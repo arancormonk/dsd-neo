@@ -33,6 +33,21 @@ void dpmr_confirm_reset(dsd_state* state);
  */
 int dpmr_confirm_is_confirmed(const dsd_state* state);
 
+/** @brief dPMRVoiceFS2Frame_t::Scrambled values (issue #655). */
+enum {
+    DPMR_HALF_CLEAR = 0U,      /**< Clear voice. */
+    DPMR_HALF_SCRAMBLED = 1U,  /**< Scrambled voice (Version 3). */
+    DPMR_HALF_UNVERIFIED = 2U, /**< No verified half says which since the transmission's boundary. */
+};
+
+/**
+ * @brief Forget the scrambling the current transmission's CRC-verified halves signalled (issue #655).
+ *
+ * A half whose CRC-7 fails is played by the transmission's last verified half, so a transmission boundary the engine
+ * sees (a header, end or other non-voice frame sync) must not hand one call's verdict to the next.
+ */
+void dpmr_scrambling_reset(dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

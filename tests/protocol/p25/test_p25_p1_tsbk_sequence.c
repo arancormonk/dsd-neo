@@ -381,10 +381,13 @@ main(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    // Issue #657: a control frame leaves the user's slot preference as set (it used to reset it to Auto).
+    opts.slot_preference = 1;
 
     processTSBK(&opts, &state);
 
     int rc = 0;
+    rc |= expect_eq_int("tsbk keeps the slot preference", opts.slot_preference, 1);
     rc |= expect_eq_int("mac dispatch count", g_mac_count, 2);
     rc |= expect_eq_int("first group", g_mac_group[0], 0x1111);
     rc |= expect_eq_int("second group", g_mac_group[1], 0x2222);

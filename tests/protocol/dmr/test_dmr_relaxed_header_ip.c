@@ -1460,6 +1460,60 @@ test_data_header_labels_proprietary_packet_data_sap(void) {
     return rc;
 }
 
+/* Issue #657: a data transmission is no Kirisun or Hytera Enhanced voice call. Its header clears the slot's vendor
+ * late-entry mode, and so does a proprietary extension header that arrives without the standard header (missed),
+ * which keeps the data crypto it decodes; the other slot's mode stays. */
+// DMR_LE_VENDOR_* in <dsd-neo/protocol/dmr/dmr.h>, which this file's stubs keep it from including.
+enum { LE_VENDOR_NONE = 0, LE_VENDOR_KIRISUN_ENC = 1, LE_VENDOR_HYTERA_ENH = 3 };
+
+static int
+expect_mode(const char* tag, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_data_headers_clear_the_vendor_late_entry_mode(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.aggressive_framesync = 1;
+    state.currentslot = 1;
+    state.dmr_le_vendor[0] = LE_VENDOR_KIRISUN_ENC;
+    state.dmr_le_vendor[1] = LE_VENDOR_HYTERA_ENH;
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 0, 0U, 4);     // proprietary SAP 0
+    set_bits(bits, 4, 15U, 4);    // DPF=15, proprietary extension
+    set_bits(bits, 8, 0x10U, 8);  // Motorola MFID
+    set_bits(bits, 17, 1U, 3);    // ALG 1
+    set_bits(bits, 20, 1U, 4);    // encrypted
+    set_bits(bits, 24, 0x5AU, 8); // KEY ID
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    rc |= expect_mode("proprietary header clears the slot's vendor mode", state.dmr_le_vendor[1], LE_VENDOR_NONE);
+    rc |= expect_mode("proprietary header keeps the other slot's mode", state.dmr_le_vendor[0], LE_VENDOR_KIRISUN_ENC);
+    rc |= expect_mode("proprietary header keeps its data key id", state.payload_keyidR, 0x5A);
+
+    state.currentslot = 0;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 4, 2U, 4); // DPF=2, unconfirmed delivery
+    set_bits(bits, 8, 4U, 4); // SAP=4, IP
+    set_bits(bits, 16, 0x000123U, 24);
+    set_bits(bits, 40, 0x000456U, 24);
+    set_bits(bits, 65, 1U, 7);
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    rc |= expect_mode("data header clears the slot's vendor mode", state.dmr_le_vendor[0], LE_VENDOR_NONE);
+    return rc;
+}
+
 static int g_scan_activity_calls;
 static uint32_t g_scan_activity_target;
 static uint32_t g_scan_activity_source;
@@ -2043,6 +2097,7 @@ main(int argc, char** argv) {
     test_type2_rejects_out_of_bounds_aggregate_length();
     int rc = test_data_header_prints_fsn_and_final_flag();
     rc |= test_data_header_labels_proprietary_packet_data_sap();
+    rc |= test_data_headers_clear_the_vendor_late_entry_mode();
     rc |= test_data_header_reports_conventional_scan_activity();
     rc |= test_type1_mnis_ars_registration_prints_device_id();
     rc |= test_type1_mnis_ars_fallback_dump_is_bounded();

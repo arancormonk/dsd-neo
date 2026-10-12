@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
+#include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -483,8 +484,22 @@ write_sdrtrunk_json_input(FILE** out, const char* json) {
     return 0;
 }
 
+/* The output buffers the gain stage (processAudio()) writes, for a zeroed state: JSON playback runs it for every frame
+   in either output format (issue #652). Each run starts them over. */
+static void
+prepare_gain_stage(dsd_state* state) {
+    static short out_buf[100 + (160 * 512)];
+    state->audio_out_buf = out_buf;
+    state->audio_out_buf_p = out_buf + 100;
+    state->audio_out_idx = 0;
+    state->audio_out_idx2 = 0;
+    state->aout_max_buf_p = state->aout_max_buf;
+    state->aout_max_buf_idx = 0;
+}
+
 static int
 run_sdrtrunk_json(const char* json, dsd_opts* opts, dsd_state* state) {
+    prepare_gain_stage(state);
     FILE* in = NULL;
     if (write_sdrtrunk_json_input(&in, json) != 0) {
         return 1;
@@ -1612,6 +1627,45 @@ test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records(void) {
  * dsd_ambe_2450_dibit_map. */
 static const char k_sdrtrunk_dmr_voice_hex[] = "3ABF032D9ADEE4CB50";
 
+/* SDRTrunk JSON playback runs every frame it synthesizes through the voice chain as soon as it is made, as the vocoder
+ * does, so a frame it then withholds (encrypted, no key) still moves the filter and the gain on (issue #653): when
+ * playback turns decryptable partway (DMR AES late entry), the chain picks up from the call, not from stale state. */
+static int
+test_sdrtrunk_json_withheld_frames_run_the_voice_chain(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static mbe_parms cur, prev, prev_enhanced;
+    int rc = 0;
+
+    char json[320];
+    DSD_SNPRINTF(json, sizeof json,
+                 "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+                 "\"encryption_algorithm\":\"36\",\"encryption_key_id\":\"9\","
+                 "\"frames\":[{\"hex\":\"%s\"},{\"hex\":\"%s\"}]}",
+                 k_sdrtrunk_dmr_voice_hex, k_sdrtrunk_dmr_voice_hex);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    opts.floating_point = 1;
+    opts.use_hpf_d = 1;
+    state.event_history_s = history;
+    state.aout_gain = 25.0f;
+    mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+    state.cur_mp = &cur;
+    state.prev_mp = &prev;
+    state.prev_mp_enhanced = &prev_enhanced;
+
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    rc |= expect_true("sdrtrunk withheld frames move the high-pass",
+                      fabs(state.voice_hpf[0].s1) > 1e-9 || fabs(state.voice_hpf[0].s2) > 1e-9);
+    rc |= expect_true("sdrtrunk withheld frames move the auto gain", fabsf(state.aout_gain - 25.0f) > 1e-3f);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /* mbelib-neo's float PCM is int16 / 7. SDRTrunk JSON playback scales each frame
  * to the int16 scale its WAV writers expect, as live decode does, so a per-call
  * WAV holds the PCM mbe_floattoshort() makes of the frames, not a 7th of it. */
@@ -1667,6 +1721,10 @@ test_sdrtrunk_json_voice_wav_is_pcm16_scale(void) {
     opts.playfiles = 1;
     opts.floating_point = 1;
     opts.dmr_stereo_wav = 1;
+    // A fixed unity gain with the high-pass off leaves the voice chain (issue #653) a pass-through, so the WAV shows
+    // the scale alone.
+    opts.audio_gain = 1.0f;
+    opts.audio_gainR = 1.0f;
     state.event_history_s = history;
     mbe_initMbeParms(&cur, &prev, &prev_enhanced);
     state.cur_mp = &cur;
@@ -3484,6 +3542,7 @@ main(void) {
     rc |= test_sdrtrunk_json_second_protocol_gets_its_own_capture();
     rc |= test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records();
     rc |= test_sdrtrunk_json_voice_wav_is_pcm16_scale();
+    rc |= test_sdrtrunk_json_withheld_frames_run_the_voice_chain();
     rc |= test_sdrtrunk_json_wav_honors_talkgroup_policy();
     rc |= test_sdrtrunk_json_mbe_capture_honors_talkgroup_policy();
     rc |= test_sdrtrunk_json_hex_voice_blocks_encrypted_without_keystream();

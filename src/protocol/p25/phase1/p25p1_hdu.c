@@ -448,9 +448,4 @@ processHDU(dsd_opts* opts, dsd_state* state) {
 
     // Classify accumulated status symbols and set advisory AFC gate flag.
     p25_status_accum_classify(state);
-
-    //reset gain
-    if (opts->floating_point == 1) {
-        state->aout_gain = opts->audio_gain;
-    }
 }

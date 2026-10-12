@@ -322,8 +322,5 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "%s\n", KNRM);
     }
     tdulc_print_lcw_payload(opts, LCW_bytes);
-    if (opts->floating_point == 1) {
-        state->aout_gain = opts->audio_gain;
-    }
     p25_status_accum_classify(state);
 }

@@ -37,7 +37,7 @@ main(void) {
     for (int i = 0; i < 8; ++i) {
         char frame[8][23] = {{0}};
         frame[0][i % 23] = 1;
-        processMbeFrame(&opts, &state, frame, NULL, NULL);
+        processMbeFrame(&opts, &state, DSD_VOICE_PROTOCOL_P25P1, frame, NULL, NULL);
         expected[i % 3] = (unsigned)state.errs2;
         assert(state.p25_p1_voice_err_hist_count == (i < 3 ? i + 1 : 3));
         assert(state.p25_p1_voice_err_hist_sum == expected[0] + expected[1] + expected[2]);
@@ -52,7 +52,7 @@ main(void) {
         assert(state.p25_p1_voice_err_hist[i] == 0);
     }
     char frame[8][23] = {{0}};
-    processMbeFrame(&opts, &state, frame, NULL, NULL);
+    processMbeFrame(&opts, &state, DSD_VOICE_PROTOCOL_P25P1, frame, NULL, NULL);
     assert(state.p25_p1_voice_err_hist_count == 1);
     assert(state.p25_p1_voice_err_hist_sum == (unsigned)state.errs2);
 
@@ -71,7 +71,7 @@ main(void) {
         for (int i = 0; i < 8; ++i) {
             char ambe[4][24] = {{0}};
             ambe[0][i % 24] = 1;
-            processMbeFrame(&opts, &state, NULL, ambe, NULL);
+            processMbeFrame(&opts, &state, DSD_VOICE_PROTOCOL_P25P2, NULL, ambe, NULL);
             sums[i % 3] = (unsigned)(slot ? state.errs2R : state.errs2);
             assert(state.p25_p2_voice_err_hist_count[slot] == (i < 3 ? i + 1 : 3));
             assert(state.p25_p2_voice_err_hist_sum[slot] == sums[0] + sums[1] + sums[2]);
@@ -90,7 +90,7 @@ main(void) {
     dsd_call_state_end(&state, 0, 0);
     state.p25_p1_voice_err_hist_len = 0;
     char late_frame[8][23] = {{0}};
-    processMbeFrame(&opts, &state, late_frame, NULL, NULL);
+    processMbeFrame(&opts, &state, DSD_VOICE_PROTOCOL_P25P1, late_frame, NULL, NULL);
     assert(state.p25_p1_voice_err_hist_len == 50);
     assert(state.p25_p1_voice_err_hist_count == 1);
     dsd_call_observation identity = {0};
@@ -101,7 +101,7 @@ main(void) {
     assert(state.p25_p1_voice_err_hist_count == 1);
     state.p25_p1_voice_err_hist_len = 100;
     assert(dsd_call_state_observe(&state, &identity, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    processMbeFrame(&opts, &state, late_frame, NULL, NULL);
+    processMbeFrame(&opts, &state, DSD_VOICE_PROTOCOL_P25P1, late_frame, NULL, NULL);
     assert(state.p25_p1_voice_err_hist_len == 64);
     assert(state.p25_p1_voice_err_hist_count == 1);
     freeState(&state);

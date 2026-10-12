@@ -143,6 +143,10 @@ SNDFILE* __wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filena
 int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
 
 /* Issue #574: the blocks written to the local output while g_audio_write_capture is set. */
 static int g_audio_write_capture = 0;
@@ -215,6 +219,17 @@ __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t f
     }
     g_audio_write_count++;
     return (int)frames;
+}
+
+/* The audio sink asks the stream's device health after each write (issue #659); the captured stream is a sentinel. */
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out) {
+    if (!g_audio_write_capture) {
+        return __real_dsd_audio_output_health_get(stream, out);
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    return 0;
 }
 
 static dsd_trunk_tune_result
@@ -1894,6 +1909,8 @@ test_edacs_analog_output_honors_mute_and_slot(void) {
                 }
                 opts.audio_out_fd = raw_fd;
             }
+            /* The local stream is open (a sentinel the write wrap counts): the sink writes no stream that is not. */
+            opts.audio_raw_out = out_types[o] == 0 ? (dsd_audio_stream*)&g_audio_write_capture : NULL;
             g_audio_write_count = 0;
             g_audio_write_capture = out_types[o] == 0;
 

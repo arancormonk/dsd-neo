@@ -19,6 +19,7 @@
  * then end to end through processdPMRvoice() itself.
  */
 
+#include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
@@ -66,7 +67,9 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 }
 
 void
-processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23], char ambe_fr[4][24],
+                char imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_DPMR);
     (void)opts;
     (void)state;
     (void)imbe_fr;
@@ -77,12 +80,6 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }

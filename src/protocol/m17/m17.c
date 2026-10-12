@@ -15,6 +15,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -59,7 +60,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include "m17_algorithms.h"
 #include "m17_confirm.h"
 #include "m17_internal.h"
@@ -670,8 +670,7 @@ m17_can_emit_audio(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static void
-m17_write_decoded_audio_single(const dsd_opts* opts, dsd_state* state, const short* samples, size_t nsam,
-                               const char* log_ctx) {
+m17_write_decoded_audio_single(const dsd_opts* opts, dsd_state* state, const short* samples, size_t nsam) {
     if (!m17_can_emit_audio(opts, state)) {
         return;
     }
@@ -680,7 +679,7 @@ m17_write_decoded_audio_single(const dsd_opts* opts, dsd_state* state, const sho
     }
 
     if (opts->audio_out_type == 0) {
-        dsd_audio_write(opts->audio_out_stream, samples, nsam);
+        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, samples, nsam);
         return;
     }
 
@@ -690,16 +689,13 @@ m17_write_decoded_audio_single(const dsd_opts* opts, dsd_state* state, const sho
     }
 
     if (opts->audio_out_type == 1) {
-        const ssize_t written = dsd_write(opts->audio_out_fd, samples, nsam * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("%s: failed to write %zu-byte audio block", log_ctx, nsam * sizeof(short));
-        }
+        (void)dsd_audio_sink_write_fd(opts->audio_out_fd, samples, nsam * sizeof(short), sizeof(short));
     }
 }
 
 static void
 m17_write_decoded_audio_pair(const dsd_opts* opts, dsd_state* state, const short* first, const short* second,
-                             size_t nsam, const char* log_ctx) {
+                             size_t nsam) {
     if (!m17_can_emit_audio(opts, state)) {
         return;
     }
@@ -708,8 +704,8 @@ m17_write_decoded_audio_pair(const dsd_opts* opts, dsd_state* state, const short
     }
 
     if (opts->audio_out_type == 0) {
-        dsd_audio_write(opts->audio_out_stream, first, nsam);
-        dsd_audio_write(opts->audio_out_stream, second, nsam);
+        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, first, nsam);
+        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, second, nsam);
         return;
     }
 
@@ -720,14 +716,8 @@ m17_write_decoded_audio_pair(const dsd_opts* opts, dsd_state* state, const short
     }
 
     if (opts->audio_out_type == 1) {
-        ssize_t written = dsd_write(opts->audio_out_fd, first, nsam * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("%s: failed to write first %zu-byte audio block", log_ctx, nsam * sizeof(short));
-        }
-        written = dsd_write(opts->audio_out_fd, second, nsam * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("%s: failed to write second %zu-byte audio block", log_ctx, nsam * sizeof(short));
-        }
+        (void)dsd_audio_sink_write_fd(opts->audio_out_fd, first, nsam * sizeof(short), sizeof(short));
+        (void)dsd_audio_sink_write_fd(opts->audio_out_fd, second, nsam * sizeof(short), sizeof(short));
     }
 }
 
@@ -803,7 +793,7 @@ M17processCodec2_1600(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
         hpf_dL(state, samp1, nsam);
     }
 
-    m17_write_decoded_audio_single(opts, state, samp1, nsam, "M17processCodec2_1600");
+    m17_write_decoded_audio_single(opts, state, samp1, nsam);
     m17_maybe_write_wav_single(opts, state, samp1, (int)nsam);
 
 #endif
@@ -861,7 +851,7 @@ M17processCodec2_3200(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
         hpf_dL(state, samp2, nsam);
     }
 
-    m17_write_decoded_audio_pair(opts, state, samp1, samp2, nsam, "M17processCodec2_3200");
+    m17_write_decoded_audio_pair(opts, state, samp1, samp2, nsam);
     m17_maybe_write_wav_pair(opts, state, samp1, samp2, (int)nsam);
 
 #endif
@@ -1626,7 +1616,7 @@ m17_monitor_baseband_if_enabled(dsd_opts* opts, dsd_state* state, const short* b
     }
 
     if (opts->audio_out_type == 0) {
-        dsd_audio_write(opts->audio_raw_out, baseband, M17_BASEBAND_SAMPLES);
+        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_RAW, opts->audio_raw_out, baseband, M17_BASEBAND_SAMPLES);
         return;
     }
 
@@ -1636,10 +1626,7 @@ m17_monitor_baseband_if_enabled(dsd_opts* opts, dsd_state* state, const short* b
     }
 
     if (opts->audio_out_type == 1) {
-        const ssize_t written = dsd_write(opts->audio_out_fd, baseband, M17_BASEBAND_BYTES);
-        if (written < 0) {
-            LOG_WARN("encodeM17RF: failed to write %zu-byte baseband block", M17_BASEBAND_BYTES);
-        }
+        (void)dsd_audio_sink_write_fd(opts->audio_out_fd, baseband, M17_BASEBAND_BYTES, sizeof(short));
     }
 }
 

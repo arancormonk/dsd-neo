@@ -15,13 +15,10 @@ dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    if (opts->floating_point == 0 && opts->pulse_digi_out_channels == 1) {
+    // Both output formats play through the same mixers; float output (-y) is only how the output writes the samples.
+    if (opts->pulse_digi_out_channels == 1) {
         playSynthesizedVoiceMS(opts, state);
-    } else if (opts->floating_point == 0 && opts->pulse_digi_out_channels == 2) {
+    } else if (opts->pulse_digi_out_channels == 2) {
         playSynthesizedVoiceSS(opts, state);
-    } else if (opts->floating_point == 1 && opts->pulse_digi_out_channels == 1) {
-        playSynthesizedVoiceFM(opts, state);
-    } else if (opts->floating_point == 1 && opts->pulse_digi_out_channels == 2) {
-        playSynthesizedVoiceFS(opts, state);
     }
 }

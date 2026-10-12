@@ -172,21 +172,23 @@ assert_common_tdu_state(const dsd_opts* opts, const dsd_state* state) {
     assert(state->p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
 }
 
+/* One voice chain gain serves both output formats, and its level carries across calls (issue #653): a TDU leaves it
+   as it was in float output too. */
 static void
-test_tdu_resets_call_crypto_state_and_restores_float_gain(void) {
+test_tdu_resets_call_crypto_state_and_keeps_float_gain(void) {
     static dsd_opts opts;
     static dsd_state state;
 
     reset_harness();
     seed_active_call_state(&opts, &state);
     opts.floating_point = 1;
-    opts.audio_gain = 2.25F;
-    state.aout_gain = -1.0F;
+    opts.audio_gain = 0.0F;
+    state.aout_gain = 7.0F;
 
     processTDU(&opts, &state);
 
     assert_common_tdu_state(&opts, &state);
-    assert(float_close(state.aout_gain, opts.audio_gain, 1e-6F));
+    assert(float_close(state.aout_gain, 7.0F, 1e-6F));
 }
 
 static void
@@ -211,7 +213,7 @@ test_tdu_preserves_gain_when_integer_output_and_reports_sync_mismatch(void) {
 int
 main(void) {
     dsd_decode_clock_use_test(1234500000000ULL);
-    test_tdu_resets_call_crypto_state_and_restores_float_gain();
+    test_tdu_resets_call_crypto_state_and_keeps_float_gain();
     test_tdu_preserves_gain_when_integer_output_and_reports_sync_mismatch();
     dsd_decode_clock_use_system();
     printf("P25_P1_TDU: OK\n");

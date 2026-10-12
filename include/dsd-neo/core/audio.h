@@ -34,9 +34,15 @@ extern "C" {
  *         SPS hunt as proof its profile is the right one (#407).
  */
 int processdPMRvoice(dsd_opts* opts, dsd_state* state);
-/** @brief Core audio processing entry point (slot 1). */
+/**
+ * @brief Run the voice chain on the left frame (`audio_out_temp_buf`, slot 1's state) and stage it for the short
+ * mixers: dsd_voice_chain_run() then dsd_voice_stage_short_left() (<dsd-neo/core/voice_chain.h>).
+ *
+ * In-tree decoders call those two themselves (the chain on every frame, the staging only where the short output takes
+ * it); this stays for out-of-tree callers.
+ */
 void processAudio(const dsd_opts* opts, dsd_state* state);
-/** @brief Core audio processing entry point (slot 2 / right). */
+/** @brief processAudio() for the right frame (`audio_out_temp_bufR`) on slot 2's state. */
 void processAudioR(const dsd_opts* opts, dsd_state* state);
 
 /** @brief Open audio input stream based on opts. Returns 0 on success. */
@@ -92,14 +98,11 @@ void dsd_write_mono_voice_to_slot_wav(dsd_opts* opts, dsd_state* state, int slot
 /** @brief Write synthesized mono mixed voice samples. */
 void writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state);
 
-/** @brief Play synthesized voice (float stereo mix) for slot 1. */
-void playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state); // float stereo mix
-/** @brief Play synthesized voice (float stereo mix 3v2 DMR). */
-void playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state); // float stereo mix 3v2 DMR
-/** @brief Play synthesized voice (float stereo mix 4v2 P25p2). */
-/** @brief Play float mono voice, duplicating samples when the configured output is stereo. */
-void playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state); // float mono
-
+/*
+ * The voice mixers serve both output formats (issue #652): they stage 16-bit samples after the one gain stage
+ * (processAudio()/processAudioR()), and float output (-y) only changes how the raw fd (-o -) and UDP write them (as
+ * f32, s16 / 32768). The local audio device takes 16-bit samples in either format.
+ */
 /** @brief Play synthesized voice (short mono output slot 1). */
 void playSynthesizedVoice(dsd_opts* opts, dsd_state* state); // short mono output slot 1
 /** @brief Play short mono voice, duplicating samples when the configured output is stereo. */
@@ -108,22 +111,20 @@ void playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state); // short mono mix
 void playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state); // short stereo mix
 /** @brief Play synthesized voice (short stereo mix 3v2 DMR). */
 void playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state); // short stereo mix 3v2 DMR
-/** @brief Play synthesized voice (short stereo mix 18V superframe). */
 
 /**
- * @brief Decoded media the vocoder staged for a DMR slot since the stereo mixes last ran (issue #574).
+ * @brief Decoded media the vocoder staged for a DMR slot since the stereo mix last ran (issue #574).
  *
- * The float (FS3) and short (SS3) DMR mixes run on a timer of bursts, skipped ones included, and replay each slot's
- * buffers whether or not anything was decoded into them, so they note the audible-audio stamp
- * (<dsd-neo/core/audio_activity.h>) only for a slot whose gates pass, that a channel they emit carries (SS3's output
- * policy may copy one slot over the other) and that holds media of their kind: FLOAT when the vocoder copied a decoded
- * frame into `f_l`/`f_r`, SHORT when it ran the short path into `s_l`/`s_r` (never the silence a muted slot stages).
- * The silence a muted slot stages replaces its short frame, so it retires that slot's SHORT flag: the flag then says
- * media was staged after the slot's last silence, which the frames the mixes play still hold. Each mix takes both
- * slots' flags; a path that discards the staged audio clears them. Kept only while the stamp is armed. Process-wide,
- * decoder thread only.
+ * The DMR stereo mix (SS3, in both output formats) runs on a timer of bursts, skipped ones included, and replays each
+ * slot's buffers whether or not anything was decoded into them, so it notes the audible-audio stamp
+ * (<dsd-neo/core/audio_activity.h>) only for a slot whose gates pass, that a channel it emits carries (its output
+ * policy may copy one slot over the other) and that holds media: SHORT when the vocoder ran the short path into
+ * `s_l`/`s_r` (never the silence a muted slot stages). The silence a muted slot stages replaces its short frame, so it
+ * retires that slot's SHORT flag: the flag then says media was staged after the slot's last silence, which the frames
+ * the mix plays still hold. The mix takes both slots' flags; a path that discards the staged audio clears them. Kept
+ * only while the stamp is armed. Process-wide, decoder thread only.
  */
-enum { DSD_DMR_MIX_MEDIA_FLOAT = 1, DSD_DMR_MIX_MEDIA_SHORT = 2 };
+enum { DSD_DMR_MIX_MEDIA_SHORT = 1 };
 
 /** @brief The vocoder staged decoded media of @p kind (DSD_DMR_MIX_MEDIA_*) for DMR slot @p slot (0 or 1). */
 void dsd_audio_dmr_mix_media_staged(int slot, unsigned int kind);
@@ -135,22 +136,17 @@ void dsd_audio_dmr_mix_media_discard(int slot);
 unsigned int dsd_audio_dmr_mix_media_take(int slot);
 
 /**
- * @brief Play one synthesized voice frame using the configured sample format and channel count.
+ * @brief Play one synthesized voice frame through the mono or stereo mixer for the configured channel count.
  *
- * Selects short or float output from `opts->floating_point` and mono or
- * stereo output from `opts->pulse_digi_out_channels`. Unsupported values and
- * null arguments produce no output.
+ * Picks the short mono (MS) or stereo (SS) mixer from `opts->pulse_digi_out_channels`, in either output format
+ * (`opts->floating_point` only changes how the output writes the samples). Unsupported values and null arguments
+ * produce no output.
  */
 void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
 
-/** @brief Apply float-domain gain to 160-sample block for given slot. */
-void agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot); // float gain control
 /** @brief Apply the manual analog gain (`-n`, 0..100% as 0x..5x) to a short buffer: the M17 encoder's fixed input gain.
  *  The analog monitor's gain stage is dsd_analog_audio_process_f() (<dsd-neo/dsp/analog_audio.h>). */
 void analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len); // manual gain for analog paths
-
-/** @brief Multiply float buffer by gain factor in-place. */
-void audio_apply_gain_f32(float* buf, size_t n, float gain);
 
 /** @brief Analog monitor 6x sample-repetition upsampler. */
 void upsample(dsd_state* state, float invalue);
@@ -202,20 +198,12 @@ void dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old
 int dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, SNDFILE** out_file,
                                    SF_INFO** out_info, int* out_sample_rate_hz, int* out_opened_as_container);
 
-/** @brief Duplicate mono float samples into interleaved stereo buffer. */
-void audio_mono_to_stereo_f32(const float* in, float* out, size_t n);
 /** @brief Duplicate mono int16 samples into interleaved stereo buffer. */
 void audio_mono_to_stereo_s16(const short* in, short* out, size_t n);
 
-/** @brief Mix two float channels with per-channel mute flags into interleaved stereo. */
-void audio_mix_interleave_stereo_f32(const float* left, const float* right, size_t n, int encL, int encR,
-                                     float* stereo_out);
 /** @brief Mix two int16 channels with per-channel mute flags into interleaved stereo. */
 void audio_mix_interleave_stereo_s16(const short* left, const short* right, size_t n, int encL, int encR,
                                      short* stereo_out);
-/** @brief Mix two float channels with mute flags into mono output. */
-void audio_mix_mono_from_slots_f32(const float* left, const float* right, size_t n, int l_on, int r_on,
-                                   float* mono_out);
 /** @brief Mix two int16 channels with mute flags into mono output (the average when both are on). */
 void audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out);
 
@@ -255,16 +243,11 @@ int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsi
 /** @brief Talkgroup/whitelist/TG-hold gating for dual/slot mix (enc flags 0=unmuted,1=muted). */
 int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
-/** @brief Mono per-call WAV gate combining decrypt state with TG/allow-list/TG-hold policy. */
-int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
 /**
- * @brief Non-zero when the current Phase 1 voice frame belongs to a live P25 call.
- *
- * Excludes SDRTrunk JSON playback and a protocol that borrows the Phase 1 decoder
- * (YSF full rate runs its IMBE frames with synctype P25P1 for a YSF call).
- * Recording applies the P25 speaker rule, reverse mute included, only then.
+ * @brief Mono per-call WAV gate: the vocoder's verdict on the current slot's frame (dsd_state::mbe_slot_muted) and
+ * the TG/allow-list/TG-hold policy. Called by the vocoder after it judged the frame.
  */
-int dsd_audio_p25p1_live_voice(const dsd_state* state);
+int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
 /**
  * @brief WAV gate for TG/allow-list/TG-hold policy alone, on the call in @p slot.
  *
@@ -275,6 +258,48 @@ int dsd_audio_p25p1_live_voice(const dsd_state* state);
  * with no active call is allowed.
  */
 int dsd_audio_record_policy_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, int* allow_out);
+
+/** @brief How a voice frame stands toward encryption, after the keystream the vocoder applied to it (issue #655). */
+typedef enum {
+    DSD_VOICE_CRYPTO_CLEAR = 0,     /**< Not encrypted (or no encryption is classified for the protocol). */
+    DSD_VOICE_CRYPTO_DECRYPTABLE,   /**< Encrypted, and the key the vocoder applied decrypts it. */
+    DSD_VOICE_CRYPTO_UNDECRYPTABLE, /**< Encrypted, and no loaded key decrypts it. */
+} dsd_voice_crypto_class;
+
+/**
+ * @brief The user's rule on a classified voice frame: 1 when it plays.
+ *
+ * Reverse mute (-q) plays an encrypted frame, decryptable or not, and mutes a clear one. Otherwise a frame plays
+ * unless it is undecryptable while the slot's encrypted-audio mute (dmr_mute_encL/R) is on.
+ */
+int dsd_voice_crypto_class_audible(const dsd_opts* opts, int slot, dsd_voice_crypto_class cls);
+
+/**
+ * @brief The protocol that owns the voice frame being decoded.
+ *
+ * The protocol processFrame() dispatched (YSF and scrambled dPMR keep theirs while they decode through the NXDN or
+ * P25 Phase 1 decoder), else state->synctype.
+ */
+int dsd_voice_frame_owner(const dsd_state* state);
+
+/**
+ * @brief The NXDN-family classification of the current frame: NXDN, and dPMR, whose bridge sets nxdn_cipher_type 1
+ * for a scrambled half and 0 for a clear one. Decryptable when the vocoder applies a keystream to it (a scalar key for
+ * ciphers 1 and 2 or under forced privacy, an AES key for cipher 3).
+ */
+dsd_voice_crypto_class dsd_nxdn_voice_crypto_class(const dsd_state* state);
+
+/**
+ * @brief The encryption verdict on the voice frame on @p slot, by the protocol that owns it: 1 when it plays.
+ *
+ * One verdict for every output (issue #655): P25 Phase 1 and Phase 2 by the P25 rule
+ * (p25_crypto_audio_output_permitted(), Phase 2 also needs its decode gate); NXDN and dPMR by
+ * dsd_nxdn_voice_crypto_class() and dsd_voice_crypto_class_audible() on slot 0; DMR by the vocoder's verdict on the
+ * slot's last frame (dsd_state::mbe_slot_muted), since it depends on the keystream that frame got. Protocols with no
+ * encryption classified here (YSF, D-STAR, X2-TDMA, ProVoice), no protocol, and SDRTrunk JSON playback, which checks
+ * crypto itself, always play. The FDMA mixers call it for the frame they play; the vocoder stores it per slot.
+ */
+int dsd_voice_crypto_audible(const dsd_opts* opts, const dsd_state* state, int slot);
 
 /**
  * @brief Key material the DMR/P25 voice ALGID @p algid requires.

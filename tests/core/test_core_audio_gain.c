@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -248,26 +249,7 @@ read_short_file_samples(const char* path, short* out, size_t out_count) {
 }
 
 static int
-test_audio_apply_gain_f32_multiplies_block(void) {
-    float in[4] = {1.0f, -2.0f, 0.5f, 0.0f};
-    audio_apply_gain_f32(in, 4, 2.5f);
-
-    int rc = 0;
-    rc |= expect_float_close("gain f32 sample 0", in[0], 2.5f, 1e-6f);
-    rc |= expect_float_close("gain f32 sample 1", in[1], -5.0f, 1e-6f);
-    rc |= expect_float_close("gain f32 sample 2", in[2], 1.25f, 1e-6f);
-    rc |= expect_float_close("gain f32 sample 3", in[3], 0.0f, 1e-6f);
-
-    audio_apply_gain_f32(NULL, 4, 3.0f);
-    return rc;
-}
-
-static int
 test_audio_mono_to_stereo_duplicates_samples(void) {
-    const float in_f[3] = {1.0f, -2.5f, 0.25f};
-    float out_f[6] = {0.0f};
-    audio_mono_to_stereo_f32(in_f, out_f, 3);
-
     const short in_s[3] = {-4, 0, 1234};
     short out_s[6] = {0};
     audio_mono_to_stereo_s16(in_s, out_s, 3);
@@ -276,21 +258,11 @@ test_audio_mono_to_stereo_duplicates_samples(void) {
     for (int i = 0; i < 3; i++) {
         const size_t out_idx = (size_t)i * 2U;
         char label[64];
-        DSD_SNPRINTF(label, sizeof label, "mono f32 left %d", i);
-        rc |= expect_float_close(label, out_f[out_idx], in_f[i], 1e-6f);
-        DSD_SNPRINTF(label, sizeof label, "mono f32 right %d", i);
-        rc |= expect_float_close(label, out_f[out_idx + 1U], in_f[i], 1e-6f);
         DSD_SNPRINTF(label, sizeof label, "mono s16 left %d", i);
         rc |= expect_int_eq(label, out_s[out_idx], in_s[i]);
         DSD_SNPRINTF(label, sizeof label, "mono s16 right %d", i);
         rc |= expect_int_eq(label, out_s[out_idx + 1U], in_s[i]);
     }
-
-    float guard_f[2] = {7.0f, 8.0f};
-    audio_mono_to_stereo_f32(NULL, guard_f, 1);
-    audio_mono_to_stereo_f32(in_f, NULL, 1);
-    rc |= expect_float_close("mono f32 null input guard", guard_f[0], 7.0f, 1e-6f);
-    rc |= expect_float_close("mono f32 null output guard", guard_f[1], 8.0f, 1e-6f);
 
     short guard_s[2] = {7, 8};
     audio_mono_to_stereo_s16(NULL, guard_s, 1);
@@ -302,42 +274,33 @@ test_audio_mono_to_stereo_duplicates_samples(void) {
 
 static int
 test_audio_mix_helpers_apply_channel_gates(void) {
-    const float left_f[2] = {1.0f, 2.0f};
-    const float right_f[2] = {10.0f, 20.0f};
-    float stereo_f[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
-    audio_mix_interleave_stereo_f32(left_f, right_f, 2, 0, 1, stereo_f);
-
     const short left_s[2] = {1, 2};
     const short right_s[2] = {10, 20};
     short stereo_s[4] = {-1, -1, -1, -1};
     audio_mix_interleave_stereo_s16(left_s, right_s, 2, 1, 0, stereo_s);
 
-    float mono[2] = {-1.0f, -1.0f};
-    audio_mix_mono_from_slots_f32(left_f, right_f, 2, 1, 1, mono);
+    short mono[2] = {-1, -1};
+    audio_mix_mono_from_slots_s16(left_s, right_s, 2, 1, 1, mono);
 
     int rc = 0;
-    rc |= expect_float_close("mix f32 left 0", stereo_f[0], 1.0f, 1e-6f);
-    rc |= expect_float_close("mix f32 muted right 0", stereo_f[1], 0.0f, 1e-6f);
-    rc |= expect_float_close("mix f32 left 1", stereo_f[2], 2.0f, 1e-6f);
-    rc |= expect_float_close("mix f32 muted right 1", stereo_f[3], 0.0f, 1e-6f);
     rc |= expect_int_eq("mix s16 muted left 0", stereo_s[0], 0);
     rc |= expect_int_eq("mix s16 right 0", stereo_s[1], 10);
     rc |= expect_int_eq("mix s16 muted left 1", stereo_s[2], 0);
     rc |= expect_int_eq("mix s16 right 1", stereo_s[3], 20);
-    rc |= expect_float_close("mono average 0", mono[0], 5.5f, 1e-6f);
-    rc |= expect_float_close("mono average 1", mono[1], 11.0f, 1e-6f);
+    rc |= expect_int_eq("mono average 0", mono[0], 5);
+    rc |= expect_int_eq("mono average 1", mono[1], 11);
 
-    audio_mix_mono_from_slots_f32(left_f, right_f, 2, 1, 0, mono);
-    rc |= expect_float_close("mono left only", mono[0], 1.0f, 1e-6f);
-    audio_mix_mono_from_slots_f32(left_f, right_f, 2, 0, 1, mono);
-    rc |= expect_float_close("mono right only", mono[0], 10.0f, 1e-6f);
-    audio_mix_mono_from_slots_f32(left_f, right_f, 2, 0, 0, mono);
-    rc |= expect_float_close("mono neither slot", mono[0], 0.0f, 1e-6f);
+    audio_mix_mono_from_slots_s16(left_s, right_s, 2, 1, 0, mono);
+    rc |= expect_int_eq("mono left only", mono[0], 1);
+    audio_mix_mono_from_slots_s16(left_s, right_s, 2, 0, 1, mono);
+    rc |= expect_int_eq("mono right only", mono[0], 10);
+    audio_mix_mono_from_slots_s16(left_s, right_s, 2, 0, 0, mono);
+    rc |= expect_int_eq("mono neither slot", mono[0], 0);
 
-    float guard_f[2] = {7.0f, 8.0f};
-    audio_mix_interleave_stereo_f32(NULL, right_f, 1, 0, 0, guard_f);
-    rc |= expect_float_close("mix f32 null guard left", guard_f[0], 7.0f, 1e-6f);
-    rc |= expect_float_close("mix f32 null guard right", guard_f[1], 8.0f, 1e-6f);
+    short guard_s[2] = {7, 8};
+    audio_mix_interleave_stereo_s16(NULL, right_s, 1, 0, 0, guard_s);
+    rc |= expect_int_eq("mix s16 null guard left", guard_s[0], 7);
+    rc |= expect_int_eq("mix s16 null guard right", guard_s[1], 8);
     return rc;
 }
 
@@ -419,37 +382,14 @@ test_manual_analog_gain_helper(void) {
 }
 
 static int
-test_agf_scales_nonzero_float_block_and_updates_slot_gain(void) {
-    static dsd_opts opts = {0};
-    static dsd_state state = {0};
-    opts.audio_gain = 25.0f;
-    state.aout_gain = 49.0f;
-
-    float samp[160];
-    for (int i = 0; i < 160; i++) {
-        samp[i] = 384.0f;
-    }
-    agf(&opts, &state, samp, 0);
-
-    int rc = 0;
-    rc |= expect_float_close("agf first clipped sample", samp[0], 0.72f, 1e-5f);
-    rc |= expect_true("agf updates left gain", state.aout_gain < 49.0f);
-
-    float silent[160] = {0.0f};
-    float before_gain = state.aout_gain;
-    agf(&opts, &state, silent, 0);
-    rc |= expect_float_close("agf silence leaves gain", state.aout_gain, before_gain, 1e-6f);
-    return rc;
-}
-
-static int
 test_process_audio_native_left_clamps_and_tracks_output(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
-    opts.audio_gain = 1.0f;
+    // A fixed -g is a plain multiplier, the setting itself (issue #653).
+    opts.audio_gain = 2.0f;
     opts.pulse_digi_rate_out = 8000;
     state.aout_gain = 2.0f;
     static short out[200];
@@ -488,7 +428,7 @@ test_process_audio_native_right_clamps_and_tracks_output(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
-    opts.audio_gainR = 1.0f;
+    opts.audio_gainR = 3.0f;
     opts.pulse_digi_rate_out = 8000;
     state.aout_gainR = 3.0f;
     static short out[200];
@@ -598,7 +538,7 @@ test_process_audio_right_auto_gain_tracks_peak_history(void) {
 }
 
 static int
-test_process_audio_upsampled_left_clamps_and_tracks_output(void) {
+test_stage_short_left_upsampled_clamps_and_tracks_output(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -620,7 +560,7 @@ test_process_audio_upsampled_left_clamps_and_tracks_output(void) {
     state.audio_out_temp_buf[2] = 123.0f;
     state.audio_out_idx = 160; // a stale count (issue #654)
 
-    processAudio(&opts, &state);
+    dsd_voice_stage_short_left(&opts, &state);
 
     int rc = 0;
     rc |= expect_int_eq("left upsample clamp positive first", out[0], 32767);
@@ -760,6 +700,56 @@ test_play_synthesized_voice_fd_writes_pending_pcm_and_resets_index(void) {
     rc |= expect_int_eq("fd write sample 3", samples[3], -404);
     rc |= expect_int_eq("fd write resets index", state.audio_out_idx, 0);
     rc |= expect_int_eq("fd write leaves long index", state.audio_out_idx2, 4);
+    (void)remove(path);
+    return rc;
+}
+
+/* Issue #652: under float output (-y) the legacy short output, which SDRTrunk JSON playback uses while a WAV is
+ * written, writes its pending samples to the raw fd as f32, each the 16-bit sample / 32768, as every mixer does. */
+static int
+test_play_synthesized_voice_float_output_writes_f32(void) {
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+
+    char path[DSD_AUDIO_TEST_PATH_MAX] = {0};
+    int fd = create_temp_file_fd("dsdneo_audio_f32", path, sizeof path);
+    if (fd < 0) {
+        return 1;
+    }
+    opts.slot1_on = 1;
+    opts.audio_out = 1;
+    opts.audio_out_type = 1;
+    opts.audio_out_fd = fd;
+    opts.floating_point = 1;
+    state.mbe_file_type = 3;
+    static short out[8];
+    static const short initial_out[8] = {16384, -8192, 32767, -32768, 505, -606, 707, -808};
+    DSD_MEMCPY(out, initial_out, sizeof(out));
+    state.audio_out_buf = out;
+    state.audio_out_buf_p = out + 4;
+    state.audio_out_idx = 4;
+    state.audio_out_idx2 = 4;
+
+    playSynthesizedVoice(&opts, &state);
+    (void)dsd_close(fd);
+    opts.audio_out_fd = -1;
+
+    float samples[5] = {0.0f};
+    size_t got = 0;
+    FILE* file = dsd_fopen_existing_regular_file(path, "rb");
+    int rc = expect_true("f32 legacy output readable", file != NULL);
+    if (file) {
+        got = fread(samples, sizeof(float), 5, file);
+        fclose(file);
+    }
+    rc |= expect_int_eq("f32 legacy output sample count", (int)got, 4);
+    rc |= expect_float_close("f32 legacy output sample 0", samples[0], 0.5f, 1e-9f);
+    rc |= expect_float_close("f32 legacy output sample 1", samples[1], -0.25f, 1e-9f);
+    rc |= expect_float_close("f32 legacy output sample 2", samples[2], 32767.0f / 32768.0f, 1e-9f);
+    rc |= expect_float_close("f32 legacy output sample 3", samples[3], -1.0f, 1e-9f);
+    rc |= expect_int_eq("f32 legacy output resets index", state.audio_out_idx, 0);
     (void)remove(path);
     return rc;
 }
@@ -1340,20 +1330,19 @@ test_async_output_policy_keeps_file_replays_synchronous(void) {
 int
 main(void) {
     int rc = 0;
-    rc |= test_audio_apply_gain_f32_multiplies_block();
     rc |= test_audio_mono_to_stereo_duplicates_samples();
     rc |= test_audio_mix_helpers_apply_channel_gates();
     rc |= test_upsample_repeats_into_selected_slot_buffer();
     rc |= test_manual_analog_gain_helper();
-    rc |= test_agf_scales_nonzero_float_block_and_updates_slot_gain();
     rc |= test_process_audio_native_left_clamps_and_tracks_output();
     rc |= test_process_audio_native_right_clamps_and_tracks_output();
     rc |= test_process_audio_auto_gain_ramps_from_peak_history();
     rc |= test_process_audio_right_auto_gain_tracks_peak_history();
-    rc |= test_process_audio_upsampled_left_clamps_and_tracks_output();
+    rc |= test_stage_short_left_upsampled_clamps_and_tracks_output();
     rc |= test_process_audio_upsampled_right_clamps_and_tracks_output();
     rc |= test_play_synthesized_voice_slot_off_clears_pending_output();
     rc |= test_play_synthesized_voice_fd_writes_pending_pcm_and_resets_index();
+    rc |= test_play_synthesized_voice_float_output_writes_f32();
     rc |= test_play_synthesized_voice_drops_blocked_talkgroup();
     rc |= test_play_synthesized_voice_bad_fd_drops_pending_pcm();
     rc |= test_play_synthesized_voice_stamps_what_it_writes();

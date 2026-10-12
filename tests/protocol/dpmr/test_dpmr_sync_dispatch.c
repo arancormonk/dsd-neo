@@ -284,6 +284,31 @@ test_dispatch_voice_sync_alone_opens_no_call(void) {
     g_voice_crc_halves = 2;
 }
 
+/* Issue #655: a CRC-failed half is played by the scrambling the transmission's last verified half signalled, so every
+   transmission boundary the dispatcher sees (FS1 header, FS3 end, FS4) forgets it before the next call. */
+static void
+test_dispatch_boundaries_forget_the_scrambling(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const int boundaries[] = {DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_DPMR_FS1_NEG, DSD_SYNC_DPMR_FS3_POS,
+                                     DSD_SYNC_DPMR_FS3_NEG, DSD_SYNC_DPMR_FS4_POS, DSD_SYNC_DPMR_FS4_NEG};
+    for (size_t i = 0; i < sizeof(boundaries) / sizeof(boundaries[0]); i++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.dpmr_scrambled = 2U;
+        state.synctype = boundaries[i];
+        (void)dsd_dispatch_handle_dpmr(&opts, &state);
+        assert(state.dpmr_scrambled == 0U);
+    }
+    // A voice frame keeps the transmission's verdict.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dpmr_scrambled = 2U;
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(state.dpmr_scrambled == 2U);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -295,6 +320,7 @@ main(void) {
     test_dispatch_end_sync_tightens_sync_loss_end();
     test_dispatch_voice_verdicts_follow_the_cch_crc();
     test_dispatch_voice_sync_alone_opens_no_call();
+    test_dispatch_boundaries_forget_the_scrambling();
     printf("DPMR_SYNC_DISPATCH: OK\n");
     return 0;
 }

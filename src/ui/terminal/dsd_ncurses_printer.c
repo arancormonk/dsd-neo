@@ -35,6 +35,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/analog_audio.h>
+#include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
@@ -547,9 +548,6 @@ ui_render_pulse_digital_output(const dsd_opts* opts, const dsd_state* state) {
                opts->pulse_digi_out_channels, state->aout_gain * 2);
         if (opts->pulse_digi_out_channels == 2) {
             printw(" G: %02.0f%%", state->aout_gainR * 2);
-        }
-        if (opts->floating_point == 1) {
-            printw(" FLOAT: %02.0f%%;", opts->audio_gain * 2);
         }
         if (opts->audio_gain == 0) {
             printw(" (+|-) Auto  ");
@@ -2590,7 +2588,7 @@ ui_render_call_info_dpmr(const dsd_opts* opts, dsd_state* state) {
         printw("TGT: [%s] SRC: [%s] ", call.target_text[0] != '\0' ? call.target_text : "unknown",
                call.source_text[0] != '\0' ? call.source_text : "unknown");
         printw("\n| ");
-        if (state->dPMRVoiceFS2Frame.Version[0] == 3) {
+        if (state->dPMRVoiceFS2Frame.Scrambled[0] == DPMR_HALF_SCRAMBLED) {
             attron(COLOR_PAIR(2));
             printw("Scrambler ");
             attroff(COLOR_PAIR(2));

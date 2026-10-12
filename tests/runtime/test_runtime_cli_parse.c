@@ -783,8 +783,9 @@ test_H_loads_aes256_key_for_both_slots(void) {
         return 1;
     }
 
-    if (opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
-        DSD_FPRINTF(stderr, "expected -H to unmute encrypted DMR audio, got L/R=%d/%d\n", opts->dmr_mute_encL,
+    // A key load leaves the DMR encrypted-audio mute as the user set it (issue #655).
+    if (opts->dmr_mute_encL != 1 || opts->dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "expected -H to leave encrypted DMR audio muted, got L/R=%d/%d\n", opts->dmr_mute_encL,
                     opts->dmr_mute_encR);
         freeState(state);
         free(opts);
@@ -850,8 +851,8 @@ test_H_zero_key_arms_dmr_decryption(void) {
         return 1;
     }
 
-    if (opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
-        DSD_FPRINTF(stderr, "expected zero -H key to arm DMR decryption, got L/R=%d/%d\n", opts->dmr_mute_encL,
+    if (opts->dmr_mute_encL != 1 || opts->dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "expected zero -H key to leave the DMR mute alone, got L/R=%d/%d\n", opts->dmr_mute_encL,
                     opts->dmr_mute_encR);
         freeState(state);
         free(opts);
@@ -966,8 +967,8 @@ test_b_loads_basic_privacy_key_and_unmutes_dmr(void) {
         return 1;
     }
 
-    if (state->K != 42ULL || opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
-        DSD_FPRINTF(stderr, "expected -b 42 to set K=42 and unmute DMR, got K=%llu L/R=%d/%d\n", state->K,
+    if (state->K != 42ULL || opts->dmr_mute_encL != 1 || opts->dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "expected -b 42 to set K=42 and leave the DMR mute, got K=%llu L/R=%d/%d\n", state->K,
                     opts->dmr_mute_encL, opts->dmr_mute_encR);
         freeState(state);
         free(opts);
@@ -1012,8 +1013,8 @@ test_b_zero_key_arms_dmr_decryption(void) {
         return 1;
     }
 
-    if (state->K != 0ULL || opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
-        DSD_FPRINTF(stderr, "expected -b 0 to set K=0 and arm DMR decryption, got K=%llu L/R=%d/%d\n", state->K,
+    if (state->K != 0ULL || opts->dmr_mute_encL != 1 || opts->dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "expected -b 0 to set K=0 and leave the DMR mute, got K=%llu L/R=%d/%d\n", state->K,
                     opts->dmr_mute_encL, opts->dmr_mute_encR);
         freeState(state);
         free(opts);
@@ -1056,8 +1057,8 @@ test_b_accepts_basic_privacy_table_max(void) {
         return 1;
     }
 
-    if (state->K != 255ULL || opts->dmr_mute_encL != 0 || opts->dmr_mute_encR != 0) {
-        DSD_FPRINTF(stderr, "expected -b 255 to set K=255 and unmute DMR, got K=%llu L/R=%d/%d\n", state->K,
+    if (state->K != 255ULL || opts->dmr_mute_encL != 1 || opts->dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "expected -b 255 to set K=255 and leave the DMR mute, got K=%llu L/R=%d/%d\n", state->K,
                     opts->dmr_mute_encL, opts->dmr_mute_encR);
         freeState(state);
         free(opts);

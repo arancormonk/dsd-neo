@@ -296,6 +296,18 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 
+# The analog monitor in dsd_symbol.c writes through the audio sinks (issue #659), which dsd-neo_core holds too; tests
+# that link the DSP archive without core take this copy. It needs the platform audio and runtime log those link.
+add_library(
+    dsd-neo_test_audio_sink
+    OBJECT
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_sink.c
+)
+target_include_directories(
+    dsd-neo_test_audio_sink
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+
 add_library(
     dsd-neo_test_p25_shims
     STATIC
@@ -361,7 +373,10 @@ function(dsd_neo_link_dsp_test target_name)
     else()
         target_link_libraries(${target_name} PRIVATE dsd-neo_dsp)
     endif()
-    target_link_libraries(${target_name} PRIVATE dsd-neo_test_audio_activity)
+    target_link_libraries(
+        ${target_name}
+        PRIVATE dsd-neo_test_audio_activity dsd-neo_test_audio_sink
+    )
 
     if(ARGN)
         target_link_libraries(${target_name} PRIVATE ${ARGN})
@@ -5465,7 +5480,9 @@ add_executable(
     dsd-neo_test_core_audio2_helpers
     core/test_core_audio2_helpers.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dsd_audio2.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/voice_crypto.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_sink.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c
 )
 target_include_directories(
@@ -5475,23 +5492,41 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src
 )
-target_include_directories(
-    dsd-neo_test_core_audio2_helpers
-    SYSTEM
-    PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
-)
-# MBE_STATIC: the test defines its own mbe_floattoshort() instead of linking
-# mbe-neo, so the header must not declare it __declspec(dllimport) on Windows
-# (MSVC rejects defining a dllimport function, C2491).
 target_compile_definitions(
     dsd-neo_test_core_audio2_helpers
-    PRIVATE DSD_AUDIO2_INTERNAL= MBE_STATIC
+    PRIVATE DSD_AUDIO2_INTERNAL=
 )
 target_link_libraries(
     dsd-neo_test_core_audio2_helpers
     PRIVATE dsd-neo_test_call_state_support ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME CORE_AUDIO2_HELPERS COMMAND dsd-neo_test_core_audio2_helpers)
+
+# The digital voice chain (issue #653): the per-slot high-pass and gain every decoded frame runs through, and the alert
+# tone, the same in both output formats.
+add_executable(dsd-neo_test_core_voice_chain core/test_core_voice_chain.c)
+target_include_directories(
+    dsd-neo_test_core_voice_chain
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_voice_chain
+    PRIVATE dsd-neo_core ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_VOICE_CHAIN COMMAND dsd-neo_test_core_voice_chain)
+
+# The audio sinks' write path: device failure and recovery reports, the -o - descriptor's failure and drops (issue
+# #659). The platform writes and the log are stubbed.
+add_executable(
+    dsd-neo_test_core_audio_sink
+    core/test_core_audio_sink.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_sink.c
+)
+target_include_directories(
+    dsd-neo_test_core_audio_sink
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME CORE_AUDIO_SINK COMMAND dsd-neo_test_core_audio_sink)
 
 add_executable(
     dsd-neo_test_core_misc_power_filters
@@ -5584,6 +5619,7 @@ target_link_libraries(
     PRIVATE
         dsd-neo_dsp_private_test_support
         dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
         dsd-neo_test_support
         ${DSD_NEO_TEST_MATH_LIB}
         ${LIBSNDFILE_LIBRARIES}
@@ -5637,6 +5673,27 @@ add_test(
     NAME CORE_MBE_TRANSFORM_CONTEXT
     COMMAND dsd-neo_test_core_mbe_transform_context
 )
+
+# Issue #656: crypto transforms stay with the protocol that owns the voice; keystream reads stay in the keystream.
+add_executable(
+    dsd-neo_test_core_mbe_crypto_scope
+    core/test_core_mbe_crypto_scope.c
+)
+target_include_directories(
+    dsd-neo_test_core_mbe_crypto_scope
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_core_mbe_crypto_scope
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_dmr
+        dsd-neo_feature_codec2
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(NAME CORE_MBE_CRYPTO_SCOPE COMMAND dsd-neo_test_core_mbe_crypto_scope)
 
 add_executable(
     dsd-neo_test_core_straight_keystream_validation
@@ -6813,6 +6870,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=io_control_set_freq"
             "LINKER:--wrap=dmr_data_burst_handler"
             "LINKER:--wrap=dsd_audio_write"
+            "LINKER:--wrap=dsd_audio_output_health_get"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
@@ -8665,7 +8723,10 @@ if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_link_options(
         dsd-neo_test_m17_state_dispatch
-        PRIVATE "-Wl,--wrap=dsd_audio_write" "-Wl,--wrap=dsd_audio_drain"
+        PRIVATE
+            "-Wl,--wrap=dsd_audio_write"
+            "-Wl,--wrap=dsd_audio_drain"
+            "-Wl,--wrap=dsd_audio_output_health_get"
     )
 endif()
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
@@ -10966,6 +11027,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=close_and_rename_wav_file_ex"
             "-Wl,--wrap=open_wav_file"
             "-Wl,--wrap=dsd_audio_write"
+            "-Wl,--wrap=dsd_audio_output_health_get"
     )
     add_test(
         NAME EDACS_GRANT_TUNE_MATRIX
@@ -11130,6 +11192,7 @@ target_link_libraries(
     PRIVATE
         dsd-neo_dsp_private_test_support
         dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
         ${DSD_NEO_TEST_MATH_LIB}
         ${LIBSNDFILE_LIBRARIES}
 )
@@ -11665,6 +11728,48 @@ target_link_libraries(
     PRIVATE dsd-neo_platform dsd-neo_test_support
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
+
+# PortAudio output device recovery with the real pump thread and locks over a fake PortAudio (issue #659). Needs only
+# the PortAudio header, so it also runs where PulseAudio is the backend.
+if(UNIX)
+    find_path(DSD_NEO_TEST_PORTAUDIO_INCLUDE_DIR portaudio.h)
+    if(DSD_NEO_TEST_PORTAUDIO_INCLUDE_DIR)
+        add_executable(
+            dsd-neo_test_platform_audio_portaudio_recovery
+            platform/test_platform_audio_portaudio_recovery.c
+        )
+        target_include_directories(
+            dsd-neo_test_platform_audio_portaudio_recovery
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/platform
+                ${DSD_NEO_TEST_PORTAUDIO_INCLUDE_DIR}
+        )
+        target_link_libraries(
+            dsd-neo_test_platform_audio_portaudio_recovery
+            PRIVATE dsd-neo_platform
+        )
+        add_test(
+            NAME PLATFORM_AUDIO_PORTAUDIO_RECOVERY
+            COMMAND dsd-neo_test_platform_audio_portaudio_recovery
+        )
+    endif()
+endif()
+
+# Whole-frame descriptor writes and the closed-reader SIGPIPE guard (issue #659).
+add_executable(
+    dsd-neo_test_platform_write_frames
+    platform/test_platform_write_frames.c
+)
+target_include_directories(
+    dsd-neo_test_platform_write_frames
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/platform
+)
+target_link_libraries(
+    dsd-neo_test_platform_write_frames
+    PRIVATE dsd-neo_platform
+)
+add_test(NAME PLATFORM_WRITE_FRAMES COMMAND dsd-neo_test_platform_write_frames)
 
 add_executable(dsd-neo_test_platform_dir_list platform/test_platform_dir_list.c)
 target_include_directories(
@@ -12946,6 +13051,37 @@ if(DSD_HAS_RADIO)
         "Src=[0-9]"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_DSTAR dstar -fd "SRC: KB7WUK")
+
+    # The -o - audio output (issue #659): a reader that goes away costs stdout audio one logged error, never the
+    # process or the -w recording; the analog monitor writes stdout in the analog-only modes, the -8 source monitor
+    # during digital decoding does not. POSIX only: the pipe case needs true(1) and a SIGPIPE to survive.
+    if(UNIX)
+        function(dsd_neo_add_audio_stdout_test test_name check fixture mode)
+            set(_extra)
+            if(ARGC GREATER 4)
+                set(_extra "-DMIN_BYTES=${ARGV4}")
+            endif()
+            add_test(
+                NAME ${test_name}
+                COMMAND
+                    ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                    "-DCHECK=${check}" "-DMODE=${mode}"
+                    "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                    "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/audio_stdout/${test_name}"
+                    ${_extra} -P
+                    "${CMAKE_CURRENT_SOURCE_DIR}/audio_stdout_check.cmake"
+            )
+            set_tests_properties(
+                ${test_name}
+                PROPERTIES LABELS "iq-decode" TIMEOUT 240
+            )
+        endfunction()
+        dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_CLOSED_PIPE CLOSED_PIPE dstar -fd)
+        # About a second of the 1.5 s tone at 48 kHz mono s16.
+        dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_FM_MONITOR MONITOR nfm_tone_synth -fA 96000)
+        dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_AM_MONITOR MONITOR am_tone_synth -fM 96000)
+        dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_SOURCE_MONITOR MONITOR_8 dstar -fd)
+    endif()
     # D-STAR voice decodes through the soft AMBE 3600x2400 path (issue #599). The payload is the first frame of the
     # transmission's first voice superframe, which decodes with nothing to correct.
     dsd_neo_add_iq_decode_test(
@@ -13344,6 +13480,78 @@ if(DSD_HAS_RADIO)
         MIN_FILES 1
         MIN_FRAMES 160
     )
+    # The digital voice chain (issue #653): tests/iq_voice_chain_check.cmake replays a fixture with per-call WAVs (-P)
+    # under integer output to stdout, float output (-y) to stdout and the null output, and requires byte-identical
+    # per-call WAVs from all three, as many float samples as integer ones, a float output the digital high-pass changes,
+    # and, with PLAYBACK_MATCH (one call, mono preset), the integer stdout equal to the per-call WAV's samples.
+    function(dsd_neo_add_iq_voice_chain_test test_name fixture mode expected)
+        cmake_parse_arguments(_chain "PLAYBACK_MATCH" "" "" ${ARGN})
+        set(_match OFF)
+        if(_chain_PLAYBACK_MATCH)
+            set(_match ON)
+        endif()
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DEXPECTED=${expected}"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/voice_chain/${test_name}"
+                "-DPLAYBACK_MATCH=${_match}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_voice_chain_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;voice-chain" TIMEOUT 300
+        )
+    endfunction()
+
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_P25P1
+        p25p1_c4fm_vc
+        -f1
+        "Group Voice Channel User"
+        PLAYBACK_MATCH
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_P25P1_AUTO
+        p25p1_c4fm_vc
+        -fa
+        "Group Voice Channel User"
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_NXDN96
+        nxdn96
+        -fn
+        "RAN 00"
+        PLAYBACK_MATCH
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_DMR
+        dmr_voice
+        -fs
+        "Color Code=02"
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_DSTAR
+        dstar
+        -fd
+        "SRC: KB7WUK"
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_YSF
+        ysf
+        -fy
+        "V/D2 RID Mode Repeater CC"
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_PROVOICE
+        provoice
+        "-fp -Z"
+        "IMBE [0-9A-F]+ err = "
+    )
+
     # Receiver noise under dPMR alone: false FS2 syncs synthesize nothing, so they leave no file.
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_NOISE_DPMR
@@ -13367,6 +13575,130 @@ if(DSD_HAS_RADIO)
         "V/D2 RID Mode Repeater CC"
         EXT .amb
         MIN_FILES 1
+    )
+
+    # Float output (-y), issue #652: tests/iq_float_output_check.cmake replays a fixture with 16-bit output and with
+    # -y, each to stdout (-o -) and a static WAV (-w), and the comparator requires the float stream to be the 16-bit
+    # stream as f32 (s16 / 32768, bit for bit: no NaN, nothing past full scale), audio in it, and identical static WAVs.
+    # BOTH_EARS: a single call plays in both channels; SILENT: both formats mute the same call; SINK null: -o null.
+    add_executable(
+        dsd-neo_test_float_output_compare
+        core/float_output_compare.c
+    )
+    target_link_libraries(
+        dsd-neo_test_float_output_compare
+        PRIVATE dsd-neo_platform
+    )
+    function(
+        dsd_neo_add_iq_float_output_test
+        test_name
+        fixture
+        mode
+        expected
+        channels
+    )
+        cmake_parse_arguments(_flt "BOTH_EARS;SILENT;NULL_SINK" "" "" ${ARGN})
+        set(_sink stdout)
+        if(_flt_NULL_SINK)
+            set(_sink null)
+        endif()
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DCOMPARE_BIN=$<TARGET_FILE:dsd-neo_test_float_output_compare>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DEXPECTED=${expected}"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/float_output/${test_name}"
+                "-DCHANNELS=${channels}" "-DBOTH_EARS=${_flt_BOTH_EARS}"
+                "-DSILENT=${_flt_SILENT}" "-DSINK=${_sink}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_float_output_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;float-output" TIMEOUT 240
+        )
+    endfunction()
+
+    # A single DMR call (slot 2) in both ears: float output's mixer left the idle slot 1's channel silent.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_DMR
+        dmr_voice
+        -fs
+        "Color Code=02"
+        2
+        BOTH_EARS
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_P25P1
+        p25p1_c4fm_vc
+        -f1
+        "Group Voice Channel User"
+        1
+    )
+    # Stereo FDMA at full level in both ears: float output's mixer halved it.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_P25P1_AUTO
+        p25p1_c4fm_vc
+        -fa
+        "Group Voice Channel User"
+        2
+        BOTH_EARS
+    )
+    # -g 50 is the fixed x50 gain in both formats: float output's gain stage divided by zero there.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_P25P1_GAIN_50
+        p25p1_c4fm_vc
+        "-f1 -g 50"
+        "Group Voice Channel User"
+        1
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_NXDN96
+        nxdn96
+        -fn
+        "RAN 00"
+        1
+    )
+    # Reverse mute under AUTO mutes the clear call in both formats: float output's mixer played it.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_NXDN96_AUTO_REVERSE_MUTE
+        nxdn96
+        "-fa -q"
+        "RAN 00"
+        2
+        SILENT
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_DSTAR
+        dstar
+        -fd
+        "SRC: KB7WUK"
+        1
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_YSF
+        ysf
+        -fy
+        "V/D2 RID Mode Repeater CC"
+        1
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_PROVOICE
+        provoice
+        -fp
+        "Decoding only ProVoice frames"
+        1
+    )
+    # The static WAV with no playback (-o null) in both formats.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_DMR_NULL_SINK
+        dmr_voice
+        -fs
+        "Color Code=02"
+        2
+        NULL_SINK
     )
 
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
@@ -13428,6 +13760,7 @@ if(DSD_HAS_RADIO)
             PRIVATE
                 "LINKER:--wrap=dsd_audio_open_output"
                 "LINKER:--wrap=dsd_audio_write"
+                "LINKER:--wrap=dsd_audio_output_health_get"
                 "LINKER:--wrap=dsd_audio_drain"
                 "LINKER:--wrap=dsd_audio_close"
         )

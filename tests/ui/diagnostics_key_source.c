@@ -27,6 +27,8 @@ dsd_test_diagnostics_direct_key_applied(dsd_opts* opts, dsd_state* state, int ty
     if (len >= sizeof payload.value) {
         return 0;
     }
+    const int mute_left = opts->dmr_mute_encL;
+    const int mute_right = opts->dmr_mute_encR;
     state->ui_msg[0] = '\0';
     DSD_MEMCPY(payload.value, value, len);
     const int queued = dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &payload, sizeof payload);
@@ -34,8 +36,8 @@ dsd_test_diagnostics_direct_key_applied(dsd_opts* opts, dsd_state* state, int ty
     const int drained = dsd_app_drain_cmds(opts, state);
     // The C++ caller checks the type-specific scalars and overlay preservation.
     return queued > 0 && drained == 1 && strcmp(state->ui_msg, "Key applied") == 0 && state->keyloader == 0
-           && state->payload_keyid == 0 && state->payload_keyidR == 0 && opts->dmr_mute_encL == 0
-           && opts->dmr_mute_encR == 0 && opts->unmute_encrypted_p25 == 0 && opts->show_keys == 0;
+           && state->payload_keyid == 0 && state->payload_keyidR == 0 && opts->dmr_mute_encL == mute_left
+           && opts->dmr_mute_encR == mute_right && opts->unmute_encrypted_p25 == 0 && opts->show_keys == 0;
 }
 
 int

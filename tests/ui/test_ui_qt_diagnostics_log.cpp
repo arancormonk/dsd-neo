@@ -30,7 +30,6 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
-#include <initializer_list>
 #include <string.h>
 #include <thread>
 #include <utility>
@@ -114,7 +113,7 @@ parseKey(dsd_opts* opts, dsd_state* state, const char* flag, QByteArray value, b
 }
 
 static void
-checkHexState(const dsd_opts* opts, const dsd_state* state, const QByteArray& key) {
+checkHexState(const dsd_state* state, const QByteArray& key) {
     const auto first = key.left(16).toULongLong(nullptr, 16);
     const auto second = key.mid(16, 16).toULongLong(nullptr, 16);
     const auto third = key.mid(32, 16).toULongLong(nullptr, 16);
@@ -137,8 +136,13 @@ checkHexState(const dsd_opts* opts, const dsd_state* state, const QByteArray& ke
     for (size_t i = static_cast<size_t>(bytes.size()); i < sizeof(state->aes_key); ++i) {
         check(state->aes_key[i] == 0, "unused AES bytes were not cleared");
     }
-    check(opts->dmr_mute_encL == 0 && opts->dmr_mute_encR == 0 && opts->unmute_encrypted_p25 == 0,
-          "encrypted audio flags mismatch");
+}
+
+static void
+checkMutePolicy(const dsd_opts* opts, int muteLeft, int muteRight) {
+    check(opts->dmr_mute_encL == muteLeft && opts->dmr_mute_encR == muteRight,
+          "key loading changed the user's encrypted audio mute settings");
+    check(opts->unmute_encrypted_p25 == 0, "key loading did not mute undecodable P25 audio");
 }
 
 static void
@@ -212,55 +216,64 @@ realKeySources() {
     }
     const QByteArray malformed = cases[1].value + "invalid";
     // Exercise wide-to-narrow HEX replacement and preservation across other
-    // key types on both paths. The keyring survives every direct overlay.
+    // key types on both paths, preserving each combination of the user's
+    // independent slot mute settings. The keyring survives every direct overlay.
     for (int path = 0; path < 2; ++path) {
-        QByteArray activeHex;
-        state->K = 17;
-        state->R = 19;
-        state->RR = 23;
-        unsigned long long basic = state->K, left = state->R, right = state->RR;
-        state->rkey_array[7] = 29;
-        state->rkey_array_loaded[7] = 1;
-        for (const auto& entry : cases) {
-            state->keyloader = 1;
-            state->payload_keyid = state->payload_keyidR = 7;
-            opts->dmr_mute_encL = opts->dmr_mute_encR = opts->unmute_encrypted_p25 = 1;
-            if (path == 0) {
-                const auto captured = parseKey(opts.get(), state.get(), entry.flag, entry.value, true);
-                checkAbsent(captured, representations, "CLI diagnostic contains a key representation");
-                log.submit("stderr", "info", QString::fromUtf8(captured));
-            } else {
-                check(dsd_test_diagnostics_direct_key_applied(opts.get(), state.get(), entry.type,
-                                                              entry.value.constData()),
-                      "KEY_DIRECT_SET did not apply key and activation flags");
-                checkAbsent(QByteArray(state->ui_msg), representations,
-                            "direct-command message contains a key representation");
-                log.submit("host", "info", QString::fromUtf8(state->ui_msg));
-            }
-            if (entry.type == DSD_KEY_TYPE_HEX) {
-                activeHex = entry.value;
-            } else if (entry.type == DSD_KEY_TYPE_BASIC) {
-                basic = entry.value.toULongLong();
-            } else if (entry.type == DSD_KEY_TYPE_RC4) {
-                left = right = entry.value.toULongLong(nullptr, 16);
-            } else {
-                left = entry.value.toULongLong();
-            }
-            checkHexState(opts.get(), state.get(), activeHex);
-            check(state->K == basic && state->R == left && state->RR == right, "direct overlay scalar mismatch");
-            check(state->rkey_array[7] == 29 && state->rkey_array_loaded[7] == 1, "direct overlay altered keyring");
-            check(state->payload_keyid == 0 && state->payload_keyidR == 0, "direct activation retained key IDs");
-            if (path == 0) {
-                dsd_key_set before{}, after{};
-                check(dsd_key_set_capture(&before, state.get()) == 0, "key state capture failed");
-                const auto captured =
-                    parseKey(opts.get(), state.get(), entry.flag, entry.value + "invalid", false, entry.error);
-                check(dsd_key_set_capture(&after, state.get()) == 0 && dsd_key_set_equal(&before, &after),
-                      "refused CLI key altered loaded state");
-                dsd_key_set_free(&before);
-                dsd_key_set_free(&after);
-                checkAbsent(captured, representations, "CLI error diagnostic contains a key representation");
-                log.submit("stderr", "info", QString::fromUtf8(captured));
+        for (int muteSettings = 0; muteSettings < 4; ++muteSettings) {
+            const int muteLeft = muteSettings & 1;
+            const int muteRight = (muteSettings >> 1) & 1;
+            QByteArray activeHex;
+            state->K = 17;
+            state->R = 19;
+            state->RR = 23;
+            unsigned long long basic = state->K, left = state->R, right = state->RR;
+            state->rkey_array[7] = 29;
+            state->rkey_array_loaded[7] = 1;
+            for (const auto& entry : cases) {
+                state->keyloader = 1;
+                state->payload_keyid = state->payload_keyidR = 7;
+                opts->dmr_mute_encL = muteLeft;
+                opts->dmr_mute_encR = muteRight;
+                opts->unmute_encrypted_p25 = 1;
+                if (path == 0) {
+                    const auto captured = parseKey(opts.get(), state.get(), entry.flag, entry.value, true);
+                    checkAbsent(captured, representations, "CLI diagnostic contains a key representation");
+                    log.submit("stderr", "info", QString::fromUtf8(captured));
+                } else {
+                    check(dsd_test_diagnostics_direct_key_applied(opts.get(), state.get(), entry.type,
+                                                                  entry.value.constData()),
+                          "KEY_DIRECT_SET did not apply key and activation flags");
+                    checkAbsent(QByteArray(state->ui_msg), representations,
+                                "direct-command message contains a key representation");
+                    log.submit("host", "info", QString::fromUtf8(state->ui_msg));
+                }
+                if (entry.type == DSD_KEY_TYPE_HEX) {
+                    activeHex = entry.value;
+                } else if (entry.type == DSD_KEY_TYPE_BASIC) {
+                    basic = entry.value.toULongLong();
+                } else if (entry.type == DSD_KEY_TYPE_RC4) {
+                    left = right = entry.value.toULongLong(nullptr, 16);
+                } else {
+                    left = entry.value.toULongLong();
+                }
+                checkHexState(state.get(), activeHex);
+                checkMutePolicy(opts.get(), muteLeft, muteRight);
+                check(state->K == basic && state->R == left && state->RR == right, "direct overlay scalar mismatch");
+                check(state->rkey_array[7] == 29 && state->rkey_array_loaded[7] == 1, "direct overlay altered keyring");
+                check(state->payload_keyid == 0 && state->payload_keyidR == 0, "direct activation retained key IDs");
+                if (path == 0) {
+                    dsd_key_set before{}, after{};
+                    check(dsd_key_set_capture(&before, state.get()) == 0, "key state capture failed");
+                    const auto captured =
+                        parseKey(opts.get(), state.get(), entry.flag, entry.value + "invalid", false, entry.error);
+                    check(dsd_key_set_capture(&after, state.get()) == 0 && dsd_key_set_equal(&before, &after),
+                          "refused CLI key altered loaded state");
+                    checkMutePolicy(opts.get(), muteLeft, muteRight);
+                    dsd_key_set_free(&before);
+                    dsd_key_set_free(&after);
+                    checkAbsent(captured, representations, "CLI error diagnostic contains a key representation");
+                    log.submit("stderr", "info", QString::fromUtf8(captured));
+                }
             }
         }
     }

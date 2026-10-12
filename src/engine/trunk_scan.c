@@ -160,6 +160,7 @@ typedef struct {
     unsigned int dmr_so;
     unsigned int dmr_fidR;
     unsigned int dmr_soR;
+    uint8_t dmr_le_vendor[2];
     unsigned int dmr_t3_syscode;
     char dmr_site_parms[200];
     char dmr_branding[20];
@@ -1809,6 +1810,7 @@ trunk_scan_save_dmr_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* sn
     snapshot->dmr_so = state->dmr_so;
     snapshot->dmr_fidR = state->dmr_fidR;
     snapshot->dmr_soR = state->dmr_soR;
+    DSD_MEMCPY(snapshot->dmr_le_vendor, state->dmr_le_vendor, sizeof(snapshot->dmr_le_vendor));
     snapshot->dmr_t3_syscode = state->dmr_t3_syscode;
     trunk_scan_save_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->dmr_branding, state->dmr_branding, sizeof(snapshot->dmr_branding));
@@ -1835,6 +1837,7 @@ trunk_scan_restore_dmr_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot*
     state->dmr_so = snapshot->dmr_so;
     state->dmr_fidR = snapshot->dmr_fidR;
     state->dmr_soR = snapshot->dmr_soR;
+    DSD_MEMCPY(state->dmr_le_vendor, snapshot->dmr_le_vendor, sizeof(state->dmr_le_vendor));
     state->dmr_t3_syscode = snapshot->dmr_t3_syscode;
     trunk_scan_restore_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(state->dmr_branding, snapshot->dmr_branding, sizeof(state->dmr_branding));
@@ -2005,6 +2008,9 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
         return;
     }
     trunk_scan_restore_snapshot(state, &rt->snapshot);
+    // A new visit is a new reception: the old call's vendor evidence cannot suppress this visit's SB/MI decoding.
+    // Keep it in the raw snapshot only for rollback to a carrier that a failed switch never left (issue #657).
+    DSD_MEMSET(state->dmr_le_vendor, 0, sizeof(state->dmr_le_vendor));
     state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
     rt->snapshot.trunk_chan_map_seq = state->trunk_chan_map_seq;
 }
@@ -3944,9 +3950,10 @@ target_decryption_mute_policy(dsd_trunk_scan_target_runtime* rt) {
                        && (scalar->basic_key_present || scalar->scalar_key_present[0] || scalar->scalar_key_present[1]
                            || scalar->aes_key_loaded[0] || scalar->hytera_key_segments);
     rt->profile->values.present &= ~(DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25);
+    /* The DMR encrypted-audio mute stays the session's: a call the target's key decrypts plays by the vocoder's
+       verdict (issue #655). */
     if (direct) {
-        rt->profile->values.present |= DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25;
-        rt->profile->values.mute_dmr = 0;
+        rt->profile->values.present |= DSD_SCAN_OPT_MUTE_P25;
     }
 }
 
