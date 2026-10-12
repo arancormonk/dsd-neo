@@ -72,14 +72,18 @@ process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr
         if (opts->payload == 1) {
             DSD_FPRINTF(stderr, "\n IMBE Non-standard c0 detected, skipped;");
         }
+        // The frame still owns its place in the superframe's keystream: consume it as a decoded frame would, so the
+        // frames after it decrypt with their own keystream (issue #656), including while output is gated.
+        dsd_mbe_p25p1_skip_voice_frame(state);
         return;
     }
     if (!p25_crypto_audio_permitted(opts, state, 0)) {
         dsd_mbe_log_imbe_soft_frame(opts, state, imbe_soft_fr);
+        dsd_mbe_p25p1_skip_voice_frame(state);
         DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));
         return;
     }
-    processMbeFrameSoft(opts, state, imbe_soft_fr, NULL, NULL);
+    processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_P25P1, imbe_soft_fr, NULL, NULL);
 }
 
 void

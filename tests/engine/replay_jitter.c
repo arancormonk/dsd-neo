@@ -500,6 +500,10 @@ int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 void __wrap_dsd_audio_close(dsd_audio_stream* stream);
 
 static replay_sink_stream*
@@ -628,6 +632,17 @@ __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t f
     (void)dsd_cond_signal(&s->cv);
     dsd_mutex_unlock(&s->mu);
     return (int)frames;
+}
+
+/* The audio sinks ask each write's stream for its device health (issue #659); the fake device never fails. */
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out) {
+    if (replay_sink_find(stream) == NULL) {
+        return __real_dsd_audio_output_health_get(stream, out);
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    return 0;
 }
 
 int

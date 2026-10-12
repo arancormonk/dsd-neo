@@ -10,10 +10,13 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/log.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <errno.h>
 #include <netinet/in.h>
 #endif
+#include <stdint.h>
 #include <stdio.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
@@ -24,6 +27,56 @@
 
 static struct sockaddr_in address;
 static struct sockaddr_in addressA;
+
+/* At most one failure line a minute per socket; the failures held back are counted into the next one. */
+#define UDP_AUDIO_REPORT_INTERVAL_MS 60000U
+
+/* Send failures of one blaster socket, reported once per run and recovery (issue #659). Decoder thread only. */
+typedef struct {
+    int failing;          /* the latest send failed */
+    int episode_reported; /* the current run of failures was reported, so its end is too */
+    uint64_t last_report_ms;
+    uint64_t held_back;
+} udp_audio_send_report;
+
+static udp_audio_send_report g_udp_report_digital;
+static udp_audio_send_report g_udp_report_analog;
+
+static void
+udp_audio_note_send(udp_audio_send_report* r, const char* name, int sent, size_t nsam) {
+    if (sent >= 0 && (size_t)sent == nsam) {
+        if (r->failing && r->episode_reported) {
+            LOG_INFO("UDP audio (%s): sending again\n", name);
+        }
+        r->failing = 0;
+        r->episode_reported = 0;
+        return;
+    }
+    const int starts_run = !r->failing;
+    r->failing = 1;
+    const uint64_t now_ms = dsd_realtime_mono_ms();
+    if (!(r->last_report_ms == 0U || now_ms - r->last_report_ms >= UDP_AUDIO_REPORT_INTERVAL_MS)) {
+        r->held_back++;
+        if (starts_run) {
+            r->episode_reported = 0;
+        }
+        return;
+    }
+    char held_back[64] = "";
+    if (r->held_back > 0U) {
+        DSD_SNPRINTF(held_back, sizeof(held_back), " (%llu more failures since the last report)",
+                     (unsigned long long)r->held_back);
+    }
+    if (sent < 0) {
+        LOG_WARN("UDP audio (%s): send failed (socket error %d); its audio is dropped while sends fail%s\n", name,
+                 dsd_socket_get_error(), held_back);
+    } else {
+        LOG_WARN("UDP audio (%s): sent %d of %zu bytes%s\n", name, sent, nsam, held_back);
+    }
+    r->last_report_ms = now_ms == 0U ? 1U : now_ms;
+    r->held_back = 0U;
+    r->episode_reported = 1;
+}
 
 static int
 m17_socket_receive_error_is_retryable(void) {
@@ -57,12 +110,7 @@ udp_socket_blaster(const dsd_opts* opts, dsd_state* state, size_t nsam, const vo
     //send audio or data to socket
     err = dsd_socket_sendto(opts->udp_sockfd, data, nsam, 0, (const struct sockaddr*)&address,
                             sizeof(struct sockaddr_in));
-    if (err < 0) {
-        DSD_FPRINTF(stderr, "\n UDP SENDTO ERR %d", err);
-    }
-    if (err >= 0 && (size_t)err < nsam) {
-        DSD_FPRINTF(stderr, "\n UDP Underflow %d", err); //I'm not even sure if this is possible
-    }
+    udp_audio_note_send(&g_udp_report_digital, "digital", err, nsam);
 }
 
 int
@@ -100,13 +148,7 @@ udp_socket_blasterA(const dsd_opts* opts, dsd_state* state, size_t nsam, const v
     //send audio or data to socket
     err = dsd_socket_sendto(opts->udp_sockfdA, data, nsam, 0, (const struct sockaddr*)&addressA,
                             sizeof(struct sockaddr_in));
-    if (err < 0) {
-        DSD_FPRINTF(stderr, "\n UDP SENDTO ERR %d",
-                    err); // return value here is number of bytes sent, or -1 for failure
-    }
-    if (err >= 0 && (size_t)err < nsam) {
-        DSD_FPRINTF(stderr, "\n UDP Underflow %d", err); //I'm not even sure if this is possible
-    }
+    udp_audio_note_send(&g_udp_report_analog, "analog", err, nsam);
 }
 
 int
@@ -125,6 +167,8 @@ udp_socket_connect(dsd_opts* opts, dsd_state* state) {
     err = dsd_socket_setsockopt(opts->udp_sockfd, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
     if (err != 0) {
         DSD_FPRINTF(stderr, " UDP Broadcast Set Error %d\n", err);
+        dsd_socket_close(opts->udp_sockfd);
+        opts->udp_sockfd = DSD_INVALID_SOCKET;
         return err;
     }
 
@@ -132,9 +176,12 @@ udp_socket_connect(dsd_opts* opts, dsd_state* state) {
     address.sin_family = AF_INET;
     if (dsd_socket_resolve(opts->udp_hostname, opts->udp_portno, &address) != 0) {
         DSD_FPRINTF(stderr, " UDP address resolve error for %s\n", opts->udp_hostname);
+        dsd_socket_close(opts->udp_sockfd);
+        opts->udp_sockfd = DSD_INVALID_SOCKET;
         return -1;
     }
 
+    DSD_MEMSET(&g_udp_report_digital, 0, sizeof(g_udp_report_digital));
     return 0;
 }
 
@@ -154,6 +201,8 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
     err = dsd_socket_setsockopt(opts->udp_sockfdA, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
     if (err != 0) {
         DSD_FPRINTF(stderr, " UDP Broadcast Set Error %d\n", err);
+        dsd_socket_close(opts->udp_sockfdA);
+        opts->udp_sockfdA = DSD_INVALID_SOCKET;
         return err;
     }
 
@@ -162,8 +211,11 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
     //plus 2 to current port assignment for the analog port value
     if (dsd_socket_resolve(opts->udp_hostname, opts->udp_portno + 2, &addressA) != 0) {
         DSD_FPRINTF(stderr, " UDP address resolve error for %s\n", opts->udp_hostname);
+        dsd_socket_close(opts->udp_sockfdA);
+        opts->udp_sockfdA = DSD_INVALID_SOCKET;
         return -1;
     }
 
+    DSD_MEMSET(&g_udp_report_analog, 0, sizeof(g_udp_report_analog));
     return 0;
 }

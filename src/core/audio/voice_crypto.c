@@ -91,6 +91,13 @@ dsd_voice_crypto_audible(const dsd_opts* opts, const dsd_state* state, int slot)
     if (DSD_SYNC_IS_DMR(owner)) {
         return state->mbe_slot_muted[slot] == 0 ? 1 : 0;
     }
+    // These live protocols always pass through the vocoder, which may reject a frame despite a loaded key (for
+    // example an exhausted keystream). Preserve that frame verdict before consulting the current call's metadata.
+    // YSF V/D2 and SDRTrunk stage independently, so they must not inherit another decoder's cached mute.
+    if ((DSD_SYNC_IS_P25P1(owner) || DSD_SYNC_IS_P25P2(owner) || DSD_SYNC_IS_NXDN(owner) || DSD_SYNC_IS_DPMR(owner))
+        && state->mbe_slot_muted[slot] != 0) {
+        return 0;
+    }
     if (DSD_SYNC_IS_P25P1(owner)) {
         return p25_crypto_audio_output_permitted(opts, state, 0);
     }

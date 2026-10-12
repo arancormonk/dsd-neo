@@ -11,6 +11,7 @@
  * correction helpers without requiring a live LDU1/LDU2 dibit stream.
  */
 
+#include <assert.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
@@ -35,6 +36,7 @@ static int g_dibit_sequence_len;
 static int g_dibit_sequence[80];
 static int g_open_mbe_calls;
 static int g_vocoder_calls;
+static int g_skip_keystream_calls;
 static int g_imbe_log_calls;
 static dsd_vocoder_soft_bit g_last_imbe_soft[8][23];
 static int g_hard_hamming_result;
@@ -83,8 +85,9 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
+processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, dsd_vocoder_soft_bit imbe_fr[8][23],
                     dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_P25P1);
     (void)opts;
     (void)state;
     (void)imbe_fr;
@@ -92,6 +95,13 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
     (void)imbe7100_fr;
     g_vocoder_calls++;
     DSD_MEMCPY(g_last_imbe_soft, imbe_fr, sizeof(g_last_imbe_soft));
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_mbe_p25p1_skip_voice_frame(dsd_state* state) {
+    (void)state;
+    g_skip_keystream_calls++;
 }
 
 void
@@ -314,9 +324,20 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     g_vocoder_calls = 0;
     g_open_mbe_calls = 0;
     g_imbe_log_calls = 0;
+    g_skip_keystream_calls = 0;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     int rc = 0;
     rc |= expect_int("non-standard c0 skipped", g_vocoder_calls, 0);
+    // Output gates do not stop the transmitter's keystream clock.
+    rc |= expect_int("gated non-standard c0 consumes its keystream", g_skip_keystream_calls, 1);
+
+    // A skipped frame of a call the gate admits still takes its keystream position, so the frames after it in the
+    // superframe decrypt with their own keystream (issue #656); it still never reaches the vocoder.
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
+    rc |= expect_int("admitted non-standard c0 skipped", g_vocoder_calls, 0);
+    rc |= expect_int("admitted non-standard c0 consumes its keystream", g_skip_keystream_calls, 2);
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     imbe_fr[0][0] = 1;
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
@@ -324,12 +345,14 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     rc |= expect_int("pending crypto does not open recording", g_open_mbe_calls, 0);
     rc |= expect_int("pending crypto does not dispatch vocoder", g_vocoder_calls, 0);
     rc |= expect_int("pending crypto without detail does not log IMBE", g_imbe_log_calls, 0);
+    rc |= expect_int("pending crypto consumes its keystream", g_skip_keystream_calls, 3);
 
     opts.payload = 1;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     rc |= expect_int("pending crypto payload detail logs IMBE", g_imbe_log_calls, 1);
     rc |= expect_int("pending crypto payload detail keeps recording closed", g_open_mbe_calls, 0);
     rc |= expect_int("pending crypto payload detail bypasses vocoder", g_vocoder_calls, 0);
+    rc |= expect_int("pending crypto with detail consumes once", g_skip_keystream_calls, 4);
 
     opts.payload = 0;
     opts.unmute_encrypted_p25 = 1;

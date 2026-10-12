@@ -259,6 +259,16 @@ typedef struct {
 
 } HPFilter;
 
+/* One slot's digital voice high-pass (`-v 0x8`, issue #653): the transposed direct form II state of the 2nd-order
+   Butterworth section dsd_voice_hpf_process() runs on 8 kHz vocoder frames, and the reception it last ran for, so a new
+   call or protocol on the slot starts from clear state (<dsd-neo/core/voice_chain.h>). */
+typedef struct {
+    double s1;
+    double s2;
+    uint64_t call_epoch; /* The last nonzero call epoch the slot's frames belonged to; 0 before the first. */
+    int protocol_family; /* dsd_call_state_protocol_family() of the last frame; 0 before the first. */
+} dsd_voice_hpf_state;
+
 //end new filters
 
 /**
@@ -767,17 +777,12 @@ struct dsd_state {
     uint8_t analog_block_mixed;
     /* The rate the analog sinks last said they had no memory to convert, so that is said once per rate. */
     int analog_sink_nomem_hz;
-    //new stereo float sample storage
-    float f_l[160];     //single sample left
-    float f_r[160];     //single sample right
-    float f_l4[4][160]; //quad sample for up to a P25p2 4V
-    float f_r4[4][160]; //quad sample for up to a P25p2 4V
     //new stereo short sample storage
     short s_l[160]; //single sample left
     short s_r[160]; //single sample right
     /* Per slot: 1 when the vocoder left the current frame's short samples out of s_l/s_r (it staged silence, or
-       skipped short staging), 0 when processAudio()/processAudioR() staged them there. The P25 Phase 2 playout reads
-       it to tell decoded audio from silence (issue #651). */
+       skipped short staging), 0 when dsd_voice_stage_short_left/right() staged them there. The P25 Phase 2 playout
+       reads it to tell decoded audio from silence (issue #651). */
     uint8_t mbe_short_silenced[2];
     /* Per slot: the vocoder's verdict on the slot's last voice frame (issue #655), 1 when it is muted: by encryption
        (judged by the protocol that owns the call, after the frame's keystream), the user's encrypted-audio mute,
@@ -1129,8 +1134,9 @@ struct dsd_state {
     /* Live slot crypto captured by the DMR terminator handler just before its reset, so the
      * heal of a voice burst mis-typed as a terminator can restore exactly what the vocoder was
      * decrypting with. Deliberately limited to what the canonical dsd_call_snapshot cannot
-     * supply -- the FID and service options the Basic Privacy gates require, and the MI as the
-     * superframe machinery last advanced it (the snapshot's MI can lag it); ALGID and key id
+     * supply -- the FID and service options the Basic Privacy gates require, the MI as the
+     * superframe machinery last advanced it (the snapshot's MI can lag it), and the vendor
+     * late-entry mode (dmr_le_vendor); ALGID and key id
      * are read back from the snapshot the reacquire hook receives, so they have one source of
      * truth. Indexed by slot; epoch ties each capture to the ended epoch it belongs to, so a
      * stale stash can never be applied to a later call, and the engine's retune/no-carrier
@@ -1140,6 +1146,7 @@ struct dsd_state {
     unsigned long long int dmr_heal_epoch[2];
     unsigned int dmr_heal_fid[2];
     unsigned int dmr_heal_so[2];
+    uint8_t dmr_heal_le_vendor[2];
     uint8_t dmr_heal_valid[2];
 
     /* Per-slot DMR encryption-classification hysteresis (src/protocol/dmr/dmr_enc_class.c).
@@ -1152,6 +1159,11 @@ struct dsd_state {
     uint8_t dmr_enc_class[2];         /* applied classification: 0 none, 1 clear, 2 encrypted */
     uint8_t dmr_enc_class_est[2];     /* classification corroborated (strong LC or matching repeat) */
     uint8_t dmr_enc_class_pending[2]; /* quarantined contradicting candidate (0 none, 1 clear, 2 enc) */
+
+    /* Per-slot, per-call DMR vendor late-entry mode (DMR_LE_VENDOR_* in <dsd-neo/protocol/dmr/dmr.h>, 0 none), set
+     * from verified Kirisun/Hytera Enhanced signalling. The user's late-entry setting stays in opts->dmr_le, which
+     * decoding never writes (issue #657). */
+    uint8_t dmr_le_vendor[2];
 
     char slot1light[8];
     char slot2light[8];
@@ -1233,9 +1245,9 @@ struct dsd_state {
     LPFilter RCFilter;
     HPFilter HRCFilter;
     LPFilter RCFilterL;
-    HPFilter HRCFilterL;
     LPFilter RCFilterR;
-    HPFilter HRCFilterR;
+    /* The digital voice high-pass per slot (0 left, 1 right); see dsd_voice_hpf_state. */
+    dsd_voice_hpf_state voice_hpf[2];
 
     int dpmr_color_code;
 

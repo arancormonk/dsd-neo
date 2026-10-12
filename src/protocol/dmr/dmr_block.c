@@ -543,6 +543,9 @@ dmr_dheader_reset_irrecoverable(dsd_state* state, uint8_t slot) {
 static void
 dmr_dheader_handle_by_format(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint8_t slot,
                              const dmr_dheader_fields* f) {
+    // A data transmission, its proprietary extension included, is no Kirisun or Hytera Enhanced voice call: the slot's
+    // vendor late-entry mode was the previous call's (issue #657).
+    state->dmr_le_vendor[state->currentslot == 0 ? 0 : 1] = DMR_LE_VENDOR_NONE;
     switch (f->dpf) {
         case 0: dmr_dheader_handle_udt(opts, state, dheader, slot, f); break;
         case 1: dmr_dheader_handle_response(opts, state, slot, f); break;

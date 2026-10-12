@@ -51,7 +51,6 @@ static unsigned int g_open_right_calls;
 static unsigned int g_close_left_calls;
 static unsigned int g_close_right_calls;
 static unsigned int g_process_mbe_calls;
-static unsigned int g_play_fs3_calls;
 static unsigned int g_play_ss3_calls;
 static unsigned int g_ui_redraw_calls;
 static unsigned int g_history_calls[2];
@@ -93,7 +92,6 @@ reset_spies(void) {
     g_close_left_calls = 0;
     g_close_right_calls = 0;
     g_process_mbe_calls = 0;
-    g_play_fs3_calls = 0;
     g_play_ss3_calls = 0;
     g_ui_redraw_calls = 0;
     g_history_calls[0] = 0;
@@ -309,7 +307,9 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
 
 /* The vocoder's writer creates a slot's capture with the first frame it records (issue #661). */
 void
-processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23], char ambe_fr[4][24],
+                char imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_DMR);
     if (opts->mbe_out_dir[0] != 0) {
         if (state->currentslot == 1 && opts->mbe_out_fR == NULL) {
             opts->mbe_out_fR = (FILE*)(uintptr_t)1;
@@ -325,15 +325,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     }
     g_process_mbe_calls++;
     if (g_stage_mix_media) {
-        dsd_audio_dmr_mix_media_staged(state->currentslot, DSD_DMR_MIX_MEDIA_FLOAT | DSD_DMR_MIX_MEDIA_SHORT);
+        dsd_audio_dmr_mix_media_staged(state->currentslot, DSD_DMR_MIX_MEDIA_SHORT);
     }
-}
-
-void
-playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    g_play_fs3_calls++;
 }
 
 void
@@ -573,8 +566,8 @@ test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks(void) {
     assert(g_close_right_calls == 1U);
     assert(g_close_left_calls == 0U);
     assert(g_process_mbe_calls == 3U);
-    assert(g_play_fs3_calls == 1U);
-    assert(g_play_ss3_calls == 0U);
+    // Float output (-y) plays through the same DMR stereo mix as 16-bit output (#652).
+    assert(g_play_ss3_calls == 1U);
     assert(g_ui_redraw_calls == 1U);
     assert(g_history_calls[0] == 1U);
     assert(g_history_calls[1] == 1U);
@@ -610,7 +603,6 @@ test_bs_slot2_voice_integer_output_uses_ss3_playback(void) {
     dmrBS(&opts, &state);
 
     assert(state.dmrburstR == 16);
-    assert(g_play_fs3_calls == 0U);
     assert(g_play_ss3_calls == 1U);
     assert(g_process_mbe_calls == 3U);
     assert(g_sm_voice_sync_last_slot == 1);
@@ -727,7 +719,7 @@ test_bs_bootstrap_prefetched_voice_runs_first_frame_path(void) {
     assert(g_late_entry_calls >= 1U);
     assert(g_open_right_calls == 0U);
     assert(g_close_right_calls >= 1U);
-    assert(g_play_fs3_calls >= 1U);
+    assert(g_play_ss3_calls >= 1U);
     assert(state.last_vc_sync_time > 0);
     assert(state.last_vc_sync_time_m > 0.0);
 }
@@ -792,7 +784,7 @@ test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped(void) {
     assert(g_process_mbe_calls == 0U);
     assert(g_cach_calls == 0U);
     assert(g_late_entry_calls == 0U);
-    assert(g_play_fs3_calls == 0U);
+    assert(g_play_ss3_calls == 0U);
     assert(g_reset_blocks_calls == 1U);
     assert(g_refresh_error_calls == 0U);
     assert(g_confidence_reset_calls == 1U);
@@ -818,12 +810,12 @@ test_bs_loop_end_discards_the_mix_media(void) {
     g_any_voice_open = 1;
     g_stage_mix_media = 1;
     dsd_audio_dmr_mix_media_discard(0);
-    dsd_audio_dmr_mix_media_staged(1, DSD_DMR_MIX_MEDIA_FLOAT | DSD_DMR_MIX_MEDIA_SHORT);
+    dsd_audio_dmr_mix_media_staged(1, DSD_DMR_MIX_MEDIA_SHORT);
 
     dmrBS(&opts, &state);
 
     assert(g_process_mbe_calls == 3U);
-    assert(g_play_fs3_calls == 0U && g_play_ss3_calls == 0U);
+    assert(g_play_ss3_calls == 0U);
     assert(dsd_audio_dmr_mix_media_take(0) == 0U);
     assert(dsd_audio_dmr_mix_media_take(1) == 0U);
     g_stage_mix_media = 0;

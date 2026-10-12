@@ -216,7 +216,7 @@ zero_key_voice(void) {
                 } else {
                     opts.mbe_out_f = recording;
                 }
-                processMbeFrame(&opts, &state, NULL, frame, NULL);
+                processMbeFrame(&opts, &state, DSD_VOICE_PROTOCOL_DMR, NULL, frame, NULL);
                 char recovered[49] = {0}, expected_plain[49];
                 for (int bit = 0; bit < 49; ++bit) {
                     expected_plain[bit] = cipher[bit] ^ ((stream[algorithm][bit / 8] >> (7 - bit % 8)) & 1);

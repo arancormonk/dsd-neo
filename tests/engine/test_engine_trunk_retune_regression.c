@@ -177,6 +177,12 @@ dmr_enc_class_reset(dsd_state* state, uint8_t slot) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+dmr_le_vendor_reset(dsd_state* state, uint8_t slot) {
+    state->dmr_le_vendor[slot != 0U ? 1U : 0U] = 0U;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_frame_sync_reset_mod_state(void) {
     g_frame_sync_reset_calls++;
 }

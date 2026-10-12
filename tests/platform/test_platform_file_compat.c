@@ -180,6 +180,8 @@ expect_negative_descriptor_wrappers(void) {
     errno = 0;
     rc |= dsd_isatty(-1) == 0 && errno == EBADF ? 0 : 1;
     errno = 0;
+    rc |= dsd_set_binary_mode(-1) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
     rc |= dsd_dup(-1) == -1 && errno == EBADF ? 0 : 1;
     errno = 0;
     rc |= dsd_dup2(-1, 0) == -1 && errno == EBADF ? 0 : 1;

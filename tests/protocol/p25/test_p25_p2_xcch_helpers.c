@@ -22,8 +22,12 @@
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "../../../src/protocol/p25/p25_trunk_sm_internal.h"
 #include "../../../src/protocol/p25/phase2/p25p2_frame_internal.h"
 
@@ -744,7 +748,8 @@ test_slot_ptt_and_end_helpers(void) {
     // A PTT repeat within the call changes nothing in the playout: its stream and frames stay (issue #651).
     rc |= expect_int("slot0 PTT keeps the playout stream", state.p25p2_playout.slot[0].open, 1);
     rc |= expect_int("slot0 PTT keeps the queued frames", state.p25p2_playout.slot[0].count, 7);
-    rc |= expect_int("slot0 gain reset", (int)state.aout_gain, 3);
+    // The voice chain's gain level carries across calls in both output formats (issue #653).
+    rc |= expect_int("slot0 gain kept", fabsf(state.aout_gain - 0.5F) < 1e-6F, 1);
     rc |= expect_int("slot0 enc emitted", g_enc_count[0], 1);
     rc |= expect_int("slot0 enc algid", g_enc_algid[0], 0x84);
     rc |= expect_int("slot0 lfsr", g_lfsr_count[0], 1);
@@ -831,6 +836,44 @@ test_slot_ptt_and_end_helpers(void) {
     rc |= expect_int("ended slot target retained for diagnostics", p25p2_xcch_get_slot_tg(&state, 0), 0x2222);
     rc |= expect_int("ended slot source retained for diagnostics", p25p2_xcch_get_slot_src(&state, 0), 0x112233);
 
+    return rc;
+}
+
+static int
+test_slot_gps_clear_bounds(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_state* expected = calloc(1, sizeof(*expected));
+    if (!state || !expected) {
+        free(state);
+        free(expected);
+        return 1;
+    }
+    DSD_MEMSET(state->dmr_embedded_gps, 'g', sizeof(state->dmr_embedded_gps));
+    DSD_MEMSET(state->dmr_lrrp_gps, 'l', sizeof(state->dmr_lrrp_gps));
+    DSD_MEMCPY(expected, state, sizeof(*expected));
+
+    p25p2_xcch_clear_slot_gps(NULL, 0);
+    const int invalid_slots[] = {INT_MIN, -1, 2, INT_MAX};
+    for (size_t i = 0; i < sizeof(invalid_slots) / sizeof(invalid_slots[0]); i++) {
+        p25p2_xcch_clear_slot_gps(state, invalid_slots[i]);
+    }
+    int rc =
+        expect_int("invalid GPS slot leaves embedded GPS unchanged",
+                   memcmp(state->dmr_embedded_gps, expected->dmr_embedded_gps, sizeof(state->dmr_embedded_gps)), 0);
+    rc |= expect_int("invalid GPS slot leaves LRRP GPS unchanged",
+                     memcmp(state->dmr_lrrp_gps, expected->dmr_lrrp_gps, sizeof(state->dmr_lrrp_gps)), 0);
+    for (int slot = 0; slot < 2; slot++) {
+        expected->dmr_embedded_gps[slot][0] = '\0';
+        expected->dmr_lrrp_gps[slot][0] = '\0';
+        p25p2_xcch_clear_slot_gps(state, slot);
+        rc |=
+            expect_int("GPS clear touches only the requested embedded slot",
+                       memcmp(state->dmr_embedded_gps, expected->dmr_embedded_gps, sizeof(state->dmr_embedded_gps)), 0);
+        rc |= expect_int("GPS clear touches only the requested LRRP slot",
+                         memcmp(state->dmr_lrrp_gps, expected->dmr_lrrp_gps, sizeof(state->dmr_lrrp_gps)), 0);
+    }
+    free(state);
+    free(expected);
     return rc;
 }
 
@@ -1709,6 +1752,7 @@ main(void) {
     int rc = 0;
 
     rc |= test_slot_ptt_and_end_helpers();
+    rc |= test_slot_gps_clear_bounds();
     rc |= test_facch_public_dispatch_and_crc_gates();
     rc |= test_ptt_signature_transport_equivalence_and_repeat_processing();
     rc |= test_sacch_dispatch_and_lcch_crc_abort();

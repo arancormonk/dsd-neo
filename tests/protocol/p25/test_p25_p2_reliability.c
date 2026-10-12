@@ -5,6 +5,7 @@
 
 /* Unit tests for P25P2 frame reset and soft-decision recovery paths. */
 
+#include <assert.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
@@ -290,7 +291,9 @@ dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8
 }
 
 void
-processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23], char ambe_fr[4][24],
+                char imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_P25P2);
     (void)opts;
     (void)state;
     (void)imbe_fr;
@@ -299,8 +302,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 }
 
 void
-processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
+processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, dsd_vocoder_soft_bit imbe_fr[8][23],
                     dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_P25P2);
     (void)opts;
     (void)state;
     (void)imbe_fr;

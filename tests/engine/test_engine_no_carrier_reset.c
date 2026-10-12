@@ -3904,6 +3904,8 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     state->data_header_valid[0] = 1;
     state->dmr_embedded_signalling[0][1][0] = 1;
     state->late_entry_mi_fragment[0][1][0] = 5U;
+    state->dmr_le_vendor[0] = DMR_LE_VENDOR_HYTERA_ENH;
+    state->dmr_le_vendor[1] = DMR_LE_VENDOR_KIRISUN_ENC;
     state->dmr_alias_format[0] = 1;
     state->dmr_alias_block_len[0] = 4;
     state->dmr_alias_char_size[0] = 7;
@@ -3944,6 +3946,9 @@ test_carrier_boundary_discards_partial_assemblies(void) {
                           && state->data_block_counter[0] == 1 && state->data_header_valid[0] == 0);
     rc |= expect_true("assemblies: the boundary drops the DMR embedded LC and late-entry MI",
                       state->dmr_embedded_signalling[0][1][0] == 0 && state->late_entry_mi_fragment[0][1][0] == 0U);
+    /* Issue #657: the calls end at the boundary, and with them each slot's vendor late-entry mode. */
+    rc |= expect_true("assemblies: the boundary drops the DMR vendor late-entry modes",
+                      state->dmr_le_vendor[0] == DMR_LE_VENDOR_NONE && state->dmr_le_vendor[1] == DMR_LE_VENDOR_NONE);
     rc |= expect_true("assemblies: the boundary drops the DMR talker alias and the alias shown",
                       state->dmr_alias_format[0] == 0 && state->dmr_alias_block_len[0] == 0
                           && state->dmr_alias_char_size[0] == 0 && state->dmr_alias_block_segment[0][0][0][0] == 0
@@ -3993,7 +3998,7 @@ test_no_carrier_reset_discards_the_dmr_mix_media(void) {
             opts->pulse_digi_out_channels = 2;
             opts->slot1_on = 1;
             opts->slot2_on = 1;
-            const unsigned int media = DSD_DMR_MIX_MEDIA_FLOAT | DSD_DMR_MIX_MEDIA_SHORT;
+            const unsigned int media = DSD_DMR_MIX_MEDIA_SHORT;
             dsd_audio_dmr_mix_media_staged(0, media);
             dsd_audio_dmr_mix_media_staged(1, media);
 
@@ -4006,25 +4011,18 @@ test_no_carrier_reset_discards_the_dmr_mix_media(void) {
             state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
             char tag[128];
             const char* reset = path == 0 ? "noCarrier" : "the shared reset";
-            const char* mix = floating_point ? "FS3" : "SS3";
+            // Both output formats play DMR through SS3 (#652).
+            const char* mix = floating_point ? "SS3 (-y)" : "SS3";
             uint64_t stamp = 0U;
             dsd_audio_activity_reset();
-            if (floating_point) {
-                playSynthesizedVoiceFS3(opts, state);
-            } else {
-                playSynthesizedVoiceSS3(opts, state);
-            }
+            playSynthesizedVoiceSS3(opts, state);
             dsd_audio_activity_read(&stamp, NULL);
             DSD_SNPRINTF(tag, sizeof(tag), "dmr mix media: %s %s after %s stamps nothing", mix, "mix", reset);
             rc |= expect_true(tag, stamp == 0U);
 
             dsd_audio_dmr_mix_media_staged(0, media);
             dsd_audio_activity_reset();
-            if (floating_point) {
-                playSynthesizedVoiceFS3(opts, state);
-            } else {
-                playSynthesizedVoiceSS3(opts, state);
-            }
+            playSynthesizedVoiceSS3(opts, state);
             dsd_audio_activity_read(&stamp, NULL);
             DSD_SNPRINTF(tag, sizeof(tag), "dmr mix media: %s stamps media staged after %s", mix, reset);
             rc |= expect_true(tag, stamp != 0U);
@@ -4032,6 +4030,46 @@ test_no_carrier_reset_discards_the_dmr_mix_media(void) {
         }
     }
     dsd_audio_activity_reset();
+    return rc;
+}
+
+/*
+ * Issue #652: the no-carrier pass reset the digital output gain in float output (-y) only, to the -g setting: the auto
+ * gain (-g 0) restarted every call at its quietest, and -g 50 divided by zero in the old float gain stage. One gain
+ * stage serves both formats now: the auto gain's level carries over the pass in either format, its peak history goes,
+ * and a fixed gain stays the -g multiplier.
+ */
+static int
+test_no_carrier_keeps_the_digital_gain_in_either_format(void) {
+    int rc = 0;
+    for (int floating_point = 0; floating_point <= 1; floating_point++) {
+        for (int fixed = 0; fixed <= 1; fixed++) {
+            dsd_opts* opts = NULL;
+            dsd_state* state = NULL;
+            if (init_test_runtime(&opts, &state) != 0) {
+                return 1;
+            }
+            opts->floating_point = floating_point;
+            opts->audio_gain = fixed ? 50.0f : 0.0f;
+            opts->audio_gainR = opts->audio_gain;
+            state->aout_gain = fixed ? 50.0f : 37.5f;
+            state->aout_gainR = fixed ? 50.0f : 12.25f;
+            state->aout_max_buf[3] = 900.0f;
+            state->aout_max_bufR[7] = 450.0f;
+
+            noCarrier(opts, state);
+
+            char tag[128];
+            DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s %s gain keeps its level", floating_point ? "-y" : "s16",
+                         fixed ? "fixed" : "auto");
+            rc |= expect_true(tag, fabsf(state->aout_gain - (fixed ? 50.0f : 37.5f)) < 1e-6f
+                                       && fabsf(state->aout_gainR - (fixed ? 50.0f : 12.25f)) < 1e-6f);
+            DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s %s gain drops its peak history",
+                         floating_point ? "-y" : "s16", fixed ? "fixed" : "auto");
+            rc |= expect_true(tag, fabsf(state->aout_max_buf[3]) < 1e-6f && fabsf(state->aout_max_bufR[7]) < 1e-6f);
+            free_test_runtime(opts, state);
+        }
+    }
     return rc;
 }
 
@@ -4610,8 +4648,8 @@ test_rx_tone_resets_on_legacy_scan_step(void) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* Issue #651: a no-carrier pass that finds the guard taken leaves the playout to the next pass, and with it the
-   return to the control channel (which would turn both slots on): the next pass drains the queued frame under the
-   user's switches (both off here) before it returns, so nothing plays. */
+   return to the control channel (which ends the calls): the next pass drains the queued frame under the user's
+   switches (both off here) before it returns, so nothing plays, and the return leaves the switches as set (#657). */
 static int
 test_p25_nocarrier_deferred_drain_keeps_the_switches(void) {
     dsd_opts* opts = NULL;
@@ -4646,6 +4684,7 @@ test_p25_nocarrier_deferred_drain_keeps_the_switches(void) {
     rc |= expect_true("p25-nocarrier-deferred-drain-keeps-switches", opts->slot1_on == 0 && opts->slot2_on == 0);
     noCarrier(opts, state);
     rc |= expect_true("p25-nocarrier-deferred-drain-plays-nothing", g_p25p2_blocks == 0);
+    rc |= expect_true("p25-nocarrier-return-keeps-switches", opts->slot1_on == 0 && opts->slot2_on == 0);
     rc |= expect_true("p25-nocarrier-deferred-drain-empties", dsd_p25p2_playout_level(state, 0) == 0);
     g_guard_busy_once = 0;
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
@@ -5552,8 +5591,9 @@ main(void) {
     state->p25_p1_validated_rf_mod = 1;
     state->p25_p1_nid_evidence = 1;
     state->p25_p1_nid_evidence_symbolcnt = 4321U;
-    /* Issue #651: a Phase 2 frame still queued as the carrier drops, both slots switched off by the user. The return to
-       the control channel below turns both slots on for it; the frame drains first, under the user's switches. */
+    /* Issue #651: a Phase 2 frame still queued as the carrier drops, both slots switched off by the user. The frame
+       drains first, under the user's switches, and the return to the control channel below leaves them as set (issue
+       #657: it used to turn both slots back on). */
     stage_p25p2_frame(opts, state);
 
     noCarrier(opts, state);
@@ -5580,7 +5620,7 @@ main(void) {
                       state->samplesPerSymbol == 20 && state->symbolCenter == 9);
     rc |= expect_true("p25-rtl-nocarrier-selects-four-level-profile",
                       state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && state->sps_hunt_counter == 0);
-    rc |= expect_true("p25-rtl-nocarrier-reenables-slots", opts->slot1_on == 1 && opts->slot2_on == 1);
+    rc |= expect_true("p25-rtl-nocarrier-keeps-slot-switches", opts->slot1_on == 0 && opts->slot2_on == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->trunk_is_tuned == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
     rc |= expect_true("p25-rtl-nocarrier-uses-return-grace",
@@ -6348,6 +6388,7 @@ main(void) {
     rc |= test_carrier_boundary_closes_mbe_captures();
     rc |= test_carrier_boundary_discards_partial_assemblies();
     rc |= test_no_carrier_reset_discards_the_dmr_mix_media();
+    rc |= test_no_carrier_keeps_the_digital_gain_in_either_format();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();

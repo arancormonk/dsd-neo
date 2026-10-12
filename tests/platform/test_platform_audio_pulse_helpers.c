@@ -22,8 +22,13 @@
 #include "dsd-neo/platform/audio.h"
 #include "dsd-neo/platform/audio_concealment.h"
 #include "dsd-neo/platform/threading.h"
+#include "dsd-neo/platform/timing.h"
 
 static int g_pa_simple_new_fail;
+static int g_pa_simple_new_calls;
+static uint64_t g_pa_simple_new_delay_ns; /* how long an open takes on the fake clock */
+static char g_pa_simple_new_dev[64];
+static char g_pa_simple_new_app[64];
 static int g_pa_simple_error;
 static int g_pa_simple_read_fail;
 static int g_pa_simple_read_calls;
@@ -35,6 +40,10 @@ static int g_pa_simple_drain_calls;
 static void
 reset_pa_simple_fakes(void) {
     g_pa_simple_new_fail = 0;
+    g_pa_simple_new_calls = 0;
+    g_pa_simple_new_delay_ns = 0;
+    g_pa_simple_new_dev[0] = '\0';
+    g_pa_simple_new_app[0] = '\0';
     g_pa_simple_error = 0;
     g_pa_simple_read_fail = 0;
     g_pa_simple_read_calls = 0;
@@ -42,6 +51,14 @@ reset_pa_simple_fakes(void) {
     g_pa_simple_write_calls = 0;
     g_pa_simple_drain_fail = 0;
     g_pa_simple_drain_calls = 0;
+}
+
+/* The device recovery's clock (audio_output_recovery.h), set by the tests. */
+static uint64_t g_now_ns = 1000000000ULL;
+
+uint64_t
+dsd_time_monotonic_ns(void) {
+    return g_now_ns;
 }
 
 int
@@ -104,11 +121,12 @@ dsd_cond_wait(dsd_cond_t* cond, dsd_mutex_t* mutex) {
     return 0;
 }
 
+/* A wait with no one to wake it runs its whole timeout: the fake clock moves on by it. */
 int
 dsd_cond_timedwait(dsd_cond_t* cond, dsd_mutex_t* mutex, unsigned int timeout_ms) {
     (void)cond;
     (void)mutex;
-    (void)timeout_ms;
+    g_now_ns += (uint64_t)timeout_ms * 1000000ULL;
     return 0;
 }
 
@@ -151,13 +169,15 @@ pa_simple*
 pa_simple_new(const char* server, const char* name, pa_stream_direction_t dir, const char* dev, const char* stream_name,
               const pa_sample_spec* ss, const pa_channel_map* map, const pa_buffer_attr* attr, int* error) {
     (void)server;
-    (void)name;
     (void)dir;
-    (void)dev;
     (void)stream_name;
     (void)ss;
     (void)map;
     (void)attr;
+    g_pa_simple_new_calls++;
+    g_now_ns += g_pa_simple_new_delay_ns;
+    DSD_SNPRINTF(g_pa_simple_new_dev, sizeof(g_pa_simple_new_dev), "%s", dev ? dev : "");
+    DSD_SNPRINTF(g_pa_simple_new_app, sizeof(g_pa_simple_new_app), "%s", name ? name : "");
     if (g_pa_simple_new_fail) {
         if (error != NULL) {
             *error = g_pa_simple_error;
@@ -491,6 +511,9 @@ test_pulse_simple_error_paths(void) {
     assert(dsd_audio_write(&stream, samples, 4) == -1);
     assert(g_pa_simple_write_calls == 1);
     assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_INTERNAL)) == 0);
+    /* The failed device is closed and owed a reopen (issue #659). */
+    assert(stream.handle == NULL);
+    assert(stream.recovery.down == 1);
 
     reset_pa_simple_fakes();
     DSD_MEMSET(&stream, 0, sizeof(stream));
@@ -524,7 +547,12 @@ test_pulse_async_error_paths(void) {
     g_pa_simple_error = PA_ERR_CONNECTIONTERMINATED;
     assert(pulse_output_write_chunk(&stream) == -1);
     assert(g_pa_simple_write_calls == 1);
-    assert(stream.stop == 1);
+    /* A failed device write no longer stops the stream for good (issue #659): the device is closed and owed a reopen. */
+    assert(stream.stop == 0);
+    assert(stream.handle == NULL);
+    assert(stream.recovery.down == 1);
+    assert(stream.recovery.failures == 1U);
+    assert(strcmp(stream.recovery.error, pa_strerror(PA_ERR_CONNECTIONTERMINATED)) == 0);
     assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_CONNECTIONTERMINATED)) == 0);
 
     reset_pa_simple_fakes();
@@ -557,13 +585,191 @@ test_pulse_async_error_paths(void) {
     stream.drain_requested = 1;
     g_pa_simple_write_fail = 1;
     g_pa_simple_error = PA_ERR_IO;
-    assert(pulse_output_handle_drain_locked(&stream) == -1);
+    assert(pulse_output_handle_drain_locked(&stream) == 0);
     assert(g_pa_simple_write_calls == 1);
-    assert(stream.stop == 1);
+    /* The drain ends, failed, and the device is down; the stream itself goes on. */
+    assert(stream.stop == 0);
+    assert(stream.drain_requested == 0);
+    assert(stream.drain_completed == 1);
+    assert(stream.drain_failed == 1);
+    assert(stream.recovery.down == 1);
+    assert(stream.ring_samples_count == 0U);
     assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_IO)) == 0);
 
     assert(dsd_cond_destroy(&stream.cv) == 0);
     assert(dsd_mutex_destroy(&stream.mu) == 0);
+}
+
+/* Issue #659: a device whose write fails is reopened behind the same stream, from the pump, with a growing wait while
+   it cannot be; writes fail meanwhile, and a failure counts as recovered only once the reopened device takes a write. */
+static void
+test_pulse_async_device_recovery(void) {
+    dsd_audio_params params = pulse_test_valid_params();
+    params.async_output = 0;
+    params.device = "alsa_output.test-sink";
+    params.app_name = "dsd-neo-test";
+    int16_t samples[4] = {1, 2, 3, 4};
+
+    reset_pa_simple_fakes();
+    /* Opened blocking, then given the async ring with no pump thread: the test runs the pump's passes itself. */
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    assert(g_pa_simple_new_calls == 1);
+    stream->use_async = 1;
+    assert(pulse_output_init_async_sync(stream) == 1);
+    assert(pulse_output_prepare_async_buffers(stream) == 1);
+
+    dsd_audio_output_health health;
+    assert(dsd_audio_output_health_get(stream, &health) == 0);
+    assert(health.failures == 0U && health.recoveries == 0U && health.down == 0);
+
+    /* The pump's write fails: the device closes and the queue is dropped. */
+    assert(dsd_audio_write(stream, samples, 4) == 4);
+    g_pa_simple_write_fail = 1;
+    g_pa_simple_error = PA_ERR_CONNECTIONTERMINATED;
+    assert(pulse_output_pump_step(stream) == 0);
+    assert(stream->handle == NULL);
+    assert(stream->ring_samples_count == 0U);
+    assert(dsd_audio_output_health_get(stream, &health) == 0);
+    assert(health.failures == 1U && health.recoveries == 0U && health.down == 1);
+    assert(strcmp(health.error, pa_strerror(PA_ERR_CONNECTIONTERMINATED)) == 0);
+
+    /* Writes fail while it is down, and queue nothing; a drain fails at once rather than wait on a pump that may be
+       busy reopening. */
+    assert(dsd_audio_write(stream, samples, 4) == -1);
+    assert(stream->ring_samples_count == 0U);
+    assert(dsd_audio_drain(stream) == -1);
+    assert(stream->drain_requested == 0);
+
+    /* The first reopen is tried at once; the server is still away, so the next waits 250 ms. */
+    g_pa_simple_new_fail = 1;
+    g_pa_simple_error = PA_ERR_CONNECTIONREFUSED;
+    const uint64_t t0 = g_now_ns;
+    assert(pulse_output_pump_step(stream) == 0);
+    assert(g_pa_simple_new_calls == 2);
+    assert(g_now_ns == t0);
+    assert(stream->recovery.retry_at_ns == t0 + 250000000ULL);
+    assert(pulse_output_pump_step(stream) == 0);
+    assert(g_pa_simple_new_calls == 3);
+    assert(g_now_ns >= t0 + 250000000ULL);
+    /* ...then 500 ms. */
+    const uint64_t t1 = g_now_ns;
+    assert(stream->recovery.retry_at_ns == t1 + 500000000ULL);
+    assert(dsd_audio_output_health_get(stream, &health) == 0);
+    assert(health.failures == 1U && health.down == 1);
+    assert(strcmp(health.error, pa_strerror(PA_ERR_CONNECTIONREFUSED)) == 0);
+
+    /* The server is back: the reopen uses the stream's own device and name, and writes queue again. */
+    g_pa_simple_new_fail = 0;
+    g_pa_simple_write_fail = 0;
+    assert(pulse_output_pump_step(stream) == 0);
+    assert(g_pa_simple_new_calls == 4);
+    assert(strcmp(g_pa_simple_new_dev, "alsa_output.test-sink") == 0);
+    assert(strcmp(g_pa_simple_new_app, "dsd-neo-test") == 0);
+    assert(stream->handle != NULL);
+    assert(dsd_audio_output_health_get(stream, &health) == 0);
+    assert(health.down == 0);
+    /* Reopened is not recovered: only a write the device takes is. */
+    assert(health.recoveries == 0U);
+    assert(dsd_audio_write(stream, samples, 4) == 4);
+    assert(pulse_output_pump_step(stream) == 0);
+    assert(dsd_audio_output_health_get(stream, &health) == 0);
+    assert(health.failures == 1U && health.recoveries == 1U && health.down == 0);
+
+    /* A device that fails again before it has stayed healthy is not retried at once. */
+    g_pa_simple_write_fail = 1;
+    assert(dsd_audio_write(stream, samples, 4) == 4);
+    assert(pulse_output_pump_step(stream) == 0);
+    assert(stream->recovery.down == 1);
+    assert(stream->recovery.retry_at_ns > g_now_ns);
+    assert(dsd_audio_output_health_get(stream, &health) == 0);
+    assert(health.failures == 2U && health.recoveries == 1U);
+
+    /* A drain while the device is down ends at once, failed. */
+    stream->drain_requested = 1;
+    dsd_mutex_lock(&stream->mu);
+    assert(pulse_output_wait_for_reopen_locked(stream) == 0);
+    dsd_mutex_unlock(&stream->mu);
+    assert(stream->drain_completed == 1 && stream->drain_failed == 1 && stream->drain_requested == 0);
+
+    /* Stop ends the wait for a reopen. */
+    stream->recovery.retry_at_ns = g_now_ns + 1000000000ULL;
+    stream->stop = 1;
+    assert(pulse_output_pump_step(stream) == -1);
+    stream->stop = 0;
+    dsd_audio_close(stream);
+}
+
+/* Issue #659: blocking output reopens the device on the writer's thread, on the next write once that is due. */
+static void
+test_pulse_sync_device_recovery(void) {
+    dsd_audio_params params = pulse_test_valid_params();
+    params.async_output = 0;
+    int16_t samples[4] = {1, 2, 3, 4};
+
+    reset_pa_simple_fakes();
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    assert(stream->use_async == 0);
+
+    g_pa_simple_write_fail = 1;
+    g_pa_simple_error = PA_ERR_CONNECTIONTERMINATED;
+    assert(dsd_audio_write(stream, samples, 4) == -1);
+    assert(stream->handle == NULL);
+    dsd_audio_output_health health;
+    assert(dsd_audio_output_health_get(stream, &health) == 0);
+    assert(health.failures == 1U && health.down == 1);
+    assert(dsd_audio_drain(stream) == -1);
+
+    /* The first reopen comes with the next write. */
+    g_pa_simple_write_fail = 0;
+    assert(dsd_audio_write(stream, samples, 4) == 4);
+    assert(g_pa_simple_new_calls == 2);
+    assert(dsd_audio_output_health_get(stream, &health) == 0);
+    assert(health.failures == 1U && health.recoveries == 1U && health.down == 0);
+
+    /* Failing again at once: the reopen waits 250 ms, and writes fail without trying it until then. */
+    g_pa_simple_write_fail = 1;
+    assert(dsd_audio_write(stream, samples, 4) == -1);
+    g_pa_simple_write_fail = 0;
+    assert(dsd_audio_write(stream, samples, 4) == -1);
+    assert(g_pa_simple_new_calls == 2);
+    g_now_ns += 250000000ULL;
+    assert(dsd_audio_write(stream, samples, 4) == 4);
+    assert(g_pa_simple_new_calls == 3);
+
+    /* After 2 s of writes the device counts as healthy: the next failure is retried at once again. */
+    g_now_ns += 2000000000ULL;
+    assert(dsd_audio_write(stream, samples, 4) == 4);
+    assert(stream->recovery.streak == 0U);
+    g_pa_simple_write_fail = 1;
+    assert(dsd_audio_write(stream, samples, 4) == -1);
+    g_pa_simple_write_fail = 0;
+    assert(dsd_audio_write(stream, samples, 4) == 4);
+    assert(g_pa_simple_new_calls == 4);
+    assert(dsd_audio_output_health_get(stream, &health) == 0);
+    assert(health.failures == 3U && health.recoveries == 3U);
+
+    /* An open that blocks longer than the wait (a server that does not answer) is timed from when it gave up: the
+       next write does not try again at once. */
+    g_pa_simple_write_fail = 1;
+    assert(dsd_audio_write(stream, samples, 4) == -1);
+    assert(stream->handle == NULL);
+    g_pa_simple_write_fail = 0;
+    g_now_ns += 5000000000ULL; /* past any wait */
+    g_pa_simple_new_fail = 1;
+    g_pa_simple_new_delay_ns = 5000000000ULL;
+    const int opens_before = g_pa_simple_new_calls;
+    assert(dsd_audio_write(stream, samples, 4) == -1);
+    assert(g_pa_simple_new_calls == opens_before + 1);
+    assert(stream->recovery.retry_at_ns > g_now_ns);
+    assert(dsd_audio_write(stream, samples, 4) == -1);
+    assert(g_pa_simple_new_calls == opens_before + 1);
+    g_pa_simple_new_fail = 0;
+    g_pa_simple_new_delay_ns = 0;
+
+    assert(dsd_audio_output_health_get(NULL, &health) == -1);
+    dsd_audio_close(stream);
 }
 
 static void
@@ -635,6 +841,8 @@ main(void) {
     test_pulse_sync_output_open_uses_blocking_write();
     test_pulse_simple_error_paths();
     test_pulse_async_error_paths();
+    test_pulse_async_device_recovery();
+    test_pulse_sync_device_recovery();
     test_pulse_enum_callbacks_and_guards();
     return 0;
 }

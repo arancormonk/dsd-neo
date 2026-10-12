@@ -18,6 +18,7 @@
 #include <dsd-neo/platform/audio_concealment.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <pulse/context.h>
 #include <pulse/def.h>
 #include <pulse/error.h>
@@ -30,8 +31,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define DSD_NEO_AUDIO_BACKEND_PULSE 1
 #include "audio_error_internal.h"
+#include "audio_output_recovery.h"
 #include "audio_stream_internal.h"
 
 #if DSD_PLATFORM_POSIX
@@ -187,12 +190,101 @@ ring_read_samples(dsd_audio_stream* stream, int16_t* dst, size_t samples) {
     return samples;
 }
 
+static void pulse_output_init_attr(const dsd_audio_params* params, pa_buffer_attr* attr);
+
+/* Open the playback device with what the stream was opened with (dsd_audio_open_output() and every reopen). */
+static pa_simple*
+pulse_output_open_handle(const dsd_audio_stream* stream, int* err) {
+    dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
+    params.sample_rate = stream->sample_rate;
+    params.channels = stream->channels;
+    pa_buffer_attr attr;
+    pulse_output_init_attr(&params, &attr);
+
+    pa_sample_spec ss;
+    ss.format = PA_SAMPLE_S16NE;
+    ss.channels = (uint8_t)stream->channels;
+    ss.rate = (uint32_t)stream->sample_rate;
+
+    const char* dev = stream->has_device_name ? stream->device_name : NULL;
+    return pa_simple_new(NULL, stream->app_name, PA_STREAM_PLAYBACK, dev, "Audio Output", &ss, NULL, &attr, err);
+}
+
+/* The pump's device write failed: close the device (only the pump touches it), drop what was queued for it, and owe a
+   reopen. Writes fail until a reopened device takes one again. Called without the stream lock. */
 static void
-pulse_output_stop_on_error(dsd_audio_stream* stream, int pa_errno) {
+pulse_output_device_failed(dsd_audio_stream* stream, int pa_errno) {
     set_error_pa(pa_errno);
+    pa_simple* dead = stream->handle;
+    stream->handle = NULL;
+    if (dead) {
+        pa_simple_free(dead);
+    }
     dsd_mutex_lock(&stream->mu);
-    stream->stop = 1;
+    audio_recovery_note_device_failed(&stream->recovery, dsd_time_monotonic_ns(), pa_strerror(pa_errno));
+    stream->drops += stream->ring_samples_count;
+    stream->ring_samples_head = 0;
+    stream->ring_samples_tail = 0;
+    stream->ring_samples_count = 0;
+    stream->conceal_has_good = 0;
     dsd_cond_broadcast(&stream->cv);
+    dsd_mutex_unlock(&stream->mu);
+}
+
+static void
+pulse_output_complete_drain_locked(dsd_audio_stream* stream, int drain_failed) {
+    stream->drain_requested = 0;
+    stream->drain_failed = drain_failed;
+    stream->drain_completed = 1;
+    dsd_cond_broadcast(&stream->cv);
+}
+
+/* While the device is down: sleep until a reopen is due, answering a drain at once (there is nothing to drain).
+   Returns 0 when a reopen is due, -1 on stop. */
+static int
+pulse_output_wait_for_reopen_locked(dsd_audio_stream* stream) {
+    while (!stream->stop) {
+        if (stream->drain_requested) {
+            pulse_output_complete_drain_locked(stream, 1);
+            continue;
+        }
+        const uint64_t now = dsd_time_monotonic_ns();
+        if (audio_recovery_reopen_due(&stream->recovery, now)) {
+            return 0;
+        }
+        uint64_t wait_ms = (stream->recovery.retry_at_ns - now) / 1000000ULL + 1U;
+        if (wait_ms > (uint64_t)DSD_AUDIO_RECOVERY_BACKOFF_MAX_MS) {
+            wait_ms = DSD_AUDIO_RECOVERY_BACKOFF_MAX_MS;
+        }
+        (void)dsd_cond_timedwait(&stream->cv, &stream->mu, (unsigned int)wait_ms);
+    }
+    return -1;
+}
+
+/* Reopen the device from the pump. Called without the stream lock; pa_simple_new() may take a while. */
+static void
+pulse_output_try_reopen(dsd_audio_stream* stream) {
+    int err = 0;
+    pa_simple* handle = pulse_output_open_handle(stream, &err);
+    if (!handle) {
+        set_error_pa(err);
+    }
+    dsd_mutex_lock(&stream->mu);
+    if (handle) {
+        stream->handle = handle;
+        audio_recovery_note_reopened(&stream->recovery);
+    } else {
+        audio_recovery_note_reopen_failed(&stream->recovery, dsd_time_monotonic_ns(), pa_strerror(err));
+    }
+    dsd_mutex_unlock(&stream->mu);
+}
+
+static void
+pulse_output_note_write_ok(dsd_audio_stream* stream) {
+    const uint64_t now = dsd_time_monotonic_ns();
+    dsd_mutex_lock(&stream->mu);
+    audio_recovery_note_write_ok(&stream->recovery, now);
     dsd_mutex_unlock(&stream->mu);
 }
 
@@ -239,9 +331,13 @@ pulse_output_handle_drain_locked(dsd_audio_stream* stream) {
 
         err = 0;
         if (pa_simple_write(stream->handle, stream->chunk, take * sizeof(int16_t), &err) < 0) {
-            pulse_output_stop_on_error(stream, err);
-            return -1;
+            pulse_output_device_failed(stream, err);
+            dsd_mutex_lock(&stream->mu);
+            pulse_output_complete_drain_locked(stream, 1);
+            dsd_mutex_unlock(&stream->mu);
+            return 0;
         }
+        pulse_output_note_write_ok(stream);
 
         dsd_mutex_lock(&stream->mu);
     }
@@ -256,10 +352,7 @@ pulse_output_handle_drain_locked(dsd_audio_stream* stream) {
         dsd_mutex_lock(&stream->mu);
     }
 
-    stream->drain_requested = 0;
-    stream->drain_failed = drain_failed;
-    stream->drain_completed = 1;
-    dsd_cond_broadcast(&stream->cv);
+    pulse_output_complete_drain_locked(stream, drain_failed);
     dsd_mutex_unlock(&stream->mu);
     return 0;
 }
@@ -303,9 +396,41 @@ static int
 pulse_output_write_chunk(dsd_audio_stream* stream) {
     int err = 0;
     if (pa_simple_write(stream->handle, stream->chunk, stream->chunk_samples * sizeof(int16_t), &err) < 0) {
-        pulse_output_stop_on_error(stream, err);
+        pulse_output_device_failed(stream, err);
         return -1;
     }
+    pulse_output_note_write_ok(stream);
+    return 0;
+}
+
+/* One pass of the pump: reopen a device that is down once that is due, else feed the device one chunk or serve a
+   drain. Returns -1 when the stream stops. */
+static int
+pulse_output_pump_step(dsd_audio_stream* stream) {
+    dsd_mutex_lock(&stream->mu);
+    if (stream->recovery.down) {
+        const int due = pulse_output_wait_for_reopen_locked(stream);
+        dsd_mutex_unlock(&stream->mu);
+        if (due < 0) {
+            return -1;
+        }
+        pulse_output_try_reopen(stream);
+        return 0;
+    }
+
+    int synthesize_underrun = pulse_output_wait_for_work_locked(stream);
+    if (synthesize_underrun < 0) {
+        dsd_mutex_unlock(&stream->mu);
+        return -1;
+    }
+
+    if (stream->drain_requested) {
+        return pulse_output_handle_drain_locked(stream);
+    }
+
+    pulse_output_prepare_chunk_locked(stream, synthesize_underrun);
+    dsd_mutex_unlock(&stream->mu);
+    (void)pulse_output_write_chunk(stream);
     return 0;
 }
 
@@ -316,27 +441,7 @@ pulse_output_pump_thread(void* arg) {
         DSD_THREAD_RETURN;
     }
 
-    while (1) {
-        dsd_mutex_lock(&stream->mu);
-        int synthesize_underrun = pulse_output_wait_for_work_locked(stream);
-        if (synthesize_underrun < 0) {
-            dsd_mutex_unlock(&stream->mu);
-            break;
-        }
-
-        if (stream->drain_requested) {
-            if (pulse_output_handle_drain_locked(stream) < 0) {
-                DSD_THREAD_RETURN;
-            }
-            continue;
-        }
-
-        pulse_output_prepare_chunk_locked(stream, synthesize_underrun);
-        dsd_mutex_unlock(&stream->mu);
-        if (pulse_output_write_chunk(stream) < 0) {
-            break;
-        }
-    }
+    while (pulse_output_pump_step(stream) == 0) {}
 
     DSD_THREAD_RETURN;
 }
@@ -783,6 +888,24 @@ pulse_output_disable_async(dsd_audio_stream* stream, int async_sync_inited) {
     }
 }
 
+/* Keep the device and application names a reopen uses (pulse_output_open_handle()). */
+static int
+pulse_output_remember_names(dsd_audio_stream* stream, const dsd_audio_params* params) {
+    const char* app = (params->app_name && params->app_name[0]) ? params->app_name : "DSD-neo";
+    if (params->device && params->device[0]) {
+        if (strlen(params->device) >= sizeof(stream->device_name)) {
+            set_error("Output device name too long");
+            return -1;
+        }
+        DSD_STRNCPY(stream->device_name, params->device, sizeof(stream->device_name) - 1);
+        stream->device_name[sizeof(stream->device_name) - 1] = '\0';
+        stream->has_device_name = 1;
+    }
+    DSD_STRNCPY(stream->app_name, app, sizeof(stream->app_name) - 1);
+    stream->app_name[sizeof(stream->app_name) - 1] = '\0';
+    return 0;
+}
+
 dsd_audio_stream*
 dsd_audio_open_output(const dsd_audio_params* params) {
     if (!validate_stream_params(params)) {
@@ -795,22 +918,8 @@ dsd_audio_open_output(const dsd_audio_params* params) {
         return NULL;
     }
 
-    pa_sample_spec ss;
-    ss.format = PA_SAMPLE_S16NE;
-    ss.channels = (uint8_t)params->channels;
-    ss.rate = (uint32_t)params->sample_rate;
-
     int err = 0;
-    const char* dev = (params->device && params->device[0]) ? params->device : NULL;
-    const char* app = (params->app_name && params->app_name[0]) ? params->app_name : "DSD-neo";
-
-    pa_buffer_attr attr;
-    pulse_output_init_attr(params, &attr);
-
-    stream->handle = pa_simple_new(NULL, app, PA_STREAM_PLAYBACK, dev, "Audio Output", &ss, NULL, &attr, &err);
-
-    if (!stream->handle) {
-        set_error_pa(err);
+    if (pulse_output_remember_names(stream, params) != 0) {
         free(stream);
         return NULL;
     }
@@ -818,6 +927,14 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     stream->is_input = 0;
     stream->channels = params->channels;
     stream->sample_rate = params->sample_rate;
+    stream->handle = pulse_output_open_handle(stream, &err);
+
+    if (!stream->handle) {
+        set_error_pa(err);
+        free(stream);
+        return NULL;
+    }
+
     pulse_output_init_async_state(stream, params->async_output);
 
     if (stream->use_async) {
@@ -854,9 +971,45 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
+/* Blocking output: the caller's thread owns the device. A failed write closes it, and the next write that finds a
+   reopen due reopens it (audio_output_recovery.h); until then writes fail at once. */
+static int
+pulse_output_sync_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
+    int err = 0;
+    if (!stream->handle) {
+        if (!audio_recovery_reopen_due(&stream->recovery, dsd_time_monotonic_ns())) {
+            set_error(stream->recovery.error);
+            return -1;
+        }
+        stream->handle = pulse_output_open_handle(stream, &err);
+        if (!stream->handle) {
+            set_error_pa(err);
+            /* Timed after the attempt: an open that blocks past the wait must not make the next one due at once. */
+            audio_recovery_note_reopen_failed(&stream->recovery, dsd_time_monotonic_ns(), pa_strerror(err));
+            return -1;
+        }
+        audio_recovery_note_reopened(&stream->recovery);
+    }
+
+    size_t bytes = frames * (size_t)stream->channels * sizeof(int16_t);
+    err = 0;
+    const int rc = pa_simple_write(stream->handle, buffer, bytes, &err);
+    const uint64_t now = dsd_time_monotonic_ns();
+    if (rc < 0) {
+        set_error_pa(err);
+        pa_simple_free(stream->handle);
+        stream->handle = NULL;
+        audio_recovery_note_device_failed(&stream->recovery, now, pa_strerror(err));
+        return -1;
+    }
+    audio_recovery_note_write_ok(&stream->recovery, now);
+    return (int)frames;
+}
+
 int
 dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
-    if (!stream || !stream->handle || !buffer) {
+    /* A NULL device handle is legal on an output stream: it is down and owed a reopen. */
+    if (!stream || !buffer) {
         set_error("Invalid arguments");
         return -1;
     }
@@ -867,15 +1020,7 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
     }
 
     if (!stream->use_async) {
-        size_t bytes = frames * (size_t)stream->channels * sizeof(int16_t);
-        int err = 0;
-
-        if (pa_simple_write(stream->handle, buffer, bytes, &err) < 0) {
-            set_error_pa(err);
-            return -1;
-        }
-
-        return (int)frames;
+        return pulse_output_sync_write(stream, buffer, frames);
     }
 
     size_t samples = frames * (size_t)stream->channels;
@@ -886,6 +1031,15 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
     dsd_mutex_lock(&stream->mu);
 
     if (stream->stop) {
+        dsd_mutex_unlock(&stream->mu);
+        return -1;
+    }
+
+    /* The device is down: nothing queued now would play before the reopen, and stale audio after it is worse than a
+       gap. */
+    if (stream->recovery.down) {
+        stream->drops += samples;
+        set_error(stream->recovery.error);
         dsd_mutex_unlock(&stream->mu);
         return -1;
     }
@@ -977,7 +1131,7 @@ dsd_audio_close(dsd_audio_stream* stream) {
 
 int
 dsd_audio_drain(dsd_audio_stream* stream) {
-    if (!stream || !stream->handle) {
+    if (!stream) {
         return -1;
     }
 
@@ -987,6 +1141,9 @@ dsd_audio_drain(dsd_audio_stream* stream) {
     }
 
     if (!stream->use_async) {
+        if (!stream->handle) {
+            return -1;
+        }
         int err = 0;
         if (pa_simple_drain(stream->handle, &err) < 0) {
             set_error_pa(err);
@@ -996,6 +1153,11 @@ dsd_audio_drain(dsd_audio_stream* stream) {
     }
 
     dsd_mutex_lock(&stream->mu);
+    if (stream->recovery.down) {
+        /* Nothing is queued for a device that is down, and the pump may be busy reopening it. */
+        dsd_mutex_unlock(&stream->mu);
+        return -1;
+    }
     stream->drain_failed = 0;
     stream->drain_completed = 0;
     stream->drain_requested = 1;
@@ -1011,6 +1173,29 @@ dsd_audio_drain(dsd_audio_stream* stream) {
         return -1;
     }
 
+    return 0;
+}
+
+int
+dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!stream || stream->is_input) {
+        return -1;
+    }
+    if (stream->use_async) {
+        dsd_mutex_lock(&stream->mu);
+    }
+    out->failures = stream->recovery.failures;
+    out->recoveries = stream->recovery.recoveries;
+    out->down = stream->recovery.down;
+    DSD_STRNCPY(out->error, stream->recovery.error, sizeof(out->error) - 1);
+    out->error[sizeof(out->error) - 1] = '\0';
+    if (stream->use_async) {
+        dsd_mutex_unlock(&stream->mu);
+    }
     return 0;
 }
 

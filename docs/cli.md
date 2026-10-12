@@ -97,8 +97,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical). A WAV file's header rate holds for that file only:
   an input switch away from it (Input > Switch source in the terminal UI) opens the next file, UDP or TCP input at the
   `-s` rate again (Pulse opens at its own capture rate, as at startup).
-- The analog outputs always run at 48 kHz: the analog and source monitor (local audio and the UDP analog stream), the
-  `-6` raw WAV and EDACS analog voice. Audio input at another rate is converted, so it plays at the input's speed.
+- The analog outputs always run at 48 kHz: the analog and source monitor (local audio, the UDP analog stream, and
+  `-o -` in the analog monitor modes), the `-6` raw WAV and EDACS analog voice. Audio input at another rate is converted, so it plays at the input's speed.
   8, 9.6, 12, 16 and 24 kHz input reaches the decoder at 48 kHz already. Any other rate from 1 kHz to 768 kHz (44.1,
   22.05, 32, 96 kHz, ...) is converted on the way out, exactly for the usual rates and within 250 ppm for any other,
   while decoding runs at the input's own rate as before. At a rate outside that range the analog outputs stay silent
@@ -130,7 +130,11 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - Null (no audio): `-o null`
 - UDP audio out (raw PCM): `-o udp[:host:port]` (default 127.0.0.1:23456). See `docs/network-audio.md`.
 - M17 UDP/IP frame out: `-o m17udp[:host:port]` (default 127.0.0.1:17000)
-- stdout (raw decoded audio): `-o -` (see `docs/network-audio.md`)
+- stdout (raw decoded audio): `-o -` (see `docs/network-audio.md`). In the analog monitor modes (`-fA`, `-fM`) it
+  carries the monitor's 48 kHz mono audio. A reader that goes away (`-o - | head`) or a write that fails costs stdout
+  audio one logged error: decoding, recording (`-w`, `-P`) and trunk following carry on.
+- A local sound device that fails mid-session (a PulseAudio or PipeWire restart, a device error) is reopened behind the
+  scenes, with one line in the log when it fails and one when it plays again.
 
 ## Display & UI
 
@@ -226,6 +230,8 @@ Windows console runs:
   published under a name no other recording holds: a name already taken draws another number, so an earlier
   recording is never replaced. That holds outright where the filesystem offers a no-replace rename or hard links;
   on one with neither, the name is claimed with an empty file first, which another program can see for a moment.
+  A per-call WAV holds digital voice at the level and with the high-pass it plays with: the same file with or without
+  `-y`, with `-o null`, muted, or under any preset (issue #653).
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
   allow-list or Hold miss, or `record=off` keeps the call out of the per-call WAV, the static WAV and MBE capture,
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
@@ -346,9 +352,10 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
   (comma-separated); a CLI list replaces the config list.
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
 - `-q` Reverse mute: mute clear audio, play encrypted audio, whether or not a loaded key decrypts it. It applies to
-  the protocols whose encryption the decoder classifies, DMR, P25 (encrypted P25 without a key plays only while
-  encrypted calls are followed), NXDN and dPMR, in both output formats; YSF, D-STAR, X2-TDMA and ProVoice are not
-  affected. SDRTrunk JSON playback ignores it. WAV recordings and MBE capture (`-d`) follow what it mutes.
+  the protocols whose encryption the decoder classifies: DMR, P25 (encrypted P25 without a key plays only while
+  encrypted calls are followed), NXDN and dPMR, in both output formats. YSF, D-STAR, X2-TDMA and ProVoice are not
+  affected. SDRTrunk JSON playback ignores it. WAV recordings and MBE capture (`-d`) follow the same verdict.
+  Keystream exhaustion keeps a frame muted even under reverse mute.
 
 ## IQ Capture And Replay
 
@@ -396,7 +403,11 @@ Notes
 
 ## Levels & Audio
 
-- `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
+- `-g <num>` Digital output gain, the same in integer and `-y` float output and in the WAVs. `0` = auto: a peak
+  normalizer to about -0.8 dBFS over the last 0.5 s, at most x50, cutting at once on a louder peak and rising by at
+  most 5% per 20 ms, its level carried from call to call. `1`–`50` is a fixed multiplier on the vocoder's reference
+  level (`1` ≈ 2% of the range, `50` = 100%), saturating at full scale. Since issue #653 `-g N` under `-y` is this
+  fixed multiplier too, where it used to scale a float auto gain that kept adapting.
 - `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: an AGC brings analog voice to the
   level digital voice plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
   `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays at
@@ -405,15 +416,27 @@ Notes
   stepping below `1` goes back to auto. Since issue #518 a fixed `-n` plays RTL monitor audio about 9 dB louder than
   before, and up to 18 dB more where the old default filter (see `-v`) cut it.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
-- `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
-- `-8` Monitor the source audio (helpful when mixing analog/digital)
-- `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3)
-- `-y` Use experimental float audio output
+- `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto). When both slots carry audible voice, the
+  preferred slot plays alone, in both ears (with one-channel output, alone); auto plays both. It applies to DMR and P25
+  Phase 2, in integer and `-y` float output, and stays as set: decoding never changes it. A talkgroup hold prefers the
+  held slot.
+- `-8` Monitor the source audio (helpful when mixing analog/digital). It plays on a sound device or UDP (port + 2);
+  with `-o -` while decoding digital modes it is not written to stdout, which carries the decoded voice, and a warning
+  says so at startup.
+- `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3). A switched-off slot
+  is not played on any audio output nor written to the static `-w` WAV, a call held with a talkgroup hold included,
+  and stays off until you switch it on: neither a hold nor a return to a P25 control channel turns it back on.
+  Per-call WAVs (`-P`) and MBE capture (`-d`) have their own gates and do not follow the switches.
+- `-y` Write digital voice to stdout (`-o -`) and UDP as 32-bit float samples (`f32le`) instead of 16-bit integers.
+  The audio is the same as without `-y`: the same gain (`-g`), digital high-pass (`-v` 0x8), routing (a single call in
+  both ears, and at full level on one channel) and muting, and `-w` and `-P` record the same WAVs. Each float sample is
+  the 16-bit sample / 32768, so none is past full scale. A sound device plays 16-bit samples either way. Exceptions: M17
+  voice is still written as 16-bit samples and EDACS analog voice is not written to stdout.
 - P25 Phase 2 voice plays as each timeslot pair completes (every 60 ms of air time), in integer and `-y` float output
   alike: both slots side by side, every frame once, 18 frames per slot per 360 ms superframe. A slot whose call starts
   or ends mid-superframe is heard from its first frame to its last while the other slot plays on; a lost voice burst
   plays as silence in its place. One active slot plays in both ears; with one-channel output two slots are averaged.
-- `-a` Enable call alert beep (UI)
+- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output.
 
 ## Modes & Decoders (`-f`)
 
@@ -1364,8 +1387,11 @@ setting, shown apart from what is received, and it is off by default: then the o
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
 - Analog filter bitmap (advanced): `-v <hex>`, default `0x9`. `0x1` the analog monitor's voice band-pass: 300-3400 Hz,
   which takes every CTCSS tone at least 40 dB down on FM, and a DCS signal about 32 dB (a 200 Hz high-pass on AM); `0x2` a 960 Hz
-  low-pass and `0x4` a 960 Hz high-pass on the analog monitor; `0x8` the digital voice high-pass. `-v 0` plays the
-  demodulator's audio unfiltered.
+  low-pass and `0x4` a 960 Hz high-pass on the analog monitor; `0x8` the digital voice high-pass: a 2nd-order
+  Butterworth at 300 Hz (-3 dB at 300 Hz, about -19 dB at 100 Hz, within 0.05 dB of unity from 1 kHz up), run on each
+  slot's decoded frames before the gain, so every output that takes digital voice gets it, in both output formats;
+  each slot keeps its own filter state, which starts over at a new call or protocol. `-v 0` plays the demodulator's
+  audio unfiltered.
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
 - Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT). No effect on NXDN, which always requires
   CRC-verified content (see the NXDN note under "Modes & Decoders" above).
@@ -1790,6 +1816,13 @@ Out-of-range decimal keys are rejected without changing the installed key.
   `-H`/`-R` legacy menu entries) can disarm the keyloader and be overwritten by a keyed hop. The typed
   `KEY_DIRECT_SET`/`DECRYPTION_APPLY` frontend entry points instead update the global baseline beneath an
   active keyed row; the row keeps its effective keys. See [decryption scope](decryption-profiles.md).
+- Each key option applies only to the protocol whose voice it decrypts, so one decoder (the default AUTO preset, a
+  scan, or `-fa`) can carry keys for several systems: DMR privacy (`-b`, `-H` as a Hytera BP key, `-4`), the vendor
+  scramblers (`-!`, `-@`, `-5`, `-9`, `-A`, `-2`, `--dmr-baofeng-pc5`) and `--dmr-force-algid` act on DMR voice only;
+  the scrambler `-R` (and `-4 -R`) on NXDN and scrambled dPMR; P25 ALG IDs on P25 Phase 1 and 2 (and on DMR, which
+  carries them). Clear dPMR, P25 Phase 2 and YSF voice is never put through another protocol's key. The generic `-S`
+  keystream applies to DMR, P25 Phase 2 and clear dPMR voice. A P25 or DMR frame that would need keystream past what
+  was generated for it (a long call whose MI never refreshes) is muted instead of being played with a wrong keystream.
 - Force key over identifiers: `-4` (DMR BP/NXDN scrambler), `-0` (DMR RC4 when PI/LE missing),
   `--dmr-force-algid <hex>` (DMR ALGID when PI/LE missing; a fallback only — an ALG ID or KEY ID
   received over the air via PI header/LE always takes precedence; `-M` is reserved for M17 in DSD-neo).
@@ -1807,7 +1840,10 @@ Out-of-range decimal keys are rejected without changing the installed key.
   `-1` RC4/DES and `-R` scrambler keys, group files, force settings, CRC policy and conventional voice-gate intervals.
   See [scoped row options](csv-formats.md#scoped-row-options) for the supported switches and inheritance rules.
   The outer conventional command remains `-Y -C <file>`; `-Y` does not take a filename argument.
-- Disable DMR Late Entry IDs: `-3` (avoid false ENC)
+- Disable DMR Late Entry IDs: `-3` (avoid false ENC). It turns off the DMRA single-burst encryption identifiers and
+  reverse-channel parsing for the session; Kirisun and Hytera Enhanced signalling no longer turn them back on or off.
+  A Kirisun or Hytera Enhanced call changes late-entry handling for its own slot and call only: Kirisun reads its own
+  identifier (also under `-3`), and Hytera Enhanced skips DMRA late-entry MI collection.
 
 ## Tools & Extras
 

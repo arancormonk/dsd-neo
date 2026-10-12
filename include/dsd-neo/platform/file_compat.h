@@ -51,6 +51,17 @@ int dsd_fileno(FILE* fp);
 int dsd_isatty(int fd);
 
 /**
+ * @brief Disable text translation on an open descriptor used for raw bytes.
+ *
+ * Selects binary mode on Windows; POSIX descriptors already carry raw bytes.
+ * Flush any buffered stdio output before changing its descriptor's mode.
+ *
+ * @param fd    Open file descriptor.
+ * @return 0 on success, -1 on error with errno set.
+ */
+int dsd_set_binary_mode(int fd);
+
+/**
  * @brief Duplicate a file descriptor.
  *
  * @param oldfd     File descriptor to duplicate.
@@ -278,6 +289,33 @@ ssize_t dsd_read(int fd, void* buf, size_t count);
  * @return Number of bytes written, or -1 on error.
  */
 ssize_t dsd_write(int fd, const void* buf, size_t count);
+
+/** What dsd_write_frames() did with a buffer. */
+typedef enum {
+    DSD_WRITE_FRAMES_OK = 0,      /**< every byte was written */
+    DSD_WRITE_FRAMES_WOULD_BLOCK, /**< the descriptor would block at a frame boundary: the frames before it went out,
+                                       the rest of the buffer did not, and the stream is still frame-aligned */
+    DSD_WRITE_FRAMES_ERROR,       /**< a write failed (errno says why); the stream may end in the middle of a frame */
+} dsd_write_frames_status;
+
+/**
+ * @brief Write a buffer of whole sample frames to a file descriptor.
+ *
+ * Retries interrupted writes and continues after short counts. On a non-blocking descriptor that is full it never
+ * spins: at a frame boundary it returns DSD_WRITE_FRAMES_WOULD_BLOCK at once, and only when a short count left part of
+ * a frame written does it wait (a bounded time) for room to finish that frame. A write that returns 0 is an error
+ * (EIO). A reader that has gone away is an error (EPIPE) and never raises SIGPIPE: on POSIX the signal the write
+ * raises in the calling thread is blocked and consumed (macOS: the descriptor's no-SIGPIPE flag is set), leaving the
+ * process's signal dispositions and any SIGPIPE already pending alone.
+ *
+ * @param fd          File descriptor.
+ * @param buf         Data buffer.
+ * @param bytes       Bytes to write.
+ * @param frame_bytes Bytes per sample frame (0 is taken as 1).
+ * @param written     Optional; receives the bytes written.
+ * @return What happened; errno is set when the result is DSD_WRITE_FRAMES_ERROR.
+ */
+dsd_write_frames_status dsd_write_frames(int fd, const void* buf, size_t bytes, size_t frame_bytes, size_t* written);
 
 /**
  * @brief Get the null device path for this platform.

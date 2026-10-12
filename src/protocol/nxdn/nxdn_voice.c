@@ -22,7 +22,6 @@
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/nxdn/nxdn_voice.h>
 #include <stdint.h>
@@ -73,19 +72,12 @@ nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const
             }
         }
         if (dbuf_reliab != NULL) {
-            processMbeFrameSoft(opts, state, NULL, ambe_soft_fr, NULL);
+            processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_NXDN, NULL, ambe_soft_fr, NULL);
         } else {
-            processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+            processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_NXDN, NULL, ambe_fr, NULL);
         }
 
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-
-        if (opts->floating_point == 0) {
-            playSynthesizedVoiceMS(opts, state);
-        }
-        if (opts->floating_point == 1) {
-            playSynthesizedVoiceFM(opts, state);
-        }
+        playSynthesizedVoiceMS(opts, state);
     }
 
     if (opts->payload == 1) {

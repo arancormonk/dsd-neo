@@ -30,7 +30,7 @@ void dsd_beeper_emit(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, i
 
 /* Mono output verdict for the active slot 0 call, shared by the short mono path
  * and the legacy short output: the talkgroup gate plus the live P25 Phase 1
- * crypto and reverse-mute rule the float and stereo paths apply. 1 = muted. */
+ * crypto and reverse-mute rule the stereo path applies. 1 = muted. */
 int dsd_audio_mono_output_muted(const dsd_opts* opts, const dsd_state* state);
 
 /* Symbol replay pacing, shared by the startup open and the runtime input switch (dsd_audio_input_switch.c): a new

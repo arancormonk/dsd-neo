@@ -33,6 +33,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -2322,6 +2323,8 @@ test_dmr_service_options_state_isolated_per_target(void) {
     }
 
     seed_dmr_service_options(&state, 0x10U, 0x40U, 0x68U, 0x41U);
+    state.dmr_le_vendor[0] = DMR_LE_VENDOR_KIRISUN_ENC;
+    state.dmr_le_vendor[1] = DMR_LE_VENDOR_HYTERA_ENH;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
@@ -2338,6 +2341,12 @@ test_dmr_service_options_state_isolated_per_target(void) {
         test_rc = 1;
     }
     test_rc |= expect_dmr_service_options("restored target", &state, 0x10U, 0x40U, 0x68U, 0x41U);
+    // Vendor late-entry evidence belongs to the reception that ended when this target was left. Returning must not
+    // resurrect a stale Hytera MI gate or Kirisun SB gate from that target's metadata snapshot (issue #657).
+    if (state.dmr_le_vendor[0] != DMR_LE_VENDOR_NONE || state.dmr_le_vendor[1] != DMR_LE_VENDOR_NONE) {
+        DSD_FPRINTF(stderr, "restored target revived a previous call's vendor late-entry mode\n");
+        test_rc = 1;
+    }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -13288,6 +13297,8 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     g_forget_carrier_decoding_calls++;
     state->nxdn_part_of_frame = 0;
+    state->dmr_le_vendor[0] = DMR_LE_VENDOR_NONE;
+    state->dmr_le_vendor[1] = DMR_LE_VENDOR_NONE;
 }
 
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.

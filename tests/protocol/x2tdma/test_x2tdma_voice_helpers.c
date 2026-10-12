@@ -30,7 +30,7 @@ static int g_skip_calls;
 static int g_skip_total;
 static int g_mbe_calls;
 static int g_mbe_first_bit[32];
-static int g_play_calls[4];
+static int g_play_calls[2];
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at = -1;
@@ -94,7 +94,9 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 }
 
 void
-processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23], char ambe_fr[4][24],
+                char imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_X2TDMA);
     (void)opts;
     (void)state;
     (void)imbe_fr;
@@ -116,20 +118,6 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_play_calls[1]++;
-}
-
-void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    g_play_calls[2]++;
-}
-
-void
-playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    g_play_calls[3]++;
 }
 
 #include "../../../src/protocol/x2tdma/x2tdma_voice.c"
@@ -258,6 +246,7 @@ test_signaling_extracts_lc_mi_and_encryption_fields(void) {
     assert(strcmp(state.keyid, "________________") == 0);
 }
 
+/* Float output (-y) plays through the same mono mixer as 16-bit output (#652). */
 static void
 test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     static dsd_opts opts;
@@ -277,7 +266,7 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     x2tdma_process_voice_frames(&opts, &state, &ctx);
     assert(state.firstframe == 0);
     assert(g_mbe_calls == 1);
-    assert(g_play_calls[2] == 1);
+    assert(g_play_calls[0] == 1);
     assert(g_get_pos == 54);
 
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
@@ -287,7 +276,7 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     ctx.mutecurrentslot = 0;
     x2tdma_process_voice_frames(&opts, &state, &ctx);
     assert(g_mbe_calls == 3);
-    assert(g_play_calls[2] == 3);
+    assert(g_play_calls[0] == 3);
     assert(g_get_pos == 54);
 
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
@@ -296,7 +285,7 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     ctx.mutecurrentslot = 1;
     x2tdma_process_voice_frames(&opts, &state, &ctx);
     assert(g_mbe_calls == 0);
-    assert(g_play_calls[2] == 1);
+    assert(g_play_calls[0] == 1);
     assert(g_get_pos == 54);
 }
 
