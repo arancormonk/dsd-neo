@@ -35,7 +35,7 @@ void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     va_list ap;
     va_start(ap, format);
-    (void)vsnprintf(g_last_line, sizeof(g_last_line), format, ap);
+    (void)DSD_VSNPRINTF(g_last_line, sizeof(g_last_line), format, ap);
     va_end(ap);
     if (level == LOG_LEVEL_WARN) {
         g_warn_lines++;
