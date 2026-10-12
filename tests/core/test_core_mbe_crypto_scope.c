@@ -68,9 +68,7 @@ expect_int(const char* tag, long long got, long long want) {
 static void
 reset_state(int synctype, int slot) {
     dsd_state_ext_free_all(&g_state);
-    if (g_state.rc2_context != NULL) {
-        free(g_state.rc2_context);
-    }
+    free(g_state.rc2_context);
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     mbe_initMbeParms(&g_cur, &g_prev, &g_prev_enh);
