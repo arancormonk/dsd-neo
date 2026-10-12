@@ -726,35 +726,40 @@ test_fdma_crypto_verdict_formats(void) {
         {DSD_SYNC_DPMR_FS2_POS, 1, 1234, 1, 0, 1}, {DSD_SYNC_YSF_POS, 1, 0, 1, 0, 1},
     };
 
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
     int rc = 0;
     for (int floating = 0; floating <= 1; floating++) {
         for (int channels = 1; channels <= 2; channels++) {
             for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-                DSD_MEMSET(&opts, 0, sizeof(opts));
-                DSD_MEMSET(&state, 0, sizeof(state));
-                opts.audio_out = 1;
-                opts.audio_out_type = 8;
-                opts.slot1_on = 1;
-                opts.slot2_on = 1;
-                opts.floating_point = floating;
-                opts.pulse_digi_out_channels = channels;
-                opts.pulse_digi_rate_out = 8000;
-                opts.reverse_mute = (uint8_t)cases[i].reverse;
-                opts.dmr_mute_encL = cases[i].unmute ? 0 : 1;
-                state.synctype = cases[i].synctype;
-                state.nxdn_cipher_type = cases[i].cipher;
-                state.R = (unsigned long long)cases[i].key;
-                state.dmr_so = 0x40;
-                state.payload_algid = 0x21;
-                state.s_l[0] = 1234;
-                state.audio_out_idx = 160;
+                DSD_MEMSET(opts, 0, sizeof(*opts));
+                DSD_MEMSET(state, 0, sizeof(*state));
+                opts->audio_out = 1;
+                opts->audio_out_type = 8;
+                opts->slot1_on = 1;
+                opts->slot2_on = 1;
+                opts->floating_point = floating;
+                opts->pulse_digi_out_channels = channels;
+                opts->pulse_digi_rate_out = 8000;
+                opts->reverse_mute = (uint8_t)cases[i].reverse;
+                opts->dmr_mute_encL = cases[i].unmute ? 0 : 1;
+                state->synctype = cases[i].synctype;
+                state->nxdn_cipher_type = cases[i].cipher;
+                state->R = (unsigned long long)cases[i].key;
+                state->dmr_so = 0x40;
+                state->payload_algid = 0x21;
+                state->s_l[0] = 1234;
+                state->audio_out_idx = 160;
                 reset_sink_capture();
                 if (channels == 1) {
-                    playSynthesizedVoiceMS(&opts, &state);
+                    playSynthesizedVoiceMS(opts, state);
                 } else {
-                    playSynthesizedVoiceSS(&opts, &state);
+                    playSynthesizedVoiceSS(opts, state);
                 }
                 char tag[96];
                 DSD_SNPRINTF(tag, sizeof(tag), "fdma verdict case %zu format %d channels %d", i, floating, channels);
@@ -762,6 +767,8 @@ test_fdma_crypto_verdict_formats(void) {
             }
         }
     }
+    free(opts);
+    free(state);
     return rc;
 }
 
