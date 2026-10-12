@@ -1856,19 +1856,6 @@ no_carrier_apply_direct_cc_return(const dsd_opts* opts, dsd_state* state, long c
     return 1;
 }
 
-static void
-no_carrier_enable_p25_cc_slots(dsd_opts* opts) {
-    opts->slot1_on = 1;
-    opts->slot2_on = 1;
-}
-
-static void
-no_carrier_enable_p25_cc_slots_if_known(dsd_opts* opts, const dsd_state* state) {
-    if (state->p25_cc_is_tdma == 0 || state->p25_cc_is_tdma == 1) {
-        no_carrier_enable_p25_cc_slots(opts);
-    }
-}
-
 static int
 no_carrier_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
     int demod_rate = dsd_opts_current_input_timing_rate(opts);
@@ -1886,7 +1873,7 @@ no_carrier_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static void
-no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
+no_carrier_apply_p25_cc_symbolrate(const dsd_opts* opts, dsd_state* state) {
     int sym_rate = 0;
     if (state->p25_cc_is_tdma == 0) {
         sym_rate = 4800;
@@ -1899,7 +1886,6 @@ no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->sps_hunt_idx = sym_rate == 6000 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->sps_hunt_counter = 0;
-    no_carrier_enable_p25_cc_slots(opts);
 }
 
 static int
@@ -1961,16 +1947,19 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
         int p25_helper_attempted = 0;
         dsd_trunk_tune_result p25_helper_result = DSD_TRUNK_TUNE_RESULT_OK;
         int generic_helper_attempted = 0;
-        if (no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
-                                               &p25_helper_attempted, &p25_helper_result, &cc_return_request_id)) {
-            no_carrier_enable_p25_cc_slots_if_known(opts, state);
+        const int helper_returned =
+            no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
+                                               &p25_helper_attempted, &p25_helper_result, &cc_return_request_id);
+        const int helper_deferred =
+            !helper_returned && no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result);
+        if (helper_returned
+            || (!helper_deferred
+                && no_carrier_try_generic_gate_recovery(opts, state, cc, p25_return, clear_generic_p25_alias,
+                                                        &generic_helper_attempted, &cc_return_request_id))) {
             accepted_cc_return = 1;
-        } else if (no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result)) {
+        } else if (helper_deferred) {
             /* Another P25 transition owns the guard; leave the staged
              * voice state intact so the main loop can retry safely. */
-        } else if (no_carrier_try_generic_gate_recovery(opts, state, cc, p25_return, clear_generic_p25_alias,
-                                                        &generic_helper_attempted, &cc_return_request_id)) {
-            accepted_cc_return = 1;
         } else if (!generic_helper_attempted
                    && no_carrier_apply_direct_cc_return(opts, state, cc, p25_helper_attempted)) {
             no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
@@ -2161,6 +2150,8 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->dmr_fidR = 0;
     dmr_enc_class_reset(state, 0);
     dmr_enc_class_reset(state, 1);
+    dmr_le_vendor_reset(state, 0);
+    dmr_le_vendor_reset(state, 1);
     state->payload_mi = 0;
     state->payload_miR = 0;
     state->payload_mfid = 0;
@@ -2485,6 +2476,9 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     state->ysf_fich_confirmed = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
+    // The calls end at the boundary, and a vendor late-entry mode is its call's (issue #657).
+    dmr_le_vendor_reset(state, 0);
+    dmr_le_vendor_reset(state, 1);
 }
 
 /* With its codes and evidence, step 3 drops every multi-frame assembly the decoders keep in dsd_state that can publish
@@ -2675,10 +2669,12 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
 
 /* The no-carrier pass's part in the P25 Phase 2 playout (issue #651): the carrier is gone, so what the playout still
    holds plays now and its queues reset, under the talkgroup verdict the calls have while they are still active and
-   under the slot switches the user set. So it runs before this pass ends the calls or a return to the control channel
-   turns both slots on. The watchdog's release drains the playout too, under the tick guard, so this runs only under the
-   guard: a pass that finds it taken leaves the playout to the next pass (whose verdicts the calls' last ones taken
-   still hold), as the recovery tick does. Returns 0 when it left audio for the next pass.
+   under the slot switches the user set (which no return to the control channel rewrites, issue #657). So it runs
+   before this pass ends the calls, which a return to the control channel does. The watchdog's release drains the
+   playout too, under the tick guard, so this runs only under the guard: a pass that finds it taken leaves the playout
+   to the next pass (whose verdicts the calls' last ones taken still hold), as the recovery tick does. Returns 0 when it
+   left audio for the next pass.
+
 
    The voice chain's high-pass starts the next reception clear here too (issue #653), under the same guard: the
    watchdog's crypto expiry purges a slot's filter state under it. Its gain level carries on. */
@@ -2729,7 +2725,7 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
          * hop reason. A pending tune must not close them as sync loss first. */
         return;
     }
-    // A drain left to the next pass takes the return to the control channel with it: the return turns both slots on.
+    // A drain left to the next pass takes the return to the control channel with it: the return ends the calls.
     if (no_carrier_drain_playout(opts, state, guard_held)) {
         no_carrier_return_to_control_channel_if_needed(opts, state, now, guard_held);
     }

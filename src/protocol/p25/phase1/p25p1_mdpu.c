@@ -108,12 +108,12 @@ p25_mpdu_context_init(P25MpduContext* ctx) {
     ctx->err[1] = -2;
 }
 
+// Takes no options: the slot preference is the user's, and a control frame leaves it as set (issue #657).
 static void
-p25_mpdu_prepare_state(dsd_opts* opts, dsd_state* state) {
+p25_mpdu_prepare_state(dsd_state* state) {
     state->p25_p1_duid_mpdu++;
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
-    opts->slot_preference = 2;
     state->currentslot = 0;
 
     p25_status_accum_ensure_started(state);
@@ -693,7 +693,7 @@ p25_mpdu_dispatch_payload(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx)
 void
 processMPDU(dsd_opts* opts, dsd_state* state) {
     P25MpduContext ctx;
-    p25_mpdu_prepare_state(opts, state);
+    p25_mpdu_prepare_state(state);
     p25_mpdu_context_init(&ctx);
     const uint32_t carrier_seq = state->carrier_seq;
     p25_mpdu_collect_blocks(opts, state, &ctx);

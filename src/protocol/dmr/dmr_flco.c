@@ -200,10 +200,12 @@ dmr_flco_detect_kenwood_sc(dmr_flco_ctx* ctx, int crc_ok) {
     }
 }
 
+// A verified Kirisun LC sets its slot's late-entry mode for the call (issue #657: never the user's opts->dmr_le).
 static void
 dmr_flco_detect_kirisun_le(dmr_flco_ctx* ctx, int crc_ok) {
     if (crc_ok && ctx->fid == 0x0A) {
-        ctx->opts->dmr_le = ((ctx->so & 0x40U) != 0U) ? 3 : 0;
+        dmr_le_vendor_set(ctx->state, ctx->slot_idx,
+                          ((ctx->so & 0x40U) != 0U) ? DMR_LE_VENDOR_KIRISUN_ENC : DMR_LE_VENDOR_KIRISUN_CLEAR);
     }
 }
 
@@ -522,7 +524,7 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
             ctx->state->payload_miR = mi;
         }
         dmr_enc_class_force(ctx->state, ctx->slot, 1);
-        ctx->opts->dmr_le = 2;
+        dmr_le_vendor_set(ctx->state, ctx->slot, DMR_LE_VENDOR_HYTERA_ENH);
         *ctx->IrrecoverableErrors = 0;
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
@@ -590,6 +592,7 @@ dmr_flco_reset_slot_crypto(dmr_flco_ctx* ctx, uint8_t idx) {
     *live.keyid = 0;
     *live.mi = 0;
     dmr_enc_class_reset(ctx->state, idx);
+    dmr_le_vendor_reset(ctx->state, idx);
 }
 
 static void
@@ -771,7 +774,23 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         .priority = (uint8_t)(ctx->so & 0x03U),
         .has_service_metadata = 1U,
     };
-    (void)dsd_call_state_observe(ctx->state, &observation, dmr_flco_voice_boundary(ctx));
+    dsd_call_snapshot before;
+    const int was_active =
+        dsd_call_state_get(ctx->state, ctx->slot, &before) > 0 && before.phase == DSD_CALL_PHASE_ACTIVE;
+    const dsd_call_boundary boundary = dmr_flco_voice_boundary(ctx);
+    (void)dsd_call_state_observe(ctx->state, &observation, boundary);
+    // A new transmission replaced the slot's active call, whose terminator was missed, so the vendor late-entry mode
+    // was that call's (issue #657): a voice LC header after the call carried voice (or after the header repeat window),
+    // which dmr_flco_voice_boundary() reads as the next transmission even where it specializes an identity-less epoch
+    // (a Kirisun or Hytera Enhanced call whose own LCs publish no identity) instead of opening its own, or an LC naming
+    // another call, which forks the epoch. Header repeats and embedded LCs of the same call keep the mode, and so does
+    // evidence decoded before any call was active (a PI after a lost voice LC header).
+    dsd_call_snapshot after;
+    if (was_active
+        && (boundary == DSD_CALL_BOUNDARY_BEGIN
+            || (dsd_call_state_get(ctx->state, ctx->slot, &after) > 0 && after.epoch != before.epoch))) {
+        dmr_le_vendor_reset(ctx->state, ctx->slot);
+    }
     dmr_flco_publish_crypto(ctx);
     dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
 }
@@ -787,13 +806,15 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
 // healed. The epoch tie plus the all-cleared gate mean a stale stash can never overwrite
 // fresher signaling or leak into a later call.
 static int
-dmr_flco_slot_crypto_is_clear(const dmr_flco_slot_crypto* live) {
-    return *live->fid == 0U && *live->so == 0U && *live->algid == 0 && *live->keyid == 0 && *live->mi == 0ULL;
+dmr_flco_slot_crypto_is_clear(const dsd_state* state, uint8_t idx, const dmr_flco_slot_crypto* live) {
+    return *live->fid == 0U && *live->so == 0U && *live->algid == 0 && *live->keyid == 0 && *live->mi == 0ULL
+           && state->dmr_le_vendor[idx] == DMR_LE_VENDOR_NONE;
 }
 
 // The stash holds only what the canonical snapshot cannot supply: the FID and service options
 // the Basic Privacy gates require, which the snapshot never carried, and the MI as the
-// superframe machinery last advanced it, which the snapshot's copy can lag. The ALGID and key id
+// superframe machinery last advanced it, which the snapshot's copy can lag, and the slot's vendor
+// late-entry mode (issue #657), which is call state the snapshot never carried. The ALGID and key id
 // are deliberately not duplicated here -- the heal reads them back from the `previous` snapshot
 // the canonical layer hands it, so there is one source of truth for them.
 static void
@@ -801,12 +822,13 @@ dmr_flco_stash_slot_crypto(dsd_state* state, uint8_t slot, uint64_t epoch) {
     const uint8_t idx = slot != 0U ? 1U : 0U;
     const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(state, idx);
     state->dmr_heal_valid[idx] = 0U;
-    if (dmr_flco_slot_crypto_is_clear(&live)) {
+    if (dmr_flco_slot_crypto_is_clear(state, idx, &live)) {
         return;
     }
     state->dmr_heal_fid[idx] = *live.fid;
     state->dmr_heal_so[idx] = *live.so;
     state->dmr_heal_mi[idx] = *live.mi;
+    state->dmr_heal_le_vendor[idx] = state->dmr_le_vendor[idx];
     state->dmr_heal_epoch[idx] = epoch;
     state->dmr_heal_valid[idx] = 1U;
 }
@@ -824,7 +846,7 @@ dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* p
     // Only into a slot whose live fields are entirely cleared -- the post-reset shape -- so
     // fresher signaling (a header that decoded between the reset and the heal) never loses.
     const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(state, idx);
-    if (!dmr_flco_slot_crypto_is_clear(&live)) {
+    if (!dmr_flco_slot_crypto_is_clear(state, idx, &live)) {
         return;
     }
     *live.fid = state->dmr_heal_fid[idx];
@@ -832,6 +854,7 @@ dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* p
     *live.algid = (int)previous->algid;
     *live.keyid = (int)previous->kid;
     *live.mi = state->dmr_heal_mi[idx];
+    state->dmr_le_vendor[idx] = state->dmr_heal_le_vendor[idx];
     // The stash held live, already-corroborated signaling; restoring it re-establishes the
     // classification so the resumed transmission is not re-proved from scratch.
     dmr_enc_class_force(state, idx, (*live.so & 0x40U) != 0U);

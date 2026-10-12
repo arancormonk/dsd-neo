@@ -247,6 +247,7 @@ setup(int floating, int channels) {
     g_opts.pulse_digi_out_channels = channels;
     g_opts.slot1_on = 1;
     g_opts.slot2_on = 1;
+    g_opts.slot_preference = 2; // Auto: both audible slots play side by side
     g_opts.audio_gain = 0;
     g_state.aout_gain = 25.0f;
     g_state.aout_gainR = 25.0f;

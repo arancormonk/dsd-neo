@@ -31,10 +31,10 @@ DSD_AUDIO2_INTERNAL void dsd_output_s16_blocks(dsd_opts* opts, dsd_state* state,
 DSD_AUDIO2_INTERNAL void dsd_dmr_apply_mono_slot_gate(const dsd_opts* opts, const dsd_state* state, int* encL,
                                                       int* encR);
 DSD_AUDIO2_INTERNAL void dsd_dmr_ss3_init_enc_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR);
-DSD_AUDIO2_INTERNAL void dsd_dmr_apply_tg_hold_and_slot_preference_ss3(dsd_opts* opts, const dsd_state* state,
-                                                                       unsigned long TGL, unsigned long TGR, int* encL,
-                                                                       int* encR);
-DSD_AUDIO2_INTERNAL void dsd_dmr_apply_stereo_output_policy_ss3(const dsd_opts* opts, dsd_state* state, int encL,
-                                                                int encR);
+DSD_AUDIO2_INTERNAL int dsd_tdma_effective_slot_preference(const dsd_opts* opts, int held_slot);
+DSD_AUDIO2_INTERNAL int dsd_dmr_apply_tg_hold_ss3(const dsd_opts* opts, const dsd_state* state, unsigned long TGL,
+                                                  unsigned long TGR, int* encL, int* encR);
+DSD_AUDIO2_INTERNAL void dsd_dmr_apply_stereo_output_policy_ss3(const dsd_opts* opts, dsd_state* state, int pref,
+                                                                int encL, int encR);
 
 #endif // DSD_NEO_SRC_CORE_AUDIO_DSD_AUDIO2_INTERNAL_H

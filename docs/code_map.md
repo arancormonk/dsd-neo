@@ -883,17 +883,25 @@ suite runs under this compiler.
   `currentslot` to 0, since these paths read it. EDACS analog voice applies the talkgroup gate at its own output.
   M17 is outside talkgroup policy (callsign addresses). Writers outside the mixers follow the mixers' output rule
   (`dsd_output_*_block()`): the mute (`audio_out` 0, which leaves the output open) silences the local stream, UDP and
-  the raw fd alike, and EDACS analog and M17 Codec2 voice also stop while slot 1 is switched off. The P25 Phase 2
-  playout reads the slot switches before it routes, so a muted companion never mirrors a switched-off slot into both
-  channels. The DMR stereo mix (SS3, in both output formats) starts each slot from the
-  vocoder's verdict, `dmr_encL/R` as `mbe_post_left/right_audio()` leave it: set when the slot is encrypted and no
-  loaded key decrypts it (a mapped Vertex keystream decrypts), cleared under forced clear (Baofeng AP, CSI EE, Kenwood
-  scrambler, `dsd_key_dmr_forced_clear()`), flipped by reverse mute (`-q`). The encrypted-audio mute
-  flag `dmr_mute_encL/R` is 0 after the user's toggle of all mutes, after any key load
-  (`dsd_key_apply_mute_policy()`, or a scan row's or trunk-scan target's direct keys through
-  `scan_option_apply_mute_dmr()`) and after the vocoder's talkgroup key autoload or AES keystream: the vocoder then
-  stages a flagged slot, but SS3 keeps a flagged slot muted unless a
-  talkgroup hold unmutes it, and then plays the short samples the vocoder staged, as it always has. A slot the
+  the raw fd alike, and EDACS analog and M17 Codec2 voice also stop while slot 1 is switched off. Every mix applies the
+  slot switches last, after the talkgroup gate and a hold, so a held call on a switched-off slot stays silent (SS, SS3
+  and the P25 Phase 2 playout, in either output format). The P25 Phase 2 playout reads the slot switches before it
+  routes, so a muted companion never mirrors a switched-off slot into both channels. Decoding reads the user's slot
+  switches, slot preference, encrypted-audio mute options (`dmr_mute_encL/R`) and DMR late-entry setting (`dmr_le`)
+  and never writes them (issue #657): what the user set is what the menu, the API and the next frame see. The slot
+  preference is applied as a tie-break in both formats: with both slots audible, the preferred slot fills both
+  channels while it carries voice (DMR: `dsd_dmr_preferred_slot_fills_both()`, the slot a hold names standing in for
+  the preference; P25 Phase 2: a decoded frame of the preferred slot, never fill). The DMR stereo mix (SS3, in both
+  formats) starts each slot from the vocoder's verdict, `dmr_encL/R` as `mbe_post_left/right_audio()` leave it: set when
+  the slot is encrypted and no loaded key decrypts it (a mapped Vertex keystream decrypts), cleared under forced clear
+  (Baofeng AP, CSI EE, Kenwood scrambler, `dsd_key_dmr_forced_clear()`), flipped by reverse mute (`-q`). The
+  encrypted-audio mute, `dsd_dmr_slot_mute_enc()` (`<dsd-neo/core/dmr_enc_mute.h>`), reads the user's `dmr_mute_encL/R`,
+  which is 0 after the user's toggle of all mutes and after any key load (`dsd_key_apply_mute_policy()`, or a scan
+  row's or trunk-scan target's direct keys through `scan_option_apply_mute_dmr()`), and 1 under `-q`, where the flipped
+  flag alone decides. The vocoder's talkgroup key autoload and AES/stream keystream turn it off for the frame they
+  decrypt only (`mbe_frame_ctx_t::key_unmute`), so a key that decrypted one call never unmutes the next. While it is 0
+  the vocoder stages a flagged slot, but SS3 keeps that slot muted unless a talkgroup hold unmutes it, and then plays
+  the short samples the vocoder staged. The per-call WAV gate and MBE capture read the same rule. A slot the
   vocoder mutes (flagged with the flag on, or a DMR mono slot not playing) stages silence in `s_l`/`s_r`, so no mix
   replays an earlier frame; a talkgroup hold that unmutes such a slot plays that silence. MBE capture saves a frame
   after the post stage has classified its slots and before it stages them (`mbe_post_{left,right}_classify()`,
@@ -971,12 +979,13 @@ suite runs under this compiler.
     call (its epoch and policy evaluation alike): the no-carrier pass may end the calls on the decoder thread while the
     watchdog holds the guard, and a call ended in between keeps the verdict last taken for it. A new call on a slot
     first hands the previous call's verdict to the frames that call still has queued
-    (`dsd_p25p2_playout_entry::live`). The slot switches are read at emission; both off mutes everything, a hold
-    included.
+    (`dsd_p25p2_playout_entry::live`). The slot switches are read at emission and never written: a switched-off slot
+    stays silent, a hold included (issue #657).
   - Output. Routing comes from content: two audible slots play as stereo, one plays in both ears; one-channel output
-    averages two (`audio_mix_mono_from_slots_s16()`) and plays one alone. The playout filters nothing: the
-    vocoder's voice chain high-passed and gained each frame on its slot before it was queued; the static WAV records
-    each played stereo block,
+    averages two (`audio_mix_mono_from_slots_s16()`) and plays one alone. With a slot preference set, a block in
+    which both slots are audible and the preferred slot's frame is decoded media (`fresh`, never fill) plays that
+    slot alone, in both ears; the static WAV follows. The playout filters nothing: the vocoder's voice chain
+    high-passed and gained each frame on its slot before it was queued; the static WAV records each played stereo block,
     silent in a channel whose source frame is not recordable, and skips a block with none. At an output rate other
     than 8 kHz nothing is written, but the queues still empty. Every emission ends with the housekeeping SS18 and FS4
     used to do: `dsd_audio_maybe_reset_output_ring_left/right()` and zeroed `audio_out_idx/R`, since
@@ -1005,14 +1014,14 @@ suite runs under this compiler.
     same in either output format. The jitter ring that once stood in for activity, with `--p25-ring-hold`, is gone.
   - Serialization. Every entry point runs on the decoder thread inside `processFrame()`, which holds the P25 SM tick
     guard, or in SM and engine code holding that guard. The no-carrier pass takes the calls' verdicts, drains and resets
-    it under the guard, taken when free, before it ends the calls or a return to the control channel turns both slots
-    on (`no_carrier_drain_playout()`): a pass that finds the guard taken leaves the playout to the next pass, and the
-    return to the control channel with it while the playout still holds audio
-    (`dsd_p25p2_playout_holds_audio()`, readable from any thread). Frame sync's no-sync release
-    (`p25_sm_release_from_frame_sync()`, outside `processFrame()`) takes the guard the same way, or leaves the release
-    to the next no-sync pass. Commands that change what the playout reads (a call's verdict, the slot switches and
-    the output buffers a switched-off slot rewinds: `command_feeds_playout()`) apply under the guard. The playout lives
-    in `dsd_state` outside the ranges UI snapshots copy.
+    it under the guard, taken when free, before it ends the calls, which a return to the control channel does
+    (`no_carrier_drain_playout()`; the return leaves the slot switches as the user set them, issue #657): a pass
+    that finds the guard taken leaves the playout to the next pass, and the return to the control channel with it
+    while the playout still holds audio (`dsd_p25p2_playout_holds_audio()`, readable from any thread). Frame sync's
+    no-sync release (`p25_sm_release_from_frame_sync()`, outside `processFrame()`) takes the guard the same way, or
+    leaves the release to the next no-sync pass. Commands that change what the playout reads (a call's verdict, the
+    slot switches and the output buffers a switched-off slot rewinds, the slot preference: `command_feeds_playout()`)
+    apply under the guard. The playout lives in `dsd_state` outside the ranges UI snapshots copy.
   - Left to its issue: crypto-mute verdicts (#655).
   Tests: `CORE_P25P2_PLAYOUT`, `P25_P2_VOICE_OUTPUT`, `P25_P2_MIXER_GATE`.
 - Invariant (audible-audio stamp, `<dsd-neo/core/audio_activity.h>`, `src/core/audio/audio_activity.c`, issue #574): one
@@ -4044,6 +4053,21 @@ Private per-protocol modules worth knowing about:
 
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it.
+- `src/protocol/dmr/dmr_enc_class.c` — per-slot privacy-bit hysteresis, and each slot's vendor late-entry mode
+  (`dsd_state::dmr_le_vendor[]`, `DMR_LE_VENDOR_*` in `<dsd-neo/protocol/dmr/dmr.h>`, issue #657). A CRC-verified
+  Kirisun PI or LC, or a checksum-verified Hytera Enhanced PI or LC, sets the slot's mode for its call; it is cleared
+  with the slot's crypto at the terminator (stashed and restored by the unverified-terminator heal), by a verified DMRA
+  PI or a data header, at the carrier boundary, on a retune and in the no-carrier reset. A DMRA PI supersedes vendor
+  evidence even when a missed terminator or voice header hid the call boundary. Trunk-scan snapshots carry the mode
+  for failed-switch rollback, but each new target visit clears it instead of restoring a previous call's mode.
+  `dmr_flco_publish_voice()` also clears it when a new transmission replaces the slot's active call: a voice LC header
+  after that call carried voice (the BEGIN `dmr_flco_voice_boundary()` returns), which may specialize the identity-less
+  epoch a Kirisun or Hytera Enhanced call runs on (their own LCs publish no identity) rather than open a new one, or an
+  LC that forks the epoch. Header repeats, the same call's embedded LCs and a reacquired epoch keep it, and so does
+  evidence decoded before any call was active. `dmr_le.c` combines it with the user's `-3` setting (`opts->dmr_le`, 0 or
+  1, never written by decoding): Kirisun's SB identifier is read for an encrypted Kirisun call whatever `-3` says;
+  standard SB/RC parsing needs the user's setting on and no vendor mode on the slot; `dmr_late_entry_mi_fragment()`
+  skips a Hytera Enhanced call's slot.
 - `src/protocol/nxdn/nxdn_confirm.{c,h}` — its NXDN counterpart, and for the same reason: the 10-symbol sync word and
   one-parity-bit LICH ahead of it are weak enough that receiver noise clears both. Channel decoders report their CRC
   verdicts to it, and `nxdn_frame.c` consults it before refreshing the scan hold or synthesizing voice, as

@@ -536,11 +536,10 @@ update_dmr_bs_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+// dmr_late_entry_mi_fragment() skips a slot whose call is Hytera Enhanced (issue #657).
 static void
-collect_dmr_bs_late_entry_if_needed(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
-    if (opts->dmr_le != 2) {
-        dmr_late_entry_mi_fragment(opts, state, current_dmr_bs_vc(ctx) % 7, ctx->m1, ctx->m2, ctx->m3);
-    }
+collect_dmr_bs_late_entry(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
+    dmr_late_entry_mi_fragment(opts, state, current_dmr_bs_vc(ctx) % 7, ctx->m1, ctx->m2, ctx->m3);
 }
 
 static dmr_bs_action
@@ -587,7 +586,7 @@ process_dmr_bs_voice_burst(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     }
 
     run_dmr_bs_slot_vc6_post_voice(opts, state, ctx);
-    collect_dmr_bs_late_entry_if_needed(opts, state, ctx);
+    collect_dmr_bs_late_entry(opts, state, ctx);
     increment_dmr_bs_slot_vc(ctx);
     update_dmr_bs_sync_times_if_tuned(opts, state);
 
@@ -767,9 +766,7 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
 
     process_dmr_bs_three_voice_frames(opts, state, ctx->internalslot, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
 
-    if (opts->dmr_le != 2) {
-        dmr_late_entry_mi_fragment(opts, state, 1, ctx->m1, ctx->m2, ctx->m3);
-    }
+    dmr_late_entry_mi_fragment(opts, state, 1, ctx->m1, ctx->m2, ctx->m3);
 
     (void)dmr_cach(opts, state, ctx->cachdata);
     if (opts->payload == 0) {

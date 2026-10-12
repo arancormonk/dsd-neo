@@ -524,7 +524,6 @@ test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle(void) {
     opts.pulse_digi_out_channels = 2;
     opts.use_dsp_output = 1;
     opts.dmr_debug_burst = 1;
-    opts.dmr_le = 2;
     state.dmr_color_code = 5;
 
     dmrMSBootstrap(&opts, &state);
@@ -532,7 +531,9 @@ test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle(void) {
     assert(g_voice_sync_calls == 6);
     assert(g_process_mbe_calls == 18);
     assert(g_play_ss3_calls == 6);
-    assert(g_late_entry_calls == 0);
+    // Every voice burst hands its fragments over; dmr_late_entry_mi_fragment() itself skips a Hytera Enhanced call
+    // (issue #657), so the MS path no longer reads a session-wide setting for it.
+    assert(g_late_entry_calls == 6);
     assert(g_debug_format_calls == 1);
     assert(g_fopen_private_calls == 6);
     assert(g_skip_calls == 6);
@@ -555,7 +556,6 @@ test_ms_bootstrap_plays_short_on_one_channel(void) {
 
     opts.floating_point = 0;
     opts.pulse_digi_out_channels = 1;
-    opts.dmr_le = 2;
 
     dmrMSBootstrap(&opts, &state);
 

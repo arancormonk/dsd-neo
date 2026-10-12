@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dmr_enc_mute.h>
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
@@ -562,7 +563,7 @@ dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state,
     }
 
     enc = (slot == 1) ? state->dmr_encR : state->dmr_encL;
-    dmr_unmute_slot = (slot == 1) ? (opts->dmr_mute_encR == 0) : (opts->dmr_mute_encL == 0);
+    dmr_unmute_slot = !dsd_dmr_slot_mute_enc(opts, slot);
     // The P25 unmute override is not a DMR control: DMR audio answers to its slot
     // flags alone, and so does its recording.
     const int p25_unmute = opts->unmute_encrypted_p25 == 1 && !DSD_SYNC_IS_DMR(state->synctype);

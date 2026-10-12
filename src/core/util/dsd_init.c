@@ -877,6 +877,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->dmr_soR = 0;
     state->dmr_fid = 0;
     state->dmr_fidR = 0;
+    state->dmr_le_vendor[0] = state->dmr_le_vendor[1] = 0; // DMR_LE_VENDOR_NONE
     state->dmr_flco = 0;
     state->dmr_flcoR = 0;
     state->dmr_ms_mode = 0;

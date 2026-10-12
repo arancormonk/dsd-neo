@@ -277,12 +277,9 @@ test_context_init_and_saturating_add(void) {
 
 static int
 test_prepare_state_resets_mpdu_frame_context(void) {
-    static dsd_opts opts;
     static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    opts.slot_preference = 1;
     state.p25_p1_duid_mpdu = 41;
     state.s_l4[0][0] = 11;
     state.s_r4[0][0] = 12;
@@ -298,13 +295,12 @@ test_prepare_state_resets_mpdu_frame_context(void) {
     (void)seed_active_voice_call(&state, 77U, 88U);
     reset_dispatch_counters();
 
-    p25_mpdu_prepare_state(&opts, &state);
+    p25_mpdu_prepare_state(&state);
 
     int rc = 0;
     rc |= expect_int("mpdu counter increment", (int)state.p25_p1_duid_mpdu, 42);
     rc |= expect_int("left 4v samples reset", state.s_l4[0][0], 0);
     rc |= expect_int("right 4v samples reset", state.s_r4[0][0], 0);
-    rc |= expect_int("slot preference set", opts.slot_preference, 2);
     rc |= expect_int("current slot reset", state.currentslot, 0);
     rc |= expect_int("status accumulator started", g_status_ensure_started_calls, 1);
     rc |= expect_active_voice_call("MPDU prepare preserves voice", &state, 77U, 88U);
@@ -812,6 +808,8 @@ test_process_mpdu_zero_block_header_orchestration(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    // Issue #657: a control frame leaves the user's slot preference as set.
+    opts.slot_preference = 1;
     DSD_MEMSET(g_soft_candidates, 0, sizeof(g_soft_candidates));
     DSD_MEMCPY(g_soft_candidates[0].bytes, header, sizeof(header));
     g_soft_candidate_count = 1;
@@ -826,6 +824,7 @@ test_process_mpdu_zero_block_header_orchestration(void) {
     processMPDU(&opts, &state);
 
     rc |= expect_int("process mpdu counter", (int)state.p25_p1_duid_mpdu, 1);
+    rc |= expect_int("process mpdu keeps the slot preference", opts.slot_preference, 1);
     rc |= expect_int("process used soft dibit reader", g_get_dibit_soft_calls, 101);
     rc |= expect_int("process avoided r12 fallback", g_r12_fallback_calls, 0);
     rc |= expect_int("process avoided r34 fallback", g_mbf34_fallback_calls, 0);

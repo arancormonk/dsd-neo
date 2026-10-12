@@ -29,9 +29,9 @@
  * edit mutes what was queued before it, also in the drain when the release leaves the channel. The current verdict is
  * the decode gate's decision for the call's latest burst, or the one a path that changes verdicts or ends the calls
  * took (dsd_p25p2_playout_note_policy()); emission only checks, cheaply, whether anything a waiting call's verdict
- * reads moved (dsd_p25p2_policy_key) and takes its verdict again then. The slot switches are read at emission. Both
- * output formats queue the slot's 16-bit frame after the filter and gain chain; float output (-y) only writes it as f32
- * (issue #652).
+ * reads moved (dsd_p25p2_policy_key) and takes its verdict again then. The slot switches and slot preference are
+ * read at emission, never written; a switched-off slot stays silent under a hold. Both output formats queue the
+ * slot's 16-bit frame after the filter and gain chain; float output (-y) only writes it as f32 (issue #652).
  */
 
 #include <dsd-neo/core/audio.h>
@@ -601,13 +601,11 @@ check_epoch(dsd_state* state, int slot) {
     }
 }
 
+// The slot switch mutes last, as in every mix: a hold lifts a talkgroup block, never a switched-off slot (issue #657).
 static int
 frame_audible(const dsd_opts* opts, int slot, const dsd_p25p2_playout_verdict* v) {
     const int slot_on = (slot == 0) ? (opts->slot1_on != 0) : (opts->slot2_on != 0);
-    if (opts->slot1_on == 0 && opts->slot2_on == 0) {
-        return 0;
-    }
-    return (v->hold || (!v->blocked && slot_on)) && v->crypto_ok;
+    return slot_on && (v->hold || !v->blocked) && v->crypto_ok;
 }
 
 // The mix's line in the --p25-sm-log stream: logged when the routing or a stream's state changes.
@@ -890,6 +888,16 @@ queue_barrier(dsd_state* state, int slot) {
     }
 }
 
+// The slot preference's tie-break (issue #657): with both slots audible, a decoded frame of the preferred slot plays in
+// both ears and the companion is not heard in that block. Fill and frames the vocoder left out never win it.
+static void
+apply_slot_preference(const dsd_opts* opts, dsd_p25p2_playout_entry* e[2], int audible[2]) {
+    const int pref = opts->slot_preference;
+    if (audible[0] && audible[1] && (pref == 0 || pref == 1) && e[pref]->fresh) {
+        audible[pref ^ 1] = 0;
+    }
+}
+
 // Pop one block from both slots and play it when audible. Returns whether it carried an audible fresh frame (#574).
 static int
 play_block(dsd_opts* opts, dsd_state* state, int output, int last_audible[2]) {
@@ -903,6 +911,7 @@ play_block(dsd_opts* opts, dsd_state* state, int output, int last_audible[2]) {
     if (!barrier_waits(&state->p25p2_playout, second, e[first])) {
         audible[second] = pop_frame(opts, state, second, &popped[second], &e[second]);
     }
+    apply_slot_preference(opts, e, audible);
     int fresh = 0;
     if (audible[0] || audible[1]) {
         last_audible[0] = audible[0];
