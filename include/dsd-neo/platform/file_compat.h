@@ -51,6 +51,17 @@ int dsd_fileno(FILE* fp);
 int dsd_isatty(int fd);
 
 /**
+ * @brief Disable text translation on an open descriptor used for raw bytes.
+ *
+ * Selects binary mode on Windows; POSIX descriptors already carry raw bytes.
+ * Flush any buffered stdio output before changing its descriptor's mode.
+ *
+ * @param fd    Open file descriptor.
+ * @return 0 on success, -1 on error with errno set.
+ */
+int dsd_set_binary_mode(int fd);
+
+/**
  * @brief Duplicate a file descriptor.
  *
  * @param oldfd     File descriptor to duplicate.

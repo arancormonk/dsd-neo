@@ -512,6 +512,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     Open raw bytes with a `b` mode: on Windows a text-mode stream writes every LF as CRLF. An `x` after a write mode
     (`"wbx"`, C11's) creates exclusively: an existing file fails with EEXIST and keeps its bytes (issue #661: MBE
     capture names)
+  - Binary descriptors: `dsd_set_binary_mode()` disables Windows text translation on an existing descriptor (a
+    validated no-op on POSIX). Engine setup uses it for `-o -` before emitting audio, so an inherited text-mode
+    stdout cannot expand sample bytes containing LF into CRLF. Tests: `ENGINE_RUN_SETUP`, `PLATFORM_FILE_COMPAT`
   - No-replace rename: `dsd_rename_noreplace()` never writes over an existing name (EEXIST, both files kept):
     `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS, else a hard link and an unlink (whose
     fallback, `dsd_rename_noreplace_by_link()` in `src/platform/file_compat_internal.h`, tests reach directly), and on
