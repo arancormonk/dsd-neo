@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -32,6 +33,33 @@ aur = module("update_aur_pffft")
 
 
 class PinTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bash"), "Linux analyzer job")
+    def test_cppcheck_source_override_needs_no_dsd_configure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            binaries = work / "bin"
+            binaries.mkdir()
+            args_log = work / "cppcheck-args"
+            for name, body in (("cppcheck", 'printf "%s\\n" "$@" > "$PFFFT_TEST_CPP_ARGS"\n'),
+                               ("cmake", "exit 91\n")):
+                program = binaries / name
+                program.write_text("#!/usr/bin/env bash\n" + body)
+                program.chmod(0o755)
+            source = work / "fft"
+            (source / "include/pffft").mkdir(parents=True)
+            (source / "include/pffft/pffft.h").touch()
+            (work / "src").mkdir()
+            (work / "src/example.c").write_text("int example(void) { return 0; }\n")
+            script = work / "cppcheck.sh"
+            shutil.copyfile(ROOT / "tools/cppcheck.sh", script)
+            result = subprocess.run(["bash", str(script), "--strict", "--", "src/example.c"], cwd=work,
+                                    env={**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                                         "DSD_PFFFT_SOURCE_DIR": str(source),
+                                         "DSD_ANALYSIS_BUILD_DIR": str(work / "unconfigured"),
+                                         "PFFFT_TEST_CPP_ARGS": str(args_log)}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(str(source / "include/pffft"), args_log.read_text().splitlines())
+
     def test_sbom_records_exact_source(self):
         pins = metadata.read_pins()
         sbom = metadata.add_spdx({"SPDXID": "SPDXRef-DOCUMENT", "packages": []}, pins)

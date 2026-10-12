@@ -168,6 +168,8 @@ source-layout, missing-path and checksum-error cases, including source archives.
 
 The only project header that includes PFFFT is `src/io/radio/rtl_fft_cache.h`.
 Analyzers exclude the resolved dependency location, including a source override.
+For cppcheck without a configured DSD build, set `DSD_PFFFT_SOURCE_DIR` to the
+pinned fork checkout; the CI cppcheck job acquires it with the pinned-Git helper.
 OSV scans the pinned commit explicitly; release SBOMs record its repository,
 revision and checksum before upload and attestation. Installed, Qt, Android and
 portable packages carry `pffft-LICENSE.txt` and `pffft-NOTICES.txt`, generated

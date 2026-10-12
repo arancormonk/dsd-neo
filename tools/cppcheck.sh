@@ -93,12 +93,15 @@ CPPCHECK_BUILD_DIR="${CPPCHECK_BUILD_DIR:-.cppcheck-build}"
 mkdir -p "$CPPCHECK_BUILD_DIR"
 
 PFFFT_BUILD_DIR="${DSD_ANALYSIS_BUILD_DIR:-build/dev-debug}"
-if [[ ! -f "$PFFFT_BUILD_DIR/CMakeCache.txt" ]]; then
-  cmake --preset dev-debug -B "$PFFFT_BUILD_DIR"
+PFFFT_SOURCE_DIR="${DSD_PFFFT_SOURCE_DIR:-}"
+if [[ -z "$PFFFT_SOURCE_DIR" ]]; then
+  if [[ ! -f "$PFFFT_BUILD_DIR/CMakeCache.txt" ]]; then
+    cmake --preset dev-debug -B "$PFFFT_BUILD_DIR"
+  fi
+  PFFFT_SOURCE_DIR=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$PFFFT_BUILD_DIR/CMakeCache.txt")
 fi
-PFFFT_SOURCE_DIR=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$PFFFT_BUILD_DIR/CMakeCache.txt")
 if [[ ! -f "$PFFFT_SOURCE_DIR/include/pffft/pffft.h" ]]; then
-  echo "Configure $PFFFT_BUILD_DIR with the pinned PFFFT source before running cppcheck." >&2
+  echo "Configure $PFFFT_BUILD_DIR or set DSD_PFFFT_SOURCE_DIR to the pinned PFFFT source before running cppcheck." >&2
   exit 1
 fi
 

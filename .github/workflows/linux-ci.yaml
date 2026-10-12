@@ -1673,6 +1673,9 @@ jobs:
         run: |
           bash tools/ci_arch_toolchain.sh bash -lc '
             set -euo pipefail
+            source tools/ci-dependency-pins.env
+            tools/fetch-pinned-git.sh https://github.com/arancormonk/pffft "$PFFFT_SHA" /tmp/dsd-pffft
+            export DSD_PFFFT_SOURCE_DIR=/tmp/dsd-pffft
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
               mapfile -t files < .ci/changed-files/cppcheck_sources.txt
               tools/cppcheck.sh --strict -- "${files[@]}"
