@@ -4930,13 +4930,17 @@ main thread only. The decision is pure Kotlin with no `android.*` import, run on
   left the screen off into `wakeRefused()`, and keeps one scheduled tick in step with the deadline. Its `stopped()` and
   `screenOff()` take the verdict supplier as `sample()` does, since either can judge held audio. `Effects.pulseWake()`
   answers with a `ScreenWake` (`ScreenWake.kt`, plain Kotlin): `WOKE`, `ALREADY_ON` or `REFUSED`. It decides which
-  screen-on is DSD-neo's own wake: only the first within `OWN_WAKE_SETTLE_MS` (2 s) of a pulse that answered `WOKE`. A
-  refused pulse leaves none, so the next screen-on is someone else's and disarms. `ALREADY_ON` is the screen turned on
+  screen-on is DSD-neo's own wake: the first after an outstanding pulse that answered `WOKE`, with no delivery-time
+  cutoff. Android can delay `SCREEN_ON` while the lock screen or main looper is busy; the former 2 s cutoff incorrectly
+  disarmed repeat wakes after a successful wake (issue #574 follow-up). A screen-off, unlock, Activity destruction or
+  session change cancels the pending claim. Screen-off clears it before applying the policy, so a new pulse for held
+  audio at that off keeps its own claim. A refused pulse leaves none, so the next screen-on is someone else's and
+  disarms. `ALREADY_ON` is the screen turned on
   before its broadcast reached DSD-neo, as when the user or a notification turns it on and a status tick with a call
   runs before the queued `SCREEN_ON`: the policy, which counts the screen on only by that broadcast, still asks for a
   wake. Nothing was pulsed, so the controller claims nothing and tells the policy nothing; the broadcast then disarms
-  as any foreign screen-on does (D7). An own pulse whose screen-on is still to come keeps the claim it made, dated from
-  that pulse. `state` is a read-only view of the policy, so nothing bypasses the effects.
+  as any foreign screen-on does (D7). An own pulse whose screen-on is still to come keeps its claim across such an
+  `ALREADY_ON` result. `state` is a read-only view of the policy, so nothing bypasses the effects.
 - `StatusFeed.kt`: the service's status poll as the policy sees it. Every running tick samples, even an unchanged
   record (a held lease is renewed per sample); a new session id starts a session; every path that stops the poll ends
   it, once. It keeps no stamp, so a synchronous sample the glue sends straight to the controller is never undone by a
