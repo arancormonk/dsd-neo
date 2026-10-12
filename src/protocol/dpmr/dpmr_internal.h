@@ -27,5 +27,6 @@ uint8_t dpmr_extract_cch_crc(const uint8_t cch_bits[48]);
 void dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, const dpmr_superframe_part* part);
 void dpmr_print_ids(const dsd_state* state);
 void dpmr_publish_call(dsd_opts* opts, dsd_state* state);
+void dpmr_resolve_half_scrambling(dsd_state* state);
 
 #endif /* DSD_NEO_SRC_PROTOCOL_DPMR_DPMR_INTERNAL_H */

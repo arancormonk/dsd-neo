@@ -6,6 +6,8 @@
 #include "dpmr_confirm.h"
 
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/dpmr/dpmr.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/state_fwd.h"
@@ -18,6 +20,15 @@ dpmr_confirm_reset(dsd_state* state) {
     state->dpmr_confirmed = 0;
     state->dpmr_confirm_weak_streak = 0;
     state->dpmr_confirm_frame_evidence = 0;
+    /* The scrambling a verified half signalled is the transmission's too: the next one proves its own. */
+    dpmr_scrambling_reset(state);
+}
+
+void
+dpmr_scrambling_reset(dsd_state* state) {
+    if (state != NULL) {
+        state->dpmr_scrambled = 0U;
+    }
 }
 
 void

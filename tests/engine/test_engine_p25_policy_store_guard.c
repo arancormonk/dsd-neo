@@ -306,6 +306,9 @@ submit_phase(void) {
         /* The slot switches the playout reads as it plays, with the output buffers a switched-off slot rewinds. */
         case 12: return dsd_app_command_submit(DSD_APP_CMD_SLOT1_TOGGLE, NULL, 0);
         case 13: return dsd_app_command_set_i32(DSD_APP_CMD_SLOTS_ONOFF_SET, 2);
+        /* The slot preference the playout's tie-break reads as it plays (issue #657). */
+        case 15: return dsd_app_command_submit(DSD_APP_CMD_SLOT_PREF_CYCLE, NULL, 0);
+        case 16: return dsd_app_command_set_i32(DSD_APP_CMD_SLOT_PREF_SET, 1);
         default: return -1;
     }
 }
@@ -380,6 +383,8 @@ check_postcondition(policy_view before, policy_view baseline) {
         case 10: return expect(g_opts.trunk_use_allow_list == 1 && !after.allowed, "allow list blocks unlisted target");
         case 12: return expect(g_opts.slot1_on == 0 && g_opts.slot2_on == 1, "slot 1 switched off");
         case 13: return expect(g_opts.slot1_on == 0 && g_opts.slot2_on == 1, "slot mask leaves slot 2 only");
+        case 15: return expect(g_opts.slot_preference == 0, "preference cycles from auto to slot 1");
+        case 16: return expect(g_opts.slot_preference == 1, "preference set to slot 2");
         default: return 1;
     }
 }
@@ -564,6 +569,9 @@ main(void) {
             rc |= run_phase();
         }
         rc |= test_wav_commands_take_the_guard();
+        for (g_phase = 15; g_phase <= 16; ++g_phase) {
+            rc |= run_phase();
+        }
     }
     (void)remove(g_block_csv);
     (void)remove(g_allow_csv);

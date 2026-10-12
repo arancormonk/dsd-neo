@@ -17,6 +17,9 @@
  * evidence applies at once, weak evidence applies tentatively and must repeat
  * before it can flip an established classification, and the lockout only acts
  * on an established encrypted classification.
+ *
+ * It also keeps each slot's vendor late-entry mode (dmr_le_vendor_set/_reset), which lives and resets with the
+ * slot's call crypto.
  */
 
 #include <dsd-neo/core/state.h>
@@ -90,6 +93,16 @@ dmr_enc_class_reset(dsd_state* state, uint8_t slot) {
     state->dmr_enc_class[idx] = DMR_ENC_CLASS_NONE;
     state->dmr_enc_class_est[idx] = 0U;
     state->dmr_enc_class_pending[idx] = DMR_ENC_CLASS_NONE;
+}
+
+void
+dmr_le_vendor_set(dsd_state* state, uint8_t slot, uint8_t mode) {
+    state->dmr_le_vendor[dmr_enc_class_slot_index(slot)] = mode;
+}
+
+void
+dmr_le_vendor_reset(dsd_state* state, uint8_t slot) {
+    state->dmr_le_vendor[dmr_enc_class_slot_index(slot)] = DMR_LE_VENDOR_NONE;
 }
 
 int

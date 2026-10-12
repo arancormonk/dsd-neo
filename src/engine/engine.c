@@ -6,6 +6,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/audio_input_switch.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
@@ -29,6 +30,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
@@ -952,7 +954,16 @@ dsd_engine_setup_parse_simple_outputs(dsd_opts* opts) {
         }
         opts->audio_out_fd = fd;
         opts->audio_out_type = 1;
+        dsd_audio_sink_fd_reset();
         LOG_INFO("NOTICE: Audio Out Device: -\n");
+        /* The analog monitor writes stdout only in the analog-only modes (dsd_audio_sink_monitor_takes_fd()); the M17
+           encoders' -8 baseband is a stdout writer of its own. */
+        if (opts->monitor_input_audio == 1 && !dsd_audio_sink_monitor_takes_fd(opts) && opts->m17encoder != 1
+            && opts->m17encoderbrt != 1 && opts->m17encoderpkt != 1) {
+            LOG_WARN("WARNING: -8 source monitoring is not written to stdout (-o -) while decoding digital modes; its "
+                     "48 kHz audio would interleave with the decoded voice. Use -o udp (port + 2) or a sound device "
+                     "for it.\n");
+        }
     }
     return 0;
 }
@@ -1235,14 +1246,6 @@ static void
 no_carrier_rotate_symbol_output_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->symbol_out_f && opts->symbol_out_file_is_auto == 1) {
         rotate_symbol_out_file(opts, state);
-    }
-}
-
-static void
-no_carrier_reset_floating_gain_if_needed(const dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 1) {
-        state->aout_gain = opts->audio_gain;
-        state->aout_gainR = opts->audio_gain;
     }
 }
 
@@ -1853,19 +1856,6 @@ no_carrier_apply_direct_cc_return(const dsd_opts* opts, dsd_state* state, long c
     return 1;
 }
 
-static void
-no_carrier_enable_p25_cc_slots(dsd_opts* opts) {
-    opts->slot1_on = 1;
-    opts->slot2_on = 1;
-}
-
-static void
-no_carrier_enable_p25_cc_slots_if_known(dsd_opts* opts, const dsd_state* state) {
-    if (state->p25_cc_is_tdma == 0 || state->p25_cc_is_tdma == 1) {
-        no_carrier_enable_p25_cc_slots(opts);
-    }
-}
-
 static int
 no_carrier_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
     int demod_rate = dsd_opts_current_input_timing_rate(opts);
@@ -1883,7 +1873,7 @@ no_carrier_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static void
-no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
+no_carrier_apply_p25_cc_symbolrate(const dsd_opts* opts, dsd_state* state) {
     int sym_rate = 0;
     if (state->p25_cc_is_tdma == 0) {
         sym_rate = 4800;
@@ -1896,7 +1886,6 @@ no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->sps_hunt_idx = sym_rate == 6000 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->sps_hunt_counter = 0;
-    no_carrier_enable_p25_cc_slots(opts);
 }
 
 static int
@@ -1958,16 +1947,19 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
         int p25_helper_attempted = 0;
         dsd_trunk_tune_result p25_helper_result = DSD_TRUNK_TUNE_RESULT_OK;
         int generic_helper_attempted = 0;
-        if (no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
-                                               &p25_helper_attempted, &p25_helper_result, &cc_return_request_id)) {
-            no_carrier_enable_p25_cc_slots_if_known(opts, state);
+        const int helper_returned =
+            no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
+                                               &p25_helper_attempted, &p25_helper_result, &cc_return_request_id);
+        const int helper_deferred =
+            !helper_returned && no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result);
+        if (helper_returned
+            || (!helper_deferred
+                && no_carrier_try_generic_gate_recovery(opts, state, cc, p25_return, clear_generic_p25_alias,
+                                                        &generic_helper_attempted, &cc_return_request_id))) {
             accepted_cc_return = 1;
-        } else if (no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result)) {
+        } else if (helper_deferred) {
             /* Another P25 transition owns the guard; leave the staged
              * voice state intact so the main loop can retry safely. */
-        } else if (no_carrier_try_generic_gate_recovery(opts, state, cc, p25_return, clear_generic_p25_alias,
-                                                        &generic_helper_attempted, &cc_return_request_id)) {
-            accepted_cc_return = 1;
         } else if (!generic_helper_attempted
                    && no_carrier_apply_direct_cc_return(opts, state, cc, p25_helper_attempted)) {
             no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
@@ -2158,6 +2150,8 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->dmr_fidR = 0;
     dmr_enc_class_reset(state, 0);
     dmr_enc_class_reset(state, 1);
+    dmr_le_vendor_reset(state, 0);
+    dmr_le_vendor_reset(state, 1);
     state->payload_mi = 0;
     state->payload_miR = 0;
     state->payload_mfid = 0;
@@ -2227,6 +2221,8 @@ no_carrier_reset_dmr_data_blocks(dsd_state* state) {
     state->data_ks_start[1] = 0;
     state->dmr_encL = 0;
     state->dmr_encR = 0;
+    state->mbe_slot_muted[0] = 0;
+    state->mbe_slot_muted[1] = 0;
     state->dmrburstL = 17;
     state->dmrburstR = 17;
     for (short i = 0; i < 4; i++) {
@@ -2378,7 +2374,8 @@ no_carrier_clear_stale_follow_state_if_needed(dsd_opts* opts, dsd_state* state, 
 static void
 no_carrier_reset_call_strings_and_dpmr(dsd_opts* opts, dsd_state* state) {
     opts->dPMR_next_part_of_superframe = 0;
-    DSD_MEMSET(state->dPMRVoiceFS2Frame.Version, 0, 8);
+    DSD_MEMSET(state->dPMRVoiceFS2Frame.Version, 0, sizeof(state->dPMRVoiceFS2Frame.Version));
+    DSD_MEMSET(state->dPMRVoiceFS2Frame.Scrambled, 0, sizeof(state->dPMRVoiceFS2Frame.Scrambled));
     /* Evidence is per-transmission: the next carrier proves itself again (issue #407). */
     dpmr_confirm_reset(state);
     state->dpmr_cch_evidence = 0;
@@ -2482,6 +2479,9 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     state->ysf_fich_confirmed = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
+    // The calls end at the boundary, and a vendor late-entry mode is its call's (issue #657).
+    dmr_le_vendor_reset(state, 0);
+    dmr_le_vendor_reset(state, 1);
 }
 
 /* With its codes and evidence, step 3 drops every multi-frame assembly the decoders keep in dsd_state that can publish
@@ -2550,6 +2550,8 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     carrier_boundary_forget_assemblies(opts, state);
     // A capture never spans carriers: what the next carrier carries starts its own (issue #661).
     no_carrier_close_mbe_outputs_if_needed(opts, state);
+    // Nor does the digital voice high-pass's memory (issue #653).
+    dsd_voice_hpf_reset(state, -1);
 }
 
 void
@@ -2655,10 +2657,6 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
 
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
     DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
-    DSD_MEMSET(state->f_l, 0.0f, sizeof(state->f_l));
-    DSD_MEMSET(state->f_r, 0.0f, sizeof(state->f_r));
-    DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
-    DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
     dsd_audio_dmr_mix_media_discard(0);
     dsd_audio_dmr_mix_media_discard(1);
     DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
@@ -2674,10 +2672,15 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
 
 /* The no-carrier pass's part in the P25 Phase 2 playout (issue #651): the carrier is gone, so what the playout still
    holds plays now and its queues reset, under the talkgroup verdict the calls have while they are still active and
-   under the slot switches the user set. So it runs before this pass ends the calls or a return to the control channel
-   turns both slots on. The watchdog's release drains the playout too, under the tick guard, so this runs only under the
-   guard: a pass that finds it taken leaves the playout to the next pass (whose verdicts the calls' last ones taken
-   still hold), as the recovery tick does. Returns 0 when it left audio for the next pass. */
+   under the slot switches the user set (which no return to the control channel rewrites, issue #657). So it runs
+   before this pass ends the calls, which a return to the control channel does. The watchdog's release drains the
+   playout too, under the tick guard, so this runs only under the guard: a pass that finds it taken leaves the playout
+   to the next pass (whose verdicts the calls' last ones taken still hold), as the recovery tick does. Returns 0 when it
+   left audio for the next pass.
+
+
+   The voice chain's high-pass starts the next reception clear here too (issue #653), under the same guard: the
+   watchdog's crypto expiry purges a slot's filter state under it. Its gain level carries on. */
 static int
 no_carrier_drain_playout(dsd_opts* opts, dsd_state* state, int guard_held) {
     if (!guard_held && !p25_sm_tick_guard_try_enter()) {
@@ -2685,6 +2688,7 @@ no_carrier_drain_playout(dsd_opts* opts, dsd_state* state, int guard_held) {
     }
     dsd_p25p2_playout_note_policy(opts, state);
     dsd_p25p2_flush_partial_audio(opts, state);
+    dsd_voice_hpf_reset(state, -1);
     if (!guard_held) {
         p25_sm_tick_guard_leave();
     }
@@ -2709,7 +2713,6 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
 #endif
 
     no_carrier_rotate_symbol_output_if_needed(opts, state);
-    no_carrier_reset_floating_gain_if_needed(opts, state);
 
 //only do it here on the tweaks
 #ifdef LIMAZULUTWEAKS
@@ -2725,7 +2728,7 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
          * hop reason. A pending tune must not close them as sync loss first. */
         return;
     }
-    // A drain left to the next pass takes the return to the control channel with it: the return turns both slots on.
+    // A drain left to the next pass takes the return to the control channel with it: the return ends the calls.
     if (no_carrier_drain_playout(opts, state, guard_held)) {
         no_carrier_return_to_control_channel_if_needed(opts, state, now, guard_held);
     }
@@ -2775,16 +2778,23 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     no_carrier_reset_m17_and_sample_buffers(state);
 }
 
+// One voice chain gain serves both output formats (issue #653), so its setting and starting level do too.
 static int
 live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 1) {
-        if (opts->audio_gain > 50.0f) {
-            opts->audio_gain = 50.0f;
-        }
-        if (opts->audio_gain < 0.0f) {
-            opts->audio_gain = 0.0f;
-        }
-    } else if (opts->audio_gain == 0) {
+    if (opts->audio_gain > 50.0f) {
+        opts->audio_gain = 50.0f;
+    }
+    if (opts->audio_gain < 0.0f) {
+        opts->audio_gain = 0.0f;
+    }
+    if (opts->audio_gainR > 50.0f) {
+        opts->audio_gainR = 50.0f;
+    }
+    if (opts->audio_gainR < 0.0f) {
+        opts->audio_gainR = 0.0f;
+    }
+    // Auto gain (0) starts at 15.
+    if (!(opts->audio_gain > 0.0f)) {
         state->aout_gain = 15.0f;
         state->aout_gainR = 15.0f;
     }
@@ -3328,6 +3338,24 @@ dsd_engine_run_install_hooks(void) {
     dsd_engine_p25_optional_hooks_install();
 }
 
+/* Embedded in a host process (Android service, GUI shell), the library must not steal the process signal dispositions;
+ * the host drives shutdown with dsd_request_shutdown() instead. */
+static void
+dsd_engine_install_signal_handlers(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (cfg && cfg->no_signal_handlers_enable) {
+        return;
+    }
+    signal(SIGINT, dsd_engine_signal_handler);
+    signal(SIGTERM, dsd_engine_signal_handler);
+#ifdef SIGPIPE
+    /* A reader that goes away (`-o - | head`, a closed log pipe, a dropped socket) costs that output an error return,
+       never the process: decoding, recording and trunk following carry on, and a shutdown still finalizes the WAV
+       headers (issue #659). No child process is ever started, so nothing inherits this. */
+    signal(SIGPIPE, SIG_IGN);
+#endif
+}
+
 static int
 dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
     if (!opts || !state || !early_exit) {
@@ -3374,16 +3402,7 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
         return 0;
     }
 
-    /* Embedded in a host process (Android service, GUI shell), the library must
-     * not steal the process signal dispositions; the host drives shutdown with
-     * dsd_request_shutdown() instead. */
-    {
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-        if (!cfg || !cfg->no_signal_handlers_enable) {
-            signal(SIGINT, dsd_engine_signal_handler);
-            signal(SIGTERM, dsd_engine_signal_handler);
-        }
-    }
+    dsd_engine_install_signal_handlers();
     dsd_engine_parse_m17_userdata(opts, state);
     dsd_engine_note_m17_encoder_squelch(opts, state);
     return 0;

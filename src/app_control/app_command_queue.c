@@ -5173,7 +5173,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        dmr_stereo is deliberately not in this pair, though the presets set it
        next to them. It selects two-slot decoding, not a stream shape: the DMR
        playback paths take the channel count separately and mix both slots down
-       when it is 1 (playSynthesizedVoiceSS3/FS3), so a mono session that switches
+       when it is 1 (playSynthesizedVoiceSS3), so a mono session that switches
        to DMR still hears both slots. Putting it back with the channel count would
        instead leave a DMR session on dmr_stereo == 0 with dmr_mono == 0, which no
        preset produces and which dmr_handle_voice() answers by running the MS
@@ -7691,14 +7691,15 @@ command_changes_call_verdict(const struct dsd_app_command* c) {
                    || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE));
 }
 
-/* A command that changes what the P25 Phase 2 playout reads as it plays: a call's verdict, or a slot switch (with the
-   vocoder output buffers a slot switched off rewinds). */
+/* A command that changes what the P25 Phase 2 playout reads as it plays: a call's verdict, a slot switch (with the
+   vocoder output buffers a slot switched off rewinds) or the slot preference. */
 static int
 command_feeds_playout(const struct dsd_app_command* c) {
     return command_changes_call_verdict(c)
            || (c
                && (c->id == DSD_APP_CMD_SLOT1_TOGGLE || c->id == DSD_APP_CMD_SLOT2_TOGGLE
-                   || c->id == DSD_APP_CMD_SLOTS_ONOFF_SET));
+                   || c->id == DSD_APP_CMD_SLOTS_ONOFF_SET || c->id == DSD_APP_CMD_SLOT_PREF_CYCLE
+                   || c->id == DSD_APP_CMD_SLOT_PREF_SET));
 }
 
 /* A command that opens, closes or publishes a per-call, static or raw WAV. The watchdog's release publishes and reopens

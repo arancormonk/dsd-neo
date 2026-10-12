@@ -52,7 +52,16 @@
 static bool Send(dsd_socket_t sockfd, const char* buf);
 static bool Recv(dsd_socket_t sockfd, char* buf);
 static void rigctl_peer_forget(dsd_socket_t sockfd);
-static void connect_apply_options(dsd_socket_t sockfd);
+/* A rigctl server that has gone away must cost a failed send, never a SIGPIPE: an embedded host that keeps the default
+   disposition (DSD_NEO_NO_SIGNAL_HANDLERS) would die of it. Linux takes the flag per send; macOS/BSD use the socket's
+   SO_NOSIGPIPE option in connect_apply_options(), and Windows has no such signal. */
+#ifdef MSG_NOSIGNAL
+#define DSD_RIGCTL_SEND_FLAGS MSG_NOSIGNAL
+#else
+#define DSD_RIGCTL_SEND_FLAGS 0
+#endif
+
+static int connect_apply_options(dsd_socket_t sockfd);
 static void connect_note_address(const char* host, int port, const struct sockaddr_in* addr);
 
 /**
@@ -92,14 +101,27 @@ Connect(char* hostname, int portno) {
         return DSD_INVALID_SOCKET;
     }
 
-    connect_apply_options(sockfd);
+    // cppcheck-suppress knownConditionTrueFalse -- SO_NOSIGPIPE setup can fail on macOS/BSD only.
+    if (connect_apply_options(sockfd) != 0) {
+        dsd_socket_close(sockfd);
+        return DSD_INVALID_SOCKET;
+    }
     connect_note_address(hostname, portno, &serveraddr);
     return sockfd;
 }
 
 /* The receive timeout and options every connection Connect() and ConnectBounded() make runs with. */
-static void
+static int
 connect_apply_options(dsd_socket_t sockfd) {
+#ifdef SO_NOSIGPIPE
+    /* macOS has no MSG_NOSIGNAL: protect this socket without changing the embedded host's signal disposition. A
+       connection that cannot be protected must not reach Send(). */
+    const int no_sigpipe = 1;
+    if (dsd_socket_setsockopt(sockfd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0) {
+        LOG_ERROR("ERROR disabling SIGPIPE on control socket\n");
+        return -1;
+    }
+#endif
     /* Apply small receive timeout so control I/O can't wedge the app. Default 1500ms. */
     {
         int to_ms = 1500;
@@ -121,6 +143,7 @@ connect_apply_options(dsd_socket_t sockfd) {
 
     /* A new connection on the number of a socket closed before it is a peer nothing was asked of. */
     rigctl_peer_forget(sockfd);
+    return 0;
 }
 
 /* An address a connection was made to (issue #634). */
@@ -198,7 +221,11 @@ ConnectBounded(const char* hostname, int portno, int resolve, dsd_socket_cancel_
         dsd_socket_close(sockfd);
         return DSD_INVALID_SOCKET;
     }
-    connect_apply_options(sockfd);
+    // cppcheck-suppress knownConditionTrueFalse -- SO_NOSIGPIPE setup can fail on macOS/BSD only.
+    if (connect_apply_options(sockfd) != 0) {
+        dsd_socket_close(sockfd);
+        return DSD_INVALID_SOCKET;
+    }
     connect_note_address(hostname, portno, &serveraddr);
     return sockfd;
 }
@@ -218,7 +245,7 @@ Send(dsd_socket_t sockfd, const char* buf) {
         return false;
     }
     const size_t len = strlen(buf);
-    const int n = dsd_socket_send(sockfd, buf, len, 0);
+    const int n = dsd_socket_send(sockfd, buf, len, DSD_RIGCTL_SEND_FLAGS);
     return n >= 0 && (size_t)n == len;
 }
 

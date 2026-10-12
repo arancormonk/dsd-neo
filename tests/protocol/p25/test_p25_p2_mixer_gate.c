@@ -22,6 +22,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -84,13 +85,6 @@ reset_capture(void) {
     g_audio_capture_nonzero = 0;
 }
 
-static void
-fill_f32_frame(float frame[160], float value) {
-    for (int i = 0; i < 160; i++) {
-        frame[i] = value;
-    }
-}
-
 static int
 seed_group_call(dsd_state* state, uint8_t slot, uint64_t target) {
     const dsd_call_observation observation = {
@@ -140,16 +134,6 @@ short_block_is_clear(const short* samples, size_t count) {
     return 1;
 }
 
-static int
-float_block_is_clear(const float* samples, size_t count) {
-    for (size_t i = 0; i < count; i++) {
-        if (samples[i] < -1.0e-6f || samples[i] > 1.0e-6f) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static void
 playout_setup(dsd_opts* opts, dsd_state* st, int floating, int channels) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -162,6 +146,7 @@ playout_setup(dsd_opts* opts, dsd_state* st, int floating, int channels) {
     opts->pulse_digi_out_channels = channels;
     opts->slot1_on = 1;
     opts->slot2_on = 1;
+    opts->slot_preference = 2; // Auto: both audible slots play side by side
     opts->audio_gain = 25;
     st->aout_gain = 49.0f;
     st->aout_gainR = 49.0f;
@@ -169,29 +154,27 @@ playout_setup(dsd_opts* opts, dsd_state* st, int floating, int channels) {
 }
 
 /* One frame queued for @p slot at superframe pair @p pair, as the frame decoder queues a frame its decode gate
-   admitted: every sample @p value (short, and float before the gain), its verdict taken from the slot's gates now. */
+   admitted: every sample @p value, its verdict taken from the slot's gates now. */
 static void
 queue_frame(dsd_opts* opts, dsd_state* st, int slot, int pair, int value) {
     static uint32_t serial = 0U;
     short* s = (slot == 0) ? st->s_l : st->s_r;
-    float* f = (slot == 0) ? st->audio_out_temp_buf : st->audio_out_temp_bufR;
     for (int i = 0; i < 160; i++) {
         s[i] = (short)value;
-        f[i] = (float)value;
     }
     st->mbe_short_silenced[slot] = 0U;
     dsd_p25p2_playout_stage(opts, st, slot, pair, ++serial, NULL);
 }
 
-/* The first captured block's two channels, as 1 when they carry @p left / @p right (short), or for float the sign of
-   each (+1, -1 or 0). */
+/* The first captured block's first sample of each channel. Float output (-y) writes the same 16-bit samples as f32,
+   s16 / 32768 (#652), so a float block reads back as the short sample it carries. */
 static int
 first_block(int floating, int channels, int* left, int* right) {
     if (floating) {
         float out[160 * 2] = {0.0f};
         const int rc = copy_capture_bytes("first float block", out, (size_t)160 * (size_t)channels * sizeof(float));
-        *left = (out[0] > 0.0f) ? 1 : ((out[0] < 0.0f) ? -1 : 0);
-        *right = (channels == 2) ? ((out[1] > 0.0f) ? 1 : ((out[1] < 0.0f) ? -1 : 0)) : *left;
+        *left = (int)lrintf(out[0] * 32768.0f);
+        *right = (channels == 2) ? (int)lrintf(out[1] * 32768.0f) : *left;
         return rc;
     }
     short out[160 * 2] = {0};
@@ -249,7 +232,7 @@ run_clear_beside_muted_companion_case(int floating, int clear_slot, int enc_lock
     const int copied = first_block(floating, 2, &left, &right);
     rc |= copied;
     if (copied == 0) {
-        const int want = floating ? 1 : 100;
+        const int want = 100;
         DSD_SNPRINTF(tag, sizeof(tag), "%s clear=%d alg=0x%02X: clear slot heard", floating ? "float" : "short",
                      clear_slot, muted_slot_algid);
         rc |= expect_eq(tag, clear_slot == 0 ? left : right, want);
@@ -318,7 +301,7 @@ run_clear_plus_blocked_hold_case(int floating, int channels, int clear_slot, int
     const int copied = first_block(floating, channels, &left, &right);
     rc |= copied;
     if (copied == 0) {
-        const int want = floating ? 1 : 100;
+        const int want = 100;
         rc |= expect_eq("hold left output", left, want);
         rc |= expect_eq("hold right output", right, want);
     }
@@ -349,7 +332,7 @@ run_reverse_mute_case(dsd_p25_crypto_state crypto_state, int expect_audio) {
         const int copied = first_block(1, 2, &left, &right);
         rc |= copied;
         if (copied == 0) {
-            rc |= expect_eq("reverse mute encrypted audio audible", left, 1);
+            rc |= expect_eq("reverse mute encrypted audio audible", left, 384);
         }
     }
     return rc;
@@ -443,8 +426,8 @@ run_partial_flush_case(int floating) {
     const int copied = first_block(floating, 2, &left, &right);
     rc |= copied;
     if (copied == 0) {
-        rc |= expect_eq("partial flush left sample", left, floating ? 1 : 321);
-        rc |= expect_eq("partial flush right sample", right, floating ? -1 : -654);
+        rc |= expect_eq("partial flush left sample", left, 321);
+        rc |= expect_eq("partial flush right sample", right, -654);
     }
     rc |= expect_eq("partial flush leaves the left gate", st.p25_p2_audio_allowed[0], 0);
     rc |= expect_eq("partial flush leaves the right gate", st.p25_p2_audio_allowed[1], 0);
@@ -549,6 +532,7 @@ run_short_mono_playback_case(void) {
     return rc;
 }
 
+/* Float output (-y) plays through the same mono mixer: the block goes to UDP as f32, each sample s16 / 32768 (#652). */
 static int
 run_float_mono_playback_case(void) {
     static dsd_opts opts;
@@ -561,26 +545,36 @@ run_float_mono_playback_case(void) {
 
     opts.audio_out = 1;
     opts.audio_out_type = 8;
+    opts.floating_point = 1;
     opts.slot1_on = 1;
-    opts.audio_gain = 25;
     st.synctype = DSD_SYNC_NONE;
-    st.aout_gain = 49.0f;
+    st.audio_out_idx = 160;
     st.audio_out_idx2 = 800000;
     st.audio_out_buf_p = st.audio_out_buf + 100;
     st.audio_out_float_buf_p = st.audio_out_float_buf + 100;
-    fill_f32_frame(st.f_l, 0.25f);
+    for (int i = 0; i < 160; i++) {
+        st.s_l[i] = (short)((i + 1) * ((i & 1) ? -200 : 200));
+    }
 
-    playSynthesizedVoiceFM(&opts, &st);
+    playSynthesizedVoiceMS(&opts, &st);
 
     float out[160] = {0.0f};
     rc |= expect_eq("float mono captured calls", g_audio_capture_calls, 1);
     int copied = copy_capture_bytes("float mono captured bytes", out, sizeof(out));
     rc |= copied;
     if (copied == 0) {
-        rc |= expect_true("float mono audible", out[0] != 0.0f);
+        int exact = 1;
+        for (int i = 0; i < 160; i++) {
+            const float want = (float)((i + 1) * ((i & 1) ? -200 : 200)) / 32768.0f;
+            if (fabsf(out[i] - want) > 1e-9f) {
+                exact = 0;
+            }
+        }
+        rc |= expect_true("float mono carries the short samples as f32", exact);
     }
+    rc |= expect_eq("float mono resets idx", st.audio_out_idx, 0);
     rc |= expect_eq("float mono resets ring span", st.audio_out_idx2, 0);
-    rc |= expect_eq("float mono clears f_l", float_block_is_clear(st.f_l, 160), 1);
+    rc |= expect_eq("float mono clears s_l", short_block_is_clear(st.s_l, 160), 1);
     rc |= expect_true("float mono resets short ptr", st.audio_out_buf_p == st.audio_out_buf + 100);
     rc |= expect_true("float mono resets float ptr", st.audio_out_float_buf_p == st.audio_out_float_buf + 100);
     return rc;
@@ -650,6 +644,7 @@ run_short_stereo_dmr3_playback_case(void) {
     opts.audio_out_type = 8;
     opts.slot1_on = 1;
     opts.slot2_on = 1;
+    opts.slot_preference = 2; // Auto: both audible slots play side by side
     st.audio_out_idx = 160;
     st.audio_out_idxR = 160;
     st.audio_out_idx2 = 800000;

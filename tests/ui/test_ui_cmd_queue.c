@@ -186,6 +186,8 @@ void __wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t inf
                                    const uint8_t* reliab98);
 int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+int __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
 int __real_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
@@ -293,6 +295,16 @@ __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t f
         return __real_dsd_audio_write(stream, buffer, frames);
     }
     g_audio_write_frames += frames;
+    return 0;
+}
+
+/* The audio sinks ask each write's stream for its device health (issue #659); the armed fake never fails. */
+int
+__wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out) {
+    if (!g_audio_write_armed) {
+        return __real_dsd_audio_output_health_get(stream, out);
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
     return 0;
 }
 
@@ -993,8 +1005,9 @@ test_key_and_runtime_state_commands(void) {
     rc |= expect_u64("basic key loaded", state.K, 0x12345678ULL);
     rc |= expect_u64("scrambler key loaded", state.R, 0x55667788ULL);
     rc |= expect_u64("rc4des key mirror loaded", state.RR, 0x55667788ULL);
-    rc |= expect_int("key mute reset left", opts.dmr_mute_encL, 0);
-    rc |= expect_int("key mute reset right", opts.dmr_mute_encR, 0);
+    // Key loads leave the DMR encrypted-audio mute as the user set it (issue #655).
+    rc |= expect_int("key leaves left mute", opts.dmr_mute_encL, 1);
+    rc |= expect_int("key leaves right mute", opts.dmr_mute_encR, 1);
     rc |= expect_int("payload key reset left", state.payload_keyid, 0);
     rc |= expect_int("payload key reset right", state.payload_keyidR, 0);
     rc |= expect_u64("aes key loaded", state.A1[0], 3ULL);
@@ -3998,7 +4011,7 @@ test_modulation_and_decode_mode_setters(void) {
      * it when the stream was opened. dmr_stereo is not part of that shape and must
      * not be dragged along with it: it selects two-slot decoding, and the DMR
      * playback paths mix the two slots down themselves when the stream is mono
-     * (playSynthesizedVoiceSS3/FS3). Held to dmr_stereo == 1 here because the
+     * (playSynthesizedVoiceSS3). Held to dmr_stereo == 1 here because the
      * alternative pairs it with dmr_mono == 0, which no preset produces and which
      * dmr_handle_voice() has no branch for on MS voice. */
     init_decode_mode_context(&opts, &state);
@@ -5531,8 +5544,10 @@ test_scoped_direct_key_mutes(void) {
             keys.scalars.R = 55;
             rc |= expect_true("enter row keys", dsd_scan_keys_enter(state, &keys));
             rc |= expect_int("enter key command scope", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
-            dsd_scan_option_values row = {.present = DSD_SCAN_OPT_MUTE_DMR, .mute_dmr = 1};
-            (void)dsd_scan_mode_options(opts, state, row_mutes ? &row : NULL);
+            // The row decides the DMR encrypted-audio mute either way; a direct key never overrides it, nor the
+            // configured one (issue #655).
+            dsd_scan_option_values row = {.present = DSD_SCAN_OPT_MUTE_DMR, .mute_dmr = row_mutes};
+            (void)dsd_scan_mode_options(opts, state, &row);
             uint64_t payload[5] = {7, 8, 9, 10, 11};
             uint32_t short_key = 7;
             const void* data = i < 2 ? (const void*)&short_key : (const void*)payload;
@@ -5547,8 +5562,8 @@ test_scoped_direct_key_mutes(void) {
             rc |= expect_int("row mute respected right", opts->dmr_mute_encR, row_mutes);
             dsd_scan_settings configured;
             dsd_scan_mode_configured(opts, state, &configured);
-            rc |= expect_int("direct key saved left unmute", configured.dmr_mute_encL, 0);
-            rc |= expect_int("direct key saved right unmute", configured.dmr_mute_encR, 0);
+            rc |= expect_int("direct key keeps configured left mute", configured.dmr_mute_encL, 1);
+            rc |= expect_int("direct key keeps configured right mute", configured.dmr_mute_encR, 1);
             rc |= expect_true("direct key retains row ownership", state->scan_keys_active_set != 0);
             const uint64_t live[] = {state->K, state->R, state->RR, state->K4, state->A4[0]};
             const uint64_t expected[] = {7, 7, 7, 11, 10};
@@ -5558,7 +5573,7 @@ test_scoped_direct_key_mutes(void) {
             rc |= expect_int("CRC toggle preserves row mute", opts->dmr_mute_encL, row_mutes);
             (void)dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48);
             (void)dsd_scan_mode_options(opts, state, NULL);
-            rc |= expect_int("next row inherits unmute", opts->dmr_mute_encL, 0);
+            rc |= expect_int("next row inherits configured mute", opts->dmr_mute_encL, 1);
             dsd_scan_keys_leave(state);
             rc |= expect_true("leave restores global key", state->R == 99);
             dsd_scan_mode_leave(opts, state);
@@ -6280,8 +6295,8 @@ test_direct_key_and_force_scope(void) {
     dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
     dsd_app_drain_cmds(&opts, &state);
     dsd_scan_mode_configured(&opts, &state, &configured);
-    rc |= expect_true("direct zero arms configured decryption",
-                      configured.dmr_mute_encL == 0 && configured.dmr_mute_encR == 0);
+    rc |= expect_true("direct zero leaves the configured DMR mute",
+                      configured.dmr_mute_encL == 1 && configured.dmr_mute_encR == 1);
     rc |= expect_true("direct respects row mute", opts.dmr_mute_encL == 1 && opts.dmr_mute_encR == 1);
     rc |= expect_true("direct bumps epoch", state.enc_lockout_key_epoch != epoch);
     epoch = state.enc_lockout_key_epoch;
@@ -6301,7 +6316,7 @@ test_direct_key_and_force_scope(void) {
     rc |= expect_true("unterminated direct rejected", state.enc_lockout_key_epoch == epoch);
     DSD_SECURE_ZERO(&key, sizeof key);
     (void)dsd_scan_mode_options(&opts, &state, NULL);
-    rc |= expect_true("unkeyed row inherits force and mute", state.M == 1 && opts.dmr_mute_encL == 0);
+    rc |= expect_true("unkeyed row inherits force and mute", state.M == 1 && opts.dmr_mute_encL == 1);
     dsd_scan_mode_leave(&opts, &state);
     freeState(&state);
     return rc;

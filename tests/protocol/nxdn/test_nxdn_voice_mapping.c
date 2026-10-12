@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -15,7 +16,6 @@
 static int g_hard_calls;
 static int g_soft_calls;
 static int g_play_ms_calls;
-static int g_play_fm_calls;
 static char g_last_hard[4][24];
 static dsd_vocoder_soft_bit g_last_soft[4][24];
 static dsd_opts g_opts;
@@ -30,25 +30,11 @@ expect_int(const char* label, int got, int want) {
     return 0;
 }
 
-static int
-expect_float(const char* label, float got, float want) {
-    float delta = got - want;
-    if (delta < 0.0f) {
-        delta = -delta;
-    }
-    if (delta > 1e-6f) {
-        DSD_FPRINTF(stderr, "%s: got %.6f want %.6f\n", label, got, want);
-        return 1;
-    }
-    return 0;
-}
-
 static void
 reset_spies(void) {
     g_hard_calls = 0;
     g_soft_calls = 0;
     g_play_ms_calls = 0;
-    g_play_fm_calls = 0;
     DSD_MEMSET(g_last_hard, 0, sizeof(g_last_hard));
     DSD_MEMSET(g_last_soft, 0, sizeof(g_last_soft));
 }
@@ -68,28 +54,27 @@ fill_dibits(uint8_t dbuf[182], uint8_t reliab[182]) {
 }
 
 void
-processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23], char ambe_fr[4][24],
+                char imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_NXDN);
     (void)opts;
+    (void)state;
     (void)imbe_fr;
     (void)imbe7100_fr;
     g_hard_calls++;
     DSD_MEMCPY(g_last_hard, ambe_fr, sizeof(g_last_hard));
-    for (int i = 0; i < 160; i++) {
-        state->audio_out_temp_buf[i] = (float)(g_hard_calls * 1000 + i);
-    }
 }
 
 void
-processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
+processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, dsd_vocoder_soft_bit imbe_fr[8][23],
                     dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_NXDN);
     (void)opts;
+    (void)state;
     (void)imbe_fr;
     (void)imbe7100_fr;
     g_soft_calls++;
     DSD_MEMCPY(g_last_soft, ambe_fr, sizeof(g_last_soft));
-    for (int i = 0; i < 160; i++) {
-        state->audio_out_temp_buf[i] = (float)(g_soft_calls * 2000 + i);
-    }
 }
 
 void
@@ -97,13 +82,6 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_play_ms_calls++;
-}
-
-void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    g_play_fm_calls++;
 }
 
 static int
@@ -119,10 +97,8 @@ test_hard_voice_modes(void) {
     nxdn_voice(&g_opts, &g_state, 1, dbuf, NULL);
     err |= expect_int("voice 1 hard frames", g_hard_calls, 2);
     err |= expect_int("voice 1 short playback", g_play_ms_calls, 2);
-    err |= expect_int("voice 1 float playback", g_play_fm_calls, 0);
     err |= expect_int("voice 1 final high bit", g_last_hard[0][23], (dbuf[74] >> 1) & 1);
     err |= expect_int("voice 1 final low bit", g_last_hard[0][5], dbuf[74] & 1);
-    err |= expect_float("voice 1 copies final audio", g_state.f_l[7], 2007.0f);
 
     reset_spies();
     reset_decoder_objects();
@@ -133,17 +109,16 @@ test_hard_voice_modes(void) {
 
     reset_spies();
     reset_decoder_objects();
+    // Float output (-y) plays through the same mono mixer (#652).
     g_opts.floating_point = 1;
     nxdn_voice(&g_opts, &g_state, 3, dbuf, NULL);
     err |= expect_int("voice 3 hard frames", g_hard_calls, 4);
-    err |= expect_int("voice 3 short playback", g_play_ms_calls, 0);
-    err |= expect_int("voice 3 float playback", g_play_fm_calls, 4);
-    err |= expect_float("voice 3 copies final audio", g_state.f_l[159], 4159.0f);
+    err |= expect_int("voice 3 float output plays the mono mixer", g_play_ms_calls, 4);
 
     reset_spies();
     nxdn_voice(&g_opts, &g_state, 0, dbuf, NULL);
     err |= expect_int("voice 0 does not decode", g_hard_calls, 0);
-    err |= expect_int("voice 0 does not play", g_play_fm_calls, 0);
+    err |= expect_int("voice 0 does not play", g_play_ms_calls, 0);
 
     return err;
 }
@@ -166,7 +141,6 @@ test_soft_reliability_mapping(void) {
     err |= expect_int("soft high reliability", g_last_soft[0][23].reliability, reliab[74]);
     err |= expect_int("soft low bit", g_last_soft[0][5].bit, dbuf[74] & 1);
     err |= expect_int("soft low reliability", g_last_soft[0][5].reliability, reliab[74]);
-    err |= expect_float("soft copies final audio", g_state.f_l[3], 4003.0f);
 
     return err;
 }

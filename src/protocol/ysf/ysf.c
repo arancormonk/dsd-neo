@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/colors.h>
@@ -449,14 +450,9 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
             ambe_fr[map->low_row][map->low_col] = (char)b2;
         }
 
-        processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+        processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_YSF, NULL, ambe_fr, NULL);
 
         // The vocoder already wrote this frame's per-call WAV block behind its record gate.
-        if (opts->floating_point == 1) //float audio is really quiet now (look into it)
-        {
-
-            DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-        }
         dsd_play_synthesized_voice(opts, state);
     }
 
@@ -518,16 +514,13 @@ ysf_capture_bypassed_frame(dsd_opts* opts, dsd_state* state, const char ambe_d[4
     }
 }
 
+// A frame that bypassed the vocoder (V/D2) runs the gain stage here, in either output format (issue #652); one that
+// went through it was already gained there.
 static void
 ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder) {
-    if (opts->floating_point == 0) {
-        if (bypassed_vocoder) {
-            processAudio(opts, state);
-        }
-    } else {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-    }
     if (bypassed_vocoder) {
+        dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
+        dsd_voice_stage_short_left(opts, state);
         ysf_write_bypassed_call_wav(opts, state);
     }
     dsd_play_synthesized_voice(opts, state);
@@ -689,6 +682,9 @@ ysf_print_fich_summary(const dsd_opts* opts, const ysf_fich_info* info) {
     ysf_print_fich_payload(opts, info);
 }
 
+/* A V/D type 1 frame carries five DCH/VCH pairs, one 20 ms AMBE frame per VCH: 100 ms of voice (issue #660). */
+enum { YSF_VD1_CHANNEL_PAIRS = 5 };
+
 static void
 ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
     uint8_t dbuf[190];
@@ -696,7 +692,7 @@ ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
     DSD_MEMSET(dbuf, 0, sizeof(dbuf));
     DSD_MEMSET(vbuf, 0, sizeof(vbuf));
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < YSF_VD1_CHANNEL_PAIRS; i++) {
         for (int j = 0; j < 36; j++) {
             dbuf[(i * 36) + j] = get_dibit_and_analog_signal(opts, state, NULL);
         }
@@ -708,7 +704,7 @@ ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
         return;
     }
 
-    ysf_ehr(opts, state, vbuf, 0, 4);
+    ysf_ehr(opts, state, vbuf, 0, YSF_VD1_CHANNEL_PAIRS);
     ysf_conv_dch(opts, state, info->bn, info->bt, info->fn, info->ft, info->cm, dbuf);
 }
 
@@ -856,7 +852,7 @@ ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state, const ysf_fich
     dsd_ysf_unpack_full_rate_imbe(imbe_raw, imbe_vch, imbe_fr);
 
     state->synctype = DSD_SYNC_P25P1_POS;
-    processMbeFrame(opts, state, imbe_fr, NULL, NULL);
+    processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_YSF, imbe_fr, NULL, NULL);
     state->synctype = synctype;
 
     ysf_emit_audio_from_temp(opts, state, false);

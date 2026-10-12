@@ -69,14 +69,14 @@ typedef struct {
     int tsbk_decoded_bits[TSBK_BITS_PER_BLOCK];
 } tsbk_decode_ctx_t;
 
+// Takes no options: the slot preference is the user's, and a control frame leaves it as set (issue #657).
 static void
-tsbk_prepare_frame_state(dsd_opts* opts, dsd_state* state) {
+tsbk_prepare_frame_state(dsd_state* state) {
     state->p25_p1_duid_tsbk++;
 
     // Reset counters and buffers to avoid carryover from voice paths.
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
-    opts->slot_preference = 2;
 
     // Ensure slot index is sane when swapping protocols.
     state->currentslot = 0;
@@ -1047,7 +1047,7 @@ tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t*
 
 void
 processTSBK(dsd_opts* opts, dsd_state* state) {
-    tsbk_prepare_frame_state(opts, state);
+    tsbk_prepare_frame_state(state);
 
     int skipdibit = 36 - 14;
     for (int block = 0; block < TSBK_MAX_BLOCKS; block++) {

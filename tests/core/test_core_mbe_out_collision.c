@@ -141,6 +141,11 @@ test_capture_never_truncates_an_existing_file(void) {
     opts.playfiles = 1;
     opts.floating_point = 1;
     state.event_history_s = history;
+    /* The gain stage's output buffers: JSON playback runs it for every frame in either output format (issue #652). */
+    static short out_buf[100 + (160 * 64)];
+    state.audio_out_buf = out_buf;
+    state.audio_out_buf_p = out_buf + 100;
+    state.aout_max_buf_p = state.aout_max_buf;
 
     static const char json[] =
         "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","

@@ -645,7 +645,8 @@ dsd_key_apply_mute_policy(dsd_opts* opts, dsd_state* state) {
     }
     state->keyloader = 0;
     state->payload_keyid = state->payload_keyidR = 0;
-    opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+    /* The DMR encrypted-audio mute stays the user's (issue #655): the vocoder's verdict already plays every call the
+       loaded key decrypts, and clearing the mute here only let calls it cannot decrypt play as garble. */
     opts->unmute_encrypted_p25 = 0;
 }
 

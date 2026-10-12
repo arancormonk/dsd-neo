@@ -89,7 +89,10 @@ expected(const dsd_opts* opts, const dsd_state* state, int type, size_t width) {
         check(state->aes_key_loaded[0] == (width != 10), "AES activation");
     }
     check(state->keyloader == 0 && state->payload_keyid == 0 && state->payload_keyidR == 0, "direct activation");
-    check(opts->dmr_mute_encL == 0 && opts->dmr_mute_encR == 0, "every value arms decryption");
+    // The DMR encrypted-audio mute stays the user's (issue #655): a call the key decrypts plays by the vocoder's
+    // verdict, one it cannot stays muted. Undecodable P25 audio is muted.
+    check(opts->dmr_mute_encL == 1 && opts->dmr_mute_encR == 1, "every value leaves the DMR mute alone");
+    check(opts->unmute_encrypted_p25 == 0, "every value keeps undecodable P25 muted");
 }
 
 static void
@@ -213,7 +216,7 @@ zero_key_voice(void) {
                 } else {
                     opts.mbe_out_f = recording;
                 }
-                processMbeFrame(&opts, &state, NULL, frame, NULL);
+                processMbeFrame(&opts, &state, DSD_VOICE_PROTOCOL_DMR, NULL, frame, NULL);
                 char recovered[49] = {0}, expected_plain[49];
                 for (int bit = 0; bit < 49; ++bit) {
                     expected_plain[bit] = cipher[bit] ^ ((stream[algorithm][bit / 8] >> (7 - bit % 8)) & 1);
@@ -434,7 +437,7 @@ main(void) {
                 dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &zero, sizeof zero);
                 dsd_app_drain_cmds(&opts, &state);
             }
-            check(opts.dmr_mute_encL == 0 && opts.dmr_mute_encR == 0, "all zero types share mute policy");
+            check(opts.dmr_mute_encL == 1 && opts.dmr_mute_encR == 1, "all zero types share mute policy");
             check((types[i] != 0 || state.K == 0) && (types[i] != 1 || state.K1 == 0) && (types[i] < 2 || state.R == 0),
                   "zero scalar installed");
             DSD_SECURE_ZERO(&zero, sizeof zero);

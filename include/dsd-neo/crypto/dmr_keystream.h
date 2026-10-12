@@ -40,7 +40,16 @@ void straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49])
 int dmr_ambe49_is_default_silence(const char ambe_d[49]);
 int dmr_ambe49_has_zero_tail(const char ambe_d[49]);
 int dmr_ambe49_should_skip_crypto(const char ambe_d[49]);
-int dmr_voice_stream_apply_frame49(const uint8_t* ks_bits, long int* bit_counter, int algid, char ambe_d[49]);
+/**
+ * XOR one 49-bit AMBE frame with the next bits of a DMR voice keystream and advance @p bit_counter past the frame
+ * (49 bits for Hytera Enhanced 0x02, 56 for every other ALG ID). @p ks_bit_count is how many bits of @p ks_bits
+ * hold generated keystream. A default-silence frame is left as is and only advances the counter.
+ *
+ * @return 1 when the frame was decrypted, 0 when it was skipped as silence (or an argument is NULL), -1 when the
+ *         frame's bits lie outside the generated keystream: the frame and the counter are left unchanged.
+ */
+int dmr_voice_stream_apply_frame49(const uint8_t* ks_bits, size_t ks_bit_count, long int* bit_counter, int algid,
+                                   char ambe_d[49]);
 /** Advance the DMR RC4 message indicator by one 32-bit LFSR cycle. */
 uint32_t dmr_mi_advance32(uint32_t mi);
 /** Expand a DMR AES 32-bit MI into 16 IV bytes; return the next superframe's MI.

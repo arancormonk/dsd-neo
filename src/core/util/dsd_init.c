@@ -568,13 +568,6 @@ init_state_core_buffers(dsd_state* state) {
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
     DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
 
-    //set float temp buffer to baseline
-    DSD_MEMSET(state->f_l, 0.0f, sizeof(state->f_l));
-    DSD_MEMSET(state->f_r, 0.0f, sizeof(state->f_r));
-
-    //set float temp buffer to baseline
-    DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
-    DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
     dsd_audio_dmr_mix_media_discard(0);
     dsd_audio_dmr_mix_media_discard(1);
 
@@ -793,6 +786,7 @@ init_state_dpmr_confirmation(dsd_state* state) {
     state->dpmr_confirmed = 0;
     state->dpmr_confirm_weak_streak = 0;
     state->dpmr_confirm_frame_evidence = 0;
+    state->dpmr_scrambled = 0;
     state->dpmr_cch_evidence = 0;
     state->dpmr_cch_evidence_symbolcnt = 0;
 }
@@ -884,6 +878,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->dmr_soR = 0;
     state->dmr_fid = 0;
     state->dmr_fidR = 0;
+    state->dmr_le_vendor[0] = state->dmr_le_vendor[1] = 0; // DMR_LE_VENDOR_NONE
     state->dmr_flco = 0;
     state->dmr_flcoR = 0;
     state->dmr_ms_mode = 0;
@@ -965,6 +960,8 @@ init_state_protocol_defaults_b(dsd_state* state) {
 
     state->dmr_encL = 0;
     state->dmr_encR = 0;
+    state->mbe_slot_muted[0] = 0;
+    state->mbe_slot_muted[1] = 0;
 }
 
 static void

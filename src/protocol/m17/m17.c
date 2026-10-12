@@ -13,6 +13,7 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -57,7 +58,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include "m17_algorithms.h"
 #include "m17_confirm.h"
 #include "m17_internal.h"
@@ -659,8 +659,9 @@ m17_can_matches_state(const dsd_state* state) {
 }
 
 #ifdef USE_CODEC2
-/* Decoded Codec2 voice plays through the digital voice output the other modes use (issue #658): the mixers apply the
-   slot 1 switch, the mute, the gain, the high-pass, the stream's channel count and sample format, and write the WAVs.
+/* Decoded Codec2 voice plays through the digital voice output the other modes use (issue #658): the adapter runs the
+   shared high-pass and gain, then the mixers apply the slot 1 switch, mute, channel count and sample format. The WAVs
+   consume the same chained samples.
    M17 is outside talkgroup policy, so it settles its own gates here: an encrypted stream plays only once decrypted, and
    only a CAN the filter allows plays. @p nsam is the decoder's real output: 160 samples per 3200 frame, 320 at 1600. */
 static void
@@ -1511,7 +1512,7 @@ m17_monitor_baseband_if_enabled(dsd_opts* opts, dsd_state* state, const short* b
     }
 
     if (opts->audio_out_type == 0) {
-        dsd_audio_write(opts->audio_raw_out, baseband, M17_BASEBAND_SAMPLES);
+        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_RAW, opts->audio_raw_out, baseband, M17_BASEBAND_SAMPLES);
         return;
     }
 
@@ -1521,10 +1522,7 @@ m17_monitor_baseband_if_enabled(dsd_opts* opts, dsd_state* state, const short* b
     }
 
     if (opts->audio_out_type == 1) {
-        const ssize_t written = dsd_write(opts->audio_out_fd, baseband, M17_BASEBAND_BYTES);
-        if (written < 0) {
-            LOG_WARN("encodeM17RF: failed to write %zu-byte baseband block", M17_BASEBAND_BYTES);
-        }
+        (void)dsd_audio_sink_write_fd(opts->audio_out_fd, baseband, M17_BASEBAND_BYTES, sizeof(short));
     }
 }
 

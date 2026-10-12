@@ -233,6 +233,7 @@ main(void) {
     opts.pulse_digi_rate_out = 8000;
     opts.slot1_on = 1;
     opts.slot2_on = 1;
+    opts.slot_preference = 2; // Auto: both audible slots play side by side
     opts.audio_out = 1;
     opts.audio_out_type = 8;
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_blast});

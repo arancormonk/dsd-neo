@@ -43,7 +43,6 @@ static dsd_dibit_soft_t g_cached_soft[90];
 static int g_mark_vc_sync_calls;
 static int g_fopen_private_calls;
 static int g_process_mbe_calls;
-static int g_play_fs3_calls;
 static int g_play_ss3_calls;
 static int g_ui_calls;
 static int g_watchdog_history_calls;
@@ -76,7 +75,6 @@ reset_fixture(void) {
     g_mark_vc_sync_calls = 0;
     g_fopen_private_calls = 0;
     g_process_mbe_calls = 0;
-    g_play_fs3_calls = 0;
     g_play_ss3_calls = 0;
     g_ui_calls = 0;
     g_watchdog_history_calls = 0;
@@ -192,21 +190,15 @@ dsd_fopen_private(const char* path, const char* mode) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23], char ambe_fr[4][24],
+                char imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_DMR);
     (void)opts;
     (void)state;
     (void)imbe_fr;
     (void)ambe_fr;
     (void)imbe7100_fr;
     g_process_mbe_calls++;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    g_play_fs3_calls++;
 }
 
 void
@@ -473,8 +465,7 @@ test_ms_voice_cycle_processes_frames_and_cleans_mode_state(void) {
 
     assert(g_voice_sync_calls == 5);
     assert(g_process_mbe_calls == 15);
-    assert(g_play_fs3_calls == 5);
-    assert(g_play_ss3_calls == 0);
+    assert(g_play_ss3_calls == 5);
     assert(g_late_entry_calls == 5);
     assert(g_tyt_keystream_calls == 15);
     assert(g_csi_keystream_calls == 15);
@@ -500,6 +491,7 @@ test_ms_voice_cycle_processes_frames_and_cleans_mode_state(void) {
     assert(state.vertex_ks_warned[0] == 0);
 }
 
+/* Float output (-y) plays through the same DMR stereo mix as 16-bit output (#652). */
 static void
 test_ms_voice_cycle_plays_float_on_one_channel(void) {
     static dsd_opts opts;
@@ -515,8 +507,7 @@ test_ms_voice_cycle_plays_float_on_one_channel(void) {
     dmrMS(&opts, &state);
 
     assert(g_process_mbe_calls == 15);
-    assert(g_play_fs3_calls == 5);
-    assert(g_play_ss3_calls == 0);
+    assert(g_play_ss3_calls == 5);
 }
 
 static void
@@ -533,16 +524,16 @@ test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle(void) {
     opts.pulse_digi_out_channels = 2;
     opts.use_dsp_output = 1;
     opts.dmr_debug_burst = 1;
-    opts.dmr_le = 2;
     state.dmr_color_code = 5;
 
     dmrMSBootstrap(&opts, &state);
 
     assert(g_voice_sync_calls == 6);
     assert(g_process_mbe_calls == 18);
-    assert(g_play_fs3_calls == 0);
     assert(g_play_ss3_calls == 6);
-    assert(g_late_entry_calls == 0);
+    // Every voice burst hands its fragments over; dmr_late_entry_mi_fragment() itself skips a Hytera Enhanced call
+    // (issue #657), so the MS path no longer reads a session-wide setting for it.
+    assert(g_late_entry_calls == 6);
     assert(g_debug_format_calls == 1);
     assert(g_fopen_private_calls == 6);
     assert(g_skip_calls == 6);
@@ -565,12 +556,10 @@ test_ms_bootstrap_plays_short_on_one_channel(void) {
 
     opts.floating_point = 0;
     opts.pulse_digi_out_channels = 1;
-    opts.dmr_le = 2;
 
     dmrMSBootstrap(&opts, &state);
 
     assert(g_process_mbe_calls == 18);
-    assert(g_play_fs3_calls == 0);
     assert(g_play_ss3_calls == 6);
 }
 

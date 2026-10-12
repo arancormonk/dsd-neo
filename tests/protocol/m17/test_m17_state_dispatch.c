@@ -2797,6 +2797,18 @@ int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size
 int __real_dsd_audio_drain(dsd_audio_stream* stream);
 int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
+int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+int __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+
+/* The audio sinks ask each write's stream for its device health (issue #659); the wrapped output never fails. */
+int
+__wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out) {
+    if (!g_audio_wrap_on) {
+        return __real_dsd_audio_output_health_get(stream, out);
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    return 0;
+}
 
 int
 __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
@@ -2944,7 +2956,7 @@ test_stream_voice_audio_honors_mute_on_every_output(void) {
                 g_audio_event_count = 0;
                 g_audio_events[0] = '\0';
                 g_audio_wrap_on = out_type == 0;
-                /* The local stream is open; the wrap takes its writes. */
+                /* The local stream is open (a sentinel the wraps take): the sink writes no stream that is not. */
                 opts->audio_out_stream = out_type == 0 ? (dsd_audio_stream*)&g_audio_wrap_on : NULL;
 #endif
 
@@ -3158,17 +3170,17 @@ run_voice_format_case(uint8_t dt, int floating, int channels, int out_type, floa
         err |= expect_int("m17 voice block bytes", (int)g_udp_audio_last_nsam,
                           (int)(count * (floating ? sizeof(float) : sizeof(short))));
         for (size_t i = 0U; i < count; i++) {
+            const int source = dt == 3U ? 1001 + 160 + (int)(i / (size_t)channels) : 1002 + (int)(i / (size_t)channels);
+            const short want = (short)((float)source * gain);
             if (floating) {
                 float sample;
-                float first;
                 DSD_MEMCPY(&sample, g_udp_audio_last_data + (i * sizeof(float)), sizeof(sample));
-                DSD_MEMCPY(&first, g_udp_audio_last_data + ((i - (i % (size_t)channels)) * sizeof(float)),
-                           sizeof(first));
-                err |= expect_int("m17 f32 voice sample in range", isfinite(sample) && fabsf(sample) <= 1.0f, 1);
-                err |= expect_int("m17 f32 voice channels carry the frame", fabsf(sample - first) < 1e-9f, 1);
+                err |= expect_int("m17 f32 voice matches chained short", fabsf(sample - (float)want / 32768.0f) < 1e-9f,
+                                  1);
             } else {
                 short sample;
                 DSD_MEMCPY(&sample, g_udp_audio_last_data + (i * sizeof(short)), sizeof(sample));
+                err |= expect_int("m17 s16 voice matches chained short", sample, want);
                 if (first_block != NULL && i < 320U) {
                     first_block[i] = sample;
                 }
@@ -3185,12 +3197,7 @@ run_voice_format_case(uint8_t dt, int floating, int channels, int out_type, floa
         for (size_t i = 0U; i < count; i++) {
             /* The second block holds the decoded frame from sample 160 of a 1600 frame, or the second 3200 frame. */
             const int want = dt == 3U ? 1001 + 160 + (int)(i / (size_t)channels) : 1002 + (int)(i / (size_t)channels);
-            if (!floating) {
-                err |= expect_int("m17 voice local stream sample", g_audio_wrap_last[i], want);
-            } else {
-                err |= expect_int("m17 voice local stream channels carry the frame",
-                                  g_audio_wrap_last[i] == g_audio_wrap_last[i - (i % (size_t)channels)], 1);
-            }
+            err |= expect_int("m17 voice local stream sample", g_audio_wrap_last[i], (short)((float)want * gain));
         }
         g_audio_wrap_on = 0;
         g_audio_wrap_channels = 1;
@@ -3208,10 +3215,12 @@ test_stream_voice_audio_follows_output_format(void) {
     for (size_t d = 0U; d < sizeof(dts) / sizeof(dts[0]); d++) {
         for (int floating = 0; floating <= 1; floating++) {
             for (int channels = 1; channels <= 2; channels++) {
-                err |= run_voice_format_case(dts[d], floating, channels, 8, 1.0f, NULL, NULL);
+                for (int gain = 1; gain <= 3; gain += 2) {
+                    err |= run_voice_format_case(dts[d], floating, channels, 8, (float)gain, NULL, NULL);
 #ifdef DSD_NEO_TEST_AUDIO_WRAP
-                err |= run_voice_format_case(dts[d], floating, channels, 0, 1.0f, NULL, NULL);
+                    err |= run_voice_format_case(dts[d], floating, channels, 0, (float)gain, NULL, NULL);
 #endif
+                }
             }
         }
         /* -g 1 passes the decoded samples through; -g 3 triples them, in both channels. */

@@ -28,15 +28,12 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-static int
-dmr_slot_is_kirisun_call(const dsd_state* state, uint8_t slot_idx) {
-    // Gate Kirisun handling using current-call slot metadata only.
-    // payload_algid* can persist across call boundaries and must not steer SB/RC parsing.
-    if (slot_idx == 0U) {
-        return state->dmr_fid == 0x0A;
-    }
-
-    return state->dmr_fidR == 0x0A;
+// The slot's vendor late-entry mode, per slot and per call (issue #657). It is set only by verified Kirisun or Hytera
+// Enhanced signalling of the slot's current call and cleared with the call, so it, and not payload_algid* (which can
+// persist across call boundaries), steers SB/RC parsing and MI collection.
+static uint8_t
+dmr_slot_le_vendor(const dsd_state* state, uint8_t slot_idx) {
+    return state->dmr_le_vendor[slot_idx != 0U ? 1U : 0U];
 }
 
 static int
@@ -224,6 +221,12 @@ dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t
 
     uint8_t slot = state->currentslot;
     uint8_t slot_idx = (slot >= 2) ? 1 : slot;
+
+    // Hytera Enhanced carries its MI in its own PI/LC, so its call collects no DMRA late-entry MI. This is the slot's
+    // call's mode, not a session setting: the other slot and the next call collect as ever (issue #657).
+    if (dmr_slot_le_vendor(state, slot_idx) == DMR_LE_VENDOR_HYTERA_ENH) {
+        return;
+    }
 
     (void)dsd_dmr_apply_forced_algid(state);
 
@@ -559,9 +562,11 @@ dmr_sbrc_apply_enc_identifier(const dsd_opts* opts, dsd_state* state, uint8_t sl
     }
 }
 
+// Kirisun's own SB encryption identifier, read for an encrypted Kirisun call: vendor evidence, so it does not depend
+// on the user's late-entry setting (-3 turns off the DMRA identifiers), as before.
 static void
-dmr_sbrc_handle_kirisun_mode(const dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data, int kirisun_call) {
-    if (!(opts->dmr_le == 3 && kirisun_call)) {
+dmr_sbrc_handle_kirisun_mode(const dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data) {
+    if (dmr_slot_le_vendor(state, data->slot_idx) != DMR_LE_VENDOR_KIRISUN_ENC) {
         return;
     }
 
@@ -576,11 +581,13 @@ dmr_sbrc_handle_kirisun_mode(const dsd_opts* opts, dsd_state* state, const dmr_s
         DSD_FPRINTF(stderr, " Slot %d", state->currentslot + 1);
         DSD_FPRINTF(stderr, " DMR LE SB Kirisun Encryption Identifier;");
         DSD_FPRINTF(stderr, "%s ", KNRM);
+        // The verified encrypted Kirisun mode is the encryption evidence: a Kirisun LC publishes no service options
+        // (its FID takes the unknown-LC path), so the slot's SO cannot be required here.
         if (data->slot_idx == 0U) {
-            if (state->payload_algid == 0 && (state->dmr_so & 0x40U)) {
+            if (state->payload_algid == 0) {
                 state->payload_algid = 0x35;
             }
-        } else if (state->payload_algidR == 0 && (state->dmr_soR & 0x40U)) {
+        } else if (state->payload_algidR == 0) {
             state->payload_algidR = 0x35;
         }
     }
@@ -612,11 +619,12 @@ dmr_sbrc_handle_standard_payload(dsd_opts* opts, dsd_state* state, const dmr_sbr
     }
 }
 
+// Standard SB/RC parsing: the user's late-entry setting (-3 turns it off) for a call without a vendor mode. A Kirisun
+// or Hytera Enhanced call on the slot turns it off for that call only (issue #657).
 static void
 dmr_sbrc_handle_standard_mode(dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data, uint8_t sbrc_opcode,
-                              uint8_t alg, uint8_t key, uint8_t txi_delay, int kirisun_call) {
-    // opts->dmr_le is global; fall back to standard SB/RC parsing for non-Kirisun calls.
-    if (!(opts->dmr_le == 1 || (opts->dmr_le == 3 && !kirisun_call))) {
+                              uint8_t alg, uint8_t key, uint8_t txi_delay) {
+    if (opts->dmr_le == 0 || dmr_slot_le_vendor(state, data->slot_idx) != DMR_LE_VENDOR_NONE) {
         return;
     }
 
@@ -667,10 +675,9 @@ dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power) {
         const uint8_t alg = data.sbrc_hex & 0x7;
         const uint8_t key = (data.sbrc_hex >> 3) & 0xFF;
         const uint8_t txi_delay = (data.sbrc_hex >> 3) & 0x1F; // middle five are TXI delay
-        const int kirisun_call = dmr_slot_is_kirisun_call(state, data.slot_idx);
 
-        dmr_sbrc_handle_kirisun_mode(opts, state, &data, kirisun_call);
-        dmr_sbrc_handle_standard_mode(opts, state, &data, sbrc_opcode, alg, key, txi_delay, kirisun_call);
+        dmr_sbrc_handle_kirisun_mode(opts, state, &data);
+        dmr_sbrc_handle_standard_mode(opts, state, &data, sbrc_opcode, alg, key, txi_delay);
     }
 
     dmr_sbrc_write_dsp_output(opts, state, data.slot);

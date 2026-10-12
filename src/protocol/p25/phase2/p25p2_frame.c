@@ -1037,7 +1037,7 @@ p25p2_decode_and_store_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder
         dsd_p25p2_playout_note_muted(state, slot);
         return;
     }
-    processMbeFrameSoft(opts, state, NULL, ambe_soft, NULL);
+    processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_P25P2, NULL, ambe_soft, NULL);
     dsd_p25p2_playout_stage_decided(opts, state, slot, p25p2_pair_index(state), s_burst_serial,
                                     p25p2_burst_verdict_for(slot));
 }

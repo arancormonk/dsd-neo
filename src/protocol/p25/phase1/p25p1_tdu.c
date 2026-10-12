@@ -3,7 +3,6 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -53,11 +52,6 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     }
 
     //reset some strings -- since its a tdu, blank out any call strings, only want during actual call
-
-    //reset gain
-    if (opts->floating_point == 1) {
-        state->aout_gain = opts->audio_gain;
-    }
 
     // Mark the Phase 1 transmission boundary and reset encryption indicators
     // so the next LDU on this retained carrier starts muted.

@@ -121,7 +121,9 @@ dsd_key_direct_result dsd_key_set_load_typed(dsd_key_set* out, dsd_key_type type
  * Call dsd_key_apply_mute_policy after success at either entry point. */
 dsd_key_direct_result dsd_key_apply_direct(dsd_state* state, dsd_key_type key_type, const char* text,
                                            dsd_key_apply_mode mode);
-/** Any supplied value arms decryption; encrypted-lockout decides audibility. */
+/** Any supplied value arms decryption; encrypted-lockout decides audibility. The DMR encrypted-audio mute is left
+ * as the user set it: a call the key decrypts plays by the vocoder's verdict, one it cannot stays muted. Undecodable
+ * P25 audio is muted. */
 void dsd_key_apply_mute_policy(dsd_opts* opts, dsd_state* state);
 /** 0 = normal identifiers, 1 = force privacy, 2 = force RC4. */
 dsd_key_direct_result dsd_key_apply_force(dsd_state* state, int mode);

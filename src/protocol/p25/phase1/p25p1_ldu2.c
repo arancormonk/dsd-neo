@@ -120,8 +120,8 @@ ldu2_refresh_hold_hysteresis(const dsd_opts* opts, dsd_state* state) {
 
 static void
 ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, int emit_active) {
-    process_IMBE(opts, state, status_count);
-    if (p25_crypto_audio_permitted(opts, state, 0)) {
+    // A frame the vocoder never synthesized (a skipped non-standard c0) mixes nothing in any output (issue #654).
+    if (process_IMBE(opts, state, status_count) && p25_crypto_audio_permitted(opts, state, 0)) {
         dsd_play_synthesized_voice(opts, state);
     }
     if (emit_active != 0) {

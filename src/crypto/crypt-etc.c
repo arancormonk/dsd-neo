@@ -615,7 +615,8 @@ dmr_ambe49_should_skip_crypto(const char ambe_d[49]) {
 }
 
 int
-dmr_voice_stream_apply_frame49(const uint8_t* ks_bits, long int* bit_counter, int algid, char ambe_d[49]) {
+dmr_voice_stream_apply_frame49(const uint8_t* ks_bits, size_t ks_bit_count, long int* bit_counter, int algid,
+                               char ambe_d[49]) {
     if (ks_bits == NULL || bit_counter == NULL || ambe_d == NULL) {
         return 0;
     }
@@ -624,21 +625,27 @@ dmr_voice_stream_apply_frame49(const uint8_t* ks_bits, long int* bit_counter, in
         *bit_counter = 0;
     }
 
+    // Each frame owns 49 keystream bits, plus 7 unused ones for every ALG ID but Hytera Enhanced. Past the generated
+    // keystream there is nothing to decrypt with: wrapping or reading on would only hide a wrong keystream.
+    const size_t step = (algid != 0x02) ? 56U : 49U;
+    const size_t pos = (size_t)*bit_counter;
+    if (pos > ks_bit_count) {
+        return -1;
+    }
+
     if (dmr_ambe49_should_skip_crypto(ambe_d) == 1) {
-        *bit_counter += 49;
-        if (algid != 0x02) {
-            *bit_counter += 7;
-        }
+        // Silence reads no keystream; past the end the counter stays at the end.
+        *bit_counter = (long int)((ks_bit_count - pos < step) ? ks_bit_count : pos + step);
         return 0;
     }
 
-    for (int i = 0; i < 49; i++) {
-        ambe_d[i] ^= (char)(ks_bits[*bit_counter] & 1U);
-        (*bit_counter)++;
+    if (ks_bit_count - pos < 49U) {
+        return -1;
     }
-    if (algid != 0x02) {
-        *bit_counter += 7;
+    for (size_t i = 0; i < 49U; i++) {
+        ambe_d[i] ^= (char)(ks_bits[pos + i] & 1U);
     }
+    *bit_counter = (long int)((ks_bit_count - pos < step) ? ks_bit_count : pos + step);
     return 1;
 }
 

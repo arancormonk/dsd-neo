@@ -747,10 +747,10 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
     }
     if (rc == 0) {
         /* Every accepted direct switch arms decryption, including zero-valued keys.
-         * Legacy material-only columns never acquire this policy override. */
+         * Legacy material-only columns never acquire this policy override. The DMR encrypted-audio mute stays the
+         * session's: a call the row's key decrypts plays by the vocoder's verdict (issue #655). */
         if (parsed.values.present & DSD_SCAN_OPT_DIRECT) {
-            parsed.values.present |= DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25;
-            parsed.values.mute_dmr = 0;
+            parsed.values.present |= DSD_SCAN_OPT_MUTE_P25;
         }
         *out = parsed;
     }
