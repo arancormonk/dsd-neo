@@ -2422,6 +2422,8 @@ test_decoded_pcm16_plays_settled_frames(void) {
     opts->static_wav_file = 1;
     state->synctype = DSD_SYNC_NXDN_POS;
     state->nxdn_cipher_type = 0x1;
+    opts->dmr_mute_encL = 1;
+    state->mbe_slot_muted[0] = 1;
 
     for (int floating = 0; floating <= 1; floating++) {
         for (int channels = 1; channels <= 2; channels++) {

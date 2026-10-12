@@ -3802,7 +3802,9 @@ Notes:
 
 - M17 IP dispatch validates the received length before reading a stream or control frame or changing its state.
   MPKT header conversion reads only its 34-byte prefix, since a valid packet can be shorter than a 54-byte stream
-  frame. `M17_STATE_DISPATCH` exercises every truncated prefix and an exact-sized short valid MPKT under ASan.
+  frame. The application length excludes only the two CRC bytes, preserving the final application byte emitted by
+  the sender. `M17_STATE_DISPATCH` exercises every truncated prefix, an exact-sized short valid MPKT and a complete
+  text-metadata payload under ASan.
 
 EDACS analog voice (`edacs_analog()` in `src/protocol/edacs/edacs-fme.c`) runs at 48 kHz (`EDACS_ANALOG_RATE_HZ`,
 issue #633): the release register reads every 5th sample as a 9600-baud symbol, the per-call WAV opens at it and the

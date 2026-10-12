@@ -421,7 +421,7 @@ build_ip_stream_frame(uint8_t ip_frame[54], const uint8_t lsf_bits[TEST_M17_LSF_
 static size_t
 build_ip_mpkt_frame(uint8_t* ip_frame, size_t ip_frame_len, const uint8_t lsf_bits[TEST_M17_LSF_BITS], uint16_t sid,
                     const uint8_t* app, size_t app_len) {
-    const size_t frame_len = 34U + app_len + 3U;
+    const size_t frame_len = 34U + app_len + 2U;
     if (ip_frame == NULL || lsf_bits == NULL || app == NULL || ip_frame_len < frame_len) {
         return 0U;
     }
@@ -1404,7 +1404,7 @@ test_short_valid_ip_mpkt_reads_only_its_header(void) {
     state->m17_can_en = -1;
     uint8_t lsf_bits[TEST_M17_LSF_BITS];
     const uint8_t app[] = {0x05U, 0U};
-    const size_t length = 34U + sizeof(app) + 3U;
+    const size_t length = 34U + sizeof(app) + 2U;
     uint8_t* frame = malloc(length);
     assert(frame != NULL);
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
@@ -1547,8 +1547,8 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
     uint8_t lsf_bits[TEST_M17_LSF_BITS];
-    uint8_t mpkt_frame[80];
     uint8_t app[2U + M17_META_BYTES];
+    uint8_t mpkt_frame[34U + sizeof(app) + 2U];
     uint8_t expected_text[M17_TEXT_BLOCK_BYTES];
     static Event_History_I event_history[2];
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -1569,8 +1569,10 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     app[0] = 0xC2U;
     app[1] = 0x80U;
     app[2] = 0x11U;
-    DSD_MEMCPY(app + 3, "IP-MPKT-OK", 10U);
-    DSD_MEMCPY(expected_text, "IP-MPKT-OK", 10U);
+    /* The sender emits the header, the application bytes and CRC2 only. Fill the whole text block so a dropped
+       final application byte cannot be hidden by a NUL or by padding in the frame builder. */
+    DSD_MEMCPY(app + 3, "IP-MPKT-LAST!", M17_TEXT_BLOCK_BYTES);
+    DSD_MEMCPY(expected_text, "IP-MPKT-LAST!", M17_TEXT_BLOCK_BYTES);
     const size_t mpkt_len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), lsf_bits, 0xCAFEU, app, sizeof(app));
 
     state->m17_can_en = -1;
@@ -1598,6 +1600,7 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     err |= expect_u8("valid MPKT text received bitmap", state->m17_text_meta_received_bitmap, 0x01U);
     err |= expect_u8("valid MPKT text control", state->m17_text_meta_control_or, 0x11U);
     err |= expect_bytes("valid MPKT text bytes", state->m17_text_meta, expected_text, sizeof(expected_text));
+    err |= expect_u8("valid MPKT retains final application byte", state->m17_text_meta[M17_TEXT_BLOCK_BYTES - 1U], '!');
 
     const uint64_t first_epoch = call.epoch;
     m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);

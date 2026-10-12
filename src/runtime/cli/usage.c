@@ -134,7 +134,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -q            Reverse Mute - Mute Unencrypted Voice and Unmute Encrypted Voice\n");
     printf("  -V <num>      TDMA Voice Synthesis: 0=Off, 1=Slot1, 2=Slot2, 3=Both; Default is 3\n");
     printf("  -z <num>      TDMA slot preference: 0=Slot1, 1=Slot2, 2=Auto; default is 2\n");
-    printf("  -y            Write decoded digital voice (not M17) to stdout (-o -) and UDP as 32-bit float\n");
+    printf("  -y            Write decoded digital voice to stdout (-o -) and UDP as 32-bit float\n");
     printf("  -v <hex>      Set Filtering Bitmap Options (Advanced Option; Default: 0x9)\n");
     printf("                0x1 analog voice band-pass, 0x2 analog low-pass (960 Hz),\n");
     printf("                0x4 analog high-pass (960 Hz), 0x8 digital high-pass\n");
