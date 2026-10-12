@@ -17,10 +17,11 @@
 #include "rtl_fft_cache.h"
 
 struct dsd_signal_detector {
-    dsd_io::FftSetupCache fft;
-    dsd_io::HannWindowCache<DSD_SEARCH_MAX_FFT> hann;
-    dsd_signal_measure_request request{};
+    /* Keep aligned buffers first so records never require interior alignment padding. */
     alignas(16) float samples[2 * DSD_SEARCH_MAX_FFT]{};
+    dsd_io::HannWindowCache<DSD_SEARCH_MAX_FFT> hann;
+    dsd_io::FftSetupCache fft;
+    dsd_signal_measure_request request{};
     double power[DSD_SEARCH_MAX_FFT]{};
     double energy = 0;
     size_t filled = 0, window_samples = 0, total_samples = 0, clipped = 0;
