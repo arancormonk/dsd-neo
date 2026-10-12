@@ -772,11 +772,6 @@ struct dsd_state {
     uint8_t analog_block_mixed;
     /* The rate the analog sinks last said they had no memory to convert, so that is said once per rate. */
     int analog_sink_nomem_hz;
-    //new stereo float sample storage
-    float f_l[160];     //single sample left
-    float f_r[160];     //single sample right
-    float f_l4[4][160]; //quad sample for up to a P25p2 4V
-    float f_r4[4][160]; //quad sample for up to a P25p2 4V
     //new stereo short sample storage
     short s_l[160]; //single sample left
     short s_r[160]; //single sample right

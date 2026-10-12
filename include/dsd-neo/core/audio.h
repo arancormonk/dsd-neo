@@ -90,14 +90,11 @@ void writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state);
 /** @brief Write synthesized mono mixed voice samples. */
 void writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state);
 
-/** @brief Play synthesized voice (float stereo mix) for slot 1. */
-void playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state); // float stereo mix
-/** @brief Play synthesized voice (float stereo mix 3v2 DMR). */
-void playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state); // float stereo mix 3v2 DMR
-/** @brief Play synthesized voice (float stereo mix 4v2 P25p2). */
-/** @brief Play float mono voice, duplicating samples when the configured output is stereo. */
-void playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state); // float mono
-
+/*
+ * The voice mixers serve both output formats (issue #652): they stage 16-bit samples after the one gain stage
+ * (processAudio()/processAudioR()), and float output (-y) only changes how the raw fd (-o -) and UDP write them (as
+ * f32, s16 / 32768). The local audio device takes 16-bit samples in either format.
+ */
 /** @brief Play synthesized voice (short mono output slot 1). */
 void playSynthesizedVoice(dsd_opts* opts, dsd_state* state); // short mono output slot 1
 /** @brief Play short mono voice, duplicating samples when the configured output is stereo. */
@@ -106,22 +103,20 @@ void playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state); // short mono mix
 void playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state); // short stereo mix
 /** @brief Play synthesized voice (short stereo mix 3v2 DMR). */
 void playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state); // short stereo mix 3v2 DMR
-/** @brief Play synthesized voice (short stereo mix 18V superframe). */
 
 /**
- * @brief Decoded media the vocoder staged for a DMR slot since the stereo mixes last ran (issue #574).
+ * @brief Decoded media the vocoder staged for a DMR slot since the stereo mix last ran (issue #574).
  *
- * The float (FS3) and short (SS3) DMR mixes run on a timer of bursts, skipped ones included, and replay each slot's
- * buffers whether or not anything was decoded into them, so they note the audible-audio stamp
- * (<dsd-neo/core/audio_activity.h>) only for a slot whose gates pass, that a channel they emit carries (SS3's output
- * policy may copy one slot over the other) and that holds media of their kind: FLOAT when the vocoder copied a decoded
- * frame into `f_l`/`f_r`, SHORT when it ran the short path into `s_l`/`s_r` (never the silence a muted slot stages).
- * The silence a muted slot stages replaces its short frame, so it retires that slot's SHORT flag: the flag then says
- * media was staged after the slot's last silence, which the frames the mixes play still hold. Each mix takes both
- * slots' flags; a path that discards the staged audio clears them. Kept only while the stamp is armed. Process-wide,
- * decoder thread only.
+ * The DMR stereo mix (SS3, in both output formats) runs on a timer of bursts, skipped ones included, and replays each
+ * slot's buffers whether or not anything was decoded into them, so it notes the audible-audio stamp
+ * (<dsd-neo/core/audio_activity.h>) only for a slot whose gates pass, that a channel it emits carries (its output
+ * policy may copy one slot over the other) and that holds media: SHORT when the vocoder ran the short path into
+ * `s_l`/`s_r` (never the silence a muted slot stages). The silence a muted slot stages replaces its short frame, so it
+ * retires that slot's SHORT flag: the flag then says media was staged after the slot's last silence, which the frames
+ * the mix plays still hold. The mix takes both slots' flags; a path that discards the staged audio clears them. Kept
+ * only while the stamp is armed. Process-wide, decoder thread only.
  */
-enum { DSD_DMR_MIX_MEDIA_FLOAT = 1, DSD_DMR_MIX_MEDIA_SHORT = 2 };
+enum { DSD_DMR_MIX_MEDIA_SHORT = 1 };
 
 /** @brief The vocoder staged decoded media of @p kind (DSD_DMR_MIX_MEDIA_*) for DMR slot @p slot (0 or 1). */
 void dsd_audio_dmr_mix_media_staged(int slot, unsigned int kind);
@@ -133,20 +128,17 @@ void dsd_audio_dmr_mix_media_discard(int slot);
 unsigned int dsd_audio_dmr_mix_media_take(int slot);
 
 /**
- * @brief Play one synthesized voice frame using the configured sample format and channel count.
+ * @brief Play one synthesized voice frame through the mono or stereo mixer for the configured channel count.
  *
- * Selects short or float output from `opts->floating_point` and mono or
- * stereo output from `opts->pulse_digi_out_channels`. Unsupported values and
- * null arguments produce no output.
+ * Picks the short mono (MS) or stereo (SS) mixer from `opts->pulse_digi_out_channels`, in either output format
+ * (`opts->floating_point` only changes how the output writes the samples). Unsupported values and null arguments
+ * produce no output.
  */
 void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
 
 /** @brief Apply the manual analog gain (`-n`, 0..100% as 0x..5x) to a short buffer: the M17 encoder's fixed input gain.
  *  The analog monitor's gain stage is dsd_analog_audio_process_f() (<dsd-neo/dsp/analog_audio.h>). */
 void analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len); // manual gain for analog paths
-
-/** @brief Multiply float buffer by gain factor in-place. */
-void audio_apply_gain_f32(float* buf, size_t n, float gain);
 
 /** @brief Analog monitor 6x sample-repetition upsampler. */
 void upsample(dsd_state* state, float invalue);
@@ -198,20 +190,12 @@ void dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old
 int dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, SNDFILE** out_file,
                                    SF_INFO** out_info, int* out_sample_rate_hz, int* out_opened_as_container);
 
-/** @brief Duplicate mono float samples into interleaved stereo buffer. */
-void audio_mono_to_stereo_f32(const float* in, float* out, size_t n);
 /** @brief Duplicate mono int16 samples into interleaved stereo buffer. */
 void audio_mono_to_stereo_s16(const short* in, short* out, size_t n);
 
-/** @brief Mix two float channels with per-channel mute flags into interleaved stereo. */
-void audio_mix_interleave_stereo_f32(const float* left, const float* right, size_t n, int encL, int encR,
-                                     float* stereo_out);
 /** @brief Mix two int16 channels with per-channel mute flags into interleaved stereo. */
 void audio_mix_interleave_stereo_s16(const short* left, const short* right, size_t n, int encL, int encR,
                                      short* stereo_out);
-/** @brief Mix two float channels with mute flags into mono output. */
-void audio_mix_mono_from_slots_f32(const float* left, const float* right, size_t n, int l_on, int r_on,
-                                   float* mono_out);
 /** @brief Mix two int16 channels with mute flags into mono output (the average when both are on). */
 void audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out);
 

@@ -297,22 +297,18 @@ update_p25_p1_voice_err_hist(dsd_state* state) {
     }
 }
 
+// One frame of -r playback, through the voice chain and the shared mono mixer in either output format.
 static void
 play_mbe_output_frame(dsd_opts* opts, dsd_state* state, int want_static_wav) {
-    // The voice chain runs on every frame (issue #653); the short staging only where the short output takes it.
     dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
-    if ((opts->audio_out == 1 || want_static_wav) && opts->floating_point == 0) {
+    if (opts->audio_out == 1 || want_static_wav) {
         dsd_voice_stage_short_left(opts, state);
     }
     if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
         writeSynthesizedVoice(opts, state);
     }
-    if ((opts->audio_out == 1 || want_static_wav) && opts->floating_point == 0) {
+    if (opts->audio_out == 1 || want_static_wav) {
         playSynthesizedVoiceMS(opts, state);
-    }
-    if (opts->floating_point == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-        playSynthesizedVoiceFM(opts, state);
     }
 }
 
@@ -1615,7 +1611,7 @@ mbe_post_stage_slot_silence(dsd_state* state, int slot) {
     }
 }
 
-// Decoded media a DMR slot staged for the stereo mixes' audible-audio stamp (dsd_audio_dmr_mix_media_staged(), issue
+// Decoded media a DMR slot staged for the stereo mix's audible-audio stamp (dsd_audio_dmr_mix_media_staged(), issue
 // #574); called only while the stamp is armed. P25 Phase 2 stages through here as well, but its playout reads the
 // provenance from dsd_state::mbe_short_silenced instead (issue #651).
 static void
@@ -1686,19 +1682,13 @@ mbe_post_left_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class 
 
     state->debug_audio_errors += state->errs2;
     if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
-        if (opts->floating_point == 0) {
-            dsd_voice_stage_short_left(opts, state);
-            state->mbe_short_silenced[0] = 0U;
-            if (dsd_audio_activity_armed()) {
-                mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_SHORT);
-            }
+        dsd_voice_stage_short_left(opts, state);
+        state->mbe_short_silenced[0] = 0U;
+        if (dsd_audio_activity_armed()) {
+            mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_SHORT);
         }
     } else {
         mbe_post_stage_slot_silence(state, 0);
-    }
-    DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-    if (dsd_audio_activity_armed()) {
-        mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_FLOAT);
     }
 }
 
@@ -1750,19 +1740,13 @@ mbe_post_right_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class
 
     state->debug_audio_errorsR += state->errs2R;
     if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
-        if (opts->floating_point == 0) {
-            dsd_voice_stage_short_right(opts, state);
-            state->mbe_short_silenced[1] = 0U;
-            if (dsd_audio_activity_armed()) {
-                mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_SHORT);
-            }
+        dsd_voice_stage_short_right(opts, state);
+        state->mbe_short_silenced[1] = 0U;
+        if (dsd_audio_activity_armed()) {
+            mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_SHORT);
         }
     } else {
         mbe_post_stage_slot_silence(state, 1);
-    }
-    DSD_MEMCPY(state->f_r, state->audio_out_temp_bufR, sizeof(state->f_r));
-    if (dsd_audio_activity_armed()) {
-        mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_FLOAT);
     }
 }
 
@@ -1770,8 +1754,7 @@ static void
 mbe_post_other_process_audio(const dsd_opts* opts, dsd_state* state, int is_p25p2) {
     const int slot = (is_p25p2 && state->currentslot == 1) ? 1 : 0;
     state->debug_audio_errors += state->errs2;
-    if ((opts->audio_out != 1 && !(opts->wav_out_f != NULL && opts->static_wav_file == 1))
-        || opts->floating_point != 0) {
+    if (opts->audio_out != 1 && !(opts->wav_out_f != NULL && opts->static_wav_file == 1)) {
         // The slot's short frame is left as it was: it holds no sample of this frame.
         state->mbe_short_silenced[slot] = 1U;
         return;
@@ -1803,15 +1786,6 @@ mbe_post_other_is_allowed(const dsd_opts* opts, const dsd_state* state, int is_p
 }
 
 static void
-mbe_post_other_copy_float_buffer(dsd_state* state, int is_p25p2) {
-    if (is_p25p2 && state->currentslot == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-    } else {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf)); //P25p1 FDMA 8k/1
-    }
-}
-
-static void
 mbe_post_other_audio(const dsd_opts* opts, dsd_state* state) {
     if (mbe_post_dmr_mono_active(opts, state) || mbe_post_stereo_active(opts, state)) {
         return;
@@ -1821,8 +1795,6 @@ mbe_post_other_audio(const dsd_opts* opts, dsd_state* state) {
     if (mbe_post_other_is_allowed(opts, state, is_p25p2)) {
         mbe_post_other_process_audio(opts, state, is_p25p2);
     }
-
-    mbe_post_other_copy_float_buffer(state, is_p25p2);
 }
 
 static int
@@ -1837,12 +1809,7 @@ mbe_post_mono_left_audio(const dsd_opts* opts, dsd_state* state) {
         frame_errors = state->errs2R;
     }
     state->debug_audio_errors += frame_errors;
-
-    if (opts->floating_point == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-    } else {
-        dsd_voice_stage_short_left(opts, state);
-    }
+    dsd_voice_stage_short_left(opts, state);
 }
 
 // The slot whose per-call WAV a frame on the mono post path belongs to: DMR mono's playing slot, and a P25 Phase 2
@@ -2005,9 +1972,9 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
 
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    // The frame goes through its slot's voice chain once, before anything reads it (issue #653): the short staging,
-    // the float copies, the per-call WAV and the mixers all take the same filtered, gained samples, whatever the output
-    // format, the output type or the mute. The gates below still decide who receives it.
+    // The frame goes through its slot's voice chain once, before anything reads it (issue #653): the shared short
+    // staging and the per-call WAV take the same filtered, gained samples, whatever the output format, the output
+    // type or the mute. The gates below still decide who receives it.
     if (frame_ctx->synth) {
         dsd_voice_chain_run(opts, state, frame_ctx->synth_slot, frame_ctx->synth);
     }

@@ -6,6 +6,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/audio_input_switch.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
@@ -953,7 +954,16 @@ dsd_engine_setup_parse_simple_outputs(dsd_opts* opts) {
         }
         opts->audio_out_fd = fd;
         opts->audio_out_type = 1;
+        dsd_audio_sink_fd_reset();
         LOG_INFO("NOTICE: Audio Out Device: -\n");
+        /* The analog monitor writes stdout only in the analog-only modes (dsd_audio_sink_monitor_takes_fd()); the M17
+           encoders' -8 baseband is a stdout writer of its own. */
+        if (opts->monitor_input_audio == 1 && !dsd_audio_sink_monitor_takes_fd(opts) && opts->m17encoder != 1
+            && opts->m17encoderbrt != 1 && opts->m17encoderpkt != 1) {
+            LOG_WARN("WARNING: -8 source monitoring is not written to stdout (-o -) while decoding digital modes; its "
+                     "48 kHz audio would interleave with the decoded voice. Use -o udp (port + 2) or a sound device "
+                     "for it.\n");
+        }
     }
     return 0;
 }
@@ -2650,10 +2660,6 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
 
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
     DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
-    DSD_MEMSET(state->f_l, 0.0f, sizeof(state->f_l));
-    DSD_MEMSET(state->f_r, 0.0f, sizeof(state->f_r));
-    DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
-    DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
     dsd_audio_dmr_mix_media_discard(0);
     dsd_audio_dmr_mix_media_discard(1);
     DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
@@ -3333,6 +3339,24 @@ dsd_engine_run_install_hooks(void) {
     dsd_engine_p25_optional_hooks_install();
 }
 
+/* Embedded in a host process (Android service, GUI shell), the library must not steal the process signal dispositions;
+ * the host drives shutdown with dsd_request_shutdown() instead. */
+static void
+dsd_engine_install_signal_handlers(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (cfg && cfg->no_signal_handlers_enable) {
+        return;
+    }
+    signal(SIGINT, dsd_engine_signal_handler);
+    signal(SIGTERM, dsd_engine_signal_handler);
+#ifdef SIGPIPE
+    /* A reader that goes away (`-o - | head`, a closed log pipe, a dropped socket) costs that output an error return,
+       never the process: decoding, recording and trunk following carry on, and a shutdown still finalizes the WAV
+       headers (issue #659). No child process is ever started, so nothing inherits this. */
+    signal(SIGPIPE, SIG_IGN);
+#endif
+}
+
 static int
 dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
     if (!opts || !state || !early_exit) {
@@ -3379,16 +3403,7 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
         return 0;
     }
 
-    /* Embedded in a host process (Android service, GUI shell), the library must
-     * not steal the process signal dispositions; the host drives shutdown with
-     * dsd_request_shutdown() instead. */
-    {
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-        if (!cfg || !cfg->no_signal_handlers_enable) {
-            signal(SIGINT, dsd_engine_signal_handler);
-            signal(SIGTERM, dsd_engine_signal_handler);
-        }
-    }
+    dsd_engine_install_signal_handlers();
     dsd_engine_parse_m17_userdata(opts, state);
     dsd_engine_note_m17_encoder_squelch(opts, state);
     return 0;

@@ -387,28 +387,6 @@ test_chain_gain_laws(void) {
     return rc;
 }
 
-/* What the float output plays is the chained frame rescaled, the same samples the short output stages. */
-static int
-test_float_output_rescales_chain_output(void) {
-    int rc = 0;
-    float in[DSD_VOICE_FRAME_SAMPLES];
-    float out[DSD_VOICE_FRAME_SAMPLES];
-    for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
-        in[n] = (float)((n * 397) % 65535 - 32767);
-    }
-    dsd_voice_frame_to_float(in, out, DSD_VOICE_FRAME_SAMPLES);
-    for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
-        const float as_s16 = out[n] * 32767.0f;
-        if (fabsf(as_s16 - in[n]) > 1.0f) {
-            rc |= expect_true("float sample is the short sample within 1 LSB", 0);
-            break;
-        }
-    }
-    dsd_voice_frame_to_float(in, in, DSD_VOICE_FRAME_SAMPLES);
-    rc |= expect_true("in-place rescale", frames_match(in, out, DSD_VOICE_FRAME_SAMPLES));
-    return rc;
-}
-
 static short g_tone_s16[16 * 160];
 static float g_tone_f32[16 * 160];
 static size_t g_tone_count;
@@ -432,7 +410,7 @@ capture_tone(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* da
 }
 
 /* The alert tone is built once on the int16 scale: short output plays a clean sine at its level, float output the same
-   samples / 32767, and the tone runs on across its 20 ms blocks. */
+   samples / 32768, and the tone runs on across its 20 ms blocks. */
 static int
 test_beeper_tone_is_the_same_in_both_formats(void) {
     static const struct {
@@ -477,7 +455,7 @@ test_beeper_tone_is_the_same_in_both_formats(void) {
         rc |= expect_true("float tone length", g_tone_count == (size_t)6U * 160U);
         float worst_f = 0.0f;
         for (size_t i = 0; i < g_tone_count; i++) {
-            const float diff = fabsf(g_tone_f32[i] - ((float)g_tone_s16[i] / 32767.0f));
+            const float diff = fabsf(g_tone_f32[i] - ((float)g_tone_s16[i] / 32768.0f));
             worst_f = diff > worst_f ? diff : worst_f;
         }
         rc |= expect_true("float tone carries the short tone's samples", worst_f < 1e-7f);
@@ -496,7 +474,6 @@ main(void) {
     rc |= test_high_pass_state_is_per_slot();
     rc |= test_high_pass_restarts_at_reception_boundaries();
     rc |= test_chain_gain_laws();
-    rc |= test_float_output_rescales_chain_output();
     rc |= test_beeper_tone_is_the_same_in_both_formats();
     if (rc == 0) {
         DSD_FPRINTF(stdout, "CORE_VOICE_CHAIN: OK\n");

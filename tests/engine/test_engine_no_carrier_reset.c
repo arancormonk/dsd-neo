@@ -3993,7 +3993,7 @@ test_no_carrier_reset_discards_the_dmr_mix_media(void) {
             opts->pulse_digi_out_channels = 2;
             opts->slot1_on = 1;
             opts->slot2_on = 1;
-            const unsigned int media = DSD_DMR_MIX_MEDIA_FLOAT | DSD_DMR_MIX_MEDIA_SHORT;
+            const unsigned int media = DSD_DMR_MIX_MEDIA_SHORT;
             dsd_audio_dmr_mix_media_staged(0, media);
             dsd_audio_dmr_mix_media_staged(1, media);
 
@@ -4006,25 +4006,18 @@ test_no_carrier_reset_discards_the_dmr_mix_media(void) {
             state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
             char tag[128];
             const char* reset = path == 0 ? "noCarrier" : "the shared reset";
-            const char* mix = floating_point ? "FS3" : "SS3";
+            // Both output formats play DMR through SS3 (#652).
+            const char* mix = floating_point ? "SS3 (-y)" : "SS3";
             uint64_t stamp = 0U;
             dsd_audio_activity_reset();
-            if (floating_point) {
-                playSynthesizedVoiceFS3(opts, state);
-            } else {
-                playSynthesizedVoiceSS3(opts, state);
-            }
+            playSynthesizedVoiceSS3(opts, state);
             dsd_audio_activity_read(&stamp, NULL);
             DSD_SNPRINTF(tag, sizeof(tag), "dmr mix media: %s %s after %s stamps nothing", mix, "mix", reset);
             rc |= expect_true(tag, stamp == 0U);
 
             dsd_audio_dmr_mix_media_staged(0, media);
             dsd_audio_activity_reset();
-            if (floating_point) {
-                playSynthesizedVoiceFS3(opts, state);
-            } else {
-                playSynthesizedVoiceSS3(opts, state);
-            }
+            playSynthesizedVoiceSS3(opts, state);
             dsd_audio_activity_read(&stamp, NULL);
             DSD_SNPRINTF(tag, sizeof(tag), "dmr mix media: %s stamps media staged after %s", mix, reset);
             rc |= expect_true(tag, stamp != 0U);
@@ -4032,6 +4025,46 @@ test_no_carrier_reset_discards_the_dmr_mix_media(void) {
         }
     }
     dsd_audio_activity_reset();
+    return rc;
+}
+
+/*
+ * Issue #652: the no-carrier pass reset the digital output gain in float output (-y) only, to the -g setting: the auto
+ * gain (-g 0) restarted every call at its quietest, and -g 50 divided by zero in the old float gain stage. One gain
+ * stage serves both formats now: the auto gain's level carries over the pass in either format, its peak history goes,
+ * and a fixed gain stays the -g multiplier.
+ */
+static int
+test_no_carrier_keeps_the_digital_gain_in_either_format(void) {
+    int rc = 0;
+    for (int floating_point = 0; floating_point <= 1; floating_point++) {
+        for (int fixed = 0; fixed <= 1; fixed++) {
+            dsd_opts* opts = NULL;
+            dsd_state* state = NULL;
+            if (init_test_runtime(&opts, &state) != 0) {
+                return 1;
+            }
+            opts->floating_point = floating_point;
+            opts->audio_gain = fixed ? 50.0f : 0.0f;
+            opts->audio_gainR = opts->audio_gain;
+            state->aout_gain = fixed ? 50.0f : 37.5f;
+            state->aout_gainR = fixed ? 50.0f : 12.25f;
+            state->aout_max_buf[3] = 900.0f;
+            state->aout_max_bufR[7] = 450.0f;
+
+            noCarrier(opts, state);
+
+            char tag[128];
+            DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s %s gain keeps its level", floating_point ? "-y" : "s16",
+                         fixed ? "fixed" : "auto");
+            rc |= expect_true(tag, fabsf(state->aout_gain - (fixed ? 50.0f : 37.5f)) < 1e-6f
+                                       && fabsf(state->aout_gainR - (fixed ? 50.0f : 12.25f)) < 1e-6f);
+            DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s %s gain drops its peak history",
+                         floating_point ? "-y" : "s16", fixed ? "fixed" : "auto");
+            rc |= expect_true(tag, fabsf(state->aout_max_buf[3]) < 1e-6f && fabsf(state->aout_max_bufR[7]) < 1e-6f);
+            free_test_runtime(opts, state);
+        }
+    }
     return rc;
 }
 
@@ -6348,6 +6381,7 @@ main(void) {
     rc |= test_carrier_boundary_closes_mbe_captures();
     rc |= test_carrier_boundary_discards_partial_assemblies();
     rc |= test_no_carrier_reset_discards_the_dmr_mix_media();
+    rc |= test_no_carrier_keeps_the_digital_gain_in_either_format();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();

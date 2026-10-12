@@ -11,19 +11,8 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
-#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-
-void
-audio_apply_gain_f32(float* buf, size_t n, float gain) {
-    if (!buf) {
-        return;
-    }
-    for (size_t i = 0; i < n; i++) {
-        buf[i] *= gain;
-    }
-}
 
 // Manual analog gain for the M17 encoder's microphone input (-n N, N > 0): 0..100% maps to 0x..5x. The analog monitor's
 // gain stage, fixed or automatic, is dsd_analog_audio_process_f().

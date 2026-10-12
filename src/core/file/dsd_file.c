@@ -1610,12 +1610,10 @@ sdrtrunk_chain_frame(const dsd_opts* opts, dsd_state* state) {
     dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
 }
 
-// The chained frame's consumers: the short staging only where the short output takes it.
+// The chained frame's consumers share short staging in both output formats.
 static void
 run_decode_audio_output_path(dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 0) {
-        dsd_voice_stage_short_left(opts, state);
-    }
+    dsd_voice_stage_short_left(opts, state);
     const int record = sdrtrunk_json_record_allowed(opts, state);
     if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
         writeSynthesizedVoice(opts, state);
@@ -1624,16 +1622,12 @@ run_decode_audio_output_path(dsd_opts* opts, dsd_state* state) {
         writeSynthesizedVoiceMS(opts, state);
     }
 
-    if (opts->audio_out == 1 && opts->floating_point == 0) {
+    if (opts->audio_out == 1) {
         if (opts->static_wav_file == 1 || opts->dmr_stereo_wav == 1) {
             playSynthesizedVoice(opts, state);
         } else {
             playSynthesizedVoiceMS(opts, state);
         }
-    }
-    if (opts->audio_out == 1 && opts->floating_point == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-        playSynthesizedVoiceFM(opts, state);
     } else if (opts->audio_out == 0) {
         purge_audio_buffers_if_needed(state);
     }

@@ -20,8 +20,6 @@
 
 static int g_ms_calls = 0;
 static int g_ss_calls = 0;
-static int g_fm_calls = 0;
-static int g_fs_calls = 0;
 
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
@@ -37,33 +35,16 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-in
     g_ss_calls++;
 }
 
-void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    g_fm_calls++;
-}
-
-void
-playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    g_fs_calls++;
-}
-
 static void
 reset_counters(void) {
     g_ms_calls = 0;
     g_ss_calls = 0;
-    g_fm_calls = 0;
-    g_fs_calls = 0;
 }
 
 static int
-expect_counts(int ms, int ss, int fm, int fs, const char* label) {
-    if (g_ms_calls != ms || g_ss_calls != ss || g_fm_calls != fm || g_fs_calls != fs) {
-        DSD_FPRINTF(stderr, "FAIL %s: got ms=%d ss=%d fm=%d fs=%d expected ms=%d ss=%d fm=%d fs=%d\n", label,
-                    g_ms_calls, g_ss_calls, g_fm_calls, g_fs_calls, ms, ss, fm, fs);
+expect_counts(int ms, int ss, const char* label) {
+    if (g_ms_calls != ms || g_ss_calls != ss) {
+        DSD_FPRINTF(stderr, "FAIL %s: got ms=%d ss=%d expected ms=%d ss=%d\n", label, g_ms_calls, g_ss_calls, ms, ss);
         return 1;
     }
     return 0;
@@ -80,18 +61,16 @@ main(void) {
         return 1;
     }
 
+    // Both output formats play through the same mixers (issue #652): float output only changes how samples are written.
     struct {
         int floating_point;
         int channels;
         int ms;
         int ss;
-        int fm;
-        int fs;
         const char* label;
     } cases[] = {
-        {0, 1, 1, 0, 0, 0, "short_mono"},       {0, 2, 0, 1, 0, 0, "short_stereo"},
-        {1, 1, 0, 0, 1, 0, "float_mono"},       {1, 2, 0, 0, 0, 1, "float_stereo"},
-        {0, 0, 0, 0, 0, 0, "invalid_channels"}, {2, 2, 0, 0, 0, 0, "invalid_float_mode"},
+        {0, 1, 1, 0, "short_mono"},   {0, 2, 0, 1, "short_stereo"},     {1, 1, 1, 0, "float_mono"},
+        {1, 2, 0, 1, "float_stereo"}, {0, 0, 0, 0, "invalid_channels"}, {1, 3, 0, 0, "invalid_float_channels"},
     };
 
     for (size_t i = 0; i < (sizeof cases / sizeof cases[0]); i++) {
@@ -99,7 +78,7 @@ main(void) {
         opts->floating_point = cases[i].floating_point;
         opts->pulse_digi_out_channels = cases[i].channels;
         dsd_play_synthesized_voice(opts, state);
-        if (expect_counts(cases[i].ms, cases[i].ss, cases[i].fm, cases[i].fs, cases[i].label) != 0) {
+        if (expect_counts(cases[i].ms, cases[i].ss, cases[i].label) != 0) {
             free(opts);
             free(state);
             return 1;
@@ -109,7 +88,7 @@ main(void) {
     reset_counters();
     dsd_play_synthesized_voice(NULL, state);
     dsd_play_synthesized_voice(opts, NULL);
-    if (expect_counts(0, 0, 0, 0, "null_guard") != 0) {
+    if (expect_counts(0, 0, "null_guard") != 0) {
         free(opts);
         free(state);
         return 1;

@@ -127,12 +127,19 @@ persistence tests use disposable directories and do not require a writable home 
 
 The P25 Phase 2 voice playout (issue #651) is tested end to end by `P25_P2_VOICE_OUTPUT`: timeslots run through the real
 DUID dispatch with seeded DUIDs and `p2_scramble_offset`, and a stand-in `processMbeFrameSoft()` tags every frame (each
-short sample holds a per-slot sequence number; the float frame carries it in the signs of its first 16 samples, which
-the float gain keeps). Each case reads every block from the UDP blast hook and checks that both slots play every frame
-once, in order, side by side, and as each timeslot pair completes. It uses only interfaces the decoder had before the
-playout, so it also runs against the earlier mixers, where it fails. A MAC message that has to arrive between two
-timeslots of a window comes from the stand-in vocoder's hook. `CORE_P25P2_PLAYOUT` drives the playout's API directly
-(the fill rule over every 2V position, epochs, verdicts, routing, the static WAV through a real libsndfile file).
+short sample holds a per-slot sequence number, which float output writes as f32, the sample / 32768). Each case reads
+every block from the UDP blast hook and checks that both slots play every frame once, in order, side by side, and as
+each timeslot pair completes. It uses only interfaces the decoder had before the playout, so it also runs against the
+earlier mixers, where it fails. A MAC message that has to arrive between two timeslots of a window comes from the
+stand-in vocoder's hook. `CORE_P25P2_PLAYOUT` drives the playout's API directly (the fill rule over every 2V position,
+epochs, verdicts, routing, the static WAV through a real libsndfile file).
+
+Float output (`-y`, issue #652) is the integer output written as f32, so its end-to-end cases compare the two formats
+rather than pin levels: each `DECODE_IQ_FLOAT_OUTPUT_*` case (`tests/iq_float_output_check.cmake`, label `float-output`)
+replays a voice fixture twice, without and with `-y`, each to stdout and a static WAV, and the comparator
+(`tests/core/float_output_compare.c`) requires every float sample to equal the 16-bit sample / 32768 bit for bit, audio
+in the stream, and byte-identical static WAVs; options check a single call in both ears, a call both formats mute, and
+`-o null`. Replays decode identically within one build ("Replay determinism"), so the two runs see the same frames.
 
 The audible-audio stamp (`<dsd-neo/core/audio_activity.h>`, issue #574) is tested where each writer emits, and every
 writer case asserts both the captured output and the stamp, so audio that plays without stamping, or a stamp with
@@ -140,9 +147,10 @@ nothing played, fails. Each writer family also has negative controls for the nul
 as an unmuted `-o null` session runs) and a local stream that is not open. `CORE_AUDIO_ACTIVITY` covers the API: an
 unarmed note reads no clock and stores nothing, arming, the age and its 60 s expiry, reset, a writer, reader and
 resetter racing (run it under the `tsan-debug` preset too), and the shared output rule every writer stamps under.
-`CORE_AUDIO2_HELPERS` drives the mixers with stubbed gates, the DMR fresh-media marks included (a repeated mix with
-nothing new, muted media beside an idle slot, a discard); `CORE_MBE_TRANSFORM_CONTEXT` the real vocoder into the real
-FS3 and SS3 mixes (its clear, encrypted, reverse-mute, unmute and forced-clear matrix, skipped bursts, decoded all-zero
+`CORE_AUDIO2_HELPERS` drives the mixers with stubbed gates, in both output formats, the DMR fresh-media marks included
+(a repeated mix with nothing new, muted media beside an idle slot, a discard); `CORE_MBE_TRANSFORM_CONTEXT` the real
+vocoder into the real SS3 mix in both output formats (its clear, encrypted, reverse-mute, unmute and forced-clear
+matrix, skipped bursts, decoded all-zero
 samples, a talkgroup hold, a muted burst over a clear one not yet mixed, and a slot SS3's output policy copies over its
 companion, on stereo and mono output); `CORE_AUDIO_GAIN` the legacy short output; `P25_P2_MIXER_GATE` the P25 Phase 2
 playout under the real gates in both formats (a slot with frames heard whichever slot a hold or the last burst would
@@ -383,6 +391,15 @@ draw of the hunt's phase against the calls, which a change to the hunt's timelin
 [Replay determinism](#replay-determinism-issue-572) says how to judge such a change across captures and their
 realizations instead. Decode *volume* under the hunt is not covered by the `iq-decode` suite, which asks only whether a
 build still decodes.
+
+#### stdout audio (issue #659)
+
+`DECODE_IQ_STDOUT_*` (`tests/audio_stdout_check.cmake`, radio builds on POSIX) run the `-o -` output end to end.
+`_CLOSED_PIPE` pipes D-STAR into `true`, a reader that is gone before the first block, so the case never depends on how
+much the pipe buffers: dsd-neo must exit 0 (not 141, SIGPIPE), log exactly one stdout failure, and write a `-w` WAV
+byte-identical to a full run's, which replay determinism makes exact. `_FM_MONITOR` and `_AM_MONITOR` require the
+analog monitor's audio on stdout under `-fA` and `-fM`, and `_SOURCE_MONITOR` that `-8` during digital decoding warns
+once and leaves stdout byte-identical to the run without it.
 
 #### Replay determinism (issue #572)
 

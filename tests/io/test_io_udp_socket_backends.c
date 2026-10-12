@@ -12,6 +12,8 @@
 #include <dsd-neo/io/udp_bind.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/log.h>
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
@@ -51,6 +53,26 @@ static int g_recvfrom_result;
 static int g_socket_error;
 static uint8_t g_recvfrom_payload[32];
 static size_t g_recvfrom_payload_len;
+
+/* The blasters report send failures through the log, rate-limited on the real-time clock (issue #659). */
+static int g_log_warn_count;
+static int g_log_info_count;
+static uint64_t g_now_ms = 1000U;
+
+void
+dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
+    (void)format;
+    if (level == LOG_LEVEL_WARN) {
+        g_log_warn_count++;
+    } else if (level == LOG_LEVEL_INFO) {
+        g_log_info_count++;
+    }
+}
+
+uint64_t
+dsd_realtime_mono_ms(void) {
+    return g_now_ms;
+}
 
 static void
 reset_stubs(void) {
@@ -206,7 +228,8 @@ test_udp_connect_failures(void) {
     reset_stubs();
     g_setsockopt_result = 7;
     assert(udp_socket_connect(&opts, &state) == 7);
-    assert(opts.udp_sockfd == 11);
+    assert(opts.udp_sockfd == DSD_INVALID_SOCKET);
+    assert(g_close_count == 1);
     assert(g_setsockopt_count == 1);
     assert(g_resolve_count == 0);
 
@@ -216,6 +239,8 @@ test_udp_connect_failures(void) {
     assert(g_resolve_count == 1);
     assert(strcmp(g_last_resolve_host, "239.1.2.3") == 0);
     assert(g_last_resolve_port == 23456);
+    assert(opts.udp_sockfd == DSD_INVALID_SOCKET);
+    assert(g_close_count == 1);
 
     reset_stubs();
     g_create_result = DSD_INVALID_SOCKET;
@@ -227,7 +252,8 @@ test_udp_connect_failures(void) {
     reset_stubs();
     g_setsockopt_result = 8;
     assert(udp_socket_connectA(&opts, &state) == 8);
-    assert(opts.udp_sockfdA == 11);
+    assert(opts.udp_sockfdA == DSD_INVALID_SOCKET);
+    assert(g_close_count == 1);
     assert(g_setsockopt_count == 1);
     assert(g_resolve_count == 0);
 
@@ -237,6 +263,8 @@ test_udp_connect_failures(void) {
     assert(g_resolve_count == 1);
     assert(strcmp(g_last_resolve_host, "239.1.2.3") == 0);
     assert(g_last_resolve_port == 23458);
+    assert(opts.udp_sockfdA == DSD_INVALID_SOCKET);
+    assert(g_close_count == 1);
     return 0;
 }
 
@@ -280,6 +308,74 @@ test_udp_connect_success_and_send_paths(void) {
     udp_socket_blasterA(&opts, &state, sizeof(analog_payload), analog_payload);
     assert(g_last_sendto_len == 0);
     assert(g_last_sendto_sock == DSD_INVALID_SOCKET);
+    return 0;
+}
+
+/* A failing blaster socket reports the first failure of a run, then at most one line a minute, and one line when sends
+   go through again; a datagram cut short counts as a failure (issue #659). */
+static int
+test_udp_send_failures_are_rate_limited(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_opts(&opts);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stubs();
+    assert(udp_socket_connect(&opts, &state) == 0);
+
+    const uint8_t payload[] = {1, 2, 3, 4};
+    g_log_warn_count = 0;
+    g_log_info_count = 0;
+    g_now_ms = 5000U;
+    g_sendto_result = -1;
+    for (int i = 0; i < 500; i++) {
+        udp_socket_blaster(&opts, &state, sizeof(payload), payload);
+        g_now_ms += 20U;
+    }
+    /* 10 s of failures: one line. */
+    assert(g_log_warn_count == 1);
+    assert(g_log_info_count == 0);
+
+    g_sendto_result = 0;
+    udp_socket_blaster(&opts, &state, sizeof(payload), payload);
+    assert(g_log_info_count == 1);
+    udp_socket_blaster(&opts, &state, sizeof(payload), payload);
+    assert(g_log_info_count == 1);
+
+    /* Flapping inside the minute: no new failure line, so no recovery line either. */
+    for (int i = 0; i < 100; i++) {
+        g_sendto_result = (i % 2 == 0) ? -1 : 0;
+        udp_socket_blaster(&opts, &state, sizeof(payload), payload);
+        g_now_ms += 20U;
+    }
+    assert(g_log_warn_count == 1);
+    assert(g_log_info_count == 1);
+
+    /* A minute on, a short datagram is reported again. */
+    g_now_ms += 60000U;
+    g_sendto_result = 2;
+    udp_socket_blaster(&opts, &state, sizeof(payload), payload);
+    assert(g_log_warn_count == 2);
+
+    /* The analog socket keeps its own count. */
+    reset_stubs();
+    init_opts(&opts);
+    assert(udp_socket_connectA(&opts, &state) == 0);
+    g_sendto_result = -1;
+    udp_socket_blasterA(&opts, &state, sizeof(payload), payload);
+    udp_socket_blasterA(&opts, &state, sizeof(payload), payload);
+    assert(g_log_warn_count == 3);
+    g_sendto_result = 0;
+    udp_socket_blasterA(&opts, &state, sizeof(payload), payload);
+    assert(g_log_info_count == 2);
+
+    /* A new socket, including one reusing the same descriptor number, starts a new reporting session. Its first
+       failure must not inherit the old socket's minute-long suppression. */
+    assert(udp_socket_connect(&opts, &state) == 0);
+    assert(udp_socket_connectA(&opts, &state) == 0);
+    g_sendto_result = -1;
+    udp_socket_blaster(&opts, &state, sizeof(payload), payload);
+    udp_socket_blasterA(&opts, &state, sizeof(payload), payload);
+    assert(g_log_warn_count == 5);
     return 0;
 }
 
@@ -427,6 +523,7 @@ main(void) {
     int rc = 0;
     rc |= test_udp_connect_failures();
     rc |= test_udp_connect_success_and_send_paths();
+    rc |= test_udp_send_failures_are_rate_limited();
     rc |= test_m17_connect_send_and_receive();
     rc |= test_m17_receive_error_classification();
     rc |= test_m17_connect_failures();

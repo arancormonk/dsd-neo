@@ -29,9 +29,9 @@
  * edit mutes what was queued before it, also in the drain when the release leaves the channel. The current verdict is
  * the decode gate's decision for the call's latest burst, or the one a path that changes verdicts or ends the calls
  * took (dsd_p25p2_playout_note_policy()); emission only checks, cheaply, whether anything a waiting call's verdict
- * reads moved (dsd_p25p2_policy_key) and takes its verdict again then. The slot switches are read at emission.
- * Frames are queued as the vocoder's voice chain left them (filtered and gained per slot, issue #653): the short
- * samples it staged, or the float frame rescaled to [-1, 1).
+ * reads moved (dsd_p25p2_policy_key) and takes its verdict again then. The slot switches are read at emission. Both
+ * output formats queue the slot's 16-bit frame after the filter and gain chain; float output (-y) only writes it as f32
+ * (issue #652).
  */
 
 #include <dsd-neo/core/audio.h>
@@ -41,7 +41,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -647,28 +646,6 @@ housekeeping(dsd_state* state) {
     state->audio_out_idxR = 0;
 }
 
-// Routing: two audible slots play as stereo; one plays in both ears.
-static void
-emit_block_float(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
-    float left[BLOCK_FRAMES] = {0};
-    float right[BLOCK_FRAMES] = {0};
-    if (e[0]) {
-        DSD_MEMCPY(left, e[0]->pcm.f32, sizeof(left));
-    }
-    if (e[1]) {
-        DSD_MEMCPY(right, e[1]->pcm.f32, sizeof(right));
-    }
-    if (opts->pulse_digi_out_channels == 1) {
-        float out[BLOCK_FRAMES];
-        audio_mix_mono_from_slots_f32(left, right, BLOCK_FRAMES, audible[0], audible[1], out);
-        dsd_output_float_block(opts, state, out, BLOCK_FRAMES, 1);
-        return;
-    }
-    float out[BLOCK_FRAMES * 2];
-    audio_mix_interleave_stereo_f32(audible[0] ? left : right, audible[1] ? right : left, BLOCK_FRAMES, 0, 0, out);
-    dsd_output_float_block(opts, state, out, BLOCK_FRAMES, 2);
-}
-
 // The static WAV records what plays, in stereo, minus calls their talkgroup lets be heard but not recorded.
 static void
 write_static_wav(const dsd_opts* opts, const short* stereo, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
@@ -684,8 +661,10 @@ write_static_wav(const dsd_opts* opts, const short* stereo, dsd_p25p2_playout_en
     }
 }
 
+// Routing: two audible slots play as stereo; one plays in both ears. The same block goes to the output in either format
+// and to the static WAV.
 static void
-emit_block_short(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
+emit_block(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
     short left[BLOCK_FRAMES] = {0};
     short right[BLOCK_FRAMES] = {0};
     if (e[0]) {
@@ -929,11 +908,7 @@ play_block(dsd_opts* opts, dsd_state* state, int output, int last_audible[2]) {
         last_audible[0] = audible[0];
         last_audible[1] = audible[1];
         if (output) {
-            if (opts->floating_point == 1) {
-                emit_block_float(opts, state, e, audible);
-            } else {
-                emit_block_short(opts, state, e, audible);
-            }
+            emit_block(opts, state, e, audible);
             fresh = (audible[0] && e[0]->fresh) || (audible[1] && e[1]->fresh);
         }
     }
@@ -1045,15 +1020,10 @@ take_burst_verdict(const dsd_opts* opts, dsd_state* state, int slot, dsd_p25p2_p
     }
 }
 
-// The frame the session's format plays: the float frame, rescaled from the slot's voice chain output (issue #653), or
-// the short frame the vocoder staged from it (zeros, not fresh, when it left the slot out).
+// The short frame the vocoder staged, in either output format (zeros, not fresh, when it left the slot out).
 static void
-copy_frame(const dsd_opts* opts, const dsd_state* state, int slot, dsd_p25p2_playout_entry* e) {
-    if (opts->floating_point == 1) {
-        dsd_voice_frame_to_float((slot == 0) ? state->audio_out_temp_buf : state->audio_out_temp_bufR, e->pcm.f32,
-                                 BLOCK_FRAMES);
-        e->fresh = 1U;
-    } else if (state->mbe_short_silenced[slot]) {
+copy_frame(const dsd_state* state, int slot, dsd_p25p2_playout_entry* e) {
+    if (state->mbe_short_silenced[slot]) {
         e->fresh = 0U;
     } else {
         DSD_MEMCPY(e->pcm.s16, (slot == 0) ? state->s_l : state->s_r, sizeof(e->pcm.s16));
@@ -1090,7 +1060,7 @@ stage_frame(dsd_opts* opts, dsd_state* state, int slot, int pair, uint32_t burst
     e->clock = state->p25p2_playout.pair_clock;
     e->epoch = s->epoch;
     e->verdict = s->verdict;
-    copy_frame(opts, state, slot, e);
+    copy_frame(state, slot, e);
     if (s->sf_frames < UINT8_MAX) {
         s->sf_frames++;
     }

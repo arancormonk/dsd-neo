@@ -9,6 +9,7 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <assert.h>
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -59,6 +60,8 @@ static int g_mbe_call_count;
 static int g_process_mbe_call_count;
 static int g_process_mbe_synctype[5];
 static int g_process_mbe_ambe_nonnull[5];
+/* The AMBE frame each stubbed processMbeFrame() call received, for V/D1 (issue #660). */
+static char g_process_mbe_ambe[5][4][24];
 static int g_mbe_inbound_errs2[5];
 /* The AMBE frame each stubbed mbelib call decoded, and the call that fails (-1: none), for the V/D2 capture. */
 static char g_mbe_ambe[5][49];
@@ -110,6 +113,9 @@ __wrap_processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], ch
     assert(g_process_mbe_call_count < 5);
     g_process_mbe_synctype[g_process_mbe_call_count] = state->synctype;
     g_process_mbe_ambe_nonnull[g_process_mbe_call_count] = (ambe_fr != NULL);
+    if (ambe_fr != NULL) {
+        DSD_MEMCPY(g_process_mbe_ambe[g_process_mbe_call_count], ambe_fr, sizeof(g_process_mbe_ambe[0]));
+    }
     g_process_mbe_call_count++;
 }
 
@@ -426,16 +432,53 @@ append_interleaved_full_rate_dch_blocks(const uint8_t dch0[180], const uint8_t d
     }
 }
 
+/* Dibit i of a V/D1 frame's VCH `block`. Every block of a frame differs (a pattern that only shifted by the block would
+   repeat block 0 as block 4), so a VCH decoded twice, out of order or not at all shows (issue #660). */
+static uint8_t
+vd_type1_voice_dibit(uint8_t voice_seed, size_t block, size_t i) {
+    uint32_t x = ((uint32_t)voice_seed * 131U) + ((uint32_t)block * 977U) + ((uint32_t)i * 31U) + 1U;
+    x ^= x >> 7U;
+    x *= 0x9E3779B1U;
+    return (uint8_t)((x >> 15U) & 3U);
+}
+
 static void
 append_vd_type1_blocks(const uint8_t dch[180], uint8_t voice_seed) {
-    uint8_t voice[36];
+    uint8_t voice[DSD_AMBE_2450_DIBITS];
 
     for (size_t block = 0; block < 5U; block++) {
         append_dibits_to_stream(&dch[block * 36U], 36U);
         for (size_t i = 0; i < sizeof(voice); i++) {
-            voice[i] = (uint8_t)((voice_seed + block + i) & 3U);
+            voice[i] = vd_type1_voice_dibit(voice_seed, block, i);
         }
         append_dibits_to_stream(voice, sizeof(voice));
+    }
+}
+
+/* Each of the five processMbeFrame() calls carried its own VCH, in air order: the frame's AMBE bits, read back through
+   the AMBE 2450 interleave, are that VCH's dibits. */
+static void
+assert_vd_type1_calls_carry_each_vch(uint8_t voice_seed) {
+    for (size_t a = 0; a < 5U; a++) {
+        for (size_t b = a + 1U; b < 5U; b++) {
+            int same = 1;
+            for (size_t i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+                same &= vd_type1_voice_dibit(voice_seed, a, i) == vd_type1_voice_dibit(voice_seed, b, i);
+            }
+            assert(!same);
+        }
+    }
+
+    assert(g_process_mbe_call_count == 5);
+    for (size_t call = 0; call < 5U; call++) {
+        assert(g_process_mbe_ambe_nonnull[call] == 1);
+        for (size_t i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+            const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
+            const uint8_t high = (uint8_t)g_process_mbe_ambe[call][map->high_row][map->high_col];
+            const uint8_t low = (uint8_t)g_process_mbe_ambe[call][map->low_row][map->low_col];
+            assert(high <= 1U && low <= 1U);
+            assert((uint8_t)((high << 1U) | low) == vd_type1_voice_dibit(voice_seed, call, i));
+        }
     }
 }
 
@@ -759,6 +802,7 @@ test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state(void) {
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_process_mbe_synctype, 0, sizeof(g_process_mbe_synctype));
     DSD_MEMSET(g_process_mbe_ambe_nonnull, 0, sizeof(g_process_mbe_ambe_nonnull));
+    DSD_MEMSET(g_process_mbe_ambe, 0, sizeof(g_process_mbe_ambe));
     g_dibit_stream_len = 0;
     g_dibit_stream_pos = 0;
     g_process_mbe_call_count = 0;
@@ -772,12 +816,13 @@ test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state(void) {
 
     processYSF(&opts, &state);
 
+    /* Issue #660: all five VCHs reach the vocoder, the fifth included, each with its own bits. */
     assert(g_dibit_stream_pos == g_dibit_stream_len);
-    assert(g_process_mbe_call_count == 4);
-    for (size_t i = 0; i < 4U; i++) {
+    assert(g_process_mbe_call_count == 5);
+    for (size_t i = 0; i < 5U; i++) {
         assert(g_process_mbe_synctype[i] == DSD_SYNC_NXDN_POS);
-        assert(g_process_mbe_ambe_nonnull[i] == 1);
     }
+    assert_vd_type1_calls_carry_each_vch(1U);
     assert(state.synctype == 0);
     assert(state.ysf_fi == 1U);
     assert(state.ysf_dt == 0U);
@@ -869,8 +914,8 @@ test_process_ysf_bad_fich_fallback_reopens_ysf_epoch(void) {
     processYSF(&opts, &state);
 
     assert(g_dibit_stream_pos == g_dibit_stream_len);
-    assert(g_process_mbe_call_count == 4);
-    for (size_t i = 0U; i < 4U; i++) {
+    assert(g_process_mbe_call_count == 5);
+    for (size_t i = 0U; i < 5U; i++) {
         assert(g_process_mbe_synctype[i] == DSD_SYNC_NXDN_POS);
     }
     call = get_test_ysf_call(&state);
@@ -932,7 +977,7 @@ test_process_ysf_fich_verdict_is_sticky_per_transmission(void) {
     append_dibits_to_stream(fich_input, 100U);
     append_vd_type1_blocks(dch, 1U);
     assert(processYSF(&opts, &state) == 1);
-    assert(g_process_mbe_call_count == 4);
+    assert(g_process_mbe_call_count == 5);
 
     /* The flag alone gates the verdict: cleared, the very frame that just reported productive
      * reports unproductive again, so a new transmission cannot inherit the last one's
@@ -948,6 +993,17 @@ test_process_ysf_fich_verdict_is_sticky_per_transmission(void) {
     assert(processYSF(&opts, &state) == 0);
 
     dsd_state_ext_free_all(&state);
+}
+
+/* The output buffers the gain stage (processAudio()) writes, for a zeroed state: V/D2 frames run it in either output
+   format (issue #652). */
+static void
+prepare_gain_stage(dsd_state* state) {
+    static short out_buf[100 + (160 * 96)];
+    state->audio_out_buf = out_buf;
+    state->audio_out_buf_p = out_buf + 100;
+    state->aout_max_buf_p = state->aout_max_buf;
+    state->aout_max_buf_idx = 0;
 }
 
 static void
@@ -967,9 +1023,11 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     g_dibit_stream_pos = 0;
     g_mbe_call_count = 0;
     opts.floating_point = 1;
-    // A fixed gain of 2 shows the bypassed frames go through the voice chain in float output too (issue #653).
-    opts.audio_gain = 2.0F;
-    opts.audio_gainR = 2.0F;
+    /* A fixed gain of 3, so the staged frame shows the gain stage ran exactly once (issue #652: float output skipped it;
+       twice would stage 9x). */
+    opts.audio_gain = 3.0F;
+    state.aout_gain = 3.0F;
+    prepare_gain_stage(&state);
 
     make_fich_bits_for_vd_type2(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
@@ -996,9 +1054,12 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     const dsd_call_snapshot call = get_test_ysf_call(&state);
     assert(strcmp(call.source_text, "VD2SRC4444") == 0);
     assert(strcmp(state.err_str, "========") == 0);
-    // The fifth stubbed frame (5.0), scaled to the int16 scale of the voice buffers, then the chain's fixed gain.
-    assert(fabsf(state.f_l[0] - (2.0F * 5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
-    assert(fabsf(state.f_l[159] - (2.0F * 5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
+    // The fifth stubbed frame (5.0), scaled to the int16 scale of the voice buffers and gained once (x3) into the short
+    // frame the mixers play, in float output as in 16-bit output.
+    const short once = (short)(3.0F * 5.0F * DSD_MBE_PCM16_PER_FLOAT);
+    assert(state.s_l[0] == once);
+    assert(state.s_l[159] == once);
+    assert(fabsf(state.audio_out_temp_buf[0] - (3.0F * 5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
 }
 
 static void
@@ -1085,7 +1146,7 @@ test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder(void) {
     append_vd_type1_blocks(dch, 1U);
 
     processYSF(&opts, &state);
-    assert(g_process_mbe_call_count == 4);
+    assert(g_process_mbe_call_count == 5);
 
     sf_close(opts.wav_out_f);
     opts.wav_out_f = NULL;
@@ -1119,6 +1180,7 @@ test_process_ysf_vd_type2_writes_call_wav_under_record_policy(void) {
         g_dibit_stream_pos = 0;
         g_mbe_call_count = 0;
         opts.floating_point = 1;
+        prepare_gain_stage(&state);
         opts.dmr_stereo_wav = 1;
         opts.trunk_use_allow_list = blocked;
 
@@ -1253,6 +1315,7 @@ test_process_ysf_vd_type2_captures_each_block(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_ysf_stream();
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     state.synctype = DSD_SYNC_YSF_POS;
     capture_dir_begin(&opts, "dsdneo_ysf_vd2_capture");
     g_mbe_fail_at = 3;
@@ -1293,6 +1356,7 @@ test_process_ysf_capture_waits_for_a_verified_fich(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     state.synctype = DSD_SYNC_YSF_POS;
 
     /* An earlier transmission leaves V/D2 as the fallback layout; its carrier then dropped. */
@@ -1337,6 +1401,7 @@ test_process_ysf_header_and_terminator_end_the_capture(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     state.synctype = DSD_SYNC_YSF_POS;
     capture_dir_begin(&opts, "dsdneo_ysf_end_capture");
     encode_dch_payload_to_input("TERMDST001TERMSRC002", 20U, dch0, 176U, 9U, 0);
@@ -1378,6 +1443,7 @@ test_process_ysf_voice_split_by_a_carrier_boundary_drops_the_rest(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     reset_ysf_stream();
     append_vd_type2_frame(0);
     /* Inside the third block's VeCH. */
@@ -1391,6 +1457,7 @@ test_process_ysf_voice_split_by_a_carrier_boundary_drops_the_rest(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     reset_ysf_stream();
     make_fich_bits_for_full_rate_voice(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
@@ -1438,6 +1505,24 @@ append_full_rate_voice_frame(void) {
     }
 }
 
+/* Zeroed options and state with the vocoder parameters the real processMbeFrame() synthesizes into, float audio. */
+static void
+begin_real_vocoder_test(dsd_opts* opts, dsd_state* state) {
+    static mbe_parms cur, prev, prev_enhanced, cur2, prev2, prev_enhanced2;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+    mbe_initMbeParms(&cur2, &prev2, &prev_enhanced2);
+    state->cur_mp = &cur;
+    state->prev_mp = &prev;
+    state->prev_mp_enhanced = &prev_enhanced;
+    state->cur_mp2 = &cur2;
+    state->prev_mp2 = &prev2;
+    state->prev_mp_enhanced2 = &prev_enhanced2;
+    opts->floating_point = 1;
+    prepare_gain_stage(state);
+}
+
 static void
 test_process_ysf_borrowed_decoder_frames_are_captured(void) {
     static dsd_opts opts;
@@ -1445,18 +1530,7 @@ test_process_ysf_borrowed_decoder_frames_are_captured(void) {
     InitAllFecFunction();
 
     for (int full_rate = 0; full_rate <= 1; full_rate++) {
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        DSD_MEMSET(&state, 0, sizeof(state));
-        static mbe_parms cur, prev, prev_enhanced, cur2, prev2, prev_enhanced2;
-        mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        mbe_initMbeParms(&cur2, &prev2, &prev_enhanced2);
-        state.cur_mp = &cur;
-        state.prev_mp = &prev;
-        state.prev_mp_enhanced = &prev_enhanced;
-        state.cur_mp2 = &cur2;
-        state.prev_mp2 = &prev2;
-        state.prev_mp_enhanced2 = &prev_enhanced2;
-        opts.floating_point = 1;
+        begin_real_vocoder_test(&opts, &state);
         state.synctype = DSD_SYNC_YSF_POS;
         capture_dir_begin(&opts, "dsdneo_ysf_borrowed_capture");
         reset_ysf_stream();
@@ -1475,7 +1549,11 @@ test_process_ysf_borrowed_decoder_frames_are_captured(void) {
         const size_t record = full_rate ? 12U : 8U;
         assert(memcmp(bytes, full_rate ? ".imb" : ".amb", 4) == 0);
         assert(n > 4U && ((n - 4U) % record) == 0U);
-        assert((n - 4U) / record == (full_rate ? 5U : 4U));
+        /* Five frames a YSF frame in both: V/D1 lost its fifth VCH before issue #660. */
+        assert((n - 4U) / record == 5U);
+        if (!full_rate) {
+            assert(g_mbe_call_count == 5);
+        }
         capture_dir_end();
         dsd_state_ext_free_all(&state);
     }
@@ -1488,18 +1566,7 @@ test_process_ysf_borrowed_frames_belong_to_ysf(void) {
     static dsd_opts opts;
     static dsd_state state;
     InitAllFecFunction();
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    static mbe_parms cur, prev, prev_enhanced, cur2, prev2, prev_enhanced2;
-    mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-    mbe_initMbeParms(&cur2, &prev2, &prev_enhanced2);
-    state.cur_mp = &cur;
-    state.prev_mp = &prev;
-    state.prev_mp_enhanced = &prev_enhanced;
-    state.cur_mp2 = &cur2;
-    state.prev_mp2 = &prev2;
-    state.prev_mp_enhanced2 = &prev_enhanced2;
-    opts.floating_point = 1;
+    begin_real_vocoder_test(&opts, &state);
     capture_dir_begin(&opts, "dsdneo_ysf_owner_capture");
     state.synctype = DSD_SYNC_YSF_POS;
     state.frame_dispatch_active = 1;
@@ -1512,6 +1579,12 @@ test_process_ysf_borrowed_frames_belong_to_ysf(void) {
     assert(opts.mbe_out_f != NULL);
     assert(opts.mbe_out_owner == dsd_mbe_out_owner_of(DSD_SYNC_YSF_NEG));
     assert(opts.mbe_out_format == DSD_MBE_OUT_FORMAT_AMBE);
+    /* The verified FICH admits the frame's every VCH to the YSF capture (issue #660). */
+    (void)fflush(opts.mbe_out_f);
+    char vd1_name[256];
+    assert(capture_dir_count(vd1_name, sizeof vd1_name) == 1);
+    unsigned char vd1_bytes[128];
+    assert(read_capture_file(vd1_name, vd1_bytes, sizeof vd1_bytes) == 4U + (5U * 8U));
 
     reset_ysf_stream();
     append_full_rate_voice_frame();
@@ -1523,6 +1596,47 @@ test_process_ysf_borrowed_frames_belong_to_ysf(void) {
     capture_dir_end();
     dsd_state_ext_free_all(&state);
 }
+
+/* Issue #660: a V/D1 frame is 100 ms of voice, so its five VCHs write five 160-sample blocks to the per-call WAV (-P)
+   through the vocoder; before, the fifth was never synthesized and each frame recorded 80 ms. mbelib's synthesis is
+   still the stub here, so this pins the frame count reaching the recording, not the speech. */
+static void
+test_process_ysf_vd_type1_records_five_frames_to_call_wav(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    InitAllFecFunction();
+    begin_real_vocoder_test(&opts, &state);
+    opts.dmr_stereo_wav = 1;
+    state.synctype = DSD_SYNC_YSF_POS;
+
+    char wav_path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(wav_path, sizeof wav_path, "dsdneo_ysf_vd1_wav");
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = 8000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    opts.wav_out_f = sf_open(wav_path, SFM_WRITE, &info);
+    assert(opts.wav_out_f != NULL);
+
+    reset_ysf_stream();
+    append_vd_type1_frame();
+    processYSF(&opts, &state);
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    assert(g_mbe_call_count == 5);
+
+    sf_close(opts.wav_out_f);
+    opts.wav_out_f = NULL;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+    assert(written != NULL);
+    sf_close(written);
+    assert(info.frames == (sf_count_t)5 * 160);
+    (void)remove(wav_path);
+    dsd_state_ext_free_all(&state);
+}
 #endif
 
 int
@@ -1530,6 +1644,7 @@ main(void) {
 #ifdef DSD_YSF_TEST_REAL_VOCODER
     test_process_ysf_borrowed_decoder_frames_are_captured();
     test_process_ysf_borrowed_frames_belong_to_ysf();
+    test_process_ysf_vd_type1_records_five_frames_to_call_wav();
     return 0;
 #else
     test_dch_csd1_tracks_destination_and_source();

@@ -2484,7 +2484,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             break;                                                                                                     \
         case 'y':                                                                                                      \
             opts->floating_point = 1;                                                                                  \
-            LOG_INFO("NOTICE: Enabling Experimental Floating Point Audio Output\n");                                   \
+            LOG_INFO("NOTICE: Digital voice to stdout and UDP as 32-bit float samples\n");                             \
             break;                                                                                                     \
         case 'Y':                                                                                                      \
             if (opts->trunk_scan_enabled) {                                                                            \

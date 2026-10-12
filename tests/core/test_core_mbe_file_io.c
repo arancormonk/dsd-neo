@@ -484,8 +484,22 @@ write_sdrtrunk_json_input(FILE** out, const char* json) {
     return 0;
 }
 
+/* The output buffers the gain stage (processAudio()) writes, for a zeroed state: JSON playback runs it for every frame
+   in either output format (issue #652). Each run starts them over. */
+static void
+prepare_gain_stage(dsd_state* state) {
+    static short out_buf[100 + (160 * 512)];
+    state->audio_out_buf = out_buf;
+    state->audio_out_buf_p = out_buf + 100;
+    state->audio_out_idx = 0;
+    state->audio_out_idx2 = 0;
+    state->aout_max_buf_p = state->aout_max_buf;
+    state->aout_max_buf_idx = 0;
+}
+
 static int
 run_sdrtrunk_json(const char* json, dsd_opts* opts, dsd_state* state) {
+    prepare_gain_stage(state);
     FILE* in = NULL;
     if (write_sdrtrunk_json_input(&in, json) != 0) {
         return 1;

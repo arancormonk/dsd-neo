@@ -10,11 +10,10 @@
  *
  * A decoder that synthesizes a voice frame (the vocoder, YSF V/D2, MBE file and SDRTrunk JSON playback) runs
  * dsd_voice_chain_run() on it in place, whatever the output format, output type or mute say. Every consumer then takes
- * the same samples: the per-call WAV, the short output's staging (dsd_voice_stage_short_left/right()) and the float
- * output, which only converts the int16-scale frame to [-1, 1) (DSD_VOICE_PCM16_TO_FLOAT). So every consumer starts
- * from one level and one frequency response in both formats; what a mixer then does (routing, the float stereo FDMA
- * mix's half level, the static WAV the float mixers do not write yet) is its own. The chain is verdict-neutral:
- * crypto, talkgroup and slot gates still decide who receives a frame. Decoder thread only.
+ * the same samples: the per-call WAV and the shared short staging (dsd_voice_stage_short_left/right()). Mixers route
+ * those samples in both output formats; stdout and UDP convert the resulting s16 blocks to f32 under -y. Every
+ * consumer starts from one level and one frequency response. The chain is verdict-neutral: crypto, talkgroup and
+ * slot gates still decide who receives a frame. Decoder thread only.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_VOICE_CHAIN_H
@@ -30,13 +29,11 @@ extern "C" {
 #endif
 
 /** The digital voice high-pass (`-v 0x8`): a 2nd-order Butterworth high-pass at this corner on 8 kHz frames. */
-#define DSD_VOICE_HPF_CORNER_HZ  300.0
+#define DSD_VOICE_HPF_CORNER_HZ 300.0
 /** The rate the digital voice frames, and so the high-pass, run at. */
-#define DSD_VOICE_HPF_RATE_HZ    8000.0
+#define DSD_VOICE_HPF_RATE_HZ   8000.0
 /** Samples per voice frame. */
-#define DSD_VOICE_FRAME_SAMPLES  160
-/** Scale from the chain's int16-scale samples to the float output's [-1, 1). */
-#define DSD_VOICE_PCM16_TO_FLOAT (1.0f / 32768.0f)
+#define DSD_VOICE_FRAME_SAMPLES 160
 
 /**
  * @brief Run the chain on one frame of slot @p slot (0 or 1) in place: the high-pass when `opts->use_hpf_d` is 1, then
@@ -60,17 +57,6 @@ void dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float
 void dsd_voice_stage_short_left(const dsd_opts* opts, dsd_state* state);
 /** @brief Stage the chained right frame (`audio_out_temp_bufR`) for the short mixers: `s_r`, the ring, `s_ru`. */
 void dsd_voice_stage_short_right(const dsd_opts* opts, dsd_state* state);
-
-/**
- * @brief The float output's samples for a chained frame: the chain already filtered and gained it on the int16 scale,
- * so the float mixers only rescale it, from @p in into @p out (which may be @p in).
- */
-static inline void
-dsd_voice_frame_to_float(const float* in, float* out, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        out[i] = in[i] * DSD_VOICE_PCM16_TO_FLOAT;
-    }
-}
 
 /**
  * @brief Clear slot @p slot's high-pass state and the reception it ran for (both slots when @p slot is negative): the

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
@@ -47,7 +48,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include "dsd_audio_internal.h"
 
 static int
@@ -231,6 +231,8 @@ dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old_effe
 
 void
 closeAudioOutput(dsd_opts* opts) {
+    /* The streams below go; what was reported about them goes with them. */
+    dsd_audio_sink_device_reset();
     /* Close primary audio output stream */
     if (opts->audio_out_stream) {
         dsd_audio_close(opts->audio_out_stream);
@@ -902,6 +904,13 @@ writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     dsd_audio_write_wav_short_block(opts->wav_out_f, ss, 320, "writeSynthesizedVoiceMS");
 }
 
+// The legacy short output's pending samples (state->audio_out_idx of them) to the output, then none pending.
+static void
+dsd_audio_legacy_write_pending(dsd_opts* opts, dsd_state* state) {
+    dsd_output_s16_block(opts, state, state->audio_out_buf_p - state->audio_out_idx, (size_t)state->audio_out_idx, 1);
+    state->audio_out_idx = 0;
+}
+
 void
 playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
 
@@ -928,30 +937,7 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
         if (dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1)) {
             dsd_audio_activity_note();
         }
-        if (opts->audio_out == 1 && opts->audio_out_type == 1) {
-            ssize_t written = dsd_write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
-                                        (size_t)state->audio_out_idx * sizeof(short));
-            if (written < 0) {
-                LOG_WARN("playSynthesizedVoice: failed to write %zu bytes to audio_out_fd",
-                         (size_t)state->audio_out_idx * sizeof(short));
-            }
-            state->audio_out_idx = 0;
-        } else if (opts->audio_out == 1 && opts->audio_out_type == 0) {
-            /* Use audio abstraction layer */
-            if (opts->audio_out_stream) {
-                dsd_audio_write(opts->audio_out_stream, (state->audio_out_buf_p - state->audio_out_idx),
-                                (size_t)state->audio_out_idx);
-            }
-            state->audio_out_idx = 0;
-        } else if (opts->audio_out == 1
-                   && opts->audio_out_type == 8) //UDP Audio Out -- Forgot some things still use this for now
-        {
-            dsd_udp_audio_hook_blast(opts, state, (size_t)state->audio_out_idx * sizeof(short),
-                                     (state->audio_out_buf_p - state->audio_out_idx));
-            state->audio_out_idx = 0;
-        } else {
-            state->audio_out_idx = 0; //failsafe for audio_out == 0
-        }
+        dsd_audio_legacy_write_pending(opts, state);
     }
 
 end_psv:
