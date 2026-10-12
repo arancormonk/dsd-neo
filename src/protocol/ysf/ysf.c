@@ -9,6 +9,7 @@
  * 2023-07 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
@@ -280,6 +281,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
 
     //decode the callsign, etc, found in the DCH when no errors
     if (err == 0) {
+        dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
         ysf_dch_decode2(state, bn, bt, fn, ft, cm, trellis_buf);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
@@ -551,6 +553,7 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* l
 
     info->err = ysf_conv_fich(fichrawdibits, info->fich_decode, &info->v_error);
     if (info->err == 0) {
+        dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
         info->fi = (uint8_t)convert_bits_into_output(&info->fich_decode[0], 2);
         info->cm = (uint8_t)convert_bits_into_output(&info->fich_decode[4], 2);
         info->bn = (uint8_t)convert_bits_into_output(&info->fich_decode[6], 2);

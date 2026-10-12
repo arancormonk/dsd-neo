@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stddef.h>
 #include "nxdn_confirm.h"
 
 #include <dsd-neo/core/state.h>
@@ -37,6 +39,7 @@ nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence) {
         state->nxdn_confirm_frame_evidence = (uint8_t)NXDN_EVIDENCE_STRONG;
         state->nxdn_confirm_weak_streak = 0;
         state->nxdn_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
         return;
     }
     if (evidence != NXDN_EVIDENCE_WEAK || state->nxdn_confirm_frame_evidence != 0) {
@@ -49,6 +52,7 @@ nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence) {
     }
     if (state->nxdn_confirm_weak_streak >= NXDN_CONFIRM_WEAK_OBSERVES) {
         state->nxdn_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
     }
 }
 

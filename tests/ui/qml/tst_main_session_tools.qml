@@ -10,6 +10,16 @@ Item {
         id: loader
         source: uiDir + "/Main.qml"
     }
+    QtObject {
+        id: searchStub
+        property var status: ({phase: 4, session: "17", hit: {id: "1", freqMHz: "450.125000", ended: false}})
+        property var ranges: []
+        property var history: []
+        property var avoids: []
+        property string error: ""
+        property int lastAction: -1
+        function control(action, session, hit) { lastAction = action; }
+    }
     TestCase {
         name: "MainSessionTools"
         when: windowShown
@@ -32,6 +42,8 @@ Item {
             tryCompare(app, "active", true);
         }
         function cleanup() {
+            app.signalSearchOpen = false;
+            findChild(app, "signalSearchScreen").searchModel = null;
             app.importsOpen = false;
             app.diagnosticsOpen = false;
             app.licensesOpen = false;
@@ -63,6 +75,23 @@ Item {
             row.activate();
             verify(!menu.visible);
             wait(0); // Settle queued navigation focus before typing or opening another layer.
+        }
+        function test_signal_search_controls_are_navigation_roots() {
+            var screen = findChild(app, "signalSearchScreen");
+            screen.searchModel = searchStub;
+            app.signalSearchOpen = true;
+            wait(0);
+            for (var name of ["searchStartPause", "searchStop", "searchHold", "searchBack"]) {
+                var button = findChild(screen, name);
+                verify(button.visible && button.enabled, name);
+                verify(Ui.Navigation.allows(button), name + " must be reachable during search");
+                verify(!button.Accessible.ignored, name + " must remain accessible");
+            }
+            findChild(screen, "searchHold").activate();
+            compare(searchStub.lastAction, 3);
+            findChild(screen, "searchStartPause").activate();
+            compare(searchStub.lastAction, 1);
+            verify(!Ui.Navigation.back(app), "Active search delegates Back to Main's session policy");
         }
         function visibleTitles(item, title) {
             if (!item.visible) return 0;

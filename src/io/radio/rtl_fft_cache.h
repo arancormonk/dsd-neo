@@ -48,6 +48,16 @@ class FftSetupCache {
     FftSetupCache(const FftSetupCache&) = delete;
     FftSetupCache& operator=(const FftSetupCache&) = delete;
 
+    /** Release only after the owning worker has stopped using this cache. */
+    void
+    release() {
+        if (m_setup) {
+            pffft_destroy_setup(m_setup);
+        }
+        m_setup = nullptr;
+        m_n = 0;
+    }
+
     /**
      * @brief Forward complex transform of @p n points, in place.
      *

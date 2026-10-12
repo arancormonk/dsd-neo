@@ -206,7 +206,7 @@ Item {
      * found, and answering them for the user would produce a card that does not
      * work. @a sys supplies the source; it is the explore session's own map.
      */
-    function openForFound(sys, freqMhz) {
+    function openForFound(sys, freqMhz, detection) {
         resetImport();
         retainedKeySourceUid = "";
         decryptionProfileUid = "";
@@ -241,6 +241,15 @@ Item {
         srcCsvPath = "";
         csvNotice = "";
         csvNoticeIsProblem = false;
+        if (detection) {
+            decodeFlag = detection.decodeFlag || "";
+            trunking = false;
+            trunkingAnswered = true;
+            gainField.text = String(detection.gainDb);
+            bwField.text = String(detection.bandwidthKhz > 0 ? detection.bandwidthKhz : 48);
+            extraField.text = detection.extraArgs || "";
+            csvNotice = detection.searchUnresolved ? qsTr("Digital identification is unresolved. NFM monitoring does not confirm an analog transmission.") : "";
+        }
         initialDraft = draftFingerprint();
     }
 

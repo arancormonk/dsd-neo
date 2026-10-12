@@ -27,6 +27,7 @@
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
+#include "known_frequency_index.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
 #include "radio_reference_model.h"
@@ -34,6 +35,7 @@
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
+#include "signal_search_model.h"
 #include "site_groups.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
@@ -175,6 +177,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* talkgroupView = new TalkgroupFilterModel(&engine);
     talkgroupView->setSourceModel(talkgroups);
     auto* spectrum = new SpectrumModel(&engine);
+    auto* knownFrequencies = new KnownFrequencyIndex(systems, scanLists, &engine);
+    auto* signalSearch = new SignalSearchModel(host, knownFrequencies, &engine);
     // Each view that shows the call log owns its filter state: the history tab's
     // search and pills must not silently filter the monitor's recent-calls pane.
     auto* historyView = new CallHistoryFilterModel(&engine);
@@ -234,6 +238,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
+    context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
+    context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
 
     engine.load(QUrl(QStringLiteral("qrc:/dsdneo/qml/Main.qml")));

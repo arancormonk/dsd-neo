@@ -1465,6 +1465,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/audio/dispatch.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dstar_process
@@ -1478,6 +1479,7 @@ add_executable(
     dsd-neo_test_dstar_confirm
     protocol/dstar/test_dstar_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dstar_confirm
@@ -1520,6 +1522,7 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice.c
     ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice_frame.c
 )
 target_include_directories(
@@ -1534,6 +1537,7 @@ add_executable(
     dsd-neo_test_provoice_confirm
     protocol/provoice/test_provoice_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(
     dsd-neo_test_provoice_confirm
@@ -1583,6 +1587,7 @@ add_executable(
     dsd-neo_test_dpmr_confirm
     protocol/dpmr/test_dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_confirm
@@ -1598,6 +1603,7 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dpmr.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_policy.c
 )
 target_include_directories(
@@ -1614,6 +1620,7 @@ add_executable(
     protocol/dpmr/test_dpmr_voice_bridge.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
 )
@@ -1633,6 +1640,7 @@ add_executable(
     protocol/dpmr/test_dpmr_reference_vectors.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
 )
@@ -1985,6 +1993,7 @@ add_executable(
     protocol/nxdn/test_nxdn_frame_routing.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_frame.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_frame_routing
@@ -1998,6 +2007,7 @@ add_executable(
     dsd-neo_test_nxdn_confirm
     protocol/nxdn/test_nxdn_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_confirm
@@ -2278,6 +2288,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(
     dsd-neo_test_app_control_actions
@@ -4162,7 +4173,7 @@ if(DSD_ENABLE_QT_UI)
                 ENVIRONMENT
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
         )
-        foreach(_case IN ITEMS settings_layout licenses_screen)
+        foreach(_case IN ITEMS settings_layout licenses_screen signal_search)
             string(TOUPPER "${_case}" _case_upper)
             add_test(
                 NAME UI_QT_QML_${_case_upper}
@@ -8737,6 +8748,7 @@ add_executable(
     dsd-neo_test_m17_confirm
     protocol/m17/test_m17_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(
     dsd-neo_test_m17_confirm
@@ -16132,6 +16144,81 @@ if(DSD_ENABLE_API)
     set_tests_properties(API_SERVER PROPERTIES TIMEOUT 120)
     unset(_dsd_neo_api_test_deps)
     unset(_dsd_neo_api_ieee_option)
+endif()
+
+add_executable(
+    dsd-neo_test_app_signal_search_provenance
+    ui/test_app_signal_search_provenance.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_signal_search.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+)
+target_include_directories(
+    dsd-neo_test_app_signal_search_provenance
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_signal_search_provenance
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME APP_SIGNAL_SEARCH_PROVENANCE
+    COMMAND dsd-neo_test_app_signal_search_provenance
+)
+
+# Signal discovery works on capture-rate samples, independently of any UI FFT.
+if(DSD_HAS_RADIO)
+    add_executable(dsd-neo_test_io_signal_measure io/test_io_signal_measure.cpp)
+    target_link_libraries(
+        dsd-neo_test_io_signal_measure
+        PRIVATE dsd-neo_io_radio dsd-neo_runtime
+    )
+    add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
+    add_executable(
+        dsd-neo_test_engine_signal_search
+        engine/test_engine_signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_signal_search
+        PRIVATE USE_RADIO
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_signal_search
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_SIGNAL_SEARCH
+        COMMAND dsd-neo_test_engine_signal_search
+    )
+    # Manual only: this executable opens the requested hardware source.
+    add_executable(
+        dsd-neo_test_signal_search_bench
+        engine/signal_search_bench.cpp
+    )
+    target_link_libraries(
+        dsd-neo_test_signal_search_bench
+        PRIVATE dsd-neo_engine dsd-neo_feature_radio ${LIBS}
+    )
+endif()
+if(DSD_ENABLE_QT_UI)
+    add_executable(
+        dsd-neo_test_ui_qt_signal_search
+        ui/test_ui_qt_signal_search.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_signal_search
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_signal_search
+        PRIVATE
+            dsd-neo_ui_qt
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            ${LIBS}
+    )
+    add_test(NAME UI_QT_SIGNAL_SEARCH COMMAND dsd-neo_test_ui_qt_signal_search)
 endif()
 
 # Windows builds the terminal UI against vcpkg's PDCurses, whose include

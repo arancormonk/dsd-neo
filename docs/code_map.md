@@ -46,6 +46,15 @@ Generated (do not edit/commit):
     frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
     repeats the step, which then finds nothing left to do
   - Protocol/frame dispatch glue
+  - Signal search (issue #537): `signal_search.c` / `engine/signal_search.h` coordinate
+    capture measurement, tagged asynchronous tuning, identification and listening on
+    the decoder thread. Its private owner shares the stable trunk-scan extension slot
+    through `scan_owner.h`; extension IDs are unchanged. Search excludes other tuner
+    owners, suppresses visited frequencies per pass and retains native session avoids.
+    Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
+    loops. Receive profiles, gain and frequency are restored on exit. Protocol details
+    enter only through CRC/FEC confirmation or validated activity hooks, never a generic
+    sync or dispatcher verdict. See [Signal search](signal-search.md).
   - Trunk retune policy and bookkeeping: `src/engine/trunk_tuning.c` implements the tune-to-frequency,
     tune-to-control-channel and return-to-control-channel requests behind
     `include/dsd-neo/engine/trunk_tuning.h`, and `src/engine/trunk_tuning_hooks_install.c` installs them into the
@@ -1219,6 +1228,10 @@ suite runs under this compiler.
 - Path: `src/runtime`, `include/dsd-neo/runtime`
 - Target: `dsd-neo_runtime`
 - Responsibilities:
+  - Frontend-neutral Signal search records, rational range validation and conservative
+    DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
+    carries validated protocol evidence and the decoder-thread active query, with no-op
+    defaults. It does not own radio I/O, persistence or Qt state.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
@@ -1584,6 +1597,14 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - Path: `src/app_control`, `include/dsd-neo/app_control`
 - Target: `dsd-neo_app_control`
 - Responsibilities:
+  - Signal search commands 712/713 are frontend-only and not public TCP API commands.
+    `actions/actions_signal_search.c` runs them on the decoder thread, enriches copied
+    hits using confirmed call/access-code and received-tone views, and flushes on stop.
+    Decoded-field enrichment runs only on confirmation callbacks; periodic status
+    refreshes cannot promote fields from a subsequent unconfirmed sync.
+    `signal_search_store.cpp` owns the mutex-protected snapshots and a native worker for
+    the versioned private journal, bounded upserts and atomic compaction/avoids. The
+    worker survives QML teardown; it never reads live decoder state.
   - Frontend metrics and raw telemetry snapshots used by the terminal renderer
   - Command queue dispatch and menu service helpers. Decoder-owner runtime start/stop opens/closes admission under
     the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
@@ -3085,6 +3106,15 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 ## IO
 
 - Path: `src/io`, `include/dsd-neo/io`
+- Signal discovery (`radio/signal_measure.cpp`, `io/signal_measure.h`) uses an independent
+  PFFFT/Hann cache at the capture-rate I/Q boundary. Linear channel power and neighboring
+  noise are energy-normalized over two sample-count windows. Session/request IDs and
+  applied generation accompany every report; gain, rate, drops, tuning and input changes
+  invalidate partial and ready reports. Search bypass preserves capture/control health
+  while skipping demodulation, protocol/audio work and display FFTs. Decoder-dependent
+  gain/PPM supervision is suspended during discovery. `rtl_stream_tune_async()` and
+  `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
+  the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
 - Targets:
   - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers; no SDR dependency
   - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides
@@ -4191,6 +4221,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Build files: `src/third_party/CMakeLists.txt` and subdirectory `CMakeLists.txt` files
 
 ## UI
+
+- Qt Signal search uses `SignalSearchModel`, `SignalSearchScreen.qml` and
+  `SignalSearchRangeEditor.qml`, sharing Theme/Plex controls, source startup and the
+  save-found-system wizard. Native status/history are copied on a 250 ms timer. Back
+  delegates to Main's session policy; active search is a navigation root so its controls
+  remain accessible after Activity recreation. Range edits apply on paused restart.
+  `KnownFrequencyIndex` caches saved frequencies and referenced CSVs, rebuilding on model
+  or file changes; Signal search, Spectrum and Live Exploring look up labels without
+  reading files during rendering. Exact matches win, nearest matches use half the smaller
+  applicable channel width/spacing, and ties remain ambiguous. Saving uses an immutable
+  hit snapshot, including its original source settings and unresolved identity.
 
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`

@@ -14,6 +14,8 @@ target_sources(
         decode_clock.c
         decode_mode.c
         scan_mode.c
+        signal_search.c
+        signal_search_hooks.c
         scan_options.c
         scan_row_edit.c
         squelch.c

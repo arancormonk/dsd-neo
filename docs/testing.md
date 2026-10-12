@@ -5,6 +5,12 @@ to reduce regression and security risk.
 
 ## Test Suites
 
+Signal search's detector, tuning lifecycle, provenance, native journal and Qt tests
+are described in [Signal search verification](signal-search.md#verification-and-measured-limits).
+Its manual hardware benchmark is deliberately outside CTest: automatic tests never
+claim an attached SDR. Report acquisition, measurement/identification, UI and transport
+latency separately; desktop synthetic tests do not establish Android screen-off performance.
+
 The CTest suite includes focused tests for:
 
 - runtime configuration, CLI parsing, rings, hooks, shutdown, and telemetry

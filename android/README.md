@@ -975,6 +975,15 @@ imports' exclusion behavior). Supplying keys never silently unblocks a talkgroup
 
 ### Navigation, accessibility and replay
 
+**Signal search**, beside Explore on Home, searches configured frequency ranges
+using internal RF power measurements, then identifies and monitors detections.
+Ranges have independent detection sensitivity and listening squelch. The default
+digital probe is two seconds, followed by explicitly unresolved NFM monitoring;
+Hold, Skip, session/permanent avoids, detection history and Save as system are
+available. Search owns the radio exclusively and follows the existing background
+listening preference. See [Signal search](../docs/signal-search.md) for controls,
+limits, persistence and measured performance.
+
 Android Back dismisses input, then the top dialog, then the pushed screen or
 wizard step. Root Back follows the background-listening preference. Monitor's
 More menu reaches History, Settings and Diagnostics without stopping the session.

@@ -51,6 +51,7 @@ struct dsd_app_command_reg {
 };
 
 /** Per-domain registries (terminated with `{0, NULL}`). */
+extern const struct dsd_app_command_reg dsd_app_actions_signal_search[];
 extern const struct dsd_app_command_reg dsd_app_actions_audio[];
 extern const struct dsd_app_command_reg dsd_app_actions_radio[];
 extern const struct dsd_app_command_reg dsd_app_actions_trunk[];

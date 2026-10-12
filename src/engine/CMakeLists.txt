@@ -56,6 +56,7 @@ target_sources(
     PRIVATE
         engine.c
         channel_scan.c
+        signal_search.c
         frame_sync_hooks_install.c
         p25_bandplan_export.c
         p25_optional_hooks_install.c

@@ -77,3 +77,9 @@ dsd_frame_sync_hook_no_carrier(dsd_opts* opts, dsd_state* state) {
     }
     g_frame_sync_hooks.no_carrier(opts, state);
 }
+
+int
+dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_state* state) {
+    return g_frame_sync_hooks.signal_search_should_yield ? g_frame_sync_hooks.signal_search_should_yield(opts, state)
+                                                         : 0;
+}

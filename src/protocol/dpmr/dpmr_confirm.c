@@ -4,6 +4,7 @@
  */
 
 #include "dpmr_confirm.h"
+#include <dsd-neo/runtime/signal_search_hooks.h>
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
@@ -48,6 +49,7 @@ dpmr_confirm_note_evidence(dsd_state* state, dpmr_evidence evidence) {
         state->dpmr_confirm_frame_evidence = (uint8_t)DPMR_EVIDENCE_STRONG;
         state->dpmr_confirm_weak_streak = 0;
         state->dpmr_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "dPMR", 0, 0, NULL);
         return;
     }
     if (evidence != DPMR_EVIDENCE_WEAK || state->dpmr_confirm_frame_evidence != 0) {
@@ -60,6 +62,7 @@ dpmr_confirm_note_evidence(dsd_state* state, dpmr_evidence evidence) {
     }
     if (state->dpmr_confirm_weak_streak >= DPMR_CONFIRM_WEAK_OBSERVES) {
         state->dpmr_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "dPMR", 0, 0, NULL);
     }
 }
 

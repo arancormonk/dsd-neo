@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stddef.h>
 #include "dstar_confirm.h"
 
 #include <dsd-neo/core/state.h>
@@ -37,6 +39,7 @@ dstar_confirm_note_evidence(dsd_state* state, dstar_evidence evidence) {
         state->dstar_confirm_frame_evidence = (uint8_t)DSTAR_EVIDENCE_STRONG;
         state->dstar_confirm_weak_streak = 0;
         state->dstar_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "D-STAR", 0, 0, NULL);
         return;
     }
     if (evidence != DSTAR_EVIDENCE_WEAK || state->dstar_confirm_frame_evidence != 0) {
@@ -49,6 +52,7 @@ dstar_confirm_note_evidence(dsd_state* state, dstar_evidence evidence) {
     }
     if (state->dstar_confirm_weak_streak >= DSTAR_CONFIRM_WEAK_OBSERVES) {
         state->dstar_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "D-STAR", 0, 0, NULL);
     }
 }
 

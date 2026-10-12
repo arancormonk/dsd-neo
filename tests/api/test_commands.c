@@ -14,6 +14,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/safe_api.h>
 #include <stdint.h>
@@ -63,6 +64,11 @@ header_command_ids(int* ids, size_t cap) {
             digits++;
         }
         if (digits > 0) {
+            /* Search commands carry native session/hit identity and are deliberately frontend-only.
+               The public TCP API has no signal-search session lifecycle in this release. */
+            if (value == DSD_APP_CMD_SIGNAL_SEARCH_START || value == DSD_APP_CMD_SIGNAL_SEARCH_CONTROL) {
+                continue;
+            }
             assert(n < cap);
             ids[n++] = value;
         }
@@ -263,6 +269,11 @@ main(void) {
     dsd_json_free(resp);
 
     dsd_app_frontend_runtime_start(NULL, NULL);
+    for (size_t i = 0; i < 2; ++i) {
+        resp = execute(i ? "signal_search_control" : "signal_search_start", "{}");
+        assert(!is_ok(resp) && strcmp(error_code(resp), "unknown_command") == 0);
+        dsd_json_free(resp);
+    }
     for (size_t i = 0; i < root->count; i++) {
         const char* name = dsd_json_as_str(dsd_json_obj_get(root->items[i], "name"));
         const char* doc = dsd_json_as_str(dsd_json_obj_get(root->items[i], "params"));

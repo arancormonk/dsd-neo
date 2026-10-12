@@ -35,6 +35,7 @@ if(DSD_HAS_RADIO)
             radio/rtl_stream_c.cpp
             radio/rtl_sdr_fm.cpp
             radio/rtl_wideband_spectrum.cpp
+            radio/signal_measure.cpp
             radio/soapy_profile.cpp
     )
     target_include_directories(
@@ -73,6 +74,7 @@ if(DSD_HAS_RADIO)
             radio/soapy_profile.cpp
             radio/rtl_auto_ppm.cpp
             radio/rtl_finite.cpp
+            radio/signal_measure.cpp
             PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
         )
     elseif(MSVC)
@@ -80,6 +82,7 @@ if(DSD_HAS_RADIO)
             radio/soapy_profile.cpp
             radio/rtl_auto_ppm.cpp
             radio/rtl_finite.cpp
+            radio/signal_measure.cpp
             PROPERTIES COMPILE_OPTIONS "/fp:precise"
         )
     endif()

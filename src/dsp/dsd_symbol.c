@@ -47,6 +47,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -2197,7 +2198,11 @@ symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_ou
             return 1;
         }
         if (cache_status != RTL_SYMBOL_CACHE_RETRY && cache_status != RTL_SYMBOL_CACHE_REFRESH) {
-            dsd_request_shutdown(opts, state);
+            if (dsd_signal_search_is_running(state)) {
+                state->input_interrupted = 1;
+            } else {
+                dsd_request_shutdown(opts, state);
+            }
             return 0;
         }
         work->rtl_span_restart = 1;
@@ -2229,7 +2234,11 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
     }
     int got = 0;
     if (dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got) < 0 || got != 1) {
-        dsd_request_shutdown(opts, state);
+        if (dsd_signal_search_is_running(state)) {
+            state->input_interrupted = 1;
+        } else {
+            dsd_request_shutdown(opts, state);
+        }
         return 0;
     }
     work->rtl_sample_generation = dsd_rtl_stream_metrics_hook_stream_generation();
@@ -2963,6 +2972,13 @@ symbol_commit_symbol(dsd_opts* opts, dsd_state* state, int have_sync, const symb
 
 float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
+    /* Long protocol readers also leave a search visit at its deadline. Completing their
+       bounded frame with unusable symbols lets the engine regain its tick guard safely. */
+    if ((state->symbolcnt & 63) == 0 && dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
+        state->input_interrupted = 1;
+        state->symbol_replay_symbol_unusable = 1;
+        return 0.0f;
+    }
     symbol_work_ctx work;
     symbol_work_ctx_init(&work, state);
     work.hunting = have_sync == 0;
