@@ -1279,13 +1279,13 @@ Butterworth response (-3 dB at 300 Hz, unity at Nyquist, flat within 0.05 dB fro
 through the live filter; it checks that each slot filters on its own state, that the state starts over at a new call or
 protocol family (and not when a call becomes known mid-stream, after a boundary reset included, nor for a borrowed
 decoder's synctype), the gain laws (fixed `-g` a plain multiplier, unity below 0, the auto gain's attack, a legitimate
-gain below unity kept, a zeroed level recovering), the float rescale, and that the alert tone is a clean sine with the
-same samples in both formats, its phase running across blocks (ID 41 ends a block partway through a cycle).
+gain below unity kept, a zeroed level recovering), and that the alert tone is a clean sine with the same samples in
+both formats after sink conversion, its phase running across blocks (ID 41 ends a block partway through a cycle).
 `CORE_MBE_TRANSFORM_CONTEXT`'s voice-chain case decodes P25 Phase 1, NXDN, DMR slot 2, D-STAR and X2-TDMA slot 2
 frames through the real vocoder under integer and float output, the null output, a mute partway, and stereo presets,
-and requires byte-identical per-call WAVs, chained frames and gain levels, the short staging equal to the WAV, the
-float mixers' frame equal to the short one within rounding, the mono mixers' playback (MS, FM) equal to the WAV and to
-each other within one LSB, and a recording the high-pass changes. `CORE_MBE_FILE_IO` checks that SDRTrunk JSON
+and requires byte-identical per-call WAVs, chained frames and gain levels, shared short staging equal to the WAV in
+both formats, the mono mixer's playback equal to the WAV and to the converted float output within one LSB, and a
+recording the high-pass changes. `CORE_MBE_FILE_IO` checks that SDRTrunk JSON
 playback chains the frames it withholds (encrypted, no key). Its other cases set a fixed
 unity gain with the high-pass off (`pass_through_voice_chain()`), which leaves the chain a pass-through, so they still
 compare synthesis against mbelib's own output.
