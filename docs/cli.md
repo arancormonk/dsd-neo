@@ -1747,7 +1747,7 @@ Monitor
 
 - Without `-8` the stream encoder decodes each frame it sends and plays the voice on the digital output, opened at
   8 kHz mono, as a received M17 call plays: with `-g`, `-y` and the high-pass. With `-8` the 48 kHz transmit baseband
-  plays on the analog output instead. Give `-8` after `-fZ`: an `-f` selector turns it off.
+  plays on the analog output instead. An explicit `-8` works before or after `-fZ`.
 
 Examples
 

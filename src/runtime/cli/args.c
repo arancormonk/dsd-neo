@@ -2425,8 +2425,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             LOG_INFO("NOTICE: TG Hold set to %u \n", state->tg_hold);                                                  \
             break;                                                                                                     \
         case '8':                                                                                                      \
+            cli_source_monitor_seen = 1;                                                                               \
             opts->monitor_input_audio = 1;                                                                             \
-            LOG_INFO("NOTICE: Experimental Raw Analog Source Monitoring Enabled (Pulse Audio Only!)\n");               \
+            LOG_INFO("NOTICE: Raw Source Audio Monitoring Enabled\n");                                               \
             break;                                                                                                     \
         case 'j':                                                                                                      \
             /* Compatibility spelling for the current default/on policy. */                                            \
@@ -3404,6 +3405,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_sps = 0;
     int cli_manual_timing_center = 0;
     int cli_dmr_mono_override_seen = 0;
+    int cli_source_monitor_seen = 0;
     while ((c = getopt(argc, argv,
                        ":~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
                        "89:Ek:I:J:O^Nj"))
@@ -3412,6 +3414,11 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     }
     if (cli_dmr_mono_override_seen) {
         opts->dmr_mono = 1;
+    }
+    /* Leaving an analog preset clears its implicit monitor. An explicit -8 is the user's separate choice and must
+       survive later selectors too, notably -fZ where it selects 48 kHz baseband instead of decoded voice. */
+    if (cli_source_monitor_seen) {
+        opts->monitor_input_audio = 1;
     }
     if (cli_decode_timing_seen && dsd_opts_source_uses_effective_input_rate(opts)) {
         int timing_rate_hz = dsd_opts_effective_input_rate(opts);

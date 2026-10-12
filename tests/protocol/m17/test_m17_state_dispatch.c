@@ -1360,6 +1360,72 @@ test_frame_info_packet_and_ip_helpers(void) {
 }
 
 static int
+test_ip_frames_reject_truncation_before_reading_or_changing_state(void) {
+    static const struct {
+        uint8_t magic[4];
+        size_t minimum;
+    } cases[] = {{{'M', '1', '7', ' '}, 54U}, {{'M', 'P', 'K', 'T'}, 37U}, {{'C', 'O', 'N', 'N'}, 11U},
+                 {{'D', 'I', 'S', 'C'}, 10U}, {{'E', 'O', 'T', 'X'}, 10U}, {{'P', 'I', 'N', 'G'}, 10U},
+                 {{'P', 'O', 'N', 'G'}, 10U}, {{'A', 'C', 'K', 'N'}, 4U},  {{'N', 'A', 'C', 'K'}, 4U}};
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    opts->payload = 1;
+    state->carrier = 1;
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    state->m17_lsf[0] = 1U;
+    int err = 0;
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
+        for (size_t len = 0; len < cases[c].minimum; ++len) {
+            /* Exact-sized allocations let ASan see any read beyond the received datagram, including its magic. */
+            uint8_t* frame = calloc(len > 0U ? len : 1U, 1);
+            assert(frame != NULL);
+            DSD_MEMCPY(frame, cases[c].magic, len < 4U ? len : 4U);
+            m17_ip_dispatch_frame(opts, state, frame, (int)len);
+            err |= expect_int("truncated IP frame keeps carrier", state->carrier, 1);
+            err |= expect_int("truncated IP frame keeps sync", state->synctype, DSD_SYNC_M17_STR_POS);
+            err |= expect_u8("truncated IP frame preserves LSF", state->m17_lsf[0], 1U);
+            free(frame);
+        }
+    }
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return err;
+}
+
+static int
+test_short_valid_ip_mpkt_reads_only_its_header(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    opts->payload = 1;
+    state->m17_can_en = -1;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    const uint8_t app[] = {0x05U, 0U};
+    const size_t length = 34U + sizeof(app) + 3U;
+    uint8_t* frame = malloc(length);
+    assert(frame != NULL);
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    assert(build_ip_mpkt_frame(frame, length, lsf_bits, 0xCAFEU, app, sizeof(app)) == length);
+    m17_ip_dispatch_frame(opts, state, frame, (int)length);
+    dsd_call_snapshot call;
+    int err = expect_int("short valid MPKT publishes identity", get_m17_call(state, &call), 1);
+    err |= expect_u64("short valid MPKT destination", call.ota_target_id, dst);
+    err |= expect_u64("short valid MPKT source", call.ota_source_id, src);
+    err |= expect_int("short valid MPKT ends call", call.phase, DSD_CALL_PHASE_ENDED);
+    free(frame);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return err;
+}
+
+static int
 test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
@@ -3898,6 +3964,8 @@ main(void) {
     err |= test_bert_payload_resyncs_after_error_threshold();
     err |= test_bert_hard_payload_decode_primitives();
     err |= test_frame_info_packet_and_ip_helpers();
+    err |= test_ip_frames_reject_truncation_before_reading_or_changing_state();
+    err |= test_short_valid_ip_mpkt_reads_only_its_header();
     err |= test_ip_stream_frames_apply_crc_gated_lsf_state();
     err |= test_ip_stream_bad_crc_does_not_reopen_ended_voice_epoch();
     err |= test_ip_mpkt_frames_apply_crc_gated_packet_state();

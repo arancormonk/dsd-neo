@@ -840,7 +840,8 @@ suite runs under this compiler.
   staging, since the float mixers run no high-pass (#653), and the static WAV records the filtered frame while slot
   1 is on, since they write none (#652); the short mixers do both themselves. `agf()`'s divisor is floored at the
   49.5 step, so `-g 50` no longer divides by zero there. The M17 stream encoder (`-fZ`) opens the digital voice stream
-  at 8 kHz: it carries only the decoded monitor, while `-8`'s 48 kHz baseband goes to `audio_raw_out`. Tests:
+  at 8 kHz: it carries only the decoded monitor, while `-8`'s 48 kHz baseband goes to `audio_raw_out`. An explicit
+  `-8` survives later CLI mode selectors; leaving an analog preset still clears monitoring it enabled implicitly. Tests:
   `CORE_AUDIO2_HELPERS`, `CORE_AUDIO_GAIN`, `M17_STATE_DISPATCH`, `RUNTIME_CLI_PARSE`, `DECODE_IQ_M17_VOICE_OUTPUT`.
 - Invariant (P25 Phase 2 voice playout, `<dsd-neo/core/p25p2_playout.h>`, `src/core/audio/p25p2_playout.c`, issue
   #651): both output formats play P25 Phase 2 voice through one staging and one mixer. The frame decoder queues each
@@ -3654,6 +3655,10 @@ Notes:
     digital gain (`-g` and its live controls), the high-pass, the stream's channel count and sample format (`-y`),
     the WAVs and the audible-audio stamp are the mixers'. Tests: `M17_STATE_DISPATCH`, `CORE_AUDIO2_HELPERS`,
     `DECODE_IQ_M17_VOICE_OUTPUT`.
+
+- M17 IP dispatch validates the received length before reading a stream or control frame or changing its state.
+  MPKT header conversion reads only its 34-byte prefix, since a valid packet can be shorter than a 54-byte stream
+  frame. `M17_STATE_DISPATCH` exercises every truncated prefix and an exact-sized short valid MPKT under ASan.
 
 EDACS analog voice (`edacs_analog()` in `src/protocol/edacs/edacs-fme.c`) runs at 48 kHz (`EDACS_ANALOG_RATE_HZ`,
 issue #633): the release register reads every 5th sample as a 9600-baud symbol, the per-call WAV opens at it and the

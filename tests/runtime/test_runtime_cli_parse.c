@@ -9670,11 +9670,51 @@ test_m17_encoder_digital_output_rates(void) {
     return rc;
 }
 
+/* Explicit source monitoring chooses the encoder's baseband even when a later preset replaces analog mode. */
+static int
+test_explicit_source_monitor_survives_mode_selectors(void) {
+    static const char* const selectors[] = {"-fZ", "-fB", "-fP", "-fU", "-fp", "-fz", "-fd"};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof selectors / sizeof selectors[0]; ++i) {
+        for (int monitor_first = 0; monitor_first <= 1; ++monitor_first) {
+            dsd_opts* opts = calloc(1, sizeof(*opts));
+            dsd_state* state = calloc(1, sizeof(*state));
+            if (!opts || !state) {
+                free(opts);
+                free(state);
+                return 1;
+            }
+            initOpts(opts);
+            initState(state);
+            char name[] = "dsd-neo";
+            char analog[] = "-fA";
+            char monitor[] = "-8";
+            char selector[8] = {0};
+            DSD_SNPRINTF(selector, sizeof selector, "%s", selectors[i]);
+            char* argv[] = {name, analog, monitor_first ? monitor : selector, monitor_first ? selector : monitor, NULL};
+            int effective = 0;
+            int exit_rc = -1;
+            const int parsed = dsd_parse_args(4, argv, opts, state, &effective, &exit_rc);
+            if (parsed != DSD_PARSE_CONTINUE || opts->analog_only != 0 || opts->monitor_input_audio != 1) {
+                DSD_FPRINTF(stderr, "explicit -8 lost for %s (first=%d): rc=%d analog=%d monitor=%d\n", selectors[i],
+                            monitor_first, parsed, opts->analog_only, opts->monitor_input_audio);
+                rc = 1;
+            }
+            close_parse_outputs(opts);
+            freeState(state);
+            free(state);
+            free(opts);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_api_options();
     rc |= test_m17_encoder_digital_output_rates();
+    rc |= test_explicit_source_monitor_survives_mode_selectors();
     rc |= test_force_conflicts_and_explicit_off_options();
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();

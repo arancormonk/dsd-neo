@@ -3393,9 +3393,9 @@ typedef struct m17_ip_ctrl_desc {
 } m17_ip_ctrl_desc;
 
 static void
-m17_ip_bits_from_54_bytes(const uint8_t* ip_frame, uint8_t* ip_bits) {
+m17_ip_bits_from_bytes(const uint8_t* ip_frame, size_t count, uint8_t* ip_bits) {
     int k = 0;
-    for (int i = 0; i < 54; i++) {
+    for (size_t i = 0; i < count; i++) {
         for (int j = 0; j < 8; j++) {
             ip_bits[k++] = (ip_frame[i] >> (7 - j)) & 1U;
         }
@@ -3435,7 +3435,7 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     uint8_t payload[128];
     DSD_MEMSET(ip_bits, 0, sizeof(ip_bits));
     DSD_MEMSET(payload, 0, sizeof(payload));
-    m17_ip_bits_from_54_bytes(ip_frame, ip_bits);
+    m17_ip_bits_from_bytes(ip_frame, 54U, ip_bits);
 
     state->carrier = 1;
     state->synctype = DSD_SYNC_M17_STR_POS;
@@ -3481,9 +3481,12 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
 
 static int
 m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, dsd_state* state,
-                            const uint8_t* ip_frame) {
+                            const uint8_t* ip_frame, int len) {
     if (memcmp(ip_frame, desc->magic, 4) != 0) {
         return 0;
+    }
+    if (len < desc->dump_len) {
+        return 1;
     }
 
     DSD_FPRINTF(stderr, "\n M17 IP   %s: ", desc->label);
@@ -3514,7 +3517,9 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
 
     uint8_t ip_bits[462];
     DSD_MEMSET(ip_bits, 0, sizeof(ip_bits));
-    m17_ip_bits_from_54_bytes(ip_frame, ip_bits);
+    /* MPKT needs only its magic, stream ID and LSF (34 bytes). Valid short packets need not hold the 54 bytes a
+       stream frame does, and no packet payload belongs in this header conversion. */
+    m17_ip_bits_from_bytes(ip_frame, 34U, ip_bits);
     const uint16_t sid = (uint16_t)convert_bits_into_output(&ip_bits[32], 16);
     m17_ip_copy_lsf_from_bits(state, ip_bits);
 
@@ -3540,10 +3545,13 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
 
 void
 m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, int len) {
-    if (opts == NULL || state == NULL || ip_frame == NULL) {
+    if (opts == NULL || state == NULL || ip_frame == NULL || len < 4) {
         return;
     }
     if (memcmp(ip_frame, m17_ip_magic_stream, 4) == 0) {
+        if (len < 54) {
+            return;
+        }
         m17_ip_handle_stream_frame(opts, state, ip_frame);
         return;
     }
@@ -3560,7 +3568,7 @@ m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_
     };
 
     for (size_t i = 0; i < sizeof(ctrl) / sizeof(ctrl[0]); i++) {
-        if (m17_ip_handle_control_frame(&ctrl[i], opts, state, ip_frame)) {
+        if (m17_ip_handle_control_frame(&ctrl[i], opts, state, ip_frame, len)) {
             return;
         }
     }
