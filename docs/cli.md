@@ -426,7 +426,8 @@ Notes
 - `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3). A switched-off slot
   is not played on any audio output nor written to the static `-w` WAV, a call held with a talkgroup hold included,
   and stays off until you switch it on: neither a hold nor a return to a P25 control channel turns it back on.
-  Per-call WAVs (`-P`) and MBE capture (`-d`) have their own gates and do not follow the switches.
+  The switches apply to X2-TDMA too. Per-call WAVs (`-P`) and MBE capture (`-d`) have their own gates and do not
+  follow the switches.
 - `-y` Write digital voice to stdout (`-o -`) and UDP as 32-bit float samples (`f32le`) instead of 16-bit integers.
   The audio is the same as without `-y`: the same gain (`-g`), digital high-pass (`-v` 0x8), routing (a single call in
   both ears, and at full level on one channel) and muting, and `-w` and `-P` record the same WAVs. Each float sample is

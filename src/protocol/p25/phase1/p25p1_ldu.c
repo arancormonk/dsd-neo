@@ -64,7 +64,8 @@ is_non_standard_c0_word(const char c0_word[23]) {
     return 1;
 }
 
-static void
+// Returns 1 when the frame went to the vocoder, 0 when it was skipped (non-standard c0) or muted before it.
+static int
 process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23],
                                   dsd_vocoder_soft_bit imbe_soft_fr[8][23]) {
     if (is_non_standard_c0_word(imbe_fr[0])) {
@@ -75,18 +76,19 @@ process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr
         // The frame still owns its place in the superframe's keystream: consume it as a decoded frame would, so the
         // frames after it decrypt with their own keystream (issue #656), including while output is gated.
         dsd_mbe_p25p1_skip_voice_frame(state);
-        return;
+        return 0;
     }
     if (!p25_crypto_audio_permitted(opts, state, 0)) {
         dsd_mbe_log_imbe_soft_frame(opts, state, imbe_soft_fr);
         dsd_mbe_p25p1_skip_voice_frame(state);
         DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));
-        return;
+        return 0;
     }
     processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_P25P1, imbe_soft_fr, NULL, NULL);
+    return 1;
 }
 
-void
+int
 process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
     int j;
     char imbe_fr[8][23];
@@ -116,7 +118,7 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
     // Check for a non-standard c0 transmitted
     // This is explained here: https://github.com/szechyjs/dsd/issues/24
 
-    process_imbe_or_skip_non_standard(opts, state, imbe_fr, imbe_soft_fr);
+    return process_imbe_or_skip_non_standard(opts, state, imbe_fr, imbe_soft_fr);
 }
 
 static int

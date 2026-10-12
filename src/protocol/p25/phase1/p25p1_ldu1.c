@@ -125,12 +125,13 @@ p25p1_ldu1_init_decode_ctx(dsd_state* state, ldu1_decode_ctx_t* ctx) {
 
 static void
 p25p1_ldu1_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, int emit_active) {
-    process_IMBE(opts, state, status_count);
+    // A frame the vocoder never synthesized (a skipped non-standard c0) mixes nothing in any output (issue #654).
+    const int dispatched = process_IMBE(opts, state, status_count);
     if (emit_active) {
         // SM event: ACTIVE (P1 uses slot 0).
         p25_sm_emit_active(opts, state, 0);
     }
-    if (p25_crypto_audio_permitted(opts, state, 0)) {
+    if (dispatched && p25_crypto_audio_permitted(opts, state, 0)) {
         dsd_play_synthesized_voice(opts, state);
     }
 }

@@ -469,11 +469,10 @@ x2tdma_process_voice_frames(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx* 
     if (x2tdma_carrier_left(ctx, state)) {
         return;
     }
+    /* A data or idle timeslot mixes nothing: every voice frame of either timeslot was mixed right after it was
+       decoded, so nothing is pending (issue #654). */
     if (ctx->mutecurrentslot == 0) {
         x2tdma_process_voice_frame(opts, state, ctx->ambe_fr3);
-    } else {
-        /* Drain audio already decoded for the other timeslot. */
-        dsd_play_synthesized_voice(opts, state);
     }
 }
 

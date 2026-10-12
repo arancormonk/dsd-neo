@@ -255,6 +255,13 @@ dsd_mono_source_slot(const dsd_state* state) {
     return (DSD_SYNC_IS_X2TDMA(state->synctype) && state->currentslot == 1) ? 1U : 0U;
 }
 
+// The slot switch (-V, slot1_on/slot2_on) of the timeslot the mono buffer holds (issue #654). The mono mixers apply it
+// after every other gate, so a talkgroup hold never plays a switched-off timeslot.
+static int
+dsd_mono_source_slot_on(const dsd_opts* opts, const dsd_state* state) {
+    return (dsd_mono_source_slot(state) == 1U ? opts->slot2_on : opts->slot1_on) != 0;
+}
+
 // The slot (0 or 1) each channel of a stereo mix carries once its output policy has
 // run: its own, or its companion when the policy copied that slot over it.
 static void
@@ -579,24 +586,24 @@ dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 // Mono source, formatted for the device opened at startup (which stays stereo in AUTO/mixed scans).
+//
+// It plays exactly the frame dsd_voice_stage_short_left() staged: audio_out_idx is that frame's count (160, or 960
+// upsampled), and 0 when the frame staged no short samples (muted crypto). Any other count is no frame either.
+// Without a frame nothing is played, recorded or stamped (issue #654). The static WAV takes a frame
+// that passed every gate, whether or not an output is open (-o null -w records).
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
-    size_t len = state->audio_out_idx;
-    if (len > 960) {
-        len = 960; // clamp to buffer capacity
-    }
-
-    short mono_samp_buf[960];
-    short* mono_samp = mono_samp_buf;
-    DSD_MEMSET(mono_samp, 0, len * sizeof(short));
+    const int count = state->audio_out_idx;
+    const size_t len = (count == 160 || count == 960) ? (size_t)count : 0U;
+    short mono_samp[960];
 
     // The vocoder stages s_l only for a frame its verdict lets play; the same verdict and the talkgroup gate apply
-    // here, as in the float and stereo paths.
+    // here and in the stereo path, in both output formats.
     const int muted = dsd_audio_mono_output_muted(opts, state);
 
-    if (opts->slot1_on != 0 && !muted) {
-        const int loaded = dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p);
-        if (dsd_audio_activity_armed() && loaded && dsd_mix_output_plays(opts)) {
+    if (len != 0U && !muted && dsd_mono_source_slot_on(opts, state)
+        && dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p)) {
+        if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
             dsd_audio_activity_note();
         }
         if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
@@ -624,8 +631,8 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     unsigned long TGL = dsd_audio_call_target(state, source_slot);
 
     encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
-    // The slot switch mutes last: a hold never plays a switched-off slot (issue #657).
-    if (opts->slot1_on == 0) {
+    // The source slot switch mutes last: a hold never plays a switched-off slot.
+    if (!dsd_mono_source_slot_on(opts, state)) {
         encL = 1;
     }
 

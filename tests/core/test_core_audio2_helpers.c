@@ -2069,6 +2069,7 @@ test_x2_mono_voice_uses_playing_slot(void) {
             opts.audio_out = 1;
             opts.audio_out_type = 8;
             opts.slot1_on = 1;
+            opts.slot2_on = 1; // the frame plays slot 2, which its own switch gates (issue #654)
             opts.pulse_digi_out_channels = stereo ? 2 : 1;
             opts.wav_out_f = (SNDFILE*)&opts;
             opts.static_wav_file = 1;
@@ -2104,6 +2105,148 @@ test_x2_mono_voice_uses_playing_slot(void) {
     reset_gate_capture();
     g_audio_write_channels = 2;
     return rc;
+}
+
+/* Issue #654: X2-TDMA plays either timeslot through the mono mixers, so each mixer (SS and MS) in both output formats asks the
+ * switch (-V, slot1_on/slot2_on) of the timeslot it plays, for playback, the static WAV and the audible-audio stamp
+ * alike. The switch is the last gate: a talkgroup hold that unmutes the call never plays a switched-off timeslot.
+ * A non-X2 source is slot 1 whatever currentslot a TDMA decode left. */
+static int
+test_mono_mixers_follow_the_playing_slot_switch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char* const mixers[] = {"ss float", "ms float", "ss", "ms"};
+    int rc = 0;
+    for (int m = 0; m < 4; m++) {
+        for (int x2 = 0; x2 <= 1; x2++) {
+            for (int slot = 0; slot < 2; slot++) {
+                for (int switches = 0; switches < 4; switches++) {
+                    for (int hold = 0; hold <= 1; hold++) {
+                        DSD_MEMSET(&opts, 0, sizeof(opts));
+                        DSD_MEMSET(&state, 0, sizeof(state));
+                        reset_sink_capture();
+                        reset_gate_capture();
+                        opts.audio_out = 1;
+                        opts.audio_out_type = 8;
+                        opts.slot1_on = switches & 1;
+                        opts.slot2_on = (switches >> 1) & 1;
+                        opts.floating_point = m < 2 ? 1 : 0;
+                        opts.pulse_digi_out_channels = (m == 0 || m == 2) ? 2 : 1;
+                        opts.wav_out_f = (SNDFILE*)&opts;
+                        opts.static_wav_file = 1;
+                        g_audio_write_channels = opts.pulse_digi_out_channels;
+                        state.synctype = x2 ? DSD_SYNC_X2TDMA_VOICE_POS : DSD_SYNC_NXDN_POS;
+                        state.currentslot = slot;
+                        state.audio_out_idx = 160;
+                        for (size_t i = 0; i < 160U; i++) {
+                            state.s_l[i] = (short)(i + 1U);
+                        }
+                        // A held talkgroup: the gate unmutes the call whatever came before it.
+                        g_gate_mono_forced_enc = hold ? 0 : -1;
+                        stamp_clear();
+                        switch (m) {
+                            case 0:
+                            case 2: playSynthesizedVoiceSS(&opts, &state); break;
+                            default: playSynthesizedVoiceMS(&opts, &state); break;
+                        }
+                        const int source = (x2 && slot == 1) ? 1 : 0;
+                        const int want = source == 1 ? opts.slot2_on : opts.slot1_on;
+                        char tag[160];
+                        DSD_SNPRINTF(tag, sizeof(tag), "%s %s slot %d switches %d/%d hold %d: blocks", mixers[m],
+                                     x2 ? "x2" : "nxdn", slot + 1, opts.slot1_on, opts.slot2_on, hold);
+                        rc |= expect_int(tag, g_udp_blast_calls, want);
+                        DSD_SNPRINTF(tag, sizeof(tag), "%s %s slot %d switches %d/%d hold %d: stamp", mixers[m],
+                                     x2 ? "x2" : "nxdn", slot + 1, opts.slot1_on, opts.slot2_on, hold);
+                        rc |= expect_int(tag, stamp_noted(), want);
+                        {
+                            // Both sink formats record the same short samples that played.
+                            DSD_SNPRINTF(tag, sizeof(tag), "%s %s slot %d switches %d/%d hold %d: static wav",
+                                         mixers[m], x2 ? "x2" : "nxdn", slot + 1, opts.slot1_on, opts.slot2_on, hold);
+                            rc |= expect_int(tag, g_sf_write_short_calls, want);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    reset_gate_capture();
+    g_audio_write_channels = 2;
+    return rc;
+}
+
+/* Issue #654: the short mono mixer plays exactly the frame dsd_voice_stage_short_left() staged, 160 samples or 960 upsampled. Any
+ * other count is no frame (0 when the vocoder staged none, as for an encrypted NXDN or dPMR call without its key; a
+ * stale total of frames that reached no mixer; or a corrupt count): it plays, records and stamps nothing, writes no
+ * sample beyond its buffers, and leaves the count at 0. */
+static int
+check_mono_short_mixer_plays_only_a_staged_frame(int floating) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    static short history[2048];
+    static const int counts[] = {-960, -1, 0, 1, 159, 161, 320, 480, 640, 959, 961, 1920, 100000, 160, 960};
+    int rc = 0;
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->floating_point = floating;
+    opts->slot1_on = 1;
+    opts->pulse_digi_out_channels = 1;
+    opts->wav_out_f = (SNDFILE*)opts;
+    opts->static_wav_file = 1;
+    g_audio_write_channels = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    reset_gate_capture();
+    for (size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); c++) {
+        const int count = counts[c];
+        const int staged = count == 160 || count == 960;
+        for (size_t i = 0; i < 160U; i++) {
+            state->s_l[i] = (short)(i + 7U);
+        }
+        for (size_t i = 0; i < 960U; i++) {
+            history[1000U + i] = (short)(i + 11U);
+        }
+        state->audio_out_buf_p = history + 1960;
+        state->audio_out_idx = count;
+        reset_sink_capture();
+        stamp_clear();
+        playSynthesizedVoiceMS(opts, state);
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof(tag), "mono count %d: blocks", count);
+        rc |= expect_int(tag, g_udp_blast_calls, staged);
+        DSD_SNPRINTF(tag, sizeof(tag), "mono count %d: stamp", count);
+        rc |= expect_int(tag, stamp_noted(), staged);
+        DSD_SNPRINTF(tag, sizeof(tag), "mono count %d: static wav", count);
+        rc |= expect_int(tag, g_sf_write_short_calls, staged);
+        DSD_SNPRINTF(tag, sizeof(tag), "mono count %d: history position kept", count);
+        rc |= expect_int(tag, state->audio_out_buf_p == history + 1960, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "mono count %d: count reset", count);
+        rc |= expect_int(tag, state->audio_out_idx, 0);
+        if (staged) {
+            DSD_SNPRINTF(tag, sizeof(tag), "mono count %d: frame duration", count);
+            const size_t width = floating ? sizeof(float) : sizeof(short);
+            rc |= expect_size(tag, g_udp_blast_bytes, (size_t)count * width);
+            short first = 0;
+            if (floating) {
+                float value = 0.0f;
+                DSD_MEMCPY(&value, g_udp_blast_data, sizeof(value));
+                first = (short)(value * 32768.0f);
+            } else {
+                DSD_MEMCPY(&first, g_udp_blast_data, sizeof(first));
+            }
+            DSD_SNPRINTF(tag, sizeof(tag), "mono count %d: plays the staged frame", count);
+            rc |= expect_int(tag, first, count == 160 ? 7 : 11);
+        }
+    }
+    reset_gate_capture();
+    g_audio_write_channels = 2;
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_mono_short_mixer_plays_only_a_staged_frame(void) {
+    return check_mono_short_mixer_plays_only_a_staged_frame(0) | check_mono_short_mixer_plays_only_a_staged_frame(1);
 }
 
 static int
@@ -2168,6 +2311,8 @@ main(void) {
     rc |= test_static_wav_honors_record_policy_stereo();
     rc |= test_static_wav_follows_stereo_routing();
     rc |= test_x2_mono_voice_uses_playing_slot();
+    rc |= test_mono_mixers_follow_the_playing_slot_switch();
+    rc |= test_mono_short_mixer_plays_only_a_staged_frame();
     rc |= test_ss3_hold_respects_policy_mute();
     rc |= test_silent_s16_helper();
     rc |= test_dmr_mixes_stamp_only_fresh_audible_slots();

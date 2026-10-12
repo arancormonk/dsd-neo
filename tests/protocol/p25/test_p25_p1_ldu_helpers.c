@@ -325,8 +325,10 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     g_open_mbe_calls = 0;
     g_imbe_log_calls = 0;
     g_skip_keystream_calls = 0;
-    process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     int rc = 0;
+    // Issue #654: the return value tells the LDU whether a frame was synthesized, so a skipped one mixes nothing.
+    rc |= expect_int("non-standard c0 synthesizes nothing",
+                     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr), 0);
     rc |= expect_int("non-standard c0 skipped", g_vocoder_calls, 0);
     // Output gates do not stop the transmitter's keystream clock.
     rc |= expect_int("gated non-standard c0 consumes its keystream", g_skip_keystream_calls, 1);
@@ -341,7 +343,8 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     imbe_fr[0][0] = 1;
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-    process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
+    rc |= expect_int("pending crypto synthesizes nothing",
+                     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr), 0);
     rc |= expect_int("pending crypto does not open recording", g_open_mbe_calls, 0);
     rc |= expect_int("pending crypto does not dispatch vocoder", g_vocoder_calls, 0);
     rc |= expect_int("pending crypto without detail does not log IMBE", g_imbe_log_calls, 0);
@@ -374,7 +377,8 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     opts.dmr_mute_encL = 1;
     opts.trunk_tune_enc_calls = 1;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
-    process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
+    rc |= expect_int("standard c0 reports its dispatch",
+                     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr), 1);
     rc |= expect_int("standard c0 dispatched", g_vocoder_calls, 3);
     rc |= expect_int("classified voice leaves the recording to its first frame", g_open_mbe_calls, 0);
 
@@ -410,9 +414,10 @@ test_ldu_process_imbe_status_cadence_and_soft_dispatch(void) {
     state.payload_algid = 0x80;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     int status_count = 1;
-    process_IMBE(&opts, &state, &status_count);
+    const int dispatched = process_IMBE(&opts, &state, &status_count);
 
     int rc = 0;
+    rc |= expect_int("process_IMBE reports the dispatch", dispatched, 1);
     rc |= expect_int("soft dibits consumed including status", g_get_dibit_soft_count, 74);
     rc |= expect_int("midframe status symbols forwarded", g_status_add_count, 2);
     rc |= expect_int("last status dibit forwarded", g_status_dibit, 3);

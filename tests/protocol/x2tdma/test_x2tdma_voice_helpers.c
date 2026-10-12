@@ -285,7 +285,8 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     ctx.mutecurrentslot = 1;
     x2tdma_process_voice_frames(&opts, &state, &ctx);
     assert(g_mbe_calls == 0);
-    assert(g_play_calls[0] == 1);
+    /* Issue #654: a data or idle timeslot calls no mixer; there is no pending frame to drain. */
+    assert(g_play_calls[0] == 0);
     assert(g_get_pos == 54);
 }
 
@@ -338,21 +339,69 @@ test_slot_iteration_voice_and_data_state(void) {
     assert(ctx.mutecurrentslot == 1);
     assert(ctx.msMode == 1);
     assert(g_mbe_calls == 0);
-    assert(g_play_calls[1] == 1);
+    assert(g_play_calls[1] == 0);
     assert(g_skip_calls == 1);
     assert(g_skip_total == 54);
 }
 
-/* A whole voice superframe: six slots on slot 0's voice sync, the first from the frame sync's buffer. */
+/* A whole superframe: six slots, the first from the frame sync's buffer, each on the sync @p syncs gives it. */
 static void
-prepare_voice_superframe(int dibits[144]) {
+prepare_superframe(int dibits[144], const char* const syncs[6]) {
     DSD_MEMSET(dibits, 0, sizeof(int) * 144U);
-    set_slot_sync(dibits, X2TDMA_BS_VOICE_SYNC, 0);
+    set_slot_sync(dibits, syncs[0], 0);
     prepare_stream_after_slot(X2TDMA_BS_VOICE_SYNC, 0);
     for (int j = 1; j < 6; j++) {
         append_zeros(54 + 12 + 36 + 18);
-        append_sync(X2TDMA_BS_VOICE_SYNC, 0);
+        append_sync(syncs[j], 0);
         prepare_stream_after_slot(X2TDMA_BS_VOICE_SYNC, 0);
+    }
+}
+
+/* A whole voice superframe: six slots on slot 0's voice sync. */
+static void
+prepare_voice_superframe(int dibits[144]) {
+    static const char* const voice[6] = {X2TDMA_BS_VOICE_SYNC, X2TDMA_BS_VOICE_SYNC, X2TDMA_BS_VOICE_SYNC,
+                                         X2TDMA_BS_VOICE_SYNC, X2TDMA_BS_VOICE_SYNC, X2TDMA_BS_VOICE_SYNC};
+    prepare_superframe(dibits, voice);
+}
+
+static int
+total_play_calls(void) {
+    return g_play_calls[0] + g_play_calls[1];
+}
+
+/* Issue #654: every mixer call carries the frame the vocoder just synthesized. A superframe whose slots alternate
+   between voice and data mixes exactly its voice frames, in every output format: a data slot no longer drains the
+   mono buffer a second time. */
+static void
+test_superframe_mixes_only_synthesized_frames(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int dibits[144];
+    static const char* const mixed[6] = {X2TDMA_BS_VOICE_SYNC, X2TDMA_BS_DATA_SYNC,  X2TDMA_BS_VOICE_SYNC,
+                                         X2TDMA_BS_DATA_SYNC,  X2TDMA_BS_VOICE_SYNC, X2TDMA_BS_DATA_SYNC};
+
+    for (int format = 0; format < 4; format++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = format >= 2 ? 1 : 0;
+        opts.pulse_digi_out_channels = (format & 1) ? 2 : 1;
+        state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+
+        reset_stubs();
+        prepare_voice_superframe(dibits);
+        state.dibit_buf_p = dibits + 144;
+        processX2TDMAvoice(&opts, &state);
+        assert(g_mbe_calls == 18);
+        assert(total_play_calls() == g_mbe_calls);
+        assert(g_play_calls[format & 1] == g_mbe_calls);
+
+        reset_stubs();
+        prepare_superframe(dibits, mixed);
+        state.dibit_buf_p = dibits + 144;
+        processX2TDMAvoice(&opts, &state);
+        assert(g_mbe_calls == 9);
+        assert(total_play_calls() == g_mbe_calls);
     }
 }
 
@@ -402,6 +451,7 @@ main(void) {
     test_voice_frame_dispatch_gates_first_frame_and_mute();
     test_slot_iteration_voice_and_data_state();
     test_voice_superframe_split_by_a_carrier_boundary_publishes_nothing();
+    test_superframe_mixes_only_synthesized_frames();
     printf("X2TDMA_VOICE_HELPERS: OK\n");
     return 0;
 }

@@ -760,6 +760,8 @@ dsd_audio_emit_native_left(dsd_state* state) {
 
 void
 dsd_voice_stage_short_left(const dsd_opts* opts, dsd_state* state) {
+    // This count describes only this frame, even when its predecessor reached no mixer (issue #654).
+    state->audio_out_idx = 0;
     if (opts->pulse_digi_rate_out > 8000) {
         dsd_audio_emit_upsampled_left(opts, state);
         return;
@@ -828,8 +830,9 @@ processAudioR(const dsd_opts* opts, dsd_state* state) {
     dsd_voice_stage_short_right(opts, state);
 }
 
-void
-writeSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
+// Writes the mono (left) frame in audio_out_temp_buf, clamped to 16 bits in place, as one mono block of @p file.
+static void
+dsd_audio_write_mono_frame_wav(SNDFILE* file, dsd_state* state, const char* context) {
     int n;
     short aout_buf[160];
     short* aout_buf_p;
@@ -848,7 +851,24 @@ writeSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
         state->audio_out_temp_buf_p++;
     }
 
-    dsd_audio_write_wav_short_block(opts->wav_out_f, aout_buf, 160, "writeSynthesizedVoice");
+    dsd_audio_write_wav_short_block(file, aout_buf, 160, context);
+}
+
+void
+writeSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
+    dsd_audio_write_mono_frame_wav(opts->wav_out_f, state, "writeSynthesizedVoice");
+}
+
+void
+dsd_write_mono_voice_to_slot_wav(dsd_opts* opts, dsd_state* state, int slot) {
+    if (!opts || !state) {
+        return;
+    }
+    if (slot == 1) {
+        dsd_audio_write_mono_frame_wav(opts->wav_out_fR, state, "dsd_write_mono_voice_to_slot_wav slot 2");
+    } else {
+        dsd_audio_write_mono_frame_wav(opts->wav_out_f, state, "dsd_write_mono_voice_to_slot_wav slot 1");
+    }
 }
 
 void

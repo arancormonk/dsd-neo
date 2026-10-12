@@ -87,6 +87,14 @@ int dsd_audio_ensure_digital_output(dsd_opts* opts);
 void writeSynthesizedVoice(dsd_opts* opts, dsd_state* state);
 /** @brief Write synthesized mono voice samples for slot 2. */
 void writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Write the mono (left) synthesized frame into a slot's per-call WAV.
+ *
+ * For a source that stages either timeslot in the mono buffer (X2-TDMA): the samples come from
+ * `audio_out_temp_buf` whatever @p slot is, and land in `wav_out_f` (slot 0) or `wav_out_fR` (slot 1). A closed
+ * file writes nothing.
+ */
+void dsd_write_mono_voice_to_slot_wav(dsd_opts* opts, dsd_state* state, int slot);
 /** @brief Write synthesized mono mixed voice samples. */
 void writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state);
 

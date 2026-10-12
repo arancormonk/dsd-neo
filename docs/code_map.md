@@ -879,7 +879,18 @@ suite runs under this compiler.
   (below), which for P25 is the P25 speaker rule. The static WAV writes only recordable slots: the mono paths ask about the slot being played (X2-TDMA may
   play slot 1), and the stereo mixes write silent any channel whose routed source slot, as the output policy
   mirrors it, is record-blocked (`dsd_stereo_wav_channel_mask()`). The vocoder writes each MBE frame's per-call
-  WAV block; YSF writes only its V/D2 frames, which decode straight through mbelib. FDMA dispatchers (NXDN, YSF, D-STAR, ProVoice, dPMR) set
+  WAV block; YSF writes only its V/D2 frames, which decode straight through mbelib. X2-TDMA stages either timeslot
+  in the mono (left) buffer: the vocoder writes only its per-call WAV, into the frame's own timeslot's file from that
+  buffer (`dsd_write_mono_voice_to_slot_wav()`), and leaves the static WAV to the mono mixer's stereo block (issue
+  #654). The mono mixers (SS and MS) read the switch of the timeslot they play (`dsd_mono_source_slot_on()`:
+  `slot2_on` for an X2 slot-2 frame, `slot1_on` otherwise) as their last gate, after the talkgroup gate, so a hold
+  never plays a switched-off timeslot. Every mono mixer call carries a frame the vocoder just synthesized: X2 mixes
+  nothing for a data or idle timeslot, and P25 Phase 1 mixes nothing for a frame `process_IMBE()` did not dispatch (a
+  skipped non-standard c0 word, a crypto-muted frame), in every output format.
+  `audio_out_idx` counts only the current frame's short samples: the vocoder zeroes it at each frame and
+  `dsd_voice_stage_short_left()` counts its own frame (160, or 960 upsampled), so MS plays exactly that frame, or
+  nothing (no output, static WAV or stamp) when the frame staged no short samples, as an encrypted NXDN or dPMR
+  frame without its key does. FDMA dispatchers (NXDN, YSF, D-STAR, ProVoice, dPMR) set
   `currentslot` to 0, since these paths read it. EDACS analog voice applies the talkgroup gate at its own output.
   M17 is outside talkgroup policy (callsign addresses). Writers outside the mixers follow the mixers' output rule
   (`dsd_output_*_block()`): the mute (`audio_out` 0, which leaves the output open) silences the local stream, UDP and
