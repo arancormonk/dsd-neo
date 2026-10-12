@@ -14,6 +14,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/key_presence.h>
@@ -21,8 +22,6 @@
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/platform/audio.h>
-#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <limits.h>
@@ -30,19 +29,11 @@
 #include <mbelib-neo/mbelib.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <sys/types.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd_audio2_internal.h"
 #include "dsd_audio_internal.h"
-
-static void
-write_s16_audio(dsd_opts* opts, const int16_t* buf, size_t frames) {
-    if (opts->audio_out_stream) {
-        dsd_audio_write(opts->audio_out_stream, buf, frames);
-    }
-}
 
 static unsigned long
 dsd_audio_call_target(const dsd_state* state, uint8_t slot) {
@@ -56,35 +47,47 @@ dsd_audio_call_target(const dsd_state* state, uint8_t slot) {
     return target <= ULONG_MAX ? (unsigned long)target : 0UL;
 }
 
-/* Convert float audio to int16 and write using the abstraction layer (the beeper's float tone) */
-static void
-write_float_audio(dsd_opts* opts, const float* buf, size_t frames) {
-    if (!opts->audio_out_stream || !buf) {
+/* Convert float audio to int16 for the local device stream. A block of any length goes out in chunks the conversion
+   buffer holds, each written with its own frame count, so the backend never reads past what was converted. */
+DSD_AUDIO2_INTERNAL void
+dsd_write_float_audio_device(dsd_opts* opts, const float* buf, size_t frames, int channels) {
+    if (!opts->audio_out_stream || !buf || channels <= 0) {
         return;
     }
-    /* Convert float [-1.0, 1.0] to int16 with clipping */
-    int channels = opts->pulse_digi_out_channels;
-    size_t total_samples = frames * (size_t)channels;
-    int16_t tmp[320 * 2]; /* Max 320 stereo frames */
-    if (total_samples > sizeof(tmp) / sizeof(tmp[0])) {
-        total_samples = sizeof(tmp) / sizeof(tmp[0]);
+    int16_t tmp[320 * 2];
+    const size_t chunk_frames_max = (sizeof(tmp) / sizeof(tmp[0])) / (size_t)channels;
+    if (chunk_frames_max == 0U) {
+        return;
     }
-    for (size_t i = 0; i < total_samples; i++) {
-        float v = buf[i] * 32767.0f;
-        if (v > 32767.0f) {
-            v = 32767.0f;
-        } else if (v < -32768.0f) {
-            v = -32768.0f;
+    size_t done = 0;
+    while (done < frames) {
+        size_t chunk_frames = frames - done;
+        if (chunk_frames > chunk_frames_max) {
+            chunk_frames = chunk_frames_max;
         }
-        tmp[i] = (int16_t)v;
+        const float* src = buf + (done * (size_t)channels);
+        const size_t chunk_samples = chunk_frames * (size_t)channels;
+        /* Convert float [-1.0, 1.0] to int16 with clipping */
+        for (size_t i = 0; i < chunk_samples; i++) {
+            float v = src[i] * 32767.0f;
+            if (v > 32767.0f) {
+                v = 32767.0f;
+            } else if (v < -32768.0f) {
+                v = -32768.0f;
+            }
+            tmp[i] = (int16_t)v;
+        }
+        if (dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, tmp, chunk_frames) < 0) {
+            /* The device is down: the rest of the block would fail too. */
+            return;
+        }
+        done += chunk_frames;
     }
-    dsd_audio_write(opts->audio_out_stream, tmp, frames);
 }
 
 static inline void
-write_audio_out(int fd, const void* buf, size_t bytes) {
-    const ssize_t written = dsd_write(fd, buf, bytes);
-    (void)written;
+write_audio_out(int fd, const void* buf, size_t bytes, size_t frame_bytes) {
+    (void)dsd_audio_sink_write_fd(fd, buf, bytes, frame_bytes);
 }
 
 DSD_AUDIO2_INTERNAL int
@@ -156,11 +159,12 @@ dsd_output_float_block(dsd_opts* opts, dsd_state* state, const float* samples, s
         return;
     }
     if (opts->audio_out_type == 0) {
-        write_float_audio(opts, samples, frames);
+        dsd_write_float_audio_device(opts, samples, frames, channels);
     } else if (opts->audio_out_type == 8) {
         dsd_udp_audio_hook_blast(opts, state, frames * (size_t)channels * sizeof(float), (void*)samples);
     } else if (opts->audio_out_type == 1) {
-        write_audio_out(opts->audio_out_fd, samples, frames * (size_t)channels * sizeof(float));
+        write_audio_out(opts->audio_out_fd, samples, frames * (size_t)channels * sizeof(float),
+                        (size_t)channels * sizeof(float));
     }
 }
 
@@ -183,7 +187,7 @@ dsd_output_s16_as_f32(const dsd_opts* opts, dsd_state* state, const short* sampl
         if (opts->audio_out_type == 8) {
             dsd_udp_audio_hook_blast(opts, state, n * channels * sizeof(float), f32);
         } else {
-            write_audio_out(opts->audio_out_fd, f32, n * channels * sizeof(float));
+            write_audio_out(opts->audio_out_fd, f32, n * channels * sizeof(float), channels * sizeof(float));
         }
         done += n;
     }
@@ -198,13 +202,14 @@ dsd_output_s16_block(dsd_opts* opts, dsd_state* state, const short* samples, siz
         return;
     }
     if (opts->audio_out_type == 0) {
-        write_s16_audio(opts, (const int16_t*)samples, frames);
+        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, samples, frames);
     } else if (opts->floating_point == 1 && (opts->audio_out_type == 8 || opts->audio_out_type == 1)) {
         dsd_output_s16_as_f32(opts, state, samples, frames, (size_t)channels);
     } else if (opts->audio_out_type == 8) {
         dsd_udp_audio_hook_blast(opts, state, frames * (size_t)channels * sizeof(short), (void*)samples);
     } else if (opts->audio_out_type == 1) {
-        write_audio_out(opts->audio_out_fd, samples, frames * (size_t)channels * sizeof(short));
+        write_audio_out(opts->audio_out_fd, samples, frames * (size_t)channels * sizeof(short),
+                        (size_t)channels * sizeof(short));
     }
 }
 

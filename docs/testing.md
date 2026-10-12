@@ -392,6 +392,15 @@ draw of the hunt's phase against the calls, which a change to the hunt's timelin
 realizations instead. Decode *volume* under the hunt is not covered by the `iq-decode` suite, which asks only whether a
 build still decodes.
 
+#### stdout audio (issue #659)
+
+`DECODE_IQ_STDOUT_*` (`tests/audio_stdout_check.cmake`, radio builds on POSIX) run the `-o -` output end to end.
+`_CLOSED_PIPE` pipes D-STAR into `true`, a reader that is gone before the first block, so the case never depends on how
+much the pipe buffers: dsd-neo must exit 0 (not 141, SIGPIPE), log exactly one stdout failure, and write a `-w` WAV
+byte-identical to a full run's, which replay determinism makes exact. `_FM_MONITOR` and `_AM_MONITOR` require the
+analog monitor's audio on stdout under `-fA` and `-fM`, and `_SOURCE_MONITOR` that `-8` during digital decoding warns
+once and leaves stdout byte-identical to the run without it.
+
 #### Replay determinism (issue #572)
 
 Under `--iq-replay` the decoder paces the front end a capture chunk at a time (a chunk is at most one live transfer,

@@ -680,6 +680,9 @@ ysf_print_fich_summary(const dsd_opts* opts, const ysf_fich_info* info) {
     ysf_print_fich_payload(opts, info);
 }
 
+/* A V/D type 1 frame carries five DCH/VCH pairs, one 20 ms AMBE frame per VCH: 100 ms of voice (issue #660). */
+enum { YSF_VD1_CHANNEL_PAIRS = 5 };
+
 static void
 ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
     uint8_t dbuf[190];
@@ -687,7 +690,7 @@ ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
     DSD_MEMSET(dbuf, 0, sizeof(dbuf));
     DSD_MEMSET(vbuf, 0, sizeof(vbuf));
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < YSF_VD1_CHANNEL_PAIRS; i++) {
         for (int j = 0; j < 36; j++) {
             dbuf[(i * 36) + j] = get_dibit_and_analog_signal(opts, state, NULL);
         }
@@ -699,7 +702,7 @@ ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
         return;
     }
 
-    ysf_ehr(opts, state, vbuf, 0, 4);
+    ysf_ehr(opts, state, vbuf, 0, YSF_VD1_CHANNEL_PAIRS);
     ysf_conv_dch(opts, state, info->bn, info->bt, info->fn, info->ft, info->cm, dbuf);
 }
 

@@ -2695,6 +2695,18 @@ int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size
 int __real_dsd_audio_drain(dsd_audio_stream* stream);
 int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
+int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+int __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+
+/* The audio sinks ask each write's stream for its device health (issue #659); the wrapped output never fails. */
+int
+__wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out) {
+    if (!g_audio_wrap_on) {
+        return __real_dsd_audio_output_health_get(stream, out);
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    return 0;
+}
 
 int
 __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
@@ -2834,6 +2846,8 @@ test_stream_voice_audio_honors_mute_on_every_output(void) {
                 g_audio_event_count = 0;
                 g_audio_events[0] = '\0';
                 g_audio_wrap_on = out_type == 0;
+                /* The local stream is open (a sentinel the wraps take): the sink writes no stream that is not. */
+                opts->audio_out_stream = out_type == 0 ? (dsd_audio_stream*)&g_audio_wrap_on : NULL;
 #endif
 
                 (void)m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits);

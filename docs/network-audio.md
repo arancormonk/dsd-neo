@@ -97,6 +97,9 @@ The analog/source monitor stream is:
 - Datagrams: at most 960 samples (1920 bytes) of monitor or EDACS audio each; the M17 encoder's baseband (`-8` while
   encoding) goes out in datagrams of 1920 samples (3840 bytes)
 
+A send that fails (no route, the network down) drops that datagram; the first failure of a run is logged, then at
+most one line a minute per socket with a count, and one line when sends go through again.
+
 ## Listen to UDP Output (Examples)
 
 These examples use `socat` to receive UDP datagrams and feed a player that can consume raw PCM from stdin.
@@ -120,9 +123,27 @@ socat -u UDP-RECV:23458,reuseaddr STDOUT | ffplay -nodisp -f s16le -ar 48000 -ac
 ## stdout Audio Output (`-o -`)
 
 `-o -` writes the same raw decoded audio stream to stdout. The format matches the “Digital decoded voice” description
-above (rate/channels/type depend on mode and `-y`). Two writers send analog audio instead, as **48 kHz mono `s16le`**:
-EDACS analog voice, at every input rate (not written to stdout under `-y`), and the M17 encoder's baseband with `-8`.
-ProVoice's decoded voice keeps the digital format.
+above (rate/channels/type depend on mode and `-y`). Some writers send analog audio instead, as **48 kHz mono `s16le`**:
+
+- The analog monitor in the analog-only modes (`-fA`, `-fM`, or a switch to Analog or AM): no digital writer shares
+  the stream then, so it carries the monitor's audio alone, as the UDP port + 2 stream does, whatever `-y` says.
+- EDACS analog voice, at every input rate, without `-y` (with `-y` the stream is `f32le`, so EDACS analog voice is not
+  written to stdout; use a sound device or UDP for it).
+- The M17 encoder's baseband with `-8`.
+
+ProVoice's decoded voice keeps the digital format. The `-8` source monitor while decoding digital modes is not written
+to stdout: its 48 kHz audio would interleave with the decoded voice's 8 kHz stream. DSD-neo warns once at startup when
+`-o -` and `-8` meet; use `-o udp` (port + 2) or a sound device for it.
+
+Writes go out in whole sample frames, so the stream never shifts by a byte:
+
+- **The reader goes away** (`-o - | head -c 1000`, a closed socket) or a **write fails** (`-o - > /dev/full`, a full
+  disk): one error in the log, then stdout audio stays off for the rest of the session. Decoding, the `-w`/`-P`
+  recordings, trunk following and the other outputs carry on, and a normal shutdown still finalizes the WAV files.
+  DSD-neo never dies of SIGPIPE.
+- **The reader is slow**: stdout is an ordinary blocking pipe, so DSD-neo waits for it, as any pipe writer does, and a
+  reader that stops reading without closing the pipe holds up decoding. A non-blocking stdout that is full drops whole
+  blocks instead of waiting, with one warning and a count at most once a minute after it.
 
 This can be useful when you want to keep transport out of DSD-neo (pipe into another tool, or re-packetize yourself).
 

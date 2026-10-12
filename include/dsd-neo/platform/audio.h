@@ -119,9 +119,33 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
  * @param stream    Audio stream handle.
  * @param buffer    Samples to write (int16_t).
  * @param frames    Number of frames to write.
- * @return Number of frames written, or negative on error.
+ * @return Number of frames written (queued, on an async stream), or negative on error, including while the
+ *         stream's device is down and owed a reopen (dsd_audio_output_health_get()).
  */
 int dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+
+/** Device health of an output stream (dsd_audio_output_health_get()). */
+typedef struct dsd_audio_output_health {
+    uint64_t failures;   /* device failures since the stream opened; each left the device unusable, owing a reopen */
+    uint64_t recoveries; /* failures after which a reopened device took audio again */
+    int down;            /* 1 while the device is unusable and a reopen is owed; writes fail meanwhile */
+    char error[256];     /* what the latest failure reported */
+} dsd_audio_output_health;
+
+/**
+ * @brief Report an output stream's device failures and recoveries.
+ *
+ * PulseAudio and PortAudio give up a device whose write fails and reopen it behind the same stream handle, retrying
+ * with a growing wait while it cannot be reopened; dsd_audio_write() fails while it is down. (PulseAudio closes and
+ * reopens it on its output thread; PortAudio on the thread that writes and opened the stream.) A caller compares the counts
+ * between calls to report each failure and recovery once. Backends that recover on their own without reporting
+ * (AAudio) and the null backend report zeros.
+ *
+ * @param stream    Output stream handle.
+ * @param out       Receives the report (zeroed on error).
+ * @return 0 on success, -1 for a NULL, input or otherwise invalid stream.
+ */
+int dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
 
 /**
  * @brief Close an audio stream.

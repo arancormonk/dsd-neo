@@ -24,7 +24,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 
 #include <mbelib-neo/mbelib.h>
 #include "core/audio/dsd_audio2_internal.h"
@@ -63,6 +62,7 @@ dsd_p25_sm_logf(dsd_opts* opts, const char* format, ...) {
 
 static int g_audio_write_calls;
 static size_t g_audio_write_frames;
+static size_t g_audio_write_frame_log[8];
 static int g_audio_write_channels = 2;
 static int16_t g_audio_write_samples[1920];
 static int g_udp_blast_calls;
@@ -247,6 +247,9 @@ dsd_audio_record_policy_gate_slot(const dsd_opts* opts, const dsd_state* state, 
 int
 dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
     (void)stream;
+    if (g_audio_write_calls < (int)(sizeof(g_audio_write_frame_log) / sizeof(g_audio_write_frame_log[0]))) {
+        g_audio_write_frame_log[g_audio_write_calls] = frames;
+    }
     g_audio_write_calls++;
     g_audio_write_frames = frames;
     size_t samples = frames * (size_t)g_audio_write_channels;
@@ -281,25 +284,38 @@ dsd_udp_audio_hook_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, co
     }
 }
 
-ssize_t
-dsd_write(int fd, const void* buf, size_t count) {
+/* The audio sinks (audio_sink.c, compiled in) write the -o - descriptor through this. */
+dsd_write_frames_status
+dsd_write_frames(int fd, const void* buf, size_t bytes, size_t frame_bytes, size_t* written) {
+    (void)frame_bytes;
     g_dsd_write_calls++;
     g_dsd_write_fd = fd;
-    g_dsd_write_bytes = count;
+    g_dsd_write_bytes = bytes;
     if (buf != NULL) {
-        size_t copy = count;
+        size_t copy = bytes;
         if (copy > sizeof(g_dsd_write_data)) {
             copy = sizeof(g_dsd_write_data);
         }
         DSD_MEMCPY(g_dsd_write_data, buf, copy);
     }
-    return (ssize_t)count;
+    if (written != NULL) {
+        *written = bytes;
+    }
+    return DSD_WRITE_FRAMES_OK;
+}
+
+int
+dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out) {
+    (void)stream;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    return 0;
 }
 
 static void
 reset_sink_capture(void) {
     g_audio_write_calls = 0;
     g_audio_write_frames = 0;
+    DSD_MEMSET(g_audio_write_frame_log, 0, sizeof(g_audio_write_frame_log));
     DSD_MEMSET(g_audio_write_samples, 0, sizeof(g_audio_write_samples));
     g_udp_blast_calls = 0;
     g_udp_blast_bytes = 0;
@@ -568,6 +584,43 @@ test_float_output_writes_the_s16_block_as_f32(void) {
     dsd_output_s16_block(&opts, &state, block, 960U, 2);
     rc |= expect_size("s16 udp bytes", g_udp_blast_bytes, 1920U * sizeof(short));
     rc |= expect_bytes("s16 udp samples", g_udp_blast_data, block, 1920U * sizeof(short));
+    return rc;
+}
+
+/* Issue #659: a float block longer than the conversion buffer goes to the device in chunks, each written with the
+   frame count it converted, in the caller's channel count, so the backend never reads past what was converted. */
+static int
+test_float_device_write_converts_in_bounded_chunks(void) {
+    static dsd_opts opts;
+    static float block[400 * 2];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_out_stream = (dsd_audio_stream*)&opts;
+    opts.pulse_digi_out_channels = 1; /* not what the caller writes: its own count is used */
+    for (size_t i = 0; i < sizeof(block) / sizeof(block[0]); i++) {
+        block[i] = (float)(i % 100U) / 1000.0f;
+    }
+
+    int rc = 0;
+    reset_sink_capture();
+    g_audio_write_channels = 2;
+    dsd_write_float_audio_device(&opts, block, 400, 2);
+    rc |= expect_int("float-chunks-calls", g_audio_write_calls, 2);
+    rc |= expect_size("float-chunks-first", g_audio_write_frame_log[0], 320);
+    rc |= expect_size("float-chunks-second", g_audio_write_frame_log[1], 80);
+    /* The last chunk starts at frame 320 (sample 640): 640 % 100 = 40 -> 0.040 * 32767. */
+    rc |= expect_int("float-chunks-second-first-sample", g_audio_write_samples[0], (int)(0.040f * 32767.0f));
+
+    reset_sink_capture();
+    dsd_write_float_audio_device(&opts, block, 160, 1);
+    rc |= expect_int("float-mono-chunks-calls", g_audio_write_calls, 1);
+    rc |= expect_size("float-mono-chunks-frames", g_audio_write_frame_log[0], 160);
+
+    reset_sink_capture();
+    dsd_write_float_audio_device(&opts, block, 400, 0);
+    rc |= expect_int("float-chunks-no-channels", g_audio_write_calls, 0);
+    opts.audio_out_stream = NULL;
+    dsd_write_float_audio_device(&opts, block, 400, 2);
+    rc |= expect_int("float-chunks-no-stream", g_audio_write_calls, 0);
     return rc;
 }
 
@@ -1899,6 +1952,7 @@ main(void) {
     rc |= test_p25_decrypt_gate_helpers();
     rc |= test_output_helpers_dispatch_to_configured_sinks();
     rc |= test_float_output_writes_the_s16_block_as_f32();
+    rc |= test_float_device_write_converts_in_bounded_chunks();
     rc |= test_output_block_helpers_skip_silent_trailing_blocks();
     rc |= test_output_ring_reset_helpers_preserve_below_threshold_and_clear_at_limit();
     rc |= test_dmr_slot_mute_and_mono_gate_helpers();

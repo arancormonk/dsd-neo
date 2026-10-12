@@ -22,6 +22,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -44,7 +45,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include "dsd_audio_internal.h"
 
 static int
@@ -228,6 +228,8 @@ dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old_effe
 
 void
 closeAudioOutput(dsd_opts* opts) {
+    /* The streams below go; what was reported about them goes with them. */
+    dsd_audio_sink_device_reset();
     /* Close primary audio output stream */
     if (opts->audio_out_stream) {
         dsd_audio_close(opts->audio_out_stream);
@@ -930,35 +932,8 @@ writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
 // The legacy short output's pending samples (state->audio_out_idx of them) to the output, then none pending.
 static void
 dsd_audio_legacy_write_pending(dsd_opts* opts, dsd_state* state) {
-    if (opts->audio_out == 1 && opts->floating_point == 1 && opts->audio_out_type != 0) {
-        // Float output (-y): the raw fd and UDP take the same samples as f32, as from every other mixer.
-        dsd_output_s16_block(opts, state, (state->audio_out_buf_p - state->audio_out_idx), (size_t)state->audio_out_idx,
-                             1);
-        state->audio_out_idx = 0;
-    } else if (opts->audio_out == 1 && opts->audio_out_type == 1) {
-        ssize_t written = dsd_write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
-                                    (size_t)state->audio_out_idx * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("playSynthesizedVoice: failed to write %zu bytes to audio_out_fd",
-                     (size_t)state->audio_out_idx * sizeof(short));
-        }
-        state->audio_out_idx = 0;
-    } else if (opts->audio_out == 1 && opts->audio_out_type == 0) {
-        /* Use audio abstraction layer */
-        if (opts->audio_out_stream) {
-            dsd_audio_write(opts->audio_out_stream, (state->audio_out_buf_p - state->audio_out_idx),
-                            (size_t)state->audio_out_idx);
-        }
-        state->audio_out_idx = 0;
-    } else if (opts->audio_out == 1
-               && opts->audio_out_type == 8) //UDP Audio Out -- Forgot some things still use this for now
-    {
-        dsd_udp_audio_hook_blast(opts, state, (size_t)state->audio_out_idx * sizeof(short),
-                                 (state->audio_out_buf_p - state->audio_out_idx));
-        state->audio_out_idx = 0;
-    } else {
-        state->audio_out_idx = 0; //failsafe for audio_out == 0
-    }
+    dsd_output_s16_block(opts, state, state->audio_out_buf_p - state->audio_out_idx, (size_t)state->audio_out_idx, 1);
+    state->audio_out_idx = 0;
 }
 
 void
