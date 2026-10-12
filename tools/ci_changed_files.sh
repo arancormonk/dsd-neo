@@ -289,7 +289,6 @@ for p in "${changed_paths[@]}"; do
       ;;
   esac
 
-
   case "$p" in
     *.c | *.cc | *.cpp | *.cxx)
       changed_sources+=("$p")
