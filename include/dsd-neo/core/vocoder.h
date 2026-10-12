@@ -70,8 +70,8 @@ void processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol pr
                          dsd_vocoder_soft_bit imbe7100_fr[7][24]);
 
 /**
- * Account for a P25 Phase 1 IMBE frame the decoder drops before the vocoder (the non-standard C0 word): the frame
- * consumes its keystream position (11 octets of multicrypt keystream, generated first if this frame would have
+ * Account for a P25 Phase 1 IMBE frame the decoder drops before the vocoder (non-standard C0 or the crypto gate):
+ * the frame consumes its keystream position (11 octets of multicrypt keystream, generated first if this frame would have
  * generated it, or 11 RC4 drop octets) exactly as a decoded frame does, so the frames after it in the superframe
  * decrypt with their own keystream. Nothing is synthesized or output.
  */

@@ -1660,7 +1660,7 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
 }
 
 static int
-test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
+test_process_mbe_frame_nxdn_cipher2_mutes_stale_bit_counter(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -1673,38 +1673,11 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
     char imbe_fr[8][23] = {{0}};
     char ambe_fr[4][24] = {{0}};
     char imbe7100_fr[7][24] = {{0}};
-    char decoded_ambe_d[49] = {0};
-    char expected_ambe_d[49] = {0};
     float expected_audio[160] = {0};
-    char expected_err_str[96] = {0};
-    int expected_errs = -1;
-    int expected_errs2 = -1;
-    mbe_process_result result;
 
     ambe_fr[0][9] = 1;
     ambe_fr[1][18] = 1;
     ambe_fr[3][5] = 1;
-
-    int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, decoded_ambe_d, &result);
-    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
-    rc |= expect_eq_int("nxdn-cipher2-clamp fixture decodes", ret >= 0, 1);
-    if (ret >= 0) {
-        // The all-ones keystream flips every bit. Build the expected audio from the
-        // same library instead of assuming the flipped frame is audible: mbelib-neo
-        // 2.2 treats it as a TIA-102.BABA-1 erasure and repeats the (silent) initial
-        // frame, while 2.1 synthesized audio for it.
-        copy_ambe49(expected_ambe_d, decoded_ambe_d);
-        for (size_t i = 0U; i < 49U; i++) {
-            expected_ambe_d[i] ^= 1;
-        }
-
-        (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
-        mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur, &prev, &prev_enhanced);
-        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                      sizeof(expected_err_str), &result);
-        rc |= expect_eq_int("nxdn-cipher2-clamp fixture processes", ret >= 0, 1);
-    }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
@@ -1714,16 +1687,23 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
     state.R = 1U;
     state.bit_counterL = 2000;
     DSD_MEMSET(state.ks_bitstreamL, 1, sizeof(state.ks_bitstreamL));
+    for (size_t i = 0; i < 160U; i++) {
+        state.audio_out_temp_buf[i] = 1000.0f;
+        state.f_l[i] = 1000.0f;
+    }
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
-    rc |= expect_eq_int("nxdn-cipher2-clamp state bit-counter", state.bit_counterL, 1568);
-    rc |= expect_eq_int("nxdn-cipher2-clamp errs", state.errs, expected_errs);
-    rc |= expect_eq_int("nxdn-cipher2-clamp errs2", state.errs2, expected_errs2);
-    rc |= expect_eq_int("nxdn-cipher2-clamp status", strcmp(state.err_str, expected_err_str), 0);
-    rc |= expect_eq_mem("nxdn-cipher2-clamp temp audio", state.audio_out_temp_buf, expected_audio,
+    // An exhausted session cannot reuse its final word. Preserve the exhausted
+    // cursor and replace any previous audio with silence until a fresh IV arrives.
+    rc |= expect_eq_int("nxdn-cipher2-exhausted state bit-counter", state.bit_counterL, 2000);
+    rc |= expect_eq_int("nxdn-cipher2-exhausted errs", state.errs, 0);
+    rc |= expect_eq_int("nxdn-cipher2-exhausted errs2", state.errs2, 0);
+    rc |= expect_eq_int("nxdn-cipher2-exhausted status", state.err_str[0], '\0');
+    rc |= expect_eq_int("nxdn-cipher2-exhausted silenced", state.mbe_short_silenced[0], 1);
+    rc |= expect_eq_mem("nxdn-cipher2-exhausted temp audio", state.audio_out_temp_buf, expected_audio,
                         sizeof(expected_audio));
-    rc |= expect_eq_mem("nxdn-cipher2-clamp staged left", state.f_l, expected_audio, sizeof(expected_audio));
+    rc |= expect_eq_mem("nxdn-cipher2-exhausted staged left", state.f_l, expected_audio, sizeof(expected_audio));
 
     return rc;
 }
@@ -5167,7 +5147,7 @@ main(void) {
     rc |= test_process_mbe_frame_p25p1_multicrypt_transforms_imbe_payload();
     rc |= test_process_mbe_frame_nxdn_cipher1_transforms_ambe_payload();
     rc |= test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream();
-    rc |= test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter();
+    rc |= test_process_mbe_frame_nxdn_cipher2_mutes_stale_bit_counter();
     rc |= test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset();
     rc |= test_process_mbe_frame_hard_dstar_stages_audio();
     rc |= test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400();

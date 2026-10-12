@@ -328,15 +328,15 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     int rc = 0;
     rc |= expect_int("non-standard c0 skipped", g_vocoder_calls, 0);
-    // Held back by the crypto gate, as a decoded frame would be: no keystream consumed either.
-    rc |= expect_int("gated non-standard c0 consumes no keystream", g_skip_keystream_calls, 0);
+    // Output gates do not stop the transmitter's keystream clock.
+    rc |= expect_int("gated non-standard c0 consumes its keystream", g_skip_keystream_calls, 1);
 
     // A skipped frame of a call the gate admits still takes its keystream position, so the frames after it in the
     // superframe decrypt with their own keystream (issue #656); it still never reaches the vocoder.
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     rc |= expect_int("admitted non-standard c0 skipped", g_vocoder_calls, 0);
-    rc |= expect_int("admitted non-standard c0 consumes its keystream", g_skip_keystream_calls, 1);
+    rc |= expect_int("admitted non-standard c0 consumes its keystream", g_skip_keystream_calls, 2);
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     imbe_fr[0][0] = 1;
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
@@ -345,12 +345,14 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     rc |= expect_int("pending crypto does not open recording", g_open_mbe_calls, 0);
     rc |= expect_int("pending crypto does not dispatch vocoder", g_vocoder_calls, 0);
     rc |= expect_int("pending crypto without detail does not log IMBE", g_imbe_log_calls, 0);
+    rc |= expect_int("pending crypto consumes its keystream", g_skip_keystream_calls, 3);
 
     opts.payload = 1;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     rc |= expect_int("pending crypto payload detail logs IMBE", g_imbe_log_calls, 1);
     rc |= expect_int("pending crypto payload detail keeps recording closed", g_open_mbe_calls, 0);
     rc |= expect_int("pending crypto payload detail bypasses vocoder", g_vocoder_calls, 0);
+    rc |= expect_int("pending crypto with detail consumes once", g_skip_keystream_calls, 4);
 
     opts.payload = 0;
     opts.unmute_encrypted_p25 = 1;

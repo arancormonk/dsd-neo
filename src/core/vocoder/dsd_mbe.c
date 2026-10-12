@@ -933,21 +933,22 @@ mbe_init_nxdn_cipher23_keystream(dsd_state* state) {
     }
 }
 
-static void
+/* NXDN TS 1-D section 5.4.4.2: one DES/AES encryption session contains 32 EHR voice words of 49 bits. A missing
+   replacement IV cannot extend that session by repeating its final word. */
+#define MBE_NXDN_VOICE_KS_BITS ((size_t)32U * 49U)
+
+static int
 mbe_apply_nxdn_cipher23(dsd_state* state, char ambe_d[49]) {
     mbe_init_nxdn_cipher23_keystream(state);
 
-    //sanity check, don't exceed bit application counter
-    if (state->bit_counterL < 0) {
-        state->bit_counterL = 0;
-    }
-    if (state->bit_counterL > (1568 - 49)) {
-        state->bit_counterL = (1568 - 49);
+    if (state->bit_counterL < 0 || (size_t)state->bit_counterL > MBE_NXDN_VOICE_KS_BITS - 49U) {
+        return -1;
     }
 
     for (int i = 0; i < 49; i++) {
-        ambe_d[i] ^= state->ks_bitstreamL[state->bit_counterL++];
+        ambe_d[i] ^= (char)(state->ks_bitstreamL[state->bit_counterL++] & 1U);
     }
+    return 1;
 }
 
 static void
@@ -1090,7 +1091,10 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     else if (nxdn_crypto
              && ((state->nxdn_cipher_type == 0x02 && dsd_key_scalar_present(state, 0))
                  || (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1))) {
-        mbe_apply_nxdn_cipher23(state, frame_ctx->ambe_d);
+        if (mbe_apply_nxdn_cipher23(state, frame_ctx->ambe_d) < 0) {
+            mbe_mute_exhausted_frame(opts, state, 0, frame_ctx);
+            return;
+        }
     }
 
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
@@ -1472,15 +1476,24 @@ mbeslot_stream_keystream_bits(int algid) {
 }
 
 static int
-mbeslot_left_apply_keystream_bits(dsd_state* state, char ambe_d[49]) {
+mbeslot_left_apply_keystream_bits(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
+    // P25 ciphertext has no DMR clear-silence exception: every admitted word consumes and applies its 49 bits.
+    if (frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P2) {
+        return mbeslot_xor_keystream_frame(state->ks_bitstreamL, mbeslot_stream_keystream_bits(state->payload_algid),
+                                           &state->bit_counterL, frame_ctx->ambe_d);
+    }
     return dmr_voice_stream_apply_frame49(state->ks_bitstreamL, mbeslot_stream_keystream_bits(state->payload_algid),
-                                          &state->bit_counterL, state->payload_algid, ambe_d);
+                                          &state->bit_counterL, state->payload_algid, frame_ctx->ambe_d);
 }
 
 static int
-mbeslot_right_apply_keystream_bits(dsd_state* state, char ambe_d[49]) {
+mbeslot_right_apply_keystream_bits(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
+    if (frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P2) {
+        return mbeslot_xor_keystream_frame(state->ks_bitstreamR, mbeslot_stream_keystream_bits(state->payload_algidR),
+                                           &state->bit_counterR, frame_ctx->ambe_d);
+    }
     return dmr_voice_stream_apply_frame49(state->ks_bitstreamR, mbeslot_stream_keystream_bits(state->payload_algidR),
-                                          &state->bit_counterR, state->payload_algidR, ambe_d);
+                                          &state->bit_counterR, state->payload_algidR, frame_ctx->ambe_d);
 }
 
 /* Returns 1 when the frame was decrypted (or skipped as silence), 0 when no stream cipher applies, -1 when its
@@ -1501,7 +1514,8 @@ mbeslot_left_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_c
         mbeslot_left_init_keystream(opts, state, aes_key);
     }
 
-    const int applied = mbeslot_left_apply_keystream_bits(state, frame_ctx->ambe_d);
+    const int applied = mbeslot_left_apply_keystream_bits(state, frame_ctx);
+    DSD_SECURE_ZERO(aes_key, sizeof(aes_key));
     state->DMRvcL++;
     if (applied < 0) {
         return -1;
@@ -1526,7 +1540,8 @@ mbeslot_right_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_
         mbeslot_right_init_keystream(opts, state, aes_key);
     }
 
-    const int applied = mbeslot_right_apply_keystream_bits(state, frame_ctx->ambe_d);
+    const int applied = mbeslot_right_apply_keystream_bits(state, frame_ctx);
+    DSD_SECURE_ZERO(aes_key, sizeof(aes_key));
     state->DMRvcR++;
     if (applied < 0) {
         return -1;

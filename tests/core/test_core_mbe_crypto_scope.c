@@ -579,6 +579,8 @@ p25p1_reference_keystream(const dsd_state* s, uint8_t ks[512]) {
     p25_aes_key_bytes(s, key);
     switch (s->payload_algid) {
         case 0x81: des_ofb_keystream_output(s->payload_miP, s->R, ks, 40); return 19;
+        case 0x83: tdea_tofb_keystream_output(s->payload_miP, key, ks, 40); return 19;
+        case 0x9F: des_xl_keystream_output(s->payload_miP, s->R, ks, s->xl_is_hdu); return 11;
         case 0x84: aes_ofb_keystream_output(s->aes_iv, key, ks, DSD_AES_KEY_256, 20); return 27;
         case 0x89: aes_ofb_keystream_output(s->aes_iv, key, ks, DSD_AES_KEY_128, 20); return 27;
         default: return -1;
@@ -678,6 +680,19 @@ key_p1_des(dsd_state* s) {
     key_p25_des(s);
 }
 
+static void
+key_p1_tdea(dsd_state* s) {
+    key_p25_aes256(s);
+    s->payload_algid = 0x83;
+    s->payload_miP = 0x1122334455667788ULL;
+}
+
+static void
+key_p1_desxl(dsd_state* s) {
+    key_p25_des(s);
+    s->payload_algid = 0x9F;
+}
+
 /* Item 5: AES decrypts all 18 frames of the superframe, the 18th included (it read zeros past 14 blocks).
    Item 6: a frame dropped before the vocoder takes its keystream with it, including the one that generates it. */
 static int
@@ -686,9 +701,15 @@ test_p25p1_superframe_keystream(void) {
     rc |= check_p25p1_superframe("p25p1 aes-128 superframe", key_p1_aes128, 0U);
     rc |= check_p25p1_superframe("p25p1 aes-256 superframe", key_p1_aes256, 0U);
     rc |= check_p25p1_superframe("p25p1 des superframe", key_p1_des, 0U);
+    rc |= check_p25p1_superframe("p25p1 tdea superframe", key_p1_tdea, 0U);
+    rc |= check_p25p1_superframe("p25p1 des-xl superframe", key_p1_desxl, 0U);
     rc |= check_p25p1_superframe("p25p1 aes-128 frame 4 skipped", key_p1_aes128, 1U << 3);
     rc |= check_p25p1_superframe("p25p1 aes-128 frame 1 skipped", key_p1_aes128, 1U << 0);
     rc |= check_p25p1_superframe("p25p1 des ldu2 frames skipped", key_p1_des, (1U << 9) | (1U << 17));
+    // A retained-carrier call can withhold a whole LDU1 while its identity is pending; LDU2 starts at word 10.
+    rc |= check_p25p1_superframe("p25p1 aes ldu1 gated", key_p1_aes256, 0x1FFU);
+    rc |= check_p25p1_superframe("p25p1 tdea ldu1 gated", key_p1_tdea, 0x1FFU);
+    rc |= check_p25p1_superframe("p25p1 des-xl ldu1 gated", key_p1_desxl, 0x1FFU);
 
     // RC4 keeps its drop position across a skipped frame too.
     reset_state(DSD_SYNC_P25P1_POS, 0);
@@ -952,6 +973,132 @@ test_dmr_des_frames_match_reference(void) {
     return rc;
 }
 
+/* P25 Phase 2 ciphertext can coincidentally match either DMR clear-silence pattern. It still needs AES, unlike DMR.
+   These hard frames encode F801A99F8CE080 (default silence) and 80000000000080 (zero tail); decoding asserts the
+   fixtures independently, without requiring the newer mbelib encoder API at build time. */
+static int
+test_p25p2_aes_does_not_skip_dmr_silence_patterns(void) {
+    static const char encoded[2][4][24] = {
+        {{0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1},
+         {1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0},
+         {0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+         {1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {{1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+         {0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0},
+         {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+         {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    };
+    static const uint64_t words[2] = {0xF801A99F8CE080ULL, 0x80000000000080ULL};
+    static const key_setup_fn keys[] = {key_p25_aes128, key_p25_aes256};
+    int rc = 0;
+    for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+        for (int slot = 0; slot < 2; slot++) {
+            for (int p25 = 0; p25 < 2; p25++) {
+                const dsd_voice_protocol owner = p25 ? DSD_VOICE_PROTOCOL_P25P2 : DSD_VOICE_PROTOCOL_DMR;
+                reset_state(p25 ? DSD_SYNC_P25P2_POS : DSD_SYNC_DMR_BS_VOICE_POS, slot);
+                keys[k](&g_state);
+                uint8_t key[32];
+                uint8_t ks[160];
+                p25_aes_key_bytes(&g_state, key);
+                aes_ofb_keystream_output(slot ? g_state.aes_ivR : g_state.aes_iv, key, ks,
+                                         k == 0 ? DSD_AES_KEY_128 : DSD_AES_KEY_256, 10);
+                if (trace_begin() != 0) {
+                    return 1;
+                }
+                // Include an exhausted P25 frame whose ciphertext also matches silence: it must be muted.
+                for (int f = 0; f < 21; f++) {
+                    char fr[4][24];
+                    DSD_MEMCPY(fr, encoded[f & 1], sizeof(fr));
+                    processMbeFrame(&g_opts, &g_state, owner, NULL, fr, NULL);
+                }
+                rc |= trace_end(&g_trace);
+                rc |= expect_int("silence-pattern frames", g_trace.frames, p25 ? 20 : 21);
+                rc |= expect_int("silence-pattern exhausted", g_trace.exhausted, p25 ? 1 : 0);
+                for (int f = 0; f < g_trace.frames; f++) {
+                    char plain[49];
+                    for (int b = 0; b < 49; b++) {
+                        const int bit = (f * 56) + b;
+                        const int mask = p25 ? ((ks[16 + (bit / 8)] >> (7 - (bit % 8))) & 1) : 0;
+                        plain[b] = (char)(((words[f & 1] >> (55 - b)) & 1U) ^ (unsigned)mask);
+                    }
+                    char want[24];
+                    ambe_hex(plain, want);
+                    rc |= expect_int("silence-pattern plaintext matches owner", strcmp(g_trace.data[f], want), 0);
+                }
+                rc |= expect_int("silence-pattern counter", slot ? g_state.bit_counterR : g_state.bit_counterL,
+                                 p25 ? 1120 : 1152);
+            }
+        }
+    }
+    return rc;
+}
+
+/* A missing NXDN replacement IV ends the 32-word session: do not repeatedly apply the last word or use unused
+   cipher-block padding. A fresh IV restores the next session. The same bound applies to DES and AES. */
+static int
+test_nxdn_cipher23_session_exhaustion(void) {
+    static const key_setup_fn keys[] = {key_nxdn_cipher2, key_nxdn_cipher3};
+    int rc = 0;
+    for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+        reset_state(DSD_SYNC_NXDN_POS, 0);
+        keys[k](&g_state);
+        uint8_t ks[240];
+        const int discard = k == 0 ? 8 : 16;
+        if (k == 0) {
+            des_ofb_keystream_output(g_state.payload_miN, g_state.R, ks, 26);
+        } else {
+            aes_ofb_keystream_output(g_state.aes_iv, g_state.aes_key, ks, DSD_AES_KEY_256, 15);
+        }
+        if (trace_begin() != 0) {
+            return 1;
+        }
+        run_ambe(DSD_VOICE_PROTOCOL_NXDN, 40);
+        rc |= trace_end(&g_trace);
+        rc |= expect_int("nxdn session frames", g_trace.frames, 32);
+        rc |= expect_int("nxdn exhausted frames", g_trace.exhausted, 8);
+        rc |= expect_int("nxdn exhausted position stays put", g_state.bit_counterL, 1568);
+        for (int f = 0; f < 32 && f < g_trace.frames; f++) {
+            char plain[49];
+            for (int b = 0; b < 49; b++) {
+                const int bit = (f * 49) + b;
+                plain[b] = (char)(g_ambe_d[f % FIXTURE_FRAMES][b] ^ ((ks[discard + (bit / 8)] >> (7 - (bit % 8))) & 1));
+            }
+            char want[24];
+            ambe_hex(plain, want);
+            rc |= expect_int("nxdn session plaintext", strcmp(g_trace.data[f], want), 0);
+        }
+        rc |= expect_int("nxdn exhausted frame marked silent", g_state.mbe_short_silenced[0], 1);
+        for (int i = 0; i < 160; i++) {
+            rc |= expect_int("nxdn exhausted PCM is silent",
+                             g_state.audio_out_temp_buf[i] < 1e-6f && g_state.audio_out_temp_buf[i] > -1e-6f, 1);
+        }
+
+        g_state.nxdn_new_iv = 1;
+        if (trace_begin() != 0) {
+            return 1;
+        }
+        run_ambe(DSD_VOICE_PROTOCOL_NXDN, 2);
+        rc |= trace_end(&g_trace);
+        rc |= expect_int("nxdn IV refresh recovers", g_trace.frames, 2);
+        rc |= expect_int("nxdn IV refresh not exhausted", g_trace.exhausted, 0);
+        rc |= expect_int("nxdn IV refresh position", g_state.bit_counterL, 98);
+
+        static const long bad_positions[] = {-1, 1520, 1568, 100000};
+        for (size_t p = 0; p < sizeof(bad_positions) / sizeof(bad_positions[0]); p++) {
+            g_state.bit_counterL = bad_positions[p];
+            if (trace_begin() != 0) {
+                return 1;
+            }
+            run_ambe(DSD_VOICE_PROTOCOL_NXDN, 1);
+            rc |= trace_end(&g_trace);
+            rc |= expect_int("nxdn invalid position mutes", g_trace.exhausted, 1);
+            rc |= expect_int("nxdn invalid position does not synthesize", g_trace.frames, 0);
+            rc |= expect_int("nxdn invalid position stays put", g_state.bit_counterL, bad_positions[p]);
+        }
+    }
+    return rc;
+}
+
 /* Raw .amb/.dmb playback: DMR basic privacy (-b) is an AMBE+2 transform and never touches D-STAR's AMBE 2400 frames. */
 static int
 play_file_audio(const char cookie[4], unsigned long long basic_key, float audio[160]) {
@@ -1028,6 +1175,8 @@ main(void) {
     rc |= test_p25p1_keystream_read_is_bounded();
     rc |= test_dmr_keystream_read_is_bounded();
     rc |= test_dmr_des_frames_match_reference();
+    rc |= test_p25p2_aes_does_not_skip_dmr_silence_patterns();
+    rc |= test_nxdn_cipher23_session_exhaustion();
     rc |= test_keystream_muted_frame_stages_silence();
     rc |= test_manual_keystream_takes_over_exhausted_frame();
     rc |= test_file_playback_basic_privacy_stays_on_ambe2450();

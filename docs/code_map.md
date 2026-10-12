@@ -609,10 +609,13 @@ suite runs under this compiler.
   blocks = 240; a superframe reads up to octet 228), the slot path by `dmr_voice_stream_apply_frame49()`'s
   `ks_bit_count` and the DES helper (DES and AES 1152 bits, Hytera Enhanced 1080, Kirisun 1008). A frame past the end is
   muted like an undecodable one (silence, no MBE capture, `KEYSTREAM_EXHAUSTED` frame-log event; a stereo slot stages
-  silence) and the counter stays put; nothing wraps. An armed `-S` keystream still takes over such a slot frame. NXDN
-  cipher 2/3 keeps its own in-array clamp. A P25 Phase 1 frame the decoder drops before the vocoder (the non-standard C0
-  word) still consumes its keystream position through `dsd_mbe_p25p1_skip_voice_frame()` when the crypto gate admits the
-  call. Raw `.dmb` (D-STAR AMBE 2400) playback never applies `-b`. Tests: `CORE_MBE_CRYPTO_SCOPE`.
+  silence) and the counter stays put; nothing wraps. An armed `-S` keystream still takes over such a slot frame. P25
+  Phase 2 applies AES to every ciphertext word, including patterns DMR reserves for clear silence. NXDN cipher 2/3
+  stops after its 32 EHR words (1568 bits) until a fresh IV starts the next encryption session, per NXDN TS 1-D section
+  5.4.4.2; it never repeats the final word or uses the unused cipher-block padding. A P25 Phase 1 frame the decoder
+  drops before the vocoder (non-standard C0 or the crypto gate) still consumes its keystream position through
+  `dsd_mbe_p25p1_skip_voice_frame()`. Raw `.dmb` (D-STAR AMBE 2400) playback never applies `-b`.
+  Tests: `CORE_MBE_CRYPTO_SCOPE`, `P25_P1_LDU_HELPERS`.
 - `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
   position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
   IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path.

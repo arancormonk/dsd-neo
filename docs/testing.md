@@ -164,6 +164,13 @@ from [NXDN TS 1-D v1.3](https://www.qsl.net/kb9mwr/projects/dv/nxdn/NXDN-TS-1-D_
 16-frame reset; DES/AES cover the 32-frame session. Missing-IV, changed-to-unloaded-key, manual-key versus
 stale-CSV, and skipped-SACCH cases defend against stale crypto context and incorrect positioning.
 
+`CORE_MBE_CRYPTO_SCOPE` also drives live NXDN DES/AES beyond that 32-word session: every word that fits matches its
+reference keystream; missing-IV frames mute without reusing the last word; a fresh IV restores decoding. Its P25
+Phase 2 AES cases include ciphertext matching DMR's default-silence and zero-tail patterns, on both slots and both AES
+key sizes: P25 still decrypts them, while DMR keeps its clear-silence exception. P25 Phase 1 skipped-frame cases
+compare the remaining superframe against reference keystream positions; `P25_P1_LDU_HELPERS` checks that both
+non-standard C0 and ordinary frames held by the crypto gate consume a position without invoking the vocoder.
+
 The DMR AES-128/256 and RC4 excerpts come from the Baofeng DM-32 recordings in
 [known-key-mbe-samples](https://github.com/tylerwatt12/known-key-mbe-samples/tree/2e15b86e305b7a3c71d52873518e2908747f6e09).
 The tests compare exact plaintext voice bits independently checked with OpenSSL-backed AES/OFB and an
