@@ -457,7 +457,8 @@ main(void) {
                           && activity.entries[0].observation.ota_target_id == 0x4567
                           && activity.entries[0].observation.ota_source_id == 0U
                           && activity.entries[0].observation.channel == 0x100A);
-    rc |= expect_eq_float("tdulc gain reset", state.aout_gain, opts.audio_gain);
+    // The voice chain's gain level carries across calls in both output formats (issue #653).
+    rc |= expect_eq_float("tdulc gain kept", state.aout_gain, 0.25F);
     rc |= expect_true("tdulc monotonic time recorded", state.p25_p1_last_tdu_m > 0.0);
     rc |= expect_true("tdulc vc sync time refreshed", state.last_vc_sync_time_m > 0.0);
     rc |= expect_eq_int("tdulc preserves dispatched grant crypto", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);

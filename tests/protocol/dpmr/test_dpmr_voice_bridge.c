@@ -32,7 +32,6 @@
 
 static size_t g_mbe_calls;
 static int g_ms_calls;
-static int g_fm_calls;
 static int g_mbe_synctype[8];
 static int g_mbe_cipher[8];
 static int g_mbe_enc[8];
@@ -46,7 +45,6 @@ static void
 reset_capture(void) {
     g_mbe_calls = 0;
     g_ms_calls = 0;
-    g_fm_calls = 0;
     DSD_MEMSET(g_mbe_synctype, 0, sizeof(g_mbe_synctype));
     DSD_MEMSET(g_mbe_cipher, 0, sizeof(g_mbe_cipher));
     DSD_MEMSET(g_mbe_enc, 0, sizeof(g_mbe_enc));
@@ -99,13 +97,6 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     g_ms_calls++;
 }
 
-void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    g_fm_calls++;
-}
-
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {
@@ -147,7 +138,6 @@ test_first_group_scrambler_bridge_mutes_without_key(void) {
     int rc = 0;
     rc |= expect_int("first-group-mbe-calls", (int)g_mbe_calls, 4);
     rc |= expect_int("first-group-ms-calls", g_ms_calls, 4);
-    rc |= expect_int("first-group-fm-calls", g_fm_calls, 0);
     for (int i = 0; i < 4; i++) {
         rc |= expect_int("first-group-synctype", g_mbe_synctype[i], DSD_SYNC_NXDN_POS);
         rc |= expect_int("first-group-cipher", g_mbe_cipher[i], 1);
@@ -184,8 +174,8 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
 
     int rc = 0;
     rc |= expect_int("second-group-mbe-calls", (int)g_mbe_calls, 4);
-    rc |= expect_int("second-group-ms-calls", g_ms_calls, 0);
-    rc |= expect_int("second-group-fm-calls", g_fm_calls, 4);
+    // Float output (-y) plays through the same mono mixer (#652).
+    rc |= expect_int("second-group-ms-calls", g_ms_calls, 4);
     for (int i = 0; i < 4; i++) {
         rc |= expect_int("second-group-synctype", g_mbe_synctype[i], DSD_SYNC_NXDN_POS);
         rc |= expect_int("second-group-cipher", g_mbe_cipher[i], 1);
@@ -509,7 +499,6 @@ test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
     rc |= expect_int("process-dibit-count", g_dibit_calls, 372);
     rc |= expect_int("process-mbe-calls", (int)g_mbe_calls, 8);
     rc |= expect_int("process-ms-calls", g_ms_calls, 8);
-    rc |= expect_int("process-fm-calls", g_fm_calls, 0);
     for (int i = 0; i < 8; i++) {
         rc |= expect_int("process-synctype", g_mbe_synctype[i], DSD_SYNC_DPMR_FS1_POS);
         rc |= expect_int("process-cipher", g_mbe_cipher[i], 0);

@@ -827,8 +827,6 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     state.p25_p2_audio_allowed[1] = 1;
     state.audio_out_temp_buf[0] = 1.0f;
     state.audio_out_temp_bufR[0] = 2.0f;
-    state.f_l4[0][0] = 3.0f;
-    state.f_r4[0][0] = 4.0f;
     state.s_l4[0][0] = 5;
     state.s_r4[0][0] = 6;
     state.s_l4u[0][0] = 7;
@@ -847,8 +845,6 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     rc |= expect_int("clear-to-blocked transition",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x4000, 0x4444, 300),
                      DSD_P25_CRYPTO_BLOCKED);
-    rc |= expect_int("transition purges selected float frame", state.f_l4[0][0] == 0.0f, 1);
-    rc |= expect_int("transition preserves companion float frame", state.f_r4[0][0] == 4.0f, 1);
     rc |= expect_int("transition purges selected int16 tail", state.s_l4[0][0], 0);
     rc |= expect_int("transition preserves companion int16 tail", state.s_r4[0][0], 6);
     rc |= expect_int("transition purges selected upsample tail", state.s_l4u[0][0], 0);

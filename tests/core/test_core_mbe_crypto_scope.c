@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -84,6 +85,19 @@ reset_state(int synctype, int slot) {
     g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     g_state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
     g_opts.floating_point = 1;
+    g_opts.audio_gain = 1.0f;
+    g_opts.audio_gainR = 1.0f;
+    // Both output formats run the same voice chain and short staging (issues #652/#653).
+    static short out_l[100 + (160 * TRACE_MAX_FRAMES)];
+    static short out_r[100 + (160 * TRACE_MAX_FRAMES)];
+    g_state.audio_out_buf = out_l;
+    g_state.audio_out_buf_p = out_l + 100;
+    g_state.audio_out_bufR = out_r;
+    g_state.audio_out_buf_pR = out_r + 100;
+    g_state.aout_max_buf_p = g_state.aout_max_buf;
+    g_state.aout_max_buf_pR = g_state.aout_max_bufR;
+    g_state.aout_gain = 1.0f;
+    g_state.aout_gainR = 1.0f;
 }
 
 static int
@@ -857,8 +871,8 @@ test_dmr_keystream_read_is_bounded(void) {
     return rc;
 }
 
-/* A frame muted for its keystream stages silence, marked as such, on the stereo slot path (short and float output) and
-   on the mono path. Runs on a fully initialized decoder so the short output path (processAudio) is live. */
+/* A frame muted for its keystream stages silence, marked as such, in either output format, including when the
+   high-pass filter retains speech history. Runs on a fully initialized decoder with the voice chain and staging. */
 static int
 test_keystream_muted_frame_stages_silence(void) {
     static dsd_opts opts;
@@ -868,7 +882,7 @@ test_keystream_muted_frame_stages_silence(void) {
     static const struct {
         int stereo;
         int floating_point;
-    } modes[] = {{1, 1}, {1, 0}, {0, 0}};
+    } modes[] = {{1, 1}, {1, 0}, {0, 0}, {0, 1}};
 
     for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
         for (int slot = 0; slot < 2; slot++) {
@@ -878,18 +892,25 @@ test_keystream_muted_frame_stages_silence(void) {
             opts.audio_out_type = 0;
             opts.floating_point = modes[m].floating_point;
             opts.dmr_stereo = modes[m].stereo;
+            opts.use_hpf_d = 1;
+            opts.audio_gain = opts.audio_gainR = 1.0f;
             state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
             state.currentslot = slot;
             key_dmr_des(&state);
             for (int f = 0; f < 2; f++) {
                 processMbeFrame(&opts, &state, DSD_VOICE_PROTOCOL_DMR, NULL, g_ambe_fr[f], NULL);
             }
+            // Give the HPF a nonzero history. Feeding the exhausted frame's zeros through it would synthesize a
+            // tail; exhaustion must leave both synthesis and short staging silent instead.
+            float prior_audio[160];
+            for (int i = 0; i < 160; i++) {
+                prior_audio[i] = 5000.0f;
+            }
+            dsd_voice_chain_run(&opts, &state, slot, prior_audio);
             // Stale non-silent samples on the slot, then a frame past the end of the keystream.
             short* staged = (slot == 0) ? state.s_l : state.s_r;
-            float* staged_f = (slot == 0) ? state.f_l : state.f_r;
             for (int i = 0; i < 160; i++) {
                 staged[i] = 1000;
-                staged_f[i] = 1000.0f;
             }
             if (slot == 0) {
                 state.bit_counterL = 1152;
@@ -898,13 +919,16 @@ test_keystream_muted_frame_stages_silence(void) {
             }
             processMbeFrame(&opts, &state, DSD_VOICE_PROTOCOL_DMR, NULL, g_ambe_fr[2], NULL);
 
+            const float* audio = (slot == 0) ? state.audio_out_temp_buf : state.audio_out_temp_bufR;
+            for (int i = 0; i < 160; i++) {
+                rc |= expect_int("muted frame bypasses retained HPF history", audio[i] < 1e-6f && audio[i] > -1e-6f, 1);
+            }
             const int marker = (modes[m].stereo == 1) ? slot : 0;
             rc |= expect_int("muted frame marked silenced", state.mbe_short_silenced[marker], 1);
             if (modes[m].stereo == 1) {
                 int nonzero = 0;
                 for (int i = 0; i < 160; i++) {
                     nonzero |= staged[i] != 0;
-                    nonzero |= staged_f[i] > 1e-6f || staged_f[i] < -1e-6f;
                 }
                 rc |= expect_int("muted stereo slot stages silence", nonzero, 0);
             }

@@ -12,6 +12,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(DSD_NEO_AUDIO_BACKEND_PULSE) || defined(DSD_NEO_AUDIO_BACKEND_PORTAUDIO)
+#include "audio_output_recovery.h"
+#endif
+
 #if defined(DSD_NEO_AUDIO_BACKEND_PULSE)
 #include <pulse/simple.h>
 typedef pa_simple dsd_audio_backend_handle;
@@ -58,6 +62,19 @@ struct dsd_audio_stream {
 
     uint64_t underruns;
     uint64_t drops;
+
+#if defined(DSD_NEO_AUDIO_BACKEND_PULSE) || defined(DSD_NEO_AUDIO_BACKEND_PORTAUDIO)
+    /* Output device recovery (audio_output_recovery.h): what the stream was opened with, so a device whose write
+     * failed can be reopened behind the same handle. `recovery` is read and written under `mu` in async mode and
+     * belongs to the writing thread in sync mode. `handle` in async mode: PulseAudio's pump owns it after open and
+     * closes and reopens it itself; PortAudio's pump only writes it while the device is up, and while it is down the
+     * writer's thread, which opened it, closes and reopens it (the pump touches no handle until `recovery.down`
+     * clears under `mu`). */
+    char device_name[512];
+    int has_device_name;
+    char app_name[64];
+    dsd_audio_output_recovery recovery;
+#endif
 
 #ifdef DSD_NEO_AUDIO_BACKEND_AAUDIO
     /* AAudio grants a rate/channel layout that need not match the requested one

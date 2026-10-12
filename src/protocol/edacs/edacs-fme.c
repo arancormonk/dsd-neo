@@ -26,6 +26,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -42,7 +43,6 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/rate_converter.h>
 #include <dsd-neo/platform/audio.h>
-#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
 #include <dsd-neo/protocol/edacs/edacs_bch.h>
 #include <dsd-neo/runtime/colors.h>
@@ -638,9 +638,9 @@ edacs_should_emit_pulse_audio(const dsd_opts* opts) {
 
 static void
 edacs_emit_pulse_audio(dsd_opts* opts, const short* analog1, const short* analog2, const short* analog3) {
-    dsd_audio_write(opts->audio_raw_out, analog1, 960);
-    dsd_audio_write(opts->audio_raw_out, analog2, 960);
-    dsd_audio_write(opts->audio_raw_out, analog3, 960);
+    (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_RAW, opts->audio_raw_out, analog1, 960);
+    (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_RAW, opts->audio_raw_out, analog2, 960);
+    (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_RAW, opts->audio_raw_out, analog3, 960);
 }
 
 static int
@@ -671,17 +671,10 @@ edacs_analog_output_writes(const dsd_opts* opts) {
 }
 
 static void
-edacs_emit_fd_audio_block(int fd, const short* block, const char* label) {
-    if (dsd_write(fd, block, (size_t)960u * sizeof(short)) < 0) {
-        LOG_WARN("edacs_analog: failed to write %s audio block", label);
-    }
-}
-
-static void
 edacs_emit_fd_audio(const dsd_opts* opts, const short* analog1, const short* analog2, const short* analog3) {
-    edacs_emit_fd_audio_block(opts->audio_out_fd, analog1, "analog1");
-    edacs_emit_fd_audio_block(opts->audio_out_fd, analog2, "analog2");
-    edacs_emit_fd_audio_block(opts->audio_out_fd, analog3, "analog3");
+    (void)dsd_audio_sink_write_fd(opts->audio_out_fd, analog1, (size_t)960u * sizeof(short), sizeof(short));
+    (void)dsd_audio_sink_write_fd(opts->audio_out_fd, analog2, (size_t)960u * sizeof(short), sizeof(short));
+    (void)dsd_audio_sink_write_fd(opts->audio_out_fd, analog3, (size_t)960u * sizeof(short), sizeof(short));
 }
 
 // Analog voice never reaches the vocoder output gates, so its talkgroup gate is

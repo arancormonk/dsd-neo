@@ -83,11 +83,7 @@ provoice_print_call_info(const dsd_opts* opts, const dsd_state* state) {
 
 static void
 provoice_play_voice(dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 0) {
-        playSynthesizedVoiceMS(opts, state);
-    } else if (opts->floating_point == 1) {
-        playSynthesizedVoiceFM(opts, state);
-    }
+    playSynthesizedVoiceMS(opts, state);
 }
 
 static void
