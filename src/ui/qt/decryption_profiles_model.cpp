@@ -6,7 +6,7 @@
 #include <QJsonValue>
 #include <Qt>
 #include <QtGlobal>
-#include <initializer_list>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <stdint.h>
 #include <utility>
 #include "decryption_profiles_model.h"
