@@ -463,6 +463,8 @@ test_process_audio_native_left_clamps_and_tracks_output(void) {
     state.audio_out_temp_buf[2] = 100.0f;
     state.audio_out_buf_p = state.audio_out_buf;
     state.audio_out_float_buf_p = state.audio_out_float_buf;
+    // Samples an earlier frame counted and no mixer played (issue #654): the count is this frame's alone.
+    state.audio_out_idx = 480;
 
     processAudio(&opts, &state);
 
@@ -616,6 +618,7 @@ test_process_audio_upsampled_left_clamps_and_tracks_output(void) {
     state.audio_out_temp_buf[0] = 40000.0f;
     state.audio_out_temp_buf[1] = -40000.0f;
     state.audio_out_temp_buf[2] = 123.0f;
+    state.audio_out_idx = 160; // a stale count (issue #654)
 
     processAudio(&opts, &state);
 
@@ -1077,6 +1080,50 @@ test_write_synthesized_voice_clamps_and_writes_left_mono(void) {
     return rc;
 }
 
+/* Issue #654: X2-TDMA stages either timeslot in the mono buffer, so its per-call WAV block for a timeslot comes from
+ * audio_out_temp_buf and lands in that timeslot's file; slot 2 never reads audio_out_temp_bufR and slot 1's file never
+ * receives it. */
+static int
+test_write_mono_voice_to_slot_wav_reads_left_buffer(void) {
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
+    int rc = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        char path[DSD_AUDIO_TEST_PATH_MAX] = {0};
+        if (create_temp_wav_path("dsdneo_audio_slot", path, sizeof path) != 0) {
+            return 1;
+        }
+        SNDFILE* wav = open_temp_wav_writer(path, 1);
+        if (!wav) {
+            (void)remove(path);
+            return 1;
+        }
+        if (slot == 1) {
+            opts.wav_out_fR = wav;
+        } else {
+            opts.wav_out_f = wav;
+        }
+        state.audio_out_temp_buf[0] = 40000.0f;
+        state.audio_out_temp_buf[1] = 1111.0f;
+        state.audio_out_temp_bufR[0] = -2222.0f;
+        state.audio_out_temp_bufR[1] = -2222.0f;
+        // The other slot's file is closed: the write goes to this slot's alone.
+        dsd_write_mono_voice_to_slot_wav(&opts, &state, slot);
+        sf_close(wav);
+        opts.wav_out_f = NULL;
+        opts.wav_out_fR = NULL;
+
+        short samples[160] = {0};
+        rc |= read_wav_samples(path, 1, samples, 160);
+        rc |= expect_int_eq(slot ? "slot 2 wav takes left clamp" : "slot 1 wav takes left clamp", samples[0], 32767);
+        rc |= expect_int_eq(slot ? "slot 2 wav takes left sample" : "slot 1 wav takes left sample", samples[1], 1111);
+        (void)remove(path);
+    }
+    return rc;
+}
+
 static int
 test_write_synthesized_voice_r_clamps_and_writes_right_mono(void) {
     static dsd_opts opts = {0};
@@ -1315,6 +1362,7 @@ main(void) {
     rc |= test_reconfigure_drains_sync_output_before_policy_close();
     rc |= test_write_synthesized_voice_clamps_and_writes_left_mono();
     rc |= test_write_synthesized_voice_r_clamps_and_writes_right_mono();
+    rc |= test_write_mono_voice_to_slot_wav_reads_left_buffer();
     rc |= test_write_synthesized_voice_ms_duplicates_left_into_stereo_wav();
     rc |= test_open_audio_in_device_rejects_null_arguments();
     rc |= test_open_audio_in_device_bin_symbol_file_resets_replay_state();

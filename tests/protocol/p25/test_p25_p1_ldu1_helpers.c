@@ -66,6 +66,8 @@ static int g_status_classify_calls;
 static int g_audio_play_calls;
 static int g_active_calls;
 static int g_imbe_calls;
+/* What the process_IMBE() stub reports: 1 when the frame reached the vocoder, 0 when it synthesized none. */
+static int g_imbe_dispatched = 1;
 /* The IMBE frame whose read adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at_imbe = -1;
@@ -175,7 +177,7 @@ p25_status_accum_ensure_started(dsd_state* state) {
     (void)state;
 }
 
-void
+int
 process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
     (void)opts;
     (void)status_count;
@@ -183,6 +185,7 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
         state->carrier_seq++;
     }
     g_imbe_calls++;
+    return g_imbe_dispatched;
 }
 
 void
@@ -289,6 +292,7 @@ reset_hook_counters(void) {
     g_audio_play_calls = 0;
     g_active_calls = 0;
     g_imbe_calls = 0;
+    g_imbe_dispatched = 1;
     g_boundary_at_imbe = -1;
     g_last_status_dibit = -1;
     g_last_policy_id = 0U;
@@ -520,6 +524,16 @@ test_ldu1_activity_is_independent_of_media_gate(void) {
     p25p1_ldu1_process_imbe_frame(&opts, &state, &status_count, 1);
     rc |= expect_int("clear frame emits activity", g_active_calls, 2);
     rc |= expect_int("clear frame plays audio", g_audio_play_calls, 1);
+
+    // Issue #654: a frame the vocoder never synthesized (a skipped non-standard c0) still counts as activity but mixes
+    // nothing, so every output format leaves it out alike.
+    g_imbe_dispatched = 0;
+    p25p1_ldu1_process_imbe_frame(&opts, &state, &status_count, 1);
+    rc |= expect_int("skipped c0 frame emits activity", g_active_calls, 3);
+    rc |= expect_int("skipped c0 frame mixes nothing", g_audio_play_calls, 1);
+    g_imbe_dispatched = 1;
+    p25p1_ldu1_process_imbe_frame(&opts, &state, &status_count, 1);
+    rc |= expect_int("next synthesized frame plays", g_audio_play_calls, 2);
     return rc;
 }
 

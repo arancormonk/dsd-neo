@@ -1916,7 +1916,8 @@ test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400(void) {
 }
 
 /* X2-TDMA and D-STAR write their WAV straight from the MBE post-processing;
- * like every other protocol there, it honours the call's talkgroup policy. */
+ * like every other protocol there, it honours the call's talkgroup policy.
+ * X2-TDMA writes the per-call WAV of the timeslot it decodes (issue #654). */
 static int
 test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy(void) {
     // D-STAR publishes on slot 0 even when a TDMA decode left currentslot at 1;
@@ -1955,7 +1956,12 @@ test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy(void) {
             }
             DSD_MEMSET(&opts, 0, sizeof(opts));
             opts.floating_point = 1;
-            opts.wav_out_f = wav;
+            const int slot2_file = DSD_SYNC_IS_X2TDMA(cases[p].protocol) && cases[p].current_slot == 1;
+            if (slot2_file) {
+                opts.wav_out_fR = wav;
+            } else {
+                opts.wav_out_f = wav;
+            }
             opts.dmr_stereo_wav = 1;
             init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
             state.synctype = cases[p].protocol;
@@ -1975,6 +1981,7 @@ test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy(void) {
 
             sf_close(wav);
             opts.wav_out_f = NULL;
+            opts.wav_out_fR = NULL;
             SF_INFO info;
             DSD_MEMSET(&info, 0, sizeof(info));
             SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
@@ -4856,7 +4863,9 @@ test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio(void) {
     rc |= expect_eq_int("x2-slot2 wav output opened", wav_out != NULL, 1);
     if (wav_out) {
         sf_write_sync(wav_out);
-        rc |= expect_eq_int("x2-slot2 wav frames", (int)sf_seek(wav_out, 0, SEEK_END), 160);
+        // The static WAV (-w) is the mixer's, in its stereo format: the vocoder writes no mono block there (issue #654).
+        rc |=
+            expect_eq_int("x2-slot2 vocoder leaves the static wav to the mixer", (int)sf_seek(wav_out, 0, SEEK_END), 0);
         rc |= expect_eq_int("x2-slot2 wav close", sf_close(wav_out), 0);
         (void)remove(wav_path);
         opts.wav_out_f = NULL;
@@ -5109,6 +5118,305 @@ test_process_mbe_frame_capture_files_follow_the_frame(void) {
     return rc;
 }
 
+/* Issue #654: the mono mixer blocks one run played, counted through the UDP blast hook. */
+static int g_mono_mix_blocks = 0;
+static size_t g_mono_mix_bytes = 0;
+
+static void
+mono_mix_count_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    (void)state;
+    (void)data;
+    g_mono_mix_blocks++;
+    g_mono_mix_bytes += nsam;
+}
+
+static SNDFILE*
+create_wav_temp_channels(char* path, size_t path_size, const char* prefix, int channels) {
+    int fd = create_playback_temp(path, path_size, prefix);
+    if (fd < 0) {
+        return NULL;
+    }
+    dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = 8000;
+    info.channels = channels;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* wav = sf_open(path, SFM_WRITE, &info);
+    if (wav == NULL) {
+        (void)remove(path);
+    }
+    return wav;
+}
+
+/* Reads up to @p cap samples of a closed WAV; returns its frame count (-1 when unreadable) and its channels. */
+static long
+read_wav_back(const char* path, short* samples, size_t cap, int* channels) {
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(path, SFM_READ, &info);
+    if (wav == NULL) {
+        return -1;
+    }
+    const size_t want = (size_t)info.frames * (size_t)info.channels;
+    (void)sf_read_short(wav, samples, (sf_count_t)(want < cap ? want : cap));
+    sf_close(wav);
+    *channels = info.channels;
+    return (long)info.frames;
+}
+
+enum { X2_SEQ_FRAMES = 5 };
+
+/* One X2-TDMA scenario: a frame sequence over both timeslots, each through the vocoder and then the mono mixer the
+ * output format dispatches to, as x2tdma_process_voice_frame() runs them. */
+static int
+x2_sequence_check(int floating_point, int channels, int per_call, int slot1_on, int slot2_on) {
+    static const int slots[X2_SEQ_FRAMES] = {0, 1, 0, 1, 0};
+    static short expected[X2_SEQ_FRAMES][160];
+    static short got[X2_SEQ_FRAMES * 320];
+    char tag[192];
+    char label[256];
+    DSD_SNPRINTF(tag, sizeof(tag), "x2 sequence %s %dch %s V%d%d", floating_point ? "float" : "short", channels,
+                 per_call ? "-P" : "-w", slot1_on, slot2_on);
+
+    dsd_opts* opts = dmr_mix_new_opts(floating_point, 0);
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initState(state);
+    opts->pulse_digi_out_channels = channels;
+    opts->pulse_digi_rate_out = 8000;
+    opts->slot1_on = slot1_on;
+    opts->slot2_on = slot2_on;
+
+    char path[2][1024];
+    SNDFILE* wav[2] = {NULL, NULL};
+    if (per_call) {
+        wav[0] = create_wav_temp_channels(path[0], sizeof(path[0]), "x2_seq_s1", 1);
+        wav[1] = create_wav_temp_channels(path[1], sizeof(path[1]), "x2_seq_s2", 1);
+        opts->wav_out_f = wav[0];
+        opts->wav_out_fR = wav[1];
+        opts->dmr_stereo_wav = 1;
+        opts->static_wav_file = 0;
+    } else {
+        wav[0] = create_wav_temp_channels(path[0], sizeof(path[0]), "x2_seq_static", 2);
+        opts->wav_out_f = wav[0];
+        opts->dmr_stereo_wav = 0;
+        opts->static_wav_file = 1;
+    }
+    if (wav[0] == NULL || (per_call && wav[1] == NULL)) {
+        for (int w = 0; w < 2; w++) {
+            if (wav[w] != NULL) {
+                sf_close(wav[w]);
+                (void)remove(path[w]);
+            }
+        }
+        freeState(state);
+        free(state);
+        free(opts);
+        return 1;
+    }
+
+    state->synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    state->lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    dsd_udp_audio_hooks hooks = {0};
+    hooks.blast = mono_mix_count_blast;
+    dsd_udp_audio_hooks_set(hooks);
+
+    int rc = 0;
+    int played[X2_SEQ_FRAMES] = {0};
+    int nonzero = 0;
+    for (int f = 0; f < X2_SEQ_FRAMES; f++) {
+        char ambe_fr[4][24] = {{0}};
+        // Each timeslot carries its own voice, decoded through its own history.
+        if (slots[f] == 0) {
+            ambe_fr[0][2] = 1;
+            ambe_fr[2][15] = 1;
+        } else {
+            ambe_fr[1][3] = 1;
+            ambe_fr[2][17] = 1;
+            ambe_fr[0][5] = 1;
+        }
+        state->currentslot = slots[f];
+        processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+        // What this frame's recordings must hold: the 16-bit mono frame the vocoder staged (after the short gain).
+        for (int i = 0; i < 160; i++) {
+            float v = state->audio_out_temp_buf[i];
+            v = v > 32767.0f ? 32767.0f : (v < -32768.0f ? -32768.0f : v);
+            expected[f][i] = floating_point ? (short)v : state->s_l[i];
+            nonzero |= expected[f][i] != 0;
+        }
+        g_mono_mix_blocks = 0;
+        g_mono_mix_bytes = 0;
+        dsd_play_synthesized_voice(opts, state);
+        played[f] = g_mono_mix_blocks;
+        const int want = slots[f] == 1 ? slot2_on : slot1_on;
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d (slot %d) playback", tag, f, slots[f] + 1);
+        rc |= expect_eq_int(label, played[f], want);
+        if (want) {
+            const size_t width = floating_point ? sizeof(float) : sizeof(short);
+            DSD_SNPRINTF(label, sizeof(label), "%s frame %d plays one 20 ms frame", tag, f);
+            rc |= expect_eq_int(label, (int)g_mono_mix_bytes, (int)(160U * (size_t)channels * width));
+        }
+    }
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    rc |= expect_eq_int("x2 sequence fixture decodes audible voice", nonzero, 1);
+
+    sf_close(wav[0]);
+    opts->wav_out_f = NULL;
+    if (wav[1] != NULL) {
+        sf_close(wav[1]);
+        opts->wav_out_fR = NULL;
+    }
+
+    if (per_call) {
+        // Each timeslot's frames, and only those, in its own per-call file, in order.
+        for (int slot = 0; slot < 2; slot++) {
+            int ch = 0;
+            const long frames = read_wav_back(path[slot], got, sizeof(got) / sizeof(got[0]), &ch);
+            int want_frames = 0;
+            int same = 1;
+            for (int f = 0; f < X2_SEQ_FRAMES; f++) {
+                if (slots[f] != slot) {
+                    continue;
+                }
+                for (int i = 0; i < 160 && frames >= (long)(want_frames + 1) * 160; i++) {
+                    same &= got[(want_frames * 160) + i] == expected[f][i];
+                }
+                want_frames++;
+            }
+            DSD_SNPRINTF(label, sizeof(label), "%s slot %d per-call frames", tag, slot + 1);
+            rc |= expect_eq_int(label, (int)frames, want_frames * 160);
+            DSD_SNPRINTF(label, sizeof(label), "%s slot %d per-call holds its own voice", tag, slot + 1);
+            rc |= expect_eq_int(label, same, 1);
+            (void)remove(path[slot]);
+        }
+    } else {
+        int ch = 0;
+        const long frames = read_wav_back(path[0], got, sizeof(got) / sizeof(got[0]), &ch);
+        DSD_SNPRINTF(label, sizeof(label), "%s static wav stays stereo", tag);
+        rc |= expect_eq_int(label, ch, 2);
+        int want_frames = 0;
+        int same = 1;
+        if (!floating_point) {
+            // Every played frame once, as the stereo block the mixer played: no mono block, no switched-off slot.
+            for (int f = 0; f < X2_SEQ_FRAMES; f++) {
+                if (!played[f]) {
+                    continue;
+                }
+                for (int i = 0; i < 160 && frames >= (long)(want_frames + 1) * 160; i++) {
+                    same &= got[(want_frames * 320) + (i * 2)] == expected[f][i];
+                    same &= got[(want_frames * 320) + (i * 2) + 1] == expected[f][i];
+                }
+                want_frames++;
+            }
+        }
+        // The float mixers write no static WAV yet (#652), and the vocoder no longer writes its mono block there.
+        DSD_SNPRINTF(label, sizeof(label), "%s static wav frames", tag);
+        rc |= expect_eq_int(label, (int)frames, want_frames * 160);
+        DSD_SNPRINTF(label, sizeof(label), "%s static wav holds the played frames", tag);
+        rc |= expect_eq_int(label, same, 1);
+        (void)remove(path[0]);
+    }
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* Issue #654: X2-TDMA plays both timeslots through the mono mixers. Under -w the static WAV holds only the stereo
+ * blocks the mixer played, one per decoded frame; under -P each timeslot's frames go to that timeslot's per-call file;
+ * and -V switches each timeslot by its own switch, in playback and the static WAV alike. */
+static int
+test_x2_sequence_records_and_switches_each_timeslot(void) {
+    int rc = 0;
+    for (int floating_point = 0; floating_point <= 1; floating_point++) {
+        for (int channels = 1; channels <= 2; channels++) {
+            rc |= x2_sequence_check(floating_point, channels, 1, 1, 1);
+            rc |= x2_sequence_check(floating_point, channels, 0, 1, 1);
+            rc |= x2_sequence_check(floating_point, channels, 0, 1, 0);
+            rc |= x2_sequence_check(floating_point, channels, 0, 0, 1);
+        }
+    }
+    return rc;
+}
+
+/* Issue #654: the short mono mixer (-fn, -fi, -fm, dPMR, ProVoice) plays exactly the frame the vocoder staged. An
+ * encrypted NXDN frame without its key stages no short samples, so it neither plays nor grows the static WAV, even
+ * when an earlier frame (a DMR burst whose pair never reached its mixer) left samples counted; a clear frame then
+ * plays and records exactly 20 ms. */
+static int
+test_mono_mixer_plays_only_the_frame_the_vocoder_staged(void) {
+    dsd_opts* opts = dmr_mix_new_opts(0, 0);
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initState(state);
+    opts->pulse_digi_out_channels = 1;
+    opts->pulse_digi_rate_out = 8000;
+    opts->dmr_stereo = 0;
+    char path[1024];
+    SNDFILE* wav = create_wav_temp_channels(path, sizeof(path), "mono_staged_static", 2);
+    if (wav == NULL) {
+        freeState(state);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    opts->wav_out_f = wav;
+    opts->static_wav_file = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    dsd_udp_audio_hooks hooks = {0};
+    hooks.blast = mono_mix_count_blast;
+    dsd_udp_audio_hooks_set(hooks);
+
+    char ambe_fr[4][24] = {{0}};
+    ambe_fr[0][2] = 1;
+    ambe_fr[2][15] = 1;
+    int rc = 0;
+    g_mono_mix_blocks = 0;
+    for (int f = 0; f < 3; f++) {
+        // Stale short samples and a stale count, as an unmixed DMR pair leaves them.
+        for (int i = 0; i < 160; i++) {
+            state->s_l[i] = 1234;
+        }
+        state->audio_out_idx = 160 * (f + 1);
+        state->dmr_encL = 1; // encrypted, no key
+        processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+        playSynthesizedVoiceMS(opts, state);
+    }
+    rc |= expect_eq_int("encrypted nxdn without key plays nothing", g_mono_mix_blocks, 0);
+
+    state->dmr_encL = 0;
+    state->audio_out_idx = 480;
+    g_mono_mix_bytes = 0;
+    processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+    playSynthesizedVoiceMS(opts, state);
+    rc |= expect_eq_int("clear nxdn plays one frame", g_mono_mix_blocks, 1);
+    rc |= expect_eq_int("clear nxdn plays 20 ms", (int)g_mono_mix_bytes, (int)(160U * sizeof(short)));
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+
+    sf_close(wav);
+    opts->wav_out_f = NULL;
+    static short got[4 * 320];
+    int ch = 0;
+    const long frames = read_wav_back(path, got, sizeof(got) / sizeof(got[0]), &ch);
+    rc |= expect_eq_int("static wav grows only by the clear frame", (int)frames, 160);
+    (void)remove(path);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -5174,6 +5482,8 @@ main(void) {
     rc |= test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state();
     rc |= test_process_mbe_frame_media_protocol_lifecycle();
     rc |= test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio();
+    rc |= test_x2_sequence_records_and_switches_each_timeslot();
+    rc |= test_mono_mixer_plays_only_the_frame_the_vocoder_staged();
 
     if (rc == 0) {
         printf("CORE_MBE_TRANSFORM_CONTEXT: OK\n");

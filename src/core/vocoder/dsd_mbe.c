@@ -1895,8 +1895,13 @@ mbe_post_write_mono_wav(dsd_opts* opts, dsd_state* state) {
 static void
 mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
     if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
-        if (opts->wav_out_f != NULL && mbe_record_policy_allows(opts, state, state->currentslot == 1 ? 1 : 0)) {
-            writeSynthesizedVoice(opts, state);
+        // X2-TDMA stages either timeslot in the mono buffer. Only the per-call WAV (-P) is written here, into the
+        // file of the timeslot the frame belongs to; the static WAV (-w) is the mixer's, in its stereo format
+        // (issue #654).
+        const int slot = state->currentslot == 1 ? 1 : 0;
+        if (opts->dmr_stereo_wav == 1 && (slot == 1 ? opts->wav_out_fR : opts->wav_out_f) != NULL
+            && mbe_record_policy_allows(opts, state, slot)) {
+            dsd_write_mono_voice_to_slot_wav(opts, state, slot);
         }
         return;
     }
@@ -1999,6 +2004,9 @@ static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     // Until a branch below stages this frame's short samples, the current slot's short frame is not this frame's.
     state->mbe_short_silenced[state->currentslot == 1 ? 1 : 0] = 1U;
+    // Nor are any samples an earlier frame counted for the short mono mixer: processAudio() counts this frame's, and
+    // a frame it does not stage (muted crypto, float output, outputs off) leaves none to play (issue #654).
+    state->audio_out_idx = 0;
     if (mbe_post_uses_mono_left_staging(state)) {
         mbe_capture_frame(opts, state, frame_ctx);
         mbe_post_mono_left_audio(opts, state);

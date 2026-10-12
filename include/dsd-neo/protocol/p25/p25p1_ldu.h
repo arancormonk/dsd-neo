@@ -23,8 +23,11 @@
  * \param state The DSD state.
  * \status_count An index that allows us to skip the status words interleaved every 36 dibit in the data
  * stream.
+ * \return 1 when the frame was dispatched to the vocoder, 0 when no frame was synthesized: a non-standard c0 word
+ * skipped before the vocoder, or a frame muted by the P25 crypto rule. The frame's dibits are consumed either way. A
+ * caller mixes audio only for a dispatched frame (issue #654).
  */
-void process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count);
+int process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count);
 
 /**
  * Reads an hex word, its parity bits and attempts to error correct it using the Hamming FEC.
