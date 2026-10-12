@@ -165,8 +165,8 @@ struct RingFixture {
             item->category = DSD_EVENT_CATEGORY_VOICE;
             item->target_id = tg + static_cast<uint32_t>(i);
             item->source_id = src + static_cast<uint32_t>(i);
-            item->event_start_time = start + 10 * i;
-            item->event_time = start + 10 * i + 4;
+            item->event_start_time = start + 10 * static_cast<time_t>(i);
+            item->event_time = start + 10 * static_cast<time_t>(i) + 4;
         }
         ring->push_seq += static_cast<uint64_t>(count);
         ring->commit_rev++;
@@ -770,7 +770,8 @@ test_new_session_starts_fresh(void) {
     auto ring = std::make_unique<RingFixture>();
     CallHistoryModel model;
     for (uint32_t i = 0; i < 4; i++) {
-        ring->commit(0, 7001 + i, 100 + i, 1754503000 + 10 * i, 1754503004 + 10 * i);
+        ring->commit(0, 7001 + i, 100 + i, 1754503000 + 10 * static_cast<time_t>(i),
+                     1754503004 + 10 * static_cast<time_t>(i));
     }
     model.refresh(ring->state);
     model.clearAll();
@@ -781,7 +782,8 @@ test_new_session_starts_fresh(void) {
     model.beginSession();
     expect("a start moves the session on", model.session() == clearedIn + 1);
     for (uint32_t i = 0; i < 6; i++) {
-        ring->commit(0, 7101 + i, 200 + i, kCaptureStart + 10 * i, kCaptureStart + 4 + 10 * i);
+        ring->commit(0, 7101 + i, 200 + i, kCaptureStart + 10 * static_cast<time_t>(i),
+                     kCaptureStart + 4 + 10 * static_cast<time_t>(i));
     }
     model.refresh(ring->state);
     expect("the new session's first calls show although the old clear covered their push positions",
@@ -812,14 +814,16 @@ test_clear_is_bound_to_its_ring(void) {
     auto ring = std::make_unique<RingFixture>();
     CallHistoryModel model;
     for (uint32_t i = 0; i < 4; i++) {
-        ring->commit(0, 7301 + i, 100 + i, 1754503000 + 10 * i, 1754503004 + 10 * i);
+        ring->commit(0, 7301 + i, 100 + i, 1754503000 + 10 * static_cast<time_t>(i),
+                     1754503004 + 10 * static_cast<time_t>(i));
     }
     model.refresh(ring->state);
     expect("the four calls land before the clear", model.count() == 4);
     model.clearAll();
     ring = std::make_unique<RingFixture>(); // a replacement ring, no beginSession()
     for (uint32_t i = 0; i < 6; i++) {
-        ring->commit(0, 7401 + i, 200 + i, kCaptureStart + 10 * i, kCaptureStart + 4 + 10 * i);
+        ring->commit(0, 7401 + i, 200 + i, kCaptureStart + 10 * static_cast<time_t>(i),
+                     kCaptureStart + 4 + 10 * static_cast<time_t>(i));
     }
     model.refresh(ring->state);
     expect("a clear does not reach a replacement ring already past its position", model.count() == 6);
@@ -842,7 +846,8 @@ test_clear_without_a_ring_hides_nothing(void) {
     RingFixture ring;
     CallHistoryModel model;
     for (uint32_t i = 0; i < 6; i++) {
-        ring.commit(0, 7501 + i, 300 + i, kCaptureStart + 10 * i, kCaptureStart + 4 + 10 * i);
+        ring.commit(0, 7501 + i, 300 + i, kCaptureStart + 10 * static_cast<time_t>(i),
+                    kCaptureStart + 4 + 10 * static_cast<time_t>(i));
     }
     model.refresh(ring.state);
     expect("a clear mark that names no ring hides none of a ring's calls", model.count() == 6);
