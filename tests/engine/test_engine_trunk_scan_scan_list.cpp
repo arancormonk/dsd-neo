@@ -10,9 +10,10 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <initializer_list>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <stdint.h>
 #include <utility>
 #include "scan_list_targets.h"
@@ -25,6 +26,7 @@ extern "C" {
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>

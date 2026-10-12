@@ -41,6 +41,7 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QtGlobal>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>

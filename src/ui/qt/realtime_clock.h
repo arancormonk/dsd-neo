@@ -25,7 +25,6 @@
 #ifndef DSD_NEO_SRC_UI_QT_REALTIME_CLOCK_H_
 #define DSD_NEO_SRC_UI_QT_REALTIME_CLOCK_H_
 
-#include <QDate>
 #include <QDateTime>
 #include <QtGlobal>
 
