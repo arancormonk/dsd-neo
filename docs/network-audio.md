@@ -60,7 +60,10 @@ The primary UDP output carries decoded digital voice:
   - Often **stereo** (2 channels, interleaved) by default
 - Sample type:
   - Default: **`s16le`** (signed 16-bit little-endian)
-  - With `-y`: **`f32le`** (32-bit float little-endian)
+  - With `-y`: **`f32le`** (32-bit float little-endian): the same samples as the default, each the `s16le` value /
+    32768, so always within ±1. Each block the default sends as one datagram goes out as one `f32le` datagram, twice the
+    size. Two writers keep their own format: M17 voice is still sent as `s16le`, and the alert tones are synthesized as
+    float directly (a different waveform from their `s16le` form).
 
 ### Analog/source monitor (UDP port + 2)
 
@@ -118,8 +121,8 @@ socat -u UDP-RECV:23458,reuseaddr STDOUT | ffplay -nodisp -f s16le -ar 48000 -ac
 
 `-o -` writes the same raw decoded audio stream to stdout. The format matches the “Digital decoded voice” description
 above (rate/channels/type depend on mode and `-y`). Two writers send analog audio instead, as **48 kHz mono `s16le`**:
-EDACS analog voice, at every input rate, and the M17 encoder's baseband with `-8`. ProVoice's decoded voice keeps the
-digital format.
+EDACS analog voice, at every input rate (not written to stdout under `-y`), and the M17 encoder's baseband with `-8`.
+ProVoice's decoded voice keeps the digital format.
 
 This can be useful when you want to keep transport out of DSD-neo (pipe into another tool, or re-packetize yourself).
 

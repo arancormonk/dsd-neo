@@ -204,19 +204,6 @@ p25p2_xcch_set_slot_burst(dsd_state* state, int slot, int value) {
 }
 
 static void
-p25p2_xcch_reset_slot_gain(const dsd_opts* opts, dsd_state* state, int slot) {
-    if (opts->floating_point != 1) {
-        return;
-    }
-
-    if (slot == 0) {
-        state->aout_gain = opts->audio_gain;
-    } else {
-        state->aout_gainR = opts->audio_gain;
-    }
-}
-
-static void
 p25p2_xcch_close_slot_mbe_out(dsd_opts* opts, dsd_state* state, int slot) {
     dsd_mbe_out_close_protocol(opts, state, slot == 0 ? DSD_MBE_OUT_SLOT1 : DSD_MBE_OUT_SLOT2, DSD_SYNC_P25P2_POS);
 }
@@ -346,7 +333,6 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
 
     p25p2_xcch_set_slot_crypto_from_mac(opts, state, slot, mac);
     p25p2_xcch_log_slot_encryption(opts, state, slot);
-    p25p2_xcch_reset_slot_gain(opts, state, slot);
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
@@ -374,7 +360,6 @@ p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear
     }
 
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
-    p25p2_xcch_reset_slot_gain(opts, state, slot);
     p25p2_xcch_clear_slot_gps(state, slot);
     p25_crypto_reset_slot(state, slot);
 }

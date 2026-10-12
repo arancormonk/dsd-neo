@@ -197,7 +197,6 @@ dmr_ms_apply_keystream(dsd_state* state, dmr_ms_voice_frames* frames) {
 static void
 dmr_ms_process_single_mbe(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], size_t frame_idx) {
     processMbeFrame(opts, state, NULL, ambe_fr, NULL);
-    DSD_MEMCPY(state->f_l4[frame_idx], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
     DSD_MEMCPY(state->s_l4[frame_idx], state->s_l, sizeof(state->s_l));
     DSD_MEMCPY(state->s_l4u[frame_idx], state->s_lu, sizeof(state->s_lu));
 }
@@ -214,11 +213,7 @@ dmr_ms_play_voice(dsd_opts* opts, dsd_state* state) {
     if (opts->pulse_digi_out_channels != 1 && opts->pulse_digi_out_channels != 2) {
         return;
     }
-    if (opts->floating_point == 0) {
-        playSynthesizedVoiceSS3(opts, state);
-    } else if (opts->floating_point == 1) {
-        playSynthesizedVoiceFS3(opts, state);
-    }
+    playSynthesizedVoiceSS3(opts, state);
 }
 
 static void

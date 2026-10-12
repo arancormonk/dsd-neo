@@ -950,6 +950,17 @@ test_process_ysf_fich_verdict_is_sticky_per_transmission(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The output buffers the gain stage (processAudio()) writes, for a zeroed state: V/D2 frames run it in either output
+   format (issue #652). */
+static void
+prepare_gain_stage(dsd_state* state) {
+    static short out_buf[100 + (160 * 96)];
+    state->audio_out_buf = out_buf;
+    state->audio_out_buf_p = out_buf + 100;
+    state->aout_max_buf_p = state->aout_max_buf;
+    state->aout_max_buf_idx = 0;
+}
+
 static void
 test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     static dsd_opts opts;
@@ -967,6 +978,11 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     g_dibit_stream_pos = 0;
     g_mbe_call_count = 0;
     opts.floating_point = 1;
+    /* A fixed gain of 3, so the staged frame shows the gain stage ran exactly once (issue #652: float output skipped it;
+       twice would stage 9x). */
+    opts.audio_gain = 3.0F;
+    state.aout_gain = 3.0F;
+    prepare_gain_stage(&state);
 
     make_fich_bits_for_vd_type2(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
@@ -993,9 +1009,12 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     const dsd_call_snapshot call = get_test_ysf_call(&state);
     assert(strcmp(call.source_text, "VD2SRC4444") == 0);
     assert(strcmp(state.err_str, "========") == 0);
-    // The fifth stubbed frame (5.0), scaled to the int16 scale of the voice buffers.
-    assert(fabsf(state.f_l[0] - (5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
-    assert(fabsf(state.f_l[159] - (5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
+    // The fifth stubbed frame (5.0), scaled to the int16 scale of the voice buffers and gained once (x3) into the short
+    // frame the mixers play, in float output as in 16-bit output.
+    const short once = (short)(3.0F * 5.0F * DSD_MBE_PCM16_PER_FLOAT);
+    assert(state.s_l[0] == once);
+    assert(state.s_l[159] == once);
+    assert(fabsf(state.audio_out_temp_buf[0] - (3.0F * 5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
 }
 
 static void
@@ -1116,6 +1135,7 @@ test_process_ysf_vd_type2_writes_call_wav_under_record_policy(void) {
         g_dibit_stream_pos = 0;
         g_mbe_call_count = 0;
         opts.floating_point = 1;
+        prepare_gain_stage(&state);
         opts.dmr_stereo_wav = 1;
         opts.trunk_use_allow_list = blocked;
 
@@ -1250,6 +1270,7 @@ test_process_ysf_vd_type2_captures_each_block(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_ysf_stream();
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     state.synctype = DSD_SYNC_YSF_POS;
     capture_dir_begin(&opts, "dsdneo_ysf_vd2_capture");
     g_mbe_fail_at = 3;
@@ -1290,6 +1311,7 @@ test_process_ysf_capture_waits_for_a_verified_fich(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     state.synctype = DSD_SYNC_YSF_POS;
 
     /* An earlier transmission leaves V/D2 as the fallback layout; its carrier then dropped. */
@@ -1334,6 +1356,7 @@ test_process_ysf_header_and_terminator_end_the_capture(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     state.synctype = DSD_SYNC_YSF_POS;
     capture_dir_begin(&opts, "dsdneo_ysf_end_capture");
     encode_dch_payload_to_input("TERMDST001TERMSRC002", 20U, dch0, 176U, 9U, 0);
@@ -1375,6 +1398,7 @@ test_process_ysf_voice_split_by_a_carrier_boundary_drops_the_rest(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     reset_ysf_stream();
     append_vd_type2_frame(0);
     /* Inside the third block's VeCH. */
@@ -1388,6 +1412,7 @@ test_process_ysf_voice_split_by_a_carrier_boundary_drops_the_rest(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     reset_ysf_stream();
     make_fich_bits_for_full_rate_voice(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
@@ -1454,6 +1479,7 @@ test_process_ysf_borrowed_decoder_frames_are_captured(void) {
         state.prev_mp2 = &prev2;
         state.prev_mp_enhanced2 = &prev_enhanced2;
         opts.floating_point = 1;
+        prepare_gain_stage(&state);
         state.synctype = DSD_SYNC_YSF_POS;
         capture_dir_begin(&opts, "dsdneo_ysf_borrowed_capture");
         reset_ysf_stream();
@@ -1497,6 +1523,7 @@ test_process_ysf_borrowed_frames_belong_to_ysf(void) {
     state.prev_mp2 = &prev2;
     state.prev_mp_enhanced2 = &prev_enhanced2;
     opts.floating_point = 1;
+    prepare_gain_stage(&state);
     capture_dir_begin(&opts, "dsdneo_ysf_owner_capture");
     state.synctype = DSD_SYNC_YSF_POS;
     state.frame_dispatch_active = 1;

@@ -81,12 +81,6 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
 static int g_failures;
 
 static void

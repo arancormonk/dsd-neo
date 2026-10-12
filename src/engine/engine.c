@@ -1231,14 +1231,6 @@ no_carrier_rotate_symbol_output_if_needed(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-no_carrier_reset_floating_gain_if_needed(const dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 1) {
-        state->aout_gain = opts->audio_gain;
-        state->aout_gainR = opts->audio_gain;
-    }
-}
-
-static void
 no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
     state->nxdn_last_ran = -1;
 }
@@ -2647,10 +2639,6 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
 
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
     DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
-    DSD_MEMSET(state->f_l, 0.0f, sizeof(state->f_l));
-    DSD_MEMSET(state->f_r, 0.0f, sizeof(state->f_r));
-    DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
-    DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
     dsd_audio_dmr_mix_media_discard(0);
     dsd_audio_dmr_mix_media_discard(1);
     DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
@@ -2701,7 +2689,6 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
 #endif
 
     no_carrier_rotate_symbol_output_if_needed(opts, state);
-    no_carrier_reset_floating_gain_if_needed(opts, state);
 
 //only do it here on the tweaks
 #ifdef LIMAZULUTWEAKS
@@ -2767,16 +2754,10 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     no_carrier_reset_m17_and_sample_buffers(state);
 }
 
+// One gain stage serves both output formats (issue #652): auto gain starts its slots at 15.
 static int
-live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 1) {
-        if (opts->audio_gain > 50.0f) {
-            opts->audio_gain = 50.0f;
-        }
-        if (opts->audio_gain < 0.0f) {
-            opts->audio_gain = 0.0f;
-        }
-    } else if (opts->audio_gain == 0) {
+live_scanner_apply_audio_gain(const dsd_opts* opts, dsd_state* state) {
+    if (opts->audio_gain == 0) {
         state->aout_gain = 15.0f;
         state->aout_gainR = 15.0f;
     }

@@ -166,20 +166,6 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    voice_play_calls++;
-}
-
-void
-playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    voice_play_calls++;
-}
-
-void
 processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     (void)opts;
     (void)state;

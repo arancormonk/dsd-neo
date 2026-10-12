@@ -548,9 +548,6 @@ ui_render_pulse_digital_output(const dsd_opts* opts, const dsd_state* state) {
         if (opts->pulse_digi_out_channels == 2) {
             printw(" G: %02.0f%%", state->aout_gainR * 2);
         }
-        if (opts->floating_point == 1) {
-            printw(" FLOAT: %02.0f%%;", opts->audio_gain * 2);
-        }
         if (opts->audio_gain == 0) {
             printw(" (+|-) Auto  ");
         }

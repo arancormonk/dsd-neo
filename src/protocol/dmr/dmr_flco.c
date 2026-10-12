@@ -590,13 +590,6 @@ dmr_flco_reset_slot_crypto(dmr_flco_ctx* ctx, uint8_t idx) {
     *live.keyid = 0;
     *live.mi = 0;
     dmr_enc_class_reset(ctx->state, idx);
-    if (ctx->opts->floating_point == 1) {
-        if (idx == 0U) {
-            ctx->state->aout_gain = ctx->opts->audio_gain;
-        } else {
-            ctx->state->aout_gainR = ctx->opts->audio_gain;
-        }
-    }
 }
 
 static void
