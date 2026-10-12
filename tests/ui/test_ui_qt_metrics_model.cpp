@@ -36,6 +36,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>

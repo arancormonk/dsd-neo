@@ -41,7 +41,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <functional>
-#include <initializer_list>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <memory>
 #include <stdint.h>
 #include <utility>

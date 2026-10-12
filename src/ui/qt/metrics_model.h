@@ -1815,22 +1815,59 @@ class MetricsModel : public QObject {
         int effective_force = 0;
         QString key_profile_ref;
         quint64 key_epoch = 0;
-        bool automatic_keys = false;
-        bool direct_keys = false;
-        /* Issue #526: an analog scan row on air and its own width; issue #524: the kind the width readings describe.
-           Kept with the key flags, which leave room for them, rather than in the flag block below. */
-        bool analog_bandwidth_row_active = false;
-        bool analog_bandwidth_row_override = false;
-        bool analog_bandwidth_am = false;
-        /* Issue #621: audio input with a rigctl peer that demodulates it, and whether the reading's kind runs now. */
-        bool peer_passband = false;
-        bool passband_in_force = false;
         QVariantList decryption_slots;
         int modulation = 0;
         int tuner_gain_db = 0;
         int tuner_gain_configured_db = 0;
         int configured_squelch_margin_db = 0;
         int effective_squelch_margin_db = 0;
+        int ppm = 0;
+        int enc_lockout_count = 0;
+        int scan_avoid_count = 0;
+        QString scan_target_id;
+        int scan_target_ordinal = 0;
+        int scan_target_count = 0;
+        /* #508: the stay reason and the live window, copied from the app-control view. */
+        QString scan_stay_phrase;
+        int scan_stay_reason = 0;
+        int scan_timer_remaining_ds = 0;
+        quint32 scan_timer_span_ms = 0;
+        int scan_dwell_ms = 0;
+        int scan_dwell_state = 0;
+        int scan_hold_ms = 0;
+        quint32 scan_hang_ms = 0;
+        /* #507: the per-visit cap for the row on air, and whether it is counting. */
+        int scan_visit_ms = 0;
+        int scan_visit_remaining_ds = 0;
+        /* #522/#523: the received tone or code and, separately, the configured policy. */
+        QString rx_tone_text;
+        QString rx_tone_configured_text;
+        int rx_tone_status = 0;
+        int rx_tone_kind = 0;
+        int rx_tone_tenths_hz = 0;
+        int rx_tone_dcs_code = 0;
+        int rx_tone_dcs_alias_code = 0;
+        /* #527: the Tone filter row's visibility and the policy's verdict on the carrier on air. */
+        QString tone_filter_status_text;
+        int tone_filter_gate = 0;
+        /* #527: the live editor -- reachable, shadowed by a row -- and the configured policy it opens on. */
+        int tone_filter_configured_mode = 0;
+        QString tone_filter_configured_list;
+        /* #518: the scan row on air for the "this channel" editors. */
+        QString scan_row_label;
+        QString scan_row_key;
+        int scan_row_editable = 0;
+        int scan_row_edited = 0;
+        int scan_row_listed = 0;
+
+        /* Keep flags together so additions do not leave padding between the larger fields. */
+        bool automatic_keys = false;
+        bool direct_keys = false;
+        bool analog_bandwidth_row_active = false;
+        bool analog_bandwidth_row_override = false;
+        bool analog_bandwidth_am = false;
+        bool peer_passband = false;
+        bool passband_in_force = false;
         bool tuner_gain_row_override = false;
         bool configured_squelch_auto = false;
         bool effective_squelch_auto = false;
@@ -1839,9 +1876,6 @@ class MetricsModel : public QObject {
         bool squelch_noise_offered = false;
         bool configured_squelch_level_off = false;
         bool squelch_audio_input = false;
-        int ppm = 0;
-        int enc_lockout_count = 0;
-        int scan_avoid_count = 0;
         bool persist_tg_lockouts = true;
         bool snr_valid = false;
         bool carrier_lock = false;
@@ -1863,54 +1897,19 @@ class MetricsModel : public QObject {
         bool scanner_mode = false;
         bool options_known = false;
         bool scan_rotation_active = false;
-        QString scan_target_id;
-        int scan_target_ordinal = 0;
-        int scan_target_count = 0;
         bool scan_hold = false;
         bool scan_target_avoided = false;
-        /* #508: the stay reason and the live window, copied from the app-control view. */
-        QString scan_stay_phrase;
-        int scan_stay_reason = 0;
-        int scan_timer_remaining_ds = 0;
-        quint32 scan_timer_span_ms = 0;
-        int scan_dwell_ms = 0;
-        int scan_dwell_state = 0;
-        int scan_hold_ms = 0;
-        quint32 scan_hang_ms = 0;
-        /* #507: the per-visit cap for the row on air, and whether it is counting. */
-        int scan_visit_ms = 0;
-        int scan_visit_remaining_ds = 0;
         bool scan_timing_visible = false;
         bool scan_timer_live = false;
         bool scan_visit_live = false;
-        /* #522/#523: the received tone or code and, separately, the configured policy. */
-        QString rx_tone_text;
-        QString rx_tone_configured_text;
-        int rx_tone_status = 0;
-        int rx_tone_kind = 0;
-        int rx_tone_tenths_hz = 0;
-        int rx_tone_dcs_code = 0;
-        int rx_tone_dcs_alias_code = 0;
         bool rx_tone_dcs_inverted = false;
         bool rx_tone_dcs_alias_inverted = false;
         bool rx_tone_visible = false;
         bool rx_tone_carrier = false;
-        /* #527: the Tone filter row's visibility and the policy's verdict on the carrier on air. */
-        QString tone_filter_status_text;
-        int tone_filter_gate = 0;
         bool tone_filter_visible = false;
-        /* #527: the live editor -- reachable, shadowed by a row -- and the configured policy it opens on. */
         bool tone_filter_editable = false;
         bool tone_filter_row_override = false;
-        int tone_filter_configured_mode = 0;
-        QString tone_filter_configured_list;
-        /* #518: the scan row on air for the "this channel" editors. */
         bool scan_row_active = false;
-        QString scan_row_label;
-        QString scan_row_key;
-        int scan_row_editable = 0;
-        int scan_row_edited = 0;
-        int scan_row_listed = 0;
         bool scan_row_synced = false;
 
         /* Exact comparison is right for the two doubles: they are carried through

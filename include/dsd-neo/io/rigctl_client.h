@@ -8,7 +8,9 @@
 
 #include <dsd-neo/platform/sockets.h>
 
+#ifndef __cplusplus
 #include <stdbool.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {

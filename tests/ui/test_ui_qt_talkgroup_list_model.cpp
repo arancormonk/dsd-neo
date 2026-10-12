@@ -232,7 +232,7 @@ test_replay_heard_again_lists_its_talkgroups() {
     const time_t capture = 1262304000; // 2010-01-01Z: a replay's calls carry the capture's time
     CallHistoryModel history;
     TalkgroupListModel model(&history);
-    auto replay = [capture](Fixture& fixture) {
+    auto replay = [](Fixture& fixture) {
         fixture.commit(9301, capture);
         fixture.commit(9302, capture + 30);
     };
