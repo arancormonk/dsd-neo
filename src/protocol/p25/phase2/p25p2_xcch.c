@@ -252,8 +252,16 @@ p25p2_xcch_clear_idle_metadata_if_stale(dsd_state* state, uint8_t slot, double i
 
 static void
 p25p2_xcch_clear_slot_gps(dsd_state* state, int slot) {
-    state->dmr_embedded_gps[slot][0] = '\0';
-    state->dmr_lrrp_gps[slot][0] = '\0';
+    if (!state) {
+        return;
+    }
+    if (slot == 0) {
+        state->dmr_embedded_gps[0][0] = '\0';
+        state->dmr_lrrp_gps[0][0] = '\0';
+    } else if (slot == 1) {
+        state->dmr_embedded_gps[1][0] = '\0';
+        state->dmr_lrrp_gps[1][0] = '\0';
+    }
 }
 
 static void
