@@ -42,6 +42,11 @@ dsd_isatty(int fd) {
 }
 
 int
+dsd_set_binary_mode(int fd) {
+    return fcntl(fd, F_GETFL) < 0 ? -1 : 0;
+}
+
+int
 dsd_dup(int oldfd) {
     return dup(oldfd);
 }
