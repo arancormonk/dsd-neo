@@ -16216,9 +16216,19 @@ if(DSD_ENABLE_QT_UI)
             dsd-neo_ui_qt
             dsd-neo_feature_rtlsdr
             dsd-neo_feature_codec2
+            # As for the import-model tests, put static providers before optional
+            # shared libraries so --as-needed retains RTL-SDR and Codec2.
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
             ${LIBS}
     )
     add_test(NAME UI_QT_SIGNAL_SEARCH COMMAND dsd-neo_test_ui_qt_signal_search)
+    # Exercise Ubuntu's shared-library retention policy on local Linux builds too.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_ui_qt_signal_search
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
 endif()
 
 # Windows builds the terminal UI against vcpkg's PDCurses, whose include
