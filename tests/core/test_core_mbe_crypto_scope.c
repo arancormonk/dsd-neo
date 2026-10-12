@@ -1038,7 +1038,7 @@ test_p25p2_aes_does_not_skip_dmr_silence_patterns(void) {
                 rc |= trace_end(&g_trace);
                 rc |= expect_int("silence-pattern frames", g_trace.frames, p25 ? 20 : 21);
                 rc |= expect_int("silence-pattern exhausted", g_trace.exhausted, p25 ? 1 : 0);
-                for (int f = 0; f < g_trace.frames; f++) {
+                for (int f = 0; f < g_trace.frames && f < (p25 ? 20 : 21); f++) {
                     char plain[49];
                     for (int b = 0; b < 49; b++) {
                         const int bit = (f * 56) + b;
