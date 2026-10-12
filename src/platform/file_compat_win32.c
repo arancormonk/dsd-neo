@@ -46,6 +46,14 @@ dsd_isatty(int fd) {
 }
 
 int
+dsd_set_binary_mode(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
+    return _setmode(fd, _O_BINARY) < 0 ? -1 : 0;
+}
+
+int
 dsd_dup(int oldfd) {
     if (dsd_fd_is_negative(oldfd)) {
         return -1;

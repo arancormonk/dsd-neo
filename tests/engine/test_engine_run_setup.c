@@ -219,6 +219,65 @@ typedef struct {
     int failures;
 } engine_lifecycle_test_ctx;
 
+static const unsigned char kStdoutAudioBytes[] = {0x00, 0x0A, 0x0D, 0x1A, 0x7F, 0x80, 0xFF, 0x0A};
+
+static int
+write_stdout_audio_probe(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)state;
+    int* calls = context;
+    ++*calls;
+    if (opts->audio_out_type != 1 || opts->audio_out_fd != dsd_fileno(stdout)) {
+        return -1;
+    }
+    return dsd_write(opts->audio_out_fd, kStdoutAudioBytes, sizeof(kStdoutAudioBytes))
+                   == (ssize_t)sizeof(kStdoutAudioBytes)
+               ? 0
+               : -1;
+}
+
+/* The inherited stdout descriptor is text-mode on Windows. Audio samples containing LF must not grow a CR byte. */
+static int
+test_stdout_audio_preserves_bytes(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* path = "engine_stdout_audio_test.tmp";
+    FILE* sink = dsd_fopen_private(path, "w");
+    const int saved_stdout = dsd_dup(dsd_fileno(stdout));
+    int rc = 0;
+    if (!sink || saved_stdout < 0 || fflush(stdout) != 0 || dsd_dup2(dsd_fileno(sink), dsd_fileno(stdout)) < 0) {
+        rc = 1;
+    } else {
+        DSD_SNPRINTF(opts->audio_out_dev, sizeof(opts->audio_out_dev), "%s", "-");
+        int calls = 0;
+        const dsd_engine_lifecycle_hooks hooks = {.start = write_stdout_audio_probe, .context = &calls};
+        rc |= expect_true("stdout audio setup succeeds", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
+        rc |= expect_true("stdout audio probe runs once", calls == 1);
+    }
+    if (saved_stdout >= 0) {
+        rc |= expect_true("restore stdout", dsd_dup2(saved_stdout, dsd_fileno(stdout)) >= 0);
+        rc |= expect_true("close saved stdout", dsd_close(saved_stdout) == 0);
+    }
+    if (sink) {
+        rc |= expect_true("close stdout capture", fclose(sink) == 0);
+    }
+    FILE* capture = dsd_fopen_existing_regular_file(path, "rb");
+    if (!capture) {
+        rc = 1;
+    } else {
+        unsigned char got[sizeof(kStdoutAudioBytes) + 1] = {0};
+        const size_t count = fread(got, 1, sizeof(got), capture);
+        rc |= expect_true("stdout audio retains exact bytes",
+                          count == sizeof(kStdoutAudioBytes) && memcmp(got, kStdoutAudioBytes, count) == 0);
+        rc |= expect_true("close stdout capture reader", fclose(capture) == 0);
+    }
+    (void)remove(path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_lifecycle_start(dsd_opts* opts, dsd_state* state, void* context) {
     engine_lifecycle_test_ctx* ctx = (engine_lifecycle_test_ctx*)context;
@@ -1381,6 +1440,7 @@ main(void) {
     rc |= test_soapy_setup_normalizes_args_and_tuning();
     rc |= test_iq_replay_guard_and_requested_setup();
     rc |= test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup();
+    rc |= test_stdout_audio_preserves_bytes();
 #ifdef DSD_NEO_TEST_RIGCTL_WRAP
     rc |= test_startup_rigctl_connection_names_the_peer_record();
     rc |= test_startup_asks_the_session_passband();

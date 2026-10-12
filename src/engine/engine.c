@@ -935,7 +935,7 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-static void
+static int
 dsd_engine_setup_parse_simple_outputs(dsd_opts* opts) {
     if (strncmp(opts->audio_out_dev, "pulse", 5) == 0) {
         opts->audio_out_type = 0;
@@ -946,10 +946,16 @@ dsd_engine_setup_parse_simple_outputs(dsd_opts* opts) {
         opts->audio_out = 0;
     }
     if (strncmp(opts->audio_out_dev, "-", 1) == 0) {
-        opts->audio_out_fd = dsd_fileno(stdout);
+        const int fd = dsd_fileno(stdout);
+        if (fflush(stdout) != 0 || dsd_set_binary_mode(fd) != 0) {
+            LOG_ERROR("Unable to configure stdout for binary audio output\n");
+            return -1;
+        }
+        opts->audio_out_fd = fd;
         opts->audio_out_type = 1;
         LOG_INFO("NOTICE: Audio Out Device: -\n");
     }
+    return 0;
 }
 
 static int
@@ -1107,7 +1113,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
         return -1;
     }
-    dsd_engine_setup_parse_simple_outputs(opts);
+    if (dsd_engine_setup_parse_simple_outputs(opts) != 0) {
+        return -1;
+    }
     return dsd_engine_setup_open_audio_paths(opts, state);
 }
 
