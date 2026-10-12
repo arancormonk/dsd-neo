@@ -114,7 +114,10 @@ the broadcast, and never snoozed by an off it followed), Android's verdict asked
 the `AudioManager` and Do Not Disturb mapping, and a wake asked for over a screen someone else turned on, whose
 broadcast then disarms; `ScreenControllerTest.kt` the make-before-break order, lease renewal, wake refusal and which
 screen-on is DSD-neo's own wake (none after a refused pulse, nor after a wake that found the screen already on before
-its broadcast, while an own pulse's pending screen-on keeps its claim); `ScreenLocksTest.kt` that a screen already on
+its broadcast, while an own pulse's pending screen-on keeps its claim). The issue #574 follow-up regression repeats
+three lock-screen wake cycles with broadcast delays from 0 to 10 s, including the old 2 s cutoff; it also checks that
+screen-off, unlock, Activity destruction and session changes cancel pending claims, and that screen-off keeps the
+claim of a new pulse it triggers for held audio. `ScreenLocksTest.kt` checks that a screen already on
 is never pulsed; `StatusFeedTest.kt`
 that the verdict is handed on unasked; `ScreenTouchTest.kt` the gesture latch and the TalkBack exception. Each suite
 compiles its own files, each build in a suite its own set, and the CTest entries share a resource lock so two Kotlin

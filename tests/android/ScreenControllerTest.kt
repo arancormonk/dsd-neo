@@ -259,8 +259,28 @@ private fun aRefusedWakeIsFedBackAndNotRetried() {
     check(rig.effects.take() == listOf("pulse")) { "after a full quiet delay a new call tries again" }
 }
 
-private fun aScreenOnIsOursOnlyJustAfterAnAcceptedPulse() {
-    val settle = ScreenController.OWN_WAKE_SETTLE_MS
+private fun delayedScreenOnKeepsRepeatWakesArmed() {
+    // Android can deliver SCREEN_ON after the wake lock has already made the display interactive.
+    // A busy main looper / delayed lock-screen transition must not turn our own wake into a foreign one.
+    for (deliveryDelay in listOf(0L, 1_999L, 2_000L, 3_000L, 10_000L)) {
+        val rig = ControllerRig(mode = OFF).armedAsleep()
+        repeat(3) {
+            rig.audio()
+            check("pulse" in rig.effects.take()) { "call ${it + 1} must wake after a ${deliveryDelay}ms broadcast delay" }
+            rig.now += deliveryDelay
+            rig.controller.screenOn(15_000)
+            check(rig.policy.armed && rig.policy.outputs.holdLease) {
+                "our delayed SCREEN_ON must keep the lock screen awake and preserve repeat wakes ($deliveryDelay ms)"
+            }
+            rig.quiet()
+            rig.controller.screenOff()
+            check(rig.policy.armed && !rig.policy.snoozed)
+            rig.effects.take()
+        }
+    }
+}
+
+private fun aScreenOnIsOursOnlyAfterAnAcceptedPulse() {
     // Refused: the screen stayed off, so a screen-on in the next moments is the user's, another app's or a
     // notification's, and disarms at once.
     val refused = ControllerRig(mode = OFF).armedAsleep()
@@ -271,21 +291,16 @@ private fun aScreenOnIsOursOnlyJustAfterAnAcceptedPulse() {
     refused.controller.screenOn(30_000)
     check(!refused.policy.armed && refused.policy.wakeAt == null) { "a screen-on after a refused pulse disarms" }
     check(!refused.policy.outputs.holdLease && "renew" !in refused.effects.take()) { "and takes no lease" }
-    // Accepted: a screen-on within the settle window is the pulse's own and keeps the arming, but only the first.
+    // Accepted: the next screen-on is the pulse's own and keeps the arming, but only the first.
     val accepted = ControllerRig(mode = OFF).armedAsleep()
     accepted.audio()
     check(accepted.effects.take() == listOf("pulse"))
-    accepted.now += settle - 1
+    accepted.now += 3_000
     accepted.controller.screenOn(30_000)
     check(accepted.policy.armed && accepted.policy.wakeAt == accepted.now && accepted.policy.outputs.holdLease)
     accepted.controller.screenOn(30_000)
     check(!accepted.policy.armed) { "only the first screen-on after a pulse is its own" }
-    // Past the window, or with no pulse at all, a screen-on is someone else's.
-    val late = ControllerRig(mode = OFF).armedAsleep()
-    late.audio()
-    late.now += settle
-    late.controller.screenOn(30_000)
-    check(!late.policy.armed) { "a screen-on 2 s after the pulse" }
+    // With no pulse at all, a screen-on is someone else's.
     val none = ControllerRig(mode = OFF).armedAsleep()
     none.controller.screenOn(30_000)
     check(!none.policy.armed) { "a screen-on with no pulse" }
@@ -295,7 +310,6 @@ private fun aScreenFoundOnBeforeItsBroadcastIsNotOurWake() {
     // The user, another app or a notification turns the screen on while DSD-neo is armed, and a status tick with a new
     // call runs before that screen-on broadcast does: the policy still counts the screen off and asks for a wake, but
     // the screen is already on, so nothing is pulsed and nothing is claimed. The broadcast then disarms (D7).
-    val settle = ScreenController.OWN_WAKE_SETTLE_MS
     val rig = ControllerRig(mode = OFF).armedAsleep()
     rig.effects.screenAlreadyOn = true
     rig.audio()
@@ -309,29 +323,41 @@ private fun aScreenFoundOnBeforeItsBroadcastIsNotOurWake() {
     rig.audio()
     check("pulse" !in rig.effects.take()) { "and no later call asks for a wake" }
     // An own pulse whose screen-on is still to come keeps its claim when the next call finds that screen on, and the
-    // claim still dates from that pulse: the second ask adds none.
+    // second ask adds none and does not discard the existing one.
     val own = ControllerRig(mode = OFF).armedAsleep()
     own.audio()
     check(own.effects.take() == listOf("pulse"))
-    val pulsedAt = own.now
     own.effects.screenAlreadyOn = true
     own.now += 1_000
     own.audio()
     check(own.effects.take() == listOf("pulse") && own.policy.armed)
-    own.now = pulsedAt + settle - 1
+    own.now += 3_000
     own.controller.screenOn(30_000)
     check(own.policy.armed && own.policy.wakeAt == own.now && own.policy.outputs.holdLease) {
         "the pulse's own screen-on keeps the arming"
     }
-    val stale = ControllerRig(mode = OFF).armedAsleep()
-    stale.audio()
-    val staleAt = stale.now
-    stale.effects.screenAlreadyOn = true
-    stale.now += 1_000
-    stale.audio()
-    stale.now = staleAt + settle
-    stale.controller.screenOn(30_000)
-    check(!stale.policy.armed) { "a screen found on renews no claim: 2 s after the pulse the screen-on is foreign" }
+}
+
+private fun anEndedScreenCycleCannotClaimAnotherWake() {
+    for (end in listOf<(ScreenController) -> Unit>(
+        { it.screenOff() },
+        { it.userPresent() },
+        { it.sessionEnded() },
+        { it.sessionStarted(SESSION + 1) },
+        { it.destroyed() },
+    )) {
+        val rig = ControllerRig(mode = OFF).armedAsleep()
+        rig.audio()
+        check("pulse" in rig.effects.take())
+        // The pulse's SCREEN_ON was coalesced or is still queued when the screen goes off / ownership ends.
+        rig.now += 500
+        end(rig.controller)
+        rig.now += 500
+        rig.effects.take()
+        rig.controller.screenOn(30_000)
+        check(!rig.policy.armed && rig.policy.wakeAt == null) { "an ended wake cannot claim a later screen-on" }
+        check("renew" !in rig.effects.take()) { "a later foreign wake must not take a screen lease" }
+    }
 }
 
 private fun anAcceptedWakeHoldsTheLeaseOnceTheScreenIsOn() {
@@ -411,6 +437,9 @@ private fun theLateBroadcastPulsesForACallHeardAfterTheArmingLoss() {
     rig.controller.screenOff { asked++; true }
     check(rig.effects.take().contains("pulse") && asked == 1) { "the late broadcast pulses for it" }
     check(!rig.controller.state.snoozed) { "and does not snooze it" }
+    rig.now += 3_000
+    rig.controller.screenOn(30_000)
+    check(rig.policy.armed && rig.policy.outputs.holdLease) { "the off must preserve the new pulse it triggered" }
 }
 
 private fun touchDelegatesInOneCall() {
@@ -433,8 +462,10 @@ fun main() {
     aHeldLeaseIsRenewedOnEverySample()
     theLeaseIsReleasedAtOnce()
     aRefusedWakeIsFedBackAndNotRetried()
-    aScreenOnIsOursOnlyJustAfterAnAcceptedPulse()
+    delayedScreenOnKeepsRepeatWakesArmed()
+    aScreenOnIsOursOnlyAfterAnAcceptedPulse()
     aScreenFoundOnBeforeItsBroadcastIsNotOurWake()
+    anEndedScreenCycleCannotClaimAnotherWake()
     anAcceptedWakeHoldsTheLeaseOnceTheScreenIsOn()
     aTickAlwaysReschedulesWhatIsLeft()
     theVerdictReachesThePolicyUnasked()

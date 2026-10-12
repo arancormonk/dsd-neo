@@ -700,7 +700,9 @@ A wake only turns the screen on: DSD-neo does not show itself over the lock
 screen, so a locked phone wakes to its lock screen. The screen then stays on
 through the audio and the delay after it, and then goes off on the phone's timer
 (on most phones, the lock screen's own shorter timeout); a phone left alone
-wakes again for the next call. Anything other than DSD-neo's own wake that turns
+wakes again for the next call. A delayed screen-on broadcast still belongs to
+the successful wake that caused it; broadcast latency does not stop repeat wakes.
+Anything other than DSD-neo's own wake that turns
 the screen on stops wakes at once: you, another app or a notification, an
 incoming call, or on some phones plugging in the charger. So does unlocking. A
 call that arrives in the moment between such a screen-on and Android telling
@@ -714,6 +716,13 @@ way, wakes stay stopped until DSD-neo is back in front and the display goes off
 there again. That sleep in front arms wakes afresh, however long DSD-neo was in
 use after the wake (or, on a phone with no screen lock, after the wake showed
 it).
+
+The lock-screen readout is the **Decoder** notification. Allow DSD-neo's
+notifications and enable lock-screen display of silent notifications in Android
+settings; the channel is deliberately silent. Android can hide silent
+notifications on the lock screen even when notifications are allowed, leaving
+only the clock after a wake. Channel and lock-screen privacy settings still
+control which call details appear. Waking the display does not override them.
 
 Dimming happens only while DSD-neo's window has focus and is not in split screen
 or another multi-window mode, because the brightness an app sets applies to the
@@ -761,6 +770,13 @@ device, with a source that has known calls (an I/Q replay works):
   goes off at the later of the delay and the phone's timeout; the next call
   wakes it to the lock screen within about a second, and again after the screen
   times out untouched.
+- Repeat the wake cycle with delayed `SCREEN_ON` delivery (for example, a test
+  build that stalls the Android main looper for 3 s just after a successful
+  pulse). The screen must still stay on for the remaining audio delay and wake
+  on subsequent calls. A later manual wake must still disarm it.
+- Allow notifications but hide silent notifications on the lock screen: a wake
+  shows only the clock. Enable silent lock-screen notifications: the Decoder
+  readout appears, subject to the phone's privacy settings.
 - Each delay choice, with a phone timeout shorter and longer than the delay.
 - Power pressed during or just after a call snoozes wakes until a full delay of
   quiet; pressed after a quiet delay, it does not.
