@@ -13478,6 +13478,130 @@ if(DSD_HAS_RADIO)
         MIN_FILES 1
     )
 
+    # Float output (-y), issue #652: tests/iq_float_output_check.cmake replays a fixture with 16-bit output and with
+    # -y, each to stdout (-o -) and a static WAV (-w), and the comparator requires the float stream to be the 16-bit
+    # stream as f32 (s16 / 32768, bit for bit: no NaN, nothing past full scale), audio in it, and identical static WAVs.
+    # BOTH_EARS: a single call plays in both channels; SILENT: both formats mute the same call; SINK null: -o null.
+    add_executable(
+        dsd-neo_test_float_output_compare
+        core/float_output_compare.c
+    )
+    target_link_libraries(
+        dsd-neo_test_float_output_compare
+        PRIVATE dsd-neo_platform
+    )
+    function(
+        dsd_neo_add_iq_float_output_test
+        test_name
+        fixture
+        mode
+        expected
+        channels
+    )
+        cmake_parse_arguments(_flt "BOTH_EARS;SILENT;NULL_SINK" "" "" ${ARGN})
+        set(_sink stdout)
+        if(_flt_NULL_SINK)
+            set(_sink null)
+        endif()
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DCOMPARE_BIN=$<TARGET_FILE:dsd-neo_test_float_output_compare>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DEXPECTED=${expected}"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/float_output/${test_name}"
+                "-DCHANNELS=${channels}" "-DBOTH_EARS=${_flt_BOTH_EARS}"
+                "-DSILENT=${_flt_SILENT}" "-DSINK=${_sink}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_float_output_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;float-output" TIMEOUT 240
+        )
+    endfunction()
+
+    # A single DMR call (slot 2) in both ears: float output's mixer left the idle slot 1's channel silent.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_DMR
+        dmr_voice
+        -fs
+        "Color Code=02"
+        2
+        BOTH_EARS
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_P25P1
+        p25p1_c4fm_vc
+        -f1
+        "Group Voice Channel User"
+        1
+    )
+    # Stereo FDMA at full level in both ears: float output's mixer halved it.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_P25P1_AUTO
+        p25p1_c4fm_vc
+        -fa
+        "Group Voice Channel User"
+        2
+        BOTH_EARS
+    )
+    # -g 50 is the fixed x50 gain in both formats: float output's gain stage divided by zero there.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_P25P1_GAIN_50
+        p25p1_c4fm_vc
+        "-f1 -g 50"
+        "Group Voice Channel User"
+        1
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_NXDN96
+        nxdn96
+        -fn
+        "RAN 00"
+        1
+    )
+    # Reverse mute under AUTO mutes the clear call in both formats: float output's mixer played it.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_NXDN96_AUTO_REVERSE_MUTE
+        nxdn96
+        "-fa -q"
+        "RAN 00"
+        2
+        SILENT
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_DSTAR
+        dstar
+        -fd
+        "SRC: KB7WUK"
+        1
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_YSF
+        ysf
+        -fy
+        "V/D2 RID Mode Repeater CC"
+        1
+    )
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_PROVOICE
+        provoice
+        -fp
+        "Decoding only ProVoice frames"
+        1
+    )
+    # The static WAV with no playback (-o null) in both formats.
+    dsd_neo_add_iq_float_output_test(
+        DECODE_IQ_FLOAT_OUTPUT_DMR_NULL_SINK
+        dmr_voice
+        -fs
+        "Color Code=02"
+        2
+        NULL_SINK
+    )
+
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
     # shape an embedding host (Android service, GUI shell) uses. Lives here
     # because it replays an I/Q fixture and therefore needs the radio pipeline.

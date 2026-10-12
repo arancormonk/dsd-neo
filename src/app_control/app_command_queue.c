@@ -5173,7 +5173,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        dmr_stereo is deliberately not in this pair, though the presets set it
        next to them. It selects two-slot decoding, not a stream shape: the DMR
        playback paths take the channel count separately and mix both slots down
-       when it is 1 (playSynthesizedVoiceSS3/FS3), so a mono session that switches
+       when it is 1 (playSynthesizedVoiceSS3), so a mono session that switches
        to DMR still hears both slots. Putting it back with the channel count would
        instead leave a DMR session on dmr_stereo == 0 with dmr_mono == 0, which no
        preset produces and which dmr_handle_voice() answers by running the MS

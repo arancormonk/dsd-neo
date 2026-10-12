@@ -844,7 +844,7 @@ suite runs under this compiler.
 - API note (audio output and WAV gates, `<dsd-neo/core/audio.h>`): every voice output path applies the talkgroup
   gate (`dsd_audio_group_gate_mono()`/`_dual()`). The short mono path and the legacy short output that SDRTrunk JSON
   playback uses share `dsd_audio_mono_output_muted()` (module-private, `src/core/audio/dsd_audio_internal.h`), the
-  same gate plus live P25 Phase 1 crypto and reverse-mute rule as the float and stereo paths; that P25 rule is
+  same gate plus live P25 Phase 1 crypto and reverse-mute rule as the stereo path; that P25 rule is
   `p25_crypto_audio_output_permitted()` in `<dsd-neo/protocol/p25/p25_crypto.h>`, shared with the record gate.
   Per-call WAV writers use `dsd_audio_record_gate_mono()` (slot crypto, P25 reverse mute and policy), or
   `dsd_audio_record_policy_gate_slot()` (policy alone, on the slot the protocol publishes) where the decode path
@@ -861,29 +861,43 @@ suite runs under this compiler.
   (`dsd_output_*_block()`): the mute (`audio_out` 0, which leaves the output open) silences the local stream, UDP and
   the raw fd alike, and EDACS analog and M17 Codec2 voice also stop while slot 1 is switched off. The P25 Phase 2
   playout reads the slot switches before it routes, so a muted companion never mirrors a switched-off slot into both
-  channels. The float (FS3) and short (SS3) DMR mixes start each slot from the
+  channels. The DMR stereo mix (SS3, in both output formats) starts each slot from the
   vocoder's verdict, `dmr_encL/R` as `mbe_post_left/right_audio()` leave it: set when the slot is encrypted and no
   loaded key decrypts it (a mapped Vertex keystream decrypts), cleared under forced clear (Baofeng AP, CSI EE, Kenwood
-  scrambler, `dsd_key_dmr_forced_clear()`), flipped by reverse mute (`-q`). They differ over the encrypted-audio mute
-  flag `dmr_mute_encL/R`, which is 0 after the user's toggle of all mutes, after any key load
+  scrambler, `dsd_key_dmr_forced_clear()`), flipped by reverse mute (`-q`). The encrypted-audio mute
+  flag `dmr_mute_encL/R` is 0 after the user's toggle of all mutes, after any key load
   (`dsd_key_apply_mute_policy()`, or a scan row's or trunk-scan target's direct keys through
   `scan_option_apply_mute_dmr()`) and after the vocoder's talkgroup key autoload or AES keystream: the vocoder then
-  stages a flagged slot and FS3 plays it, undecryptable or not, while SS3 keeps a flagged slot muted unless a
+  stages a flagged slot, but SS3 keeps a flagged slot muted unless a
   talkgroup hold unmutes it, and then plays the short samples the vocoder staged, as it always has. A slot the
   vocoder mutes (flagged with the flag on, or a DMR mono slot not playing) stages silence in `s_l`/`s_r`, so no mix
-  replays an earlier frame; a talkgroup hold that unmutes such a slot plays silence in SS3, while FS3 plays the float
-  frames the vocoder always stages. MBE capture saves a frame after the post stage has classified its slots and before
-  it stages them (`mbe_post_{left,right}_classify()`, `mbe_capture_frame()`, `mbe_post_{left,right}_stage()`), so each
-  frame is captured by its own verdict, reverse mute included, never the one the previous frame left (issue #661).
-  Classification reads nothing staging writes, so the order changes no output.
+  replays an earlier frame; a talkgroup hold that unmutes such a slot plays that silence. MBE capture saves a frame
+  after the post stage has classified its slots and before it stages them (`mbe_post_{left,right}_classify()`,
+  `mbe_capture_frame()`, `mbe_post_{left,right}_stage()`), so each frame is captured by its own verdict, reverse mute
+  included, never the one the previous frame left (issue #661). Classification reads nothing staging writes, so the
+  order changes no output.
+- Invariant (digital voice output formats, issue #652): integer and float (`-y`) output are one chain, not two. The
+  vocoder runs the one gain stage, `processAudio()`/`processAudioR()` in `src/core/audio/dsd_audio.c` (the fixed `-g`
+  gain, or the auto gain: per slot, peaks toward 30000, `aout_gain`/`aout_gainR` carried from call to call, its peak
+  history cleared by the no-carrier reset), and stages each frame's 16-bit samples (`s_l`/`s_r`, and
+  `mbe_short_silenced`) the same way in both formats, as do the vocoder bypasses (SDRTrunk JSON playback, YSF V/D2).
+  Every protocol plays through the same mixers (MS, SS, SS3, the P25 Phase 2 playout), so routing, muting, the digital
+  high-pass, the audible-audio stamp and the static and per-call WAVs are the same in both. The one place the format
+  shows is `dsd_output_s16_block()` (`dsd_audio2.c`, the writer every mixer and the legacy short output use): under
+  `-y` the raw fd (`-o -`) and UDP take each block as f32, s16 / 32768 (exact), in whole frames of at most 1920
+  samples per write (one write and one datagram per block for every size a mixer writes), while the local device
+  stream is 16-bit in either format and takes the block unchanged. Nothing resets the gain at call boundaries in
+  either format. Outside the chain: the beeper's tone (`dsd_output_float_block()` under `-y`), M17 Codec2 voice (16-bit
+  in both) and EDACS analog voice (no raw-fd output under `-y`). Tests: `DECODE_IQ_FLOAT_OUTPUT_*` (both formats
+  replayed and compared), `CORE_AUDIO2_HELPERS`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_P25P2_PLAYOUT`.
 - Invariant (P25 Phase 2 voice playout, `<dsd-neo/core/p25p2_playout.h>`, `src/core/audio/p25p2_playout.c`, issue
   #651): both output formats play P25 Phase 2 voice through one staging and one mixer. The frame decoder queues each
-  frame its decode gate admits on the slot's queue right after the vocoder (`dsd_p25p2_playout_stage()`): in short
-  output the slot's `s_l`/`s_r` as the vocoder staged them, or zeros marked not fresh when
-  `dsd_state::mbe_short_silenced` says the vocoder left them out; in float output (`-y`) the mbelib frame through
-  `agf()`. A frame the gate mutes closes the slot's stream (`_note_muted()`). After each timeslot the decoder reports
-  what it carried for its slot (`_burst_done()`: 4V, 2V, SACCH, OTHER for a FACCH or LCCH in a voice position, LOST),
-  and after slot 2's timeslot of each pair it runs the emission (`_pair_done()`).
+  frame its decode gate admits on the slot's queue right after the vocoder (`dsd_p25p2_playout_stage()`): the slot's
+  `s_l`/`s_r` as the vocoder staged them, or zeros marked not fresh when `dsd_state::mbe_short_silenced` says the
+  vocoder left them out, in either output format. A frame the gate mutes closes the slot's stream (`_note_muted()`).
+  After each timeslot the decoder reports what it carried for its slot (`_burst_done()`: 4V, 2V, SACCH, OTHER for a
+  FACCH or LCCH in a voice position, LOST), and after slot 2's timeslot of each pair it runs the emission
+  (`_pair_done()`).
   - Timing. A physical superframe carries 18 frames per slot, but the 4V/2V order rotates per slot and transmission,
     so the two slots' bursts are out of step by up to two frames. The emission plays as many blocks as every open
     stream has ready (with none open, what the closed ones hold): a slot running ahead keeps at most 2 frames of carry,
@@ -936,7 +950,7 @@ suite runs under this compiler.
     (`dsd_p25p2_playout_entry::live`). The slot switches are read at emission; both off mutes everything, a hold
     included.
   - Output. Routing comes from content: two audible slots play as stereo, one plays in both ears; one-channel output
-    averages two (`audio_mix_mono_from_slots_s16()`/`_f32()`) and plays one alone. Short output runs the digital
+    averages two (`audio_mix_mono_from_slots_s16()`) and plays one alone. Both output formats run the digital
     high-pass (`use_hpf_d`) per slot over exactly the blocks played; the static WAV records each played stereo block,
     silent in a channel whose source frame is not recordable, and skips a block with none. At an output rate other
     than 8 kHz nothing is written, but the queues still empty. Every emission ends with the housekeeping SS18 and FS4
@@ -974,7 +988,7 @@ suite runs under this compiler.
     to the next no-sync pass. Commands that change what the playout reads (a call's verdict, the slot switches and
     the output buffers a switched-off slot rewinds: `command_feeds_playout()`) apply under the guard. The playout lives
     in `dsd_state` outside the ranges UI snapshots copy.
-  - Left to their issues: `-y` static WAV, gain and agf (#652), the HPF (#653), crypto-mute verdicts (#655).
+  - Left to their issues: the HPF (#653), crypto-mute verdicts (#655).
   Tests: `CORE_P25P2_PLAYOUT`, `P25_P2_VOICE_OUTPUT`, `P25_P2_MIXER_GATE`.
 - Invariant (audible-audio stamp, `<dsd-neo/core/audio_activity.h>`, `src/core/audio/audio_activity.c`, issue #574): one
   process-wide atomic word says when the decoder last emitted audio the app plays, in real-time monotonic milliseconds
@@ -996,8 +1010,9 @@ suite runs under this compiler.
   `dsd_audio_activity_armed()`, one relaxed load, first, so a desktop, CLI or API session adds no scan, clock read or
   store per block. `dsd_audio_activity_read()` loads the word once (acquire) and ages that same value, -1 when it is 0
   or older than `DSD_AUDIO_ACTIVITY_MAX_AGE_MS` (60 s); `dsd_audio_activity_reset()` clears it and leaves it armed.
-  Writers run on the decoder thread; arm, read and reset are safe from any thread. Stamped, in `dsd_audio2.c`: FS3 and
-  SS3 (by the DMR media marks below), and FS, FM, SS and MS (each decoded frame they play; MS only when it loaded one);
+  Writers run on the decoder thread; arm, read and reset are safe from any thread. Stamped, in `dsd_audio2.c`
+  (the mixers of both output formats): SS3 (by the DMR media marks below), and SS and MS (each decoded frame they play;
+  MS only when it loaded one);
   the P25 Phase 2 playout (`p25p2_playout.c`: once per emission, when a played block carries an audible frame the
   vocoder did not silence; its drains reach it too); the
   legacy short output `playSynthesizedVoice()` (`dsd_audio.c`, SDRTrunk JSON playback included, past its delay); the M17
@@ -1005,23 +1020,21 @@ suite runs under this compiler.
   (`edacs_emit_analog_audio()`); and the analog monitor sink (`symbol_write_unsynced_audio()` in `dsd_symbol.c`). Never
   stamped: the beeper's tones, the M17 baseband monitor, the `-6` raw WAV, the static and per-call WAV writers, and the
   output helpers below the writers (`dsd_output_*_block(s)()`, `dsd_audio_write()`, the UDP blasters), which cannot tell
-  where a block came from. FS3 and SS3 run on a timer of bursts, skipped ones included, and replay each slot's buffers
+  where a block came from. SS3 runs on a timer of bursts, skipped ones included, and replay each slot's buffers
   whether or not anything new was decoded into them, so the vocoder marks fresh media per slot
   (`dsd_audio_dmr_mix_media_staged()`/`_silenced()`/`_discard()`/`_take()` in `<dsd-neo/core/audio.h>`,
-  `src/core/audio/dmr_mix_media.c`; DMR synctypes only, only while armed, decoder thread only): FLOAT where
-  `mbe_post_left/right_audio()` copy a decoded frame into `f_l`/`f_r`, SHORT where the short path writes `s_l`/`s_r`,
-  never for the silence staged for a muted slot. That silence replaces the slot's short frame, so it retires the slot's
-  SHORT mark: the mark says short media was staged after the slot's last silence, which the frames the mix plays still
-  hold, and a muted burst over an unmixed clear one leaves none. Each mix takes both slots' marks and stamps only for an
-  unmuted slot holding its own kind that a channel it emits carries, so under a talkgroup hold of a slot the vocoder
-  muted FS3 stamps the float frames it plays and SS3, playing silence, does not. Slot purges
-  (`dsd_mbe_purge_slot_audio()`), `initState()`, the engine's no-carrier reset and the end of the DMR BS loop
-  (`finalize_dmr_bs()`) discard the marks. EDACS analog stamps a triplet only when an output receives it
-  (`edacs_analog_output_writes()`: slot 1 on, then the shared rule on `audio_raw_out`, the raw fd taking 16-bit output
-  only) and the squelch the call
-  runs opened on it: the dynamic squelch heard a sample (the per-run marking `edacs_process_analog_triplet()` already
-  applies, returned), the level squelch's power test (`pwr > call->sql`) passed, or the call runs none; a closed triplet
-  is still written but never stamps. The analog monitor stamps analog reception only: the FM or AM monitor
+  `src/core/audio/dmr_mix_media.c`; DMR synctypes only, only while armed, decoder thread only): SHORT where the short
+  path writes `s_l`/`s_r`, never for the silence staged for a muted slot. That silence replaces the slot's short frame,
+  so it retires the slot's SHORT mark: the mark says short media was staged after the slot's last silence, which the
+  frames the mix plays still hold, and a muted burst over an unmixed clear one leaves none. Each mix takes both slots'
+  marks and stamps only for an unmuted slot holding a mark that a channel it emits carries, so under a talkgroup hold of
+  a slot the vocoder muted SS3, playing silence, does not stamp. Slot purges (`dsd_mbe_purge_slot_audio()`),
+  `initState()`, the engine's no-carrier reset and the end of the DMR BS loop (`finalize_dmr_bs()`) discard the marks.
+  EDACS analog stamps a triplet only when an output receives it (`edacs_analog_output_writes()`: slot 1 on, then the
+  shared rule on `audio_raw_out`, the raw fd taking 16-bit output only) and the squelch the call runs opened on it: the
+  dynamic squelch heard a sample (the per-run marking `edacs_process_analog_triplet()` already applies, returned), the
+  level squelch's power test (`pwr > call->sql`) passed, or the call runs none; a closed triplet is still written but
+  never stamps. The analog monitor stamps analog reception only: the FM or AM monitor
   (`dsd_analog_monitor_tap_active()`), never the `-8` source monitor during digital decoding, with the tap's carrier
   open now and the tone policy passing it (`symbol_unsynced_carrier_active()`), a sink that receives it (the shared rule
   on `audio_raw_out`: the local raw stream while open, UDP, or the raw fd in the analog-only modes), and under the auto
@@ -1034,8 +1047,8 @@ suite runs under this compiler.
   `docs/testing.md`).
 - Invariant (vocoder PCM scale, `<dsd-neo/core/vocoder.h>`): mbelib-neo's float PCM is int16 / 7
   (`mbe_floattoshort()` multiplies by 7), and from 2.3 it synthesizes speech at that reference level. The voice
-  buffers (`audio_out_temp_buf`/`R` and their `f_l`/`f_r`/`f_l4`/`f_r4` copies) hold int16-scale samples, which the
-  short output's fixed and auto gain, the float auto-gain `agf()` and the WAV writers expect, so every caller of an
+  buffers (`audio_out_temp_buf`/`R`) hold int16-scale samples, which the one gain stage (`processAudio()`, fixed and
+  auto, in both output formats) and the WAV writers expect, so every caller of an
   `mbe_process*f` API scales the frame it gets with `dsd_mbe_float_to_pcm16_scale()`: `store_process_result()` in
   `dsd_mbe.c` for the vocoder's own paths, SDRTrunk JSON playback in `dsd_file.c` and YSF V/D2 in `ysf.c`. A new
   call site does the same. Silence from `mbe_synthesizeSilencef()` is zero and needs none.

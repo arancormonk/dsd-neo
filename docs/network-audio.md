@@ -60,7 +60,10 @@ The primary UDP output carries decoded digital voice:
   - Often **stereo** (2 channels, interleaved) by default
 - Sample type:
   - Default: **`s16le`** (signed 16-bit little-endian)
-  - With `-y`: **`f32le`** (32-bit float little-endian)
+  - With `-y`: **`f32le`** (32-bit float little-endian): the same samples as the default, each the `s16le` value /
+    32768, so always within ±1. Each block the default sends as one datagram goes out as one `f32le` datagram, twice the
+    size. Two writers keep their own format: M17 voice is still sent as `s16le`, and the alert tones are synthesized as
+    float directly (a different waveform from their `s16le` form).
 
 ### Analog/source monitor (UDP port + 2)
 

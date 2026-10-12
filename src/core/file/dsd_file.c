@@ -1600,11 +1600,11 @@ sdrtrunk_json_record_allowed(const dsd_opts* opts, const dsd_state* state) {
     return dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) == 0 && allow;
 }
 
+// One frame of SDRTrunk JSON playback, through the one gain stage in either output format (issue #652). The static WAV
+// is written here, so playback goes through the legacy short output, which writes none, when a WAV is open.
 static void
 run_decode_audio_output_path(dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 0) {
-        processAudio(opts, state);
-    }
+    processAudio(opts, state);
     const int record = sdrtrunk_json_record_allowed(opts, state);
     if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
         writeSynthesizedVoice(opts, state);
@@ -1613,16 +1613,12 @@ run_decode_audio_output_path(dsd_opts* opts, dsd_state* state) {
         writeSynthesizedVoiceMS(opts, state);
     }
 
-    if (opts->audio_out == 1 && opts->floating_point == 0) {
+    if (opts->audio_out == 1) {
         if (opts->static_wav_file == 1 || opts->dmr_stereo_wav == 1) {
             playSynthesizedVoice(opts, state);
         } else {
             playSynthesizedVoiceMS(opts, state);
         }
-    }
-    if (opts->audio_out == 1 && opts->floating_point == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-        playSynthesizedVoiceFM(opts, state);
     } else if (opts->audio_out == 0) {
         purge_audio_buffers_if_needed(state);
     }

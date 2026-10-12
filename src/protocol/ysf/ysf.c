@@ -452,11 +452,6 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
         processMbeFrame(opts, state, NULL, ambe_fr, NULL);
 
         // The vocoder already wrote this frame's per-call WAV block behind its record gate.
-        if (opts->floating_point == 1) //float audio is really quiet now (look into it)
-        {
-
-            DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-        }
         dsd_play_synthesized_voice(opts, state);
     }
 
@@ -518,16 +513,12 @@ ysf_capture_bypassed_frame(dsd_opts* opts, dsd_state* state, const char ambe_d[4
     }
 }
 
+// A frame that bypassed the vocoder (V/D2) runs the gain stage here, in either output format (issue #652); one that
+// went through it was already gained there.
 static void
 ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder) {
-    if (opts->floating_point == 0) {
-        if (bypassed_vocoder) {
-            processAudio(opts, state);
-        }
-    } else {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-    }
     if (bypassed_vocoder) {
+        processAudio(opts, state);
         ysf_write_bypassed_call_wav(opts, state);
     }
     dsd_play_synthesized_voice(opts, state);

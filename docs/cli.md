@@ -349,10 +349,11 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
   only applies to ports that would otherwise be unknown. Config key: `mode.dmr_lrrp_ports`
   (comma-separated); a CLI list replaces the config list.
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
-- `-q` Reverse mute: mute clear audio, unmute encrypted audio. It applies to live DMR and P25 decoding. With integer
-  stereo output (the AUTO default), NXDN, dPMR and YSF voice decoded through the vocoder's DMR slot path follows it
-  too; YSF V/D2 and float output (`-y`) do not. SDRTrunk JSON playback ignores it. WAV recordings follow what it
-  mutes. MBE capture (`-d`) follows it frame by frame where `-d` lists reverse mute in a protocol's verdict.
+- `-q` Reverse mute: mute clear audio, unmute encrypted audio. It applies to live DMR and P25 decoding. With stereo
+  output (the AUTO default), NXDN, dPMR and YSF voice decoded through the vocoder's DMR slot path follows it too; YSF
+  V/D2 does not. Float output (`-y`) mutes what integer output mutes. SDRTrunk JSON playback ignores it. WAV recordings
+  follow what it mutes. MBE capture (`-d`) follows it frame by frame where `-d` lists reverse mute in a protocol's
+  verdict.
 
 ## IQ Capture And Replay
 
@@ -400,7 +401,10 @@ Notes
 
 ## Levels & Audio
 
-- `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
+- `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%. It means the same with and without `-y`: a
+  non-zero value is a fixed gain (`N` times the vocoder's level, clipped at full scale), and auto gain brings each
+  slot's peaks toward full scale and keeps its level from call to call, starting over its peak history only when the
+  carrier drops.
 - `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: an AGC brings analog voice to the
   level digital voice plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
   `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays at
@@ -414,7 +418,12 @@ Notes
   with `-o -` while decoding digital modes it is not written to stdout, which carries the decoded voice, and a warning
   says so at startup.
 - `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3)
-- `-y` Use experimental float audio output
+- `-y` Write digital voice to stdout (`-o -`) and UDP as 32-bit float samples (`f32le`) instead of 16-bit integers.
+  The audio is the same as without `-y`: the same gain (`-g`), digital high-pass (`-v` 0x8), routing (a single call in
+  both ears, and at full level on one channel) and muting, and `-w` and `-P` record the same WAVs. Each float sample is
+  the 16-bit sample / 32768, so none is past full scale. A sound device plays 16-bit samples either way. Exceptions: M17
+  voice is still written as 16-bit samples, EDACS analog voice is not written to stdout, and the alert tones keep their
+  own float waveform.
 - P25 Phase 2 voice plays as each timeslot pair completes (every 60 ms of air time), in integer and `-y` float output
   alike: both slots side by side, every frame once, 18 frames per slot per 360 ms superframe. A slot whose call starts
   or ends mid-superframe is heard from its first frame to its last while the other slot plays on; a lost voice burst

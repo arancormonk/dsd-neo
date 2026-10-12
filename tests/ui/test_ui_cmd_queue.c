@@ -4010,7 +4010,7 @@ test_modulation_and_decode_mode_setters(void) {
      * it when the stream was opened. dmr_stereo is not part of that shape and must
      * not be dragged along with it: it selects two-slot decoding, and the DMR
      * playback paths mix the two slots down themselves when the stream is mono
-     * (playSynthesizedVoiceSS3/FS3). Held to dmr_stereo == 1 here because the
+     * (playSynthesizedVoiceSS3). Held to dmr_stereo == 1 here because the
      * alternative pairs it with dmr_mono == 0, which no preset produces and which
      * dmr_handle_voice() has no branch for on MS voice. */
     init_decode_mode_context(&opts, &state);
