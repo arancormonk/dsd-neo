@@ -101,6 +101,7 @@ Connect(char* hostname, int portno) {
         return DSD_INVALID_SOCKET;
     }
 
+    // cppcheck-suppress knownConditionTrueFalse -- SO_NOSIGPIPE setup can fail on macOS/BSD only.
     if (connect_apply_options(sockfd) != 0) {
         dsd_socket_close(sockfd);
         return DSD_INVALID_SOCKET;
@@ -220,6 +221,7 @@ ConnectBounded(const char* hostname, int portno, int resolve, dsd_socket_cancel_
         dsd_socket_close(sockfd);
         return DSD_INVALID_SOCKET;
     }
+    // cppcheck-suppress knownConditionTrueFalse -- SO_NOSIGPIPE setup can fail on macOS/BSD only.
     if (connect_apply_options(sockfd) != 0) {
         dsd_socket_close(sockfd);
         return DSD_INVALID_SOCKET;
