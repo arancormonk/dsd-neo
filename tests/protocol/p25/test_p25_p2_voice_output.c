@@ -8,12 +8,12 @@
  * real voice, MAC, trunking and audio code, and every block the output receives is checked.
  *
  * A stand-in vocoder tags each frame it synthesizes with a per-slot sequence number: every short sample holds the tag,
- * and the float frame carries it in the signs of its first 16 samples (the float gain scales and clips, but keeps
- * signs). Each case then checks that both slots play every frame once, in order and side by side, at the air rate:
+ * which float output (-y) writes as f32, the sample / 32768 (issue #652). Each case then checks that both slots play every frame once, in order and side by side, at the air rate:
  * 18 frames per slot per superframe, played as each timeslot pair completes. Only interfaces the decoder had before
  * the playout are used, so the cases also run against the earlier mixers.
  */
 
+#include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -47,7 +48,6 @@ extern int16_t p2llr[1400];
 enum {
     MAX_BLOCKS = 256,
     TAG_NONE = -1,   /* a block channel that carried silence */
-    TAG_BITS = 16,   /* float frames carry the tag in the signs of their first 16 samples */
     FIRST_TAG0 = 1,  /* slot 1's tags start here ... */
     FIRST_TAG1 = 501 /* ... and slot 2's here */
 };
@@ -90,7 +90,9 @@ expect_int(const char* tag, long got, long want) {
 }
 
 void
-processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23], char ambe_fr[4][24],
+                char imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_P25P2);
     (void)opts;
     (void)state;
     (void)imbe_fr;
@@ -99,18 +101,17 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 }
 
 void
-processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
+processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, dsd_vocoder_soft_bit imbe_fr[8][23],
                     dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_P25P2);
     (void)imbe_fr;
     (void)ambe_fr;
     (void)imbe7100_fr;
     const int slot = state->currentslot & 1;
     const int tag = g_next_tag[slot]++;
     short* s = (slot == 0) ? state->s_l : state->s_r;
-    float* f = (slot == 0) ? state->audio_out_temp_buf : state->audio_out_temp_bufR;
     for (int i = 0; i < 160; i++) {
         s[i] = (short)tag;
-        f[i] = (i < TAG_BITS) ? ((((unsigned)tag >> i) & 1U) ? 0.25f : -0.25f) : 0.1f;
     }
     const int frame = g_frames_in_burst[slot]++;
     if (g_hook && slot == g_hook_slot && frame == g_hook_frame) {
@@ -176,18 +177,11 @@ decode_short(const short* s) {
     return (s[0] == 0) ? TAG_NONE : s[0];
 }
 
+// Float output (-y) writes the same 16-bit frames as f32, s16 / 32768 (issue #652).
 static int
-decode_float(const float* f, int stride) {
-    if (f[0] > -1.0e-9f && f[0] < 1.0e-9f) {
-        return TAG_NONE;
-    }
-    int tag = 0;
-    for (int i = 0; i < TAG_BITS; i++) {
-        if (f[(size_t)i * (size_t)stride] > 0.0f) {
-            tag |= 1 << i;
-        }
-    }
-    return tag;
+decode_float(const float* f) {
+    const int v = (int)lrintf(f[0] * 32768.0f);
+    return (v == 0) ? TAG_NONE : v;
 }
 
 static void
@@ -202,8 +196,8 @@ capture_blast(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* 
     b->channels = (int)(bytes / (160U * sample));
     if (g_floating) {
         const float* f = (const float*)data;
-        b->left = decode_float(f, b->channels == 2 ? 2 : 1);
-        b->right = (b->channels == 2) ? decode_float(f + 1, 2) : b->left;
+        b->left = decode_float(f);
+        b->right = (b->channels == 2) ? decode_float(f + 1) : b->left;
     } else {
         const short* s = (const short*)data;
         b->left = decode_short(s);

@@ -36,6 +36,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -297,20 +298,18 @@ update_p25_p1_voice_err_hist(dsd_state* state) {
     }
 }
 
+// One frame of -r playback, through the voice chain and the shared mono mixer in either output format.
 static void
 play_mbe_output_frame(dsd_opts* opts, dsd_state* state, int want_static_wav) {
-    if ((opts->audio_out == 1 || want_static_wav) && opts->floating_point == 0) {
-        processAudio(opts, state);
+    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
+    if (opts->audio_out == 1 || want_static_wav) {
+        dsd_voice_stage_short_left(opts, state);
     }
     if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
         writeSynthesizedVoice(opts, state);
     }
-    if ((opts->audio_out == 1 || want_static_wav) && opts->floating_point == 0) {
+    if (opts->audio_out == 1 || want_static_wav) {
         playSynthesizedVoiceMS(opts, state);
-    }
-    if (opts->floating_point == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-        playSynthesizedVoiceFM(opts, state);
     }
 }
 
@@ -375,7 +374,10 @@ play_ambe_file_frame(dsd_opts* opts, dsd_state* state, char ambe_d[49], char fil
     if (readAmbe2450Data(opts, state, ambe_d) != 0) {
         return -1;
     }
-    decrypt_ambe_with_pr_key(state, ambe_d);
+    // DMR basic privacy is an AMBE+2 transform: D-STAR's AMBE 2400 (.dmb) frames never carry it (issue #656).
+    if (state->mbe_file_type == 1) {
+        decrypt_ambe_with_pr_key(state, ambe_d);
+    }
     decode_ambe_file_frame(state, ambe_d, file_err_str);
     play_mbe_output_frame(opts, state, want_static_wav);
     return 0;
@@ -403,18 +405,27 @@ typedef struct {
     // mute is off for this frame only, never in dsd_opts (issue #657).
     int key_unmute[2];
     mbe_capture_point capture;
+    /* The protocol that owns the frame; it, not the codec path, decides which crypto transforms run (issue #656). */
+    dsd_voice_protocol protocol;
+    /* The frame needed keystream past what was generated for it: it is muted, not decrypted with a wrong keystream. */
+    int crypto_muted;
+    /* The buffer the decode synthesized this frame into (NULL: none) and the slot whose voice chain runs on it. */
+    float* synth;
+    int synth_slot;
 } mbe_frame_ctx_t;
 
+/* Key selection by the signalled ALG ID / KEY ID belongs to the protocols that signal them to the vocoder. NXDN voice
+   loads its keys from its own VCALL (nxdn_vcall_load_key()); YSF, dPMR, D-STAR, X2-TDMA and ProVoice signal none, so
+   for them payload_algid/payload_keyid are another call's and must not overwrite R (the NXDN and dPMR scrambler key)
+   or the AES key. */
+static int
+mbe_protocol_selects_keys(dsd_voice_protocol protocol) {
+    return protocol == DSD_VOICE_PROTOCOL_DMR || protocol == DSD_VOICE_PROTOCOL_P25P1
+           || protocol == DSD_VOICE_PROTOCOL_P25P2;
+}
+
 static void
-mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_call_snapshot* call) {
-    frame_ctx->vertex_ks_applied_l = 0;
-    frame_ctx->vertex_ks_applied_r = 0;
-    frame_ctx->key_unmute[0] = 0;
-    frame_ctx->key_unmute[1] = 0;
-    frame_ctx->capture = MBE_CAPTURE_NONE;
-
-    (void)dsd_dmr_apply_forced_algid(state);
-
+mbe_activate_keyloader_slot(dsd_state* state, const dsd_call_snapshot* call) {
     const int slot = (state->currentslot == 1) ? 1 : 0;
     const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
 
@@ -430,6 +441,27 @@ mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_
         const int kid = keyring_dmr_slot_kid_for_call(state, slot, call, dsd_dmr_alg_key_need(algid), signaled);
         keyring_activate_slot_with_kid(state, slot, kid);
     }
+}
+
+static void
+mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_call_snapshot* call,
+                        dsd_voice_protocol protocol) {
+    frame_ctx->vertex_ks_applied_l = 0;
+    frame_ctx->vertex_ks_applied_r = 0;
+    frame_ctx->key_unmute[0] = 0;
+    frame_ctx->key_unmute[1] = 0;
+    frame_ctx->capture = MBE_CAPTURE_NONE;
+    frame_ctx->protocol = protocol;
+    frame_ctx->crypto_muted = 0;
+    frame_ctx->synth = NULL;
+    frame_ctx->synth_slot = 0;
+
+    if (protocol == DSD_VOICE_PROTOCOL_DMR) {
+        (void)dsd_dmr_apply_forced_algid(state);
+    }
+    if (mbe_protocol_selects_keys(protocol)) {
+        mbe_activate_keyloader_slot(state, call);
+    }
 
     DSD_MEMSET(frame_ctx->imbe_d, 0, sizeof(frame_ctx->imbe_d));
     DSD_MEMSET(frame_ctx->ambe_d, 0, sizeof(frame_ctx->ambe_d));
@@ -442,6 +474,27 @@ mbe_load_aes_key_slot0(const dsd_state* state, uint8_t aes_key[32]) {
         aes_key[i + 8] = (state->A2[0] >> (56 - (i * 8))) & 0xFF;
         aes_key[i + 16] = (state->A3[0] >> (56 - (i * 8))) & 0xFF;
         aes_key[i + 24] = (state->A4[0] >> (56 - (i * 8))) & 0xFF;
+    }
+}
+
+/* P25 Phase 1 multicrypt keystream: an LDU1/LDU2 superframe reads 18 IMBE frames of 11 octets and skips 2 octets for
+   each LSD, after the start offset (19 for DES/TDEA, 11 for DES-XL, 27 for AES), so it reads up to octet 228 for
+   AES. AES generates 15 blocks (240 octets) to cover it, as OP25 does for FDMA; 14 left the last 40 bits of every
+   superframe's 18th frame encrypted (issue #656). */
+#define MBE_P25P1_DES_BLOCKS   28
+#define MBE_P25P1_DESXL_OCTETS 213 /* des_xl_keystream_output() emits 1704 bits */
+#define MBE_P25P1_AES_BLOCKS   15
+
+/* Octets of keystream mbe_init_p25p1_multicrypt_keystream() generates for an ALG ID, 0 for none. */
+static int
+mbe_p25p1_keystream_octets(int algid) {
+    switch (algid) {
+        case 0x81:
+        case 0x83: return MBE_P25P1_DES_BLOCKS * 8;
+        case 0x9F: return MBE_P25P1_DESXL_OCTETS;
+        case 0x84:
+        case 0x89: return MBE_P25P1_AES_BLOCKS * 16;
+        default: return 0;
     }
 }
 
@@ -461,21 +514,34 @@ mbe_init_p25p1_multicrypt_keystream(dsd_state* state, const uint8_t aes_key[32])
     DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
 
     if (state->payload_algid == 0x81) { //DES-56
-        des_ofb_keystream_output(state->payload_miP, state->R, state->ks_octetL, 28);
+        des_ofb_keystream_output(state->payload_miP, state->R, state->ks_octetL, MBE_P25P1_DES_BLOCKS);
     }
     if (state->payload_algid == 0x83) { //3DES, or TDEA
-        tdea_tofb_keystream_output(state->payload_miP, aes_key, state->ks_octetL, 28);
+        tdea_tofb_keystream_output(state->payload_miP, aes_key, state->ks_octetL, MBE_P25P1_DES_BLOCKS);
     }
     if (state->payload_algid == 0x9F) { //DES-XL
         des_xl_keystream_output(state->payload_miP, state->R, state->ks_octetL,
                                 state->xl_is_hdu); //xl_is_hdu determines lfsr run values
     }
     if (state->payload_algid == 0x84) { //AES256
-        aes_ofb_keystream_output(state->aes_iv, aes_key, state->ks_octetL, DSD_AES_KEY_256, 14);
+        aes_ofb_keystream_output(state->aes_iv, aes_key, state->ks_octetL, DSD_AES_KEY_256, MBE_P25P1_AES_BLOCKS);
     }
     if (state->payload_algid == 0x89) { //AES128
-        aes_ofb_keystream_output(state->aes_iv, aes_key, state->ks_octetL, DSD_AES_KEY_128, 14);
+        aes_ofb_keystream_output(state->aes_iv, aes_key, state->ks_octetL, DSD_AES_KEY_128, MBE_P25P1_AES_BLOCKS);
     }
+}
+
+/* The current frame's 11 keystream octets, advancing the counter past them, or NULL with the counter unchanged when
+   they would lie outside the generated keystream. */
+static const uint8_t*
+mbe_p25p1_take_keystream(dsd_state* state) {
+    const int len = mbe_p25p1_keystream_octets(state->payload_algid);
+    const int pos = state->octet_counter;
+    if (len <= 0 || (size_t)len > sizeof(state->ks_octetL) || pos < 0 || pos > len - 11) {
+        return NULL;
+    }
+    state->octet_counter = pos + 11;
+    return &state->ks_octetL[pos];
 }
 
 static void
@@ -502,7 +568,9 @@ mbe_unpack_imbe_bits(char imbe_d[88], uint8_t packed[11]) {
     }
 }
 
-static void
+/* Returns 1 when the frame was decrypted, -1 when its keystream lies outside the generated keystream (the frame is
+   left as it is). */
+static int
 mbe_apply_p25p1_multicrypt(dsd_state* state, char imbe_d[88]) {
     uint8_t cipher[11];
     uint8_t plain[11];
@@ -514,12 +582,18 @@ mbe_apply_p25p1_multicrypt(dsd_state* state, char imbe_d[88]) {
 
     mbe_load_aes_key_slot0(state, aes_key);
     mbe_init_p25p1_multicrypt_keystream(state, aes_key);
-    mbe_pack_imbe_bits(imbe_d, cipher);
+    DSD_SECURE_ZERO(aes_key, sizeof(aes_key));
 
+    const uint8_t* ks = mbe_p25p1_take_keystream(state);
+    if (ks == NULL) {
+        return -1;
+    }
+    mbe_pack_imbe_bits(imbe_d, cipher);
     for (int i = 0; i < 11; i++) {
-        plain[i] = cipher[i] ^ state->ks_octetL[state->octet_counter++];
+        plain[i] = cipher[i] ^ ks[i];
     }
     mbe_unpack_imbe_bits(imbe_d, plain);
+    return 1;
 }
 
 static void
@@ -585,6 +659,37 @@ mbe_p25p1_multicrypt_enabled(const dsd_state* state) {
     }
 }
 
+/* One IMBE frame position of the P25p1 superframe passes without its keystream being applied: consume what the frame
+   would have (generating the keystream first when this frame would have generated it), so the frames after it
+   decrypt with their own keystream (issue #656). */
+static void
+mbe_p25p1_advance_keystream(dsd_state* state) {
+    if (mbe_p25p1_multicrypt_enabled(state)) {
+        uint8_t aes_key[32];
+        DSD_MEMSET(aes_key, 0, sizeof(aes_key));
+        mbe_load_aes_key_slot0(state, aes_key);
+        mbe_init_p25p1_multicrypt_keystream(state, aes_key);
+        DSD_SECURE_ZERO(aes_key, sizeof(aes_key));
+        (void)mbe_p25p1_take_keystream(state);
+    }
+    if (state->payload_algid == 0xAA && dsd_key_scalar_present(state, 0)) {
+        state->dropL += 11;
+    }
+    state->p25vc++;
+}
+
+static void
+mbe_mute_exhausted_frame(dsd_opts* opts, dsd_state* state, int slot, mbe_frame_ctx_t* frame_ctx) {
+    float* audio = (slot == 1) ? state->audio_out_temp_bufR : state->audio_out_temp_buf;
+    int* errs = (slot == 1) ? &state->errsR : &state->errs;
+    int* errs2 = (slot == 1) ? &state->errs2R : &state->errs2;
+    char* err_str = (slot == 1) ? state->err_strR : state->err_str;
+    store_process_result(MBE_STATUS_INVALID_BITS, audio, errs, errs2, err_str, sizeof(state->err_str), NULL);
+    frame_ctx->crypto_muted = 1;
+    frame_ctx->capture = MBE_CAPTURE_NONE;
+    dsd_frame_logf(opts, "FRAME EVENT slot=%d type=KEYSTREAM_EXHAUSTED action=mute", slot + 1);
+}
+
 static int
 mbe_p25p1_is_tail_erasure(const dsd_state* state, const char imbe_d[88], int corrections) {
     if (state->p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || corrections < 10) {
@@ -631,11 +736,16 @@ mbe_record_policy_allows(const dsd_opts* opts, const dsd_state* state, int slot)
 static void
 mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
                   mbe_frame_ctx_t* frame_ctx) {
+    // YSF full rate borrows this decoder: P25 keys, keystreams and the keystream position stay P25's.
+    const int p25_owned = frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P1;
     mbe_process_result imbe_result;
     int have_imbe_result = decode_imbe7200_frame(state, imbe_fr, imbe_soft_fr, frame_ctx->imbe_d, &imbe_result);
     if (!have_imbe_result) {
         store_process_result(MBE_STATUS_INVALID_BITS, state->audio_out_temp_buf, &state->errs, &state->errs2,
                              state->err_str, sizeof(state->err_str), NULL);
+        if (p25_owned) {
+            mbe_p25p1_advance_keystream(state);
+        }
         return;
     }
 
@@ -650,7 +760,9 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
         state->p25_p1_suppressed_tail_frames++;
         state->p25_p1_excluded_tail_corrections += (uint64_t)decoded_corrections;
         clear_mbe_status(&state->errs, &state->errs2, state->err_str, sizeof(state->err_str));
-        state->p25vc++;
+        if (p25_owned) {
+            mbe_p25p1_advance_keystream(state);
+        }
         return;
     }
 
@@ -658,12 +770,16 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
     DSD_MEMCPY(decoded_imbe_d, frame_ctx->imbe_d, sizeof(decoded_imbe_d));
 
     //P25p1 Multi Crypt Handler (DES1, DES3, DES-XL and AES)
-    if (mbe_p25p1_multicrypt_enabled(state)) {
-        mbe_apply_p25p1_multicrypt(state, frame_ctx->imbe_d);
+    if (p25_owned && mbe_p25p1_multicrypt_enabled(state)) {
+        if (mbe_apply_p25p1_multicrypt(state, frame_ctx->imbe_d) < 0) {
+            mbe_mute_exhausted_frame(opts, state, 0, frame_ctx);
+            state->p25vc++;
+            return;
+        }
     }
 
     //P25p1 RC4 Handling
-    if (state->payload_algid == 0xAA && dsd_key_scalar_present(state, 0)) {
+    if (p25_owned && state->payload_algid == 0xAA && dsd_key_scalar_present(state, 0)) {
         mbe_apply_p25p1_rc4(state, frame_ctx->imbe_d);
     }
 
@@ -681,7 +797,9 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
     }
 
     //increment vc counter by one.
-    state->p25vc++;
+    if (p25_owned) {
+        state->p25vc++;
+    }
     frame_ctx->capture = MBE_CAPTURE_P25P1;
 }
 
@@ -825,18 +943,22 @@ mbe_init_nxdn_cipher23_keystream(dsd_state* state) {
     }
 }
 
-static void
+/* NXDN TS 1-D section 5.4.4.2: one DES/AES encryption session contains 32 EHR voice words of 49 bits. A missing
+   replacement IV cannot extend that session by repeating its final word. */
+#define MBE_NXDN_VOICE_KS_BITS ((size_t)32U * 49U)
+
+static int
 mbe_apply_nxdn_cipher23(dsd_state* state, char ambe_d[49]) {
     mbe_init_nxdn_cipher23_keystream(state);
 
-    //sanity check, don't exceed bit application counter
-    if (state->bit_counterL > (1568 - 49)) {
-        state->bit_counterL = (1568 - 49);
+    if (state->bit_counterL < 0 || (size_t)state->bit_counterL > MBE_NXDN_VOICE_KS_BITS - 49U) {
+        return -1;
     }
 
     for (int i = 0; i < 49; i++) {
-        ambe_d[i] ^= state->ks_bitstreamL[state->bit_counterL++];
+        ambe_d[i] ^= (char)(state->ks_bitstreamL[state->bit_counterL++] & 1U);
     }
+    return 1;
 }
 
 static void
@@ -890,9 +1012,14 @@ mbe_hash_tg_for_key(uint32_t tg) {
     return hash & 0xFFFF;
 }
 
+static int
+mbe_slot_straight_ks_armed(const dsd_state* state) {
+    return state->straight_ks == 1 && state->straight_mod > 0;
+}
+
 static void
 mbe_slot_apply_straight_ks_left(dsd_state* state, char ambe_d[49]) {
-    if (state->straight_ks == 1 && state->straight_mod > 0) {
+    if (mbe_slot_straight_ks_armed(state)) {
         state->dmr_so = 0;
         state->payload_algid = 0;
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
@@ -901,7 +1028,7 @@ mbe_slot_apply_straight_ks_left(dsd_state* state, char ambe_d[49]) {
 
 static void
 mbe_slot_apply_straight_ks_right(dsd_state* state, char ambe_d[49]) {
-    if (state->straight_ks == 1 && state->straight_mod > 0) {
+    if (mbe_slot_straight_ks_armed(state)) {
         state->dmr_soR = 0;
         state->payload_algidR = 0;
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
@@ -960,15 +1087,24 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     char decoded_ambe_d[49];
     DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
-    if ((state->nxdn_cipher_type == 0x01 && dsd_key_scalar_present(state, 0))
-        || (state->M == 1 && dsd_key_scalar_present(state, 0))) {
+    // YSF V/D Type 1 borrows this decoder and has no cipher: the scrambler and cipher 2/3 are NXDN's, and scrambled
+    // dPMR halves', only.
+    const int nxdn_crypto =
+        frame_ctx->protocol == DSD_VOICE_PROTOCOL_NXDN || frame_ctx->protocol == DSD_VOICE_PROTOCOL_DPMR;
+    if (nxdn_crypto
+        && ((state->nxdn_cipher_type == 0x01 && dsd_key_scalar_present(state, 0))
+            || (state->M == 1 && dsd_key_scalar_present(state, 0)))) {
         mbe_apply_nxdn_cipher1(state, frame_ctx->ambe_d);
     }
 
     //NXDN Generic Cipher 2 and Cipher 3 Keystream Application (to be tested)
-    else if ((state->nxdn_cipher_type == 0x02 && dsd_key_scalar_present(state, 0))
-             || (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1)) {
-        mbe_apply_nxdn_cipher23(state, frame_ctx->ambe_d);
+    else if (nxdn_crypto
+             && ((state->nxdn_cipher_type == 0x02 && dsd_key_scalar_present(state, 0))
+                 || (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1))) {
+        if (mbe_apply_nxdn_cipher23(state, frame_ctx->ambe_d) < 0) {
+            mbe_mute_exhausted_frame(opts, state, 0, frame_ctx);
+            return;
+        }
     }
 
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
@@ -1054,7 +1190,7 @@ mbeslot_right_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) 
 
 static void
 mbeslot_left_apply_vertex_standard(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (state->payload_algid == 0x07 && state->straight_ks != 1) {
+    if (frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR && state->payload_algid == 0x07 && state->straight_ks != 1) {
         frame_ctx->vertex_ks_applied_l = vertex_key_map_apply_frame49(state, 0, state->R, frame_ctx->ambe_d);
         if (frame_ctx->vertex_ks_applied_l == 1) {
             state->dmr_so &= ~0x40U;
@@ -1069,7 +1205,7 @@ mbeslot_left_apply_vertex_standard(dsd_state* state, mbe_frame_ctx_t* frame_ctx)
 
 static void
 mbeslot_right_apply_vertex_standard(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (state->payload_algidR == 0x07 && state->straight_ks != 1) {
+    if (frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR && state->payload_algidR == 0x07 && state->straight_ks != 1) {
         frame_ctx->vertex_ks_applied_r = vertex_key_map_apply_frame49(state, 1, state->RR, frame_ctx->ambe_d);
         if (frame_ctx->vertex_ks_applied_r == 1) {
             state->dmr_soR &= ~0x40U;
@@ -1082,19 +1218,55 @@ mbeslot_right_apply_vertex_standard(dsd_state* state, mbe_frame_ctx_t* frame_ctx
     }
 }
 
-static void
+/* The slot path's DES-OFB keystream: 19 blocks minus the discard block, expanded to bits. */
+#define MBE_SLOT_DES_KS_BITS ((size_t)18U * 8U * 8U)
+
+/* XOR one frame with the next 49 keystream bits and step past the frame's 56; -1 (frame and counter unchanged) when
+   the bits lie outside the ks_bit_count generated ones (issue #656). */
+static int
+mbeslot_xor_keystream_frame(const uint8_t* ks_bits, size_t ks_bit_count, long int* bit_counter, char ambe_d[49]) {
+    if (*bit_counter < 0) {
+        *bit_counter = 0;
+    }
+    const size_t pos = (size_t)*bit_counter;
+    if (pos > ks_bit_count || ks_bit_count - pos < 49U) {
+        return -1;
+    }
+    for (size_t i = 0; i < 49U; i++) {
+        ambe_d[i] ^= (char)(ks_bits[pos + i] & 1U);
+    }
+    *bit_counter = (long int)((ks_bit_count - pos < 56U) ? ks_bit_count : pos + 56U);
+    return 1;
+}
+
+/* The ALG IDs the slot path may decrypt for the frame's owner: on DMR every one it decrypts, as before; on P25 Phase 2
+   only P25's own (DES, AES, RC4); on clear dPMR none. */
+static int
+mbe_slot_algid_allowed(dsd_voice_protocol protocol, int algid) {
+    if (protocol == DSD_VOICE_PROTOCOL_DMR) {
+        return 1;
+    }
+    if (protocol == DSD_VOICE_PROTOCOL_P25P2) {
+        return algid == 0x81 || algid == 0x84 || algid == 0x89 || algid == 0xAA;
+    }
+    return 0;
+}
+
+/* Returns 1 when the frame was decrypted, 0 when DES does not apply, -1 when its keystream is exhausted. */
+static int
 mbeslot_left_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!((state->payload_algid == 0x22 && dsd_key_scalar_present(state, 0))
-          || (state->payload_algid == 0x81 && dsd_key_scalar_present(state, 0)))) {
-        return;
+    if (!mbe_slot_algid_allowed(frame_ctx->protocol, state->payload_algid)
+        || !((state->payload_algid == 0x22 && dsd_key_scalar_present(state, 0))
+             || (state->payload_algid == 0x81 && dsd_key_scalar_present(state, 0)))) {
+        return 0;
     }
 
     if (state->DMRvcL > 17) {
         state->DMRvcL = 17;
     }
 
-    int z = 0;
     if (state->DMRvcL == 0) {
+        int z = 0;
         int n = 8;
         DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
         DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
@@ -1111,30 +1283,26 @@ mbeslot_left_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
         }
     }
 
-    z = 0;
-    for (int i = 0; i < 6; i++) {
-        for (int j = 0; j < 8; j++) {
-            frame_ctx->ambe_d[z++] ^= state->ks_bitstreamL[state->bit_counterL++];
-        }
-    }
-    frame_ctx->ambe_d[48] ^= state->ks_bitstreamL[state->bit_counterL++];
-    state->bit_counterL += 7;
+    const int applied = mbeslot_xor_keystream_frame(state->ks_bitstreamL, MBE_SLOT_DES_KS_BITS, &state->bit_counterL,
+                                                    frame_ctx->ambe_d);
     state->DMRvcL++;
+    return applied;
 }
 
-static void
+static int
 mbeslot_right_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!((state->payload_algidR == 0x22 && dsd_key_scalar_present(state, 1))
-          || (state->payload_algidR == 0x81 && dsd_key_scalar_present(state, 1)))) {
-        return;
+    if (!mbe_slot_algid_allowed(frame_ctx->protocol, state->payload_algidR)
+        || !((state->payload_algidR == 0x22 && dsd_key_scalar_present(state, 1))
+             || (state->payload_algidR == 0x81 && dsd_key_scalar_present(state, 1)))) {
+        return 0;
     }
 
     if (state->DMRvcR > 17) {
         state->DMRvcR = 17;
     }
 
-    int z = 0;
     if (state->DMRvcR == 0) {
+        int z = 0;
         int n = 8;
         DSD_MEMSET(state->ks_octetR, 0, sizeof(state->ks_octetR));
         DSD_MEMSET(state->ks_bitstreamR, 0, sizeof(state->ks_bitstreamR));
@@ -1149,15 +1317,10 @@ mbeslot_right_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
         }
     }
 
-    z = 0;
-    for (int i = 0; i < 6; i++) {
-        for (int j = 0; j < 8; j++) {
-            frame_ctx->ambe_d[z++] ^= state->ks_bitstreamR[state->bit_counterR++];
-        }
-    }
-    frame_ctx->ambe_d[48] ^= state->ks_bitstreamR[state->bit_counterR++];
-    state->bit_counterR += 7;
+    const int applied = mbeslot_xor_keystream_frame(state->ks_bitstreamR, MBE_SLOT_DES_KS_BITS, &state->bit_counterR,
+                                                    frame_ctx->ambe_d);
     state->DMRvcR++;
+    return applied;
 }
 
 static int
@@ -1305,20 +1468,50 @@ mbeslot_right_init_keystream(dsd_opts* opts, dsd_state* state, const uint8_t aes
     mbeslot_right_expand_keystream_bits(state, start_index);
 }
 
-static void
-mbeslot_left_apply_keystream_bits(dsd_state* state, char ambe_d[49]) {
-    (void)dmr_voice_stream_apply_frame49(state->ks_bitstreamL, &state->bit_counterL, state->payload_algid, ambe_d);
+/* Bits of generated keystream mbeslot_*_init_keystream() leaves in ks_bitstream for an ALG ID: AES-OFB's 9 blocks
+   after the discard block, Hytera Enhanced's 135 RC4 octets (hytera_enhanced_rc4_setup()) and Kirisun's 126 octets
+   (kirisun_*_keystream_creation()). The rest of the expanded 144 octets is zero fill, not keystream. */
+static size_t
+mbeslot_stream_keystream_bits(int algid) {
+    switch (algid) {
+        case 0x02: return (size_t)135U * 8U;
+        case 0x36:
+        case 0x37: return (size_t)126U * 8U;
+        case 0x24:
+        case 0x25:
+        case 0x84:
+        case 0x89: return (size_t)9U * 16U * 8U;
+        default: return 0U;
+    }
 }
 
-static void
-mbeslot_right_apply_keystream_bits(dsd_state* state, char ambe_d[49]) {
-    (void)dmr_voice_stream_apply_frame49(state->ks_bitstreamR, &state->bit_counterR, state->payload_algidR, ambe_d);
+static int
+mbeslot_left_apply_keystream_bits(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
+    // P25 ciphertext has no DMR clear-silence exception: every admitted word consumes and applies its 49 bits.
+    if (frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P2) {
+        return mbeslot_xor_keystream_frame(state->ks_bitstreamL, mbeslot_stream_keystream_bits(state->payload_algid),
+                                           &state->bit_counterL, frame_ctx->ambe_d);
+    }
+    return dmr_voice_stream_apply_frame49(state->ks_bitstreamL, mbeslot_stream_keystream_bits(state->payload_algid),
+                                          &state->bit_counterL, state->payload_algid, frame_ctx->ambe_d);
 }
 
-static void
+static int
+mbeslot_right_apply_keystream_bits(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
+    if (frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P2) {
+        return mbeslot_xor_keystream_frame(state->ks_bitstreamR, mbeslot_stream_keystream_bits(state->payload_algidR),
+                                           &state->bit_counterR, frame_ctx->ambe_d);
+    }
+    return dmr_voice_stream_apply_frame49(state->ks_bitstreamR, mbeslot_stream_keystream_bits(state->payload_algidR),
+                                          &state->bit_counterR, state->payload_algidR, frame_ctx->ambe_d);
+}
+
+/* Returns 1 when the frame was decrypted (or skipped as silence), 0 when no stream cipher applies, -1 when its
+   keystream is exhausted. */
+static int
 mbeslot_left_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!mbeslot_left_aes_enabled(state)) {
-        return;
+    if (!mbe_slot_algid_allowed(frame_ctx->protocol, state->payload_algid) || !mbeslot_left_aes_enabled(state)) {
+        return 0;
     }
 
     uint8_t aes_key[32];
@@ -1331,15 +1524,20 @@ mbeslot_left_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_c
         mbeslot_left_init_keystream(opts, state, aes_key);
     }
 
-    mbeslot_left_apply_keystream_bits(state, frame_ctx->ambe_d);
+    const int applied = mbeslot_left_apply_keystream_bits(state, frame_ctx);
+    DSD_SECURE_ZERO(aes_key, sizeof(aes_key));
     state->DMRvcL++;
+    if (applied < 0) {
+        return -1;
+    }
     frame_ctx->key_unmute[0] = 1;
+    return 1;
 }
 
-static void
+static int
 mbeslot_right_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!mbeslot_right_aes_enabled(state)) {
-        return;
+    if (!mbe_slot_algid_allowed(frame_ctx->protocol, state->payload_algidR) || !mbeslot_right_aes_enabled(state)) {
+        return 0;
     }
 
     uint8_t aes_key[32];
@@ -1352,14 +1550,20 @@ mbeslot_right_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_
         mbeslot_right_init_keystream(opts, state, aes_key);
     }
 
-    mbeslot_right_apply_keystream_bits(state, frame_ctx->ambe_d);
+    const int applied = mbeslot_right_apply_keystream_bits(state, frame_ctx);
+    DSD_SECURE_ZERO(aes_key, sizeof(aes_key));
     state->DMRvcR++;
+    if (applied < 0) {
+        return -1;
+    }
     frame_ctx->key_unmute[1] = 1;
+    return 1;
 }
 
 static void
 mbeslot_left_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!(state->payload_algid == 0x21 && dsd_key_scalar_present(state, 0))) {
+    if (!(mbe_slot_algid_allowed(frame_ctx->protocol, state->payload_algid) && state->payload_algid == 0x21
+          && dsd_key_scalar_present(state, 0))) {
         return;
     }
 
@@ -1396,7 +1600,8 @@ mbeslot_left_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 
 static void
 mbeslot_right_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!(state->payload_algidR == 0x21 && dsd_key_scalar_present(state, 1))) {
+    if (!(mbe_slot_algid_allowed(frame_ctx->protocol, state->payload_algidR) && state->payload_algidR == 0x21
+          && dsd_key_scalar_present(state, 1))) {
         return;
     }
 
@@ -1433,7 +1638,8 @@ mbeslot_right_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 
 static void
 mbeslot_left_apply_p25p2_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!(state->payload_algid == 0xAA && dsd_key_scalar_present(state, 0) && DSD_SYNC_IS_P25P2(state->synctype))) {
+    if (!(state->payload_algid == 0xAA && dsd_key_scalar_present(state, 0)
+          && frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P2)) {
         return;
     }
 
@@ -1466,7 +1672,8 @@ mbeslot_left_apply_p25p2_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 
 static void
 mbeslot_right_apply_p25p2_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!(state->payload_algidR == 0xAA && dsd_key_scalar_present(state, 1) && DSD_SYNC_IS_P25P2(state->synctype))) {
+    if (!(state->payload_algidR == 0xAA && dsd_key_scalar_present(state, 1)
+          && frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P2)) {
         return;
     }
 
@@ -1512,14 +1719,26 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
     char decoded_ambe_d[49];
     DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
-    mbeslot_left_autoload_keys(state, frame_ctx);
-    mbeslot_left_apply_basic_privacy(state, frame_ctx);
+    // DMR's talkgroup key autoload, privacy, Hytera, Vertex and vendor scramblers are DMR's alone: clear dPMR and P25
+    // Phase 2 reach this path too (issue #656).
+    const int dmr_owned = frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR;
+    if (dmr_owned) {
+        mbeslot_left_autoload_keys(state, frame_ctx);
+        mbeslot_left_apply_basic_privacy(state, frame_ctx);
+    }
     mbeslot_left_apply_vertex_standard(state, frame_ctx);
-    mbeslot_left_apply_des(state, frame_ctx);
-    mbeslot_left_apply_aes_and_streams(opts, state, frame_ctx);
+    // Past its keystream the frame is muted, unless the manual -S keystream is armed: it replaces the signalled
+    // cipher (and clears the ALG ID) below, as it does on a frame the cipher decrypted.
+    if ((mbeslot_left_apply_des(state, frame_ctx) < 0 || mbeslot_left_apply_aes_and_streams(opts, state, frame_ctx) < 0)
+        && !mbe_slot_straight_ks_armed(state)) {
+        mbe_mute_exhausted_frame(opts, state, 0, frame_ctx);
+        return;
+    }
     mbeslot_left_apply_rc4(state, frame_ctx);
     mbeslot_left_apply_p25p2_rc4(state, frame_ctx);
-    mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
+    if (dmr_owned) {
+        mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
+    }
     mbe_slot_apply_straight_ks_left(state, frame_ctx->ambe_d);
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_left(opts, state, frame_ctx->ambe_d, &ambe_result);
@@ -1541,14 +1760,23 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
     char decoded_ambe_d[49];
     DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
-    mbeslot_right_autoload_keys(state, frame_ctx);
-    mbeslot_right_apply_basic_privacy(state, frame_ctx);
+    const int dmr_owned = frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR;
+    if (dmr_owned) {
+        mbeslot_right_autoload_keys(state, frame_ctx);
+        mbeslot_right_apply_basic_privacy(state, frame_ctx);
+    }
     mbeslot_right_apply_vertex_standard(state, frame_ctx);
-    mbeslot_right_apply_des(state, frame_ctx);
-    mbeslot_right_apply_aes_and_streams(opts, state, frame_ctx);
+    if ((mbeslot_right_apply_des(state, frame_ctx) < 0
+         || mbeslot_right_apply_aes_and_streams(opts, state, frame_ctx) < 0)
+        && !mbe_slot_straight_ks_armed(state)) {
+        mbe_mute_exhausted_frame(opts, state, 1, frame_ctx);
+        return;
+    }
     mbeslot_right_apply_rc4(state, frame_ctx);
     mbeslot_right_apply_p25p2_rc4(state, frame_ctx);
-    mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
+    if (dmr_owned) {
+        mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
+    }
     mbe_slot_apply_straight_ks_right(state, frame_ctx->ambe_d);
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_right(opts, state, frame_ctx->ambe_d, &ambe_result);
@@ -1620,7 +1848,7 @@ mbe_post_stage_slot_silence(dsd_state* state, int slot) {
     }
 }
 
-// Decoded media a DMR slot staged for the stereo mixes' audible-audio stamp (dsd_audio_dmr_mix_media_staged(), issue
+// Decoded media a DMR slot staged for the stereo mix's audible-audio stamp (dsd_audio_dmr_mix_media_staged(), issue
 // #574); called only while the stamp is armed. P25 Phase 2 stages through here as well, but its playout reads the
 // provenance from dsd_state::mbe_short_silenced instead (issue #651).
 static void
@@ -1656,6 +1884,7 @@ typedef enum {
     MBE_POST_SLOT_SKIP = 0,
     MBE_POST_SLOT_MONO_OFF,
     MBE_POST_SLOT_ACTIVE,
+    MBE_POST_SLOT_CRYPTO_MUTED, /* the frame ran past its keystream (issue #656): it stages silence */
 } mbe_post_slot_class;
 
 static mbe_post_slot_class
@@ -1676,7 +1905,7 @@ mbe_post_left_classify(const dsd_opts* opts, dsd_state* state, const mbe_frame_c
     mbe_post_apply_p25p2_metadata_gate(state, &state->dmr_encL);
     mbe_post_apply_forced_clear_gate(state, &state->dmr_encL);
     mbe_post_apply_reverse_mute(opts, &state->dmr_encL);
-    return MBE_POST_SLOT_ACTIVE;
+    return frame_ctx->crypto_muted ? MBE_POST_SLOT_CRYPTO_MUTED : MBE_POST_SLOT_ACTIVE;
 }
 
 static void
@@ -1686,25 +1915,23 @@ mbe_post_left_stage(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_
         mbe_post_stage_slot_silence(state, 0);
         return;
     }
+    if (slot_class == MBE_POST_SLOT_CRYPTO_MUTED) {
+        mbe_post_stage_slot_silence(state, 0);
+        return;
+    }
     if (slot_class != MBE_POST_SLOT_ACTIVE) {
         return;
     }
 
     state->debug_audio_errors += state->errs2;
     if (state->dmr_encL == 0 || !mbe_frame_slot_mute_enc(opts, frame_ctx, 0)) {
-        if (opts->floating_point == 0) {
-            processAudio(opts, state);
-            state->mbe_short_silenced[0] = 0U;
-            if (dsd_audio_activity_armed()) {
-                mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_SHORT);
-            }
+        dsd_voice_stage_short_left(opts, state);
+        state->mbe_short_silenced[0] = 0U;
+        if (dsd_audio_activity_armed()) {
+            mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_SHORT);
         }
     } else {
         mbe_post_stage_slot_silence(state, 0);
-    }
-    DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-    if (dsd_audio_activity_armed()) {
-        mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_FLOAT);
     }
 }
 
@@ -1741,7 +1968,7 @@ mbe_post_right_classify(const dsd_opts* opts, dsd_state* state, const mbe_frame_
     mbe_post_apply_p25p2_metadata_gate(state, &state->dmr_encR);
     mbe_post_apply_forced_clear_gate(state, &state->dmr_encR);
     mbe_post_apply_reverse_mute(opts, &state->dmr_encR);
-    return MBE_POST_SLOT_ACTIVE;
+    return frame_ctx->crypto_muted ? MBE_POST_SLOT_CRYPTO_MUTED : MBE_POST_SLOT_ACTIVE;
 }
 
 static void
@@ -1751,25 +1978,23 @@ mbe_post_right_stage(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx
         mbe_post_stage_slot_silence(state, 1);
         return;
     }
+    if (slot_class == MBE_POST_SLOT_CRYPTO_MUTED) {
+        mbe_post_stage_slot_silence(state, 1);
+        return;
+    }
     if (slot_class != MBE_POST_SLOT_ACTIVE) {
         return;
     }
 
     state->debug_audio_errorsR += state->errs2R;
     if (state->dmr_encR == 0 || !mbe_frame_slot_mute_enc(opts, frame_ctx, 1)) {
-        if (opts->floating_point == 0) {
-            processAudioR(opts, state);
-            state->mbe_short_silenced[1] = 0U;
-            if (dsd_audio_activity_armed()) {
-                mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_SHORT);
-            }
+        dsd_voice_stage_short_right(opts, state);
+        state->mbe_short_silenced[1] = 0U;
+        if (dsd_audio_activity_armed()) {
+            mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_SHORT);
         }
     } else {
         mbe_post_stage_slot_silence(state, 1);
-    }
-    DSD_MEMCPY(state->f_r, state->audio_out_temp_bufR, sizeof(state->f_r));
-    if (dsd_audio_activity_armed()) {
-        mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_FLOAT);
     }
 }
 
@@ -1777,16 +2002,15 @@ static void
 mbe_post_other_process_audio(const dsd_opts* opts, dsd_state* state, int is_p25p2) {
     const int slot = (is_p25p2 && state->currentslot == 1) ? 1 : 0;
     state->debug_audio_errors += state->errs2;
-    if ((opts->audio_out != 1 && !(opts->wav_out_f != NULL && opts->static_wav_file == 1))
-        || opts->floating_point != 0) {
+    if (opts->audio_out != 1 && !(opts->wav_out_f != NULL && opts->static_wav_file == 1)) {
         // The slot's short frame is left as it was: it holds no sample of this frame.
         state->mbe_short_silenced[slot] = 1U;
         return;
     }
     if (slot == 1) {
-        processAudioR(opts, state);
+        dsd_voice_stage_short_right(opts, state);
     } else {
-        processAudio(opts, state);
+        dsd_voice_stage_short_left(opts, state);
     }
     state->mbe_short_silenced[slot] = 0U;
 }
@@ -1810,26 +2034,19 @@ mbe_post_other_is_allowed(const dsd_opts* opts, const dsd_state* state, int is_p
 }
 
 static void
-mbe_post_other_copy_float_buffer(dsd_state* state, int is_p25p2) {
-    if (is_p25p2 && state->currentslot == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-    } else {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf)); //P25p1 FDMA 8k/1
-    }
-}
-
-static void
-mbe_post_other_audio(const dsd_opts* opts, dsd_state* state) {
+mbe_post_other_audio(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     if (mbe_post_dmr_mono_active(opts, state) || mbe_post_stereo_active(opts, state)) {
         return;
     }
 
     int is_p25p2 = DSD_SYNC_IS_P25P2(state->synctype);
+    if (frame_ctx->crypto_muted) {
+        mbe_post_stage_slot_silence(state, (is_p25p2 && state->currentslot == 1) ? 1 : 0);
+        return;
+    }
     if (mbe_post_other_is_allowed(opts, state, is_p25p2)) {
         mbe_post_other_process_audio(opts, state, is_p25p2);
     }
-
-    mbe_post_other_copy_float_buffer(state, is_p25p2);
 }
 
 static int
@@ -1844,12 +2061,7 @@ mbe_post_mono_left_audio(const dsd_opts* opts, dsd_state* state) {
         frame_errors = state->errs2R;
     }
     state->debug_audio_errors += frame_errors;
-
-    if (opts->floating_point == 1) {
-        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-    } else {
-        processAudio(opts, state);
-    }
+    dsd_voice_stage_short_left(opts, state);
 }
 
 // The slot whose per-call WAV a frame on the mono post path belongs to: DMR mono's playing slot, and a P25 Phase 2
@@ -2012,6 +2224,13 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
 
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+    // The frame goes through its slot's voice chain once, before anything reads it (issue #653): the shared short
+    // staging and the per-call WAV take the same filtered, gained samples, whatever the output format, the output
+    // type or the mute. An exhausted keystream produced no decoded media: keep that silence out of the HPF so its
+    // history cannot revive it. The gates below still decide who receives it.
+    if (frame_ctx->synth && !frame_ctx->crypto_muted) {
+        dsd_voice_chain_run(opts, state, frame_ctx->synth_slot, frame_ctx->synth);
+    }
     // Until a branch below stages this frame's short samples, the current slot's short frame is not this frame's.
     state->mbe_short_silenced[state->currentslot == 1 ? 1 : 0] = 1U;
     if (mbe_post_uses_mono_left_staging(state)) {
@@ -2025,7 +2244,7 @@ mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_c
         mbe_capture_frame(opts, state, frame_ctx);
         mbe_post_left_stage(opts, state, frame_ctx, left);
         mbe_post_right_stage(opts, state, frame_ctx, right);
-        mbe_post_other_audio(opts, state);
+        mbe_post_other_audio(opts, state, frame_ctx);
     }
     mbe_post_wav_outputs(opts, state);
 
@@ -2046,6 +2265,8 @@ mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
     }
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
+    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653).
+    dsd_voice_hpf_reset(state, -1);
 }
 
 void
@@ -2210,15 +2431,17 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state, dsd_call_snapshot* out
 }
 
 static void
-processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
-                        char imbe7100_fr[7][24], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
+processMbeFrameInternal(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23],
+                        char ambe_fr[4][24], char imbe7100_fr[7][24], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
                         dsd_vocoder_soft_bit ambe_soft_fr[4][24], dsd_vocoder_soft_bit imbe7100_soft_fr[7][24]) {
     mbe_frame_ctx_t frame_ctx;
     dsd_call_snapshot call;
 
     const int have_call = mark_vocoder_call_media(opts, state, &call);
-    mbe_prepare_frame_state(state, &frame_ctx, have_call ? &call : NULL);
+    mbe_prepare_frame_state(state, &frame_ctx, have_call ? &call : NULL, protocol);
 
+    // Every decode below writes its frame, speech or silence, into the buffer named here, on every path.
+    frame_ctx.synth = state->audio_out_temp_buf;
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         mbe_process_p25p1(opts, state, imbe_fr, imbe_soft_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_PROVOICE(state->synctype)) {
@@ -2227,10 +2450,20 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], c
         /* Header synctypes too: processDSTAR_HD() decodes the superframe behind the header under its own synctype. */
         mbe_process_dstar(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
+        // Both timeslots synthesize into the left buffer, each on its own slot's chain.
+        frame_ctx.synth_slot = (state->currentslot == 1) ? 1 : 0;
         mbe_process_x2(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_NXDN(state->synctype)) {
         mbe_process_nxdn(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     } else {
+        // The slot path synthesizes slot 1 into the left buffer and slot 2 into the right one, and nothing for any
+        // other slot value.
+        if (state->currentslot == 1) {
+            frame_ctx.synth = state->audio_out_temp_bufR;
+            frame_ctx.synth_slot = 1;
+        } else if (state->currentslot != 0) {
+            frame_ctx.synth = NULL;
+        }
         mbe_process_slot_traffic(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     }
 
@@ -2238,12 +2471,23 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], c
 }
 
 void
-processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
-    processMbeFrameInternal(opts, state, imbe_fr, ambe_fr, imbe7100_fr, NULL, NULL, NULL);
+processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23], char ambe_fr[4][24],
+                char imbe7100_fr[7][24]) {
+    processMbeFrameInternal(opts, state, protocol, imbe_fr, ambe_fr, imbe7100_fr, NULL, NULL, NULL);
 }
 
 void
-processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
+processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, dsd_vocoder_soft_bit imbe_fr[8][23],
                     dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
-    processMbeFrameInternal(opts, state, NULL, NULL, NULL, imbe_fr, ambe_fr, imbe7100_fr);
+    processMbeFrameInternal(opts, state, protocol, NULL, NULL, NULL, imbe_fr, ambe_fr, imbe7100_fr);
+}
+
+void
+dsd_mbe_p25p1_skip_voice_frame(dsd_state* state) {
+    if (state == NULL) {
+        return;
+    }
+    // The key a decoded frame would have selected, so a keystream this frame generates is the call's.
+    mbe_activate_keyloader_slot(state, NULL);
+    mbe_p25p1_advance_keystream(state);
 }

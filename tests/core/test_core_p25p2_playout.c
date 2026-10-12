@@ -24,6 +24,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,10 +39,8 @@ typedef struct {
     int channels; /* 1 or 2 */
     int left;     /* first left (or mono) sample: the tag */
     int right;
-    int peak_left; /* largest left (or mono) sample magnitude in the block (short output) */
-    int is_float;
-    float fleft;
-    float fright;
+    int peak_left; /* largest left (or mono) sample magnitude in the block */
+    int is_float;  /* written as f32 (-y): left, right and peak_left are the 16-bit samples it carries */
 } captured_block;
 
 static dsd_opts g_opts;
@@ -65,18 +64,25 @@ capture_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* d
     captured_block* b = &g_blocks[g_block_count++];
     DSD_MEMSET(b, 0, sizeof(*b));
     b->is_float = g_capture_float;
-    if (g_capture_float) {
-        const float* f = (const float*)data;
-        b->channels = (nsam == sizeof(float) * 160U * 2U) ? 2 : 1;
-        b->fleft = f[0];
-        b->fright = (b->channels == 2) ? f[1] : f[0];
-    } else {
-        const short* s = (const short*)data;
-        b->channels = (nsam == sizeof(short) * 160U * 2U) ? 2 : 1;
-        b->left = s[0];
-        b->right = (b->channels == 2) ? s[1] : s[0];
-        for (int i = 0; i < 160; i++) {
-            const int v = s[(size_t)i * (size_t)b->channels];
+    // Float output (-y) writes the same 16-bit blocks as f32, s16 / 32768 (issue #652): read them back as samples.
+    const size_t width = g_capture_float ? sizeof(float) : sizeof(short);
+    b->channels = (nsam == width * 160U * 2U) ? 2 : 1;
+    for (int i = 0; i < 160 * b->channels; i++) {
+        int v;
+        if (g_capture_float) {
+            float f = 0.0f;
+            DSD_MEMCPY(&f, (const uint8_t*)data + ((size_t)i * sizeof(float)), sizeof(f));
+            v = (int)lrintf(f * 32768.0f);
+        } else {
+            v = ((const short*)data)[i];
+        }
+        if (i == 0) {
+            b->left = v;
+        }
+        if (i == ((b->channels == 2) ? 1 : 0)) {
+            b->right = v;
+        }
+        if (i % b->channels == 0) {
             const int mag = (v < 0) ? -v : v;
             if (mag > b->peak_left) {
                 b->peak_left = mag;
@@ -159,10 +165,8 @@ burst(int slot, int pair, dsd_p25p2_burst_kind kind, int tag) {
     g_serial++;
     for (int f = 0; f < frames; f++) {
         short* s = (slot == 0) ? g_state.s_l : g_state.s_r;
-        float* fl = (slot == 0) ? g_state.audio_out_temp_buf : g_state.audio_out_temp_bufR;
         for (int i = 0; i < 160; i++) {
             s[i] = (short)(tag + f);
-            fl[i] = (slot == 0) ? 1000.0f : -1000.0f;
         }
         g_state.mbe_short_silenced[slot] = 0U;
         dsd_p25p2_playout_stage(&g_opts, &g_state, slot, pair, g_serial, &k_open_verdict);
@@ -515,64 +519,79 @@ test_verdicts(void) {
 static int
 test_slot_preference(void) {
     int rc = 0;
-    for (int pref = 0; pref <= 2; pref++) {
-        for (int channels = 2; channels >= 1; channels--) {
-            setup(0, channels);
-            g_opts.slot_preference = pref;
-            seed_call(&g_state, 0U, 100U, 1000U);
-            seed_call(&g_state, 1U, 200U, 2000U);
-            int tag0 = 1000;
-            int tag1 = 2000;
-            superframe(4, 4, &tag0, &tag1, -1); /* proves both 2V pairs */
-            superframe(4, 4, &tag0, &tag1, 2);  /* slot 1 loses its 4V at pair 2: blocks 8..11 of it are fill */
-            char tag[96];
-            DSD_SNPRINTF(tag, sizeof tag, "preference %d channels %d blocks", pref, channels);
-            rc |= expect_int(tag, g_block_count, 36);
-            for (int i = 0; i < g_block_count && i < 36; i++) {
-                const int fill0 = i >= 26 && i < 30;
-                const int left = fill0 ? 0 : 1000 + i;
-                const int right = 2000 + i;
-                // A fill block of the preferred slot plays as Auto does: side by side.
-                const int wins = (pref == 1) || (pref == 0 && !fill0);
-                int want_left = left;
-                int want_right = right;
-                if (pref == 0 && wins) {
-                    want_right = left;
-                } else if (pref == 1) {
-                    want_left = right;
+    for (int floating = 0; floating < 2; floating++) {
+        for (int pref = 0; pref <= 2; pref++) {
+            for (int channels = 2; channels >= 1; channels--) {
+                setup(floating, channels);
+                g_opts.slot_preference = pref;
+                seed_call(&g_state, 0U, 100U, 1000U);
+                seed_call(&g_state, 1U, 200U, 2000U);
+                int tag0 = 1000;
+                int tag1 = 2000;
+                superframe(4, 4, &tag0, &tag1, -1); /* proves both 2V pairs */
+                superframe(4, 4, &tag0, &tag1, 2);  /* slot 1 loses its 4V at pair 2: blocks 8..11 of it are fill */
+                char tag[96];
+                DSD_SNPRINTF(tag, sizeof tag, "preference %d channels %d blocks", pref, channels);
+                rc |= expect_int(tag, g_block_count, 36);
+                for (int i = 0; i < g_block_count && i < 36; i++) {
+                    const int fill0 = i >= 26 && i < 30;
+                    const int left = fill0 ? 0 : 1000 + i;
+                    const int right = 2000 + i;
+                    // A fill block of the preferred slot plays as Auto does: side by side.
+                    const int wins = (pref == 1) || (pref == 0 && !fill0);
+                    int want_left = left;
+                    int want_right = right;
+                    if (pref == 0 && wins) {
+                        want_right = left;
+                    } else if (pref == 1) {
+                        want_left = right;
+                    }
+                    if (channels == 1) {
+                        const int want = wins ? want_left : (left + right) / 2;
+                        DSD_SNPRINTF(tag, sizeof tag, "preference %d mono block %d", pref, i);
+                        rc |= expect_int(tag, g_blocks[i].left, want);
+                    } else {
+                        DSD_SNPRINTF(tag, sizeof tag, "preference %d left block %d", pref, i);
+                        rc |= expect_int(tag, g_blocks[i].left, want_left);
+                        DSD_SNPRINTF(tag, sizeof tag, "preference %d right block %d", pref, i);
+                        rc |= expect_int(tag, g_blocks[i].right, want_right);
+                    }
                 }
-                if (channels == 1) {
-                    const int want = wins ? want_left : (left + right) / 2;
-                    DSD_SNPRINTF(tag, sizeof tag, "preference %d mono block %d", pref, i);
-                    rc |= expect_int(tag, g_blocks[i].left, want);
-                } else {
-                    DSD_SNPRINTF(tag, sizeof tag, "preference %d left block %d", pref, i);
-                    rc |= expect_int(tag, g_blocks[i].left, want_left);
-                    DSD_SNPRINTF(tag, sizeof tag, "preference %d right block %d", pref, i);
-                    rc |= expect_int(tag, g_blocks[i].right, want_right);
-                }
+                DSD_SNPRINTF(tag, sizeof tag, "preference %d kept", pref);
+                rc |= expect_int(tag, g_opts.slot_preference, pref);
             }
-            DSD_SNPRINTF(tag, sizeof tag, "preference %d kept", pref);
-            rc |= expect_int(tag, g_opts.slot_preference, pref);
         }
     }
     return rc;
 }
 
-/* Float output plays every frame too, through the same queues: slot 1 positive, slot 2 negative. */
+/* Float output plays every frame too, through the same queues: the same blocks as 16-bit output, written as f32
+   (issue #652: it used to gain each slot's float frame through agf() on its own). */
 static int
 test_float_output(void) {
     int rc = 0;
-    setup(1, 2);
-    seed_call(&g_state, 0U, 100U, 1000U);
-    seed_call(&g_state, 1U, 200U, 2000U);
-    int tag0 = 1000;
-    int tag1 = 2000;
-    superframe(4, 0, &tag0, &tag1, -1);
-    rc |= expect_int("float blocks", g_block_count, 18);
-    for (int i = 0; i < g_block_count; i++) {
-        rc |= expect_int("float left is slot 1", g_blocks[i].fleft > 0.0f, 1);
-        rc |= expect_int("float right is slot 2", g_blocks[i].fright < 0.0f, 1);
+    static captured_block short_blocks[MAX_BLOCKS];
+    int short_count = 0;
+    for (int floating = 0; floating < 2; floating++) {
+        setup(floating, 2);
+        seed_call(&g_state, 0U, 100U, 1000U);
+        seed_call(&g_state, 1U, 200U, 2000U);
+        int tag0 = 1000;
+        int tag1 = 2000;
+        superframe(4, 0, &tag0, &tag1, -1);
+        rc |= expect_int(floating ? "float blocks" : "short blocks", g_block_count, 18);
+        if (!floating) {
+            DSD_MEMCPY(short_blocks, g_blocks, sizeof(short_blocks));
+            short_count = g_block_count;
+            continue;
+        }
+        rc |= expect_int("float block count as short", g_block_count, short_count);
+        for (int i = 0; i < g_block_count && i < short_count; i++) {
+            rc |= expect_int("float left as short", g_blocks[i].left, short_blocks[i].left);
+            rc |= expect_int("float right as short", g_blocks[i].right, short_blocks[i].right);
+            rc |= expect_int("float left is slot 1", g_blocks[i].left >= 1000 && g_blocks[i].left < 2000, 1);
+            rc |= expect_int("float right is slot 2", g_blocks[i].right >= 2000, 1);
+        }
     }
     return rc;
 }
@@ -711,7 +730,7 @@ test_switched_off_slot_beside_muted_companion(void) {
     return rc;
 }
 
-/* One-channel float output: a lone call at full level, two calls averaged (slot 1 positive, slot 2 negative). */
+/* One-channel float output: a lone call at full level, two calls averaged, as in 16-bit output. */
 static int
 test_float_mono_output(void) {
     int rc = 0;
@@ -723,8 +742,7 @@ test_float_mono_output(void) {
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     rc |= expect_int("float mono blocks", g_block_count, 4);
     rc |= expect_int("float mono channels", g_blocks[0].channels, 1);
-    const float lone = g_blocks[0].fleft;
-    rc |= expect_int("float mono lone call heard", lone > 0.0f, 1);
+    rc |= expect_int("float mono lone call at full level", g_blocks[0].left, 1000);
 
     setup(1, 1);
     seed_call(&g_state, 0U, 100U, 1000U);
@@ -733,8 +751,7 @@ test_float_mono_output(void) {
     burst(1, 0, DSD_P25P2_BURST_4V, 2000);
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     rc |= expect_int("float mono two calls blocks", g_block_count, 4);
-    const float mixed = g_blocks[0].fleft;
-    rc |= expect_int("float mono two calls averaged", (mixed < 0.01f * lone) && (mixed > -0.01f * lone), 1);
+    rc |= expect_int("float mono two calls averaged", g_blocks[0].left, 1500);
     return rc;
 }
 
@@ -1182,8 +1199,8 @@ read_wav(const char* path, short* out, int max, int* frames) {
 }
 
 static int
-run_static_wav_case(const char* what, int blocked_slot, int companion, int left_on, int want_frames, int want_left,
-                    int want_right) {
+run_static_wav_case(int floating, const char* what, int blocked_slot, int companion, int left_on, int want_frames,
+                    int want_left, int want_right) {
     static short samples[160 * 2 * 8];
     char path[DSD_TEST_PATH_MAX];
     int rc = 0;
@@ -1198,7 +1215,7 @@ run_static_wav_case(const char* what, int blocked_slot, int companion, int left_
     info.samplerate = 8000;
     info.channels = 2;
     info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-    setup(0, 2);
+    setup(floating, 2);
     g_opts.wav_out_f = sf_open(path, SFM_WRITE, &info);
     g_opts.static_wav_file = 1;
     g_opts.slot1_on = left_on;
@@ -1237,13 +1254,18 @@ run_static_wav_case(const char* what, int blocked_slot, int companion, int left_
     return rc;
 }
 
+/* In either output format: float output (-y) wrote no static WAV (issue #652). */
 static int
 test_static_wav_records_what_plays(void) {
     int rc = 0;
-    rc |= run_static_wav_case("record-blocked slot 1 plays, its channel stays out of the wav", 0, 1, 1, 320, 0, 2222);
-    rc |= run_static_wav_case("record-blocked slot 2 plays, its channel stays out of the wav", 1, 1, 1, 320, 1111, 0);
-    rc |= run_static_wav_case("record-blocked lone slot writes nothing", 0, 0, 1, 0, 0, 0);
-    rc |= run_static_wav_case("an unheard slot is never recorded", -1, 1, 0, 320, 2222, 2222);
+    for (int floating = 0; floating < 2; floating++) {
+        rc |= run_static_wav_case(floating, "record-blocked slot 1 plays, its channel stays out of the wav", 0, 1, 1,
+                                  320, 0, 2222);
+        rc |= run_static_wav_case(floating, "record-blocked slot 2 plays, its channel stays out of the wav", 1, 1, 1,
+                                  320, 1111, 0);
+        rc |= run_static_wav_case(floating, "record-blocked lone slot writes nothing", 0, 0, 1, 0, 0, 0);
+        rc |= run_static_wav_case(floating, "an unheard slot is never recorded", -1, 1, 0, 320, 2222, 2222);
+    }
     return rc;
 }
 

@@ -4,8 +4,8 @@
  */
 /*-------------------------------------------------------------------------------
  *
- * Float-path audio processing helpers and playback mixers
- * (DMR stereo variants and utilities)
+ * Digital voice playback mixers (mono, stereo, DMR stereo), their output
+ * primitives and the alert beeper
  *
  * LWVMOBILE
  * 2023-10 DSD-FME Florida Man Edition
@@ -13,37 +13,24 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
-#include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/dmr_enc_mute.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/platform/audio.h>
-#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <limits.h>
 #include <math.h>
-#include <mbelib-neo/mbelib.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <sys/types.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd_audio2_internal.h"
 #include "dsd_audio_internal.h"
-
-static void
-write_s16_audio(dsd_opts* opts, const int16_t* buf, size_t frames) {
-    if (opts->audio_out_stream) {
-        dsd_audio_write(opts->audio_out_stream, buf, frames);
-    }
-}
 
 static unsigned long
 dsd_audio_call_target(const dsd_state* state, uint8_t slot) {
@@ -57,50 +44,47 @@ dsd_audio_call_target(const dsd_state* state, uint8_t slot) {
     return target <= ULONG_MAX ? (unsigned long)target : 0UL;
 }
 
-/* Convert float audio to int16 and write using the abstraction layer */
-static void
-write_float_audio(dsd_opts* opts, const float* buf, size_t frames) {
-    if (!opts->audio_out_stream || !buf) {
+/* Convert float audio to int16 for the local device stream. A block of any length goes out in chunks the conversion
+   buffer holds, each written with its own frame count, so the backend never reads past what was converted. */
+DSD_AUDIO2_INTERNAL void
+dsd_write_float_audio_device(dsd_opts* opts, const float* buf, size_t frames, int channels) {
+    if (!opts->audio_out_stream || !buf || channels <= 0) {
         return;
     }
-    /* Convert float [-1.0, 1.0] to int16 with clipping */
-    int channels = opts->pulse_digi_out_channels;
-    size_t total_samples = frames * (size_t)channels;
-    int16_t tmp[320 * 2]; /* Max 320 stereo frames */
-    if (total_samples > sizeof(tmp) / sizeof(tmp[0])) {
-        total_samples = sizeof(tmp) / sizeof(tmp[0]);
+    int16_t tmp[320 * 2];
+    const size_t chunk_frames_max = (sizeof(tmp) / sizeof(tmp[0])) / (size_t)channels;
+    if (chunk_frames_max == 0U) {
+        return;
     }
-    for (size_t i = 0; i < total_samples; i++) {
-        float v = buf[i] * 32767.0f;
-        if (v > 32767.0f) {
-            v = 32767.0f;
-        } else if (v < -32768.0f) {
-            v = -32768.0f;
+    size_t done = 0;
+    while (done < frames) {
+        size_t chunk_frames = frames - done;
+        if (chunk_frames > chunk_frames_max) {
+            chunk_frames = chunk_frames_max;
         }
-        tmp[i] = (int16_t)v;
-    }
-    dsd_audio_write(opts->audio_out_stream, tmp, frames);
-}
-
-// Return 1 if all elements are effectively zero (|x| < 1e-12f)
-static inline int
-dsd_is_all_zero_f(const float* buf, size_t n) {
-    if (!buf) {
-        return 1;
-    }
-    const float eps = 1e-12f;
-    for (size_t i = 0; i < n; i++) {
-        if (buf[i] > eps || buf[i] < -eps) {
-            return 0;
+        const float* src = buf + (done * (size_t)channels);
+        const size_t chunk_samples = chunk_frames * (size_t)channels;
+        /* Convert float [-1.0, 1.0] to int16 with clipping */
+        for (size_t i = 0; i < chunk_samples; i++) {
+            float v = src[i] * 32767.0f;
+            if (v > 32767.0f) {
+                v = 32767.0f;
+            } else if (v < -32768.0f) {
+                v = -32768.0f;
+            }
+            tmp[i] = (int16_t)v;
         }
+        if (dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, tmp, chunk_frames) < 0) {
+            /* The device is down: the rest of the block would fail too. */
+            return;
+        }
+        done += chunk_frames;
     }
-    return 1;
 }
 
 static inline void
-write_audio_out(int fd, const void* buf, size_t bytes) {
-    const ssize_t written = dsd_write(fd, buf, bytes);
-    (void)written;
+write_audio_out(int fd, const void* buf, size_t bytes, size_t frame_bytes) {
+    (void)dsd_audio_sink_write_fd(fd, buf, bytes, frame_bytes);
 }
 
 DSD_AUDIO2_INTERNAL int
@@ -139,18 +123,6 @@ dsd_audio_maybe_reset_output_ring_right(dsd_state* state) {
 }
 
 static void
-dsd_audio_reset_float_mix_working_state(dsd_state* state) {
-    DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
-    DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
-    DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
-    DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
-    state->audio_out_idx = 0;
-    state->audio_out_idxR = 0;
-    dsd_audio_maybe_reset_output_ring_left(state);
-    dsd_audio_maybe_reset_output_ring_right(state);
-}
-
-static void
 dsd_audio_reset_short_mono_left_working_state(dsd_state* state) {
     state->audio_out_idx = 0;
     DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
@@ -184,37 +156,57 @@ dsd_output_float_block(dsd_opts* opts, dsd_state* state, const float* samples, s
         return;
     }
     if (opts->audio_out_type == 0) {
-        write_float_audio(opts, samples, frames);
+        dsd_write_float_audio_device(opts, samples, frames, channels);
     } else if (opts->audio_out_type == 8) {
         dsd_udp_audio_hook_blast(opts, state, frames * (size_t)channels * sizeof(float), (void*)samples);
     } else if (opts->audio_out_type == 1) {
-        write_audio_out(opts->audio_out_fd, samples, frames * (size_t)channels * sizeof(float));
+        write_audio_out(opts->audio_out_fd, samples, frames * (size_t)channels * sizeof(float),
+                        (size_t)channels * sizeof(float));
     }
 }
 
+// The most samples one f32 write carries: a 960-frame stereo block (48 kHz mono duplicated), the largest block a
+// mixer writes, so each block goes out as one write and one UDP datagram.
+enum { DSD_OUTPUT_F32_CHUNK_SAMPLES = 1920 };
+
+// Float output (-y) is the 16-bit output written as 32-bit float samples, s16 / 32768 (exact), to the outputs that
+// take bytes: the raw fd (-o -) and UDP. A block larger than a chunk goes out in whole frames, chunk by chunk.
+static void
+dsd_output_s16_as_f32(const dsd_opts* opts, dsd_state* state, const short* samples, size_t frames, size_t channels) {
+    float f32[DSD_OUTPUT_F32_CHUNK_SAMPLES];
+    const size_t chunk_frames = DSD_OUTPUT_F32_CHUNK_SAMPLES / channels;
+    for (size_t done = 0; done < frames;) {
+        const size_t n = (frames - done < chunk_frames) ? frames - done : chunk_frames;
+        const short* src = samples + (done * channels);
+        for (size_t i = 0; i < n * channels; i++) {
+            f32[i] = (float)src[i] * (1.0f / 32768.0f);
+        }
+        if (opts->audio_out_type == 8) {
+            dsd_udp_audio_hook_blast(opts, state, n * channels * sizeof(float), f32);
+        } else {
+            write_audio_out(opts->audio_out_fd, f32, n * channels * sizeof(float), channels * sizeof(float));
+        }
+        done += n;
+    }
+}
+
+// The one digital voice writer (issue #652): every mixer, the P25 Phase 2 playout and the legacy short output hand it
+// 16-bit blocks of @p channels interleaved channels, in either output format. The local device stream is 16-bit in
+// both formats; under -y the raw fd and UDP take the same samples as f32.
 void
 dsd_output_s16_block(dsd_opts* opts, dsd_state* state, const short* samples, size_t frames, int channels) {
-    if (opts->audio_out != 1 || !samples || frames == 0) {
+    if (opts->audio_out != 1 || !samples || frames == 0 || channels < 1 || channels > 2) {
         return;
     }
     if (opts->audio_out_type == 0) {
-        write_s16_audio(opts, (const int16_t*)samples, frames);
+        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, samples, frames);
+    } else if (opts->floating_point == 1 && (opts->audio_out_type == 8 || opts->audio_out_type == 1)) {
+        dsd_output_s16_as_f32(opts, state, samples, frames, (size_t)channels);
     } else if (opts->audio_out_type == 8) {
         dsd_udp_audio_hook_blast(opts, state, frames * (size_t)channels * sizeof(short), (void*)samples);
     } else if (opts->audio_out_type == 1) {
-        write_audio_out(opts->audio_out_fd, samples, frames * (size_t)channels * sizeof(short));
-    }
-}
-
-DSD_AUDIO2_INTERNAL void
-dsd_output_float_blocks(dsd_opts* opts, dsd_state* state, const float* const* blocks, size_t block_count, size_t frames,
-                        int channels, int skip_silent) {
-    size_t samples_per_block = frames * (size_t)channels;
-    for (size_t i = 0; i < block_count; i++) {
-        if (skip_silent && dsd_is_all_zero_f(blocks[i], samples_per_block)) {
-            continue;
-        }
-        dsd_output_float_block(opts, state, blocks[i], frames, channels);
+        write_audio_out(opts->audio_out_fd, samples, frames * (size_t)channels * sizeof(short),
+                        (size_t)channels * sizeof(short));
     }
 }
 
@@ -382,36 +374,24 @@ dsd_p25_algid_can_decrypt(const dsd_state* state) {
     return 0;
 }
 
-DSD_AUDIO2_INTERNAL int
-dsd_nxdn_can_decrypt(const dsd_state* state) {
-    if (state->nxdn_cipher_type == 0x1 || state->nxdn_cipher_type == 0x2) {
-        return dsd_key_scalar_present(state, 0);
-    }
-    if (state->nxdn_cipher_type == 0x3) {
-        return state->aes_key_loaded[0] == 1;
-    }
-    return 0;
-}
-
 static int
 dsd_p25p1_live_crypto_gate_applies(const dsd_state* state) {
     return DSD_SYNC_IS_P25P1(state->synctype) && state->mbe_file_type != 3;
 }
 
 static int
-dsd_fdma_crypto_muted(const dsd_opts* opts, const dsd_state* state, int include_nxdn) {
+dsd_fdma_crypto_muted(const dsd_opts* opts, const dsd_state* state) {
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         return dsd_p25p1_live_crypto_gate_applies(state) && !p25_crypto_audio_output_permitted(opts, state, 0);
     }
 
-    int muted = dsd_p25_algid_is_encrypted(state) || (include_nxdn && state->nxdn_cipher_type != 0);
-    if (!muted) {
+    if (!dsd_p25_algid_is_encrypted(state)) {
         return 0;
     }
 
     const int can_p25 =
         dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && dsd_key_scalar_present(state, 0));
-    return (can_p25 || (include_nxdn && dsd_nxdn_can_decrypt(state))) ? 0 : 1;
+    return can_p25 ? 0 : 1;
 }
 
 static int
@@ -453,35 +433,28 @@ dsd_dmr_mix_note_audible(const dsd_opts* opts, int encL, int encR, int copy_righ
 // Baofeng AP and CSI EE unmute a slot whatever its flags say, a mixer override older than the vocoder's forced clear
 // for them (SS3 then read only the encryption bit of the service options, which forced clear leaves set). It never
 // overrides reverse mute (-q): the vocoder applies forced clear first and -q then mutes the call, so the s16 path
-// stages none of it and neither mixer may play it.
+// stages none of it and the mixer may not play it.
 static inline int
 dmr_forced_privacy_unmute_enabled(const dsd_opts* opts, const dsd_state* state) {
     return opts->reverse_mute != 1 && ((state->baofeng_ap == 1) || (state->csi_ee == 1));
 }
 
-// The stereo DMR mixes start each slot from the vocoder's verdict, dmr_encL/R as mbe_post_left/right_audio() leave
-// it: set when the slot is encrypted and no loaded key decrypts it (a mapped Vertex keystream counts as decrypting),
-// cleared under forced clear, and flipped by reverse mute (-q). The Baofeng AP / CSI EE override above comes first.
+// The stereo DMR mix (SS3, in both output formats) starts each slot from the vocoder's verdict, dmr_encL/R as
+// mbe_post_left/right_audio() leave it: set when the slot is encrypted and no loaded key decrypts it (a mapped Vertex
+// keystream counts as decrypting), cleared under forced clear, and flipped by reverse mute (-q). The Baofeng AP / CSI
+// EE override above comes first.
 //
-// The mixes differ over the encrypted-audio mute, dsd_dmr_slot_mute_enc(): the user's dmr_mute_encL/R, which is 0
-// after the user's toggle of all mutes and after any key load (dsd_key_apply_mute_policy(), or a scan row's or
-// trunk-scan target's direct keys through scan_option_apply_mute_dmr()), and reads 1 under -q, where the flipped flag
-// alone decides. Decoding never writes it (issue #657). While it is 0 the vocoder still runs a slot it flagged
-// encrypted through the short path, and FS3 plays the slot (undecryptable garble, as it long has). SS3 does not: a slot flagged encrypted starts muted whatever the flag
-// says, so a key load cannot unmute every call those keys do not decrypt. A talkgroup hold on that slot still unmutes
-// it, and SS3 then plays the short samples the vocoder staged for it (mute flag 0, no key), as it always has.
+// The encrypted-audio mute is the user's dmr_mute_encL/R, which is 0 after the user's toggle of all mutes and after
+// any key load (dsd_key_apply_mute_policy(), or scan_option_apply_mute_dmr()), and reads 1 under -q, where the flipped
+// flag alone decides. Decoding never writes it (issue #657). While it is 0 the vocoder still stages a slot it flagged
+// encrypted, but the shared SS3 mixer keeps it muted: a key load cannot unmute every call those keys do not decrypt.
+// A talkgroup hold on that slot still unmutes it and plays the samples the vocoder staged, as it always has.
 static int
 dmr_slot_flagged_encrypted(const dsd_opts* opts, const dsd_state* state, int slot) {
     if (dmr_forced_privacy_unmute_enabled(opts, state)) {
         return 0;
     }
     return ((slot == 0) ? state->dmr_encL : state->dmr_encR) != 0 ? 1 : 0;
-}
-
-// FS3's verdict: flagged encrypted while encrypted audio is muted.
-static int
-dmr_slot_mixer_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
-    return (dmr_slot_flagged_encrypted(opts, state, slot) && dsd_dmr_slot_mute_enc(opts, slot)) ? 1 : 0;
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -496,32 +469,6 @@ dsd_dmr_apply_mono_slot_gate(const dsd_opts* opts, const dsd_state* state, int* 
     }
 }
 
-DSD_AUDIO2_INTERNAL void
-dsd_dmr_init_slot_mute_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
-    *encL = dmr_slot_mixer_muted(opts, state, 0);
-    *encR = dmr_slot_mixer_muted(opts, state, 1);
-    dsd_dmr_apply_mono_slot_gate(opts, state, encL, encR);
-}
-
-DSD_AUDIO2_INTERNAL void
-dsd_duplicate_active_float_slot_to_stereo(float* a, float* b, float* c, int encL, int encR, int* outL, int* outR) {
-    if (!encL && encR) {
-        for (int i = 0; i < 320; i += 2) {
-            a[i + 1] = a[i + 0];
-            b[i + 1] = b[i + 0];
-            c[i + 1] = c[i + 0];
-        }
-        *outR = 0;
-    } else if (encL && !encR) {
-        for (int i = 0; i < 320; i += 2) {
-            a[i + 0] = a[i + 1];
-            b[i + 0] = b[i + 1];
-            c[i + 0] = c[i + 1];
-        }
-        *outL = 0;
-    }
-}
-
 static void
 dsd_apply_slot_hard_mute_flags(const dsd_opts* opts, int* encL, int* encR) {
     if (opts->slot1_on == 0) {
@@ -529,17 +476,6 @@ dsd_apply_slot_hard_mute_flags(const dsd_opts* opts, int* encL, int* encR) {
     }
     if (opts->slot2_on == 0) {
         *encR = 1;
-    }
-}
-
-static void
-dsd_hpf_short_triplet_if_enabled(const dsd_opts* opts, dsd_state* state) {
-    if (opts->use_hpf_d != 1) {
-        return;
-    }
-    for (int j = 0; j < 3; j++) {
-        hpf_dL(state, state->s_l4[j], 160);
-        hpf_dR(state, state->s_r4[j], 160);
     }
 }
 
@@ -593,7 +529,7 @@ dsd_dmr_apply_tg_hold_ss3(const dsd_opts* opts, const dsd_state* state, unsigned
     return dsd_tdma_effective_slot_preference(opts, held_slot);
 }
 
-// The preference's tie-break, the same in both DMR mixes: with both slots audible, the preferred slot fills both
+// The preference's tie-break, used in both output formats: with both slots audible, the preferred slot fills both
 // channels while it carries voice. Returns that slot, or -1.
 static int
 dsd_dmr_preferred_slot_fills_both(const dsd_state* state, int pref, int encL, int encR) {
@@ -697,164 +633,6 @@ dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
     dsd_p25p2_playout_close(state, slot);
 }
 
-//NOTE: Tones produce ringing sound when put through the hpf_d, may want to look into tweaking it,
-//or looking for a way to store is_tone by glancing at ambe_d values and not running hpf_d on them
-
-//TODO: WAV File saving (works fine on shorts, but on float, writing short to wav is not auto-gained,
-//so super quiet, either convert to float wav files, or run processAudio AFTER memcpy of the temp_buf)
-
-//     //user gain factor
-//     samp[i] *= gain;
-
-//float stereo mix 3v2 DMR
-void
-playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
-
-    //NOTE: This runs once for every two timeslots, if we are in the BS voice loop
-    //it doesn't matter if both slots have voice, or if one does, the slot without voice
-    //will play silence while this runs if no voice present
-
-    int encL, encR;
-    float stereo_samp1[320]; //8k 2-channel stereo interleave mix
-    float stereo_samp2[320]; //8k 2-channel stereo interleave mix
-    float stereo_samp3[320]; //8k 2-channel stereo interleave mix
-
-    DSD_MEMSET(stereo_samp1, 0.0f, sizeof(stereo_samp1));
-    DSD_MEMSET(stereo_samp2, 0.0f, sizeof(stereo_samp2));
-    DSD_MEMSET(stereo_samp3, 0.0f, sizeof(stereo_samp3));
-
-    //TODO: add option to bypass enc with a toggle as well
-
-    // DMR per-slot ENC gating: derive from decoder-side flags and user policy.
-    dsd_dmr_init_slot_mute_flags(opts, state, &encL, &encR);
-
-    unsigned long TGL = dsd_audio_call_target(state, 0U);
-    unsigned long TGR = dsd_audio_call_target(state, 1U);
-
-    // Apply whitelist/TG-hold gating shared with other mixers.
-    (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
-    // The slot switches mute last, as in every mix: a hold never plays a switched-off slot (issue #657). The slot is not
-    // really disabled; it is decoded and not played.
-    dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
-    dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
-    // With both slots audible, the preferred one fills both channels while it carries voice, as in SS3.
-    const int fill = dsd_dmr_preferred_slot_fills_both(
-        state, dsd_tdma_effective_slot_preference(opts, dsd_dmr_held_slot(state, TGL, TGR)), encL, encR);
-    if (dsd_audio_activity_armed()) {
-        // Besides that copy, FS3's duplication below only fills a muted slot's channel with the other.
-        dsd_dmr_mix_note_audible(opts, encL, encR, fill == 1, fill == 0, DSD_DMR_MIX_MEDIA_FLOAT);
-    }
-
-    //run autogain on the f_ buffers
-    agf(opts, state, state->f_l4[0], 0);
-    agf(opts, state, state->f_r4[0], 1);
-    agf(opts, state, state->f_l4[1], 0);
-    agf(opts, state, state->f_r4[1], 1);
-    agf(opts, state, state->f_l4[2], 0);
-    agf(opts, state, state->f_r4[2], 1);
-
-    // After each slot's own gain, so the copy plays as the preferred slot does.
-    if (fill == 1) {
-        DSD_MEMCPY(state->f_l4, state->f_r4, sizeof(state->f_l4));
-    } else if (fill == 0) {
-        DSD_MEMCPY(state->f_r4, state->f_l4, sizeof(state->f_r4));
-    }
-
-    //interleave left and right channels from the temp (float) buffer
-    audio_mix_interleave_stereo_f32(state->f_l4[0], state->f_r4[0], 160, encL, encR, stereo_samp1);
-    audio_mix_interleave_stereo_f32(state->f_l4[1], state->f_r4[1], 160, encL, encR, stereo_samp2);
-    audio_mix_interleave_stereo_f32(state->f_l4[2], state->f_r4[2], 160, encL, encR, stereo_samp3);
-
-    //at this point, if both channels are still flagged as enc, then we can skip all playback/writing functions
-    if (encL && encR) {
-        goto FS3_END;
-    }
-
-    if (opts->pulse_digi_out_channels == 1) {
-        float mono1[160], mono2[160], mono3[160];
-        DSD_MEMSET(mono1, 0, sizeof(mono1));
-        DSD_MEMSET(mono2, 0, sizeof(mono2));
-        DSD_MEMSET(mono3, 0, sizeof(mono3));
-        int l_on = !encL;
-        int r_on = !encR;
-        audio_mix_mono_from_slots_f32(state->f_l4[0], state->f_r4[0], 160, l_on, r_on, mono1);
-        audio_mix_mono_from_slots_f32(state->f_l4[1], state->f_r4[1], 160, l_on, r_on, mono2);
-        audio_mix_mono_from_slots_f32(state->f_l4[2], state->f_r4[2], 160, l_on, r_on, mono3);
-        const float* mono_blocks[] = {mono1, mono2, mono3};
-        dsd_output_float_blocks(opts, state, mono_blocks, 3, 160, 1, 0);
-    } else {
-        // If only one slot is active, duplicate to both channels for stereo sinks.
-        dsd_duplicate_active_float_slot_to_stereo(stereo_samp1, stereo_samp2, stereo_samp3, encL, encR, &encL, &encR);
-        const float* stereo_blocks[] = {stereo_samp1, stereo_samp2, stereo_samp3};
-        dsd_output_float_blocks(opts, state, stereo_blocks, 3, 160, 2, 0);
-    }
-
-FS3_END:
-    dsd_audio_reset_float_mix_working_state(state);
-}
-
-//float stereo mix -- when using Float Stereo Output, we need to send P25p1, DMR MS/Simplex, DStar, and YSF here
-void
-playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
-    const int is_p25p1 = DSD_SYNC_IS_P25P1(state->synctype);
-    int encL = is_p25p1 ? (p25_crypto_audio_output_permitted(opts, state, 0) ? 0 : 1)
-                        : (dsd_p25_algid_is_encrypted(state) ? 1 : 0);
-    float stereo_samp1[320]; //8k 2-channel stereo interleave mix
-
-    DSD_MEMSET(stereo_samp1, 0.0f, sizeof(stereo_samp1));
-    if (!is_p25p1 && encL
-        && (dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->aes_key_loaded[0] == 1))) {
-        encL = 0;
-    }
-
-    unsigned long TGL = dsd_audio_call_target(state, dsd_mono_source_slot(state));
-    (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
-    if (is_p25p1 && !p25_crypto_audio_output_permitted(opts, state, 0)) {
-        encL = 1;
-    }
-    // The slot switch mutes last: a hold never plays a switched-off slot (issue #657).
-    if (opts->slot1_on == 0) {
-        encL = 1;
-    }
-
-    agf(opts, state, state->f_l, 0);
-    if (!encL) {
-        if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
-            dsd_audio_activity_note();
-        }
-        audio_mono_to_stereo_f32(state->f_l, stereo_samp1, 160);
-        audio_apply_gain_f32(stereo_samp1, 320, 0.5f);
-        dsd_output_float_block(opts, state, stereo_samp1, 160, 2);
-    }
-    dsd_audio_reset_float_mix_working_state(state);
-}
-
-void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
-    agf(opts, state, state->f_l, 0);
-    int encL = dsd_fdma_crypto_muted(opts, state, 1);
-
-    unsigned long TGL = dsd_audio_call_target(state, dsd_mono_source_slot(state));
-
-    encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
-
-    if (!encL && opts->slot1_on != 0) {
-        if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
-            dsd_audio_activity_note();
-        }
-        if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
-            float stereo[320];
-            audio_mono_to_stereo_f32(state->f_l, stereo, 160);
-            dsd_output_float_block(opts, state, stereo, 160, 2);
-        } else {
-            dsd_output_float_block(opts, state, state->f_l, 160, 1);
-        }
-    }
-    dsd_audio_maybe_reset_output_ring_left(state);
-    DSD_MEMSET(state->f_l, 0.0f, sizeof(state->f_l));
-    DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
-}
-
 // Mono source, formatted for the device opened at startup (which stays stereo in AUTO/mixed scans).
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
@@ -869,16 +647,13 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
 
     // Crypto is settled before samples reach s_l (the MBE post-processing only
     // fills it for audible calls), but the talkgroup gate and reverse mute are
-    // not, so apply them here as the float and stereo paths do.
+    // not, so apply them here as the stereo paths do.
     const int muted = dsd_audio_mono_output_muted(opts, state);
 
     if (opts->slot1_on != 0 && !muted) {
         const int loaded = dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p);
         if (dsd_audio_activity_armed() && loaded && dsd_mix_output_plays(opts)) {
             dsd_audio_activity_note();
-        }
-        if (opts->use_hpf_d == 1) {
-            hpf_dL(state, mono_samp, (int)len);
         }
         if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
             short stereo[1920];
@@ -897,7 +672,7 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
 //Stereo Mix - Short (SB16LE) -- When Playing Short FDMA samples when setup for stereo output
 void
 playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
-    int encL = dsd_fdma_crypto_muted(opts, state, 0);
+    int encL = dsd_fdma_crypto_muted(opts, state);
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     DSD_MEMSET(stereo_samp1, 0, sizeof(stereo_samp1));
 
@@ -910,9 +685,6 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
         encL = 1;
     }
 
-    if (opts->use_hpf_d == 1) {
-        hpf_dL(state, state->s_l, 160);
-    }
     audio_mono_to_stereo_s16(state->s_l, stereo_samp1, 160);
     if (!encL) {
         if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
@@ -950,18 +722,16 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     unsigned long TGR = dsd_audio_call_target(state, 1U);
 
     // A held talkgroup unmutes its slot even when the vocoder muted it (encrypted with no key while encrypted audio is
-    // muted, or clear under -q). FS3 then plays the float frames the vocoder always stages; SS3 plays the slot's short
-    // samples, which the vocoder stages only for a slot it did not mute and otherwise leaves silent
-    // (mbe_post_stage_slot_silence()), so here a held muted slot plays silence. Staging short samples for a muted slot
-    // would run the short path's gain on audio the vocoder judged muted, for a rare combination. A slot flagged
-    // encrypted that the vocoder still staged (encrypted-audio mute flag 0, no key) plays those samples under a hold.
+    // muted, or clear under -q). The shared mixer plays the slot's short samples, which the vocoder stages only for a
+    // slot it did not mute and otherwise leaves silent (mbe_post_stage_slot_silence()), so a held muted slot plays
+    // silence. A slot flagged encrypted that the vocoder still staged (encrypted-audio mute flag 0, no key) plays
+    // those samples under a hold.
     const int pref = dsd_dmr_apply_tg_hold_ss3(opts, state, TGL, TGR, &encL, &encR);
     // Apply the final policy after Hold so a temporary avoid cannot be unmuted again.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
     // The slot switches mute last, as in every mix: a hold never plays a switched-off slot (issue #657).
     dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
     dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
-    dsd_hpf_short_triplet_if_enabled(opts, state);
     // The copies dsd_dmr_apply_stereo_output_policy_ss3() makes below, decided from the same flags.
     const int copy_right_to_left = dsd_ss3_should_copy_right_to_left(opts, state, pref, encL, encR);
     const int copy_left_to_right =
@@ -1005,40 +775,28 @@ SS3_END:
     dsd_audio_reset_short_stereo_working_state(state);
 }
 
-//largely borrowed from Boatbod OP25 (simplified single tone ID version)
+// One 20 ms block of the alert tone, largely borrowed from Boatbod OP25 (simplified single tone ID version): a sine at
+// 31.25 Hz x ID with a peak of AD x 75 / 8000 of full scale, from sample @p n of the tone on. It is built once on the
+// int16 scale (issue #653): the short output plays these samples and the float output the same samples / 32768, so an
+// alert sounds the same in both formats.
 static void
-soft_tonef(float samp[160], int n, int ID, int AD) {
-    int i;
-    double step1, step2, amplitude, freq1, freq2;
-
-    float gain = 1.0f;
-
-    // Synthesize tones
-    freq1 = 31.25 * (double)ID;
-    freq2 = freq1;
-    step1 = 2.0 * M_PI * freq1 / 8000.0;
-    step2 = 2.0 * M_PI * freq2 / 8000.0;
-    amplitude = (double)AD * 75.0;
-
-    for (i = 0; i < 160; i++) {
-        samp[i] = (float)(amplitude * (sin((double)n * step1) * 0.5 + sin((double)n * step2) * 0.5));
-        samp[i] /= 8000.0f;
-        samp[i] *= gain;
-        n++;
+dsd_beeper_tone_block(short* samp, int n, int id, int ad) {
+    const double pi = 3.14159265358979323846;
+    const double step = 2.0 * pi * (31.25 * (double)id) / 8000.0;
+    const double amplitude = ((double)ad * 75.0) / 8000.0;
+    for (int i = 0; i < 160; i++) {
+        double v = amplitude * sin((double)(n + i) * step) * 32767.0;
+        if (v > 32767.0) {
+            v = 32767.0;
+        } else if (v < -32767.0) {
+            v = -32767.0;
+        }
+        samp[i] = (short)lrint(v);
     }
 }
 
 static void
-dsd_beeper_output_samples(dsd_opts* opts, dsd_state* state, const float* samp_f, const float* samp_fs,
-                          const short* samp_s, const short* samp_ss) {
-    if (opts->floating_point == 1) {
-        if (opts->pulse_digi_out_channels == 2) {
-            dsd_output_float_block(opts, state, samp_fs, 160, 2);
-        } else {
-            dsd_output_float_block(opts, state, samp_f, 160, 1);
-        }
-        return;
-    }
+dsd_beeper_output_samples(dsd_opts* opts, dsd_state* state, const short* samp_s, const short* samp_ss) {
     if (opts->pulse_digi_out_channels == 2) {
         dsd_output_s16_block(opts, state, samp_ss, 160, 2);
     } else {
@@ -1057,15 +815,10 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
 
 void
 dsd_beeper_emit(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
-    UNUSED(state);
-    int i, j, n;
     //use lr as left or right channel designation in stereo config
-    float samp_f[160];  //mono float sample
-    float samp_fs[320]; //stereo float sample
     short samp_s[160];  //mono short sample
     short samp_ss[320]; //stereo short sample
-
-    n = 0; //rolling sine wave 'degree'
+    const int ch = (lr == 1) ? 1 : 0;
 
     //double len if not using Pulse Audio,
     //anything over UDP may
@@ -1074,28 +827,13 @@ dsd_beeper_emit(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int le
         len *= 2;
     }
 
-    //each j increment is 20 ms at 160 samples / 8 kHz
-    for (j = 0; j < len; j++) {
-        //'zero' out stereo mix samples
-        DSD_MEMSET(samp_fs, 0, sizeof(samp_fs));
+    //each j increment is 20 ms at 160 samples / 8 kHz; the tone runs on across blocks
+    for (int j = 0; j < len; j++) {
         DSD_MEMSET(samp_ss, 0, sizeof(samp_ss));
-
-        //generate a tone with supplied tone ID and AD value
-        soft_tonef(samp_f, n, id, ad);
-
-        //convert float to short if required
-        if (opts->floating_point == 0) {
-            mbe_floattoshort(samp_f, samp_s);
-            for (i = 0; i < 160; i++) {
-                samp_s[i] *= 4000; //apply gain
-                samp_ss[(i * 2) + lr] = samp_s[i];
-            }
+        dsd_beeper_tone_block(samp_s, j * 160, id, ad);
+        for (int i = 0; i < 160; i++) {
+            samp_ss[(i * 2) + ch] = samp_s[i];
         }
-
-        for (i = 0; i < 160; i++) {
-            samp_fs[(i * 2) + lr] = samp_f[i];
-        }
-
-        dsd_beeper_output_samples(opts, state, samp_f, samp_fs, samp_s, samp_ss);
+        dsd_beeper_output_samples(opts, state, samp_s, samp_ss);
     }
 }

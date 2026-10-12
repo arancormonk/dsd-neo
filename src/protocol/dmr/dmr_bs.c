@@ -454,11 +454,9 @@ apply_dmr_bs_voice_keystream(dsd_state* state, char ambe_fr[4][24], char ambe_fr
 static void
 store_dmr_bs_processed_audio(dsd_state* state, uint8_t internalslot, uint8_t frame_index) {
     if (internalslot == 0) {
-        DSD_MEMCPY(state->f_l4[frame_index], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
         DSD_MEMCPY(state->s_l4[frame_index], state->s_l, sizeof(state->s_l));
         DSD_MEMCPY(state->s_l4u[frame_index], state->s_lu, sizeof(state->s_lu));
     } else {
-        DSD_MEMCPY(state->f_r4[frame_index], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
         DSD_MEMCPY(state->s_r4[frame_index], state->s_r, sizeof(state->s_r));
         DSD_MEMCPY(state->s_r4u[frame_index], state->s_ru, sizeof(state->s_ru));
     }
@@ -467,7 +465,7 @@ store_dmr_bs_processed_audio(dsd_state* state, uint8_t internalslot, uint8_t fra
 static void
 process_dmr_bs_voice_frame(dsd_opts* opts, dsd_state* state, uint8_t internalslot, char frame[4][24],
                            uint8_t frame_index) {
-    processMbeFrame(opts, state, NULL, frame, NULL);
+    processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DMR, NULL, frame, NULL);
     store_dmr_bs_processed_audio(state, internalslot, frame_index);
 }
 
@@ -603,13 +601,7 @@ process_dmr_bs_voice_burst(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
 
 static dmr_bs_action
 run_dmr_bs_post_skip(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
-    if (dmr_confidence_any_voice_open(state) && ctx->internalslot == 1 && opts->floating_point == 1
-        && opts->pulse_digi_rate_out == 8000) {
-        playSynthesizedVoiceFS3(opts, state);
-    }
-
-    if (dmr_confidence_any_voice_open(state) && ctx->internalslot == 1 && opts->floating_point == 0
-        && opts->pulse_digi_rate_out == 8000) {
+    if (dmr_confidence_any_voice_open(state) && ctx->internalslot == 1 && opts->pulse_digi_rate_out == 8000) {
         playSynthesizedVoiceSS3(opts, state);
     }
 
@@ -640,8 +632,6 @@ finalize_dmr_bs(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
 
     dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_BOTH, DSD_SYNC_DMR_BS_DATA_POS);
 
-    DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
-    DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
     dsd_audio_dmr_mix_media_discard(0);
@@ -788,11 +778,7 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
         state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
 
-    if (ctx->internalslot == 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
-        playSynthesizedVoiceFS3(opts, state);
-    }
-
-    if (ctx->internalslot == 1 && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000) {
+    if (ctx->internalslot == 1 && opts->pulse_digi_rate_out == 8000) {
         playSynthesizedVoiceSS3(opts, state);
     }
 }

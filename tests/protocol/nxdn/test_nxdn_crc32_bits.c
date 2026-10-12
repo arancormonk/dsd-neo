@@ -197,7 +197,9 @@ expect_call_reset(const char* label, const dsd_opts* opts, const dsd_state* stat
     rc |= expect_int("call-reset-cipher-reset", state->nxdn_cipher_type, 0);
     rc |= expect_int("call-reset-r-state", state->R, key_cleared ? 0 : 42);
     rc |= expect_int("call-reset-sacch-reset", all_sacch_segments_are(1U, state), 1);
-    rc |= expect_float_close("call-reset-gain-reset", state->aout_gain, opts->audio_gain, 1e-6f);
+    // The voice chain's gain level carries across calls in both output formats (issue #653).
+    (void)opts;
+    rc |= expect_float_close("call-reset-gain-kept", state->aout_gain, 9.0f, 1e-6f);
     return rc;
 }
 
@@ -241,7 +243,7 @@ test_message_type_reset_contract(void) {
     rc |= expect_int("tx-rel-ex-call-active", call.phase, DSD_CALL_PHASE_ACTIVE);
     rc |= expect_u32("tx-rel-ex-target-kept", (uint32_t)call.ota_target_id, 5678U);
     rc |= expect_int("tx-rel-ex-r-kept", state.R, 42);
-    rc |= expect_float_close("tx-rel-ex-gain-reset", state.aout_gain, opts.audio_gain, 1e-6f);
+    rc |= expect_float_close("tx-rel-ex-gain-kept", state.aout_gain, 9.0f, 1e-6f);
 
     state.aout_gain = 7.0f;
     nxdn_message_type(&opts, &state, 0x10U);

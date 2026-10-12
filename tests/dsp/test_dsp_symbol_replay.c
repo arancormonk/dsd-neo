@@ -10,6 +10,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
@@ -3989,7 +3990,8 @@ test_auto_squelch_gates_each_sample(void) {
    FM or AM monitor (never the -8 source monitor during digital decoding), with the tap's carrier open and the tone
    policy passing it, and under the auto squelch with at least one sample its own gate hears -- whatever the audio's
    level, so an unmodulated carrier counts and the fade-out written after the gate closes does not. Only a sink that
-   takes the block counts: the local stream while open, or UDP; never the raw fd or the null output. */
+   takes the block counts: the local stream while open, UDP, or the raw fd in the analog-only modes (issue #659); never
+   the null output. */
 static int g_monitor_stamp_failures = 0;
 
 static void
@@ -4042,8 +4044,39 @@ test_monitor_stamps_analog_reception(void) {
     opts.audio_out = 0;
     monitor_tone_block_expect(&opts, &state, 0, 0, "output muted");
     opts.audio_out = 1;
-    opts.audio_out_type = 1;
-    monitor_tone_block_expect(&opts, &state, 0, 0, "raw fd output, which the monitor does not feed");
+    {
+        /* Issue #659: in the analog-only modes the monitor writes the -o - descriptor, at the sink rate (48 kHz mono
+           s16): the block reaches no UDP socket, but it plays, so it stamps. The -8 source monitor during digital
+           decoding writes nothing there. */
+        char raw_path[DSD_TEST_PATH_MAX];
+        const int raw_fd = dsd_test_mkstemp(raw_path, sizeof(raw_path), "dsdneo_monitor_fd");
+        assert(raw_fd >= 0);
+        dsd_audio_sink_fd_reset();
+        opts.audio_out_type = 1;
+        opts.audio_out_fd = raw_fd;
+        monitor_tone_block_expect(&opts, &state, 0, 1, "raw fd output in the analog-only mode");
+        dsd_stat_t st;
+        DSD_MEMSET(&st, 0, sizeof(st));
+        assert(dsd_fstat(raw_fd, &st) == 0);
+        const long long fm_bytes = (long long)st.st_size;
+        if (fm_bytes != 960LL * (long long)sizeof(short)) {
+            DSD_FPRINTF(stderr, "FAIL: monitor raw fd: %lld bytes, want one 48 kHz block (1920)\n", fm_bytes);
+            g_monitor_stamp_failures++;
+        }
+        opts.analog_only = 0;
+        monitor_tone_block_expect(&opts, &state, 0, 0, "-8 source monitor on the raw fd");
+        DSD_MEMSET(&st, 0, sizeof(st));
+        assert(dsd_fstat(raw_fd, &st) == 0);
+        if ((long long)st.st_size != fm_bytes) {
+            DSD_FPRINTF(stderr, "FAIL: monitor raw fd: the -8 source monitor wrote %lld bytes\n",
+                        (long long)st.st_size - fm_bytes);
+            g_monitor_stamp_failures++;
+        }
+        opts.analog_only = 1;
+        opts.audio_out_fd = -1;
+        (void)dsd_close(raw_fd);
+        (void)remove(raw_path);
+    }
     /* The null output (-o null keeps output type 9 once unmuted) and a local stream that is not open take nothing. */
     opts.audio_out_type = 9;
     monitor_tone_block_expect(&opts, &state, 0, 0, "null output");

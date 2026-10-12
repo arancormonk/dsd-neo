@@ -568,13 +568,6 @@ init_state_core_buffers(dsd_state* state) {
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
     DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
 
-    //set float temp buffer to baseline
-    DSD_MEMSET(state->f_l, 0.0f, sizeof(state->f_l));
-    DSD_MEMSET(state->f_r, 0.0f, sizeof(state->f_r));
-
-    //set float temp buffer to baseline
-    DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
-    DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
     dsd_audio_dmr_mix_media_discard(0);
     dsd_audio_dmr_mix_media_discard(1);
 

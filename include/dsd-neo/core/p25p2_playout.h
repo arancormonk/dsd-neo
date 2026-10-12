@@ -10,8 +10,8 @@
  * Each slot's synthesized frames queue in order with the output verdict their burst had when it was decoded. After
  * slot 2's burst of each timeslot pair, the playout emits as many blocks as every open stream has ready, so the two
  * slots run concurrently at the air rate even though each slot's 4V/2V sequence starts at its own pair. A voice burst
- * an open stream misses plays as silence in place, sized from the slot's 2V position. Short (int16) and float (`-y`)
- * output go through the same queues and the same mixer.
+ * an open stream misses plays as silence in place, sized from the slot's 2V position. Both output formats queue and
+ * play the same 16-bit frames (float output, `-y`, only writes them as f32, issue #652).
  *
  * Every function runs on the decoder thread inside processFrame(), or in code holding the P25 SM tick guard.
  */
@@ -89,9 +89,8 @@ typedef struct dsd_p25p2_burst_decision {
 
 /** One queue entry. */
 typedef struct dsd_p25p2_playout_entry {
-    union {
+    struct {
         int16_t s16[160];
-        float f32[160];
     } pcm;
 
     uint64_t epoch;   /**< Canonical call epoch of the stream it was queued for, 0 none. */
@@ -165,8 +164,8 @@ typedef struct dsd_p25p2_playout {
 /**
  * @brief Queue the frame the vocoder just synthesized for @p slot.
  *
- * Copies the slot's short frame (s_l/s_r, zeros when dsd_state::mbe_short_silenced says the vocoder left it out) or
- * its float frame (audio_out_temp_buf(R), through agf()), whichever the session's format plays. The first frame of
+ * Copies the slot's short frame (s_l/s_r, zeros when dsd_state::mbe_short_silenced says the vocoder left it out), in
+ * either output format. The first frame of
  * a burst (@p burst_serial) fixes the burst's verdict: @p burst_verdict when the decode gate already evaluated the
  * policy for this burst, else one evaluation here. A frame whose slot's canonical call epoch differs from the open
  * stream's starts a new stream; the old stream's queued frames still play.

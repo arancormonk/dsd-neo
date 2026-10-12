@@ -37,10 +37,45 @@ dsd_vocoder_soft_bit_from_hard_llr(int bit, int16_t llr) {
     return out;
 }
 
-void processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
-                     char imbe7100_fr[7][24]);
-void processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
-                         dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]);
+/**
+ * The protocol that owns a voice frame, as distinct from the codec path that decodes it.
+ *
+ * The codec path still follows `state->synctype`, which YSF and scrambled dPMR set to another protocol's value to
+ * borrow its decoder (YSF V/D Type 1 and scrambled dPMR halves decode as NXDN, YSF full rate as P25 Phase 1). The
+ * owner decides which crypto transforms and key selection may touch the frame (issue #656):
+ * - DMR: privacy, Hytera, vendor scramblers, DMR ALG IDs and the P25 ALG IDs DMR carries.
+ * - P25P1: P25 multicrypt (DES, TDEA, DES-XL, AES) and RC4.
+ * - P25P2: P25 DES, AES and RC4.
+ * - NXDN, DPMR: the NXDN scrambler and NXDN cipher 2/3 (dPMR reaches them only on its scrambled halves).
+ * - YSF, D-STAR, X2-TDMA, ProVoice, NONE: no crypto transform.
+ * The manual `-S` keystream applies on the shared DMR / P25 Phase 2 / clear dPMR slot path whatever the owner.
+ */
+typedef enum {
+    DSD_VOICE_PROTOCOL_NONE = 0,
+    DSD_VOICE_PROTOCOL_DMR,
+    DSD_VOICE_PROTOCOL_P25P1,
+    DSD_VOICE_PROTOCOL_P25P2,
+    DSD_VOICE_PROTOCOL_NXDN,
+    DSD_VOICE_PROTOCOL_DPMR,
+    DSD_VOICE_PROTOCOL_YSF,
+    DSD_VOICE_PROTOCOL_DSTAR,
+    DSD_VOICE_PROTOCOL_X2TDMA,
+    DSD_VOICE_PROTOCOL_PROVOICE,
+} dsd_voice_protocol;
+
+void processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23],
+                     char ambe_fr[4][24], char imbe7100_fr[7][24]);
+void processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol,
+                         dsd_vocoder_soft_bit imbe_fr[8][23], dsd_vocoder_soft_bit ambe_fr[4][24],
+                         dsd_vocoder_soft_bit imbe7100_fr[7][24]);
+
+/**
+ * Account for a P25 Phase 1 IMBE frame the decoder drops before the vocoder (non-standard C0 or the crypto gate):
+ * the frame consumes its keystream position (11 octets of multicrypt keystream, generated first if this frame would have
+ * generated it, or 11 RC4 drop octets) exactly as a decoded frame does, so the frames after it in the superframe
+ * decrypt with their own keystream. Nothing is synthesized or output.
+ */
+void dsd_mbe_p25p1_skip_voice_frame(dsd_state* state);
 
 /** Decode and log one soft IMBE frame without synthesizing or emitting media. */
 void dsd_mbe_log_imbe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23]);

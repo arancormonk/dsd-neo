@@ -29,14 +29,13 @@
  * edit mutes what was queued before it, also in the drain when the release leaves the channel. The current verdict is
  * the decode gate's decision for the call's latest burst, or the one a path that changes verdicts or ends the calls
  * took (dsd_p25p2_playout_note_policy()); emission only checks, cheaply, whether anything a waiting call's verdict
- * reads moved (dsd_p25p2_policy_key) and takes its verdict again then. The slot switches and the slot preference are
- * read at emission, never written; a switched-off slot stays silent under a hold. Float frames are gained (agf) when
- * queued.
+ * reads moved (dsd_p25p2_policy_key) and takes its verdict again then. The slot switches and slot preference are
+ * read at emission, never written; a switched-off slot stays silent under a hold. Both output formats queue the
+ * slot's 16-bit frame after the filter and gain chain; float output (-y) only writes it as f32 (issue #652).
  */
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -634,36 +633,15 @@ playout_diag(dsd_opts* opts, const dsd_state* state, int k, const int audible[2]
                     slot_level(&state->p25p2_playout, 1));
 }
 
-// Keep the vocoder's output buffers inside their allocation: processAudio() and the upsampler advance them per frame
-// and only a mixer's working-state reset wraps them (the mixers the playout replaced did it after every pass).
+// Keep the vocoder's output buffers inside their allocation: the short staging (dsd_voice_stage_short_left/right())
+// advances them per frame and only a mixer's working-state reset wraps them (the mixers the playout replaced did it
+// after every pass).
 static void
 housekeeping(dsd_state* state) {
     dsd_audio_maybe_reset_output_ring_left(state);
     dsd_audio_maybe_reset_output_ring_right(state);
     state->audio_out_idx = 0;
     state->audio_out_idxR = 0;
-}
-
-// Routing: two audible slots play as stereo; one plays in both ears (also the preferred slot that won the tie-break).
-static void
-emit_block_float(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
-    float left[BLOCK_FRAMES] = {0};
-    float right[BLOCK_FRAMES] = {0};
-    if (e[0]) {
-        DSD_MEMCPY(left, e[0]->pcm.f32, sizeof(left));
-    }
-    if (e[1]) {
-        DSD_MEMCPY(right, e[1]->pcm.f32, sizeof(right));
-    }
-    if (opts->pulse_digi_out_channels == 1) {
-        float out[BLOCK_FRAMES];
-        audio_mix_mono_from_slots_f32(left, right, BLOCK_FRAMES, audible[0], audible[1], out);
-        dsd_output_float_block(opts, state, out, BLOCK_FRAMES, 1);
-        return;
-    }
-    float out[BLOCK_FRAMES * 2];
-    audio_mix_interleave_stereo_f32(audible[0] ? left : right, audible[1] ? right : left, BLOCK_FRAMES, 0, 0, out);
-    dsd_output_float_block(opts, state, out, BLOCK_FRAMES, 2);
 }
 
 // The static WAV records what plays, in stereo, minus calls their talkgroup lets be heard but not recorded.
@@ -681,8 +659,10 @@ write_static_wav(const dsd_opts* opts, const short* stereo, dsd_p25p2_playout_en
     }
 }
 
+// Routing: two audible slots play as stereo; one plays in both ears. The same block goes to the output in either format
+// and to the static WAV.
 static void
-emit_block_short(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
+emit_block(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
     short left[BLOCK_FRAMES] = {0};
     short right[BLOCK_FRAMES] = {0};
     if (e[0]) {
@@ -690,11 +670,6 @@ emit_block_short(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2]
     }
     if (e[1]) {
         DSD_MEMCPY(right, e[1]->pcm.s16, sizeof(right));
-    }
-    // The digital high-pass runs over exactly the blocks played, each slot on its own filter state.
-    if (opts->use_hpf_d == 1) {
-        hpf_dL(state, left, BLOCK_FRAMES);
-        hpf_dR(state, right, BLOCK_FRAMES);
     }
     short stereo[BLOCK_FRAMES * 2];
     audio_mix_interleave_stereo_s16(audible[0] ? left : right, audible[1] ? right : left, BLOCK_FRAMES, 0, 0, stereo);
@@ -942,11 +917,7 @@ play_block(dsd_opts* opts, dsd_state* state, int output, int last_audible[2]) {
         last_audible[0] = audible[0];
         last_audible[1] = audible[1];
         if (output) {
-            if (opts->floating_point == 1) {
-                emit_block_float(opts, state, e, audible);
-            } else {
-                emit_block_short(opts, state, e, audible);
-            }
+            emit_block(opts, state, e, audible);
             fresh = (audible[0] && e[0]->fresh) || (audible[1] && e[1]->fresh);
         }
     }
@@ -1058,16 +1029,10 @@ take_burst_verdict(const dsd_opts* opts, dsd_state* state, int slot, dsd_p25p2_p
     }
 }
 
-// The frame the session's format plays: the float frame through agf(), or the short frame the vocoder staged (zeros,
-// not fresh, when it left the slot out).
+// The short frame the vocoder staged, in either output format (zeros, not fresh, when it left the slot out).
 static void
-copy_frame(const dsd_opts* opts, dsd_state* state, int slot, dsd_p25p2_playout_entry* e) {
-    if (opts->floating_point == 1) {
-        DSD_MEMCPY(e->pcm.f32, (slot == 0) ? state->audio_out_temp_buf : state->audio_out_temp_bufR,
-                   sizeof(e->pcm.f32));
-        agf(opts, state, e->pcm.f32, slot);
-        e->fresh = 1U;
-    } else if (state->mbe_short_silenced[slot]) {
+copy_frame(const dsd_state* state, int slot, dsd_p25p2_playout_entry* e) {
+    if (state->mbe_short_silenced[slot]) {
         e->fresh = 0U;
     } else {
         DSD_MEMCPY(e->pcm.s16, (slot == 0) ? state->s_l : state->s_r, sizeof(e->pcm.s16));
@@ -1104,7 +1069,7 @@ stage_frame(dsd_opts* opts, dsd_state* state, int slot, int pair, uint32_t burst
     e->clock = state->p25p2_playout.pair_clock;
     e->epoch = s->epoch;
     e->verdict = s->verdict;
-    copy_frame(opts, state, slot, e);
+    copy_frame(state, slot, e);
     if (s->sf_frames < UINT8_MAX) {
         s->sf_frames++;
     }

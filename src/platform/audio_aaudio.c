@@ -1660,6 +1660,17 @@ dsd_audio_drain(dsd_audio_stream* stream) {
     return 0;
 }
 
+int
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/platform/audio.h
+dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    /* AAudio reopens a disconnected device itself (aaudio_schedule_reopen()) and reports it only in its stats line. */
+    return (stream && !stream->is_input) ? 0 : -1;
+}
+
 const char*
 dsd_audio_get_error(void) {
     return audio_error_get();
