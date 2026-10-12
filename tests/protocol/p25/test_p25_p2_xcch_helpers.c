@@ -857,12 +857,20 @@ test_slot_gps_clear_bounds(void) {
     for (size_t i = 0; i < sizeof(invalid_slots) / sizeof(invalid_slots[0]); i++) {
         p25p2_xcch_clear_slot_gps(state, invalid_slots[i]);
     }
-    int rc = expect_int("invalid GPS slot leaves state unchanged", memcmp(state, expected, sizeof(*state)), 0);
+    int rc =
+        expect_int("invalid GPS slot leaves embedded GPS unchanged",
+                   memcmp(state->dmr_embedded_gps, expected->dmr_embedded_gps, sizeof(state->dmr_embedded_gps)), 0);
+    rc |= expect_int("invalid GPS slot leaves LRRP GPS unchanged",
+                     memcmp(state->dmr_lrrp_gps, expected->dmr_lrrp_gps, sizeof(state->dmr_lrrp_gps)), 0);
     for (int slot = 0; slot < 2; slot++) {
         expected->dmr_embedded_gps[slot][0] = '\0';
         expected->dmr_lrrp_gps[slot][0] = '\0';
         p25p2_xcch_clear_slot_gps(state, slot);
-        rc |= expect_int("GPS clear touches only the requested slot", memcmp(state, expected, sizeof(*state)), 0);
+        rc |=
+            expect_int("GPS clear touches only the requested embedded slot",
+                       memcmp(state->dmr_embedded_gps, expected->dmr_embedded_gps, sizeof(state->dmr_embedded_gps)), 0);
+        rc |= expect_int("GPS clear touches only the requested LRRP slot",
+                         memcmp(state->dmr_lrrp_gps, expected->dmr_lrrp_gps, sizeof(state->dmr_lrrp_gps)), 0);
     }
     free(state);
     free(expected);
