@@ -84,7 +84,7 @@ int dsd_audio_ensure_analog_output(dsd_opts* opts);
 int dsd_audio_ensure_digital_output(dsd_opts* opts);
 
 /** @brief Write synthesized mono voice samples for slot 1. */
-void writeSynthesizedVoice(dsd_opts* opts, dsd_state* state);
+void writeSynthesizedVoice(const dsd_opts* opts, dsd_state* state);
 /** @brief Write synthesized mono voice samples for slot 2. */
 void writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state);
 /**
@@ -143,6 +143,20 @@ unsigned int dsd_audio_dmr_mix_media_take(int slot);
  * produce no output.
  */
 void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Play decoded 8 kHz mono PCM through the digital voice chain and mixers (issue #658).
+ *
+ * For a decoder outside the vocoder whose own gates passed the audio (M17's Codec2 voice, with its own CAN and crypto
+ * gates and callsign addressing outside talkgroup policy). Each whole 160-sample frame runs the slot 0 high-pass,
+ * gain and saturation once, then shared short staging. MS or SS expands it to the stream's channel count and the
+ * common sink writes s16 or normalized f32. The slot 1 switch and output mute still apply; talkgroup policy and FDMA
+ * crypto rules do not. Per-call and static WAVs consume the same chained samples; the static WAV follows slot 1.
+ * A trailing partial frame is dropped, never read past. Decoder thread only.
+ *
+ * @param count Samples in @p pcm.
+ */
+void dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count);
 
 /** @brief Apply the manual analog gain (`-n`, 0..100% as 0x..5x) to a short buffer: the M17 encoder's fixed input gain.
  *  The analog monitor's gain stage is dsd_analog_audio_process_f() (<dsd-neo/dsp/analog_audio.h>). */

@@ -13,8 +13,6 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/audio_activity.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
@@ -661,109 +659,17 @@ m17_can_matches_state(const dsd_state* state) {
 }
 
 #ifdef USE_CODEC2
-// The mute (audio_out 0, which leaves the output open) silences every output type, as it does for the mixers
-// (dsd_output_*_block()).
-static int
-m17_can_emit_audio(const dsd_opts* opts, const dsd_state* state) {
-    return (opts->audio_out == 1 && opts->slot1_on == 1 && (state->m17_enc == 0 || state->m17_payload_decrypted != 0U)
-            && m17_can_matches_state(state));
-}
-
+/* Decoded Codec2 voice plays through the digital voice output the other modes use (issue #658): the adapter runs the
+   shared high-pass and gain, then the mixers apply the slot 1 switch, mute, channel count and sample format. The WAVs
+   consume the same chained samples.
+   M17 is outside talkgroup policy, so it settles its own gates here: an encrypted stream plays only once decrypted, and
+   only a CAN the filter allows plays. @p nsam is the decoder's real output: 160 samples per 3200 frame, 320 at 1600. */
 static void
-m17_write_decoded_audio_single(const dsd_opts* opts, dsd_state* state, const short* samples, size_t nsam) {
-    if (!m17_can_emit_audio(opts, state)) {
+m17_play_codec2_voice(const dsd_opts* opts, dsd_state* state, const short* samples, size_t nsam) {
+    if ((state->m17_enc != 0 && state->m17_payload_decrypted == 0U) || !m17_can_matches_state(state)) {
         return;
     }
-    if (dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1)) {
-        dsd_audio_activity_note();
-    }
-
-    if (opts->audio_out_type == 0) {
-        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, samples, nsam);
-        return;
-    }
-
-    if (opts->audio_out_type == 8) {
-        dsd_udp_audio_hook_blast(opts, state, nsam * sizeof(short), (short*)samples);
-        return;
-    }
-
-    if (opts->audio_out_type == 1) {
-        (void)dsd_audio_sink_write_fd(opts->audio_out_fd, samples, nsam * sizeof(short), sizeof(short));
-    }
-}
-
-static void
-m17_write_decoded_audio_pair(const dsd_opts* opts, dsd_state* state, const short* first, const short* second,
-                             size_t nsam) {
-    if (!m17_can_emit_audio(opts, state)) {
-        return;
-    }
-    if (dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1)) {
-        dsd_audio_activity_note();
-    }
-
-    if (opts->audio_out_type == 0) {
-        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, first, nsam);
-        (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, second, nsam);
-        return;
-    }
-
-    if (opts->audio_out_type == 8) {
-        dsd_udp_audio_hook_blast(opts, state, nsam * sizeof(short), (short*)first);
-        dsd_udp_audio_hook_blast(opts, state, nsam * sizeof(short), (short*)second);
-        return;
-    }
-
-    if (opts->audio_out_type == 1) {
-        (void)dsd_audio_sink_write_fd(opts->audio_out_fd, first, nsam * sizeof(short), sizeof(short));
-        (void)dsd_audio_sink_write_fd(opts->audio_out_fd, second, nsam * sizeof(short), sizeof(short));
-    }
-}
-
-static void
-m17_write_static_stereo_wav(const short* mono, int count, SNDFILE* wav_out_f) {
-    short stereo[320 * 2];
-    for (int i = 0; i < count; i++) {
-        stereo[((size_t)i * 2) + 0] = mono[i];
-        stereo[((size_t)i * 2) + 1] = mono[i];
-    }
-    m17_write_wav_short_block(wav_out_f, stereo, ((sf_count_t)count) * 2, "M17 static stereo WAV");
-}
-
-static void
-m17_maybe_write_wav_single(const dsd_opts* opts, const dsd_state* state, const short* samples, int count) {
-    if (opts->wav_out_f == NULL || (state->m17_enc != 0 && state->m17_payload_decrypted == 0U)) {
-        return;
-    }
-
-    if (opts->dmr_stereo_wav == 1) {
-        m17_write_wav_short_block(opts->wav_out_f, samples, count, "M17 WAV single");
-        return;
-    }
-
-    if (opts->static_wav_file == 1) {
-        m17_write_static_stereo_wav(samples, count, opts->wav_out_f);
-    }
-}
-
-static void
-m17_maybe_write_wav_pair(const dsd_opts* opts, const dsd_state* state, const short* first, const short* second,
-                         int count) {
-    if (opts->wav_out_f == NULL || (state->m17_enc != 0 && state->m17_payload_decrypted == 0U)) {
-        return;
-    }
-
-    if (opts->dmr_stereo_wav == 1) {
-        m17_write_wav_short_block(opts->wav_out_f, first, count, "M17 WAV pair first");
-        m17_write_wav_short_block(opts->wav_out_f, second, count, "M17 WAV pair second");
-        return;
-    }
-
-    if (opts->static_wav_file == 1) {
-        m17_write_static_stereo_wav(first, count, opts->wav_out_f);
-        m17_write_static_stereo_wav(second, count, opts->wav_out_f);
-    }
+    dsd_audio_play_decoded_pcm16(opts, state, samples, nsam);
 }
 #endif
 
@@ -789,12 +695,7 @@ M17processCodec2_1600(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
     short samp1[320];
     codec2_decode(state->codec2_1600, samp1, voice1);
 
-    if (opts->use_hpf_d == 1) {
-        hpf_dL(state, samp1, nsam);
-    }
-
-    m17_write_decoded_audio_single(opts, state, samp1, nsam);
-    m17_maybe_write_wav_single(opts, state, samp1, (int)nsam);
+    m17_play_codec2_voice(opts, state, samp1, nsam);
 
 #endif
 
@@ -821,7 +722,7 @@ M17processCodec2_1600(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
 }
 
 static void
-// cppcheck-suppress constParameterPointer ; state is mutable when USE_CODEC2 enables HPF state updates
+// cppcheck-suppress constParameterPointer ; state is mutable when USE_CODEC2 stages the decoded voice for output
 M17processCodec2_3200(const dsd_opts* opts, dsd_state* state, const uint8_t* payload) {
     unsigned char voice1[8];
     unsigned char voice2[8];
@@ -846,13 +747,8 @@ M17processCodec2_3200(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
     codec2_decode(state->codec2_3200, samp1, voice1);
     codec2_decode(state->codec2_3200, samp2, voice2);
 
-    if (opts->use_hpf_d == 1) {
-        hpf_dL(state, samp1, nsam);
-        hpf_dL(state, samp2, nsam);
-    }
-
-    m17_write_decoded_audio_pair(opts, state, samp1, samp2, nsam);
-    m17_maybe_write_wav_pair(opts, state, samp1, samp2, (int)nsam);
+    m17_play_codec2_voice(opts, state, samp1, nsam);
+    m17_play_codec2_voice(opts, state, samp2, nsam);
 
 #endif
 }
@@ -3495,9 +3391,9 @@ typedef struct m17_ip_ctrl_desc {
 } m17_ip_ctrl_desc;
 
 static void
-m17_ip_bits_from_54_bytes(const uint8_t* ip_frame, uint8_t* ip_bits) {
+m17_ip_bits_from_bytes(const uint8_t* ip_frame, size_t count, uint8_t* ip_bits) {
     int k = 0;
-    for (int i = 0; i < 54; i++) {
+    for (size_t i = 0; i < count; i++) {
         for (int j = 0; j < 8; j++) {
             ip_bits[k++] = (ip_frame[i] >> (7 - j)) & 1U;
         }
@@ -3537,7 +3433,7 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     uint8_t payload[128];
     DSD_MEMSET(ip_bits, 0, sizeof(ip_bits));
     DSD_MEMSET(payload, 0, sizeof(payload));
-    m17_ip_bits_from_54_bytes(ip_frame, ip_bits);
+    m17_ip_bits_from_bytes(ip_frame, 54U, ip_bits);
 
     state->carrier = 1;
     state->synctype = DSD_SYNC_M17_STR_POS;
@@ -3583,9 +3479,12 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
 
 static int
 m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, dsd_state* state,
-                            const uint8_t* ip_frame) {
+                            const uint8_t* ip_frame, int len) {
     if (memcmp(ip_frame, desc->magic, 4) != 0) {
         return 0;
+    }
+    if (len < desc->dump_len) {
+        return 1;
     }
 
     DSD_FPRINTF(stderr, "\n M17 IP   %s: ", desc->label);
@@ -3616,7 +3515,9 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
 
     uint8_t ip_bits[462];
     DSD_MEMSET(ip_bits, 0, sizeof(ip_bits));
-    m17_ip_bits_from_54_bytes(ip_frame, ip_bits);
+    /* MPKT needs only its magic, stream ID and LSF (34 bytes). Valid short packets need not hold the 54 bytes a
+       stream frame does, and no packet payload belongs in this header conversion. */
+    m17_ip_bits_from_bytes(ip_frame, 34U, ip_bits);
     const uint16_t sid = (uint16_t)convert_bits_into_output(&ip_bits[32], 16);
     m17_ip_copy_lsf_from_bits(state, ip_bits);
 
@@ -3633,7 +3534,8 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
         DSD_FPRINTF(stderr, "\n M17 IP   RECD: %d", err);
     }
     if (crc_ext == crc_cmp) {
-        decodeM17PKT(opts, state, ip_frame + 34, err - 34 - 3);
+        /* The MPKT trailer is CRC2 only; decodeM17PKT consumes the protocol identifier itself. */
+        decodeM17PKT(opts, state, ip_frame + 34, err - 34 - 2);
         m17_end_packet_call(opts, state);
     } else {
         DSD_FPRINTF(stderr, " IP CRC ERR");
@@ -3642,10 +3544,13 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
 
 void
 m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, int len) {
-    if (opts == NULL || state == NULL || ip_frame == NULL) {
+    if (opts == NULL || state == NULL || ip_frame == NULL || len < 4) {
         return;
     }
     if (memcmp(ip_frame, m17_ip_magic_stream, 4) == 0) {
+        if (len < 54) {
+            return;
+        }
         m17_ip_handle_stream_frame(opts, state, ip_frame);
         return;
     }
@@ -3662,7 +3567,7 @@ m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_
     };
 
     for (size_t i = 0; i < sizeof(ctrl) / sizeof(ctrl[0]); i++) {
-        if (m17_ip_handle_control_frame(&ctrl[i], opts, state, ip_frame)) {
+        if (m17_ip_handle_control_frame(&ctrl[i], opts, state, ip_frame, len)) {
             return;
         }
     }

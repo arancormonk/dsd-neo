@@ -3420,7 +3420,9 @@ static int
 dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
                             int* lifecycle_started) {
     opts->use_cosine_filter = 1;
-    opts->pulse_digi_rate_out = 48000;
+    /* The digital stream carries only the decoded 8 kHz Codec2 monitor (issue #658); the -8 baseband monitor writes
+       the raw stream, which runs at the analog sink rate. */
+    opts->pulse_digi_rate_out = 8000;
 
     if (opts->audio_in_type == AUDIO_IN_PULSE && openAudioInput(opts) != 0) {
         return -1;

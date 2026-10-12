@@ -63,6 +63,9 @@ static size_t g_udp_audio_last_nsam;
 static const dsd_opts* g_udp_audio_last_opts;
 static dsd_state* g_udp_audio_last_state;
 static short g_udp_audio_last_first_sample;
+static uint8_t g_udp_audio_last_data[320U * 2U * sizeof(float)];
+/* Samples the fake decoder writes per frame: codec2's real output, 160 at 3200 bit/s and 320 at 1600 (issue #658). */
+static size_t g_codec2_decode_samples = 160U;
 #endif
 static int g_conv_start_calls;
 static int g_conv_decode_calls;
@@ -130,7 +133,7 @@ codec2_decode(struct CODEC2* codec2_state, short speech[], const unsigned char* 
         DSD_MEMCPY(g_codec2_last_bits, bits, sizeof(g_codec2_last_bits));
     }
     if (speech != NULL) {
-        for (size_t i = 0U; i < 160U; i++) {
+        for (size_t i = 0U; i < g_codec2_decode_samples; i++) {
             speech[i] = (short)(1000 + g_codec2_decode_calls + (int)i);
         }
     }
@@ -226,6 +229,10 @@ fake_udp_audio_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const 
     g_udp_audio_last_state = state;
     g_udp_audio_last_nsam = nsam;
     g_udp_audio_last_first_sample = (data != NULL) ? ((const short*)data)[0] : 0;
+    if (data != NULL) {
+        DSD_MEMCPY(g_udp_audio_last_data, data,
+                   nsam < sizeof(g_udp_audio_last_data) ? nsam : sizeof(g_udp_audio_last_data));
+    }
 }
 
 static void
@@ -239,6 +246,25 @@ reset_audio_fakes(void) {
     g_udp_audio_last_opts = NULL;
     g_udp_audio_last_state = NULL;
     g_udp_audio_last_first_sample = 0;
+    DSD_MEMSET(g_udp_audio_last_data, 0, sizeof(g_udp_audio_last_data));
+    g_codec2_decode_samples = 160U;
+}
+
+/* Decoded voice plays through the digital voice output (issue #658), which stages each frame in the vocoder buffers
+   initState() sets up: an output history, the auto gain's peak history, a mono stream at the fixed gain -g 1 (unity),
+   with no high-pass. A zeroed state has none of them and plays nothing. */
+static short g_voice_history[100U + (160U * 16U)];
+
+static void
+prepare_voice_output(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(g_voice_history, 0, sizeof(g_voice_history));
+    state->audio_out_buf = g_voice_history;
+    state->audio_out_buf_p = g_voice_history + 100;
+    state->aout_max_buf_p = state->aout_max_buf;
+    state->aout_gain = 1.0f;
+    opts->audio_gain = 1.0f;
+    opts->pulse_digi_out_channels = 1;
+    opts->pulse_digi_rate_out = 8000;
 }
 #endif
 
@@ -395,7 +421,7 @@ build_ip_stream_frame(uint8_t ip_frame[54], const uint8_t lsf_bits[TEST_M17_LSF_
 static size_t
 build_ip_mpkt_frame(uint8_t* ip_frame, size_t ip_frame_len, const uint8_t lsf_bits[TEST_M17_LSF_BITS], uint16_t sid,
                     const uint8_t* app, size_t app_len) {
-    const size_t frame_len = 34U + app_len + 3U;
+    const size_t frame_len = 34U + app_len + 2U;
     if (ip_frame == NULL || lsf_bits == NULL || app == NULL || ip_frame_len < frame_len) {
         return 0U;
     }
@@ -1035,6 +1061,7 @@ test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
     DSD_MEMSET(state, 0, sizeof(*state));
     reset_audio_fakes();
     install_fake_udp_audio();
+    prepare_voice_output(opts, state);
 
     opts->slot1_on = 1;
     opts->audio_out = 1;
@@ -1075,6 +1102,8 @@ test_stream_voice_1600_dispatch_routes_single_audio_to_udp(void) {
     DSD_MEMSET(state, 0, sizeof(*state));
     reset_audio_fakes();
     install_fake_udp_audio();
+    prepare_voice_output(opts, state);
+    g_codec2_decode_samples = 320U;
 
     opts->slot1_on = 1;
     opts->audio_out = 1;
@@ -1093,9 +1122,10 @@ test_stream_voice_1600_dispatch_routes_single_audio_to_udp(void) {
     err |= expect_bytes("1600 voice processed bits", processed_bits, payload_bits, sizeof(payload_bits));
     err |= expect_int("1600 voice Codec2 decodes", g_codec2_decode_calls, 1);
     err |= expect_bytes("1600 voice codec frame", g_codec2_last_bits, payload_bytes, 8U);
-    err |= expect_int("1600 voice UDP calls", g_udp_audio_calls, 1);
-    err |= expect_int("1600 voice UDP bytes", (int)g_udp_audio_last_nsam, (int)(320U * sizeof(short)));
-    err |= expect_int("1600 voice UDP first sample", (int)g_udp_audio_last_first_sample, 1001);
+    /* Codec2's 320 samples go out as two 160-sample frames, the second starting at the decoder's sample 160. */
+    err |= expect_int("1600 voice UDP calls", g_udp_audio_calls, 2);
+    err |= expect_int("1600 voice UDP bytes", (int)g_udp_audio_last_nsam, (int)(160U * sizeof(short)));
+    err |= expect_int("1600 voice UDP second frame first sample", (int)g_udp_audio_last_first_sample, 1001 + 160);
     reset_audio_fakes();
     dsd_state_ext_free_all(state);
     return err;
@@ -1113,6 +1143,7 @@ test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled(void) {
     DSD_MEMSET(state, 0, sizeof(*state));
     reset_audio_fakes();
     install_fake_udp_audio();
+    prepare_voice_output(opts, state);
 
     opts->slot1_on = 0;
     opts->audio_out = 1;
@@ -1329,6 +1360,72 @@ test_frame_info_packet_and_ip_helpers(void) {
 }
 
 static int
+test_ip_frames_reject_truncation_before_reading_or_changing_state(void) {
+    static const struct {
+        uint8_t magic[4];
+        size_t minimum;
+    } cases[] = {{{'M', '1', '7', ' '}, 54U}, {{'M', 'P', 'K', 'T'}, 37U}, {{'C', 'O', 'N', 'N'}, 11U},
+                 {{'D', 'I', 'S', 'C'}, 10U}, {{'E', 'O', 'T', 'X'}, 10U}, {{'P', 'I', 'N', 'G'}, 10U},
+                 {{'P', 'O', 'N', 'G'}, 10U}, {{'A', 'C', 'K', 'N'}, 4U},  {{'N', 'A', 'C', 'K'}, 4U}};
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    opts->payload = 1;
+    state->carrier = 1;
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    state->m17_lsf[0] = 1U;
+    int err = 0;
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
+        for (size_t len = 0; len < cases[c].minimum; ++len) {
+            /* Exact-sized allocations let ASan see any read beyond the received datagram, including its magic. */
+            uint8_t* frame = calloc(len > 0U ? len : 1U, 1);
+            assert(frame != NULL);
+            DSD_MEMCPY(frame, cases[c].magic, len < 4U ? len : 4U);
+            m17_ip_dispatch_frame(opts, state, frame, (int)len);
+            err |= expect_int("truncated IP frame keeps carrier", state->carrier, 1);
+            err |= expect_int("truncated IP frame keeps sync", state->synctype, DSD_SYNC_M17_STR_POS);
+            err |= expect_u8("truncated IP frame preserves LSF", state->m17_lsf[0], 1U);
+            free(frame);
+        }
+    }
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return err;
+}
+
+static int
+test_short_valid_ip_mpkt_reads_only_its_header(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    opts->payload = 1;
+    state->m17_can_en = -1;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    const uint8_t app[] = {0x05U, 0U};
+    const size_t length = 34U + sizeof(app) + 2U;
+    uint8_t* frame = malloc(length);
+    assert(frame != NULL);
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    assert(build_ip_mpkt_frame(frame, length, lsf_bits, 0xCAFEU, app, sizeof(app)) == length);
+    m17_ip_dispatch_frame(opts, state, frame, (int)length);
+    dsd_call_snapshot call;
+    int err = expect_int("short valid MPKT publishes identity", get_m17_call(state, &call), 1);
+    err |= expect_u64("short valid MPKT destination", call.ota_target_id, dst);
+    err |= expect_u64("short valid MPKT source", call.ota_source_id, src);
+    err |= expect_int("short valid MPKT ends call", call.phase, DSD_CALL_PHASE_ENDED);
+    free(frame);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return err;
+}
+
+static int
 test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
@@ -1450,8 +1547,8 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
     uint8_t lsf_bits[TEST_M17_LSF_BITS];
-    uint8_t mpkt_frame[80];
     uint8_t app[2U + M17_META_BYTES];
+    uint8_t mpkt_frame[34U + sizeof(app) + 2U];
     uint8_t expected_text[M17_TEXT_BLOCK_BYTES];
     static Event_History_I event_history[2];
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -1472,8 +1569,10 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     app[0] = 0xC2U;
     app[1] = 0x80U;
     app[2] = 0x11U;
-    DSD_MEMCPY(app + 3, "IP-MPKT-OK", 10U);
-    DSD_MEMCPY(expected_text, "IP-MPKT-OK", 10U);
+    /* The sender emits the header, the application bytes and CRC2 only. Fill the whole text block so a dropped
+       final application byte cannot be hidden by a NUL or by padding in the frame builder. */
+    DSD_MEMCPY(app + 3, "IP-MPKT-LAST!", M17_TEXT_BLOCK_BYTES);
+    DSD_MEMCPY(expected_text, "IP-MPKT-LAST!", M17_TEXT_BLOCK_BYTES);
     const size_t mpkt_len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), lsf_bits, 0xCAFEU, app, sizeof(app));
 
     state->m17_can_en = -1;
@@ -1501,6 +1600,7 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     err |= expect_u8("valid MPKT text received bitmap", state->m17_text_meta_received_bitmap, 0x01U);
     err |= expect_u8("valid MPKT text control", state->m17_text_meta_control_or, 0x11U);
     err |= expect_bytes("valid MPKT text bytes", state->m17_text_meta, expected_text, sizeof(expected_text));
+    err |= expect_u8("valid MPKT retains final application byte", state->m17_text_meta[M17_TEXT_BLOCK_BYTES - 1U], '!');
 
     const uint64_t first_epoch = call.epoch;
     m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
@@ -2688,6 +2788,11 @@ test_encoder_rtl_input_reaches_pcm_scale(void) {
 static char g_audio_events[2048];
 static int g_audio_event_count = 0;
 static int g_audio_wrap_on = 0;
+/* The channel count of the local stream under the wrap, and the last block it took: a backend reads frames x channels
+   samples from the buffer it is handed (issue #658), so the wrap copies that many. */
+static int g_audio_wrap_channels = 1;
+static size_t g_audio_wrap_last_frames = 0U;
+static int16_t g_audio_wrap_last[320U * 2U];
 
 // GNU linker wrappers of the local output (-Wl,--wrap): the names are the linker's.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -2712,6 +2817,11 @@ int
 __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
     if (!g_audio_wrap_on) {
         return __real_dsd_audio_write(stream, buffer, frames);
+    }
+    g_audio_wrap_last_frames = frames;
+    const size_t samples = frames * (size_t)g_audio_wrap_channels;
+    if (buffer != NULL && samples <= sizeof(g_audio_wrap_last) / sizeof(g_audio_wrap_last[0])) {
+        DSD_MEMCPY(g_audio_wrap_last, buffer, samples * sizeof(buffer[0]));
     }
     int zero = 1;
     for (size_t i = 0U; buffer != NULL && i < frames; i++) {
@@ -2785,7 +2895,8 @@ test_packet_encoder_end_drains_on_a_local_output(void) {
 #ifdef USE_CODEC2
 /* Issue #574: the Monitor's mute sets audio_out to 0 and leaves the output open, and the mixers then write nothing to
    any output type (dsd_output_*_block()). Decoded Codec2 voice follows the same rule on the local stream, UDP and the
-   raw fd, for the 3200 payload (two frames) and the 1600 payload (one frame). */
+   raw fd, for the 3200 payload (two codec frames) and the 1600 payload (one codec frame, played as two 160-sample
+   frames, issue #658). */
 static int
 test_stream_voice_audio_honors_mute_on_every_output(void) {
     static const struct {
@@ -2795,7 +2906,7 @@ test_stream_voice_audio_honors_mute_on_every_output(void) {
         size_t block_bytes;
     } formats[] = {
         {"3200", 2U, 2, 160U * sizeof(short)},
-        {"1600", 3U, 1, 320U * sizeof(short)},
+        {"1600", 3U, 2, 160U * sizeof(short)},
     };
 
     static const int out_types[] = {
@@ -2823,6 +2934,8 @@ test_stream_voice_audio_honors_mute_on_every_output(void) {
                 DSD_MEMSET(state, 0, sizeof(*state));
                 reset_audio_fakes();
                 install_fake_udp_audio();
+                prepare_voice_output(opts, state);
+                g_codec2_decode_samples = formats[f].dt == 3U ? 320U : 160U;
                 opts->slot1_on = 1;
                 opts->audio_out = audio_out;
                 opts->audio_out_type = out_type;
@@ -2885,7 +2998,7 @@ test_stream_voice_audio_honors_mute_on_every_output(void) {
 
 #ifdef USE_CODEC2
 /* Issue #574: Codec2 voice stamps audible audio whenever a frame it decoded is written, the first frame of a
-   transmission included, through both writers (the 3200 pair and the 1600 single) and on every output type. A muted
+   transmission included, for both payloads (the 3200 pair and the 1600 single) and on every output type. A muted
    output, slot 1 switched off, a CAN the filter rejects or an encrypted stream with no key stamps nothing. */
 static int
 test_stream_voice_audio_stamps_what_it_plays(void) {
@@ -2896,7 +3009,7 @@ test_stream_voice_audio_stamps_what_it_plays(void) {
         size_t block_bytes;
     } formats[] = {
         {"3200", 2U, 2, 160U * sizeof(short)},
-        {"1600", 3U, 1, 320U * sizeof(short)},
+        {"1600", 3U, 2, 160U * sizeof(short)},
     };
 
     static const int out_types[] = {
@@ -2937,6 +3050,8 @@ test_stream_voice_audio_stamps_what_it_plays(void) {
                 DSD_MEMSET(state, 0, sizeof(*state));
                 reset_audio_fakes();
                 install_fake_udp_audio();
+                prepare_voice_output(opts, state);
+                g_codec2_decode_samples = formats[f].dt == 3U ? 320U : 160U;
                 opts->slot1_on = cases[c].slot1_on;
                 opts->audio_out = cases[c].audio_out;
                 opts->audio_out_type = out_type;
@@ -3007,8 +3122,131 @@ test_stream_voice_audio_stamps_what_it_plays(void) {
 #endif
 
 #ifdef USE_CODEC2
+/* Issue #658: decoded Codec2 voice takes the stream's format. Each payload's frames (two 160-sample codec frames at
+   3200, one 320-sample codec frame at 1600) go out as 160-frame blocks of the stream's channel count, s16 by default
+   and f32 under -y, the channels carrying the same frame; the fixed gain -g applies. On a two-channel local stream the
+   backend reads 320 samples from each block it is handed, all of them the decoded frame's. */
+static int
+run_voice_format_case(uint8_t dt, int floating, int channels, int out_type, float gain, int16_t* first_block,
+                      size_t* first_block_count) {
+    static const uint8_t payload_bytes[16] = {0x70U, 0x71U, 0x72U, 0x73U, 0x74U, 0x75U, 0x76U, 0x77U,
+                                              0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U};
+    uint8_t payload_bits[128];
+    uint8_t processed_bits[128];
+    bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_audio_fakes();
+    install_fake_udp_audio();
+    prepare_voice_output(opts, state);
+    g_codec2_decode_samples = dt == 3U ? 320U : 160U;
+    opts->slot1_on = 1;
+    opts->audio_out = 1;
+    opts->audio_out_type = out_type;
+    opts->floating_point = floating;
+    opts->pulse_digi_out_channels = channels;
+    opts->audio_gain = gain;
+    state->aout_gain = gain;
+    state->m17_str_dt = dt;
+    state->m17_can_en = -1;
+    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    g_audio_event_count = 0;
+    g_audio_events[0] = '\0';
+    g_audio_wrap_on = out_type == 0;
+    g_audio_wrap_channels = channels;
+    g_audio_wrap_last_frames = 0U;
+    DSD_MEMSET(g_audio_wrap_last, 0, sizeof(g_audio_wrap_last));
+    opts->audio_out_stream = out_type == 0 ? (dsd_audio_stream*)&g_audio_wrap_on : NULL;
+#endif
+
+    (void)m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits);
+
+    int err = 0;
+    char label[128];
+    const size_t count = 160U * (size_t)channels;
+    DSD_SNPRINTF(label, sizeof(label), "m17 dt %u float %d ch %d out %d", (unsigned)dt, floating, channels, out_type);
+    if (out_type == 8) {
+        err |= expect_int(label, g_udp_audio_calls, 2);
+        err |= expect_int("m17 voice block bytes", (int)g_udp_audio_last_nsam,
+                          (int)(count * (floating ? sizeof(float) : sizeof(short))));
+        for (size_t i = 0U; i < count; i++) {
+            const int source = dt == 3U ? 1001 + 160 + (int)(i / (size_t)channels) : 1002 + (int)(i / (size_t)channels);
+            const short want = (short)((float)source * gain);
+            if (floating) {
+                float sample;
+                DSD_MEMCPY(&sample, g_udp_audio_last_data + (i * sizeof(float)), sizeof(sample));
+                err |= expect_int("m17 f32 voice matches chained short", fabsf(sample - (float)want / 32768.0f) < 1e-9f,
+                                  1);
+            } else {
+                short sample;
+                DSD_MEMCPY(&sample, g_udp_audio_last_data + (i * sizeof(short)), sizeof(sample));
+                err |= expect_int("m17 s16 voice matches chained short", sample, want);
+                if (first_block != NULL && i < 320U) {
+                    first_block[i] = sample;
+                }
+            }
+        }
+        if (first_block_count != NULL) {
+            *first_block_count = floating ? 0U : count;
+        }
+    }
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    if (out_type == 0) {
+        err |= expect_int(label, g_audio_event_count, 2);
+        err |= expect_int("m17 voice local stream frames", (int)g_audio_wrap_last_frames, 160);
+        for (size_t i = 0U; i < count; i++) {
+            /* The second block holds the decoded frame from sample 160 of a 1600 frame, or the second 3200 frame. */
+            const int want = dt == 3U ? 1001 + 160 + (int)(i / (size_t)channels) : 1002 + (int)(i / (size_t)channels);
+            err |= expect_int("m17 voice local stream sample", g_audio_wrap_last[i], (short)((float)want * gain));
+        }
+        g_audio_wrap_on = 0;
+        g_audio_wrap_channels = 1;
+    }
+#endif
+    reset_audio_fakes();
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+static int
+test_stream_voice_audio_follows_output_format(void) {
+    static const uint8_t dts[] = {2U, 3U};
+    int err = 0;
+    for (size_t d = 0U; d < sizeof(dts) / sizeof(dts[0]); d++) {
+        for (int floating = 0; floating <= 1; floating++) {
+            for (int channels = 1; channels <= 2; channels++) {
+                for (int gain = 1; gain <= 3; gain += 2) {
+                    err |= run_voice_format_case(dts[d], floating, channels, 8, (float)gain, NULL, NULL);
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+                    err |= run_voice_format_case(dts[d], floating, channels, 0, (float)gain, NULL, NULL);
+#endif
+                }
+            }
+        }
+        /* -g 1 passes the decoded samples through; -g 3 triples them, in both channels. */
+        int16_t unity[320];
+        int16_t tripled[320];
+        size_t unity_count = 0U;
+        size_t tripled_count = 0U;
+        err |= run_voice_format_case(dts[d], 0, 2, 8, 1.0f, unity, &unity_count);
+        err |= run_voice_format_case(dts[d], 0, 2, 8, 3.0f, tripled, &tripled_count);
+        err |= expect_int("m17 voice gain block sizes", (int)unity_count == 320 && tripled_count == unity_count, 1);
+        for (size_t i = 0U; i < unity_count; i++) {
+            const int want = dts[d] == 3U ? 1001 + 160 + (int)(i / 2U) : 1002 + (int)(i / 2U);
+            err |= expect_int("m17 voice at -g 1", unity[i], want);
+            err |= expect_int("m17 voice at -g 3", tripled[i], want * 3);
+        }
+    }
+    return err;
+}
+#endif
+
+#ifdef USE_CODEC2
 /* Issue #574: Codec2 voice stamps only what an output receives. The null output (-o null, which keeps output type 9 once
-   unmuted) and a local stream that is not open receive nothing from either writer (the 3200 pair, the 1600 single), so
+   unmuted) and a local stream that is not open receive nothing from either payload (the 3200 pair, the 1600 single), so
    a frame that would play stamps nothing. */
 static int
 test_stream_voice_audio_stamps_nothing_no_output_takes(void) {
@@ -3044,6 +3282,8 @@ test_stream_voice_audio_stamps_nothing_no_output_takes(void) {
             DSD_MEMSET(state, 0, sizeof(*state));
             reset_audio_fakes();
             install_fake_udp_audio();
+            prepare_voice_output(opts, state);
+            g_codec2_decode_samples = formats[f].dt == 3U ? 320U : 160U;
             opts->slot1_on = 1;
             opts->audio_out = 1;
             opts->audio_out_type = outputs[o].out_type;
@@ -3730,11 +3970,14 @@ main(void) {
     err |= test_stream_voice_audio_honors_mute_on_every_output();
     err |= test_stream_voice_audio_stamps_what_it_plays();
     err |= test_stream_voice_audio_stamps_nothing_no_output_takes();
+    err |= test_stream_voice_audio_follows_output_format();
 #endif
     err |= test_bert_payload_locks_from_default_state_and_continues();
     err |= test_bert_payload_resyncs_after_error_threshold();
     err |= test_bert_hard_payload_decode_primitives();
     err |= test_frame_info_packet_and_ip_helpers();
+    err |= test_ip_frames_reject_truncation_before_reading_or_changing_state();
+    err |= test_short_valid_ip_mpkt_reads_only_its_header();
     err |= test_ip_stream_frames_apply_crc_gated_lsf_state();
     err |= test_ip_stream_bad_crc_does_not_reopen_ended_voice_epoch();
     err |= test_ip_mpkt_frames_apply_crc_gated_packet_state();

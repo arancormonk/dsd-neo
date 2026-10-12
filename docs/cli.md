@@ -431,8 +431,8 @@ Notes
 - `-y` Write digital voice to stdout (`-o -`) and UDP as 32-bit float samples (`f32le`) instead of 16-bit integers.
   The audio is the same as without `-y`: the same gain (`-g`), digital high-pass (`-v` 0x8), routing (a single call in
   both ears, and at full level on one channel) and muting, and `-w` and `-P` record the same WAVs. Each float sample is
-  the 16-bit sample / 32768, so none is past full scale. A sound device plays 16-bit samples either way. Exceptions: M17
-  voice is still written as 16-bit samples and EDACS analog voice is not written to stdout.
+  the 16-bit sample / 32768, so none is past full scale. A sound device plays 16-bit samples either way.
+  M17 Codec2 voice follows this path too. EDACS analog voice is not written to stdout under `-y`.
 - P25 Phase 2 voice plays as each timeslot pair completes (every 60 ms of air time), in integer and `-y` float output
   alike: both slots side by side, every frame once, 18 frames per slot per 360 ms superframe. A slot whose call starts
   or ends mid-superframe is heard from its first frame to its last while the other slot plays on; a lost voice burst
@@ -1769,6 +1769,12 @@ Input, squelch and VOX
 - On a local audio output the encoder lets the last frame and the EOT marker play before it queues the dead air, so a
   full output cannot drop them. At shutdown it lets everything queued play before the output closes, a VOX unkey's
   end included. The packet encoder (`-fP`) ends the same way.
+
+Monitor
+
+- Without `-8` the stream encoder decodes each frame it sends and plays the voice on the digital output, opened at
+  8 kHz mono, as a received M17 call plays: with `-g`, `-y` and the high-pass. With `-8` the 48 kHz transmit baseband
+  plays on the analog output instead. An explicit `-8` works before or after `-fZ`.
 
 Examples
 

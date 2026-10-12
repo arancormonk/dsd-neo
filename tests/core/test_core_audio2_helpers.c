@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/core/voice_chain.h>
 #include "core/audio/dsd_audio2_internal.h"
 #include "core/audio/dsd_audio_internal.h"
 #include "dsd-neo/core/audio.h"
@@ -82,6 +83,45 @@ static int g_gate_mono_forced_enc = -1;
 static int g_gate_dual_forced_enc_l = -1;
 static int g_gate_dual_forced_enc_r = -1;
 static unsigned long g_gate_mono_tg;
+
+static int g_voice_chain_calls;
+static int g_voice_chain_slot;
+static int g_stage_short_calls;
+static int g_write_voice_calls;
+static short g_write_voice_sample;
+
+/* A distinguishable chained value verifies that staging, devices and both WAV paths consume the chain once. The
+   M17 dispatch tests link the real chain and cover its gain and filter behavior. */
+void
+dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame) {
+    (void)opts;
+    (void)state;
+    g_voice_chain_calls++;
+    g_voice_chain_slot = slot;
+    for (size_t i = 0; i < 160U; i++) {
+        frame[i] *= 2.0f;
+    }
+}
+
+void
+dsd_voice_stage_short_left(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    g_stage_short_calls++;
+    state->audio_out_idx = 0;
+    for (size_t i = 0; i < 160U; i++) {
+        state->s_l[i] = (short)state->audio_out_temp_buf[i];
+        *state->audio_out_buf_p++ = state->s_l[i];
+        state->audio_out_idx++;
+        state->audio_out_idx2++;
+    }
+}
+
+void
+writeSynthesizedVoice(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    g_write_voice_calls++;
+    g_write_voice_sample = (short)state->audio_out_temp_buf[0];
+}
 
 void
 audio_mono_to_stereo_s16(const short* in, short* out, size_t n) {
@@ -2284,6 +2324,183 @@ test_ss3_hold_respects_policy_mute(void) {
     return rc;
 }
 
+/* Issue #658: voice a decoder synthesized and gated itself (M17's Codec2) plays through the mono mixers with its verdict
+   settled. Talkgroup policy, the record policy and the FDMA crypto rules (a stale NXDN cipher with no key here) never
+   mute it. Each whole 160-sample frame goes out once, expanded to the stream's channel count in its sample format, and
+   a trailing partial frame is never read. The slot 1 switch and the mute still apply, and the static WAV records what
+   slot 1 plays in either format. */
+#define DECODED_PCM_SAMPLES 330U
+
+static int
+run_decoded_pcm16_case(dsd_opts* opts, dsd_state* state, const short* pcm, int floating, int channels, int sink,
+                       int slot1_on, int audio_out) {
+    static short history[4096];
+    char label[160];
+    int rc = 0;
+    opts->floating_point = floating;
+    opts->pulse_digi_out_channels = channels;
+    opts->audio_out_type = sink;
+    opts->slot1_on = slot1_on;
+    opts->audio_out = audio_out;
+    g_audio_write_channels = channels;
+    state->audio_out_buf_p = history + 100;
+    state->aout_max_buf_p = state->aout_max_buf;
+    // A frame another path staged and never mixed: not this one's.
+    state->audio_out_idx = 160;
+    reset_sink_capture();
+    reset_gate_capture();
+    g_gate_mono_forced_enc = 1;
+    g_record_policy_blocked[0] = 1;
+    g_record_policy_blocked[1] = 1;
+    g_voice_chain_calls = 0;
+    g_stage_short_calls = 0;
+    g_voice_chain_slot = -1;
+    g_write_voice_calls = 0;
+
+    dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES);
+
+    const int plays = slot1_on && audio_out;
+    const int writes = g_audio_write_calls + g_dsd_write_calls + g_udp_blast_calls;
+    DSD_SNPRINTF(label, sizeof(label), "decoded pcm fmt %d ch %d sink %d slot1 %d out %d", floating, channels, sink,
+                 slot1_on, audio_out);
+    rc |= expect_int(label, writes, plays ? 2 : 0);
+    rc |= expect_int("decoded pcm chain once per frame", g_voice_chain_calls, 2);
+    rc |= expect_int("decoded pcm chain uses slot 0", g_voice_chain_slot, 0);
+    rc |= expect_int("decoded pcm short stage once per frame", g_stage_short_calls, 2);
+    const int records = slot1_on && opts->static_wav_file == 1;
+    rc |= expect_int(label, g_sf_write_short_calls, records ? 2 : 0);
+    if (records) {
+        rc |= expect_int("decoded pcm static wav left", g_sf_written[0], 2 * pcm[0]);
+        rc |= expect_int("decoded pcm static wav right", g_sf_written[1], 2 * pcm[0]);
+        rc |= expect_int("decoded pcm static wav second frame", g_sf_written[640 - 2], 2 * pcm[319]);
+    }
+    if (!plays) {
+        return rc;
+    }
+    // The last block written is the second frame, pcm[160..319].
+    const size_t count = 160U * (size_t)channels;
+    if (sink == 0) {
+        rc |= expect_size("decoded pcm device frames", g_audio_write_frames, 160U);
+        for (size_t i = 0; i < count; i++) {
+            rc |= expect_int("decoded pcm device sample", g_audio_write_samples[i],
+                             2 * pcm[160U + (i / (size_t)channels)]);
+        }
+        return rc;
+    }
+    const uint8_t* data = sink == 1 ? g_dsd_write_data : g_udp_blast_data;
+    const size_t bytes = sink == 1 ? g_dsd_write_bytes : g_udp_blast_bytes;
+    rc |= expect_size("decoded pcm stream block bytes", bytes, count * (floating ? sizeof(float) : sizeof(short)));
+    for (size_t i = 0; i < count; i++) {
+        const short source = 2 * pcm[160U + (i / (size_t)channels)];
+        if (floating) {
+            float sample;
+            DSD_MEMCPY(&sample, data + i * sizeof(float), sizeof(sample));
+            rc |= expect_float("decoded pcm float sample", sample, (float)source / 32768.0f);
+        } else {
+            short sample;
+            DSD_MEMCPY(&sample, data + i * sizeof(short), sizeof(sample));
+            rc |= expect_int("decoded pcm short sample", sample, source);
+        }
+    }
+    return rc;
+}
+
+static int
+test_decoded_pcm16_plays_settled_frames(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    static short pcm[DECODED_PCM_SAMPLES];
+    for (size_t i = 0; i < DECODED_PCM_SAMPLES; i++) {
+        pcm[i] = (short)((int)(i * 3U) - 400);
+    }
+    const int sinks[] = {0, 1, 8};
+    int rc = 0;
+    opts->audio_out_stream = (dsd_audio_stream*)opts;
+    opts->audio_out_fd = 42;
+    opts->wav_out_f = (SNDFILE*)opts;
+    opts->static_wav_file = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->nxdn_cipher_type = 0x1;
+    opts->dmr_mute_encL = 1;
+    state->mbe_slot_muted[0] = 1;
+
+    for (int floating = 0; floating <= 1; floating++) {
+        for (int channels = 1; channels <= 2; channels++) {
+            for (size_t sink = 0; sink < sizeof(sinks) / sizeof(sinks[0]); sink++) {
+                rc |= run_decoded_pcm16_case(opts, state, pcm, floating, channels, sinks[sink], 1, 1);
+                rc |= run_decoded_pcm16_case(opts, state, pcm, floating, channels, sinks[sink], 0, 1);
+                rc |= run_decoded_pcm16_case(opts, state, pcm, floating, channels, sinks[sink], 1, 0);
+            }
+        }
+    }
+
+    // A stale X2 slot cannot make M17 use slot 2's switch or record policy.
+    state->synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    state->currentslot = 1;
+    opts->slot2_on = 0;
+    rc |= run_decoded_pcm16_case(opts, state, pcm, 1, 2, 8, 1, 1);
+    opts->slot2_on = 1;
+    rc |= run_decoded_pcm16_case(opts, state, pcm, 0, 1, 8, 0, 1);
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->currentslot = 0;
+
+    // The per-call WAV (-P) takes every frame, in either format.
+    opts->static_wav_file = 0;
+    opts->dmr_stereo_wav = 1;
+    for (int floating = 0; floating <= 1; floating++) {
+        rc |= run_decoded_pcm16_case(opts, state, pcm, floating, 1, 8, 1, 1);
+        rc |= expect_int("decoded pcm per-call wav per frame", g_write_voice_calls, 2);
+        rc |= expect_int("decoded pcm per-call wav chained sample", g_write_voice_sample, 2 * pcm[160]);
+    }
+
+    // A state with no output history to stage into plays nothing.
+    reset_sink_capture();
+    g_voice_chain_calls = 0;
+    g_stage_short_calls = 0;
+    g_voice_chain_slot = -1;
+    state->audio_out_buf_p = NULL;
+    dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES);
+    rc |= expect_int(
+        "decoded pcm without output history writes nothing",
+        g_audio_write_calls + g_dsd_write_calls + g_udp_blast_calls + g_voice_chain_calls + g_stage_short_calls, 0);
+
+    // Invalid stream shapes and incomplete frames must not run the chain or advance the output ring.
+    static short shape_history[320];
+    state->audio_out_buf_p = shape_history;
+    for (int channels = 0; channels <= 3; channels += 3) {
+        opts->pulse_digi_out_channels = channels;
+        dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES);
+    }
+    opts->pulse_digi_out_channels = 1;
+    dsd_audio_play_decoded_pcm16(opts, state, pcm, 159U);
+    rc |= expect_int("decoded pcm rejects incomplete frames and invalid channels",
+                     g_voice_chain_calls + g_stage_short_calls, 0);
+    rc |= expect_int("decoded pcm invalid input retains output pointer", state->audio_out_buf_p == shape_history, 1);
+
+    // The vocoder's frames still take the policy's verdict.
+    static short history[960];
+    opts->floating_point = 0;
+    opts->pulse_digi_out_channels = 1;
+    opts->audio_out_type = 8;
+    opts->slot1_on = 1;
+    opts->audio_out = 1;
+    state->audio_out_buf_p = history + 160;
+    state->audio_out_idx = 160;
+    reset_sink_capture();
+    reset_gate_capture();
+    g_gate_mono_forced_enc = 1;
+    playSynthesizedVoiceMS(opts, state);
+    rc |= expect_int("policy-muted vocoder frame still muted", g_udp_blast_calls, 0);
+
+    reset_gate_capture();
+    g_audio_write_channels = 2;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2318,5 +2535,6 @@ main(void) {
     rc |= test_dmr_mixes_stamp_only_fresh_audible_slots();
     rc |= test_fdma_mixers_stamp_what_they_play();
     rc |= test_mixers_stamp_only_what_an_output_takes();
+    rc |= test_decoded_pcm16_plays_settled_frames();
     return rc;
 }

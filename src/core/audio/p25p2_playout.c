@@ -662,7 +662,7 @@ write_static_wav(const dsd_opts* opts, const short* stereo, dsd_p25p2_playout_en
 // Routing: two audible slots play as stereo; one plays in both ears. The same block goes to the output in either format
 // and to the static WAV.
 static void
-emit_block(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
+emit_block(const dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
     short left[BLOCK_FRAMES] = {0};
     short right[BLOCK_FRAMES] = {0};
     if (e[0]) {
@@ -794,7 +794,7 @@ drop_head(dsd_p25p2_playout_slot* s) {
 // removed entries at the head are let go (nothing pops them) the head is the oldest entry left: an alert is due once
 // that is newer than the alert, whatever else was removed behind it.
 static void
-fire_alerts(dsd_opts* opts, dsd_state* state) {
+fire_alerts(const dsd_opts* opts, dsd_state* state) {
     dsd_p25p2_playout* p = &state->p25p2_playout;
     for (int slot = 0; slot < 2; slot++) {
         dsd_p25p2_playout_slot* s = &p->slot[slot];
@@ -900,7 +900,7 @@ apply_slot_preference(const dsd_opts* opts, dsd_p25p2_playout_entry* e[2], int a
 
 // Pop one block from both slots and play it when audible. Returns whether it carried an audible fresh frame (#574).
 static int
-play_block(dsd_opts* opts, dsd_state* state, int output, int last_audible[2]) {
+play_block(const dsd_opts* opts, dsd_state* state, int output, int last_audible[2]) {
     dsd_p25p2_playout_entry popped[2];
     dsd_p25p2_playout_entry* e[2] = {NULL, NULL};
     int audible[2] = {0, 0};
@@ -1256,6 +1256,7 @@ dsd_p25p2_playout_reset(dsd_state* state, int slot) {
 }
 
 void
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/p25p2_playout.h
 dsd_p25p2_playout_discard(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;

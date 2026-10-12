@@ -855,7 +855,7 @@ dsd_audio_write_mono_frame_wav(SNDFILE* file, dsd_state* state, const char* cont
 }
 
 void
-writeSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
+writeSynthesizedVoice(const dsd_opts* opts, dsd_state* state) {
     dsd_audio_write_mono_frame_wav(opts->wav_out_f, state, "writeSynthesizedVoice");
 }
 
@@ -926,12 +926,13 @@ writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
 
 // The legacy short output's pending samples (state->audio_out_idx of them) to the output, then none pending.
 static void
-dsd_audio_legacy_write_pending(dsd_opts* opts, dsd_state* state) {
+dsd_audio_legacy_write_pending(const dsd_opts* opts, dsd_state* state) {
     dsd_output_s16_block(opts, state, state->audio_out_buf_p - state->audio_out_idx, (size_t)state->audio_out_idx, 1);
     state->audio_out_idx = 0;
 }
 
 void
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h
 playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
 
     //don't synthesize voice if slot is turned off

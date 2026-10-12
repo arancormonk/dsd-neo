@@ -8,7 +8,7 @@
  * @brief The digital voice chain (issue #653): one high-pass and one gain per slot, run once on each decoded 8 kHz
  * voice frame before anything consumes it.
  *
- * A decoder that synthesizes a voice frame (the vocoder, YSF V/D2, MBE file and SDRTrunk JSON playback) runs
+ * A decoder that synthesizes a voice frame (the vocoder, YSF V/D2, MBE file, SDRTrunk JSON playback and M17 Codec2) runs
  * dsd_voice_chain_run() on it in place, whatever the output format, output type or mute say. Every consumer then takes
  * the same samples: the per-call WAV and the shared short staging (dsd_voice_stage_short_left/right()). Mixers route
  * those samples in both output formats; stdout and UDP convert the resulting s16 blocks to f32 under -y. Every

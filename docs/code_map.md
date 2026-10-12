@@ -892,7 +892,8 @@ suite runs under this compiler.
   nothing (no output, static WAV or stamp) when the frame staged no short samples, as an encrypted NXDN or dPMR
   frame without its key does. FDMA dispatchers (NXDN, YSF, D-STAR, ProVoice, dPMR) set
   `currentslot` to 0, since these paths read it. EDACS analog voice applies the talkgroup gate at its own output.
-  M17 is outside talkgroup policy (callsign addresses). Writers outside the mixers follow the mixers' output rule
+  M17 is outside talkgroup policy (callsign addresses): its Codec2 voice plays through the FDMA mixers with a settled
+  verdict (`dsd_audio_play_decoded_pcm16()`, below). Writers outside the mixers follow the mixers' output rule
   (`dsd_output_*_block()`): the mute (`audio_out` 0, which leaves the output open) silences the local stream, UDP and
   the raw fd alike, and EDACS analog and M17 Codec2 voice also stop while slot 1 is switched off. Every mix applies the
   slot switches last, after the talkgroup gate and a hold, so a held call on a switched-off slot stays silent (SS, SS3
@@ -938,16 +939,27 @@ suite runs under this compiler.
   vocoder runs the filter and gain once with `dsd_voice_chain_run()` (the fixed `-g`
   gain, or the auto gain: per slot, peaks toward 30000, `aout_gain`/`aout_gainR` carried from call to call, its peak
   history cleared by the no-carrier reset), and stages each frame's 16-bit samples (`s_l`/`s_r`, and
-  `mbe_short_silenced`) the same way in both formats, as do the vocoder bypasses (SDRTrunk JSON playback, YSF V/D2).
+  `mbe_short_silenced`) the same way in both formats, as do the vocoder bypasses (SDRTrunk JSON playback, YSF V/D2, M17 Codec2).
   Every protocol plays through the same mixers (MS, SS, SS3, the P25 Phase 2 playout), so routing, muting, the digital
   high-pass, the audible-audio stamp and the static and per-call WAVs are the same in both. The one place the format
   shows is `dsd_output_s16_block()` (`dsd_audio2.c`, the writer every mixer and the legacy short output use): under
   `-y` the raw fd (`-o -`) and UDP take each block as f32, s16 / 32768 (exact), in whole frames of at most 1920
   samples per write (one write and one datagram per block for every size a mixer writes), while the local device
   stream is 16-bit in either format and takes the block unchanged. Nothing resets the gain at call boundaries in
-  either format. The beeper also uses the shared s16 sink conversion. Outside the chain: M17 Codec2 voice (16-bit
-  in both) and EDACS analog voice (no raw-fd output under `-y`). Tests: `DECODE_IQ_FLOAT_OUTPUT_*` (both formats
+  either format. The beeper also uses the shared s16 sink conversion. Outside the chain: EDACS analog voice (no raw-fd output under `-y`). Tests: `DECODE_IQ_FLOAT_OUTPUT_*` (both formats
   replayed and compared), `CORE_AUDIO2_HELPERS`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_P25P2_PLAYOUT`.
+- API note (decoded PCM voice, `dsd_audio_play_decoded_pcm16()` in `<dsd-neo/core/audio.h>`, `dsd_audio2.c`, issue
+  #658): a decoder that synthesizes its own 8 kHz mono int16 voice (M17's Codec2) settles its own gates before calling.
+  Each whole 160-sample frame is copied to `audio_out_temp_buf`, runs `dsd_voice_chain_run()` on slot 0 once, then
+  `dsd_voice_stage_short_left()`. The per-call WAV takes the same chained frame (`writeSynthesizedVoice()`). MS or SS
+  routes it according to `pulse_digi_out_channels`, with a settled verdict that skips talkgroup policy, FDMA crypto
+  rules and the static WAV's record policy; the slot 1 switch, output mute and audible-audio stamp still apply.
+  Both formats use the shared short staging and sink conversion, so gain, high-pass, stereo level and WAV samples
+  agree. Public mixer callers retain their protocol and policy verdicts. A trailing partial frame is dropped, and
+  a state without the output history `initState()` allocates plays nothing. The M17 stream encoder (`-fZ`) opens the
+  decoded monitor at 8 kHz; explicit `-8` selects its separate 48 kHz baseband monitor whether before or after the
+  mode selector. Leaving an analog preset clears monitoring it enabled implicitly. Tests: `CORE_AUDIO2_HELPERS`,
+  `M17_STATE_DISPATCH`, `RUNTIME_CLI_PARSE`, `DECODE_IQ_M17_VOICE_OUTPUT`.
 - Invariant (P25 Phase 2 voice playout, `<dsd-neo/core/p25p2_playout.h>`, `src/core/audio/p25p2_playout.c`, issue
   #651): both output formats play P25 Phase 2 voice through one staging and one mixer. The frame decoder queues each
   frame its decode gate admits on the slot's queue right after the vocoder (`dsd_p25p2_playout_stage()`): the slot's
@@ -1074,8 +1086,8 @@ suite runs under this compiler.
   MS only when it loaded one);
   the P25 Phase 2 playout (`p25p2_playout.c`: once per emission, when a played block carries an audible frame the
   vocoder did not silence; its drains reach it too); the
-  legacy short output `playSynthesizedVoice()` (`dsd_audio.c`, SDRTrunk JSON playback included, past its delay); the M17
-  Codec2 writers `m17_write_decoded_audio_single()`/`_pair()` (after `m17_can_emit_audio()`); EDACS analog voice
+  legacy short output `playSynthesizedVoice()` (`dsd_audio.c`, SDRTrunk JSON playback included, past its delay); M17
+  Codec2 voice through SS and MS (`dsd_audio_play_decoded_pcm16()`); EDACS analog voice
   (`edacs_emit_analog_audio()`); and the analog monitor sink (`symbol_write_unsynced_audio()` in `dsd_symbol.c`). Never
   stamped: the beeper's tones, the M17 baseband monitor, the `-6` raw WAV, the static and per-call WAV writers, and the
   output helpers below the writers (`dsd_output_*_block(s)()`, `dsd_audio_write()`, the UDP blasters), which cannot tell
@@ -1116,13 +1128,13 @@ suite runs under this compiler.
   0x8`; a 2nd-order Butterworth at 300 Hz, unity in the voice band, `dsd_voice_hpf_*()` in `dsd_misc.c`), then the
   slot's gain (the fixed `-g` multiplier `audio_gain`/`audio_gainR`, unity below 0, or the auto peak normalizer on
   `aout_gain`/`aout_max_buf` and their `R` twins), then saturation to the int16 range (`dsd_voice_chain_run()` in
-  `dsd_audio.c`). It runs whatever the output format, output type, mute or preset say, and before every gate, so it
+  `dsd_audio.c`). It runs whatever the output format, output type, mute or preset say, before consumer gates, and
   never decides who hears a frame; the gates still do. Producers: the vocoder at the top of its post stage
   (`mbe_post_audio_and_recording()`, on the buffer and slot `processMbeFrameInternal()` names for the decode: the right
   buffer for the slot path's slot 2, the left one otherwise, with X2-TDMA's timeslot as the slot), MBE file playback
   (`play_mbe_output_frame()`), SDRTrunk JSON playback (`sdrtrunk_chain_frame()`, as each frame is synthesized and
-  before its decrypt-or-mute decision) and YSF V/D2
-  (`ysf_emit_audio_from_temp()`); M17 runs only the high-pass, through `hpf_dL()`. Consumers take the chained frame
+  before its decrypt-or-mute decision), YSF V/D2 (`ysf_emit_audio_from_temp()`), and M17 Codec2
+  (`dsd_audio_play_decoded_pcm16()`, after M17's CAN and decryptability gates). Consumers take the chained frame
   as it is: the per-call WAV writers and the shared short staging (`dsd_voice_stage_short_left/right()`: `s_l`/`s_r`,
   the output ring and the 48 kHz upsample). No mixer filters or gains. The same staged samples feed every mixer in
   both formats, and float serialization happens only at the sink. The per-call and static WAVs therefore agree
@@ -3779,12 +3791,20 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 Notes:
 
 - Optional codec integrations are expressed via feature interface targets:
-  - `dsd-neo_feature_codec2` → `USE_CODEC2` (used by M17 when available). The M17 Codec2 voice writers
-    (`m17_write_decoded_audio_single()`/`_pair()` in `src/protocol/m17/m17.c`) play only through
-    `m17_can_emit_audio()`: the output unmuted (`audio_out` 1, the mixers' rule), slot 1 on, a clear or decrypted
-    payload and a CAN the CAN filter allows, on the local stream, UDP and the raw fd alike; they note the audible-audio
-    stamp there when an output receives the block, never on the null output or a local stream that is not open (see
-    Core). Tests: `M17_STATE_DISPATCH`.
+  - `dsd-neo_feature_codec2` → `USE_CODEC2` (used by M17 when available). M17's decoded Codec2 voice plays through
+    the digital voice output every other mode uses (issue #658): `m17_play_codec2_voice()` in
+    `src/protocol/m17/m17.c` settles M17's own gates (a clear or decrypted payload, a CAN the CAN filter allows; M17
+    is outside talkgroup policy) and hands the decoder's real output, 160 samples per 3200 frame and 320 per 1600
+    frame, to `dsd_audio_play_decoded_pcm16()` (see the Core audio API note). So the mute, the slot 1 switch, the
+    digital gain (`-g` and its live controls), the high-pass, the stream's channel count and sample format (`-y`),
+    the WAVs and the audible-audio stamp follow the shared chain and mixers. Tests: `M17_STATE_DISPATCH`, `CORE_AUDIO2_HELPERS`,
+    `DECODE_IQ_M17_VOICE_OUTPUT`.
+
+- M17 IP dispatch validates the received length before reading a stream or control frame or changing its state.
+  MPKT header conversion reads only its 34-byte prefix, since a valid packet can be shorter than a 54-byte stream
+  frame. The application length excludes only the two CRC bytes, preserving the final application byte emitted by
+  the sender. `M17_STATE_DISPATCH` exercises every truncated prefix, an exact-sized short valid MPKT and a complete
+  text-metadata payload under ASan.
 
 EDACS analog voice (`edacs_analog()` in `src/protocol/edacs/edacs-fme.c`) runs at 48 kHz (`EDACS_ANALOG_RATE_HZ`,
 issue #633): the release register reads every 5th sample as a 9600-baud symbol, the per-call WAV opens at it and the

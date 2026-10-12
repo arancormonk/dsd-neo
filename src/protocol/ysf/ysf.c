@@ -496,7 +496,7 @@ ysf_carrier_left(const dsd_state* state, const ysf_fich_info* info) {
 // slot 0 where YSF publishes its call. Frames that went through processMbeFrame()
 // were already written there.
 static void
-ysf_write_bypassed_call_wav(dsd_opts* opts, dsd_state* state) {
+ysf_write_bypassed_call_wav(const dsd_opts* opts, dsd_state* state) {
     int allow = 0;
     if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1
         && dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) == 0 && allow) {
