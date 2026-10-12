@@ -89,9 +89,9 @@ provoice_play_voice(dsd_opts* opts, dsd_state* state) {
 static void
 provoice_decode_imbe_pair(dsd_opts* opts, dsd_state* state, dsd_provoice_imbe_frame frame1,
                           dsd_provoice_imbe_frame frame2) {
-    processMbeFrameSoft(opts, state, NULL, NULL, frame1);
+    processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_PROVOICE, NULL, NULL, frame1);
     provoice_play_voice(opts, state);
-    processMbeFrameSoft(opts, state, NULL, NULL, frame2);
+    processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_PROVOICE, NULL, NULL, frame2);
     provoice_play_voice(opts, state);
 }
 

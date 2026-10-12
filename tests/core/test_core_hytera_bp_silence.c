@@ -94,7 +94,7 @@ test_voice_stream_aes_keystream(void) {
 
     int rc = 0;
     long int bit_counter = 0;
-    int applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x24, frame);
+    int applied = dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x24, frame);
     rc |= expect_eq_int("voice-stream-applied", applied, 1);
     rc |= expect_eq_int("voice-stream-aes-counter", (int)bit_counter, 56);
     rc |= expect_eq_frame("voice-stream-aes-frame", frame, expected);
@@ -111,16 +111,77 @@ test_voice_stream_silence_skip(const char silence[49]) {
 
     int rc = 0;
     long int bit_counter = 0;
-    int applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x24, frame);
+    int applied = dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x24, frame);
     rc |= expect_eq_int("voice-stream-silence-skipped", applied, 0);
     rc |= expect_eq_int("voice-stream-silence-aes-counter", (int)bit_counter, 56);
     rc |= expect_eq_frame("voice-stream-silence-frame", frame, original);
 
     bit_counter = 0;
-    applied = dmr_voice_stream_apply_frame49(ks_bits, &bit_counter, 0x02, frame);
+    applied = dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x02, frame);
     rc |= expect_eq_int("voice-stream-hytera-silence-skipped", applied, 0);
     rc |= expect_eq_int("voice-stream-hytera-counter", (int)bit_counter, 49);
     rc |= expect_eq_frame("voice-stream-hytera-frame", frame, original);
+    return rc;
+}
+
+/* Issue #656: a frame whose keystream bits lie past the generated keystream is left alone and the counter stays put;
+   the last frame that fits is decrypted and the counter stops at the end of the keystream. */
+static int
+test_voice_stream_stays_inside_keystream(void) {
+    uint8_t ks_bits[112];
+    for (size_t i = 0; i < sizeof(ks_bits); i++) {
+        ks_bits[i] = (uint8_t)((i * 7U + 3U) & 1U);
+    }
+    int rc = 0;
+    char frame[49];
+    char original[49];
+    for (int i = 0; i < 49; i++) {
+        frame[i] = original[i] = (char)((i * 5 + 1) & 1);
+    }
+
+    // 112 bits hold two 56-bit AES frames: the second fits exactly, a third does not.
+    long int bit_counter = 56;
+    rc |= expect_eq_int("bounded-second-frame-applied",
+                        dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x24, frame), 1);
+    rc |= expect_eq_int("bounded-second-frame-counter", (int)bit_counter, 112);
+    DSD_MEMCPY(frame, original, sizeof(frame));
+    rc |= expect_eq_int("bounded-third-frame-refused",
+                        dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x24, frame), -1);
+    rc |= expect_eq_int("bounded-third-frame-counter", (int)bit_counter, 112);
+    rc |= expect_eq_frame("bounded-third-frame-unchanged", frame, original);
+
+    // A frame straddling the end is refused, not partly decrypted; a counter far past the end is refused too.
+    bit_counter = 80;
+    rc |= expect_eq_int("bounded-straddle-refused",
+                        dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x02, frame), -1);
+    rc |= expect_eq_int("bounded-straddle-counter", (int)bit_counter, 80);
+    rc |= expect_eq_frame("bounded-straddle-unchanged", frame, original);
+    bit_counter = 1000000L;
+    rc |= expect_eq_int("bounded-far-refused",
+                        dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x24, frame), -1);
+    rc |= expect_eq_frame("bounded-far-unchanged", frame, original);
+
+    // Hytera Enhanced steps 49 bits: 63 + 49 = 112 fits.
+    bit_counter = 63;
+    rc |= expect_eq_int("bounded-hytera-last-applied",
+                        dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x02, frame), 1);
+    rc |= expect_eq_int("bounded-hytera-last-counter", (int)bit_counter, 112);
+    return rc;
+}
+
+static int
+test_voice_stream_silence_stops_at_keystream_end(const char silence[49]) {
+    uint8_t ks_bits[100] = {0};
+    char frame[49];
+    DSD_MEMCPY(frame, silence, sizeof(frame));
+    int rc = 0;
+    long int bit_counter = 56;
+    rc |= expect_eq_int("silence-near-end-skipped",
+                        dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x24, frame), 0);
+    rc |= expect_eq_int("silence-near-end-counter", (int)bit_counter, 100);
+    rc |= expect_eq_int("silence-at-end-skipped",
+                        dmr_voice_stream_apply_frame49(ks_bits, sizeof(ks_bits), &bit_counter, 0x24, frame), 0);
+    rc |= expect_eq_int("silence-at-end-counter", (int)bit_counter, 100);
     return rc;
 }
 
@@ -198,6 +259,8 @@ main(void) {
     rc |= test_silence_detection(silence);
     rc |= test_voice_stream_aes_keystream();
     rc |= test_voice_stream_silence_skip(silence);
+    rc |= test_voice_stream_stays_inside_keystream();
+    rc |= test_voice_stream_silence_stops_at_keystream_end(silence);
     rc |= test_basic_privacy();
     rc |= test_basic_privacy_rejects_invalid_keys();
     rc |= test_hytera_bp_silence_skip(silence);

@@ -465,7 +465,7 @@ store_dmr_bs_processed_audio(dsd_state* state, uint8_t internalslot, uint8_t fra
 static void
 process_dmr_bs_voice_frame(dsd_opts* opts, dsd_state* state, uint8_t internalslot, char frame[4][24],
                            uint8_t frame_index) {
-    processMbeFrame(opts, state, NULL, frame, NULL);
+    processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DMR, NULL, frame, NULL);
     store_dmr_bs_processed_audio(state, internalslot, frame_index);
 }
 

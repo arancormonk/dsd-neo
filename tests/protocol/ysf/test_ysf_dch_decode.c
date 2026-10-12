@@ -44,8 +44,8 @@ void LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state); // NOLINT
 int Connect(char* hostname, int portno);                               // NOLINT(misc-use-internal-linkage)
 int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state,
                                        int* out_analog_signal); // NOLINT(misc-use-internal-linkage)
-void __wrap_processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
-                            char imbe7100_fr[7][24]); // NOLINT(misc-use-internal-linkage)
+void __wrap_processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23],
+                            char ambe_fr[4][24], char imbe7100_fr[7][24]); // NOLINT(misc-use-internal-linkage)
 int __wrap_mbe_processAmbe2450Dataf(float* aout_buf, mbe_process_result* result, const char ambe_d[49],
                                     mbe_parms* cur_mp, mbe_parms* prev_mp,
                                     mbe_parms* prev_mp_enhanced); // NOLINT(misc-use-internal-linkage)
@@ -59,6 +59,7 @@ static size_t g_boundary_at = SIZE_MAX;
 static int g_mbe_call_count;
 static int g_process_mbe_call_count;
 static int g_process_mbe_synctype[5];
+static dsd_voice_protocol g_process_mbe_protocol[5];
 static int g_process_mbe_ambe_nonnull[5];
 /* The AMBE frame each stubbed processMbeFrame() call received, for V/D1 (issue #660). */
 static char g_process_mbe_ambe[5][4][24];
@@ -104,14 +105,15 @@ __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_an
 
 void
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-__wrap_processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
-                       char imbe7100_fr[7][24]) {
+__wrap_processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23],
+                       char ambe_fr[4][24], char imbe7100_fr[7][24]) {
     (void)opts;
     (void)imbe_fr;
     (void)imbe7100_fr;
 
     assert(g_process_mbe_call_count < 5);
     g_process_mbe_synctype[g_process_mbe_call_count] = state->synctype;
+    g_process_mbe_protocol[g_process_mbe_call_count] = protocol;
     g_process_mbe_ambe_nonnull[g_process_mbe_call_count] = (ambe_fr != NULL);
     if (ambe_fr != NULL) {
         DSD_MEMCPY(g_process_mbe_ambe[g_process_mbe_call_count], ambe_fr, sizeof(g_process_mbe_ambe[0]));
@@ -821,6 +823,9 @@ test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state(void) {
     assert(g_process_mbe_call_count == 5);
     for (size_t i = 0; i < 5U; i++) {
         assert(g_process_mbe_synctype[i] == DSD_SYNC_NXDN_POS);
+        // The NXDN decoder is borrowed; the frame stays YSF's, so no NXDN cipher touches it (issue #656).
+        assert(g_process_mbe_protocol[i] == DSD_VOICE_PROTOCOL_YSF);
+        assert(g_process_mbe_ambe_nonnull[i] == 1);
     }
     assert_vd_type1_calls_carry_each_vch(1U);
     assert(state.synctype == 0);
@@ -917,6 +922,8 @@ test_process_ysf_bad_fich_fallback_reopens_ysf_epoch(void) {
     assert(g_process_mbe_call_count == 5);
     for (size_t i = 0U; i < 5U; i++) {
         assert(g_process_mbe_synctype[i] == DSD_SYNC_NXDN_POS);
+        // The NXDN decoder is borrowed; the frame stays YSF's, so no NXDN cipher touches it (issue #656).
+        assert(g_process_mbe_protocol[i] == DSD_VOICE_PROTOCOL_YSF);
     }
     call = get_test_ysf_call(&state);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE);

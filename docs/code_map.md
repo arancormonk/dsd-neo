@@ -630,6 +630,26 @@ suite runs under this compiler.
   checked out on an unchanged carrier, a verified YSF header or terminator, a verified D-STAR header; the engine closes
   both at no-carrier, shutdown and in `dsd_engine_forget_carrier_decoding()` (carrier boundary, trunk-scan switch).
   `dsd_mbe_out_enabled()` (folder set or handle attached) gates every capture path before any record gate runs.
+- Invariant (voice crypto ownership, issue #656; `<dsd-neo/core/vocoder.h>`): every caller of `processMbeFrame()` /
+  `processMbeFrameSoft()` passes the `dsd_voice_protocol` that owns the frame. The codec path and the output stage still
+  follow `state->synctype`, which YSF (NXDN and P25 Phase 1 decoders) and scrambled dPMR (NXDN decoder) borrow; the
+  owner alone decides which crypto transforms and key selection run. DMR: TG key autoload, BP, Hytera BP, Vertex, vendor
+  scramblers, `--dmr-force-algid` and every slot-path ALG ID. P25 Phase 2: only P25 DES/AES/RC4 (0x81, 0x84, 0x89, 0xAA)
+  on the shared slot path. P25 Phase 1: multicrypt and RC4, and only it moves `p25vc`/`octet_counter`. NXDN and dPMR:
+  the NXDN scrambler (signalled or forced `M == 1`) and cipher 2/3. YSF, D-STAR, X2-TDMA, ProVoice: none. The
+  keyloader's ALG ID / KEY ID activation (`mbe_activate_keyloader_slot()`) runs for DMR and P25 only: NXDN voice loads
+  its keys from its VCALL, and the others signal none. The manual `-S` keystream stays on the slot path for every owner.
+  Keystream reads are bounded by what was generated: P25 Phase 1 by ALG ID (DES/TDEA 224 octets, DES-XL 213, AES 15
+  blocks = 240; a superframe reads up to octet 228), the slot path by `dmr_voice_stream_apply_frame49()`'s
+  `ks_bit_count` and the DES helper (DES and AES 1152 bits, Hytera Enhanced 1080, Kirisun 1008). A frame past the end is
+  muted like an undecodable one (silence, no MBE capture, `KEYSTREAM_EXHAUSTED` frame-log event; a stereo slot stages
+  silence) and the counter stays put; nothing wraps. An armed `-S` keystream still takes over such a slot frame. P25
+  Phase 2 applies AES to every ciphertext word, including patterns DMR reserves for clear silence. NXDN cipher 2/3
+  stops after its 32 EHR words (1568 bits) until a fresh IV starts the next encryption session, per NXDN TS 1-D section
+  5.4.4.2; it never repeats the final word or uses the unused cipher-block padding. A P25 Phase 1 frame the decoder
+  drops before the vocoder (non-standard C0 or the crypto gate) still consumes its keystream position through
+  `dsd_mbe_p25p1_skip_voice_frame()`. Raw `.dmb` (D-STAR AMBE 2400) playback never applies `-b`.
+  Tests: `CORE_MBE_CRYPTO_SCOPE`, `P25_P1_LDU_HELPERS`.
 - Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
   decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only
   through `dsd_audio_sink_write_device()` and the `-o -` descriptor only through `dsd_audio_sink_write_fd()`: the

@@ -450,7 +450,7 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
             ambe_fr[map->low_row][map->low_col] = (char)b2;
         }
 
-        processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+        processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_YSF, NULL, ambe_fr, NULL);
 
         // The vocoder already wrote this frame's per-call WAV block behind its record gate.
         dsd_play_synthesized_voice(opts, state);
@@ -852,7 +852,7 @@ ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state, const ysf_fich
     dsd_ysf_unpack_full_rate_imbe(imbe_raw, imbe_vch, imbe_fr);
 
     state->synctype = DSD_SYNC_P25P1_POS;
-    processMbeFrame(opts, state, imbe_fr, NULL, NULL);
+    processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_YSF, imbe_fr, NULL, NULL);
     state->synctype = synctype;
 
     ysf_emit_audio_from_temp(opts, state, false);
