@@ -11,12 +11,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <io.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <windows.h>
 
 #include "win32_temp_name_internal.h"
+#include "write_frames_internal.h"
 
 /*
  * The CRT treats a negative descriptor as a caller bug: it raises the invalid-parameter handler, which ends the
@@ -43,6 +45,14 @@ dsd_isatty(int fd) {
         return 0;
     }
     return _isatty(fd);
+}
+
+int
+dsd_set_binary_mode(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
+    return _setmode(fd, _O_BINARY) < 0 ? -1 : 0;
 }
 
 int
@@ -514,6 +524,27 @@ dsd_write(int fd, const void* buf, size_t count) {
         return -1;
     }
     return (ssize_t)_write(fd, buf, (unsigned int)count);
+}
+
+static ssize_t
+// cppcheck-suppress constParameterCallback -- signature fixed by dsd_write_frames_ops
+write_frames_win32_write(void* ctx, const void* buf, size_t count) {
+    const int fd = *(const int*)ctx;
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
+    if (count > (size_t)INT_MAX) {
+        count = (size_t)INT_MAX;
+    }
+    return (ssize_t)_write(fd, buf, (unsigned int)count);
+}
+
+dsd_write_frames_status
+dsd_write_frames(int fd, const void* buf, size_t bytes, size_t frame_bytes, size_t* written) {
+    int fd_copy = fd;
+    /* The CRT descriptors block, and there is no SIGPIPE: a closed pipe is a plain write error. */
+    const dsd_write_frames_ops ops = {write_frames_win32_write, NULL, &fd_copy};
+    return dsd_write_frames_loop(&ops, buf, bytes, frame_bytes, written);
 }
 
 const char*

@@ -48,6 +48,7 @@ static size_t g_response_count;
 static size_t g_response_index;
 static dsd_socket_t g_create_result;
 static int g_send_result;
+static int g_last_send_flags = -1;
 static int g_resolve_result;
 static int g_connect_result;
 static int g_resolve_count;
@@ -61,6 +62,10 @@ static unsigned int g_last_timeout_ms;
 static int g_setsockopt_count;
 static int g_last_setsockopt_level;
 static int g_last_setsockopt_name;
+#ifdef SO_NOSIGPIPE
+static int g_no_sigpipe_count;
+static int g_no_sigpipe_result;
+#endif
 static int g_rtl_tune_calls;
 static uint32_t g_rtl_tune_freq;
 static int g_rtl_tune_result;
@@ -98,6 +103,10 @@ reset_stubs(void) {
     g_setsockopt_count = 0;
     g_last_setsockopt_level = 0;
     g_last_setsockopt_name = 0;
+#ifdef SO_NOSIGPIPE
+    g_no_sigpipe_count = 0;
+    g_no_sigpipe_result = 0;
+#endif
     g_rtl_tune_calls = 0;
     g_rtl_tune_freq = 0U;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -232,13 +241,21 @@ dsd_socket_setsockopt(dsd_socket_t sock, int level, int optname, const void* opt
     g_setsockopt_count++;
     g_last_setsockopt_level = level;
     g_last_setsockopt_name = optname;
+#ifdef SO_NOSIGPIPE
+    if (level == SOL_SOCKET && optname == SO_NOSIGPIPE) {
+        assert(optlen == (int)sizeof(int));
+        assert(*(const int*)optval == 1);
+        g_no_sigpipe_count++;
+        return g_no_sigpipe_result;
+    }
+#endif
     return 0;
 }
 
 int
 dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     (void)sock;
-    (void)flags;
+    g_last_send_flags = flags;
     assert(g_command_count < MAX_COMMANDS);
     size_t copy_len = len;
     if (copy_len >= sizeof(g_commands[g_command_count])) {
@@ -304,11 +321,38 @@ test_connect_success_uses_rigctl_timeout(void) {
     assert(g_close_count == 0);
     assert(g_recv_timeout_count == 1);
     assert(g_last_timeout_ms == 2345U);
+#ifdef SO_NOSIGPIPE
+    assert(g_no_sigpipe_count == 1);
+    assert(g_setsockopt_count == 2);
+#else
     assert(g_setsockopt_count == 1);
+#endif
     assert(g_last_setsockopt_level == IPPROTO_TCP);
     assert(g_last_setsockopt_name == TCP_NODELAY);
     return 0;
 }
+
+#ifdef SO_NOSIGPIPE
+/* A macOS/BSD embedded host keeps its own SIGPIPE disposition: refuse a socket if the no-signal option fails. */
+static int
+test_connect_rejects_an_unprotected_socket(void) {
+    reset_stubs();
+    char host[] = "127.0.0.1";
+    g_no_sigpipe_result = -1;
+    assert(Connect(host, 4532) == DSD_INVALID_SOCKET);
+    assert(g_no_sigpipe_count == 1);
+    assert(g_close_count == 1 && g_closed_sock == g_create_result);
+    assert(g_recv_timeout_count == 0 && g_command_count == 0);
+
+    reset_stubs();
+    g_no_sigpipe_result = -1;
+    assert(ConnectBounded(host, 4532, 1, NULL, NULL) == DSD_INVALID_SOCKET);
+    assert(g_no_sigpipe_count == 1);
+    assert(g_close_count == 1 && g_closed_sock == g_create_result);
+    assert(g_recv_timeout_count == 0 && g_command_count == 0);
+    return 0;
+}
+#endif
 
 static int
 cancel_always(void* context) {
@@ -329,6 +373,9 @@ test_connect_bounded_resolves_once_and_bounds_the_connect(void) {
     assert(g_bounded_timeout_ms == DSD_CONNECT_BOUNDED_TIMEOUT_MS);
     assert(g_recv_timeout_count == 1);
     assert(g_last_setsockopt_name == TCP_NODELAY);
+#ifdef SO_NOSIGPIPE
+    assert(g_no_sigpipe_count == 1);
+#endif
     ConnectKeepTcpAudioAddress("audio.example", 7356); /* the switch took it */
 
     /* A reconnect to the same host and port reuses the address. */
@@ -411,6 +458,10 @@ test_setfreq_success_failure_and_cache(void) {
     assert(SetFreq(100, 851012500L));
     assert(g_command_count == 1);
     assert(strcmp(g_commands[0], "F 851012500\n") == 0);
+#ifdef MSG_NOSIGNAL
+    /* A rigctl server that went away costs a failed send, never a SIGPIPE (issue #659). */
+    assert(g_last_send_flags == MSG_NOSIGNAL);
+#endif
 
     assert(SetFreq(100, 851012500L));
     assert(g_command_count == 1);
@@ -2820,6 +2871,9 @@ main(void) {
     int rc = 0;
     rc |= test_connect_failure_cleanup();
     rc |= test_connect_success_uses_rigctl_timeout();
+#ifdef SO_NOSIGPIPE
+    rc |= test_connect_rejects_an_unprotected_socket();
+#endif
     rc |= test_connect_bounded_resolves_once_and_bounds_the_connect();
     rc |= test_connect_bounded_cancel_and_failures_close_the_socket();
     rc |= test_startup_connect_is_kept_for_the_reconnect();

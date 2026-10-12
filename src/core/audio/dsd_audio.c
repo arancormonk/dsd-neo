@@ -22,6 +22,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -44,7 +45,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include "dsd_audio_internal.h"
 
 static int
@@ -228,6 +228,8 @@ dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old_effe
 
 void
 closeAudioOutput(dsd_opts* opts) {
+    /* The streams below go; what was reported about them goes with them. */
+    dsd_audio_sink_device_reset();
     /* Close primary audio output stream */
     if (opts->audio_out_stream) {
         dsd_audio_close(opts->audio_out_stream);
@@ -954,19 +956,13 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
             dsd_audio_activity_note();
         }
         if (opts->audio_out == 1 && opts->audio_out_type == 1) {
-            ssize_t written = dsd_write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
-                                        (size_t)state->audio_out_idx * sizeof(short));
-            if (written < 0) {
-                LOG_WARN("playSynthesizedVoice: failed to write %zu bytes to audio_out_fd",
-                         (size_t)state->audio_out_idx * sizeof(short));
-            }
+            (void)dsd_audio_sink_write_fd(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
+                                          (size_t)state->audio_out_idx * sizeof(short), sizeof(short));
             state->audio_out_idx = 0;
         } else if (opts->audio_out == 1 && opts->audio_out_type == 0) {
-            /* Use audio abstraction layer */
-            if (opts->audio_out_stream) {
-                dsd_audio_write(opts->audio_out_stream, (state->audio_out_buf_p - state->audio_out_idx),
-                                (size_t)state->audio_out_idx);
-            }
+            (void)dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream,
+                                              (state->audio_out_buf_p - state->audio_out_idx),
+                                              (size_t)state->audio_out_idx);
             state->audio_out_idx = 0;
         } else if (opts->audio_out == 1
                    && opts->audio_out_type == 8) //UDP Audio Out -- Forgot some things still use this for now

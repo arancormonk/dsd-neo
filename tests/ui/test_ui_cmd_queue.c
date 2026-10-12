@@ -186,6 +186,8 @@ void __wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t inf
                                    const uint8_t* reliab98);
 int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+int __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
 int __real_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
@@ -293,6 +295,16 @@ __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t f
         return __real_dsd_audio_write(stream, buffer, frames);
     }
     g_audio_write_frames += frames;
+    return 0;
+}
+
+/* The audio sinks ask each write's stream for its device health (issue #659); the armed fake never fails. */
+int
+__wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out) {
+    if (!g_audio_write_armed) {
+        return __real_dsd_audio_output_health_get(stream, out);
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
     return 0;
 }
 
