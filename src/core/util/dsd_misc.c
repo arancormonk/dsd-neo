@@ -13,6 +13,7 @@
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/fec/trellis.h>
 #include <dsd-neo/fec/viterbi.h>
 #include <math.h>
@@ -383,9 +384,9 @@ init_audio_filters(dsd_state* state, int sample_rate_hz) {
     //left and right variants for stereo output testing on digital voice samples
     //Digital voice path runs on 8 kHz frames; keep these filters keyed to that rate.
     LPFilter_Init(&state->RCFilterL, 960.0f, digital_Ts);
-    HPFilter_Init(&state->HRCFilterL, 960.0f, digital_Ts);
     LPFilter_Init(&state->RCFilterR, 960.0f, digital_Ts);
-    HPFilter_Init(&state->HRCFilterR, 960.0f, digital_Ts);
+    // The digital voice high-pass runs at its fixed 8 kHz design; an input change starts it over (issue #653).
+    dsd_voice_hpf_reset(state, -1);
 }
 
 //FUNCTIONS for handing use of above filters
@@ -437,22 +438,131 @@ hpf_f(dsd_state* state, float* input, int len) {
     }
 }
 
+/********************************************************************************************************
+ *                              DIGITAL VOICE HIGH-PASS (issue #653)
+ ********************************************************************************************************/
+
+/* A sample whose magnitude reaches this is not a finite audio sample. */
+static const double k_voice_hpf_finite_limit = 1e30;
+static const double k_voice_hpf_pi = 3.14159265358979323846;
+/* The Butterworth section's Q, 1/sqrt(2). */
+static const double k_voice_hpf_q = 0.70710678118654752440;
+
+typedef struct {
+    double b0, b1, b2, a1, a2;
+} voice_hpf_coefs;
+
+/* RBJ cookbook high-pass with Q = 1/sqrt(2): the bilinear 2nd-order Butterworth, prewarped so its -3 dB corner lands
+   at DSD_VOICE_HPF_CORNER_HZ. b0 - b1 + b2 equals a0 - a1 + a2, so the gain at Nyquist is exactly 1, and the
+   Butterworth response is monotonic: the voice band passes at unity, with no ripple. */
+static voice_hpf_coefs
+voice_hpf_design(void) {
+    const double w0 = 2.0 * k_voice_hpf_pi * DSD_VOICE_HPF_CORNER_HZ / DSD_VOICE_HPF_RATE_HZ;
+    const double cw = cos(w0);
+    const double alpha = sin(w0) / (2.0 * k_voice_hpf_q);
+    const double a0 = 1.0 + alpha;
+    voice_hpf_coefs c;
+    c.b0 = ((1.0 + cw) / 2.0) / a0;
+    c.b1 = -(1.0 + cw) / a0;
+    c.b2 = c.b0;
+    c.a1 = (-2.0 * cw) / a0;
+    c.a2 = (1.0 - alpha) / a0;
+    return c;
+}
+
+void
+dsd_voice_hpf_reset(dsd_state* state, int slot) {
+    if (!state) {
+        return;
+    }
+    // The reception the state ran for goes with it, so the next frames start a reception of their own: a call learned
+    // partway through them is not taken for a change from the call before the reset.
+    for (int s = 0; s < 2; s++) {
+        if (slot < 0 || slot == s) {
+            state->voice_hpf[s].s1 = 0.0;
+            state->voice_hpf[s].s2 = 0.0;
+            state->voice_hpf[s].call_epoch = 0U;
+            state->voice_hpf[s].protocol_family = 0;
+        }
+    }
+}
+
+void
+dsd_voice_hpf_process(dsd_state* state, int slot, float* buf, size_t n) {
+    if (!state || !buf || slot < 0 || slot > 1) {
+        return;
+    }
+    const voice_hpf_coefs c = voice_hpf_design();
+    dsd_voice_hpf_state* f = &state->voice_hpf[slot];
+    for (size_t i = 0; i < n; i++) {
+        const double x = (double)buf[i];
+        if (!(fabs(x) < k_voice_hpf_finite_limit)) {
+            buf[i] = 0.0f;
+            continue;
+        }
+        const double y = (c.b0 * x) + f->s1;
+        f->s1 = (c.b1 * x) - (c.a1 * y) + f->s2;
+        f->s2 = (c.b2 * x) - (c.a2 * y);
+        buf[i] = (float)y;
+    }
+}
+
+double
+dsd_voice_hpf_gain_db(double hz) {
+    const voice_hpf_coefs c = voice_hpf_design();
+    const double w = 2.0 * k_voice_hpf_pi * hz / DSD_VOICE_HPF_RATE_HZ;
+    const double c1 = cos(w);
+    const double s1 = -sin(w);
+    const double c2 = cos(2.0 * w);
+    const double s2 = -sin(2.0 * w);
+    const double nr = c.b0 + (c.b1 * c1) + (c.b2 * c2);
+    const double ni = (c.b1 * s1) + (c.b2 * s2);
+    const double dr = 1.0 + (c.a1 * c1) + (c.a2 * c2);
+    const double di = (c.a1 * s1) + (c.a2 * s2);
+    const double den = (dr * dr) + (di * di);
+    if (!(den > 0.0)) {
+        return -300.0;
+    }
+    const double mag2 = ((nr * nr) + (ni * ni)) / den;
+    return mag2 > 1e-30 ? 10.0 * log10(mag2) : -300.0;
+}
+
+/* The digital high-pass on a short buffer, slot 1 (left) or slot 2 (right) state, saturating to int16. The voice
+   chain (dsd_voice_chain_run()) runs it on the float frame before the gain; these stay for callers that hold int16
+   samples. */
+static void
+voice_hpf_short(dsd_state* state, int slot, short* input, int len) {
+    if (!state || !input || len <= 0) {
+        return;
+    }
+    float tmp[DSD_VOICE_FRAME_SAMPLES];
+    int done = 0;
+    while (done < len) {
+        int chunk = len - done;
+        if (chunk > DSD_VOICE_FRAME_SAMPLES) {
+            chunk = DSD_VOICE_FRAME_SAMPLES;
+        }
+        for (int i = 0; i < chunk; i++) {
+            tmp[i] = (float)input[done + i];
+        }
+        dsd_voice_hpf_process(state, slot, tmp, (size_t)chunk);
+        for (int i = 0; i < chunk; i++) {
+            input[done + i] = clamp_float_to_short(tmp[i]);
+        }
+        done += chunk;
+    }
+}
+
 //hpf digital left
 void
 hpf_dL(dsd_state* state, short* input, int len) {
-    int i;
-    for (i = 0; i < len; i++) {
-        input[i] = clamp_float_to_short(HPFilter_Update(&state->HRCFilterL, input[i]));
-    }
+    voice_hpf_short(state, 0, input, len);
 }
 
 //hpf digital right
 void
 hpf_dR(dsd_state* state, short* input, int len) {
-    int i;
-    for (i = 0; i < len; i++) {
-        input[i] = clamp_float_to_short(HPFilter_Update(&state->HRCFilterR, input[i]));
-    }
+    voice_hpf_short(state, 1, input, len);
 }
 
 /* The old "PBF" pair, a one-pole 8 kHz high-pass and 12 kHz low-pass that the monitor ran as its voice filter and

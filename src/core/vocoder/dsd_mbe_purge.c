@@ -6,6 +6,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <mbelib-neo/mbelib.h>
 
 #include "dsd-neo/core/safe_api.h"
@@ -32,6 +33,7 @@ dsd_mbe_purge_slot_audio(dsd_state* state, int slot) {
 
     dsd_mbe_reset_slot_parameters(state, slot);
     dsd_audio_dmr_mix_media_discard(slot);
+    dsd_voice_hpf_reset(state, slot);
 
     if (slot == 0) {
         DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));

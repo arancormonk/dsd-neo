@@ -4,8 +4,8 @@
  */
 
 /*
- * Manual analog gain for the M17 encoder's microphone input. Digital voice has one gain stage in both output formats,
- * processAudio()/processAudioR() in dsd_audio.c (issue #652).
+ * Shared gain helpers for audio paths. The digital voice gain, the same for both output formats, is the voice chain's
+ * (dsd_voice_chain_run(), <dsd-neo/core/voice_chain.h>, issue #653).
  */
 
 #include <dsd-neo/core/audio.h>

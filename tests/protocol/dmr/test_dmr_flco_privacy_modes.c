@@ -847,7 +847,7 @@ assert_td_lc_slot_reset(const dsd_state* state, unsigned int slot) {
         assert(state->payload_algid == 0);
         assert(state->payload_keyid == 0);
         assert(state->payload_mi == 0);
-        // Issue #652: a terminator no longer resets float output's gain to -g; one gain stage keeps its level.
+        // The voice chain's gain level carries across calls in both output formats (issue #653).
         assert(fabsf(state->aout_gain - 1.0f) < 1e-6f);
     } else {
         assert(state->dmr_fidR == 0);
@@ -881,7 +881,7 @@ assert_td_lc_slot_crypto_reset_metadata_retained(const dsd_state* state, unsigne
         assert(state->payload_algid == 0);
         assert(state->payload_keyid == 0);
         assert(state->payload_mi == 0);
-        // Issue #652: a terminator no longer resets float output's gain to -g; one gain stage keeps its level.
+        // The voice chain's gain level carries across calls in both output formats (issue #653).
         assert(fabsf(state->aout_gain - 1.0f) < 1e-6f);
     } else {
         assert(state->dmr_fidR == 0);

@@ -41,6 +41,15 @@
 #include "mbe_result_context.h"
 #include "test_support.h"
 
+/* These cases check synthesis, crypto and routing against mbelib's own output: a fixed unity gain with the high-pass
+   off (use_hpf_d 0) leaves the voice chain every frame runs through (issue #653) a pass-through. The chain itself is
+   CORE_VOICE_CHAIN's, and its place on each path the voice-chain cases below. */
+static void
+pass_through_voice_chain(dsd_opts* opts) {
+    opts->audio_gain = 1.0f;
+    opts->audio_gainR = 1.0f;
+}
+
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
@@ -337,6 +346,7 @@ test_keyring_tracks_aes_segment_metadata(void) {
     const int slot1_fallback_key = 0x1400;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     state.payload_keyid = slot0_zero_key;
@@ -674,6 +684,7 @@ create_mbe_playback_file(char* path, size_t path_size, const char cookie[4],
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     DSD_MEMSET(&state, 0, sizeof(state));
     state.errs2 = errs2;
     opts.mbe_out_f = f;
@@ -730,6 +741,7 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     static mbe_parms prev2;
     static mbe_parms prev_enhanced2;
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.optind = 1;
     state.synctype = DSD_SYNC_P25P1_POS;
@@ -742,6 +754,7 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     rc |= expect_eq_int("play-imbe-path", strcmp(opts.mbe_in_file, imbe_path), 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.optind = 1;
 
@@ -753,6 +766,7 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     rc |= expect_eq_int("play-amb-path", strcmp(opts.mbe_in_file, amb_path), 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.optind = 1;
 
@@ -995,6 +1009,7 @@ test_process_mbe_frame_p25p1_suppresses_tail_erasure_hard(void) {
     dsd_close(log_fd);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1089,6 +1104,7 @@ test_process_mbe_frame_p25p1_suppresses_tail_erasure_soft(void) {
     mbe_parms prev_enhanced_before;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1159,6 +1175,8 @@ test_process_mbe_frame_p25p1_tail_erasure_requires_exact_clear_state(void) {
         char imbe_fr[8][23] = {{0}};
 
         DSD_MEMSET(&opts, 0, sizeof(opts));
+        pass_through_voice_chain(&opts);
+        pass_through_voice_chain(&opts);
         opts.floating_point = 1;
         opts.audio_gain = 1.0f;
         opts.audio_gainR = 1.0f;
@@ -1196,6 +1214,7 @@ test_process_mbe_frame_p25p1_normalized_metrics_and_nonmatches(void) {
     char imbe_fr[8][23] = {{0}};
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1344,6 +1363,7 @@ test_process_mbe_frame_p25p1_updates_error_history(void) {
     mbe_process_result result;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     int ret = mbe_decodeImbe7200x4400Frame((const char (*)[23])imbe_fr, imbe_d, &result);
     store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("hard-p25 fixture decodes", ret >= 0, 1);
@@ -1408,6 +1428,7 @@ test_process_mbe_frame_soft_p25p1_copies_soft_imbe_audio(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1466,6 +1487,7 @@ test_process_mbe_frame_soft_nxdn_copies_soft_ambe_audio(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1531,6 +1553,7 @@ test_process_mbe_frame_p25p1_rc4_transforms_imbe_payload(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1618,6 +1641,7 @@ test_process_mbe_frame_p25p1_multicrypt_transforms_imbe_payload(void) {
     // Run the full P25p1 AES128 path and compare counters, keystream emission,
     // vocoder status, and staged float audio against the oracle above.
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1648,6 +1672,7 @@ test_process_mbe_frame_p25p1_multicrypt_transforms_imbe_payload(void) {
     // DES-XL shares the P25p1 IMBE transform entry point but has a distinct
     // MI/key schedule and octet counter progression, so keep it in this fixture.
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1715,6 +1740,7 @@ test_process_mbe_frame_nxdn_cipher1_transforms_ambe_payload(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1784,6 +1810,7 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1857,6 +1884,7 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1900,6 +1928,7 @@ test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset(void) {
     ambe_fr[3][20] = 1;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -1961,6 +1990,7 @@ test_process_mbe_frame_hard_dstar_stages_audio(void) {
     rc |= expect_eq_int("frame-hard-dstar process", ret >= 0, 1);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2077,6 +2107,7 @@ test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400(void) {
     rc |= expect_eq_int("dstar-route 2450 synthesis differs", ambe2450_differs, 1);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2149,6 +2180,9 @@ test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy(void) {
                 return 1;
             }
             DSD_MEMSET(&opts, 0, sizeof(opts));
+            pass_through_voice_chain(&opts);
+            pass_through_voice_chain(&opts);
+            pass_through_voice_chain(&opts);
             opts.floating_point = 1;
             opts.audio_gain = 1.0f;
             opts.audio_gainR = 1.0f;
@@ -2227,6 +2261,9 @@ test_process_mbe_frame_mbe_capture_honors_record_policy(void) {
                 return 1;
             }
             DSD_MEMSET(&opts, 0, sizeof(opts));
+            pass_through_voice_chain(&opts);
+            pass_through_voice_chain(&opts);
+            pass_through_voice_chain(&opts);
             opts.floating_point = 1;
             opts.audio_gain = 1.0f;
             opts.audio_gainR = 1.0f;
@@ -2303,6 +2340,8 @@ test_process_mbe_frame_p25p1_capture_honors_reverse_mute(void) {
             return 1;
         }
         DSD_MEMSET(&opts, 0, sizeof(opts));
+        pass_through_voice_chain(&opts);
+        pass_through_voice_chain(&opts);
         opts.floating_point = 1;
         opts.audio_gain = 1.0f;
         opts.audio_gainR = 1.0f;
@@ -2367,6 +2406,7 @@ test_process_mbe_frame_hard_dmr_left_stages_audio(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2432,6 +2472,7 @@ test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2518,6 +2559,7 @@ test_process_mbe_frame_p25p2_mono_path_records_slot2_wav(void) {
     ambe_fr[2][20] = 1;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.dmr_stereo = 0;
     opts.dmr_stereo_wav = 1;
     opts.static_wav_file = 0;
@@ -2573,6 +2615,7 @@ test_process_mbe_frame_p25p2_short_staging_provenance(void) {
 
     // Stereo post path, clear slot 2: staged, so audio.
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.dmr_stereo = 1;
     opts.audio_out = 1;
     opts.dmr_mute_encL = 1;
@@ -2663,6 +2706,7 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2713,6 +2757,7 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2772,6 +2817,7 @@ test_process_mbe_frame_mixed_clear_and_bp(void) {
             store_expected_process_status(ret, expected_audio, &errs, &errs2, expected_error, sizeof(expected_error),
                                           &result);
             init_mbe_state(state, &cur, &prev, &enhanced, &cur2, &prev2, &enhanced2);
+            pass_through_voice_chain(opts);
             opts->floating_point = 1;
             opts->audio_gain = 1.0f;
             opts->audio_gainR = 1.0f;
@@ -2827,6 +2873,7 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
     ambe_fr[2][15] = 1;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2844,6 +2891,7 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
     rc |= expect_eq_int("reverse-mute-left-preserves-p25-override", opts.unmute_encrypted_p25, 1);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2882,6 +2930,7 @@ test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots(void) {
     ambe_fr[2][18] = 1;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2899,6 +2948,7 @@ test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots(void) {
     rc |= expect_eq_int("missing-alg-left-debug", state.debug_audio_errors, state.errs2);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2937,6 +2987,7 @@ test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags(void) {
     ambe_fr[3][21] = 1;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -2952,6 +3003,7 @@ test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags(void) {
     rc |= expect_eq_int("forced-clear-left-enc", state.dmr_encL, 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -3633,6 +3685,7 @@ test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
     ambe_fr[3][22] = 1;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -3659,6 +3712,7 @@ test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
     rc |= expect_any_nonzero_u8("aes-left-keystream-ready", state.ks_octetL, sizeof(state.ks_octetL));
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -3717,6 +3771,7 @@ test_process_mbe_frame_activation_gate_and_wide_kid(void) {
     // algid == 0: the BP/HBP TG autoload owns the slot, so the gate must stay shut even with
     // keyloader armed and material imported for the signaled id -- R must survive untouched.
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -3733,6 +3788,7 @@ test_process_mbe_frame_activation_gate_and_wide_kid(void) {
 
     // algid == 0x80: the scrambler path owns the slot -- same non-activation as algid == 0.
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -3751,6 +3807,7 @@ test_process_mbe_frame_activation_gate_and_wide_kid(void) {
     // algid == 0x21 with keyloader armed: the gate opens and the signaled id's own material
     // activates, overwriting whatever R held before.
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -3770,6 +3827,7 @@ test_process_mbe_frame_activation_gate_and_wide_kid(void) {
     // uint8_t before reaching the resolver. Seed a decoy at the truncated index so a
     // reintroduced truncation is caught by the wrong *value*, not merely a missing key.
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -3826,6 +3884,7 @@ test_process_mbe_frame_hard_p25p2_right_stages_audio(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -3877,6 +3936,7 @@ test_process_mbe_frame_provoice_updates_debug_errors_without_p25_history(void) {
     mbe_process_result result;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     int ret = mbe_decodeImbe7100x4400Frame((const char (*)[24])imbe7100_fr, imbe_d, &result);
     store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("provoice-baseline fixture decodes", ret >= 0, 1);
@@ -3941,6 +4001,7 @@ test_process_mbe_frame_hard_provoice_stages_audio(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -4076,6 +4137,7 @@ run_provoice_frame(char hard_fr[7][24], dsd_vocoder_soft_bit soft_fr[7][24], pro
         return 1;
     }
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -4247,6 +4309,7 @@ run_provoice_library_parity(int soft_path) {
     int rc = 0;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -4408,6 +4471,7 @@ run_dstar_frame(char hard_fr[4][24], dsd_vocoder_soft_bit soft_fr[4][24], dstar_
         return 1;
     }
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -4620,6 +4684,7 @@ run_dstar_library_parity(int soft_path, int synctype) {
 
     DSD_SNPRINTF(tag, sizeof(tag), "dstar-parity %s synctype %d", soft_path ? "soft" : "hard", synctype);
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -4750,6 +4815,7 @@ test_process_mbe_frame_ambe2_routes_slot2_error_state(void) {
     mbe_process_result result;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -4813,6 +4879,7 @@ run_dstar_stale_stereo_slot_case(int synctype) {
     ambe_fr[3][12] = 1;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -4887,6 +4954,7 @@ test_process_mbe_frame_media_protocol_lifecycle(void) {
     dsd_call_snapshot call;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -5024,6 +5092,7 @@ test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio(void) {
     ambe_fr[2][17] = 1;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -5144,6 +5213,7 @@ run_capture_verdict_case(const capture_verdict_case* c) {
         return 1;
     }
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -5284,6 +5354,7 @@ test_process_mbe_frame_capture_files_follow_the_frame(void) {
 
     /* YSF V/D1 (NXDN decoder borrowed), then real NXDN. */
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -5309,6 +5380,7 @@ test_process_mbe_frame_capture_files_follow_the_frame(void) {
 
     /* X2: slot 1 and slot 2 frames, one file. */
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -5331,6 +5403,7 @@ test_process_mbe_frame_capture_files_follow_the_frame(void) {
 
     /* DMR mono playing slot 2: a slot 1 frame writes nothing, a slot 2 frame creates the slot 2 file. */
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
     opts.floating_point = 1;
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
@@ -5352,6 +5425,262 @@ test_process_mbe_frame_capture_files_follow_the_frame(void) {
     rc |= expect_eq_int("dmr mono: slot 2's", mono_ctx.with_suffix, 1);
     dsd_state_ext_free_all(&state);
     remove_capture_dir(dir);
+    return rc;
+}
+
+/* The voice chain on the vocoder's paths (issue #653). Each case decodes the same frames under one output setting and
+   returns the per-call WAV and the chained frames. */
+enum { CHAIN_FRAMES = 8 };
+
+typedef struct {
+    const char* tag;
+    int floating;   /* -y */
+    int audio_out;  /* 0: -o null, or muted from the start */
+    int mute_after; /* muted from this frame on (0: never) */
+    int stereo;     /* a stereo-active preset (-fa / -fs) */
+    int hpf;        /* -v 0x8 */
+} chain_output_case;
+
+typedef struct {
+    int protocol;
+    int slot;
+    const char* tag;
+} chain_protocol_case;
+
+static void
+chain_case_frame(int protocol, int frame, char imbe_fr[8][23], char ambe_fr[4][24]) {
+    DSD_MEMSET(imbe_fr, 0, 8 * 23);
+    DSD_MEMSET(ambe_fr, 0, 4 * 24);
+    if (DSD_SYNC_IS_P25P1(protocol)) {
+        load_imbe7200_rows((frame % 3 == 1) ? k_p25p1_clean_silence_rows : k_p25p1_corrected_speech_rows, imbe_fr);
+        return;
+    }
+    if (DSD_SYNC_IS_DSTAR(protocol)) {
+        (void)build_dstar_voice_frame(frame, ambe_fr);
+        return;
+    }
+    char ambe_d[49];
+    int errs = 0;
+    int errs2 = 0;
+    mbe_process_result result;
+    (void)prepare_active_ambe2450_fixture(ambe_fr, ambe_d, &errs, &errs2, &result);
+}
+
+/* What the mono mixer of a chain case emitted to UDP, as int16-scale samples whichever the format. */
+static float g_chain_emitted[CHAIN_FRAMES * 160];
+static int g_chain_emitted_count;
+static int g_chain_emitted_float;
+
+static void
+chain_capture_emitted(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    (void)state;
+    const size_t width = g_chain_emitted_float ? sizeof(float) : sizeof(short);
+    for (size_t i = 0; i < nsam / width && g_chain_emitted_count < CHAIN_FRAMES * 160; i++) {
+        if (g_chain_emitted_float) {
+            float v = 0.0f;
+            DSD_MEMCPY(&v, (const uint8_t*)data + (i * width), sizeof(v));
+            g_chain_emitted[g_chain_emitted_count++] = v * 32768.0f;
+        } else {
+            short v = 0;
+            DSD_MEMCPY(&v, (const uint8_t*)data + (i * width), sizeof(v));
+            g_chain_emitted[g_chain_emitted_count++] = (float)v;
+        }
+    }
+}
+
+/* Decodes CHAIN_FRAMES frames of @p p under @p c. @p wav gets the slot's per-call WAV samples (@p wav_count of them),
+   @p chained each frame's chain output and @p staged the shared short staging. Single-slot protocols then play each
+   frame through the mono mixer into g_chain_emitted in the selected sink format. */
+static int
+run_chain_case(const chain_protocol_case* p, const chain_output_case* c, short* wav, int* wav_count,
+               float chained[CHAIN_FRAMES][160], short staged[CHAIN_FRAMES][160], float* gain_out) {
+    char wav_path[1024];
+    SNDFILE* file = create_wav_temp(wav_path, sizeof(wav_path), "voice_chain_wav");
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!file || !opts || !state) {
+        if (file) {
+            sf_close(file);
+            (void)remove(wav_path);
+        }
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->audio_out_type = 8;
+    opts->audio_out = c->audio_out;
+    opts->floating_point = c->floating;
+    opts->use_hpf_d = c->hpf;
+    opts->dmr_stereo = (c->stereo || DSD_SYNC_IS_DMR(p->protocol)) ? 1 : 0;
+    opts->dmr_stereo_wav = 1;
+    opts->static_wav_file = 0;
+    opts->slot1_on = 1;
+    opts->slot2_on = 1;
+    opts->audio_gain = 0.0f;
+    opts->audio_gainR = 0.0f;
+    if (p->slot == 1 && !DSD_SYNC_IS_X2TDMA(p->protocol)) {
+        opts->wav_out_fR = file;
+    } else {
+        opts->wav_out_f = file;
+    }
+    state->synctype = p->protocol;
+    state->lastsynctype = p->protocol;
+    state->currentslot = p->slot;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state->aout_gain = 15.0f;
+    state->aout_gainR = 15.0f;
+    opts->pulse_digi_out_channels = 1;
+    g_chain_emitted_count = 0;
+    g_chain_emitted_float = c->floating;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = chain_capture_emitted});
+
+    char imbe_fr[8][23];
+    char ambe_fr[4][24];
+    for (int f = 0; f < CHAIN_FRAMES; f++) {
+        if (c->mute_after > 0 && f >= c->mute_after) {
+            opts->audio_out = 0;
+        }
+        chain_case_frame(p->protocol, f, imbe_fr, ambe_fr);
+        mbe_setThreadRngSeed(4100U + (uint32_t)f);
+        processMbeFrame(opts, state, imbe_fr, ambe_fr, NULL);
+        const int right = p->slot == 1 && !DSD_SYNC_IS_X2TDMA(p->protocol);
+        DSD_MEMCPY(chained[f], right ? state->audio_out_temp_bufR : state->audio_out_temp_buf, sizeof(chained[f]));
+        DSD_MEMCPY(staged[f], right ? state->s_r : state->s_l, sizeof(staged[f]));
+        if (!DSD_SYNC_IS_DMR(p->protocol)) {
+            playSynthesizedVoiceMS(opts, state);
+        }
+        // Keep the output ring inside its allocation, as the mixers do after each pass.
+        state->audio_out_buf_p = state->audio_out_buf + 100;
+        state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
+        state->audio_out_buf_pR = state->audio_out_bufR + 100;
+        state->audio_out_float_buf_pR = state->audio_out_float_bufR + 100;
+        state->audio_out_idx = state->audio_out_idx2 = state->audio_out_idxR = state->audio_out_idx2R = 0;
+    }
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    *gain_out = p->slot == 1 ? state->aout_gainR : state->aout_gain;
+    const float other_gain = p->slot == 1 ? state->aout_gain : state->aout_gainR;
+    sf_close(file);
+    opts->wav_out_f = NULL;
+    opts->wav_out_fR = NULL;
+
+    int rc = expect_eq_int("voice chain: the other slot's gain untouched", fabsf(other_gain - 15.0f) < 1e-6f, 1);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+    *wav_count = 0;
+    if (written) {
+        *wav_count = (int)sf_read_short(written, wav, CHAIN_FRAMES * 160);
+        sf_close(written);
+    }
+    (void)remove(wav_path);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* One decoded call gives one per-call WAV whatever the output format, the output type, a mute partway through or the
+   preset, and it holds the filtered, gained samples that play: the float output's frame is exactly the short output's after sink conversion (issue #653). */
+static int
+test_voice_chain_per_call_wav_is_format_independent(void) {
+    static const chain_protocol_case protocols[] = {
+        {DSD_SYNC_P25P1_POS, 0, "p25p1"},
+        {DSD_SYNC_NXDN_POS, 0, "nxdn"},
+        {DSD_SYNC_DMR_BS_VOICE_POS, 1, "dmr slot 2"},
+        {DSD_SYNC_DSTAR_VOICE_POS, 0, "dstar"},
+        {DSD_SYNC_X2TDMA_VOICE_POS, 1, "x2 slot 2"},
+    };
+    static const chain_output_case outputs[] = {
+        {"short", 0, 1, 0, 0, 1},
+        {"float", 1, 1, 0, 0, 1},
+        {"short -o null", 0, 0, 0, 0, 1},
+        {"float -o null", 1, 0, 0, 0, 1},
+        {"short muted partway", 0, 1, 3, 0, 1},
+        {"short stereo preset", 0, 1, 0, 1, 1},
+        {"float stereo preset", 1, 1, 0, 1, 1},
+    };
+    static const chain_output_case unfiltered = {"short high-pass off", 0, 1, 0, 0, 0};
+    static short ref_wav[CHAIN_FRAMES * 160];
+    static short wav[CHAIN_FRAMES * 160];
+    static float ref_chained[CHAIN_FRAMES][160];
+    static float chained[CHAIN_FRAMES][160];
+    static short ref_staged[CHAIN_FRAMES][160];
+    static short staged[CHAIN_FRAMES][160];
+    static float ref_emitted[CHAIN_FRAMES * 160];
+    char label[160];
+    int rc = 0;
+    for (size_t p = 0; p < sizeof(protocols) / sizeof(protocols[0]); p++) {
+        int ref_count = 0;
+        float ref_gain = 0.0f;
+        rc |= run_chain_case(&protocols[p], &outputs[0], ref_wav, &ref_count, ref_chained, ref_staged, &ref_gain);
+        const int ref_emitted_count = g_chain_emitted_count;
+        DSD_MEMCPY(ref_emitted, g_chain_emitted, sizeof(ref_emitted));
+        if (!DSD_SYNC_IS_DMR(protocols[p].protocol)) {
+            // The short mono mixer played the per-call WAV's samples.
+            DSD_SNPRINTF(label, sizeof(label), "voice chain %s: short playback is the per-call WAV", protocols[p].tag);
+            int same = ref_emitted_count == ref_count;
+            for (int i = 0; same && i < ref_count; i++) {
+                same = fabsf(ref_emitted[i] - (float)ref_wav[i]) < 0.5f;
+            }
+            rc |= expect_eq_int(label, same, 1);
+        }
+        DSD_SNPRINTF(label, sizeof(label), "voice chain %s: per-call WAV holds every frame", protocols[p].tag);
+        rc |= expect_eq_int(label, ref_count, CHAIN_FRAMES * 160);
+        int peak = 0;
+        for (int i = 0; i < ref_count; i++) {
+            const int a = ref_wav[i] < 0 ? -ref_wav[i] : ref_wav[i];
+            peak = a > peak ? a : peak;
+        }
+        // The recording is not silent, and the auto gain moved off its starting level: it is the gained frame.
+        DSD_SNPRINTF(label, sizeof(label), "voice chain %s: the auto gain ran on the call", protocols[p].tag);
+        rc |= expect_eq_int(label, peak > 0 && fabsf(ref_gain - 15.0f) > 0.5f, 1);
+        // What the short output staged is the chain output it wrote to the WAV.
+        DSD_SNPRINTF(label, sizeof(label), "voice chain %s: short staging is the per-call WAV", protocols[p].tag);
+        rc |= expect_eq_mem(label, ref_staged, ref_wav, sizeof(ref_staged));
+
+        for (size_t o = 1; o < sizeof(outputs) / sizeof(outputs[0]); o++) {
+            int count = 0;
+            float gain = 0.0f;
+            rc |= run_chain_case(&protocols[p], &outputs[o], wav, &count, chained, staged, &gain);
+            DSD_SNPRINTF(label, sizeof(label), "voice chain %s %s: per-call WAV length", protocols[p].tag,
+                         outputs[o].tag);
+            rc |= expect_eq_int(label, count, ref_count);
+            DSD_SNPRINTF(label, sizeof(label), "voice chain %s %s: per-call WAV samples", protocols[p].tag,
+                         outputs[o].tag);
+            rc |= expect_eq_mem(label, wav, ref_wav, sizeof(short) * (size_t)ref_count);
+            DSD_SNPRINTF(label, sizeof(label), "voice chain %s %s: chained frames", protocols[p].tag, outputs[o].tag);
+            rc |= expect_eq_mem(label, chained, ref_chained, sizeof(chained));
+            DSD_SNPRINTF(label, sizeof(label), "voice chain %s %s: gain level", protocols[p].tag, outputs[o].tag);
+            rc |= expect_eq_int(label, fabsf(gain - ref_gain) < 1e-6f, 1);
+            if (!outputs[o].floating) {
+                continue;
+            }
+            // Both output formats stage the same quantized samples whenever this output path stages a frame.
+            if (outputs[o].audio_out || outputs[o].stereo || DSD_SYNC_IS_DMR(protocols[p].protocol)) {
+                DSD_SNPRINTF(label, sizeof(label), "voice chain %s %s: float staging is the short staging",
+                             protocols[p].tag, outputs[o].tag);
+                rc |= expect_eq_mem(label, staged, ref_staged, sizeof(staged));
+            }
+            if (outputs[o].audio_out && outputs[o].mute_after == 0 && !outputs[o].stereo
+                && !DSD_SYNC_IS_DMR(protocols[p].protocol)) {
+                int same = g_chain_emitted_count == ref_emitted_count;
+                for (int i = 0; same && i < ref_emitted_count; i++) {
+                    same = fabsf(g_chain_emitted[i] - ref_emitted[i]) <= 1.0f;
+                }
+                DSD_SNPRINTF(label, sizeof(label), "voice chain %s %s: float playback is the short playback",
+                             protocols[p].tag, outputs[o].tag);
+                rc |= expect_eq_int(label, same, 1);
+            }
+        }
+        int count = 0;
+        float gain = 0.0f;
+        rc |= run_chain_case(&protocols[p], &unfiltered, wav, &count, chained, staged, &gain);
+        DSD_SNPRINTF(label, sizeof(label), "voice chain %s: the high-pass shapes the recording", protocols[p].tag);
+        rc |= expect_eq_int(label, count == ref_count && memcmp(wav, ref_wav, sizeof(short) * (size_t)count) != 0, 1);
+    }
     return rc;
 }
 
@@ -5422,6 +5751,7 @@ main(void) {
     rc |= test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state();
     rc |= test_process_mbe_frame_media_protocol_lifecycle();
     rc |= test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio();
+    rc |= test_voice_chain_per_call_wav_is_format_independent();
 
     if (rc == 0) {
         printf("CORE_MBE_TRANSFORM_CONTEXT: OK\n");

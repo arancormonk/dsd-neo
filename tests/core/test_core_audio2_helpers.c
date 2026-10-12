@@ -25,11 +25,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <mbelib-neo/mbelib.h>
 #include "core/audio/dsd_audio2_internal.h"
 #include "core/audio/dsd_audio_internal.h"
 #include "dsd-neo/core/audio.h"
-#include "dsd-neo/core/audio_filters.h"
 #include "dsd-neo/core/file_io.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -84,30 +82,6 @@ static int g_gate_mono_forced_enc = -1;
 static int g_gate_dual_forced_enc_l = -1;
 static int g_gate_dual_forced_enc_r = -1;
 static unsigned long g_gate_mono_tg;
-
-void
-mbe_floattoshort(const float* in, short* out) {
-    if (in == NULL || out == NULL) {
-        return;
-    }
-    for (size_t i = 0; i < 160U; i++) {
-        out[i] = (short)in[i];
-    }
-}
-
-void
-hpf_dL(dsd_state* state, short* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-hpf_dR(dsd_state* state, short* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
 
 void
 audio_mono_to_stereo_s16(const short* in, short* out, size_t n) {

@@ -1263,6 +1263,33 @@ name the code will try, creates a file there, and checks that it keeps its bytes
 next number. `YSF_MBE_CAPTURE` compiles `test_ysf_dch_decode.c` again with `DSD_YSF_TEST_REAL_VOCODER`, linking the
 real vocoder in place of the `processMbeFrame` stub, so the V/D1 and full-rate frames YSF hands the borrowed NXDN and
 P25 Phase 1 decoders reach the capture writer.
+
+### Digital voice chain checks (issue #653)
+
+Every decoded voice frame runs once through its slot's voice chain (high-pass, then gain) before anything consumes it,
+so one call gives the same audio in every output. `CORE_VOICE_CHAIN` holds the high-pass to the closed-form bilinear
+Butterworth response (-3 dB at 300 Hz, unity at Nyquist, flat within 0.05 dB from 1 kHz up) and runs a sine sweep
+through the live filter; it checks that each slot filters on its own state, that the state starts over at a new call or
+protocol family (and not when a call becomes known mid-stream, after a boundary reset included, nor for a borrowed
+decoder's synctype), the gain laws (fixed `-g` a plain multiplier, unity below 0, the auto gain's attack, a legitimate
+gain below unity kept, a zeroed level recovering), and that the alert tone is a clean sine with the same samples in
+both formats after sink conversion, its phase running across blocks (ID 41 ends a block partway through a cycle).
+`CORE_MBE_TRANSFORM_CONTEXT`'s voice-chain case decodes P25 Phase 1, NXDN, DMR slot 2, D-STAR and X2-TDMA slot 2
+frames through the real vocoder under integer and float output, the null output, a mute partway, and stereo presets,
+and requires byte-identical per-call WAVs, chained frames and gain levels, shared short staging equal to the WAV in
+both formats, the mono mixer's playback equal to the WAV and to the converted float output within one LSB, and a
+recording the high-pass changes. `CORE_MBE_FILE_IO` checks that SDRTrunk JSON
+playback chains the frames it withholds (encrypted, no key). Its other cases set a fixed
+unity gain with the high-pass off (`pass_through_voice_chain()`), which leaves the chain a pass-through, so they still
+compare synthesis against mbelib's own output.
+
+`DECODE_IQ_VOICE_CHAIN_*` (CTest labels `iq-decode` and `voice-chain`) replay a voice fixture with `-P` through
+`tests/iq_voice_chain_check.cmake` under integer output to stdout, float output (`-y`) to stdout and `-o null`, and
+require byte-identical per-call WAVs from all three (compared as sorted content hashes, since their names carry a
+nonce), as many float samples as integer ones, a float output that `-v 0x1` (high-pass off) changes, and, for a mono
+preset's single call (`PLAYBACK_MATCH`), the integer stdout equal to the WAV's samples. The runner removes its work
+folder, failing or not.
+
 ### Analog monitor audio checks
 
 The `DECODE_IQ_ANALOG_*` audio cases (CTest labels `iq-decode` and `analog`, radio builds only) check what the analog

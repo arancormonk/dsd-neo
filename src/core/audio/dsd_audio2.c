@@ -13,10 +13,8 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
@@ -26,7 +24,6 @@
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <limits.h>
 #include <math.h>
-#include <mbelib-neo/mbelib.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -484,17 +481,6 @@ dsd_apply_slot_hard_mute_flags(const dsd_opts* opts, int* encL, int* encR) {
     }
 }
 
-static void
-dsd_hpf_short_triplet_if_enabled(const dsd_opts* opts, dsd_state* state) {
-    if (opts->use_hpf_d != 1) {
-        return;
-    }
-    for (int j = 0; j < 3; j++) {
-        hpf_dL(state, state->s_l4[j], 160);
-        hpf_dR(state, state->s_r4[j], 160);
-    }
-}
-
 DSD_AUDIO2_INTERNAL void
 dsd_dmr_ss3_init_enc_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
     // The vocoder's flag alone, whatever the encrypted-audio mute flag says (see dmr_slot_flagged_encrypted()).
@@ -612,9 +598,6 @@ dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
     dsd_p25p2_playout_close(state, slot);
 }
 
-//NOTE: Tones produce ringing sound when put through the hpf_d, may want to look into tweaking it,
-//or looking for a way to store is_tone by glancing at ambe_d values and not running hpf_d on them
-
 // Mono source, formatted for the device opened at startup (which stays stereo in AUTO/mixed scans).
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
@@ -636,9 +619,6 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
         const int loaded = dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p);
         if (dsd_audio_activity_armed() && loaded && dsd_mix_output_plays(opts)) {
             dsd_audio_activity_note();
-        }
-        if (opts->use_hpf_d == 1) {
-            hpf_dL(state, mono_samp, (int)len);
         }
         if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
             short stereo[1920];
@@ -670,9 +650,6 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
 
     encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
-    if (opts->use_hpf_d == 1) {
-        hpf_dL(state, state->s_l, 160);
-    }
     audio_mono_to_stereo_s16(state->s_l, stereo_samp1, 160);
     if (!encL) {
         if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
@@ -720,7 +697,6 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
     dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
     dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
-    dsd_hpf_short_triplet_if_enabled(opts, state);
     // The copies dsd_dmr_apply_stereo_output_policy_ss3() makes below, decided from the same flags.
     const int copy_right_to_left = dsd_ss3_should_copy_right_to_left(opts, state, encL, encR);
     const int copy_left_to_right = !copy_right_to_left && dsd_ss3_should_copy_left_to_right(opts, state, encL, encR);
@@ -763,40 +739,28 @@ SS3_END:
     dsd_audio_reset_short_stereo_working_state(state);
 }
 
-//largely borrowed from Boatbod OP25 (simplified single tone ID version)
+// One 20 ms block of the alert tone, largely borrowed from Boatbod OP25 (simplified single tone ID version): a sine at
+// 31.25 Hz x ID with a peak of AD x 75 / 8000 of full scale, from sample @p n of the tone on. It is built once on the
+// int16 scale (issue #653): the short output plays these samples and the float output the same samples / 32768, so an
+// alert sounds the same in both formats.
 static void
-soft_tonef(float samp[160], int n, int ID, int AD) {
-    int i;
-    double step1, step2, amplitude, freq1, freq2;
-
-    float gain = 1.0f;
-
-    // Synthesize tones
-    freq1 = 31.25 * (double)ID;
-    freq2 = freq1;
-    step1 = 2.0 * M_PI * freq1 / 8000.0;
-    step2 = 2.0 * M_PI * freq2 / 8000.0;
-    amplitude = (double)AD * 75.0;
-
-    for (i = 0; i < 160; i++) {
-        samp[i] = (float)(amplitude * (sin((double)n * step1) * 0.5 + sin((double)n * step2) * 0.5));
-        samp[i] /= 8000.0f;
-        samp[i] *= gain;
-        n++;
+dsd_beeper_tone_block(short* samp, int n, int id, int ad) {
+    const double pi = 3.14159265358979323846;
+    const double step = 2.0 * pi * (31.25 * (double)id) / 8000.0;
+    const double amplitude = ((double)ad * 75.0) / 8000.0;
+    for (int i = 0; i < 160; i++) {
+        double v = amplitude * sin((double)(n + i) * step) * 32767.0;
+        if (v > 32767.0) {
+            v = 32767.0;
+        } else if (v < -32767.0) {
+            v = -32767.0;
+        }
+        samp[i] = (short)lrint(v);
     }
 }
 
 static void
-dsd_beeper_output_samples(dsd_opts* opts, dsd_state* state, const float* samp_f, const float* samp_fs,
-                          const short* samp_s, const short* samp_ss) {
-    if (opts->floating_point == 1) {
-        if (opts->pulse_digi_out_channels == 2) {
-            dsd_output_float_block(opts, state, samp_fs, 160, 2);
-        } else {
-            dsd_output_float_block(opts, state, samp_f, 160, 1);
-        }
-        return;
-    }
+dsd_beeper_output_samples(dsd_opts* opts, dsd_state* state, const short* samp_s, const short* samp_ss) {
     if (opts->pulse_digi_out_channels == 2) {
         dsd_output_s16_block(opts, state, samp_ss, 160, 2);
     } else {
@@ -815,15 +779,10 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
 
 void
 dsd_beeper_emit(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
-    UNUSED(state);
-    int i, j, n;
     //use lr as left or right channel designation in stereo config
-    float samp_f[160];  //mono float sample
-    float samp_fs[320]; //stereo float sample
     short samp_s[160];  //mono short sample
     short samp_ss[320]; //stereo short sample
-
-    n = 0; //rolling sine wave 'degree'
+    const int ch = (lr == 1) ? 1 : 0;
 
     //double len if not using Pulse Audio,
     //anything over UDP may
@@ -832,28 +791,13 @@ dsd_beeper_emit(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int le
         len *= 2;
     }
 
-    //each j increment is 20 ms at 160 samples / 8 kHz
-    for (j = 0; j < len; j++) {
-        //'zero' out stereo mix samples
-        DSD_MEMSET(samp_fs, 0, sizeof(samp_fs));
+    //each j increment is 20 ms at 160 samples / 8 kHz; the tone runs on across blocks
+    for (int j = 0; j < len; j++) {
         DSD_MEMSET(samp_ss, 0, sizeof(samp_ss));
-
-        //generate a tone with supplied tone ID and AD value
-        soft_tonef(samp_f, n, id, ad);
-
-        //convert float to short if required
-        if (opts->floating_point == 0) {
-            mbe_floattoshort(samp_f, samp_s);
-            for (i = 0; i < 160; i++) {
-                samp_s[i] *= 4000; //apply gain
-                samp_ss[(i * 2) + lr] = samp_s[i];
-            }
+        dsd_beeper_tone_block(samp_s, j * 160, id, ad);
+        for (int i = 0; i < 160; i++) {
+            samp_ss[(i * 2) + ch] = samp_s[i];
         }
-
-        for (i = 0; i < 160; i++) {
-            samp_fs[(i * 2) + lr] = samp_f[i];
-        }
-
-        dsd_beeper_output_samples(opts, state, samp_f, samp_fs, samp_s, samp_ss);
+        dsd_beeper_output_samples(opts, state, samp_s, samp_ss);
     }
 }

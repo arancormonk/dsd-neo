@@ -35,6 +35,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -296,11 +297,12 @@ update_p25_p1_voice_err_hist(dsd_state* state) {
     }
 }
 
-// One frame of -r playback, through the one gain stage and the mono mixer in either output format (issue #652).
+// One frame of -r playback, through the voice chain and the shared mono mixer in either output format.
 static void
 play_mbe_output_frame(dsd_opts* opts, dsd_state* state, int want_static_wav) {
+    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
     if (opts->audio_out == 1 || want_static_wav) {
-        processAudio(opts, state);
+        dsd_voice_stage_short_left(opts, state);
     }
     if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
         writeSynthesizedVoice(opts, state);
@@ -396,6 +398,9 @@ typedef struct {
     int vertex_ks_applied_l;
     int vertex_ks_applied_r;
     mbe_capture_point capture;
+    /* The buffer the decode synthesized this frame into (NULL: none) and the slot whose voice chain runs on it. */
+    float* synth;
+    int synth_slot;
 } mbe_frame_ctx_t;
 
 static void
@@ -403,6 +408,8 @@ mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_
     frame_ctx->vertex_ks_applied_l = 0;
     frame_ctx->vertex_ks_applied_r = 0;
     frame_ctx->capture = MBE_CAPTURE_NONE;
+    frame_ctx->synth = NULL;
+    frame_ctx->synth_slot = 0;
 
     (void)dsd_dmr_apply_forced_algid(state);
 
@@ -1675,7 +1682,7 @@ mbe_post_left_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class 
 
     state->debug_audio_errors += state->errs2;
     if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
-        processAudio(opts, state);
+        dsd_voice_stage_short_left(opts, state);
         state->mbe_short_silenced[0] = 0U;
         if (dsd_audio_activity_armed()) {
             mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_SHORT);
@@ -1733,7 +1740,7 @@ mbe_post_right_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class
 
     state->debug_audio_errorsR += state->errs2R;
     if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
-        processAudioR(opts, state);
+        dsd_voice_stage_short_right(opts, state);
         state->mbe_short_silenced[1] = 0U;
         if (dsd_audio_activity_armed()) {
             mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_SHORT);
@@ -1753,9 +1760,9 @@ mbe_post_other_process_audio(const dsd_opts* opts, dsd_state* state, int is_p25p
         return;
     }
     if (slot == 1) {
-        processAudioR(opts, state);
+        dsd_voice_stage_short_right(opts, state);
     } else {
-        processAudio(opts, state);
+        dsd_voice_stage_short_left(opts, state);
     }
     state->mbe_short_silenced[slot] = 0U;
 }
@@ -1802,7 +1809,7 @@ mbe_post_mono_left_audio(const dsd_opts* opts, dsd_state* state) {
         frame_errors = state->errs2R;
     }
     state->debug_audio_errors += frame_errors;
-    processAudio(opts, state);
+    dsd_voice_stage_short_left(opts, state);
 }
 
 // The slot whose per-call WAV a frame on the mono post path belongs to: DMR mono's playing slot, and a P25 Phase 2
@@ -1965,6 +1972,12 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
 
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+    // The frame goes through its slot's voice chain once, before anything reads it (issue #653): the shared short
+    // staging and the per-call WAV take the same filtered, gained samples, whatever the output format, the output
+    // type or the mute. The gates below still decide who receives it.
+    if (frame_ctx->synth) {
+        dsd_voice_chain_run(opts, state, frame_ctx->synth_slot, frame_ctx->synth);
+    }
     // Until a branch below stages this frame's short samples, the current slot's short frame is not this frame's.
     state->mbe_short_silenced[state->currentslot == 1 ? 1 : 0] = 1U;
     if (mbe_post_uses_mono_left_staging(state)) {
@@ -1999,6 +2012,8 @@ mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
     }
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
+    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653).
+    dsd_voice_hpf_reset(state, -1);
 }
 
 void
@@ -2172,6 +2187,8 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], c
     const int have_call = mark_vocoder_call_media(opts, state, &call);
     mbe_prepare_frame_state(state, &frame_ctx, have_call ? &call : NULL);
 
+    // Every decode below writes its frame, speech or silence, into the buffer named here, on every path.
+    frame_ctx.synth = state->audio_out_temp_buf;
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         mbe_process_p25p1(opts, state, imbe_fr, imbe_soft_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_PROVOICE(state->synctype)) {
@@ -2180,10 +2197,20 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], c
         /* Header synctypes too: processDSTAR_HD() decodes the superframe behind the header under its own synctype. */
         mbe_process_dstar(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
+        // Both timeslots synthesize into the left buffer, each on its own slot's chain.
+        frame_ctx.synth_slot = (state->currentslot == 1) ? 1 : 0;
         mbe_process_x2(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_NXDN(state->synctype)) {
         mbe_process_nxdn(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     } else {
+        // The slot path synthesizes slot 1 into the left buffer and slot 2 into the right one, and nothing for any
+        // other slot value.
+        if (state->currentslot == 1) {
+            frame_ctx.synth = state->audio_out_temp_bufR;
+            frame_ctx.synth_slot = 1;
+        } else if (state->currentslot != 0) {
+            frame_ctx.synth = NULL;
+        }
         mbe_process_slot_traffic(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     }
 

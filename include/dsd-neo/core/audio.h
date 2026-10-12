@@ -34,9 +34,15 @@ extern "C" {
  *         SPS hunt as proof its profile is the right one (#407).
  */
 int processdPMRvoice(dsd_opts* opts, dsd_state* state);
-/** @brief Core audio processing entry point (slot 1). */
+/**
+ * @brief Run the voice chain on the left frame (`audio_out_temp_buf`, slot 1's state) and stage it for the short
+ * mixers: dsd_voice_chain_run() then dsd_voice_stage_short_left() (<dsd-neo/core/voice_chain.h>).
+ *
+ * In-tree decoders call those two themselves (the chain on every frame, the staging only where the short output takes
+ * it); this stays for out-of-tree callers.
+ */
 void processAudio(const dsd_opts* opts, dsd_state* state);
-/** @brief Core audio processing entry point (slot 2 / right). */
+/** @brief processAudio() for the right frame (`audio_out_temp_bufR`) on slot 2's state. */
 void processAudioR(const dsd_opts* opts, dsd_state* state);
 
 /** @brief Open audio input stream based on opts. Returns 0 on success. */

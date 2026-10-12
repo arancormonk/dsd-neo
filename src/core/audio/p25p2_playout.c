@@ -30,13 +30,12 @@
  * the decode gate's decision for the call's latest burst, or the one a path that changes verdicts or ends the calls
  * took (dsd_p25p2_playout_note_policy()); emission only checks, cheaply, whether anything a waiting call's verdict
  * reads moved (dsd_p25p2_policy_key) and takes its verdict again then. The slot switches are read at emission. Both
- * output formats queue the slot's 16-bit frame after the one gain stage; float output (-y) only writes it as f32
+ * output formats queue the slot's 16-bit frame after the filter and gain chain; float output (-y) only writes it as f32
  * (issue #652).
  */
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -636,8 +635,9 @@ playout_diag(dsd_opts* opts, const dsd_state* state, int k, const int audible[2]
                     slot_level(&state->p25p2_playout, 1));
 }
 
-// Keep the vocoder's output buffers inside their allocation: processAudio() and the upsampler advance them per frame
-// and only a mixer's working-state reset wraps them (the mixers the playout replaced did it after every pass).
+// Keep the vocoder's output buffers inside their allocation: the short staging (dsd_voice_stage_short_left/right())
+// advances them per frame and only a mixer's working-state reset wraps them (the mixers the playout replaced did it
+// after every pass).
 static void
 housekeeping(dsd_state* state) {
     dsd_audio_maybe_reset_output_ring_left(state);
@@ -672,11 +672,6 @@ emit_block(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], cons
     }
     if (e[1]) {
         DSD_MEMCPY(right, e[1]->pcm.s16, sizeof(right));
-    }
-    // The digital high-pass runs over exactly the blocks played, each slot on its own filter state.
-    if (opts->use_hpf_d == 1) {
-        hpf_dL(state, left, BLOCK_FRAMES);
-        hpf_dR(state, right, BLOCK_FRAMES);
     }
     short stereo[BLOCK_FRAMES * 2];
     audio_mix_interleave_stereo_s16(audible[0] ? left : right, audible[1] ? right : left, BLOCK_FRAMES, 0, 0, stereo);

@@ -230,6 +230,8 @@ Windows console runs:
   published under a name no other recording holds: a name already taken draws another number, so an earlier
   recording is never replaced. That holds outright where the filesystem offers a no-replace rename or hard links;
   on one with neither, the name is claimed with an empty file first, which another program can see for a moment.
+  A per-call WAV holds digital voice at the level and with the high-pass it plays with: the same file with or without
+  `-y`, with `-o null`, muted, or under any preset (issue #653).
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
   allow-list or Hold miss, or `record=off` keeps the call out of the per-call WAV, the static WAV and MBE capture,
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
@@ -401,10 +403,11 @@ Notes
 
 ## Levels & Audio
 
-- `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%. It means the same with and without `-y`: a
-  non-zero value is a fixed gain (`N` times the vocoder's level, clipped at full scale), and auto gain brings each
-  slot's peaks toward full scale and keeps its level from call to call, starting over its peak history only when the
-  carrier drops.
+- `-g <num>` Digital output gain, the same in integer and `-y` float output and in the WAVs. `0` = auto: a peak
+  normalizer to about -0.8 dBFS over the last 0.5 s, at most x50, cutting at once on a louder peak and rising by at
+  most 5% per 20 ms, its level carried from call to call. `1`–`50` is a fixed multiplier on the vocoder's reference
+  level (`1` ≈ 2% of the range, `50` = 100%), saturating at full scale. Since issue #653 `-g N` under `-y` is this
+  fixed multiplier too, where it used to scale a float auto gain that kept adapting.
 - `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: an AGC brings analog voice to the
   level digital voice plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
   `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays at
@@ -422,13 +425,12 @@ Notes
   The audio is the same as without `-y`: the same gain (`-g`), digital high-pass (`-v` 0x8), routing (a single call in
   both ears, and at full level on one channel) and muting, and `-w` and `-P` record the same WAVs. Each float sample is
   the 16-bit sample / 32768, so none is past full scale. A sound device plays 16-bit samples either way. Exceptions: M17
-  voice is still written as 16-bit samples, EDACS analog voice is not written to stdout, and the alert tones keep their
-  own float waveform.
+  voice is still written as 16-bit samples and EDACS analog voice is not written to stdout.
 - P25 Phase 2 voice plays as each timeslot pair completes (every 60 ms of air time), in integer and `-y` float output
   alike: both slots side by side, every frame once, 18 frames per slot per 360 ms superframe. A slot whose call starts
   or ends mid-superframe is heard from its first frame to its last while the other slot plays on; a lost voice burst
   plays as silence in its place. One active slot plays in both ears; with one-channel output two slots are averaged.
-- `-a` Enable call alert beep (UI)
+- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output.
 
 ## Modes & Decoders (`-f`)
 
@@ -1379,8 +1381,11 @@ setting, shown apart from what is received, and it is off by default: then the o
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
 - Analog filter bitmap (advanced): `-v <hex>`, default `0x9`. `0x1` the analog monitor's voice band-pass: 300-3400 Hz,
   which takes every CTCSS tone at least 40 dB down on FM, and a DCS signal about 32 dB (a 200 Hz high-pass on AM); `0x2` a 960 Hz
-  low-pass and `0x4` a 960 Hz high-pass on the analog monitor; `0x8` the digital voice high-pass. `-v 0` plays the
-  demodulator's audio unfiltered.
+  low-pass and `0x4` a 960 Hz high-pass on the analog monitor; `0x8` the digital voice high-pass: a 2nd-order
+  Butterworth at 300 Hz (-3 dB at 300 Hz, about -19 dB at 100 Hz, within 0.05 dB of unity from 1 kHz up), run on each
+  slot's decoded frames before the gain, so every output that takes digital voice gets it, in both output formats;
+  each slot keeps its own filter state, which starts over at a new call or protocol. `-v 0` plays the demodulator's
+  audio unfiltered.
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
 - Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT). No effect on NXDN, which always requires
   CRC-verified content (see the NXDN note under "Modes & Decoders" above).

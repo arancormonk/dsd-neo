@@ -5491,23 +5491,28 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src
 )
-target_include_directories(
-    dsd-neo_test_core_audio2_helpers
-    SYSTEM
-    PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
-)
-# MBE_STATIC: the test defines its own mbe_floattoshort() instead of linking
-# mbe-neo, so the header must not declare it __declspec(dllimport) on Windows
-# (MSVC rejects defining a dllimport function, C2491).
 target_compile_definitions(
     dsd-neo_test_core_audio2_helpers
-    PRIVATE DSD_AUDIO2_INTERNAL= MBE_STATIC
+    PRIVATE DSD_AUDIO2_INTERNAL=
 )
 target_link_libraries(
     dsd-neo_test_core_audio2_helpers
     PRIVATE dsd-neo_test_call_state_support ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME CORE_AUDIO2_HELPERS COMMAND dsd-neo_test_core_audio2_helpers)
+
+# The digital voice chain (issue #653): the per-slot high-pass and gain every decoded frame runs through, and the alert
+# tone, the same in both output formats.
+add_executable(dsd-neo_test_core_voice_chain core/test_core_voice_chain.c)
+target_include_directories(
+    dsd-neo_test_core_voice_chain
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_voice_chain
+    PRIVATE dsd-neo_core ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_VOICE_CHAIN COMMAND dsd-neo_test_core_voice_chain)
 
 # The audio sinks' write path: device failure and recovery reports, the -o - descriptor's failure and drops (issue
 # #659). The platform writes and the log are stubbed.
@@ -13453,6 +13458,78 @@ if(DSD_HAS_RADIO)
         MIN_FILES 1
         MIN_FRAMES 160
     )
+    # The digital voice chain (issue #653): tests/iq_voice_chain_check.cmake replays a fixture with per-call WAVs (-P)
+    # under integer output to stdout, float output (-y) to stdout and the null output, and requires byte-identical
+    # per-call WAVs from all three, as many float samples as integer ones, a float output the digital high-pass changes,
+    # and, with PLAYBACK_MATCH (one call, mono preset), the integer stdout equal to the per-call WAV's samples.
+    function(dsd_neo_add_iq_voice_chain_test test_name fixture mode expected)
+        cmake_parse_arguments(_chain "PLAYBACK_MATCH" "" "" ${ARGN})
+        set(_match OFF)
+        if(_chain_PLAYBACK_MATCH)
+            set(_match ON)
+        endif()
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DEXPECTED=${expected}"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/voice_chain/${test_name}"
+                "-DPLAYBACK_MATCH=${_match}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_voice_chain_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;voice-chain" TIMEOUT 300
+        )
+    endfunction()
+
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_P25P1
+        p25p1_c4fm_vc
+        -f1
+        "Group Voice Channel User"
+        PLAYBACK_MATCH
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_P25P1_AUTO
+        p25p1_c4fm_vc
+        -fa
+        "Group Voice Channel User"
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_NXDN96
+        nxdn96
+        -fn
+        "RAN 00"
+        PLAYBACK_MATCH
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_DMR
+        dmr_voice
+        -fs
+        "Color Code=02"
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_DSTAR
+        dstar
+        -fd
+        "SRC: KB7WUK"
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_YSF
+        ysf
+        -fy
+        "V/D2 RID Mode Repeater CC"
+    )
+    dsd_neo_add_iq_voice_chain_test(
+        DECODE_IQ_VOICE_CHAIN_PROVOICE
+        provoice
+        "-fp -Z"
+        "IMBE [0-9A-F]+ err = "
+    )
+
     # Receiver noise under dPMR alone: false FS2 syncs synthesize nothing, so they leave no file.
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_NOISE_DPMR

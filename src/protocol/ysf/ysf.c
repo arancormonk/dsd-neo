@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/colors.h>
@@ -518,7 +519,8 @@ ysf_capture_bypassed_frame(dsd_opts* opts, dsd_state* state, const char ambe_d[4
 static void
 ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder) {
     if (bypassed_vocoder) {
-        processAudio(opts, state);
+        dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
+        dsd_voice_stage_short_left(opts, state);
         ysf_write_bypassed_call_wav(opts, state);
     }
     dsd_play_synthesized_voice(opts, state);

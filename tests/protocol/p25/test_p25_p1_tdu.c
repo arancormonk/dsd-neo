@@ -172,8 +172,8 @@ assert_common_tdu_state(const dsd_opts* opts, const dsd_state* state) {
     assert(state->p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
 }
 
-/* Issue #652: a TDU reset float output's gain to the -g setting, so the auto gain restarted each call at its quietest
-   and -g 50 divided by zero. One gain stage serves both formats now and keeps its level across the TDU. */
+/* One voice chain gain serves both output formats, and its level carries across calls (issue #653): a TDU leaves it
+   as it was in float output too. */
 static void
 test_tdu_resets_call_crypto_state_and_keeps_float_gain(void) {
     static dsd_opts opts;
@@ -182,13 +182,13 @@ test_tdu_resets_call_crypto_state_and_keeps_float_gain(void) {
     reset_harness();
     seed_active_call_state(&opts, &state);
     opts.floating_point = 1;
-    opts.audio_gain = 2.25F;
-    state.aout_gain = 17.5F;
+    opts.audio_gain = 0.0F;
+    state.aout_gain = 7.0F;
 
     processTDU(&opts, &state);
 
     assert_common_tdu_state(&opts, &state);
-    assert(float_close(state.aout_gain, 17.5F, 1e-6F));
+    assert(float_close(state.aout_gain, 7.0F, 1e-6F));
 }
 
 static void

@@ -387,7 +387,8 @@ test_process_audio_native_left_clamps_and_tracks_output(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
-    opts.audio_gain = 1.0f;
+    // A fixed -g is a plain multiplier, the setting itself (issue #653).
+    opts.audio_gain = 2.0f;
     opts.pulse_digi_rate_out = 8000;
     state.aout_gain = 2.0f;
     static short out[200];
@@ -424,7 +425,7 @@ test_process_audio_native_right_clamps_and_tracks_output(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
-    opts.audio_gainR = 1.0f;
+    opts.audio_gainR = 3.0f;
     opts.pulse_digi_rate_out = 8000;
     state.aout_gainR = 3.0f;
     static short out[200];
