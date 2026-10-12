@@ -210,8 +210,8 @@ dsd_output_s16_block(const dsd_opts* opts, dsd_state* state, const short* sample
 }
 
 DSD_AUDIO2_INTERNAL void
-dsd_output_s16_blocks(dsd_opts* opts, dsd_state* state, const short* const* blocks, size_t block_count, size_t frames,
-                      int channels, int skip_silent) {
+dsd_output_s16_blocks(const dsd_opts* opts, dsd_state* state, const short* const* blocks, size_t block_count,
+                      size_t frames, int channels, int skip_silent) {
     size_t samples_per_block = frames * (size_t)channels;
     for (size_t i = 0; i < block_count; i++) {
         if (skip_silent && dsd_is_all_zero_s16(blocks[i], samples_per_block)) {
@@ -654,11 +654,13 @@ dsd_play_voice_ss(const dsd_opts* opts, dsd_state* state, int settled) {
 
 // Public mixers retain the protocol and talkgroup policy; independently gated PCM uses the same routing below.
 void
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     dsd_play_voice_ms(opts, state, 0);
 }
 
 void
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h
 playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     dsd_play_voice_ss(opts, state, 0);
 }
@@ -688,6 +690,7 @@ dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short
 
 //short stereo mix 3v2 DMR
 void
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h
 playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
 
     //NOTE: This runs once for every two timeslots, if we are in the BS voice loop
@@ -779,7 +782,7 @@ dsd_beeper_tone_block(short* samp, int n, int id, int ad) {
 }
 
 static void
-dsd_beeper_output_samples(dsd_opts* opts, dsd_state* state, const short* samp_s, const short* samp_ss) {
+dsd_beeper_output_samples(const dsd_opts* opts, dsd_state* state, const short* samp_s, const short* samp_ss) {
     if (opts->pulse_digi_out_channels == 2) {
         dsd_output_s16_block(opts, state, samp_ss, 160, 2);
     } else {
@@ -788,6 +791,7 @@ dsd_beeper_output_samples(dsd_opts* opts, dsd_state* state, const short* samp_s,
 }
 
 void
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h
 beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
     // An alert for a P25 Phase 2 slot whose playout still holds audio sounds after that audio (issue #651).
     if (dsd_p25p2_playout_defer_alert(opts, state, lr, id, ad, len)) {
@@ -797,7 +801,7 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
 }
 
 void
-dsd_beeper_emit(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
+dsd_beeper_emit(const dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
     //use lr as left or right channel designation in stereo config
     short samp_s[160];  //mono short sample
     short samp_ss[320]; //stereo short sample
