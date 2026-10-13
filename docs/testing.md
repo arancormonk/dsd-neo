@@ -2340,12 +2340,6 @@ ctest --preset dev-debug -L qml --output-on-failure
 
 It carries its own headless environment (offscreen platform, software renderer)
 in the CTest registration, so it needs no window server and no GPU.
-On Windows, `uiDir` is published to QML as a `file:///` URL rather than a raw
-drive-qualified path; otherwise `Loader.source` treats the drive letter as an
-unknown network scheme. The Qt 6.10.3 MSVC validation built the complete
-`dsd-neo_ui_qt` target and passed all 12 registered `UI_QT_*` tests, including
-the real QML screen test. When Qt is not deployed beside the test executables,
-prepend the selected Qt kit's `bin` directory to `PATH` before invoking CTest.
 
 The QML suites, and the C++ cases that load a production screen (`UI_QT_CONTROLLER`,
 `UI_QT_RADIO_REFERENCE`), run the QML collector to completion, as the app does: each calls
