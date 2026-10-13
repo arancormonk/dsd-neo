@@ -1179,6 +1179,7 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     //multi-key array
     DSD_MEMSET(state->rkey_array, 0, sizeof(state->rkey_array));
     DSD_MEMSET(state->rkey_array_loaded, 0, sizeof(state->rkey_array_loaded));
+    DSD_MEMSET(state->tetra_air_keys, 0, sizeof(state->tetra_air_keys));
     state->keyloader = 0; //keyloader off
 
     //Remus DMR End Call Alert Beep
