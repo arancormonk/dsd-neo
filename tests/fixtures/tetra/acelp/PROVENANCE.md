@@ -15,18 +15,12 @@ SHA-256 is
 `9534bfb74db896bb4dfa0bf2e48242cefeec7e6da5f7c0736ad0ca86407c65f0`.
 The regression test compares all 8,220 ACELP bits with this reference.
 
-`hello_tetra_reference.wav` is the corresponding mono PCM16 reference at
-8 kHz: 14,400 samples (1.8 seconds), with SHA-256
-`80f28d1f2acf147d5d8843affc7d952d088824e989eb70a2aa763db497794f85`.
-
-The reference artifacts were generated locally with ETSI EN 300 395-2
-V1.3.1 package `en_30039502v010301p0.zip` downloaded from ETSI. Package hashes:
+The reference was generated locally with ETSI EN 300 395-2 V1.3.1 package
+`en_30039502v010301p0.zip` downloaded from ETSI. Package hashes:
 
 - MD5: `a8115fe68ef8f8cc466f4192572a1e3e`
 - SHA-256: `1fe18c4773c8ccb52ef23ca5b4a0b0841b38d54ddd5d9c7d86eb8b060f132f39`
 
 The ETSI decoder source and binaries are not redistributed. The local decoder
 was adapted using `sq5bpf/install-tetra-codec` commit
-`bfd21ceb1159e8d5f12221a1570bd3da10e77832`. Decoding produced 60 speech
-frames of 240 samples each. The raw PCM SHA-256 before WAV wrapping was
-`d816a513c0bb759f8bf07f6ce5284b91050724fbb8b6184276f0905502831b90`.
+`bfd21ceb1159e8d5f12221a1570bd3da10e77832`.

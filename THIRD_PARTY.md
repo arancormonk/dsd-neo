@@ -88,8 +88,8 @@ for file-specific license/provenance details.
     to verify negative-polarity recovery with the real capture's impairments. Source commit, hashes, published capture parameters, expected cell identity, and reproduction
     command are recorded in `tests/fixtures/iq/tetra_scbs_real_air.PROVENANCE.md`; the upstream license text is
     `tests/fixtures/iq/tetra_scbs_real_air.APACHE-2.0.txt`.
-  - `tests/fixtures/tetra/acelp/hello_tetra.acelp` and its decoded reference
-    artifacts come from the GPL-3.0 `sq5bpf/telive` test sample. Exact source,
+  - `tests/fixtures/tetra/acelp/hello_tetra.acelp` and its decoder-input reference
+    `hello_tetra.codec` come from the GPL-3.0 `sq5bpf/telive` test sample. Exact source,
     decoder, license, and hashes are recorded in the adjacent `PROVENANCE.md`.
   - The frozen `Ahoj` SDS-TRANSFER vector in `tests/protocol/tetra/test_mle_cmce.c` derives its 64-bit SDS user
     field and expected decoded values from the example output published by
