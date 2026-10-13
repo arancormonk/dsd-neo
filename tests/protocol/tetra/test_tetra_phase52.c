@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "tetra_calls.h"
+#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
 
@@ -246,16 +247,9 @@ test_d_sds_data_sdti0_payload(void) {
     int n;
     wrap_mle_cmce(cmce, 50, mle, &n);
 
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    tetra_mle_dispatch(mle, n, 0, opt, st);
-
-    CHECK(tetra_st(st)->sds_short_valid == 1, "D-SDS-DATA SDTI=0: valid=1");
-    CHECK(tetra_st(st)->sds_short_data == 0xABCDu, "D-SDS-DATA SDTI=0: data=0xABCD");
-
-    free_state(st);
-    free(opt);
+    tetra_sds_pdu pdu;
+    CHECK(tetra_sds_decode(mle, n, &pdu) && pdu.data.sdti == 0, "D-SDS-DATA SDTI=0 decodes");
+    CHECK(pdu.data.short_data == 0xABCDu, "D-SDS-DATA SDTI=0: data=0xABCD");
 }
 
 /* Test 11: D-SDS-DATA SDTI=0 sets sds_short_src */
@@ -276,18 +270,9 @@ test_d_sds_data_sdti0_src(void) {
     int n;
     wrap_mle_cmce(cmce, 50, mle, &n);
 
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    tetra_mle_dispatch(mle, n, 0, opt, st);
-
-    CHECK(tetra_st(st)->sds_short_src == 55555u, "D-SDS-DATA SDTI=0: src=55555");
-    CHECK(tetra_st(st)->sds_short_valid == 1, "D-SDS-DATA SDTI=0: valid=1");
-    /* Also sets the shared sds_src field */
-    CHECK(tetra_st(st)->sds_src == 55555u, "D-SDS-DATA SDTI=0: shared src=55555");
-
-    free_state(st);
-    free(opt);
+    tetra_sds_pdu pdu;
+    CHECK(tetra_sds_decode(mle, n, &pdu) && pdu.data.sdti == 0, "D-SDS-DATA SDTI=0 decodes");
+    CHECK(pdu.data.calling.ssi_valid && pdu.data.calling.ssi == 55555u, "D-SDS-DATA SDTI=0: src=55555");
 }
 
 /* Test 12: D-SDS-DATA SDTI=0 too short (no crash) */
@@ -303,33 +288,8 @@ test_d_sds_data_sdti0_too_short(void) {
     int n;
     wrap_mle_cmce(cmce, 10, mle, &n);
 
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    /* Must not crash */
-    tetra_mle_dispatch(mle, n, 0, opt, st);
-
-    CHECK(tetra_st(st)->sds_short_valid == 0, "truncated D-SDS-DATA stays invalid");
-
-    free_state(st);
-    free(opt);
-}
-
-/* =======================================================================
- * Phase 51: zero-initialisation of new fields
- * ======================================================================= */
-
-static void
-test_new_fields_zero(void) {
-    printf("[test_new_fields_zero]\n");
-    dsd_state* st = alloc_state();
-
-    /* Phase 50 fields */
-    CHECK(tetra_st(st)->sds_short_valid == 0, "sds_short_valid zero");
-    CHECK(tetra_st(st)->sds_short_data == 0, "sds_short_data zero");
-    CHECK(tetra_st(st)->sds_short_src == 0, "sds_short_src zero");
-
-    free_state(st);
+    tetra_sds_pdu pdu;
+    CHECK(!tetra_sds_decode(mle, n, &pdu), "truncated D-SDS-DATA is incomplete");
 }
 
 /* =======================================================================
@@ -351,10 +311,6 @@ main(void) {
     test_d_sds_data_sdti0_payload();
     test_d_sds_data_sdti0_src();
     test_d_sds_data_sdti0_too_short();
-
-    /* Phase 51 */
-    printf("\n--- Phase 51: new fields zero-init ---\n");
-    test_new_fields_zero();
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

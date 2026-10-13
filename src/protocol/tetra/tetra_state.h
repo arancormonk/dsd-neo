@@ -270,38 +270,9 @@ typedef struct tetra_state {
     uint8_t freq_band;
     uint8_t freq_offset;
 
-    /* SDS, EN 300 392-2 clauses 14.7.1.10/14.7.1.11 and 29, published by tetra_mle.c.
-     *
-     * sds_status / sds_status_src: the last D-STATUS pre-coded status and its calling party SSI (0 when the PDU named
-     *   none); 0 status means none received yet.
-     * sds_src / sds_text / sds_text_len: the last complete D-SDS-DATA, written together so the sender always belongs
-     *   to the text. The text is UTF-8 with C0/C1 controls replaced by spaces, at most 255 bytes, never cut inside a
-     *   character.
-     * sds_forward_*: the SDS-TL storage/forward address (tables 29.12 and 29.14); type 0 SNA, 1 SSI, 2 TSI,
-     *   3 external number, 7 none.
-     * sds_concat_*: the last accepted concatenation part (clause 29.5.14); sds_concat_generation counts completed
-     *   messages. sds_concat holds the reassembly contexts and is freed with the TETRA state. */
-    uint32_t sds_src;
-    uint32_t sds_status_src;
-    uint32_t sds_forward_ssi;
-    uint32_t sds_forward_extension;
-    uint32_t sds_concat_generation;
-    struct tetra_sds_concat_store* sds_concat; /* reassembly contexts, allocated on first use; see tetra_mle.c */
-    uint16_t sds_status;
-    uint16_t sds_text_len;
-    uint16_t sds_concat_ref;
-    char sds_text[256];
-    char sds_forward_external[25];
-    uint8_t sds_storage_forward;
-    uint8_t sds_validity_period;
-    uint8_t sds_forward_type;
-    uint8_t sds_forward_valid;
-    uint8_t sds_forward_sna;
-    uint8_t sds_concat_total;
-    uint8_t sds_concat_received;
-    uint8_t sds_concat_valid;
-    uint8_t sds_concat_duplicate;
-    uint8_t sds_concat_complete;
+    /* Concatenated SDS reassembly contexts (EN 300 392-2 clause 29.5.14), allocated on first use and freed with the
+     * TETRA state; see tetra_mle.c. */
+    struct tetra_sds_concat_store* sds_concat;
 
     /* SYSINFO fields (EN 300 392-2 table 21.65).
      *
@@ -357,20 +328,6 @@ typedef struct tetra_state {
     uint8_t mn;
     uint32_t tdma_slot_start;
 
-    /* sds_msg_ref: message reference (table 29.19) of the last SDS-TL TRANSFER, REPORT or ACK.
-     * sds_last_cc: colour code the last accepted D-SDS-DATA arrived with. */
-    uint8_t sds_msg_ref;
-    int8_t sds_last_cc;
-
-    /* D-SDS-DATA with short data type identifier 0: user defined data-1 (16 bits) and its calling party SSI;
-     * sds_short_valid is cleared by any other D-SDS-DATA. */
-    uint32_t sds_short_src;
-    uint16_t sds_short_data;
-    uint8_t sds_short_valid;
-
-    /* 1 when the last SDS text used the UCS-2/UTF-16BE text coding scheme (table 29.29 value 26). */
-    uint8_t sds_text_unicode;
-
     /* KSG 0..3 remembered from D-OTAR SCK/GCK Provide, keyed by MCC/MNC.
      * hyperframe is the SYSINFO value from a burst whose CCK flag is clear,
      * kept apart from cck_id so a later CCK identifier does not erase it, and
@@ -383,13 +340,6 @@ typedef struct tetra_state {
     uint8_t air_ksg[4];
     uint8_t hyperframe_valid;
     uint16_t hyperframe;
-
-    /* SDS-TL SDS-REPORT (table 29.12) in a D-SDS-DATA: the delivery status (table 29.16), delivery_ok when the status
-     * is in the success range, and the message reference. */
-    uint8_t sds_report_valid;
-    uint8_t sds_report_delivery_ok;
-    uint8_t sds_report_cause;
-    uint8_t sds_report_msg_ref;
 
     /* ACCESS-DEFINE (EN 300 392-2 table 21.79), continued.
      * access_num_ra:      4-bit Nu, number of random access transmissions.
@@ -422,18 +372,6 @@ typedef struct tetra_state {
     uint32_t sysinfo_opt_field_data;
 
     uint8_t access_common_flag;
-
-    /* The short data type identifier of the last D-SDS-DATA (table 14.13). */
-    uint8_t cmce_sds_data_type;
-
-    /* SDS-TL SDS-ACK (table 29.11) and SDS-SHORT REPORT (table 29.13, carried as a D-STATUS pre-coded status):
-     * delivery status or short report type, and the message reference. */
-    uint8_t sds_ack_valid;
-    uint8_t sds_ack_msg_ref;
-    uint8_t sds_ack_delivery_status;
-    uint8_t sds_short_report_valid;
-    uint8_t sds_short_report_result;
-    uint8_t sds_short_report_msg_ref;
 
     /* The last SN-PDU (EN 300 392-2 clause 28.4.4): its SN PDU type (table 28.121), its NSAPI (0, a reserved value,
      * for PDU types that carry none) and its length in bits. */

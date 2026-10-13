@@ -35,7 +35,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "tetra_calls.h"
+#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -314,17 +316,6 @@ test_bsch_keeps_hyperframe(void) {
  * Phase 45: D-TX-GRANTED updates UI fields
  * ======================================================================= */
 
-static void
-test_tx_granted_ui_fields_zero(void) {
-    printf("[test_tx_granted_ui_fields_zero]\n");
-    dsd_state* st = alloc_state();
-
-    CHECK(tetra_st(st)->sds_msg_ref == 0, "sds_msg_ref zero after calloc");
-    CHECK(tetra_st(st)->sds_last_cc == 0, "sds_last_cc zero after calloc");
-
-    free_state(st);
-}
-
 /*
  * Build a D-TX-GRANTED CMCE PDU with granted SSI present.
  *
@@ -469,6 +460,8 @@ build_d_sds_data(uint8_t* cmce, uint32_t src_ssi, uint8_t sdti) {
     }
 }
 
+/* A D-SDS-DATA decodes with its own calling party and data type, and its summary line names the colour code it came
+ * with. */
 static void
 test_sds_msg_ref_stored(void) {
     printf("[test_sds_sdti_and_cc_stored]\n");
@@ -477,11 +470,16 @@ test_sds_msg_ref_stored(void) {
     uint8_t mle[70];
     int n;
     wrap_mle_cmce(cmce, 50, mle, &n);
+    tetra_sds_pdu pdu;
+    CHECK(tetra_sds_decode(mle, n, &pdu) && pdu.data.sdti == 0 && pdu.data.calling.ssi == 22222u
+              && pdu.data.short_data == 0xCAFE,
+          "SDS SDTI = 0");
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
-    tetra_mle_dispatch(mle, n, 3, opt, st);
-    CHECK(tetra_st(st)->cmce_sds_data_type == 0, "SDS SDTI = 0");
-    CHECK(tetra_st(st)->sds_last_cc == 3, "SDS last_cc = 3");
+    char log[256];
+    tetra_test_mle_logged(mle, n, 3, opt, st, log, sizeof log);
+    CHECK(strstr(log, "[TETRA CMCE D-SDS-DATA] CC=3 src_SSI=22222 CPTI=1 SDTI=0 data_bits=16") != NULL,
+          "SDS summary line with CC = 3");
     free_state(st);
     free(opt);
 }
@@ -496,8 +494,9 @@ test_sds_last_cc_stored(void) {
     wrap_mle_cmce(cmce, 50, mle, &n);
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
-    tetra_mle_dispatch(mle, n, 11, opt, st);
-    CHECK(tetra_st(st)->sds_last_cc == 11, "SDS last_cc = 11");
+    char log[256];
+    tetra_test_mle_logged(mle, n, 11, opt, st, log, sizeof log);
+    CHECK(strstr(log, "[TETRA CMCE D-SDS-DATA] CC=11 src_SSI=33333") != NULL, "SDS summary line with CC = 11");
     free_state(st);
     free(opt);
 }
@@ -505,20 +504,15 @@ test_sds_last_cc_stored(void) {
 static void
 test_sds_msg_ref_overwrite(void) {
     printf("[test_sds_source_overwrite]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
     uint8_t cmce[61], mle[70];
     int n;
+    tetra_sds_pdu pdu;
     build_d_sds_data(cmce, 10001u, 0u);
     wrap_mle_cmce(cmce, 50, mle, &n);
-    tetra_mle_dispatch(mle, n, 0, opt, st);
-    CHECK(tetra_st(st)->sds_src == 10001u, "first SDS source");
+    CHECK(tetra_sds_decode(mle, n, &pdu) && pdu.data.calling.ssi == 10001u, "first SDS source");
     build_d_sds_data(cmce, 10002u, 0u);
     wrap_mle_cmce(cmce, 50, mle, &n);
-    tetra_mle_dispatch(mle, n, 0, opt, st);
-    CHECK(tetra_st(st)->sds_src == 10002u, "second SDS source overwrites first");
-    free_state(st);
-    free(opt);
+    CHECK(tetra_sds_decode(mle, n, &pdu) && pdu.data.calling.ssi == 10002u, "second SDS source");
 }
 
 /* =======================================================================
@@ -539,7 +533,6 @@ main(void) {
 
     /* Phase 45 */
     printf("\n--- Phase 45: D-TX-GRANTED UI fields ---\n");
-    test_tx_granted_ui_fields_zero();
     test_tx_granted_identity_set();
     test_tx_granted_without_channel_assignment();
     test_tx_granted_floor_state();

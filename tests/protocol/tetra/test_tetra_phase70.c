@@ -79,17 +79,6 @@ wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_n
 }
 
 /* =======================================================================
- * Phase 62: tetra_sds_text_len is uint16_t
- * ======================================================================= */
-static void
-test_sds_text_len_type(void) {
-    printf("[test_sds_text_len_type]\n");
-    dsd_state* st = alloc_state();
-    CHECK(sizeof(tetra_st(st)->sds_text_len) == 2, "tetra_sds_text_len is uint16_t (2 bytes)");
-    free_state(st);
-}
-
-/* =======================================================================
  * Phase 64: CMCE D-ALERT call_id
  * ======================================================================= */
 /* =======================================================================
@@ -180,7 +169,6 @@ int
 main(void) {
     printf("=== TETRA Phase 70 Test Suite ===\n\n");
 
-    test_sds_text_len_type();
     test_d_tx_ceased();
     test_mle_restore_fields();
 

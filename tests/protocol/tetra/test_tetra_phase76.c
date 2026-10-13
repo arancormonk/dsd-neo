@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
@@ -20,7 +21,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -48,6 +51,12 @@ alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
 }
 
+static void
+free_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 static dsd_opts*
 alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -69,16 +78,6 @@ wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_n
 static void
 test_sds_data_truncation(void) {
     printf("[test_sds_data_truncation]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    /* Prime state with fake previous message */
-    tetra_st(st)->sds_text_len = 5;
-    strcpy(tetra_st(st)->sds_text, "HELLO");
-    tetra_st(st)->sds_src = 222;
-    tetra_st(st)->sds_short_valid = 1;
-    tetra_st(st)->sds_short_data = 0xCAFEu;
-
     /* Truncated D-SDS-DATA payload after the source SSI. */
     uint8_t cmce[40];
     memset(cmce, 0, sizeof(cmce));
@@ -90,15 +89,16 @@ test_sds_data_truncation(void) {
     uint8_t pdu[40 + 9];
     int n;
     wrap_mle_cmce(cmce, 33, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
+    tetra_sds_pdu sds;
+    CHECK(!tetra_sds_decode(pdu, n, &sds), "D-SDS-DATA without its user data is incomplete");
 
-    CHECK(tetra_st(st)->sds_text_len == 5, "Prior text_len retained after truncated D-SDS-DATA");
-    CHECK(strcmp(tetra_st(st)->sds_text, "HELLO") == 0, "Prior text retained after truncated D-SDS-DATA");
-    CHECK(tetra_st(st)->sds_src == 222, "Partial source SSI is not published");
-    CHECK(tetra_st(st)->sds_short_valid == 1 && tetra_st(st)->sds_short_data == 0xCAFEu,
-          "Prior short-data state retained after truncation");
+    dsd_state* st = alloc_state();
+    dsd_opts* opt = alloc_opts();
+    char log[256];
+    tetra_test_mle_logged(pdu, n, 0, opt, st, log, sizeof log);
+    CHECK(strstr(log, "D-SDS-DATA") == NULL, "Partial source SSI is not published");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -137,7 +137,7 @@ test_mac_access_define(void) {
     CHECK(tetra_st(st)->access_ts_ptr == 4, "Extracted ts_ptr");
     CHECK(tetra_st(st)->access_min_pdu_pri == 3, "Extracted min_pdu_pri");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 

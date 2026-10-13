@@ -4,6 +4,8 @@
  * its ETSI table, and the rule that a truncated or malformed PDU publishes nothing.
  */
 
+#include <assert.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -18,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "tetra_calls.h"
+#include "tetra_confirm.h"
 #include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
@@ -61,11 +64,42 @@ alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
 }
 
-/* Frees the TETRA state extension (and the SDS reassembly it owns) with the decoder state. */
+/* Frees the TETRA state extension (and the SDS reassembly it owns) and the event history with the decoder state. */
 static void
 free_state(dsd_state* state) {
+    if (!state) {
+        return;
+    }
     dsd_state_ext_free_all(state);
+    free(state->event_history_s);
     free(state);
+}
+
+/* A decoder state with an event history and a carrier a CRC-passed block proved: decoded short data and status reach
+ * the history as notices (tetra_calls_notice()). */
+static dsd_state*
+alloc_notice_state(void) {
+    dsd_state* state = alloc_state();
+    assert(state != NULL);
+    state->event_history_s = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    if (state->event_history_s) {
+        init_event_history(&state->event_history_s[0], 0, 255);
+        init_event_history(&state->event_history_s[1], 0, 255);
+    }
+    tetra_confirm_note_signalling(state);
+    return state;
+}
+
+/* Notices pushed to @p state's history so far. */
+static uint64_t
+notices(const dsd_state* state) {
+    return state->event_history_s ? state->event_history_s[0].push_seq : 0U;
+}
+
+/* The notice @p back pushes ago (1 for the last). */
+static const Event_History*
+notice(const dsd_state* state, int back) {
+    return &state->event_history_s[0].Event_History_Items[back];
 }
 
 /* A D-SETUP (table 14.15) for group call @p call_id without optional elements, decoded without its MAC PDU. */
@@ -506,8 +540,9 @@ test_standard_setup_release_status(void) {
     DSD_MEMSET(mle, 0, sizeof(mle));
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     DSD_MEMCPY(mle + 3, cmce, (size_t)off);
-    tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (tetra_st(state)->sds_status_src != 0x654321 || tetra_st(state)->sds_status != 0xBEEF) {
+    tetra_sds_pdu sds;
+    if (!tetra_sds_decode(mle, off + 3, &sds) || sds.type != TETRA_CMCE_D_STATUS || sds.status.calling.ssi != 0x654321
+        || sds.status.status != 0xBEEF || sds.status.short_report) {
         ok = 0;
     }
 
@@ -1523,8 +1558,6 @@ test_floor_control_party_optionals_and_clear(void) {
 static int
 test_sds_transfer_timestamp_text(void) {
     uint8_t cmce[128] = {0}, mle[128] = {0};
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 3, 7, 2);
     pack_bits(cmce, 72, 9, 11);
@@ -1536,26 +1569,20 @@ test_sds_transfer_timestamp_text(void) {
     pack_bits(cmce, 'K', 84, 8);
     pack_bits(cmce, 0, 92, 1); /* O-bit */
     wrap_cmce(mle, cmce, 93);
-    tetra_mle_dispatch(mle, 96, 3, opts, state);
-    int ok = strcmp(tetra_st(state)->sds_text, "OK") == 0 && tetra_st(state)->sds_msg_ref == 0xb7;
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(mle, 96, &pdu) && strcmp(pdu.data.text.text, "OK") == 0 && pdu.data.tl.reference == 0xb7;
     /* The outer length is complete; the timestamp itself lacks one bit. */
     pack_bits(cmce, 55, 9, 11);
     pack_bits(cmce, 0x11, 36, 8);
     pack_bits(cmce, 0, 75, 1); /* O-bit */
     wrap_cmce(mle, cmce, 76);
-    tetra_mle_dispatch(mle, 79, 4, opts, state);
-    ok = ok && strcmp(tetra_st(state)->sds_text, "OK") == 0 && tetra_st(state)->sds_msg_ref == 0xb7
-         && tetra_st(state)->sds_last_cc == 3;
-    free_state(state);
-    free(opts);
+    ok = ok && !tetra_sds_decode(mle, 79, &pdu);
     return ok;
 }
 
 static int
 test_sds_gsm_text(void) {
     uint8_t cmce[128] = {0}, mle[128] = {0};
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 3, 7, 2);
     pack_bits(cmce, 40, 9, 11);
@@ -1566,39 +1593,33 @@ test_sds_gsm_text(void) {
     pack_bits(cmce, 0x19, 52, 8);
     pack_bits(cmce, 0, 60, 1); /* O-bit */
     wrap_cmce(mle, cmce, 61);
-    tetra_mle_dispatch(mle, 64, 3, opts, state);
-    int ok = tetra_st(state)->sds_text_len == 4 && memcmp(tetra_st(state)->sds_text, "A\xe2\x82\xac", 5) == 0;
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(mle, 64, &pdu) && pdu.data.text.len == 4
+             && memcmp(pdu.data.text.text, "A\xe2\x82\xac", 5) == 0;
     /* One packed ESC without its extension character shows as U+FFFD. */
     pack_bits(cmce, 24, 9, 11);
     pack_bits(cmce, 27, 36, 8);
     pack_bits(cmce, 0, 44, 1);
     wrap_cmce(mle, cmce, 45);
-    tetra_mle_dispatch(mle, 48, 4, opts, state);
-    ok = ok && tetra_st(state)->sds_last_cc == 4 && strcmp(tetra_st(state)->sds_text, "\xef\xbf\xbd") == 0;
+    ok = ok && tetra_sds_decode(mle, 48, &pdu) && strcmp(pdu.data.text.text, "\xef\xbf\xbd") == 0;
     /* TETRA carries packed octets; a seven-bit payload is incomplete. */
     pack_bits(cmce, 23, 9, 11);
     pack_bits(cmce, 0, 43, 1);
     wrap_cmce(mle, cmce, 44);
-    tetra_mle_dispatch(mle, 47, 3, opts, state);
-    ok = ok && tetra_st(state)->sds_last_cc == 4;
+    ok = ok && !tetra_sds_decode(mle, 47, &pdu);
     /* Undefined extension falls back to the default alphabet character. */
     pack_bits(cmce, 32, 9, 11);
     pack_bits(cmce, 0x9b, 36, 8); /* ESC followed by A. */
     pack_bits(cmce, 0x20, 44, 8);
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
-    tetra_mle_dispatch(mle, 56, 5, opts, state);
-    ok = ok && strcmp(tetra_st(state)->sds_text, "A") == 0 && tetra_st(state)->sds_last_cc == 5;
-    free_state(state);
-    free(opts);
+    ok = ok && tetra_sds_decode(mle, 56, &pdu) && strcmp(pdu.data.text.text, "A") == 0;
     return ok;
 }
 
 static int
 test_sds_utf16_display_bound(void) {
     uint8_t mle[2048] = {0};
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     pack_bits(mle, TETRA_CMCE_D_SDS_DATA, 3, 5);
     pack_bits(mle, 3, 10, 2);
@@ -1609,25 +1630,20 @@ test_sds_utf16_display_bound(void) {
         pack_bits(mle, 0x4e2d, 39 + i * 16, 16);
     }
     pack_bits(mle, 0, 39 + 90 * 16, 1); /* O-bit */
-    tetra_mle_dispatch(mle, 40 + 90 * 16, 3, opts, state);
-    int ok = tetra_st(state)->sds_text_len == 255 && tetra_st(state)->sds_text[255] == 0;
-    for (size_t i = 0; i < 85; i++) {
-        ok = ok && memcmp(tetra_st(state)->sds_text + (i * 3), "\xe4\xb8\xad", 3) == 0;
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(mle, 40 + 90 * 16, &pdu) && pdu.data.text.len == 255 && pdu.data.text.text[255] == 0;
+    for (size_t i = 0; ok && i < 85; i++) {
+        ok = memcmp(pdu.data.text.text + (i * 3), "\xe4\xb8\xad", 3) == 0;
     }
     /* An unpaired surrogate past the displayed characters changes nothing that is shown. */
     pack_bits(mle, 0xd800, 39 + 89 * 16, 16);
-    tetra_mle_dispatch(mle, 40 + 90 * 16, 4, opts, state);
-    ok = ok && tetra_st(state)->sds_last_cc == 4 && tetra_st(state)->sds_text_len == 255;
-    free_state(state);
-    free(opts);
+    ok = ok && tetra_sds_decode(mle, 40 + 90 * 16, &pdu) && pdu.data.text.len == 255;
     return ok;
 }
 
 static int
 test_sds_utf16_text(void) {
     uint8_t cmce[128] = {0}, mle[128] = {0};
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 3, 7, 2);
     pack_bits(cmce, 64, 9, 11);
@@ -1638,29 +1654,24 @@ test_sds_utf16_text(void) {
     pack_bits(cmce, 0xde00, 68, 16);
     pack_bits(cmce, 0, 84, 1);
     wrap_cmce(mle, cmce, 85);
-    tetra_mle_dispatch(mle, 88, 3, opts, state);
-    int ok = tetra_st(state)->sds_text_unicode && tetra_st(state)->sds_text_len == 7
-             && memcmp(tetra_st(state)->sds_text, "\xe4\xb8\xad\xf0\x9f\x98\x80", 8) == 0;
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(mle, 88, &pdu) && pdu.data.text.unicode && pdu.data.text.len == 7
+             && memcmp(pdu.data.text.text, "\xe4\xb8\xad\xf0\x9f\x98\x80", 8) == 0;
     /* A high surrogate without its low half shows as U+FFFD; the rest of the message is kept. */
     pack_bits(cmce, 0x0041, 68, 16);
     wrap_cmce(mle, cmce, 85);
-    tetra_mle_dispatch(mle, 88, 4, opts, state);
-    ok = ok && tetra_st(state)->sds_last_cc == 4 && tetra_st(state)->sds_text_len == 7
-         && memcmp(tetra_st(state)->sds_text,
+    ok = ok && tetra_sds_decode(mle, 88, &pdu) && pdu.data.text.len == 7
+         && memcmp(pdu.data.text.text,
                    "\xe4\xb8\xad\xef\xbf\xbd"
                    "A",
                    8)
                 == 0;
-    free_state(state);
-    free(opts);
     return ok;
 }
 
 static int
 test_sds_latin1_text(void) {
     uint8_t cmce[128] = {0}, mle[128] = {0};
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 3, 7, 2);
     pack_bits(cmce, 32, 9, 11);
@@ -1670,28 +1681,23 @@ test_sds_latin1_text(void) {
     pack_bits(cmce, 0xe9, 44, 8);
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
-    tetra_mle_dispatch(mle, 56, 3, opts, state);
-    int ok = tetra_st(state)->sds_text_len == 3 && memcmp(tetra_st(state)->sds_text, "A\xc3\xa9", 4) == 0;
+    tetra_sds_pdu pdu;
+    int ok =
+        tetra_sds_decode(mle, 56, &pdu) && pdu.data.text.len == 3 && memcmp(pdu.data.text.text, "A\xc3\xa9", 4) == 0;
     pack_bits(cmce, 8, 9, 11); /* PID only: missing the coding-scheme octet. */
     pack_bits(cmce, 0, 28, 1);
     wrap_cmce(mle, cmce, 29);
-    tetra_mle_dispatch(mle, 32, 4, opts, state);
-    ok = ok && tetra_st(state)->sds_text_len == 3 && tetra_st(state)->sds_last_cc == 3;
+    ok = ok && !tetra_sds_decode(mle, 32, &pdu);
     pack_bits(cmce, 31, 9, 11);
     pack_bits(cmce, 0, 51, 1);
     wrap_cmce(mle, cmce, 52);
-    tetra_mle_dispatch(mle, 55, 4, opts, state);
-    ok = ok && tetra_st(state)->sds_text_len == 3 && tetra_st(state)->sds_last_cc == 3;
-    free_state(state);
-    free(opts);
+    ok = ok && !tetra_sds_decode(mle, 55, &pdu);
     return ok;
 }
 
 static int
 test_sds_transfer_reference(void) {
     uint8_t cmce[128] = {0}, mle[128] = {0};
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 3, 7, 2);
     pack_bits(cmce, 56, 9, 11);
@@ -1703,26 +1709,20 @@ test_sds_transfer_reference(void) {
     pack_bits(cmce, 0x123456, 52, 24);
     pack_bits(cmce, 0, 76, 1);
     wrap_cmce(mle, cmce, 77);
-    tetra_mle_dispatch(mle, 80, 3, opts, state);
-    int ok = tetra_st(state)->sds_msg_ref == 0xa9 && tetra_st(state)->sds_storage_forward
-             && tetra_st(state)->sds_validity_period == 17 && tetra_st(state)->sds_forward_valid
-             && tetra_st(state)->sds_forward_type == 1 && tetra_st(state)->sds_forward_ssi == 0x123456;
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(mle, 80, &pdu) && pdu.data.tl.message_type == TETRA_SDS_TL_TRANSFER
+             && pdu.data.tl.reference == 0xa9 && pdu.data.tl.storage_forward && pdu.data.tl.validity_period == 17
+             && pdu.data.tl.forward_valid && pdu.data.tl.forward_type == 1 && pdu.data.tl.forward_ssi == 0x123456;
     pack_bits(cmce, 0x11, 36, 8);
     pack_bits(cmce, 55, 9, 11);
     pack_bits(cmce, 0, 75, 1);
     wrap_cmce(mle, cmce, 76);
-    tetra_mle_dispatch(mle, 79, 4, opts, state);
-    ok = ok && tetra_st(state)->sds_msg_ref == 0xa9 && tetra_st(state)->sds_last_cc == 3
-         && tetra_st(state)->sds_forward_valid && tetra_st(state)->sds_forward_ssi == 0x123456;
-    free_state(state);
-    free(opts);
+    ok = ok && !tetra_sds_decode(mle, 79, &pdu);
     return ok;
 }
 
 static int
 test_sds_report_transport(void) {
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     uint8_t cmce[128] = {0}, mle[128] = {0};
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 3, 7, 2);
@@ -1731,6 +1731,7 @@ test_sds_report_transport(void) {
     pack_bits(cmce, 0x4a, 36, 8);
     pack_bits(cmce, 0xd3, 44, 8);
     int ok = 1;
+    tetra_sds_pdu pdu;
     const int lengths[] = {48, 64, 88, 64, 0, 0, 0, 40};
     pack_bits(cmce, 1, 35, 1);
     for (unsigned address = 0; address < 8; address++) {
@@ -1754,37 +1755,32 @@ test_sds_report_transport(void) {
         }
         int length = lengths[address] ? lengths[address] : 40;
         pack_bits(cmce, length, 9, 11);
-        tetra_st(state)->sds_report_valid = 0;
         pack_bits(cmce, 0, 20 + length, 1); /* O-bit */
         wrap_cmce(mle, cmce, 21 + length);
-        tetra_mle_dispatch(mle, 24 + length, 2, opts, state);
-        ok = ok && tetra_st(state)->sds_report_valid == (lengths[address] != 0);
+        ok = ok && tetra_sds_decode(mle, 24 + length, &pdu) == (lengths[address] != 0);
         if (lengths[address]) {
-            ok = ok && tetra_st(state)->sds_report_cause == 0x4a && tetra_st(state)->sds_report_msg_ref == 0xd3
-                 && !tetra_st(state)->sds_report_delivery_ok && tetra_st(state)->sds_storage_forward
-                 && tetra_st(state)->sds_forward_valid && tetra_st(state)->sds_forward_type == address;
+            const tetra_sds_tl* const tl = &pdu.data.tl;
+            ok = ok && tl->message_type == TETRA_SDS_TL_REPORT && tl->status == 0x4a && tl->reference == 0xd3
+                 && tl->storage_forward && tl->forward_valid && tl->forward_type == address;
             if (address == 0) {
-                ok = ok && tetra_st(state)->sds_forward_sna == 0xa5;
+                ok = ok && tl->forward_sna == 0xa5;
             }
             if (address == 1) {
-                ok = ok && tetra_st(state)->sds_forward_ssi == 0x123456;
+                ok = ok && tl->forward_ssi == 0x123456;
             }
             if (address == 2) {
-                ok = ok && tetra_st(state)->sds_forward_ssi == 0x234567
-                     && tetra_st(state)->sds_forward_extension == 0x345678;
+                ok = ok && tl->forward_ssi == 0x234567 && tl->forward_extension == 0x345678;
             }
             if (address == 3) {
-                ok = ok && strcmp(tetra_st(state)->sds_forward_external, "1*+") == 0;
+                ok = ok && strcmp(tl->forward_external, "1*+") == 0;
             }
-            tetra_st(state)->sds_report_valid = 0;
             pack_bits(cmce, length - 1, 9, 11);
             pack_bits(cmce, 0, 19 + length, 1); /* O-bit */
             wrap_cmce(mle, cmce, 20 + length);
-            tetra_mle_dispatch(mle, 23 + length, 2, opts, state);
-            ok = ok && !tetra_st(state)->sds_report_valid;
+            ok = ok && !tetra_sds_decode(mle, 23 + length, &pdu);
         }
     }
-    /* Reserved external digits and a non-zero odd-digit pad reject atomically. */
+    /* Reserved external digits and a non-zero odd-digit pad are malformed. */
     pack_bits(cmce, 3, 57, 3);
     pack_bits(cmce, 3, 60, 8);
     pack_bits(cmce, 13, 68, 4);
@@ -1792,32 +1788,26 @@ test_sds_report_transport(void) {
     pack_bits(cmce, 64, 9, 11);
     pack_bits(cmce, 0, 84, 1);
     wrap_cmce(mle, cmce, 85);
-    tetra_mle_dispatch(mle, 88, 6, opts, state);
-    ok = ok && tetra_st(state)->sds_forward_type == 7 && tetra_st(state)->sds_last_cc == 2;
+    ok = ok && !tetra_sds_decode(mle, 88, &pdu);
     pack_bits(cmce, 1, 68, 4);
     pack_bits(cmce, 2, 72, 4);
     pack_bits(cmce, 3, 76, 4);
     pack_bits(cmce, 1, 80, 4);
     wrap_cmce(mle, cmce, 85);
-    tetra_mle_dispatch(mle, 88, 6, opts, state);
-    ok = ok && tetra_st(state)->sds_forward_type == 7 && tetra_st(state)->sds_last_cc == 2;
+    ok = ok && !tetra_sds_decode(mle, 88, &pdu);
+    /* Delivery status 2 (table 29.16: in the success range) without storage/forward control. */
     pack_bits(cmce, 0, 35, 1);
     pack_bits(cmce, 32, 9, 11);
     pack_bits(cmce, 2, 36, 8);
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
-    tetra_mle_dispatch(mle, 56, 2, opts, state);
-    ok = ok && tetra_st(state)->sds_report_valid && tetra_st(state)->sds_report_delivery_ok
-         && !tetra_st(state)->sds_storage_forward && !tetra_st(state)->sds_forward_valid;
-    free_state(state);
-    free(opts);
+    ok = ok && tetra_sds_decode(mle, 56, &pdu) && pdu.data.tl.message_type == TETRA_SDS_TL_REPORT
+         && pdu.data.tl.status == 2 && !pdu.data.tl.storage_forward && !pdu.data.tl.forward_valid;
     return ok;
 }
 
 static int
 test_sds_ack_transport(void) {
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     uint8_t cmce[128] = {0}, mle[128] = {0};
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 3, 7, 2);
@@ -1828,32 +1818,25 @@ test_sds_ack_transport(void) {
     pack_bits(cmce, 0xe7, 44, 8);
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
-    tetra_mle_dispatch(mle, 56, 2, opts, state);
-    int ok = tetra_st(state)->sds_ack_valid && tetra_st(state)->sds_ack_msg_ref == 0xe7
-             && tetra_st(state)->sds_ack_delivery_status == 3;
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(mle, 56, &pdu) && pdu.data.tl.message_type == TETRA_SDS_TL_ACK
+             && pdu.data.tl.reference == 0xe7 && pdu.data.tl.status == 3;
     /* Complete CMCE payload, but truncated inner transport header. */
     pack_bits(cmce, 31, 9, 11);
     pack_bits(cmce, 0x22, 44, 8);
     pack_bits(cmce, 0, 51, 1);
     wrap_cmce(mle, cmce, 52);
-    tetra_mle_dispatch(mle, 55, 7, opts, state);
-    ok = ok && tetra_st(state)->sds_ack_msg_ref == 0xe7 && tetra_st(state)->sds_last_cc == 2;
+    ok = ok && !tetra_sds_decode(mle, 55, &pdu);
     pack_bits(cmce, 32, 9, 11);
     pack_bits(cmce, 2, 20, 8); /* Simple text PID: no transport ACK. */
-    tetra_st(state)->sds_ack_valid = 0;
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
-    tetra_mle_dispatch(mle, 56, 2, opts, state);
-    ok = ok && !tetra_st(state)->sds_ack_valid;
-    free_state(state);
-    free(opts);
+    ok = ok && tetra_sds_decode(mle, 56, &pdu) && pdu.data.tl.message_type == TETRA_SDS_TL_NONE;
     return ok;
 }
 
 static int
 test_sds_published_trace(void) {
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     uint8_t bits[88] = {0};
 
     /* Published tetra-multiframe-sds example trace:
@@ -1866,57 +1849,47 @@ test_sds_published_trace(void) {
      * 64-bit length, no optional tail) without using pack_bits().
      */
     unpack_hex_bits("4F30810400400282D0DED4", bits, 88);
-    tetra_mle_dispatch(bits, 88, 4, opts, state);
-
-    int ok = tetra_st(state)->cmce_sds_data_type == 3 && tetra_st(state)->sds_src == 0
-             && tetra_st(state)->sds_msg_ref == 32 && tetra_st(state)->sds_text_len == 4
-             && !tetra_st(state)->sds_text_unicode && strcmp(tetra_st(state)->sds_text, "Ahoj") == 0
-             && tetra_st(state)->sds_last_cc == 4;
-    free_state(state);
-    free(opts);
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(bits, 88, &pdu) && pdu.data.sdti == 3 && pdu.data.calling.ssi == 0 && pdu.data.pid == 130
+             && pdu.data.tl.reference == 32 && pdu.data.text.len == 4 && !pdu.data.text.unicode
+             && strcmp(pdu.data.text.text, "Ahoj") == 0;
     return ok;
 }
 
 static int
 test_sds_short_report_status(void) {
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     uint8_t cmce[48] = {0}, mle[128] = {0};
     int ok = 1;
     pack_bits(cmce, TETRA_CMCE_D_STATUS, 0, 5);
     pack_bits(cmce, 1, 5, 2);
     pack_bits(cmce, 0x123456, 7, 24);
     pack_bits(cmce, 0, 47, 1); /* O-bit */
+    tetra_sds_pdu pdu;
     for (unsigned result = 0; result < 4; result++) {
         pack_bits(cmce, 0x7c00u | (result << 8) | 0xe5u, 31, 16);
         wrap_cmce(mle, cmce, 48);
-        tetra_mle_dispatch(mle, 51, 1, opts, state);
-        ok = ok && tetra_st(state)->sds_short_report_valid && tetra_st(state)->sds_short_report_result == result
-             && tetra_st(state)->sds_short_report_msg_ref == 0xe5 && tetra_st(state)->sds_status_src == 0x123456;
+        ok = ok && tetra_sds_decode(mle, 51, &pdu) && pdu.type == TETRA_CMCE_D_STATUS && pdu.status.short_report
+             && pdu.status.short_report_type == result && pdu.status.short_report_msg_ref == 0xe5
+             && pdu.status.calling.ssi == 0x123456;
     }
-    /* A truncated replacement must preserve the last complete report. */
+    /* A truncated status is incomplete. */
     pack_bits(cmce, 0x7c11, 31, 16);
     wrap_cmce(mle, cmce, 48);
-    tetra_mle_dispatch(mle, 50, 1, opts, state);
-    ok = ok && tetra_st(state)->sds_short_report_result == 3 && tetra_st(state)->sds_short_report_msg_ref == 0xe5;
+    ok = ok && !tetra_sds_decode(mle, 50, &pdu);
     /* Adjacent prefixes are ordinary status, not short reports. */
     for (unsigned status = 0x7800; status <= 0x8000; status += 0x800) {
-        tetra_st(state)->sds_short_report_valid = 0;
         pack_bits(cmce, status, 31, 16);
         wrap_cmce(mle, cmce, 48);
-        tetra_mle_dispatch(mle, 51, 1, opts, state);
-        ok = ok && !tetra_st(state)->sds_short_report_valid;
+        ok = ok && tetra_sds_decode(mle, 51, &pdu) && !pdu.status.short_report;
     }
-    free_state(state);
-    free(opts);
     return ok;
 }
 
-static void
-dispatch_concat_fragment(dsd_state* state, dsd_opts* opts, uint32_t src_ssi, int with_transport, uint16_t reference,
-                         uint8_t total, uint8_t sequence, int payload_pid, const uint8_t* data, int data_bits,
-                         uint8_t message_ref) {
-    uint8_t cmce[128] = {0}, mle[128] = {0};
+/* A concatenation part (tables 29.62 and 29.63) of a message from @p src_ssi into @p mle; returns its bits. */
+static int
+build_concat_fragment(uint8_t* mle, uint32_t src_ssi, int with_transport, uint16_t reference, uint8_t total,
+                      uint8_t sequence, int payload_pid, const uint8_t* data, int data_bits, uint8_t message_ref) {
+    uint8_t cmce[128] = {0};
     int off = 0;
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, off, 5);
     off += 5;
@@ -1963,13 +1936,26 @@ dispatch_concat_fragment(dsd_state* state, dsd_opts* opts, uint32_t src_ssi, int
     pack_bits(cmce, 0, off, 1);
     off++; /* O-bit */
     wrap_cmce(mle, cmce, off);
-    tetra_mle_dispatch(mle, off + 3, 6, opts, state);
+    return off + 3;
 }
 
+/* The part build_concat_fragment() builds, decoded with colour code 6; @p log receives the summary lines. */
+static void
+dispatch_concat_fragment(dsd_state* state, dsd_opts* opts, uint32_t src_ssi, int with_transport, uint16_t reference,
+                         uint8_t total, uint8_t sequence, int payload_pid, const uint8_t* data, int data_bits,
+                         uint8_t message_ref, char* log, size_t log_size) {
+    uint8_t mle[128] = {0};
+    const int nbits = build_concat_fragment(mle, src_ssi, with_transport, reference, total, sequence, payload_pid, data,
+                                            data_bits, message_ref);
+    tetra_test_mle_logged(mle, nbits, 6, opts, state, log, log_size);
+}
+
+/* Parts arrive out of order and repeated: the message completes once, from its three parts, and only then is noted. */
 static int
 test_sds_concat_out_of_order_and_duplicates(void) {
-    dsd_state* state = alloc_state();
+    dsd_state* state = alloc_notice_state();
     dsd_opts* opts = alloc_opts();
+    char log[512];
     uint8_t first[24] = {0}, second[16] = {0}, third[8] = {0};
     pack_bits(first, 1, 0, 8); /* No timestamp, Latin-1. */
     pack_bits(first, 'H', 8, 8);
@@ -1977,50 +1963,59 @@ test_sds_concat_out_of_order_and_duplicates(void) {
     pack_bits(second, 'L', 0, 8);
     pack_bits(second, 'L', 8, 8);
     pack_bits(third, 'O', 0, 8);
-    DSD_SNPRINTF(tetra_st(state)->sds_text, sizeof tetra_st(state)->sds_text, "%s", "OLD");
-    tetra_st(state)->sds_text_len = 3;
+    const uint64_t before = notices(state);
 
-    dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 2, -1, second, 16, 0);
-    int ok = tetra_st(state)->sds_concat_valid && tetra_st(state)->sds_concat_ref == 0xabc
-             && tetra_st(state)->sds_concat_received == 1 && !tetra_st(state)->sds_concat_complete
-             && strcmp(tetra_st(state)->sds_text, "OLD") == 0;
-    dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 2, -1, second, 16, 0);
-    ok = ok && tetra_st(state)->sds_concat_duplicate && tetra_st(state)->sds_concat_received == 1;
-    dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 3, -1, third, 8, 0);
-    dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 1, 2, first, 24, 0);
-    ok = ok && tetra_st(state)->sds_concat_complete && tetra_st(state)->sds_concat_received == 3
-         && tetra_st(state)->sds_concat_generation == 1 && tetra_st(state)->sds_src == 0x123456
-         && strcmp(tetra_st(state)->sds_text, "HELLO") == 0;
+    dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 2, -1, second, 16, 0, log, sizeof log);
+    int ok = strstr(log, "[TETRA SDS CONCAT] CC=6 src_SSI=1193046 ref=2748 part=2/3 received=1\n") != NULL
+             && strstr(log, "D-SDS-DATA") == NULL && notices(state) == before;
+    dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 2, -1, second, 16, 0, log, sizeof log);
+    ok = ok && strstr(log, "part=2/3 received=1 duplicate") != NULL;
+    dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 3, -1, third, 8, 0, log, sizeof log);
+    ok = ok && strstr(log, "part=3/3 received=2\n") != NULL && notices(state) == before;
+    dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 1, 2, first, 24, 0, log, sizeof log);
+    ok = ok && strstr(log, "part=1/3 received=3 complete") != NULL
+         && strstr(log, "[TETRA CMCE D-SDS-DATA] CC=6 src_SSI=1193046") != NULL && notices(state) == before + 1U
+         && notice(state, 1)->source_id == 0x123456 && strcmp(notice(state, 1)->text_message, "HELLO") == 0;
     free_state(state);
     free(opts);
     return ok;
 }
 
+/* With SDS-TL: a part that differs from the one held under its number discards the message; a message completes from
+ * a new set of parts; a part count or number out of range is malformed. */
 static int
 test_sds_concat_transport_and_conflict(void) {
-    dsd_state* state = alloc_state();
+    dsd_state* state = alloc_notice_state();
     dsd_opts* opts = alloc_opts();
+    char log[512];
     uint8_t first[16] = {0}, second[8] = {0}, conflict[8] = {0};
     pack_bits(first, 1, 0, 8);
     pack_bits(first, 'O', 8, 8);
     pack_bits(second, 'K', 0, 8);
     pack_bits(conflict, 'X', 0, 8);
 
-    dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 2, -1, second, 8, 0x44);
-    dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 2, -1, conflict, 8, 0x44);
-    int ok = tetra_st(state)->sds_concat_received == 1 && !tetra_st(state)->sds_concat_complete;
-    /* The conflicting duplicate discarded the entire old context. */
-    dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 1, 130, first, 16, 0x44);
-    ok = ok && tetra_st(state)->sds_concat_received == 1;
-    dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 2, -1, second, 8, 0x44);
-    ok = ok && tetra_st(state)->sds_concat_complete && tetra_st(state)->sds_concat_generation == 1
-         && tetra_st(state)->sds_msg_ref == 0x44 && strcmp(tetra_st(state)->sds_text, "OK") == 0;
+    dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 2, -1, second, 8, 0x44, log, sizeof log);
+    int ok = strstr(log, "part=2/2 received=1\n") != NULL;
+    dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 2, -1, conflict, 8, 0x44, log, sizeof log);
+    ok = ok && strstr(log, "SDS CONCAT") == NULL;
+    /* The conflicting part discarded the entire old context. */
+    dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 1, 130, first, 16, 0x44, log, sizeof log);
+    ok = ok && strstr(log, "part=1/2 received=1\n") != NULL;
+    dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 2, -1, second, 8, 0x44, log, sizeof log);
+    ok = ok && strstr(log, "part=2/2 received=2 complete") != NULL && strcmp(notice(state, 1)->text_message, "OK") == 0;
+    uint8_t mle[128] = {0};
+    tetra_sds_pdu pdu;
+    const int nbits = build_concat_fragment(mle, 77, 1, 9, 2, 2, -1, second, 8, 0x44);
+    ok = ok && tetra_sds_decode(mle, nbits, &pdu) && pdu.data.concat_present && pdu.data.concat.with_transport
+         && pdu.data.tl.message_type == TETRA_SDS_TL_TRANSFER && pdu.data.tl.reference == 0x44
+         && pdu.data.concat.reference == 9 && pdu.data.concat.total == 2 && pdu.data.concat.sequence == 2
+         && pdu.data.concat.payload_pid == -1 && pdu.data.text.len == 0;
 
-    uint8_t old_received = tetra_st(state)->sds_concat_received;
-    dispatch_concat_fragment(state, opts, 88, 0, 3, 1, 1, 2, first, 16, 0);
-    ok = ok && tetra_st(state)->sds_concat_received == old_received;
-    dispatch_concat_fragment(state, opts, 88, 0, 3, 2, 3, -1, second, 8, 0);
-    ok = ok && tetra_st(state)->sds_concat_received == old_received;
+    const uint64_t before = notices(state);
+    dispatch_concat_fragment(state, opts, 88, 0, 3, 1, 1, 2, first, 16, 0, log, sizeof log);
+    ok = ok && strstr(log, "SDS CONCAT") == NULL;
+    dispatch_concat_fragment(state, opts, 88, 0, 3, 2, 3, -1, second, 8, 0, log, sizeof log);
+    ok = ok && strstr(log, "SDS CONCAT") == NULL && notices(state) == before;
     free_state(state);
     free(opts);
     return ok;
@@ -2029,8 +2024,6 @@ test_sds_concat_transport_and_conflict(void) {
 static int
 test_sds_annex_e_type34_tail(void) {
     uint8_t cmce[64] = {0}, mle[128] = {0};
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     int off = 0;
 
     /* CPTI=0, SDTI=0, followed by one unknown length-delimited Type 3 IE. */
@@ -2055,10 +2048,10 @@ test_sds_annex_e_type34_tail(void) {
     pack_bits(cmce, 0, off, 1);
     off++; /* terminating M-bit */
     wrap_cmce(mle, cmce, off);
-    tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    int ok = tetra_st(state)->sds_short_valid && tetra_st(state)->sds_short_data == 0xBEEF;
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(mle, off + 3, &pdu) && pdu.data.sdti == 0 && pdu.data.short_data == 0xBEEF;
 
-    /* An incomplete Type 3 value must not publish the replacement payload. */
+    /* An incomplete Type 3 value leaves the PDU incomplete. */
     DSD_MEMSET(cmce, 0, sizeof cmce);
     off = 0;
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, off, 5);
@@ -2080,11 +2073,7 @@ test_sds_annex_e_type34_tail(void) {
     pack_bits(cmce, 2, off, 2);
     off += 2;
     wrap_cmce(mle, cmce, off);
-    tetra_mle_dispatch(mle, off + 3, 3, opts, state);
-    ok = ok && tetra_st(state)->sds_short_data == 0xBEEF && tetra_st(state)->sds_last_cc == 2;
-
-    free_state(state);
-    free(opts);
+    ok = ok && !tetra_sds_decode(mle, off + 3, &pdu);
     return ok;
 }
 
@@ -2254,12 +2243,12 @@ test_tx_granted_ending_at_o_bit(void) {
     return ok;
 }
 
-/* The SDS sender belongs to the SDS text: a D-STATUS or an unfinished concatenation part from someone else must not
- * re-attribute the last text. */
+/* The SDS sender belongs to the SDS text: each notice names the sender of its own message, and neither a D-STATUS nor
+ * an unfinished concatenation part from someone else re-attributes the last text. */
 static int
 test_sds_sender_stays_with_text(void) {
     uint8_t bits[160];
-    dsd_state* state = alloc_state();
+    dsd_state* state = alloc_notice_state();
     dsd_opts* opts = alloc_opts();
 
     bit_writer w = sds_writer(bits, sizeof bits, 1001, 32);
@@ -2269,7 +2258,7 @@ test_sds_sender_stays_with_text(void) {
     put(&w, 'I', 8);
     put(&w, 0, 1); /* O-bit */
     tetra_mle_dispatch(bits, w.pos, 1, opts, state);
-    int ok = tetra_st(state)->sds_src == 1001 && strcmp(tetra_st(state)->sds_text, "HI") == 0;
+    int ok = notice(state, 1)->source_id == 1001 && strcmp(notice(state, 1)->text_message, "HI") == 0;
 
     w = cmce_writer(bits, sizeof bits, TETRA_CMCE_D_STATUS);
     put(&w, 1, 2);
@@ -2277,9 +2266,11 @@ test_sds_sender_stays_with_text(void) {
     put(&w, 0x1234, 16);
     put(&w, 0, 1);
     tetra_mle_dispatch(bits, w.pos, 1, opts, state);
-    ok = ok && tetra_st(state)->sds_status_src == 2002 && tetra_st(state)->sds_status == 0x1234
-         && tetra_st(state)->sds_src == 1001 && strcmp(tetra_st(state)->sds_text, "HI") == 0;
+    ok = ok && notice(state, 1)->source_id == 2002 && notice(state, 1)->text_message[0] == '\0'
+         && strstr(notice(state, 1)->event_string, "STATUS SRC: 2002; TGT: 0; STATUS: 0x1234;") != NULL
+         && notice(state, 2)->source_id == 1001 && strcmp(notice(state, 2)->text_message, "HI") == 0;
 
+    const uint64_t before = notices(state);
     w = sds_writer(bits, sizeof bits, 3003, 8 + 24 + 8);
     put(&w, 12, 8); /* concatenated SDS without SDS-TL */
     put(&w, 0, 3);
@@ -2290,8 +2281,7 @@ test_sds_sender_stays_with_text(void) {
     put(&w, 'X', 8);
     put(&w, 0, 1);
     tetra_mle_dispatch(bits, w.pos, 1, opts, state);
-    ok = ok && tetra_st(state)->sds_concat_valid && !tetra_st(state)->sds_concat_complete
-         && tetra_st(state)->sds_src == 1001 && strcmp(tetra_st(state)->sds_text, "HI") == 0;
+    ok = ok && notices(state) == before && notice(state, 2)->source_id == 1001;
     free_state(state);
     free(opts);
     return ok;
@@ -2301,8 +2291,6 @@ test_sds_sender_stays_with_text(void) {
 static int
 test_sds_control_characters(void) {
     uint8_t bits[200];
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     static const uint16_t k_units[] = {'A', 0x009B, 'B', 0x001B, 'C', 0x0085, 'D'};
 
     bit_writer w = sds_writer(bits, sizeof bits, 7, 16 + 7 * 16);
@@ -2312,8 +2300,8 @@ test_sds_control_characters(void) {
         put(&w, k_units[i], 16);
     }
     put(&w, 0, 1);
-    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
-    int ok = strcmp(tetra_st(state)->sds_text, "A B C D") == 0;
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(bits, w.pos, &pdu) && strcmp(pdu.data.text.text, "A B C D") == 0;
 
     w = sds_writer(bits, sizeof bits, 7, 16 + 6 * 8);
     put(&w, 2, 8);
@@ -2325,12 +2313,11 @@ test_sds_control_characters(void) {
     put(&w, 0xE9, 8);
     put(&w, 'F', 8);
     put(&w, 0, 1);
-    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
-    ok = ok
-         && strcmp(tetra_st(state)->sds_text, "E   \xc3\xa9"
-                                              "F")
+    ok = ok && tetra_sds_decode(bits, w.pos, &pdu)
+         && strcmp(pdu.data.text.text, "E   \xc3\xa9"
+                                       "F")
                 == 0
-         && text_is_safe_utf8(tetra_st(state)->sds_text);
+         && text_is_safe_utf8(pdu.data.text.text);
 
     /* GSM 7-bit "A", LF, "B" packed into three octets (table 29.34): 0x41, 0x85, 0x10. */
     w = sds_writer(bits, sizeof bits, 7, 16 + 24);
@@ -2340,10 +2327,7 @@ test_sds_control_characters(void) {
     put(&w, 0x85, 8);
     put(&w, 0x10, 8);
     put(&w, 0, 1);
-    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
-    ok = ok && strcmp(tetra_st(state)->sds_text, "A B") == 0;
-    free_state(state);
-    free(opts);
+    ok = ok && tetra_sds_decode(bits, w.pos, &pdu) && strcmp(pdu.data.text.text, "A B") == 0;
     return ok;
 }
 
@@ -2351,8 +2335,6 @@ test_sds_control_characters(void) {
 static int
 test_sds_unpaired_surrogates(void) {
     uint8_t bits[160];
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     bit_writer w = sds_writer(bits, sizeof bits, 9, 16 + 3 * 16);
     put(&w, 2, 8);
     put(&w, 26, 8);
@@ -2360,13 +2342,11 @@ test_sds_unpaired_surrogates(void) {
     put(&w, 'A', 16);
     put(&w, 0xD83D, 16);
     put(&w, 0, 1);
-    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
-    int ok = tetra_st(state)->sds_src == 9 && tetra_st(state)->sds_text_unicode
-             && strcmp(tetra_st(state)->sds_text, "\xef\xbf\xbd"
-                                                  "A\xef\xbf\xbd")
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(bits, w.pos, &pdu) && pdu.data.calling.ssi == 9 && pdu.data.text.unicode
+             && strcmp(pdu.data.text.text, "\xef\xbf\xbd"
+                                           "A\xef\xbf\xbd")
                     == 0;
-    free_state(state);
-    free(opts);
     return ok;
 }
 
@@ -2374,8 +2354,6 @@ test_sds_unpaired_surrogates(void) {
 static int
 test_sds_long_text_utf8_boundary(void) {
     uint8_t bits[2048];
-    dsd_state* state = alloc_state();
-    dsd_opts* opts = alloc_opts();
     bit_writer w = sds_writer(bits, sizeof bits, 1234567, 16 + 150 * 8);
     put(&w, 2, 8);
     put(&w, 1, 8);
@@ -2383,16 +2361,15 @@ test_sds_long_text_utf8_boundary(void) {
         put(&w, 0xE9, 8); /* two UTF-8 bytes each */
     }
     put(&w, 0, 1);
-    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
-    int ok = tetra_st(state)->sds_text_len == 254 && text_is_safe_utf8(tetra_st(state)->sds_text)
-             && strncmp(tetra_st(state)->sds_text, "\xc3\xa9\xc3\xa9", 4) == 0;
-    free_state(state);
-    free(opts);
+    tetra_sds_pdu pdu;
+    int ok = tetra_sds_decode(bits, w.pos, &pdu) && pdu.data.text.len == 254 && pdu.data.text.full
+             && text_is_safe_utf8(pdu.data.text.text) && strncmp(pdu.data.text.text, "\xc3\xa9\xc3\xa9", 4) == 0;
     return ok;
 }
 
+/* Part @p sequence of a two-part simple text from SSI 55; @p log receives the summary lines. */
 static void
-dispatch_concat_part(dsd_state* state, dsd_opts* opts, uint8_t sequence, uint8_t octet) {
+dispatch_concat_part(dsd_state* state, dsd_opts* opts, uint8_t sequence, uint8_t octet, char* log, size_t log_size) {
     uint8_t bits[160];
     const int data_bits = 8 + 24 + (sequence == 1 ? 8 + 8 : 0) + 8;
     bit_writer w = sds_writer(bits, sizeof bits, 55, data_bits);
@@ -2408,28 +2385,28 @@ dispatch_concat_part(dsd_state* state, dsd_opts* opts, uint8_t sequence, uint8_t
     }
     put(&w, octet, 8);
     put(&w, 0, 1);
-    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    tetra_test_mle_logged(bits, w.pos, 1, opts, state, log, log_size);
 }
 
 /* Reassembly lives in each session's TETRA state: parts given to one session never complete a message in another, and
  * resetting the TETRA state drops what was collected. */
 static int
 test_sds_concat_is_per_session(void) {
-    dsd_state* a = alloc_state();
-    dsd_state* b = alloc_state();
+    dsd_state* a = alloc_notice_state();
+    dsd_state* b = alloc_notice_state();
     dsd_opts* opts = alloc_opts();
+    char log[512];
 
-    dispatch_concat_part(a, opts, 1, 'O');
-    dispatch_concat_part(b, opts, 2, 'K');
-    int ok =
-        tetra_st(b)->sds_concat_valid && !tetra_st(b)->sds_concat_complete && tetra_st(b)->sds_concat_received == 1;
-    dispatch_concat_part(a, opts, 2, 'K');
-    ok = ok && tetra_st(a)->sds_concat_complete && strcmp(tetra_st(a)->sds_text, "OK") == 0;
+    dispatch_concat_part(a, opts, 1, 'O', log, sizeof log);
+    dispatch_concat_part(b, opts, 2, 'K', log, sizeof log);
+    int ok = strstr(log, "part=2/2 received=1\n") != NULL;
+    dispatch_concat_part(a, opts, 2, 'K', log, sizeof log);
+    ok = ok && strstr(log, "part=2/2 received=2 complete") != NULL && strcmp(notice(a, 1)->text_message, "OK") == 0;
 
-    dispatch_concat_part(a, opts, 1, 'N');
+    dispatch_concat_part(a, opts, 1, 'N', log, sizeof log);
     tetra_state_reset(a);
-    dispatch_concat_part(a, opts, 2, 'O');
-    ok = ok && !tetra_st(a)->sds_concat_complete && tetra_st(a)->sds_concat_received == 1;
+    dispatch_concat_part(a, opts, 2, 'O', log, sizeof log);
+    ok = ok && strstr(log, "part=2/2 received=1\n") != NULL;
 
     free_state(a);
     free_state(b);
@@ -2441,15 +2418,16 @@ test_sds_concat_is_per_session(void) {
 static int
 test_sds_concat_timeout(void) {
     const uint64_t second_ns = 1000000000ULL;
-    dsd_state* state = alloc_state();
+    dsd_state* state = alloc_notice_state();
     dsd_opts* opts = alloc_opts();
+    char log[512];
     dsd_decode_clock_use_test(1000 * second_ns);
-    dispatch_concat_part(state, opts, 1, 'O');
+    dispatch_concat_part(state, opts, 1, 'O', log, sizeof log);
     dsd_decode_clock_test_set_ns(1301 * second_ns);
-    dispatch_concat_part(state, opts, 2, 'K');
-    int ok = !tetra_st(state)->sds_concat_complete && tetra_st(state)->sds_concat_received == 1;
-    dispatch_concat_part(state, opts, 1, 'O');
-    ok = ok && tetra_st(state)->sds_concat_complete && strcmp(tetra_st(state)->sds_text, "OK") == 0;
+    dispatch_concat_part(state, opts, 2, 'K', log, sizeof log);
+    int ok = strstr(log, "part=2/2 received=1\n") != NULL;
+    dispatch_concat_part(state, opts, 1, 'O', log, sizeof log);
+    ok = ok && strstr(log, "part=1/2 received=2 complete") != NULL && strcmp(notice(state, 1)->text_message, "OK") == 0;
     dsd_decode_clock_use_system();
     free_state(state);
     free(opts);
@@ -2466,8 +2444,11 @@ test_sds_truncated_concat_control(void) {
     put(&w, 12, 8);
     put(&w, 0, 8);
     put(&w, 0, 1);
-    tetra_mle_dispatch(bits, w.pos, 6, opts, state);
-    int ok = tetra_st(state)->sds_last_cc == 0 && tetra_st(state)->sds_src == 0 && !tetra_st(state)->sds_concat_valid;
+    tetra_sds_pdu pdu;
+    int ok = !tetra_sds_decode(bits, w.pos, &pdu);
+    char log[256];
+    tetra_test_mle_logged(bits, w.pos, 6, opts, state, log, sizeof log);
+    ok = ok && strstr(log, "SDS") == NULL;
     free_state(state);
     free(opts);
     return ok;

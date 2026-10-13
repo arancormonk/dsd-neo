@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -58,11 +59,6 @@ pack_bits(uint8_t* out, uint32_t val, int offset, int nbits) {
 static dsd_state*
 alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
-}
-
-static dsd_opts*
-alloc_opts(void) {
-    return (dsd_opts*)calloc(1, sizeof(dsd_opts));
 }
 
 static void
@@ -126,15 +122,11 @@ test_d_sds_data_8bit_text(void) {
     uint8_t mle[58];
     int mle_nbits;
     wrap_mle_cmce(cmce, 50, mle, &mle_nbits);
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-    CHECK(tetra_st(st)->sds_src == 77777u, "D-SDS-DATA: CPTI SSI parsed");
-    CHECK(tetra_st(st)->cmce_sds_data_type == 0, "D-SDS-DATA: SDTI=0");
-    CHECK(tetra_st(st)->sds_short_valid == 1, "D-SDS-DATA: 16-bit form valid");
-    CHECK(tetra_st(st)->sds_short_data == 0x4F4B, "D-SDS-DATA: 16-bit payload");
-    free(st);
-    free(opt);
+    tetra_sds_pdu pdu;
+    CHECK(tetra_sds_decode(mle, mle_nbits, &pdu) && pdu.data.calling.ssi == 77777u, "D-SDS-DATA: CPTI SSI parsed");
+    CHECK(pdu.data.sdti == 0, "D-SDS-DATA: SDTI=0");
+    CHECK(pdu.data.data_bits == 16, "D-SDS-DATA: 16-bit form");
+    CHECK(pdu.data.short_data == 0x4F4B, "D-SDS-DATA: 16-bit payload");
 }
 
 /* Test 4: too-short PDU (no crash, no side-effects) */
@@ -150,17 +142,8 @@ test_d_sds_data_too_short(void) {
     int mle_nbits;
     wrap_mle_cmce(cmce, 10, mle, &mle_nbits);
 
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    /* Must not crash */
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-
-    CHECK(tetra_st(st)->sds_src == 0, "D-SDS-DATA short: src_ssi stays 0");
-    CHECK(tetra_st(st)->sds_text_len == 0, "D-SDS-DATA short: text_len stays 0");
-
-    free(st);
-    free(opt);
+    tetra_sds_pdu pdu;
+    CHECK(!tetra_sds_decode(mle, mle_nbits, &pdu), "D-SDS-DATA short: incomplete");
 }
 
 /* Test 5: CPTI=0 has no calling-party address. */
@@ -176,13 +159,10 @@ test_d_sds_data_ext_flag(void) {
     uint8_t mle[34];
     int mle_nbits;
     wrap_mle_cmce(cmce, 26, mle, &mle_nbits);
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-    CHECK(tetra_st(st)->sds_src == 0, "D-SDS-DATA CPTI=0: no SSI");
-    CHECK(tetra_st(st)->sds_short_data == 0x1234, "D-SDS-DATA CPTI=0 payload");
-    free(st);
-    free(opt);
+    tetra_sds_pdu pdu;
+    CHECK(tetra_sds_decode(mle, mle_nbits, &pdu) && !pdu.data.calling.ssi_valid && pdu.data.calling.ssi == 0,
+          "D-SDS-DATA CPTI=0: no SSI");
+    CHECK(pdu.data.short_data == 0x1234, "D-SDS-DATA CPTI=0 payload");
 }
 
 /* Test 6: 7-bit encoding for text "Hi!" */
@@ -202,14 +182,10 @@ test_d_sds_data_7bit_text(void) {
     uint8_t mle[74];
     int mle_nbits;
     wrap_mle_cmce(cmce, 66, mle, &mle_nbits);
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-    CHECK(tetra_st(st)->sds_src == 55555u, "D-SDS-DATA SDTI3: SSI parsed");
-    CHECK(tetra_st(st)->cmce_sds_data_type == 3, "D-SDS-DATA SDTI3 selected");
-    CHECK(tetra_st(st)->sds_text_len == 0, "CMCE does not invent SDS-TL text encoding");
-    free(st);
-    free(opt);
+    tetra_sds_pdu pdu;
+    CHECK(tetra_sds_decode(mle, mle_nbits, &pdu) && pdu.data.calling.ssi == 55555u, "D-SDS-DATA SDTI3: SSI parsed");
+    CHECK(pdu.data.sdti == 3 && pdu.data.data_bits == 21, "D-SDS-DATA SDTI3 selected");
+    CHECK(pdu.data.text.len == 0, "CMCE does not invent SDS-TL text encoding");
 }
 
 /* -----------------------------------------------------------------------

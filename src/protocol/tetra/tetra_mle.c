@@ -78,19 +78,8 @@ require_absent_type2(tetra_bit_reader* r, int count) {
 
 /* CMCE (clause 14). */
 
-/* A calling or transmitting party (tables 14.43 to 14.45): type 1 carries an SSI, type 2 an SSI and its 24-bit
- * extension (MCC and MNC); types 0 and 3 are reserved and carry neither. */
-typedef struct {
-    uint32_t ssi;
-    uint32_t extension;
-    uint8_t type;
-    uint8_t type_valid;
-    uint8_t ssi_valid;
-    uint8_t extension_valid;
-} cmce_party;
-
 static void
-cmce_read_party_address(tetra_bit_reader* r, cmce_party* party) {
+cmce_read_party_address(tetra_bit_reader* r, tetra_cmce_party* party) {
     if (party->type == 1 || party->type == 2) {
         party->ssi = tetra_bits_read(r, 24);
         party->ssi_valid = 1;
@@ -103,7 +92,7 @@ cmce_read_party_address(tetra_bit_reader* r, cmce_party* party) {
 
 /* The type-2 calling/transmitting party type identifier with its conditional address. */
 static void
-cmce_read_party_type2(tetra_bit_reader* r, cmce_party* party) {
+cmce_read_party_type2(tetra_bit_reader* r, tetra_cmce_party* party) {
     if (tetra_bits_present(r)) {
         party->type = (uint8_t)tetra_bits_read(r, 2);
         party->type_valid = 1;
@@ -129,7 +118,7 @@ cmce_call_event(const mle_ctx* ctx, tetra_call_event* ev, uint8_t kind, uint16_t
 /* D-SETUP, table 14.15. */
 
 typedef struct {
-    cmce_party calling;
+    tetra_cmce_party calling;
     uint16_t call_id;
     uint8_t timeout;
     uint8_t basic;
@@ -348,43 +337,10 @@ parse_cmce_d_call_proceeding(tetra_bit_reader* r, const mle_ctx* ctx) {
     return 1;
 }
 
-/* D-STATUS, table 14.14. */
-
-static int
-parse_cmce_d_status(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_state_t* const ts = ctx->ts;
-    cmce_party calling;
-    DSD_MEMSET(&calling, 0, sizeof calling);
-    calling.type = (uint8_t)tetra_bits_read(r, 2);
-    cmce_read_party_address(r, &calling);
-    const uint16_t status = (uint16_t)tetra_bits_read(r, 16);
-    if (tetra_bits_present(r)) { /* no type-2 elements: type-3 elements follow at once */
-        (void)tetra_bits_skip_type34(r);
-    }
-    if (!tetra_bits_ok(r)) {
-        return cmce_reject(ctx, "D-STATUS");
-    }
-    DSD_FPRINTF(stderr, "[TETRA CMCE D-STATUS] CC=%d src_SSI=%u status=0x%04X\n", ctx->cc, calling.ssi, status);
-    ts->sds_status_src = calling.ssi;
-    ts->sds_status = status;
-    const uint32_t dst = tetra_calls_addressed_ssi(ctx->sdu);
-    char notice[64];
-    DSD_SNPRINTF(notice, sizeof notice, "STATUS SRC: %u; TGT: %u; STATUS: 0x%04X;", (unsigned)calling.ssi,
-                 (unsigned)dst, (unsigned)status);
-    tetra_calls_notice(ctx->opts, ctx->state, 1, calling.ssi, dst, notice, NULL);
-    /* Table 29.13: a pre-coded status starting 011111 is an SDS-TL SDS-SHORT REPORT. */
-    if ((status >> 10) == 0x1fu) {
-        ts->sds_short_report_result = (uint8_t)((status >> 8) & 3u);
-        ts->sds_short_report_msg_ref = (uint8_t)status;
-        ts->sds_short_report_valid = 1;
-    }
-    return 1;
-}
-
 /* Floor control: D-TX GRANTED, D-TX INTERRUPT, D-TX CONTINUE, D-TX WAIT and D-TX CEASED, tables 14.16-14.20. */
 
 typedef struct {
-    cmce_party party; /* transmitting party (D-TX GRANTED and D-TX INTERRUPT) */
+    tetra_cmce_party party; /* transmitting party (D-TX GRANTED and D-TX INTERRUPT) */
     uint16_t call_id;
     uint8_t grant;          /* transmission grant (D-TX GRANTED and D-TX INTERRUPT) */
     uint8_t permission;     /* transmission request permission */
@@ -686,9 +642,6 @@ parse_cmce_d_facility(tetra_bit_reader* r, const mle_ctx* ctx) {
 #define SDS_PID_IMMEDIATE_TEXT        137u
 #define SDS_PID_CONCAT_TL             140u
 
-/* SDS-TL message types, table 29.20. */
-enum { SDS_TL_TRANSFER = 0, SDS_TL_REPORT = 1, SDS_TL_ACK = 2, SDS_TL_NONE = 0xff };
-
 /* Table 29.21: protocol identifiers 128 to 254 use the SDS-TL data transfer service (255 is the extension value). */
 static int
 sds_pid_uses_tl(uint32_t pid) {
@@ -705,19 +658,11 @@ sds_pid_is_tl_text(uint32_t pid) {
     return pid == SDS_PID_TEXT || pid == SDS_PID_IMMEDIATE_TEXT;
 }
 
-/* Decoded text: UTF-8, at most 255 bytes plus the terminator, never cut inside a character. */
-typedef struct {
-    char text[256];
-    uint16_t len;
-    uint8_t unicode;
-    uint8_t full;
-} sds_text;
-
 /* Append one Unicode scalar value. C0 and C1 controls become a space: radio text must not reach a terminal as an
  * escape sequence (a UTF-8 U+009B is CSI), and table 29.39's LF and CR read as word breaks. The first character that
  * does not fit ends the text. */
 static void
-sds_text_append(sds_text* t, uint32_t scalar) {
+sds_text_append(tetra_sds_text* t, uint32_t scalar) {
     char utf8[DSD_UTF8_MAX_BYTES + 1];
     if (t->full) {
         return;
@@ -769,7 +714,7 @@ gsm7_extension(unsigned code) {
  * sent most significant bit first; the spare bits of the last octet are padding. A trailing escape without its
  * extension character shows as U+FFFD. */
 static int
-sds_decode_gsm7(tetra_bit_reader* r, sds_text* t) {
+sds_decode_gsm7(tetra_bit_reader* r, tetra_sds_text* t) {
     uint32_t acc = 0;
     unsigned acc_bits = 0;
     int escaped = 0;
@@ -799,7 +744,7 @@ sds_decode_gsm7(tetra_bit_reader* r, sds_text* t) {
 
 /* ISO/IEC 8859-1 octets are the Unicode scalar values 0 to 255. */
 static int
-sds_decode_latin1(tetra_bit_reader* r, sds_text* t) {
+sds_decode_latin1(tetra_bit_reader* r, tetra_sds_text* t) {
     if (tetra_bits_left(r) % 8 != 0) {
         return 0;
     }
@@ -811,7 +756,7 @@ sds_decode_latin1(tetra_bit_reader* r, sds_text* t) {
 
 /* UCS-2 with the UTF-16BE extension (clause 29.5.4.1). Surrogate pairs combine; an unpaired half shows as U+FFFD. */
 static int
-sds_decode_utf16(tetra_bit_reader* r, sds_text* t) {
+sds_decode_utf16(tetra_bit_reader* r, tetra_sds_text* t) {
     dsd_utf16_decoder decoder;
     uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
     if (tetra_bits_left(r) % 16 != 0) {
@@ -841,7 +786,7 @@ sds_decode_utf16(tetra_bit_reader* r, sds_text* t) {
  * flag (reserved for simple text) and the text coding scheme, the time stamp when used and allowed, then the text.
  * Text in a coding scheme without a decoder here is left empty. 0 when the PDU is malformed. */
 static int
-sds_decode_text(tetra_bit_reader* r, int timestamp_allowed, sds_text* t) {
+sds_decode_text(tetra_bit_reader* r, int timestamp_allowed, tetra_sds_text* t) {
     const uint32_t timestamp_used = tetra_bits_read(r, 1);
     const uint32_t coding = tetra_bits_read(r, 7);
     if (timestamp_allowed && timestamp_used) {
@@ -858,51 +803,16 @@ sds_decode_text(tetra_bit_reader* r, int timestamp_allowed, sds_text* t) {
     }
 }
 
-/* The fixed part of a D-SDS-DATA (table 14.13): calling party, short data type identifier and user data. */
-typedef struct {
-    cmce_party calling;
-    int data_pos;  /* user data start, in the PDU's bits */
-    int data_bits; /* user data length */
-    uint8_t sdti;
-} sds_pdu;
-
-/* SDS-TL header (tables 29.11, 29.12 and 29.14) with its storage/forward control fields. */
-typedef struct {
-    uint32_t forward_ssi;
-    uint32_t forward_extension;
-    char forward_external[25];
-    uint8_t message_type; /* SDS_TL_* */
-    uint8_t status;       /* delivery status (REPORT and ACK) */
-    uint8_t reference;    /* message reference */
-    uint8_t storage_forward;
-    uint8_t validity_period;
-    uint8_t forward_type;
-    uint8_t forward_valid;
-    uint8_t forward_sna;
-} sds_tl_header;
-
-/* Concatenation part status (table 29.60), and the reassembled message once complete. */
+/* The reassembly of a concatenated message (table 29.60): how many parts it holds now, whether this part completed
+ * or repeated it, and the reassembled message once complete. */
 typedef struct {
     uint8_t* assembled;
     int assembled_bits;
-    uint16_t reference;
-    uint8_t total;
-    uint8_t sequence;
     uint8_t received;
     uint8_t assembled_pid;
-    uint8_t present;  /* the D-SDS-DATA carried a concatenation part */
     uint8_t complete; /* this part completed the message */
     uint8_t duplicate;
 } sds_concat_status;
-
-typedef struct {
-    sds_text text;
-    sds_tl_header tl;
-    sds_concat_status concat;
-    uint16_t short_data; /* user defined data-1 */
-} sds_message;
-
-enum { SDS_DECODE_BAD, SDS_DECODE_OK };
 
 /* Concatenated SDS reassembly, clause 29.5.14. */
 
@@ -1050,12 +960,12 @@ sds_concat_store_part(sds_concat_ctx* c, const sds_concat_part* part) {
     return SDS_CONCAT_PENDING;
 }
 
-/* Add one part to the reassembly in @p ts and report the message state in @p status. */
+/* Add one well-formed part (sds_read_concat_control()) to the reassembly in @p ts and report the message state in
+ * @p status. */
 static int
 sds_concat_submit(tetra_state_t* ts, const sds_concat_part* part, sds_concat_status* status) {
     struct tetra_sds_concat_store* store = sds_concat_store(ts);
-    if (!store || part->total < 2 || part->sequence == 0 || part->sequence > part->total
-        || tetra_bits_left(&part->data) > SDS_CONCAT_PART_BITS) {
+    if (!store) {
         return SDS_CONCAT_REJECTED;
     }
     const uint64_t now_ms = dsd_decode_now_mono_ms();
@@ -1100,7 +1010,7 @@ sds_read_external_number(tetra_bit_reader* r, char* out, size_t out_size) {
 /* Storage/forward control information (tables 29.12 and 29.14): validity period, forward address type (table 29.18)
  * and the address it selects. */
 static void
-sds_read_forward_address(tetra_bit_reader* r, sds_tl_header* h) {
+sds_read_forward_address(tetra_bit_reader* r, tetra_sds_tl* h) {
     h->validity_period = (uint8_t)tetra_bits_read(r, 5);
     h->forward_type = (uint8_t)tetra_bits_read(r, 3);
     switch (h->forward_type) {
@@ -1120,13 +1030,13 @@ sds_read_forward_address(tetra_bit_reader* r, sds_tl_header* h) {
 /* The SDS-TL header after the protocol identifier: SDS-TRANSFER, SDS-REPORT or SDS-ACK. Message types 3 to 15 are
  * reserved or application-defined and carry no header the decoder knows. */
 static void
-sds_read_tl_header(tetra_bit_reader* r, sds_tl_header* h) {
+sds_read_tl_header(tetra_bit_reader* r, tetra_sds_tl* h) {
     const uint32_t type = tetra_bits_read(r, 4);
-    if (type > SDS_TL_ACK) {
+    if (type > TETRA_SDS_TL_ACK) {
         return;
     }
     h->message_type = (uint8_t)type;
-    if (type == SDS_TL_ACK) {
+    if (type == TETRA_SDS_TL_ACK) {
         (void)tetra_bits_skip(r, 4); /* reserved */
         h->status = (uint8_t)tetra_bits_read(r, 8);
         h->reference = (uint8_t)tetra_bits_read(r, 8);
@@ -1135,7 +1045,7 @@ sds_read_tl_header(tetra_bit_reader* r, sds_tl_header* h) {
     /* TRANSFER: delivery report request, service selection; REPORT: acknowledgement required, reserved. */
     (void)tetra_bits_skip(r, 3);
     h->storage_forward = (uint8_t)tetra_bits_read(r, 1);
-    if (type == SDS_TL_REPORT) {
+    if (type == TETRA_SDS_TL_REPORT) {
         h->status = (uint8_t)tetra_bits_read(r, 8);
     }
     h->reference = (uint8_t)tetra_bits_read(r, 8);
@@ -1144,9 +1054,10 @@ sds_read_tl_header(tetra_bit_reader* r, sds_tl_header* h) {
     }
 }
 
-/* Concatenation control (table 29.60) and, in part 1, the PID of the user payload. */
+/* Concatenation control (table 29.60) and, in part 1, the PID of the user payload; then the part's user data. A part
+ * is malformed when its count or number is out of range, or when part 1 names a concatenation PID again. */
 static void
-sds_read_concat_control(tetra_bit_reader* r, sds_concat_part* part) {
+sds_read_concat_control(tetra_bit_reader* r, tetra_sds_concat_part* part) {
     if (tetra_bits_read(r, 3) != 0) { /* concatenation control PDU type: only transfer is defined (table 29.61) */
         bits_reject(r);
         return;
@@ -1163,11 +1074,17 @@ sds_read_concat_control(tetra_bit_reader* r, sds_concat_part* part) {
             bits_reject(r);
         }
     }
+    part->data_pos = r->pos;
+    part->data_bits = tetra_bits_left(r);
+    if (part->total < 2 || part->sequence == 0 || part->sequence > part->total
+        || part->data_bits > SDS_CONCAT_PART_BITS) {
+        bits_reject(r);
+    }
 }
 
 /* Decode the text of a message whose user data PID is @p pid; @p r is at the text message SDU. */
 static int
-sds_decode_message_text(tetra_bit_reader* r, uint32_t pid, sds_text* t) {
+sds_decode_message_text(tetra_bit_reader* r, uint32_t pid, tetra_sds_text* t) {
     if (sds_pid_is_simple_text(pid)) {
         return sds_decode_text(r, 0, t);
     }
@@ -1177,194 +1094,204 @@ sds_decode_message_text(tetra_bit_reader* r, uint32_t pid, sds_text* t) {
     return 1;
 }
 
-/* A concatenation part (tables 29.62 and 29.63): add it to the reassembly and, when it completes the message, decode
- * the message text. */
+/* A concatenation part (tables 29.62 and 29.63) of the message under @p pid. */
 static int
-sds_decode_concat(const mle_ctx* ctx, const sds_pdu* pdu, uint32_t pid, tetra_bit_reader* ud, sds_message* msg) {
-    sds_concat_part part;
-    DSD_MEMSET(&part, 0, sizeof part);
-    if (pid == SDS_PID_CONCAT_TL && msg->tl.message_type != SDS_TL_TRANSFER) {
-        return SDS_DECODE_BAD;
+sds_decode_concat(tetra_bit_reader* ud, uint32_t pid, tetra_sds_data* d) {
+    if (pid == SDS_PID_CONCAT_TL && d->tl.message_type != TETRA_SDS_TL_TRANSFER) {
+        return 0;
     }
-    sds_read_concat_control(ud, &part);
-    if (!tetra_bits_ok(ud)) {
-        return SDS_DECODE_BAD;
-    }
-    part.data = *ud;
-    part.src_ssi = pdu->calling.ssi;
-    part.with_transport = (uint8_t)(pid == SDS_PID_CONCAT_TL);
-    msg->concat.present = 1;
-    msg->concat.reference = part.reference;
-    msg->concat.total = part.total;
-    msg->concat.sequence = part.sequence;
-    const int result = sds_concat_submit(ctx->ts, &part, &msg->concat);
-    if (result == SDS_CONCAT_REJECTED) {
-        return SDS_DECODE_BAD;
-    }
-    msg->concat.duplicate = (uint8_t)(result == SDS_CONCAT_DUPLICATE);
-    msg->concat.complete = (uint8_t)(result == SDS_CONCAT_COMPLETE);
-    if (!msg->concat.complete) {
-        return SDS_DECODE_OK;
-    }
-    tetra_bit_reader assembled = tetra_bits_reader(msg->concat.assembled, msg->concat.assembled_bits, 0);
-    return sds_decode_message_text(&assembled, msg->concat.assembled_pid, &msg->text) ? SDS_DECODE_OK : SDS_DECODE_BAD;
+    sds_read_concat_control(ud, &d->concat);
+    d->concat.with_transport = (uint8_t)(pid == SDS_PID_CONCAT_TL);
+    d->concat_present = 1;
+    return tetra_bits_ok(ud);
 }
 
 /* User defined data-4 (short data type identifier 3): the protocol identifier (table 29.21), the SDS-TL header for the
  * PIDs that use it, then text or a concatenation part. */
 static int
-sds_decode_user_data(const mle_ctx* ctx, const sds_pdu* pdu, tetra_bit_reader* ud, sds_message* msg) {
+sds_decode_user_data(tetra_bit_reader* ud, tetra_sds_data* d) {
     if (tetra_bits_left(ud) < 8) {
-        return SDS_DECODE_OK; /* too short to name a protocol: kept as bare user data */
+        return 1; /* too short to name a protocol: kept as bare user data */
     }
     const uint32_t pid = tetra_bits_read(ud, 8);
+    d->pid = (uint8_t)pid;
+    d->pid_present = 1;
     if (sds_pid_uses_tl(pid)) {
-        sds_read_tl_header(ud, &msg->tl);
+        sds_read_tl_header(ud, &d->tl);
     }
     if (!tetra_bits_ok(ud)) {
-        return SDS_DECODE_BAD;
+        return 0;
     }
     if (pid == SDS_PID_CONCAT || pid == SDS_PID_CONCAT_TL) {
-        return sds_decode_concat(ctx, pdu, pid, ud, msg);
+        return sds_decode_concat(ud, pid, d);
     }
-    if (sds_pid_is_tl_text(pid) && msg->tl.message_type != SDS_TL_TRANSFER) {
-        return SDS_DECODE_OK; /* only SDS-TRANSFER carries the text message transfer SDU */
+    if (sds_pid_is_tl_text(pid) && d->tl.message_type != TETRA_SDS_TL_TRANSFER) {
+        return 1; /* only SDS-TRANSFER carries the text message transfer SDU */
     }
-    return sds_decode_message_text(ud, pid, &msg->text) ? SDS_DECODE_OK : SDS_DECODE_BAD;
+    return sds_decode_message_text(ud, pid, &d->text);
 }
 
-/* The D-SDS-DATA fields of table 14.13 up to the end of the PDU. */
-static void
-sds_read_pdu(tetra_bit_reader* r, sds_pdu* pdu) {
+/* D-SDS-DATA (table 14.13): calling party, short data type identifier and user data, then the user data decoded. */
+static int
+sds_decode_data(tetra_bit_reader* r, tetra_sds_data* d) {
     static const int k_fixed_bits[3] = {16, 32, 64}; /* user defined data-1 to -3 */
-    pdu->calling.type = (uint8_t)tetra_bits_read(r, 2);
-    cmce_read_party_address(r, &pdu->calling);
-    pdu->sdti = (uint8_t)tetra_bits_read(r, 2);
-    pdu->data_bits = pdu->sdti < 3 ? k_fixed_bits[pdu->sdti] : (int)tetra_bits_read(r, 11);
-    pdu->data_pos = r->pos;
-    (void)tetra_bits_skip(r, pdu->data_bits);
+    d->tl.message_type = TETRA_SDS_TL_NONE;
+    d->calling.type = (uint8_t)tetra_bits_read(r, 2);
+    cmce_read_party_address(r, &d->calling);
+    d->sdti = (uint8_t)tetra_bits_read(r, 2);
+    d->data_bits = d->sdti < 3 ? k_fixed_bits[d->sdti] : (int)tetra_bits_read(r, 11);
+    const int data_pos = r->pos;
+    (void)tetra_bits_skip(r, d->data_bits);
     if (tetra_bits_present(r)) { /* no type-2 elements: type-3 elements follow at once */
         (void)tetra_bits_skip_type34(r);
     }
+    if (!tetra_bits_ok(r)) {
+        return 0;
+    }
+    tetra_bit_reader ud = tetra_bits_reader(r->bits, data_pos + d->data_bits, data_pos);
+    if (d->sdti == 0) {
+        d->short_data = (uint16_t)tetra_bits_read(&ud, 16);
+    } else if (d->sdti == 3) {
+        return sds_decode_user_data(&ud, d);
+    }
+    return 1;
 }
 
-static void
-sds_publish_concat(const mle_ctx* ctx, const sds_pdu* pdu, const sds_concat_status* concat) {
-    tetra_state_t* const ts = ctx->ts;
-    DSD_FPRINTF(stderr, "[TETRA SDS CONCAT] CC=%d src_SSI=%u ref=%u part=%u/%u received=%u%s\n", ctx->cc,
-                pdu->calling.ssi, concat->reference, concat->sequence, concat->total, concat->received,
-                concat->complete ? " complete" : (concat->duplicate ? " duplicate" : ""));
-    ts->sds_concat_ref = concat->reference;
-    ts->sds_concat_total = concat->total;
-    ts->sds_concat_received = concat->received;
-    ts->sds_concat_valid = 1;
-    ts->sds_concat_duplicate = concat->duplicate;
-    ts->sds_concat_complete = concat->complete;
-    ts->sds_last_cc = (int8_t)ctx->cc;
+/* D-STATUS (table 14.14): calling party and pre-coded status. */
+static int
+sds_decode_status(tetra_bit_reader* r, tetra_cmce_status* st) {
+    st->calling.type = (uint8_t)tetra_bits_read(r, 2);
+    cmce_read_party_address(r, &st->calling);
+    st->status = (uint16_t)tetra_bits_read(r, 16);
+    if (tetra_bits_present(r)) { /* no type-2 elements: type-3 elements follow at once */
+        (void)tetra_bits_skip_type34(r);
+    }
+    /* Table 29.13: a pre-coded status starting 011111 is an SDS-TL SDS-SHORT REPORT. */
+    if ((st->status >> 10) == 0x1fu) {
+        st->short_report = 1;
+        st->short_report_type = (uint8_t)((st->status >> 8) & 3u);
+        st->short_report_msg_ref = (uint8_t)st->status;
+    }
+    return tetra_bits_ok(r);
+}
+
+int
+tetra_sds_decode(const uint8_t* bits, int nbits, tetra_sds_pdu* out) {
+    if (!out) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof *out);
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 0);
+    if (tetra_bits_read(&r, 3) != TETRA_MLE_PD_CMCE) {
+        return 0;
+    }
+    out->type = (uint8_t)tetra_bits_read(&r, 5);
+    if (!tetra_bits_ok(&r)) {
+        return 0;
+    }
+    if (out->type == TETRA_CMCE_D_STATUS) {
+        return sds_decode_status(&r, &out->status);
+    }
+    return out->type == TETRA_CMCE_D_SDS_DATA && sds_decode_data(&r, &out->data);
+}
+
+/* Acting on a complete D-SDS-DATA. */
+
+/* Add a concatenation part to the reassembly and, when it completes the message, decode the message's text into
+ * @p d. SDS_CONCAT_REJECTED when the part conflicts with the parts already held, or the message text is malformed. */
+static int
+sds_reassemble(const mle_ctx* ctx, tetra_sds_data* d, sds_concat_status* concat) {
+    sds_concat_part part;
+    DSD_MEMSET(&part, 0, sizeof part);
+    part.data = tetra_bits_reader(ctx->bits, d->concat.data_pos + d->concat.data_bits, d->concat.data_pos);
+    part.src_ssi = d->calling.ssi;
+    part.payload_pid = d->concat.payload_pid;
+    part.reference = d->concat.reference;
+    part.with_transport = d->concat.with_transport;
+    part.total = d->concat.total;
+    part.sequence = d->concat.sequence;
+    const int result = sds_concat_submit(ctx->ts, &part, concat);
+    concat->duplicate = (uint8_t)(result == SDS_CONCAT_DUPLICATE);
+    concat->complete = (uint8_t)(result == SDS_CONCAT_COMPLETE);
     if (concat->complete) {
-        ts->sds_concat_generation++;
+        tetra_bit_reader assembled = tetra_bits_reader(concat->assembled, concat->assembled_bits, 0);
+        if (!sds_decode_message_text(&assembled, concat->assembled_pid, &d->text)) {
+            return SDS_CONCAT_REJECTED;
+        }
     }
+    return result;
 }
 
 static void
-sds_publish_tl(tetra_state_t* ts, const sds_tl_header* tl) {
-    ts->sds_storage_forward = tl->storage_forward;
-    ts->sds_validity_period = tl->validity_period;
-    ts->sds_forward_type = tl->forward_type;
-    ts->sds_forward_valid = tl->forward_valid;
-    ts->sds_forward_sna = tl->forward_sna;
-    ts->sds_forward_ssi = tl->forward_ssi;
-    ts->sds_forward_extension = tl->forward_extension;
-    DSD_MEMCPY(ts->sds_forward_external, tl->forward_external, sizeof ts->sds_forward_external);
-    if (tl->message_type == SDS_TL_TRANSFER) {
-        ts->sds_msg_ref = tl->reference;
-    } else if (tl->message_type == SDS_TL_ACK) {
-        ts->sds_ack_delivery_status = tl->status;
-        ts->sds_ack_msg_ref = tl->reference;
-        ts->sds_msg_ref = tl->reference;
-        ts->sds_ack_valid = 1;
-    } else if (tl->message_type == SDS_TL_REPORT) {
-        ts->sds_report_cause = tl->status;
-        ts->sds_report_delivery_ok = (uint8_t)(tl->status < 32); /* table 29.16: 000xxxxx is success */
-        ts->sds_report_msg_ref = tl->reference;
-        ts->sds_msg_ref = tl->reference;
-        ts->sds_report_valid = 1;
-    }
+sds_report_concat(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status* concat) {
+    DSD_FPRINTF(stderr, "[TETRA SDS CONCAT] CC=%d src_SSI=%u ref=%u part=%u/%u received=%u%s\n", ctx->cc,
+                d->calling.ssi, d->concat.reference, d->concat.sequence, d->concat.total, concat->received,
+                concat->complete ? " complete" : (concat->duplicate ? " duplicate" : ""));
 }
 
 /* A data notice for the event history (tetra_calls_notice()): who sent the message to whom, its text as the notice's
  * message, or what it held when it had no text. */
 static void
-sds_notice(const mle_ctx* ctx, const sds_pdu* pdu, const sds_message* msg) {
+sds_notice(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status* concat) {
     const uint32_t dst = tetra_calls_addressed_ssi(ctx->sdu);
     char notice[96];
-    if (msg->text.len > 0) {
-        DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u;", (unsigned)pdu->calling.ssi, (unsigned)dst);
-    } else if (pdu->sdti == 0) {
-        DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u; DATA: 0x%04X;", (unsigned)pdu->calling.ssi,
-                     (unsigned)dst, (unsigned)msg->short_data);
+    if (d->text.len > 0) {
+        DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u;", (unsigned)d->calling.ssi, (unsigned)dst);
+    } else if (d->sdti == 0) {
+        DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u; DATA: 0x%04X;", (unsigned)d->calling.ssi,
+                     (unsigned)dst, (unsigned)d->short_data);
     } else {
-        DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u; DATA: %d bits;", (unsigned)pdu->calling.ssi,
-                     (unsigned)dst, msg->concat.complete ? msg->concat.assembled_bits : pdu->data_bits);
+        DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u; DATA: %d bits;", (unsigned)d->calling.ssi,
+                     (unsigned)dst, concat->complete ? concat->assembled_bits : d->data_bits);
     }
-    tetra_calls_notice(ctx->opts, ctx->state, 0, pdu->calling.ssi, dst, notice,
-                       msg->text.len > 0 ? msg->text.text : NULL);
+    tetra_calls_notice(ctx->opts, ctx->state, 0, d->calling.ssi, dst, notice, d->text.len > 0 ? d->text.text : NULL);
 }
 
 static void
-sds_publish(const mle_ctx* ctx, const sds_pdu* pdu, const sds_message* msg) {
-    tetra_state_t* const ts = ctx->ts;
+sds_report(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status* concat) {
     DSD_FPRINTF(stderr, "[TETRA CMCE D-SDS-DATA] CC=%d src_SSI=%u CPTI=%u SDTI=%u data_bits=%d\n", ctx->cc,
-                pdu->calling.ssi, pdu->calling.type, pdu->sdti, pdu->data_bits);
-    /* The sender and the text are replaced together. */
-    ts->sds_src = pdu->calling.ssi;
-    DSD_MEMCPY(ts->sds_text, msg->text.text, sizeof ts->sds_text);
-    ts->sds_text_len = msg->text.len;
-    ts->sds_text_unicode = msg->text.unicode;
-    ts->cmce_sds_data_type = pdu->sdti;
-    ts->sds_last_cc = (int8_t)ctx->cc;
-    if (!msg->concat.present) {
-        ts->sds_concat_valid = 0;
-        ts->sds_concat_duplicate = 0;
-        ts->sds_concat_complete = 0;
-    }
-    sds_publish_tl(ts, &msg->tl);
-    ts->sds_short_valid = (uint8_t)(pdu->sdti == 0);
-    if (pdu->sdti == 0) {
-        ts->sds_short_data = msg->short_data;
-        ts->sds_short_src = pdu->calling.ssi;
-    }
-    sds_notice(ctx, pdu, msg);
+                d->calling.ssi, d->calling.type, d->sdti, d->data_bits);
+    sds_notice(ctx, d, concat);
 }
 
-/* D-SDS-DATA, table 14.13. */
-
+/* D-SDS-DATA, table 14.13: a whole message, or a concatenation part, which completes a message when it is the last of
+ * its parts to arrive. */
 static int
 parse_cmce_d_sds_data(tetra_bit_reader* r, const mle_ctx* ctx) {
-    sds_pdu pdu;
-    sds_message msg;
-    DSD_MEMSET(&pdu, 0, sizeof pdu);
-    DSD_MEMSET(&msg, 0, sizeof msg);
-    msg.tl.message_type = SDS_TL_NONE;
-    sds_read_pdu(r, &pdu);
-    if (!tetra_bits_ok(r)) {
-        return cmce_reject(ctx, "D-SDS-DATA");
+    tetra_sds_data data;
+    tetra_sds_data* const d = &data;
+    sds_concat_status concat;
+    DSD_MEMSET(d, 0, sizeof *d);
+    DSD_MEMSET(&concat, 0, sizeof concat);
+    int ok = sds_decode_data(r, d);
+    if (ok && d->concat_present) {
+        ok = sds_reassemble(ctx, d, &concat) != SDS_CONCAT_REJECTED;
+        if (ok) {
+            sds_report_concat(ctx, d, &concat);
+        }
     }
-    tetra_bit_reader ud = tetra_bits_reader(r->bits, pdu.data_pos + pdu.data_bits, pdu.data_pos);
-    int rc = SDS_DECODE_OK;
-    if (pdu.sdti == 0) {
-        msg.short_data = (uint16_t)tetra_bits_read(&ud, 16);
-    } else if (pdu.sdti == 3) {
-        rc = sds_decode_user_data(ctx, &pdu, &ud, &msg);
+    if (ok && (!d->concat_present || concat.complete)) {
+        sds_report(ctx, d, &concat);
     }
-    if (rc == SDS_DECODE_OK && msg.concat.present) {
-        sds_publish_concat(ctx, &pdu, &msg.concat);
+    free(concat.assembled);
+    return ok ? 1 : cmce_reject(ctx, "D-SDS-DATA");
+}
+
+/* D-STATUS, table 14.14: a control notice with the status. */
+static int
+parse_cmce_d_status(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_cmce_status st;
+    DSD_MEMSET(&st, 0, sizeof st);
+    if (!sds_decode_status(r, &st)) {
+        return cmce_reject(ctx, "D-STATUS");
     }
-    if (rc == SDS_DECODE_OK && (!msg.concat.present || msg.concat.complete)) {
-        sds_publish(ctx, &pdu, &msg);
-    }
-    free(msg.concat.assembled);
-    return rc == SDS_DECODE_OK ? 1 : cmce_reject(ctx, "D-SDS-DATA");
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-STATUS] CC=%d src_SSI=%u status=0x%04X\n", ctx->cc, st.calling.ssi, st.status);
+    const uint32_t dst = tetra_calls_addressed_ssi(ctx->sdu);
+    char notice[64];
+    DSD_SNPRINTF(notice, sizeof notice, "STATUS SRC: %u; TGT: %u; STATUS: 0x%04X;", (unsigned)st.calling.ssi,
+                 (unsigned)dst, (unsigned)st.status);
+    tetra_calls_notice(ctx->opts, ctx->state, 1, st.calling.ssi, dst, notice, NULL);
+    return 1;
 }
 
 /* CMCE PDU dispatch, table 14.66. */

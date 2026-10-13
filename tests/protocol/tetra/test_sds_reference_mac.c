@@ -16,6 +16,7 @@
 #include <string.h>
 #include "tetra_confirm.h"
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 
 int
 main(void) {
@@ -46,19 +47,17 @@ main(void) {
     tetra_confirm_note_signalling(state);
     /* MAC block as published (34 octets): MAC-RESOURCE, length indication 25 octets, SSI 101, fill bits, BL-UDATA,
      * CMCE D-SDS-DATA; then a Null PDU and fill bits. */
-    tetra_mac_parse_schd(bits, (int)sizeof(bits), 7, opts, state);
+    char log[1024];
+    tetra_test_mac_logged(bits, (int)sizeof(bits), 7, opts, state, log, sizeof log);
 
-    const int ok = tetra_st(state)->frames_resource == 1 && tetra_st(state)->cmce_sds_data_type == 3
-                   && tetra_st(state)->sds_msg_ref == 32 && tetra_st(state)->sds_text_len == 4
-                   && strcmp(tetra_st(state)->sds_text, "Ahoj") == 0
+    const int ok = tetra_st(state)->frames_resource == 1
+                   && strstr(log, "[TETRA CMCE D-SDS-DATA] CC=7 src_SSI=16777184 CPTI=1 SDTI=3 data_bits=64") != NULL
                    && history[0].Event_History_Items[1].category == DSD_EVENT_CATEGORY_DATA
                    && history[0].Event_History_Items[1].target_id == 101U
                    && strcmp(history[0].Event_History_Items[1].text_message, "Ahoj") == 0;
     if (!ok) {
-        DSD_FPRINTF(stderr, "reference SDS mismatch: resources=%u type=%u ref=%u len=%u text='%s'\n",
-                    (unsigned)tetra_st(state)->frames_resource, (unsigned)tetra_st(state)->cmce_sds_data_type,
-                    (unsigned)tetra_st(state)->sds_msg_ref, (unsigned)tetra_st(state)->sds_text_len,
-                    tetra_st(state)->sds_text);
+        DSD_FPRINTF(stderr, "reference SDS mismatch: resources=%u text='%s'\n%s",
+                    (unsigned)tetra_st(state)->frames_resource, history[0].Event_History_Items[1].text_message, log);
     }
     dsd_state_ext_free_all(state);
     free(state);

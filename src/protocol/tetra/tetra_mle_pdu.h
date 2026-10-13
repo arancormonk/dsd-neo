@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file
- * @brief TETRA MLE protocol PDUs as decoded (EN 300 392-2 clause 18).
+ * @brief TETRA MLE protocol PDUs and CMCE short data PDUs as decoded (EN 300 392-2 clauses 14, 18 and 29).
  *
  * tetra_mle_decode() reads one downlink MLE protocol PDU (protocol discriminator 101, table 18.87) into a
- * tetra_mle_pdu; the MLE dispatcher decodes through it and acts only on a PDU that decoded completely. Fields a PDU
- * does not carry read zero. Module-private.
+ * tetra_mle_pdu, and tetra_sds_decode() one D-STATUS or D-SDS-DATA (protocol discriminator 010) into a tetra_sds_pdu.
+ * The MLE dispatcher decodes through them and acts only on a PDU that decoded completely. Fields a PDU does not carry
+ * read zero. Module-private.
  */
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_MLE_PDU_H_
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_MLE_PDU_H_
@@ -193,6 +194,107 @@ typedef struct {
  *         D-NEW-CELL or D-PREPARE-FAIL is not part of the PDU (tetra_mm_decode() reads it).
  */
 int tetra_mle_decode(const uint8_t* bits, int nbits, tetra_mle_pdu* out);
+
+/* CMCE short data, clauses 14.7.1.10, 14.7.1.11 and 29. */
+
+/** A calling or transmitting party (tables 14.43 to 14.45): type 1 carries an SSI, type 2 an SSI and its 24-bit
+ * extension (MCC and MNC); types 0 and 3 are reserved and carry neither. */
+typedef struct {
+    uint32_t ssi;
+    uint32_t extension;
+    uint8_t type;
+    uint8_t type_valid;
+    uint8_t ssi_valid;
+    uint8_t extension_valid;
+} tetra_cmce_party;
+
+/** D-STATUS (table 14.14). */
+typedef struct {
+    tetra_cmce_party calling;
+    uint16_t status;              /**< pre-coded status */
+    uint8_t short_report;         /**< the status is an SDS-TL SDS-SHORT REPORT (table 29.13: it starts 011111) */
+    uint8_t short_report_type;    /**< short report type, when short_report */
+    uint8_t short_report_msg_ref; /**< message reference, when short_report */
+} tetra_cmce_status;
+
+/** Decoded SDS text: UTF-8 with C0 and C1 controls replaced by spaces, at most 255 bytes plus the terminator, never cut
+ * inside a character. */
+typedef struct {
+    char text[256];
+    uint16_t len;
+    uint8_t unicode; /**< text coding scheme 26, UCS-2 with the UTF-16BE extension (table 29.29) */
+    uint8_t full;    /**< a character did not fit and ended the text */
+} tetra_sds_text;
+
+/* SDS-TL message types, table 29.20; TETRA_SDS_TL_NONE for user data without an SDS-TL header. */
+#define TETRA_SDS_TL_TRANSFER 0u
+#define TETRA_SDS_TL_REPORT   1u
+#define TETRA_SDS_TL_ACK      2u
+#define TETRA_SDS_TL_NONE     0xFFu
+
+/** SDS-TL header (tables 29.11, 29.12 and 29.14) with its storage/forward control fields (table 29.18 forward address
+ * type: 0 SNA, 1 SSI, 2 TSI, 3 external number, 7 none). */
+typedef struct {
+    uint32_t forward_ssi;
+    uint32_t forward_extension;
+    char forward_external[25]; /**< external subscriber number digits (table 14.59) */
+    uint8_t message_type;      /**< TETRA_SDS_TL_* */
+    uint8_t status;            /**< delivery status (table 29.16), SDS-REPORT and SDS-ACK */
+    uint8_t reference;         /**< message reference (table 29.19) */
+    uint8_t storage_forward;
+    uint8_t validity_period;
+    uint8_t forward_type;
+    uint8_t forward_valid;
+    uint8_t forward_sna;
+} tetra_sds_tl;
+
+/** One part of a concatenated message (tables 29.60, 29.62 and 29.63). */
+typedef struct {
+    int data_pos;           /**< the part's user data: bit of the TM-SDU where it starts */
+    int data_bits;          /**< and its length */
+    int payload_pid;        /**< protocol identifier of the whole message, carried by part 1 only; -1 in the others */
+    uint16_t reference;     /**< concatenated message reference, its extension included */
+    uint8_t total;          /**< parts in the message */
+    uint8_t sequence;       /**< this part's number, 1..total */
+    uint8_t with_transport; /**< protocol identifier 140 (SDS-TL) rather than 12 */
+} tetra_sds_concat_part;
+
+/** D-SDS-DATA (table 14.13): its user data decoded as far as one PDU goes. A concatenated message's text exists only
+ * once every part arrived, so a part leaves @c text empty. */
+typedef struct {
+    tetra_sds_text text;          /**< the text of a text message (protocol identifiers 2, 9, 130 and 137) */
+    tetra_sds_tl tl;              /**< SDS-TL header; message_type TETRA_SDS_TL_NONE without one */
+    tetra_sds_concat_part concat; /**< when concat_present */
+    tetra_cmce_party calling;
+    int data_bits;       /**< user data length */
+    uint16_t short_data; /**< user defined data-1, short data type identifier 0 */
+    uint8_t sdti;        /**< short data type identifier (table 14.13) */
+    uint8_t pid;         /**< protocol identifier (table 29.21) of user defined data-4, when pid_present */
+    uint8_t pid_present;
+    uint8_t concat_present; /**< the user data is a concatenation part */
+} tetra_sds_data;
+
+/** One decoded D-STATUS or D-SDS-DATA; @c type (TETRA_CMCE_D_STATUS or TETRA_CMCE_D_SDS_DATA) selects the member. */
+typedef struct {
+    union {
+        tetra_cmce_status status;
+        tetra_sds_data data;
+    };
+
+    uint8_t type; /**< CMCE PDU type (table 14.66) */
+} tetra_sds_pdu;
+
+/**
+ * @brief Decode one D-STATUS or D-SDS-DATA without acting on it.
+ *
+ * @param bits  TM-SDU, one bit per byte (0 or 1), MSB first, starting at the protocol discriminator.
+ * @param nbits Number of bits in @p bits.
+ * @param out   Receives the PDU; zeroed first.
+ * @return 1 when the TM-SDU is a D-STATUS or D-SDS-DATA, every element it declares was inside @p nbits, and its user
+ *         data is well formed as far as this decoder reads it (text, SDS-TL header, concatenation control); 0
+ *         otherwise. Concatenated parts are only decoded here: reassembling them is the dispatcher's.
+ */
+int tetra_sds_decode(const uint8_t* bits, int nbits, tetra_sds_pdu* out);
 
 #ifdef __cplusplus
 }
