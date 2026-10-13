@@ -161,7 +161,7 @@ expect_full_scan() {
 printf 'int edited;\n' > src/core/base.c
 git commit -q -am 'ordinary source change'
 expect_full_scan "an ordinary source change keeps the analysis to the changed files" "$base" 0
-for path in tools/ci-dependency-pins.env cmake/Pffft.cmake src/third_party/ezpwd/rs \
+for path in tools/ci-dependency-pins.env cmake/Pffft.cmake cmake/TetraCrypto.cmake src/third_party/ezpwd/rs \
   android/third_party/libusb/libusb.h android/third_party/librtlsdr/rtl-sdr.h \
   android/third_party/libairspy/airspy.h; do
   git checkout -q -f --detach "$base"

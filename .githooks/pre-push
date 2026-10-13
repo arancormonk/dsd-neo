@@ -50,7 +50,7 @@ head_sha=$(git rev-parse -q --verify HEAD 2> /dev/null || true)
 analysis_full_scan=0
 is_dependency_input() {
   case "$1" in
-    tools/ci-dependency-pins.env | cmake/Pffft.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
+    tools/ci-dependency-pins.env | cmake/Pffft.cmake | cmake/TetraCrypto.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
       return 0
       ;;
   esac

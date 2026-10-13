@@ -34,9 +34,9 @@ Run the smallest useful set before opening a PR, then broaden it when the change
   not in the clone it compares with the remote's default branch, and when no comparison works the push fails
   instead of going out unchecked. CI's pull-request jobs take their files from `tools/ci_changed_files.sh` the same
   way: names stay raw (`git diff -z`), and a diff that fails fails the job. When a change touches
-  `tools/ci-dependency-pins.env`, `cmake/Pffft.cmake` or a vendored snapshot, both run cppcheck, clang-tidy, IWYU
-  and GCC `-fanalyzer` over the whole tree, as the push to main does: a dependency's headers can move a finding
-  into a file the change did not touch.
+  `tools/ci-dependency-pins.env`, `cmake/Pffft.cmake`, `cmake/TetraCrypto.cmake` or a vendored snapshot, both run
+  cppcheck, clang-tidy, IWYU and GCC `-fanalyzer` over the whole tree, as the push to main does: a dependency's
+  headers can move a finding into a file the change did not touch.
 - Broad or high-risk changes: `tools/quality_preflight.sh`.
 - Sanitizer-sensitive code: `ctest --preset asan-ubsan-debug --output-on-failure` after configuring/building the matching preset.
 - Threading changes: `ctest --preset tsan-debug --output-on-failure` where the affected tests are supported by TSan.

@@ -72,7 +72,7 @@ git commit -q -am 'ordinary source change'
 run_hook "$(git rev-parse HEAD)" "$base" || true
 grep -q 'analysis_full=0' "$WORK/out" || fail "a source change asked for the full tree: $(cat "$WORK/out")"
 echo "PASS an ordinary source change keeps the analysis to the changed files"
-for path in tools/ci-dependency-pins.env cmake/Pffft.cmake src/third_party/ezpwd/rs \
+for path in tools/ci-dependency-pins.env cmake/Pffft.cmake cmake/TetraCrypto.cmake src/third_party/ezpwd/rs \
   android/third_party/libusb/libusb.h android/third_party/librtlsdr/rtl-sdr.h \
   android/third_party/libairspy/airspy.h; do
   git checkout -q -f --detach "$base"

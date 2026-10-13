@@ -261,7 +261,7 @@ for p in "${changed_paths[@]}"; do
   # The per-TU analyzers then take the whole tree, as on push. Matched before the
   # vendored snapshots are dropped below.
   case "$p" in
-    tools/ci-dependency-pins.env | cmake/Pffft.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
+    tools/ci-dependency-pins.env | cmake/Pffft.cmake | cmake/TetraCrypto.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
       analysis_full_scan=1
       ;;
   esac
