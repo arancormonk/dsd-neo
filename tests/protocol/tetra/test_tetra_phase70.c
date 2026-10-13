@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -81,7 +82,7 @@ static void
 test_sds_text_len_type(void) {
     printf("[test_sds_text_len_type]\n");
     dsd_state* st = alloc_state();
-    CHECK(sizeof(st->tetra_sds_text_len) == 2, "tetra_sds_text_len is uint16_t (2 bytes)");
+    CHECK(sizeof(tetra_st(st)->sds_text_len) == 2, "tetra_sds_text_len is uint16_t (2 bytes)");
     free(st);
 }
 
@@ -111,16 +112,16 @@ test_d_tx_ceased(void) {
     pack_bits(cmce, 1, 19, 1); /* requests remain permitted */
     pack_bits(cmce, 0, 20, 1); /* O-bit */
 
-    st->tetra_tx_granted_valid = 1; /* pre-condition */
+    tetra_st(st)->tx_granted_valid = 1; /* pre-condition */
 
     uint8_t pdu[21 + 3];
     int n;
     wrap_mle_cmce(cmce, 21, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
 
-    CHECK(st->tetra_tx_ceased_tx_perm == 1, "D-TX-CEASED request permission extracted");
-    CHECK(st->tetra_tx_ceased_cipher_info == 0, "D-TX-CEASED has no cipher-info field");
-    CHECK(st->tetra_tx_granted_valid == 0, "D-TX-CEASED clears grant");
+    CHECK(tetra_st(st)->tx_ceased_tx_perm == 1, "D-TX-CEASED request permission extracted");
+    CHECK(tetra_st(st)->tx_ceased_cipher_info == 0, "D-TX-CEASED has no cipher-info field");
+    CHECK(tetra_st(st)->tx_granted_valid == 0, "D-TX-CEASED clears grant");
 
     free(st);
     free(opt);
@@ -149,9 +150,9 @@ test_mle_restore_fields(void) {
     pack_bits(mle_ack, 0, 30, 1); /* CMCE O-bit */
     tetra_mle_dispatch(mle_ack, 31, 0, opt, st);
 
-    CHECK(st->tetra_restore_ack == 1, "D-RESTORE-ACK flag set");
-    CHECK(st->tetra_call_restore_valid == 1, "D-RESTORE-ACK CMCE SDU parsed");
-    CHECK(st->tetra_call_restore_id == 777, "D-CALL-RESTORE identifier extracted");
+    CHECK(tetra_st(st)->restore_ack == 1, "D-RESTORE-ACK flag set");
+    CHECK(tetra_st(st)->call_restore_valid == 1, "D-RESTORE-ACK CMCE SDU parsed");
+    CHECK(tetra_st(st)->call_restore_id == 777, "D-CALL-RESTORE identifier extracted");
 
     uint8_t mle_res[9];
     memset(mle_res, 0, sizeof(mle_res));
@@ -161,8 +162,8 @@ test_mle_restore_fields(void) {
     pack_bits(mle_res, 0, 8, 1);
     tetra_mle_dispatch(mle_res, 9, 0, opt, st);
 
-    CHECK(st->tetra_mle_restore_fail_valid == 1, "D-RESTORE-FAIL valid");
-    CHECK(st->tetra_mle_restore_fail_cause == 1, "D-RESTORE-FAIL cause extracted");
+    CHECK(tetra_st(st)->mle_restore_fail_valid == 1, "D-RESTORE-FAIL valid");
+    CHECK(tetra_st(st)->mle_restore_fail_cause == 1, "D-RESTORE-FAIL cause extracted");
 
     free(st);
     free(opt);

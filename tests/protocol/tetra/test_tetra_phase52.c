@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -99,11 +100,11 @@ test_d_connect_parse(void) {
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_connect_valid == 1, "D-CONNECT: valid=1");
-    CHECK(st->tetra_call_id == 0x2345, "D-CONNECT: call identifier");
-    CHECK(st->tetra_call_timeout == 9, "D-CONNECT: call timeout");
-    CHECK(st->tetra_cmce_connect_hook == 1, "D-CONNECT: hook method");
-    CHECK(st->tetra_cmce_connect_duplex == 1, "D-CONNECT: simplex/duplex");
+    CHECK(tetra_st(st)->connect_valid == 1, "D-CONNECT: valid=1");
+    CHECK(tetra_st(st)->call_id == 0x2345, "D-CONNECT: call identifier");
+    CHECK(tetra_st(st)->call_timeout == 9, "D-CONNECT: call timeout");
+    CHECK(tetra_st(st)->cmce_connect_hook == 1, "D-CONNECT: hook method");
+    CHECK(tetra_st(st)->cmce_connect_duplex == 1, "D-CONNECT: simplex/duplex");
 
     free(st);
     free(opt);
@@ -127,7 +128,7 @@ test_d_connect_call_active(void) {
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_call_active == 1, "D-CONNECT: call_active=1");
+    CHECK(tetra_st(st)->call_active == 1, "D-CONNECT: call_active=1");
 
     free(st);
     free(opt);
@@ -155,9 +156,9 @@ test_d_connect_transmission_control(void) {
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_cmce_connect_tx_grant == 3, "D-CONNECT: transmission grant");
-    CHECK(st->tetra_cmce_connect_tx_permission == 1, "D-CONNECT: request permission");
-    CHECK(st->tetra_cmce_connect_ownership == 1, "D-CONNECT: ownership");
+    CHECK(tetra_st(st)->cmce_connect_tx_grant == 3, "D-CONNECT: transmission grant");
+    CHECK(tetra_st(st)->cmce_connect_tx_permission == 1, "D-CONNECT: request permission");
+    CHECK(tetra_st(st)->cmce_connect_ownership == 1, "D-CONNECT: ownership");
 
     free(st);
     free(opt);
@@ -181,8 +182,8 @@ test_d_connect_too_short(void) {
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_call_active == 0, "D-CONNECT short: call stays inactive");
-    CHECK(st->tetra_connect_valid == 0, "D-CONNECT short: remains invalid");
+    CHECK(tetra_st(st)->call_active == 0, "D-CONNECT short: call stays inactive");
+    CHECK(tetra_st(st)->connect_valid == 0, "D-CONNECT short: remains invalid");
 
     free(st);
     free(opt);
@@ -222,8 +223,8 @@ test_d_sds_data_sdti0_payload(void) {
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_sds_short_valid == 1, "D-SDS-DATA SDTI=0: valid=1");
-    CHECK(st->tetra_sds_short_data == 0xABCDu, "D-SDS-DATA SDTI=0: data=0xABCD");
+    CHECK(tetra_st(st)->sds_short_valid == 1, "D-SDS-DATA SDTI=0: valid=1");
+    CHECK(tetra_st(st)->sds_short_data == 0xABCDu, "D-SDS-DATA SDTI=0: data=0xABCD");
 
     free(st);
     free(opt);
@@ -252,10 +253,10 @@ test_d_sds_data_sdti0_src(void) {
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_sds_short_src == 55555u, "D-SDS-DATA SDTI=0: src=55555");
-    CHECK(st->tetra_sds_short_valid == 1, "D-SDS-DATA SDTI=0: valid=1");
+    CHECK(tetra_st(st)->sds_short_src == 55555u, "D-SDS-DATA SDTI=0: src=55555");
+    CHECK(tetra_st(st)->sds_short_valid == 1, "D-SDS-DATA SDTI=0: valid=1");
     /* Also sets the shared sds_src field */
-    CHECK(st->tetra_sds_src == 55555u, "D-SDS-DATA SDTI=0: shared src=55555");
+    CHECK(tetra_st(st)->sds_src == 55555u, "D-SDS-DATA SDTI=0: shared src=55555");
 
     free(st);
     free(opt);
@@ -280,7 +281,7 @@ test_d_sds_data_sdti0_too_short(void) {
     /* Must not crash */
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_sds_short_valid == 0, "truncated D-SDS-DATA stays invalid");
+    CHECK(tetra_st(st)->sds_short_valid == 0, "truncated D-SDS-DATA stays invalid");
 
     free(st);
     free(opt);
@@ -296,14 +297,14 @@ test_new_fields_zero(void) {
     dsd_state* st = alloc_state();
 
     /* Phase 49 fields */
-    CHECK(st->tetra_connect_valid == 0, "connect_valid zero");
-    CHECK(st->tetra_connect_enc_mode == 0, "connect_enc_mode zero");
-    CHECK(st->tetra_connect_call_type == 0, "connect_call_type zero");
+    CHECK(tetra_st(st)->connect_valid == 0, "connect_valid zero");
+    CHECK(tetra_st(st)->connect_enc_mode == 0, "connect_enc_mode zero");
+    CHECK(tetra_st(st)->connect_call_type == 0, "connect_call_type zero");
 
     /* Phase 50 fields */
-    CHECK(st->tetra_sds_short_valid == 0, "sds_short_valid zero");
-    CHECK(st->tetra_sds_short_data == 0, "sds_short_data zero");
-    CHECK(st->tetra_sds_short_src == 0, "sds_short_src zero");
+    CHECK(tetra_st(st)->sds_short_valid == 0, "sds_short_valid zero");
+    CHECK(tetra_st(st)->sds_short_data == 0, "sds_short_data zero");
+    CHECK(tetra_st(st)->sds_short_src == 0, "sds_short_src zero");
 
     free(st);
 }

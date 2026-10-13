@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 enum {
     CODED_BITS = 120,
@@ -186,8 +187,9 @@ main(void) {
         free(state);
         return fail("BSCH parse failed");
     }
-    if (state->tetra_mcc != 460 || state->tetra_mnc != 4242 || state->tetra_colour != 17 || state->tetra_tn != 3
-        || state->tetra_fn != 9 || state->tetra_mn != 37 || state->tetra_lfsr_seed != 0x73109247U) {
+    if (tetra_st(state)->mcc != 460 || tetra_st(state)->mnc != 4242 || tetra_st(state)->colour != 17
+        || tetra_st(state)->tn != 3 || tetra_st(state)->fn != 9 || tetra_st(state)->mn != 37
+        || tetra_st(state)->lfsr_seed != 0x73109247U) {
         free(opts);
         free(state);
         return fail("decoded BSCH fields mismatch");
@@ -214,7 +216,7 @@ main(void) {
     }
 
     memcpy(sys_type4, sys_type5, sizeof(sys_type4));
-    tetra_descramble(sys_type4, SYSINFO_CODED_BITS, state->tetra_lfsr_seed);
+    tetra_descramble(sys_type4, SYSINFO_CODED_BITS, tetra_st(state)->lfsr_seed);
     tetra_block_deinterleave(sys_type4, sys_type3, SYSINFO_CODED_BITS, 101);
     tetra_hard_bits_to_soft(sys_type3, sys_costs, SYSINFO_CODED_BITS);
     if (tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, sys_costs, SYSINFO_CODED_BITS, sys_mother,
@@ -237,11 +239,13 @@ main(void) {
     }
     tetra_mac_parse_schd(sys_decoded, SYSINFO_TYPE1_BITS, 1, opts, state);
 
-    const int ok = state->tetra_sysinfo_known == 1 && state->tetra_sysinfo_main_carrier == 321
-                   && state->tetra_freq_band == 4 && state->tetra_freq_offset == 1 && state->tetra_duplex_spacing == 5
-                   && state->tetra_num_csch == 2 && state->tetra_ms_txpwr_max == 6 && state->tetra_rxlev_access_min == 9
-                   && state->tetra_cck_valid == 1 && state->tetra_cck_id == 0xBEEFU && state->tetra_la == 777
-                   && state->tetra_subscr_class == 0x1234U && state->tetra_bs_service_det == 0x567U;
+    const int ok = tetra_st(state)->sysinfo_known == 1 && tetra_st(state)->sysinfo_main_carrier == 321
+                   && tetra_st(state)->freq_band == 4 && tetra_st(state)->freq_offset == 1
+                   && tetra_st(state)->duplex_spacing == 5 && tetra_st(state)->num_csch == 2
+                   && tetra_st(state)->ms_txpwr_max == 6 && tetra_st(state)->rxlev_access_min == 9
+                   && tetra_st(state)->cck_valid == 1 && tetra_st(state)->cck_id == 0xBEEFU
+                   && tetra_st(state)->la == 777 && tetra_st(state)->subscr_class == 0x1234U
+                   && tetra_st(state)->bs_service_det == 0x567U;
     free(opts);
     free(state);
     return ok ? 0 : fail("decoded SYSINFO fields mismatch");

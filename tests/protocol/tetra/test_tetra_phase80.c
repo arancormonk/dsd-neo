@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -99,12 +100,12 @@ test_phase77_mac_resource(void) {
 
     tetra_mac_parse_schd(bits, n, 0, opt, st);
 
-    CHECK(st->tetra_mac_fill_bits == 1, "tetra_mac_fill_bits");
-    CHECK(st->tetra_mac_grant_pos == 0, "tetra_mac_grant_pos");
-    CHECK(st->tetra_mac_rand_acc == 1, "tetra_mac_rand_acc");
-    CHECK(st->tetra_mac_len_ind == 42, "tetra_mac_len_ind");
-    CHECK(st->tetra_mac_addr_type == TETRA_MAC_ADDR_SSI_EVENT, "tetra_mac_addr_type");
-    CHECK(st->tetra_mac_event_label == 511, "tetra_mac_event_label");
+    CHECK(tetra_st(st)->mac_fill_bits == 1, "tetra_mac_fill_bits");
+    CHECK(tetra_st(st)->mac_grant_pos == 0, "tetra_mac_grant_pos");
+    CHECK(tetra_st(st)->mac_rand_acc == 1, "tetra_mac_rand_acc");
+    CHECK(tetra_st(st)->mac_len_ind == 42, "tetra_mac_len_ind");
+    CHECK(tetra_st(st)->mac_addr_type == TETRA_MAC_ADDR_SSI_EVENT, "tetra_mac_addr_type");
+    CHECK(tetra_st(st)->mac_event_label == 511, "tetra_mac_event_label");
 
     free(st);
     free(opt);
@@ -140,7 +141,7 @@ test_phase77_mac_resource_usage(void) {
 
     tetra_mac_parse_schd(bits, n, 0, opt, st);
 
-    CHECK(st->tetra_mac_usage_marker == 33, "tetra_mac_usage_marker");
+    CHECK(tetra_st(st)->mac_usage_marker == 33, "tetra_mac_usage_marker");
 
     free(st);
     free(opt);
@@ -191,12 +192,12 @@ test_phase77_sysinfo(void) {
 
     tetra_mac_parse_schd(bits, n, 0, opt, st);
 
-    CHECK(st->tetra_sysinfo_main_carrier == 1000, "tetra_sysinfo_main_carrier");
-    CHECK(st->tetra_sysinfo_rev_op == 1, "tetra_sysinfo_rev_op");
-    CHECK(st->tetra_sysinfo_acc_param == 7, "tetra_sysinfo_acc_param");
-    CHECK(st->tetra_sysinfo_radio_dl_tmo == 14, "tetra_sysinfo_radio_dl_tmo");
-    CHECK(st->tetra_sysinfo_opt_field_type == 2, "tetra_sysinfo_opt_field_type");
-    CHECK(st->tetra_sysinfo_opt_field_data == 0xABCDE, "tetra_sysinfo_opt_field_data");
+    CHECK(tetra_st(st)->sysinfo_main_carrier == 1000, "tetra_sysinfo_main_carrier");
+    CHECK(tetra_st(st)->sysinfo_rev_op == 1, "tetra_sysinfo_rev_op");
+    CHECK(tetra_st(st)->sysinfo_acc_param == 7, "tetra_sysinfo_acc_param");
+    CHECK(tetra_st(st)->sysinfo_radio_dl_tmo == 14, "tetra_sysinfo_radio_dl_tmo");
+    CHECK(tetra_st(st)->sysinfo_opt_field_type == 2, "tetra_sysinfo_opt_field_type");
+    CHECK(tetra_st(st)->sysinfo_opt_field_data == 0xABCDE, "tetra_sysinfo_opt_field_data");
 
     free(st);
     free(opt);
@@ -233,7 +234,7 @@ test_phase77_access_define(void) {
 
     tetra_mac_parse_schd(bits, n, 0, opt, st);
 
-    CHECK(st->tetra_access_common_flag == 1, "tetra_access_common_flag");
+    CHECK(tetra_st(st)->access_common_flag == 1, "tetra_access_common_flag");
 
     free(st);
     free(opt);
@@ -268,8 +269,8 @@ test_phase78_cmce_d_tx_granted(void) {
     wrap_mle_cmce(cmce, n, pdu, &out_n);
     tetra_mle_dispatch(pdu, out_n, 0, opt, st);
 
-    CHECK(st->tetra_cmce_tx_granted_perm == 1, "tetra_cmce_tx_granted_perm");
-    CHECK(st->tetra_cmce_tx_granted_reserv == 1, "tetra_cmce_tx_granted_reserv");
+    CHECK(tetra_st(st)->cmce_tx_granted_perm == 1, "tetra_cmce_tx_granted_perm");
+    CHECK(tetra_st(st)->cmce_tx_granted_reserv == 1, "tetra_cmce_tx_granted_reserv");
 
     free(st);
     free(opt);
@@ -298,9 +299,9 @@ test_phase78_mle_nwrk_broadcast(void) {
 
     tetra_mle_dispatch(pdu, n, 0, opt, st);
 
-    CHECK(st->tetra_mle_cell_reselect_params == 0x4321, "tetra_mle_cell_reselect_params");
-    CHECK(st->tetra_mle_cell_load == 2, "tetra_mle_cell_load");
-    CHECK(st->tetra_mle_ca_neighbor_count_valid == 0, "Annex E.16 has no neighbour count");
+    CHECK(tetra_st(st)->mle_cell_reselect_params == 0x4321, "tetra_mle_cell_reselect_params");
+    CHECK(tetra_st(st)->mle_cell_load == 2, "tetra_mle_cell_load");
+    CHECK(tetra_st(st)->mle_ca_neighbor_count_valid == 0, "Annex E.16 has no neighbour count");
 
     /* Annex E.17 explicitly carries the zero value meaning no neighbour-cell
      * information is available. */
@@ -323,7 +324,7 @@ test_phase78_mle_nwrk_broadcast(void) {
     pack_bits(pdu, 0, n, 3);
     n += 3;
     tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(st->tetra_mle_ca_neighbor_count_valid == 1 && st->tetra_mle_ca_neighbor_count == 0,
+    CHECK(tetra_st(st)->mle_ca_neighbor_count_valid == 1 && tetra_st(st)->mle_ca_neighbor_count == 0,
           "Annex E.17 no-neighbour indication accepted");
 
     /* Annex E.18: two CA neighbours.  The first has no optional fields; the
@@ -393,17 +394,17 @@ test_phase78_mle_nwrk_broadcast(void) {
     pack_bits(pdu, 0, n, 1);
     n += 1; /* TDMA frame offset */
     tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(st->tetra_mle_ca_neighbor_count_valid == 1 && st->tetra_mle_ca_neighbor_count == 2,
+    CHECK(tetra_st(st)->mle_ca_neighbor_count_valid == 1 && tetra_st(st)->mle_ca_neighbor_count == 2,
           "Annex E.18 two-neighbour collection accepted");
-    CHECK(st->tetra_mle_ca_neighbor_cell_id[0] == 1 && st->tetra_mle_ca_neighbor_main_carrier[0] == 1000
-              && st->tetra_mle_ca_neighbor_cell_id[1] == 2 && st->tetra_mle_ca_neighbor_main_carrier[1] == 2000,
+    CHECK(tetra_st(st)->mle_ca_neighbor_cell_id[0] == 1 && tetra_st(st)->mle_ca_neighbor_main_carrier[0] == 1000
+              && tetra_st(st)->mle_ca_neighbor_cell_id[1] == 2 && tetra_st(st)->mle_ca_neighbor_main_carrier[1] == 2000,
           "Annex E.18 mandatory neighbour fields retained");
 
     /* Remove the final Type 2 P-bit after changing the mandatory value.  No
      * part of the incomplete broadcast may replace the previous snapshot. */
     pack_bits(pdu, 0x3333, 6, 16);
     tetra_mle_dispatch(pdu, n - 1, 0, opt, st);
-    CHECK(st->tetra_mle_cell_reselect_params == 0x2222 && st->tetra_mle_ca_neighbor_count == 2,
+    CHECK(tetra_st(st)->mle_cell_reselect_params == 0x2222 && tetra_st(st)->mle_ca_neighbor_count == 2,
           "truncated Annex E.18 preserves the previous network broadcast");
 
     free(st);
@@ -435,13 +436,13 @@ test_phase79_mm_attach_detach(void) {
     wrap_mle_mm(mm, n, pdu, &out_n);
     tetra_mle_dispatch(pdu, out_n, 0, opt, st);
 
-    CHECK(st->tetra_mm_detach_flag == 1, "tetra_mm_detach_flag");
-    CHECK(st->tetra_mm_class_of_grp == 1, "tetra_mm_class_of_grp");
-    CHECK(st->tetra_mm_addr_type == 1, "tetra_mm_addr_type");
-    CHECK(st->tetra_mm_group_identity_valid == 1, "tetra_mm_group_identity_valid");
-    CHECK(st->tetra_mm_group_identity_report == 1, "tetra_mm_group_identity_report");
-    CHECK(st->tetra_mm_group_identity_ack_request == 1, "tetra_mm_group_identity_ack_request");
-    CHECK(st->tetra_mm_group_identity_attach_detach_mode == 1, "tetra_mm_group_identity_attach_detach_mode");
+    CHECK(tetra_st(st)->mm_detach_flag == 1, "tetra_mm_detach_flag");
+    CHECK(tetra_st(st)->mm_class_of_grp == 1, "tetra_mm_class_of_grp");
+    CHECK(tetra_st(st)->mm_addr_type == 1, "tetra_mm_addr_type");
+    CHECK(tetra_st(st)->mm_group_identity_valid == 1, "tetra_mm_group_identity_valid");
+    CHECK(tetra_st(st)->mm_group_identity_report == 1, "tetra_mm_group_identity_report");
+    CHECK(tetra_st(st)->mm_group_identity_ack_request == 1, "tetra_mm_group_identity_ack_request");
+    CHECK(tetra_st(st)->mm_group_identity_attach_detach_mode == 1, "tetra_mm_group_identity_attach_detach_mode");
 
     free(st);
     free(opt);

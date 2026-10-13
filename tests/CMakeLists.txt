@@ -6062,7 +6062,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_generic_trunk_return_matrix
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/tetra
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(
@@ -6373,6 +6373,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -11113,7 +11114,9 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
     )
     target_include_directories(
         "${_dsd_tetra_target}"
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/tetra
     )
     target_link_libraries(
         "${_dsd_tetra_target}"
@@ -11153,7 +11156,9 @@ if(Python3_Interpreter_FOUND)
     )
     target_include_directories(
         dsd-neo_test_tetra_acelp_pipeline
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/tetra
     )
     target_link_libraries(
         dsd-neo_test_tetra_acelp_pipeline
@@ -11177,7 +11182,9 @@ if(Python3_Interpreter_FOUND)
     )
     target_include_directories(
         dsd-neo_test_tetra_acelp_short_output
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/tetra
     )
     target_link_libraries(
         dsd-neo_test_tetra_acelp_short_output

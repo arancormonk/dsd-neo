@@ -18,9 +18,6 @@ int tetra_air_ksg_lookup(const struct dsd_state* state, uint16_t mcc, uint16_t m
 /* "TEA1".."TEA4", or NULL when ksg is outside 0..3. */
 const char* tetra_air_ksg_name(int ksg);
 
-/* Store a 10-byte key for this network, replacing an earlier one. */
-int tetra_air_key_set(struct dsd_state* state, uint16_t mcc, uint16_t mnc, const uint8_t key[10]);
-
 /* EN 300 392-7 clause 6.3.2.1. tn/fn/mn are the air values (1..4, 1..18, 1..60).
  * dir is 0 downlink, 1 uplink. Returns 0 when a field is outside that range. */
 uint32_t tetra_air_build_iv(uint8_t tn, uint8_t fn, uint8_t mn, uint16_t hn, uint8_t dir);

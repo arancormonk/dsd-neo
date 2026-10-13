@@ -22,12 +22,14 @@
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <stdio.h>
 #include <string.h>
+#include "tetra_state.h"
 
 /* Phase 81: bits_to_uint unified — see tetra_bits.h */
 #define bits_to_uint tetra_bits_to_uint
 
 int
 tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (!bits || !state) {
         return 0;
     }
@@ -48,29 +50,29 @@ tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state)
 
     /* Phase 56: clear colour-change flag at the start of each BSCH parse
      * so it only stays 1 for one frame/iteration. */
-    state->tetra_bsch_colour_changed = 0;
+    ts->bsch_colour_changed = 0;
 
     /* Phase 24: detect colour code change before updating state */
-    if (state->tetra_net_known && state->tetra_colour != colour) {
-        state->tetra_bsch_colour_changed = 1;
+    if (ts->net_known && ts->colour != colour) {
+        ts->bsch_colour_changed = 1;
     }
 
     /* Update state */
-    state->tetra_mcc = mcc;
-    state->tetra_mnc = mnc;
-    state->tetra_colour = colour;
-    state->tetra_lfsr_seed = seed;
-    state->tetra_net_known = 1;
-    state->tetra_bsch_count++;
+    ts->mcc = mcc;
+    ts->mnc = mnc;
+    ts->colour = colour;
+    ts->lfsr_seed = seed;
+    ts->net_known = 1;
+    ts->bsch_count++;
 
     /* Phase 43: TDMA timestamps */
-    state->tetra_tn = tn_raw + 1u; /* convert to 1-based (1-4) */
-    state->tetra_fn = fn;
-    state->tetra_mn = mn;
-    state->tetra_tdma_valid = 1;
+    ts->tn = tn_raw + 1u; /* convert to 1-based (1-4) */
+    ts->fn = fn;
+    ts->mn = mn;
+    ts->tdma_valid = 1;
 
     fprintf(stderr, "[TETRA BSCH] MCC=%u MNC=%u CC=0x%02x seed=0x%08x  TN=%u FN=%u MN=%u\n", mcc, mnc, colour, seed,
-            state->tetra_tn, fn, mn);
+            ts->tn, fn, mn);
     (void)opts;
     return 1;
 }

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 /* -------------------------------------------------------------------------
  * Helpers
@@ -130,22 +131,22 @@ test_sysinfo(void) {
         ok = 0;
     }
 
-    if (!state->tetra_sysinfo_known) {
+    if (!tetra_st(state)->sysinfo_known) {
         fprintf(stderr, "FAIL(sysinfo): tetra_sysinfo_known not set\n");
         ok = 0;
     }
-    if (state->tetra_la != (uint16_t)TEST_LA) {
-        fprintf(stderr, "FAIL(sysinfo): tetra_la=%u expect=%u\n", (unsigned)state->tetra_la, (unsigned)TEST_LA);
+    if (tetra_st(state)->la != (uint16_t)TEST_LA) {
+        fprintf(stderr, "FAIL(sysinfo): tetra_la=%u expect=%u\n", (unsigned)tetra_st(state)->la, (unsigned)TEST_LA);
         ok = 0;
     }
-    if (state->tetra_subscr_class != (uint16_t)TEST_SUBSCR_CLASS) {
-        fprintf(stderr, "FAIL(sysinfo): tetra_subscr_class=0x%04X expect=0x%04X\n", (unsigned)state->tetra_subscr_class,
-                (unsigned)TEST_SUBSCR_CLASS);
+    if (tetra_st(state)->subscr_class != (uint16_t)TEST_SUBSCR_CLASS) {
+        fprintf(stderr, "FAIL(sysinfo): tetra_subscr_class=0x%04X expect=0x%04X\n",
+                (unsigned)tetra_st(state)->subscr_class, (unsigned)TEST_SUBSCR_CLASS);
         ok = 0;
     }
-    if (state->tetra_bs_service_det != (uint16_t)TEST_BS_SVC) {
+    if (tetra_st(state)->bs_service_det != (uint16_t)TEST_BS_SVC) {
         fprintf(stderr, "FAIL(sysinfo): tetra_bs_service_det=0x%03X expect=0x%03X\n",
-                (unsigned)state->tetra_bs_service_det, (unsigned)TEST_BS_SVC);
+                (unsigned)tetra_st(state)->bs_service_det, (unsigned)TEST_BS_SVC);
         ok = 0;
     }
     tetra_mac_parse_schd(bits, NBITS, 0, opts, state);
@@ -155,8 +156,8 @@ test_sysinfo(void) {
     }
 
     if (ok) {
-        fprintf(stderr, "OK: SYSINFO state update (LA=%u subscr=0x%04X bs=0x%03X)\n", (unsigned)state->tetra_la,
-                (unsigned)state->tetra_subscr_class, (unsigned)state->tetra_bs_service_det);
+        fprintf(stderr, "OK: SYSINFO state update (LA=%u subscr=0x%04X bs=0x%03X)\n", (unsigned)tetra_st(state)->la,
+                (unsigned)tetra_st(state)->subscr_class, (unsigned)tetra_st(state)->bs_service_det);
     }
     free(state);
     free(opts);
@@ -205,24 +206,24 @@ test_mac_resource_ssi(void) {
 
     int ok = 1;
 
-    if (!state->tetra_ssi_valid) {
+    if (!tetra_st(state)->ssi_valid) {
         fprintf(stderr, "FAIL(resource): tetra_ssi_valid not set\n");
         ok = 0;
     }
-    if (state->tetra_active_ssi != TEST_SSI) {
-        fprintf(stderr, "FAIL(resource): tetra_active_ssi=0x%06X expect=0x%06X\n", (unsigned)state->tetra_active_ssi,
-                (unsigned)TEST_SSI);
+    if (tetra_st(state)->active_ssi != TEST_SSI) {
+        fprintf(stderr, "FAIL(resource): tetra_active_ssi=0x%06X expect=0x%06X\n",
+                (unsigned)tetra_st(state)->active_ssi, (unsigned)TEST_SSI);
         ok = 0;
     }
-    if (state->tetra_enc_mode != (uint8_t)TEST_ENC_MODE) {
-        fprintf(stderr, "FAIL(resource): tetra_enc_mode=%u expect=%u\n", (unsigned)state->tetra_enc_mode,
+    if (tetra_st(state)->enc_mode != (uint8_t)TEST_ENC_MODE) {
+        fprintf(stderr, "FAIL(resource): tetra_enc_mode=%u expect=%u\n", (unsigned)tetra_st(state)->enc_mode,
                 (unsigned)TEST_ENC_MODE);
         ok = 0;
     }
 
     if (ok) {
-        fprintf(stderr, "OK: MAC-RESOURCE SSI state update (ssi=0x%06X enc=%u)\n", (unsigned)state->tetra_active_ssi,
-                (unsigned)state->tetra_enc_mode);
+        fprintf(stderr, "OK: MAC-RESOURCE SSI state update (ssi=0x%06X enc=%u)\n",
+                (unsigned)tetra_st(state)->active_ssi, (unsigned)tetra_st(state)->enc_mode);
     }
     free(state);
     free(opts);
@@ -261,7 +262,7 @@ test_sysinfo_tooshort(void) {
     dsd_opts* opts = alloc_opts();
     tetra_mac_parse_schd(bits, 10, 0, opts, state);
 
-    if (state->tetra_sysinfo_known) {
+    if (tetra_st(state)->sysinfo_known) {
         fprintf(stderr, "FAIL(tooshort): tetra_sysinfo_known wrongly set\n");
         free(state);
         free(opts);
@@ -312,23 +313,23 @@ test_nwrk_broadcast(void) {
     tetra_mac_parse_schd(bits, NBITS, 0, opts, state);
 
     int ok = 1;
-    if (!state->tetra_nwrk_bcast_known) {
+    if (!tetra_st(state)->nwrk_bcast_known) {
         fprintf(stderr, "FAIL(nwrk_bcast): tetra_nwrk_bcast_known not set\n");
         ok = 0;
     }
-    if (state->tetra_mle_cell_reselect_params != TEST_RESELECT) {
-        fprintf(stderr, "FAIL(nwrk_bcast): reselect=0x%04X expect=0x%04X\n", state->tetra_mle_cell_reselect_params,
+    if (tetra_st(state)->mle_cell_reselect_params != TEST_RESELECT) {
+        fprintf(stderr, "FAIL(nwrk_bcast): reselect=0x%04X expect=0x%04X\n", tetra_st(state)->mle_cell_reselect_params,
                 (unsigned)TEST_RESELECT);
         ok = 0;
     }
-    if (state->tetra_mle_cell_load != TEST_LOAD) {
-        fprintf(stderr, "FAIL(nwrk_bcast): load=%u expect=%u\n", state->tetra_mle_cell_load, (unsigned)TEST_LOAD);
+    if (tetra_st(state)->mle_cell_load != TEST_LOAD) {
+        fprintf(stderr, "FAIL(nwrk_bcast): load=%u expect=%u\n", tetra_st(state)->mle_cell_load, (unsigned)TEST_LOAD);
         ok = 0;
     }
 
     if (ok) {
-        fprintf(stderr, "OK: MAC-BROADCAST/NWRK-BCAST reselect=0x%04X load=%u\n", state->tetra_mle_cell_reselect_params,
-                state->tetra_mle_cell_load);
+        fprintf(stderr, "OK: MAC-BROADCAST/NWRK-BCAST reselect=0x%04X load=%u\n",
+                tetra_st(state)->mle_cell_reselect_params, tetra_st(state)->mle_cell_load);
     }
     free(state);
     free(opts);
@@ -360,11 +361,11 @@ test_bc_restore_noop(void) {
     tetra_mac_parse_schd(bits, NBITS, 0, opts, state); /* must not crash */
 
     int ok = 1;
-    if (state->tetra_nwrk_bcast_known) {
+    if (tetra_st(state)->nwrk_bcast_known) {
         fprintf(stderr, "FAIL(bc_restore): tetra_nwrk_bcast_known wrongly set\n");
         ok = 0;
     }
-    if (state->tetra_sysinfo_known) {
+    if (tetra_st(state)->sysinfo_known) {
         fprintf(stderr, "FAIL(bc_restore): tetra_sysinfo_known wrongly set\n");
         ok = 0;
     }
@@ -399,8 +400,8 @@ test_mac_resource_binds_group_target(void) {
     dsd_opts* opts = alloc_opts();
     tetra_mac_parse_schd(bits, NBITS, 0, opts, state);
 
-    int ok = state->tetra_call_active && state->tetra_cmce_com_type == 1 && state->tetra_active_ssi == target_gssi
-             && state->tetra_gssi == target_gssi;
+    int ok = tetra_st(state)->call_active && tetra_st(state)->cmce_com_type == 1
+             && tetra_st(state)->active_ssi == target_gssi && tetra_st(state)->gssi == target_gssi;
     if (!ok) {
         fprintf(stderr, "FAIL(group target): MAC SSI was not bound to CMCE group call\n");
     }
@@ -408,7 +409,7 @@ test_mac_resource_binds_group_target(void) {
     /* A subsequent point-to-point setup must remove the previous group ID. */
     pack_bits(bits, 0x00u, HEADER_BITS + 28, 8); /* speech, point-to-point */
     tetra_mac_parse_schd(bits, NBITS, 0, opts, state);
-    if (state->tetra_cmce_com_type != 0 || state->tetra_gssi != 0) {
+    if (tetra_st(state)->cmce_com_type != 0 || tetra_st(state)->gssi != 0) {
         fprintf(stderr, "FAIL(individual target): stale GSSI retained\n");
         ok = 0;
     }
@@ -442,8 +443,8 @@ test_call_allocation_obeys_group_policy(void) {
 
     dsd_state* state = alloc_state();
     dsd_opts* opts = alloc_opts();
-    state->tetra_freq_band = 4;
-    state->tetra_freq_offset = 2;
+    tetra_st(state)->freq_band = 4;
+    tetra_st(state)->freq_offset = 2;
     state->trunk_cc_freq = 460000000L;
     state->samplesPerSymbol = 10;
     opts->trunk_enable = 1;
@@ -455,7 +456,7 @@ test_call_allocation_obeys_group_policy(void) {
     tune_calls = 0;
     opts->trunk_tune_group_calls = 0;
     tetra_mac_parse_schd(bits, NBITS, 0, opts, state);
-    int ok = tune_calls == 0 && state->tetra_gssi == target_gssi;
+    int ok = tune_calls == 0 && tetra_st(state)->gssi == target_gssi;
 
     tetra_sm_init();
     tune_calls = 0;
@@ -481,7 +482,7 @@ test_call_allocation_obeys_group_policy(void) {
     tetra_sm_init();
     tune_calls = 0;
     tetra_mac_parse_schd(bits, NBITS, 0, opts, state);
-    if (tune_calls != 0 || state->tetra_gssi != 0) {
+    if (tune_calls != 0 || tetra_st(state)->gssi != 0) {
         ok = 0;
     }
     opts->trunk_tune_private_calls = 1;
@@ -574,8 +575,8 @@ test_fragmented_call_defers_policy_and_tune(void) {
 
     dsd_state* state = alloc_state();
     dsd_opts* opts = alloc_opts();
-    state->tetra_freq_band = 4;
-    state->tetra_freq_offset = 2;
+    tetra_st(state)->freq_band = 4;
+    tetra_st(state)->freq_offset = 2;
     state->trunk_cc_freq = 460000000L;
     state->samplesPerSymbol = 10;
     opts->trunk_enable = 1;
@@ -587,10 +588,11 @@ test_fragmented_call_defers_policy_and_tune(void) {
     tetra_sm_init();
     tune_calls = 0;
     tetra_mac_parse_schd(start, START_BITS, 1, opts, state);
-    int ok = tune_calls == 0 && state->tetra_vc_grant_pending && state->tetra_frag_active && !state->tetra_call_active;
+    int ok = tune_calls == 0 && tetra_st(state)->vc_grant_pending && tetra_st(state)->frag_active
+             && !tetra_st(state)->call_active;
     tetra_mac_parse_schd(end, END_BITS, 1, opts, state);
-    ok = ok && tune_calls == 0 && !state->tetra_vc_grant_pending && !state->tetra_frag_active
-         && state->tetra_call_active && state->tetra_gssi == target_gssi;
+    ok = ok && tune_calls == 0 && !tetra_st(state)->vc_grant_pending && !tetra_st(state)->frag_active
+         && tetra_st(state)->call_active && tetra_st(state)->gssi == target_gssi;
 
     tetra_sm_init();
     tune_calls = 0;
@@ -606,13 +608,13 @@ test_fragmented_call_defers_policy_and_tune(void) {
 
     /* An LLC FCS failure must not publish the call or trigger the deferred
      * channel grant after reassembly. */
-    state->tetra_call_active = 0;
-    state->tetra_cmce_call_generation = 0;
+    tetra_st(state)->call_active = 0;
+    tetra_st(state)->cmce_call_generation = 0;
     tune_calls = 0;
     end[END_BITS - 1] ^= 1u;
     tetra_mac_parse_schd(start, START_BITS, 1, opts, state);
     tetra_mac_parse_schd(end, END_BITS, 1, opts, state);
-    if (state->tetra_call_active || tune_calls != 0) {
+    if (tetra_st(state)->call_active || tune_calls != 0) {
         ok = 0;
     }
 
@@ -650,8 +652,8 @@ test_mac_resource_channel_allocation(void) {
 
     dsd_state* state = alloc_state();
     dsd_opts* opts = alloc_opts();
-    state->tetra_freq_band = 4;
-    state->tetra_freq_offset = 2; /* -6.25 kHz */
+    tetra_st(state)->freq_band = 4;
+    tetra_st(state)->freq_offset = 2; /* -6.25 kHz */
     state->trunk_cc_freq = 460000000L;
     opts->trunk_enable = 1;
     tune_calls = 0;
@@ -660,22 +662,22 @@ test_mac_resource_channel_allocation(void) {
     tetra_mac_parse_schd(bits, NBITS, 2, opts, state);
 
     int ok = 1;
-    if (!state->tetra_vc_assignment_valid) {
+    if (!tetra_st(state)->vc_assignment_valid) {
         ok = 0;
     }
-    if (state->tetra_vc_assignment_type != 0) {
+    if (tetra_st(state)->vc_assignment_type != 0) {
         ok = 0;
     }
-    if (state->tetra_vc_timeslot_bitmap != 4) {
+    if (tetra_st(state)->vc_timeslot_bitmap != 4) {
         ok = 0;
     }
-    if (state->tetra_vc_uplink_downlink != 1) {
+    if (tetra_st(state)->vc_uplink_downlink != 1) {
         ok = 0;
     }
-    if (state->tetra_vc_carrier != 50) {
+    if (tetra_st(state)->vc_carrier != 50) {
         ok = 0;
     }
-    if (state->tetra_vc_freq_hz != 401243750L) {
+    if (tetra_st(state)->vc_freq_hz != 401243750L) {
         ok = 0;
     }
     if (tune_calls != 1 || tuned_freq != 401243750L) {
@@ -684,17 +686,18 @@ test_mac_resource_channel_allocation(void) {
     if (!ok) {
         fprintf(stderr, "FAIL(channel allocation): parsed fields differ\n");
     } else {
-        fprintf(stderr, "OK: MAC-RESOURCE channel allocation freq=%ld slots=0x%X\n", state->tetra_vc_freq_hz,
-                state->tetra_vc_timeslot_bitmap);
+        fprintf(stderr, "OK: MAC-RESOURCE channel allocation freq=%ld slots=0x%X\n", tetra_st(state)->vc_freq_hz,
+                tetra_st(state)->vc_timeslot_bitmap);
     }
 
     /* A zero timeslot bitmap is an explicit release and must not leave stale
      * VC identity or floor authorization in the state consumed by the UI. */
     pack_bits(bits, 0u, 21, 4);
-    state->tetra_tx_granted_valid = 1;
+    tetra_st(state)->tx_granted_valid = 1;
     tetra_mac_parse_schd(bits, NBITS, 2, opts, state);
-    if (!state->tetra_vc_assignment_valid || state->tetra_vc_timeslot_bitmap != 0 || state->tetra_vc_carrier != 0
-        || state->tetra_vc_freq_hz != 0 || state->tetra_tx_granted_valid != 0) {
+    if (!tetra_st(state)->vc_assignment_valid || tetra_st(state)->vc_timeslot_bitmap != 0
+        || tetra_st(state)->vc_carrier != 0 || tetra_st(state)->vc_freq_hz != 0
+        || tetra_st(state)->tx_granted_valid != 0) {
         fprintf(stderr, "FAIL(channel allocation release): stale VC state retained\n");
         ok = 0;
     }
@@ -723,11 +726,11 @@ test_allocation_after_call_setup(void) {
         free(opts);
         return 0;
     }
-    state->tetra_freq_band = 4;
-    state->tetra_freq_offset = 2;
+    tetra_st(state)->freq_band = 4;
+    tetra_st(state)->freq_offset = 2;
     state->trunk_cc_freq = 460000000L;
-    state->tetra_call_active = 1;
-    state->tetra_cmce_call_generation = 1;
+    tetra_st(state)->call_active = 1;
+    tetra_st(state)->cmce_call_generation = 1;
     opts->trunk_enable = 1;
     tetra_sm_init();
     tune_calls = 0;
@@ -763,18 +766,18 @@ test_mac_resource_rejects_further_augmentation(void) {
 
     dsd_state* state = alloc_state();
     dsd_opts* opts = alloc_opts();
-    state->tetra_freq_band = 4;
-    state->tetra_freq_offset = 2;
-    state->tetra_vc_assignment_valid = 1;
-    state->tetra_vc_timeslot_bitmap = 8;
-    state->tetra_vc_carrier = 77;
-    state->tetra_vc_freq_hz = 461918750L;
+    tetra_st(state)->freq_band = 4;
+    tetra_st(state)->freq_offset = 2;
+    tetra_st(state)->vc_assignment_valid = 1;
+    tetra_st(state)->vc_timeslot_bitmap = 8;
+    tetra_st(state)->vc_carrier = 77;
+    tetra_st(state)->vc_freq_hz = 461918750L;
     tune_calls = 0;
 
     tetra_mac_parse_schd(bits, NBITS, 2, opts, state);
 
-    int ok = state->tetra_vc_assignment_valid == 1 && state->tetra_vc_timeslot_bitmap == 8
-             && state->tetra_vc_carrier == 77 && state->tetra_vc_freq_hz == 461918750L && tune_calls == 0;
+    int ok = tetra_st(state)->vc_assignment_valid == 1 && tetra_st(state)->vc_timeslot_bitmap == 8
+             && tetra_st(state)->vc_carrier == 77 && tetra_st(state)->vc_freq_hz == 461918750L && tune_calls == 0;
     if (!ok) {
         fprintf(stderr, "FAIL(further augmentation): rejected allocation changed state or tuned\n");
     } else {

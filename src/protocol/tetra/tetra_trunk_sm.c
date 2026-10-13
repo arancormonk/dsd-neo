@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "tetra_state.h"
 
 /* ============================================================================
  * Singleton context
@@ -86,9 +87,10 @@ state_name(tetra_sm_state_e s) {
 
 static void
 set_state(dsd_state* state, tetra_sm_state_e next) {
+    tetra_state_t* const ts = tetra_st(state);
     g_tetra_sm.state = next;
-    if (state) {
-        state->tetra_trunk_state = (uint8_t)next;
+    if (ts) {
+        ts->trunk_state = (uint8_t)next;
     }
 }
 
@@ -265,11 +267,12 @@ tetra_sm_get_hangtime(void) {
 
 void
 tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (!opts || !state) {
         return;
     }
 
-    state->tetra_trunk_state = (uint8_t)g_tetra_sm.state;
+    ts->trunk_state = (uint8_t)g_tetra_sm.state;
 
     if (!settle_pending(opts, state)) {
         return;
@@ -298,11 +301,12 @@ tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state) {
 
 void
 tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, long vc_freq_hz, uint8_t slot) {
+    tetra_state_t* const ts = tetra_st(state);
     if (!opts || !state) {
         return;
     }
 
-    state->tetra_trunk_state = (uint8_t)g_tetra_sm.state;
+    ts->trunk_state = (uint8_t)g_tetra_sm.state;
 
     if (!settle_pending(opts, state)) {
         sm_log(opts, "on_grant: tune transition already pending");
@@ -384,11 +388,12 @@ tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, long vc_freq_hz, uint8_t slo
 
 void
 tetra_sm_on_release(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (!opts || !state) {
         return;
     }
 
-    state->tetra_trunk_state = (uint8_t)g_tetra_sm.state;
+    ts->trunk_state = (uint8_t)g_tetra_sm.state;
 
     if (!settle_pending(opts, state)) {
         return;
@@ -408,26 +413,27 @@ tetra_sm_on_release(dsd_opts* opts, dsd_state* state) {
 
 void
 tetra_sm_on_external_cc_return(dsd_state* state) {
-    if (state) {
-        state->tetra_call_active = 0;
-        state->tetra_tx_granted_valid = 0;
-        state->tetra_tx_granted_ssi = 0;
-        state->tetra_cmce_tx_granted_notification_valid = 0;
-        state->tetra_cmce_tx_granted_party_type_valid = 0;
-        state->tetra_cmce_tx_granted_party_extension_valid = 0;
-        state->tetra_tx_continue = 0;
-        state->tetra_tx_interrupted = 0;
-        state->tetra_tx_wait = 0;
-        state->tetra_tx_event_notification_valid = 0;
-        state->tetra_tx_event_party_type_valid = 0;
-        state->tetra_tx_event_party_ssi_valid = 0;
-        state->tetra_tx_event_party_extension_valid = 0;
-        state->tetra_vc_assignment_valid = 0;
-        state->tetra_vc_assignment_type = 0;
-        state->tetra_vc_timeslot_bitmap = 0;
-        state->tetra_vc_slot = 0;
-        state->tetra_vc_carrier = 0;
-        state->tetra_vc_freq_hz = 0;
+    tetra_state_t* const ts = tetra_st(state);
+    if (ts) {
+        ts->call_active = 0;
+        ts->tx_granted_valid = 0;
+        ts->tx_granted_ssi = 0;
+        ts->cmce_tx_granted_notification_valid = 0;
+        ts->cmce_tx_granted_party_type_valid = 0;
+        ts->cmce_tx_granted_party_extension_valid = 0;
+        ts->tx_continue = 0;
+        ts->tx_interrupted = 0;
+        ts->tx_wait = 0;
+        ts->tx_event_notification_valid = 0;
+        ts->tx_event_party_type_valid = 0;
+        ts->tx_event_party_ssi_valid = 0;
+        ts->tx_event_party_extension_valid = 0;
+        ts->vc_assignment_valid = 0;
+        ts->vc_assignment_type = 0;
+        ts->vc_timeslot_bitmap = 0;
+        ts->vc_slot = 0;
+        ts->vc_carrier = 0;
+        ts->vc_freq_hz = 0;
     }
     set_state(state, state && state->trunk_cc_freq > 0 ? TETRA_SM_ON_CC : TETRA_SM_IDLE);
     g_tetra_sm.vc_freq_hz = 0;
@@ -439,20 +445,22 @@ tetra_sm_on_external_cc_return(dsd_state* state) {
 
 void
 tetra_sm_poll_tuning(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (!opts || !state) {
         return;
     }
-    state->tetra_trunk_state = (uint8_t)g_tetra_sm.state;
+    ts->trunk_state = (uint8_t)g_tetra_sm.state;
     (void)settle_pending(opts, state);
 }
 
 void
 tetra_sm_tick(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (!opts || !state) {
         return;
     }
 
-    state->tetra_trunk_state = (uint8_t)g_tetra_sm.state;
+    ts->trunk_state = (uint8_t)g_tetra_sm.state;
 
     if (!settle_pending(opts, state)) {
         return;
@@ -473,7 +481,7 @@ tetra_sm_tick(dsd_opts* opts, dsd_state* state) {
      * tuned us, and D-RELEASE/D-DISCONNECT return immediately through
      * tetra_sm_on_release().  Keep the timer fresh while call control still
      * says the traffic channel is in use so a long call cannot be cut off. */
-    if (state->tetra_call_active) {
+    if (ts->call_active) {
         g_tetra_sm.t_tune_m = now_m();
         return;
     }

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 int
 main(void) {
@@ -38,13 +39,13 @@ main(void) {
     uint8_t type2[292] = {0};
     tetra_acelp_process_tch(type2, 271, 0, opts, state);
     int rejected_activity_ok = state->last_vc_sync_time == 0 && state->last_vc_sync_time_m == 0.0;
-    state->tetra_vc_assignment_valid = 1;
-    state->tetra_vc_timeslot_bitmap = 8; /* TN1 assigned, receiving TN2. */
-    state->tetra_tdma_valid = 1;
-    state->tetra_tn = 2;
+    tetra_st(state)->vc_assignment_valid = 1;
+    tetra_st(state)->vc_timeslot_bitmap = 8; /* TN1 assigned, receiving TN2. */
+    tetra_st(state)->tdma_valid = 1;
+    tetra_st(state)->tn = 2;
     tetra_acelp_process_tch(type2, 292, 0, opts, state);
     rejected_activity_ok = rejected_activity_ok && state->last_vc_sync_time == 0 && state->last_vc_sync_time_m == 0.0;
-    state->tetra_tn = 1;
+    tetra_st(state)->tn = 1;
     tetra_acelp_process_tch(type2, 292, 0, opts, state);
     tetra_vocoder_close();
     sf_write_sync(wav);
@@ -54,9 +55,9 @@ main(void) {
         (!cmd || !cmd[0]) ? TETRA_VOCODER_STATUS_COMMAND_MISSING
                           : (strstr(cmd, "--hang") ? TETRA_VOCODER_STATUS_TIMEOUT : TETRA_VOCODER_STATUS_SHORT_OUTPUT);
     uint32_t expected_errors = expected_status == TETRA_VOCODER_STATUS_COMMAND_MISSING ? 0u : 1u;
-    int status_ok = rejected_activity_ok && state->tetra_vocoder_status == expected_status
+    int status_ok = rejected_activity_ok && tetra_st(state)->vocoder_status == expected_status
                     && state->last_vc_sync_time > 0 && state->last_vc_sync_time_m > 0.0
-                    && state->tetra_vocoder_frames == 0 && state->tetra_vocoder_errors == expected_errors;
+                    && tetra_st(state)->vocoder_frames == 0 && tetra_st(state)->vocoder_errors == expected_errors;
     sf_close(wav);
     free(opts);
     free(state);

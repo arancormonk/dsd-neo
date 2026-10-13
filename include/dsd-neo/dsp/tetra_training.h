@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#ifndef DSD_NEO_PROTOCOL_TETRA_SYNC_H
-#define DSD_NEO_PROTOCOL_TETRA_SYNC_H
+/**
+ * @file
+ * @brief TETRA training-sequence matching for the frame sync, shared with the TETRA decoder.
+ *
+ * TETRA bursts carry their training sequence mid-burst. The frame sync matches it on the sliced dibits after
+ * undoing up to three 90 degree steps of the CQPSK slicer, and the decoder applies the same derotation to the
+ * payload dibits it captured.
+ */
 
-#include <stdint.h>
+#ifndef DSD_NEO_DSP_TETRA_TRAINING_H
+#define DSD_NEO_DSP_TETRA_TRAINING_H
 
-// TETRA sync patterns (from osmo-tetra src/phy/tetra_burst.c)
-static const uint8_t TETRA_N_BITS[22] = {1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 0};
-static const uint8_t TETRA_P_BITS[22] = {0, 1, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0};
-static const uint8_t TETRA_Q_BITS[22] = {1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1};
-static const uint8_t TETRA_Y_BITS[38] = {1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1,
-                                         0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1};
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* 90° constellation step used by the CQPSK slicer: 0→1→3→2→0.
  * A Costas loop on a bursty π/4-DQPSK carrier parks on any of the four
@@ -76,4 +80,8 @@ tetra_training_derotation(const char* obs, const char* pat, const char* pat_inv,
     return 0;
 }
 
-#endif // DSD_NEO_PROTOCOL_TETRA_SYNC_H
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* DSD_NEO_DSP_TETRA_TRAINING_H */

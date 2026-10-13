@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "tetra_state.h"
 
 /* Phase 81: bits_to_uint unified — see tetra_bits.h */
 #define mle_bits_to_uint                 tetra_bits_to_uint
@@ -169,7 +170,8 @@ sds_concat_submit(uint32_t src_ssi, uint16_t reference, uint8_t with_transport, 
 
 static int
 cmce_matches_active_call(const dsd_state* state, uint32_t call_id) {
-    return !state || !state->tetra_call_active || state->tetra_call_id == call_id;
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return !state || !ts->call_active || ts->call_id == call_id;
 }
 
 /* Annex E.1.1: after all type-2 P-bits, an M-bit terminates the PDU or
@@ -209,6 +211,7 @@ cmce_skip_type34(const uint8_t* bits, int nbits, int* off) {
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_setup(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 41) {
         fprintf(stderr, "[TETRA CMCE D-SETUP] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -311,30 +314,30 @@ parse_cmce_d_setup(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
         fprintf(stderr, " calling_SSI=%u", calling_ssi);
     }
     fprintf(stderr, "\n");
-    if (state) {
-        state->tetra_call_active = 1;
-        state->tetra_call_id = call_id;
-        state->tetra_call_timeout = timeout;
-        state->tetra_call_type = circuit; /* compatibility: now the standardized circuit-mode type */
-        state->tetra_call_slots = service;
-        state->tetra_cmce_duplex = duplex;
-        state->tetra_cmce_notif = notification;
-        state->tetra_cmce_com_type = communication;
-        state->tetra_cmce_called_type = cpti; /* compatibility field contains calling-party type */
-        state->tetra_cmce_setup_hook = hook;
-        state->tetra_cmce_setup_basic_service = basic;
-        state->tetra_cmce_setup_tx_grant = grant;
-        state->tetra_cmce_setup_tx_permission = request;
-        state->tetra_cmce_setup_priority = priority;
-        state->tetra_cmce_setup_notification_valid = notification_valid;
-        state->tetra_cmce_setup_temporary_address = temporary_address;
-        state->tetra_cmce_setup_temporary_address_valid = temporary_address_valid;
-        state->tetra_cmce_setup_calling_type_valid = cpti_valid;
-        state->tetra_cmce_setup_calling_extension = calling_extension;
-        state->tetra_cmce_setup_calling_extension_valid = calling_extension_valid;
-        state->tetra_enc_mode = encrypted;
-        state->tetra_calling_ssi = calling_ssi_valid ? calling_ssi : 0;
-        state->tetra_cmce_call_generation++;
+    if (ts) {
+        ts->call_active = 1;
+        ts->call_id = call_id;
+        ts->call_timeout = timeout;
+        ts->call_type = circuit; /* compatibility: now the standardized circuit-mode type */
+        ts->call_slots = service;
+        ts->cmce_duplex = duplex;
+        ts->cmce_notif = notification;
+        ts->cmce_com_type = communication;
+        ts->cmce_called_type = cpti; /* compatibility field contains calling-party type */
+        ts->cmce_setup_hook = hook;
+        ts->cmce_setup_basic_service = basic;
+        ts->cmce_setup_tx_grant = grant;
+        ts->cmce_setup_tx_permission = request;
+        ts->cmce_setup_priority = priority;
+        ts->cmce_setup_notification_valid = notification_valid;
+        ts->cmce_setup_temporary_address = temporary_address;
+        ts->cmce_setup_temporary_address_valid = temporary_address_valid;
+        ts->cmce_setup_calling_type_valid = cpti_valid;
+        ts->cmce_setup_calling_extension = calling_extension;
+        ts->cmce_setup_calling_extension_valid = calling_extension_valid;
+        ts->enc_mode = encrypted;
+        ts->calling_ssi = calling_ssi_valid ? calling_ssi : 0;
+        ts->cmce_call_generation++;
     }
     return;
 
@@ -348,6 +351,7 @@ truncated:
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_release(const uint8_t* bits, int nbits, int cc, int is_disconnect, dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 25) {
         fprintf(stderr, "[TETRA CMCE %s] CC=%d (too short: %d bits)\n", is_disconnect ? "D-DISCONNECT" : "D-RELEASE",
                 cc, nbits);
@@ -377,32 +381,31 @@ parse_cmce_d_release(const uint8_t* bits, int nbits, int cc, int is_disconnect, 
     }
     fprintf(stderr, "[TETRA CMCE %s] CC=%d call=%u cause=%u\n", is_disconnect ? "D-DISCONNECT" : "D-RELEASE", cc,
             (unsigned)call_id, cause);
-    if (state) {
-        if (state->tetra_call_active && state->tetra_call_id != call_id) {
+    if (ts) {
+        if (ts->call_active && ts->call_id != call_id) {
             fprintf(stderr, "[TETRA CMCE %s] CC=%d call=%u ignored; active call=%u\n",
-                    is_disconnect ? "D-DISCONNECT" : "D-RELEASE", cc, (unsigned)call_id,
-                    (unsigned)state->tetra_call_id);
+                    is_disconnect ? "D-DISCONNECT" : "D-RELEASE", cc, (unsigned)call_id, (unsigned)ts->call_id);
             return;
         }
-        state->tetra_call_active = 0;
-        state->tetra_tx_granted_valid = 0;
-        state->tetra_tx_granted_ssi = 0;
-        state->tetra_cmce_tx_granted_notification_valid = 0;
-        state->tetra_cmce_tx_granted_party_type_valid = 0;
-        state->tetra_cmce_tx_granted_party_extension_valid = 0;
-        state->tetra_tx_continue = 0;
-        state->tetra_tx_interrupted = 0;
-        state->tetra_tx_wait = 0;
-        state->tetra_tx_event_notification_valid = 0;
-        state->tetra_tx_event_party_type_valid = 0;
-        state->tetra_tx_event_party_ssi_valid = 0;
-        state->tetra_tx_event_party_extension_valid = 0;
-        state->tetra_call_id = call_id;
-        state->tetra_cmce_release_cause_type = 0;
-        state->tetra_cmce_release_cause = cause;
-        state->tetra_cmce_release_notification = notification;
-        state->tetra_cmce_release_notification_valid = notification_valid;
-        state->tetra_cmce_release_was_disconnect = (uint8_t)(is_disconnect ? 1 : 0);
+        ts->call_active = 0;
+        ts->tx_granted_valid = 0;
+        ts->tx_granted_ssi = 0;
+        ts->cmce_tx_granted_notification_valid = 0;
+        ts->cmce_tx_granted_party_type_valid = 0;
+        ts->cmce_tx_granted_party_extension_valid = 0;
+        ts->tx_continue = 0;
+        ts->tx_interrupted = 0;
+        ts->tx_wait = 0;
+        ts->tx_event_notification_valid = 0;
+        ts->tx_event_party_type_valid = 0;
+        ts->tx_event_party_ssi_valid = 0;
+        ts->tx_event_party_extension_valid = 0;
+        ts->call_id = call_id;
+        ts->cmce_release_cause_type = 0;
+        ts->cmce_release_cause = cause;
+        ts->cmce_release_notification = notification;
+        ts->cmce_release_notification_valid = notification_valid;
+        ts->cmce_release_was_disconnect = (uint8_t)(is_disconnect ? 1 : 0);
         tetra_sm_on_release(opts, state);
     }
     return;
@@ -417,6 +420,7 @@ truncated:
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_connect(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 30) {
         fprintf(stderr, "[TETRA CMCE D-CONNECT] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -462,33 +466,33 @@ parse_cmce_d_connect(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
     }
     fprintf(stderr, "[TETRA CMCE D-CONNECT] CC=%d call=%u timeout=%u grant=%u request=%u\n", cc, (unsigned)id, timeout,
             grant, permission);
-    if (state) {
-        state->tetra_call_active = 1;
-        state->tetra_call_id = id;
-        state->tetra_call_timeout = timeout;
-        state->tetra_connect_valid = 1;
-        state->tetra_connect_call_type = basic_valid ? (uint8_t)(basic >> 5) : 0;
-        state->tetra_connect_enc_mode = basic_valid ? (uint8_t)((basic >> 4) & 1u) : 0;
-        state->tetra_cmce_connect_hook = hook;
-        state->tetra_cmce_connect_duplex = duplex;
-        state->tetra_cmce_connect_tx_grant = grant;
-        state->tetra_cmce_connect_tx_permission = permission;
-        state->tetra_cmce_connect_ownership = ownership;
-        state->tetra_cmce_connect_priority = priority;
-        state->tetra_cmce_connect_priority_valid = priority_valid;
-        state->tetra_cmce_connect_basic_service = basic;
-        state->tetra_cmce_connect_basic_service_valid = basic_valid;
-        state->tetra_cmce_connect_temporary_address = temporary_address;
-        state->tetra_cmce_connect_temporary_address_valid = temporary_address_valid;
-        state->tetra_cmce_connect_notification = notification;
-        state->tetra_cmce_connect_notification_valid = notification_valid;
+    if (ts) {
+        ts->call_active = 1;
+        ts->call_id = id;
+        ts->call_timeout = timeout;
+        ts->connect_valid = 1;
+        ts->connect_call_type = basic_valid ? (uint8_t)(basic >> 5) : 0;
+        ts->connect_enc_mode = basic_valid ? (uint8_t)((basic >> 4) & 1u) : 0;
+        ts->cmce_connect_hook = hook;
+        ts->cmce_connect_duplex = duplex;
+        ts->cmce_connect_tx_grant = grant;
+        ts->cmce_connect_tx_permission = permission;
+        ts->cmce_connect_ownership = ownership;
+        ts->cmce_connect_priority = priority;
+        ts->cmce_connect_priority_valid = priority_valid;
+        ts->cmce_connect_basic_service = basic;
+        ts->cmce_connect_basic_service_valid = basic_valid;
+        ts->cmce_connect_temporary_address = temporary_address;
+        ts->cmce_connect_temporary_address_valid = temporary_address_valid;
+        ts->cmce_connect_notification = notification;
+        ts->cmce_connect_notification_valid = notification_valid;
         if (basic_valid) {
-            state->tetra_call_type = (uint8_t)(basic >> 5);
-            state->tetra_enc_mode = (uint8_t)((basic >> 4) & 1u);
-            state->tetra_cmce_com_type = (uint8_t)((basic >> 2) & 3u);
-            state->tetra_call_slots = (uint8_t)(basic & 3u);
+            ts->call_type = (uint8_t)(basic >> 5);
+            ts->enc_mode = (uint8_t)((basic >> 4) & 1u);
+            ts->cmce_com_type = (uint8_t)((basic >> 2) & 3u);
+            ts->call_slots = (uint8_t)(basic & 3u);
         }
-        state->tetra_cmce_call_generation++;
+        ts->cmce_call_generation++;
     }
     return;
 truncated:
@@ -504,6 +508,7 @@ truncated:
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_tx_granted(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 25) {
         fprintf(stderr, "[TETRA CMCE D-TX-GRANTED] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -586,26 +591,26 @@ parse_cmce_d_tx_granted(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, 
     }
     fprintf(stderr, "\n");
 
-    if (state) {
+    if (ts) {
         if (!cmce_matches_active_call(state, call_id)) {
             fprintf(stderr, "[TETRA CMCE D-TX-GRANTED] CC=%d call=%u ignored; active call=%u\n", cc, call_id,
-                    (unsigned)state->tetra_call_id);
+                    (unsigned)ts->call_id);
             return;
         }
         /* Values 0 and 3 switch on the receive U-plane; 1 and 2 do not. */
-        state->tetra_tx_granted_valid = (uint8_t)(tx_grant == 0 || tx_grant == 3);
-        state->tetra_enc_mode = (uint8_t)(enc_mode & 0x01u);
+        ts->tx_granted_valid = (uint8_t)(tx_grant == 0 || tx_grant == 3);
+        ts->enc_mode = (uint8_t)(enc_mode & 0x01u);
 
         /* Phase 78: CMCE D-TX-GRANTED dropped variables */
-        state->tetra_cmce_tx_granted_perm = (uint8_t)(tx_perm & 1u);
-        state->tetra_cmce_tx_granted_reserv = (uint8_t)(reserved & 1u);
-        state->tetra_cmce_tx_granted_notification = (uint8_t)notification;
-        state->tetra_cmce_tx_granted_notification_valid = notification_valid;
-        state->tetra_cmce_tx_granted_party_type = party_type;
-        state->tetra_cmce_tx_granted_party_type_valid = party_type_valid;
-        state->tetra_tx_granted_ssi = got_ssi ? granted_ssi : 0;
-        state->tetra_cmce_tx_granted_party_extension = party_extension;
-        state->tetra_cmce_tx_granted_party_extension_valid = party_extension_valid;
+        ts->cmce_tx_granted_perm = (uint8_t)(tx_perm & 1u);
+        ts->cmce_tx_granted_reserv = (uint8_t)(reserved & 1u);
+        ts->cmce_tx_granted_notification = (uint8_t)notification;
+        ts->cmce_tx_granted_notification_valid = notification_valid;
+        ts->cmce_tx_granted_party_type = party_type;
+        ts->cmce_tx_granted_party_type_valid = party_type_valid;
+        ts->tx_granted_ssi = got_ssi ? granted_ssi : 0;
+        ts->cmce_tx_granted_party_extension = party_extension;
+        ts->cmce_tx_granted_party_extension_valid = party_extension_valid;
     }
 
     (void)opts; /* channel allocation and tuning are MAC-layer responsibilities */
@@ -623,6 +628,7 @@ truncated:
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_tx_ceased(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 21) {
         fprintf(stderr, "[TETRA CMCE D-TX-CEASED] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -657,15 +663,15 @@ parse_cmce_d_tx_ceased(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, d
         fprintf(stderr, "  notification=%u", (unsigned)notification);
     }
     fprintf(stderr, "  (floor released)\n");
-    if (state) {
+    if (ts) {
         if (!cmce_matches_active_call(state, call_id)) {
             fprintf(stderr, "[TETRA CMCE D-TX-CEASED] CC=%d call=%u ignored; active call=%u\n", cc, (unsigned)call_id,
-                    (unsigned)state->tetra_call_id);
+                    (unsigned)ts->call_id);
             return;
         }
-        state->tetra_tx_ceased_tx_perm = tx_perm;
-        state->tetra_tx_ceased_cipher_info = 0; /* retained ABI field; no such IE in Table 14.16 */
-        state->tetra_tx_granted_valid = 0;
+        ts->tx_ceased_tx_perm = tx_perm;
+        ts->tx_ceased_cipher_info = 0; /* retained ABI field; no such IE in Table 14.16 */
+        ts->tx_granted_valid = 0;
     }
     /* Floor release does not release the assigned traffic channel. */
     (void)opts;
@@ -713,6 +719,7 @@ parse_mle_ca_neighbor(const uint8_t* bits, int nbits, int* off, uint8_t* cell_id
 /* D-NWRK-BROADCAST, table 18.2. @bits starts at its 3-bit PDU type. */
 static void
 parse_mle_d_nwrk_broadcast(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 22) { /* type + reselect parameters + load + O-bit */
         fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -767,19 +774,19 @@ parse_mle_d_nwrk_broadcast(const uint8_t* bits, int nbits, int cc, dsd_state* st
 
     fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST] CC=%d reselect=0x%04X load=%u\n", cc, reselect, load);
 
-    if (state) {
-        state->tetra_nwrk_bcast_known = 1;
-        state->tetra_mle_cell_reselect_params = (uint16_t)reselect;
-        state->tetra_mle_cell_load = (uint8_t)load;
-        state->tetra_mle_network_time = network_time;
-        state->tetra_mle_network_time_valid = network_time_valid;
-        state->tetra_mle_ca_neighbor_count = neighbor_count;
-        state->tetra_mle_ca_neighbor_count_valid = neighbor_count_valid;
-        memcpy(state->tetra_mle_ca_neighbor_cell_id, cell_id, sizeof(cell_id));
-        memcpy(state->tetra_mle_ca_neighbor_reselect_types, reselect_types, sizeof(reselect_types));
-        memcpy(state->tetra_mle_ca_neighbor_synchronized, synchronized, sizeof(synchronized));
-        memcpy(state->tetra_mle_ca_neighbor_load, neighbor_load, sizeof(neighbor_load));
-        memcpy(state->tetra_mle_ca_neighbor_main_carrier, main_carrier, sizeof(main_carrier));
+    if (ts) {
+        ts->nwrk_bcast_known = 1;
+        ts->mle_cell_reselect_params = (uint16_t)reselect;
+        ts->mle_cell_load = (uint8_t)load;
+        ts->mle_network_time = network_time;
+        ts->mle_network_time_valid = network_time_valid;
+        ts->mle_ca_neighbor_count = neighbor_count;
+        ts->mle_ca_neighbor_count_valid = neighbor_count_valid;
+        memcpy(ts->mle_ca_neighbor_cell_id, cell_id, sizeof(cell_id));
+        memcpy(ts->mle_ca_neighbor_reselect_types, reselect_types, sizeof(reselect_types));
+        memcpy(ts->mle_ca_neighbor_synchronized, synchronized, sizeof(synchronized));
+        memcpy(ts->mle_ca_neighbor_load, neighbor_load, sizeof(neighbor_load));
+        memcpy(ts->mle_ca_neighbor_main_carrier, main_carrier, sizeof(main_carrier));
     }
     return;
 
@@ -833,37 +840,38 @@ parse_mle_irregular_channel(const uint8_t* bits, int nbits, int* off, uint8_t* c
  * a truncated list or optional header cannot partially replace the last valid
  * network snapshot. */
 typedef struct {
-    uint8_t tetra_nwrk_bcast_ext_known;
-    uint8_t tetra_mle_ext_serving_classes_present;
-    uint8_t tetra_mle_ext_serving_class_count;
-    uint8_t tetra_mle_ext_serving_class_id[15];
-    uint32_t tetra_mle_ext_serving_class_characteristics[15];
-    uint8_t tetra_mle_ext_serving_class_bs_power[15];
-    uint8_t tetra_mle_ext_neighbor_classes_present;
-    uint8_t tetra_mle_ext_neighbor_class_count;
-    uint8_t tetra_mle_ext_neighbor_class_cell_id[31];
-    uint8_t tetra_mle_ext_neighbor_class_id[31];
-    uint32_t tetra_mle_ext_neighbor_class_characteristics[31];
-    uint8_t tetra_mle_ext_neighbor_class_bs_power[31];
-    uint8_t tetra_mle_ext_serving_irregular_present;
-    uint8_t tetra_mle_ext_serving_irregular_count;
-    uint8_t tetra_mle_ext_serving_irregular_channel_id[31];
-    uint32_t tetra_mle_ext_serving_irregular_characteristics[31];
-    uint16_t tetra_mle_ext_serving_irregular_carrier[31];
-    uint16_t tetra_mle_ext_serving_irregular_carrier_extension[31];
-    uint8_t tetra_mle_ext_serving_irregular_extension_valid[31];
-    uint8_t tetra_mle_ext_neighbor_irregular_present;
-    uint8_t tetra_mle_ext_neighbor_irregular_count;
-    uint8_t tetra_mle_ext_neighbor_irregular_cell_id[63];
-    uint8_t tetra_mle_ext_neighbor_irregular_channel_id[63];
-    uint32_t tetra_mle_ext_neighbor_irregular_characteristics[63];
-    uint16_t tetra_mle_ext_neighbor_irregular_carrier[63];
-    uint16_t tetra_mle_ext_neighbor_irregular_carrier_extension[63];
-    uint8_t tetra_mle_ext_neighbor_irregular_extension_valid[63];
+    uint8_t nwrk_bcast_ext_known;
+    uint8_t mle_ext_serving_classes_present;
+    uint8_t mle_ext_serving_class_count;
+    uint8_t mle_ext_serving_class_id[15];
+    uint32_t mle_ext_serving_class_characteristics[15];
+    uint8_t mle_ext_serving_class_bs_power[15];
+    uint8_t mle_ext_neighbor_classes_present;
+    uint8_t mle_ext_neighbor_class_count;
+    uint8_t mle_ext_neighbor_class_cell_id[31];
+    uint8_t mle_ext_neighbor_class_id[31];
+    uint32_t mle_ext_neighbor_class_characteristics[31];
+    uint8_t mle_ext_neighbor_class_bs_power[31];
+    uint8_t mle_ext_serving_irregular_present;
+    uint8_t mle_ext_serving_irregular_count;
+    uint8_t mle_ext_serving_irregular_channel_id[31];
+    uint32_t mle_ext_serving_irregular_characteristics[31];
+    uint16_t mle_ext_serving_irregular_carrier[31];
+    uint16_t mle_ext_serving_irregular_carrier_extension[31];
+    uint8_t mle_ext_serving_irregular_extension_valid[31];
+    uint8_t mle_ext_neighbor_irregular_present;
+    uint8_t mle_ext_neighbor_irregular_count;
+    uint8_t mle_ext_neighbor_irregular_cell_id[63];
+    uint8_t mle_ext_neighbor_irregular_channel_id[63];
+    uint32_t mle_ext_neighbor_irregular_characteristics[63];
+    uint16_t mle_ext_neighbor_irregular_carrier[63];
+    uint16_t mle_ext_neighbor_irregular_carrier_extension[63];
+    uint8_t mle_ext_neighbor_irregular_extension_valid[63];
 } tetra_mle_nwrk_bcast_ext_snapshot;
 
 static void
 parse_mle_d_nwrk_broadcast_ext(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     tetra_mle_nwrk_bcast_ext_snapshot decoded;
     int off = 3;
 
@@ -871,7 +879,7 @@ parse_mle_d_nwrk_broadcast_ext(const uint8_t* bits, int nbits, int cc, dsd_state
         goto truncated;
     }
     memset(&decoded, 0, sizeof(decoded));
-    decoded.tetra_nwrk_bcast_ext_known = 1;
+    decoded.nwrk_bcast_ext_known = 1;
 
     if (!(bits[off++] & 1u)) {
         goto commit;
@@ -885,13 +893,13 @@ parse_mle_d_nwrk_broadcast_ext(const uint8_t* bits, int nbits, int cc, dsd_state
         if (off + 4 > nbits) {
             goto truncated;
         }
-        decoded.tetra_mle_ext_serving_classes_present = 1;
-        decoded.tetra_mle_ext_serving_class_count = (uint8_t)mle_bits_to_uint(bits, off, 4);
+        decoded.mle_ext_serving_classes_present = 1;
+        decoded.mle_ext_serving_class_count = (uint8_t)mle_bits_to_uint(bits, off, 4);
         off += 4;
-        for (uint8_t i = 0; i < decoded.tetra_mle_ext_serving_class_count; i++) {
-            if (!parse_mle_channel_class(bits, nbits, &off, &decoded.tetra_mle_ext_serving_class_id[i],
-                                         &decoded.tetra_mle_ext_serving_class_characteristics[i],
-                                         &decoded.tetra_mle_ext_serving_class_bs_power[i])) {
+        for (uint8_t i = 0; i < decoded.mle_ext_serving_class_count; i++) {
+            if (!parse_mle_channel_class(bits, nbits, &off, &decoded.mle_ext_serving_class_id[i],
+                                         &decoded.mle_ext_serving_class_characteristics[i],
+                                         &decoded.mle_ext_serving_class_bs_power[i])) {
                 goto truncated;
             }
         }
@@ -905,18 +913,18 @@ parse_mle_d_nwrk_broadcast_ext(const uint8_t* bits, int nbits, int cc, dsd_state
         if (off + 5 > nbits) {
             goto truncated;
         }
-        decoded.tetra_mle_ext_neighbor_classes_present = 1;
-        decoded.tetra_mle_ext_neighbor_class_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
+        decoded.mle_ext_neighbor_classes_present = 1;
+        decoded.mle_ext_neighbor_class_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
         off += 5;
-        for (uint8_t i = 0; i < decoded.tetra_mle_ext_neighbor_class_count; i++) {
+        for (uint8_t i = 0; i < decoded.mle_ext_neighbor_class_count; i++) {
             if (off + 5 > nbits) {
                 goto truncated;
             }
-            decoded.tetra_mle_ext_neighbor_class_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 5);
+            decoded.mle_ext_neighbor_class_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 5);
             off += 5;
-            if (!parse_mle_channel_class(bits, nbits, &off, &decoded.tetra_mle_ext_neighbor_class_id[i],
-                                         &decoded.tetra_mle_ext_neighbor_class_characteristics[i],
-                                         &decoded.tetra_mle_ext_neighbor_class_bs_power[i])) {
+            if (!parse_mle_channel_class(bits, nbits, &off, &decoded.mle_ext_neighbor_class_id[i],
+                                         &decoded.mle_ext_neighbor_class_characteristics[i],
+                                         &decoded.mle_ext_neighbor_class_bs_power[i])) {
                 goto truncated;
             }
         }
@@ -930,15 +938,15 @@ parse_mle_d_nwrk_broadcast_ext(const uint8_t* bits, int nbits, int cc, dsd_state
         if (off + 5 > nbits) {
             goto truncated;
         }
-        decoded.tetra_mle_ext_serving_irregular_present = 1;
-        decoded.tetra_mle_ext_serving_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
+        decoded.mle_ext_serving_irregular_present = 1;
+        decoded.mle_ext_serving_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
         off += 5;
-        for (uint8_t i = 0; i < decoded.tetra_mle_ext_serving_irregular_count; i++) {
-            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded.tetra_mle_ext_serving_irregular_channel_id[i],
-                                             &decoded.tetra_mle_ext_serving_irregular_characteristics[i],
-                                             &decoded.tetra_mle_ext_serving_irregular_carrier[i],
-                                             &decoded.tetra_mle_ext_serving_irregular_carrier_extension[i],
-                                             &decoded.tetra_mle_ext_serving_irregular_extension_valid[i])) {
+        for (uint8_t i = 0; i < decoded.mle_ext_serving_irregular_count; i++) {
+            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded.mle_ext_serving_irregular_channel_id[i],
+                                             &decoded.mle_ext_serving_irregular_characteristics[i],
+                                             &decoded.mle_ext_serving_irregular_carrier[i],
+                                             &decoded.mle_ext_serving_irregular_carrier_extension[i],
+                                             &decoded.mle_ext_serving_irregular_extension_valid[i])) {
                 goto truncated;
             }
         }
@@ -952,20 +960,20 @@ parse_mle_d_nwrk_broadcast_ext(const uint8_t* bits, int nbits, int cc, dsd_state
         if (off + 6 > nbits) {
             goto truncated;
         }
-        decoded.tetra_mle_ext_neighbor_irregular_present = 1;
-        decoded.tetra_mle_ext_neighbor_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 6);
+        decoded.mle_ext_neighbor_irregular_present = 1;
+        decoded.mle_ext_neighbor_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 6);
         off += 6;
-        for (uint8_t i = 0; i < decoded.tetra_mle_ext_neighbor_irregular_count; i++) {
+        for (uint8_t i = 0; i < decoded.mle_ext_neighbor_irregular_count; i++) {
             if (off + 5 > nbits) {
                 goto truncated;
             }
-            decoded.tetra_mle_ext_neighbor_irregular_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 5);
+            decoded.mle_ext_neighbor_irregular_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 5);
             off += 5;
-            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded.tetra_mle_ext_neighbor_irregular_channel_id[i],
-                                             &decoded.tetra_mle_ext_neighbor_irregular_characteristics[i],
-                                             &decoded.tetra_mle_ext_neighbor_irregular_carrier[i],
-                                             &decoded.tetra_mle_ext_neighbor_irregular_carrier_extension[i],
-                                             &decoded.tetra_mle_ext_neighbor_irregular_extension_valid[i])) {
+            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded.mle_ext_neighbor_irregular_channel_id[i],
+                                             &decoded.mle_ext_neighbor_irregular_characteristics[i],
+                                             &decoded.mle_ext_neighbor_irregular_carrier[i],
+                                             &decoded.mle_ext_neighbor_irregular_carrier_extension[i],
+                                             &decoded.mle_ext_neighbor_irregular_extension_valid[i])) {
                 goto truncated;
             }
         }
@@ -979,39 +987,39 @@ parse_mle_d_nwrk_broadcast_ext(const uint8_t* bits, int nbits, int cc, dsd_state
 
 commit:
     fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST-EXT] CC=%d classes=%u/%u irregular=%u/%u\n", cc,
-            decoded.tetra_mle_ext_serving_class_count, decoded.tetra_mle_ext_neighbor_class_count,
-            decoded.tetra_mle_ext_serving_irregular_count, decoded.tetra_mle_ext_neighbor_irregular_count);
-    if (state) {
-#define COPY_EXT_FIELD(name) state->name = decoded.name
-        COPY_EXT_FIELD(tetra_nwrk_bcast_ext_known);
-        COPY_EXT_FIELD(tetra_mle_ext_serving_classes_present);
-        COPY_EXT_FIELD(tetra_mle_ext_serving_class_count);
-        COPY_EXT_FIELD(tetra_mle_ext_neighbor_classes_present);
-        COPY_EXT_FIELD(tetra_mle_ext_neighbor_class_count);
-        COPY_EXT_FIELD(tetra_mle_ext_serving_irregular_present);
-        COPY_EXT_FIELD(tetra_mle_ext_serving_irregular_count);
-        COPY_EXT_FIELD(tetra_mle_ext_neighbor_irregular_present);
-        COPY_EXT_FIELD(tetra_mle_ext_neighbor_irregular_count);
+            decoded.mle_ext_serving_class_count, decoded.mle_ext_neighbor_class_count,
+            decoded.mle_ext_serving_irregular_count, decoded.mle_ext_neighbor_irregular_count);
+    if (ts) {
+#define COPY_EXT_FIELD(name) ts->name = decoded.name
+        COPY_EXT_FIELD(nwrk_bcast_ext_known);
+        COPY_EXT_FIELD(mle_ext_serving_classes_present);
+        COPY_EXT_FIELD(mle_ext_serving_class_count);
+        COPY_EXT_FIELD(mle_ext_neighbor_classes_present);
+        COPY_EXT_FIELD(mle_ext_neighbor_class_count);
+        COPY_EXT_FIELD(mle_ext_serving_irregular_present);
+        COPY_EXT_FIELD(mle_ext_serving_irregular_count);
+        COPY_EXT_FIELD(mle_ext_neighbor_irregular_present);
+        COPY_EXT_FIELD(mle_ext_neighbor_irregular_count);
 #undef COPY_EXT_FIELD
-#define COPY_EXT_ARRAY(name) memcpy(state->name, decoded.name, sizeof(state->name))
-        COPY_EXT_ARRAY(tetra_mle_ext_serving_class_id);
-        COPY_EXT_ARRAY(tetra_mle_ext_serving_class_characteristics);
-        COPY_EXT_ARRAY(tetra_mle_ext_serving_class_bs_power);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_class_cell_id);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_class_id);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_class_characteristics);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_class_bs_power);
-        COPY_EXT_ARRAY(tetra_mle_ext_serving_irregular_channel_id);
-        COPY_EXT_ARRAY(tetra_mle_ext_serving_irregular_characteristics);
-        COPY_EXT_ARRAY(tetra_mle_ext_serving_irregular_carrier);
-        COPY_EXT_ARRAY(tetra_mle_ext_serving_irregular_carrier_extension);
-        COPY_EXT_ARRAY(tetra_mle_ext_serving_irregular_extension_valid);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_irregular_cell_id);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_irregular_channel_id);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_irregular_characteristics);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_irregular_carrier);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_irregular_carrier_extension);
-        COPY_EXT_ARRAY(tetra_mle_ext_neighbor_irregular_extension_valid);
+#define COPY_EXT_ARRAY(name) memcpy(ts->name, decoded.name, sizeof(ts->name))
+        COPY_EXT_ARRAY(mle_ext_serving_class_id);
+        COPY_EXT_ARRAY(mle_ext_serving_class_characteristics);
+        COPY_EXT_ARRAY(mle_ext_serving_class_bs_power);
+        COPY_EXT_ARRAY(mle_ext_neighbor_class_cell_id);
+        COPY_EXT_ARRAY(mle_ext_neighbor_class_id);
+        COPY_EXT_ARRAY(mle_ext_neighbor_class_characteristics);
+        COPY_EXT_ARRAY(mle_ext_neighbor_class_bs_power);
+        COPY_EXT_ARRAY(mle_ext_serving_irregular_channel_id);
+        COPY_EXT_ARRAY(mle_ext_serving_irregular_characteristics);
+        COPY_EXT_ARRAY(mle_ext_serving_irregular_carrier);
+        COPY_EXT_ARRAY(mle_ext_serving_irregular_carrier_extension);
+        COPY_EXT_ARRAY(mle_ext_serving_irregular_extension_valid);
+        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_cell_id);
+        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_channel_id);
+        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_characteristics);
+        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_carrier);
+        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_carrier_extension);
+        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_extension_valid);
 #undef COPY_EXT_ARRAY
     }
     return;
@@ -1023,36 +1031,36 @@ truncated:
 /* Table 18.65 DA neighbour information.  The first eleven optional fields
  * are retained and the three reserved fields are required to be absent. */
 static int
-parse_mle_da_neighbor(const uint8_t* bits, int nbits, int* off, dsd_state* decoded, uint8_t index) {
+parse_mle_da_neighbor(const uint8_t* bits, int nbits, int* off, tetra_state_t* decoded, uint8_t index) {
     static const uint8_t widths[11] = {10, 10, 14, 14, 8, 3, 4, 16, 7, 3, 6};
     if (!bits || !off || !decoded || index >= 7 || *off + 21 > nbits) {
         return 0;
     }
 
-    decoded->tetra_mle_da_neighbor_cell_id[index] = (uint8_t)mle_bits_to_uint(bits, *off, 8);
+    decoded->mle_da_neighbor_cell_id[index] = (uint8_t)mle_bits_to_uint(bits, *off, 8);
     *off += 8;
-    decoded->tetra_mle_da_neighbor_reselect_types[index] = (uint8_t)mle_bits_to_uint(bits, *off, 8);
+    decoded->mle_da_neighbor_reselect_types[index] = (uint8_t)mle_bits_to_uint(bits, *off, 8);
     *off += 8;
-    decoded->tetra_mle_da_neighbor_synchronized[index] = bits[(*off)++] & 1u;
-    decoded->tetra_mle_da_neighbor_wide_area[index] = bits[(*off)++] & 1u;
-    decoded->tetra_mle_da_neighbor_ci_path[index] = (uint8_t)mle_bits_to_uint(bits, *off, 2);
+    decoded->mle_da_neighbor_synchronized[index] = bits[(*off)++] & 1u;
+    decoded->mle_da_neighbor_wide_area[index] = bits[(*off)++] & 1u;
+    decoded->mle_da_neighbor_ci_path[index] = (uint8_t)mle_bits_to_uint(bits, *off, 2);
     *off += 2;
-    decoded->tetra_mle_da_neighbor_load_known[index] = bits[(*off)++] & 1u;
-    if (decoded->tetra_mle_da_neighbor_load_known[index]) {
+    decoded->mle_da_neighbor_load_known[index] = bits[(*off)++] & 1u;
+    if (decoded->mle_da_neighbor_load_known[index]) {
         if (*off + 3 > nbits) {
             return 0;
         }
-        decoded->tetra_mle_da_neighbor_load[index] = (uint8_t)mle_bits_to_uint(bits, *off, 3);
+        decoded->mle_da_neighbor_load[index] = (uint8_t)mle_bits_to_uint(bits, *off, 3);
         *off += 3;
     }
     if (*off + 18 > nbits) {
         return 0;
     }
-    decoded->tetra_mle_da_neighbor_main_carrier[index] = (uint16_t)mle_bits_to_uint(bits, *off, 12);
+    decoded->mle_da_neighbor_main_carrier[index] = (uint16_t)mle_bits_to_uint(bits, *off, 12);
     *off += 12;
-    decoded->tetra_mle_da_neighbor_modulation[index] = (uint8_t)mle_bits_to_uint(bits, *off, 3);
+    decoded->mle_da_neighbor_modulation[index] = (uint8_t)mle_bits_to_uint(bits, *off, 3);
     *off += 3;
-    decoded->tetra_mle_da_neighbor_bandwidth[index] = (uint8_t)mle_bits_to_uint(bits, *off, 3);
+    decoded->mle_da_neighbor_bandwidth[index] = (uint8_t)mle_bits_to_uint(bits, *off, 3);
     *off += 3;
 
     if (*off >= nbits) {
@@ -1072,19 +1080,19 @@ parse_mle_da_neighbor(const uint8_t* bits, int nbits, int* off, dsd_state* decod
             }
             value = mle_bits_to_uint(bits, *off, widths[i]);
             *off += widths[i];
-            decoded->tetra_mle_da_neighbor_optional_mask[index] |= (uint16_t)(1u << i);
+            decoded->mle_da_neighbor_optional_mask[index] |= (uint16_t)(1u << i);
             switch (i) {
-                case 0: decoded->tetra_mle_da_neighbor_carrier_extension[index] = (uint16_t)value; break;
-                case 1: decoded->tetra_mle_da_neighbor_mcc[index] = (uint16_t)value; break;
-                case 2: decoded->tetra_mle_da_neighbor_mnc[index] = (uint16_t)value; break;
-                case 3: decoded->tetra_mle_da_neighbor_la[index] = (uint16_t)value; break;
-                case 4: decoded->tetra_mle_da_neighbor_local_cell_id[index] = (uint8_t)value; break;
-                case 5: decoded->tetra_mle_da_neighbor_max_tx_power[index] = (uint8_t)value; break;
-                case 6: decoded->tetra_mle_da_neighbor_min_rx_level[index] = (uint8_t)value; break;
-                case 7: decoded->tetra_mle_da_neighbor_subscriber_class[index] = (uint16_t)value; break;
-                case 8: decoded->tetra_mle_da_neighbor_bs_service_details[index] = (uint8_t)value; break;
-                case 9: decoded->tetra_mle_da_neighbor_security[index] = (uint8_t)value; break;
-                case 10: decoded->tetra_mle_da_neighbor_frame_offset[index] = (uint8_t)value; break;
+                case 0: decoded->mle_da_neighbor_carrier_extension[index] = (uint16_t)value; break;
+                case 1: decoded->mle_da_neighbor_mcc[index] = (uint16_t)value; break;
+                case 2: decoded->mle_da_neighbor_mnc[index] = (uint16_t)value; break;
+                case 3: decoded->mle_da_neighbor_la[index] = (uint16_t)value; break;
+                case 4: decoded->mle_da_neighbor_local_cell_id[index] = (uint8_t)value; break;
+                case 5: decoded->mle_da_neighbor_max_tx_power[index] = (uint8_t)value; break;
+                case 6: decoded->mle_da_neighbor_min_rx_level[index] = (uint8_t)value; break;
+                case 7: decoded->mle_da_neighbor_subscriber_class[index] = (uint16_t)value; break;
+                case 8: decoded->mle_da_neighbor_bs_service_details[index] = (uint8_t)value; break;
+                case 9: decoded->mle_da_neighbor_security[index] = (uint8_t)value; break;
+                case 10: decoded->mle_da_neighbor_frame_offset[index] = (uint8_t)value; break;
             }
         }
         if (*off + 3 > nbits || bits[*off] || bits[*off + 1] || bits[*off + 2]) {
@@ -1098,12 +1106,13 @@ parse_mle_da_neighbor(const uint8_t* bits, int nbits, int* off, dsd_state* decod
 /* Extended-PDU D-NWRK-BROADCAST-DA, table 18.3. */
 static void
 parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    dsd_state* decoded = (dsd_state*)calloc(1, sizeof(*decoded));
+    tetra_state_t* const ts = tetra_st(state);
+    tetra_state_t* decoded = (tetra_state_t*)calloc(1, sizeof(*decoded));
     int off = 10; /* base type, extension, mandatory three reserved zero bits */
     if (!decoded) {
         return;
     }
-    decoded->tetra_mle_da_broadcast_known = 1;
+    decoded->mle_da_broadcast_known = 1;
     if (nbits < 11 || mle_bits_to_uint(bits, 7, 3) != 0) {
         goto truncated;
     }
@@ -1128,9 +1137,9 @@ parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state*
             off += (width);                                                                                            \
         }                                                                                                              \
     } while (0)
-    DA_OUTER_VALUE(8, tetra_mle_da_cell_id_valid, tetra_mle_da_cell_id);
-    DA_OUTER_VALUE(16, tetra_mle_da_reselect_valid, tetra_mle_da_reselect);
-    DA_OUTER_VALUE(3, tetra_mle_da_load_valid, tetra_mle_da_load);
+    DA_OUTER_VALUE(8, mle_da_cell_id_valid, mle_da_cell_id);
+    DA_OUTER_VALUE(16, mle_da_reselect_valid, mle_da_reselect);
+    DA_OUTER_VALUE(3, mle_da_load_valid, mle_da_load);
 #undef DA_OUTER_VALUE
 
     if (off >= nbits) {
@@ -1140,9 +1149,9 @@ parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state*
         if (off + 48 > nbits) {
             goto truncated;
         }
-        decoded->tetra_mle_da_network_time =
+        decoded->mle_da_network_time =
             ((uint64_t)mle_bits_to_uint(bits, off, 16) << 32) | mle_bits_to_uint(bits, off + 16, 32);
-        decoded->tetra_mle_da_network_time_valid = 1;
+        decoded->mle_da_network_time_valid = 1;
         off += 48;
     }
 
@@ -1150,11 +1159,10 @@ parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state*
         goto truncated;
     }
     if (bits[off++] & 1u) {
-        decoded->tetra_mle_da_local_ca_valid = 1;
-        if (!parse_mle_ca_neighbor(bits, nbits, &off, &decoded->tetra_mle_da_local_ca_cell_id,
-                                   &decoded->tetra_mle_da_local_ca_reselect_types,
-                                   &decoded->tetra_mle_da_local_ca_synchronized, &decoded->tetra_mle_da_local_ca_load,
-                                   &decoded->tetra_mle_da_local_ca_main_carrier)) {
+        decoded->mle_da_local_ca_valid = 1;
+        if (!parse_mle_ca_neighbor(bits, nbits, &off, &decoded->mle_da_local_ca_cell_id,
+                                   &decoded->mle_da_local_ca_reselect_types, &decoded->mle_da_local_ca_synchronized,
+                                   &decoded->mle_da_local_ca_load, &decoded->mle_da_local_ca_main_carrier)) {
             goto truncated;
         }
     }
@@ -1166,10 +1174,10 @@ parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state*
         if (off + 3 > nbits) {
             goto truncated;
         }
-        decoded->tetra_mle_da_neighbor_list_present = 1;
-        decoded->tetra_mle_da_neighbor_count = (uint8_t)mle_bits_to_uint(bits, off, 3);
+        decoded->mle_da_neighbor_list_present = 1;
+        decoded->mle_da_neighbor_count = (uint8_t)mle_bits_to_uint(bits, off, 3);
         off += 3;
-        for (uint8_t i = 0; i < decoded->tetra_mle_da_neighbor_count; i++) {
+        for (uint8_t i = 0; i < decoded->mle_da_neighbor_count; i++) {
             if (!parse_mle_da_neighbor(bits, nbits, &off, decoded, i)) {
                 goto truncated;
             }
@@ -1183,13 +1191,13 @@ parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state*
         if (off + 4 > nbits) {
             goto truncated;
         }
-        decoded->tetra_mle_da_serving_classes_present = 1;
-        decoded->tetra_mle_da_serving_class_count = (uint8_t)mle_bits_to_uint(bits, off, 4);
+        decoded->mle_da_serving_classes_present = 1;
+        decoded->mle_da_serving_class_count = (uint8_t)mle_bits_to_uint(bits, off, 4);
         off += 4;
-        for (uint8_t i = 0; i < decoded->tetra_mle_da_serving_class_count; i++) {
-            if (!parse_mle_channel_class(bits, nbits, &off, &decoded->tetra_mle_da_serving_class_id[i],
-                                         &decoded->tetra_mle_da_serving_class_characteristics[i],
-                                         &decoded->tetra_mle_da_serving_class_bs_power[i])) {
+        for (uint8_t i = 0; i < decoded->mle_da_serving_class_count; i++) {
+            if (!parse_mle_channel_class(bits, nbits, &off, &decoded->mle_da_serving_class_id[i],
+                                         &decoded->mle_da_serving_class_characteristics[i],
+                                         &decoded->mle_da_serving_class_bs_power[i])) {
                 goto truncated;
             }
         }
@@ -1202,18 +1210,18 @@ parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state*
         if (off + 5 > nbits) {
             goto truncated;
         }
-        decoded->tetra_mle_da_neighbor_classes_present = 1;
-        decoded->tetra_mle_da_neighbor_class_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
+        decoded->mle_da_neighbor_classes_present = 1;
+        decoded->mle_da_neighbor_class_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
         off += 5;
-        for (uint8_t i = 0; i < decoded->tetra_mle_da_neighbor_class_count; i++) {
+        for (uint8_t i = 0; i < decoded->mle_da_neighbor_class_count; i++) {
             if (off + 8 > nbits) {
                 goto truncated;
             }
-            decoded->tetra_mle_da_neighbor_class_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 8);
+            decoded->mle_da_neighbor_class_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 8);
             off += 8;
-            if (!parse_mle_channel_class(bits, nbits, &off, &decoded->tetra_mle_da_neighbor_class_id[i],
-                                         &decoded->tetra_mle_da_neighbor_class_characteristics[i],
-                                         &decoded->tetra_mle_da_neighbor_class_bs_power[i])) {
+            if (!parse_mle_channel_class(bits, nbits, &off, &decoded->mle_da_neighbor_class_id[i],
+                                         &decoded->mle_da_neighbor_class_characteristics[i],
+                                         &decoded->mle_da_neighbor_class_bs_power[i])) {
                 goto truncated;
             }
         }
@@ -1226,15 +1234,15 @@ parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state*
         if (off + 5 > nbits) {
             goto truncated;
         }
-        decoded->tetra_mle_da_serving_irregular_present = 1;
-        decoded->tetra_mle_da_serving_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
+        decoded->mle_da_serving_irregular_present = 1;
+        decoded->mle_da_serving_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
         off += 5;
-        for (uint8_t i = 0; i < decoded->tetra_mle_da_serving_irregular_count; i++) {
-            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded->tetra_mle_da_serving_irregular_channel_id[i],
-                                             &decoded->tetra_mle_da_serving_irregular_characteristics[i],
-                                             &decoded->tetra_mle_da_serving_irregular_carrier[i],
-                                             &decoded->tetra_mle_da_serving_irregular_extension[i],
-                                             &decoded->tetra_mle_da_serving_irregular_extension_valid[i])) {
+        for (uint8_t i = 0; i < decoded->mle_da_serving_irregular_count; i++) {
+            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded->mle_da_serving_irregular_channel_id[i],
+                                             &decoded->mle_da_serving_irregular_characteristics[i],
+                                             &decoded->mle_da_serving_irregular_carrier[i],
+                                             &decoded->mle_da_serving_irregular_extension[i],
+                                             &decoded->mle_da_serving_irregular_extension_valid[i])) {
                 goto truncated;
             }
         }
@@ -1247,20 +1255,20 @@ parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state*
         if (off + 6 > nbits) {
             goto truncated;
         }
-        decoded->tetra_mle_da_neighbor_irregular_present = 1;
-        decoded->tetra_mle_da_neighbor_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 6);
+        decoded->mle_da_neighbor_irregular_present = 1;
+        decoded->mle_da_neighbor_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 6);
         off += 6;
-        for (uint8_t i = 0; i < decoded->tetra_mle_da_neighbor_irregular_count; i++) {
+        for (uint8_t i = 0; i < decoded->mle_da_neighbor_irregular_count; i++) {
             if (off + 8 > nbits) {
                 goto truncated;
             }
-            decoded->tetra_mle_da_neighbor_irregular_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 8);
+            decoded->mle_da_neighbor_irregular_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 8);
             off += 8;
-            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded->tetra_mle_da_neighbor_irregular_channel_id[i],
-                                             &decoded->tetra_mle_da_neighbor_irregular_characteristics[i],
-                                             &decoded->tetra_mle_da_neighbor_irregular_carrier[i],
-                                             &decoded->tetra_mle_da_neighbor_irregular_extension[i],
-                                             &decoded->tetra_mle_da_neighbor_irregular_extension_valid[i])) {
+            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded->mle_da_neighbor_irregular_channel_id[i],
+                                             &decoded->mle_da_neighbor_irregular_characteristics[i],
+                                             &decoded->mle_da_neighbor_irregular_carrier[i],
+                                             &decoded->mle_da_neighbor_irregular_extension[i],
+                                             &decoded->mle_da_neighbor_irregular_extension_valid[i])) {
                 goto truncated;
             }
         }
@@ -1274,78 +1282,77 @@ parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state*
 
 commit:
     fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST-DA] CC=%d neighbours=%u classes=%u/%u irregular=%u/%u\n", cc,
-            decoded->tetra_mle_da_neighbor_count, decoded->tetra_mle_da_serving_class_count,
-            decoded->tetra_mle_da_neighbor_class_count, decoded->tetra_mle_da_serving_irregular_count,
-            decoded->tetra_mle_da_neighbor_irregular_count);
-    if (state) {
-#define COPY_DA_SCALAR(name) state->name = decoded->name
-        COPY_DA_SCALAR(tetra_mle_da_broadcast_known);
-        COPY_DA_SCALAR(tetra_mle_da_cell_id_valid);
-        COPY_DA_SCALAR(tetra_mle_da_cell_id);
-        COPY_DA_SCALAR(tetra_mle_da_reselect_valid);
-        COPY_DA_SCALAR(tetra_mle_da_reselect);
-        COPY_DA_SCALAR(tetra_mle_da_load_valid);
-        COPY_DA_SCALAR(tetra_mle_da_load);
-        COPY_DA_SCALAR(tetra_mle_da_network_time_valid);
-        COPY_DA_SCALAR(tetra_mle_da_network_time);
-        COPY_DA_SCALAR(tetra_mle_da_local_ca_valid);
-        COPY_DA_SCALAR(tetra_mle_da_local_ca_cell_id);
-        COPY_DA_SCALAR(tetra_mle_da_local_ca_reselect_types);
-        COPY_DA_SCALAR(tetra_mle_da_local_ca_synchronized);
-        COPY_DA_SCALAR(tetra_mle_da_local_ca_load);
-        COPY_DA_SCALAR(tetra_mle_da_local_ca_main_carrier);
-        COPY_DA_SCALAR(tetra_mle_da_neighbor_list_present);
-        COPY_DA_SCALAR(tetra_mle_da_neighbor_count);
-        COPY_DA_SCALAR(tetra_mle_da_serving_classes_present);
-        COPY_DA_SCALAR(tetra_mle_da_serving_class_count);
-        COPY_DA_SCALAR(tetra_mle_da_neighbor_classes_present);
-        COPY_DA_SCALAR(tetra_mle_da_neighbor_class_count);
-        COPY_DA_SCALAR(tetra_mle_da_serving_irregular_present);
-        COPY_DA_SCALAR(tetra_mle_da_serving_irregular_count);
-        COPY_DA_SCALAR(tetra_mle_da_neighbor_irregular_present);
-        COPY_DA_SCALAR(tetra_mle_da_neighbor_irregular_count);
+            decoded->mle_da_neighbor_count, decoded->mle_da_serving_class_count, decoded->mle_da_neighbor_class_count,
+            decoded->mle_da_serving_irregular_count, decoded->mle_da_neighbor_irregular_count);
+    if (ts) {
+#define COPY_DA_SCALAR(name) ts->name = decoded->name
+        COPY_DA_SCALAR(mle_da_broadcast_known);
+        COPY_DA_SCALAR(mle_da_cell_id_valid);
+        COPY_DA_SCALAR(mle_da_cell_id);
+        COPY_DA_SCALAR(mle_da_reselect_valid);
+        COPY_DA_SCALAR(mle_da_reselect);
+        COPY_DA_SCALAR(mle_da_load_valid);
+        COPY_DA_SCALAR(mle_da_load);
+        COPY_DA_SCALAR(mle_da_network_time_valid);
+        COPY_DA_SCALAR(mle_da_network_time);
+        COPY_DA_SCALAR(mle_da_local_ca_valid);
+        COPY_DA_SCALAR(mle_da_local_ca_cell_id);
+        COPY_DA_SCALAR(mle_da_local_ca_reselect_types);
+        COPY_DA_SCALAR(mle_da_local_ca_synchronized);
+        COPY_DA_SCALAR(mle_da_local_ca_load);
+        COPY_DA_SCALAR(mle_da_local_ca_main_carrier);
+        COPY_DA_SCALAR(mle_da_neighbor_list_present);
+        COPY_DA_SCALAR(mle_da_neighbor_count);
+        COPY_DA_SCALAR(mle_da_serving_classes_present);
+        COPY_DA_SCALAR(mle_da_serving_class_count);
+        COPY_DA_SCALAR(mle_da_neighbor_classes_present);
+        COPY_DA_SCALAR(mle_da_neighbor_class_count);
+        COPY_DA_SCALAR(mle_da_serving_irregular_present);
+        COPY_DA_SCALAR(mle_da_serving_irregular_count);
+        COPY_DA_SCALAR(mle_da_neighbor_irregular_present);
+        COPY_DA_SCALAR(mle_da_neighbor_irregular_count);
 #undef COPY_DA_SCALAR
-#define COPY_DA_ARRAY(name) memcpy(state->name, decoded->name, sizeof(state->name))
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_cell_id);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_reselect_types);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_synchronized);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_wide_area);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_ci_path);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_load_known);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_load);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_main_carrier);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_modulation);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_bandwidth);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_optional_mask);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_carrier_extension);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_mcc);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_mnc);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_la);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_local_cell_id);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_max_tx_power);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_min_rx_level);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_subscriber_class);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_bs_service_details);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_security);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_frame_offset);
-        COPY_DA_ARRAY(tetra_mle_da_serving_class_id);
-        COPY_DA_ARRAY(tetra_mle_da_serving_class_characteristics);
-        COPY_DA_ARRAY(tetra_mle_da_serving_class_bs_power);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_class_cell_id);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_class_id);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_class_characteristics);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_class_bs_power);
-        COPY_DA_ARRAY(tetra_mle_da_serving_irregular_channel_id);
-        COPY_DA_ARRAY(tetra_mle_da_serving_irregular_characteristics);
-        COPY_DA_ARRAY(tetra_mle_da_serving_irregular_carrier);
-        COPY_DA_ARRAY(tetra_mle_da_serving_irregular_extension);
-        COPY_DA_ARRAY(tetra_mle_da_serving_irregular_extension_valid);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_irregular_cell_id);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_irregular_channel_id);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_irregular_characteristics);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_irregular_carrier);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_irregular_extension);
-        COPY_DA_ARRAY(tetra_mle_da_neighbor_irregular_extension_valid);
+#define COPY_DA_ARRAY(name) memcpy(ts->name, decoded->name, sizeof(ts->name))
+        COPY_DA_ARRAY(mle_da_neighbor_cell_id);
+        COPY_DA_ARRAY(mle_da_neighbor_reselect_types);
+        COPY_DA_ARRAY(mle_da_neighbor_synchronized);
+        COPY_DA_ARRAY(mle_da_neighbor_wide_area);
+        COPY_DA_ARRAY(mle_da_neighbor_ci_path);
+        COPY_DA_ARRAY(mle_da_neighbor_load_known);
+        COPY_DA_ARRAY(mle_da_neighbor_load);
+        COPY_DA_ARRAY(mle_da_neighbor_main_carrier);
+        COPY_DA_ARRAY(mle_da_neighbor_modulation);
+        COPY_DA_ARRAY(mle_da_neighbor_bandwidth);
+        COPY_DA_ARRAY(mle_da_neighbor_optional_mask);
+        COPY_DA_ARRAY(mle_da_neighbor_carrier_extension);
+        COPY_DA_ARRAY(mle_da_neighbor_mcc);
+        COPY_DA_ARRAY(mle_da_neighbor_mnc);
+        COPY_DA_ARRAY(mle_da_neighbor_la);
+        COPY_DA_ARRAY(mle_da_neighbor_local_cell_id);
+        COPY_DA_ARRAY(mle_da_neighbor_max_tx_power);
+        COPY_DA_ARRAY(mle_da_neighbor_min_rx_level);
+        COPY_DA_ARRAY(mle_da_neighbor_subscriber_class);
+        COPY_DA_ARRAY(mle_da_neighbor_bs_service_details);
+        COPY_DA_ARRAY(mle_da_neighbor_security);
+        COPY_DA_ARRAY(mle_da_neighbor_frame_offset);
+        COPY_DA_ARRAY(mle_da_serving_class_id);
+        COPY_DA_ARRAY(mle_da_serving_class_characteristics);
+        COPY_DA_ARRAY(mle_da_serving_class_bs_power);
+        COPY_DA_ARRAY(mle_da_neighbor_class_cell_id);
+        COPY_DA_ARRAY(mle_da_neighbor_class_id);
+        COPY_DA_ARRAY(mle_da_neighbor_class_characteristics);
+        COPY_DA_ARRAY(mle_da_neighbor_class_bs_power);
+        COPY_DA_ARRAY(mle_da_serving_irregular_channel_id);
+        COPY_DA_ARRAY(mle_da_serving_irregular_characteristics);
+        COPY_DA_ARRAY(mle_da_serving_irregular_carrier);
+        COPY_DA_ARRAY(mle_da_serving_irregular_extension);
+        COPY_DA_ARRAY(mle_da_serving_irregular_extension_valid);
+        COPY_DA_ARRAY(mle_da_neighbor_irregular_cell_id);
+        COPY_DA_ARRAY(mle_da_neighbor_irregular_channel_id);
+        COPY_DA_ARRAY(mle_da_neighbor_irregular_characteristics);
+        COPY_DA_ARRAY(mle_da_neighbor_irregular_carrier);
+        COPY_DA_ARRAY(mle_da_neighbor_irregular_extension);
+        COPY_DA_ARRAY(mle_da_neighbor_irregular_extension_valid);
 #undef COPY_DA_ARRAY
     }
     free(decoded);
@@ -1409,6 +1416,7 @@ parse_mle_cell_removal(const uint8_t* bits, int nbits, int* off, int cell_id_bit
 /* D-NWRK-BROADCAST REMOVE, table 18.5. @bits starts at the base PDU type. */
 static void
 parse_mle_d_nwrk_broadcast_remove(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     tetra_mle_cell_removal ca[31] = {{0}};
     tetra_mle_cell_removal da[255] = {{0}};
     uint8_t ca_present = 0, ca_count = 0;
@@ -1499,47 +1507,47 @@ parse_mle_d_nwrk_broadcast_remove(const uint8_t* bits, int nbits, int cc, dsd_st
 commit:
     fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST-REMOVE] CC=%d CA=%u DA=%u serving=%u\n", cc, ca_count, da_count,
             serving_present);
-    if (state) {
-        state->tetra_mle_remove_known = 1;
-        state->tetra_mle_remove_ca_present = ca_present;
-        state->tetra_mle_remove_ca_count = ca_count;
-        state->tetra_mle_remove_da_present = da_present;
-        state->tetra_mle_remove_da_count = da_count;
-        state->tetra_mle_remove_serving_present = serving_present;
-        state->tetra_mle_remove_serving_class_count = serving_class_count;
-        state->tetra_mle_remove_serving_channel_count = serving_channel_count;
-        memset(state->tetra_mle_remove_ca_cell_id, 0, sizeof(state->tetra_mle_remove_ca_cell_id));
-        memset(state->tetra_mle_remove_ca_remove_cell, 0, sizeof(state->tetra_mle_remove_ca_remove_cell));
-        memset(state->tetra_mle_remove_ca_class_count, 0, sizeof(state->tetra_mle_remove_ca_class_count));
-        memset(state->tetra_mle_remove_ca_class_id, 0, sizeof(state->tetra_mle_remove_ca_class_id));
-        memset(state->tetra_mle_remove_ca_channel_count, 0, sizeof(state->tetra_mle_remove_ca_channel_count));
-        memset(state->tetra_mle_remove_ca_channel_id, 0, sizeof(state->tetra_mle_remove_ca_channel_id));
-        memset(state->tetra_mle_remove_da_cell_id, 0, sizeof(state->tetra_mle_remove_da_cell_id));
-        memset(state->tetra_mle_remove_da_remove_cell, 0, sizeof(state->tetra_mle_remove_da_remove_cell));
-        memset(state->tetra_mle_remove_da_class_count, 0, sizeof(state->tetra_mle_remove_da_class_count));
-        memset(state->tetra_mle_remove_da_class_id, 0, sizeof(state->tetra_mle_remove_da_class_id));
-        memset(state->tetra_mle_remove_da_channel_count, 0, sizeof(state->tetra_mle_remove_da_channel_count));
-        memset(state->tetra_mle_remove_da_channel_id, 0, sizeof(state->tetra_mle_remove_da_channel_id));
-        memset(state->tetra_mle_remove_serving_class_id, 0, sizeof(state->tetra_mle_remove_serving_class_id));
-        memset(state->tetra_mle_remove_serving_channel_id, 0, sizeof(state->tetra_mle_remove_serving_channel_id));
+    if (ts) {
+        ts->mle_remove_known = 1;
+        ts->mle_remove_ca_present = ca_present;
+        ts->mle_remove_ca_count = ca_count;
+        ts->mle_remove_da_present = da_present;
+        ts->mle_remove_da_count = da_count;
+        ts->mle_remove_serving_present = serving_present;
+        ts->mle_remove_serving_class_count = serving_class_count;
+        ts->mle_remove_serving_channel_count = serving_channel_count;
+        memset(ts->mle_remove_ca_cell_id, 0, sizeof(ts->mle_remove_ca_cell_id));
+        memset(ts->mle_remove_ca_remove_cell, 0, sizeof(ts->mle_remove_ca_remove_cell));
+        memset(ts->mle_remove_ca_class_count, 0, sizeof(ts->mle_remove_ca_class_count));
+        memset(ts->mle_remove_ca_class_id, 0, sizeof(ts->mle_remove_ca_class_id));
+        memset(ts->mle_remove_ca_channel_count, 0, sizeof(ts->mle_remove_ca_channel_count));
+        memset(ts->mle_remove_ca_channel_id, 0, sizeof(ts->mle_remove_ca_channel_id));
+        memset(ts->mle_remove_da_cell_id, 0, sizeof(ts->mle_remove_da_cell_id));
+        memset(ts->mle_remove_da_remove_cell, 0, sizeof(ts->mle_remove_da_remove_cell));
+        memset(ts->mle_remove_da_class_count, 0, sizeof(ts->mle_remove_da_class_count));
+        memset(ts->mle_remove_da_class_id, 0, sizeof(ts->mle_remove_da_class_id));
+        memset(ts->mle_remove_da_channel_count, 0, sizeof(ts->mle_remove_da_channel_count));
+        memset(ts->mle_remove_da_channel_id, 0, sizeof(ts->mle_remove_da_channel_id));
+        memset(ts->mle_remove_serving_class_id, 0, sizeof(ts->mle_remove_serving_class_id));
+        memset(ts->mle_remove_serving_channel_id, 0, sizeof(ts->mle_remove_serving_channel_id));
         for (uint8_t i = 0; i < ca_count; i++) {
-            state->tetra_mle_remove_ca_cell_id[i] = ca[i].cell_id;
-            state->tetra_mle_remove_ca_remove_cell[i] = ca[i].remove_cell;
-            state->tetra_mle_remove_ca_class_count[i] = ca[i].class_count;
-            memcpy(state->tetra_mle_remove_ca_class_id[i], ca[i].class_id, sizeof(ca[i].class_id));
-            state->tetra_mle_remove_ca_channel_count[i] = ca[i].channel_count;
-            memcpy(state->tetra_mle_remove_ca_channel_id[i], ca[i].channel_id, sizeof(ca[i].channel_id));
+            ts->mle_remove_ca_cell_id[i] = ca[i].cell_id;
+            ts->mle_remove_ca_remove_cell[i] = ca[i].remove_cell;
+            ts->mle_remove_ca_class_count[i] = ca[i].class_count;
+            memcpy(ts->mle_remove_ca_class_id[i], ca[i].class_id, sizeof(ca[i].class_id));
+            ts->mle_remove_ca_channel_count[i] = ca[i].channel_count;
+            memcpy(ts->mle_remove_ca_channel_id[i], ca[i].channel_id, sizeof(ca[i].channel_id));
         }
         for (unsigned i = 0; i < da_count; i++) {
-            state->tetra_mle_remove_da_cell_id[i] = da[i].cell_id;
-            state->tetra_mle_remove_da_remove_cell[i] = da[i].remove_cell;
-            state->tetra_mle_remove_da_class_count[i] = da[i].class_count;
-            memcpy(state->tetra_mle_remove_da_class_id[i], da[i].class_id, sizeof(da[i].class_id));
-            state->tetra_mle_remove_da_channel_count[i] = da[i].channel_count;
-            memcpy(state->tetra_mle_remove_da_channel_id[i], da[i].channel_id, sizeof(da[i].channel_id));
+            ts->mle_remove_da_cell_id[i] = da[i].cell_id;
+            ts->mle_remove_da_remove_cell[i] = da[i].remove_cell;
+            ts->mle_remove_da_class_count[i] = da[i].class_count;
+            memcpy(ts->mle_remove_da_class_id[i], da[i].class_id, sizeof(da[i].class_id));
+            ts->mle_remove_da_channel_count[i] = da[i].channel_count;
+            memcpy(ts->mle_remove_da_channel_id[i], da[i].channel_id, sizeof(da[i].channel_id));
         }
-        memcpy(state->tetra_mle_remove_serving_class_id, serving_class_id, sizeof(serving_class_id));
-        memcpy(state->tetra_mle_remove_serving_channel_id, serving_channel_id, sizeof(serving_channel_id));
+        memcpy(ts->mle_remove_serving_class_id, serving_class_id, sizeof(serving_class_id));
+        memcpy(ts->mle_remove_serving_channel_id, serving_channel_id, sizeof(serving_channel_id));
     }
     return;
 
@@ -1552,6 +1560,7 @@ truncated:
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_alert(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 26) {
         fprintf(stderr, "[TETRA CMCE D-ALERT] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1593,24 +1602,24 @@ parse_cmce_d_alert(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
     }
     fprintf(stderr, "[TETRA CMCE D-ALERT] CC=%d call=%u setup_timeout=%u queued=%u\n", cc, (unsigned)id, timeout,
             queued);
-    if (state) {
-        state->tetra_call_active = 1;
-        state->tetra_call_id = id;
-        state->tetra_d_alert_call_id = id;
-        state->tetra_d_alert_timeout = timeout;
-        state->tetra_d_alert_reserved = reserved;
-        state->tetra_d_alert_duplex = duplex;
-        state->tetra_d_alert_queued = queued;
-        state->tetra_d_alert_basic_service = basic;
-        state->tetra_d_alert_notification = notification;
-        state->tetra_d_alert_valid = 1;
+    if (ts) {
+        ts->call_active = 1;
+        ts->call_id = id;
+        ts->d_alert_call_id = id;
+        ts->d_alert_timeout = timeout;
+        ts->d_alert_reserved = reserved;
+        ts->d_alert_duplex = duplex;
+        ts->d_alert_queued = queued;
+        ts->d_alert_basic_service = basic;
+        ts->d_alert_notification = notification;
+        ts->d_alert_valid = 1;
         if (basic_valid) {
-            state->tetra_call_type = (uint8_t)(basic >> 5);
-            state->tetra_enc_mode = (uint8_t)((basic >> 4) & 1u);
-            state->tetra_cmce_com_type = (uint8_t)((basic >> 2) & 3u);
-            state->tetra_call_slots = (uint8_t)(basic & 3u);
+            ts->call_type = (uint8_t)(basic >> 5);
+            ts->enc_mode = (uint8_t)((basic >> 4) & 1u);
+            ts->cmce_com_type = (uint8_t)((basic >> 2) & 3u);
+            ts->call_slots = (uint8_t)(basic & 3u);
         }
-        state->tetra_cmce_call_generation++;
+        ts->cmce_call_generation++;
     }
     return;
 truncated:
@@ -1619,6 +1628,7 @@ truncated:
 
 static void
 parse_cmce_d_call_proceeding(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 25) {
         fprintf(stderr, "[TETRA CMCE D-CALL-PROCEEDING] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1669,24 +1679,24 @@ parse_cmce_d_call_proceeding(const uint8_t* bits, int nbits, int cc, dsd_state* 
         }
     }
     fprintf(stderr, "[TETRA CMCE D-CALL-PROCEEDING] CC=%d call=%u setup_timeout=%u\n", cc, (unsigned)id, timeout);
-    if (state) {
-        state->tetra_call_active = 1;
-        state->tetra_call_id = id;
-        state->tetra_d_call_proc_call_id = id;
-        state->tetra_d_call_proc_timeout = timeout;
-        state->tetra_d_call_proc_hook = hook;
-        state->tetra_d_call_proc_duplex = duplex;
-        state->tetra_d_call_proc_basic_service = basic;
-        state->tetra_d_call_proc_status = status;
-        state->tetra_d_call_proc_notification = notification;
-        state->tetra_d_call_proc_valid = 1;
+    if (ts) {
+        ts->call_active = 1;
+        ts->call_id = id;
+        ts->d_call_proc_call_id = id;
+        ts->d_call_proc_timeout = timeout;
+        ts->d_call_proc_hook = hook;
+        ts->d_call_proc_duplex = duplex;
+        ts->d_call_proc_basic_service = basic;
+        ts->d_call_proc_status = status;
+        ts->d_call_proc_notification = notification;
+        ts->d_call_proc_valid = 1;
         if (basic_valid) {
-            state->tetra_call_type = (uint8_t)(basic >> 5);
-            state->tetra_enc_mode = (uint8_t)((basic >> 4) & 1u);
-            state->tetra_cmce_com_type = (uint8_t)((basic >> 2) & 3u);
-            state->tetra_call_slots = (uint8_t)(basic & 3u);
+            ts->call_type = (uint8_t)(basic >> 5);
+            ts->enc_mode = (uint8_t)((basic >> 4) & 1u);
+            ts->cmce_com_type = (uint8_t)((basic >> 2) & 3u);
+            ts->call_slots = (uint8_t)(basic & 3u);
         }
-        state->tetra_cmce_call_generation++;
+        ts->cmce_call_generation++;
     }
     return;
 truncated:
@@ -1698,6 +1708,7 @@ truncated:
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_status(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     int off = 5;
     uint32_t src_ssi = 0;
     uint8_t cpti;
@@ -1730,17 +1741,17 @@ parse_cmce_d_status(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
         return;
     }
     fprintf(stderr, "[TETRA CMCE D-STATUS] CC=%d src_SSI=%u status=0x%04X\n", cc, src_ssi, status);
-    if (state) {
-        state->tetra_sds_src = src_ssi;
-        state->tetra_sds_status = status;
-        state->tetra_sds_status_log[state->tetra_sds_status_log_head & 3u] = status;
-        state->tetra_sds_status_log_head = (uint8_t)((state->tetra_sds_status_log_head + 1u) & 3u);
+    if (ts) {
+        ts->sds_src = src_ssi;
+        ts->sds_status = status;
+        ts->sds_status_log[ts->sds_status_log_head & 3u] = status;
+        ts->sds_status_log_head = (uint8_t)((ts->sds_status_log_head + 1u) & 3u);
         /* EN 300 392-2 V3.8.1 table 29.13: SDS-SHORT REPORT is
          * carried in pre-coded status, with the six-bit prefix 011111. */
         if ((status >> 10) == 0x1fu) {
-            state->tetra_sds_short_report_result = (uint8_t)((status >> 8) & 3u);
-            state->tetra_sds_short_report_msg_ref = (uint8_t)status;
-            state->tetra_sds_short_report_valid = 1;
+            ts->sds_short_report_result = (uint8_t)((status >> 8) & 3u);
+            ts->sds_short_report_msg_ref = (uint8_t)status;
+            ts->sds_short_report_valid = 1;
         }
     }
 }
@@ -1750,6 +1761,7 @@ parse_cmce_d_status(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_connect_ack(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 27) {
         fprintf(stderr, "[TETRA CMCE D-CONNECT-ACK] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1779,17 +1791,17 @@ parse_cmce_d_connect_ack(const uint8_t* bits, int nbits, int cc, dsd_state* stat
         }
     }
     fprintf(stderr, "[TETRA CMCE D-CONNECT-ACK] CC=%d call=%u timeout=%u grant=%u\n", cc, (unsigned)id, timeout, grant);
-    if (state) {
-        state->tetra_call_active = 1;
-        state->tetra_call_id = id;
-        state->tetra_call_timeout = timeout;
-        state->tetra_d_connect_ack_call_id = id;
-        state->tetra_d_connect_ack_tx_grant = grant;
-        state->tetra_d_connect_ack_tx_permission = permission;
-        state->tetra_d_connect_ack_notification = notification;
-        state->tetra_d_connect_ack_notification_valid = notification_valid;
-        state->tetra_d_connect_ack_valid = 1;
-        state->tetra_cmce_call_generation++;
+    if (ts) {
+        ts->call_active = 1;
+        ts->call_id = id;
+        ts->call_timeout = timeout;
+        ts->d_connect_ack_call_id = id;
+        ts->d_connect_ack_tx_grant = grant;
+        ts->d_connect_ack_tx_permission = permission;
+        ts->d_connect_ack_notification = notification;
+        ts->d_connect_ack_notification_valid = notification_valid;
+        ts->d_connect_ack_valid = 1;
+        ts->cmce_call_generation++;
     }
     return;
 truncated:
@@ -1801,6 +1813,7 @@ truncated:
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_tx_event(const uint8_t* bits, int nbits, int cc, uint32_t pdu_type, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     const char* name;
     switch (pdu_type) {
         case TETRA_CMCE_D_TX_CONTINUE: name = "D-TX-CONTINUE"; break;
@@ -1900,30 +1913,30 @@ parse_cmce_d_tx_event(const uint8_t* bits, int nbits, int cc, uint32_t pdu_type,
     }
     fprintf(stderr, "\n");
 
-    if (state) {
+    if (ts) {
         if (!cmce_matches_active_call(state, call_id)) {
             fprintf(stderr, "[TETRA CMCE %s] CC=%d call=%u ignored; active call=%u\n", name, cc, call_id,
-                    (unsigned)state->tetra_call_id);
+                    (unsigned)ts->call_id);
             return;
         }
-        state->tetra_tx_event_call_id = (uint16_t)call_id;
-        state->tetra_tx_event_notification = (uint8_t)notification;
-        state->tetra_tx_event_request_perm = (uint8_t)request_perm;
-        state->tetra_tx_event_continue = (uint8_t)continue_value;
-        state->tetra_tx_event_grant = (uint8_t)grant;
-        state->tetra_tx_event_encryption = (uint8_t)encryption;
-        state->tetra_tx_event_notification_valid = notification_valid;
-        state->tetra_tx_event_party_type = party_type;
-        state->tetra_tx_event_party_type_valid = party_type_valid;
-        state->tetra_tx_event_party_ssi = party_ssi;
-        state->tetra_tx_event_party_ssi_valid = party_ssi_valid;
-        state->tetra_tx_event_party_extension = party_extension;
-        state->tetra_tx_event_party_extension_valid = party_extension_valid;
+        ts->tx_event_call_id = (uint16_t)call_id;
+        ts->tx_event_notification = (uint8_t)notification;
+        ts->tx_event_request_perm = (uint8_t)request_perm;
+        ts->tx_event_continue = (uint8_t)continue_value;
+        ts->tx_event_grant = (uint8_t)grant;
+        ts->tx_event_encryption = (uint8_t)encryption;
+        ts->tx_event_notification_valid = notification_valid;
+        ts->tx_event_party_type = party_type;
+        ts->tx_event_party_type_valid = party_type_valid;
+        ts->tx_event_party_ssi = party_ssi;
+        ts->tx_event_party_ssi_valid = party_ssi_valid;
+        ts->tx_event_party_extension = party_extension;
+        ts->tx_event_party_extension_valid = party_extension_valid;
 
         switch (pdu_type) {
-            case TETRA_CMCE_D_TX_CONTINUE: state->tetra_tx_continue = 1; break;
-            case TETRA_CMCE_D_TX_INTERRUPT: state->tetra_tx_interrupted = 1; break;
-            case TETRA_CMCE_D_TX_WAIT: state->tetra_tx_wait = 1; break;
+            case TETRA_CMCE_D_TX_CONTINUE: ts->tx_continue = 1; break;
+            case TETRA_CMCE_D_TX_INTERRUPT: ts->tx_interrupted = 1; break;
+            case TETRA_CMCE_D_TX_WAIT: ts->tx_wait = 1; break;
             default: break;
         }
     }
@@ -1938,6 +1951,7 @@ truncated:
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_info(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 22) {
         fprintf(stderr, "[TETRA CMCE D-INFO] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1987,37 +2001,37 @@ parse_cmce_d_info(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
     }
 #undef DINFO_TYPE2
     fprintf(stderr, "[TETRA CMCE D-INFO] CC=%d call=%u reset=%u poll=%u\n", cc, (unsigned)id, reset, poll);
-    if (state) {
-        state->tetra_d_info_call_id = id;
-        state->tetra_d_info_call_timeout = reset;
-        state->tetra_d_info_notification = poll;
-        state->tetra_d_info_new_call_id = new_id;
-        state->tetra_d_info_new_call_id_valid = new_id_valid;
-        state->tetra_d_info_timeout = timeout;
-        state->tetra_d_info_timeout_valid = timeout_valid;
-        state->tetra_d_info_setup_timeout = setup_timeout;
-        state->tetra_d_info_setup_timeout_valid = setup_timeout_valid;
-        state->tetra_d_info_ownership = ownership;
-        state->tetra_d_info_ownership_valid = ownership_valid;
-        state->tetra_d_info_modify = modify;
-        state->tetra_d_info_modify_valid = modify_valid;
-        state->tetra_d_info_status = status;
-        state->tetra_d_info_status_valid = status_valid;
-        state->tetra_d_info_temporary_address = temporary_address;
-        state->tetra_d_info_temporary_address_valid = temporary_address_valid;
-        state->tetra_d_info_notification_indicator = notification;
-        state->tetra_d_info_notification_indicator_valid = notification_valid;
-        state->tetra_d_info_poll_percentage = poll_percentage;
-        state->tetra_d_info_poll_percentage_valid = poll_percentage_valid;
-        state->tetra_d_info_poll_number = poll_number;
-        state->tetra_d_info_poll_number_valid = poll_number_valid;
+    if (ts) {
+        ts->d_info_call_id = id;
+        ts->d_info_call_timeout = reset;
+        ts->d_info_notification = poll;
+        ts->d_info_new_call_id = new_id;
+        ts->d_info_new_call_id_valid = new_id_valid;
+        ts->d_info_timeout = timeout;
+        ts->d_info_timeout_valid = timeout_valid;
+        ts->d_info_setup_timeout = setup_timeout;
+        ts->d_info_setup_timeout_valid = setup_timeout_valid;
+        ts->d_info_ownership = ownership;
+        ts->d_info_ownership_valid = ownership_valid;
+        ts->d_info_modify = modify;
+        ts->d_info_modify_valid = modify_valid;
+        ts->d_info_status = status;
+        ts->d_info_status_valid = status_valid;
+        ts->d_info_temporary_address = temporary_address;
+        ts->d_info_temporary_address_valid = temporary_address_valid;
+        ts->d_info_notification_indicator = notification;
+        ts->d_info_notification_indicator_valid = notification_valid;
+        ts->d_info_poll_percentage = poll_percentage;
+        ts->d_info_poll_percentage_valid = poll_percentage_valid;
+        ts->d_info_poll_number = poll_number;
+        ts->d_info_poll_number_valid = poll_number_valid;
         if (new_id_valid) {
-            state->tetra_call_id = new_id;
+            ts->call_id = new_id;
         }
         if (timeout_valid) {
-            state->tetra_call_timeout = timeout;
+            ts->call_timeout = timeout;
         }
-        state->tetra_d_info_valid = 1;
+        ts->d_info_valid = 1;
     }
     return;
 truncated:
@@ -2029,6 +2043,7 @@ truncated:
  * ----------------------------------------------------------------------- */
 static int
 parse_cmce_d_call_restore(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 24) {
         fprintf(stderr, "[TETRA CMCE D-CALL-RESTORE] CC=%d (too short: %d bits)\n", cc, nbits);
         return 0;
@@ -2114,25 +2129,25 @@ parse_cmce_d_call_restore(const uint8_t* bits, int nbits, int cc, dsd_state* sta
     }
     fprintf(stderr, "[TETRA CMCE D-CALL-RESTORE] CC=%d call=%u grant=%u request=%u reset=%u\n", cc, (unsigned)id, grant,
             permission, reset);
-    if (state) {
-        state->tetra_call_active = 1;
-        state->tetra_call_id = new_id_valid ? new_id : id;
-        state->tetra_call_restore_id = id;
-        state->tetra_call_restore_grant = grant;
-        state->tetra_call_restore_permission = permission;
-        state->tetra_call_restore_reset = reset;
-        state->tetra_call_restore_new_id = new_id;
-        state->tetra_call_restore_new_id_valid = new_id_valid;
-        state->tetra_call_restore_timeout = timeout;
-        state->tetra_call_restore_timeout_valid = timeout_valid;
-        state->tetra_call_restore_status = status;
-        state->tetra_call_restore_status_valid = status_valid;
-        state->tetra_call_restore_modify = modify;
-        state->tetra_call_restore_modify_valid = modify_valid;
-        state->tetra_call_restore_notification = notification;
-        state->tetra_call_restore_notification_valid = notification_valid;
-        state->tetra_call_restore_valid = 1;
-        state->tetra_cmce_call_generation++;
+    if (ts) {
+        ts->call_active = 1;
+        ts->call_id = new_id_valid ? new_id : id;
+        ts->call_restore_id = id;
+        ts->call_restore_grant = grant;
+        ts->call_restore_permission = permission;
+        ts->call_restore_reset = reset;
+        ts->call_restore_new_id = new_id;
+        ts->call_restore_new_id_valid = new_id_valid;
+        ts->call_restore_timeout = timeout;
+        ts->call_restore_timeout_valid = timeout_valid;
+        ts->call_restore_status = status;
+        ts->call_restore_status_valid = status_valid;
+        ts->call_restore_modify = modify;
+        ts->call_restore_modify_valid = modify_valid;
+        ts->call_restore_notification = notification;
+        ts->call_restore_notification_valid = notification_valid;
+        ts->call_restore_valid = 1;
+        ts->cmce_call_generation++;
     }
     return 1;
 truncated:
@@ -2143,6 +2158,7 @@ truncated:
 /* CMCE FUNCTION NOT SUPPORTED, table 14.33. */
 static void
 parse_cmce_function_not_supported(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 20) {
         fprintf(stderr, "[TETRA CMCE FUNCTION-NOT-SUPPORTED] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -2185,13 +2201,13 @@ parse_cmce_function_not_supported(const uint8_t* bits, int nbits, int cc, dsd_st
     }
     fprintf(stderr, "[TETRA CMCE FUNCTION-NOT-SUPPORTED] CC=%d rejected=%u call=%u pointer=%u extract=%u\n", cc,
             rejected, (unsigned)id, pointer, extract_len);
-    if (state) {
-        state->tetra_cmce_fns_rejected_pdu = rejected;
-        state->tetra_cmce_fns_call_id_present = id_present;
-        state->tetra_cmce_fns_call_id = id;
-        state->tetra_cmce_fns_pointer = pointer;
-        state->tetra_cmce_fns_extract_bits = extract_len;
-        state->tetra_cmce_fns_valid = 1;
+    if (ts) {
+        ts->cmce_fns_rejected_pdu = rejected;
+        ts->cmce_fns_call_id_present = id_present;
+        ts->cmce_fns_call_id = id;
+        ts->cmce_fns_pointer = pointer;
+        ts->cmce_fns_extract_bits = extract_len;
+        ts->cmce_fns_valid = 1;
     }
 }
 
@@ -2343,6 +2359,7 @@ decode_sds_text_payload(const uint8_t* bits, int payload_bits, int text_offset, 
  * ----------------------------------------------------------------------- */
 static void
 parse_cmce_d_sds_data(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     int off = 5;
     uint32_t src_ssi = 0;
     uint32_t cpti;
@@ -2567,18 +2584,18 @@ parse_cmce_d_sds_data(const uint8_t* bits, int nbits, int cc, dsd_state* state) 
             if (result < 0) {
                 goto truncated;
             }
-            if (state) {
-                state->tetra_sds_concat_ref = reference;
-                state->tetra_sds_concat_total = total;
-                state->tetra_sds_concat_received = received;
-                state->tetra_sds_concat_sequence = sequence;
-                state->tetra_sds_concat_valid = 1;
-                state->tetra_sds_concat_duplicate = (uint8_t)(result == 2);
-                state->tetra_sds_concat_complete = (uint8_t)(result == 1);
-                state->tetra_sds_src = src_ssi;
-                state->tetra_sds_last_cc = (int8_t)cc;
+            if (ts) {
+                ts->sds_concat_ref = reference;
+                ts->sds_concat_total = total;
+                ts->sds_concat_received = received;
+                ts->sds_concat_sequence = sequence;
+                ts->sds_concat_valid = 1;
+                ts->sds_concat_duplicate = (uint8_t)(result == 2);
+                ts->sds_concat_complete = (uint8_t)(result == 1);
+                ts->sds_src = src_ssi;
+                ts->sds_last_cc = (int8_t)cc;
                 if (result == 1) {
-                    state->tetra_sds_concat_generation++;
+                    ts->sds_concat_generation++;
                 }
             }
             fprintf(stderr, "[TETRA SDS CONCAT] CC=%d src_SSI=%u ref=%u part=%u/%u received=%u%s\n", cc, src_ssi,
@@ -2607,50 +2624,50 @@ parse_cmce_d_sds_data(const uint8_t* bits, int nbits, int cc, dsd_state* state) 
 publish_sds:
     fprintf(stderr, "[TETRA CMCE D-SDS-DATA] CC=%d src_SSI=%u CPTI=%u SDTI=%u data_bits=%d\n", cc, src_ssi, cpti, sdti,
             payload_bits);
-    if (state) {
+    if (ts) {
         /* Commit only after the complete declared payload is available. */
-        state->tetra_sds_text_len = 0;
-        state->tetra_sds_text[0] = '\0';
-        state->tetra_sds_text_unicode = decoded_unicode;
-        memcpy(state->tetra_sds_text, decoded_text, sizeof(decoded_text));
-        state->tetra_sds_text_len = (uint16_t)decoded_length;
-        state->tetra_sds_short_valid = 0;
-        state->tetra_sds_src = src_ssi;
-        state->tetra_cmce_sds_data_type = (uint8_t)sdti;
-        state->tetra_sds_last_cc = (int8_t)cc;
+        ts->sds_text_len = 0;
+        ts->sds_text[0] = '\0';
+        ts->sds_text_unicode = decoded_unicode;
+        memcpy(ts->sds_text, decoded_text, sizeof(decoded_text));
+        ts->sds_text_len = (uint16_t)decoded_length;
+        ts->sds_short_valid = 0;
+        ts->sds_src = src_ssi;
+        ts->cmce_sds_data_type = (uint8_t)sdti;
+        ts->sds_last_cc = (int8_t)cc;
         if (!concat_message) {
-            state->tetra_sds_concat_valid = 0;
-            state->tetra_sds_concat_duplicate = 0;
-            state->tetra_sds_concat_complete = 0;
+            ts->sds_concat_valid = 0;
+            ts->sds_concat_duplicate = 0;
+            ts->sds_concat_complete = 0;
         }
-        state->tetra_sds_storage_forward = storage_forward;
-        state->tetra_sds_validity_period = validity_period;
-        state->tetra_sds_forward_type = forward_type;
-        state->tetra_sds_forward_valid = forward_valid;
-        state->tetra_sds_forward_sna = forward_sna;
-        state->tetra_sds_forward_ssi = forward_ssi;
-        state->tetra_sds_forward_extension = forward_extension;
-        memcpy(state->tetra_sds_forward_external, forward_external, sizeof(state->tetra_sds_forward_external));
+        ts->sds_storage_forward = storage_forward;
+        ts->sds_validity_period = validity_period;
+        ts->sds_forward_type = forward_type;
+        ts->sds_forward_valid = forward_valid;
+        ts->sds_forward_sna = forward_sna;
+        ts->sds_forward_ssi = forward_ssi;
+        ts->sds_forward_extension = forward_extension;
+        memcpy(ts->sds_forward_external, forward_external, sizeof(ts->sds_forward_external));
         if (sds_transfer) {
-            state->tetra_sds_msg_ref = ack_ref;
+            ts->sds_msg_ref = ack_ref;
         }
         if (sds_ack) {
-            state->tetra_sds_ack_delivery_status = ack_status;
-            state->tetra_sds_ack_msg_ref = ack_ref;
-            state->tetra_sds_msg_ref = ack_ref;
-            state->tetra_sds_ack_valid = 1;
+            ts->sds_ack_delivery_status = ack_status;
+            ts->sds_ack_msg_ref = ack_ref;
+            ts->sds_msg_ref = ack_ref;
+            ts->sds_ack_valid = 1;
         }
         if (sds_report) {
-            state->tetra_sds_report_cause = ack_status;
-            state->tetra_sds_report_delivery_ok = ack_status < 32;
-            state->tetra_sds_report_msg_ref = ack_ref;
-            state->tetra_sds_msg_ref = ack_ref;
-            state->tetra_sds_report_valid = 1;
+            ts->sds_report_cause = ack_status;
+            ts->sds_report_delivery_ok = ack_status < 32;
+            ts->sds_report_msg_ref = ack_ref;
+            ts->sds_msg_ref = ack_ref;
+            ts->sds_report_valid = 1;
         }
         if (sdti == 0) {
-            state->tetra_sds_short_data = (uint16_t)mle_bits_to_uint(bits, off, 16);
-            state->tetra_sds_short_src = src_ssi;
-            state->tetra_sds_short_valid = 1;
+            ts->sds_short_data = (uint16_t)mle_bits_to_uint(bits, off, 16);
+            ts->sds_short_src = src_ssi;
+            ts->sds_short_valid = 1;
         }
         char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
         if (decoded_length != 0) {
@@ -2675,6 +2692,7 @@ truncated:
  * length-delimited type-3/4 chain. */
 static void
 parse_cmce_d_facility(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     int off = 5;
     uint32_t count;
     uint32_t first_ss_type = 0;
@@ -2708,9 +2726,9 @@ parse_cmce_d_facility(const uint8_t* bits, int nbits, int cc, dsd_state* state) 
     }
 
     fprintf(stderr, "[TETRA CMCE D-FACILITY] CC=%d ss_pdus=%u first_ss_type=%u\n", cc, count, first_ss_type);
-    if (state) {
-        state->tetra_facility_type = (uint8_t)first_ss_type;
-        state->tetra_facility_valid = 1;
+    if (ts) {
+        ts->facility_type = (uint8_t)first_ss_type;
+        ts->facility_valid = 1;
     }
     return;
 
@@ -2723,14 +2741,15 @@ truncated:
  * ----------------------------------------------------------------------- */
 static void
 tetra_cmce_parse(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 5) {
         fprintf(stderr, "[TETRA CMCE] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
     }
 
     uint32_t pdu_type = mle_bits_to_uint(bits, 0, 5);
-    const uint32_t call_generation = state ? state->tetra_cmce_call_generation : 0;
-    const uint8_t call_active = state ? state->tetra_call_active : 0;
+    const uint32_t call_generation = state ? ts->cmce_call_generation : 0;
+    const uint8_t call_active = state ? ts->call_active : 0;
 
     switch (pdu_type) {
 
@@ -2778,11 +2797,10 @@ tetra_cmce_parse(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, d
             }
             break;
     }
-    if (state && (state->tetra_cmce_call_generation != call_generation || state->tetra_call_active != call_active)) {
+    if (ts && (ts->cmce_call_generation != call_generation || ts->call_active != call_active)) {
         char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
-        DSD_SNPRINTF(summary, sizeof summary, "Call %s CC=%d ID=%u SSI=%u enc=%u",
-                     state->tetra_call_active ? "active" : "ended", cc, state->tetra_call_id, state->tetra_active_ssi,
-                     state->tetra_enc_mode);
+        DSD_SNPRINTF(summary, sizeof summary, "Call %s CC=%d ID=%u SSI=%u enc=%u", ts->call_active ? "active" : "ended",
+                     cc, ts->call_id, ts->active_ssi, ts->enc_mode);
         tetra_message_push(state, DSD_TETRA_MESSAGE_CALL, summary);
     }
 }
@@ -2792,14 +2810,15 @@ tetra_cmce_parse(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, d
  * messages define no Type 2 fields, so an asserted O-bit is malformed. */
 static void
 parse_mle_d_new_cell(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 6 || (bits[5] & 1u)) {
         fprintf(stderr, "[TETRA MLE D-NEW-CELL] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
         return;
     }
     uint8_t command = (uint8_t)mle_bits_to_uint(bits, 3, 2);
-    if (state) {
-        state->tetra_mle_new_cell_channel_command = command;
-        state->tetra_mle_new_cell_valid = 1;
+    if (ts) {
+        ts->mle_new_cell_channel_command = command;
+        ts->mle_new_cell_valid = 1;
     }
     if (nbits > 6) {
         tetra_mm_dispatch(bits + 6, nbits - 6, cc, opts, state);
@@ -2808,14 +2827,15 @@ parse_mle_d_new_cell(const uint8_t* bits, int nbits, int cc, const dsd_opts* opt
 
 static void
 parse_mle_d_prepare_fail(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 6 || (bits[5] & 1u)) {
         fprintf(stderr, "[TETRA MLE D-PREPARE-FAIL] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
         return;
     }
     uint8_t cause = (uint8_t)mle_bits_to_uint(bits, 3, 2);
-    if (state) {
-        state->tetra_mle_prepare_fail_cause = cause;
-        state->tetra_mle_prepare_fail_valid = 1;
+    if (ts) {
+        ts->mle_prepare_fail_cause = cause;
+        ts->mle_prepare_fail_valid = 1;
     }
     if (nbits > 6) {
         tetra_mm_dispatch(bits + 6, nbits - 6, cc, opts, state);
@@ -2824,25 +2844,27 @@ parse_mle_d_prepare_fail(const uint8_t* bits, int nbits, int cc, const dsd_opts*
 
 static void
 parse_mle_d_restore_ack(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     /* O-bit followed by the mandatory CMCE D-CALL-RESTORE SDU. */
     if (nbits < 28 || (bits[3] & 1u) || mle_bits_to_uint(bits, 4, 5) != TETRA_CMCE_D_CALL_RESTORE) {
         fprintf(stderr, "[TETRA MLE D-RESTORE-ACK] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
         return;
     }
     if (parse_cmce_d_call_restore(bits + 4, nbits - 4, cc, state) && state) {
-        state->tetra_restore_ack = 1;
+        ts->restore_ack = 1;
     }
 }
 
 static void
 parse_mle_d_restore_fail(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 6 || (bits[5] & 1u)) {
         fprintf(stderr, "[TETRA MLE D-RESTORE-FAIL] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
         return;
     }
-    if (state) {
-        state->tetra_mle_restore_fail_cause = (uint8_t)mle_bits_to_uint(bits, 3, 2);
-        state->tetra_mle_restore_fail_valid = 1;
+    if (ts) {
+        ts->mle_restore_fail_cause = (uint8_t)mle_bits_to_uint(bits, 3, 2);
+        ts->mle_restore_fail_valid = 1;
     }
 }
 
@@ -2851,15 +2873,16 @@ parse_mle_d_restore_fail(const uint8_t* bits, int nbits, int cc, dsd_state* stat
  * O=0 after the three mandatory values. */
 static void
 parse_mle_d_channel_response(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 12 || (bits[11] & 1u)) {
         fprintf(stderr, "[TETRA MLE D-CHANNEL-RESPONSE] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
         return;
     }
-    if (state) {
-        state->tetra_mle_channel_response_type = bits[3] & 1u;
-        state->tetra_mle_channel_response_reason = (uint8_t)mle_bits_to_uint(bits, 4, 3);
-        state->tetra_mle_channel_response_retry_delay = (uint8_t)mle_bits_to_uint(bits, 7, 4);
-        state->tetra_mle_channel_response_valid = 1;
+    if (ts) {
+        ts->mle_channel_response_type = bits[3] & 1u;
+        ts->mle_channel_response_reason = (uint8_t)mle_bits_to_uint(bits, 4, 3);
+        ts->mle_channel_response_retry_delay = (uint8_t)mle_bits_to_uint(bits, 7, 4);
+        ts->mle_channel_response_valid = 1;
     }
 }
 
@@ -2868,6 +2891,7 @@ parse_mle_d_channel_response(const uint8_t* bits, int nbits, int cc, dsd_state* 
  * ----------------------------------------------------------------------- */
 void
 tetra_mle_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (!bits || nbits < 3) {
         return;
     }
@@ -2890,11 +2914,11 @@ tetra_mle_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts,
         if (sn_nbits >= 8) {
             uint32_t nsapi = mle_bits_to_uint(sn, 0, 4);
             uint32_t sn_type = mle_bits_to_uint(sn, 4, 4);
-            if (state) {
-                state->tetra_sndcp_nsapi = (uint8_t)nsapi;
-                state->tetra_sndcp_pdu_type = (uint8_t)sn_type;
-                state->tetra_sndcp_nbits = (uint16_t)sn_nbits;
-                state->tetra_sndcp_valid = 1;
+            if (ts) {
+                ts->sndcp_nsapi = (uint8_t)nsapi;
+                ts->sndcp_pdu_type = (uint8_t)sn_type;
+                ts->sndcp_nbits = (uint16_t)sn_nbits;
+                ts->sndcp_valid = 1;
             }
         }
         return;

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 int
 main(void) {
@@ -47,7 +48,7 @@ main(void) {
 
     opts->trunk_enable = 1;
     tetra_acelp_process_tch(type2, 292, 0, opts, state);
-    if (state->tetra_vocoder_frames != 0) {
+    if (tetra_st(state)->vocoder_frames != 0) {
         fprintf(stderr, "FAIL: control-channel burst reached vocoder\n");
         sf_close(wav);
         free(opts);
@@ -60,8 +61,8 @@ main(void) {
     tetra_vocoder_close();
     sf_write_sync(wav);
     sf_count_t frames = sf_seek(wav, 0, SEEK_CUR);
-    int status_ok = state->tetra_vocoder_status == TETRA_VOCODER_STATUS_READY && state->tetra_vocoder_frames == 2
-                    && state->tetra_vocoder_errors == 0;
+    int status_ok = tetra_st(state)->vocoder_status == TETRA_VOCODER_STATUS_READY
+                    && tetra_st(state)->vocoder_frames == 2 && tetra_st(state)->vocoder_errors == 0;
     sf_close(wav);
 
     free(opts);

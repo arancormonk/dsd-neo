@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 int
 main(void) {
@@ -31,15 +32,16 @@ main(void) {
     }
     tetra_mac_parse_schd(bits, (int)sizeof(bits), 7, opts, state);
 
-    const int ok = state->tetra_frames_resource == 1 && state->tetra_cmce_sds_data_type == 3
-                   && state->tetra_sds_msg_ref == 32 && state->tetra_sds_text_len == 4
-                   && strcmp(state->tetra_sds_text, "Ahoj") == 0 && state->tetra_message_sequence == 1
+    const int ok = tetra_st(state)->frames_resource == 1 && tetra_st(state)->cmce_sds_data_type == 3
+                   && tetra_st(state)->sds_msg_ref == 32 && tetra_st(state)->sds_text_len == 4
+                   && strcmp(tetra_st(state)->sds_text, "Ahoj") == 0 && state->tetra_message_sequence == 1
                    && state->tetra_messages[0].category == DSD_TETRA_MESSAGE_SDS
                    && strstr(state->tetra_messages[0].text, "Ahoj") != NULL;
     if (!ok) {
         fprintf(stderr, "reference SDS mismatch: resources=%llu type=%u ref=%u len=%u text='%s'\n",
-                (unsigned long long)state->tetra_frames_resource, (unsigned)state->tetra_cmce_sds_data_type,
-                (unsigned)state->tetra_sds_msg_ref, (unsigned)state->tetra_sds_text_len, state->tetra_sds_text);
+                (unsigned long long)tetra_st(state)->frames_resource, (unsigned)tetra_st(state)->cmce_sds_data_type,
+                (unsigned)tetra_st(state)->sds_msg_ref, (unsigned)tetra_st(state)->sds_text_len,
+                tetra_st(state)->sds_text);
     }
     free(state);
     free(opts);

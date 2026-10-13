@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -127,22 +128,22 @@ test_resource_fill_bits(void) {
     int n = build_mac_resource(pdu, sizeof(pdu), 1, 4, tmsdu, 9);
     tetra_mac_parse_schd(pdu, n, 0, opt, st);
 
-    CHECK(st->tetra_frag_active == 0, "fill_bits=1: no fragment started");
-    CHECK(st->tetra_frag_nbits == 0, "fill_bits=1: buffer stays empty");
+    CHECK(tetra_st(st)->frag_active == 0, "fill_bits=1: no fragment started");
+    CHECK(tetra_st(st)->frag_nbits == 0, "fill_bits=1: buffer stays empty");
 
     /* fill_bits=0 with an ordinary length still dispatches directly. */
     dsd_state* st2 = alloc_state();
     n = build_mac_resource(pdu, sizeof(pdu), 0, 4, tmsdu, 9);
     tetra_mac_parse_schd(pdu, n, 0, opt, st2);
 
-    CHECK(st2->tetra_frag_active == 0, "fill_bits=0: no fragment started");
-    CHECK(st2->tetra_frag_nbits == 0, "fill_bits=0: buffer stays empty");
+    CHECK(tetra_st(st2)->frag_active == 0, "fill_bits=0: no fragment started");
+    CHECK(tetra_st(st2)->frag_nbits == 0, "fill_bits=0: buffer stays empty");
 
     dsd_state* st3 = alloc_state();
     n = build_mac_resource(pdu, sizeof(pdu), 0, 63, tmsdu, 9);
     tetra_mac_parse_schd(pdu, n, 0, opt, st3);
-    CHECK(st3->tetra_frag_active == 1, "len_ind=63: fragment started");
-    CHECK(st3->tetra_frag_nbits == 9, "len_ind=63: 9 bits buffered");
+    CHECK(tetra_st(st3)->frag_active == 1, "len_ind=63: fragment started");
+    CHECK(tetra_st(st3)->frag_nbits == 9, "len_ind=63: 9 bits buffered");
 
     free(st);
     free(st2);
@@ -167,7 +168,7 @@ test_mac_frag_accumulate(void) {
     uint8_t pdu[128];
     int n = build_mac_resource(pdu, sizeof(pdu), 0, 63, tmsdu, 9);
     tetra_mac_parse_schd(pdu, n, 0, opt, st);
-    CHECK(st->tetra_frag_nbits == 9, "after RESOURCE: 9 bits in buffer");
+    CHECK(tetra_st(st)->frag_nbits == 9, "after RESOURCE: 9 bits in buffer");
 
     /* MAC-FRAG with 5 bits */
     uint8_t frag[5];
@@ -175,8 +176,8 @@ test_mac_frag_accumulate(void) {
     n = build_mac_frag_end(pdu, sizeof(pdu), 0, frag, 5);
     tetra_mac_parse_schd(pdu, n, 0, opt, st);
 
-    CHECK(st->tetra_frag_active == 1, "after FRAG: still active");
-    CHECK(st->tetra_frag_nbits == 14, "after FRAG: 9+5=14 bits");
+    CHECK(tetra_st(st)->frag_active == 1, "after FRAG: still active");
+    CHECK(tetra_st(st)->frag_nbits == 14, "after FRAG: 9+5=14 bits");
 
     free(st);
     free(opt);
@@ -218,25 +219,25 @@ test_full_fragment_sequence(void) {
     /* ---- MAC-RESOURCE: discriminator, fill_bits=0 ---- */
     n = build_mac_resource(pdu, sizeof(pdu), 0, 63, tmsdu, 4);
     tetra_mac_parse_schd(pdu, n, 2, opt, st);
-    CHECK(st->tetra_frag_nbits == 4, "RESOURCE: 4 bits buffered");
-    CHECK(st->tetra_frag_active == 1, "RESOURCE: active=1");
-    CHECK(st->tetra_d_alert_valid == 0, "RESOURCE: D-ALERT not yet dispatched");
+    CHECK(tetra_st(st)->frag_nbits == 4, "RESOURCE: 4 bits buffered");
+    CHECK(tetra_st(st)->frag_active == 1, "RESOURCE: active=1");
+    CHECK(tetra_st(st)->d_alert_valid == 0, "RESOURCE: D-ALERT not yet dispatched");
 
     /* ---- MAC-FRAG: next 5 bits ---- */
     n = build_mac_frag_end(pdu, sizeof(pdu), 0, tmsdu + 4, 5);
     tetra_mac_parse_schd(pdu, n, 2, opt, st);
-    CHECK(st->tetra_frag_nbits == 9, "FRAG: 9 bits accumulated");
-    CHECK(st->tetra_d_alert_valid == 0, "FRAG: D-ALERT still not dispatched");
+    CHECK(tetra_st(st)->frag_nbits == 9, "FRAG: 9 bits accumulated");
+    CHECK(tetra_st(st)->d_alert_valid == 0, "FRAG: D-ALERT still not dispatched");
 
     /* ---- MAC-END: final 24 bits ---- */
     n = build_mac_frag_end(pdu, sizeof(pdu), 1, tmsdu + 9, 24);
     tetra_mac_parse_schd(pdu, n, 2, opt, st);
 
-    CHECK(st->tetra_frag_active == 0, "END: active cleared");
-    CHECK(st->tetra_frag_nbits == 0, "END: buffer cleared");
-    CHECK(st->tetra_d_alert_valid == 1, "END: D-ALERT decoded after reassembly");
-    CHECK(st->tetra_d_alert_call_id == 5, "END: D-ALERT call_id=5");
-    CHECK(st->tetra_call_active == 1, "END: call_active set by D-ALERT");
+    CHECK(tetra_st(st)->frag_active == 0, "END: active cleared");
+    CHECK(tetra_st(st)->frag_nbits == 0, "END: buffer cleared");
+    CHECK(tetra_st(st)->d_alert_valid == 1, "END: D-ALERT decoded after reassembly");
+    CHECK(tetra_st(st)->d_alert_call_id == 5, "END: D-ALERT call_id=5");
+    CHECK(tetra_st(st)->call_active == 1, "END: call_active set by D-ALERT");
 
     free(st);
     free(opt);
@@ -257,8 +258,8 @@ test_end_without_start(void) {
     int n = build_mac_frag_end(pdu, sizeof(pdu), 1, empty, 4);
     tetra_mac_parse_schd(pdu, n, 0, opt, st); /* must not crash */
 
-    CHECK(st->tetra_frag_active == 0, "END without start: active stays 0");
-    CHECK(st->tetra_frag_nbits == 0, "END without start: buffer stays 0");
+    CHECK(tetra_st(st)->frag_active == 0, "END without start: active stays 0");
+    CHECK(tetra_st(st)->frag_nbits == 0, "END without start: buffer stays 0");
 
     free(st);
     free(opt);
@@ -277,25 +278,26 @@ test_fragment_context_guards(void) {
 
     int n = build_mac_frag_end(pdu, sizeof(pdu), 0, payload, 9);
     tetra_mac_parse_schd(pdu, n, 1, opt, st);
-    CHECK(st->tetra_frag_active == 0 && st->tetra_frag_nbits == 0, "orphan FRAG cannot create a reassembly context");
+    CHECK(tetra_st(st)->frag_active == 0 && tetra_st(st)->frag_nbits == 0,
+          "orphan FRAG cannot create a reassembly context");
 
     n = build_mac_frag_end(pdu, sizeof(pdu), 1, payload, 34);
     tetra_mac_parse_schd(pdu, n, 1, opt, st);
-    CHECK(st->tetra_d_alert_valid == 0, "orphan END cannot dispatch a complete-looking TM-SDU");
+    CHECK(tetra_st(st)->d_alert_valid == 0, "orphan END cannot dispatch a complete-looking TM-SDU");
 
     n = build_mac_resource(pdu, sizeof(pdu), 0, 63, payload, 9);
     tetra_mac_parse_schd(pdu, n, 1, opt, st);
     n = build_mac_frag_end(pdu, sizeof(pdu), 0, payload + 9, 5);
     tetra_mac_parse_schd(pdu, n, 2, opt, st);
-    CHECK(st->tetra_frag_active == 0 && st->tetra_frag_nbits == 0,
+    CHECK(tetra_st(st)->frag_active == 0 && tetra_st(st)->frag_nbits == 0,
           "fragment from a different colour code discards the sequence");
 
-    st->tetra_frag_active = 1;
-    st->tetra_frag_cc = 1;
-    st->tetra_frag_nbits = 1020;
+    tetra_st(st)->frag_active = 1;
+    tetra_st(st)->frag_cc = 1;
+    tetra_st(st)->frag_nbits = 1020;
     n = build_mac_frag_end(pdu, sizeof(pdu), 0, payload, 8);
     tetra_mac_parse_schd(pdu, n, 1, opt, st);
-    CHECK(st->tetra_frag_active == 0 && st->tetra_frag_nbits == 0,
+    CHECK(tetra_st(st)->frag_active == 0 && tetra_st(st)->frag_nbits == 0,
           "reassembly overflow discards the complete sequence");
 
     free(st);

@@ -8,18 +8,19 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "tetra_state.h"
 
 void
 tetra_bsch_fmt_net(const dsd_state* state, char* buf, size_t len) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
     if (!buf || len == 0) {
         return;
     }
 
-    if (!state || !state->tetra_net_known) {
+    if (!ts || !ts->net_known) {
         snprintf(buf, len, "MCC:? MNC:? CC:?");
         return;
     }
 
-    snprintf(buf, len, "MCC:%u MNC:%u CC:%u", (unsigned)state->tetra_mcc, (unsigned)state->tetra_mnc,
-             (unsigned)state->tetra_colour);
+    snprintf(buf, len, "MCC:%u MNC:%u CC:%u", (unsigned)ts->mcc, (unsigned)ts->mnc, (unsigned)ts->colour);
 }

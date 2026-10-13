@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 int
 main(void) {
@@ -33,19 +34,19 @@ main(void) {
         return 1;
     }
 
-    st->tetra_vc_assignment_valid = 1;
-    st->tetra_tdma_valid = 0;
-    st->tetra_vc_timeslot_bitmap = 4;
+    tetra_st(st)->vc_assignment_valid = 1;
+    tetra_st(st)->tdma_valid = 0;
+    tetra_st(st)->vc_timeslot_bitmap = 4;
     if (!tetra_acelp_slot_gate_passes(0, st)) {
         fputs("FAIL: allocation without TDMA timing must remain permissive\n", stderr);
         return 1;
     }
 
-    st->tetra_tdma_valid = 1;
+    tetra_st(st)->tdma_valid = 1;
     for (unsigned tn = 1; tn <= 4; ++tn) {
-        st->tetra_tn = (uint8_t)tn;
+        tetra_st(st)->tn = (uint8_t)tn;
         for (unsigned assigned = 1; assigned <= 4; ++assigned) {
-            st->tetra_vc_timeslot_bitmap = (uint8_t)(1u << (4u - assigned));
+            tetra_st(st)->vc_timeslot_bitmap = (uint8_t)(1u << (4u - assigned));
             int expected = tn == assigned;
             if (tetra_acelp_slot_gate_passes(0, st) != expected || tetra_acelp_slot_gate_passes(2, st) != expected) {
                 fprintf(stderr, "FAIL: TN%u assignment TN%u was gated incorrectly\n", tn, assigned);
@@ -55,7 +56,7 @@ main(void) {
         }
     }
 
-    st->tetra_vc_timeslot_bitmap = 0;
+    tetra_st(st)->vc_timeslot_bitmap = 0;
     if (tetra_acelp_slot_gate_passes(0, st)) {
         fputs("FAIL: released zero-slot allocation must suppress audio\n", stderr);
         return 1;

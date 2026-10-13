@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Operator-key air-interface decrypt: IV packing and TEA1/2/3 vectors.
  * Vectors are the published TEA1/2/3 cases from Midnight Blue's Apache-2.0 tests. */
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/tetra_etee.h>
 #include <dsd-neo/crypto/tetra_tea.h>
@@ -8,6 +9,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_fail = 0;
 
@@ -59,23 +61,25 @@ main(void) {
 
     memset(&state, 0, sizeof(state));
     memset(bits, 1, sizeof(bits));
-    state.tetra_enc_mode = 1;
-    state.tetra_net_known = 1;
-    state.tetra_mcc = 86;
-    state.tetra_mnc = 28;
-    state.tetra_hyperframe_valid = 1;
-    state.tetra_tdma_valid = 1;
-    state.tetra_tn = 1;
-    state.tetra_fn = 1;
-    state.tetra_mn = 1;
+    tetra_st(&state)->enc_mode = 1;
+    tetra_st(&state)->net_known = 1;
+    tetra_st(&state)->mcc = 86;
+    tetra_st(&state)->mnc = 28;
+    tetra_st(&state)->hyperframe_valid = 1;
+    tetra_st(&state)->tdma_valid = 1;
+    tetra_st(&state)->tn = 1;
+    tetra_st(&state)->fn = 1;
+    tetra_st(&state)->mn = 1;
     CHECK(tetra_air_decrypt_voice(&state, bits, 8, 0) == 0, "encrypted voice without a KSG is unchanged");
     tetra_air_ksg_remember(&state, 86, 28, 3);
     CHECK(tetra_air_decrypt_voice(&state, bits, 8, 0) == 0, "TEA4 is named but not decrypted");
     tetra_air_ksg_remember(&state, 86, 28, 0);
     CHECK(tetra_air_decrypt_voice(&state, bits, 8, 0) == 0, "TEA1 without an operator key is unchanged");
-    tetra_air_key_set(&state, 86, 28, zero_key);
+    CHECK(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "86,28,00000000000000000000", DSD_KEY_APPLY_OVERLAY)
+              == DSD_KEY_DIRECT_OK,
+          "an operator key loads for network 86/28");
     CHECK(tetra_air_decrypt_voice(&state, bits, 8, 0) == 1, "TEA1 with a key decrypts trunked voice");
-    state.tetra_dmo = 1;
+    tetra_st(&state)->dmo = 1;
     memset(bits, 1, sizeof(bits));
     CHECK(tetra_air_decrypt_voice(&state, bits, 8, 0) == 0 && bits[0] == 1, "direct mode is not air-interface TEA");
 

@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -77,11 +78,11 @@ test_sds_data_truncation(void) {
     dsd_opts* opt = alloc_opts();
 
     /* Prime state with fake previous message */
-    st->tetra_sds_text_len = 5;
-    strcpy(st->tetra_sds_text, "HELLO");
-    st->tetra_sds_src = 222;
-    st->tetra_sds_short_valid = 1;
-    st->tetra_sds_short_data = 0xCAFEu;
+    tetra_st(st)->sds_text_len = 5;
+    strcpy(tetra_st(st)->sds_text, "HELLO");
+    tetra_st(st)->sds_src = 222;
+    tetra_st(st)->sds_short_valid = 1;
+    tetra_st(st)->sds_short_data = 0xCAFEu;
 
     /* Truncated D-SDS-DATA payload after the source SSI. */
     uint8_t cmce[40];
@@ -96,10 +97,10 @@ test_sds_data_truncation(void) {
     wrap_mle_cmce(cmce, 33, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
 
-    CHECK(st->tetra_sds_text_len == 5, "Prior text_len retained after truncated D-SDS-DATA");
-    CHECK(strcmp(st->tetra_sds_text, "HELLO") == 0, "Prior text retained after truncated D-SDS-DATA");
-    CHECK(st->tetra_sds_src == 222, "Partial source SSI is not published");
-    CHECK(st->tetra_sds_short_valid == 1 && st->tetra_sds_short_data == 0xCAFEu,
+    CHECK(tetra_st(st)->sds_text_len == 5, "Prior text_len retained after truncated D-SDS-DATA");
+    CHECK(strcmp(tetra_st(st)->sds_text, "HELLO") == 0, "Prior text retained after truncated D-SDS-DATA");
+    CHECK(tetra_st(st)->sds_src == 222, "Partial source SSI is not published");
+    CHECK(tetra_st(st)->sds_short_valid == 1 && tetra_st(st)->sds_short_data == 0xCAFEu,
           "Prior short-data state retained after truncation");
 
     free(st);
@@ -130,12 +131,12 @@ test_mac_access_define(void) {
 
     tetra_mac_parse_schd(mac, 25, 0, opt, st);
 
-    CHECK(st->tetra_access_imm == 5, "Extracted immediate");
-    CHECK(st->tetra_access_wait_time == 2, "Extracted wait time");
-    CHECK(st->tetra_access_num_ra == 9, "Extracted num_ra");
-    CHECK(st->tetra_access_frame_len_f == 1, "Extracted frame_len_f");
-    CHECK(st->tetra_access_ts_ptr == 4, "Extracted ts_ptr");
-    CHECK(st->tetra_access_min_pdu_pri == 3, "Extracted min_pdu_pri");
+    CHECK(tetra_st(st)->access_imm == 5, "Extracted immediate");
+    CHECK(tetra_st(st)->access_wait_time == 2, "Extracted wait time");
+    CHECK(tetra_st(st)->access_num_ra == 9, "Extracted num_ra");
+    CHECK(tetra_st(st)->access_frame_len_f == 1, "Extracted frame_len_f");
+    CHECK(tetra_st(st)->access_ts_ptr == 4, "Extracted ts_ptr");
+    CHECK(tetra_st(st)->access_min_pdu_pri == 3, "Extracted min_pdu_pri");
 
     free(st);
     free(opt);
@@ -150,25 +151,25 @@ test_channel_info_fmt(void) {
     dsd_state* st = alloc_state();
 
     /* Base net setup */
-    st->tetra_net_known = 1;
-    st->tetra_mcc = 123;
-    st->tetra_mnc = 45;
-    st->tetra_colour = 6;
-    st->tetra_enc_mode = 0; /* none */
+    tetra_st(st)->net_known = 1;
+    tetra_st(st)->mcc = 123;
+    tetra_st(st)->mnc = 45;
+    tetra_st(st)->colour = 6;
+    tetra_st(st)->enc_mode = 0; /* none */
 
     /* TDMA Phase 75 */
-    st->tetra_tdma_valid = 1;
-    st->tetra_tn = 1;
-    st->tetra_fn = 2;
-    st->tetra_mn = 3;
+    tetra_st(st)->tdma_valid = 1;
+    tetra_st(st)->tn = 1;
+    tetra_st(st)->fn = 2;
+    tetra_st(st)->mn = 3;
 
     /* VC freq Phase 75 */
-    st->tetra_vc_freq_hz = 405125000;
+    tetra_st(st)->vc_freq_hz = 405125000;
 
     /* SDS Text Phase 75 */
-    st->tetra_sds_src = 999;
-    strcpy(st->tetra_sds_text, "TESTMSG");
-    st->tetra_sds_text_len = 7;
+    tetra_st(st)->sds_src = 999;
+    strcpy(tetra_st(st)->sds_text, "TESTMSG");
+    tetra_st(st)->sds_text_len = 7;
 
     char buf[256];
     tetra_channel_info_fmt(st, buf, sizeof(buf));
@@ -178,8 +179,8 @@ test_channel_info_fmt(void) {
     CHECK(strstr(buf, "SDS(999):\"TESTMSG\"") != NULL, "Includes SDS text and src");
 
     /* Clear text to ensure it's not printed when empty */
-    st->tetra_sds_text_len = 0;
-    st->tetra_sds_text[0] = '\0';
+    tetra_st(st)->sds_text_len = 0;
+    tetra_st(st)->sds_text[0] = '\0';
     tetra_channel_info_fmt(st, buf, sizeof(buf));
     CHECK(strstr(buf, "SDS") == NULL, "Omits SDS when empty");
 

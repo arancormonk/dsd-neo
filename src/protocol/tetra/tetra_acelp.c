@@ -31,6 +31,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include "tetra_state.h"
 #endif
 
 /* EN 300 395-2 V1.3.1 Table 4 bit-position tables for TCH/FS — from osmo-tetra tch_reordering.c */
@@ -613,6 +614,7 @@ tetra_acelp_process_tch_half(const uint8_t* type2_bits, int type2_len, dsd_opts*
 static void
 tetra_acelp_process_impl(const uint8_t* type2_bits, int type2_len, int block_idx, int half, dsd_opts* opts,
                          dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     static int warned_gate = 0;
     static int warned_missing_cmd = 0;
     static int warned_open_failed = 0;
@@ -638,7 +640,7 @@ tetra_acelp_process_impl(const uint8_t* type2_bits, int type2_len, int block_idx
     if (!tetra_acelp_slot_gate_passes(block_idx ? block_idx : 1, state)) {
         if (!warned_gate) {
             fprintf(stderr, "[TETRA] audio suppressed by slot gate: grant_valid=%u vc_slot=%u block=%d\n",
-                    state ? (unsigned)state->tetra_tx_granted_valid : 0u, state ? (unsigned)state->tetra_vc_slot : 0u,
+                    state ? (unsigned)ts->tx_granted_valid : 0u, state ? (unsigned)ts->vc_slot : 0u,
                     block_idx ? block_idx : 1);
             warned_gate = 1;
         }
@@ -667,8 +669,8 @@ tetra_acelp_process_impl(const uint8_t* type2_bits, int type2_len, int block_idx
     /* —— Step 2: vocoder + audio routing for each frame —— */
     if (!voc_ensure_open()) {
         if (s_voc_status == TETRA_VOC_STATUS_MISSING_CMD) {
-            if (state) {
-                state->tetra_vocoder_status = TETRA_VOCODER_STATUS_COMMAND_MISSING;
+            if (ts) {
+                ts->vocoder_status = TETRA_VOCODER_STATUS_COMMAND_MISSING;
             }
             if (!warned_missing_cmd) {
                 fprintf(stderr, "[TETRA] audio disabled: TETRA_VOCODER_CMD is not set. "
@@ -676,9 +678,9 @@ tetra_acelp_process_impl(const uint8_t* type2_bits, int type2_len, int block_idx
                 warned_missing_cmd = 1;
             }
         } else if (s_voc_status == TETRA_VOC_STATUS_OPEN_FAILED) {
-            if (state) {
-                state->tetra_vocoder_status = TETRA_VOCODER_STATUS_START_FAILED;
-                state->tetra_vocoder_errors++;
+            if (ts) {
+                ts->vocoder_status = TETRA_VOCODER_STATUS_START_FAILED;
+                ts->vocoder_errors++;
             }
             if (!warned_open_failed) {
                 const char* cmd = getenv("TETRA_VOCODER_CMD");
@@ -690,8 +692,8 @@ tetra_acelp_process_impl(const uint8_t* type2_bits, int type2_len, int block_idx
         return;
     }
 
-    if (state) {
-        state->tetra_vocoder_status = TETRA_VOCODER_STATUS_READY;
+    if (ts) {
+        ts->vocoder_status = TETRA_VOCODER_STATUS_READY;
     }
 
     if (!tetra_has_any_audio_sink(opts)) {
@@ -729,18 +731,18 @@ tetra_acelp_process_impl(const uint8_t* type2_bits, int type2_len, int block_idx
         memset(pcm, 0, sizeof(pcm));
         int nsamples = voc_send_recv(frame, TETRA_TCH_FRAME_BITS, pcm, TETRA_TCH_FRAME_SAMPLES);
         if (nsamples != TETRA_TCH_FRAME_SAMPLES) {
-            if (state) {
-                state->tetra_vocoder_status =
+            if (ts) {
+                ts->vocoder_status =
                     s_voc_last_timeout ? TETRA_VOCODER_STATUS_TIMEOUT : TETRA_VOCODER_STATUS_SHORT_OUTPUT;
-                state->tetra_vocoder_errors++;
+                ts->vocoder_errors++;
             }
             fprintf(stderr, "[TETRA] vocoder returned a short PCM frame (%d/%d samples); resetting\n", nsamples,
                     TETRA_TCH_FRAME_SAMPLES);
             tetra_vocoder_close();
             return;
         }
-        if (state) {
-            state->tetra_vocoder_frames++;
+        if (ts) {
+            ts->vocoder_frames++;
         }
 
         /* —— Step 3: audio routing (same pattern as M17 / Codec2) —— */

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 /* -----------------------------------------------------------------------
  * Test infrastructure
@@ -102,7 +103,7 @@ make_pair(dsd_opts** opts_out, dsd_state** state_out) {
     opts->trunk_enable = 1;
     opts->trunk_hangtime = 5.0f;       /* 5 second hangtime */
     state->trunk_cc_freq = 380000000L; /* 380 MHz CC */
-    state->tetra_dl_carrier_hz = state->trunk_cc_freq;
+    tetra_st(state)->dl_carrier_hz = state->trunk_cc_freq;
     state->samplesPerSymbol = 10;
     *opts_out = opts;
     *state_out = state;
@@ -124,7 +125,7 @@ test_grant_tunes(void) {
     CHECK(g_tune_calls == 1, "tune hook must be called once on grant");
     CHECK(g_tuned_freq == 390000000L, "tuned to correct VC frequency");
     CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "SM must be TUNED");
-    CHECK(state->tetra_trunk_state == TETRA_SM_TUNED, "snapshot state must mirror TUNED");
+    CHECK(tetra_st(state)->trunk_state == TETRA_SM_TUNED, "snapshot state must mirror TUNED");
     free(opts);
     free(state);
     fprintf(stderr, "  PASS test_grant_tunes\n");
@@ -264,7 +265,7 @@ test_cc_sync_transitions_state(void) {
     CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "SM starts IDLE");
     tetra_sm_on_cc_sync(opts, state);
     CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "SM transitions to ON_CC after cc_sync");
-    CHECK(state->tetra_trunk_state == TETRA_SM_ON_CC, "snapshot state must mirror ON_CC");
+    CHECK(tetra_st(state)->trunk_state == TETRA_SM_ON_CC, "snapshot state must mirror ON_CC");
     /* subsequent cc_sync while ON_CC must keep ON_CC state */
     tetra_sm_on_cc_sync(opts, state);
     CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "SM stays ON_CC on repeated cc_sync");
@@ -290,35 +291,36 @@ test_external_return_clears_traffic_state(void) {
     reset_counters();
     tetra_sm_init();
     tetra_sm_on_grant(opts, state, 390000000L, 8);
-    state->tetra_call_active = 1;
-    state->tetra_tx_granted_valid = 1;
-    state->tetra_tx_granted_ssi = 0x112233u;
-    state->tetra_cmce_tx_granted_party_type_valid = 1;
-    state->tetra_tx_event_party_ssi_valid = 1;
-    state->tetra_tx_continue = state->tetra_tx_interrupted = state->tetra_tx_wait = 1;
-    state->tetra_vc_assignment_valid = 1;
-    state->tetra_vc_assignment_type = 2;
-    state->tetra_vc_timeslot_bitmap = state->tetra_vc_slot = 8;
-    state->tetra_vc_carrier = 12;
-    state->tetra_vc_freq_hz = 390000000L;
+    tetra_st(state)->call_active = 1;
+    tetra_st(state)->tx_granted_valid = 1;
+    tetra_st(state)->tx_granted_ssi = 0x112233u;
+    tetra_st(state)->cmce_tx_granted_party_type_valid = 1;
+    tetra_st(state)->tx_event_party_ssi_valid = 1;
+    tetra_st(state)->tx_continue = tetra_st(state)->tx_interrupted = tetra_st(state)->tx_wait = 1;
+    tetra_st(state)->vc_assignment_valid = 1;
+    tetra_st(state)->vc_assignment_type = 2;
+    tetra_st(state)->vc_timeslot_bitmap = tetra_st(state)->vc_slot = 8;
+    tetra_st(state)->vc_carrier = 12;
+    tetra_st(state)->vc_freq_hz = 390000000L;
     reset_counters();
     tetra_sm_on_external_cc_return(state);
     CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "external return reconciles SM");
-    CHECK(state->tetra_trunk_state == TETRA_SM_ON_CC, "external return mirrors ON_CC");
+    CHECK(tetra_st(state)->trunk_state == TETRA_SM_ON_CC, "external return mirrors ON_CC");
     CHECK(g_tune_calls == 0 && g_release_calls == 0, "external return issues no tuner request");
-    CHECK(!state->tetra_call_active && !state->tetra_tx_granted_valid, "external return clears call and floor grant");
-    CHECK(!state->tetra_tx_granted_ssi && !state->tetra_cmce_tx_granted_party_type_valid
-              && !state->tetra_tx_event_party_ssi_valid,
+    CHECK(!tetra_st(state)->call_active && !tetra_st(state)->tx_granted_valid,
+          "external return clears call and floor grant");
+    CHECK(!tetra_st(state)->tx_granted_ssi && !tetra_st(state)->cmce_tx_granted_party_type_valid
+              && !tetra_st(state)->tx_event_party_ssi_valid,
           "external return clears floor-control identities");
-    CHECK(!state->tetra_tx_continue && !state->tetra_tx_interrupted && !state->tetra_tx_wait,
+    CHECK(!tetra_st(state)->tx_continue && !tetra_st(state)->tx_interrupted && !tetra_st(state)->tx_wait,
           "external return clears floor events");
-    CHECK(!state->tetra_vc_assignment_valid && !state->tetra_vc_timeslot_bitmap && !state->tetra_vc_freq_hz
-              && !state->tetra_vc_carrier,
+    CHECK(!tetra_st(state)->vc_assignment_valid && !tetra_st(state)->vc_timeslot_bitmap && !tetra_st(state)->vc_freq_hz
+              && !tetra_st(state)->vc_carrier,
           "external return clears traffic allocation");
     state->trunk_cc_freq = 0;
     tetra_sm_on_external_cc_return(state);
     CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "traffic end without a usable CC returns SM to IDLE");
-    CHECK(state->tetra_trunk_state == TETRA_SM_IDLE, "missing CC mirrors IDLE");
+    CHECK(tetra_st(state)->trunk_state == TETRA_SM_IDLE, "missing CC mirrors IDLE");
     free(opts);
     free(state);
 }
@@ -381,13 +383,13 @@ test_active_call_suspends_hangtime(void) {
     tetra_sm_init();
 
     tetra_sm_on_grant(opts, state, 390000000L, 1);
-    state->tetra_call_active = 1;
+    tetra_st(state)->call_active = 1;
     tetra_sm_tick(opts, state);
 
     CHECK(g_release_calls == 0, "active call must suspend the idle hangtime");
     CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "active call must remain tuned after hangtime would expire");
 
-    state->tetra_call_active = 0;
+    tetra_st(state)->call_active = 0;
     tetra_sm_tick(opts, state);
     CHECK(g_release_calls == 1, "hangtime must resume after the call becomes inactive");
     CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "inactive call must return to CC after hangtime");
@@ -412,7 +414,7 @@ test_disable_while_tuned_returns_to_cc(void) {
     tetra_sm_tick(opts, state);
     CHECK(g_release_calls == 1, "disabling trunking while tuned must request return to CC");
     CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "successful disabled cleanup must finish IDLE");
-    CHECK(state->tetra_trunk_state == TETRA_SM_IDLE, "disabled cleanup snapshot must mirror IDLE");
+    CHECK(tetra_st(state)->trunk_state == TETRA_SM_IDLE, "disabled cleanup snapshot must mirror IDLE");
 
     free(opts);
     free(state);

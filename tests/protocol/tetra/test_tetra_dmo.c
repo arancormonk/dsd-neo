@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_fail = 0;
 
@@ -109,30 +110,31 @@ main(void) {
     from_string(k_sch_s, bits);
     tetra_dmo_parse_sync_s(bits, &s);
     tetra_dmo_apply_sync(&state, &s, &h);
-    CHECK(state.tetra_dmo == 1 && state.tetra_dmo_dcc_valid == 1, "DSB switches to DMO and learns the DCC");
-    CHECK(state.tetra_dmo_dcc_seed == 0xE4000193u && state.tetra_dmo_slot == 1 && state.tetra_dmo_frame == 3,
+    CHECK(tetra_st(&state)->dmo == 1 && tetra_st(&state)->dmo_dcc_valid == 1, "DSB switches to DMO and learns the DCC");
+    CHECK(tetra_st(&state)->dmo_dcc_seed == 0xE4000193u && tetra_st(&state)->dmo_slot == 1
+              && tetra_st(&state)->dmo_frame == 3,
           "DMO clock and seed stored");
 
     h.msg_type = TETRA_DMO_MSG_TX_CEASED;
     tetra_dmo_apply_sync(&state, &s, &h);
-    CHECK(state.tetra_dmo_dcc_valid == 0, "DM-TX CEASED invalidates the colour code");
+    CHECK(tetra_st(&state)->dmo_dcc_valid == 0, "DM-TX CEASED invalidates the colour code");
 
     h.msg_type = TETRA_DMO_MSG_SETUP;
     s.enc_state = 1;
     tetra_dmo_apply_sync(&state, &s, &h);
-    CHECK(state.tetra_dmo_dcc_valid == 0, "encrypted (DM-2-C) call cannot use a clear colour code");
+    CHECK(tetra_st(&state)->dmo_dcc_valid == 0, "encrypted (DM-2-C) call cannot use a clear colour code");
 
     /* Fragmented short data: SCH/F fragments use the colour code of the DMAC-SYNC that started them. */
     s.enc_state = 0;
     h.msg_type = TETRA_DMO_MSG_SDS_DATA;
     h.frag_flag = 1;
     tetra_dmo_apply_sync(&state, &s, &h);
-    CHECK(state.tetra_dmo_dcc_valid == 1 && state.tetra_dmo_dcc_seed == 0xE4000193u,
+    CHECK(tetra_st(&state)->dmo_dcc_valid == 1 && tetra_st(&state)->dmo_dcc_seed == 0xE4000193u,
           "fragmented DM-SDS DATA learns the colour code for its SCH/F");
     h.frag_flag = 0;
-    state.tetra_dmo_dcc_valid = 0;
+    tetra_st(&state)->dmo_dcc_valid = 0;
     tetra_dmo_apply_sync(&state, &s, &h);
-    CHECK(state.tetra_dmo_dcc_valid == 0, "unfragmented DM-SDS does not change the colour code");
+    CHECK(tetra_st(&state)->dmo_dcc_valid == 0, "unfragmented DM-SDS does not change the colour code");
 
     /* DM-REP presence signal: SCH/S layout differs from DMAC-SYNC, and SCH/H
      * carries the repeater address rather than a call. It must not invent a DCC. */
@@ -186,10 +188,10 @@ main(void) {
         CHECK(pres.repeater == 17 && pres.mni == 0xBC4939u && pres.two_freq == 1 && pres.spacing == 8
                   && pres.reverse == 1,
               "repeater address, MNI and 45 MHz reverse duplex");
-        kept = state.tetra_dmo_dcc_seed;
-        state.tetra_dmo_dcc_valid = 1;
+        kept = tetra_st(&state)->dmo_dcc_seed;
+        tetra_st(&state)->dmo_dcc_valid = 1;
         tetra_dmo_apply_sync(&state, &s, NULL);
-        CHECK(state.tetra_dmo_dcc_valid == 1 && state.tetra_dmo_dcc_seed == kept,
+        CHECK(tetra_st(&state)->dmo_dcc_valid == 1 && tetra_st(&state)->dmo_dcc_seed == kept,
               "presence signal does not replace the call colour code");
         CHECK(tetra_dmo_describe_presence(&pres, desc, (int)sizeof(desc)) > 0 && strstr(desc, "uplink=-45.000") != NULL,
               "presence summary names the uplink offset");
@@ -227,7 +229,7 @@ main(void) {
         gw_seed = tetra_dmo_dcc_seed(0x155u, 100u);
         CHECK(gw_seed == 0x54000193u && gw_seed != 0xE4000193u, "gateway colour code ignores the MNI");
         tetra_dmo_apply_sync(&state, &s, &h);
-        CHECK(state.tetra_dmo_dcc_valid == 1 && state.tetra_dmo_dcc_seed == gw_seed,
+        CHECK(tetra_st(&state)->dmo_dcc_valid == 1 && tetra_st(&state)->dmo_dcc_seed == gw_seed,
               "gateway DM-OCCUPIED learns the gateway colour code");
 
         /* Both addresses pseudo: the MNI is absent and the message type follows the source. */
@@ -307,8 +309,8 @@ main(void) {
         uint8_t gh[124];
         int at;
         char desc[120];
-        uint32_t kept = state.tetra_dmo_dcc_seed;
-        state.tetra_dmo_dcc_valid = 1;
+        uint32_t kept = tetra_st(&state)->dmo_dcc_seed;
+        tetra_st(&state)->dmo_dcc_valid = 1;
 
         at = sync_h_header(gh, TETRA_DMO_MSG_SETUP_PRES);
         put_bits(gh, &at, 3, 0);
@@ -333,7 +335,7 @@ main(void) {
                   && strstr(desc, "prio=high") != NULL,
               "DM-SETUP PRES summary");
         tetra_dmo_apply_sync(&state, &s, &h);
-        CHECK(state.tetra_dmo_dcc_valid == 1 && state.tetra_dmo_dcc_seed == kept,
+        CHECK(tetra_st(&state)->dmo_dcc_valid == 1 && tetra_st(&state)->dmo_dcc_seed == kept,
               "DM-SETUP PRES does not replace the colour code");
 
         at = sync_h_header(gh, TETRA_DMO_MSG_CONNECT);
@@ -351,7 +353,7 @@ main(void) {
                   && strstr(desc, "rejected by called party") != NULL,
               "DM-DISCONNECT summary");
         tetra_dmo_apply_sync(&state, &s, &h);
-        CHECK(state.tetra_dmo_dcc_valid == 0, "DM-DISCONNECT invalidates the colour code");
+        CHECK(tetra_st(&state)->dmo_dcc_valid == 0, "DM-DISCONNECT invalidates the colour code");
 
         at = sync_h_header(gh, TETRA_DMO_MSG_TX_REQUEST);
         put_bits(gh, &at, 1, 1);
@@ -436,9 +438,9 @@ main(void) {
         uint32_t kept;
         s.comm_type = 2;
         s.enc_state = 0;
-        state.tetra_dmo_dcc_valid = 1;
-        state.tetra_dmo_dcc_seed = 1;
-        kept = state.tetra_dmo_dcc_seed;
+        tetra_st(&state)->dmo_dcc_valid = 1;
+        tetra_st(&state)->dmo_dcc_seed = 1;
+        kept = tetra_st(&state)->dmo_dcc_seed;
 
         at = 0;
         memset(gh, 0, sizeof(gh));
@@ -471,7 +473,7 @@ main(void) {
                   && strstr(desc, "MNI=753/2361") != NULL && strstr(desc, "area=all") != NULL,
               "DM-GSETUP summary");
         tetra_dmo_apply_sync(&state, &s, &h);
-        CHECK(state.tetra_dmo_dcc_valid == 1 && state.tetra_dmo_dcc_seed == kept,
+        CHECK(tetra_st(&state)->dmo_dcc_valid == 1 && tetra_st(&state)->dmo_dcc_seed == kept,
               "unfragmented DM-GSETUP does not replace the colour code");
 
         at = 0;
@@ -500,7 +502,7 @@ main(void) {
         CHECK(tetra_dmo_parse_sync_h(gh, 2, &h) == 1 && h.frag_flag == 1 && h.called_tsi == 0 && h.called_ssi == 50,
               "fragmented DM-GSETUP");
         tetra_dmo_apply_sync(&state, &s, &h);
-        CHECK(state.tetra_dmo_dcc_valid == 1 && state.tetra_dmo_dcc_seed == 0x54000193u,
+        CHECK(tetra_st(&state)->dmo_dcc_valid == 1 && tetra_st(&state)->dmo_dcc_seed == 0x54000193u,
               "fragmented DM-GSETUP learns the gateway colour code");
 
         at = 0;
@@ -519,7 +521,7 @@ main(void) {
         CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) > 0 && strstr(desc, "TMO resource lost") != NULL,
               "DM-GRELEASE summary");
         tetra_dmo_apply_sync(&state, &s, &h);
-        CHECK(state.tetra_dmo_dcc_valid == 0, "DM-GRELEASE invalidates the colour code");
+        CHECK(tetra_st(&state)->dmo_dcc_valid == 0, "DM-GRELEASE invalidates the colour code");
 
         at = 0;
         memset(gh, 0, sizeof(gh));
@@ -583,9 +585,9 @@ main(void) {
         int at;
         char desc[160];
         uint32_t kept;
-        state.tetra_dmo_dcc_valid = 1;
-        state.tetra_dmo_dcc_seed = 0xE4000193u;
-        kept = state.tetra_dmo_dcc_seed;
+        tetra_st(&state)->dmo_dcc_valid = 1;
+        tetra_st(&state)->dmo_dcc_seed = 0xE4000193u;
+        kept = tetra_st(&state)->dmo_dcc_seed;
         s.comm_type = 0;
         s.enc_state = 0;
 
@@ -626,7 +628,7 @@ main(void) {
                   && strstr(state.tetra_messages[0].text, "ext=*123") != NULL,
               "DM-SDS is queued once for the terminal");
         tetra_dmo_apply_sync(&state, &s, &h);
-        CHECK(state.tetra_dmo_dcc_valid == 1 && state.tetra_dmo_dcc_seed == kept,
+        CHECK(tetra_st(&state)->dmo_dcc_valid == 1 && tetra_st(&state)->dmo_dcc_seed == kept,
               "unfragmented DM-SDS UDATA keeps the colour code");
 
         at = 0;
@@ -645,7 +647,7 @@ main(void) {
                   && strstr(desc, "timing=+10 symbols") != NULL,
               "DM-TIMING REQUEST summary");
         tetra_dmo_apply_sync(&state, &s, &h);
-        CHECK(state.tetra_dmo_dcc_valid == 1 && state.tetra_dmo_dcc_seed == kept,
+        CHECK(tetra_st(&state)->dmo_dcc_valid == 1 && tetra_st(&state)->dmo_dcc_seed == kept,
               "DM-TIMING REQUEST does not replace the colour code");
 
         at = 0;
@@ -687,38 +689,38 @@ main(void) {
         memset(&mode_state, 0, sizeof(mode_state));
         CHECK(tetra_dmo_format_mode(&mode_state, mode, (int)sizeof(mode)) > 0 && strcmp(mode, "TMO downlink") == 0,
               "default working mode is TMO downlink");
-        mode_state.tetra_net_known = 1;
-        mode_state.tetra_mcc = 86;
-        mode_state.tetra_mnc = 28;
-        mode_state.tetra_colour = 0x19;
+        tetra_st(&mode_state)->net_known = 1;
+        tetra_st(&mode_state)->mcc = 86;
+        tetra_st(&mode_state)->mnc = 28;
+        tetra_st(&mode_state)->colour = 0x19;
         CHECK(tetra_dmo_format_mode(&mode_state, mode, (int)sizeof(mode)) > 0 && strstr(mode, "TMO downlink") != NULL
                   && strstr(mode, "MCC=86") != NULL && strstr(mode, "CC=0x19") != NULL,
               "TMO downlink names the network");
-        mode_state.tetra_enc_mode = 1;
+        tetra_st(&mode_state)->enc_mode = 1;
         CHECK(tetra_dmo_format_mode(&mode_state, mode, (int)sizeof(mode)) > 0 && strstr(mode, "encrypted") != NULL
                   && strstr(mode, "TEA") == NULL,
               "encrypted trunked call without a KSG stays unnamed");
         tetra_air_ksg_remember(&mode_state, 86, 28, 1);
         CHECK(tetra_dmo_format_mode(&mode_state, mode, (int)sizeof(mode)) > 0 && strstr(mode, "TEA2") != NULL,
               "remembered KSG is shown beside the working mode");
-        mode_state.tetra_enc_mode = 0;
-        mode_state.tetra_uplink = 1;
-        mode_state.tetra_cb = 1;
+        tetra_st(&mode_state)->enc_mode = 0;
+        tetra_st(&mode_state)->uplink = 1;
+        mode_state.tetra_sync.cb = 1;
         CHECK(tetra_dmo_format_mode(&mode_state, mode, (int)sizeof(mode)) > 0
                   && strstr(mode, "TMO uplink control") != NULL,
               "TMO uplink control working mode");
-        mode_state.tetra_dmo = 1;
-        mode_state.tetra_dmo_comm_type = 0;
-        mode_state.tetra_dmo_ab_usage = 0;
-        mode_state.tetra_dmo_enc_state = 0;
-        mode_state.tetra_dmo_slot = 1;
-        mode_state.tetra_dmo_frame = 3;
+        tetra_st(&mode_state)->dmo = 1;
+        tetra_st(&mode_state)->dmo_comm_type = 0;
+        tetra_st(&mode_state)->dmo_ab_usage = 0;
+        tetra_st(&mode_state)->dmo_enc_state = 0;
+        tetra_st(&mode_state)->dmo_slot = 1;
+        tetra_st(&mode_state)->dmo_frame = 3;
         CHECK(tetra_dmo_format_mode(&mode_state, mode, (int)sizeof(mode)) > 0 && strstr(mode, "DMO direct") != NULL
                   && strstr(mode, "ch A") != NULL && strstr(mode, "clear") != NULL && strstr(mode, "slot 1") != NULL
                   && strstr(mode, "TEA") == NULL,
               "DMO direct working mode");
-        mode_state.tetra_dmo_comm_type = 2;
-        mode_state.tetra_dmo_enc_state = 1;
+        tetra_st(&mode_state)->dmo_comm_type = 2;
+        tetra_st(&mode_state)->dmo_enc_state = 1;
         CHECK(tetra_dmo_format_mode(&mode_state, mode, (int)sizeof(mode)) > 0 && strstr(mode, "DMO gateway") != NULL
                   && strstr(mode, "encrypted") != NULL,
               "DMO gateway working mode");

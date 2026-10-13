@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 /* -----------------------------------------------------------------------
  * Minimal helpers
@@ -94,9 +95,9 @@ test_standard_mm_pdus(void) {
 
     /* A bare PDU type is not a valid EN 300 392-7 D-DISABLE command. */
     pack_bits(bits, 0, TETRA_MM_D_DISABLE, 4);
-    state->tetra_ms_enabled = 1;
+    tetra_st(state)->ms_enabled = 1;
     tetra_mm_dispatch(bits, 4, 1, opts, state);
-    CHECK(state->tetra_ms_enabled == 1 && !state->tetra_mm_enable_disable_valid,
+    CHECK(tetra_st(state)->ms_enabled == 1 && !tetra_st(state)->mm_enable_disable_valid,
           "truncated D-DISABLE cannot change state");
 
     /* Table A.31: permanent equipment and subscription disable with a
@@ -134,25 +135,26 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, eo, 0, 1);
     eo++; /* terminating proprietary M-bit */
     tetra_mm_dispatch(bits, eo, 1, opts, state);
-    CHECK(state->tetra_ms_enabled == 0 && state->tetra_mm_enable_disable_valid, "complete D-DISABLE changes state");
-    CHECK(!state->tetra_mm_enable_disable_is_enable && state->tetra_mm_enable_disable_intent
-              && state->tetra_mm_disable_permanent,
+    CHECK(tetra_st(state)->ms_enabled == 0 && tetra_st(state)->mm_enable_disable_valid,
+          "complete D-DISABLE changes state");
+    CHECK(!tetra_st(state)->mm_enable_disable_is_enable && tetra_st(state)->mm_enable_disable_intent
+              && tetra_st(state)->mm_disable_permanent,
           "D-DISABLE command flags retained");
-    CHECK(state->tetra_mm_enable_disable_equipment
-              && state->tetra_mm_enable_disable_tei == UINT64_C(0x0ABCDEFA12345678),
+    CHECK(tetra_st(state)->mm_enable_disable_equipment
+              && tetra_st(state)->mm_enable_disable_tei == UINT64_C(0x0ABCDEFA12345678),
           "D-DISABLE 60-bit TEI retained");
-    CHECK(state->tetra_mm_enable_disable_subscription && state->tetra_mm_enable_disable_mcc == 460
-              && state->tetra_mm_enable_disable_mnc == 4242 && state->tetra_mm_enable_disable_ssi == 0x654321,
+    CHECK(tetra_st(state)->mm_enable_disable_subscription && tetra_st(state)->mm_enable_disable_mcc == 460
+              && tetra_st(state)->mm_enable_disable_mnc == 4242 && tetra_st(state)->mm_enable_disable_ssi == 0x654321,
           "D-DISABLE subscription identity retained");
-    CHECK(state->tetra_mm_enable_disable_auth_valid && state->tetra_mm_enable_disable_auth_challenge[0] == 0x80
-              && state->tetra_mm_enable_disable_auth_challenge[19] == 0x93,
+    CHECK(tetra_st(state)->mm_enable_disable_auth_valid && tetra_st(state)->mm_enable_disable_auth_challenge[0] == 0x80
+              && tetra_st(state)->mm_enable_disable_auth_challenge[19] == 0x93,
           "D-DISABLE authentication challenge retained");
 
     /* A missing M-bit must preserve the last complete snapshot and enabled state. */
-    state->tetra_ms_enabled = 1;
-    state->tetra_mm_enable_disable_ssi = 0x777777;
+    tetra_st(state)->ms_enabled = 1;
+    tetra_st(state)->mm_enable_disable_ssi = 0x777777;
     tetra_mm_dispatch(bits, eo - 1, 1, opts, state);
-    CHECK(state->tetra_ms_enabled == 1 && state->tetra_mm_enable_disable_ssi == 0x777777,
+    CHECK(tetra_st(state)->ms_enabled == 1 && tetra_st(state)->mm_enable_disable_ssi == 0x777777,
           "truncated D-DISABLE is atomic");
 
     /* Minimal table A.32 D-ENABLE, with neither conditional identity. */
@@ -169,10 +171,11 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, eo, 0, 1);
     eo++; /* O-bit */
     tetra_mm_dispatch(bits, eo, 1, opts, state);
-    CHECK(state->tetra_ms_enabled == 1 && state->tetra_mm_enable_disable_is_enable, "complete D-ENABLE changes state");
-    CHECK(!state->tetra_mm_enable_disable_equipment && !state->tetra_mm_enable_disable_subscription
-              && !state->tetra_mm_enable_disable_auth_valid && state->tetra_mm_enable_disable_tei == 0
-              && state->tetra_mm_enable_disable_ssi == 0,
+    CHECK(tetra_st(state)->ms_enabled == 1 && tetra_st(state)->mm_enable_disable_is_enable,
+          "complete D-ENABLE changes state");
+    CHECK(!tetra_st(state)->mm_enable_disable_equipment && !tetra_st(state)->mm_enable_disable_subscription
+              && !tetra_st(state)->mm_enable_disable_auth_valid && tetra_st(state)->mm_enable_disable_tei == 0
+              && tetra_st(state)->mm_enable_disable_ssi == 0,
           "D-ENABLE clears absent conditional fields");
 
     /* ETSI EN 300 392-2 V3.8.1, Annex E.1.3 table E.10. */
@@ -181,7 +184,8 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, 4, 6, 3);
     pack_bits(bits, 7, 0, 1); /* no optional elements */
     tetra_mm_dispatch(bits, 8, 1, opts, state);
-    CHECK(state->tetra_mm_lu_accept_valid == 1 && state->tetra_mm_lu_accept_type == 6, "LU accept mandatory type");
+    CHECK(tetra_st(state)->mm_lu_accept_valid == 1 && tetra_st(state)->mm_lu_accept_type == 6,
+          "LU accept mandatory type");
 
     memset(bits, 0, sizeof bits);
     pack_bits(bits, 0, TETRA_MM_D_LOCATION_UPDATING_ACCEPT, 4);
@@ -211,19 +215,22 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, ao, 0, 1);
     ao += 1; /* terminating M-bit */
     tetra_mm_dispatch(bits, ao, 1, opts, state);
-    CHECK(state->tetra_mm_lu_accept_valid == 1 && state->tetra_mm_lu_accept_type == 2,
+    CHECK(tetra_st(state)->mm_lu_accept_valid == 1 && tetra_st(state)->mm_lu_accept_type == 2,
           "LU accept with Type 2 elements");
-    CHECK(state->tetra_mm_lu_accept_ssi_valid == 1 && state->tetra_mm_lu_accept_ssi == 0x123456, "LU accept SSI");
-    CHECK(state->tetra_mm_lu_accept_address_ext_valid == 1 && state->tetra_mm_lu_accept_mcc == 460
-              && state->tetra_mm_lu_accept_mnc == 4242,
+    CHECK(tetra_st(state)->mm_lu_accept_ssi_valid == 1 && tetra_st(state)->mm_lu_accept_ssi == 0x123456,
+          "LU accept SSI");
+    CHECK(tetra_st(state)->mm_lu_accept_address_ext_valid == 1 && tetra_st(state)->mm_lu_accept_mcc == 460
+              && tetra_st(state)->mm_lu_accept_mnc == 4242,
           "LU accept address extension");
-    CHECK(state->tetra_mm_lu_accept_subscriber_class_valid == 1 && state->tetra_mm_lu_accept_subscriber_class == 0xBEEF,
+    CHECK(tetra_st(state)->mm_lu_accept_subscriber_class_valid == 1
+              && tetra_st(state)->mm_lu_accept_subscriber_class == 0xBEEF,
           "LU accept subscriber class");
-    CHECK(state->tetra_mm_lu_accept_energy_saving_valid == 0, "LU accept absent energy saving");
-    CHECK(state->tetra_mm_lu_accept_scch_valid == 1 && state->tetra_mm_lu_accept_scch == 0x2D, "LU accept SCCH");
-    state->tetra_mm_lu_accept_valid = 0;
+    CHECK(tetra_st(state)->mm_lu_accept_energy_saving_valid == 0, "LU accept absent energy saving");
+    CHECK(tetra_st(state)->mm_lu_accept_scch_valid == 1 && tetra_st(state)->mm_lu_accept_scch == 0x2D,
+          "LU accept SCCH");
+    tetra_st(state)->mm_lu_accept_valid = 0;
     tetra_mm_dispatch(bits, ao - 1, 1, opts, state);
-    CHECK(state->tetra_mm_lu_accept_valid == 0, "truncated LU accept stays invalid");
+    CHECK(tetra_st(state)->mm_lu_accept_valid == 0, "truncated LU accept stays invalid");
 
     /* Table 16.12: type(4), group-report(1), cipher-control(1), params(10). */
     pack_bits(bits, 0, TETRA_MM_D_LOCATION_UPDATING_COMMAND, 4);
@@ -236,17 +243,18 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, 28, 4242, 14);
     pack_bits(bits, 42, 0, 1); /* terminating M-bit */
     tetra_mm_dispatch(bits, 43, 1, opts, state);
-    CHECK(state->tetra_mm_lu_command_valid == 1, "LU command becomes valid");
-    CHECK(state->tetra_mm_lu_command_group_report == 1, "LU command group report");
-    CHECK(state->tetra_mm_lu_command_cipher_control == 1, "LU command cipher control");
-    CHECK(state->tetra_mm_lu_command_cipher_params == 0x2AA, "LU command cipher parameters");
-    CHECK(state->tetra_mm_lu_command_address_ext_valid == 1, "LU command address extension");
-    CHECK(state->tetra_mm_lu_command_mcc == 460 && state->tetra_mm_lu_command_mnc == 4242, "LU command MCC/MNC");
+    CHECK(tetra_st(state)->mm_lu_command_valid == 1, "LU command becomes valid");
+    CHECK(tetra_st(state)->mm_lu_command_group_report == 1, "LU command group report");
+    CHECK(tetra_st(state)->mm_lu_command_cipher_control == 1, "LU command cipher control");
+    CHECK(tetra_st(state)->mm_lu_command_cipher_params == 0x2AA, "LU command cipher parameters");
+    CHECK(tetra_st(state)->mm_lu_command_address_ext_valid == 1, "LU command address extension");
+    CHECK(tetra_st(state)->mm_lu_command_mcc == 460 && tetra_st(state)->mm_lu_command_mnc == 4242,
+          "LU command MCC/MNC");
 
     /* A declared cipher parameter block must be complete before publication. */
-    state->tetra_mm_lu_command_valid = 0;
+    tetra_st(state)->mm_lu_command_valid = 0;
     tetra_mm_dispatch(bits, 42, 1, opts, state);
-    CHECK(state->tetra_mm_lu_command_valid == 0, "truncated LU command stays invalid");
+    CHECK(tetra_st(state)->mm_lu_command_valid == 0, "truncated LU command stays invalid");
 
     memset(bits, 0, sizeof bits);
     pack_bits(bits, 0, TETRA_MM_D_LOCATION_UPDATING_REJECT, 4);
@@ -260,17 +268,17 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, 35, 4242, 14);
     pack_bits(bits, 49, 0, 1); /* terminating M-bit */
     tetra_mm_dispatch(bits, 50, 1, opts, state);
-    CHECK(state->tetra_mm_lu_reject_valid == 1, "LU reject becomes valid");
-    CHECK(state->tetra_mm_lu_reject_cause == 17, "LU reject uses 5-bit cause");
-    CHECK(state->tetra_mm_lu_reject_type == 3, "LU reject update type");
-    CHECK(state->tetra_mm_lu_reject_cipher_control == 1, "LU reject cipher control");
-    CHECK(state->tetra_mm_lu_reject_cipher_params == 0x155, "LU reject cipher parameters");
-    CHECK(state->tetra_mm_lu_reject_address_ext_valid == 1 && state->tetra_mm_lu_reject_mcc == 460
-              && state->tetra_mm_lu_reject_mnc == 4242,
+    CHECK(tetra_st(state)->mm_lu_reject_valid == 1, "LU reject becomes valid");
+    CHECK(tetra_st(state)->mm_lu_reject_cause == 17, "LU reject uses 5-bit cause");
+    CHECK(tetra_st(state)->mm_lu_reject_type == 3, "LU reject update type");
+    CHECK(tetra_st(state)->mm_lu_reject_cipher_control == 1, "LU reject cipher control");
+    CHECK(tetra_st(state)->mm_lu_reject_cipher_params == 0x155, "LU reject cipher parameters");
+    CHECK(tetra_st(state)->mm_lu_reject_address_ext_valid == 1 && tetra_st(state)->mm_lu_reject_mcc == 460
+              && tetra_st(state)->mm_lu_reject_mnc == 4242,
           "LU reject address extension");
-    state->tetra_mm_lu_reject_valid = 0;
+    tetra_st(state)->mm_lu_reject_valid = 0;
     tetra_mm_dispatch(bits, 49, 1, opts, state);
-    CHECK(state->tetra_mm_lu_reject_valid == 0, "truncated LU reject stays invalid");
+    CHECK(tetra_st(state)->mm_lu_reject_valid == 0, "truncated LU reject stays invalid");
 
     memset(bits, 0, sizeof bits);
     pack_bits(bits, 0, TETRA_MM_D_LOCATION_UPDATING_PROCEEDING, 4);
@@ -278,12 +286,12 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, 28, 0xABCDEF, 24);
     pack_bits(bits, 52, 0, 1); /* O-bit */
     tetra_mm_dispatch(bits, 53, 1, opts, state);
-    CHECK(state->tetra_mm_lu_proceeding_valid == 1, "LU proceeding becomes valid");
-    CHECK(state->tetra_mm_lu_proceeding_ssi == 0x123456, "LU proceeding SSI");
-    CHECK(state->tetra_mm_lu_proceeding_mni == 0xABCDEF, "LU proceeding MNI");
-    state->tetra_mm_lu_proceeding_valid = 0;
+    CHECK(tetra_st(state)->mm_lu_proceeding_valid == 1, "LU proceeding becomes valid");
+    CHECK(tetra_st(state)->mm_lu_proceeding_ssi == 0x123456, "LU proceeding SSI");
+    CHECK(tetra_st(state)->mm_lu_proceeding_mni == 0xABCDEF, "LU proceeding MNI");
+    tetra_st(state)->mm_lu_proceeding_valid = 0;
     tetra_mm_dispatch(bits, 52, 1, opts, state);
-    CHECK(state->tetra_mm_lu_proceeding_valid == 0, "truncated LU proceeding stays invalid");
+    CHECK(tetra_st(state)->mm_lu_proceeding_valid == 0, "truncated LU proceeding stays invalid");
 
     memset(bits, 0, sizeof bits);
     pack_bits(bits, 0, TETRA_MM_D_ATTACH_DETACH_GROUP, 4);
@@ -292,9 +300,9 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, 6, 0, 1); /* attachment mode */
     pack_bits(bits, 7, 0, 1); /* O-bit */
     tetra_mm_dispatch(bits, 8, 1, opts, state);
-    CHECK(state->tetra_mm_group_identity_valid == 1, "group identity mandatory fields");
-    CHECK(state->tetra_mm_group_identity_report == 1 && state->tetra_mm_group_identity_ack_request == 1
-              && state->tetra_mm_group_identity_attach_detach_mode == 0,
+    CHECK(tetra_st(state)->mm_group_identity_valid == 1, "group identity mandatory fields");
+    CHECK(tetra_st(state)->mm_group_identity_report == 1 && tetra_st(state)->mm_group_identity_ack_request == 1
+              && tetra_st(state)->mm_group_identity_attach_detach_mode == 0,
           "group identity report and acknowledgement request");
 
     memset(bits, 0, sizeof bits);
@@ -303,29 +311,29 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, 5, 0, 1);
     pack_bits(bits, 6, 0, 1); /* O-bit */
     tetra_mm_dispatch(bits, 7, 1, opts, state);
-    CHECK(state->tetra_mm_group_ack_valid == 1 && state->tetra_mm_group_ack_result == 1,
+    CHECK(tetra_st(state)->mm_group_ack_valid == 1 && tetra_st(state)->mm_group_ack_result == 1,
           "group identity acknowledgement result");
-    state->tetra_mm_group_ack_valid = 0;
+    tetra_st(state)->mm_group_ack_valid = 0;
     tetra_mm_dispatch(bits, 6, 1, opts, state);
-    CHECK(state->tetra_mm_group_ack_valid == 0, "group ACK missing O-bit stays invalid");
+    CHECK(tetra_st(state)->mm_group_ack_valid == 0, "group ACK missing O-bit stays invalid");
 
     memset(bits, 0, sizeof bits);
     pack_bits(bits, 0, TETRA_MM_D_MM_STATUS, 4);
     pack_bits(bits, 4, 0x2D, 6);
     tetra_mm_dispatch(bits, 10, 1, opts, state);
-    CHECK(state->tetra_mm_status_code == 0x2D, "D-MM-STATUS uses 6-bit status downlink");
-    CHECK(state->tetra_mm_status_valid == 1, "D-MM-STATUS valid flag");
-    state->tetra_mm_status_code = 3;
-    state->tetra_mm_status_valid = 1;
+    CHECK(tetra_st(state)->mm_status_code == 0x2D, "D-MM-STATUS uses 6-bit status downlink");
+    CHECK(tetra_st(state)->mm_status_valid == 1, "D-MM-STATUS valid flag");
+    tetra_st(state)->mm_status_code = 3;
+    tetra_st(state)->mm_status_valid = 1;
     tetra_mm_dispatch(bits, 9, 1, opts, state);
-    CHECK(state->tetra_mm_status_code == 3 && state->tetra_mm_status_valid == 1,
+    CHECK(tetra_st(state)->mm_status_code == 3 && tetra_st(state)->mm_status_valid == 1,
           "truncated status preserves prior state");
 
     memset(bits, 0, sizeof bits);
     pack_bits(bits, 0, TETRA_MM_FUNCTION_NOT_SUPPORTED, 4);
     pack_bits(bits, 4, TETRA_MM_D_ENABLE, 4);
     tetra_mm_dispatch(bits, 8, 1, opts, state);
-    CHECK(state->tetra_mm_fns_valid == 1 && state->tetra_mm_fns_pdu_type == TETRA_MM_D_ENABLE,
+    CHECK(tetra_st(state)->mm_fns_valid == 1 && tetra_st(state)->mm_fns_pdu_type == TETRA_MM_D_ENABLE,
           "function-not-supported rejected type");
 
     free(state);
@@ -359,8 +367,9 @@ test_security_golden_pdus(void) {
      * no proprietary element (41 significant bits). */
     unpack_hex_bits("1BCAFEBABE00", bits, 41);
     tetra_mm_dispatch(bits, 41, 9, opts, state);
-    CHECK(state->tetra_mm_auth_valid && state->tetra_mm_auth_subtype == 2 && state->tetra_mm_auth_result == 1
-              && state->tetra_mm_auth_mutual == 1 && state->tetra_mm_auth_response == UINT32_C(0xCAFEBABE),
+    CHECK(tetra_st(state)->mm_auth_valid && tetra_st(state)->mm_auth_subtype == 2
+              && tetra_st(state)->mm_auth_result == 1 && tetra_st(state)->mm_auth_mutual == 1
+              && tetra_st(state)->mm_auth_response == UINT32_C(0xCAFEBABE),
           "golden table A.4 authentication result offsets");
 
     /* Table A.26: acknowledgement, transition to class 3, combined CCK/GCK,
@@ -368,28 +377,30 @@ test_security_golden_pdus(void) {
     memset(bits, 0, sizeof(bits));
     unpack_hex_bits("2EEFBBC48D0A3566F780", bits, 73);
     tetra_mm_dispatch(bits, 73, 9, opts, state);
-    CHECK(state->tetra_mm_ck_change_valid && state->tetra_mm_ck_change_ack == 1
-              && state->tetra_mm_ck_change_security_class == 3 && state->tetra_mm_ck_change_key_type == 3
-              && state->tetra_mm_ck_change_cck_id == 0xBEEF && state->tetra_mm_ck_change_gck_vn == 0x1234,
+    CHECK(tetra_st(state)->mm_ck_change_valid && tetra_st(state)->mm_ck_change_ack == 1
+              && tetra_st(state)->mm_ck_change_security_class == 3 && tetra_st(state)->mm_ck_change_key_type == 3
+              && tetra_st(state)->mm_ck_change_cck_id == 0xBEEF && tetra_st(state)->mm_ck_change_gck_vn == 0x1234,
           "golden table A.26 key selection offsets");
-    CHECK(state->tetra_mm_ck_change_time_type == 0 && state->tetra_mm_ck_change_slot == 2
-              && state->tetra_mm_ck_change_frame == 17 && state->tetra_mm_ck_change_multiframe == 42
-              && state->tetra_mm_ck_change_hyperframe == 0xCDEF,
+    CHECK(tetra_st(state)->mm_ck_change_time_type == 0 && tetra_st(state)->mm_ck_change_slot == 2
+              && tetra_st(state)->mm_ck_change_frame == 17 && tetra_st(state)->mm_ck_change_multiframe == 42
+              && tetra_st(state)->mm_ck_change_hyperframe == 0xCDEF,
           "golden table A.26 activation-time offsets");
 
     /* Table A.31: confirmed permanent equipment/subscription disable, TEI
      * 0ABCDEFA12345678, identity 460/4242/654321, no optional tail (117 bits). */
     memset(bits, 0, sizeof(bits));
-    state->tetra_ms_enabled = 1;
+    tetra_st(state)->ms_enabled = 1;
     unpack_hex_bits("3F579BDF42468ACF17310926543210", bits, 117);
     tetra_mm_dispatch(bits, 117, 9, opts, state);
-    CHECK(state->tetra_mm_enable_disable_valid && !state->tetra_ms_enabled && !state->tetra_mm_enable_disable_is_enable
-              && state->tetra_mm_enable_disable_intent && state->tetra_mm_disable_permanent,
+    CHECK(tetra_st(state)->mm_enable_disable_valid && !tetra_st(state)->ms_enabled
+              && !tetra_st(state)->mm_enable_disable_is_enable && tetra_st(state)->mm_enable_disable_intent
+              && tetra_st(state)->mm_disable_permanent,
           "golden table A.31 command offsets");
-    CHECK(state->tetra_mm_enable_disable_equipment && state->tetra_mm_enable_disable_tei == UINT64_C(0x0ABCDEFA12345678)
-              && state->tetra_mm_enable_disable_subscription && state->tetra_mm_enable_disable_mcc == 460
-              && state->tetra_mm_enable_disable_mnc == 4242 && state->tetra_mm_enable_disable_ssi == 0x654321
-              && !state->tetra_mm_enable_disable_auth_valid,
+    CHECK(tetra_st(state)->mm_enable_disable_equipment
+              && tetra_st(state)->mm_enable_disable_tei == UINT64_C(0x0ABCDEFA12345678)
+              && tetra_st(state)->mm_enable_disable_subscription && tetra_st(state)->mm_enable_disable_mcc == 460
+              && tetra_st(state)->mm_enable_disable_mnc == 4242 && tetra_st(state)->mm_enable_disable_ssi == 0x654321
+              && !tetra_st(state)->mm_enable_disable_auth_valid,
           "golden table A.31 conditional identity offsets");
 
     /* Table A.30a: D-OTAR CMG GTSI provision for GSSI 654321 in foreign
@@ -398,9 +409,9 @@ test_security_golden_pdus(void) {
     memset(bits, 0, sizeof(bits));
     unpack_hex_bits("0C654321DCC42480", bits, 59);
     tetra_mm_dispatch(bits, 59, 9, opts, state);
-    CHECK(state->tetra_mm_otar_valid && state->tetra_mm_otar_subtype == 12 && state->tetra_mm_otar_gssi == 0x654321
-              && state->tetra_mm_otar_address_valid && state->tetra_mm_otar_mcc == 460
-              && state->tetra_mm_otar_mnc == 4242,
+    CHECK(tetra_st(state)->mm_otar_valid && tetra_st(state)->mm_otar_subtype == 12
+              && tetra_st(state)->mm_otar_gssi == 0x654321 && tetra_st(state)->mm_otar_address_valid
+              && tetra_st(state)->mm_otar_mcc == 460 && tetra_st(state)->mm_otar_mnc == 4242,
           "golden table A.30a D-OTAR address offsets");
 
     free(state);
@@ -432,9 +443,10 @@ test_authentication_pdus(void) {
     off++; /* no proprietary element */
     CHECK(off == 167, "table A.1 demand body is 167 bits");
     tetra_mm_dispatch(bits, off, 5, opts, state);
-    CHECK(state->tetra_mm_auth_valid && state->tetra_mm_auth_subtype == 0, "authentication demand becomes valid");
-    CHECK(state->tetra_mm_auth_random_challenge[0] == 0x10 && state->tetra_mm_auth_random_challenge[9] == 0x19
-              && state->tetra_mm_auth_random_seed[0] == 0xA0 && state->tetra_mm_auth_random_seed[9] == 0xA9,
+    CHECK(tetra_st(state)->mm_auth_valid && tetra_st(state)->mm_auth_subtype == 0,
+          "authentication demand becomes valid");
+    CHECK(tetra_st(state)->mm_auth_random_challenge[0] == 0x10 && tetra_st(state)->mm_auth_random_challenge[9] == 0x19
+              && tetra_st(state)->mm_auth_random_seed[0] == 0xA0 && tetra_st(state)->mm_auth_random_seed[9] == 0xA9,
           "complete 80-bit challenge and seed retained");
 
     /* D-AUTHENTICATION RESPONSE with mutual RAND1. */
@@ -460,16 +472,16 @@ test_authentication_pdus(void) {
     off++;
     CHECK(off == 200, "table A.3 mutual response body is 200 bits");
     tetra_mm_dispatch(bits, off, 5, opts, state);
-    CHECK(state->tetra_mm_auth_subtype == 1 && state->tetra_mm_auth_response == UINT32_C(0xDEADBEEF)
-              && state->tetra_mm_auth_mutual == 1,
+    CHECK(tetra_st(state)->mm_auth_subtype == 1 && tetra_st(state)->mm_auth_response == UINT32_C(0xDEADBEEF)
+              && tetra_st(state)->mm_auth_mutual == 1,
           "mutual authentication response retained");
-    CHECK(state->tetra_mm_auth_random_seed[9] == 0x29 && state->tetra_mm_auth_random_challenge[9] == 0x39,
+    CHECK(tetra_st(state)->mm_auth_random_seed[9] == 0x29 && tetra_st(state)->mm_auth_random_challenge[9] == 0x39,
           "response seed and conditional challenge retained");
 
     /* Removing any part of conditional RAND1 preserves the response snapshot. */
     pack_bits(bits, 86, 0xAAAAAAAA, 32);
     tetra_mm_dispatch(bits, off - 2, 5, opts, state);
-    CHECK(state->tetra_mm_auth_subtype == 1 && state->tetra_mm_auth_response == UINT32_C(0xDEADBEEF),
+    CHECK(tetra_st(state)->mm_auth_subtype == 1 && tetra_st(state)->mm_auth_response == UINT32_C(0xDEADBEEF),
           "truncated mutual response preserves prior snapshot");
 
     /* D-AUTHENTICATION RESULT with conditional RES2. */
@@ -488,10 +500,10 @@ test_authentication_pdus(void) {
     pack_bits(bits, off, 0, 1);
     off++;
     tetra_mm_dispatch(bits, off, 5, opts, state);
-    CHECK(state->tetra_mm_auth_subtype == 2 && state->tetra_mm_auth_result == 1 && state->tetra_mm_auth_mutual == 1
-              && state->tetra_mm_auth_response == UINT32_C(0xCAFEBABE),
+    CHECK(tetra_st(state)->mm_auth_subtype == 2 && tetra_st(state)->mm_auth_result == 1
+              && tetra_st(state)->mm_auth_mutual == 1 && tetra_st(state)->mm_auth_response == UINT32_C(0xCAFEBABE),
           "authentication result and RES2 retained");
-    CHECK(state->tetra_mm_auth_random_seed[0] == 0 && state->tetra_mm_auth_random_challenge[0] == 0,
+    CHECK(tetra_st(state)->mm_auth_random_seed[0] == 0 && tetra_st(state)->mm_auth_random_challenge[0] == 0,
           "result clears fields absent from its subtype");
 
     /* D-AUTHENTICATION REJECT permits only reason zero in this revision. */
@@ -500,11 +512,11 @@ test_authentication_pdus(void) {
     pack_bits(bits, 4, 3, 2);
     pack_bits(bits, 6, 0, 3);
     tetra_mm_dispatch(bits, 9, 5, opts, state);
-    CHECK(state->tetra_mm_auth_subtype == 3 && state->tetra_mm_auth_reject_reason == 0,
+    CHECK(tetra_st(state)->mm_auth_subtype == 3 && tetra_st(state)->mm_auth_reject_reason == 0,
           "authentication-not-supported rejection retained");
     pack_bits(bits, 6, 5, 3); /* reserved reason */
     tetra_mm_dispatch(bits, 9, 5, opts, state);
-    CHECK(state->tetra_mm_auth_subtype == 3 && state->tetra_mm_auth_reject_reason == 0,
+    CHECK(tetra_st(state)->mm_auth_subtype == 3 && tetra_st(state)->mm_auth_reject_reason == 0,
           "reserved rejection reason preserves prior snapshot");
 
     /* A bounded proprietary Type 3 value needs its terminal M-bit. */
@@ -531,11 +543,12 @@ test_authentication_pdus(void) {
     pack_bits(bits, off, 0, 1);
     off++;
     tetra_mm_dispatch(bits, off, 5, opts, state);
-    CHECK(state->tetra_mm_auth_subtype == 0 && state->tetra_mm_auth_random_challenge[0] == 0x40,
+    CHECK(tetra_st(state)->mm_auth_subtype == 0 && tetra_st(state)->mm_auth_random_challenge[0] == 0x40,
           "authentication demand with proprietary tail accepted");
     pack_bits(bits, 6, 0x60, 8);
     tetra_mm_dispatch(bits, off - 1, 5, opts, state);
-    CHECK(state->tetra_mm_auth_random_challenge[0] == 0x40, "missing proprietary terminal M-bit preserves snapshot");
+    CHECK(tetra_st(state)->mm_auth_random_challenge[0] == 0x40,
+          "missing proprietary terminal M-bit preserves snapshot");
 
     free(state);
     free(opts);
@@ -582,21 +595,22 @@ test_otar_cck_provide(void) {
     off++;
     CHECK(off == 302, "table A.9 list and future-key body is 302 bits");
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_valid && state->tetra_mm_otar_subtype == 0 && state->tetra_mm_otar_cck_provision,
+    CHECK(tetra_st(state)->mm_otar_valid && tetra_st(state)->mm_otar_subtype == 0
+              && tetra_st(state)->mm_otar_cck_provision,
           "CCK Provide becomes valid");
-    CHECK(state->tetra_mm_otar_cck_id == 0xCAFE && state->tetra_mm_otar_cck_key_type == 0
-              && state->tetra_mm_otar_cck_sealed[0] == 0x10 && state->tetra_mm_otar_cck_sealed[14] == 0x1E,
+    CHECK(tetra_st(state)->mm_otar_cck_id == 0xCAFE && tetra_st(state)->mm_otar_cck_key_type == 0
+              && tetra_st(state)->mm_otar_cck_sealed[0] == 0x10 && tetra_st(state)->mm_otar_cck_sealed[14] == 0x1E,
           "CCK identifier, type and full sealed key retained");
-    CHECK(state->tetra_mm_otar_cck_la_type == 1 && state->tetra_mm_otar_cck_la_count == 2
-              && state->tetra_mm_otar_cck_la[0] == 0x123 && state->tetra_mm_otar_cck_la[1] == 0x234,
+    CHECK(tetra_st(state)->mm_otar_cck_la_type == 1 && tetra_st(state)->mm_otar_cck_la_count == 2
+              && tetra_st(state)->mm_otar_cck_la[0] == 0x123 && tetra_st(state)->mm_otar_cck_la[1] == 0x234,
           "CCK location-area list retained");
-    CHECK(state->tetra_mm_otar_cck_future && state->tetra_mm_otar_cck_future_sealed[0] == 0x80
-              && state->tetra_mm_otar_cck_future_sealed[14] == 0x8E,
+    CHECK(tetra_st(state)->mm_otar_cck_future && tetra_st(state)->mm_otar_cck_future_sealed[0] == 0x80
+              && tetra_st(state)->mm_otar_cck_future_sealed[14] == 0x8E,
           "future sealed CCK retained");
 
     pack_bits(bits, 9, 0xBEEF, 16);
     tetra_mm_dispatch(bits, off - 2, 2, opts, state);
-    CHECK(state->tetra_mm_otar_cck_id == 0xCAFE && state->tetra_mm_otar_cck_future_sealed[14] == 0x8E,
+    CHECK(tetra_st(state)->mm_otar_cck_id == 0xCAFE && tetra_st(state)->mm_otar_cck_future_sealed[14] == 0x8E,
           "truncated future CCK preserves prior snapshot");
 
     /* Mask/selector form clears fields that only occur in other forms. */
@@ -627,15 +641,15 @@ test_otar_cck_provide(void) {
     pack_bits(bits, off, 0, 1);
     off++;
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_cck_key_type == 1 && state->tetra_mm_otar_cck_la_type == 2
-              && state->tetra_mm_otar_cck_la_mask == 0x3F00 && state->tetra_mm_otar_cck_la_selector == 0x1200,
+    CHECK(tetra_st(state)->mm_otar_cck_key_type == 1 && tetra_st(state)->mm_otar_cck_la_type == 2
+              && tetra_st(state)->mm_otar_cck_la_mask == 0x3F00 && tetra_st(state)->mm_otar_cck_la_selector == 0x1200,
           "future CCK mask and selector retained");
-    CHECK(state->tetra_mm_otar_cck_la_count == 0 && !state->tetra_mm_otar_cck_future,
+    CHECK(tetra_st(state)->mm_otar_cck_la_count == 0 && !tetra_st(state)->mm_otar_cck_future,
           "mask form clears list and absent future-key fields");
     pack_bits(bits, 9, 0x7777, 16);
     pack_bits(bits, 176, 1, 1); /* forbidden for a future CCK */
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_cck_id == 0x1357, "future CCK cannot carry a second future sealed key");
+    CHECK(tetra_st(state)->mm_otar_cck_id == 0x1357, "future CCK cannot carry a second future sealed key");
 
     /* Range form requires the high value to be greater than the low value. */
     memset(bits, 0, sizeof(bits));
@@ -662,12 +676,12 @@ test_otar_cck_provide(void) {
     pack_bits(bits, off, 0, 1);
     off++;
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_cck_la_type == 3 && state->tetra_mm_otar_cck_la_low == 100
-              && state->tetra_mm_otar_cck_la_high == 200,
+    CHECK(tetra_st(state)->mm_otar_cck_la_type == 3 && tetra_st(state)->mm_otar_cck_la_low == 100
+              && tetra_st(state)->mm_otar_cck_la_high == 200,
           "CCK location-area range retained");
     pack_bits(bits, 162, 50, 14);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_cck_la_high == 200, "invalid CCK location-area range preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_cck_la_high == 200, "invalid CCK location-area range preserves snapshot");
 
     /* Type zero applies the CCK to all location areas. */
     memset(bits, 0, sizeof(bits));
@@ -690,7 +704,7 @@ test_otar_cck_provide(void) {
     pack_bits(bits, off, 0, 1);
     off++;
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_cck_id == 0x369C && state->tetra_mm_otar_cck_la_type == 0,
+    CHECK(tetra_st(state)->mm_otar_cck_id == 0x369C && tetra_st(state)->mm_otar_cck_la_type == 0,
           "CCK applies to all location areas");
 
     /* No-provision form contains only its generic optional-element bit. */
@@ -700,8 +714,8 @@ test_otar_cck_provide(void) {
     pack_bits(bits, 8, 0, 1);
     pack_bits(bits, 9, 0, 1);
     tetra_mm_dispatch(bits, 10, 2, opts, state);
-    CHECK(state->tetra_mm_otar_valid && !state->tetra_mm_otar_cck_provision && state->tetra_mm_otar_cck_id == 0
-              && state->tetra_mm_otar_cck_la_type == 0,
+    CHECK(tetra_st(state)->mm_otar_valid && !tetra_st(state)->mm_otar_cck_provision
+              && tetra_st(state)->mm_otar_cck_id == 0 && tetra_st(state)->mm_otar_cck_la_type == 0,
           "CCK no-provision form clears conditional fields");
 
     free(state);
@@ -763,32 +777,32 @@ test_otar_sck_and_gsko(void) {
     off++;
     CHECK(off == 366, "table A.16 two-SCK body is 366 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 2 && state->tetra_mm_otar_ack && state->tetra_mm_otar_explicit_response
-              && state->tetra_mm_otar_max_response_timer == 45,
+    CHECK(tetra_st(state)->mm_otar_subtype == 2 && tetra_st(state)->mm_otar_ack
+              && tetra_st(state)->mm_otar_explicit_response && tetra_st(state)->mm_otar_max_response_timer == 45,
           "SCK Provide response controls retained");
-    CHECK(state->tetra_mm_otar_session_key == 1 && state->tetra_mm_otar_gsko_version == 0x2345
-              && state->tetra_mm_otar_key_count == 2,
+    CHECK(tetra_st(state)->mm_otar_session_key == 1 && tetra_st(state)->mm_otar_gsko_version == 0x2345
+              && tetra_st(state)->mm_otar_key_count == 2,
           "SCK Provide group-session fields retained");
-    CHECK(state->tetra_mm_otar_sck_number[0] == 3 && state->tetra_mm_otar_sck_version[1] == 0x1001
-              && state->tetra_mm_otar_sck_use[1] == 1 && state->tetra_mm_otar_sck_sealed[0][0] == 0x20
-              && state->tetra_mm_otar_sck_sealed[1][14] == 0x4E,
+    CHECK(tetra_st(state)->mm_otar_sck_number[0] == 3 && tetra_st(state)->mm_otar_sck_version[1] == 0x1001
+              && tetra_st(state)->mm_otar_sck_use[1] == 1 && tetra_st(state)->mm_otar_sck_sealed[0][0] == 0x20
+              && tetra_st(state)->mm_otar_sck_sealed[1][14] == 0x4E,
           "both complete SCK descriptors retained");
-    CHECK(state->tetra_mm_otar_ksg == 2 && state->tetra_mm_otar_retry_interval == 5
-              && state->tetra_mm_otar_address_valid && state->tetra_mm_otar_mcc == 460
-              && state->tetra_mm_otar_mnc == 4242,
+    CHECK(tetra_st(state)->mm_otar_ksg == 2 && tetra_st(state)->mm_otar_retry_interval == 5
+              && tetra_st(state)->mm_otar_address_valid && tetra_st(state)->mm_otar_mcc == 460
+              && tetra_st(state)->mm_otar_mnc == 4242,
           "SCK Provide KSG, retry and address retained");
     CHECK(tetra_air_ksg_lookup(state, 460, 4242) == 2, "SCK Provide KSG remembered for the network");
 
     tetra_mm_dispatch(bits, off - 1, 3, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 2 && state->tetra_mm_otar_sck_version[1] == 0x1001,
+    CHECK(tetra_st(state)->mm_otar_subtype == 2 && tetra_st(state)->mm_otar_sck_version[1] == 0x1001,
           "truncated SCK optional tail preserves snapshot");
     pack_bits(bits, 68, 1, 1);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_sck_sealed[0][0] == 0x20, "non-zero SCK reserved bit preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_sck_sealed[0][0] == 0x20, "non-zero SCK reserved bit preserves snapshot");
     pack_bits(bits, 68, 0, 1);
     pack_bits(bits, 332, 5, 4);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_ksg == 2, "reserved KSG number preserves SCK snapshot");
+    CHECK(tetra_st(state)->mm_otar_ksg == 2, "reserved KSG number preserves SCK snapshot");
 
     /* Individual-session form carries the 80-bit random seed. */
     memset(bits, 0, sizeof(bits));
@@ -819,9 +833,9 @@ test_otar_sck_and_gsko(void) {
     off++;
     CHECK(off == 118, "table A.16 individual-session zero-key body is 118 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 2 && !state->tetra_mm_otar_session_key
-              && state->tetra_mm_otar_random_seed[0] == 0xA0 && state->tetra_mm_otar_random_seed[9] == 0xA9
-              && state->tetra_mm_otar_key_count == 0 && state->tetra_mm_otar_ksg == 8,
+    CHECK(tetra_st(state)->mm_otar_subtype == 2 && !tetra_st(state)->mm_otar_session_key
+              && tetra_st(state)->mm_otar_random_seed[0] == 0xA0 && tetra_st(state)->mm_otar_random_seed[9] == 0xA9
+              && tetra_st(state)->mm_otar_key_count == 0 && tetra_st(state)->mm_otar_ksg == 8,
           "individual-session SCK seed and proprietary KSG retained");
 
     /* Each rejected SCK has its own valid reject reason. */
@@ -847,14 +861,14 @@ test_otar_sck_and_gsko(void) {
     off++;
     CHECK(off == 31, "table A.19 two-SCK reject body is 31 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 3 && state->tetra_mm_otar_key_count == 2
-              && state->tetra_mm_otar_reject_reason[0] == 1 && state->tetra_mm_otar_sck_number[0] == 7
-              && state->tetra_mm_otar_reject_reason[1] == 3 && state->tetra_mm_otar_sck_number[1] == 31
-              && state->tetra_mm_otar_retry_interval == 6,
+    CHECK(tetra_st(state)->mm_otar_subtype == 3 && tetra_st(state)->mm_otar_key_count == 2
+              && tetra_st(state)->mm_otar_reject_reason[0] == 1 && tetra_st(state)->mm_otar_sck_number[0] == 7
+              && tetra_st(state)->mm_otar_reject_reason[1] == 3 && tetra_st(state)->mm_otar_sck_number[1] == 31
+              && tetra_st(state)->mm_otar_retry_interval == 6,
           "SCK Reject list retained");
     pack_bits(bits, 11, 7, 3);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_reject_reason[0] == 1, "reserved SCK reject reason preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_reject_reason[0] == 1, "reserved SCK reject reason preserves snapshot");
 
     /* GSKO Provide retains the complete seed, key, version and group. */
     memset(bits, 0, sizeof(bits));
@@ -878,11 +892,11 @@ test_otar_sck_and_gsko(void) {
     pack_bits(bits, off, 0, 1);
     off++;
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 8 && state->tetra_mm_otar_random_seed[0] == 0x60
-              && state->tetra_mm_otar_random_seed[9] == 0x69 && state->tetra_mm_otar_gsko_version == 0xABCD
-              && state->tetra_mm_otar_gsko_sealed[14] == 0x9E && state->tetra_mm_otar_gssi == 0x654321,
+    CHECK(tetra_st(state)->mm_otar_subtype == 8 && tetra_st(state)->mm_otar_random_seed[0] == 0x60
+              && tetra_st(state)->mm_otar_random_seed[9] == 0x69 && tetra_st(state)->mm_otar_gsko_version == 0xABCD
+              && tetra_st(state)->mm_otar_gsko_sealed[14] == 0x9E && tetra_st(state)->mm_otar_gssi == 0x654321,
           "GSKO Provide snapshot retained");
-    CHECK(state->tetra_mm_otar_key_count == 0 && state->tetra_mm_otar_cck_id == 0,
+    CHECK(tetra_st(state)->mm_otar_key_count == 0 && tetra_st(state)->mm_otar_cck_id == 0,
           "GSKO Provide clears fields from earlier subtypes");
 
     /* GSKO Reject is the fixed reject reason, group and retry tuple. */
@@ -901,8 +915,8 @@ test_otar_sck_and_gsko(void) {
     pack_bits(bits, off, 0, 1);
     off++;
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 9 && state->tetra_mm_otar_reject_reason[0] == 2
-              && state->tetra_mm_otar_gssi == 0x123456 && state->tetra_mm_otar_retry_interval == 4,
+    CHECK(tetra_st(state)->mm_otar_subtype == 9 && tetra_st(state)->mm_otar_reject_reason[0] == 2
+              && tetra_st(state)->mm_otar_gssi == 0x123456 && tetra_st(state)->mm_otar_retry_interval == 4,
           "GSKO Reject snapshot retained");
 
     free(state);
@@ -964,39 +978,40 @@ test_otar_gck(void) {
     off++;
     CHECK(off == 409, "table A.12 two-GCK body is 409 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_valid && state->tetra_mm_otar_subtype == 4 && state->tetra_mm_otar_ack
-              && state->tetra_mm_otar_explicit_response && state->tetra_mm_otar_max_response_timer == 91,
+    CHECK(tetra_st(state)->mm_otar_valid && tetra_st(state)->mm_otar_subtype == 4 && tetra_st(state)->mm_otar_ack
+              && tetra_st(state)->mm_otar_explicit_response && tetra_st(state)->mm_otar_max_response_timer == 91,
           "GCK Provide response controls retained");
-    CHECK(state->tetra_mm_otar_session_key && state->tetra_mm_otar_gsko_version == 0x3456
-              && state->tetra_mm_otar_key_count == 2,
+    CHECK(tetra_st(state)->mm_otar_session_key && tetra_st(state)->mm_otar_gsko_version == 0x3456
+              && tetra_st(state)->mm_otar_key_count == 2,
           "GCK Provide group-session fields retained");
-    CHECK(state->tetra_mm_otar_gck_number[0] == 0x1200 && state->tetra_mm_otar_gck_version[1] == 0x4501
-              && state->tetra_mm_otar_gck_sealed[0][0] == 0x30 && state->tetra_mm_otar_gck_sealed[1][14] == 0x5E,
+    CHECK(tetra_st(state)->mm_otar_gck_number[0] == 0x1200 && tetra_st(state)->mm_otar_gck_version[1] == 0x4501
+              && tetra_st(state)->mm_otar_gck_sealed[0][0] == 0x30
+              && tetra_st(state)->mm_otar_gck_sealed[1][14] == 0x5E,
           "both complete GCK descriptors retained");
-    CHECK(state->tetra_mm_otar_ksg == 3 && state->tetra_mm_otar_group_association == 1
-              && state->tetra_mm_otar_gssi == 0x654321 && state->tetra_mm_otar_retry_interval == 5
-              && state->tetra_mm_otar_address_valid && state->tetra_mm_otar_mcc == 460
-              && state->tetra_mm_otar_mnc == 4242,
+    CHECK(tetra_st(state)->mm_otar_ksg == 3 && tetra_st(state)->mm_otar_group_association == 1
+              && tetra_st(state)->mm_otar_gssi == 0x654321 && tetra_st(state)->mm_otar_retry_interval == 5
+              && tetra_st(state)->mm_otar_address_valid && tetra_st(state)->mm_otar_mcc == 460
+              && tetra_st(state)->mm_otar_mnc == 4242,
           "GCK Provide association, retry and address retained");
 
     tetra_mm_dispatch(bits, off - 1, 3, opts, state);
-    CHECK(state->tetra_mm_otar_gck_version[1] == 0x4501, "truncated GCK optional tail preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_gck_version[1] == 0x4501, "truncated GCK optional tail preserves snapshot");
     pack_bits(bits, 8, 0, 1);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_ack && state->tetra_mm_otar_gck_number[0] == 0x1200,
+    CHECK(tetra_st(state)->mm_otar_ack && tetra_st(state)->mm_otar_gck_number[0] == 0x1200,
           "non-zero GCK reserved response bit preserves snapshot");
     pack_bits(bits, 8, 1, 1);
     pack_bits(bits, 350, 6, 4);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_ksg == 3, "reserved KSG number preserves GCK snapshot");
+    CHECK(tetra_st(state)->mm_otar_ksg == 3, "reserved KSG number preserves GCK snapshot");
     pack_bits(bits, 350, 3, 4);
     pack_bits(bits, 198, 0x1201, 16);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_gck_number[1] == 0x1200, "GSSI association rejects mixed GCK numbers");
+    CHECK(tetra_st(state)->mm_otar_gck_number[1] == 0x1200, "GSSI association rejects mixed GCK numbers");
     pack_bits(bits, 198, 0x1200, 16);
     pack_bits(bits, 214, 0x4500, 16);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_gck_version[1] == 0x4501, "GSSI association rejects duplicate GCK versions");
+    CHECK(tetra_st(state)->mm_otar_gck_version[1] == 0x4501, "GSSI association rejects duplicate GCK versions");
 
     /* Individual-session form permits zero keys and association by GCKN. */
     memset(bits, 0, sizeof(bits));
@@ -1029,10 +1044,10 @@ test_otar_gck(void) {
     off++;
     CHECK(off == 119, "table A.12 individual-session zero-key body is 119 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 4 && !state->tetra_mm_otar_session_key
-              && state->tetra_mm_otar_random_seed[0] == 0xA0 && state->tetra_mm_otar_random_seed[9] == 0xA9
-              && state->tetra_mm_otar_key_count == 0 && state->tetra_mm_otar_ksg == 8
-              && !state->tetra_mm_otar_group_association && state->tetra_mm_otar_gssi == 0,
+    CHECK(tetra_st(state)->mm_otar_subtype == 4 && !tetra_st(state)->mm_otar_session_key
+              && tetra_st(state)->mm_otar_random_seed[0] == 0xA0 && tetra_st(state)->mm_otar_random_seed[9] == 0xA9
+              && tetra_st(state)->mm_otar_key_count == 0 && tetra_st(state)->mm_otar_ksg == 8
+              && !tetra_st(state)->mm_otar_group_association && tetra_st(state)->mm_otar_gssi == 0,
           "individual-session zero-key GCK fields retained");
 
     /* Rejected GCKs may be identified independently by GCKN or GSSI. */
@@ -1062,23 +1077,25 @@ test_otar_gck(void) {
     off++;
     CHECK(off == 63, "table A.15 mixed two-GCK reject body is 63 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 5 && state->tetra_mm_otar_key_count == 2
-              && state->tetra_mm_otar_reject_reason[0] == 1 && !state->tetra_mm_otar_gck_reject_group_association[0]
-              && state->tetra_mm_otar_gck_number[0] == 0xCAFE,
+    CHECK(tetra_st(state)->mm_otar_subtype == 5 && tetra_st(state)->mm_otar_key_count == 2
+              && tetra_st(state)->mm_otar_reject_reason[0] == 1
+              && !tetra_st(state)->mm_otar_gck_reject_group_association[0]
+              && tetra_st(state)->mm_otar_gck_number[0] == 0xCAFE,
           "GCK Reject entry identified by GCKN retained");
-    CHECK(state->tetra_mm_otar_reject_reason[1] == 3 && state->tetra_mm_otar_gck_reject_group_association[1]
-              && state->tetra_mm_otar_gck_reject_gssi[1] == 0x123456 && state->tetra_mm_otar_retry_interval == 6,
+    CHECK(tetra_st(state)->mm_otar_reject_reason[1] == 3 && tetra_st(state)->mm_otar_gck_reject_group_association[1]
+              && tetra_st(state)->mm_otar_gck_reject_gssi[1] == 0x123456
+              && tetra_st(state)->mm_otar_retry_interval == 6,
           "GCK Reject entry identified by GSSI retained");
 
     pack_bits(bits, 11, 7, 3);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_reject_reason[0] == 1, "reserved GCK reject reason preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_reject_reason[0] == 1, "reserved GCK reject reason preserves snapshot");
     memset(bits, 0, sizeof(bits));
     pack_bits(bits, 0, TETRA_MM_D_OTAR, 4);
     pack_bits(bits, 4, 5, 4);
     pack_bits(bits, 8, 0, 3);
     tetra_mm_dispatch(bits, 15, 3, opts, state);
-    CHECK(state->tetra_mm_otar_key_count == 2 && state->tetra_mm_otar_gck_number[0] == 0xCAFE,
+    CHECK(tetra_st(state)->mm_otar_key_count == 2 && tetra_st(state)->mm_otar_gck_number[0] == 0xCAFE,
           "reserved zero GCK reject count preserves snapshot");
 
     free(state);
@@ -1130,36 +1147,37 @@ test_otar_key_associate(void) {
     off++;
     CHECK(off == 141, "table A.24 three-group SCK association is 141 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_valid && state->tetra_mm_otar_subtype == 6 && state->tetra_mm_otar_ack
-              && state->tetra_mm_otar_explicit_response && state->tetra_mm_otar_max_response_timer == 73,
+    CHECK(tetra_st(state)->mm_otar_valid && tetra_st(state)->mm_otar_subtype == 6 && tetra_st(state)->mm_otar_ack
+              && tetra_st(state)->mm_otar_explicit_response && tetra_st(state)->mm_otar_max_response_timer == 73,
           "key-associate response controls retained");
-    CHECK(!state->tetra_mm_otar_key_association_type && state->tetra_mm_otar_sck_select == 4
-              && state->tetra_mm_otar_sck_subset_grouping == 2,
+    CHECK(!tetra_st(state)->mm_otar_key_association_type && tetra_st(state)->mm_otar_sck_select == 4
+              && tetra_st(state)->mm_otar_sck_subset_grouping == 2,
           "SCK selection and subset grouping retained");
-    CHECK(state->tetra_mm_otar_group_count == 3 && !state->tetra_mm_otar_group_is_range
-              && state->tetra_mm_otar_group_value_count == 3 && state->tetra_mm_otar_group_gssi[0] == 0x100001
-              && state->tetra_mm_otar_group_gssi[2] == 0x100003,
+    CHECK(tetra_st(state)->mm_otar_group_count == 3 && !tetra_st(state)->mm_otar_group_is_range
+              && tetra_st(state)->mm_otar_group_value_count == 3 && tetra_st(state)->mm_otar_group_gssi[0] == 0x100001
+              && tetra_st(state)->mm_otar_group_gssi[2] == 0x100003,
           "key-associate GSSI list retained");
-    CHECK(state->tetra_mm_otar_address_valid && state->tetra_mm_otar_mcc == 460 && state->tetra_mm_otar_mnc == 4242,
+    CHECK(tetra_st(state)->mm_otar_address_valid && tetra_st(state)->mm_otar_mcc == 460
+              && tetra_st(state)->mm_otar_mnc == 4242,
           "key-associate address extension retained");
 
     tetra_mm_dispatch(bits, off - 1, 3, opts, state);
-    CHECK(state->tetra_mm_otar_group_gssi[2] == 0x100003, "truncated key-associate tail preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_group_gssi[2] == 0x100003, "truncated key-associate tail preserves snapshot");
     pack_bits(bits, 8, 0, 1);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_ack, "explicit response without acknowledgement preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_ack, "explicit response without acknowledgement preserves snapshot");
     pack_bits(bits, 8, 1, 1);
     pack_bits(bits, 27, 34, 6);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_sck_select == 4, "reserved SCK selection preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_sck_select == 4, "reserved SCK selection preserves snapshot");
     pack_bits(bits, 27, 4, 6);
     pack_bits(bits, 33, 10, 4);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_sck_subset_grouping == 2, "non-demand SCK grouping value preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_sck_subset_grouping == 2, "non-demand SCK grouping value preserves snapshot");
     pack_bits(bits, 33, 2, 4);
     pack_bits(bits, 37, 0, 5);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_group_count == 3, "reserved zero group count preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_group_count == 3, "reserved zero group count preserves snapshot");
 
     /* Disassociate GCKs from an ordered range, returning the groups to CCK. */
     memset(bits, 0, sizeof(bits));
@@ -1188,23 +1206,23 @@ test_otar_key_associate(void) {
     off++;
     CHECK(off == 98, "table A.24 GCK range disassociation is 98 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 6 && state->tetra_mm_otar_key_association_type
-              && state->tetra_mm_otar_gck_select == 0x10000,
+    CHECK(tetra_st(state)->mm_otar_subtype == 6 && tetra_st(state)->mm_otar_key_association_type
+              && tetra_st(state)->mm_otar_gck_select == 0x10000,
           "GCK disassociation selection retained");
-    CHECK(state->tetra_mm_otar_group_count == 31 && state->tetra_mm_otar_group_is_range
-              && state->tetra_mm_otar_group_value_count == 2 && state->tetra_mm_otar_group_gssi[0] == 1000
-              && state->tetra_mm_otar_group_gssi[1] == 2000,
+    CHECK(tetra_st(state)->mm_otar_group_count == 31 && tetra_st(state)->mm_otar_group_is_range
+              && tetra_st(state)->mm_otar_group_value_count == 2 && tetra_st(state)->mm_otar_group_gssi[0] == 1000
+              && tetra_st(state)->mm_otar_group_gssi[1] == 2000,
           "ordered GSSI range retained");
-    CHECK(state->tetra_mm_otar_sck_select == 0 && !state->tetra_mm_otar_address_valid,
+    CHECK(tetra_st(state)->mm_otar_sck_select == 0 && !tetra_st(state)->mm_otar_address_valid,
           "GCK association clears prior subtype-specific fields");
 
     pack_bits(bits, 27, 0x10001, 17);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_gck_select == 0x10000, "reserved GCK selection preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_gck_select == 0x10000, "reserved GCK selection preserves snapshot");
     pack_bits(bits, 27, 0x10000, 17);
     pack_bits(bits, 73, 999, 24);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_group_gssi[1] == 2000, "reversed GSSI range preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_group_gssi[1] == 2000, "reversed GSSI range preserves snapshot");
 
     free(state);
     free(opts);
@@ -1242,21 +1260,21 @@ test_otar_newcell(void) {
     off++;
     CHECK(off == 151, "table A.30 current-CCK NEWCELL is 151 bits");
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_otar_valid && state->tetra_mm_otar_subtype == 7 && state->tetra_mm_otar_dck_forwarding_result
-              && state->tetra_mm_otar_cck_provision,
+    CHECK(tetra_st(state)->mm_otar_valid && tetra_st(state)->mm_otar_subtype == 7
+              && tetra_st(state)->mm_otar_dck_forwarding_result && tetra_st(state)->mm_otar_cck_provision,
           "NEWCELL forwarding and CCK flags retained");
-    CHECK(state->tetra_mm_otar_cck_id == 0xCAFE && state->tetra_mm_otar_cck_key_type == 0
-              && state->tetra_mm_otar_cck_sealed[0] == 0x70 && state->tetra_mm_otar_cck_sealed[14] == 0x7E
-              && state->tetra_mm_otar_cck_la_type == 0,
+    CHECK(tetra_st(state)->mm_otar_cck_id == 0xCAFE && tetra_st(state)->mm_otar_cck_key_type == 0
+              && tetra_st(state)->mm_otar_cck_sealed[0] == 0x70 && tetra_st(state)->mm_otar_cck_sealed[14] == 0x7E
+              && tetra_st(state)->mm_otar_cck_la_type == 0,
           "NEWCELL complete CCK information retained");
 
     tetra_mm_dispatch(bits, off - 1, 4, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 7 && state->tetra_mm_otar_cck_id == 0xCAFE,
+    CHECK(tetra_st(state)->mm_otar_subtype == 7 && tetra_st(state)->mm_otar_cck_id == 0xCAFE,
           "truncated NEWCELL preserves snapshot");
     pack_bits(bits, 26, 1, 1);
     pack_bits(bits, 149, 1, 1);
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_otar_cck_key_type == 0 && !state->tetra_mm_otar_cck_future,
+    CHECK(tetra_st(state)->mm_otar_cck_key_type == 0 && !tetra_st(state)->mm_otar_cck_future,
           "future CCK cannot include another future key in NEWCELL");
 
     memset(bits, 0, sizeof(bits));
@@ -1273,8 +1291,8 @@ test_otar_newcell(void) {
     off++;
     CHECK(off == 11, "table A.30 no-CCK NEWCELL is 11 bits");
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 7 && !state->tetra_mm_otar_dck_forwarding_result
-              && !state->tetra_mm_otar_cck_provision && state->tetra_mm_otar_cck_id == 0,
+    CHECK(tetra_st(state)->mm_otar_subtype == 7 && !tetra_st(state)->mm_otar_dck_forwarding_result
+              && !tetra_st(state)->mm_otar_cck_provision && tetra_st(state)->mm_otar_cck_id == 0,
           "NEWCELL without CCK clears conditional fields");
 
     free(state);
@@ -1307,15 +1325,17 @@ test_otar_cmg_gtsi(void) {
     off++;
     CHECK(off == 59, "table A.30a CMG GTSI with address is 59 bits");
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_otar_valid && state->tetra_mm_otar_subtype == 12 && state->tetra_mm_otar_gssi == 0x654321,
+    CHECK(tetra_st(state)->mm_otar_valid && tetra_st(state)->mm_otar_subtype == 12
+              && tetra_st(state)->mm_otar_gssi == 0x654321,
           "CMG GTSI retained");
-    CHECK(state->tetra_mm_otar_address_valid && state->tetra_mm_otar_mcc == 460 && state->tetra_mm_otar_mnc == 4242,
+    CHECK(tetra_st(state)->mm_otar_address_valid && tetra_st(state)->mm_otar_mcc == 460
+              && tetra_st(state)->mm_otar_mnc == 4242,
           "CMG GTSI foreign-network address retained");
-    CHECK(!state->tetra_mm_otar_cck_provision && state->tetra_mm_otar_group_count == 0,
+    CHECK(!tetra_st(state)->mm_otar_cck_provision && tetra_st(state)->mm_otar_group_count == 0,
           "CMG GTSI clears prior subtype-specific fields");
 
     tetra_mm_dispatch(bits, off - 1, 4, opts, state);
-    CHECK(state->tetra_mm_otar_subtype == 12 && state->tetra_mm_otar_gssi == 0x654321,
+    CHECK(tetra_st(state)->mm_otar_subtype == 12 && tetra_st(state)->mm_otar_gssi == 0x654321,
           "truncated CMG GTSI tail preserves snapshot");
 
     free(state);
@@ -1357,17 +1377,19 @@ test_otar_key_delete(void) {
     off++;
     CHECK(off == 58, "table A.27f KAG deletion with address is 58 bits");
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_valid && state->tetra_mm_otar_subtype == 10 && state->tetra_mm_otar_key_delete_type == 1
-              && state->tetra_mm_otar_key_delete_sck_count == 3,
+    CHECK(tetra_st(state)->mm_otar_valid && tetra_st(state)->mm_otar_subtype == 10
+              && tetra_st(state)->mm_otar_key_delete_type == 1 && tetra_st(state)->mm_otar_key_delete_sck_count == 3,
           "KAG deletion type and count retained");
-    CHECK(state->tetra_mm_otar_key_delete_sck_number[0] == 0 && state->tetra_mm_otar_key_delete_sck_number[1] == 15
-              && state->tetra_mm_otar_key_delete_sck_number[2] == 31,
+    CHECK(tetra_st(state)->mm_otar_key_delete_sck_number[0] == 0
+              && tetra_st(state)->mm_otar_key_delete_sck_number[1] == 15
+              && tetra_st(state)->mm_otar_key_delete_sck_number[2] == 31,
           "all KAG SCK identifiers retained");
-    CHECK(state->tetra_mm_otar_address_valid && state->tetra_mm_otar_mcc == 460 && state->tetra_mm_otar_mnc == 4242,
+    CHECK(tetra_st(state)->mm_otar_address_valid && tetra_st(state)->mm_otar_mcc == 460
+              && tetra_st(state)->mm_otar_mnc == 4242,
           "key-delete address extension retained");
 
     tetra_mm_dispatch(bits, off - 1, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_delete_sck_count == 3, "truncated key-delete optional tail preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_key_delete_sck_count == 3, "truncated key-delete optional tail preserves snapshot");
 
     /* Delete one validated SCK subset. */
     memset(bits, 0, sizeof(bits));
@@ -1386,17 +1408,18 @@ test_otar_key_delete(void) {
     off++;
     CHECK(off == 21, "table A.27f subset deletion is 21 bits");
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_delete_type == 2 && state->tetra_mm_otar_key_delete_sck_grouping == 8
-              && state->tetra_mm_otar_key_delete_sck_subset == 15 && state->tetra_mm_otar_key_delete_sck_count == 0,
+    CHECK(tetra_st(state)->mm_otar_key_delete_type == 2 && tetra_st(state)->mm_otar_key_delete_sck_grouping == 8
+              && tetra_st(state)->mm_otar_key_delete_sck_subset == 15
+              && tetra_st(state)->mm_otar_key_delete_sck_count == 0,
           "SCK subset deletion retained and clears list");
 
     pack_bits(bits, 15, 16, 5);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_delete_sck_subset == 15, "out-of-group delete subset preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_key_delete_sck_subset == 15, "out-of-group delete subset preserves snapshot");
     pack_bits(bits, 15, 15, 5);
     pack_bits(bits, 11, 10, 4);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_delete_sck_grouping == 8, "reserved delete grouping preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_key_delete_sck_grouping == 8, "reserved delete grouping preserves snapshot");
 
     /* Delete two named GCKs. */
     memset(bits, 0, sizeof(bits));
@@ -1417,11 +1440,11 @@ test_otar_key_delete(void) {
     off++;
     CHECK(off == 48, "table A.27f two-GCK deletion is 48 bits");
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_delete_type == 4 && state->tetra_mm_otar_key_delete_gck_count == 2
-              && state->tetra_mm_otar_key_delete_gck_number[0] == 0x1234
-              && state->tetra_mm_otar_key_delete_gck_number[1] == 0xCAFE,
+    CHECK(tetra_st(state)->mm_otar_key_delete_type == 4 && tetra_st(state)->mm_otar_key_delete_gck_count == 2
+              && tetra_st(state)->mm_otar_key_delete_gck_number[0] == 0x1234
+              && tetra_st(state)->mm_otar_key_delete_gck_number[1] == 0xCAFE,
           "individual GCK deletion list retained");
-    CHECK(state->tetra_mm_otar_key_delete_sck_grouping == 0, "GCK deletion clears prior SCK subset fields");
+    CHECK(tetra_st(state)->mm_otar_key_delete_sck_grouping == 0, "GCK deletion clears prior SCK subset fields");
 
     /* All-SCK, all-GCK, and GSKO deletions have no conditional body. */
     const uint8_t whole_types[] = {3, 5, 6};
@@ -1438,13 +1461,14 @@ test_otar_key_delete(void) {
         off++;
         CHECK(off == 12, "table A.27f whole-class deletion is 12 bits");
         tetra_mm_dispatch(bits, off, 2, opts, state);
-        CHECK(state->tetra_mm_otar_key_delete_type == whole_types[i] && state->tetra_mm_otar_key_delete_gck_count == 0,
+        CHECK(tetra_st(state)->mm_otar_key_delete_type == whole_types[i]
+                  && tetra_st(state)->mm_otar_key_delete_gck_count == 0,
               "whole key-class deletion retained");
     }
 
     pack_bits(bits, 8, 7, 3);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_delete_type == 6, "downlink key-delete extension type is rejected atomically");
+    CHECK(tetra_st(state)->mm_otar_key_delete_type == 6, "downlink key-delete extension type is rejected atomically");
 
     free(state);
     free(opts);
@@ -1487,26 +1511,27 @@ test_otar_key_status_demand(void) {
     off++;
     CHECK(off == 65, "table A.27h subset request with address is 65 bits");
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_valid && state->tetra_mm_otar_subtype == 11 && state->tetra_mm_otar_ack
-              && state->tetra_mm_otar_explicit_response && state->tetra_mm_otar_max_response_timer == 0x1234,
+    CHECK(tetra_st(state)->mm_otar_valid && tetra_st(state)->mm_otar_subtype == 11 && tetra_st(state)->mm_otar_ack
+              && tetra_st(state)->mm_otar_explicit_response && tetra_st(state)->mm_otar_max_response_timer == 0x1234,
           "key-status response controls retained");
-    CHECK(state->tetra_mm_otar_key_status_type == 1 && state->tetra_mm_otar_key_status_sck_grouping == 7
-              && state->tetra_mm_otar_key_status_sck_subset == 10,
+    CHECK(tetra_st(state)->mm_otar_key_status_type == 1 && tetra_st(state)->mm_otar_key_status_sck_grouping == 7
+              && tetra_st(state)->mm_otar_key_status_sck_subset == 10,
           "key-status SCK subset retained");
-    CHECK(state->tetra_mm_otar_address_valid && state->tetra_mm_otar_mcc == 460 && state->tetra_mm_otar_mnc == 4242,
+    CHECK(tetra_st(state)->mm_otar_address_valid && tetra_st(state)->mm_otar_mcc == 460
+              && tetra_st(state)->mm_otar_mnc == 4242,
           "key-status address extension retained");
 
     pack_bits(bits, 33, 11, 5);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_status_sck_subset == 10, "out-of-group SCK subset preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_key_status_sck_subset == 10, "out-of-group SCK subset preserves snapshot");
     pack_bits(bits, 33, 10, 5);
     pack_bits(bits, 29, 10, 4);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_status_sck_grouping == 7, "reserved SCK grouping preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_key_status_sck_grouping == 7, "reserved SCK grouping preserves snapshot");
     pack_bits(bits, 29, 7, 4);
     pack_bits(bits, 8, 0, 1);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_ack, "key-status explicit response without acknowledgement is invalid");
+    CHECK(tetra_st(state)->mm_otar_ack, "key-status explicit response without acknowledgement is invalid");
 
     /* Individual SCK and GCK identifiers use their complete encoded ranges. */
     memset(bits, 0, sizeof(bits));
@@ -1529,8 +1554,8 @@ test_otar_key_status_demand(void) {
     off++;
     CHECK(off == 35, "table A.27h individual SCK request is 35 bits");
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_status_type == 0 && state->tetra_mm_otar_key_status_sck_number == 31
-              && !state->tetra_mm_otar_address_valid,
+    CHECK(tetra_st(state)->mm_otar_key_status_type == 0 && tetra_st(state)->mm_otar_key_status_sck_number == 31
+              && !tetra_st(state)->mm_otar_address_valid,
           "individual SCK status request retained");
 
     memset(bits, 0, sizeof(bits));
@@ -1553,8 +1578,8 @@ test_otar_key_status_demand(void) {
     off++;
     CHECK(off == 46, "table A.27h individual GCK request is 46 bits");
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_status_type == 3 && state->tetra_mm_otar_key_status_gck_number == 0xCAFE
-              && state->tetra_mm_otar_key_status_sck_number == 0,
+    CHECK(tetra_st(state)->mm_otar_key_status_type == 3 && tetra_st(state)->mm_otar_key_status_gck_number == 0xCAFE
+              && tetra_st(state)->mm_otar_key_status_sck_number == 0,
           "individual GCK status request retained and clears SCK selection");
 
     /* Aggregate SCK, aggregate GCK and GSKO requests have no identifier. */
@@ -1577,16 +1602,16 @@ test_otar_key_status_demand(void) {
         off++;
         CHECK(off == 30, "table A.27h aggregate request is 30 bits");
         tetra_mm_dispatch(bits, off, 2, opts, state);
-        CHECK(state->tetra_mm_otar_key_status_type == type && state->tetra_mm_otar_key_status_gck_number == 0,
+        CHECK(tetra_st(state)->mm_otar_key_status_type == type && tetra_st(state)->mm_otar_key_status_gck_number == 0,
               "aggregate key-status request retained");
     }
 
     pack_bits(bits, 26, 6, 3);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_status_type == 5, "response-only reject type preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_key_status_type == 5, "response-only reject type preserves snapshot");
     pack_bits(bits, 26, 7, 3);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(state->tetra_mm_otar_key_status_type == 5, "reserved key-status type preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_key_status_type == 5, "reserved key-status type preserves snapshot");
 
     free(state);
     free(opts);
@@ -1631,28 +1656,29 @@ test_otar_dm_sck_activate(void) {
     off += 14;
     CHECK(off == 93, "table A.27d subset absolute-IV demand is 93 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_valid && state->tetra_mm_otar_subtype == 13 && state->tetra_mm_otar_dm_sck_ack
-              && state->tetra_mm_otar_dm_sck_count == 0,
+    CHECK(tetra_st(state)->mm_otar_valid && tetra_st(state)->mm_otar_subtype == 13
+              && tetra_st(state)->mm_otar_dm_sck_ack && tetra_st(state)->mm_otar_dm_sck_count == 0,
           "DM-SCK subset demand and acknowledgement retained");
-    CHECK(state->tetra_mm_otar_dm_sck_grouping == 4 && state->tetra_mm_otar_dm_sck_subset == 5
-              && state->tetra_mm_otar_dm_sck_vn == 0xBEEF,
+    CHECK(tetra_st(state)->mm_otar_dm_sck_grouping == 4 && tetra_st(state)->mm_otar_dm_sck_subset == 5
+              && tetra_st(state)->mm_otar_dm_sck_vn == 0xBEEF,
           "DM-SCK subset identity retained");
-    CHECK(state->tetra_mm_otar_dm_sck_time_type == 0 && state->tetra_mm_otar_dm_sck_slot == 3
-              && state->tetra_mm_otar_dm_sck_frame == 17 && state->tetra_mm_otar_dm_sck_multiframe == 45
-              && state->tetra_mm_otar_dm_sck_hyperframe == 0x2468,
+    CHECK(tetra_st(state)->mm_otar_dm_sck_time_type == 0 && tetra_st(state)->mm_otar_dm_sck_slot == 3
+              && tetra_st(state)->mm_otar_dm_sck_frame == 17 && tetra_st(state)->mm_otar_dm_sck_multiframe == 45
+              && tetra_st(state)->mm_otar_dm_sck_hyperframe == 0x2468,
           "DM-SCK absolute activation time retained");
-    CHECK(state->tetra_mm_otar_address_valid && state->tetra_mm_otar_mcc == 460 && state->tetra_mm_otar_mnc == 4242,
+    CHECK(tetra_st(state)->mm_otar_address_valid && tetra_st(state)->mm_otar_mcc == 460
+              && tetra_st(state)->mm_otar_mnc == 4242,
           "mandatory DMO network MNI retained");
 
     tetra_mm_dispatch(bits, off - 1, 3, opts, state);
-    CHECK(state->tetra_mm_otar_dm_sck_hyperframe == 0x2468, "truncated mandatory DMO MNI preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_dm_sck_hyperframe == 0x2468, "truncated mandatory DMO MNI preserves snapshot");
     pack_bits(bits, 17, 6, 5);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_dm_sck_subset == 5, "out-of-group DM-SCK subset preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_dm_sck_subset == 5, "out-of-group DM-SCK subset preserves snapshot");
     pack_bits(bits, 17, 5, 5);
     pack_bits(bits, 13, 10, 4);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_dm_sck_grouping == 4, "reserved DM-SCK grouping preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar_dm_sck_grouping == 4, "reserved DM-SCK grouping preserves snapshot");
 
     /* Activate two named SCKs at a 48-bit network time. */
     memset(bits, 0, sizeof(bits));
@@ -1685,15 +1711,15 @@ test_otar_dm_sck_activate(void) {
     off += 14;
     CHECK(off == 129, "table A.27d two-SCK network-time demand is 129 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(state->tetra_mm_otar_dm_sck_count == 2 && state->tetra_mm_otar_dm_sck_number[0] == 3
-              && state->tetra_mm_otar_dm_sck_version[0] == 0x1234 && state->tetra_mm_otar_dm_sck_number[1] == 31
-              && state->tetra_mm_otar_dm_sck_version[1] == 0xABCD,
+    CHECK(tetra_st(state)->mm_otar_dm_sck_count == 2 && tetra_st(state)->mm_otar_dm_sck_number[0] == 3
+              && tetra_st(state)->mm_otar_dm_sck_version[0] == 0x1234 && tetra_st(state)->mm_otar_dm_sck_number[1] == 31
+              && tetra_st(state)->mm_otar_dm_sck_version[1] == 0xABCD,
           "repeated DM-SCK descriptors retained");
-    CHECK(state->tetra_mm_otar_dm_sck_time_type == 1
-              && state->tetra_mm_otar_dm_sck_network_time == UINT64_C(0x56789ABCDEF0) && state->tetra_mm_otar_mcc == 302
-              && state->tetra_mm_otar_mnc == 100,
+    CHECK(tetra_st(state)->mm_otar_dm_sck_time_type == 1
+              && tetra_st(state)->mm_otar_dm_sck_network_time == UINT64_C(0x56789ABCDEF0)
+              && tetra_st(state)->mm_otar_mcc == 302 && tetra_st(state)->mm_otar_mnc == 100,
           "DM-SCK network time and DMO network retained");
-    CHECK(state->tetra_mm_otar_dm_sck_grouping == 0 && state->tetra_mm_otar_dm_sck_vn == 0,
+    CHECK(tetra_st(state)->mm_otar_dm_sck_grouping == 0 && tetra_st(state)->mm_otar_dm_sck_vn == 0,
           "individual DM-SCK demand clears prior subset fields");
 
     /* Immediate and already-active demands carry no additional time value. */
@@ -1720,7 +1746,8 @@ test_otar_dm_sck_activate(void) {
         off += 14;
         CHECK(off == 60, "table A.27d implicit-time demand is 60 bits");
         tetra_mm_dispatch(bits, off, 3, opts, state);
-        CHECK(state->tetra_mm_otar_dm_sck_time_type == time_type && state->tetra_mm_otar_dm_sck_network_time == 0,
+        CHECK(tetra_st(state)->mm_otar_dm_sck_time_type == time_type
+                  && tetra_st(state)->mm_otar_dm_sck_network_time == 0,
               "DM-SCK implicit activation time retained");
     }
 
@@ -1761,20 +1788,21 @@ test_ck_change_demand(void) {
     off += 2; /* immediate */
     CHECK(off == 59, "table A.26 two-SCK body is 59 bits");
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_valid && state->tetra_mm_ck_change_ack,
+    CHECK(tetra_st(state)->mm_ck_change_valid && tetra_st(state)->mm_ck_change_ack,
           "SCK change becomes valid and retains acknowledgement");
-    CHECK(state->tetra_mm_ck_change_security_class == 3 && state->tetra_mm_ck_change_key_type == 0
-              && state->tetra_mm_ck_change_sck_count == 2,
+    CHECK(tetra_st(state)->mm_ck_change_security_class == 3 && tetra_st(state)->mm_ck_change_key_type == 0
+              && tetra_st(state)->mm_ck_change_sck_count == 2,
           "SCK change mandatory fields");
-    CHECK(state->tetra_mm_ck_change_sck_number[0] == 3 && state->tetra_mm_ck_change_sck_version[0] == 0xABCD
-              && state->tetra_mm_ck_change_sck_number[1] == 31 && state->tetra_mm_ck_change_sck_version[1] == 0x1234,
+    CHECK(tetra_st(state)->mm_ck_change_sck_number[0] == 3 && tetra_st(state)->mm_ck_change_sck_version[0] == 0xABCD
+              && tetra_st(state)->mm_ck_change_sck_number[1] == 31
+              && tetra_st(state)->mm_ck_change_sck_version[1] == 0x1234,
           "both repeated SCK descriptors retained");
-    CHECK(state->tetra_mm_ck_change_time_type == 2, "immediate SCK activation retained");
+    CHECK(tetra_st(state)->mm_ck_change_time_type == 2, "immediate SCK activation retained");
 
     /* The final bit of Time Type is mandatory; truncation is atomic. */
     pack_bits(bits, 15, 7, 5);
     tetra_mm_dispatch(bits, off - 1, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_sck_number[0] == 3 && state->tetra_mm_ck_change_time_type == 2,
+    CHECK(tetra_st(state)->mm_ck_change_sck_number[0] == 3 && tetra_st(state)->mm_ck_change_time_type == 2,
           "truncated SCK demand preserves prior snapshot");
 
     /* Zero SCK count selects a DMO subset and carries its common version. */
@@ -1801,9 +1829,9 @@ test_ck_change_demand(void) {
     pack_bits(bits, off, 3, 2);
     off += 2; /* currently in use */
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_sck_use == 1 && state->tetra_mm_ck_change_sck_count == 0
-              && state->tetra_mm_ck_change_sck_grouping == 9 && state->tetra_mm_ck_change_sck_subset == 17
-              && state->tetra_mm_ck_change_sck_vn == 0xBEEF,
+    CHECK(tetra_st(state)->mm_ck_change_sck_use == 1 && tetra_st(state)->mm_ck_change_sck_count == 0
+              && tetra_st(state)->mm_ck_change_sck_grouping == 9 && tetra_st(state)->mm_ck_change_sck_subset == 17
+              && tetra_st(state)->mm_ck_change_sck_vn == 0xBEEF,
           "DMO SCK subset fields retained");
 
     /* Two GCK descriptors followed by a 48-bit network time. */
@@ -1835,13 +1863,14 @@ test_ck_change_demand(void) {
     off += 32;
     CHECK(off == 128, "table A.26 two-GCK network-time body is 128 bits");
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_key_type == 2 && state->tetra_mm_ck_change_gck_count == 2,
+    CHECK(tetra_st(state)->mm_ck_change_key_type == 2 && tetra_st(state)->mm_ck_change_gck_count == 2,
           "GCK change and repeat count retained");
-    CHECK(state->tetra_mm_ck_change_gck_number[0] == 0x0102 && state->tetra_mm_ck_change_gck_version[0] == 0x0304
-              && state->tetra_mm_ck_change_gck_number[1] == 0xA0B0
-              && state->tetra_mm_ck_change_gck_version[1] == 0xC0D0,
+    CHECK(tetra_st(state)->mm_ck_change_gck_number[0] == 0x0102
+              && tetra_st(state)->mm_ck_change_gck_version[0] == 0x0304
+              && tetra_st(state)->mm_ck_change_gck_number[1] == 0xA0B0
+              && tetra_st(state)->mm_ck_change_gck_version[1] == 0xC0D0,
           "both repeated GCK descriptors retained");
-    CHECK(state->tetra_mm_ck_change_network_time == UINT64_C(0x123456789ABC),
+    CHECK(tetra_st(state)->mm_ck_change_network_time == UINT64_C(0x123456789ABC),
           "48-bit key-change network time retained");
 
     /* Combined Class 3 activation at an absolute IV. */
@@ -1870,21 +1899,21 @@ test_ck_change_demand(void) {
     pack_bits(bits, off, 0x2468, 16);
     off += 16;
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_key_type == 3 && state->tetra_mm_ck_change_cck_id == 0xCAFE
-              && state->tetra_mm_ck_change_gck_vn == 0x1357,
+    CHECK(tetra_st(state)->mm_ck_change_key_type == 3 && tetra_st(state)->mm_ck_change_cck_id == 0xCAFE
+              && tetra_st(state)->mm_ck_change_gck_vn == 0x1357,
           "combined Class 3 CCK/GCK fields retained");
-    CHECK(state->tetra_mm_ck_change_time_type == 0 && state->tetra_mm_ck_change_slot == 3
-              && state->tetra_mm_ck_change_frame == 17 && state->tetra_mm_ck_change_multiframe == 45
-              && state->tetra_mm_ck_change_hyperframe == 0x2468,
+    CHECK(tetra_st(state)->mm_ck_change_time_type == 0 && tetra_st(state)->mm_ck_change_slot == 3
+              && tetra_st(state)->mm_ck_change_frame == 17 && tetra_st(state)->mm_ck_change_multiframe == 45
+              && tetra_st(state)->mm_ck_change_hyperframe == 0x2468,
           "absolute IV fields retained");
 
     /* Reserved key-change types and a TMO zero-SCK count are invalid. */
-    uint16_t saved_cck = state->tetra_mm_ck_change_cck_id;
+    uint16_t saved_cck = tetra_st(state)->mm_ck_change_cck_id;
     memset(bits, 0, sizeof(bits));
     pack_bits(bits, 0, TETRA_MM_D_CK_CHANGE_DEMAND, 4);
     pack_bits(bits, 7, 6, 3);
     tetra_mm_dispatch(bits, 10, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_cck_id == saved_cck, "reserved key-change type preserves prior snapshot");
+    CHECK(tetra_st(state)->mm_ck_change_cck_id == saved_cck, "reserved key-change type preserves prior snapshot");
     memset(bits, 0, sizeof(bits));
     pack_bits(bits, 0, TETRA_MM_D_CK_CHANGE_DEMAND, 4);
     pack_bits(bits, 7, 0, 3);
@@ -1892,7 +1921,7 @@ test_ck_change_demand(void) {
     pack_bits(bits, 11, 0, 4); /* invalid subset count */
     pack_bits(bits, 15, 2, 2);
     tetra_mm_dispatch(bits, 17, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_cck_id == saved_cck, "TMO zero-SCK count preserves prior snapshot");
+    CHECK(tetra_st(state)->mm_ck_change_cck_id == saved_cck, "TMO zero-SCK count preserves prior snapshot");
 
     /* Remaining table A.71 key types have their own conditional widths. */
     memset(bits, 0, sizeof(bits));
@@ -1910,9 +1939,9 @@ test_ck_change_demand(void) {
     pack_bits(bits, off, 3, 2);
     off += 2;
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_key_type == 1 && state->tetra_mm_ck_change_cck_id == 0x9876,
+    CHECK(tetra_st(state)->mm_ck_change_key_type == 1 && tetra_st(state)->mm_ck_change_cck_id == 0x9876,
           "individual CCK change retained");
-    CHECK(state->tetra_mm_ck_change_sck_count == 0 && state->tetra_mm_ck_change_gck_count == 0,
+    CHECK(tetra_st(state)->mm_ck_change_sck_count == 0 && tetra_st(state)->mm_ck_change_gck_count == 0,
           "CCK change clears prior repeated-key lists");
 
     memset(bits, 0, sizeof(bits));
@@ -1930,7 +1959,7 @@ test_ck_change_demand(void) {
     pack_bits(bits, off, 2, 2);
     off += 2;
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_key_type == 4 && state->tetra_mm_ck_change_gck_vn == 0x7777,
+    CHECK(tetra_st(state)->mm_ck_change_key_type == 4 && tetra_st(state)->mm_ck_change_gck_vn == 0x7777,
           "all-GCK version change retained");
 
     memset(bits, 0, sizeof(bits));
@@ -1946,8 +1975,8 @@ test_ck_change_demand(void) {
     pack_bits(bits, off, 3, 2);
     off += 2;
     tetra_mm_dispatch(bits, off, 4, opts, state);
-    CHECK(state->tetra_mm_ck_change_key_type == 5 && state->tetra_mm_ck_change_security_class == 1
-              && state->tetra_mm_ck_change_time_type == 3,
+    CHECK(tetra_st(state)->mm_ck_change_key_type == 5 && tetra_st(state)->mm_ck_change_security_class == 1
+              && tetra_st(state)->mm_ck_change_time_type == 3,
           "no-cipher security-class change retained");
 
     free(state);
@@ -2041,8 +2070,10 @@ test_annex_e11_lu_accept_type4_chain(void) {
     CHECK(off == 159, "Annex E.11 MM body is exactly 159 bits");
 
     tetra_mm_dispatch(bits, off, 6, opts, state);
-    CHECK(state->tetra_mm_lu_accept_valid == 1 && state->tetra_mm_lu_accept_type == 5, "Annex E.11 LU Accept accepted");
-    CHECK(state->tetra_mm_lu_accept_subscriber_class_valid == 1 && state->tetra_mm_lu_accept_subscriber_class == 0xA55A,
+    CHECK(tetra_st(state)->mm_lu_accept_valid == 1 && tetra_st(state)->mm_lu_accept_type == 5,
+          "Annex E.11 LU Accept accepted");
+    CHECK(tetra_st(state)->mm_lu_accept_subscriber_class_valid == 1
+              && tetra_st(state)->mm_lu_accept_subscriber_class == 0xA55A,
           "Annex E.11 Subscriber Class published");
 
     /* Change visible fields, then stop inside the second outer Type 4 value.
@@ -2050,13 +2081,13 @@ test_annex_e11_lu_accept_type4_chain(void) {
     pack_bits(bits, 4, 2, 3);
     pack_bits(bits, 11, 0xBEEF, 16);
     tetra_mm_dispatch(bits, 157, 6, opts, state);
-    CHECK(state->tetra_mm_lu_accept_type == 5 && state->tetra_mm_lu_accept_subscriber_class == 0xA55A,
+    CHECK(tetra_st(state)->mm_lu_accept_type == 5 && tetra_st(state)->mm_lu_accept_subscriber_class == 0xA55A,
           "truncated Annex E.11 nested value preserves LU state");
 
     /* Both values are complete at bit 158; the outer terminal M-bit remains
      * mandatory for the complete D-LOCATION UPDATE ACCEPT envelope. */
     tetra_mm_dispatch(bits, 158, 6, opts, state);
-    CHECK(state->tetra_mm_lu_accept_type == 5 && state->tetra_mm_lu_accept_subscriber_class == 0xA55A,
+    CHECK(tetra_st(state)->mm_lu_accept_type == 5 && tetra_st(state)->mm_lu_accept_subscriber_class == 0xA55A,
           "missing Annex E.11 outer M-bit preserves LU state");
 
     free(state);
@@ -2112,19 +2143,20 @@ test_annex_e9_group_identity_downlink(void) {
     CHECK(off == 92, "Annex E.9 MM body is exactly 92 bits");
 
     tetra_mm_dispatch(bits, off, 7, opts, state);
-    CHECK(state->tetra_mm_group_identity_valid == 1 && state->tetra_mm_group_entry_count == 2,
+    CHECK(tetra_st(state)->mm_group_identity_valid == 1 && tetra_st(state)->mm_group_entry_count == 2,
           "Annex E.9 two-entry Group Identity Downlink accepted");
-    CHECK(state->tetra_mm_group_entry_action[0] == 0 && state->tetra_mm_group_entry_attachment_lifetime[0] == 2
-              && state->tetra_mm_group_entry_class_of_usage[0] == 5 && state->tetra_mm_group_entry_gssi[0] == 0x123456,
+    CHECK(tetra_st(state)->mm_group_entry_action[0] == 0 && tetra_st(state)->mm_group_entry_attachment_lifetime[0] == 2
+              && tetra_st(state)->mm_group_entry_class_of_usage[0] == 5
+              && tetra_st(state)->mm_group_entry_gssi[0] == 0x123456,
           "Annex E.9 attachment fields published");
-    CHECK(state->tetra_mm_group_entry_action[1] == 1 && state->tetra_mm_group_entry_detachment_reason[1] == 3
-              && state->tetra_mm_group_entry_gssi[1] == 0x654321,
+    CHECK(tetra_st(state)->mm_group_entry_action[1] == 1 && tetra_st(state)->mm_group_entry_detachment_reason[1] == 3
+              && tetra_st(state)->mm_group_entry_gssi[1] == 0x654321,
           "Annex E.9 detachment fields published");
 
     /* A complete 67-bit collection still needs the outer terminal M-bit. */
     pack_bits(bits, 38, 0x234567, 24);
     tetra_mm_dispatch(bits, off - 1, 7, opts, state);
-    CHECK(state->tetra_mm_group_entry_count == 2 && state->tetra_mm_group_entry_gssi[0] == 0x123456,
+    CHECK(tetra_st(state)->mm_group_entry_count == 2 && tetra_st(state)->mm_group_entry_gssi[0] == 0x123456,
           "missing Annex E.9 terminal M-bit preserves group snapshot");
 
     /* Table 16.54 conditional address forms: GTSI, (V)GSSI, and
@@ -2187,15 +2219,15 @@ test_annex_e9_group_identity_downlink(void) {
     off++;
     CHECK(off == 196, "table 16.54 conditional-address body is 196 bits");
     tetra_mm_dispatch(bits, off, 7, opts, state);
-    CHECK(state->tetra_mm_group_entry_count == 3, "three conditional group-address forms accepted");
-    CHECK(state->tetra_mm_group_entry_address_type[0] == 1 && state->tetra_mm_group_entry_gssi[0] == 0x111111
-              && state->tetra_mm_group_entry_extension[0] == 0x222222,
+    CHECK(tetra_st(state)->mm_group_entry_count == 3, "three conditional group-address forms accepted");
+    CHECK(tetra_st(state)->mm_group_entry_address_type[0] == 1 && tetra_st(state)->mm_group_entry_gssi[0] == 0x111111
+              && tetra_st(state)->mm_group_entry_extension[0] == 0x222222,
           "GTSI group address retained");
-    CHECK(state->tetra_mm_group_entry_address_type[1] == 2 && state->tetra_mm_group_entry_vgssi[1] == 0x333333,
+    CHECK(tetra_st(state)->mm_group_entry_address_type[1] == 2 && tetra_st(state)->mm_group_entry_vgssi[1] == 0x333333,
           "visitor GSSI retained");
-    CHECK(state->tetra_mm_group_entry_address_type[2] == 3 && state->tetra_mm_group_entry_gssi[2] == 0x444444
-              && state->tetra_mm_group_entry_extension[2] == 0x555555
-              && state->tetra_mm_group_entry_vgssi[2] == 0x666666,
+    CHECK(tetra_st(state)->mm_group_entry_address_type[2] == 3 && tetra_st(state)->mm_group_entry_gssi[2] == 0x444444
+              && tetra_st(state)->mm_group_entry_extension[2] == 0x555555
+              && tetra_st(state)->mm_group_entry_vgssi[2] == 0x666666,
           "GTSI with visitor GSSI retained");
 
     memset(bits, 0, sizeof(bits));
@@ -2205,7 +2237,7 @@ test_annex_e9_group_identity_downlink(void) {
     pack_bits(bits, 6, 0, 1);
     pack_bits(bits, 7, 0, 1); /* no optional entries */
     tetra_mm_dispatch(bits, 8, 7, opts, state);
-    CHECK(state->tetra_mm_group_entry_count == 0 && state->tetra_mm_group_entry_gssi[0] == 0,
+    CHECK(tetra_st(state)->mm_group_entry_count == 0 && tetra_st(state)->mm_group_entry_gssi[0] == 0,
           "later group message without entries clears the old snapshot");
 
     free(state);

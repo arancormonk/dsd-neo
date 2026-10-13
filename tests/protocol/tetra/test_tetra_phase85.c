@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -114,13 +115,13 @@ test_d_facility_annex_e3(void) {
     wrap_mle_cmce(cmce, 33, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
 
-    CHECK(st->tetra_facility_valid == 1, "D-FACILITY valid flag set");
-    CHECK(st->tetra_facility_type == 7, "D-FACILITY first SS-Type parsed");
+    CHECK(tetra_st(st)->facility_valid == 1, "D-FACILITY valid flag set");
+    CHECK(tetra_st(st)->facility_type == 7, "D-FACILITY first SS-Type parsed");
 
-    st->tetra_facility_valid = 0;
+    tetra_st(st)->facility_valid = 0;
     wrap_mle_cmce(cmce, 25, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
-    CHECK(st->tetra_facility_valid == 0, "truncated D-FACILITY rejected");
+    CHECK(tetra_st(st)->facility_valid == 0, "truncated D-FACILITY rejected");
 
     free(st);
     free(op);
@@ -154,21 +155,21 @@ test_d_facility_annex_e2_two_ss_pdus(void) {
 
     wrap_mle_cmce(cmce, 56, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
-    CHECK(st->tetra_facility_valid == 1, "Annex E.2 two-SS-PDU collection accepted");
-    CHECK(st->tetra_facility_type == 7, "Annex E.2 first independent SS-Type retained");
+    CHECK(tetra_st(st)->facility_valid == 1, "Annex E.2 two-SS-PDU collection accepted");
+    CHECK(tetra_st(st)->facility_type == 7, "Annex E.2 first independent SS-Type retained");
 
     /* Stop inside the second independently length-delimited SS-PDU. State
      * publication must remain atomic rather than exposing the first member. */
-    st->tetra_facility_type = 9;
+    tetra_st(st)->facility_type = 9;
     wrap_mle_cmce(cmce, 54, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
-    CHECK(st->tetra_facility_valid == 1, "truncated second SS-PDU preserves valid state");
-    CHECK(st->tetra_facility_type == 9, "truncated second SS-PDU preserves previous SS-Type");
+    CHECK(tetra_st(st)->facility_valid == 1, "truncated second SS-PDU preserves valid state");
+    CHECK(tetra_st(st)->facility_type == 9, "truncated second SS-PDU preserves previous SS-Type");
 
     /* Both SS-PDUs are complete, but Annex E requires the outer O-bit. */
     wrap_mle_cmce(cmce, 55, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
-    CHECK(st->tetra_facility_type == 9, "missing outer D-FACILITY O-bit preserves state");
+    CHECK(tetra_st(st)->facility_type == 9, "missing outer D-FACILITY O-bit preserves state");
 
     free(st);
     free(op);
@@ -240,24 +241,25 @@ test_d_connect_annex_e8_ss_al_facility(void) {
 
     wrap_mle_cmce(cmce, off, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
-    CHECK(st->tetra_connect_valid == 1, "Annex E.8 D-CONNECT accepted");
-    CHECK(st->tetra_call_id == 0x1234 && st->tetra_call_timeout == 9, "Annex E.8 mandatory call fields published");
-    CHECK(st->tetra_cmce_connect_tx_grant == 1, "Annex E.8 transmission grant published");
-    CHECK(st->tetra_cmce_call_generation == 1, "Annex E.8 complete message advances generation");
+    CHECK(tetra_st(st)->connect_valid == 1, "Annex E.8 D-CONNECT accepted");
+    CHECK(tetra_st(st)->call_id == 0x1234 && tetra_st(st)->call_timeout == 9,
+          "Annex E.8 mandatory call fields published");
+    CHECK(tetra_st(st)->cmce_connect_tx_grant == 1, "Annex E.8 transmission grant published");
+    CHECK(tetra_st(st)->cmce_call_generation == 1, "Annex E.8 complete message advances generation");
 
     /* The 42-bit Facility is length-delimited.  Stopping inside it must not
      * replace the last complete call state. */
     pack_bits(cmce, 0x2222, 5, 14);
     wrap_mle_cmce(cmce, 91, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
-    CHECK(st->tetra_call_id == 0x1234 && st->tetra_cmce_call_generation == 1,
+    CHECK(tetra_st(st)->call_id == 0x1234 && tetra_st(st)->cmce_call_generation == 1,
           "truncated Annex E.8 Facility preserves call state");
 
     /* The value is complete at bit 92, but Annex E still requires the
      * terminating outer M-bit at bit 93. */
     wrap_mle_cmce(cmce, 92, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
-    CHECK(st->tetra_call_id == 0x1234 && st->tetra_cmce_call_generation == 1,
+    CHECK(tetra_st(st)->call_id == 0x1234 && tetra_st(st)->cmce_call_generation == 1,
           "missing Annex E.8 terminal M-bit preserves call state");
 
     free(st);
@@ -272,12 +274,12 @@ test_channel_info_release_cause(void) {
     printf("[Phase 84] channel_info release cause\n");
 
     dsd_state* st = alloc_state();
-    st->tetra_net_known = 1;
-    st->tetra_mcc = 1;
-    st->tetra_mnc = 1;
-    st->tetra_colour = 1;
-    st->tetra_cmce_release_cause_type = 1; /* flag that release cause is present */
-    st->tetra_cmce_release_cause = 2;      /* pre-emption */
+    tetra_st(st)->net_known = 1;
+    tetra_st(st)->mcc = 1;
+    tetra_st(st)->mnc = 1;
+    tetra_st(st)->colour = 1;
+    tetra_st(st)->cmce_release_cause_type = 1; /* flag that release cause is present */
+    tetra_st(st)->cmce_release_cause = 2;      /* pre-emption */
 
     char buf[512];
     tetra_channel_info_fmt(st, buf, sizeof(buf));
@@ -291,11 +293,11 @@ test_channel_info_access_common(void) {
     printf("[Phase 84] channel_info access common flag\n");
 
     dsd_state* st = alloc_state();
-    st->tetra_net_known = 1;
-    st->tetra_mcc = 1;
-    st->tetra_mnc = 1;
-    st->tetra_colour = 1;
-    st->tetra_access_common_flag = 1;
+    tetra_st(st)->net_known = 1;
+    tetra_st(st)->mcc = 1;
+    tetra_st(st)->mnc = 1;
+    tetra_st(st)->colour = 1;
+    tetra_st(st)->access_common_flag = 1;
 
     char buf[512];
     tetra_channel_info_fmt(st, buf, sizeof(buf));
@@ -309,11 +311,11 @@ test_channel_info_mm_addr_type(void) {
     printf("[Phase 84] channel_info MM addr type\n");
 
     dsd_state* st = alloc_state();
-    st->tetra_net_known = 1;
-    st->tetra_mcc = 1;
-    st->tetra_mnc = 1;
-    st->tetra_colour = 1;
-    st->tetra_mm_addr_type = 3; /* SMI */
+    tetra_st(st)->net_known = 1;
+    tetra_st(st)->mcc = 1;
+    tetra_st(st)->mnc = 1;
+    tetra_st(st)->colour = 1;
+    tetra_st(st)->mm_addr_type = 3; /* SMI */
 
     char buf[512];
     tetra_channel_info_fmt(st, buf, sizeof(buf));

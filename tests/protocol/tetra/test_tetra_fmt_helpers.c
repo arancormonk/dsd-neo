@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -84,10 +85,10 @@ main(void) {
         tetra_bsch_fmt_net(st, buf, sizeof(buf));
         CHECK_STR(buf, "MCC:? MNC:? CC:?", "bsch_fmt_net net_unknown == '?'");
 
-        st->tetra_net_known = 1;
-        st->tetra_mcc = 234;
-        st->tetra_mnc = 30;
-        st->tetra_colour = 42;
+        tetra_st(st)->net_known = 1;
+        tetra_st(st)->mcc = 234;
+        tetra_st(st)->mnc = 30;
+        tetra_st(st)->colour = 42;
         tetra_bsch_fmt_net(st, buf, sizeof(buf));
         CHECK_STR(buf, "MCC:234 MNC:30 CC:42", "bsch_fmt_net known values");
         free(st);
@@ -106,35 +107,35 @@ main(void) {
         CHECK(strstr(buf, "enc:none") != NULL, "channel_info_fmt includes enc:none");
 
         /* With enc_mode=1 */
-        st->tetra_enc_mode = 1;
+        tetra_st(st)->enc_mode = 1;
         tetra_channel_info_fmt(st, buf, sizeof(buf));
         CHECK(strstr(buf, "enc:on") != NULL, "channel_info_fmt enc:on");
 
-        st->tetra_sds_forward_valid = 1;
-        st->tetra_sds_storage_forward = 1;
-        st->tetra_sds_validity_period = 17;
-        st->tetra_sds_forward_type = 3;
-        strcpy(st->tetra_sds_forward_external, "+123*#");
+        tetra_st(st)->sds_forward_valid = 1;
+        tetra_st(st)->sds_storage_forward = 1;
+        tetra_st(st)->sds_validity_period = 17;
+        tetra_st(st)->sds_forward_type = 3;
+        strcpy(tetra_st(st)->sds_forward_external, "+123*#");
         tetra_channel_info_fmt(st, buf, sizeof(buf));
         CHECK(strstr(buf, "fwd:EXT:+123*# vp:17") != NULL,
               "channel_info_fmt includes SDS forward address and validity");
 
-        st->tetra_sds_concat_valid = 1;
-        st->tetra_sds_concat_ref = 0xabc;
-        st->tetra_sds_concat_received = 2;
-        st->tetra_sds_concat_total = 3;
-        st->tetra_sds_concat_duplicate = 1;
+        tetra_st(st)->sds_concat_valid = 1;
+        tetra_st(st)->sds_concat_ref = 0xabc;
+        tetra_st(st)->sds_concat_received = 2;
+        tetra_st(st)->sds_concat_total = 3;
+        tetra_st(st)->sds_concat_duplicate = 1;
         tetra_channel_info_fmt(st, buf, sizeof(buf));
         CHECK(strstr(buf, "cat:ABC:2/3:dup") != NULL, "channel_info_fmt includes concatenated SDS progress");
 
-        st->tetra_tx_granted_valid = 1;
-        st->tetra_tx_granted_ssi = 123456;
+        tetra_st(st)->tx_granted_valid = 1;
+        tetra_st(st)->tx_granted_ssi = 123456;
         tetra_channel_info_fmt(st, buf, sizeof(buf));
         CHECK(strstr(buf, "PTT:123456") != NULL, "channel_info_fmt includes current granted transmitter");
 
-        st->tetra_tx_granted_valid = 0;
-        st->tetra_tx_event_party_ssi_valid = 1;
-        st->tetra_tx_event_party_ssi = 654321;
+        tetra_st(st)->tx_granted_valid = 0;
+        tetra_st(st)->tx_event_party_ssi_valid = 1;
+        tetra_st(st)->tx_event_party_ssi = 654321;
         tetra_channel_info_fmt(st, buf, sizeof(buf));
         CHECK(strstr(buf, "TXSRC:654321") != NULL, "channel_info_fmt includes floor-event transmitter");
 

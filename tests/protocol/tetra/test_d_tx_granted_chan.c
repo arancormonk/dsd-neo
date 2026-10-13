@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int failures;
 #define CHECK(c, m)                                                                                                    \
@@ -55,10 +56,10 @@ test_standard_layout_and_identity(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     dsd_opts* opt = calloc(1, sizeof(*opt));
     tetra_mle_dispatch(bits, nbits, 0, opt, st);
-    CHECK(st->tetra_tx_granted_valid == 1, "grant-to-another enables receive U-plane");
-    CHECK(st->tetra_tx_granted_ssi == ssi, "transmitting SSI decoded");
-    CHECK(st->tetra_cmce_tx_granted_perm == 1, "request permission decoded");
-    CHECK(st->tetra_enc_mode == 1, "encryption control decoded");
+    CHECK(tetra_st(st)->tx_granted_valid == 1, "grant-to-another enables receive U-plane");
+    CHECK(tetra_st(st)->tx_granted_ssi == ssi, "transmitting SSI decoded");
+    CHECK(tetra_st(st)->cmce_tx_granted_perm == 1, "request permission decoded");
+    CHECK(tetra_st(st)->enc_mode == 1, "encryption control decoded");
     free(st);
     free(opt);
 }
@@ -70,10 +71,10 @@ test_non_voice_grants_do_not_enable_audio(void) {
     dsd_opts* opt = calloc(1, sizeof(*opt));
     int nbits = build(bits, 1, 1, 0, 0, 0, 0);
     tetra_mle_dispatch(bits, nbits, 0, opt, st);
-    CHECK(st->tetra_tx_granted_valid == 0, "not-granted keeps receive U-plane off");
+    CHECK(tetra_st(st)->tx_granted_valid == 0, "not-granted keeps receive U-plane off");
     nbits = build(bits, 1, 2, 0, 0, 0, 0);
     tetra_mle_dispatch(bits, nbits, 0, opt, st);
-    CHECK(st->tetra_tx_granted_valid == 0, "queued keeps receive U-plane off");
+    CHECK(tetra_st(st)->tx_granted_valid == 0, "queued keeps receive U-plane off");
     free(st);
     free(opt);
 }
@@ -84,15 +85,15 @@ test_cmce_never_overwrites_mac_allocation(void) {
     int nbits = build(bits, 7, 0, 1, 0, 0, 0);
     dsd_state* st = calloc(1, sizeof(*st));
     dsd_opts* opt = calloc(1, sizeof(*opt));
-    st->tetra_vc_assignment_valid = 1;
-    st->tetra_vc_carrier = 400;
-    st->tetra_vc_timeslot_bitmap = 4;
-    st->tetra_vc_freq_hz = 470000000L;
+    tetra_st(st)->vc_assignment_valid = 1;
+    tetra_st(st)->vc_carrier = 400;
+    tetra_st(st)->vc_timeslot_bitmap = 4;
+    tetra_st(st)->vc_freq_hz = 470000000L;
     tetra_mle_dispatch(bits, nbits, 0, opt, st);
-    CHECK(st->tetra_vc_assignment_valid == 1, "MAC allocation validity retained");
-    CHECK(st->tetra_vc_carrier == 400, "MAC carrier retained");
-    CHECK(st->tetra_vc_timeslot_bitmap == 4, "MAC timeslot bitmap retained");
-    CHECK(st->tetra_vc_freq_hz == 470000000L, "MAC frequency retained");
+    CHECK(tetra_st(st)->vc_assignment_valid == 1, "MAC allocation validity retained");
+    CHECK(tetra_st(st)->vc_carrier == 400, "MAC carrier retained");
+    CHECK(tetra_st(st)->vc_timeslot_bitmap == 4, "MAC timeslot bitmap retained");
+    CHECK(tetra_st(st)->vc_freq_hz == 470000000L, "MAC frequency retained");
     free(st);
     free(opt);
 }

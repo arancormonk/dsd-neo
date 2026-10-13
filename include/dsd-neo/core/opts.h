@@ -271,7 +271,12 @@ struct dsd_opts {
     int inverted_ysf;
     int frame_m17;
     int inverted_m17;
-    int frame_tetra; /**< 1 = attempt TETRA NDB sync detection */
+    int frame_tetra;  /**< 1 = attempt TETRA NDB sync detection */
+    int tetra_uplink; /**< 1 with --tetra-uplink: normal bursts are uplink NUBs; control uplink bursts are sought. */
+    int tetra_net_preset; /**< 1 when --tetra-net gave the network identity below, used until a BSCH supplies one. */
+    uint16_t tetra_net_mcc;
+    uint16_t tetra_net_mnc;
+    uint8_t tetra_net_colour;
     int call_alert;
 
     // rigctl / sockets / streaming

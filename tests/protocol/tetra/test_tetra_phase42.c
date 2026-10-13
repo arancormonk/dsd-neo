@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -94,14 +95,14 @@ test_decode_quality_fields_zero(void) {
     printf("[test_decode_quality_fields_zero]\n");
     dsd_state* st = alloc_state();
 
-    CHECK(st->tetra_decode_ok == 0, "decode_ok zero after calloc");
-    CHECK(st->tetra_decode_errors == 0, "decode_errors zero after calloc");
+    CHECK(tetra_st(st)->decode_ok == 0, "decode_ok zero after calloc");
+    CHECK(tetra_st(st)->decode_errors == 0, "decode_errors zero after calloc");
 
     /* counters must be directly writable */
-    st->tetra_decode_ok = 99;
-    st->tetra_decode_errors = 3;
-    CHECK(st->tetra_decode_ok == 99, "decode_ok writable");
-    CHECK(st->tetra_decode_errors == 3, "decode_errors writable");
+    tetra_st(st)->decode_ok = 99;
+    tetra_st(st)->decode_errors = 3;
+    CHECK(tetra_st(st)->decode_ok == 99, "decode_ok writable");
+    CHECK(tetra_st(st)->decode_errors == 3, "decode_errors writable");
 
     free(st);
 }
@@ -127,10 +128,10 @@ test_d_sds_data_8bit_text(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-    CHECK(st->tetra_sds_src == 77777u, "D-SDS-DATA: CPTI SSI parsed");
-    CHECK(st->tetra_cmce_sds_data_type == 0, "D-SDS-DATA: SDTI=0");
-    CHECK(st->tetra_sds_short_valid == 1, "D-SDS-DATA: 16-bit form valid");
-    CHECK(st->tetra_sds_short_data == 0x4F4B, "D-SDS-DATA: 16-bit payload");
+    CHECK(tetra_st(st)->sds_src == 77777u, "D-SDS-DATA: CPTI SSI parsed");
+    CHECK(tetra_st(st)->cmce_sds_data_type == 0, "D-SDS-DATA: SDTI=0");
+    CHECK(tetra_st(st)->sds_short_valid == 1, "D-SDS-DATA: 16-bit form valid");
+    CHECK(tetra_st(st)->sds_short_data == 0x4F4B, "D-SDS-DATA: 16-bit payload");
     free(st);
     free(opt);
 }
@@ -154,8 +155,8 @@ test_d_sds_data_too_short(void) {
     /* Must not crash */
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    CHECK(st->tetra_sds_src == 0, "D-SDS-DATA short: src_ssi stays 0");
-    CHECK(st->tetra_sds_text_len == 0, "D-SDS-DATA short: text_len stays 0");
+    CHECK(tetra_st(st)->sds_src == 0, "D-SDS-DATA short: src_ssi stays 0");
+    CHECK(tetra_st(st)->sds_text_len == 0, "D-SDS-DATA short: text_len stays 0");
 
     free(st);
     free(opt);
@@ -177,8 +178,8 @@ test_d_sds_data_ext_flag(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-    CHECK(st->tetra_sds_src == 0, "D-SDS-DATA CPTI=0: no SSI");
-    CHECK(st->tetra_sds_short_data == 0x1234, "D-SDS-DATA CPTI=0 payload");
+    CHECK(tetra_st(st)->sds_src == 0, "D-SDS-DATA CPTI=0: no SSI");
+    CHECK(tetra_st(st)->sds_short_data == 0x1234, "D-SDS-DATA CPTI=0 payload");
     free(st);
     free(opt);
 }
@@ -203,9 +204,9 @@ test_d_sds_data_7bit_text(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-    CHECK(st->tetra_sds_src == 55555u, "D-SDS-DATA SDTI3: SSI parsed");
-    CHECK(st->tetra_cmce_sds_data_type == 3, "D-SDS-DATA SDTI3 selected");
-    CHECK(st->tetra_sds_text_len == 0, "CMCE does not invent SDS-TL text encoding");
+    CHECK(tetra_st(st)->sds_src == 55555u, "D-SDS-DATA SDTI3: SSI parsed");
+    CHECK(tetra_st(st)->cmce_sds_data_type == 3, "D-SDS-DATA SDTI3 selected");
+    CHECK(tetra_st(st)->sds_text_len == 0, "CMCE does not invent SDS-TL text encoding");
     free(st);
     free(opt);
 }
@@ -231,10 +232,10 @@ test_sb1_fields_zero(void) {
     printf("[test_sb1_fields_zero]\n");
     dsd_state* st = alloc_state();
 
-    CHECK(st->tetra_sb1_valid == 0, "tetra_sb1_valid zero after calloc");
+    CHECK(st->tetra_sync.sb1_valid == 0, "tetra_sb1_valid zero after calloc");
     /* Verify at least first and last bytes of the 60-byte buffer are zero */
-    CHECK(st->tetra_sb1_dibuf[0] == 0, "sb1_dibuf[0] zero");
-    CHECK(st->tetra_sb1_dibuf[59] == 0, "sb1_dibuf[59] zero");
+    CHECK(st->tetra_sync.sb1_dibuf[0] == 0, "sb1_dibuf[0] zero");
+    CHECK(st->tetra_sync.sb1_dibuf[59] == 0, "sb1_dibuf[59] zero");
 
     free(st);
 }

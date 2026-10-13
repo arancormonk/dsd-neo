@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -114,10 +115,10 @@ test_tdma_fields_zero(void) {
     printf("[test_tdma_fields_zero]\n");
     dsd_state* st = alloc_state();
 
-    CHECK(st->tetra_tdma_valid == 0, "tdma_valid zero after calloc");
-    CHECK(st->tetra_tn == 0, "tetra_tn zero after calloc");
-    CHECK(st->tetra_fn == 0, "tetra_fn zero after calloc");
-    CHECK(st->tetra_mn == 0, "tetra_mn zero after calloc");
+    CHECK(tetra_st(st)->tdma_valid == 0, "tdma_valid zero after calloc");
+    CHECK(tetra_st(st)->tn == 0, "tetra_tn zero after calloc");
+    CHECK(tetra_st(st)->fn == 0, "tetra_fn zero after calloc");
+    CHECK(tetra_st(st)->mn == 0, "tetra_mn zero after calloc");
 
     free(st);
 }
@@ -137,10 +138,10 @@ test_bsch_tdma_parse(void) {
     int result = tetra_bsch_parse(bits, 60, opt, st);
 
     CHECK(result == 1, "bsch_parse returns 1 on success");
-    CHECK(st->tetra_tdma_valid == 1, "tdma_valid = 1 after bsch_parse");
-    CHECK(st->tetra_tn == 1, "tetra_tn = tn_raw+1 = 1");
-    CHECK(st->tetra_fn == 5, "tetra_fn = 5");
-    CHECK(st->tetra_mn == 12, "tetra_mn = 12");
+    CHECK(tetra_st(st)->tdma_valid == 1, "tdma_valid = 1 after bsch_parse");
+    CHECK(tetra_st(st)->tn == 1, "tetra_tn = tn_raw+1 = 1");
+    CHECK(tetra_st(st)->fn == 5, "tetra_fn = 5");
+    CHECK(tetra_st(st)->mn == 12, "tetra_mn = 12");
 
     free(st);
     free(opt);
@@ -159,9 +160,9 @@ test_bsch_tdma_tn_onebased(void) {
 
     tetra_bsch_parse(bits, 60, opt, st);
 
-    CHECK(st->tetra_tn == 4, "tetra_tn = tn_raw(3)+1 = 4");
-    CHECK(st->tetra_fn == 17, "tetra_fn = 17 (max frame)");
-    CHECK(st->tetra_mn == 59, "tetra_mn = 59 (max multiframe)");
+    CHECK(tetra_st(st)->tn == 4, "tetra_tn = tn_raw(3)+1 = 4");
+    CHECK(tetra_st(st)->fn == 17, "tetra_fn = 17 (max frame)");
+    CHECK(tetra_st(st)->mn == 59, "tetra_mn = 59 (max multiframe)");
 
     free(st);
     free(opt);
@@ -179,14 +180,14 @@ test_bsch_tdma_overwrite(void) {
     /* First BSCH: TN=1, FN=0, MN=0 */
     bsch_build(bits, 0x01, 0, 0, 0, 100, 1);
     tetra_bsch_parse(bits, 60, opt, st);
-    CHECK(st->tetra_tn == 1, "first BSCH: tn=1");
+    CHECK(tetra_st(st)->tn == 1, "first BSCH: tn=1");
 
     /* Second BSCH: TN=3, FN=15, MN=30 */
     bsch_build(bits, 0x01, 2, 15, 30, 100, 1);
     tetra_bsch_parse(bits, 60, opt, st);
-    CHECK(st->tetra_tn == 3, "second BSCH overwrites tn=3");
-    CHECK(st->tetra_fn == 15, "second BSCH overwrites fn=15");
-    CHECK(st->tetra_mn == 30, "second BSCH overwrites mn=30");
+    CHECK(tetra_st(st)->tn == 3, "second BSCH overwrites tn=3");
+    CHECK(tetra_st(st)->fn == 15, "second BSCH overwrites fn=15");
+    CHECK(tetra_st(st)->mn == 30, "second BSCH overwrites mn=30");
 
     free(st);
     free(opt);
@@ -198,25 +199,28 @@ test_tdma_ndb_advance_and_rollover(void) {
     dsd_state* st = alloc_state();
 
     /* No trustworthy BSCH timestamp: leave all counters untouched. */
-    st->tetra_tn = 3;
-    st->tetra_fn = 9;
-    st->tetra_mn = 37;
+    tetra_st(st)->tn = 3;
+    tetra_st(st)->fn = 9;
+    tetra_st(st)->mn = 37;
     tetra_tdma_advance_ndb(st);
-    CHECK(st->tetra_tn == 3 && st->tetra_fn == 9 && st->tetra_mn == 37,
+    CHECK(tetra_st(st)->tn == 3 && tetra_st(st)->fn == 9 && tetra_st(st)->mn == 37,
           "NDB advance is inert before BSCH timing is valid");
 
-    st->tetra_tdma_valid = 1;
+    tetra_st(st)->tdma_valid = 1;
     tetra_tdma_advance_ndb(st);
-    CHECK(st->tetra_tn == 4 && st->tetra_fn == 9 && st->tetra_mn == 37, "TN3 advances to TN4 without changing FN/MN");
+    CHECK(tetra_st(st)->tn == 4 && tetra_st(st)->fn == 9 && tetra_st(st)->mn == 37,
+          "TN3 advances to TN4 without changing FN/MN");
 
     tetra_tdma_advance_ndb(st);
-    CHECK(st->tetra_tn == 1 && st->tetra_fn == 10 && st->tetra_mn == 37, "TN4 wraps to TN1 and increments FN");
+    CHECK(tetra_st(st)->tn == 1 && tetra_st(st)->fn == 10 && tetra_st(st)->mn == 37,
+          "TN4 wraps to TN1 and increments FN");
 
-    st->tetra_tn = 4;
-    st->tetra_fn = 17;
-    st->tetra_mn = 59;
+    tetra_st(st)->tn = 4;
+    tetra_st(st)->fn = 17;
+    tetra_st(st)->mn = 59;
     tetra_tdma_advance_ndb(st);
-    CHECK(st->tetra_tn == 1 && st->tetra_fn == 0 && st->tetra_mn == 0, "last frame and multiframe wrap to zero");
+    CHECK(tetra_st(st)->tn == 1 && tetra_st(st)->fn == 0 && tetra_st(st)->mn == 0,
+          "last frame and multiframe wrap to zero");
 
     free(st);
 }
@@ -230,8 +234,8 @@ test_tx_granted_ui_fields_zero(void) {
     printf("[test_tx_granted_ui_fields_zero]\n");
     dsd_state* st = alloc_state();
 
-    CHECK(st->tetra_sds_msg_ref == 0, "sds_msg_ref zero after calloc");
-    CHECK(st->tetra_sds_last_cc == 0, "sds_last_cc zero after calloc");
+    CHECK(tetra_st(st)->sds_msg_ref == 0, "sds_msg_ref zero after calloc");
+    CHECK(tetra_st(st)->sds_last_cc == 0, "sds_last_cc zero after calloc");
 
     free(st);
 }
@@ -274,13 +278,13 @@ test_tx_granted_identity_set(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
-    st->tetra_gssi = 44444;
+    tetra_st(st)->gssi = 44444;
 
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    CHECK(st->tetra_tx_granted_ssi == 88888u, "TX-GRANTED: tx_granted_ssi = 88888");
-    CHECK(st->tetra_tx_granted_valid == 1, "TX-GRANTED: valid = 1");
-    CHECK(st->tetra_gssi == 44444u, "TX-GRANTED: current GSSI retained");
+    CHECK(tetra_st(st)->tx_granted_ssi == 88888u, "TX-GRANTED: tx_granted_ssi = 88888");
+    CHECK(tetra_st(st)->tx_granted_valid == 1, "TX-GRANTED: valid = 1");
+    CHECK(tetra_st(st)->gssi == 44444u, "TX-GRANTED: current GSSI retained");
 
     free(st);
     free(opt);
@@ -299,12 +303,12 @@ test_tx_granted_without_channel_assignment(void) {
 
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
-    st->tetra_vc_freq_hz = 390000000L;
+    tetra_st(st)->vc_freq_hz = 390000000L;
 
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    CHECK(st->tetra_tx_granted_ssi == 12345u, "TX-GRANTED: granted SSI is retained");
-    CHECK(st->tetra_vc_freq_hz == 390000000L, "TX-GRANTED: absent channel IE does not overwrite VC frequency");
+    CHECK(tetra_st(st)->tx_granted_ssi == 12345u, "TX-GRANTED: granted SSI is retained");
+    CHECK(tetra_st(st)->vc_freq_hz == 390000000L, "TX-GRANTED: absent channel IE does not overwrite VC frequency");
 
     free(st);
     free(opt);
@@ -326,8 +330,8 @@ test_tx_granted_floor_state(void) {
 
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    CHECK(st->tetra_tx_granted_valid == 1, "TX-GRANTED: floor grant marked valid");
-    CHECK(st->tetra_cmce_tx_granted_perm == 1, "TX-GRANTED: transmit permission retained");
+    CHECK(tetra_st(st)->tx_granted_valid == 1, "TX-GRANTED: floor grant marked valid");
+    CHECK(tetra_st(st)->cmce_tx_granted_perm == 1, "TX-GRANTED: transmit permission retained");
 
     free(st);
     free(opt);
@@ -370,8 +374,8 @@ test_sds_msg_ref_stored(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
     tetra_mle_dispatch(mle, n, 3, opt, st);
-    CHECK(st->tetra_cmce_sds_data_type == 0, "SDS SDTI = 0");
-    CHECK(st->tetra_sds_last_cc == 3, "SDS last_cc = 3");
+    CHECK(tetra_st(st)->cmce_sds_data_type == 0, "SDS SDTI = 0");
+    CHECK(tetra_st(st)->sds_last_cc == 3, "SDS last_cc = 3");
     free(st);
     free(opt);
 }
@@ -387,7 +391,7 @@ test_sds_last_cc_stored(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
     tetra_mle_dispatch(mle, n, 11, opt, st);
-    CHECK(st->tetra_sds_last_cc == 11, "SDS last_cc = 11");
+    CHECK(tetra_st(st)->sds_last_cc == 11, "SDS last_cc = 11");
     free(st);
     free(opt);
 }
@@ -402,11 +406,11 @@ test_sds_msg_ref_overwrite(void) {
     build_d_sds_data(cmce, 10001u, 0u);
     wrap_mle_cmce(cmce, 50, mle, &n);
     tetra_mle_dispatch(mle, n, 0, opt, st);
-    CHECK(st->tetra_sds_src == 10001u, "first SDS source");
+    CHECK(tetra_st(st)->sds_src == 10001u, "first SDS source");
     build_d_sds_data(cmce, 10002u, 0u);
     wrap_mle_cmce(cmce, 50, mle, &n);
     tetra_mle_dispatch(mle, n, 0, opt, st);
-    CHECK(st->tetra_sds_src == 10002u, "second SDS source overwrites first");
+    CHECK(tetra_st(st)->sds_src == 10002u, "second SDS source overwrites first");
     free(st);
     free(opt);
 }

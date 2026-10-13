@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "tetra_state.h"
 
 int
 tetra_dmo_system_code_is_dmo(const uint8_t* sch_s_bits) {
@@ -1454,40 +1455,39 @@ tetra_dmo_publish(dsd_state* state, int msg_type, uint32_t src, uint32_t dst, co
 
 int
 tetra_dmo_format_mode(const dsd_state* state, char* buf, int buf_len) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
     const char* mode;
     const char* channel;
     int n;
-    if (!state || !buf || buf_len <= 0) {
+    if (!ts || !buf || buf_len <= 0) {
         return 0;
     }
-    if (state->tetra_dmo) {
-        switch (state->tetra_dmo_comm_type) {
+    if (ts->dmo) {
+        switch (ts->dmo_comm_type) {
             case 1: mode = "DMO repeater"; break;
             case 2: mode = "DMO gateway"; break;
             case 3: mode = "DMO repeater+gateway"; break;
             default: mode = "DMO direct"; break;
         }
-        channel = state->tetra_dmo_ab_usage == 2 ? "ch B" : state->tetra_dmo_ab_usage == 1 ? "ch A freq-eff" : "ch A";
+        channel = ts->dmo_ab_usage == 2 ? "ch B" : ts->dmo_ab_usage == 1 ? "ch A freq-eff" : "ch A";
         n = snprintf(buf, (size_t)buf_len, "%s  %s  %s  slot %u frame %u", mode, channel,
-                     state->tetra_dmo_enc_state == 0 ? "clear" : "encrypted", state->tetra_dmo_slot,
-                     state->tetra_dmo_frame);
-    } else if (state->tetra_uplink) {
-        if (state->tetra_net_known) {
+                     ts->dmo_enc_state == 0 ? "clear" : "encrypted", ts->dmo_slot, ts->dmo_frame);
+    } else if (ts->uplink) {
+        if (ts->net_known) {
             n = snprintf(buf, (size_t)buf_len, "TMO uplink%s  MCC=%u MNC=%u CC=0x%02x",
-                         state->tetra_cb ? " control" : "", state->tetra_mcc, state->tetra_mnc, state->tetra_colour);
+                         state->tetra_sync.cb ? " control" : "", ts->mcc, ts->mnc, ts->colour);
         } else {
-            n = snprintf(buf, (size_t)buf_len, "TMO uplink%s", state->tetra_cb ? " control" : "");
+            n = snprintf(buf, (size_t)buf_len, "TMO uplink%s", state->tetra_sync.cb ? " control" : "");
         }
-    } else if (state->tetra_net_known) {
-        n = snprintf(buf, (size_t)buf_len, "TMO downlink  MCC=%u MNC=%u CC=0x%02x", state->tetra_mcc, state->tetra_mnc,
-                     state->tetra_colour);
+    } else if (ts->net_known) {
+        n = snprintf(buf, (size_t)buf_len, "TMO downlink  MCC=%u MNC=%u CC=0x%02x", ts->mcc, ts->mnc, ts->colour);
     } else {
         n = snprintf(buf, (size_t)buf_len, "TMO downlink");
     }
-    if (n > 0 && n < buf_len && !state->tetra_dmo && state->tetra_net_known) {
-        const char* extra = tetra_air_ksg_name(tetra_air_ksg_lookup(state, state->tetra_mcc, state->tetra_mnc));
+    if (n > 0 && n < buf_len && !ts->dmo && ts->net_known) {
+        const char* extra = tetra_air_ksg_name(tetra_air_ksg_lookup(state, ts->mcc, ts->mnc));
         int extra_n;
-        if (!extra && (state->tetra_enc_mode == 1 || state->tetra_enc_mode == 2)) {
+        if (!extra && (ts->enc_mode == 1 || ts->enc_mode == 2)) {
             extra = "encrypted";
         }
         if (extra) {
@@ -1541,40 +1541,41 @@ tetra_dmo_msg_name(int msg_type) {
 
 void
 tetra_dmo_apply_sync(struct dsd_state* state, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
-    if (!state || !s) {
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts || !s) {
         return;
     }
-    state->tetra_dmo = 1;
-    state->tetra_dmo_since_sync = 0;
-    state->tetra_dmo_slot = s->slot;
-    state->tetra_dmo_frame = s->frame;
-    state->tetra_dmo_comm_type = s->comm_type;
-    state->tetra_dmo_ab_usage = s->ab_usage;
-    state->tetra_dmo_enc_state = s->enc_state;
-    state->tetra_dmo_sync_count++;
+    ts->dmo = 1;
+    ts->dmo_since_sync = 0;
+    ts->dmo_slot = s->slot;
+    ts->dmo_frame = s->frame;
+    ts->dmo_comm_type = s->comm_type;
+    ts->dmo_ab_usage = s->ab_usage;
+    ts->dmo_enc_state = s->enc_state;
+    ts->dmo_sync_count++;
     /* Keep the TDMA display fields meaningful for the UI. */
-    state->tetra_tn = s->slot;
-    state->tetra_fn = s->frame;
-    state->tetra_tdma_valid = 1;
+    ts->tn = s->slot;
+    ts->fn = s->frame;
+    ts->tdma_valid = 1;
 
     if (!h || !h->has_addrs) {
         return;
     }
-    state->tetra_dmo_msg_type = h->msg_type;
+    ts->dmo_msg_type = h->msg_type;
     switch (h->msg_type) {
         case TETRA_DMO_MSG_SETUP:
         case TETRA_DMO_MSG_CONNECT_ACK:
         case TETRA_DMO_MSG_OCCUPIED:
             if (s->enc_state == 0) {
-                state->tetra_dmo_mni = h->mni;
-                state->tetra_dmo_src = h->src;
-                state->tetra_dmo_dst = h->dst;
-                state->tetra_dmo_dcc_seed = tetra_dmo_call_seed(s, h);
-                state->tetra_dmo_dcc_valid = 1;
+                ts->dmo_mni = h->mni;
+                ts->dmo_src = h->src;
+                ts->dmo_dst = h->dst;
+                ts->dmo_dcc_seed = tetra_dmo_call_seed(s, h);
+                ts->dmo_dcc_valid = 1;
             } else {
                 /* DM-2-C scrambles with an encrypted short identity (EDSI);
                  * that needs key material this decoder does not have. */
-                state->tetra_dmo_dcc_valid = 0;
+                ts->dmo_dcc_valid = 0;
             }
             break;
         case TETRA_DMO_MSG_SDS_UDATA:
@@ -1584,11 +1585,11 @@ tetra_dmo_apply_sync(struct dsd_state* state, const tetra_dmo_sync_s_t* s, const
              * colour code of the DMAC-SYNC that started the fragmentation
              * (EN 300 396-3 clause 8.2.4, EN 300 396-5 clause 8.2.4). */
             if (h->frag_flag && s->enc_state == 0) {
-                state->tetra_dmo_mni = h->mni;
-                state->tetra_dmo_src = h->src;
-                state->tetra_dmo_dst = h->dst;
-                state->tetra_dmo_dcc_seed = tetra_dmo_call_seed(s, h);
-                state->tetra_dmo_dcc_valid = 1;
+                ts->dmo_mni = h->mni;
+                ts->dmo_src = h->src;
+                ts->dmo_dst = h->dst;
+                ts->dmo_dcc_seed = tetra_dmo_call_seed(s, h);
+                ts->dmo_dcc_valid = 1;
             }
             break;
         case TETRA_DMO_MSG_TX_CEASED:
@@ -1596,19 +1597,19 @@ tetra_dmo_apply_sync(struct dsd_state* state, const tetra_dmo_sync_s_t* s, const
         case TETRA_DMO_MSG_RELEASE:
             /* The next talker sends its own DM-SETUP / DM-OCCUPIED. Until then
              * the old colour code would turn traffic into noise. */
-            state->tetra_dmo_dcc_valid = 0;
+            ts->dmo_dcc_valid = 0;
             break;
         case TETRA_DMO_MSG_GATEWAY:
             if (h->gw_subtype == TETRA_DMO_GW_SETUP && h->frag_flag && s->enc_state == 0) {
                 /* A fragmented DM-GSETUP scrambles its SCH/F with this burst's
                  * gateway address and source address (EN 300 396-5 clause 8.2.4). */
-                state->tetra_dmo_mni = h->mni;
-                state->tetra_dmo_src = h->src;
-                state->tetra_dmo_dst = h->dst;
-                state->tetra_dmo_dcc_seed = tetra_dmo_call_seed(s, h);
-                state->tetra_dmo_dcc_valid = 1;
+                ts->dmo_mni = h->mni;
+                ts->dmo_src = h->src;
+                ts->dmo_dst = h->dst;
+                ts->dmo_dcc_seed = tetra_dmo_call_seed(s, h);
+                ts->dmo_dcc_valid = 1;
             } else if (h->gw_subtype == TETRA_DMO_GW_RELEASE) {
-                state->tetra_dmo_dcc_valid = 0;
+                ts->dmo_dcc_valid = 0;
             }
             break;
         default: break;
@@ -1617,13 +1618,14 @@ tetra_dmo_apply_sync(struct dsd_state* state, const tetra_dmo_sync_s_t* s, const
 
 int
 tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, struct dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     int pos;
     int type;
     uint32_t dst = 0;
     uint32_t src = 0;
     uint32_t mni = 0;
     uint32_t msg;
-    int gateway = state && state->tetra_dmo_comm_type >= 2;
+    int gateway = state && ts->dmo_comm_type >= 2;
     if (!bits || len < 60) {
         return -1;
     }

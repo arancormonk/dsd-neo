@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "tetra_state.h"
 
 /* Phase 81: bits_to_uint unified — see tetra_bits.h */
 #define mm_bits_to_uint tetra_bits_to_uint
@@ -65,6 +66,7 @@ mm_read_octets(const uint8_t* bits, int off, uint8_t* out, unsigned count) {
 /* EN 300 392-7 V3.5.1 tables A.1-A.4. */
 static void
 mm_parse_authentication(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     int off = 4;
     uint8_t subtype, challenge[10] = {0}, seed[10] = {0};
     uint32_t response = 0;
@@ -139,15 +141,15 @@ mm_parse_authentication(const uint8_t* bits, int nbits, int cc, dsd_state* state
 
 publish:
     fprintf(stderr, "[TETRA MM D-AUTHENTICATION] CC=%d subtype=%u\n", cc, subtype);
-    if (state) {
-        state->tetra_mm_auth_subtype = subtype;
-        memcpy(state->tetra_mm_auth_random_challenge, challenge, sizeof(challenge));
-        memcpy(state->tetra_mm_auth_random_seed, seed, sizeof(seed));
-        state->tetra_mm_auth_response = response;
-        state->tetra_mm_auth_mutual = mutual;
-        state->tetra_mm_auth_result = result;
-        state->tetra_mm_auth_reject_reason = reject_reason;
-        state->tetra_mm_auth_valid = 1;
+    if (ts) {
+        ts->mm_auth_subtype = subtype;
+        memcpy(ts->mm_auth_random_challenge, challenge, sizeof(challenge));
+        memcpy(ts->mm_auth_random_seed, seed, sizeof(seed));
+        ts->mm_auth_response = response;
+        ts->mm_auth_mutual = mutual;
+        ts->mm_auth_result = result;
+        ts->mm_auth_reject_reason = reject_reason;
+        ts->mm_auth_valid = 1;
     }
     return;
 
@@ -271,79 +273,79 @@ mm_parse_otar_cck_information(const uint8_t* bits, int nbits, int* off, mm_otar_
 
 static void
 mm_clear_otar_snapshot(dsd_state* state) {
-    state->tetra_mm_otar_cck_provision = 0;
-    state->tetra_mm_otar_cck_id = 0;
-    state->tetra_mm_otar_cck_key_type = 0;
-    memset(state->tetra_mm_otar_cck_sealed, 0, sizeof(state->tetra_mm_otar_cck_sealed));
-    state->tetra_mm_otar_cck_la_type = 0;
-    state->tetra_mm_otar_cck_la_count = 0;
-    memset(state->tetra_mm_otar_cck_la, 0, sizeof(state->tetra_mm_otar_cck_la));
-    state->tetra_mm_otar_cck_la_mask = 0;
-    state->tetra_mm_otar_cck_la_selector = 0;
-    state->tetra_mm_otar_cck_la_low = 0;
-    state->tetra_mm_otar_cck_la_high = 0;
-    state->tetra_mm_otar_cck_future = 0;
-    memset(state->tetra_mm_otar_cck_future_sealed, 0, sizeof(state->tetra_mm_otar_cck_future_sealed));
-    state->tetra_mm_otar_ack = 0;
-    state->tetra_mm_otar_explicit_response = 0;
-    state->tetra_mm_otar_max_response_timer = 0;
-    state->tetra_mm_otar_session_key = 0;
-    memset(state->tetra_mm_otar_random_seed, 0, sizeof(state->tetra_mm_otar_random_seed));
-    state->tetra_mm_otar_gsko_version = 0;
-    state->tetra_mm_otar_key_count = 0;
-    memset(state->tetra_mm_otar_sck_number, 0, sizeof(state->tetra_mm_otar_sck_number));
-    memset(state->tetra_mm_otar_sck_version, 0, sizeof(state->tetra_mm_otar_sck_version));
-    memset(state->tetra_mm_otar_sck_use, 0, sizeof(state->tetra_mm_otar_sck_use));
-    memset(state->tetra_mm_otar_sck_sealed, 0, sizeof(state->tetra_mm_otar_sck_sealed));
-    memset(state->tetra_mm_otar_gck_number, 0, sizeof(state->tetra_mm_otar_gck_number));
-    memset(state->tetra_mm_otar_gck_version, 0, sizeof(state->tetra_mm_otar_gck_version));
-    memset(state->tetra_mm_otar_gck_sealed, 0, sizeof(state->tetra_mm_otar_gck_sealed));
-    state->tetra_mm_otar_group_association = 0;
-    memset(state->tetra_mm_otar_gck_reject_group_association, 0,
-           sizeof(state->tetra_mm_otar_gck_reject_group_association));
-    memset(state->tetra_mm_otar_gck_reject_gssi, 0, sizeof(state->tetra_mm_otar_gck_reject_gssi));
-    state->tetra_mm_otar_key_association_type = 0;
-    state->tetra_mm_otar_sck_select = 0;
-    state->tetra_mm_otar_sck_subset_grouping = 0;
-    state->tetra_mm_otar_gck_select = 0;
-    state->tetra_mm_otar_group_count = 0;
-    state->tetra_mm_otar_group_is_range = 0;
-    state->tetra_mm_otar_group_value_count = 0;
-    memset(state->tetra_mm_otar_group_gssi, 0, sizeof(state->tetra_mm_otar_group_gssi));
-    memset(state->tetra_mm_otar_reject_reason, 0, sizeof(state->tetra_mm_otar_reject_reason));
-    state->tetra_mm_otar_ksg = 0;
-    state->tetra_mm_otar_retry_interval = 0;
-    state->tetra_mm_otar_address_valid = 0;
-    state->tetra_mm_otar_mcc = 0;
-    state->tetra_mm_otar_mnc = 0;
-    memset(state->tetra_mm_otar_gsko_sealed, 0, sizeof(state->tetra_mm_otar_gsko_sealed));
-    state->tetra_mm_otar_gssi = 0;
-    state->tetra_mm_otar_dck_forwarding_result = 0;
-    state->tetra_mm_otar_key_status_type = 0;
-    state->tetra_mm_otar_key_status_sck_number = 0;
-    state->tetra_mm_otar_key_status_sck_grouping = 0;
-    state->tetra_mm_otar_key_status_sck_subset = 0;
-    state->tetra_mm_otar_key_status_gck_number = 0;
-    state->tetra_mm_otar_key_delete_type = 0;
-    state->tetra_mm_otar_key_delete_sck_count = 0;
-    memset(state->tetra_mm_otar_key_delete_sck_number, 0, sizeof(state->tetra_mm_otar_key_delete_sck_number));
-    state->tetra_mm_otar_key_delete_sck_grouping = 0;
-    state->tetra_mm_otar_key_delete_sck_subset = 0;
-    state->tetra_mm_otar_key_delete_gck_count = 0;
-    memset(state->tetra_mm_otar_key_delete_gck_number, 0, sizeof(state->tetra_mm_otar_key_delete_gck_number));
-    state->tetra_mm_otar_dm_sck_ack = 0;
-    state->tetra_mm_otar_dm_sck_count = 0;
-    state->tetra_mm_otar_dm_sck_grouping = 0;
-    state->tetra_mm_otar_dm_sck_subset = 0;
-    state->tetra_mm_otar_dm_sck_vn = 0;
-    memset(state->tetra_mm_otar_dm_sck_number, 0, sizeof(state->tetra_mm_otar_dm_sck_number));
-    memset(state->tetra_mm_otar_dm_sck_version, 0, sizeof(state->tetra_mm_otar_dm_sck_version));
-    state->tetra_mm_otar_dm_sck_time_type = 0;
-    state->tetra_mm_otar_dm_sck_slot = 0;
-    state->tetra_mm_otar_dm_sck_frame = 0;
-    state->tetra_mm_otar_dm_sck_multiframe = 0;
-    state->tetra_mm_otar_dm_sck_hyperframe = 0;
-    state->tetra_mm_otar_dm_sck_network_time = 0;
+    tetra_state_t* const ts = tetra_st(state);
+    ts->mm_otar_cck_provision = 0;
+    ts->mm_otar_cck_id = 0;
+    ts->mm_otar_cck_key_type = 0;
+    memset(ts->mm_otar_cck_sealed, 0, sizeof(ts->mm_otar_cck_sealed));
+    ts->mm_otar_cck_la_type = 0;
+    ts->mm_otar_cck_la_count = 0;
+    memset(ts->mm_otar_cck_la, 0, sizeof(ts->mm_otar_cck_la));
+    ts->mm_otar_cck_la_mask = 0;
+    ts->mm_otar_cck_la_selector = 0;
+    ts->mm_otar_cck_la_low = 0;
+    ts->mm_otar_cck_la_high = 0;
+    ts->mm_otar_cck_future = 0;
+    memset(ts->mm_otar_cck_future_sealed, 0, sizeof(ts->mm_otar_cck_future_sealed));
+    ts->mm_otar_ack = 0;
+    ts->mm_otar_explicit_response = 0;
+    ts->mm_otar_max_response_timer = 0;
+    ts->mm_otar_session_key = 0;
+    memset(ts->mm_otar_random_seed, 0, sizeof(ts->mm_otar_random_seed));
+    ts->mm_otar_gsko_version = 0;
+    ts->mm_otar_key_count = 0;
+    memset(ts->mm_otar_sck_number, 0, sizeof(ts->mm_otar_sck_number));
+    memset(ts->mm_otar_sck_version, 0, sizeof(ts->mm_otar_sck_version));
+    memset(ts->mm_otar_sck_use, 0, sizeof(ts->mm_otar_sck_use));
+    memset(ts->mm_otar_sck_sealed, 0, sizeof(ts->mm_otar_sck_sealed));
+    memset(ts->mm_otar_gck_number, 0, sizeof(ts->mm_otar_gck_number));
+    memset(ts->mm_otar_gck_version, 0, sizeof(ts->mm_otar_gck_version));
+    memset(ts->mm_otar_gck_sealed, 0, sizeof(ts->mm_otar_gck_sealed));
+    ts->mm_otar_group_association = 0;
+    memset(ts->mm_otar_gck_reject_group_association, 0, sizeof(ts->mm_otar_gck_reject_group_association));
+    memset(ts->mm_otar_gck_reject_gssi, 0, sizeof(ts->mm_otar_gck_reject_gssi));
+    ts->mm_otar_key_association_type = 0;
+    ts->mm_otar_sck_select = 0;
+    ts->mm_otar_sck_subset_grouping = 0;
+    ts->mm_otar_gck_select = 0;
+    ts->mm_otar_group_count = 0;
+    ts->mm_otar_group_is_range = 0;
+    ts->mm_otar_group_value_count = 0;
+    memset(ts->mm_otar_group_gssi, 0, sizeof(ts->mm_otar_group_gssi));
+    memset(ts->mm_otar_reject_reason, 0, sizeof(ts->mm_otar_reject_reason));
+    ts->mm_otar_ksg = 0;
+    ts->mm_otar_retry_interval = 0;
+    ts->mm_otar_address_valid = 0;
+    ts->mm_otar_mcc = 0;
+    ts->mm_otar_mnc = 0;
+    memset(ts->mm_otar_gsko_sealed, 0, sizeof(ts->mm_otar_gsko_sealed));
+    ts->mm_otar_gssi = 0;
+    ts->mm_otar_dck_forwarding_result = 0;
+    ts->mm_otar_key_status_type = 0;
+    ts->mm_otar_key_status_sck_number = 0;
+    ts->mm_otar_key_status_sck_grouping = 0;
+    ts->mm_otar_key_status_sck_subset = 0;
+    ts->mm_otar_key_status_gck_number = 0;
+    ts->mm_otar_key_delete_type = 0;
+    ts->mm_otar_key_delete_sck_count = 0;
+    memset(ts->mm_otar_key_delete_sck_number, 0, sizeof(ts->mm_otar_key_delete_sck_number));
+    ts->mm_otar_key_delete_sck_grouping = 0;
+    ts->mm_otar_key_delete_sck_subset = 0;
+    ts->mm_otar_key_delete_gck_count = 0;
+    memset(ts->mm_otar_key_delete_gck_number, 0, sizeof(ts->mm_otar_key_delete_gck_number));
+    ts->mm_otar_dm_sck_ack = 0;
+    ts->mm_otar_dm_sck_count = 0;
+    ts->mm_otar_dm_sck_grouping = 0;
+    ts->mm_otar_dm_sck_subset = 0;
+    ts->mm_otar_dm_sck_vn = 0;
+    memset(ts->mm_otar_dm_sck_number, 0, sizeof(ts->mm_otar_dm_sck_number));
+    memset(ts->mm_otar_dm_sck_version, 0, sizeof(ts->mm_otar_dm_sck_version));
+    ts->mm_otar_dm_sck_time_type = 0;
+    ts->mm_otar_dm_sck_slot = 0;
+    ts->mm_otar_dm_sck_frame = 0;
+    ts->mm_otar_dm_sck_multiframe = 0;
+    ts->mm_otar_dm_sck_hyperframe = 0;
+    ts->mm_otar_dm_sck_network_time = 0;
 }
 
 /* EN 300 392-7 V3.5.1 tables A.9, A.12, A.15, A.16, A.19, A.20, A.23,
@@ -351,6 +353,7 @@ mm_clear_otar_snapshot(dsd_state* state) {
  * records but never decrypts them. */
 static void
 mm_parse_otar(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     int off = 4;
     uint8_t subtype, provision = 0, dck_forwarding_result = 0;
     mm_otar_cck_fields cck = {0};
@@ -908,83 +911,83 @@ mm_parse_otar(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
     }
 
     fprintf(stderr, "[TETRA MM D-OTAR] CC=%d subtype=%u keys=%u\n", cc, subtype, key_count);
-    if (state) {
+    if (ts) {
         mm_clear_otar_snapshot(state);
-        state->tetra_mm_otar_subtype = subtype;
-        state->tetra_mm_otar_cck_provision = provision;
-        state->tetra_mm_otar_cck_id = cck.id;
-        state->tetra_mm_otar_cck_key_type = cck.key_type;
-        memcpy(state->tetra_mm_otar_cck_sealed, cck.sealed, sizeof(cck.sealed));
-        state->tetra_mm_otar_cck_la_type = cck.la_type;
-        state->tetra_mm_otar_cck_la_count = cck.la_count;
-        memcpy(state->tetra_mm_otar_cck_la, cck.la, sizeof(cck.la));
-        state->tetra_mm_otar_cck_la_mask = cck.la_mask;
-        state->tetra_mm_otar_cck_la_selector = cck.la_selector;
-        state->tetra_mm_otar_cck_la_low = cck.la_low;
-        state->tetra_mm_otar_cck_la_high = cck.la_high;
-        state->tetra_mm_otar_cck_future = cck.future;
-        memcpy(state->tetra_mm_otar_cck_future_sealed, cck.future_sealed, sizeof(cck.future_sealed));
-        state->tetra_mm_otar_ack = ack;
-        state->tetra_mm_otar_explicit_response = explicit_response;
-        state->tetra_mm_otar_max_response_timer = max_response_timer;
-        state->tetra_mm_otar_session_key = session_key;
-        memcpy(state->tetra_mm_otar_random_seed, random_seed, sizeof(random_seed));
-        state->tetra_mm_otar_gsko_version = gsko_version;
-        state->tetra_mm_otar_key_count = key_count;
-        memcpy(state->tetra_mm_otar_sck_number, sck_number, sizeof(sck_number));
-        memcpy(state->tetra_mm_otar_sck_version, sck_version, sizeof(sck_version));
-        memcpy(state->tetra_mm_otar_sck_use, sck_use, sizeof(sck_use));
-        memcpy(state->tetra_mm_otar_sck_sealed, sck_sealed, sizeof(sck_sealed));
-        memcpy(state->tetra_mm_otar_gck_number, gck_number, sizeof(gck_number));
-        memcpy(state->tetra_mm_otar_gck_version, gck_version, sizeof(gck_version));
-        memcpy(state->tetra_mm_otar_gck_sealed, gck_sealed, sizeof(gck_sealed));
-        state->tetra_mm_otar_group_association = group_association;
-        memcpy(state->tetra_mm_otar_gck_reject_group_association, gck_reject_group_association,
+        ts->mm_otar_subtype = subtype;
+        ts->mm_otar_cck_provision = provision;
+        ts->mm_otar_cck_id = cck.id;
+        ts->mm_otar_cck_key_type = cck.key_type;
+        memcpy(ts->mm_otar_cck_sealed, cck.sealed, sizeof(cck.sealed));
+        ts->mm_otar_cck_la_type = cck.la_type;
+        ts->mm_otar_cck_la_count = cck.la_count;
+        memcpy(ts->mm_otar_cck_la, cck.la, sizeof(cck.la));
+        ts->mm_otar_cck_la_mask = cck.la_mask;
+        ts->mm_otar_cck_la_selector = cck.la_selector;
+        ts->mm_otar_cck_la_low = cck.la_low;
+        ts->mm_otar_cck_la_high = cck.la_high;
+        ts->mm_otar_cck_future = cck.future;
+        memcpy(ts->mm_otar_cck_future_sealed, cck.future_sealed, sizeof(cck.future_sealed));
+        ts->mm_otar_ack = ack;
+        ts->mm_otar_explicit_response = explicit_response;
+        ts->mm_otar_max_response_timer = max_response_timer;
+        ts->mm_otar_session_key = session_key;
+        memcpy(ts->mm_otar_random_seed, random_seed, sizeof(random_seed));
+        ts->mm_otar_gsko_version = gsko_version;
+        ts->mm_otar_key_count = key_count;
+        memcpy(ts->mm_otar_sck_number, sck_number, sizeof(sck_number));
+        memcpy(ts->mm_otar_sck_version, sck_version, sizeof(sck_version));
+        memcpy(ts->mm_otar_sck_use, sck_use, sizeof(sck_use));
+        memcpy(ts->mm_otar_sck_sealed, sck_sealed, sizeof(sck_sealed));
+        memcpy(ts->mm_otar_gck_number, gck_number, sizeof(gck_number));
+        memcpy(ts->mm_otar_gck_version, gck_version, sizeof(gck_version));
+        memcpy(ts->mm_otar_gck_sealed, gck_sealed, sizeof(gck_sealed));
+        ts->mm_otar_group_association = group_association;
+        memcpy(ts->mm_otar_gck_reject_group_association, gck_reject_group_association,
                sizeof(gck_reject_group_association));
-        memcpy(state->tetra_mm_otar_gck_reject_gssi, gck_reject_gssi, sizeof(gck_reject_gssi));
-        state->tetra_mm_otar_key_association_type = key_association_type;
-        state->tetra_mm_otar_sck_select = sck_select;
-        state->tetra_mm_otar_sck_subset_grouping = sck_subset_grouping;
-        state->tetra_mm_otar_gck_select = gck_select;
-        state->tetra_mm_otar_group_count = group_count;
-        state->tetra_mm_otar_group_is_range = group_is_range;
-        state->tetra_mm_otar_group_value_count = group_value_count;
-        memcpy(state->tetra_mm_otar_group_gssi, group_gssi, sizeof(group_gssi));
-        memcpy(state->tetra_mm_otar_reject_reason, reject_reason, sizeof(reject_reason));
-        state->tetra_mm_otar_ksg = ksg;
-        state->tetra_mm_otar_retry_interval = retry;
-        state->tetra_mm_otar_address_valid = address_valid;
-        state->tetra_mm_otar_mcc = mcc;
-        state->tetra_mm_otar_mnc = mnc;
-        memcpy(state->tetra_mm_otar_gsko_sealed, gsko_sealed, sizeof(gsko_sealed));
-        state->tetra_mm_otar_gssi = gssi;
-        state->tetra_mm_otar_dck_forwarding_result = dck_forwarding_result;
-        state->tetra_mm_otar_key_status_type = key_status_type;
-        state->tetra_mm_otar_key_status_sck_number = key_status_sck_number;
-        state->tetra_mm_otar_key_status_sck_grouping = key_status_sck_grouping;
-        state->tetra_mm_otar_key_status_sck_subset = key_status_sck_subset;
-        state->tetra_mm_otar_key_status_gck_number = key_status_gck_number;
-        state->tetra_mm_otar_key_delete_type = key_delete_type;
-        state->tetra_mm_otar_key_delete_sck_count = key_delete_sck_count;
-        memcpy(state->tetra_mm_otar_key_delete_sck_number, key_delete_sck_number, sizeof(key_delete_sck_number));
-        state->tetra_mm_otar_key_delete_sck_grouping = key_delete_sck_grouping;
-        state->tetra_mm_otar_key_delete_sck_subset = key_delete_sck_subset;
-        state->tetra_mm_otar_key_delete_gck_count = key_delete_gck_count;
-        memcpy(state->tetra_mm_otar_key_delete_gck_number, key_delete_gck_number, sizeof(key_delete_gck_number));
-        state->tetra_mm_otar_dm_sck_ack = dm_sck_ack;
-        state->tetra_mm_otar_dm_sck_count = dm_sck_count;
-        state->tetra_mm_otar_dm_sck_grouping = dm_sck_grouping;
-        state->tetra_mm_otar_dm_sck_subset = dm_sck_subset;
-        state->tetra_mm_otar_dm_sck_vn = dm_sck_vn;
-        memcpy(state->tetra_mm_otar_dm_sck_number, dm_sck_number, sizeof(dm_sck_number));
-        memcpy(state->tetra_mm_otar_dm_sck_version, dm_sck_version, sizeof(dm_sck_version));
-        state->tetra_mm_otar_dm_sck_time_type = dm_sck_time_type;
-        state->tetra_mm_otar_dm_sck_slot = dm_sck_slot;
-        state->tetra_mm_otar_dm_sck_frame = dm_sck_frame;
-        state->tetra_mm_otar_dm_sck_multiframe = dm_sck_multiframe;
-        state->tetra_mm_otar_dm_sck_hyperframe = dm_sck_hyperframe;
-        state->tetra_mm_otar_dm_sck_network_time = dm_sck_network_time;
-        state->tetra_mm_otar_valid = 1;
+        memcpy(ts->mm_otar_gck_reject_gssi, gck_reject_gssi, sizeof(gck_reject_gssi));
+        ts->mm_otar_key_association_type = key_association_type;
+        ts->mm_otar_sck_select = sck_select;
+        ts->mm_otar_sck_subset_grouping = sck_subset_grouping;
+        ts->mm_otar_gck_select = gck_select;
+        ts->mm_otar_group_count = group_count;
+        ts->mm_otar_group_is_range = group_is_range;
+        ts->mm_otar_group_value_count = group_value_count;
+        memcpy(ts->mm_otar_group_gssi, group_gssi, sizeof(group_gssi));
+        memcpy(ts->mm_otar_reject_reason, reject_reason, sizeof(reject_reason));
+        ts->mm_otar_ksg = ksg;
+        ts->mm_otar_retry_interval = retry;
+        ts->mm_otar_address_valid = address_valid;
+        ts->mm_otar_mcc = mcc;
+        ts->mm_otar_mnc = mnc;
+        memcpy(ts->mm_otar_gsko_sealed, gsko_sealed, sizeof(gsko_sealed));
+        ts->mm_otar_gssi = gssi;
+        ts->mm_otar_dck_forwarding_result = dck_forwarding_result;
+        ts->mm_otar_key_status_type = key_status_type;
+        ts->mm_otar_key_status_sck_number = key_status_sck_number;
+        ts->mm_otar_key_status_sck_grouping = key_status_sck_grouping;
+        ts->mm_otar_key_status_sck_subset = key_status_sck_subset;
+        ts->mm_otar_key_status_gck_number = key_status_gck_number;
+        ts->mm_otar_key_delete_type = key_delete_type;
+        ts->mm_otar_key_delete_sck_count = key_delete_sck_count;
+        memcpy(ts->mm_otar_key_delete_sck_number, key_delete_sck_number, sizeof(key_delete_sck_number));
+        ts->mm_otar_key_delete_sck_grouping = key_delete_sck_grouping;
+        ts->mm_otar_key_delete_sck_subset = key_delete_sck_subset;
+        ts->mm_otar_key_delete_gck_count = key_delete_gck_count;
+        memcpy(ts->mm_otar_key_delete_gck_number, key_delete_gck_number, sizeof(key_delete_gck_number));
+        ts->mm_otar_dm_sck_ack = dm_sck_ack;
+        ts->mm_otar_dm_sck_count = dm_sck_count;
+        ts->mm_otar_dm_sck_grouping = dm_sck_grouping;
+        ts->mm_otar_dm_sck_subset = dm_sck_subset;
+        ts->mm_otar_dm_sck_vn = dm_sck_vn;
+        memcpy(ts->mm_otar_dm_sck_number, dm_sck_number, sizeof(dm_sck_number));
+        memcpy(ts->mm_otar_dm_sck_version, dm_sck_version, sizeof(dm_sck_version));
+        ts->mm_otar_dm_sck_time_type = dm_sck_time_type;
+        ts->mm_otar_dm_sck_slot = dm_sck_slot;
+        ts->mm_otar_dm_sck_frame = dm_sck_frame;
+        ts->mm_otar_dm_sck_multiframe = dm_sck_multiframe;
+        ts->mm_otar_dm_sck_hyperframe = dm_sck_hyperframe;
+        ts->mm_otar_dm_sck_network_time = dm_sck_network_time;
+        ts->mm_otar_valid = 1;
         if (subtype == 2 || subtype == 4) {
             uint16_t net_mcc = 0;
             uint16_t net_mnc = 0;
@@ -993,9 +996,9 @@ mm_parse_otar(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
                 net_mcc = mcc;
                 net_mnc = mnc;
                 have_net = 1;
-            } else if (state->tetra_net_known) {
-                net_mcc = state->tetra_mcc;
-                net_mnc = state->tetra_mnc;
+            } else if (ts->net_known) {
+                net_mcc = ts->mcc;
+                net_mnc = ts->mnc;
                 have_net = 1;
             }
             if (have_net) {
@@ -1014,6 +1017,7 @@ truncated:
  * last complete key-change snapshot. */
 static void
 mm_parse_ck_change_demand(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     int off = 4;
     uint8_t ack, security_class, key_type;
     uint8_t sck_use = 0, sck_count = 0, sck_grouping = 0, sck_subset = 0;
@@ -1137,29 +1141,29 @@ mm_parse_ck_change_demand(const uint8_t* bits, int nbits, int cc, dsd_state* sta
     }
 
     fprintf(stderr, "[TETRA MM D-CK-CHANGE] CC=%d key_type=%u time_type=%u\n", cc, key_type, time_type);
-    if (state) {
-        state->tetra_mm_ck_change_ack = ack;
-        state->tetra_mm_ck_change_security_class = security_class;
-        state->tetra_mm_ck_change_key_type = key_type;
-        state->tetra_mm_ck_change_sck_use = sck_use;
-        state->tetra_mm_ck_change_sck_count = sck_count;
-        state->tetra_mm_ck_change_sck_grouping = sck_grouping;
-        state->tetra_mm_ck_change_sck_subset = sck_subset;
-        state->tetra_mm_ck_change_sck_vn = sck_vn;
-        memcpy(state->tetra_mm_ck_change_sck_number, sck_number, sizeof(sck_number));
-        memcpy(state->tetra_mm_ck_change_sck_version, sck_version, sizeof(sck_version));
-        state->tetra_mm_ck_change_cck_id = cck_id;
-        state->tetra_mm_ck_change_gck_count = gck_count;
-        memcpy(state->tetra_mm_ck_change_gck_number, gck_number, sizeof(gck_number));
-        memcpy(state->tetra_mm_ck_change_gck_version, gck_version, sizeof(gck_version));
-        state->tetra_mm_ck_change_gck_vn = gck_vn;
-        state->tetra_mm_ck_change_time_type = time_type;
-        state->tetra_mm_ck_change_slot = slot;
-        state->tetra_mm_ck_change_frame = frame;
-        state->tetra_mm_ck_change_multiframe = multiframe;
-        state->tetra_mm_ck_change_hyperframe = hyperframe;
-        state->tetra_mm_ck_change_network_time = network_time;
-        state->tetra_mm_ck_change_valid = 1;
+    if (ts) {
+        ts->mm_ck_change_ack = ack;
+        ts->mm_ck_change_security_class = security_class;
+        ts->mm_ck_change_key_type = key_type;
+        ts->mm_ck_change_sck_use = sck_use;
+        ts->mm_ck_change_sck_count = sck_count;
+        ts->mm_ck_change_sck_grouping = sck_grouping;
+        ts->mm_ck_change_sck_subset = sck_subset;
+        ts->mm_ck_change_sck_vn = sck_vn;
+        memcpy(ts->mm_ck_change_sck_number, sck_number, sizeof(sck_number));
+        memcpy(ts->mm_ck_change_sck_version, sck_version, sizeof(sck_version));
+        ts->mm_ck_change_cck_id = cck_id;
+        ts->mm_ck_change_gck_count = gck_count;
+        memcpy(ts->mm_ck_change_gck_number, gck_number, sizeof(gck_number));
+        memcpy(ts->mm_ck_change_gck_version, gck_version, sizeof(gck_version));
+        ts->mm_ck_change_gck_vn = gck_vn;
+        ts->mm_ck_change_time_type = time_type;
+        ts->mm_ck_change_slot = slot;
+        ts->mm_ck_change_frame = frame;
+        ts->mm_ck_change_multiframe = multiframe;
+        ts->mm_ck_change_hyperframe = hyperframe;
+        ts->mm_ck_change_network_time = network_time;
+        ts->mm_ck_change_valid = 1;
     }
     return;
 
@@ -1173,6 +1177,7 @@ truncated:
  * before changing the public state. */
 static void
 mm_parse_enable_disable(const uint8_t* bits, int nbits, int cc, int is_enable, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     int off = 4;
     uint8_t intent, permanent = 0, equipment, subscription;
     uint64_t tei = 0;
@@ -1243,20 +1248,20 @@ mm_parse_enable_disable(const uint8_t* bits, int nbits, int cc, int is_enable, d
     fprintf(stderr, "[TETRA MM D-%s] CC=%d intent=%u equipment=%u subscription=%u%s\n",
             is_enable ? "ENABLE" : "DISABLE", cc, intent, equipment, subscription,
             !is_enable && permanent ? " permanent" : "");
-    if (state) {
-        state->tetra_ms_enabled = (uint8_t)is_enable;
-        state->tetra_mm_enable_disable_valid = 1;
-        state->tetra_mm_enable_disable_is_enable = (uint8_t)is_enable;
-        state->tetra_mm_enable_disable_intent = intent;
-        state->tetra_mm_disable_permanent = permanent;
-        state->tetra_mm_enable_disable_equipment = equipment;
-        state->tetra_mm_enable_disable_tei = tei;
-        state->tetra_mm_enable_disable_subscription = subscription;
-        state->tetra_mm_enable_disable_mcc = mcc;
-        state->tetra_mm_enable_disable_mnc = mnc;
-        state->tetra_mm_enable_disable_ssi = ssi;
-        state->tetra_mm_enable_disable_auth_valid = auth_valid;
-        memcpy(state->tetra_mm_enable_disable_auth_challenge, auth_challenge, sizeof(auth_challenge));
+    if (ts) {
+        ts->ms_enabled = (uint8_t)is_enable;
+        ts->mm_enable_disable_valid = 1;
+        ts->mm_enable_disable_is_enable = (uint8_t)is_enable;
+        ts->mm_enable_disable_intent = intent;
+        ts->mm_disable_permanent = permanent;
+        ts->mm_enable_disable_equipment = equipment;
+        ts->mm_enable_disable_tei = tei;
+        ts->mm_enable_disable_subscription = subscription;
+        ts->mm_enable_disable_mcc = mcc;
+        ts->mm_enable_disable_mnc = mnc;
+        ts->mm_enable_disable_ssi = ssi;
+        ts->mm_enable_disable_auth_valid = auth_valid;
+        memcpy(ts->mm_enable_disable_auth_challenge, auth_challenge, sizeof(auth_challenge));
     }
     return;
 
@@ -1267,6 +1272,7 @@ truncated:
 
 static void
 mm_parse_lu_accept(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 8) {
         fprintf(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1306,25 +1312,26 @@ mm_parse_lu_accept(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
         }
     }
     fprintf(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d type=%u\n", cc, type);
-    if (state) {
-        state->tetra_mm_lu_accept_type = type;
-        state->tetra_mm_lu_accept_ssi = ssi;
-        state->tetra_mm_lu_accept_ssi_valid = ssi_valid;
-        state->tetra_mm_lu_accept_mcc = mcc;
-        state->tetra_mm_lu_accept_mnc = mnc;
-        state->tetra_mm_lu_accept_address_ext_valid = address_valid;
-        state->tetra_mm_lu_accept_subscriber_class = subscriber_class;
-        state->tetra_mm_lu_accept_subscriber_class_valid = subscriber_valid;
-        state->tetra_mm_lu_accept_energy_saving = energy_saving;
-        state->tetra_mm_lu_accept_energy_saving_valid = energy_valid;
-        state->tetra_mm_lu_accept_scch = scch;
-        state->tetra_mm_lu_accept_scch_valid = scch_valid;
-        state->tetra_mm_lu_accept_valid = 1;
+    if (ts) {
+        ts->mm_lu_accept_type = type;
+        ts->mm_lu_accept_ssi = ssi;
+        ts->mm_lu_accept_ssi_valid = ssi_valid;
+        ts->mm_lu_accept_mcc = mcc;
+        ts->mm_lu_accept_mnc = mnc;
+        ts->mm_lu_accept_address_ext_valid = address_valid;
+        ts->mm_lu_accept_subscriber_class = subscriber_class;
+        ts->mm_lu_accept_subscriber_class_valid = subscriber_valid;
+        ts->mm_lu_accept_energy_saving = energy_saving;
+        ts->mm_lu_accept_energy_saving_valid = energy_valid;
+        ts->mm_lu_accept_scch = scch;
+        ts->mm_lu_accept_scch_valid = scch_valid;
+        ts->mm_lu_accept_valid = 1;
     }
 }
 
 static void
 mm_parse_lu_command(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 6) {
         fprintf(stderr, "[TETRA MM D-LU-COMMAND] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1369,19 +1376,20 @@ mm_parse_lu_command(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
         }
     }
     fprintf(stderr, "[TETRA MM D-LU-COMMAND] CC=%d group_report=%u cipher=%u\n", cc, report, cipher);
-    if (state) {
-        state->tetra_mm_lu_command_group_report = report;
-        state->tetra_mm_lu_command_cipher_control = cipher;
-        state->tetra_mm_lu_command_cipher_params = params;
-        state->tetra_mm_lu_command_mcc = mcc;
-        state->tetra_mm_lu_command_mnc = mnc;
-        state->tetra_mm_lu_command_address_ext_valid = address_ext_valid;
-        state->tetra_mm_lu_command_valid = 1;
+    if (ts) {
+        ts->mm_lu_command_group_report = report;
+        ts->mm_lu_command_cipher_control = cipher;
+        ts->mm_lu_command_cipher_params = params;
+        ts->mm_lu_command_mcc = mcc;
+        ts->mm_lu_command_mnc = mnc;
+        ts->mm_lu_command_address_ext_valid = address_ext_valid;
+        ts->mm_lu_command_valid = 1;
     }
 }
 
 static void
 mm_parse_lu_reject(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 13) {
         fprintf(stderr, "[TETRA MM D-LU-REJECT] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1427,20 +1435,21 @@ mm_parse_lu_reject(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
         }
     }
     fprintf(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u\n", cc, update_type, cause, cipher);
-    if (state) {
-        state->tetra_mm_lu_reject_type = update_type;
-        state->tetra_mm_lu_reject_cause = cause;
-        state->tetra_mm_lu_reject_cipher_control = cipher;
-        state->tetra_mm_lu_reject_cipher_params = params;
-        state->tetra_mm_lu_reject_mcc = mcc;
-        state->tetra_mm_lu_reject_mnc = mnc;
-        state->tetra_mm_lu_reject_address_ext_valid = address_valid;
-        state->tetra_mm_lu_reject_valid = 1;
+    if (ts) {
+        ts->mm_lu_reject_type = update_type;
+        ts->mm_lu_reject_cause = cause;
+        ts->mm_lu_reject_cipher_control = cipher;
+        ts->mm_lu_reject_cipher_params = params;
+        ts->mm_lu_reject_mcc = mcc;
+        ts->mm_lu_reject_mnc = mnc;
+        ts->mm_lu_reject_address_ext_valid = address_valid;
+        ts->mm_lu_reject_valid = 1;
     }
 }
 
 static void
 mm_parse_lu_proceeding(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 53) {
         fprintf(stderr, "[TETRA MM D-LU-PROCEEDING] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1454,10 +1463,10 @@ mm_parse_lu_proceeding(const uint8_t* bits, int nbits, int cc, dsd_state* state)
         return;
     }
     fprintf(stderr, "[TETRA MM D-LU-PROCEEDING] CC=%d SSI=%u MNI=%u\n", cc, ssi, mni);
-    if (state) {
-        state->tetra_mm_lu_proceeding_ssi = ssi;
-        state->tetra_mm_lu_proceeding_mni = mni;
-        state->tetra_mm_lu_proceeding_valid = 1;
+    if (ts) {
+        ts->mm_lu_proceeding_ssi = ssi;
+        ts->mm_lu_proceeding_mni = mni;
+        ts->mm_lu_proceeding_valid = 1;
     }
 }
 
@@ -1574,6 +1583,7 @@ mm_parse_group_identity_tail(const uint8_t* bits, int nbits, int* off, mm_group_
 
 static void
 mm_parse_group_identity(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 8) {
         fprintf(stderr, "[TETRA MM D-GROUP-IDENTITY] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1589,31 +1599,31 @@ mm_parse_group_identity(const uint8_t* bits, int nbits, int cc, dsd_state* state
         fprintf(stderr, "[TETRA MM D-GROUP-IDENTITY] CC=%d (truncated optional tail)\n", cc);
         return;
     }
-    if (state) {
-        state->tetra_mm_group_identity_report = report;
-        state->tetra_mm_group_identity_ack_request = ack_request;
-        state->tetra_mm_group_identity_attach_detach_mode = mode;
-        state->tetra_mm_group_entry_count = snapshot.count;
-        memcpy(state->tetra_mm_group_entry_action, snapshot.action, sizeof(snapshot.action));
-        memcpy(state->tetra_mm_group_entry_attachment_lifetime, snapshot.attachment_lifetime,
+    if (ts) {
+        ts->mm_group_identity_report = report;
+        ts->mm_group_identity_ack_request = ack_request;
+        ts->mm_group_identity_attach_detach_mode = mode;
+        ts->mm_group_entry_count = snapshot.count;
+        memcpy(ts->mm_group_entry_action, snapshot.action, sizeof(snapshot.action));
+        memcpy(ts->mm_group_entry_attachment_lifetime, snapshot.attachment_lifetime,
                sizeof(snapshot.attachment_lifetime));
-        memcpy(state->tetra_mm_group_entry_class_of_usage, snapshot.class_of_usage, sizeof(snapshot.class_of_usage));
-        memcpy(state->tetra_mm_group_entry_detachment_reason, snapshot.detachment_reason,
-               sizeof(snapshot.detachment_reason));
-        memcpy(state->tetra_mm_group_entry_address_type, snapshot.address_type, sizeof(snapshot.address_type));
-        memcpy(state->tetra_mm_group_entry_gssi, snapshot.gssi, sizeof(snapshot.gssi));
-        memcpy(state->tetra_mm_group_entry_extension, snapshot.extension, sizeof(snapshot.extension));
-        memcpy(state->tetra_mm_group_entry_vgssi, snapshot.vgssi, sizeof(snapshot.vgssi));
+        memcpy(ts->mm_group_entry_class_of_usage, snapshot.class_of_usage, sizeof(snapshot.class_of_usage));
+        memcpy(ts->mm_group_entry_detachment_reason, snapshot.detachment_reason, sizeof(snapshot.detachment_reason));
+        memcpy(ts->mm_group_entry_address_type, snapshot.address_type, sizeof(snapshot.address_type));
+        memcpy(ts->mm_group_entry_gssi, snapshot.gssi, sizeof(snapshot.gssi));
+        memcpy(ts->mm_group_entry_extension, snapshot.extension, sizeof(snapshot.extension));
+        memcpy(ts->mm_group_entry_vgssi, snapshot.vgssi, sizeof(snapshot.vgssi));
         /* Keep the historic public fields synchronized for API compatibility. */
-        state->tetra_mm_class_of_grp = report;
-        state->tetra_mm_addr_type = ack_request;
-        state->tetra_mm_detach_flag = mode;
-        state->tetra_mm_group_identity_valid = 1;
+        ts->mm_class_of_grp = report;
+        ts->mm_addr_type = ack_request;
+        ts->mm_detach_flag = mode;
+        ts->mm_group_identity_valid = 1;
     }
 }
 
 static void
 mm_parse_group_ack(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 7) {
         fprintf(stderr, "[TETRA MM D-GROUP-ACK] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
@@ -1625,34 +1635,36 @@ mm_parse_group_ack(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
         fprintf(stderr, "[TETRA MM D-GROUP-ACK] CC=%d (truncated optional tail)\n", cc);
         return;
     }
-    if (state) {
-        state->tetra_mm_group_ack_result = result;
-        state->tetra_mm_group_ack_valid = 1;
+    if (ts) {
+        ts->mm_group_ack_result = result;
+        ts->mm_group_ack_valid = 1;
     }
 }
 
 static void
 mm_parse_status(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 10) {
         fprintf(stderr, "[TETRA MM D-MM-STATUS] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
     }
     uint8_t status = (uint8_t)mm_bits_to_uint(bits, 4, 6);
-    if (state) {
-        state->tetra_mm_status_code = status;
-        state->tetra_mm_status_valid = 1;
+    if (ts) {
+        ts->mm_status_code = status;
+        ts->mm_status_valid = 1;
     }
 }
 
 static void
 mm_parse_fns(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 8) {
         fprintf(stderr, "[TETRA MM FUNCTION-NOT-SUPPORTED] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
     }
-    if (state) {
-        state->tetra_mm_fns_pdu_type = (uint8_t)mm_bits_to_uint(bits, 4, 4);
-        state->tetra_mm_fns_valid = 1;
+    if (ts) {
+        ts->mm_fns_pdu_type = (uint8_t)mm_bits_to_uint(bits, 4, 4);
+        ts->mm_fns_valid = 1;
     }
 }
 

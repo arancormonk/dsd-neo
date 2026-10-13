@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 /* -------------------------------------------------------------------------
  * Helpers
@@ -118,13 +119,13 @@ test_d_tx_granted(void) {
     tetra_mle_dispatch(bits, NBITS, 0, opts, state);
 
     int ok = 1;
-    if (!state->tetra_tx_granted_valid) {
+    if (!tetra_st(state)->tx_granted_valid) {
         fprintf(stderr, "FAIL(d_tx_granted): tetra_tx_granted_valid not set\n");
         ok = 0;
     }
-    if (state->tetra_tx_granted_ssi != TEST_GRANTED_SSI) {
+    if (tetra_st(state)->tx_granted_ssi != TEST_GRANTED_SSI) {
         fprintf(stderr, "FAIL(d_tx_granted): tetra_tx_granted_ssi=0x%06X expect=0x%06X\n",
-                (unsigned)state->tetra_tx_granted_ssi, (unsigned)TEST_GRANTED_SSI);
+                (unsigned)tetra_st(state)->tx_granted_ssi, (unsigned)TEST_GRANTED_SSI);
         ok = 0;
     }
 
@@ -155,14 +156,14 @@ test_d_tx_ceased(void) {
 
     dsd_state* state = alloc_state();
     dsd_opts* opts = alloc_opts();
-    state->tetra_tx_granted_valid = 1; /* pre-condition: grant was active   */
+    tetra_st(state)->tx_granted_valid = 1; /* pre-condition: grant was active   */
 
     tetra_mle_dispatch(bits, NBITS, 0, opts, state);
 
     int ok = 1;
-    if (state->tetra_tx_granted_valid != 0) {
+    if (tetra_st(state)->tx_granted_valid != 0) {
         fprintf(stderr, "FAIL(d_tx_ceased): tetra_tx_granted_valid=%u expect=0\n",
-                (unsigned)state->tetra_tx_granted_valid);
+                (unsigned)tetra_st(state)->tx_granted_valid);
         ok = 0;
     }
 
@@ -204,10 +205,10 @@ test_d_setup_truncated_optional_rejected(void) {
 
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
-    state->tetra_call_id = 0x55;
+    tetra_st(state)->call_id = 0x55;
     tetra_mle_dispatch(mle, off + 3, 0, opts, state);
 
-    int ok = state->tetra_call_active == 0 && state->tetra_call_id == 0x55;
+    int ok = tetra_st(state)->call_active == 0 && tetra_st(state)->call_id == 0x55;
     if (!ok) {
         fprintf(stderr, "FAIL(d_setup_truncated): malformed optional IE changed call state\n");
     }
@@ -249,11 +250,11 @@ test_floor_control_truncated_optionals_rejected(void) {
     off += 1; /* O-bit */
     pack_bits(cmce, 1, off, 1);
     off += 1; /* notification present, value absent */
-    state->tetra_tx_granted_valid = 0;
-    state->tetra_tx_granted_ssi = 0x112233u;
+    tetra_st(state)->tx_granted_valid = 0;
+    tetra_st(state)->tx_granted_ssi = 0x112233u;
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 0, opts, state);
-    if (state->tetra_tx_granted_valid != 0 || state->tetra_tx_granted_ssi != 0x112233u) {
+    if (tetra_st(state)->tx_granted_valid != 0 || tetra_st(state)->tx_granted_ssi != 0x112233u) {
         ok = 0;
     }
 
@@ -270,11 +271,11 @@ test_floor_control_truncated_optionals_rejected(void) {
     off += 1; /* O-bit */
     pack_bits(cmce, 1, off, 1);
     off += 1; /* notification present, value absent */
-    state->tetra_tx_granted_valid = 1;
-    state->tetra_tx_ceased_tx_perm = 0;
+    tetra_st(state)->tx_granted_valid = 1;
+    tetra_st(state)->tx_ceased_tx_perm = 0;
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 0, opts, state);
-    if (state->tetra_tx_granted_valid != 1 || state->tetra_tx_ceased_tx_perm != 0) {
+    if (tetra_st(state)->tx_granted_valid != 1 || tetra_st(state)->tx_ceased_tx_perm != 0) {
         ok = 0;
     }
 
@@ -291,11 +292,11 @@ test_floor_control_truncated_optionals_rejected(void) {
     off += 1; /* O-bit */
     pack_bits(cmce, 1, off, 1);
     off += 1; /* notification present, value absent */
-    state->tetra_tx_wait = 0;
-    state->tetra_tx_event_call_id = 0x55;
+    tetra_st(state)->tx_wait = 0;
+    tetra_st(state)->tx_event_call_id = 0x55;
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 0, opts, state);
-    if (state->tetra_tx_wait != 0 || state->tetra_tx_event_call_id != 0x55) {
+    if (tetra_st(state)->tx_wait != 0 || tetra_st(state)->tx_event_call_id != 0x55) {
         ok = 0;
     }
 
@@ -316,14 +317,14 @@ test_release_is_scoped_to_active_call(void) {
     int off = 0;
     int ok = 1;
 
-    state->tetra_call_active = 1;
-    state->tetra_call_id = 0x1234u;
-    state->tetra_cmce_release_cause = 3;
-    state->tetra_tx_granted_valid = 1;
-    state->tetra_tx_granted_ssi = 0x112233u;
-    state->tetra_cmce_tx_granted_party_type_valid = 1;
-    state->tetra_tx_event_party_ssi_valid = 1;
-    state->tetra_tx_interrupted = 1;
+    tetra_st(state)->call_active = 1;
+    tetra_st(state)->call_id = 0x1234u;
+    tetra_st(state)->cmce_release_cause = 3;
+    tetra_st(state)->tx_granted_valid = 1;
+    tetra_st(state)->tx_granted_ssi = 0x112233u;
+    tetra_st(state)->cmce_tx_granted_party_type_valid = 1;
+    tetra_st(state)->tx_event_party_ssi_valid = 1;
+    tetra_st(state)->tx_interrupted = 1;
 
     pack_bits(cmce, TETRA_CMCE_D_RELEASE, off, 5);
     off += 5;
@@ -335,10 +336,10 @@ test_release_is_scoped_to_active_call(void) {
     off++; /* O-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 0, opts, state);
-    if (!state->tetra_call_active || state->tetra_call_id != 0x1234u || state->tetra_cmce_release_cause != 3
-        || !state->tetra_tx_granted_valid || state->tetra_tx_granted_ssi != 0x112233u
-        || !state->tetra_cmce_tx_granted_party_type_valid || !state->tetra_tx_event_party_ssi_valid
-        || !state->tetra_tx_interrupted) {
+    if (!tetra_st(state)->call_active || tetra_st(state)->call_id != 0x1234u || tetra_st(state)->cmce_release_cause != 3
+        || !tetra_st(state)->tx_granted_valid || tetra_st(state)->tx_granted_ssi != 0x112233u
+        || !tetra_st(state)->cmce_tx_granted_party_type_valid || !tetra_st(state)->tx_event_party_ssi_valid
+        || !tetra_st(state)->tx_interrupted) {
         ok = 0;
     }
 
@@ -354,9 +355,10 @@ test_release_is_scoped_to_active_call(void) {
     off++; /* O-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 0, opts, state);
-    if (state->tetra_call_active || state->tetra_call_id != 0x1234u || state->tetra_cmce_release_cause != 7
-        || state->tetra_tx_granted_valid || state->tetra_tx_granted_ssi || state->tetra_cmce_tx_granted_party_type_valid
-        || state->tetra_tx_event_party_ssi_valid || state->tetra_tx_interrupted) {
+    if (tetra_st(state)->call_active || tetra_st(state)->call_id != 0x1234u || tetra_st(state)->cmce_release_cause != 7
+        || tetra_st(state)->tx_granted_valid || tetra_st(state)->tx_granted_ssi
+        || tetra_st(state)->cmce_tx_granted_party_type_valid || tetra_st(state)->tx_event_party_ssi_valid
+        || tetra_st(state)->tx_interrupted) {
         ok = 0;
     }
 
@@ -478,10 +480,10 @@ test_standard_setup_release_status(void) {
     memcpy(mle + 3, cmce, (size_t)off);
     n = off + 3;
     tetra_mle_dispatch(mle, n, 2, opts, state);
-    if (!state->tetra_call_active || state->tetra_call_id != 0x1234 || state->tetra_call_timeout != 9
-        || state->tetra_calling_ssi != 0x654321 || state->tetra_cmce_setup_basic_service != 0x32
-        || state->tetra_cmce_setup_priority != 7 || !state->tetra_cmce_setup_calling_type_valid
-        || state->tetra_cmce_setup_temporary_address_valid || state->tetra_cmce_setup_notification_valid) {
+    if (!tetra_st(state)->call_active || tetra_st(state)->call_id != 0x1234 || tetra_st(state)->call_timeout != 9
+        || tetra_st(state)->calling_ssi != 0x654321 || tetra_st(state)->cmce_setup_basic_service != 0x32
+        || tetra_st(state)->cmce_setup_priority != 7 || !tetra_st(state)->cmce_setup_calling_type_valid
+        || tetra_st(state)->cmce_setup_temporary_address_valid || tetra_st(state)->cmce_setup_notification_valid) {
         ok = 0;
     }
 
@@ -531,11 +533,12 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (state->tetra_call_id != 0x1235 || state->tetra_cmce_notif != 17 || !state->tetra_cmce_setup_notification_valid
-        || !state->tetra_cmce_setup_temporary_address_valid || state->tetra_cmce_setup_temporary_address != 0xABCDEF
-        || !state->tetra_cmce_setup_calling_type_valid || state->tetra_cmce_called_type != 2
-        || state->tetra_calling_ssi != 0x112233 || !state->tetra_cmce_setup_calling_extension_valid
-        || state->tetra_cmce_setup_calling_extension != 0x445566) {
+    if (tetra_st(state)->call_id != 0x1235 || tetra_st(state)->cmce_notif != 17
+        || !tetra_st(state)->cmce_setup_notification_valid || !tetra_st(state)->cmce_setup_temporary_address_valid
+        || tetra_st(state)->cmce_setup_temporary_address != 0xABCDEF || !tetra_st(state)->cmce_setup_calling_type_valid
+        || tetra_st(state)->cmce_called_type != 2 || tetra_st(state)->calling_ssi != 0x112233
+        || !tetra_st(state)->cmce_setup_calling_extension_valid
+        || tetra_st(state)->cmce_setup_calling_extension != 0x445566) {
         ok = 0;
     }
 
@@ -566,9 +569,9 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (state->tetra_call_id != 0x1236 || state->tetra_calling_ssi || state->tetra_cmce_setup_notification_valid
-        || state->tetra_cmce_setup_temporary_address_valid || state->tetra_cmce_setup_calling_type_valid
-        || state->tetra_cmce_setup_calling_extension_valid) {
+    if (tetra_st(state)->call_id != 0x1236 || tetra_st(state)->calling_ssi
+        || tetra_st(state)->cmce_setup_notification_valid || tetra_st(state)->cmce_setup_temporary_address_valid
+        || tetra_st(state)->cmce_setup_calling_type_valid || tetra_st(state)->cmce_setup_calling_extension_valid) {
         ok = 0;
     }
 
@@ -589,7 +592,7 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (state->tetra_sds_src != 0x654321 || state->tetra_sds_status != 0xBEEF) {
+    if (tetra_st(state)->sds_src != 0x654321 || tetra_st(state)->sds_status != 0xBEEF) {
         ok = 0;
     }
 
@@ -608,7 +611,8 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (state->tetra_call_active || state->tetra_call_id != 0x1236 || state->tetra_cmce_release_cause != 19) {
+    if (tetra_st(state)->call_active || tetra_st(state)->call_id != 0x1236
+        || tetra_st(state)->cmce_release_cause != 19) {
         ok = 0;
     }
     /* Tables 14.4, 14.5, 14.7, 14.8 and 14.11 mandatory fields. */
@@ -632,7 +636,8 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (state->tetra_d_alert_call_id != 0x2345 || state->tetra_d_alert_timeout != 6 || !state->tetra_d_alert_queued) {
+    if (tetra_st(state)->d_alert_call_id != 0x2345 || tetra_st(state)->d_alert_timeout != 6
+        || !tetra_st(state)->d_alert_queued) {
         ok = 0;
     }
 
@@ -654,8 +659,8 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (state->tetra_d_call_proc_call_id != 0x2345 || state->tetra_d_call_proc_timeout != 5
-        || !state->tetra_d_call_proc_hook) {
+    if (tetra_st(state)->d_call_proc_call_id != 0x2345 || tetra_st(state)->d_call_proc_timeout != 5
+        || !tetra_st(state)->d_call_proc_hook) {
         ok = 0;
     }
 
@@ -683,8 +688,8 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (!state->tetra_connect_valid || state->tetra_call_id != 0x2345 || state->tetra_cmce_connect_tx_grant != 3
-        || !state->tetra_cmce_connect_ownership) {
+    if (!tetra_st(state)->connect_valid || tetra_st(state)->call_id != 0x2345
+        || tetra_st(state)->cmce_connect_tx_grant != 3 || !tetra_st(state)->cmce_connect_ownership) {
         ok = 0;
     }
 
@@ -706,8 +711,8 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (state->tetra_d_connect_ack_call_id != 0x2345 || state->tetra_d_connect_ack_tx_grant != 2
-        || !state->tetra_d_connect_ack_tx_permission) {
+    if (tetra_st(state)->d_connect_ack_call_id != 0x2345 || tetra_st(state)->d_connect_ack_tx_grant != 2
+        || !tetra_st(state)->d_connect_ack_tx_permission) {
         ok = 0;
     }
 
@@ -727,8 +732,8 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (state->tetra_d_info_call_id != 0x2345 || !state->tetra_d_info_call_timeout
-        || !state->tetra_d_info_notification) {
+    if (tetra_st(state)->d_info_call_id != 0x2345 || !tetra_st(state)->d_info_call_timeout
+        || !tetra_st(state)->d_info_notification) {
         ok = 0;
     }
 
@@ -751,8 +756,8 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (!state->tetra_call_restore_valid || state->tetra_call_restore_id != 0x3456
-        || state->tetra_call_restore_grant != 3 || !state->tetra_call_restore_reset) {
+    if (!tetra_st(state)->call_restore_valid || tetra_st(state)->call_restore_id != 0x3456
+        || tetra_st(state)->call_restore_grant != 3 || !tetra_st(state)->call_restore_reset) {
         ok = 0;
     }
 
@@ -775,8 +780,8 @@ test_standard_setup_release_status(void) {
     pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(mle + 3, cmce, (size_t)off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    if (!state->tetra_cmce_fns_valid || state->tetra_cmce_fns_rejected_pdu != TETRA_CMCE_D_SETUP
-        || state->tetra_cmce_fns_call_id != 0x3456 || state->tetra_cmce_fns_pointer != 0) {
+    if (!tetra_st(state)->cmce_fns_valid || tetra_st(state)->cmce_fns_rejected_pdu != TETRA_CMCE_D_SETUP
+        || tetra_st(state)->cmce_fns_call_id != 0x3456 || tetra_st(state)->cmce_fns_pointer != 0) {
         ok = 0;
     }
 
@@ -800,8 +805,8 @@ test_standard_mle_envelopes(void) {
     pack_bits(bits, 1, 23, 1);
     pack_bits(bits, 0, 24, 1); /* O-bit */
     tetra_mle_dispatch(bits, 25, 4, opts, state);
-    int ok = state->tetra_d_info_valid && state->tetra_d_info_call_id == 0x1234 && state->tetra_d_info_call_timeout
-             && state->tetra_d_info_notification;
+    int ok = tetra_st(state)->d_info_valid && tetra_st(state)->d_info_call_id == 0x1234
+             && tetra_st(state)->d_info_call_timeout && tetra_st(state)->d_info_notification;
 
     memset(bits, 0, sizeof bits);
     pack_bits(bits, TETRA_MLE_PD_MLE, 0, 3);
@@ -809,7 +814,7 @@ test_standard_mle_envelopes(void) {
     pack_bits(bits, 2, 6, 2);
     pack_bits(bits, 0, 8, 1); /* mandatory O-bit */
     tetra_mle_dispatch(bits, 9, 4, opts, state);
-    ok = ok && state->tetra_mle_restore_fail_valid && state->tetra_mle_restore_fail_cause == 2;
+    ok = ok && tetra_st(state)->mle_restore_fail_valid && tetra_st(state)->mle_restore_fail_cause == 2;
 
     free(state);
     free(opts);
@@ -835,7 +840,7 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 0, off, 1);
     off++;
     tetra_mle_dispatch(bits, off, 2, opts, state);
-    int ok = state->tetra_mle_new_cell_valid && state->tetra_mle_new_cell_channel_command == 2;
+    int ok = tetra_st(state)->mle_new_cell_valid && tetra_st(state)->mle_new_cell_channel_command == 2;
 
     /* E.20: D-NEW-CELL carrying a minimal D-LOCATION UPDATE ACCEPT. */
     memset(bits, 0, sizeof bits);
@@ -855,8 +860,8 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 0, off, 1);
     off++;
     tetra_mle_dispatch(bits, off, 2, opts, state);
-    ok = ok && state->tetra_mle_new_cell_channel_command == 1 && state->tetra_mm_lu_accept_valid
-         && state->tetra_mm_lu_accept_type == 5;
+    ok = ok && tetra_st(state)->mle_new_cell_channel_command == 1 && tetra_st(state)->mm_lu_accept_valid
+         && tetra_st(state)->mm_lu_accept_type == 5;
 
     /* E.21: D-PREPARE-FAIL without an MM SDU. */
     memset(bits, 0, sizeof bits);
@@ -870,7 +875,7 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 0, off, 1);
     off++;
     tetra_mle_dispatch(bits, off, 3, opts, state);
-    ok = ok && state->tetra_mle_prepare_fail_valid && state->tetra_mle_prepare_fail_cause == 3;
+    ok = ok && tetra_st(state)->mle_prepare_fail_valid && tetra_st(state)->mle_prepare_fail_cause == 3;
 
     /* E.22: D-PREPARE-FAIL carrying D-LOCATION UPDATE REJECT. */
     memset(bits, 0, sizeof bits);
@@ -894,8 +899,8 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 0, off, 1);
     off++;
     tetra_mle_dispatch(bits, off, 3, opts, state);
-    ok = ok && state->tetra_mle_prepare_fail_cause == 1 && state->tetra_mm_lu_reject_valid
-         && state->tetra_mm_lu_reject_type == 2 && state->tetra_mm_lu_reject_cause == 17;
+    ok = ok && tetra_st(state)->mle_prepare_fail_cause == 1 && tetra_st(state)->mm_lu_reject_valid
+         && tetra_st(state)->mm_lu_reject_type == 2 && tetra_st(state)->mm_lu_reject_cause == 17;
 
     /* E.23: D-RESTORE-ACK carrying CMCE D-CALL-RESTORE. */
     memset(bits, 0, sizeof bits);
@@ -919,13 +924,13 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 0, off, 1);
     off++; /* CMCE O-bit */
     tetra_mle_dispatch(bits, off, 4, opts, state);
-    ok = ok && state->tetra_restore_ack && state->tetra_call_restore_valid && state->tetra_call_restore_id == 0x2345
-         && state->tetra_call_restore_grant == 2;
+    ok = ok && tetra_st(state)->restore_ack && tetra_st(state)->call_restore_valid
+         && tetra_st(state)->call_restore_id == 0x2345 && tetra_st(state)->call_restore_grant == 2;
 
     /* The ACK and nested call state are atomic when the CMCE O-bit is absent. */
-    state->tetra_restore_ack = 0;
+    tetra_st(state)->restore_ack = 0;
     tetra_mle_dispatch(bits, off - 1, 4, opts, state);
-    ok = ok && !state->tetra_restore_ack && state->tetra_call_restore_id == 0x2345;
+    ok = ok && !tetra_st(state)->restore_ack && tetra_st(state)->call_restore_id == 0x2345;
 
     /* E.24: D-RESTORE-FAIL. */
     memset(bits, 0, sizeof bits);
@@ -939,10 +944,10 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 0, off, 1);
     off++;
     tetra_mle_dispatch(bits, off, 5, opts, state);
-    ok = ok && state->tetra_mle_restore_fail_valid && state->tetra_mle_restore_fail_cause == 2;
+    ok = ok && tetra_st(state)->mle_restore_fail_valid && tetra_st(state)->mle_restore_fail_cause == 2;
 
     /* No listed response defines Type 2 elements; O=1 must not replace state. */
-    state->tetra_mle_new_cell_channel_command = 3;
+    tetra_st(state)->mle_new_cell_channel_command = 3;
     memset(bits, 0, sizeof bits);
     off = 0;
     pack_bits(bits, TETRA_MLE_PD_MLE, off, 3);
@@ -954,7 +959,7 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 1, off, 1);
     off++;
     tetra_mle_dispatch(bits, off, 2, opts, state);
-    ok = ok && state->tetra_mle_new_cell_channel_command == 3;
+    ok = ok && tetra_st(state)->mle_new_cell_channel_command == 3;
 
     /* Table 18.10: D-CHANNEL RESPONSE with its reserved optionals absent. */
     memset(bits, 0, sizeof bits);
@@ -972,13 +977,13 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 0, off, 1);
     off++;
     tetra_mle_dispatch(bits, off, 2, opts, state);
-    ok = ok && state->tetra_mle_channel_response_valid && state->tetra_mle_channel_response_type == 1
-         && state->tetra_mle_channel_response_reason == 5 && state->tetra_mle_channel_response_retry_delay == 9;
+    ok = ok && tetra_st(state)->mle_channel_response_valid && tetra_st(state)->mle_channel_response_type == 1
+         && tetra_st(state)->mle_channel_response_reason == 5 && tetra_st(state)->mle_channel_response_retry_delay == 9;
 
     bits[off - 1] = 1; /* reserved Type 2 fields claimed */
-    state->tetra_mle_channel_response_reason = 7;
+    tetra_st(state)->mle_channel_response_reason = 7;
     tetra_mle_dispatch(bits, off, 2, opts, state);
-    ok = ok && state->tetra_mle_channel_response_reason == 7;
+    ok = ok && tetra_st(state)->mle_channel_response_reason == 7;
 
     free(state);
     free(opts);
@@ -1021,9 +1026,10 @@ test_alert_proceeding_optional_atomicity(void) {
     pack_bits(tm_sdu, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 3, opts, state);
-    int ok = state->tetra_d_alert_valid && state->tetra_d_alert_basic_service == 0xA5
-             && state->tetra_d_alert_notification == 0x2A && state->tetra_call_type == 5 && state->tetra_enc_mode == 0
-             && state->tetra_cmce_com_type == 1 && state->tetra_call_slots == 1;
+    int ok = tetra_st(state)->d_alert_valid && tetra_st(state)->d_alert_basic_service == 0xA5
+             && tetra_st(state)->d_alert_notification == 0x2A && tetra_st(state)->call_type == 5
+             && tetra_st(state)->enc_mode == 0 && tetra_st(state)->cmce_com_type == 1
+             && tetra_st(state)->call_slots == 1;
 
     /* A replacement declares Basic Service but ends before its eight bits.
      * The last complete D-ALERT must remain untouched. */
@@ -1051,8 +1057,8 @@ test_alert_proceeding_optional_atomicity(void) {
     pack_bits(tm_sdu, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 3, opts, state);
-    ok = ok && state->tetra_d_alert_call_id == 0x1234 && state->tetra_d_alert_basic_service == 0xA5
-         && state->tetra_call_type == 5 && state->tetra_cmce_com_type == 1;
+    ok = ok && tetra_st(state)->d_alert_call_id == 0x1234 && tetra_st(state)->d_alert_basic_service == 0xA5
+         && tetra_st(state)->call_type == 5 && tetra_st(state)->cmce_com_type == 1;
 
     memset(cmce, 0, sizeof cmce);
     memset(tm_sdu, 0, sizeof tm_sdu);
@@ -1086,10 +1092,10 @@ test_alert_proceeding_optional_atomicity(void) {
     pack_bits(tm_sdu, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 3, opts, state);
-    ok = ok && state->tetra_d_call_proc_valid && state->tetra_d_call_proc_basic_service == 0x53
-         && state->tetra_d_call_proc_status == 5 && state->tetra_d_call_proc_notification == 17
-         && state->tetra_call_type == 2 && state->tetra_enc_mode == 1 && state->tetra_cmce_com_type == 0
-         && state->tetra_call_slots == 3;
+    ok = ok && tetra_st(state)->d_call_proc_valid && tetra_st(state)->d_call_proc_basic_service == 0x53
+         && tetra_st(state)->d_call_proc_status == 5 && tetra_st(state)->d_call_proc_notification == 17
+         && tetra_st(state)->call_type == 2 && tetra_st(state)->enc_mode == 1 && tetra_st(state)->cmce_com_type == 0
+         && tetra_st(state)->call_slots == 3;
 
     free(state);
     free(opts);
@@ -1141,12 +1147,12 @@ test_call_restore_optionals_and_atomicity(void) {
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 6, opts, state);
 
-    int ok = state->tetra_call_restore_valid && state->tetra_call_restore_id == 0x1111 && state->tetra_call_id == 0x2222
-             && state->tetra_call_restore_new_id_valid && state->tetra_call_restore_timeout_valid
-             && state->tetra_call_restore_timeout == 9 && state->tetra_call_restore_status_valid
-             && state->tetra_call_restore_status == 5 && state->tetra_call_restore_modify_valid
-             && state->tetra_call_restore_modify == 0x12A && state->tetra_call_restore_notification_valid
-             && state->tetra_call_restore_notification == 0x2D;
+    int ok = tetra_st(state)->call_restore_valid && tetra_st(state)->call_restore_id == 0x1111
+             && tetra_st(state)->call_id == 0x2222 && tetra_st(state)->call_restore_new_id_valid
+             && tetra_st(state)->call_restore_timeout_valid && tetra_st(state)->call_restore_timeout == 9
+             && tetra_st(state)->call_restore_status_valid && tetra_st(state)->call_restore_status == 5
+             && tetra_st(state)->call_restore_modify_valid && tetra_st(state)->call_restore_modify == 0x12A
+             && tetra_st(state)->call_restore_notification_valid && tetra_st(state)->call_restore_notification == 0x2D;
 
     /* New identifier is declared but incomplete: preserve the valid restore. */
     memset(cmce, 0, sizeof cmce);
@@ -1171,8 +1177,8 @@ test_call_restore_optionals_and_atomicity(void) {
     pack_bits(tm_sdu, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 6, opts, state);
-    ok = ok && state->tetra_call_restore_id == 0x1111 && state->tetra_call_id == 0x2222
-         && state->tetra_call_restore_modify == 0x12A;
+    ok = ok && tetra_st(state)->call_restore_id == 0x1111 && tetra_st(state)->call_id == 0x2222
+         && tetra_st(state)->call_restore_modify == 0x12A;
 
     free(state);
     free(opts);
@@ -1220,12 +1226,13 @@ test_d_info_optionals_and_atomicity(void) {
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 5, opts, state);
 
-    int ok =
-        state->tetra_d_info_valid && state->tetra_d_info_new_call_id_valid && state->tetra_d_info_new_call_id == 0x2020
-        && state->tetra_call_id == 0x2020 && state->tetra_call_timeout == 11 && state->tetra_d_info_setup_timeout == 6
-        && state->tetra_d_info_ownership == 1 && state->tetra_d_info_modify == 0x155 && state->tetra_d_info_status == 3
-        && state->tetra_d_info_temporary_address == 0xABCDEF && state->tetra_d_info_notification_indicator == 42
-        && state->tetra_d_info_poll_percentage == 37 && state->tetra_d_info_poll_number == 12;
+    int ok = tetra_st(state)->d_info_valid && tetra_st(state)->d_info_new_call_id_valid
+             && tetra_st(state)->d_info_new_call_id == 0x2020 && tetra_st(state)->call_id == 0x2020
+             && tetra_st(state)->call_timeout == 11 && tetra_st(state)->d_info_setup_timeout == 6
+             && tetra_st(state)->d_info_ownership == 1 && tetra_st(state)->d_info_modify == 0x155
+             && tetra_st(state)->d_info_status == 3 && tetra_st(state)->d_info_temporary_address == 0xABCDEF
+             && tetra_st(state)->d_info_notification_indicator == 42 && tetra_st(state)->d_info_poll_percentage == 37
+             && tetra_st(state)->d_info_poll_number == 12;
 
     /* Declared new call identifier is incomplete; retain every prior value. */
     memset(cmce, 0, sizeof cmce);
@@ -1248,8 +1255,8 @@ test_d_info_optionals_and_atomicity(void) {
     pack_bits(tm_sdu, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 5, opts, state);
-    ok = ok && state->tetra_d_info_call_id == 0x1010 && state->tetra_d_info_new_call_id == 0x2020
-         && state->tetra_d_info_temporary_address == 0xABCDEF;
+    ok = ok && tetra_st(state)->d_info_call_id == 0x1010 && tetra_st(state)->d_info_new_call_id == 0x2020
+         && tetra_st(state)->d_info_temporary_address == 0xABCDEF;
 
     free(state);
     free(opts);
@@ -1297,11 +1304,13 @@ test_connect_optionals_and_atomicity(void) {
     pack_bits(tm_sdu, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 4, opts, state);
-    int ok = state->tetra_connect_valid && state->tetra_call_id == 0x1111 && state->tetra_cmce_connect_priority_valid
-             && state->tetra_cmce_connect_priority == 14 && state->tetra_cmce_connect_basic_service == 0xA6
-             && state->tetra_connect_call_type == 5 && state->tetra_connect_enc_mode == 0 && state->tetra_call_type == 5
-             && state->tetra_enc_mode == 0 && state->tetra_cmce_com_type == 1 && state->tetra_call_slots == 2
-             && state->tetra_cmce_connect_temporary_address == 0x654321 && state->tetra_cmce_connect_notification == 33;
+    int ok = tetra_st(state)->connect_valid && tetra_st(state)->call_id == 0x1111
+             && tetra_st(state)->cmce_connect_priority_valid && tetra_st(state)->cmce_connect_priority == 14
+             && tetra_st(state)->cmce_connect_basic_service == 0xA6 && tetra_st(state)->connect_call_type == 5
+             && tetra_st(state)->connect_enc_mode == 0 && tetra_st(state)->call_type == 5
+             && tetra_st(state)->enc_mode == 0 && tetra_st(state)->cmce_com_type == 1
+             && tetra_st(state)->call_slots == 2 && tetra_st(state)->cmce_connect_temporary_address == 0x654321
+             && tetra_st(state)->cmce_connect_notification == 33;
 
     /* Priority is declared but truncated: keep the established call intact. */
     memset(cmce, 0, sizeof cmce);
@@ -1332,8 +1341,8 @@ test_connect_optionals_and_atomicity(void) {
     pack_bits(tm_sdu, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 4, opts, state);
-    ok = ok && state->tetra_call_id == 0x1111 && state->tetra_cmce_connect_priority == 14 && state->tetra_call_type == 5
-         && state->tetra_cmce_com_type == 1 && state->tetra_call_slots == 2;
+    ok = ok && tetra_st(state)->call_id == 0x1111 && tetra_st(state)->cmce_connect_priority == 14
+         && tetra_st(state)->call_type == 5 && tetra_st(state)->cmce_com_type == 1 && tetra_st(state)->call_slots == 2;
 
     memset(cmce, 0, sizeof cmce);
     memset(tm_sdu, 0, sizeof tm_sdu);
@@ -1359,8 +1368,8 @@ test_connect_optionals_and_atomicity(void) {
     pack_bits(tm_sdu, TETRA_MLE_PD_CMCE, 0, 3);
     memcpy(tm_sdu + 3, cmce, (size_t)off);
     tetra_mle_dispatch(tm_sdu, off + 3, 4, opts, state);
-    ok = ok && state->tetra_d_connect_ack_valid && state->tetra_d_connect_ack_call_id == 0x3333
-         && state->tetra_d_connect_ack_notification_valid && state->tetra_d_connect_ack_notification == 29;
+    ok = ok && tetra_st(state)->d_connect_ack_valid && tetra_st(state)->d_connect_ack_call_id == 0x3333
+         && tetra_st(state)->d_connect_ack_notification_valid && tetra_st(state)->d_connect_ack_notification == 29;
     free(state);
     free(opts);
     return ok;
@@ -1371,9 +1380,9 @@ test_release_notification_and_atomicity(void) {
     uint8_t bits[48] = {0};
     dsd_state* state = alloc_state();
     dsd_opts* opts = alloc_opts();
-    state->tetra_call_active = 1;
-    state->tetra_call_id = 0x1234;
-    state->tetra_tx_granted_valid = 1;
+    tetra_st(state)->call_active = 1;
+    tetra_st(state)->call_id = 0x1234;
+    tetra_st(state)->tx_granted_valid = 1;
     pack_bits(bits, TETRA_MLE_PD_CMCE, 0, 3);
     pack_bits(bits, TETRA_CMCE_D_RELEASE, 3, 5);
     pack_bits(bits, 0x1234, 8, 14);
@@ -1383,14 +1392,15 @@ test_release_notification_and_atomicity(void) {
     pack_bits(bits, 41, 29, 6);
     pack_bits(bits, 0, 35, 1); /* M-bit */
     tetra_mle_dispatch(bits, 36, 2, opts, state);
-    int ok = !state->tetra_call_active && !state->tetra_tx_granted_valid && state->tetra_cmce_release_notification_valid
-             && state->tetra_cmce_release_notification == 41 && !state->tetra_cmce_release_was_disconnect;
+    int ok = !tetra_st(state)->call_active && !tetra_st(state)->tx_granted_valid
+             && tetra_st(state)->cmce_release_notification_valid && tetra_st(state)->cmce_release_notification == 41
+             && !tetra_st(state)->cmce_release_was_disconnect;
 
     /* A matching D-DISCONNECT whose notification is declared but truncated
      * must not release the call or replace the last complete release fields. */
     memset(bits, 0, sizeof bits);
-    state->tetra_call_active = 1;
-    state->tetra_tx_granted_valid = 1;
+    tetra_st(state)->call_active = 1;
+    tetra_st(state)->tx_granted_valid = 1;
     pack_bits(bits, TETRA_MLE_PD_CMCE, 0, 3);
     pack_bits(bits, TETRA_CMCE_D_DISCONNECT, 3, 5);
     pack_bits(bits, 0x1234, 8, 14);
@@ -1399,8 +1409,9 @@ test_release_notification_and_atomicity(void) {
     pack_bits(bits, 1, 28, 1);
     pack_bits(bits, 2, 29, 2);
     tetra_mle_dispatch(bits, 31, 2, opts, state);
-    ok = ok && state->tetra_call_active && state->tetra_tx_granted_valid && state->tetra_cmce_release_cause == 9
-         && state->tetra_cmce_release_notification == 41 && !state->tetra_cmce_release_was_disconnect;
+    ok = ok && tetra_st(state)->call_active && tetra_st(state)->tx_granted_valid
+         && tetra_st(state)->cmce_release_cause == 9 && tetra_st(state)->cmce_release_notification == 41
+         && !tetra_st(state)->cmce_release_was_disconnect;
     free(state);
     free(opts);
     return ok;
@@ -1411,11 +1422,11 @@ test_floor_control_scoped_to_active_call(void) {
     uint8_t cmce[64] = {0}, mle[128] = {0};
     dsd_state* state = alloc_state();
     dsd_opts* opts = alloc_opts();
-    state->tetra_call_active = 1;
-    state->tetra_call_id = 77;
-    state->tetra_tx_granted_valid = 1;
-    state->tetra_tx_granted_ssi = 0x112233;
-    state->tetra_tx_event_call_id = 77;
+    tetra_st(state)->call_active = 1;
+    tetra_st(state)->call_id = 77;
+    tetra_st(state)->tx_granted_valid = 1;
+    tetra_st(state)->tx_granted_ssi = 0x112233;
+    tetra_st(state)->tx_event_call_id = 77;
     int off = 0;
 
     pack_bits(cmce, TETRA_CMCE_D_TX_GRANTED, off, 5);
@@ -1434,7 +1445,7 @@ test_floor_control_scoped_to_active_call(void) {
     off++; /* O-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 1, opts, state);
-    int ok = state->tetra_tx_granted_valid && state->tetra_tx_granted_ssi == 0x112233;
+    int ok = tetra_st(state)->tx_granted_valid && tetra_st(state)->tx_granted_ssi == 0x112233;
 
     memset(cmce, 0, sizeof cmce);
     off = 0;
@@ -1448,7 +1459,7 @@ test_floor_control_scoped_to_active_call(void) {
     off++; /* O-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 1, opts, state);
-    ok = ok && state->tetra_tx_granted_valid;
+    ok = ok && tetra_st(state)->tx_granted_valid;
 
     memset(cmce, 0, sizeof cmce);
     off = 0;
@@ -1462,7 +1473,7 @@ test_floor_control_scoped_to_active_call(void) {
     off++; /* O-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 1, opts, state);
-    ok = ok && !state->tetra_tx_wait && state->tetra_tx_event_call_id == 77;
+    ok = ok && !tetra_st(state)->tx_wait && tetra_st(state)->tx_event_call_id == 77;
 
     /* The same event for the active call is accepted. */
     memset(cmce, 0, sizeof cmce);
@@ -1477,7 +1488,7 @@ test_floor_control_scoped_to_active_call(void) {
     off++; /* O-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 1, opts, state);
-    ok = ok && state->tetra_tx_wait && state->tetra_tx_event_call_id == 77;
+    ok = ok && tetra_st(state)->tx_wait && tetra_st(state)->tx_event_call_id == 77;
     free(state);
     free(opts);
     return ok;
@@ -1521,11 +1532,12 @@ test_floor_control_party_optionals_and_clear(void) {
     off++; /* terminating M-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 1, opts, state);
-    int ok = state->tetra_tx_granted_valid && state->tetra_tx_granted_ssi == 0x123456
-             && state->tetra_cmce_tx_granted_notification_valid && state->tetra_cmce_tx_granted_notification == 23
-             && state->tetra_cmce_tx_granted_party_type_valid && state->tetra_cmce_tx_granted_party_type == 2
-             && state->tetra_cmce_tx_granted_party_extension_valid
-             && state->tetra_cmce_tx_granted_party_extension == 0x654321;
+    int ok = tetra_st(state)->tx_granted_valid && tetra_st(state)->tx_granted_ssi == 0x123456
+             && tetra_st(state)->cmce_tx_granted_notification_valid
+             && tetra_st(state)->cmce_tx_granted_notification == 23 && tetra_st(state)->cmce_tx_granted_party_type_valid
+             && tetra_st(state)->cmce_tx_granted_party_type == 2
+             && tetra_st(state)->cmce_tx_granted_party_extension_valid
+             && tetra_st(state)->cmce_tx_granted_party_extension == 0x654321;
 
     /* A complete mandatory-only replacement clears absent optional identity. */
     memset(cmce, 0, sizeof cmce);
@@ -1546,8 +1558,9 @@ test_floor_control_party_optionals_and_clear(void) {
     off++; /* O-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 1, opts, state);
-    ok = ok && !state->tetra_tx_granted_ssi && !state->tetra_cmce_tx_granted_notification_valid
-         && !state->tetra_cmce_tx_granted_party_type_valid && !state->tetra_cmce_tx_granted_party_extension_valid;
+    ok = ok && !tetra_st(state)->tx_granted_ssi && !tetra_st(state)->cmce_tx_granted_notification_valid
+         && !tetra_st(state)->cmce_tx_granted_party_type_valid
+         && !tetra_st(state)->cmce_tx_granted_party_extension_valid;
 
     /* Table 14.19 has the same transmitting-party optional chain. */
     memset(cmce, 0, sizeof cmce);
@@ -1582,11 +1595,11 @@ test_floor_control_party_optionals_and_clear(void) {
     off++; /* terminating M-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 1, opts, state);
-    ok = ok && state->tetra_tx_interrupted && state->tetra_tx_event_notification_valid
-         && state->tetra_tx_event_notification == 31 && state->tetra_tx_event_party_type_valid
-         && state->tetra_tx_event_party_type == 2 && state->tetra_tx_event_party_ssi_valid
-         && state->tetra_tx_event_party_ssi == 0xABCDEF && state->tetra_tx_event_party_extension_valid
-         && state->tetra_tx_event_party_extension == 0x102030;
+    ok = ok && tetra_st(state)->tx_interrupted && tetra_st(state)->tx_event_notification_valid
+         && tetra_st(state)->tx_event_notification == 31 && tetra_st(state)->tx_event_party_type_valid
+         && tetra_st(state)->tx_event_party_type == 2 && tetra_st(state)->tx_event_party_ssi_valid
+         && tetra_st(state)->tx_event_party_ssi == 0xABCDEF && tetra_st(state)->tx_event_party_extension_valid
+         && tetra_st(state)->tx_event_party_extension == 0x102030;
 
     /* A claimed CPTI=2 extension that is truncated must preserve the event. */
     memset(cmce, 0, sizeof cmce);
@@ -1617,8 +1630,8 @@ test_floor_control_party_optionals_and_clear(void) {
     off += 8;
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 1, opts, state);
-    ok = ok && state->tetra_tx_event_notification == 31 && state->tetra_tx_event_party_ssi == 0xABCDEF
-         && state->tetra_tx_event_party_extension == 0x102030;
+    ok = ok && tetra_st(state)->tx_event_notification == 31 && tetra_st(state)->tx_event_party_ssi == 0xABCDEF
+         && tetra_st(state)->tx_event_party_extension == 0x102030;
 
     free(state);
     free(opts);
@@ -1645,15 +1658,15 @@ test_sds_transfer_timestamp_text(void) {
     pack_bits(cmce, 0, 92, 1); /* O-bit */
     wrap_cmce(mle, cmce, 93);
     tetra_mle_dispatch(mle, 96, 3, opts, state);
-    int ok = strcmp(state->tetra_sds_text, "OK") == 0 && state->tetra_sds_msg_ref == 0xb7;
+    int ok = strcmp(tetra_st(state)->sds_text, "OK") == 0 && tetra_st(state)->sds_msg_ref == 0xb7;
     /* The outer length is complete; the timestamp itself lacks one bit. */
     pack_bits(cmce, 55, 9, 11);
     pack_bits(cmce, 0x11, 36, 8);
     pack_bits(cmce, 0, 75, 1); /* O-bit */
     wrap_cmce(mle, cmce, 76);
     tetra_mle_dispatch(mle, 79, 4, opts, state);
-    ok = ok && strcmp(state->tetra_sds_text, "OK") == 0 && state->tetra_sds_msg_ref == 0xb7
-         && state->tetra_sds_last_cc == 3;
+    ok = ok && strcmp(tetra_st(state)->sds_text, "OK") == 0 && tetra_st(state)->sds_msg_ref == 0xb7
+         && tetra_st(state)->sds_last_cc == 3;
     free(state);
     free(opts);
     return ok;
@@ -1675,20 +1688,20 @@ test_sds_gsm_text(void) {
     pack_bits(cmce, 0, 60, 1); /* O-bit */
     wrap_cmce(mle, cmce, 61);
     tetra_mle_dispatch(mle, 64, 3, opts, state);
-    int ok = state->tetra_sds_text_len == 4 && memcmp(state->tetra_sds_text, "A\xe2\x82\xac", 5) == 0;
+    int ok = tetra_st(state)->sds_text_len == 4 && memcmp(tetra_st(state)->sds_text, "A\xe2\x82\xac", 5) == 0;
     /* One packed ESC has no following extension character. */
     pack_bits(cmce, 24, 9, 11);
     pack_bits(cmce, 27, 36, 8);
     pack_bits(cmce, 0, 44, 1);
     wrap_cmce(mle, cmce, 45);
     tetra_mle_dispatch(mle, 48, 4, opts, state);
-    ok = ok && state->tetra_sds_last_cc == 3 && memcmp(state->tetra_sds_text, "A\xe2\x82\xac", 5) == 0;
+    ok = ok && tetra_st(state)->sds_last_cc == 3 && memcmp(tetra_st(state)->sds_text, "A\xe2\x82\xac", 5) == 0;
     /* TETRA carries packed octets; a seven-bit payload is incomplete. */
     pack_bits(cmce, 23, 9, 11);
     pack_bits(cmce, 0, 43, 1);
     wrap_cmce(mle, cmce, 44);
     tetra_mle_dispatch(mle, 47, 4, opts, state);
-    ok = ok && state->tetra_sds_last_cc == 3;
+    ok = ok && tetra_st(state)->sds_last_cc == 3;
     /* Undefined extension falls back to the default alphabet character. */
     pack_bits(cmce, 32, 9, 11);
     pack_bits(cmce, 0x9b, 36, 8); /* ESC followed by A. */
@@ -1696,7 +1709,7 @@ test_sds_gsm_text(void) {
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
     tetra_mle_dispatch(mle, 56, 5, opts, state);
-    ok = ok && strcmp(state->tetra_sds_text, "A") == 0 && state->tetra_sds_last_cc == 5;
+    ok = ok && strcmp(tetra_st(state)->sds_text, "A") == 0 && tetra_st(state)->sds_last_cc == 5;
     free(state);
     free(opts);
     return ok;
@@ -1718,14 +1731,14 @@ test_sds_utf16_display_bound(void) {
     }
     pack_bits(mle, 0, 39 + 90 * 16, 1); /* O-bit */
     tetra_mle_dispatch(mle, 40 + 90 * 16, 3, opts, state);
-    int ok = state->tetra_sds_text_len == 255 && state->tetra_sds_text[255] == 0;
+    int ok = tetra_st(state)->sds_text_len == 255 && tetra_st(state)->sds_text[255] == 0;
     for (int i = 0; i < 85; i++) {
-        ok = ok && memcmp(state->tetra_sds_text + i * 3, "\xe4\xb8\xad", 3) == 0;
+        ok = ok && memcmp(tetra_st(state)->sds_text + i * 3, "\xe4\xb8\xad", 3) == 0;
     }
     /* Invalid suffix lies beyond all displayed characters. */
     pack_bits(mle, 0xd800, 39 + 89 * 16, 16);
     tetra_mle_dispatch(mle, 40 + 90 * 16, 4, opts, state);
-    ok = ok && state->tetra_sds_last_cc == 3 && state->tetra_sds_text_len == 255;
+    ok = ok && tetra_st(state)->sds_last_cc == 3 && tetra_st(state)->sds_text_len == 255;
     free(state);
     free(opts);
     return ok;
@@ -1747,12 +1760,12 @@ test_sds_utf16_text(void) {
     pack_bits(cmce, 0, 84, 1);
     wrap_cmce(mle, cmce, 85);
     tetra_mle_dispatch(mle, 88, 3, opts, state);
-    int ok = state->tetra_sds_text_unicode && state->tetra_sds_text_len == 7
-             && memcmp(state->tetra_sds_text, "\xe4\xb8\xad\xf0\x9f\x98\x80", 8) == 0;
+    int ok = tetra_st(state)->sds_text_unicode && tetra_st(state)->sds_text_len == 7
+             && memcmp(tetra_st(state)->sds_text, "\xe4\xb8\xad\xf0\x9f\x98\x80", 8) == 0;
     pack_bits(cmce, 0x0041, 68, 16); /* High surrogate without low surrogate. */
     wrap_cmce(mle, cmce, 85);
     tetra_mle_dispatch(mle, 88, 4, opts, state);
-    ok = ok && state->tetra_sds_text_len == 7 && state->tetra_sds_last_cc == 3;
+    ok = ok && tetra_st(state)->sds_text_len == 7 && tetra_st(state)->sds_last_cc == 3;
     free(state);
     free(opts);
     return ok;
@@ -1773,17 +1786,17 @@ test_sds_latin1_text(void) {
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
     tetra_mle_dispatch(mle, 56, 3, opts, state);
-    int ok = state->tetra_sds_text_len == 3 && memcmp(state->tetra_sds_text, "A\xc3\xa9", 4) == 0;
+    int ok = tetra_st(state)->sds_text_len == 3 && memcmp(tetra_st(state)->sds_text, "A\xc3\xa9", 4) == 0;
     pack_bits(cmce, 8, 9, 11); /* PID only: missing the coding-scheme octet. */
     pack_bits(cmce, 0, 28, 1);
     wrap_cmce(mle, cmce, 29);
     tetra_mle_dispatch(mle, 32, 4, opts, state);
-    ok = ok && state->tetra_sds_text_len == 3 && state->tetra_sds_last_cc == 3;
+    ok = ok && tetra_st(state)->sds_text_len == 3 && tetra_st(state)->sds_last_cc == 3;
     pack_bits(cmce, 31, 9, 11);
     pack_bits(cmce, 0, 51, 1);
     wrap_cmce(mle, cmce, 52);
     tetra_mle_dispatch(mle, 55, 4, opts, state);
-    ok = ok && state->tetra_sds_text_len == 3 && state->tetra_sds_last_cc == 3;
+    ok = ok && tetra_st(state)->sds_text_len == 3 && tetra_st(state)->sds_last_cc == 3;
     free(state);
     free(opts);
     return ok;
@@ -1806,16 +1819,16 @@ test_sds_transfer_reference(void) {
     pack_bits(cmce, 0, 76, 1);
     wrap_cmce(mle, cmce, 77);
     tetra_mle_dispatch(mle, 80, 3, opts, state);
-    int ok = state->tetra_sds_msg_ref == 0xa9 && state->tetra_sds_storage_forward
-             && state->tetra_sds_validity_period == 17 && state->tetra_sds_forward_valid
-             && state->tetra_sds_forward_type == 1 && state->tetra_sds_forward_ssi == 0x123456;
+    int ok = tetra_st(state)->sds_msg_ref == 0xa9 && tetra_st(state)->sds_storage_forward
+             && tetra_st(state)->sds_validity_period == 17 && tetra_st(state)->sds_forward_valid
+             && tetra_st(state)->sds_forward_type == 1 && tetra_st(state)->sds_forward_ssi == 0x123456;
     pack_bits(cmce, 0x11, 36, 8);
     pack_bits(cmce, 55, 9, 11);
     pack_bits(cmce, 0, 75, 1);
     wrap_cmce(mle, cmce, 76);
     tetra_mle_dispatch(mle, 79, 4, opts, state);
-    ok = ok && state->tetra_sds_msg_ref == 0xa9 && state->tetra_sds_last_cc == 3 && state->tetra_sds_forward_valid
-         && state->tetra_sds_forward_ssi == 0x123456;
+    ok = ok && tetra_st(state)->sds_msg_ref == 0xa9 && tetra_st(state)->sds_last_cc == 3
+         && tetra_st(state)->sds_forward_valid && tetra_st(state)->sds_forward_ssi == 0x123456;
     free(state);
     free(opts);
     return ok;
@@ -1856,33 +1869,34 @@ test_sds_report_transport(void) {
         }
         int length = lengths[address] ? lengths[address] : 40;
         pack_bits(cmce, length, 9, 11);
-        state->tetra_sds_report_valid = 0;
+        tetra_st(state)->sds_report_valid = 0;
         pack_bits(cmce, 0, 20 + length, 1); /* O-bit */
         wrap_cmce(mle, cmce, 21 + length);
         tetra_mle_dispatch(mle, 24 + length, 2, opts, state);
-        ok = ok && state->tetra_sds_report_valid == (lengths[address] != 0);
+        ok = ok && tetra_st(state)->sds_report_valid == (lengths[address] != 0);
         if (lengths[address]) {
-            ok = ok && state->tetra_sds_report_cause == 0x4a && state->tetra_sds_report_msg_ref == 0xd3
-                 && !state->tetra_sds_report_delivery_ok && state->tetra_sds_storage_forward
-                 && state->tetra_sds_forward_valid && state->tetra_sds_forward_type == address;
+            ok = ok && tetra_st(state)->sds_report_cause == 0x4a && tetra_st(state)->sds_report_msg_ref == 0xd3
+                 && !tetra_st(state)->sds_report_delivery_ok && tetra_st(state)->sds_storage_forward
+                 && tetra_st(state)->sds_forward_valid && tetra_st(state)->sds_forward_type == address;
             if (address == 0) {
-                ok = ok && state->tetra_sds_forward_sna == 0xa5;
+                ok = ok && tetra_st(state)->sds_forward_sna == 0xa5;
             }
             if (address == 1) {
-                ok = ok && state->tetra_sds_forward_ssi == 0x123456;
+                ok = ok && tetra_st(state)->sds_forward_ssi == 0x123456;
             }
             if (address == 2) {
-                ok = ok && state->tetra_sds_forward_ssi == 0x234567 && state->tetra_sds_forward_extension == 0x345678;
+                ok = ok && tetra_st(state)->sds_forward_ssi == 0x234567
+                     && tetra_st(state)->sds_forward_extension == 0x345678;
             }
             if (address == 3) {
-                ok = ok && strcmp(state->tetra_sds_forward_external, "1*+") == 0;
+                ok = ok && strcmp(tetra_st(state)->sds_forward_external, "1*+") == 0;
             }
-            state->tetra_sds_report_valid = 0;
+            tetra_st(state)->sds_report_valid = 0;
             pack_bits(cmce, length - 1, 9, 11);
             pack_bits(cmce, 0, 19 + length, 1); /* O-bit */
             wrap_cmce(mle, cmce, 20 + length);
             tetra_mle_dispatch(mle, 23 + length, 2, opts, state);
-            ok = ok && !state->tetra_sds_report_valid;
+            ok = ok && !tetra_st(state)->sds_report_valid;
         }
     }
     /* Reserved external digits and a non-zero odd-digit pad reject atomically. */
@@ -1894,22 +1908,22 @@ test_sds_report_transport(void) {
     pack_bits(cmce, 0, 84, 1);
     wrap_cmce(mle, cmce, 85);
     tetra_mle_dispatch(mle, 88, 6, opts, state);
-    ok = ok && state->tetra_sds_forward_type == 7 && state->tetra_sds_last_cc == 2;
+    ok = ok && tetra_st(state)->sds_forward_type == 7 && tetra_st(state)->sds_last_cc == 2;
     pack_bits(cmce, 1, 68, 4);
     pack_bits(cmce, 2, 72, 4);
     pack_bits(cmce, 3, 76, 4);
     pack_bits(cmce, 1, 80, 4);
     wrap_cmce(mle, cmce, 85);
     tetra_mle_dispatch(mle, 88, 6, opts, state);
-    ok = ok && state->tetra_sds_forward_type == 7 && state->tetra_sds_last_cc == 2;
+    ok = ok && tetra_st(state)->sds_forward_type == 7 && tetra_st(state)->sds_last_cc == 2;
     pack_bits(cmce, 0, 35, 1);
     pack_bits(cmce, 32, 9, 11);
     pack_bits(cmce, 2, 36, 8);
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
     tetra_mle_dispatch(mle, 56, 2, opts, state);
-    ok = ok && state->tetra_sds_report_valid && state->tetra_sds_report_delivery_ok && !state->tetra_sds_storage_forward
-         && !state->tetra_sds_forward_valid;
+    ok = ok && tetra_st(state)->sds_report_valid && tetra_st(state)->sds_report_delivery_ok
+         && !tetra_st(state)->sds_storage_forward && !tetra_st(state)->sds_forward_valid;
     free(state);
     free(opts);
     return ok;
@@ -1930,22 +1944,22 @@ test_sds_ack_transport(void) {
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
     tetra_mle_dispatch(mle, 56, 2, opts, state);
-    int ok =
-        state->tetra_sds_ack_valid && state->tetra_sds_ack_msg_ref == 0xe7 && state->tetra_sds_ack_delivery_status == 3;
+    int ok = tetra_st(state)->sds_ack_valid && tetra_st(state)->sds_ack_msg_ref == 0xe7
+             && tetra_st(state)->sds_ack_delivery_status == 3;
     /* Complete CMCE payload, but truncated inner transport header. */
     pack_bits(cmce, 31, 9, 11);
     pack_bits(cmce, 0x22, 44, 8);
     pack_bits(cmce, 0, 51, 1);
     wrap_cmce(mle, cmce, 52);
     tetra_mle_dispatch(mle, 55, 7, opts, state);
-    ok = ok && state->tetra_sds_ack_msg_ref == 0xe7 && state->tetra_sds_last_cc == 2;
+    ok = ok && tetra_st(state)->sds_ack_msg_ref == 0xe7 && tetra_st(state)->sds_last_cc == 2;
     pack_bits(cmce, 32, 9, 11);
     pack_bits(cmce, 2, 20, 8); /* Simple text PID: no transport ACK. */
-    state->tetra_sds_ack_valid = 0;
+    tetra_st(state)->sds_ack_valid = 0;
     pack_bits(cmce, 0, 52, 1);
     wrap_cmce(mle, cmce, 53);
     tetra_mle_dispatch(mle, 56, 2, opts, state);
-    ok = ok && !state->tetra_sds_ack_valid;
+    ok = ok && !tetra_st(state)->sds_ack_valid;
     free(state);
     free(opts);
     return ok;
@@ -1969,9 +1983,10 @@ test_sds_published_trace(void) {
     unpack_hex_bits("4F30810400400282D0DED4", bits, 88);
     tetra_mle_dispatch(bits, 88, 4, opts, state);
 
-    int ok = state->tetra_cmce_sds_data_type == 3 && state->tetra_sds_src == 0 && state->tetra_sds_msg_ref == 32
-             && state->tetra_sds_text_len == 4 && !state->tetra_sds_text_unicode
-             && strcmp(state->tetra_sds_text, "Ahoj") == 0 && state->tetra_sds_last_cc == 4;
+    int ok = tetra_st(state)->cmce_sds_data_type == 3 && tetra_st(state)->sds_src == 0
+             && tetra_st(state)->sds_msg_ref == 32 && tetra_st(state)->sds_text_len == 4
+             && !tetra_st(state)->sds_text_unicode && strcmp(tetra_st(state)->sds_text, "Ahoj") == 0
+             && tetra_st(state)->sds_last_cc == 4;
     free(state);
     free(opts);
     return ok;
@@ -1991,21 +2006,21 @@ test_sds_short_report_status(void) {
         pack_bits(cmce, 0x7c00u | (result << 8) | 0xe5u, 31, 16);
         wrap_cmce(mle, cmce, 48);
         tetra_mle_dispatch(mle, 51, 1, opts, state);
-        ok = ok && state->tetra_sds_short_report_valid && state->tetra_sds_short_report_result == result
-             && state->tetra_sds_short_report_msg_ref == 0xe5 && state->tetra_sds_src == 0x123456;
+        ok = ok && tetra_st(state)->sds_short_report_valid && tetra_st(state)->sds_short_report_result == result
+             && tetra_st(state)->sds_short_report_msg_ref == 0xe5 && tetra_st(state)->sds_src == 0x123456;
     }
     /* A truncated replacement must preserve the last complete report. */
     pack_bits(cmce, 0x7c11, 31, 16);
     wrap_cmce(mle, cmce, 48);
     tetra_mle_dispatch(mle, 50, 1, opts, state);
-    ok = ok && state->tetra_sds_short_report_result == 3 && state->tetra_sds_short_report_msg_ref == 0xe5;
+    ok = ok && tetra_st(state)->sds_short_report_result == 3 && tetra_st(state)->sds_short_report_msg_ref == 0xe5;
     /* Adjacent prefixes are ordinary status, not short reports. */
     for (unsigned status = 0x7800; status <= 0x8000; status += 0x800) {
-        state->tetra_sds_short_report_valid = 0;
+        tetra_st(state)->sds_short_report_valid = 0;
         pack_bits(cmce, status, 31, 16);
         wrap_cmce(mle, cmce, 48);
         tetra_mle_dispatch(mle, 51, 1, opts, state);
-        ok = ok && !state->tetra_sds_short_report_valid;
+        ok = ok && !tetra_st(state)->sds_short_report_valid;
     }
     free(state);
     free(opts);
@@ -2078,20 +2093,20 @@ test_sds_concat_out_of_order_and_duplicates(void) {
     pack_bits(second, 'L', 0, 8);
     pack_bits(second, 'L', 8, 8);
     pack_bits(third, 'O', 0, 8);
-    strcpy(state->tetra_sds_text, "OLD");
-    state->tetra_sds_text_len = 3;
+    strcpy(tetra_st(state)->sds_text, "OLD");
+    tetra_st(state)->sds_text_len = 3;
 
     dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 2, -1, second, 16, 0);
-    int ok = state->tetra_sds_concat_valid && state->tetra_sds_concat_ref == 0xabc
-             && state->tetra_sds_concat_received == 1 && !state->tetra_sds_concat_complete
-             && strcmp(state->tetra_sds_text, "OLD") == 0;
+    int ok = tetra_st(state)->sds_concat_valid && tetra_st(state)->sds_concat_ref == 0xabc
+             && tetra_st(state)->sds_concat_received == 1 && !tetra_st(state)->sds_concat_complete
+             && strcmp(tetra_st(state)->sds_text, "OLD") == 0;
     dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 2, -1, second, 16, 0);
-    ok = ok && state->tetra_sds_concat_duplicate && state->tetra_sds_concat_received == 1;
+    ok = ok && tetra_st(state)->sds_concat_duplicate && tetra_st(state)->sds_concat_received == 1;
     dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 3, -1, third, 8, 0);
     dispatch_concat_fragment(state, opts, 0x123456, 0, 0xabc, 3, 1, 2, first, 24, 0);
-    ok = ok && state->tetra_sds_concat_complete && state->tetra_sds_concat_received == 3
-         && state->tetra_sds_concat_generation == 1 && state->tetra_sds_src == 0x123456
-         && strcmp(state->tetra_sds_text, "HELLO") == 0;
+    ok = ok && tetra_st(state)->sds_concat_complete && tetra_st(state)->sds_concat_received == 3
+         && tetra_st(state)->sds_concat_generation == 1 && tetra_st(state)->sds_src == 0x123456
+         && strcmp(tetra_st(state)->sds_text, "HELLO") == 0;
     free(state);
     free(opts);
     return ok;
@@ -2110,19 +2125,19 @@ test_sds_concat_transport_and_conflict(void) {
 
     dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 2, -1, second, 8, 0x44);
     dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 2, -1, conflict, 8, 0x44);
-    int ok = state->tetra_sds_concat_received == 1 && !state->tetra_sds_concat_complete;
+    int ok = tetra_st(state)->sds_concat_received == 1 && !tetra_st(state)->sds_concat_complete;
     /* The conflicting duplicate discarded the entire old context. */
     dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 1, 130, first, 16, 0x44);
-    ok = ok && state->tetra_sds_concat_received == 1;
+    ok = ok && tetra_st(state)->sds_concat_received == 1;
     dispatch_concat_fragment(state, opts, 77, 1, 9, 2, 2, -1, second, 8, 0x44);
-    ok = ok && state->tetra_sds_concat_complete && state->tetra_sds_concat_generation == 1
-         && state->tetra_sds_msg_ref == 0x44 && strcmp(state->tetra_sds_text, "OK") == 0;
+    ok = ok && tetra_st(state)->sds_concat_complete && tetra_st(state)->sds_concat_generation == 1
+         && tetra_st(state)->sds_msg_ref == 0x44 && strcmp(tetra_st(state)->sds_text, "OK") == 0;
 
-    uint8_t old_received = state->tetra_sds_concat_received;
+    uint8_t old_received = tetra_st(state)->sds_concat_received;
     dispatch_concat_fragment(state, opts, 88, 0, 3, 1, 1, 2, first, 16, 0);
-    ok = ok && state->tetra_sds_concat_received == old_received;
+    ok = ok && tetra_st(state)->sds_concat_received == old_received;
     dispatch_concat_fragment(state, opts, 88, 0, 3, 2, 3, -1, second, 8, 0);
-    ok = ok && state->tetra_sds_concat_received == old_received;
+    ok = ok && tetra_st(state)->sds_concat_received == old_received;
     free(state);
     free(opts);
     tetra_sds_concat_reset();
@@ -2159,7 +2174,7 @@ test_sds_annex_e_type34_tail(void) {
     off++; /* terminating M-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 2, opts, state);
-    int ok = state->tetra_sds_short_valid && state->tetra_sds_short_data == 0xBEEF;
+    int ok = tetra_st(state)->sds_short_valid && tetra_st(state)->sds_short_data == 0xBEEF;
 
     /* An incomplete Type 3 value must not publish the replacement payload. */
     memset(cmce, 0, sizeof cmce);
@@ -2184,7 +2199,7 @@ test_sds_annex_e_type34_tail(void) {
     off += 2;
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 3, opts, state);
-    ok = ok && state->tetra_sds_short_data == 0xBEEF && state->tetra_sds_last_cc == 2;
+    ok = ok && tetra_st(state)->sds_short_data == 0xBEEF && tetra_st(state)->sds_last_cc == 2;
 
     free(state);
     free(opts);
@@ -2213,14 +2228,14 @@ test_function_not_supported_extract_and_o_bit(void) {
     off++; /* O-bit */
     wrap_cmce(mle, cmce, off);
     tetra_mle_dispatch(mle, off + 3, 4, opts, state);
-    int ok = state->tetra_cmce_fns_valid && state->tetra_cmce_fns_rejected_pdu == TETRA_CMCE_D_INFO
-             && state->tetra_cmce_fns_pointer == 3 && state->tetra_cmce_fns_extract_bits == 5;
+    int ok = tetra_st(state)->cmce_fns_valid && tetra_st(state)->cmce_fns_rejected_pdu == TETRA_CMCE_D_INFO
+             && tetra_st(state)->cmce_fns_pointer == 3 && tetra_st(state)->cmce_fns_extract_bits == 5;
 
     /* The same body without its mandatory O-bit is not a complete PDU. */
-    state->tetra_cmce_fns_valid = 0;
+    tetra_st(state)->cmce_fns_valid = 0;
     tetra_mle_dispatch(mle, off + 2, 5, opts, state);
-    ok = ok && !state->tetra_cmce_fns_valid && state->tetra_cmce_fns_pointer == 3
-         && state->tetra_cmce_fns_extract_bits == 5;
+    ok = ok && !tetra_st(state)->cmce_fns_valid && tetra_st(state)->cmce_fns_pointer == 3
+         && tetra_st(state)->cmce_fns_extract_bits == 5;
     free(state);
     free(opts);
     return ok;

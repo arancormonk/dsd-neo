@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "tetra_state.h"
 
 /* Phase 81: bits_to_uint unified — see tetra_bits.h */
 #define bits_to_uint tetra_bits_to_uint
@@ -80,34 +81,35 @@ addr_field_len(int addr_type) {
 
 static void
 clear_fragment_reassembly(dsd_state* state) {
-    if (!state) {
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts) {
         return;
     }
-    state->tetra_frag_active = 0;
-    state->tetra_frag_seq = 0;
-    state->tetra_frag_nbits = 0;
-    state->tetra_frag_cc = 0;
-    state->tetra_vc_grant_pending = 0;
-    state->tetra_vc_grant_call_generation = 0;
-    memset(state->tetra_frag_buf, 0, sizeof(state->tetra_frag_buf));
+    ts->frag_active = 0;
+    ts->frag_seq = 0;
+    ts->frag_nbits = 0;
+    ts->frag_cc = 0;
+    ts->vc_grant_pending = 0;
+    ts->vc_grant_call_generation = 0;
+    memset(ts->frag_buf, 0, sizeof(ts->frag_buf));
 }
 
 static int
 cmce_call_policy_allows(const dsd_opts* opts, const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
     dsd_tg_policy_decision decision;
     int rc;
-    if (!opts || !state || !state->tetra_call_active || !state->tetra_ssi_valid) {
+    if (!opts || !state || !ts->call_active || !ts->ssi_valid) {
         return 1;
     }
 
-    int encrypted = state->tetra_enc_mode != TETRA_ENC_MODE_NONE;
-    int data_call = state->tetra_call_type != 0;
-    if (state->tetra_cmce_com_type == 0) {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, state->tetra_calling_ssi, state->tetra_active_ssi,
-                                                 encrypted, data_call, &decision);
+    int encrypted = ts->enc_mode != TETRA_ENC_MODE_NONE;
+    int data_call = ts->call_type != 0;
+    if (ts->cmce_com_type == 0) {
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, ts->calling_ssi, ts->active_ssi, encrypted, data_call,
+                                                 &decision);
     } else {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, state->tetra_gssi, state->tetra_calling_ssi, encrypted,
-                                               data_call, &decision);
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, ts->gssi, ts->calling_ssi, encrypted, data_call, &decision);
     }
     if (rc != 0) {
         return 0;
@@ -121,7 +123,8 @@ cmce_call_policy_allows(const dsd_opts* opts, const dsd_state* state) {
 
 static void
 apply_channel_grant(dsd_opts* opts, dsd_state* state, long vc_hz, uint8_t slots, uint32_t generation_before) {
-    int fresh_call = state && state->tetra_cmce_call_generation != generation_before;
+    tetra_state_t* const ts = tetra_st(state);
+    int fresh_call = state && ts->cmce_call_generation != generation_before;
     if (fresh_call && cmce_call_policy_allows(opts, state)) {
         tetra_sm_on_grant(opts, state, vc_hz, slots);
     }
@@ -134,10 +137,11 @@ apply_channel_grant(dsd_opts* opts, dsd_state* state, long vc_hz, uint8_t slots,
  * payloads cannot create a talkgroup. */
 static void
 sync_cmce_call_target_from_resource(dsd_state* state) {
-    if (!state || !state->tetra_call_active || !state->tetra_ssi_valid) {
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts || !ts->call_active || !ts->ssi_valid) {
         return;
     }
-    state->tetra_gssi = state->tetra_cmce_com_type == 0 ? 0u : state->tetra_active_ssi;
+    ts->gssi = ts->cmce_com_type == 0 ? 0u : ts->active_ssi;
 }
 
 uint32_t
@@ -246,6 +250,7 @@ dispatch_basic_llc_tm_sdu(const uint8_t* bits, int nbits, int cc, const dsd_opts
 static int
 parse_resource_optional_elements(const uint8_t* bits, int nbits, int off, int cc, dsd_opts* opts, dsd_state* state,
                                  long* grant_hz, uint8_t* grant_slots) {
+    tetra_state_t* const ts = tetra_st(state);
     if (off + 1 > nbits) {
         return -1;
     }
@@ -296,8 +301,8 @@ parse_resource_optional_elements(const uint8_t* bits, int nbits, int off, int cc
     uint32_t extended = bits_to_uint(bits, off, 1);
     off += 1;
 
-    uint32_t band = state ? state->tetra_freq_band : 0;
-    uint32_t freq_offset = state ? state->tetra_freq_offset : 0;
+    uint32_t band = state ? ts->freq_band : 0;
+    uint32_t freq_offset = state ? ts->freq_offset : 0;
     if (extended) {
         if (off + 10 > nbits) {
             return -1;
@@ -392,29 +397,29 @@ parse_resource_optional_elements(const uint8_t* bits, int nbits, int off, int cc
     fprintf(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d type=%u slots=0x%X dir=%u carrier=%u freq=%ld bw=%u mod=%u\n", cc,
             allocation_type, timeslots, up_down, carrier, vc_hz, bandwidth_code, modulation);
 
-    if (state) {
-        if (!state->tetra_vc_assignment_valid || state->tetra_vc_timeslot_bitmap != (timeslots & 0x0Fu)
-            || (timeslots != 0 && state->tetra_vc_carrier != carrier)) {
+    if (ts) {
+        if (!ts->vc_assignment_valid || ts->vc_timeslot_bitmap != (timeslots & 0x0Fu)
+            || (timeslots != 0 && ts->vc_carrier != carrier)) {
             char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
             DSD_SNPRINTF(summary, sizeof summary, "Allocation CC=%d carrier=%u slots=0x%X freq=%ld", cc, carrier,
                          timeslots, vc_hz);
             tetra_message_push(state, DSD_TETRA_MESSAGE_CONTROL, summary);
         }
-        state->tetra_vc_assignment_valid = 1;
-        state->tetra_vc_assignment_type = (uint8_t)allocation_type;
-        state->tetra_vc_timeslot_bitmap = (uint8_t)(timeslots & 0x0Fu);
-        state->tetra_vc_slot = (uint8_t)(timeslots & 0x0Fu); /* compatibility */
-        state->tetra_vc_uplink_downlink = (uint8_t)up_down;
-        state->tetra_vc_carrier = (uint16_t)carrier;
-        state->tetra_vc_freq_hz = vc_hz;
+        ts->vc_assignment_valid = 1;
+        ts->vc_assignment_type = (uint8_t)allocation_type;
+        ts->vc_timeslot_bitmap = (uint8_t)(timeslots & 0x0Fu);
+        ts->vc_slot = (uint8_t)(timeslots & 0x0Fu); /* compatibility */
+        ts->vc_uplink_downlink = (uint8_t)up_down;
+        ts->vc_carrier = (uint16_t)carrier;
+        ts->vc_freq_hz = vc_hz;
 
         if (timeslots == 0) {
             /* A zero bitmap explicitly removes the traffic-channel assignment.
              * Keep assignment_valid set so the audio gate can distinguish this
              * release from conventional monitoring before any allocation. */
-            state->tetra_vc_carrier = 0;
-            state->tetra_vc_freq_hz = 0;
-            state->tetra_tx_granted_valid = 0;
+            ts->vc_carrier = 0;
+            ts->vc_freq_hz = 0;
+            ts->tx_granted_valid = 0;
             tetra_sm_on_release(opts, state);
         } else if ((up_down == 1 || up_down == 3) && vc_hz > 0 && modulation == 0) {
             if (grant_hz) {
@@ -447,6 +452,7 @@ parse_resource_optional_elements(const uint8_t* bits, int nbits, int off, int cc
  */
 static void
 parse_mac_resource(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 17) {
         fprintf(stderr, "[TETRA MAC-RESOURCE] CC=%d  (too short: %d bits)\n", cc, nbits);
         return;
@@ -455,7 +461,7 @@ parse_mac_resource(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts,
     int off = 2; /* skip 2-bit PDU type */
     long grant_hz = 0;
     uint8_t grant_slots = 0;
-    uint32_t call_generation_before = state ? state->tetra_cmce_call_generation : 0;
+    uint32_t call_generation_before = state ? ts->cmce_call_generation : 0;
     uint8_t fill_bits = (uint8_t)bits_to_uint(bits, off, 1);
     off += 1;
     uint8_t grant_pos = (uint8_t)bits_to_uint(bits, off, 1);
@@ -527,27 +533,27 @@ parse_mac_resource(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts,
     }
 
     /* --- Update dsd_state --- */
-    if (state) {
-        state->tetra_enc_mode = enc_mode;
+    if (ts) {
+        ts->enc_mode = enc_mode;
         if (addr_type == TETRA_MAC_ADDR_SSI || addr_type == TETRA_MAC_ADDR_USSI || addr_type == TETRA_MAC_ADDR_SMI) {
-            state->tetra_active_ssi = ssi;
-            state->tetra_ssi_valid = 1;
+            ts->active_ssi = ssi;
+            ts->ssi_valid = 1;
         } else if (addr_type == TETRA_MAC_ADDR_SSI_EVENT || addr_type == TETRA_MAC_ADDR_SSI_USAGE
                    || addr_type == TETRA_MAC_ADDR_SMI_EVENT) {
-            state->tetra_active_ssi = ssi;
-            state->tetra_ssi_valid = 1;
+            ts->active_ssi = ssi;
+            ts->ssi_valid = 1;
         } else {
-            state->tetra_ssi_valid = 0;
+            ts->ssi_valid = 0;
         }
 
         /* Phase 77: populate dropped MAC variables */
-        state->tetra_mac_fill_bits = fill_bits;
-        state->tetra_mac_grant_pos = grant_pos;
-        state->tetra_mac_rand_acc = rand_acc;
-        state->tetra_mac_len_ind = (uint8_t)(len_ind & 0x3Fu);
-        state->tetra_mac_addr_type = addr_type;
-        state->tetra_mac_event_label = (uint16_t)(event_label & 0x3FFu);
-        state->tetra_mac_usage_marker = (uint8_t)(usage_marker & 0x3Fu);
+        ts->mac_fill_bits = fill_bits;
+        ts->mac_grant_pos = grant_pos;
+        ts->mac_rand_acc = rand_acc;
+        ts->mac_len_ind = (uint8_t)(len_ind & 0x3Fu);
+        ts->mac_addr_type = addr_type;
+        ts->mac_event_label = (uint16_t)(event_label & 0x3FFu);
+        ts->mac_usage_marker = (uint8_t)(usage_marker & 0x3Fu);
     }
 
     /* ---------------------------------------------------------------
@@ -558,22 +564,22 @@ parse_mac_resource(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts,
      * following MAC-FRAG/END blocks), save first fragment to the
      * reassembly buffer instead of dispatching immediately.
      * --------------------------------------------------------------- */
-    if (state && off < nbits) {
+    if (ts && off < nbits) {
         if (len_ind == 63) {
             /* First fragment: seed the reassembly buffer */
             int payload_bits = nbits - off;
             clear_fragment_reassembly(state);
-            if (payload_bits > (int)sizeof(state->tetra_frag_buf)) {
+            if (payload_bits > (int)sizeof(ts->frag_buf)) {
                 fprintf(stderr, "[TETRA MAC-RESOURCE] CC=%d fragment start overflow (%d bits)\n", cc, payload_bits);
                 return;
             }
-            memcpy(state->tetra_frag_buf, bits + off, (size_t)payload_bits);
-            state->tetra_frag_nbits = (uint16_t)payload_bits;
-            state->tetra_frag_cc = (int8_t)cc;
-            state->tetra_frag_active = 1;
+            memcpy(ts->frag_buf, bits + off, (size_t)payload_bits);
+            ts->frag_nbits = (uint16_t)payload_bits;
+            ts->frag_cc = (int8_t)cc;
+            ts->frag_active = 1;
             if (grant_hz > 0) {
-                state->tetra_vc_grant_pending = 1;
-                state->tetra_vc_grant_call_generation = call_generation_before;
+                ts->vc_grant_pending = 1;
+                ts->vc_grant_call_generation = call_generation_before;
             }
             fprintf(stderr, "[TETRA MAC-RESOURCE] CC=%d  fragment start (%d bits buffered)\n", cc, payload_bits);
         } else if (len_ind != 2) {
@@ -628,6 +634,7 @@ short_out:
  */
 static void
 parse_mac_sysinfo(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 82) {
         fprintf(stderr, "[TETRA SYSINFO] CC=%d  (too short: %d bits)\n", cc, nbits);
         return;
@@ -676,38 +683,38 @@ parse_mac_sysinfo(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_st
             opt_field_type < 4 ? opt_names[opt_field_type] : "?", opt_field_data);
 
     /* Phase 11+12: cache DL carrier frequency + band params; arm trunking CC. */
-    if (state) {
-        if (state->tetra_frames_sysinfo == 1 || state->tetra_sysinfo_main_carrier != main_carrier) {
+    if (ts) {
+        if (ts->frames_sysinfo == 1 || ts->sysinfo_main_carrier != main_carrier) {
             char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
             DSD_SNPRINTF(summary, sizeof summary, "SYSINFO CC=%d carrier=%u band=%u", cc, main_carrier, freq_band);
             tetra_message_push(state, DSD_TETRA_MESSAGE_CONTROL, summary);
         }
         long dl_hz = tetra_carrier_to_dl_hz(main_carrier, freq_band, freq_offset);
         if (dl_hz != 0L) {
-            state->tetra_dl_carrier_hz = dl_hz;
-            state->tetra_freq_band = (uint8_t)freq_band;
-            state->tetra_freq_offset = (uint8_t)freq_offset;
+            ts->dl_carrier_hz = dl_hz;
+            ts->freq_band = (uint8_t)freq_band;
+            ts->freq_offset = (uint8_t)freq_offset;
             state->trunk_cc_freq = dl_hz;
             tetra_sm_on_cc_sync(opts, state);
         }
         /* Phase 20-22: cache remaining SYSINFO fields */
-        state->tetra_cck_valid = (uint8_t)(cck_valid & 1u);
-        state->tetra_cck_id = (uint16_t)(cck_or_hf & 0xFFFFu);
+        ts->cck_valid = (uint8_t)(cck_valid & 1u);
+        ts->cck_id = (uint16_t)(cck_or_hf & 0xFFFFu);
         if (!cck_valid) {
-            state->tetra_hyperframe = (uint16_t)(cck_or_hf & 0xFFFFu);
-            state->tetra_hyperframe_valid = 1;
+            ts->hyperframe = (uint16_t)(cck_or_hf & 0xFFFFu);
+            ts->hyperframe_valid = 1;
         }
-        state->tetra_duplex_spacing = (uint8_t)(duplex_spacing & 0x07u);
-        state->tetra_num_csch = (uint8_t)(num_csch & 0x03u);
-        state->tetra_ms_txpwr_max = (uint8_t)(ms_txpwr & 0x07u);
-        state->tetra_rxlev_access_min = (uint8_t)(rxlev & 0x0Fu);
+        ts->duplex_spacing = (uint8_t)(duplex_spacing & 0x07u);
+        ts->num_csch = (uint8_t)(num_csch & 0x03u);
+        ts->ms_txpwr_max = (uint8_t)(ms_txpwr & 0x07u);
+        ts->rxlev_access_min = (uint8_t)(rxlev & 0x0Fu);
         /* Phase 77: SYSINFO dropped vars */
-        state->tetra_sysinfo_main_carrier = (uint16_t)(main_carrier & 0xFFFu);
-        state->tetra_sysinfo_rev_op = (uint8_t)(rev_op & 1u);
-        state->tetra_sysinfo_acc_param = (uint8_t)(acc_param & 0x0Fu);
-        state->tetra_sysinfo_radio_dl_tmo = (uint8_t)(radio_dl_tmo & 0x0Fu);
-        state->tetra_sysinfo_opt_field_type = (uint8_t)(opt_field_type & 0x03u);
-        state->tetra_sysinfo_opt_field_data = (uint32_t)(opt_field_data & 0xFFFFFu);
+        ts->sysinfo_main_carrier = (uint16_t)(main_carrier & 0xFFFu);
+        ts->sysinfo_rev_op = (uint8_t)(rev_op & 1u);
+        ts->sysinfo_acc_param = (uint8_t)(acc_param & 0x0Fu);
+        ts->sysinfo_radio_dl_tmo = (uint8_t)(radio_dl_tmo & 0x0Fu);
+        ts->sysinfo_opt_field_type = (uint8_t)(opt_field_type & 0x03u);
+        ts->sysinfo_opt_field_data = (uint32_t)(opt_field_data & 0xFFFFFu);
     }
 
     /* MLE SYSINFO (§21.6.1): LA (14) + Subscr class (16) + BS service details (12) */
@@ -723,11 +730,11 @@ parse_mac_sysinfo(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_st
                 la, subscr_cls, bs_svc_det);
 
         /* --- Update dsd_state --- */
-        if (state) {
-            state->tetra_la = (uint16_t)la;
-            state->tetra_subscr_class = (uint16_t)subscr_cls;
-            state->tetra_bs_service_det = (uint16_t)bs_svc_det;
-            state->tetra_sysinfo_known = 1;
+        if (ts) {
+            ts->la = (uint16_t)la;
+            ts->subscr_class = (uint16_t)subscr_cls;
+            ts->bs_service_det = (uint16_t)bs_svc_det;
+            ts->sysinfo_known = 1;
         }
     }
 }
@@ -748,6 +755,7 @@ parse_mac_sysinfo(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_st
  */
 static void
 parse_mac_access_define(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 25) {
         fprintf(stderr, "[TETRA ACCESS-DEFINE] CC=%d  (too short: %d bits)\n", cc, nbits);
         return;
@@ -776,16 +784,16 @@ parse_mac_access_define(const uint8_t* bits, int nbits, int cc, dsd_state* state
             cc, common_flag ? "common" : "dedicated", immediate, wait_time, num_ra, frame_len_f, ts_ptr, min_pdu_pri);
 
     /* Phase 23: cache ACCESS-DEFINE params to state */
-    if (state) {
-        state->tetra_access_imm = (uint8_t)(immediate & 0x0Fu);
-        state->tetra_access_wait_time = (uint8_t)(wait_time & 0x0Fu);
+    if (ts) {
+        ts->access_imm = (uint8_t)(immediate & 0x0Fu);
+        ts->access_wait_time = (uint8_t)(wait_time & 0x0Fu);
         /* Phase 74: save remaining fields */
-        state->tetra_access_num_ra = (uint8_t)(num_ra & 0x0Fu);
-        state->tetra_access_frame_len_f = (uint8_t)(frame_len_f & 1u);
-        state->tetra_access_ts_ptr = (uint8_t)(ts_ptr & 0x0Fu);
-        state->tetra_access_min_pdu_pri = (uint8_t)(min_pdu_pri & 0x07u);
+        ts->access_num_ra = (uint8_t)(num_ra & 0x0Fu);
+        ts->access_frame_len_f = (uint8_t)(frame_len_f & 1u);
+        ts->access_ts_ptr = (uint8_t)(ts_ptr & 0x0Fu);
+        ts->access_min_pdu_pri = (uint8_t)(min_pdu_pri & 0x07u);
         /* Phase 77: store common_flag */
-        state->tetra_access_common_flag = (uint8_t)(common_flag & 1u);
+        ts->access_common_flag = (uint8_t)(common_flag & 1u);
     }
 }
 
@@ -801,6 +809,7 @@ parse_mac_access_define(const uint8_t* bits, int nbits, int cc, dsd_state* state
  */
 static void
 parse_mac_frag_end(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (nbits < 3) {
         fprintf(stderr, "[TETRA MAC-FRAG/END] CC=%d  (too short)\n", cc);
         return;
@@ -811,22 +820,22 @@ parse_mac_frag_end(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts,
 
     fprintf(stderr, "[TETRA MAC-%s] CC=%d  payload_bits=%d\n", subtype ? "END" : "FRAG", cc, payload_bits);
 
-    if (!state) {
+    if (!ts) {
         return;
     }
 
-    if (!state->tetra_frag_active) {
+    if (!ts->frag_active) {
         fprintf(stderr, "[TETRA MAC-%s] CC=%d ignored without fragment start\n", subtype ? "END" : "FRAG", cc);
         return;
     }
-    if (state->tetra_frag_cc != (int8_t)cc) {
+    if (ts->frag_cc != (int8_t)cc) {
         fprintf(stderr, "[TETRA MAC-%s] CC=%d rejected; fragment started on CC=%d\n", subtype ? "END" : "FRAG", cc,
-                (int)state->tetra_frag_cc);
+                (int)ts->frag_cc);
         clear_fragment_reassembly(state);
         return;
     }
 
-    int space = (int)sizeof(state->tetra_frag_buf) - (int)state->tetra_frag_nbits;
+    int space = (int)sizeof(ts->frag_buf) - (int)ts->frag_nbits;
     if (payload_bits > space) {
         fprintf(stderr, "[TETRA MAC-%s] CC=%d reassembly overflow; discarding sequence\n", subtype ? "END" : "FRAG",
                 cc);
@@ -838,40 +847,38 @@ parse_mac_frag_end(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts,
         /* ----------------------------------------------------------------
          * MAC-FRAG: continuation fragment — append to reassembly buffer.
          * ---------------------------------------------------------------- */
-        state->tetra_frag_seq = (uint8_t)((state->tetra_frag_seq + 1u) & 0xFFu);
+        ts->frag_seq = (uint8_t)((ts->frag_seq + 1u) & 0xFFu);
 
         if (payload_bits > 0) {
-            memcpy(state->tetra_frag_buf + state->tetra_frag_nbits, bits + payload_off, (size_t)payload_bits);
-            state->tetra_frag_nbits = (uint16_t)(state->tetra_frag_nbits + (uint16_t)payload_bits);
+            memcpy(ts->frag_buf + ts->frag_nbits, bits + payload_off, (size_t)payload_bits);
+            ts->frag_nbits = (uint16_t)(ts->frag_nbits + (uint16_t)payload_bits);
         }
     } else {
         /* ----------------------------------------------------------------
          * MAC-END: final fragment — append and dispatch whole TM-SDU.
          * ---------------------------------------------------------------- */
         if (payload_bits > 0) {
-            memcpy(state->tetra_frag_buf + state->tetra_frag_nbits, bits + payload_off, (size_t)payload_bits);
-            state->tetra_frag_nbits = (uint16_t)(state->tetra_frag_nbits + (uint16_t)payload_bits);
+            memcpy(ts->frag_buf + ts->frag_nbits, bits + payload_off, (size_t)payload_bits);
+            ts->frag_nbits = (uint16_t)(ts->frag_nbits + (uint16_t)payload_bits);
         }
 
-        uint8_t pending_grant = state->tetra_vc_grant_pending;
-        uint32_t grant_generation = state->tetra_vc_grant_call_generation;
+        uint8_t pending_grant = ts->vc_grant_pending;
+        uint32_t grant_generation = ts->vc_grant_call_generation;
 
         /* A fragmented TM-SDU still contains the LLC PDU. Decode its basic
          * link header only after the final fragment has arrived so the FCS
          * variants can be bounded against the complete payload. */
-        if (state->tetra_frag_nbits >= 9) {
-            fprintf(stderr, "[TETRA MAC-END] CC=%d  dispatching %u reassembled bits\n", cc, state->tetra_frag_nbits);
-            if (!dispatch_basic_llc_tm_sdu((const uint8_t*)state->tetra_frag_buf, (int)state->tetra_frag_nbits, cc,
-                                           opts, state)) {
-                tetra_mle_dispatch((const uint8_t*)state->tetra_frag_buf, (int)state->tetra_frag_nbits, cc, opts,
-                                   state);
+        if (ts->frag_nbits >= 9) {
+            fprintf(stderr, "[TETRA MAC-END] CC=%d  dispatching %u reassembled bits\n", cc, ts->frag_nbits);
+            if (!dispatch_basic_llc_tm_sdu((const uint8_t*)ts->frag_buf, (int)ts->frag_nbits, cc, opts, state)) {
+                tetra_mle_dispatch((const uint8_t*)ts->frag_buf, (int)ts->frag_nbits, cc, opts, state);
             }
             sync_cmce_call_target_from_resource(state);
         }
 
-        if (pending_grant && state->tetra_vc_freq_hz > 0 && state->tetra_vc_timeslot_bitmap != 0) {
-            apply_channel_grant((dsd_opts*)(uintptr_t)opts, state, state->tetra_vc_freq_hz,
-                                state->tetra_vc_timeslot_bitmap, grant_generation);
+        if (pending_grant && ts->vc_freq_hz > 0 && ts->vc_timeslot_bitmap != 0) {
+            apply_channel_grant((dsd_opts*)(uintptr_t)opts, state, ts->vc_freq_hz, ts->vc_timeslot_bitmap,
+                                grant_generation);
         }
 
         /* Clear reassembly state */
@@ -902,14 +909,15 @@ parse_mac_suppl(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, ds
 
 void
 tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st(state);
     if (!bits || nbits < 2) {
         fprintf(stderr, "[TETRA SCH-HD] CC=%d  (empty PDU)\n", cc);
         return;
     }
 
     /* Phase 25: total frame counter */
-    if (state) {
-        state->tetra_frames_total++;
+    if (ts) {
+        ts->frames_total++;
     }
 
     int pdu_type = (int)bits_to_uint(bits, 0, 2);
@@ -917,15 +925,15 @@ tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, const dsd_opts* opt
     switch (pdu_type) {
 
         case TETRA_MAC_TYPE_RESOURCE:
-            if (state) {
-                state->tetra_frames_resource++;
+            if (ts) {
+                ts->frames_resource++;
             }
             parse_mac_resource(bits, nbits, cc, opts, state);
             break;
 
         case TETRA_MAC_TYPE_FRAG_END:
-            if (state) {
-                state->tetra_frames_frag++;
+            if (ts) {
+                ts->frames_frag++;
             }
             parse_mac_frag_end(bits, nbits, cc, opts, state);
             break;
@@ -938,8 +946,8 @@ tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, const dsd_opts* opt
             {
                 int bcast_type = (int)bits_to_uint(bits, 2, 2);
                 if (bcast_type == TETRA_MAC_BC_SYSINFO) {
-                    if (state) {
-                        state->tetra_frames_sysinfo++;
+                    if (ts) {
+                        ts->frames_sysinfo++;
                     }
                     parse_mac_sysinfo(bits, nbits, cc, (dsd_opts*)(uintptr_t)opts, state);
                 } else if (bcast_type == TETRA_MAC_BC_ACCESS_DEF) {

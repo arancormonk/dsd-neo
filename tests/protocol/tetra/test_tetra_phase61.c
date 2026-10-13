@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -91,8 +92,8 @@ test_floor_control_events(void) {
     pack_bits(cmce, 0, 21, 1); /* O-bit */
     wrap_mle_cmce(cmce, 22, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(st->tetra_tx_continue == 1, "D-TX-CONTINUE sets flag");
-    CHECK(st->tetra_tx_event_call_id == 0x1234, "D-TX-CONTINUE keeps 14-bit call id");
+    CHECK(tetra_st(st)->tx_continue == 1, "D-TX-CONTINUE sets flag");
+    CHECK(tetra_st(st)->tx_event_call_id == 0x1234, "D-TX-CONTINUE keeps 14-bit call id");
 
     /* D-TX-INTERRUPT uses the same mandatory grant fields as D-TX-GRANTED. */
     memset(cmce, 0, sizeof(cmce));
@@ -104,8 +105,8 @@ test_floor_control_events(void) {
     pack_bits(cmce, 0, 24, 1); /* O-bit */
     wrap_mle_cmce(cmce, 25, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(st->tetra_tx_interrupted == 1, "D-TX-INTERRUPT sets flag");
-    CHECK(st->tetra_tx_event_grant == 3, "D-TX-INTERRUPT grant decoded");
+    CHECK(tetra_st(st)->tx_interrupted == 1, "D-TX-INTERRUPT sets flag");
+    CHECK(tetra_st(st)->tx_event_grant == 3, "D-TX-INTERRUPT grant decoded");
 
     /* D-TX-WAIT: call id plus request permission. */
     memset(cmce, 0, sizeof(cmce));
@@ -115,8 +116,8 @@ test_floor_control_events(void) {
     pack_bits(cmce, 0, 20, 1); /* O-bit */
     wrap_mle_cmce(cmce, 21, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(st->tetra_tx_wait == 1, "D-TX-WAIT sets flag");
-    CHECK(st->tetra_tx_event_call_id == 0x321, "D-TX-WAIT call id decoded");
+    CHECK(tetra_st(st)->tx_wait == 1, "D-TX-WAIT sets flag");
+    CHECK(tetra_st(st)->tx_event_call_id == 0x321, "D-TX-WAIT call id decoded");
 
     free(st);
     free(opt);
@@ -133,7 +134,7 @@ test_mle_restore(void) {
     memset(mle_ack, 0, sizeof(mle_ack));
     pack_bits(mle_ack, TETRA_MLE_PD_MLE, 0, 3);
     tetra_mle_dispatch(mle_ack, 5, 0, opt, st);
-    CHECK(st->tetra_restore_ack == 0, "truncated MLE D-RESTORE-ACK rejected");
+    CHECK(tetra_st(st)->restore_ack == 0, "truncated MLE D-RESTORE-ACK rejected");
 
     /* D-RESTORE-FAIL without the mandatory O-bit is rejected. */
     uint8_t mle_res[8];
@@ -141,7 +142,7 @@ test_mle_restore(void) {
     pack_bits(mle_res, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle_res, TETRA_MLE_D_RESTORE_FAIL, 3, 3);
     tetra_mle_dispatch(mle_res, 8, 0, opt, st);
-    CHECK(st->tetra_mle_restore_fail_valid == 0, "truncated MLE D-RESTORE-FAIL rejected");
+    CHECK(tetra_st(st)->mle_restore_fail_valid == 0, "truncated MLE D-RESTORE-FAIL rejected");
 
     free(st);
     free(opt);
@@ -226,40 +227,40 @@ test_nwrk_ext(void) {
     pack_bits(mle, 0, off++, 1); /* reserved type-2 P-bit */
 
     tetra_mle_dispatch(mle, off, 0, opt, st);
-    CHECK(st->tetra_nwrk_bcast_ext_known == 1, "NWRK-BCAST-EXT accepted");
-    CHECK(st->tetra_mle_ext_serving_classes_present && st->tetra_mle_ext_serving_class_count == 1
-              && st->tetra_mle_ext_serving_class_id[0] == 9
-              && st->tetra_mle_ext_serving_class_characteristics[0] == 0x23456
-              && st->tetra_mle_ext_serving_class_bs_power[0] == 17,
+    CHECK(tetra_st(st)->nwrk_bcast_ext_known == 1, "NWRK-BCAST-EXT accepted");
+    CHECK(tetra_st(st)->mle_ext_serving_classes_present && tetra_st(st)->mle_ext_serving_class_count == 1
+              && tetra_st(st)->mle_ext_serving_class_id[0] == 9
+              && tetra_st(st)->mle_ext_serving_class_characteristics[0] == 0x23456
+              && tetra_st(st)->mle_ext_serving_class_bs_power[0] == 17,
           "serving channel class decoded");
-    CHECK(st->tetra_mle_ext_neighbor_classes_present && st->tetra_mle_ext_neighbor_class_cell_id[0] == 21
-              && st->tetra_mle_ext_neighbor_class_id[0] == 6,
+    CHECK(tetra_st(st)->mle_ext_neighbor_classes_present && tetra_st(st)->mle_ext_neighbor_class_cell_id[0] == 21
+              && tetra_st(st)->mle_ext_neighbor_class_id[0] == 6,
           "CA neighbour channel class decoded");
-    CHECK(st->tetra_mle_ext_serving_irregular_present && st->tetra_mle_ext_serving_irregular_channel_id[0] == 27
-              && st->tetra_mle_ext_serving_irregular_carrier[0] == 0xABC
-              && st->tetra_mle_ext_serving_irregular_extension_valid[0]
-              && st->tetra_mle_ext_serving_irregular_carrier_extension[0] == 0x2D5,
+    CHECK(tetra_st(st)->mle_ext_serving_irregular_present && tetra_st(st)->mle_ext_serving_irregular_channel_id[0] == 27
+              && tetra_st(st)->mle_ext_serving_irregular_carrier[0] == 0xABC
+              && tetra_st(st)->mle_ext_serving_irregular_extension_valid[0]
+              && tetra_st(st)->mle_ext_serving_irregular_carrier_extension[0] == 0x2D5,
           "serving irregular channel and extension decoded");
-    CHECK(st->tetra_mle_ext_neighbor_irregular_present && st->tetra_mle_ext_neighbor_irregular_cell_id[0] == 7
-              && st->tetra_mle_ext_neighbor_irregular_channel_id[0] == 3
-              && !st->tetra_mle_ext_neighbor_irregular_extension_valid[0],
+    CHECK(tetra_st(st)->mle_ext_neighbor_irregular_present && tetra_st(st)->mle_ext_neighbor_irregular_cell_id[0] == 7
+              && tetra_st(st)->mle_ext_neighbor_irregular_channel_id[0] == 3
+              && !tetra_st(st)->mle_ext_neighbor_irregular_extension_valid[0],
           "CA neighbour irregular channel decoded");
 
     /* A repeated entry cut short after its count must preserve the snapshot. */
-    st->tetra_mle_ext_serving_class_id[0] = 13;
+    tetra_st(st)->mle_ext_serving_class_id[0] = 13;
     tetra_mle_dispatch(mle, 20, 0, opt, st);
-    CHECK(st->tetra_mle_ext_serving_class_id[0] == 13 && st->tetra_mle_ext_neighbor_irregular_count == 1,
+    CHECK(tetra_st(st)->mle_ext_serving_class_id[0] == 13 && tetra_st(st)->mle_ext_neighbor_irregular_count == 1,
           "truncated repeated entry is atomic");
 
     /* A missing final P-bit is likewise malformed. */
     tetra_mle_dispatch(mle, off - 1, 0, opt, st);
-    CHECK(st->tetra_mle_ext_serving_class_id[0] == 13 && st->tetra_mle_ext_neighbor_irregular_count == 1,
+    CHECK(tetra_st(st)->mle_ext_serving_class_id[0] == 13 && tetra_st(st)->mle_ext_neighbor_irregular_count == 1,
           "truncated extension update is atomic");
 
     /* Both reserved type-2 fields are explicitly forbidden by table 18.4. */
     mle[off - 1] = 1;
     tetra_mle_dispatch(mle, off, 0, opt, st);
-    CHECK(st->tetra_mle_ext_serving_class_id[0] == 13, "reserved extension field is rejected atomically");
+    CHECK(tetra_st(st)->mle_ext_serving_class_id[0] == 13, "reserved extension field is rejected atomically");
     mle[off - 1] = 0;
 
     /* O=0 is a complete empty snapshot and clears all prior list presence. */
@@ -267,9 +268,9 @@ test_nwrk_ext(void) {
     pack_bits(mle, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle, TETRA_MLE_D_NWRK_BCAST_EXT, 3, 3);
     tetra_mle_dispatch(mle, 7, 0, opt, st);
-    CHECK(st->tetra_nwrk_bcast_ext_known && !st->tetra_mle_ext_serving_classes_present
-              && !st->tetra_mle_ext_neighbor_classes_present && !st->tetra_mle_ext_serving_irregular_present
-              && !st->tetra_mle_ext_neighbor_irregular_present,
+    CHECK(tetra_st(st)->nwrk_bcast_ext_known && !tetra_st(st)->mle_ext_serving_classes_present
+              && !tetra_st(st)->mle_ext_neighbor_classes_present && !tetra_st(st)->mle_ext_serving_irregular_present
+              && !tetra_st(st)->mle_ext_neighbor_irregular_present,
           "O=0 commits an empty extension snapshot");
 
     free(st);
@@ -349,38 +350,40 @@ test_nwrk_remove(void) {
     }
 
     tetra_mle_dispatch(mle, off, 0, opt, st);
-    CHECK(st->tetra_mle_remove_known && st->tetra_mle_remove_ca_present && st->tetra_mle_remove_ca_count == 2,
+    CHECK(tetra_st(st)->mle_remove_known && tetra_st(st)->mle_remove_ca_present
+              && tetra_st(st)->mle_remove_ca_count == 2,
           "network-broadcast CA removal list accepted");
-    CHECK(st->tetra_mle_remove_ca_cell_id[0] == 7 && st->tetra_mle_remove_ca_remove_cell[0]
-              && st->tetra_mle_remove_ca_cell_id[1] == 9 && st->tetra_mle_remove_ca_class_count[1] == 2
-              && st->tetra_mle_remove_ca_class_id[1][1] == 4 && st->tetra_mle_remove_ca_channel_id[1][1] == 6,
+    CHECK(tetra_st(st)->mle_remove_ca_cell_id[0] == 7 && tetra_st(st)->mle_remove_ca_remove_cell[0]
+              && tetra_st(st)->mle_remove_ca_cell_id[1] == 9 && tetra_st(st)->mle_remove_ca_class_count[1] == 2
+              && tetra_st(st)->mle_remove_ca_class_id[1][1] == 4 && tetra_st(st)->mle_remove_ca_channel_id[1][1] == 6,
           "whole-cell and selective CA removals decoded");
-    CHECK(st->tetra_mle_remove_da_present && st->tetra_mle_remove_da_count == 1
-              && st->tetra_mle_remove_da_cell_id[0] == 0xAB && st->tetra_mle_remove_da_class_id[0][0] == 8
-              && st->tetra_mle_remove_da_channel_id[0][0] == 17,
+    CHECK(tetra_st(st)->mle_remove_da_present && tetra_st(st)->mle_remove_da_count == 1
+              && tetra_st(st)->mle_remove_da_cell_id[0] == 0xAB && tetra_st(st)->mle_remove_da_class_id[0][0] == 8
+              && tetra_st(st)->mle_remove_da_channel_id[0][0] == 17,
           "selective DA removal decoded");
-    CHECK(st->tetra_mle_remove_serving_present && st->tetra_mle_remove_serving_class_count == 2
-              && st->tetra_mle_remove_serving_class_id[1] == 2 && st->tetra_mle_remove_serving_channel_id[0] == 30,
+    CHECK(tetra_st(st)->mle_remove_serving_present && tetra_st(st)->mle_remove_serving_class_count == 2
+              && tetra_st(st)->mle_remove_serving_class_id[1] == 2
+              && tetra_st(st)->mle_remove_serving_channel_id[0] == 30,
           "serving-cell removal decoded");
 
-    st->tetra_mle_remove_ca_cell_id[0] = 19;
+    tetra_st(st)->mle_remove_ca_cell_id[0] = 19;
     tetra_mle_dispatch(mle, da_record_start + 4, 0, opt, st);
-    CHECK(st->tetra_mle_remove_ca_cell_id[0] == 19 && st->tetra_mle_remove_da_cell_id[0] == 0xAB,
+    CHECK(tetra_st(st)->mle_remove_ca_cell_id[0] == 19 && tetra_st(st)->mle_remove_da_cell_id[0] == 0xAB,
           "truncated nested DA removal is atomic");
     tetra_mle_dispatch(mle, off - 1, 0, opt, st);
-    CHECK(st->tetra_mle_remove_ca_cell_id[0] == 19 && st->tetra_mle_remove_da_cell_id[0] == 0xAB,
+    CHECK(tetra_st(st)->mle_remove_ca_cell_id[0] == 19 && tetra_st(st)->mle_remove_da_cell_id[0] == 0xAB,
           "truncated removal update is atomic");
     mle[off - 1] = 1;
     tetra_mle_dispatch(mle, off, 0, opt, st);
-    CHECK(st->tetra_mle_remove_ca_cell_id[0] == 19, "reserved removal field is rejected atomically");
+    CHECK(tetra_st(st)->mle_remove_ca_cell_id[0] == 19, "reserved removal field is rejected atomically");
 
     memset(mle, 0, sizeof(mle));
     pack_bits(mle, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle, TETRA_MLE_EXTENDED_PDU, 3, 3);
     pack_bits(mle, TETRA_MLE_D_NWRK_BCAST_REMOVE, 6, 4);
     tetra_mle_dispatch(mle, 11, 0, opt, st);
-    CHECK(st->tetra_mle_remove_known && !st->tetra_mle_remove_ca_present && !st->tetra_mle_remove_da_present
-              && !st->tetra_mle_remove_serving_present,
+    CHECK(tetra_st(st)->mle_remove_known && !tetra_st(st)->mle_remove_ca_present && !tetra_st(st)->mle_remove_da_present
+              && !tetra_st(st)->mle_remove_serving_present,
           "O=0 commits an empty removal snapshot");
 
     free(st);
@@ -528,55 +531,59 @@ test_nwrk_broadcast_da(void) {
     pack_bits(mle, 0, off++, 1);
 
     tetra_mle_dispatch(mle, off, 0, opt, st);
-    CHECK(st->tetra_mle_da_broadcast_known && st->tetra_mle_da_cell_id_valid && st->tetra_mle_da_cell_id == 0x42
-              && st->tetra_mle_da_reselect == 0xA55A && st->tetra_mle_da_load == 5
-              && st->tetra_mle_da_network_time == UINT64_C(0x123489ABCDEF),
+    CHECK(tetra_st(st)->mle_da_broadcast_known && tetra_st(st)->mle_da_cell_id_valid
+              && tetra_st(st)->mle_da_cell_id == 0x42 && tetra_st(st)->mle_da_reselect == 0xA55A
+              && tetra_st(st)->mle_da_load == 5 && tetra_st(st)->mle_da_network_time == UINT64_C(0x123489ABCDEF),
           "DA broadcast identity, reselection, load, and network time decoded");
-    CHECK(st->tetra_mle_da_local_ca_valid && st->tetra_mle_da_local_ca_cell_id == 17
-              && st->tetra_mle_da_local_ca_reselect_types == 2 && st->tetra_mle_da_local_ca_main_carrier == 0xABC,
+    CHECK(tetra_st(st)->mle_da_local_ca_valid && tetra_st(st)->mle_da_local_ca_cell_id == 17
+              && tetra_st(st)->mle_da_local_ca_reselect_types == 2
+              && tetra_st(st)->mle_da_local_ca_main_carrier == 0xABC,
           "DA broadcast local CA cell decoded");
-    CHECK(st->tetra_mle_da_neighbor_list_present && st->tetra_mle_da_neighbor_count == 1
-              && st->tetra_mle_da_neighbor_cell_id[0] == 0x91 && st->tetra_mle_da_neighbor_load[0] == 6
-              && st->tetra_mle_da_neighbor_main_carrier[0] == 0x789
-              && st->tetra_mle_da_neighbor_optional_mask[0] == ((1u << 0) | (1u << 3))
-              && st->tetra_mle_da_neighbor_carrier_extension[0] == 0x155 && st->tetra_mle_da_neighbor_la[0] == 0x2345,
+    CHECK(tetra_st(st)->mle_da_neighbor_list_present && tetra_st(st)->mle_da_neighbor_count == 1
+              && tetra_st(st)->mle_da_neighbor_cell_id[0] == 0x91 && tetra_st(st)->mle_da_neighbor_load[0] == 6
+              && tetra_st(st)->mle_da_neighbor_main_carrier[0] == 0x789
+              && tetra_st(st)->mle_da_neighbor_optional_mask[0] == ((1u << 0) | (1u << 3))
+              && tetra_st(st)->mle_da_neighbor_carrier_extension[0] == 0x155
+              && tetra_st(st)->mle_da_neighbor_la[0] == 0x2345,
           "DA neighbour mandatory and optional fields decoded");
-    CHECK(st->tetra_mle_da_serving_classes_present && st->tetra_mle_da_serving_class_id[0] == 7
-              && st->tetra_mle_da_neighbor_classes_present && st->tetra_mle_da_neighbor_class_cell_id[0] == 0x91
-              && st->tetra_mle_da_neighbor_class_id[0] == 12,
+    CHECK(tetra_st(st)->mle_da_serving_classes_present && tetra_st(st)->mle_da_serving_class_id[0] == 7
+              && tetra_st(st)->mle_da_neighbor_classes_present && tetra_st(st)->mle_da_neighbor_class_cell_id[0] == 0x91
+              && tetra_st(st)->mle_da_neighbor_class_id[0] == 12,
           "DA serving and neighbour channel classes decoded");
-    CHECK(st->tetra_mle_da_serving_irregular_present && st->tetra_mle_da_serving_irregular_channel_id[0] == 23
-              && st->tetra_mle_da_serving_irregular_extension_valid[0]
-              && st->tetra_mle_da_serving_irregular_extension[0] == 0x2D5 && st->tetra_mle_da_neighbor_irregular_present
-              && st->tetra_mle_da_neighbor_irregular_cell_id[0] == 0x91
-              && !st->tetra_mle_da_neighbor_irregular_extension_valid[0],
+    CHECK(tetra_st(st)->mle_da_serving_irregular_present && tetra_st(st)->mle_da_serving_irregular_channel_id[0] == 23
+              && tetra_st(st)->mle_da_serving_irregular_extension_valid[0]
+              && tetra_st(st)->mle_da_serving_irregular_extension[0] == 0x2D5
+              && tetra_st(st)->mle_da_neighbor_irregular_present
+              && tetra_st(st)->mle_da_neighbor_irregular_cell_id[0] == 0x91
+              && !tetra_st(st)->mle_da_neighbor_irregular_extension_valid[0],
           "DA serving and neighbour irregular channels decoded");
 
-    st->tetra_mle_da_cell_id = 0xEE;
+    tetra_st(st)->mle_da_cell_id = 0xEE;
     tetra_mle_dispatch(mle, da_entry_start + 24, 0, opt, st);
-    CHECK(st->tetra_mle_da_cell_id == 0xEE && st->tetra_mle_da_neighbor_count == 1,
+    CHECK(tetra_st(st)->mle_da_cell_id == 0xEE && tetra_st(st)->mle_da_neighbor_count == 1,
           "truncated DA neighbour preserves the prior snapshot");
     tetra_mle_dispatch(mle, off - 1, 0, opt, st);
-    CHECK(st->tetra_mle_da_cell_id == 0xEE, "missing final DA Type-2 P-bit is rejected atomically");
+    CHECK(tetra_st(st)->mle_da_cell_id == 0xEE, "missing final DA Type-2 P-bit is rejected atomically");
     mle[inner_reserved_pos] = 1;
     tetra_mle_dispatch(mle, off, 0, opt, st);
-    CHECK(st->tetra_mle_da_cell_id == 0xEE, "reserved DA-neighbour optional field is rejected atomically");
+    CHECK(tetra_st(st)->mle_da_cell_id == 0xEE, "reserved DA-neighbour optional field is rejected atomically");
     mle[inner_reserved_pos] = 0;
     mle[outer_reserved_pos] = 1;
     tetra_mle_dispatch(mle, off, 0, opt, st);
-    CHECK(st->tetra_mle_da_cell_id == 0xEE, "reserved outer DA field is rejected atomically");
+    CHECK(tetra_st(st)->mle_da_cell_id == 0xEE, "reserved outer DA field is rejected atomically");
     mle[outer_reserved_pos] = 0;
     mle[10] = 1;
     tetra_mle_dispatch(mle, off, 0, opt, st);
-    CHECK(st->tetra_mle_da_cell_id == 0xEE, "nonzero mandatory DA reserved bits are rejected atomically");
+    CHECK(tetra_st(st)->mle_da_cell_id == 0xEE, "nonzero mandatory DA reserved bits are rejected atomically");
 
     memset(mle, 0, sizeof(mle));
     pack_bits(mle, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle, TETRA_MLE_EXTENDED_PDU, 3, 3);
     pack_bits(mle, TETRA_MLE_D_NWRK_BROADCAST_DA, 6, 4);
     tetra_mle_dispatch(mle, 14, 0, opt, st);
-    CHECK(st->tetra_mle_da_broadcast_known && !st->tetra_mle_da_cell_id_valid && !st->tetra_mle_da_neighbor_list_present
-              && !st->tetra_mle_da_serving_classes_present && !st->tetra_mle_da_neighbor_irregular_present,
+    CHECK(tetra_st(st)->mle_da_broadcast_known && !tetra_st(st)->mle_da_cell_id_valid
+              && !tetra_st(st)->mle_da_neighbor_list_present && !tetra_st(st)->mle_da_serving_classes_present
+              && !tetra_st(st)->mle_da_neighbor_irregular_present,
           "O=0 commits an empty DA broadcast snapshot");
 
     free(st);

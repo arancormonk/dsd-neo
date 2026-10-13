@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/tetra/tetra_acelp.h>
+#include "tetra_state.h"
 
 int
 tetra_acelp_channel_gate_passes(const dsd_opts* opts) {
@@ -28,19 +29,20 @@ tetra_acelp_channel_gate_passes(const dsd_opts* opts) {
  */
 int
 tetra_acelp_slot_gate_passes(int block_idx, const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
     (void)block_idx;
-    if (!state || !state->tetra_vc_assignment_valid) {
+    if (!ts || !ts->vc_assignment_valid) {
         return 1;
     }
 
-    const uint8_t bitmap = (uint8_t)(state->tetra_vc_timeslot_bitmap & 0x0Fu);
+    const uint8_t bitmap = (uint8_t)(ts->vc_timeslot_bitmap & 0x0Fu);
     if (bitmap == 0) {
         return 0;
     }
-    if (!state->tetra_tdma_valid || state->tetra_tn < 1 || state->tetra_tn > 4) {
+    if (!ts->tdma_valid || ts->tn < 1 || ts->tn > 4) {
         return 1;
     }
 
-    const uint8_t mask = (uint8_t)(1u << (4u - state->tetra_tn));
+    const uint8_t mask = (uint8_t)(1u << (4u - ts->tn));
     return (bitmap & mask) != 0;
 }

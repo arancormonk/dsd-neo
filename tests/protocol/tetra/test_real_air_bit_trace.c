@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int
 decode_bits(const char* text, uint8_t* out, size_t capacity) {
@@ -51,21 +52,22 @@ main(void) {
     int bsch_len = decode_bits(bsch_text, bsch, sizeof(bsch));
     int sysinfo_len = decode_bits(sysinfo_text, sysinfo, sizeof(sysinfo));
     int ok = bsch_len == 60 && sysinfo_len == 124 && tetra_bsch_parse(bsch, bsch_len, opts, state);
-    ok = ok && state->tetra_mcc == 293 && state->tetra_mnc == 7 && state->tetra_colour == 3 && state->tetra_tn == 4
-         && state->tetra_fn == 5 && state->tetra_mn == 58;
+    ok = ok && tetra_st(state)->mcc == 293 && tetra_st(state)->mnc == 7 && tetra_st(state)->colour == 3
+         && tetra_st(state)->tn == 4 && tetra_st(state)->fn == 5 && tetra_st(state)->mn == 58;
 
     if (ok) {
         tetra_mac_parse_schd(sysinfo, sysinfo_len, 0, opts, state);
     }
-    ok = ok && state->tetra_sysinfo_known && state->tetra_dl_carrier_hz == 393712500L
-         && state->tetra_bs_service_det == 0x0D77u;
+    ok = ok && tetra_st(state)->sysinfo_known && tetra_st(state)->dl_carrier_hz == 393712500L
+         && tetra_st(state)->bs_service_det == 0x0D77u;
 
     if (!ok) {
         fprintf(stderr,
                 "FAIL real-air trace: MCC=%u MNC=%u CC=%u TN/FN/MN=%u/%u/%u "
                 "DL=%ld service=0x%04X\n",
-                state->tetra_mcc, state->tetra_mnc, state->tetra_colour, state->tetra_tn, state->tetra_fn,
-                state->tetra_mn, state->tetra_dl_carrier_hz, state->tetra_bs_service_det);
+                tetra_st(state)->mcc, tetra_st(state)->mnc, tetra_st(state)->colour, tetra_st(state)->tn,
+                tetra_st(state)->fn, tetra_st(state)->mn, tetra_st(state)->dl_carrier_hz,
+                tetra_st(state)->bs_service_det);
     }
     free(state);
     free(opts);

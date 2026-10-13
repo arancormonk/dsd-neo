@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -106,12 +107,12 @@ test_sysinfo_extended_fields(void) {
 
     tetra_mac_parse_schd(bits, NBITS, 0, opt, st);
 
-    CHECK(st->tetra_duplex_spacing == 5, "SYSINFO duplex_spacing=5 cached");
-    CHECK(st->tetra_num_csch == 3, "SYSINFO num_csch=3 cached");
-    CHECK(st->tetra_ms_txpwr_max == 6, "SYSINFO ms_txpwr_max=6 cached");
-    CHECK(st->tetra_rxlev_access_min == 11, "SYSINFO rxlev_access_min=11 cached");
-    CHECK(st->tetra_cck_valid == 1, "SYSINFO cck_valid=1 cached");
-    CHECK(st->tetra_cck_id == 0xABCDu, "SYSINFO cck_id=0xABCD cached");
+    CHECK(tetra_st(st)->duplex_spacing == 5, "SYSINFO duplex_spacing=5 cached");
+    CHECK(tetra_st(st)->num_csch == 3, "SYSINFO num_csch=3 cached");
+    CHECK(tetra_st(st)->ms_txpwr_max == 6, "SYSINFO ms_txpwr_max=6 cached");
+    CHECK(tetra_st(st)->rxlev_access_min == 11, "SYSINFO rxlev_access_min=11 cached");
+    CHECK(tetra_st(st)->cck_valid == 1, "SYSINFO cck_valid=1 cached");
+    CHECK(tetra_st(st)->cck_id == 0xABCDu, "SYSINFO cck_id=0xABCD cached");
 
     free(st);
     free(opt);
@@ -132,8 +133,8 @@ test_frame_counters(void) {
     dsd_opts* opt = alloc_opts();
 
     tetra_mac_parse_schd(bits, 124, 0, opt, st);
-    CHECK(st->tetra_frames_total == 1, "frame_total incremented after SYSINFO PDU");
-    CHECK(st->tetra_frames_sysinfo == 1, "frame_sysinfo incremented");
+    CHECK(tetra_st(st)->frames_total == 1, "frame_total incremented after SYSINFO PDU");
+    CHECK(tetra_st(st)->frames_sysinfo == 1, "frame_sysinfo incremented");
 
     free(st);
     free(opt);
@@ -175,10 +176,10 @@ test_d_tx_granted_enc_mode(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
-    st->tetra_enc_mode = 0; /* start at none */
+    tetra_st(st)->enc_mode = 0; /* start at none */
     tetra_mle_dispatch(bits, NBITS, 0, opt, st);
 
-    CHECK(st->tetra_enc_mode == 1, "D-TX-GRANTED syncs encryption control");
+    CHECK(tetra_st(st)->enc_mode == 1, "D-TX-GRANTED syncs encryption control");
 
     free(st);
     free(opt);
@@ -199,22 +200,22 @@ test_bsch_count(void) {
     /* Instead, verify the tetra_bsch_fmt_net helper with a non-zero count
      * (confirming the state struct has the new field). */
     dsd_state* st = alloc_state();
-    st->tetra_net_known = 1;
-    st->tetra_mcc = 100;
-    st->tetra_mnc = 200;
-    st->tetra_colour = 7;
-    st->tetra_bsch_count = 42;
+    tetra_st(st)->net_known = 1;
+    tetra_st(st)->mcc = 100;
+    tetra_st(st)->mnc = 200;
+    tetra_st(st)->colour = 7;
+    tetra_st(st)->bsch_count = 42;
 
-    CHECK(st->tetra_bsch_count == 42, "tetra_bsch_count field accessible");
+    CHECK(tetra_st(st)->bsch_count == 42, "tetra_bsch_count field accessible");
 
     /* Simulate BSCH colour change detection logic */
-    uint8_t old_colour = st->tetra_colour;
-    st->tetra_colour = 8; /* changed */
-    if (st->tetra_net_known && st->tetra_colour != old_colour) {
-        st->tetra_bsch_colour_changed = 1;
+    uint8_t old_colour = tetra_st(st)->colour;
+    tetra_st(st)->colour = 8; /* changed */
+    if (tetra_st(st)->net_known && tetra_st(st)->colour != old_colour) {
+        tetra_st(st)->bsch_colour_changed = 1;
     }
 
-    CHECK(st->tetra_bsch_colour_changed == 1, "bsch_colour_changed detected");
+    CHECK(tetra_st(st)->bsch_colour_changed == 1, "bsch_colour_changed detected");
 
     free(st);
 }

@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_state.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -101,10 +102,10 @@ test_d_tx_expanded(void) {
     wrap_mle_cmce(cmce, 30, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
 
-    CHECK(st->tetra_tx_continue == 1, "D-TX-CONTINUE flag set");
-    CHECK(st->tetra_tx_event_call_id == 0x2345, "D-TX-CONTINUE 14-bit call id");
-    CHECK(st->tetra_tx_event_notification == 7, "D-TX-CONTINUE notification");
-    CHECK(st->tetra_tx_event_continue == 1, "D-TX-CONTINUE continue value");
+    CHECK(tetra_st(st)->tx_continue == 1, "D-TX-CONTINUE flag set");
+    CHECK(tetra_st(st)->tx_event_call_id == 0x2345, "D-TX-CONTINUE 14-bit call id");
+    CHECK(tetra_st(st)->tx_event_notification == 7, "D-TX-CONTINUE notification");
+    CHECK(tetra_st(st)->tx_event_continue == 1, "D-TX-CONTINUE continue value");
 
     /* D-TX-WAIT: call_id=0, notification=0 */
     memset(st, 0, sizeof(*st));
@@ -117,9 +118,9 @@ test_d_tx_expanded(void) {
     wrap_mle_cmce(cmce, 21, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
 
-    CHECK(st->tetra_tx_wait == 1, "D-TX-WAIT flag set");
-    CHECK(st->tetra_tx_event_call_id == 0, "D-TX-WAIT call_id = 0");
-    CHECK(st->tetra_tx_event_notification == 0, "D-TX-WAIT notification = 0");
+    CHECK(tetra_st(st)->tx_wait == 1, "D-TX-WAIT flag set");
+    CHECK(tetra_st(st)->tx_event_call_id == 0, "D-TX-WAIT call_id = 0");
+    CHECK(tetra_st(st)->tx_event_notification == 0, "D-TX-WAIT notification = 0");
 
     /* Table 14.19 D-TX-INTERRUPT. */
     memset(st, 0, sizeof(*st));
@@ -134,9 +135,9 @@ test_d_tx_expanded(void) {
     wrap_mle_cmce(cmce, 25, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
 
-    CHECK(st->tetra_tx_interrupted == 1, "D-TX-INTERRUPT flag set");
-    CHECK(st->tetra_tx_event_call_id == 0x123, "D-TX-INTERRUPT call id");
-    CHECK(st->tetra_tx_event_encryption == 1, "D-TX-INTERRUPT encryption");
+    CHECK(tetra_st(st)->tx_interrupted == 1, "D-TX-INTERRUPT flag set");
+    CHECK(tetra_st(st)->tx_event_call_id == 0x123, "D-TX-INTERRUPT call id");
+    CHECK(tetra_st(st)->tx_event_encryption == 1, "D-TX-INTERRUPT encryption");
 
     free(st);
     free(opt);
@@ -151,67 +152,67 @@ test_channel_info_expanded(void) {
     dsd_state* st = alloc_state();
 
     /* Populate many state fields */
-    st->tetra_net_known = 1;
-    st->tetra_mcc = 206;
-    st->tetra_mnc = 1;
-    st->tetra_colour = 42;
-    st->tetra_dl_carrier_hz = 390000000L;
-    st->tetra_mle_ca_neighbor_count_valid = 1;
-    st->tetra_mle_ca_neighbor_count = 2;
-    st->tetra_mm_group_identity_valid = 1;
-    st->tetra_mm_group_entry_count = 3;
-    st->tetra_call_active = 1;
-    st->tetra_gssi = 100;
-    st->tetra_calling_ssi = 999;
-    st->tetra_tdma_valid = 1;
-    st->tetra_tn = 2;
-    st->tetra_fn = 10;
-    st->tetra_mn = 30;
-    st->tetra_cck_valid = 1;
-    st->tetra_cck_id = 0x1234;
-    st->tetra_call_timeout = 1;
-    st->tetra_call_slots = 1;
-    st->tetra_bsch_count = 5;
-    st->tetra_decode_ok = 100;
-    st->tetra_decode_errors = 3;
-    st->tetra_frames_total = 200;
-    st->tetra_mm_status_valid = 1;
-    st->tetra_mm_status_code = 7;
-    st->tetra_tx_continue = 1;
-    st->tetra_tx_interrupted = 1;
-    st->tetra_sds_status = 0x8001;
-    st->tetra_sds_short_valid = 1;
-    st->tetra_sds_short_data = 42;
-    st->tetra_sds_short_src = 12345;
-    st->tetra_sds_report_valid = 1;
-    st->tetra_sds_report_delivery_ok = 1;
-    st->tetra_facility_valid = 1;
-    st->tetra_facility_type = 3;
-    st->tetra_sds_ack_valid = 1;
-    st->tetra_sds_ack_msg_ref = 7;
-    st->tetra_sds_short_report_valid = 1;
-    st->tetra_sds_short_report_result = 2;
-    st->tetra_sndcp_valid = 1;
-    st->tetra_sndcp_nsapi = 5;
-    st->tetra_sndcp_pdu_type = 1;
-    st->tetra_d_info_valid = 1;
-    st->tetra_d_info_call_id = 1;
-    st->tetra_d_info_call_timeout = 1;
-    st->tetra_d_info_new_call_id = 2;
-    st->tetra_d_info_new_call_id_valid = 1;
-    st->tetra_d_info_timeout = 9;
-    st->tetra_d_info_timeout_valid = 1;
-    st->tetra_d_info_status = 3;
-    st->tetra_d_info_status_valid = 1;
-    st->tetra_d_info_notification_indicator = 42;
-    st->tetra_d_info_notification_indicator_valid = 1;
-    st->tetra_call_restore_valid = 1;
-    st->tetra_call_restore_id = 17;
-    st->tetra_call_restore_grant = 3;
-    st->tetra_call_restore_new_id = 18;
-    st->tetra_call_restore_new_id_valid = 1;
-    st->tetra_call_restore_status = 3;
-    st->tetra_call_restore_status_valid = 1;
+    tetra_st(st)->net_known = 1;
+    tetra_st(st)->mcc = 206;
+    tetra_st(st)->mnc = 1;
+    tetra_st(st)->colour = 42;
+    tetra_st(st)->dl_carrier_hz = 390000000L;
+    tetra_st(st)->mle_ca_neighbor_count_valid = 1;
+    tetra_st(st)->mle_ca_neighbor_count = 2;
+    tetra_st(st)->mm_group_identity_valid = 1;
+    tetra_st(st)->mm_group_entry_count = 3;
+    tetra_st(st)->call_active = 1;
+    tetra_st(st)->gssi = 100;
+    tetra_st(st)->calling_ssi = 999;
+    tetra_st(st)->tdma_valid = 1;
+    tetra_st(st)->tn = 2;
+    tetra_st(st)->fn = 10;
+    tetra_st(st)->mn = 30;
+    tetra_st(st)->cck_valid = 1;
+    tetra_st(st)->cck_id = 0x1234;
+    tetra_st(st)->call_timeout = 1;
+    tetra_st(st)->call_slots = 1;
+    tetra_st(st)->bsch_count = 5;
+    tetra_st(st)->decode_ok = 100;
+    tetra_st(st)->decode_errors = 3;
+    tetra_st(st)->frames_total = 200;
+    tetra_st(st)->mm_status_valid = 1;
+    tetra_st(st)->mm_status_code = 7;
+    tetra_st(st)->tx_continue = 1;
+    tetra_st(st)->tx_interrupted = 1;
+    tetra_st(st)->sds_status = 0x8001;
+    tetra_st(st)->sds_short_valid = 1;
+    tetra_st(st)->sds_short_data = 42;
+    tetra_st(st)->sds_short_src = 12345;
+    tetra_st(st)->sds_report_valid = 1;
+    tetra_st(st)->sds_report_delivery_ok = 1;
+    tetra_st(st)->facility_valid = 1;
+    tetra_st(st)->facility_type = 3;
+    tetra_st(st)->sds_ack_valid = 1;
+    tetra_st(st)->sds_ack_msg_ref = 7;
+    tetra_st(st)->sds_short_report_valid = 1;
+    tetra_st(st)->sds_short_report_result = 2;
+    tetra_st(st)->sndcp_valid = 1;
+    tetra_st(st)->sndcp_nsapi = 5;
+    tetra_st(st)->sndcp_pdu_type = 1;
+    tetra_st(st)->d_info_valid = 1;
+    tetra_st(st)->d_info_call_id = 1;
+    tetra_st(st)->d_info_call_timeout = 1;
+    tetra_st(st)->d_info_new_call_id = 2;
+    tetra_st(st)->d_info_new_call_id_valid = 1;
+    tetra_st(st)->d_info_timeout = 9;
+    tetra_st(st)->d_info_timeout_valid = 1;
+    tetra_st(st)->d_info_status = 3;
+    tetra_st(st)->d_info_status_valid = 1;
+    tetra_st(st)->d_info_notification_indicator = 42;
+    tetra_st(st)->d_info_notification_indicator_valid = 1;
+    tetra_st(st)->call_restore_valid = 1;
+    tetra_st(st)->call_restore_id = 17;
+    tetra_st(st)->call_restore_grant = 3;
+    tetra_st(st)->call_restore_new_id = 18;
+    tetra_st(st)->call_restore_new_id_valid = 1;
+    tetra_st(st)->call_restore_status = 3;
+    tetra_st(st)->call_restore_status_valid = 1;
 
     char buf[1024];
     tetra_channel_info_fmt(st, buf, sizeof(buf));
@@ -243,11 +244,11 @@ test_channel_info_expanded(void) {
     CHECK(strstr(buf, "dinfo:id1/t1->2/to9/st3/n42") != NULL, "D-INFO optional state displayed");
     CHECK(strstr(buf, "restore:id17/g3->18/st3") != NULL, "call restore state displayed");
 
-    st->tetra_sds_report_cause = 0x21;
-    st->tetra_sds_report_msg_ref = 231;
+    tetra_st(st)->sds_report_cause = 0x21;
+    tetra_st(st)->sds_report_msg_ref = 231;
     tetra_channel_info_fmt(st, buf, sizeof(buf));
     CHECK(strstr(buf, "rpt:retry/21 ref:231") != NULL, "Stored message is retrying, not a terminal failure");
-    st->tetra_sds_report_cause = 0x4a;
+    tetra_st(st)->sds_report_cause = 0x4a;
     tetra_channel_info_fmt(st, buf, sizeof(buf));
     CHECK(strstr(buf, "rpt:fail/4A") != NULL, "Terminal failure status displayed");
 
@@ -278,10 +279,10 @@ test_sndcp_parser(void) {
     wrap_mle_pd(sndcp, 16, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 3, opt, st);
 
-    CHECK(st->tetra_sndcp_valid == 1, "SNDCP valid flag set");
-    CHECK(st->tetra_sndcp_nsapi == 5, "SNDCP NSAPI = 5");
-    CHECK(st->tetra_sndcp_pdu_type == 3, "SNDCP PDU type = 3");
-    CHECK(st->tetra_sndcp_nbits == 16, "SNDCP nbits = 16");
+    CHECK(tetra_st(st)->sndcp_valid == 1, "SNDCP valid flag set");
+    CHECK(tetra_st(st)->sndcp_nsapi == 5, "SNDCP NSAPI = 5");
+    CHECK(tetra_st(st)->sndcp_pdu_type == 3, "SNDCP PDU type = 3");
+    CHECK(tetra_st(st)->sndcp_nbits == 16, "SNDCP nbits = 16");
 
     /* Test short SNDCP (< 8 bits) */
     memset(st, 0, sizeof(*st));
@@ -290,8 +291,8 @@ test_sndcp_parser(void) {
     wrap_mle_pd(sndcp_short, 4, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 3, opt, st);
 
-    CHECK(st->tetra_sndcp_valid == 0, "SNDCP short: rejected");
-    CHECK(st->tetra_sndcp_nsapi == 0, "SNDCP short: NSAPI stays 0");
+    CHECK(tetra_st(st)->sndcp_valid == 0, "SNDCP short: rejected");
+    CHECK(tetra_st(st)->sndcp_nsapi == 0, "SNDCP short: NSAPI stays 0");
 
     free(st);
     free(opt);
