@@ -463,7 +463,15 @@ Notes
   - Custom AFS bit splits: `-fh344`, `-fH434`
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
 - dPMR: `-fm`
-- TETRA: `-fT`. Speech plays only through a TETRA speech codec library the user supplies:
+- TETRA: `-fT`. TETRA's pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, so
+  it decodes only at a DSP rate that is a multiple of 18 kHz: give an RTL-SDR or rtl_tcp input the 72 kHz DSP bandwidth
+  (`-i rtl:dev:freq:gain:ppm:72`, 4 samples per symbol); at the 48 kHz default nothing decodes. A stream that opens
+  TETRA at another rate warns once, with the fix for its input (`TETRA needs a DSP rate that is a multiple of 18 kHz,
+  not 48 kHz: set the DSP bandwidth to 72 kHz (-i rtl:dev:freq:gain:ppm:72)`): a SoapySDR device runs 72 kHz only
+  where it delivers 1.152 MS/s, no Airspy sample rate halves to a multiple of 18 kHz, and an I/Q replay keeps its
+  capture's rate. A switch to TETRA at run time keeps the mode and says the same in its toast (`Decoding TETRA: DSP rate
+  48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz`).
+  Speech plays only through a TETRA speech codec library the user supplies:
   `--tetra-codec <file>` names its shared library (`.so`, `.dylib` or `.dll`), opened by that path, relative to the
   working directory when it is not absolute. dsd-neo loads it when the first TETRA speech frame needs decoding and
   refuses, with one error, a library of another interface version or one missing a function; decoding carries on

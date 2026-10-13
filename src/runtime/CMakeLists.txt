@@ -13,6 +13,7 @@ target_sources(
         config_schema.c
         decode_clock.c
         decode_mode.c
+        tetra_rate.c
         scan_mode.c
         signal_search.c
         signal_search_hooks.c

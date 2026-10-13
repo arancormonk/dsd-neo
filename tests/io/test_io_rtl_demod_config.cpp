@@ -892,6 +892,63 @@ expect_passes_for_device_rate(void) {
     return rc;
 }
 
+/* Every selectable DSP bandwidth plans an RTL-SDR capture rate the dongle runs (225-300 kHz or 900 kHz-3.2 MHz) whose
+   half-band passes decimate it to exactly that bandwidth: 72 kHz from 1.152 MHz in 4 passes, a whole 4 samples per
+   TETRA symbol, and the 48 kHz default from 1.536 MHz in 5. */
+static int
+expect_capture_plan_for_every_dsp_bandwidth(void) {
+    int rc = 0;
+    int planned = 0;
+    for (int khz = 1; khz <= DSD_ANALOG_RTL_DSP_BW_MAX_KHZ; khz++) {
+        if (!dsd_analog_rtl_dsp_bw_is_selectable(khz)) {
+            continue;
+        }
+        uint32_t capture_hz = 0U;
+        int passes = -1;
+        int rate_out_hz = 0;
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "%d kHz plans a capture", khz);
+        rc |= expect_int_eq(label, rtl_stream_test_capture_plan(khz * 1000, &capture_hz, &passes, &rate_out_hz), 0);
+        DSD_SNPRINTF(label, sizeof label, "%d kHz decimates to itself", khz);
+        rc |= expect_int_eq(label, rate_out_hz, khz * 1000);
+        rc |= expect_int_eq(label, (int)(capture_hz >> passes), khz * 1000);
+        DSD_SNPRINTF(label, sizeof label, "%d kHz captures at a rate the dongle runs", khz);
+        rc |= expect_int_eq(
+            label,
+            (capture_hz >= 225001U && capture_hz <= 300000U) || (capture_hz >= 900001U && capture_hz <= 3200000U), 1);
+        planned++;
+    }
+    rc |= expect_int_eq("every selectable bandwidth is planned", planned, 8);
+
+    uint32_t capture_hz = 0U;
+    int passes = 0;
+    int rate_out_hz = 0;
+    rc |= expect_int_eq("72 kHz plan", rtl_stream_test_capture_plan(72000, &capture_hz, &passes, &rate_out_hz), 0);
+    rc |= expect_int_eq("72 kHz captures at 1.152 MHz", (int)capture_hz, 1152000);
+    rc |= expect_int_eq("72 kHz decimates in 4 passes", passes, 4);
+    rc |= expect_int_eq("72 kHz gives TETRA whole samples per symbol", rate_out_hz % 18000, 0);
+    rc |= expect_int_eq("48 kHz plan", rtl_stream_test_capture_plan(48000, &capture_hz, &passes, &rate_out_hz), 0);
+    rc |= expect_int_eq("48 kHz captures at 1.536 MHz", (int)capture_hz, 1536000);
+    rc |= expect_int_eq("48 kHz decimates in 5 passes", passes, 5);
+    rc |=
+        expect_int_eq("no bandwidth, no plan", rtl_stream_test_capture_plan(0, &capture_hz, &passes, &rate_out_hz), -1);
+
+    /* At 72 kHz TETRA's CQPSK timing runs at 4 samples per symbol, the channel filter keeps its WIDE profile, and the
+       channel filter of an explicit NFM or AM width fits. */
+    static dsd_opts tetra;
+    DSD_MEMSET(&tetra, 0, sizeof(tetra));
+    tetra.frame_tetra = 1;
+    tetra.mod_qpsk = 1;
+    rc |= expect_configured_mode("TETRA at the 72 kHz DSP bandwidth", tetra, 72000, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
+                                 18000, 4, DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_sps("TETRA times 4 samples per symbol at 72 kHz", tetra, 72000, 0, 4, DSD_CH_LPF_PROFILE_WIDE);
+    rc |=
+        expect_int_eq("NFM 25 kHz fits 72 kHz", dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, 25000, 72000, NULL, 0U), 0);
+    rc |=
+        expect_int_eq("AM 20 kHz fits 72 kHz", dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, 20000, 72000, NULL, 0U), 0);
+    return rc;
+}
+
 /* The output rate a stream publishes is the rate its samples have (issue #633): a ratio the resampler refuses, or a
    design that fails, leaves the resampler off and publishes the demod rate. INT_MAX is prime, so a DSD_NEO_RESAMP
    target of INT_MAX against 200 MHz reduces to L = INT_MAX, M = 200000000: an expansion of 11, whose L + M - 1 and
@@ -1856,13 +1913,14 @@ set_iq_balance_env(const char* value) {
     }
 }
 
-/* The notes the log tap has seen that a configured I/Q DC blocker, or I/Q balance, is bypassed for AM. */
+/* The notes the log tap has seen that a configured I/Q DC blocker, or I/Q balance, is bypassed for AM, and the stream
+   start's warnings that TETRA cannot run at its DSP rate. The tap is installed once, by main()'s first test. */
 static std::atomic<int> g_iq_dc_bypass_notes{0};
 static std::atomic<int> g_iq_balance_bypass_notes{0};
+static std::atomic<int> g_tetra_rate_warnings{0};
 
 static void
 count_iq_dc_bypass_notes(dsd_neo_log_level_t level, const char* text, void* ctx) {
-    (void)level;
     (void)ctx;
     if (text && std::strstr(text, "The I/Q DC blocker stays off while AM is demodulated")) {
         g_iq_dc_bypass_notes.fetch_add(1, std::memory_order_relaxed);
@@ -1870,6 +1928,42 @@ count_iq_dc_bypass_notes(dsd_neo_log_level_t level, const char* text, void* ctx)
     if (text && std::strstr(text, "I/Q balance stays off while AM is demodulated")) {
         g_iq_balance_bypass_notes.fetch_add(1, std::memory_order_relaxed);
     }
+    if (level == LOG_LEVEL_WARN && text && std::strstr(text, "TETRA needs a DSP rate that is a multiple of 18 kHz")) {
+        g_tetra_rate_warnings.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+/* A stream that opens TETRA at a DSP rate that is no multiple of 18 kHz says so once per rate, naming the fix for its
+   input; at 54 or 72 kHz, and for any other mode, it says nothing. */
+static int
+expect_tetra_rate_warning(void) {
+    int rc = 0;
+    rtl_stream_test_reset_tetra_rate_warning();
+    static dsd_opts tetra;
+    DSD_MEMSET(&tetra, 0, sizeof(tetra));
+    tetra.frame_tetra = 1;
+    tetra.mod_qpsk = 1;
+    tetra.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(tetra.audio_in_dev, sizeof tetra.audio_in_dev, "%s", "rtl:0:420.1M:30:0:48");
+    rc |= expect_int_eq("TETRA at 48 kHz warns", rtl_stream_test_warn_low_dsp_bw(&tetra, 48000), 1);
+    rc |= expect_int_eq("TETRA at 48 kHz warns once", rtl_stream_test_warn_low_dsp_bw(&tetra, 48000), 0);
+    rc |= expect_int_eq("TETRA warning logged once", g_tetra_rate_warnings.load(std::memory_order_relaxed), 1);
+    tetra.rtl_dsp_bw_khz = 72;
+    rc |= expect_int_eq("TETRA at 72 kHz runs", rtl_stream_test_warn_low_dsp_bw(&tetra, 72000), 0);
+    rc |= expect_int_eq("TETRA at 54 kHz runs", rtl_stream_test_warn_low_dsp_bw(&tetra, 54000), 0);
+    /* An Airspy forces 78.125 kHz whatever the request. */
+    DSD_SNPRINTF(tetra.audio_in_dev, sizeof tetra.audio_in_dev, "%s", "airspy");
+    rc |= expect_int_eq("TETRA at another rate warns again", rtl_stream_test_warn_low_dsp_bw(&tetra, 78125), 1);
+    rc |= expect_int_eq("TETRA warnings logged", g_tetra_rate_warnings.load(std::memory_order_relaxed), 2);
+
+    static dsd_opts dmr;
+    DSD_MEMSET(&dmr, 0, sizeof(dmr));
+    dmr.frame_dmr = 1;
+    dmr.rtl_dsp_bw_khz = 48;
+    rtl_stream_test_reset_tetra_rate_warning();
+    rc |= expect_int_eq("DMR at 50 kHz has no TETRA warning", rtl_stream_test_warn_low_dsp_bw(&dmr, 50000), 0);
+    rc |= expect_int_eq("no TETRA warning for DMR", g_tetra_rate_warnings.load(std::memory_order_relaxed), 2);
+    return rc;
 }
 
 /* A digital start switched live onto AM (rtl_demod_enter_analog_family(), the decoder picker's AM on a DMR session)
@@ -2534,6 +2628,8 @@ main(void) {
     rc |= expect_finalize_rate_chain_preserves_profile();
     rc |= expect_direct_output_open_rate_uses_demod_rate();
     rc |= expect_passes_for_device_rate();
+    rc |= expect_capture_plan_for_every_dsp_bandwidth();
+    rc |= expect_tetra_rate_warning();
     rc |= expect_digital_resample_policy();
     rc |= expect_resampler_publishes_the_rate_it_delivers();
     rc |= expect_private_policy_matrices();

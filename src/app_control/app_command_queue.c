@@ -77,6 +77,7 @@
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -5152,6 +5153,22 @@ decode_mode_drop_old_analog_block(const dsd_opts* opts, dsd_state* state, int wa
     }
 }
 
+/* The toast a mode change that took posts. TETRA switched on where the DSP rate is no multiple of 18 kHz is kept, but
+   decodes nothing until the rate changes, so the toast says so and the log names the fix in full
+   (svc_tetra_rate_advice()). */
+static void
+decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
+        char advice[DSD_TETRA_RATE_ADVICE_MAX];
+        (void)svc_tetra_rate_advice(opts, state, 0, advice, sizeof advice);
+        LOG_WARN("WARNING: %s.\n", advice);
+        ui_set_toast(state, 8, "Decoding TETRA: %s", brief);
+        return;
+    }
+    ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(mode));
+}
+
 /**
  * @brief Switch which protocols are decoded, mid-session.
  *
@@ -5265,7 +5282,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         reset_call_tracking(opts, state, 1);
     }
-    ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(mode));
+    decode_mode_toast_applied(opts, state, mode);
     return UI_CMD_APPLY_COMPLETED;
 }
 

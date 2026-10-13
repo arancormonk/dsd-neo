@@ -9449,6 +9449,63 @@ reset_rx_family_wrap(void) {
 }
 
 /*
+ * TETRA times its symbols at a whole number of samples per symbol: switched on where the DSP rate is no multiple of
+ * 18 kHz, the mode is kept but its toast says the rate is wrong and how to change it, and the log names the fix in
+ * full. The rate is the running stream's, else an RTL-SDR's DSP bandwidth; at 72 kHz the toast is the usual one.
+ */
+static int
+test_decode_mode_set_tetra_names_an_unusable_rate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:420.1M:30:0:48");
+    opts.rtl_dsp_bw_khz = 48;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_rx_family_wrap();
+    g_fake_request_rate_hz = 48000;
+    rc |= expect_int("tetra at 48 kHz queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tetra at 48 kHz drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tetra at 48 kHz is kept", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+    rc |= expect_str("tetra at 48 kHz names the rate and the fix", state.ui_msg,
+                     "Decoding TETRA: DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
+
+    /* The running stream's rate, which a device forced: an Airspy at 78.125 kHz has no DSP bandwidth to suggest. */
+    rc |= expect_int("dmr between", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr between drained", dsd_app_drain_cmds(&opts, &state), 1);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    g_fake_request_rate_hz = 78125;
+    rc |= expect_int("tetra on an airspy queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tetra on an airspy drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("tetra on an airspy says no rate fits", state.ui_msg,
+                     "Decoding TETRA: DSP rate 78.125 kHz is no multiple of 18 kHz, and no Airspy rate is one");
+
+    /* With no stream running, an RTL-SDR's DSP bandwidth is the rate: 72 kHz runs TETRA. */
+    rc |= expect_int("dmr again", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr again drained", dsd_app_drain_cmds(&opts, &state), 1);
+    state.rtl_ctx = NULL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:420.1M:30:0:72");
+    opts.rtl_dsp_bw_khz = 72;
+    g_fake_request_rate_hz = 0;
+    rc |= expect_int("tetra at 72 kHz queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tetra at 72 kHz drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("tetra at 72 kHz is the usual toast", state.ui_msg, "Decoding TETRA");
+    reset_rx_family_wrap();
+    freeState(&state);
+    return rc;
+}
+
+/*
  * DECODE_MODE_SET Analog on a live digital RTL session has to move the front end
  * onto the analog family (it used to publish nothing for analog, leaving the RTL
  * stream on the old digital demodulator) and open the monitor's raw sink. Going
@@ -17672,6 +17729,7 @@ main(void) {
     rc |= test_nfm_bandwidth_set_under_a_width_row();
     rc |= test_refused_width_under_a_scan_row_keeps_the_configured_width();
     rc |= test_refused_row_width_request_puts_the_edit_back();
+    rc |= test_decode_mode_set_tetra_names_an_unusable_rate();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_width_under_scan_rows();

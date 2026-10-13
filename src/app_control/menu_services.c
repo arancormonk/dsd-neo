@@ -43,6 +43,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -983,6 +984,22 @@ svc_rtl_stream_running(const dsd_opts* opts, const dsd_state* state) {
 }
 
 #endif
+
+int
+svc_tetra_rate_advice(const dsd_opts* opts, const dsd_state* state, int brief, char* out, size_t out_size) {
+    int rate_hz = 0;
+#ifdef USE_RADIO
+    if (opts) {
+        rate_hz = svc_rtl_stream_running(opts, state) ? rtl_stream_get_request_rate_hz() : 0;
+        if (rate_hz <= 0) {
+            rate_hz = svc_rtl_bw_dsp_rate_hz(opts, opts->rtl_dsp_bw_khz);
+        }
+    }
+#else
+    (void)state;
+#endif
+    return dsd_tetra_dsp_rate_advice(opts, rate_hz, brief, out, out_size);
+}
 
 int
 svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size) {
