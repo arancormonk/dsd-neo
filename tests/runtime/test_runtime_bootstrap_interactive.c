@@ -262,6 +262,22 @@ test_pulse_defaults_apply_decode_and_ncurses(void) {
     return rc;
 }
 
+/* The wizard's last entry, 16, is TETRA; the entries before it keep their numbers. */
+static int
+test_tetra_entry_selects_tetra(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("\n16\n\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_int("tetra-decode-mode", g_last_decode_mode, DSDCFG_MODE_TETRA);
+    rc |= expect_int("tetra-decode-profile", g_last_decode_profile, DSD_DECODE_PRESET_PROFILE_INTERACTIVE);
+    return rc;
+}
+
 static int
 test_rtltcp_trunking_imports_group_allow_list_and_null_output(void) {
     int rc = 0;
@@ -672,6 +688,7 @@ main(void) {
     rc |= test_missing_config_initializes_runtime_config();
 #if !defined(_WIN32)
     rc |= test_pulse_defaults_apply_decode_and_ncurses();
+    rc |= test_tetra_entry_selects_tetra();
     rc |= test_rtltcp_trunking_imports_group_allow_list_and_null_output();
     rc |= test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv();
     rc |= test_am_entry_needs_an_iq_source();
