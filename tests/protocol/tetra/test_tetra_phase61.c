@@ -32,7 +32,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -88,6 +90,7 @@ test_floor_control_events(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
     uint8_t pdu[9 + 32];
+    char log[256];
     int n;
 
     /* D-TX-CONTINUE: call=0x1234, continue=1, request=1. */
@@ -99,9 +102,9 @@ test_floor_control_events(void) {
     pack_bits(cmce, 1, 20, 1);
     pack_bits(cmce, 0, 21, 1); /* O-bit */
     wrap_mle_cmce(cmce, 22, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(tetra_st(st)->tx_event_continue == 1, "D-TX-CONTINUE continue value decoded");
-    CHECK(tetra_st(st)->tx_event_call_id == 0x1234, "D-TX-CONTINUE keeps 14-bit call id");
+    tetra_test_mle_logged(pdu, n, 0, opt, st, log, sizeof log);
+    CHECK(strstr(log, "[TETRA CMCE D-TX-CONTINUE] CC=0 call=4660 request=1 notif=0 continue=1") != NULL,
+          "D-TX-CONTINUE call id, continue value and request permission decoded");
 
     /* D-TX-INTERRUPT uses the same mandatory grant fields as D-TX-GRANTED. */
     DSD_MEMSET(cmce, 0, sizeof(cmce));
@@ -112,9 +115,9 @@ test_floor_control_events(void) {
     pack_bits(cmce, 1, 22, 1);
     pack_bits(cmce, 0, 24, 1); /* O-bit */
     wrap_mle_cmce(cmce, 25, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(tetra_st(st)->tx_event_encryption == 1, "D-TX-INTERRUPT encryption control decoded");
-    CHECK(tetra_st(st)->tx_event_grant == 3, "D-TX-INTERRUPT grant decoded");
+    tetra_test_mle_logged(pdu, n, 0, opt, st, log, sizeof log);
+    CHECK(strstr(log, "[TETRA CMCE D-TX-INTERRUPT] CC=0 call=34 request=1 notif=0 continue=0 grant=3 enc=1") != NULL,
+          "D-TX-INTERRUPT grant and encryption control decoded");
 
     /* D-TX-WAIT: call id plus request permission. */
     DSD_MEMSET(cmce, 0, sizeof(cmce));
@@ -123,8 +126,8 @@ test_floor_control_events(void) {
     pack_bits(cmce, 0, 19, 1);
     pack_bits(cmce, 0, 20, 1); /* O-bit */
     wrap_mle_cmce(cmce, 21, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(tetra_st(st)->tx_event_call_id == 0x321, "D-TX-WAIT call id decoded");
+    tetra_test_mle_logged(pdu, n, 0, opt, st, log, sizeof log);
+    CHECK(strstr(log, "[TETRA CMCE D-TX-WAIT] CC=0 call=801 request=0") != NULL, "D-TX-WAIT call id decoded");
 
     free_state(st);
     free(opt);

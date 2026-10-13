@@ -85,7 +85,6 @@ test_standard_layout_and_identity(void) {
     const tetra_call_t* const c = tetra_calls_peek(st, 0x2345u);
     CHECK(c && c->phase == TETRA_CALL_TX_GRANTED, "grant-to-another starts a transmission");
     CHECK(c && c->talker_ssi == ssi, "transmitting SSI decoded");
-    CHECK(tetra_st(st)->cmce_tx_granted_perm == 1, "request permission decoded");
     CHECK(c && c->e2ee == 1, "encryption control marks the transmission end-to-end encrypted");
     CHECK(tetra_st(st)->enc_mode == TETRA_ENC_MODE_NONE, "the air interface encryption mode is not touched");
     free_state(st);

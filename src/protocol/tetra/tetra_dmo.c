@@ -1234,9 +1234,8 @@ dmo_learn_dcc(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sy
 }
 
 static void
-dmo_set_crypt(tetra_state_t* ts, tetra_dmo_crypt_e crypt, uint8_t security_class) {
+dmo_set_crypt(tetra_state_t* ts, tetra_dmo_crypt_e crypt) {
     ts->dmo_crypt = (uint8_t)crypt;
-    ts->dmo_security_class = security_class;
 }
 
 /* A DMAC-SYNC that sets up or occupies the channel defines the protection of the traffic that follows (EN 300 396-3
@@ -1246,7 +1245,7 @@ dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_s
     if (s->enc_state == TETRA_DMO_AIE_DM2C) {
         /* DM-2-C hides the message type and scrambles with the encrypted short identity, which needs the key. */
         ts->dmo_dcc_valid = 0;
-        dmo_set_crypt(ts, TETRA_DMO_CRYPT_AIR, s->enc_state);
+        dmo_set_crypt(ts, TETRA_DMO_CRYPT_AIR);
         return;
     }
     if (!h->has_addrs) {
@@ -1259,12 +1258,12 @@ dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_s
             crypt = h->e[TETRA_DMO_E_E2EE] ? TETRA_DMO_CRYPT_E2E : TETRA_DMO_CRYPT_CLEAR;
         }
         dmo_learn_dcc(ts, s, h);
-        dmo_set_crypt(ts, crypt, s->enc_state);
+        dmo_set_crypt(ts, crypt);
     } else if (role == DMO_ROLE_FRAGMENTS && h->frag_flag) {
         dmo_learn_dcc(ts, s, h);
     } else if (role == DMO_ROLE_END) {
         ts->dmo_dcc_valid = 0;
-        dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN, TETRA_DMO_AIE_DM1);
+        dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
     }
 }
 
@@ -1281,9 +1280,6 @@ tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_dmo_sy
         return;
     }
     ts->dmo_comm_type = s->comm_type;
-    ts->dmo_ab_usage = s->ab_usage;
-    ts->dmo_slot = s->slot;
-    ts->dmo_frame = s->frame;
     /* A presence signal describes the repeater or gateway, not a call. */
     if (s->sync_pdu_type != TETRA_DMO_SYNC_DMAC) {
         return;

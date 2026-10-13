@@ -20,8 +20,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "tetra_calls.h"
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -117,17 +119,17 @@ test_d_facility_annex_e3(void) {
     pack_bits(cmce, 0, 32, 1);  /* D-FACILITY optional elements absent */
 
     uint8_t mle[48];
+    char log[256];
     int mle_nbits = 0;
     wrap_mle_cmce(cmce, 33, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
+    tetra_test_mle_logged(mle, mle_nbits, 1, op, st, log, sizeof log);
 
-    CHECK(tetra_st(st)->facility_valid == 1, "D-FACILITY valid flag set");
-    CHECK(tetra_st(st)->facility_type == 7, "D-FACILITY first SS-Type parsed");
+    CHECK(strstr(log, "[TETRA CMCE D-FACILITY] CC=1 ss_pdus=1 first_ss_type=7") != NULL,
+          "D-FACILITY first SS-Type parsed");
 
-    tetra_st(st)->facility_valid = 0;
     wrap_mle_cmce(cmce, 25, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
-    CHECK(tetra_st(st)->facility_valid == 0, "truncated D-FACILITY rejected");
+    tetra_test_mle_logged(mle, mle_nbits, 1, op, st, log, sizeof log);
+    CHECK(strstr(log, "D-FACILITY] CC=1 ss_pdus") == NULL, "truncated D-FACILITY rejected");
 
     free_state(st);
     free(op);
@@ -159,23 +161,22 @@ test_d_facility_annex_e2_two_ss_pdus(void) {
     pack_bits(cmce, 0, 54, 1);  /* second SS-PDU O-bit */
     pack_bits(cmce, 0, 55, 1);  /* outer D-FACILITY O-bit */
 
+    char log[256];
     wrap_mle_cmce(cmce, 56, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
-    CHECK(tetra_st(st)->facility_valid == 1, "Annex E.2 two-SS-PDU collection accepted");
-    CHECK(tetra_st(st)->facility_type == 7, "Annex E.2 first independent SS-Type retained");
+    tetra_test_mle_logged(mle, mle_nbits, 2, op, st, log, sizeof log);
+    CHECK(strstr(log, "[TETRA CMCE D-FACILITY] CC=2 ss_pdus=2 first_ss_type=7") != NULL,
+          "Annex E.2 two-SS-PDU collection accepted with its first independent SS-Type");
 
-    /* Stop inside the second independently length-delimited SS-PDU. State
-     * publication must remain atomic rather than exposing the first member. */
-    tetra_st(st)->facility_type = 9;
+    /* Stop inside the second independently length-delimited SS-PDU: the PDU is not decoded, not even its first
+     * member. */
     wrap_mle_cmce(cmce, 54, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
-    CHECK(tetra_st(st)->facility_valid == 1, "truncated second SS-PDU preserves valid state");
-    CHECK(tetra_st(st)->facility_type == 9, "truncated second SS-PDU preserves previous SS-Type");
+    tetra_test_mle_logged(mle, mle_nbits, 2, op, st, log, sizeof log);
+    CHECK(strstr(log, "D-FACILITY] CC=2 ss_pdus") == NULL, "truncated second SS-PDU rejects the PDU");
 
     /* Both SS-PDUs are complete, but Annex E requires the outer O-bit. */
     wrap_mle_cmce(cmce, 55, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
-    CHECK(tetra_st(st)->facility_type == 9, "missing outer D-FACILITY O-bit preserves state");
+    tetra_test_mle_logged(mle, mle_nbits, 2, op, st, log, sizeof log);
+    CHECK(strstr(log, "D-FACILITY] CC=2 ss_pdus") == NULL, "missing outer D-FACILITY O-bit rejects the PDU");
 
     free_state(st);
     free(op);
@@ -250,11 +251,13 @@ test_d_connect_annex_e8_ss_al_facility(void) {
     tetra_calls_on_event(op, st, &setup, NULL);
     setup.call_id = 0x2222;
     tetra_calls_on_event(op, st, &setup, NULL);
+    char log[256];
     wrap_mle_cmce(cmce, off, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
+    tetra_test_mle_logged(mle, mle_nbits, 3, op, st, log, sizeof log);
     CHECK(tetra_calls_peek(st, 0x1234)->phase == TETRA_CALL_CONNECTED, "Annex E.8 D-CONNECT accepted");
     CHECK(tetra_calls_peek(st, 0x1234)->timeout == 9, "Annex E.8 mandatory call fields published");
-    CHECK(tetra_st(st)->cmce_connect_tx_grant == 1, "Annex E.8 transmission grant published");
+    CHECK(strstr(log, "[TETRA CMCE D-CONNECT] CC=3 call=4660 timeout=9 grant=1") != NULL,
+          "Annex E.8 transmission grant read");
 
     /* The 42-bit Facility is length-delimited.  Stopping inside it must not
      * replace the last complete call state. */

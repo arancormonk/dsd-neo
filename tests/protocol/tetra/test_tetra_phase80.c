@@ -20,7 +20,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -286,10 +288,11 @@ test_phase78_cmce_d_tx_granted(void) {
     uint8_t pdu[200];
     int out_n;
     wrap_mle_cmce(cmce, n, pdu, &out_n);
-    tetra_mle_dispatch(pdu, out_n, 0, opt, st);
+    char log[256];
+    tetra_test_mle_logged(pdu, out_n, 0, opt, st, log, sizeof log);
 
-    CHECK(tetra_st(st)->cmce_tx_granted_perm == 1, "tetra_cmce_tx_granted_perm");
-    CHECK(tetra_st(st)->cmce_tx_granted_reserv == 1, "tetra_cmce_tx_granted_reserv");
+    CHECK(strstr(log, "[TETRA CMCE D-TX-GRANTED] CC=0 call=291 grant=3 request=1 enc=0 reserved=1") != NULL,
+          "D-TX GRANTED request permission and reserved bit");
 
     free_state(st);
     free(opt);
@@ -455,8 +458,6 @@ test_phase79_mm_attach_detach(void) {
     wrap_mle_mm(mm, n, pdu, &out_n);
     tetra_mle_dispatch(pdu, out_n, 0, opt, st);
 
-    /* The acknowledgement request is not an address type; it must not reach the channel-info address field. */
-    CHECK(tetra_st(st)->mm_addr_type == 0, "acknowledgement request does not set tetra_mm_addr_type");
     CHECK(tetra_st(st)->mm_group_identity_valid == 1, "tetra_mm_group_identity_valid");
     CHECK(tetra_st(st)->mm_group_identity_report == 1, "tetra_mm_group_identity_report");
     CHECK(tetra_st(st)->mm_group_identity_ack_request == 1, "tetra_mm_group_identity_ack_request");

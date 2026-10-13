@@ -438,7 +438,6 @@ test_tx_granted_floor_state(void) {
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
     CHECK(tetra_calls_peek(st, 1)->phase == TETRA_CALL_TX_GRANTED, "TX-GRANTED: floor grant marked valid");
-    CHECK(tetra_st(st)->cmce_tx_granted_perm == 1, "TX-GRANTED: transmit permission retained");
 
     free_state(st);
     free(opt);

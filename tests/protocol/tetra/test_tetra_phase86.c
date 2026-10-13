@@ -19,7 +19,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -103,13 +105,13 @@ test_d_tx_expanded(void) {
     pack_bits(cmce, 0, 29, 1); /* terminating M-bit */
 
     uint8_t mle[64];
+    char log[256];
     int mle_nbits;
     wrap_mle_cmce(cmce, 30, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
+    tetra_test_mle_logged(mle, mle_nbits, 7, opt, st, log, sizeof log);
 
-    CHECK(tetra_st(st)->tx_event_call_id == 0x2345, "D-TX-CONTINUE 14-bit call id");
-    CHECK(tetra_st(st)->tx_event_notification == 7, "D-TX-CONTINUE notification");
-    CHECK(tetra_st(st)->tx_event_continue == 1, "D-TX-CONTINUE continue value");
+    CHECK(strstr(log, "[TETRA CMCE D-TX-CONTINUE] CC=7 call=9029 request=1 notif=7 continue=1") != NULL,
+          "D-TX-CONTINUE call id, notification and continue value");
 
     /* D-TX-WAIT: call_id=0, notification=0 */
     dsd_state_ext_free_all(st);
@@ -121,10 +123,10 @@ test_d_tx_expanded(void) {
     pack_bits(cmce, 0, 20, 1); /* O-bit */
 
     wrap_mle_cmce(cmce, 21, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
+    tetra_test_mle_logged(mle, mle_nbits, 7, opt, st, log, sizeof log);
 
-    CHECK(tetra_st(st)->tx_event_call_id == 0, "D-TX-WAIT call_id = 0");
-    CHECK(tetra_st(st)->tx_event_notification == 0, "D-TX-WAIT notification = 0");
+    CHECK(strstr(log, "[TETRA CMCE D-TX-WAIT] CC=7 call=0 request=0 notif=0") != NULL,
+          "D-TX-WAIT call id 0 without notification");
 
     /* Table 14.19 D-TX-INTERRUPT. */
     dsd_state_ext_free_all(st);
@@ -138,10 +140,10 @@ test_d_tx_expanded(void) {
     pack_bits(cmce, 0, 24, 1); /* O-bit */
 
     wrap_mle_cmce(cmce, 25, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
+    tetra_test_mle_logged(mle, mle_nbits, 7, opt, st, log, sizeof log);
 
-    CHECK(tetra_st(st)->tx_event_call_id == 0x123, "D-TX-INTERRUPT call id");
-    CHECK(tetra_st(st)->tx_event_encryption == 1, "D-TX-INTERRUPT encryption");
+    CHECK(strstr(log, "[TETRA CMCE D-TX-INTERRUPT] CC=7 call=291 request=0 notif=0 continue=0 grant=1 enc=1") != NULL,
+          "D-TX-INTERRUPT call id and encryption");
 
     free_state(st);
     free(opt);

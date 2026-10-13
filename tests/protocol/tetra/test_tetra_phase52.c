@@ -7,7 +7,7 @@
  * Phase 49 — D-CONNECT full parse:
  *   6.  D-CONNECT extracts the mandatory fields from ETSI table 14.7
  *   7.  D-CONNECT connects the call it names, and only a call a record holds
- *   8.  D-CONNECT records transmission grant and ownership
+ *   8.  D-CONNECT reads the transmission grant and request permission
  *   9.  D-CONNECT rejects a too-short PDU
  *
  * Phase 50 — D-SDS-DATA SDTI=0:
@@ -29,8 +29,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "tetra_calls.h"
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -119,13 +121,14 @@ test_d_connect_parse(void) {
     dsd_opts* opt = alloc_opts();
 
     setup_call(st, opt, 0x2345);
-    tetra_mle_dispatch(mle, n, 0, opt, st);
+    char log[256];
+    tetra_test_mle_logged(mle, n, 0, opt, st, log, sizeof log);
 
     const tetra_call_t* const c = tetra_calls_peek(st, 0x2345);
     CHECK(c && c->phase == TETRA_CALL_CONNECTED, "D-CONNECT: the call it names is connected");
     CHECK(c && c->timeout == 9, "D-CONNECT: call timeout");
-    CHECK(tetra_st(st)->cmce_connect_hook == 1, "D-CONNECT: hook method");
-    CHECK(tetra_st(st)->cmce_connect_duplex == 1, "D-CONNECT: simplex/duplex");
+    CHECK(strstr(log, "[TETRA CMCE D-CONNECT] CC=0 call=9029 timeout=9 grant=3 request=1") != NULL,
+          "D-CONNECT: fields after the hook and simplex/duplex bits");
 
     free_state(st);
     free(opt);
@@ -178,11 +181,11 @@ test_d_connect_transmission_control(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
-    tetra_mle_dispatch(mle, n, 0, opt, st);
+    char log[256];
+    tetra_test_mle_logged(mle, n, 0, opt, st, log, sizeof log);
 
-    CHECK(tetra_st(st)->cmce_connect_tx_grant == 3, "D-CONNECT: transmission grant");
-    CHECK(tetra_st(st)->cmce_connect_tx_permission == 1, "D-CONNECT: request permission");
-    CHECK(tetra_st(st)->cmce_connect_ownership == 1, "D-CONNECT: ownership");
+    CHECK(strstr(log, "[TETRA CMCE D-CONNECT] CC=0 call=0 timeout=0 grant=3 request=1") != NULL,
+          "D-CONNECT: transmission grant and request permission");
 
     free_state(st);
     free(opt);
@@ -204,11 +207,11 @@ test_d_connect_too_short(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
-    tetra_mle_dispatch(mle, n, 0, opt, st);
+    char log[256];
+    tetra_test_mle_logged(mle, n, 0, opt, st, log, sizeof log);
 
     CHECK(tetra_calls_peek(st, 0) == NULL, "D-CONNECT short: no call");
-    CHECK(tetra_st(st)->cmce_connect_tx_grant == 0 && tetra_st(st)->cmce_connect_hook == 0,
-          "D-CONNECT short: nothing published");
+    CHECK(strstr(log, "[TETRA CMCE D-CONNECT] CC=0 call=") == NULL, "D-CONNECT short: not decoded");
 
     free_state(st);
     free(opt);

@@ -11152,7 +11152,7 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
     )
     target_link_libraries(
         "${_dsd_tetra_target}"
-        PRIVATE dsd-neo_proto_tetra dsd-neo_fec
+        PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support
     )
     string(REGEX REPLACE "^tetra_" "" _dsd_tetra_test_name "${_dsd_tetra_test}")
     string(TOUPPER "${_dsd_tetra_test_name}" _dsd_tetra_test_name)

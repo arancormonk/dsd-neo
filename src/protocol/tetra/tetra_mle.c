@@ -128,16 +128,12 @@ cmce_call_event(const mle_ctx* ctx, tetra_call_event* ev, uint8_t kind, uint16_t
 
 typedef struct {
     cmce_party calling;
-    uint32_t temporary_address;
     uint16_t call_id;
     uint8_t timeout;
     uint8_t basic;
     uint8_t grant;
     uint8_t permission;
     uint8_t priority;
-    uint8_t notification;
-    uint8_t notification_valid;
-    uint8_t temporary_address_valid;
 } cmce_setup;
 
 static void
@@ -155,18 +151,13 @@ cmce_read_setup(tetra_bit_reader* r, cmce_setup* s) {
     if (!tetra_bits_present(r)) {
         return;
     }
-    const unsigned present = read_type2_elements(r, k_type2, 2, values);
-    s->notification = (uint8_t)values[0];
-    s->notification_valid = type2_present(present, 0);
-    s->temporary_address = values[1];
-    s->temporary_address_valid = type2_present(present, 1);
+    (void)read_type2_elements(r, k_type2, 2, values);
     cmce_read_party_type2(r, &s->calling);
     (void)tetra_bits_skip_type34(r);
 }
 
 static int
 parse_cmce_d_setup(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_state_t* const ts = ctx->ts;
     cmce_setup s;
     DSD_MEMSET(&s, 0, sizeof s);
     cmce_read_setup(r, &s);
@@ -182,17 +173,6 @@ parse_cmce_d_setup(tetra_bit_reader* r, const mle_ctx* ctx) {
         DSD_FPRINTF(stderr, " calling_SSI=%u", s.calling.ssi);
     }
     DSD_FPRINTF(stderr, "\n");
-
-    ts->cmce_notif = s.notification;
-    ts->cmce_setup_basic_service = s.basic;
-    ts->cmce_setup_priority = s.priority;
-    ts->cmce_setup_notification_valid = s.notification_valid;
-    ts->cmce_setup_temporary_address = s.temporary_address;
-    ts->cmce_setup_temporary_address_valid = s.temporary_address_valid;
-    ts->cmce_setup_calling_type = s.calling.type;
-    ts->cmce_setup_calling_type_valid = s.calling.type_valid;
-    ts->cmce_setup_calling_extension = s.calling.extension;
-    ts->cmce_setup_calling_extension_valid = s.calling.extension_valid;
 
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
@@ -214,24 +194,18 @@ parse_cmce_d_setup(tetra_bit_reader* r, const mle_ctx* ctx) {
 static int
 parse_cmce_release(tetra_bit_reader* r, const mle_ctx* ctx, int is_disconnect) {
     static const uint8_t k_type2[] = {6}; /* notification indicator */
-    tetra_state_t* const ts = ctx->ts;
     const char* const name = is_disconnect ? "D-DISCONNECT" : "D-RELEASE";
     uint32_t notification = 0;
-    unsigned present = 0;
     const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
     const uint8_t cause = (uint8_t)tetra_bits_read(r, 5);
     if (tetra_bits_present(r)) {
-        present = read_type2_elements(r, k_type2, 1, &notification);
+        (void)read_type2_elements(r, k_type2, 1, &notification);
         (void)tetra_bits_skip_type34(r);
     }
     if (!tetra_bits_ok(r)) {
         return cmce_reject(ctx, name);
     }
     DSD_FPRINTF(stderr, "[TETRA CMCE %s] CC=%d call=%u cause=%u\n", name, ctx->cc, call_id, cause);
-    ts->cmce_release_cause = cause;
-    ts->cmce_release_notification = (uint8_t)notification;
-    ts->cmce_release_notification_valid = type2_present(present, 0);
-    ts->cmce_release_was_disconnect = (uint8_t)(is_disconnect ? 1 : 0);
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
     cmce_call_event(ctx, &ev, TETRA_CALL_EV_RELEASE, call_id);
@@ -255,26 +229,21 @@ typedef struct {
     unsigned present;
     uint16_t call_id;
     uint8_t timeout;
-    uint8_t hook;
-    uint8_t duplex;
     uint8_t grant;
     uint8_t permission;
-    uint8_t ownership;
 } cmce_connect;
 
 static int
 parse_cmce_d_connect(tetra_bit_reader* r, const mle_ctx* ctx) {
     static const uint8_t k_type2[] = {4, 8, 24, 6};
-    tetra_state_t* const ts = ctx->ts;
     cmce_connect c;
     DSD_MEMSET(&c, 0, sizeof c);
     c.call_id = (uint16_t)tetra_bits_read(r, 14);
     c.timeout = (uint8_t)tetra_bits_read(r, 4);
-    c.hook = (uint8_t)tetra_bits_read(r, 1);
-    c.duplex = (uint8_t)tetra_bits_read(r, 1);
+    (void)tetra_bits_skip(r, 2); /* hook method selection, simplex/duplex selection */
     c.grant = (uint8_t)tetra_bits_read(r, 2);
     c.permission = (uint8_t)tetra_bits_read(r, 1);
-    c.ownership = (uint8_t)tetra_bits_read(r, 1);
+    (void)tetra_bits_skip(r, 1); /* call ownership */
     if (tetra_bits_present(r)) {
         c.present = read_type2_elements(r, k_type2, 4, c.optional);
         (void)tetra_bits_skip_type34(r);
@@ -287,20 +256,6 @@ parse_cmce_d_connect(tetra_bit_reader* r, const mle_ctx* ctx) {
 
     const uint8_t basic = (uint8_t)c.optional[1];
     const uint8_t basic_valid = type2_present(c.present, 1);
-    ts->cmce_connect_hook = c.hook;
-    ts->cmce_connect_duplex = c.duplex;
-    ts->cmce_connect_tx_grant = c.grant;
-    ts->cmce_connect_tx_permission = c.permission;
-    ts->cmce_connect_ownership = c.ownership;
-    ts->cmce_connect_priority = (uint8_t)c.optional[0];
-    ts->cmce_connect_priority_valid = type2_present(c.present, 0);
-    ts->cmce_connect_basic_service = basic;
-    ts->cmce_connect_basic_service_valid = basic_valid;
-    ts->cmce_connect_temporary_address = c.optional[2];
-    ts->cmce_connect_temporary_address_valid = type2_present(c.present, 2);
-    ts->cmce_connect_notification = (uint8_t)c.optional[3];
-    ts->cmce_connect_notification_valid = type2_present(c.present, 3);
-
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
     ev.has = (uint8_t)(TETRA_CALL_HAS_TIMEOUT | TETRA_CALL_HAS_GRANT | (basic_valid ? TETRA_CALL_HAS_BASIC : 0u));
@@ -316,15 +271,13 @@ parse_cmce_d_connect(tetra_bit_reader* r, const mle_ctx* ctx) {
 static int
 parse_cmce_d_connect_ack(tetra_bit_reader* r, const mle_ctx* ctx) {
     static const uint8_t k_type2[] = {6}; /* notification indicator */
-    tetra_state_t* const ts = ctx->ts;
     uint32_t notification = 0;
-    unsigned present = 0;
     const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
     const uint8_t timeout = (uint8_t)tetra_bits_read(r, 4);
     const uint8_t grant = (uint8_t)tetra_bits_read(r, 2);
-    const uint8_t permission = (uint8_t)tetra_bits_read(r, 1);
+    (void)tetra_bits_skip(r, 1); /* transmission request permission */
     if (tetra_bits_present(r)) {
-        present = read_type2_elements(r, k_type2, 1, &notification);
+        (void)read_type2_elements(r, k_type2, 1, &notification);
         (void)tetra_bits_skip_type34(r);
     }
     if (!tetra_bits_ok(r)) {
@@ -332,13 +285,6 @@ parse_cmce_d_connect_ack(tetra_bit_reader* r, const mle_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, "[TETRA CMCE D-CONNECT-ACK] CC=%d call=%u timeout=%u grant=%u\n", ctx->cc, call_id, timeout,
                 grant);
-    ts->d_connect_ack_call_id = call_id;
-    ts->d_connect_ack_tx_grant = grant;
-    ts->d_connect_ack_tx_permission = permission;
-    ts->d_connect_ack_notification = (uint8_t)notification;
-    ts->d_connect_ack_notification_valid = type2_present(present, 0);
-    ts->d_connect_ack_valid = 1;
-
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
     ev.has = (uint8_t)(TETRA_CALL_HAS_TIMEOUT | TETRA_CALL_HAS_GRANT);
@@ -353,7 +299,6 @@ parse_cmce_d_connect_ack(tetra_bit_reader* r, const mle_ctx* ctx) {
 static int
 parse_cmce_d_alert(tetra_bit_reader* r, const mle_ctx* ctx) {
     static const uint8_t k_type2[] = {8, 6}; /* basic service information, notification indicator */
-    tetra_state_t* const ts = ctx->ts;
     uint32_t values[2] = {0, 0};
     unsigned present = 0;
     const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
@@ -369,13 +314,6 @@ parse_cmce_d_alert(tetra_bit_reader* r, const mle_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, "[TETRA CMCE D-ALERT] CC=%d call=%u setup_timeout=%u queued=%u\n", ctx->cc, call_id, timeout,
                 queued);
-    ts->d_alert_call_id = call_id;
-    ts->d_alert_timeout = timeout;
-    ts->d_alert_queued = queued;
-    ts->d_alert_basic_service = (uint8_t)values[0];
-    ts->d_alert_notification = (uint8_t)values[1];
-    ts->d_alert_valid = 1;
-
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
     ev.has = (uint8_t)(type2_present(present, 0) ? TETRA_CALL_HAS_BASIC : 0u);
@@ -387,13 +325,11 @@ parse_cmce_d_alert(tetra_bit_reader* r, const mle_ctx* ctx) {
 static int
 parse_cmce_d_call_proceeding(tetra_bit_reader* r, const mle_ctx* ctx) {
     static const uint8_t k_type2[] = {8, 3, 6}; /* basic service information, call status, notification indicator */
-    tetra_state_t* const ts = ctx->ts;
     uint32_t values[3] = {0, 0, 0};
     unsigned present = 0;
     const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
     const uint8_t timeout = (uint8_t)tetra_bits_read(r, 3);
-    const uint8_t hook = (uint8_t)tetra_bits_read(r, 1);
-    (void)tetra_bits_skip(r, 1); /* simplex/duplex selection */
+    (void)tetra_bits_skip(r, 2); /* hook method selection, simplex/duplex selection */
     if (tetra_bits_present(r)) {
         present = read_type2_elements(r, k_type2, 3, values);
         (void)tetra_bits_skip_type34(r);
@@ -402,14 +338,6 @@ parse_cmce_d_call_proceeding(tetra_bit_reader* r, const mle_ctx* ctx) {
         return cmce_reject(ctx, "D-CALL-PROCEEDING");
     }
     DSD_FPRINTF(stderr, "[TETRA CMCE D-CALL-PROCEEDING] CC=%d call=%u setup_timeout=%u\n", ctx->cc, call_id, timeout);
-    ts->d_call_proc_call_id = call_id;
-    ts->d_call_proc_timeout = timeout;
-    ts->d_call_proc_hook = hook;
-    ts->d_call_proc_basic_service = (uint8_t)values[0];
-    ts->d_call_proc_status = (uint8_t)values[1];
-    ts->d_call_proc_notification = (uint8_t)values[2];
-    ts->d_call_proc_valid = 1;
-
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
     ev.has = (uint8_t)(type2_present(present, 0) ? TETRA_CALL_HAS_BASIC : 0u);
@@ -507,7 +435,6 @@ cmce_floor_event(const mle_ctx* ctx, const cmce_floor* f, uint8_t kind) {
 
 static int
 parse_cmce_d_tx_granted(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_state_t* const ts = ctx->ts;
     cmce_floor f;
     DSD_MEMSET(&f, 0, sizeof f);
     f.call_id = (uint16_t)tetra_bits_read(r, 14);
@@ -525,21 +452,12 @@ parse_cmce_d_tx_granted(tetra_bit_reader* r, const mle_ctx* ctx) {
         DSD_FPRINTF(stderr, " reserved=%u", f.reserved);
     }
     DSD_FPRINTF(stderr, "\n");
-    ts->cmce_tx_granted_perm = f.permission;
-    ts->cmce_tx_granted_reserv = f.reserved;
-    ts->cmce_tx_granted_notification = f.notification;
-    ts->cmce_tx_granted_notification_valid = f.notification_valid;
-    ts->cmce_tx_granted_party_type = f.party.type;
-    ts->cmce_tx_granted_party_type_valid = f.party.type_valid;
-    ts->cmce_tx_granted_party_extension = f.party.extension;
-    ts->cmce_tx_granted_party_extension_valid = f.party.extension_valid;
     cmce_floor_event(ctx, &f, TETRA_CALL_EV_TX_GRANTED);
     return 1;
 }
 
 static int
 parse_cmce_d_tx_ceased(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_state_t* const ts = ctx->ts;
     cmce_floor f;
     DSD_MEMSET(&f, 0, sizeof f);
     f.call_id = (uint16_t)tetra_bits_read(r, 14);
@@ -554,7 +472,6 @@ parse_cmce_d_tx_ceased(tetra_bit_reader* r, const mle_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, " (floor released)\n");
     /* The floor is released; the assigned traffic channel stays. */
-    ts->tx_ceased_tx_perm = f.permission;
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
     cmce_call_event(ctx, &ev, TETRA_CALL_EV_TX_CEASED, f.call_id);
@@ -564,7 +481,6 @@ parse_cmce_d_tx_ceased(tetra_bit_reader* r, const mle_ctx* ctx) {
 /* D-TX CONTINUE (table 14.17), D-TX INTERRUPT (table 14.19) and D-TX WAIT (table 14.20). */
 static int
 parse_cmce_tx_event(tetra_bit_reader* r, const mle_ctx* ctx, uint32_t pdu_type, const char* name) {
-    tetra_state_t* const ts = ctx->ts;
     cmce_floor f;
     DSD_MEMSET(&f, 0, sizeof f);
     f.call_id = (uint16_t)tetra_bits_read(r, 14);
@@ -582,18 +498,6 @@ parse_cmce_tx_event(tetra_bit_reader* r, const mle_ctx* ctx, uint32_t pdu_type, 
     }
     DSD_FPRINTF(stderr, "[TETRA CMCE %s] CC=%d call=%u request=%u notif=%u continue=%u grant=%u enc=%u\n", name,
                 ctx->cc, f.call_id, f.permission, f.notification, f.continue_value, f.grant, f.encryption);
-    ts->tx_event_call_id = f.call_id;
-    ts->tx_event_notification = f.notification;
-    ts->tx_event_continue = f.continue_value;
-    ts->tx_event_grant = f.grant;
-    ts->tx_event_encryption = f.encryption;
-    ts->tx_event_notification_valid = f.notification_valid;
-    ts->tx_event_party_type = f.party.type;
-    ts->tx_event_party_type_valid = f.party.type_valid;
-    ts->tx_event_party_ssi = f.party.ssi;
-    ts->tx_event_party_ssi_valid = f.party.ssi_valid;
-    ts->tx_event_party_extension = f.party.extension;
-    ts->tx_event_party_extension_valid = f.party.extension_valid;
     if (pdu_type == TETRA_CMCE_D_TX_INTERRUPT) {
         cmce_floor_event(ctx, &f, TETRA_CALL_EV_TX_INTERRUPT);
     } else {
@@ -637,34 +541,9 @@ enum {
     DINFO_TYPE2_COUNT,
 };
 
-static void
-publish_d_info_optional(tetra_state_t* ts, const uint32_t* v, unsigned present) {
-    ts->d_info_new_call_id = (uint16_t)v[DINFO_NEW_CALL_ID];
-    ts->d_info_new_call_id_valid = type2_present(present, DINFO_NEW_CALL_ID);
-    ts->d_info_timeout = (uint8_t)v[DINFO_TIMEOUT];
-    ts->d_info_timeout_valid = type2_present(present, DINFO_TIMEOUT);
-    ts->d_info_setup_timeout = (uint8_t)v[DINFO_SETUP_TIMEOUT];
-    ts->d_info_setup_timeout_valid = type2_present(present, DINFO_SETUP_TIMEOUT);
-    ts->d_info_ownership = (uint8_t)v[DINFO_OWNERSHIP];
-    ts->d_info_ownership_valid = type2_present(present, DINFO_OWNERSHIP);
-    ts->d_info_modify = (uint16_t)v[DINFO_MODIFY];
-    ts->d_info_modify_valid = type2_present(present, DINFO_MODIFY);
-    ts->d_info_status = (uint8_t)v[DINFO_STATUS];
-    ts->d_info_status_valid = type2_present(present, DINFO_STATUS);
-    ts->d_info_temporary_address = v[DINFO_TEMPORARY_ADDRESS];
-    ts->d_info_temporary_address_valid = type2_present(present, DINFO_TEMPORARY_ADDRESS);
-    ts->d_info_notification_indicator = (uint8_t)v[DINFO_NOTIFICATION];
-    ts->d_info_notification_indicator_valid = type2_present(present, DINFO_NOTIFICATION);
-    ts->d_info_poll_percentage = (uint8_t)v[DINFO_POLL_PERCENTAGE];
-    ts->d_info_poll_percentage_valid = type2_present(present, DINFO_POLL_PERCENTAGE);
-    ts->d_info_poll_number = (uint8_t)v[DINFO_POLL_NUMBER];
-    ts->d_info_poll_number_valid = type2_present(present, DINFO_POLL_NUMBER);
-}
-
 static int
 parse_cmce_d_info(tetra_bit_reader* r, const mle_ctx* ctx) {
     static const uint8_t k_type2[DINFO_TYPE2_COUNT] = {14, 4, 3, 1, 9, 3, 24, 6, 6, 6};
-    tetra_state_t* const ts = ctx->ts;
     uint32_t values[DINFO_TYPE2_COUNT] = {0};
     unsigned present = 0;
     const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
@@ -678,12 +557,6 @@ parse_cmce_d_info(tetra_bit_reader* r, const mle_ctx* ctx) {
         return cmce_reject(ctx, "D-INFO");
     }
     DSD_FPRINTF(stderr, "[TETRA CMCE D-INFO] CC=%d call=%u reset=%u poll=%u\n", ctx->cc, call_id, reset, poll);
-    ts->d_info_call_id = call_id;
-    ts->d_info_call_timeout = reset;
-    ts->d_info_poll_request = poll;
-    publish_d_info_optional(ts, values, present);
-    ts->d_info_valid = 1;
-
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
     ev.has = (uint8_t)((type2_present(present, DINFO_NEW_CALL_ID) ? TETRA_CALL_HAS_NEW_ID : 0u)
@@ -708,7 +581,6 @@ enum {
 static int
 parse_cmce_d_call_restore(tetra_bit_reader* r, const mle_ctx* ctx) {
     static const uint8_t k_type2[RESTORE_TYPE2_COUNT] = {14, 4, 3, 9, 6};
-    tetra_state_t* const ts = ctx->ts;
     uint32_t v[RESTORE_TYPE2_COUNT] = {0};
     unsigned present = 0;
     const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
@@ -724,21 +596,6 @@ parse_cmce_d_call_restore(tetra_bit_reader* r, const mle_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, "[TETRA CMCE D-CALL-RESTORE] CC=%d call=%u grant=%u request=%u reset=%u\n", ctx->cc, call_id,
                 grant, permission, reset);
-    ts->call_restore_id = call_id;
-    ts->call_restore_grant = grant;
-    ts->call_restore_reset = reset;
-    ts->call_restore_new_id = (uint16_t)v[RESTORE_NEW_CALL_ID];
-    ts->call_restore_new_id_valid = type2_present(present, RESTORE_NEW_CALL_ID);
-    ts->call_restore_timeout = (uint8_t)v[RESTORE_TIMEOUT];
-    ts->call_restore_timeout_valid = type2_present(present, RESTORE_TIMEOUT);
-    ts->call_restore_status = (uint8_t)v[RESTORE_STATUS];
-    ts->call_restore_status_valid = type2_present(present, RESTORE_STATUS);
-    ts->call_restore_modify = (uint16_t)v[RESTORE_MODIFY];
-    ts->call_restore_modify_valid = type2_present(present, RESTORE_MODIFY);
-    ts->call_restore_notification = (uint8_t)v[RESTORE_NOTIFICATION];
-    ts->call_restore_notification_valid = type2_present(present, RESTORE_NOTIFICATION);
-    ts->call_restore_valid = 1;
-
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
     ev.has = (uint8_t)((type2_present(present, RESTORE_NEW_CALL_ID) ? TETRA_CALL_HAS_NEW_ID : 0u)
@@ -753,7 +610,6 @@ parse_cmce_d_call_restore(tetra_bit_reader* r, const mle_ctx* ctx) {
 
 static int
 parse_cmce_function_not_supported(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_state_t* const ts = ctx->ts;
     uint16_t call_id = 0;
     uint8_t extract_bits = 0;
     const uint8_t rejected = (uint8_t)tetra_bits_read(r, 5);
@@ -774,12 +630,6 @@ parse_cmce_function_not_supported(tetra_bit_reader* r, const mle_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, "[TETRA CMCE FUNCTION-NOT-SUPPORTED] CC=%d rejected=%u call=%u pointer=%u extract=%u\n",
                 ctx->cc, rejected, call_id, pointer, extract_bits);
-    ts->cmce_fns_rejected_pdu = rejected;
-    ts->cmce_fns_call_id_present = call_id_present;
-    ts->cmce_fns_call_id = call_id;
-    ts->cmce_fns_pointer = pointer;
-    ts->cmce_fns_extract_bits = extract_bits;
-    ts->cmce_fns_valid = 1;
     return 1;
 }
 
@@ -789,7 +639,6 @@ parse_cmce_function_not_supported(tetra_bit_reader* r, const mle_ctx* ctx) {
  * type-3/4 chain. The SS type is the first six bits of an SS-PDU. */
 static int
 parse_cmce_d_facility(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_state_t* const ts = ctx->ts;
     uint32_t first_ss_type = 0;
     const uint32_t count = tetra_bits_read(r, 4);
     for (uint32_t i = 0; i < count && tetra_bits_ok(r); i++) {
@@ -807,8 +656,6 @@ parse_cmce_d_facility(tetra_bit_reader* r, const mle_ctx* ctx) {
         return cmce_reject(ctx, "D-FACILITY");
     }
     DSD_FPRINTF(stderr, "[TETRA CMCE D-FACILITY] CC=%d ss_pdus=%u first_ss_type=%u\n", ctx->cc, count, first_ss_type);
-    ts->facility_type = (uint8_t)first_ss_type;
-    ts->facility_valid = 1;
     return 1;
 }
 

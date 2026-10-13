@@ -511,8 +511,7 @@ typedef struct tetra_state {
      * for alignment. */
     long dl_carrier_hz;
 
-    /* Mobility management (tetra_mm.c), widest alignment first so the block adds no padding. The group identity,
-     * MM status and function-not-supported fields stay flat because tetra_channel_info.c reads them. */
+    /* Mobility management (tetra_mm.c), widest alignment first so the block adds no padding. */
     tetra_mm_otar_t mm_otar;
     tetra_mm_ck_change_t mm_ck_change;
     tetra_mm_enable_disable_t mm_enable_disable;
@@ -533,8 +532,6 @@ typedef struct tetra_state {
     uint8_t mm_status_valid;
     uint8_t mm_fns_pdu_type;
     uint8_t mm_fns_valid;
-    /* No decoder sets this; tetra_channel_info.c still reads it. */
-    uint8_t mm_addr_type;
 
     /* Diagnostic gates mirrored from the options at every burst (tetra_frame_enter()), so parsers that are not handed
      * the options can still keep per-burst detail behind -Z (payload) and -v (verbose). */
@@ -562,20 +559,13 @@ typedef struct tetra_state {
      * dmo:                1 once a DSB with a DMO system code was decoded: normal bursts have no AACH and use the DM
      *                     colour code. Cleared by a TMO BSCH.
      * dmo_dcc_valid:      1 while dmo_dcc_seed holds the DM colour code of the current transmission (clause 8.2.4).
-     * dmo_slot/frame:     slot 1..4 and frame 1..18 of the last DSB (frame 0 when it was reserved).
      * dmo_comm_type:      communication type of the last DSB: 0 direct, 1 DM-REP, 2 DM-GATE, 3 DM-REP/GATE.
-     * dmo_ab_usage:       A/B channel usage of the last DSB.
-     * dmo_crypt:          tetra_dmo_crypt_e of the current call; dmo_security_class its air interface encryption
-     *                     state when that is DM-2-A, DM-2-B or DM-2-C.
+     * dmo_crypt:          tetra_dmo_crypt_e of the current call.
      * dmo_since_sync:     DNBs processed since the last DMAC-SYNC (colour code staleness). */
     uint8_t dmo;
     uint8_t dmo_dcc_valid;
-    uint8_t dmo_slot;
-    uint8_t dmo_frame;
     uint8_t dmo_comm_type;
-    uint8_t dmo_ab_usage;
     uint8_t dmo_crypt;
-    uint8_t dmo_security_class;
     uint16_t dmo_since_sync;
     uint32_t dmo_dcc_seed;
 
@@ -712,22 +702,6 @@ typedef struct tetra_state {
     uint16_t sds_short_data;
     uint8_t sds_short_valid;
 
-    /* Floor-control events (tables 14.17, 14.19 and 14.20): tx_event_* hold the fields of the last D-TX CONTINUE,
-     * D-TX INTERRUPT or D-TX WAIT decoded, whichever call it named. tx_timed_out has no downlink PDU and stays 0. */
-    uint32_t tx_event_party_ssi;
-    uint32_t tx_event_party_extension;
-    uint16_t tx_event_call_id;
-    uint8_t tx_timed_out;
-    uint8_t tx_event_notification;
-    uint8_t tx_event_continue;
-    uint8_t tx_event_grant;
-    uint8_t tx_event_encryption;
-    uint8_t tx_event_notification_valid;
-    uint8_t tx_event_party_type;
-    uint8_t tx_event_party_type_valid;
-    uint8_t tx_event_party_ssi_valid;
-    uint8_t tx_event_party_extension_valid;
-
     /* MLE cell reselection and restoration (tables 18.6 to 18.10) and D-NWRK-BROADCAST (table 18.2). restore_ack is
      * set by a D-RESTORE-ACK whose D-CALL RESTORE decoded; mle_ca_neighbor_count_valid reports that the PDU carried
      * the number of CA neighbour cells. */
@@ -747,34 +721,6 @@ typedef struct tetra_state {
     uint8_t mle_channel_response_valid;
     uint8_t mle_restore_fail_cause;
     uint8_t mle_restore_fail_valid;
-
-    /* D-INFO (table 14.11): d_info_call_timeout is the reset call time-out timer flag, d_info_poll_request the poll
-     * request flag; each *_valid flag reports its type-2 element. d_info_valid is set once a complete D-INFO was
-     * decoded. */
-    uint32_t d_info_temporary_address;
-    uint16_t d_info_call_id;
-    uint16_t d_info_new_call_id;
-    uint16_t d_info_modify;
-    uint8_t d_info_call_timeout;
-    uint8_t d_info_poll_request;
-    uint8_t d_info_new_call_id_valid;
-    uint8_t d_info_timeout;
-    uint8_t d_info_timeout_valid;
-    uint8_t d_info_setup_timeout;
-    uint8_t d_info_setup_timeout_valid;
-    uint8_t d_info_ownership;
-    uint8_t d_info_ownership_valid;
-    uint8_t d_info_modify_valid;
-    uint8_t d_info_status;
-    uint8_t d_info_status_valid;
-    uint8_t d_info_temporary_address_valid;
-    uint8_t d_info_notification_indicator;
-    uint8_t d_info_notification_indicator_valid;
-    uint8_t d_info_poll_percentage;
-    uint8_t d_info_poll_percentage_valid;
-    uint8_t d_info_poll_number;
-    uint8_t d_info_poll_number_valid;
-    uint8_t d_info_valid;
 
     /* 1 when the last SDS text used the UCS-2/UTF-16BE text coding scheme (table 29.29 value 26). */
     uint8_t sds_text_unicode;
@@ -798,52 +744,6 @@ typedef struct tetra_state {
     uint8_t air_ksg[4];
     uint8_t hyperframe_valid;
     uint16_t hyperframe;
-
-    /* D-ALERT (table 14.4), D-CALL PROCEEDING (table 14.5), D-CONNECT ACKNOWLEDGE (table 14.8), D-CALL RESTORE
-     * (table 14.6) and CMCE FUNCTION NOT SUPPORTED (table 14.33), each replaced by the next complete PDU of its
-     * kind. A *_basic_service, *_status or *_notification field is 0 when its type-2 element was absent. */
-    uint16_t d_alert_call_id;
-    uint16_t d_call_proc_call_id;
-    uint16_t d_connect_ack_call_id;
-    uint16_t call_restore_id;
-    uint16_t call_restore_new_id;
-    uint16_t call_restore_modify;
-    uint16_t cmce_fns_call_id;
-    uint8_t d_alert_valid;
-    uint8_t d_alert_timeout;
-    uint8_t d_alert_queued;
-    uint8_t d_alert_basic_service;
-    uint8_t d_alert_notification;
-    uint8_t d_call_proc_valid;
-    uint8_t d_call_proc_timeout;
-    uint8_t d_call_proc_hook;
-    uint8_t d_call_proc_basic_service;
-    uint8_t d_call_proc_status;
-    uint8_t d_call_proc_notification;
-    uint8_t d_connect_ack_valid;
-    uint8_t d_connect_ack_tx_grant;
-    uint8_t d_connect_ack_tx_permission;
-    uint8_t d_connect_ack_notification;
-    uint8_t d_connect_ack_notification_valid;
-    uint8_t call_restore_grant;
-    uint8_t call_restore_reset;
-    uint8_t call_restore_new_id_valid;
-    uint8_t call_restore_timeout;
-    uint8_t call_restore_timeout_valid;
-    uint8_t call_restore_status;
-    uint8_t call_restore_status_valid;
-    uint8_t call_restore_modify_valid;
-    uint8_t call_restore_notification;
-    uint8_t call_restore_notification_valid;
-    uint8_t call_restore_valid;
-    uint8_t cmce_fns_rejected_pdu;
-    uint8_t cmce_fns_call_id_present;
-    uint8_t cmce_fns_pointer;
-    uint8_t cmce_fns_extract_bits;
-    uint8_t cmce_fns_valid;
-
-    /* D-TX CEASED (table 14.16): its transmission request permission. */
-    uint8_t tx_ceased_tx_perm;
 
     /* SDS-TL SDS-REPORT (table 29.12) in a D-SDS-DATA: the delivery status (table 29.16), delivery_ok when the status
      * is in the success range, and the message reference. */
@@ -884,55 +784,11 @@ typedef struct tetra_state {
 
     uint8_t access_common_flag;
 
-    /* D-SETUP (table 14.15), D-CONNECT (table 14.7), D-RELEASE / D-DISCONNECT (tables 14.12 and 14.9) and
-     * D-TX GRANTED (table 14.18). cmce_notif is the D-SETUP notification indicator, cmce_com_type the communication
-     * type of the last basic service information, cmce_setup_calling_type the D-SETUP calling party type identifier
-     * (table 14.43). Each *_valid flag reports its type-2 element. cmce_release_cause_type is not set by any PDU.
-     * cmce_sds_data_type is the short data type identifier of the last D-SDS-DATA. */
-    uint32_t cmce_setup_temporary_address;
-    uint32_t cmce_setup_calling_extension;
-    uint32_t cmce_connect_temporary_address;
-    uint32_t cmce_tx_granted_party_extension;
-    uint8_t cmce_notif;
-    uint8_t cmce_com_type;
-    uint8_t cmce_setup_calling_type;
-    uint8_t cmce_setup_basic_service;
-    uint8_t cmce_setup_priority;
-    uint8_t cmce_setup_notification_valid;
-    uint8_t cmce_setup_temporary_address_valid;
-    uint8_t cmce_setup_calling_type_valid;
-    uint8_t cmce_setup_calling_extension_valid;
-    uint8_t cmce_connect_hook;
-    uint8_t cmce_connect_duplex;
-    uint8_t cmce_connect_tx_grant;
-    uint8_t cmce_connect_tx_permission;
-    uint8_t cmce_connect_ownership;
-    uint8_t cmce_connect_priority;
-    uint8_t cmce_connect_priority_valid;
-    uint8_t cmce_connect_basic_service;
-    uint8_t cmce_connect_basic_service_valid;
-    uint8_t cmce_connect_temporary_address_valid;
-    uint8_t cmce_connect_notification;
-    uint8_t cmce_connect_notification_valid;
-    uint8_t cmce_release_cause_type;
-    uint8_t cmce_release_cause;
-    uint8_t cmce_release_notification;
-    uint8_t cmce_release_notification_valid;
-    uint8_t cmce_release_was_disconnect;
-    uint8_t cmce_tx_granted_perm;
-    uint8_t cmce_tx_granted_reserv;
-    uint8_t cmce_tx_granted_notification;
-    uint8_t cmce_tx_granted_notification_valid;
-    uint8_t cmce_tx_granted_party_type;
-    uint8_t cmce_tx_granted_party_type_valid;
-    uint8_t cmce_tx_granted_party_extension_valid;
+    /* The short data type identifier of the last D-SDS-DATA (table 14.13). */
     uint8_t cmce_sds_data_type;
 
-    /* D-FACILITY (table 14.10): the SS type of its first SS-PDU. SDS-TL SDS-ACK (table 29.11) and SDS-SHORT REPORT
-     * (table 29.13, carried as a D-STATUS pre-coded status): delivery status or short report type, and the message
-     * reference. */
-    uint8_t facility_valid;
-    uint8_t facility_type;
+    /* SDS-TL SDS-ACK (table 29.11) and SDS-SHORT REPORT (table 29.13, carried as a D-STATUS pre-coded status):
+     * delivery status or short report type, and the message reference. */
     uint8_t sds_ack_valid;
     uint8_t sds_ack_msg_ref;
     uint8_t sds_ack_delivery_status;

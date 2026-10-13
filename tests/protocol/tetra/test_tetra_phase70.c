@@ -7,17 +7,8 @@
  * Phase 62 — tetra_sds_text_len promoted to uint16_t
  *   1. Verify sizeof(state->tetra_sds_text_len) == 2
  *
- * Phase 64 — CMCE D-ALERT call_id
- *   3. call_id and d_alert_valid set
- *
- * Phase 65 — CMCE D-CALL-PROCEEDING call_id
- *   4. call_id and d_call_proc_valid set
- *
- * Phase 66 — CMCE D-CONNECT-ACK call_id
- *   5. call_id and d_connect_ack_valid set
- *
  * Phase 67 — CMCE D-TX-CEASED permission bits
- *   6. tx_perm extracted; tx_granted_valid cleared
+ *   6. request permission read; the transmission ends
  *
  * Phase 68 — MLE D-RESTORE-ACK SDU / D-RESTORE-FAIL cause
  *   7. restore_ack_la extracted when nbits >= 19
@@ -34,8 +25,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "tetra_calls.h"
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -127,11 +120,13 @@ test_d_tx_ceased(void) {
     tetra_calls_find(st, 0x1234)->phase = TETRA_CALL_TX_GRANTED;
 
     uint8_t pdu[21 + 3];
+    char log[256];
     int n;
     wrap_mle_cmce(cmce, 21, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
+    tetra_test_mle_logged(pdu, n, 0, opt, st, log, sizeof log);
 
-    CHECK(tetra_st(st)->tx_ceased_tx_perm == 1, "D-TX-CEASED request permission extracted");
+    CHECK(strstr(log, "[TETRA CMCE D-TX-CEASED] CC=0 call=4660 request=1") != NULL,
+          "D-TX-CEASED request permission extracted");
     CHECK(tetra_calls_peek(st, 0x1234)->phase == TETRA_CALL_CEASED, "D-TX-CEASED ends the transmission");
 
     free_state(st);
@@ -159,11 +154,12 @@ test_mle_restore_fields(void) {
     pack_bits(mle_ack, 1, 28, 1);
     pack_bits(mle_ack, 1, 29, 1);
     pack_bits(mle_ack, 0, 30, 1); /* CMCE O-bit */
-    tetra_mle_dispatch(mle_ack, 31, 0, opt, st);
+    char log[256];
+    tetra_test_mle_logged(mle_ack, 31, 0, opt, st, log, sizeof log);
 
     CHECK(tetra_st(st)->restore_ack == 1, "D-RESTORE-ACK flag set");
-    CHECK(tetra_st(st)->call_restore_valid == 1, "D-RESTORE-ACK CMCE SDU parsed");
-    CHECK(tetra_st(st)->call_restore_id == 777, "D-CALL-RESTORE identifier extracted");
+    CHECK(strstr(log, "[TETRA CMCE D-CALL-RESTORE] CC=0 call=777 grant=2 request=1 reset=1") != NULL,
+          "D-RESTORE-ACK CMCE SDU parsed");
 
     uint8_t mle_res[9];
     DSD_MEMSET(mle_res, 0, sizeof(mle_res));

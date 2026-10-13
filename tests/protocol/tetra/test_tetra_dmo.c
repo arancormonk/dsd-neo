@@ -177,8 +177,7 @@ test_real_air_call(void) {
     tetra_dmo_parse_sync_s(bits, &s);
     tetra_dmo_apply_sync(st, &s, &h);
     CHECK(tetra_st(st)->dmo == 1 && tetra_st(st)->dmo_dcc_valid == 1, "DSB switches to DMO and learns the DCC");
-    CHECK(tetra_st(st)->dmo_dcc_seed == 0xE4000193u && tetra_st(st)->dmo_slot == 1 && tetra_st(st)->dmo_frame == 3,
-          "DMO clock and seed stored");
+    CHECK(tetra_st(st)->dmo_dcc_seed == 0xE4000193u && s.slot == 1 && s.frame == 3, "DMO clock read and seed stored");
     CHECK(tetra_st(st)->tdma_valid == 0 && tetra_st(st)->hyperframe_valid == 0,
           "the TMO clock stops on a direct mode carrier");
     CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR, "a DM-1 call without end-to-end encryption is clear");
@@ -222,8 +221,7 @@ test_security_classes(void) {
           "DM-2-A summary names no DM-SDU element");
     CHECK(tetra_st(st)->dmo_dcc_valid == 1 && tetra_st(st)->dmo_dcc_seed == tetra_dmo_dcc_seed(0, 2),
           "DM-2-A scrambles with the clear source address");
-    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR && tetra_st(st)->dmo_security_class == TETRA_DMO_AIE_DM2A,
-          "DM-2-A call is air interface encrypted");
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR, "DM-2-A call is air interface encrypted");
 
     /* DM-2-B: the destination address is encrypted too. */
     sync_s(&ws, TETRA_DMO_AIE_DM2B);
@@ -231,8 +229,7 @@ test_security_classes(void) {
     tetra_dmo_parse_sync_h(wh.bits, 0, &h);
     tetra_dmo_apply_sync(st, &s, &h);
     CHECK(h.dst == 0 && h.dst_encrypted == 1 && h.src == 2 && h.has_addrs == 1, "DM-2-B hides the destination only");
-    CHECK(tetra_st(st)->dmo_dcc_valid == 1 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR
-              && tetra_st(st)->dmo_security_class == TETRA_DMO_AIE_DM2B,
+    CHECK(tetra_st(st)->dmo_dcc_valid == 1 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR,
           "DM-2-B call learns its colour code and is air interface encrypted");
 
     /* DM-2-C: everything after the address types is encrypted, and the colour code needs the encrypted identity. */
@@ -244,8 +241,7 @@ test_security_classes(void) {
               && h.sdu_state == TETRA_DMO_SDU_ENCRYPTED,
           "DM-2-C leaves no address, message type or element");
     CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) == 0, "DM-2-C has no element summary");
-    CHECK(tetra_st(st)->dmo_dcc_valid == 0 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR
-              && tetra_st(st)->dmo_security_class == TETRA_DMO_AIE_DM2C,
+    CHECK(tetra_st(st)->dmo_dcc_valid == 0 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR,
           "DM-2-C call has no colour code and is air interface encrypted");
 
     /* DM-1 with the end-to-end encryption flag. */
@@ -322,8 +318,7 @@ test_repeater_presence(void) {
     CHECK(s.slot == 1 && s.frame == 3 && s.ab_usage == 0 && s.enc_state == TETRA_DMO_AIE_DM1 && s.ms_link_flag == 0,
           "presence SCH/S read with its own layout: carrier, slot 1, frame 3, no encryption state");
     tetra_dmo_apply_sync(st, &s, NULL);
-    CHECK(tetra_st(st)->dmo_ab_usage == 0 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR,
-          "presence signal does not set channel B-style usage or encryption");
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR, "presence signal does not set encryption");
     tetra_st(st)->decode_ok = 1;
     tetra_publish(st);
     CHECK(st->tetra_pub.mode == DSD_TETRA_MODE_DMO_REPEATER && st->tetra_pub.air_encryption == DSD_TETRA_AIR_ENC_CLEAR,
