@@ -159,6 +159,16 @@ void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
  */
 void dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count);
 
+/**
+ * @brief dsd_audio_play_decoded_pcm16() for a decoder under talkgroup policy that settled the record policy as well
+ * (TETRA, through dsd_audio_record_policy_gate_slot()).
+ *
+ * With @p record nonzero it is dsd_audio_play_decoded_pcm16(). With @p record 0 the frames play the same way, but
+ * neither the per-call nor the static WAV takes them: a call whose talkgroup allows audio but not recording.
+ */
+void dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count,
+                                         int record);
+
 /** @brief Apply the manual analog gain (`-n`, 0..100% as 0x..5x) to a short buffer: the M17 encoder's fixed input gain.
  *  The analog monitor's gain stage is dsd_analog_audio_process_f() (<dsd-neo/dsp/analog_audio.h>). */
 void analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len); // manual gain for analog paths

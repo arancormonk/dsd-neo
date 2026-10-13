@@ -592,8 +592,26 @@ dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
 // upsampled), and 0 when the frame staged no short samples (muted crypto). Any other count is no frame either.
 // Without a frame nothing is played, recorded or stamped (issue #654). The static WAV takes a frame
 // that passed every gate, whether or not an output is open (-o null -w records).
+// How a mixer takes the frame staged for it: judged by the protocol's verdict and the talkgroup policy, or settled by a
+// decoder that gated it itself (dsd_audio_play_decoded_pcm16()), which also says whether the recordings take it.
+typedef enum {
+    DSD_MIX_JUDGED = 0,
+    DSD_MIX_SETTLED = 1,
+    DSD_MIX_SETTLED_UNRECORDED = 2,
+} dsd_mix_verdict;
+
+// The static WAV takes a judged frame its slot's record policy allows, and a settled one the decoder lets record.
+static int
+dsd_mix_static_wav_takes(const dsd_opts* opts, const dsd_state* state, dsd_mix_verdict verdict, int slot) {
+    if (verdict == DSD_MIX_JUDGED) {
+        return dsd_static_wav_slot_recordable(opts, state, slot);
+    }
+    return verdict == DSD_MIX_SETTLED;
+}
+
 static void
-dsd_play_voice_ms(const dsd_opts* opts, dsd_state* state, int settled) {
+dsd_play_voice_ms(const dsd_opts* opts, dsd_state* state, dsd_mix_verdict verdict) {
+    const int settled = verdict != DSD_MIX_JUDGED;
     const int count = state->audio_out_idx;
     const size_t len = (count == 160 || count == 960) ? (size_t)count : 0U;
     short mono_samp[960];
@@ -615,7 +633,7 @@ dsd_play_voice_ms(const dsd_opts* opts, dsd_state* state, int settled) {
         } else {
             dsd_output_s16_block(opts, state, mono_samp, len, 1);
         }
-        if (settled || dsd_static_wav_slot_recordable(opts, state, dsd_mono_source_slot(state))) {
+        if (dsd_mix_static_wav_takes(opts, state, verdict, dsd_mono_source_slot(state))) {
             dsd_write_static_wav_from_mono(opts, mono_samp, len);
         }
     }
@@ -624,7 +642,8 @@ dsd_play_voice_ms(const dsd_opts* opts, dsd_state* state, int settled) {
 
 //Stereo Mix - Short (SB16LE) -- When Playing Short FDMA samples when setup for stereo output
 static void
-dsd_play_voice_ss(const dsd_opts* opts, dsd_state* state, int settled) {
+dsd_play_voice_ss(const dsd_opts* opts, dsd_state* state, dsd_mix_verdict verdict) {
+    const int settled = verdict != DSD_MIX_JUDGED;
     int encL = settled ? 0 : dsd_fdma_crypto_muted(opts, state);
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     DSD_MEMSET(stereo_samp1, 0, sizeof(stereo_samp1));
@@ -645,7 +664,7 @@ dsd_play_voice_ss(const dsd_opts* opts, dsd_state* state, int settled) {
         }
         dsd_output_s16_block(opts, state, stereo_samp1, 160, 2);
         if (opts->wav_out_f != NULL && opts->static_wav_file == 1
-            && (settled || dsd_static_wav_slot_recordable(opts, state, source_slot))) {
+            && dsd_mix_static_wav_takes(opts, state, verdict, source_slot)) {
             dsd_audio_write_wav_short_block(opts->wav_out_f, stereo_samp1, 320, "processAudioDMRslot");
         }
     }
@@ -656,17 +675,23 @@ dsd_play_voice_ss(const dsd_opts* opts, dsd_state* state, int settled) {
 void
 // cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
-    dsd_play_voice_ms(opts, state, 0);
+    dsd_play_voice_ms(opts, state, DSD_MIX_JUDGED);
 }
 
 void
 // cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h
 playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
-    dsd_play_voice_ss(opts, state, 0);
+    dsd_play_voice_ss(opts, state, DSD_MIX_JUDGED);
 }
 
 void
 dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count) {
+    dsd_audio_play_decoded_pcm16_record(opts, state, pcm, count, 1);
+}
+
+void
+dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count,
+                                    int record) {
     if (!opts || !state || !pcm || !state->audio_out_buf_p || !state->aout_max_buf_p
         || opts->pulse_digi_out_channels < 1 || opts->pulse_digi_out_channels > 2) {
         return;
@@ -682,13 +707,14 @@ dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short
         }
         dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
         dsd_voice_stage_short_left(opts, state);
-        if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
+        if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
             writeSynthesizedVoice(opts, state);
         }
+        const dsd_mix_verdict verdict = record ? DSD_MIX_SETTLED : DSD_MIX_SETTLED_UNRECORDED;
         if (opts->pulse_digi_out_channels == 2) {
-            dsd_play_voice_ss(opts, state, 1);
+            dsd_play_voice_ss(opts, state, verdict);
         } else {
-            dsd_play_voice_ms(opts, state, 1);
+            dsd_play_voice_ms(opts, state, verdict);
         }
     }
 }
