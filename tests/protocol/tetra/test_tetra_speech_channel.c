@@ -192,14 +192,14 @@ decode(const speech_layout* lay, const uint8_t* type4, const int* flips, int nfl
 static void
 test_layout(const speech_layout* lay, const char* name, int max_mismatch) {
     const int nbits = lay->class0 + lay->class1 + lay->class2;
-    uint8_t type1[274] = {0};
+    uint8_t type1[274];
     uint8_t type4[432];
     uint8_t out[274];
     int crc_ok = 0;
     int mm = -1;
     char label[128];
-    for (int i = 0; i < nbits; i++) {
-        type1[i] = (uint8_t)next_bit();
+    for (int i = 0; i < (int)sizeof(type1); i++) {
+        type1[i] = i < nbits ? (uint8_t)next_bit() : 0u;
     }
 
     encode(lay, type1, 0, type4);
