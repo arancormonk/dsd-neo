@@ -16189,6 +16189,29 @@ if(DSD_HAS_RADIO)
         PRIVATE dsd-neo_io_radio dsd-neo_runtime
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
+    # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
+    add_executable(dsd-neo_test_io_rtl_signal_tap io/test_io_rtl_signal_tap.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_signal_tap
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_signal_tap
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_signal_tap
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_RTL_SIGNAL_TAP COMMAND dsd-neo_test_io_rtl_signal_tap)
     add_executable(
         dsd-neo_test_engine_signal_search
         engine/test_engine_signal_search.c

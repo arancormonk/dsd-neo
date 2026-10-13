@@ -57,6 +57,10 @@ int dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, siz
 int rtl_signal_measure_request(const dsd_signal_measure_request* request);
 int rtl_signal_measure_get(dsd_signal_measure_report* report);
 void rtl_signal_measure_cancel(void);
+/** The stream that fed the tap has stopped: forget its capture and the time of its latest samples, and retire any
+ * request as a cancel does. Until the next stream's first block there is no capture, so a search started on that
+ * stream waits for its samples and never reads the stopped stream's age as a stall. */
+void rtl_signal_measure_reset(void);
 void rtl_signal_search_bypass(int enabled);
 int rtl_signal_search_bypassed(void);
 /** Reserve tagged controller requests for one search session; zero releases the tuner. */

@@ -6,7 +6,8 @@
 /* Signal search against the real capture-rate detector and its shared tap: one NFM transmitter on a 5 kHz grid with
    16 kHz windows, fed as capture-rate I/Q for whatever the coordinator tunes. Over several passes and capture
    alignments, the transmitter's own channel is the only one ever visited: the empty channels its sidebands and the
-   windows' leakage reach are never tuned. */
+   windows' leakage reach are never tuned. A search started on a tap that a stopped stream has emptied waits for the
+   next stream's first block. */
 
 #include <assert.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -204,14 +205,9 @@ feed(void) {
     rtl_signal_measure_feed(iq, BLOCK, &capture);
 }
 
-/* A session over 50 kHz of 5 kHz channels from @p start: tune, measure and visit until three passes have finished. */
+/* A session over 50 kHz of 5 kHz channels from @p start. */
 static void
-search_from(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
-    visits = 0;
-    last_hit = 0;
-    DSD_MEMSET(&status, 0, sizeof(status));
-    capture.capture_hz = start + RATE / 4;
-    feed();
+search_start(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
     dsd_signal_search_config config;
     DSD_MEMSET(&config, 0, sizeof(config));
     config.session_id = session;
@@ -225,6 +221,40 @@ search_from(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
     config.ranges[0].max_visit_ms = 0;
     char error[192];
     assert(dsd_engine_signal_search_start(o, s, &config, observer, NULL, error, sizeof(error)) == 0);
+}
+
+/* A stopped stream leaves the tap empty (rtl_signal_measure_reset()). A search started on the next stream before that
+   stream's first block waits for it, then plans its first span from it. */
+static void
+search_before_first_block(dsd_opts* o, dsd_state* s, uint32_t start) {
+    DSD_MEMSET(&status, 0, sizeof(status));
+    capture.capture_hz = start + RATE / 4;
+    feed(); /* the previous stream's last block */
+    rtl_signal_measure_reset();
+    dsd_signal_capture none;
+    assert(!rtl_signal_capture_get(&none) && rtl_signal_capture_last_ms() == 0);
+    search_start(o, s, 41, start);
+    for (int step = 0; step < 3; ++step) {
+        (void)dsd_engine_signal_search_tick(o, s);
+        assert(status.phase == DSD_SEARCH_SEARCHING && !tune_pending);
+    }
+    feed(); /* the new stream's first block */
+    (void)dsd_engine_signal_search_tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && tune_pending);
+    tune_pending = 0;
+    dsd_engine_signal_search_shutdown(o, s);
+    assert(!dsd_engine_signal_search_active(s));
+}
+
+/* A session over 50 kHz of 5 kHz channels from @p start: tune, measure and visit until three passes have finished. */
+static void
+search_from(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
+    visits = 0;
+    last_hit = 0;
+    DSD_MEMSET(&status, 0, sizeof(status));
+    capture.capture_hz = start + RATE / 4;
+    feed();
+    search_start(o, s, session, start);
     for (int step = 0; step < 20000 && status.pass < 4; ++step) {
         (void)dsd_engine_signal_search_tick(o, s);
         assert(status.phase != DSD_SEARCH_ERROR);
@@ -260,6 +290,7 @@ main(void) {
     s->rtl_ctx = (void*)1;
     DSD_SNPRINTF(o->audio_in_dev, sizeof(o->audio_in_dev), "%s", "rtl:0:163M");
     dsd_decode_clock_use_test(now_ms * 1000000);
+    search_before_first_block(o, s, 162987500);
     /* Each start shifts the capture by a 5 kHz step, which moves the transmitter a third of an FFT bin. */
     for (uint32_t shift = 0; shift < 6; ++shift) {
         search_from(o, s, 42 + shift, 162987500 - 5000 * shift);

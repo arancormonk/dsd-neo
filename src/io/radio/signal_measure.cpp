@@ -1400,6 +1400,18 @@ rtl_signal_measure_cancel(void) {
 }
 
 extern "C" void
+rtl_signal_measure_reset(void) {
+    std::lock_guard<std::mutex> feed(feed_mutex);
+    if (tap_detector) {
+        tap_detector->armed = false;
+    }
+    std::lock_guard<std::mutex> lock(tap_mutex);
+    tap_ready = 0;
+    tap_capture = dsd_signal_capture{};
+    tap_last_ms = 0;
+}
+
+extern "C" void
 rtl_signal_search_bypass(int enabled) {
     bypass.store(enabled != 0, std::memory_order_release);
 }

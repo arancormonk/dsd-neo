@@ -8230,6 +8230,10 @@ dsd_rtl_stream_soft_stop(void) {
         dsd_thread_join(demod.thread);
         g_stream->demod_thread_started.store(0, std::memory_order_release);
     }
+    /* No block of this stream reaches the search tap any more. Left there, its capture would outlive it: a search
+       started on the next stream before that stream's first block would take the time since this one's last block for
+       a stalled input. */
+    rtl_signal_measure_reset();
     /* Wake any consumers blocked on output.ready to finish */
     safe_cond_signal(&output.ready, &output.ready_m);
     if (g_stream && g_stream->controller_thread_started.load(std::memory_order_acquire)) {
