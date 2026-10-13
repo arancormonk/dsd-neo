@@ -28,6 +28,7 @@
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <limits.h>
 #include <math.h>
@@ -1004,7 +1005,10 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     } else {
         demod->ted_sps = sps;
     }
-    if (demod->cqpsk_enable && !opts_tetra_only(opts)) {
+    /* CQPSK runs the P25 CQPSK channel filter except on TETRA's 18 ksym/s profile, which runs WIDE
+       (dsd_rtl_channel_profile_for()). The profile settled on above decides, not the options: a retune keeps the active
+       profile, and the options a stream opened with still describe the mode it opened in after a live switch to TETRA. */
+    if (demod->cqpsk_enable && sym_rate != DSD_TETRA_SYMBOL_RATE_HZ) {
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
     fsk_modem_apply_config(demod);

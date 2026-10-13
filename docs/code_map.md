@@ -1575,10 +1575,13 @@ suite runs under this compiler.
     there keeps the mode with a warning, DECODE_MODE_SET refuses it, and the terminal picker labels it `TETRA (needs an
     I/Q radio input)`. A typed `-Y` row's preset clears `frame_tetra` and drops the TETRA state; `dsd_scan_settings`
     carries `frame_tetra` with the other frame flags, so an inherited row and the end of the scan bring the configured
-    TETRA decoder back (`RUNTIME_SCAN_MODE`). Its rate rule lives in `include/dsd-neo/runtime/tetra_rate.h`
-    (`src/runtime/tetra_rate.c`): TETRA runs only at a DSP rate that is a multiple of its 18 ksym/s
-    (`dsd_tetra_dsp_rate_runs()`), so `-fT` and a Qt TETRA system without a bandwidth of its own take
-    `DSD_TETRA_DSP_BW_KHZ` (72), and `dsd_tetra_dsp_rate_advice()` words the stream-start warning
+    TETRA decoder back (`RUNTIME_SCAN_MODE`). On the RTL front end its 18 ksym/s profile runs CQPSK timing on the WIDE
+    channel filter (`dsd_rtl_channel_profile_for()`), and a retune keeps the active profile with its filter
+    (`rtl_demod_maybe_refresh_ted_sps_after_rate_change()`): the options a stream opened with in another mode do not
+    narrow a live switch to TETRA onto the P25 CQPSK filter (`IO_RTL_DEMOD_CONFIG`). Its rate rule lives in
+    `include/dsd-neo/runtime/tetra_rate.h` (`src/runtime/tetra_rate.c`): TETRA runs only at a DSP rate that is a
+    multiple of its 18 ksym/s (`dsd_tetra_dsp_rate_runs()`), so `-fT` and a Qt TETRA system without a bandwidth of its
+    own take `DSD_TETRA_DSP_BW_KHZ` (72), and `dsd_tetra_dsp_rate_advice()` words the stream-start warning
     (`src/io/radio/rtl_sdr_fm.cpp`) and the mode-change toast for a rate that cannot work, with the fix for what sets
     the rate. Tests: `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`,
     `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.

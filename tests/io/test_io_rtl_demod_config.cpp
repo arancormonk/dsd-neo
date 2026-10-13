@@ -206,6 +206,57 @@ expect_retune_preserves_active_profile(void) {
     return rc;
 }
 
+/* A CQPSK retune that keeps the active profile keeps that profile's channel filter too. A stream that opened in another
+ * mode and switched live to TETRA still holds the options it opened with, which describe the old mode: TETRA's 18 ksym/s
+ * profile keeps its WIDE filter whatever they say, and a P25 CQPSK profile keeps the P25 CQPSK filter. */
+static int
+expect_cqpsk_retune_keeps_profile_filter(const char* label, const dsd_opts* opts, int seed_rate, int seed_profile,
+                                         int want_profile, int want_sps) {
+    static demod_state demod;
+    output_state output;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    DSD_MEMSET(&output, 0, sizeof(output));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.cqpsk_enable = 1;
+    demod.rate_out = 72000;
+    demod.symbol_rate_hz = seed_rate;
+    demod.symbol_levels = 4;
+    demod.channel_lpf_profile = seed_profile;
+    output.rate = 72000U;
+
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output, /*preserve_active_profile=*/1);
+    int rc = 0;
+    rc |= expect_int_eq(label, demod.symbol_rate_hz, seed_rate);
+    rc |= expect_int_eq(label, demod.channel_lpf_profile, want_profile);
+    rc |= expect_int_eq(label, demod.ted_sps, want_sps);
+    return rc;
+}
+
+static int
+expect_retune_keeps_tetra_filter(void) {
+    int rc = 0;
+    static dsd_opts p25_opts;
+    DSD_MEMSET(&p25_opts, 0, sizeof(p25_opts));
+    p25_opts.frame_p25p1 = 1;
+    p25_opts.mod_qpsk = 1;
+    static dsd_opts auto_opts;
+    DSD_MEMSET(&auto_opts, 0, sizeof(auto_opts));
+    auto_opts.frame_p25p1 = 1;
+    auto_opts.frame_dmr = 1;
+    auto_opts.frame_nxdn48 = 1;
+    rc |= expect_cqpsk_retune_keeps_profile_filter("TETRA keeps WIDE under P25 options", &p25_opts, 18000,
+                                                   DSD_CH_LPF_PROFILE_WIDE, DSD_CH_LPF_PROFILE_WIDE, 4);
+    rc |= expect_cqpsk_retune_keeps_profile_filter("TETRA keeps WIDE under AUTO options", &auto_opts, 18000,
+                                                   DSD_CH_LPF_PROFILE_WIDE, DSD_CH_LPF_PROFILE_WIDE, 4);
+    rc |= expect_cqpsk_retune_keeps_profile_filter("TETRA keeps WIDE without options", NULL, 18000,
+                                                   DSD_CH_LPF_PROFILE_WIDE, DSD_CH_LPF_PROFILE_WIDE, 4);
+    rc |= expect_cqpsk_retune_keeps_profile_filter("P25 CQPSK keeps its filter", &p25_opts, 4800,
+                                                   DSD_CH_LPF_PROFILE_P25_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK, 15);
+    rc |= expect_cqpsk_retune_keeps_profile_filter("CQPSK off TETRA takes the P25 CQPSK filter", &auto_opts, 4800,
+                                                   DSD_CH_LPF_PROFILE_12K5, DSD_CH_LPF_PROFILE_P25_CQPSK, 15);
+    return rc;
+}
+
 /*
  * The FSK modem only resets its DC-centering and peak-AGC estimators when its configuration
  * actually changes, so preserving the profile across a retune also stops the needless reset.
@@ -2624,6 +2675,7 @@ main(void) {
     rc |= expect_public_control_wrapper_contracts();
     rc |= expect_fsk_snr_sps_uses_active_profile();
     rc |= expect_retune_preserves_active_profile();
+    rc |= expect_retune_keeps_tetra_filter();
     rc |= expect_preserved_profile_keeps_fsk_modem_config();
     rc |= expect_finalize_rate_chain_preserves_profile();
     rc |= expect_direct_output_open_rate_uses_demod_rate();
