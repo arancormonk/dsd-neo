@@ -16,11 +16,13 @@ fi
 
 usage() {
   cat << 'USAGE'
-Usage: tools/push_changed_files.sh <remote-name> <local-ref> <local-sha> <remote-sha>
+Usage: tools/push_changed_files.sh <remote-name> <local-ref> <local-sha> <remote-sha> [<diff-filter>]
 
 Writes the paths the push of <local-sha> adds, copies, modifies or renames
 (--diff-filter=ACMR), NUL-separated and unquoted, to stdout. The arguments are
-one line of a pre-push hook's input, plus the remote's name.
+one line of a pre-push hook's input, plus the remote's name. A <diff-filter>
+(git diff's letters, e.g. D for the paths the push deletes) replaces ACMR.
+Renames are not detected: a renamed file is listed as deleted and added.
 
 - An existing ref is compared with what the remote has (<remote-sha>...<local-sha>).
 - A new ref, or one whose <remote-sha> this clone does not have, is compared with
@@ -37,8 +39,13 @@ if [[ $# -eq 1 && ("$1" == "-h" || "$1" == "--help") ]]; then
   usage
   exit 0
 fi
-if [[ $# -ne 4 ]]; then
+if [[ $# -ne 4 && $# -ne 5 ]]; then
   usage >&2
+  exit 2
+fi
+diff_filter="${5:-ACMR}"
+if [[ ! "$diff_filter" =~ ^[ACDMRTUXB]+$ ]]; then
+  echo "push-changed-files: invalid diff filter '${diff_filter}'" >&2
   exit 2
 fi
 
@@ -104,8 +111,9 @@ select_best_remote_merge_base() {
   return 1
 }
 
+# --no-renames, so a file moved out of a dependency shows up among the deletions.
 diff_or_die() {
-  if ! git diff -z --name-only --diff-filter=ACMR "$@"; then
+  if ! git diff -z --name-only --no-renames "--diff-filter=${diff_filter}" "$@"; then
     echo "push-changed-files: git diff $* failed for ${local_ref}" >&2
     exit 1
   fi
