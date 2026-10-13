@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
 
@@ -301,9 +302,7 @@ test_phase78_cmce_d_tx_granted(void) {
 static void
 test_phase78_mle_nwrk_broadcast(void) {
     printf("[test_phase78_mle_nwrk_broadcast]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
+    tetra_mle_pdu mle;
     uint8_t pdu[200];
     int n = 0;
 
@@ -319,11 +318,9 @@ test_phase78_mle_nwrk_broadcast(void) {
     pack_bits(pdu, 0, n, 1);
     n += 1;
 
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-
-    CHECK(tetra_st(st)->mle_cell_reselect_params == 0x4321, "tetra_mle_cell_reselect_params");
-    CHECK(tetra_st(st)->mle_cell_load == 2, "tetra_mle_cell_load");
-    CHECK(tetra_st(st)->mle_ca_neighbor_count_valid == 0, "Annex E.16 has no neighbour count");
+    CHECK(tetra_mle_decode(pdu, n, &mle) && mle.nwrk_broadcast.reselect == 0x4321, "cell re-select parameters");
+    CHECK(mle.nwrk_broadcast.load == 2, "cell load");
+    CHECK(mle.nwrk_broadcast.neighbor_count_valid == 0, "Annex E.16 has no neighbour count");
 
     /* Annex E.17 explicitly carries the zero value meaning no neighbour-cell
      * information is available. */
@@ -345,8 +342,8 @@ test_phase78_mle_nwrk_broadcast(void) {
     n += 1; /* neighbour count present */
     pack_bits(pdu, 0, n, 3);
     n += 3;
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(tetra_st(st)->mle_ca_neighbor_count_valid == 1 && tetra_st(st)->mle_ca_neighbor_count == 0,
+    CHECK(tetra_mle_decode(pdu, n, &mle) && mle.nwrk_broadcast.neighbor_count_valid == 1
+              && mle.nwrk_broadcast.neighbor_count == 0,
           "Annex E.17 no-neighbour indication accepted");
 
     /* Annex E.18: two CA neighbours.  The first has no optional fields; the
@@ -415,22 +412,15 @@ test_phase78_mle_nwrk_broadcast(void) {
     n += 1; /* timeshare/security */
     pack_bits(pdu, 0, n, 1);
     n += 1; /* TDMA frame offset */
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(tetra_st(st)->mle_ca_neighbor_count_valid == 1 && tetra_st(st)->mle_ca_neighbor_count == 2,
+    CHECK(tetra_mle_decode(pdu, n, &mle) && mle.nwrk_broadcast.neighbor_count_valid == 1
+              && mle.nwrk_broadcast.neighbor_count == 2,
           "Annex E.18 two-neighbour collection accepted");
-    CHECK(tetra_st(st)->mle_ca_neighbor[0].cell_id == 1 && tetra_st(st)->mle_ca_neighbor[0].main_carrier == 1000
-              && tetra_st(st)->mle_ca_neighbor[1].cell_id == 2 && tetra_st(st)->mle_ca_neighbor[1].main_carrier == 2000,
-          "Annex E.18 mandatory neighbour fields retained");
+    CHECK(mle.nwrk_broadcast.neighbor[0].cell_id == 1 && mle.nwrk_broadcast.neighbor[0].main_carrier == 1000
+              && mle.nwrk_broadcast.neighbor[1].cell_id == 2 && mle.nwrk_broadcast.neighbor[1].main_carrier == 2000,
+          "Annex E.18 mandatory neighbour fields decoded");
 
-    /* Remove the final Type 2 P-bit after changing the mandatory value.  No
-     * part of the incomplete broadcast may replace the previous snapshot. */
-    pack_bits(pdu, 0x3333, 6, 16);
-    tetra_mle_dispatch(pdu, n - 1, 0, opt, st);
-    CHECK(tetra_st(st)->mle_cell_reselect_params == 0x2222 && tetra_st(st)->mle_ca_neighbor_count == 2,
-          "truncated Annex E.18 preserves the previous network broadcast");
-
-    free_state(st);
-    free(opt);
+    /* Without the final Type 2 P-bit the broadcast is incomplete. */
+    CHECK(!tetra_mle_decode(pdu, n - 1, &mle), "truncated Annex E.18 is incomplete");
 }
 
 static void

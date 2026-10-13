@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "tetra_calls.h"
+#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
 
@@ -720,8 +721,8 @@ test_standard_mle_envelopes(void) {
     pack_bits(bits, TETRA_MLE_D_RESTORE_FAIL, 3, 3);
     pack_bits(bits, 2, 6, 2);
     pack_bits(bits, 0, 8, 1); /* mandatory O-bit */
-    tetra_mle_dispatch(bits, 9, 4, opts, state);
-    ok = ok && tetra_st(state)->mle_restore_fail_valid && tetra_st(state)->mle_restore_fail_cause == 2;
+    tetra_mle_pdu pdu;
+    ok = ok && tetra_mle_decode(bits, 9, &pdu) && pdu.type == TETRA_MLE_D_RESTORE_FAIL && pdu.fail_cause == 2;
 
     free_state(state);
     free(opts);
@@ -746,8 +747,9 @@ test_annex_e19_e24_mle_responses(void) {
     off += 2;
     pack_bits(bits, 0, off, 1);
     off++;
-    tetra_mle_dispatch(bits, off, 2, opts, state);
-    int ok = tetra_st(state)->mle_new_cell_valid && tetra_st(state)->mle_new_cell_channel_command == 2;
+    tetra_mle_pdu pdu;
+    int ok = tetra_mle_decode(bits, off, &pdu) && pdu.type == TETRA_MLE_D_NEW_CELL && pdu.channel_command == 2
+             && pdu.sdu_pos == off;
 
     /* E.20: D-NEW-CELL carrying a minimal D-LOCATION UPDATE ACCEPT. */
     DSD_MEMSET(bits, 0, sizeof bits);
@@ -766,10 +768,10 @@ test_annex_e19_e24_mle_responses(void) {
     off += 3;
     pack_bits(bits, 0, off, 1);
     off++;
+    ok = ok && tetra_mle_decode(bits, off, &pdu) && pdu.channel_command == 1 && pdu.sdu_pos == 9;
     char log[512];
     tetra_test_mle_logged(bits, off, 2, opts, state, log, sizeof log);
-    ok = ok && tetra_st(state)->mle_new_cell_channel_command == 1
-         && strstr(log, "[TETRA MM D-LU-ACCEPT] CC=2 type=5") != NULL;
+    ok = ok && strstr(log, "[TETRA MM D-LU-ACCEPT] CC=2 type=5") != NULL;
 
     /* E.21: D-PREPARE-FAIL without an MM SDU. */
     DSD_MEMSET(bits, 0, sizeof bits);
@@ -782,8 +784,7 @@ test_annex_e19_e24_mle_responses(void) {
     off += 2;
     pack_bits(bits, 0, off, 1);
     off++;
-    tetra_mle_dispatch(bits, off, 3, opts, state);
-    ok = ok && tetra_st(state)->mle_prepare_fail_valid && tetra_st(state)->mle_prepare_fail_cause == 3;
+    ok = ok && tetra_mle_decode(bits, off, &pdu) && pdu.type == TETRA_MLE_D_PREPARE_FAIL && pdu.fail_cause == 3;
 
     /* E.22: D-PREPARE-FAIL carrying D-LOCATION UPDATE REJECT. */
     DSD_MEMSET(bits, 0, sizeof bits);
@@ -806,9 +807,9 @@ test_annex_e19_e24_mle_responses(void) {
     off++;
     pack_bits(bits, 0, off, 1);
     off++;
+    ok = ok && tetra_mle_decode(bits, off, &pdu) && pdu.fail_cause == 1 && pdu.sdu_pos == 9;
     tetra_test_mle_logged(bits, off, 3, opts, state, log, sizeof log);
-    ok = ok && tetra_st(state)->mle_prepare_fail_cause == 1
-         && strstr(log, "[TETRA MM D-LU-REJECT] CC=3 type=2 cause=17 cipher=0") != NULL;
+    ok = ok && strstr(log, "[TETRA MM D-LU-REJECT] CC=3 type=2 cause=17 cipher=0") != NULL;
 
     /* E.23: D-RESTORE-ACK carrying CMCE D-CALL-RESTORE. */
     DSD_MEMSET(bits, 0, sizeof bits);
@@ -831,14 +832,14 @@ test_annex_e19_e24_mle_responses(void) {
     off++;
     pack_bits(bits, 0, off, 1);
     off++; /* CMCE O-bit */
+    ok = ok && tetra_mle_decode(bits, off, &pdu) && pdu.restore_ack.call.call_id == 0x2345;
     tetra_test_mle_logged(bits, off, 4, opts, state, log, sizeof log);
-    ok = ok && tetra_st(state)->restore_ack
-         && strstr(log, "[TETRA CMCE D-CALL-RESTORE] CC=4 call=9029 grant=2 request=1 reset=1") != NULL;
+    ok = ok && strstr(log, "[TETRA CMCE D-CALL-RESTORE] CC=4 call=9029 grant=2 request=1 reset=1") != NULL;
 
-    /* The ACK and nested call state are atomic when the CMCE O-bit is absent. */
-    tetra_st(state)->restore_ack = 0;
+    /* Without the CMCE O-bit the ACK and its call restore are incomplete together: nothing acts on either. */
+    ok = ok && !tetra_mle_decode(bits, off - 1, &pdu);
     tetra_test_mle_logged(bits, off - 1, 4, opts, state, log, sizeof log);
-    ok = ok && !tetra_st(state)->restore_ack && strstr(log, "D-CALL-RESTORE] CC=4") == NULL;
+    ok = ok && strstr(log, "D-CALL-RESTORE] CC=4") == NULL;
 
     /* E.24: D-RESTORE-FAIL. */
     DSD_MEMSET(bits, 0, sizeof bits);
@@ -851,11 +852,9 @@ test_annex_e19_e24_mle_responses(void) {
     off += 2;
     pack_bits(bits, 0, off, 1);
     off++;
-    tetra_mle_dispatch(bits, off, 5, opts, state);
-    ok = ok && tetra_st(state)->mle_restore_fail_valid && tetra_st(state)->mle_restore_fail_cause == 2;
+    ok = ok && tetra_mle_decode(bits, off, &pdu) && pdu.type == TETRA_MLE_D_RESTORE_FAIL && pdu.fail_cause == 2;
 
-    /* No listed response defines Type 2 elements; O=1 must not replace state. */
-    tetra_st(state)->mle_new_cell_channel_command = 3;
+    /* No listed response defines Type 2 elements; O=1 is malformed. */
     DSD_MEMSET(bits, 0, sizeof bits);
     off = 0;
     pack_bits(bits, TETRA_MLE_PD_MLE, off, 3);
@@ -866,8 +865,7 @@ test_annex_e19_e24_mle_responses(void) {
     off += 2;
     pack_bits(bits, 1, off, 1);
     off++;
-    tetra_mle_dispatch(bits, off, 2, opts, state);
-    ok = ok && tetra_st(state)->mle_new_cell_channel_command == 3;
+    ok = ok && !tetra_mle_decode(bits, off, &pdu);
 
     /* Table 18.10: D-CHANNEL RESPONSE with its reserved optionals absent. */
     DSD_MEMSET(bits, 0, sizeof bits);
@@ -884,14 +882,11 @@ test_annex_e19_e24_mle_responses(void) {
     off += 4;
     pack_bits(bits, 0, off, 1);
     off++;
-    tetra_mle_dispatch(bits, off, 2, opts, state);
-    ok = ok && tetra_st(state)->mle_channel_response_valid && tetra_st(state)->mle_channel_response_type == 1
-         && tetra_st(state)->mle_channel_response_reason == 5 && tetra_st(state)->mle_channel_response_retry_delay == 9;
+    ok = ok && tetra_mle_decode(bits, off, &pdu) && pdu.channel_response.type == 1 && pdu.channel_response.reason == 5
+         && pdu.channel_response.retry_delay == 9;
 
     bits[off - 1] = 1; /* reserved Type 2 fields claimed */
-    tetra_st(state)->mle_channel_response_reason = 7;
-    tetra_mle_dispatch(bits, off, 2, opts, state);
-    ok = ok && tetra_st(state)->mle_channel_response_reason == 7;
+    ok = ok && !tetra_mle_decode(bits, off, &pdu);
 
     free_state(state);
     free(opts);

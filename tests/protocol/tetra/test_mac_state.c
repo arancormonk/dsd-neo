@@ -23,6 +23,7 @@
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
+#include "tetra_test_log.h"
 #include "tetra_test_pdu.h"
 
 static int tune_calls;
@@ -657,9 +658,9 @@ test_nwrk_broadcast_comes_through_llc(void) {
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
-    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    const tetra_state_t* ts = tetra_st(state);
-    int ok = check(ts->nwrk_bcast_known && ts->mle_cell_reselect_params == 0xA55Au && ts->mle_cell_load == 2,
+    char log[1024];
+    tetra_test_mac_logged(b.bits, b.n, 0, opts, state, log, sizeof log);
+    int ok = check(strstr(log, "[TETRA MLE D-NWRK-BROADCAST] CC=0 reselect=0xA55A load=2 neighbours=0") != NULL,
                    "D-NWRK-BROADCAST decoded from a MAC-RESOURCE TM-SDU");
     free_state(state);
 
@@ -671,8 +672,8 @@ test_nwrk_broadcast_comes_through_llc(void) {
         ttb_put(&reserved, 0, 1);
     }
     state = new_state();
-    tetra_mac_parse_schd(reserved.bits, reserved.n, 0, opts, state);
-    ok &= check(!tetra_st(state)->nwrk_bcast_known, "a reserved broadcast type is not handed to the MLE");
+    tetra_test_mac_logged(reserved.bits, reserved.n, 0, opts, state, log, sizeof log);
+    ok &= check(strstr(log, "D-NWRK-BROADCAST") == NULL, "a reserved broadcast type is not handed to the MLE");
     free_state(state);
     free(opts);
     return ok;

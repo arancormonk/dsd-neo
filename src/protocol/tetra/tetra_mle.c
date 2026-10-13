@@ -25,6 +25,7 @@
 
 #include "tetra_calls.h"
 #include "tetra_log.h"
+#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 
 /* What every parser needs besides its bit reader. */
@@ -32,7 +33,8 @@ typedef struct {
     dsd_opts* opts; /* may be NULL */
     dsd_state* state;
     tetra_state_t* ts;
-    tetra_mac_sdu* sdu; /* the MAC PDU the TM-SDU came in; NULL without one */
+    tetra_mac_sdu* sdu;  /* the MAC PDU the TM-SDU came in; NULL without one */
+    const uint8_t* bits; /* the whole TM-SDU, from its protocol discriminator */
     int cc;
     int nbits; /* bits in the whole TM-SDU, for the truncation notes */
 } mle_ctx;
@@ -579,30 +581,46 @@ enum {
 };
 
 static int
-parse_cmce_d_call_restore(tetra_bit_reader* r, const mle_ctx* ctx) {
+cmce_read_call_restore(tetra_bit_reader* r, tetra_cmce_call_restore* c) {
     static const uint8_t k_type2[RESTORE_TYPE2_COUNT] = {14, 4, 3, 9, 6};
     uint32_t v[RESTORE_TYPE2_COUNT] = {0};
     unsigned present = 0;
-    const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
-    const uint8_t grant = (uint8_t)tetra_bits_read(r, 2);
-    const uint8_t permission = (uint8_t)tetra_bits_read(r, 1);
-    const uint8_t reset = (uint8_t)tetra_bits_read(r, 1);
+    c->call_id = (uint16_t)tetra_bits_read(r, 14);
+    c->grant = (uint8_t)tetra_bits_read(r, 2);
+    c->permission = (uint8_t)tetra_bits_read(r, 1);
+    c->reset = (uint8_t)tetra_bits_read(r, 1);
     if (tetra_bits_present(r)) {
         present = read_type2_elements(r, k_type2, RESTORE_TYPE2_COUNT, v);
         (void)tetra_bits_skip_type34(r);
     }
-    if (!tetra_bits_ok(r)) {
-        return cmce_reject(ctx, "D-CALL-RESTORE");
-    }
-    DSD_FPRINTF(stderr, "[TETRA CMCE D-CALL-RESTORE] CC=%d call=%u grant=%u request=%u reset=%u\n", ctx->cc, call_id,
-                grant, permission, reset);
+    c->new_call_id = (uint16_t)v[RESTORE_NEW_CALL_ID];
+    c->new_call_id_present = type2_present(present, RESTORE_NEW_CALL_ID);
+    c->timeout = (uint8_t)v[RESTORE_TIMEOUT];
+    c->timeout_present = type2_present(present, RESTORE_TIMEOUT);
+    return tetra_bits_ok(r);
+}
+
+static void
+cmce_report_call_restore(const mle_ctx* ctx, const tetra_cmce_call_restore* c) {
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-CALL-RESTORE] CC=%d call=%u grant=%u request=%u reset=%u\n", ctx->cc, c->call_id,
+                c->grant, c->permission, c->reset);
     tetra_call_event ev;
     DSD_MEMSET(&ev, 0, sizeof ev);
-    ev.has = (uint8_t)((type2_present(present, RESTORE_NEW_CALL_ID) ? TETRA_CALL_HAS_NEW_ID : 0u)
-                       | (type2_present(present, RESTORE_TIMEOUT) ? TETRA_CALL_HAS_TIMEOUT : 0u));
-    ev.new_call_id = (uint16_t)v[RESTORE_NEW_CALL_ID];
-    ev.timeout = (uint8_t)v[RESTORE_TIMEOUT];
-    cmce_call_event(ctx, &ev, TETRA_CALL_EV_RESTORE, call_id);
+    ev.has = (uint8_t)((c->new_call_id_present ? TETRA_CALL_HAS_NEW_ID : 0u)
+                       | (c->timeout_present ? TETRA_CALL_HAS_TIMEOUT : 0u));
+    ev.new_call_id = c->new_call_id;
+    ev.timeout = c->timeout;
+    cmce_call_event(ctx, &ev, TETRA_CALL_EV_RESTORE, c->call_id);
+}
+
+static int
+parse_cmce_d_call_restore(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_cmce_call_restore c;
+    DSD_MEMSET(&c, 0, sizeof c);
+    if (!cmce_read_call_restore(r, &c)) {
+        return cmce_reject(ctx, "D-CALL-RESTORE");
+    }
+    cmce_report_call_restore(ctx, &c);
     return 1;
 }
 
@@ -1423,86 +1441,56 @@ mle_reject(const mle_ctx* ctx, const char* name) {
     TETRA_LOG_PAYLOAD(ctx->ts, "[TETRA MLE %s] CC=%d (truncated or malformed: %d bits)\n", name, ctx->cc, ctx->nbits);
 }
 
-/* The SDU after an MLE PDU's fields is an MM PDU without its protocol discriminator (tables 18.6 and 18.7). */
-static void
-mle_dispatch_mm_sdu(const tetra_bit_reader* r, const mle_ctx* ctx) {
-    if (tetra_bits_left(r) > 0) {
-        tetra_mm_dispatch(r->bits + r->pos, tetra_bits_left(r), ctx->cc, ctx->opts, ctx->state);
-    }
-}
-
-/* D-NEW-CELL (table 18.6): channel command valid. No type-2 elements are defined, so the O-bit must be clear. */
-static void
-parse_mle_d_new_cell(tetra_bit_reader* r, const mle_ctx* ctx) {
-    const uint8_t command = (uint8_t)tetra_bits_read(r, 2);
+/* D-NEW-CELL (table 18.6): channel command valid. No type-2 elements are defined, so the O-bit must be clear; an MM
+ * SDU may follow. */
+static int
+mle_decode_new_cell(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
+    pdu->channel_command = (uint8_t)tetra_bits_read(r, 2);
     require_absent_type2(r, 1);
-    if (!tetra_bits_ok(r)) {
-        mle_reject(ctx, "D-NEW-CELL");
-        return;
-    }
-    ctx->ts->mle_new_cell_channel_command = command;
-    ctx->ts->mle_new_cell_valid = 1;
-    mle_dispatch_mm_sdu(r, ctx);
+    pdu->sdu_pos = r->pos;
+    return tetra_bits_ok(r);
 }
 
 /* D-PREPARE-FAIL (table 18.7): fail cause, the clear O-bit, an optional MM SDU. */
-static void
-parse_mle_d_prepare_fail(tetra_bit_reader* r, const mle_ctx* ctx) {
-    const uint8_t cause = (uint8_t)tetra_bits_read(r, 2);
+static int
+mle_decode_prepare_fail(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
+    pdu->fail_cause = (uint8_t)tetra_bits_read(r, 2);
     require_absent_type2(r, 1);
-    if (!tetra_bits_ok(r)) {
-        mle_reject(ctx, "D-PREPARE-FAIL");
-        return;
-    }
-    ctx->ts->mle_prepare_fail_cause = cause;
-    ctx->ts->mle_prepare_fail_valid = 1;
-    mle_dispatch_mm_sdu(r, ctx);
+    pdu->sdu_pos = r->pos;
+    return tetra_bits_ok(r);
 }
 
 /* D-RESTORE-ACK (table 18.8): the clear O-bit and a CMCE D-CALL RESTORE SDU (Annex E table E.23). */
-static void
-parse_mle_d_restore_ack(tetra_bit_reader* r, const mle_ctx* ctx) {
+static int
+mle_decode_restore_ack(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
     require_absent_type2(r, 1);
     if (tetra_bits_read(r, 5) != TETRA_CMCE_D_CALL_RESTORE) {
         bits_reject(r);
     }
     if (!tetra_bits_ok(r)) {
-        mle_reject(ctx, "D-RESTORE-ACK");
-        return;
+        return 0;
     }
-    if (parse_cmce_d_call_restore(r, ctx)) {
-        ctx->ts->restore_ack = 1;
-    }
+    pdu->restore_ack.call_present = 1;
+    return cmce_read_call_restore(r, &pdu->restore_ack.call);
 }
 
 /* D-RESTORE-FAIL (table 18.9): fail cause and the clear O-bit. */
-static void
-parse_mle_d_restore_fail(tetra_bit_reader* r, const mle_ctx* ctx) {
-    const uint8_t cause = (uint8_t)tetra_bits_read(r, 2);
+static int
+mle_decode_restore_fail(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
+    pdu->fail_cause = (uint8_t)tetra_bits_read(r, 2);
     require_absent_type2(r, 1);
-    if (!tetra_bits_ok(r)) {
-        mle_reject(ctx, "D-RESTORE-FAIL");
-        return;
-    }
-    ctx->ts->mle_restore_fail_cause = cause;
-    ctx->ts->mle_restore_fail_valid = 1;
+    return tetra_bits_ok(r);
 }
 
 /* D-CHANNEL RESPONSE (table 18.10). Its two type-2 elements shall not be included, so the O-bit must be clear. */
-static void
-parse_mle_d_channel_response(tetra_bit_reader* r, const mle_ctx* ctx) {
-    const uint8_t type = (uint8_t)tetra_bits_read(r, 1);
-    const uint8_t reason = (uint8_t)tetra_bits_read(r, 3);
-    const uint8_t retry_delay = (uint8_t)tetra_bits_read(r, 4);
+static int
+mle_decode_channel_response(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
+    tetra_mle_channel_response* const c = &pdu->channel_response;
+    c->type = (uint8_t)tetra_bits_read(r, 1);
+    c->reason = (uint8_t)tetra_bits_read(r, 3);
+    c->retry_delay = (uint8_t)tetra_bits_read(r, 4);
     require_absent_type2(r, 1);
-    if (!tetra_bits_ok(r)) {
-        mle_reject(ctx, "D-CHANNEL-RESPONSE");
-        return;
-    }
-    ctx->ts->mle_channel_response_type = type;
-    ctx->ts->mle_channel_response_reason = reason;
-    ctx->ts->mle_channel_response_retry_delay = retry_delay;
-    ctx->ts->mle_channel_response_valid = 1;
+    return tetra_bits_ok(r);
 }
 
 /* Network broadcast elements, clause 18.5. */
@@ -1638,69 +1626,51 @@ mle_read_cell_removal(tetra_bit_reader* r, int cell_id_bits, tetra_mle_cell_remo
 
 /* D-NWRK-BROADCAST, table 18.2. */
 
-typedef struct {
-    uint64_t network_time;
-    tetra_mle_ca_neighbor neighbor[7];
-    uint16_t reselect;
-    uint8_t load;
-    uint8_t network_time_valid;
-    uint8_t neighbor_count;
-    uint8_t neighbor_count_valid;
-} mle_nwrk_broadcast;
-
-static void
-parse_mle_d_nwrk_broadcast(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_state_t* const ts = ctx->ts;
-    mle_nwrk_broadcast b;
-    DSD_MEMSET(&b, 0, sizeof b);
-    b.reselect = (uint16_t)tetra_bits_read(r, 16);
-    b.load = (uint8_t)tetra_bits_read(r, 2);
+static int
+mle_decode_nwrk_broadcast(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
+    tetra_mle_nwrk_broadcast* const b = &pdu->nwrk_broadcast;
+    b->reselect = (uint16_t)tetra_bits_read(r, 16);
+    b->load = (uint8_t)tetra_bits_read(r, 2);
     if (tetra_bits_present(r)) {
         if (tetra_bits_present(r)) {
-            b.network_time = tetra_bits_read64(r, 48);
-            b.network_time_valid = 1;
+            b->network_time = tetra_bits_read64(r, 48);
+            b->network_time_valid = 1;
         }
         if (tetra_bits_present(r)) {
-            b.neighbor_count_valid = 1;
-            b.neighbor_count = (uint8_t)tetra_bits_read(r, 3);
-            for (uint8_t i = 0; i < b.neighbor_count; i++) {
-                mle_read_ca_neighbor(r, &b.neighbor[i]);
+            b->neighbor_count_valid = 1;
+            b->neighbor_count = (uint8_t)tetra_bits_read(r, 3);
+            for (uint8_t i = 0; i < b->neighbor_count; i++) {
+                mle_read_ca_neighbor(r, &b->neighbor[i]);
             }
         }
     }
-    if (!tetra_bits_ok(r)) {
-        mle_reject(ctx, "D-NWRK-BROADCAST");
-        return;
-    }
+    return tetra_bits_ok(r);
+}
+
+static void
+mle_report_nwrk_broadcast(const mle_ctx* ctx, const tetra_mle_pdu* pdu) {
+    const tetra_mle_nwrk_broadcast* const b = &pdu->nwrk_broadcast;
     DSD_FPRINTF(stderr, "[TETRA MLE D-NWRK-BROADCAST] CC=%d reselect=0x%04X load=%u neighbours=%u\n", ctx->cc,
-                b.reselect, b.load, b.neighbor_count);
-    ts->nwrk_bcast_known = 1;
-    ts->mle_cell_reselect_params = b.reselect;
-    ts->mle_cell_load = b.load;
-    ts->mle_ca_neighbor_count = b.neighbor_count;
-    ts->mle_ca_neighbor_count_valid = b.neighbor_count_valid;
-    DSD_MEMCPY(ts->mle_ca_neighbor, b.neighbor, sizeof ts->mle_ca_neighbor);
+                b->reselect, b->load, b->neighbor_count);
 }
 
 /* D-NWRK-BROADCAST EXTENSION, table 18.4. */
 
-static void
-parse_mle_d_nwrk_broadcast_ext(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_mle_channel_lists lists;
-    DSD_MEMSET(&lists, 0, sizeof lists);
+static int
+mle_decode_nwrk_broadcast_ext(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
     if (tetra_bits_present(r)) {
-        mle_read_channel_lists(r, 5, &lists);
+        mle_read_channel_lists(r, 5, &pdu->ext);
         require_absent_type2(r, 2); /* two reserved elements that shall not be used */
     }
-    if (!tetra_bits_ok(r)) {
-        mle_reject(ctx, "D-NWRK-BROADCAST-EXT");
-        return;
-    }
+    return tetra_bits_ok(r);
+}
+
+static void
+mle_report_nwrk_broadcast_ext(const mle_ctx* ctx, const tetra_mle_pdu* pdu) {
+    const tetra_mle_channel_lists* const l = &pdu->ext;
     DSD_FPRINTF(stderr, "[TETRA MLE D-NWRK-BROADCAST-EXT] CC=%d classes=%u/%u irregular=%u/%u\n", ctx->cc,
-                lists.serving_class_count, lists.neighbor_class_count, lists.serving_irregular_count,
-                lists.neighbor_irregular_count);
-    ctx->ts->mle_ext = lists;
-    ctx->ts->nwrk_bcast_ext_known = 1;
+                l->serving_class_count, l->neighbor_class_count, l->serving_irregular_count,
+                l->neighbor_irregular_count);
 }
 
 /* D-NWRK-BROADCAST-DA, table 18.3. */
@@ -1743,25 +1713,23 @@ mle_read_da_optional(tetra_bit_reader* r, tetra_mle_da_broadcast* b) {
     require_absent_type2(r, 2);
 }
 
-static void
-parse_mle_d_nwrk_broadcast_da(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_mle_da_broadcast b;
-    DSD_MEMSET(&b, 0, sizeof b);
+static int
+mle_decode_nwrk_broadcast_da(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
     if (tetra_bits_read(r, 3) != 0) { /* reserved, set to 000 */
         bits_reject(r);
     }
     if (tetra_bits_present(r)) {
-        mle_read_da_optional(r, &b);
+        mle_read_da_optional(r, &pdu->da);
     }
-    if (!tetra_bits_ok(r)) {
-        mle_reject(ctx, "D-NWRK-BROADCAST-DA");
-        return;
-    }
+    return tetra_bits_ok(r);
+}
+
+static void
+mle_report_nwrk_broadcast_da(const mle_ctx* ctx, const tetra_mle_pdu* pdu) {
+    const tetra_mle_da_broadcast* const b = &pdu->da;
     DSD_FPRINTF(stderr, "[TETRA MLE D-NWRK-BROADCAST-DA] CC=%d neighbours=%u classes=%u/%u irregular=%u/%u\n", ctx->cc,
-                b.neighbor_count, b.lists.serving_class_count, b.lists.neighbor_class_count,
-                b.lists.serving_irregular_count, b.lists.neighbor_irregular_count);
-    b.known = 1;
-    ctx->ts->mle_da = b;
+                b->neighbor_count, b->lists.serving_class_count, b->lists.neighbor_class_count,
+                b->lists.serving_irregular_count, b->lists.neighbor_irregular_count);
 }
 
 /* D-NWRK-BROADCAST REMOVE, table 18.5. */
@@ -1789,55 +1757,135 @@ mle_read_removal_optional(tetra_bit_reader* r, tetra_mle_broadcast_removal* b) {
     require_absent_type2(r, 4); /* four reserved elements that shall not be used */
 }
 
-static void
-parse_mle_d_nwrk_broadcast_remove(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_mle_broadcast_removal b;
-    DSD_MEMSET(&b, 0, sizeof b);
+static int
+mle_decode_nwrk_broadcast_remove(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
     if (tetra_bits_present(r)) {
-        mle_read_removal_optional(r, &b);
+        mle_read_removal_optional(r, &pdu->remove);
     }
-    if (!tetra_bits_ok(r)) {
-        mle_reject(ctx, "D-NWRK-BROADCAST-REMOVE");
-        return;
-    }
-    DSD_FPRINTF(stderr, "[TETRA MLE D-NWRK-BROADCAST-REMOVE] CC=%d CA=%u DA=%u serving=%u\n", ctx->cc, b.ca_count,
-                b.da_count, b.serving_present);
-    b.known = 1;
-    ctx->ts->mle_remove = b;
-}
-
-/* MLE PDU dispatch, tables 18.85 and 18.86. */
-
-typedef void (*mle_parser)(tetra_bit_reader* r, const mle_ctx* ctx);
-
-static void
-parse_mle_extended(tetra_bit_reader* r, const mle_ctx* ctx) {
-    const uint32_t extension = tetra_bits_read(r, 4);
-    if (!tetra_bits_ok(r)) {
-        return;
-    }
-    if (extension == TETRA_MLE_D_NWRK_BROADCAST_DA) {
-        parse_mle_d_nwrk_broadcast_da(r, ctx);
-    } else if (extension == TETRA_MLE_D_NWRK_BCAST_REMOVE) {
-        parse_mle_d_nwrk_broadcast_remove(r, ctx);
-    }
+    return tetra_bits_ok(r);
 }
 
 static void
-parse_mle(tetra_bit_reader* r, const mle_ctx* ctx) {
-    static const mle_parser k_parsers[8] = {
-        [TETRA_MLE_D_NEW_CELL] = parse_mle_d_new_cell,
-        [TETRA_MLE_D_PREPARE_FAIL] = parse_mle_d_prepare_fail,
-        [TETRA_MLE_D_NWRK_BROADCAST] = parse_mle_d_nwrk_broadcast,
-        [TETRA_MLE_D_NWRK_BCAST_EXT] = parse_mle_d_nwrk_broadcast_ext,
-        [TETRA_MLE_D_RESTORE_ACK] = parse_mle_d_restore_ack,
-        [TETRA_MLE_D_RESTORE_FAIL] = parse_mle_d_restore_fail,
-        [TETRA_MLE_D_CHANNEL_RESPONSE] = parse_mle_d_channel_response,
-        [TETRA_MLE_EXTENDED_PDU] = parse_mle_extended,
+mle_report_nwrk_broadcast_remove(const mle_ctx* ctx, const tetra_mle_pdu* pdu) {
+    const tetra_mle_broadcast_removal* const b = &pdu->remove;
+    DSD_FPRINTF(stderr, "[TETRA MLE D-NWRK-BROADCAST-REMOVE] CC=%d CA=%u DA=%u serving=%u\n", ctx->cc, b->ca_count,
+                b->da_count, b->serving_present);
+}
+
+/* MLE PDU decoding, tables 18.85 and 18.86. */
+
+typedef int (*mle_decoder)(tetra_bit_reader* r, tetra_mle_pdu* pdu);
+
+static int
+mle_decode_extended(tetra_bit_reader* r, tetra_mle_pdu* pdu) {
+    pdu->extension = (uint8_t)tetra_bits_read(r, 4);
+    if (!tetra_bits_ok(r)) {
+        return 0;
+    }
+    if (pdu->extension == TETRA_MLE_D_NWRK_BROADCAST_DA) {
+        return mle_decode_nwrk_broadcast_da(r, pdu);
+    }
+    if (pdu->extension == TETRA_MLE_D_NWRK_BCAST_REMOVE) {
+        return mle_decode_nwrk_broadcast_remove(r, pdu);
+    }
+    return 0;
+}
+
+int
+tetra_mle_decode(const uint8_t* bits, int nbits, tetra_mle_pdu* out) {
+    static const mle_decoder k_decoders[8] = {
+        [TETRA_MLE_D_NEW_CELL] = mle_decode_new_cell,
+        [TETRA_MLE_D_PREPARE_FAIL] = mle_decode_prepare_fail,
+        [TETRA_MLE_D_NWRK_BROADCAST] = mle_decode_nwrk_broadcast,
+        [TETRA_MLE_D_NWRK_BCAST_EXT] = mle_decode_nwrk_broadcast_ext,
+        [TETRA_MLE_D_RESTORE_ACK] = mle_decode_restore_ack,
+        [TETRA_MLE_D_RESTORE_FAIL] = mle_decode_restore_fail,
+        [TETRA_MLE_D_CHANNEL_RESPONSE] = mle_decode_channel_response,
+        [TETRA_MLE_EXTENDED_PDU] = mle_decode_extended,
     };
-    const uint32_t type = tetra_bits_read(r, 3);
-    if (tetra_bits_ok(r)) {
-        k_parsers[type & 7u](r, ctx);
+    if (!out) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof *out);
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 0);
+    if (tetra_bits_read(&r, 3) != TETRA_MLE_PD_MLE) {
+        return 0;
+    }
+    out->type = (uint8_t)tetra_bits_read(&r, 3);
+    return tetra_bits_ok(&r) && k_decoders[out->type & 7u](&r, out);
+}
+
+/* Acting on a complete MLE PDU. */
+
+/* The SDU after the fields of a D-NEW-CELL or D-PREPARE-FAIL is an MM PDU without its protocol discriminator (tables
+ * 18.6 and 18.7). */
+static void
+mle_report_mm_sdu(const mle_ctx* ctx, const tetra_mle_pdu* pdu) {
+    if (ctx->nbits - pdu->sdu_pos > 0) {
+        tetra_mm_dispatch(ctx->bits + pdu->sdu_pos, ctx->nbits - pdu->sdu_pos, ctx->cc, ctx->opts, ctx->state);
+    }
+}
+
+static void
+mle_report_restore_ack(const mle_ctx* ctx, const tetra_mle_pdu* pdu) {
+    cmce_report_call_restore(ctx, &pdu->restore_ack.call);
+}
+
+/* How a downlink MLE PDU is named and acted on. D-RESTORE-FAIL and D-CHANNEL RESPONSE concern one MS's cell
+ * reselection or channel request; nothing acts on them. */
+typedef struct {
+    const char* name; /* in the truncation note */
+    void (*report)(const mle_ctx* ctx, const tetra_mle_pdu* pdu);
+} mle_kind;
+
+static const mle_kind k_mle_kinds[8] = {
+    [TETRA_MLE_D_NEW_CELL] = {"D-NEW-CELL", mle_report_mm_sdu},
+    [TETRA_MLE_D_PREPARE_FAIL] = {"D-PREPARE-FAIL", mle_report_mm_sdu},
+    [TETRA_MLE_D_NWRK_BROADCAST] = {"D-NWRK-BROADCAST", mle_report_nwrk_broadcast},
+    [TETRA_MLE_D_NWRK_BCAST_EXT] = {"D-NWRK-BROADCAST-EXT", mle_report_nwrk_broadcast_ext},
+    [TETRA_MLE_D_RESTORE_ACK] = {"D-RESTORE-ACK", mle_report_restore_ack},
+    [TETRA_MLE_D_RESTORE_FAIL] = {"D-RESTORE-FAIL", NULL},
+    [TETRA_MLE_D_CHANNEL_RESPONSE] = {"D-CHANNEL-RESPONSE", NULL},
+    [TETRA_MLE_EXTENDED_PDU] = {NULL, NULL},
+};
+
+static const mle_kind k_mle_extended_kinds[2] = {
+    [TETRA_MLE_D_NWRK_BROADCAST_DA] = {"D-NWRK-BROADCAST-DA", mle_report_nwrk_broadcast_da},
+    [TETRA_MLE_D_NWRK_BCAST_REMOVE] = {"D-NWRK-BROADCAST-REMOVE", mle_report_nwrk_broadcast_remove},
+};
+
+/* The kind of the decoded PDU; NULL when the TM-SDU ends before its PDU type, or before or at an extension that is not
+ * decoded, which goes unremarked. */
+static const mle_kind*
+mle_kind_of(const mle_ctx* ctx, const tetra_mle_pdu* pdu) {
+    if (ctx->nbits < 6) {
+        return NULL;
+    }
+    if (pdu->type != TETRA_MLE_EXTENDED_PDU) {
+        return &k_mle_kinds[pdu->type & 7u];
+    }
+    if (ctx->nbits < 10 || pdu->extension > TETRA_MLE_D_NWRK_BCAST_REMOVE) {
+        return NULL;
+    }
+    return &k_mle_extended_kinds[pdu->extension];
+}
+
+static void
+parse_mle(const mle_ctx* ctx) {
+    tetra_mle_pdu pdu;
+    const int complete = tetra_mle_decode(ctx->bits, ctx->nbits, &pdu);
+    const mle_kind* const kind = mle_kind_of(ctx, &pdu);
+    if (!kind) {
+        return;
+    }
+    if (complete) {
+        if (kind->report) {
+            kind->report(ctx, &pdu);
+        }
+    } else if (pdu.type == TETRA_MLE_D_RESTORE_ACK && pdu.restore_ack.call_present) {
+        (void)cmce_reject(ctx, "D-CALL-RESTORE");
+    } else {
+        mle_reject(ctx, kind->name);
     }
 }
 
@@ -1849,7 +1897,7 @@ tetra_mle_dispatch_sdu(const uint8_t* bits, int nbits, int cc, tetra_mac_sdu* sd
     if (!bits || !ts) {
         return;
     }
-    const mle_ctx ctx = {opts, state, ts, sdu, cc, nbits};
+    const mle_ctx ctx = {opts, state, ts, sdu, bits, cc, nbits};
     tetra_bit_reader r = tetra_bits_reader(bits, nbits, 0);
     const uint32_t protocol = tetra_bits_read(&r, 3); /* protocol discriminator, table 18.87 */
     if (!tetra_bits_ok(&r)) {
@@ -1859,7 +1907,7 @@ tetra_mle_dispatch_sdu(const uint8_t* bits, int nbits, int cc, tetra_mac_sdu* sd
         case TETRA_MLE_PD_MM: tetra_mm_dispatch(bits + 3, nbits - 3, cc, opts, state); break;
         case TETRA_MLE_PD_CMCE: parse_cmce(&r, &ctx); break;
         case TETRA_MLE_PD_SNDCP: parse_sndcp(&r, &ctx); break;
-        case TETRA_MLE_PD_MLE: parse_mle(&r, &ctx); break;
+        case TETRA_MLE_PD_MLE: parse_mle(&ctx); break;
         default:
             TETRA_LOG_PAYLOAD(ts, "[TETRA MLE] CC=%d protocol_discriminator=%u (%d bits)\n", cc, protocol, nbits);
             break;

@@ -182,120 +182,6 @@ typedef struct {
     uint8_t bits[TETRA_MAC_TM_SDU_MAX_BITS]; /* one bit per byte */
 } tetra_mac_fragment;
 
-/* MLE network broadcast elements, EN 300 392-2 clause 18.5. Each type keeps the fields something reads. */
-
-/** Neighbour cell information for CA (table 18.64). */
-typedef struct {
-    uint16_t main_carrier;  /**< main carrier number */
-    uint8_t cell_id;        /**< cell identifier CA */
-    uint8_t reselect_types; /**< cell reselection types supported */
-} tetra_mle_ca_neighbor;
-
-/** Channel class (table 18.41). */
-typedef struct {
-    uint32_t characteristics; /**< channel characteristics, table 18.40 */
-    uint8_t id;               /**< channel class identifier, table 18.42 */
-    uint8_t bs_power;         /**< BS transmit power relative to the main carrier */
-} tetra_mle_channel_class;
-
-/** Neighbour cell channel class for CA or DA (tables 18.62 and 18.63). */
-typedef struct {
-    tetra_mle_channel_class channel_class;
-    uint8_t cell_id;
-} tetra_mle_neighbor_channel_class;
-
-/** Irregular channel detail (table 18.96). */
-typedef struct {
-    uint16_t carrier;           /**< carrier number */
-    uint16_t carrier_extension; /**< carrier number extension, when extension_valid */
-    uint8_t channel_id;
-    uint8_t extension_valid;
-} tetra_mle_irregular_channel;
-
-/** Neighbour cell irregular channel detail for CA or DA (tables 18.66 and 18.67). */
-typedef struct {
-    tetra_mle_irregular_channel channel;
-    uint8_t cell_id;
-} tetra_mle_neighbor_irregular_channel;
-
-/**
- * The channel-class and irregular-channel lists that D-NWRK-BROADCAST EXTENSION (table 18.4) and
- * D-NWRK-BROADCAST-DA (table 18.3) both carry. Each count is the decoded list size; its present flag tells an
- * advertised empty list from an omitted one. The array sizes are the largest counts the count widths can carry.
- */
-typedef struct {
-    tetra_mle_channel_class serving_class[15];
-    tetra_mle_neighbor_channel_class neighbor_class[31];
-    tetra_mle_irregular_channel serving_irregular[31];
-    tetra_mle_neighbor_irregular_channel neighbor_irregular[63];
-    uint8_t serving_classes_present;
-    uint8_t serving_class_count;
-    uint8_t neighbor_classes_present;
-    uint8_t neighbor_class_count;
-    uint8_t serving_irregular_present;
-    uint8_t serving_irregular_count;
-    uint8_t neighbor_irregular_present;
-    uint8_t neighbor_irregular_count;
-} tetra_mle_channel_lists;
-
-/** Neighbour cell information for DA (table 18.65). */
-typedef struct {
-    uint16_t main_carrier;      /**< main carrier number */
-    uint16_t optional_mask;     /**< bit i set: the i-th type-2 element of table 18.65 was present */
-    uint16_t carrier_extension; /**< main carrier number extension (type-2 element 0) */
-    uint16_t la;                /**< location area (type-2 element 3) */
-    uint8_t cell_id;            /**< cell identifier DA */
-    uint8_t load_known;         /**< cell load known; load is valid when set */
-    uint8_t load;               /**< cell load DA */
-} tetra_mle_da_neighbor;
-
-/** D-NWRK-BROADCAST-DA (table 18.3). Each *_valid / *_present flag reports its type-2 element. */
-typedef struct {
-    uint64_t network_time; /**< TETRA network time, table 18.100 */
-    tetra_mle_channel_lists lists;
-    tetra_mle_da_neighbor neighbor[7];
-    tetra_mle_ca_neighbor local_ca; /**< neighbour cell information for the local CA cell */
-    uint16_t reselect;              /**< cell re-select parameters */
-    uint8_t known;                  /**< 1 once a complete PDU was decoded */
-    uint8_t cell_id_valid;
-    uint8_t cell_id; /**< cell identifier DA */
-    uint8_t reselect_valid;
-    uint8_t load_valid;
-    uint8_t load; /**< cell load DA */
-    uint8_t network_time_valid;
-    uint8_t local_ca_valid;
-    uint8_t neighbor_list_present;
-    uint8_t neighbor_count;
-} tetra_mle_da_broadcast;
-
-/** Channel classes and channels to remove (tables 18.90 to 18.92). */
-typedef struct {
-    uint8_t class_count;
-    uint8_t class_id[15];
-    uint8_t channel_count;
-    uint8_t channel_id[31];
-} tetra_mle_channel_removal;
-
-/** Removal data for a CA or DA cell (tables 18.90 and 18.91); remove_cell=1 removes the cell and carries no lists. */
-typedef struct {
-    tetra_mle_channel_removal channels;
-    uint8_t cell_id;
-    uint8_t remove_cell;
-} tetra_mle_cell_removal;
-
-/** D-NWRK-BROADCAST REMOVE (table 18.5). */
-typedef struct {
-    tetra_mle_cell_removal ca[31];
-    tetra_mle_cell_removal da[255];
-    tetra_mle_channel_removal serving; /**< removal data for the serving cell (table 18.92) */
-    uint8_t known;                     /**< 1 once a complete PDU was decoded */
-    uint8_t ca_present;
-    uint8_t ca_count;
-    uint8_t da_present;
-    uint8_t da_count;
-    uint8_t serving_present;
-} tetra_mle_broadcast_removal;
-
 typedef struct tetra_state {
     /* The speech path: codec library, speech integrity and PCM carry (tetra_voice.c). */
     tetra_voice_t voice;
@@ -356,15 +242,12 @@ typedef struct tetra_state {
      * TETRA network parameters — populated by MAC-BROADCAST/SYSINFO (MLE).
      *
      * sysinfo_known:    1 once a valid SYSINFO PDU has been decoded.
-     * nwrk_bcast_known: 1 once a complete D-NWRK-BROADCAST (EN 300 392-2
-     *                          table 18.2) has been decoded.
      * la:               14-bit Location Area number (last received from
      *                          either SYSINFO/MLE or D-NWRK-BROADCAST).
      * bs_service_det:   12-bit BS service details bitmask.
      * subscr_class:     16-bit subscriber class mask.
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t sysinfo_known;
-    uint8_t nwrk_bcast_known;
     uint16_t la;
     uint16_t bs_service_det;
     uint16_t subscr_class;
@@ -485,35 +368,8 @@ typedef struct tetra_state {
     uint16_t sds_short_data;
     uint8_t sds_short_valid;
 
-    /* MLE cell reselection and restoration (tables 18.6 to 18.10) and D-NWRK-BROADCAST (table 18.2). restore_ack is
-     * set by a D-RESTORE-ACK whose D-CALL RESTORE decoded; mle_ca_neighbor_count_valid reports that the PDU carried
-     * the number of CA neighbour cells. */
-    tetra_mle_ca_neighbor mle_ca_neighbor[7];
-    uint16_t mle_cell_reselect_params;
-    uint8_t mle_cell_load;
-    uint8_t mle_ca_neighbor_count;
-    uint8_t mle_ca_neighbor_count_valid;
-    uint8_t restore_ack;
-    uint8_t mle_new_cell_channel_command;
-    uint8_t mle_new_cell_valid;
-    uint8_t mle_prepare_fail_cause;
-    uint8_t mle_prepare_fail_valid;
-    uint8_t mle_channel_response_type;
-    uint8_t mle_channel_response_reason;
-    uint8_t mle_channel_response_retry_delay;
-    uint8_t mle_channel_response_valid;
-    uint8_t mle_restore_fail_cause;
-    uint8_t mle_restore_fail_valid;
-
     /* 1 when the last SDS text used the UCS-2/UTF-16BE text coding scheme (table 29.29 value 26). */
     uint8_t sds_text_unicode;
-
-    /* D-NWRK-BROADCAST EXTENSION (table 18.4), D-NWRK-BROADCAST REMOVE (table 18.5) and D-NWRK-BROADCAST-DA
-     * (table 18.3), each replaced whole by the next complete PDU of its kind. */
-    tetra_mle_channel_lists mle_ext;
-    tetra_mle_da_broadcast mle_da;
-    tetra_mle_broadcast_removal mle_remove;
-    uint8_t nwrk_bcast_ext_known;
 
     /* KSG 0..3 remembered from D-OTAR SCK/GCK Provide, keyed by MCC/MNC.
      * hyperframe is the SYSINFO value from a burst whose CCK flag is clear,

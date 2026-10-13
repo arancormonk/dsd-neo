@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "tetra_calls.h"
+#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
 
@@ -154,10 +155,12 @@ test_mle_restore_fields(void) {
     pack_bits(mle_ack, 1, 28, 1);
     pack_bits(mle_ack, 1, 29, 1);
     pack_bits(mle_ack, 0, 30, 1); /* CMCE O-bit */
+    tetra_mle_pdu pdu;
+    CHECK(tetra_mle_decode(mle_ack, 31, &pdu) && pdu.restore_ack.call.call_id == 777 && pdu.restore_ack.call.grant == 2
+              && pdu.restore_ack.call.permission == 1 && pdu.restore_ack.call.reset == 1,
+          "D-RESTORE-ACK decodes its D-CALL RESTORE");
     char log[256];
     tetra_test_mle_logged(mle_ack, 31, 0, opt, st, log, sizeof log);
-
-    CHECK(tetra_st(st)->restore_ack == 1, "D-RESTORE-ACK flag set");
     CHECK(strstr(log, "[TETRA CMCE D-CALL-RESTORE] CC=0 call=777 grant=2 request=1 reset=1") != NULL,
           "D-RESTORE-ACK CMCE SDU parsed");
 
@@ -167,10 +170,7 @@ test_mle_restore_fields(void) {
     pack_bits(mle_res, TETRA_MLE_D_RESTORE_FAIL, 3, 3);
     pack_bits(mle_res, 1, 6, 2);
     pack_bits(mle_res, 0, 8, 1);
-    tetra_mle_dispatch(mle_res, 9, 0, opt, st);
-
-    CHECK(tetra_st(st)->mle_restore_fail_valid == 1, "D-RESTORE-FAIL valid");
-    CHECK(tetra_st(st)->mle_restore_fail_cause == 1, "D-RESTORE-FAIL cause extracted");
+    CHECK(tetra_mle_decode(mle_res, 9, &pdu) && pdu.fail_cause == 1, "D-RESTORE-FAIL cause extracted");
 
     free_state(st);
     free(opt);
