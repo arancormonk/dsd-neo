@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * TETRA trunked mode air interface decryption of speech with an operator key, EN 300 392-7 clause 6.
+ */
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 
 #include <dsd-neo/core/key_set.h>
@@ -7,10 +10,16 @@
 #include <dsd-neo/crypto/tetra_tea.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 
-#include <string.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "dsd-neo/core/state_fwd.h"
 #include "tetra_state.h"
 
-#define TETRA_AIR_SLOTS 4
+#define TETRA_AIR_SLOTS        4
+
+/* A key stream segment covers at most 432 bits on a phase modulation channel (EN 300 392-7 clause 6.3.0). */
+#define TETRA_AIR_KSS_MAX_BITS 432
 
 static int
 tetra_air_slot(const uint8_t* valid, const uint16_t* mcc, const uint16_t* mnc, uint16_t want_mcc, uint16_t want_mnc) {
@@ -60,13 +69,8 @@ tetra_air_ksg_lookup(const dsd_state* state, uint16_t mcc, uint16_t mnc) {
 
 const char*
 tetra_air_ksg_name(int ksg) {
-    switch (ksg) {
-        case 0: return "TEA1";
-        case 1: return "TEA2";
-        case 2: return "TEA3";
-        case 3: return "TEA4";
-        default: return NULL;
-    }
+    static const char* const k_names[] = {"TEA1", "TEA2", "TEA3", "TEA4"};
+    return (ksg >= 0 && ksg < 4) ? k_names[ksg] : NULL;
 }
 
 uint32_t
@@ -86,45 +90,44 @@ tetra_air_key_lookup(const dsd_state* state, uint16_t mcc, uint16_t mnc) {
     return NULL;
 }
 
-int
-tetra_air_decrypt_voice(dsd_state* state, uint8_t* bits, int nbits, int ks_bit_offset) {
-    tetra_state_t* const ts = tetra_st(state);
-    int ksg;
-    const uint8_t* key;
-    uint32_t iv;
-    int ks_bits;
-    uint8_t ks[64];
-    if (!ts || !bits || nbits <= 0 || ks_bit_offset < 0 || ts->dmo) {
-        return 0;
-    }
-    if (ts->enc_mode != TETRA_ENC_MODE_ON && ts->enc_mode != TETRA_ENC_MODE_ON_AUTH) {
-        return 0;
+/* The key, algorithm and initial value for the current slot, or NULL when this speech is not decrypted here. */
+static const uint8_t*
+tetra_air_slot_key(const dsd_state* state, const tetra_state_t* ts, int* ksg, uint32_t* iv) {
+    if (ts->dmo || (ts->enc_mode != TETRA_ENC_MODE_ON && ts->enc_mode != TETRA_ENC_MODE_ON_AUTH)) {
+        return NULL;
     }
     if (!ts->net_known || !ts->hyperframe_valid || !ts->tdma_valid) {
+        return NULL;
+    }
+    /* TEA4 is named in the KSG number but its key stream generator is not available. */
+    *ksg = tetra_air_ksg_lookup(state, ts->mcc, ts->mnc);
+    if (*ksg < 0 || *ksg > 2) {
+        return NULL;
+    }
+    /* Every legal initial value is non-zero: the frame number is at least 1. */
+    *iv = tetra_air_build_iv(ts->tn, ts->fn, ts->mn, ts->hyperframe, ts->uplink ? 1u : 0u);
+    return *iv != 0u ? tetra_air_key_lookup(state, ts->mcc, ts->mnc) : NULL;
+}
+
+int
+tetra_air_decrypt_voice(const dsd_state* state, uint8_t* bits, int nbits, int ks_bit_offset) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    uint8_t ks[(TETRA_AIR_KSS_MAX_BITS + 7) / 8];
+    int ksg = -1;
+    uint32_t iv = 0;
+    if (!ts || !bits || nbits <= 0 || ks_bit_offset < 0 || ks_bit_offset + nbits > TETRA_AIR_KSS_MAX_BITS) {
         return 0;
     }
-    ksg = tetra_air_ksg_lookup(state, ts->mcc, ts->mnc);
-    if (ksg < 0 || ksg > 2) {
-        return 0;
-    }
-    key = tetra_air_key_lookup(state, ts->mcc, ts->mnc);
+    const uint8_t* const key = tetra_air_slot_key(state, ts, &ksg, &iv);
     if (!key) {
         return 0;
     }
-    iv = tetra_air_build_iv(ts->tn, ts->fn, ts->mn, ts->hyperframe, ts->uplink ? 1u : 0u);
-    /* A legal frame number is at least 1, so a valid IV cannot be zero. */
-    if (iv == 0) {
-        return 0;
-    }
-    ks_bits = ks_bit_offset + nbits;
-    if (ks_bits <= 0 || (ks_bits + 7) / 8 > (int)sizeof(ks)) {
-        return 0;
-    }
+    const int ks_bytes = (ks_bit_offset + nbits + 7) / 8;
     DSD_MEMSET(ks, 0, sizeof(ks));
-    tetra_tea_keystream(ksg, key, iv, ks, (ks_bits + 7) / 8);
+    tetra_tea_keystream(ksg, key, iv, ks, ks_bytes);
     for (int i = 0; i < nbits; i++) {
-        int bit = ks_bit_offset + i;
-        uint8_t kb = (uint8_t)((ks[bit / 8] >> (7 - (bit % 8))) & 1u);
+        const int bit = ks_bit_offset + i;
+        const uint8_t kb = (uint8_t)((ks[bit / 8] >> (7 - (bit % 8))) & 1u);
         bits[i] = (uint8_t)((bits[i] & 1u) ^ kb);
     }
     DSD_SECURE_ZERO(ks, sizeof(ks));
