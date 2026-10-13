@@ -4540,7 +4540,11 @@ single "current call".
   stream from the encryption cipher key TB5 derives with the carrier being received (`tetra_calls_carrier()`: the
   followed call's carrier, the SYSINFO main carrier on the control channel, else the carrier whose frequency is exactly
   the tuned one), the SYSINFO location area and the BSCH colour code. Only the encrypted values (2 and 3) of the
-  encryption mode element are encrypted; 1 is reserved.
+  encryption mode element are encrypted; 1 is reserved. The speech in progress (the codec's decoder state, the speech's
+  integrity and its unplayed samples) belongs to one transmission: a burst of speech of another kind or target, or the
+  first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, the state machine leaving the
+  call, another call published), starts over (`voice_bind()` in `tetra_voice.c`), so nothing of one call plays under the
+  next call's record policy and no bad opening frame is concealed with another call's codec state.
 - Canonical calls. Slot 0, the TETRA synctype as protocol. The followed call publishes from its CRC-passed signalling
   once the carrier is proven and its tune settled, until its transmission ceased: called party as target, talker as
   source, carrier and frequency, basic service as service options, priority, and its crypto class. Not trunking, the
@@ -4560,7 +4564,8 @@ single "current call".
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, identifier reuse, ageing,
 canonical calls and notices in trunked and direct mode, speech publication, the receiving carrier), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, the
-derived key stream), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
+derived key stream, the speech starting over at call boundaries), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`,
+`CORE_ACCESS_CODE`.
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 

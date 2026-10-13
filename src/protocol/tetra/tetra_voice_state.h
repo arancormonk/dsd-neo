@@ -7,7 +7,8 @@
  * @brief The speech path's part of the TETRA decoder state (tetra_state_t::voice).
  *
  * Lives and dies with the TETRA state: tetra_voice_release() runs when the state is dropped, and the engine's
- * carrier-boundary reset (tetra_voice_reset()) forgets the speech in progress. Decoder-thread private.
+ * carrier-boundary reset (tetra_voice_reset()) forgets the speech in progress. The speech in progress belongs to one
+ * transmission: speech of another call, or after a TETRA call ended, starts over from a reset. Decoder-thread private.
  */
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
@@ -43,6 +44,13 @@ typedef struct tetra_voice {
     /* Speech integrity: 1 once a CRC-passed burst started the speech; the bad frames since the last good one. */
     uint8_t confirmed;
     uint8_t bad_run;
+
+    /* The transmission the speech in progress belongs to (bound): the kind and target of its speech (tetra_speech),
+       and the count of ended TETRA calls (tetra_calls_t::ends) when it started. */
+    uint32_t owner_target;
+    uint32_t owner_ends;
+    uint8_t owner_kind;
+    uint8_t bound;
 } tetra_voice_t;
 
 /** Unload the codec and clear @p voice; the TETRA state's cleanup calls it. */

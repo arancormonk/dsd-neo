@@ -272,6 +272,7 @@ calls_end_published(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, dsd_cal
         return;
     }
     ts->calls.published = TETRA_PUB_NONE;
+    ts->calls.ends++;
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
         && DSD_SYNC_IS_TETRA(call.protocol) && dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0 && opts) {

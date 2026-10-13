@@ -292,19 +292,24 @@ played_by_burst(fixture* f) {
     return fixture_output(f, out, MAX_OUT) - before;
 }
 
-/* Trunking follows a group call to @p gssi on the timeslots of @p timeslots, its tune settled and its signalling
-   decoded on the carrier. */
+/* Trunking follows group call @p call_id to @p gssi on the timeslots of @p timeslots, its tune settled and its
+   signalling decoded on the carrier. */
 static void
-follow_group(fixture* f, uint32_t gssi, uint8_t timeslots) {
-    tetra_call_event setup = {.call_id = 9, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
+follow_call(fixture* f, uint16_t call_id, uint32_t gssi, uint8_t timeslots) {
+    tetra_call_event setup = {.call_id = call_id, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
     tetra_calls_on_event(NULL, f->state, &setup, NULL);
-    tetra_calls_find(f->state, 9)->called_ssi = gssi;
+    tetra_calls_find(f->state, call_id)->called_ssi = gssi;
     tetra_state_t* ts = tetra_st(f->state);
     f->opts->trunk_enable = 1;
     ts->sm.state = (uint8_t)TETRA_SM_TUNED;
-    ts->sm.followed.call_id = 9;
+    ts->sm.followed.call_id = call_id;
     ts->sm.followed.timeslots = timeslots;
     tetra_confirm_note_followed_call(f->state);
+}
+
+static void
+follow_group(fixture* f, uint32_t gssi, uint8_t timeslots) {
+    follow_call(f, 9, gssi, timeslots);
 }
 
 static void
@@ -548,6 +553,137 @@ test_record_gate(void) {
     fixture_close(&f);
 }
 
+/* A static WAV for the fixture's recordings; returns 0 when it is open. */
+static int
+open_static_wav(fixture* f, char* path, size_t path_size) {
+    const int fd = dsd_test_mkstemp(path, path_size, "tetra_voice_wav");
+    if (fd < 0) {
+        return -1;
+    }
+    (void)dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = 8000;
+    info.channels = 2;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    f->opts->wav_out_f = sf_open(path, SFM_WRITE, &info);
+    f->opts->static_wav_file = 1;
+    return f->opts->wav_out_f ? 0 : -1;
+}
+
+/* Close the fixture's static WAV and count the frames it took. */
+static long
+close_static_wav(fixture* f, const char* path) {
+    if (f->opts->wav_out_f) {
+        (void)sf_close(f->opts->wav_out_f);
+        f->opts->wav_out_f = NULL;
+    }
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(path, SFM_READ, &info);
+    const long frames = wav ? (long)info.frames : -1L;
+    if (wav) {
+        (void)sf_close(wav);
+    }
+    (void)remove(path);
+    return frames;
+}
+
+/* Check that the @p count samples from sample @p from are samples @p first.. of decode @p frame (a good frame of
+   @p bits). */
+static void
+expect_segment(const fixture* f, size_t from, uint32_t frame, const uint8_t* bits, size_t first, size_t count,
+               const char* what) {
+    static int16_t out[MAX_OUT];
+    const size_t n = fixture_output(f, out, MAX_OUT);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof(label), "%s: %zu samples written, %zu wanted", what, n, from + count);
+    expect(n >= from + count, label);
+    for (size_t k = 0; k < count && from + k < n; k++) {
+        const tetra_test_codec_sample smp = tetra_test_codec_read(out[from + k]);
+        if (!smp.valid || smp.bad || smp.frame != frame
+            || smp.bit != (bits[(first + k) % DSD_TETRA_CODEC_FRAME_BITS] & 1)) {
+            DSD_SNPRINTF(label, sizeof(label), "%s: sample %zu (%d) is not sample %zu of decode %u", what, from + k,
+                         out[from + k], first + k, frame);
+            expect(0, label);
+            return;
+        }
+    }
+}
+
+/* What one call left of its speech -- the samples a half slot carries, the codec's state, the confirmation -- never
+   reaches the next: not after the state machine moves to another call on the same carrier (whose record policy would
+   take the carried samples), not when the direct mode channel carries another call, and not across the end of a
+   transmission of the same call. */
+static void
+test_call_boundary_resets_speech(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "boundary: fixture");
+    char wav_path[DSD_TEST_PATH_MAX];
+    expect(open_static_wav(&f, wav_path, sizeof(wav_path)) == 0, "boundary: WAV open");
+    dsd_tg_policy_entry row;
+    expect(dsd_tg_policy_make_exact_entry(500U, "A", "play only", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0,
+           "boundary: policy row");
+    row.record = 0U;
+    expect(dsd_tg_policy_upsert_exact(f.state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0, "boundary: policy");
+    uint8_t half[TETRA_SPEECH_HALF_BITS];
+    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    tetra_voice_reorder_half(half, half_frame);
+    tetra_voice_reorder_full(full, full_frames);
+
+    /* Call 9 to group 500, played but not recorded: one block out, 80 samples carried. */
+    follow_call(&f, 9, 500, 0x0F);
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    expect(voice_of(&f)->carry_len == 80, "boundary: 80 samples carried");
+    /* Call 10 to group 600, which records, on the same carrier: its half slot starts from nothing, so its stolen frame
+       is not concealed with call 9's codec state and its block holds none of call 9's samples. */
+    follow_call(&f, 10, 600, 0x0F);
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    const size_t block = DSD_VOICE_FRAME_SAMPLES;
+    expect_segment(&f, 0, 1, half_frame, 0, block, "boundary: call 9");
+    expect_segment(&f, block, 1, half_frame, 0, block, "boundary: call 10");
+    expect(close_static_wav(&f, wav_path) == (long)DSD_VOICE_FRAME_SAMPLES,
+           "boundary: the recording holds call 10's block alone");
+
+    /* Direct mode: the call on the channel changes. */
+    tetra_state_t* ts = tetra_st(f.state);
+    ts->sm.state = (uint8_t)TETRA_SM_IDLE;
+    ts->dmo = 1;
+    ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+    ts->calls.dmo.active = 1;
+    ts->calls.dmo.dst = 1234;
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    ts->calls.dmo.dst = 1236;
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, 2 * block, 1, half_frame, 0, block, "boundary: direct mode call to 1234");
+    expect_segment(&f, 3 * block, 1, full_frames, 0, FRAME, "boundary: direct mode call to 1236");
+    expect_segment(&f, 3 * block + FRAME, 2, full_frames + DSD_TETRA_CODEC_FRAME_BITS, 0, FRAME,
+                   "boundary: direct mode call to 1236, second frame");
+
+    /* The same trunked call: its transmission ends (D-TX CEASED) and the next one is granted. */
+    ts->dmo = 0;
+    follow_call(&f, 11, 700, 0x0F);
+    const size_t before_tx = 6 * block;
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    tetra_call_event ceased = {.call_id = 11, .kind = TETRA_CALL_EV_TX_CEASED};
+    tetra_calls_on_event(f.opts, f.state, &ceased, NULL);
+    tetra_call_event granted = {.call_id = 11, .kind = TETRA_CALL_EV_TX_GRANTED, .has = TETRA_CALL_HAS_GRANT};
+    tetra_calls_on_event(f.opts, f.state, &granted, NULL);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, before_tx, 1, half_frame, 0, block, "boundary: the first transmission");
+    expect_segment(&f, before_tx + block, 1, full_frames, 0, FRAME, "boundary: the next transmission");
+    expect_segment(&f, before_tx + block + FRAME, 2, full_frames + DSD_TETRA_CODEC_FRAME_BITS, 0, FRAME,
+                   "boundary: the next transmission, second frame");
+    static int16_t out[MAX_OUT];
+    expect(voice_of(&f)->carry_len == 0 && fixture_output(&f, out, MAX_OUT) == before_tx + block + 2 * FRAME,
+           "boundary: nothing more played, nothing carried");
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_clean_stream_plays_every_frame();
@@ -558,6 +694,7 @@ main(void) {
     test_air_key_stream_positions();
     test_talkgroup_gate();
     test_record_gate();
+    test_call_boundary_resets_speech();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

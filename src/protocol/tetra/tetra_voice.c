@@ -273,6 +273,33 @@ voice_frame_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const
     voice_play(opts, state, v, pcm, route->record);
 }
 
+/* Forget the speech in progress: the decoder instance (made again at the next frame), its integrity and its unplayed
+   samples. */
+static void
+voice_speech_reset(tetra_voice_t* v) {
+    voice_codec_destroy(v);
+    v->confirmed = 0;
+    v->bad_run = 0;
+    v->carry_len = 0;
+    v->bound = 0;
+}
+
+/* The speech in progress belongs to one transmission. Speech of another call (another kind or target), or after a TETRA
+   call ended (a release, D-TX CEASED, the state machine leaving it, another call published), starts over: no samples,
+   codec state or confirmation of one call reach the next or its record policy. */
+static void
+voice_bind(tetra_state_t* ts, const tetra_speech* sp) {
+    tetra_voice_t* const v = &ts->voice;
+    if (v->bound && v->owner_kind == sp->kind && v->owner_target == sp->target && v->owner_ends == ts->calls.ends) {
+        return;
+    }
+    voice_speech_reset(v);
+    v->bound = 1;
+    v->owner_kind = sp->kind;
+    v->owner_target = sp->target;
+    v->owner_ends = ts->calls.ends;
+}
+
 /* The frames of one burst of @p sp's call: @p bad[i] for frame i of @p frames. Speech whose CRC passed reaches the call
    first (tetra_calls_on_speech()); the talkgroup and record policy are asked once per burst, and only for a burst with
    a frame to play. */
@@ -290,6 +317,8 @@ voice_burst(dsd_opts* opts, dsd_state* state, const tetra_speech* sp, const uint
     if (good) {
         tetra_calls_on_speech(opts, state, sp);
     }
+    /* After the call heard the speech: publishing this call may have ended the last one. */
+    voice_bind(ts, sp);
     voice_route route = {0, 0};
     int routed = 0;
     for (int i = 0; i < nframes; i++) {
@@ -357,9 +386,5 @@ tetra_voice_reset(dsd_state* state) {
     if (!ts) {
         return;
     }
-    tetra_voice_t* const v = &ts->voice;
-    voice_codec_destroy(v);
-    v->confirmed = 0;
-    v->bad_run = 0;
-    v->carry_len = 0;
+    voice_speech_reset(&ts->voice);
 }
