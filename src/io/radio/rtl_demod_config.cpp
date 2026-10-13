@@ -82,6 +82,13 @@ opts_digital_mode_count(const dsd_opts* opts) {
            + opts_flag_is_set(opts->frame_m17) + opts_flag_is_set(opts->frame_tetra);
 }
 
+/* TETRA's 25 kHz pi/4-DQPSK channel runs CQPSK symbols at 18 ksym/s on the wide channel filter; every P25-specific
+   CQPSK rule (the 4800 sym/s control-channel default and the P25 CQPSK channel filter) leaves it alone. */
+static int
+opts_tetra_only(const dsd_opts* opts) {
+    return opts && opts->frame_tetra == 1 && opts_digital_mode_count(opts) == 1;
+}
+
 static int
 opts_6000_mode_count(const dsd_opts* opts) {
     if (!opts) {
@@ -528,7 +535,7 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
     }
     demod->channel_lpf_enable = channel_lpf ? 1 : 0;
     demod->channel_lpf_profile = profile;
-    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
+    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && !opts_tetra_only(opts)) {
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
     demod->analog_family = 0;
@@ -963,7 +970,7 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
          * P25P1 rate (4800) since CC is typically encountered first; the trunk
          * state machine will override via ted_sps_override when tuning to P25P2 VC. */
         sym_rate = opts_symbol_rate_hz(opts);
-        if (opts && opts_has_p25_mode(opts) && opts->mod_qpsk == 1 && sym_rate != 6000) {
+        if (opts && !opts_tetra_only(opts) && opts->mod_qpsk == 1 && sym_rate != 6000) {
             sym_rate = 4800;
         }
         sym_levels = opts_symbol_levels_for_rate(opts, sym_rate);
@@ -987,7 +994,7 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     } else {
         demod->ted_sps = sps;
     }
-    if (demod->cqpsk_enable && opts_has_p25_mode(opts)) {
+    if (demod->cqpsk_enable && !opts_tetra_only(opts)) {
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
     fsk_modem_apply_config(demod);
