@@ -52,7 +52,10 @@ Analog monitoring starts its quiet timing only once the monitor has read the
 landed channel. A receiver that is still preparing its listening squelch (the NFM
 noise squelch designs its filters the first time a channel width is used) delivers
 no samples for a moment, and a closed carrier then is not a quiet channel. Only validated protocol content can add a
-confirmed digital identity, access code or call details. When a digital probe
+confirmed digital identity, access code or call details. A protocol reports its
+confirmation only after decoding the content that passed the check, so one
+validated frame, such as a single M17 link setup or D-STAR header, is enough for
+its details to reach the detection. When a digital probe
 expires, the display says **NFM monitoring · digital identification unresolved**.
 That fallback does not establish that the transmission is analog.
 
@@ -68,9 +71,15 @@ That fallback does not establish that the transmission is analog.
   future searches; removing a permanent avoid during a search lifts it from the
   running session too.
 - **Pause** permits range edits. **Resume** applies them and restarts the pass,
-  retaining session avoids. **Stop** ends the radio session.
+  retaining session avoids. **Stop** ends the radio session and leaves Signal
+  search open on the same receiver, ready to start again.
+- A start waiting for Android USB permission belongs to the search: leaving Signal
+  search, or a later **Start search** it refuses, cancels it, so a permission
+  granted afterwards starts nothing.
 - Android Back follows the existing background-listening preference. The native
-  session and history worker continue when the foreground Activity is recreated.
+  session and history worker continue when the foreground Activity is recreated,
+  and the reopened screen takes its receiver (USB, Airspy or rtl_tcp server) from
+  the running session.
 
 Detection history is separate from call history: an RF detection need not decode
 anything. The newest 1,000 detections are retained, with one row updated as details
@@ -115,6 +124,10 @@ end the session: after 100 ms without samples the decoder leaves the frame it wa
 reading and returns to the coordinator, so controls and visit deadlines still take
 effect, and it reads the input again on its next pass.
 
+The frame the decoder leaves, there or when a visit ends or a command arrives
+mid-frame, is dropped as on a sync loss: nothing that depends on what it read after
+the cut plays, is published or recorded, or counts as evidence for the detection.
+
 A search started with the radio session waits up to 10 seconds for the receiver's
 first samples. Samples from an earlier radio session do not count: the measurement
 tap forgets a stream when it stops, so a long pause between sessions is not taken
@@ -154,12 +167,9 @@ channels share one boundary however the grid frequencies were rounded. This is
 decided once per measurement, on both windows' power together, so a transmitter is
 assigned the same way for the whole measurement. It must also hold its own power in
 each window (within 10 dB of the other over the bins it occupies), so energy one
-window only owes to another transmitter is not sustained. Two transmitters that each
-fill one window can also pool into one between them; that is told apart from one
-transmitter whose modulation differs between the windows (a slow tone half a cycle
-apart) by both of these: the windows spread it over those bins differently (their
-shares of it overlapping by less than a quarter), and each window centres it
-outside its channel, on either side.
+window only owes to another transmitter is not sustained. A transmitter whose
+modulation differs between the windows (a slow tone half a cycle apart) is still
+sustained.
 
 Transmitters are located in the spectrum itself, not only among the requested
 channels, so one past a range or span boundary counts. Each channel's window climbs
@@ -212,9 +222,11 @@ horns and wide sidebands, CW, AM and 4FSK, on 2.5 to 25 kHz grids, rotation-free
 rates and 250 Hz grids, and they report neighbours down to 20 dB below beside each
 other. Known limits:
 
-- Two transmitters whose spectra merge within the FFT resolution can count as one,
-  at the channel of their combined centre (for example a neighbour 3 dB down,
-  12.5 kHz beside 5 kHz deviation, at 1.2 to 1.5 kHz bins without rotation).
+- Two transmitters whose spectra merge or overlap can count as one, at the channel
+  of their combined centre (for example a neighbour 3 dB down, 12.5 kHz beside
+  5 kHz deviation, at 1.2 to 1.5 kHz bins without rotation, or 5 and 2.5 kHz
+  deviation 10 kHz apart), and so can two such transmitters that each fill only one
+  window.
 - A weak neighbour hidden under a strong transmitter's skirt or splatter, raising
   neither a valley rise nor the envelope (for example 26 dB or more below noise-like
   voice FM, 36 dB below 5 kHz deviation, or 20 dB below a heavily modulated AM
@@ -230,9 +242,7 @@ other. Known limits:
   carrier; it is centred where its spectrum is most symmetric, which on 250 Hz
   grids can be a channel or more from its carrier.
 - A transmitter wider than the channel width whose slow modulation puts each window
-  on a different side of it, or two transmitters with overlapping spectra each
-  present in only one window, can be reported a channel from where it (or either)
-  sits.
+  on a different side of it can be reported a channel from where it sits.
 - A weaker transmitter beside a stronger one is located from what rises out of the
   valley between them. In crowded spectrum on 250 or 625 Hz grids that places it
   within its own width, which spans many channels, so it can be reported several
@@ -279,10 +289,10 @@ own decaying sideband lines past its channel width; windows that wrap FFT bin 0,
 rotation-free capture and channels at the DC and edge guards; transmitters 25 and
 37.5 kHz apart (local noise), equal ones 5 and 10 kHz apart on fine grids, a carrier
 6 dB down 5 kHz beside a stronger one within its window, a weak neighbour on an
-ownership boundary, transmitters present in only one window each (including two
-whose spectra overlap on either side of an empty channel) against one whose 50 Hz
-tone puts its windows on either side of its carrier, a transmitter with lopsided
-modulation whose skirt stands far above its mirror, and noise alone at 3 dB
+ownership boundary, transmitters present in only one window each against one whose
+45 or 50 Hz tone puts its windows on either side of its carrier, a transmitter with
+lopsided modulation whose skirt stands far above its mirror, a two-tone wide FM
+transmitter whose lobes stand either side of a valley, and noise alone at 3 dB
 sensitivity. The shared tap is tested for
 reports delivered only to their own request, cancels and capture changes, with a
 feeding thread racing requests, polls and cancels. An I/Q replay stream checks that
@@ -299,7 +309,10 @@ live strength, lifting session avoids, pause/restart and scoped restoration.
 Stalled-input regressions check that the live read gives up after 100 ms only while
 a search owns the tuner, and that the FSK, monitor and CQPSK symbol readers alike
 take that as an interruption rather than the end of the session, then read the
-rest of the frame as erasures without waiting again.
+rest of the frame as erasures without waiting again. Cut-frame regressions feed every
+digital decoder (D-STAR, ProVoice, P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF, X2-TDMA,
+EDACS) a frame interrupted part-way and check that nothing read across the cut
+plays, publishes, captures or reports evidence.
 Persistence and Qt tests cover bounded history, duplicate suppression, failed
 writes/retry (history and avoids each stay owed until their own write succeeds,
 including when storage only recovers by close), recreation, fractional steps,
@@ -313,6 +326,13 @@ is submitted, and that a start the engine rejects with no search left owns nothi
 and is retired when the decoder session ends, so a recreated frontend never restores
 the search screen over a later ordinary session. A rejected restart of a paused
 search keeps that search's phase, session and ownership; only its message changes.
+Leaving the search (its Back, the system Back) or a Start it refuses abandons a
+start still waiting for USB permission, so the grant starts no session, while a
+start Home left waiting survives; Stop and a refused arm leave nothing armed. A screen
+reopened over a running search after recreation takes its receiver (USB, Airspy or
+rtl_tcp server) from the session's options snapshot, whether that snapshot arrives
+before or after the screen, offers that receiver's gain controls in a paused range
+edit, and keeps it through Stop and a restart.
 The app-control provenance regression also checks that a later false sync or
 unvalidated code change cannot enrich an already confirmed detection during a
 periodic refresh, and that a new detection starts without the preceding details.
