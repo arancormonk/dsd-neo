@@ -52,8 +52,9 @@ typedef struct {
 /**
  * @brief Start the session's state machine over: IDLE, no followed call, no tune in flight.
  *
- * The engine calls it at start and app-control when the decode mode changes. A tune still in flight is retired as
- * rolled back. A session without TETRA state already reads IDLE and gets none.
+ * The engine calls it at start and app-control when the decode mode changes. A tune in flight is let go of: one that
+ * failed is retired as rolled back, one the backend has not answered stays the backend's, so its completion still
+ * publishes the tuner boundary. A session without TETRA state already reads IDLE and gets none.
  */
 void tetra_sm_init(dsd_opts* opts, dsd_state* state);
 
@@ -107,15 +108,15 @@ void tetra_sm_tick(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief The engine already returned the receiver to the control channel (no-carrier return, manual Return to CC):
- * drop the followed call and any tune in flight, forget the traffic carrier, and come to rest ON_CC (IDLE without a
- * control channel). No tuning.
+ * drop the followed call, let go of any tune in flight (as tetra_sm_init() does), forget the traffic carrier, and come
+ * to rest ON_CC (IDLE without a control channel). No tuning.
  */
 void tetra_sm_on_external_cc_return(const dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief A carrier boundary moves the receiver elsewhere: drop the followed call and any tune in flight and release the
- * shared tuning state, without asking the tuner for anything (the caller owns it). Rests ON_CC, or IDLE without a
- * control channel or with trunking off.
+ * @brief A carrier boundary moves the receiver elsewhere: drop the followed call, let go of any tune in flight (as
+ * tetra_sm_init() does) and release the shared tuning state, without asking the tuner for anything (the caller owns
+ * it). Rests ON_CC, or IDLE without a control channel or with trunking off.
  */
 void tetra_sm_abandon_carrier(dsd_opts* opts, dsd_state* state);
 

@@ -4451,7 +4451,10 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `TETRA_SM_TUNE_TIMEOUT_S`, which is published as a timeout so a late completion cannot revive it -- restores the
   rollback first and completes the request after, so the frame gate opens onto restored state
   (`trunk_tuning_hooks.h`). `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own
-  cleanup (a decode-mode change drops the extension) retire a request they find as rolled back.
+  cleanup (a decode-mode change drops the extension) let go of a request they find (`tetra_sm_disown_pending()`): one
+  that failed is retired as rolled back, and one the backend has not answered stays the backend's, so the frame gate
+  waits for it and its completion still publishes the tuner boundary (the mode-exit contract of
+  `dsd_trunk_tuning_retire_failed_requests()`).
 - The carrier. The receiver's carrier changes when a tune completes, not when it is asked for: then
   `tetra_forget_carrier()` (`tetra.c`) drops the carrier's CRC evidence, the partial TM-SDUs
   (`tetra_mac_forget_fragments()`), the TDMA clock (`tetra_tdma_stop()`), which counts symbols a retune may have

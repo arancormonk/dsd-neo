@@ -157,17 +157,20 @@ sm_unfollow(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     tetra_calls_unfollowed(opts, state);
 }
 
-/* A tune the state machine no longer owns: retired as rolled back, so a failed or unanswered one cannot keep the frame
- * gate closed. One that already completed is left as it is. */
-static void
-sm_retire_pending(tetra_state_t* ts) {
-    const uint64_t request_id = ts->sm.pending_request_id;
+void
+tetra_sm_disown_pending(tetra_sm_t* sm) {
+    const uint64_t request_id = sm ? sm->pending_request_id : 0U;
     if (request_id == 0U) {
         return;
     }
-    ts->sm.pending_request_id = 0U;
-    ts->sm.pending_kind = SM_PENDING_NONE;
-    dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    sm->pending_request_id = 0U;
+    sm->pending_kind = SM_PENDING_NONE;
+    /* One the backend still owns stays its own: its completion is the tuner boundary the frame gate waits for, and a
+     * later failure is retired by the mode exit or the next successful tune (trunk_tuning_hooks.h). */
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, NULL);
+    if (result != DSD_TRUNK_TUNE_RESULT_PENDING && !dsd_trunk_tune_result_is_complete(result)) {
+        dsd_trunk_tuning_request_complete(request_id, result);
+    }
 }
 
 static void
@@ -366,7 +369,7 @@ tetra_sm_init(dsd_opts* opts, dsd_state* state) {
     if (!ts) {
         return;
     }
-    sm_retire_pending(ts);
+    tetra_sm_disown_pending(&ts->sm);
     if (ts->sm.state == (uint8_t)TETRA_SM_TUNED) {
         sm_unfollow(opts, state, ts);
     }
@@ -523,7 +526,7 @@ tetra_sm_on_external_cc_return(const dsd_opts* opts, dsd_state* state) {
     if (!ts) {
         return;
     }
-    sm_retire_pending(ts);
+    tetra_sm_disown_pending(&ts->sm);
     /* The engine ended and committed the canonical calls before it handed over. */
     sm_unfollow(NULL, state, ts);
     tetra_forget_carrier(state);
@@ -537,7 +540,7 @@ tetra_sm_abandon_carrier(dsd_opts* opts, dsd_state* state) {
         return;
     }
     const int held = ts->sm.state == (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U;
-    sm_retire_pending(ts);
+    tetra_sm_disown_pending(&ts->sm);
     if (held && opts) {
         sm_release_shared_tuning(opts, state);
     }

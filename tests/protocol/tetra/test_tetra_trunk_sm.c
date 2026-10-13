@@ -468,7 +468,20 @@ test_pending_return(void) {
     session_close(&s);
 }
 
-/* The engine returned the receiver itself: reconcile without tuning, retiring a tune in flight. */
+/* The backend still owns @p request, which the state machine let go of: the frame gate stays closed until it answers,
+ * and its completion is the tuner boundary it is (trunk_tuning_hooks.h). */
+static void
+assert_in_flight_left_to_backend(uint64_t request) {
+    assert(request != 0U && dsd_trunk_tuning_pending_request() == request);
+    assert(dsd_trunk_tuning_request_status(request, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    assert(!dsd_trunk_tuning_frame_is_dispatchable(generation, 0));
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_trunk_tuning_pending_request() == 0U && dsd_trunk_tuning_generation() == generation + 1U);
+    assert(dsd_trunk_tuning_frame_is_dispatchable(generation + 1U, 0));
+}
+
+/* The engine returned the receiver itself: reconcile without tuning. A tune still in flight is the backend's. */
 static void
 test_external_return(void) {
     reset_backend();
@@ -476,12 +489,17 @@ test_external_return(void) {
     g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
     assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    const uint64_t request = g_request;
     tetra_st(s.state)->tdma_valid = 1;
     s.opts->trunk_is_tuned = 0;
     tetra_sm_on_external_cc_return(s.opts, s.state);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
-    assert(dsd_trunk_tuning_pending_request() == 0U && g_returns == 0 && g_tunes == 1);
+    assert(g_returns == 0 && g_tunes == 1);
     assert(tetra_st(s.state)->tdma_valid == 0 && !tetra_confirm_carrier_proven(s.state));
+    assert_in_flight_left_to_backend(request);
+    /* The state machine no longer counts it as its own. */
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
 
     s.state->trunk_cc_freq = 0;
     tetra_sm_on_external_cc_return(s.opts, s.state);
@@ -549,8 +567,8 @@ test_init_retires_pending(void) {
     session_close(&s);
 }
 
-/* Dropping the TETRA state (a decode-mode change, the end of the session) retires a tune in flight: nothing is left to
- * settle it. */
+/* Dropping the TETRA state (a decode-mode change, the end of the session) retires a tune that failed: nothing is left
+ * to settle it. */
 static void
 test_dropped_state_retires_pending(void) {
     reset_backend();
@@ -563,6 +581,33 @@ test_dropped_state_retires_pending(void) {
     tetra_state_reset(s.state);
     assert(dsd_trunk_tuning_pending_request() == 0U && tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
     session_close(&s);
+}
+
+/* Letting go of a tune the backend has not answered yet -- dropping the TETRA state, starting over, a carrier abandon
+ * -- leaves it to the backend: completing it as failed would open the frame gate while the tuner still moves, and the
+ * completion that follows would then publish no tuner boundary. */
+static void
+test_in_flight_tune_survives_letting_go(void) {
+    for (int how = 0; how < 3; how++) {
+        reset_backend();
+        session s = session_open();
+        g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+        assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+        const uint64_t request = g_request;
+        if (how == 0) {
+            tetra_state_reset(s.state);
+            assert(tetra_st_existing(s.state) == NULL);
+        } else if (how == 1) {
+            tetra_sm_init(s.opts, s.state);
+            assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
+        } else {
+            tetra_sm_abandon_carrier(s.opts, s.state);
+            assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
+        }
+        assert_in_flight_left_to_backend(request);
+        session_close(&s);
+    }
 }
 
 /* CRC evidence: a burst that decoded a block proves itself; a reset during a burst leaves the rest of it to the
@@ -625,6 +670,7 @@ main(void) {
     test_released_elsewhere_and_trunking_off();
     test_init_retires_pending();
     test_dropped_state_retires_pending();
+    test_in_flight_tune_survives_letting_go();
     test_confirm_evidence();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

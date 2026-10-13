@@ -54,6 +54,11 @@ typedef struct {
     uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel */
 } tetra_sm_t;
 
+/* Let go of the tune @p sm has in flight (tetra_trunk_sm.c): starting over, a hand-over to the engine, the TETRA state
+ * dropped. A request that failed is retired as rolled back, so it cannot keep the frame gate closed; one the backend
+ * has not answered is left to it, so its completion still publishes the tuner boundary. */
+void tetra_sm_disown_pending(tetra_sm_t* sm);
+
 /* CRC evidence about the carrier on air and the burst being decoded (tetra_confirm.c). A training sequence alone is
  * weak enough for noise to match; a block whose CRC-16 passed (EN 300 392-2 clause 8.2.3.3) is not. Cleared at every
  * carrier boundary, no-carrier pass and trunking retune (tetra_confirm_reset()). */
