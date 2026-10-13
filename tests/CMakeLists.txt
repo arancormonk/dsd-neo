@@ -8756,6 +8756,33 @@ target_include_directories(
 )
 add_test(NAME M17_CONFIRM COMMAND dsd-neo_test_m17_confirm)
 
+# M17 frames an input interruption cut, read through GNU ld --wrap seams around the symbol readers, like the YSF DCH
+# test, and decoded by the real FEC.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_m17_frame_cut
+        protocol/m17/test_m17_frame_cut.c
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_convolution.c
+    )
+    target_include_directories(
+        dsd-neo_test_m17_frame_cut
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/m17
+    )
+    target_link_libraries(
+        dsd-neo_test_m17_frame_cut
+        PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_m17_frame_cut
+        PRIVATE
+            -Wl,--wrap=get_dibit_and_analog_signal
+            -Wl,--wrap=getDibitAndSoftSymbol
+    )
+    add_test(NAME M17_FRAME_CUT COMMAND dsd-neo_test_m17_frame_cut)
+endif()
+
 add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
     protocol/dmr/test_dmr_t3_sm_clamp.c
