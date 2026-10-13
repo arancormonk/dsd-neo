@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/crypto/tetra_tea.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
