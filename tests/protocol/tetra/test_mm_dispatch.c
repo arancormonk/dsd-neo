@@ -49,19 +49,11 @@ pack_bits(uint8_t* bits, int off, uint32_t v, int n) {
     }
 }
 
-/* -----------------------------------------------------------------------
- * test_carrier_to_dl_hz
- *
- * Verify the formula and the ETSI offset-code mapping:
- * 00=0, 01=+6.25 kHz, 10=-6.25 kHz, 11=+12.5 kHz.
- * ----------------------------------------------------------------------- */
+/* EN 300 392-2 clause 21.4.4.1 with the TS 100 392-15 table 1 base frequencies, and the offset codes
+ * 00 = 0, 01 = +6.25 kHz, 10 = -6.25 kHz, 11 = +12.5 kHz. */
 static void
 test_carrier_to_dl_hz(void) {
-    /* Each band number supplies a 100 MHz base. */
-    long hz = tetra_carrier_to_dl_hz(100, 0, 0);
-    CHECK(hz == 2500000L, "band 0, carrier=100, offset=0 → 2 500 000");
-
-    hz = tetra_carrier_to_dl_hz(50, 4, 0);
+    long hz = tetra_carrier_to_dl_hz(50, 4, 0);
     CHECK(hz == 401250000L, "band 4, carrier=50, offset=0 → 401 250 000");
 
     /* band 4 with offset=2 */
@@ -78,13 +70,21 @@ test_carrier_to_dl_hz(void) {
     hz = tetra_carrier_to_dl_hz(3748, 3, 3);
     CHECK(hz == 393712500L, "real-air SYSINFO → 393 712 500");
 
-    hz = tetra_carrier_to_dl_hz(100, 15, 0);
-    CHECK(hz == 1502500000L, "band 15, carrier=100 → 1 502 500 000");
+    hz = tetra_carrier_to_dl_hz(4095, 9, 3);
+    CHECK(hz == 1002387500L, "band 9, highest carrier and offset");
+    hz = tetra_carrier_to_dl_hz(0, 1, 0);
+    CHECK(hz == 100000000L, "band 1 is the lowest band with a base frequency");
 
+    /* Frequency band 0 is a cell without a main carrier: the decoder must not invent one (a channel allocation for
+     * carrier 400 on band 0 used to come out as 10 MHz). */
+    CHECK(tetra_carrier_to_dl_hz(400, 0, 0) == 0L, "band 0 has no downlink frequency");
+    CHECK(tetra_carrier_to_dl_hz(100, 0, 2) == 0L, "band 0 with an offset has no downlink frequency");
+    for (uint32_t band = 10; band <= 15; band++) {
+        CHECK(tetra_carrier_to_dl_hz(100, band, 0) == 0L, "bands 10 to 15 have no base frequency");
+    }
     CHECK(tetra_carrier_to_dl_hz(0, 16, 0) == 0L, "out-of-range band → 0");
     CHECK(tetra_carrier_to_dl_hz(4096, 3, 0) == 0L, "out-of-range carrier → 0");
-
-    fprintf(stderr, "[test_carrier_to_dl_hz] done\n");
+    CHECK(tetra_carrier_to_dl_hz(100, 4, 4) == 0L, "out-of-range offset code → 0");
 }
 
 static void

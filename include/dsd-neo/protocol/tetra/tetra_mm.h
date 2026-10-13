@@ -47,20 +47,19 @@ extern "C" {
 #define TETRA_MM_RESERVED_14                    14
 #define TETRA_MM_FUNCTION_NOT_SUPPORTED         15
 
-/* -----------------------------------------------------------------------
- * Carrier frequency computation helper.
+/**
+ * @brief Downlink carrier frequency in Hz of a TETRA carrier number.
  *
- * tetra_carrier_to_dl_hz()
+ * EN 300 392-2 clause 21.4.4.1: base frequency + carrier x 25 kHz + offset, where the 2-bit offset code selects
+ * 0, +6.25, -6.25 or +12.5 kHz. ETSI TS 100 392-15 table 1 defines the base frequency of frequency band values 1 to 9
+ * as the value x 100 MHz.
  *
- * Convert the SYSINFO `main_carrier` (12-bit, 0–4095) + `freq_band` (4-bit)
- * + `freq_offset` (2-bit) into an absolute DL frequency in Hz.
- *
- * TETRA DL frequency formula (ETSI EN 300 392-2 Annex A):
- *   DL (Hz) = freq_band × 100000000 + main_carrier × 25000
- *             + decoded frequency offset
- *
- * Returns 0 when either encoded field is outside its specified width.
- * ----------------------------------------------------------------------- */
+ * @param main_carrier 12-bit carrier number (SYSINFO main carrier or channel allocation carrier number).
+ * @param freq_band    4-bit frequency band.
+ * @param freq_offset  2-bit offset code.
+ * @return The frequency, or 0 when the carrier has none: frequency band 0 (a cell without a main carrier, table 21.65
+ *         note 3), a frequency band without a base frequency (10 to 15), or a field outside its width.
+ */
 long tetra_carrier_to_dl_hz(uint32_t main_carrier, uint32_t freq_band, uint32_t freq_offset);
 
 /* -----------------------------------------------------------------------

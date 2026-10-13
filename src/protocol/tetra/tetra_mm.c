@@ -20,16 +20,16 @@
 /* Phase 81: bits_to_uint unified — see tetra_bits.h */
 #define mm_bits_to_uint tetra_bits_to_uint
 
-/* ETSI carrier formula: band supplies a 100 MHz base, carrier spacing is
- * 25 kHz, and the two-bit offset selects 0, +6.25, -6.25, or +12.5 kHz. */
-
+/* EN 300 392-2 clause 21.4.4.1: downlink main carrier frequency = base frequency + main carrier x 25 kHz + offset.
+ * ETSI TS 100 392-15 table 1 gives frequency band values 1 to 9 the base frequency value x 100 MHz. Value 0 means the
+ * cell has no main carrier (clause 21.4.4.1, table 21.65 note 3) and 10 to 15 have no base frequency. */
 long
 tetra_carrier_to_dl_hz(uint32_t main_carrier, uint32_t freq_band, uint32_t freq_offset) {
-    if (freq_band >= 16 || main_carrier > 4095) {
+    static const long offset_hz[4] = {0L, 6250L, -6250L, 12500L};
+    if (freq_band < 1u || freq_band > 9u || main_carrier > 4095u || freq_offset > 3u) {
         return 0L;
     }
-    static const long offset_hz[4] = {0L, 6250L, -6250L, 12500L};
-    return (long)freq_band * 100000000L + (long)main_carrier * 25000L + offset_hz[freq_offset & 3u];
+    return (long)freq_band * 100000000L + (long)main_carrier * 25000L + offset_hz[freq_offset];
 }
 
 /* Mandatory downlink MM fields from ETSI EN 300 392-2, tables 16.1-16.27. */
