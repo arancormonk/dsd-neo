@@ -548,6 +548,13 @@ run_credentials_case block_scalar_hash_line < <(
 )
 expect_credentials_verdict block_scalar_hash_line fail
 
+# A trigger name that is not a plain word (here a YAML escape that decodes to
+# pull_request) is not read, so it counts as pull requests.
+run_credentials_case escaped_trigger < <(
+  CREDENTIALED_ON='on: ["pull\u005frequest"]' credentialed_job build:
+)
+expect_credentials_verdict escaped_trigger fail
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:

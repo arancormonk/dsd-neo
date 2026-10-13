@@ -117,7 +117,10 @@ report_violation "Inline archlinux:base-devel image differs from ARCHLINUX_BASE_
 # indentation alone gives the structure. What it cannot read that way (a top level
 # not in block style, a flow collection spread over lines, a job written in flow
 # style, aliases or merge keys) fails closed whenever it could hide credentials:
-# write such a workflow out in block style.
+# write such a workflow out in block style. A condition that is always true because
+# of text around its ${{ }} (a trailing newline from `if: |`, say) is actionlint's
+# if-cond error, which the required shell/workflow lint check rejects; this check
+# does not model it.
 if ! command -v python3 > /dev/null 2>&1; then
   echo "python3 is required for workflow download pin guardrail checks." >&2
   exit 2
@@ -303,7 +306,9 @@ def trigger_names(rows):
             else:
                 names.append(key if key is not None else unquote(body))
     names = [n.strip().lower() for n in names]
-    if not names or any(not n or n.startswith(("*", "{", "[")) or n == "<<" for n in names):
+    # Event names are plain words; anything else (an escape sequence, an alias, a
+    # merge key, a nested collection) is not read and so counts as unreadable.
+    if not names or not all(re.fullmatch(r"[a-z_]+", n) for n in names):
         return None
     return names
 
