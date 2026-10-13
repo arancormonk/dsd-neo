@@ -189,7 +189,12 @@ SignalSearchModel::SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* ind
     QDir().mkpath(QFileInfo(path).absolutePath());
     dsd_app_signal_search_store_open(path.toUtf8().constData());
     m_timer.setInterval(250);
-    connect(&m_timer, &QTimer::timeout, this, &SignalSearchModel::refresh);
+    connect(&m_timer, &QTimer::timeout, this, [this] {
+        if (armSessionUp() && m_host->sessionState() == DecoderHost::Running) {
+            submitArm();
+        }
+        refresh();
+    });
     if (m_index) {
         connect(m_index, &KnownFrequencyIndex::changed, this, [this] {
             m_revision = UINT64_MAX;
@@ -198,21 +203,59 @@ SignalSearchModel::SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* ind
         });
     }
     if (m_host) {
-        connect(m_host, &DecoderHost::sessionStateChanged, this, [this] {
-            if (m_armed && m_host->sessionState() == 2) {
-                if (dsd_app_signal_search_start(&m_pending) < 0) {
-                    m_error = tr("The decoder did not accept Signal search. Stop and retry.");
-                }
-                m_armed = false;
-                Q_EMIT changed();
-            }
-            if (m_host->sessionState() == 4) {
-                m_armed = false;
+        connect(m_host, &DecoderHost::sessionStateChanged, this, &SignalSearchModel::followSession);
+        /* Admission is open by then. The host can report it ahead of the phase it arrives with, while Starting. */
+        connect(m_host, &DecoderHost::sessionInitialized, this, [this] {
+            if (armSessionUp()) {
+                submitArm();
             }
         });
     }
     m_timer.start();
     refresh();
+}
+
+/* An arm waits for one decoder session: the one up when it was made (a paused search's Resume), or else the next one
+   to come up, since Signal search arms before it asks for the start, and a USB grant can hold that start while the host
+   stays Idle. That session's end ends the arm, whether or not the start went in; it never carries into another. */
+void
+SignalSearchModel::followSession() {
+    const DecoderHost::SessionState state = m_host->sessionState();
+    if (state == DecoderHost::Starting || state == DecoderHost::Running) {
+        m_armSessionSeen = m_armed;
+        if (state == DecoderHost::Running) {
+            submitArm();
+        }
+    } else if (state != DecoderHost::Idle || m_armSessionSeen) {
+        disarm(); // Stopping or Failed, or Idle after the session came up
+    }
+}
+
+bool
+SignalSearchModel::armSessionUp() const {
+    if (!m_armed || !m_armSessionSeen || m_host == nullptr) {
+        return false;
+    }
+    const DecoderHost::SessionState state = m_host->sessionState();
+    return state == DecoderHost::Starting || state == DecoderHost::Running;
+}
+
+/* Running does not mean the decoder takes commands yet. The Android engine thread reports Running a moment before its
+   dsd_app_frontend_runtime_start() opens command admission (and a session winding down closes admission before Running
+   drops), so a submission can be refused. A refused one queues nothing: the arm stays for the next chance, the host's
+   initialization signal (which follows the admission edge) or a status tick while Running. An accepted one ends the
+   arm, so the search is started once. */
+void
+SignalSearchModel::submitArm() {
+    if (m_armed && dsd_app_signal_search_start(&m_pending) >= 0) {
+        disarm();
+    }
+}
+
+void
+SignalSearchModel::disarm() {
+    m_armed = false;
+    m_armSessionSeen = false;
 }
 
 /* The foreground service can outlive the entire QML engine on Android. Its native
@@ -289,7 +332,7 @@ QString
 SignalSearchModel::arm() {
     /* Each attempt replaces the last, and a refused one leaves nothing armed: m_pending is rebuilt as it is checked, so
        an earlier arm left standing would start a half-built configuration when the session comes up. */
-    m_armed = false;
+    disarm();
     if (m_ranges.isEmpty()) {
         return tr("Add a range before searching.");
     }
@@ -324,20 +367,17 @@ SignalSearchModel::arm() {
         return QString::fromUtf8(configError);
     }
     m_armed = true;
+    m_armSessionSeen = m_host != nullptr && m_host->sessionActive();
     m_error.clear();
-    if (m_host && m_host->sessionState() == 2) {
-        if (dsd_app_signal_search_start(&m_pending) < 0) {
-            m_armed = false;
-            return tr("The decoder did not accept the search.");
-        }
-        m_armed = false;
+    if (m_host != nullptr && m_host->sessionState() == DecoderHost::Running) {
+        submitArm();
     }
     return {};
 }
 
 void
 SignalSearchModel::cancelArm() {
-    m_armed = false;
+    disarm();
 }
 
 bool

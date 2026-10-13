@@ -10,6 +10,7 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QList>
@@ -19,13 +20,16 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QVariant>
 #include <QVariantMap>
 #include <cassert>
 #include <cmath>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,12 +44,25 @@
 #include "signal_search_model.h"
 
 namespace {
-/** A host whose session state a case moves, so the model's start on the Running edge can be observed. */
+/** A host whose session state a case moves, so the model's start on the Running edge can be observed. With
+    @p signalsInitialized it also reports initialization, from initialize(), as the Android host does. */
 class SessionHost : public dsd_qt::DecoderHost {
   public:
+    explicit SessionHost(bool signalsInitialized = false) : m_signalsInitialized(signalsInitialized) {}
+
     bool
     isRunning() const override {
         return m_state == Running;
+    }
+
+    bool
+    signalsSessionInitialized() const override {
+        return m_signalsInitialized;
+    }
+
+    void
+    initialize() {
+        Q_EMIT sessionInitialized();
     }
 
     QString
@@ -76,7 +93,168 @@ class SessionHost : public dsd_qt::DecoderHost {
 
   private:
     SessionState m_state = Idle;
+    bool m_signalsInitialized;
 };
+
+/* Whether a command waits in the decoder's queue; only an open command session answers. */
+bool
+startQueued() {
+    return dsd_runtime_controls_pending() != 0;
+}
+
+/* Empties the queue as a decoder session's teardown does, then opens command admission again. */
+void
+reopenAdmission() {
+    dsd_app_frontend_runtime_stop();
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+}
+
+/* Runs the event loop for @p ms: long enough for the model's 250 ms status tick to fire. */
+void
+spin(int ms) {
+    QEventLoop loop;
+    QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+    loop.exec();
+}
+
+/* Android reports Running when the engine thread raises g_running, a moment before that thread's
+   dsd_app_frontend_runtime_start() opens command admission. A start submitted on that edge is refused; the arm
+   survives the refusal and goes in once initialization (which follows the admission edge) is reported, once. */
+void
+testRunningBeforeAdmission(dsd_qt::KnownFrequencyIndex* index) {
+    SessionHost android(true);
+    dsd_qt::SignalSearchModel search(&android, index);
+    assert(search.arm().isEmpty());
+    android.enter(dsd_qt::DecoderHost::Starting);
+    android.enter(dsd_qt::DecoderHost::Running); // admission still closed: refused
+    assert(search.error().isEmpty());
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    assert(!startQueued());
+    android.initialize();
+    assert(startQueued());
+    // Submitted once: no later edge, initialization or tick starts it again.
+    reopenAdmission();
+    android.initialize();
+    android.enter(dsd_qt::DecoderHost::Running);
+    spin(300);
+    assert(!startQueued());
+    android.enter(dsd_qt::DecoderHost::Stopping);
+    android.enter(dsd_qt::DecoderHost::Idle);
+    dsd_app_frontend_runtime_stop();
+}
+
+/* The host reports initialization ahead of the phase that arrives with it, so the session can still read Starting;
+   admission is open by then, and the start goes in at once, and only once. */
+void
+testInitializedWhileStarting(dsd_qt::KnownFrequencyIndex* index) {
+    SessionHost android(true);
+    dsd_qt::SignalSearchModel search(&android, index);
+    assert(search.arm().isEmpty());
+    android.enter(dsd_qt::DecoderHost::Starting);
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    android.initialize();
+    assert(startQueued());
+    reopenAdmission();
+    android.enter(dsd_qt::DecoderHost::Running);
+    spin(300);
+    assert(!startQueued());
+    android.enter(dsd_qt::DecoderHost::Idle);
+    dsd_app_frontend_runtime_stop();
+}
+
+/* An arm made before its start (a USB grant still pending) waits through Idle for the session it asked for. */
+void
+testArmWaitsThroughIdle(dsd_qt::KnownFrequencyIndex* index) {
+    SessionHost android(true);
+    dsd_qt::SignalSearchModel search(&android, index);
+    assert(search.arm().isEmpty());
+    android.enter(dsd_qt::DecoderHost::Idle);
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    android.enter(dsd_qt::DecoderHost::Starting);
+    android.enter(dsd_qt::DecoderHost::Running);
+    assert(startQueued());
+    android.enter(dsd_qt::DecoderHost::Idle);
+    dsd_app_frontend_runtime_stop();
+}
+
+/* A session that ends before admission opens takes the arm with it, whether it stops, fails or simply ends, and
+   whether or not it reported Running first: the next, ordinary session starts no search. */
+void
+testArmEndsWithSession(dsd_qt::KnownFrequencyIndex* index, bool reachedRunning) {
+    SessionHost android(true);
+    dsd_qt::SignalSearchModel search(&android, index);
+    for (const auto end : {dsd_qt::DecoderHost::Stopping, dsd_qt::DecoderHost::Failed, dsd_qt::DecoderHost::Idle}) {
+        assert(search.arm().isEmpty());
+        android.enter(dsd_qt::DecoderHost::Starting);
+        if (reachedRunning) {
+            android.enter(dsd_qt::DecoderHost::Running); // refused: admission is closed
+        }
+        android.enter(end);
+        android.enter(dsd_qt::DecoderHost::Idle);
+        dsd_app_frontend_runtime_start(nullptr, nullptr);
+        android.enter(dsd_qt::DecoderHost::Starting);
+        android.enter(dsd_qt::DecoderHost::Running);
+        android.initialize();
+        assert(!startQueued());
+        android.enter(dsd_qt::DecoderHost::Idle);
+        dsd_app_frontend_runtime_stop();
+    }
+}
+
+/* A host without the initialization signal (desktop) uses Running as its readiness edge: with admission open then,
+   the start goes in on that edge, and a Resume over the running session goes in at once. */
+void
+testRunningEdgeWithoutInitialization(dsd_qt::KnownFrequencyIndex* index) {
+    SessionHost desktop;
+    dsd_qt::SignalSearchModel search(&desktop, index);
+    assert(search.arm().isEmpty());
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    desktop.enter(dsd_qt::DecoderHost::Running);
+    assert(startQueued());
+    reopenAdmission();
+    assert(search.arm().isEmpty());
+    assert(startQueued());
+    desktop.enter(dsd_qt::DecoderHost::Idle);
+    dsd_app_frontend_runtime_stop();
+}
+
+/* Such a host opening admission only after Running: the refused start is kept, and the status tick submits it, once. */
+void
+testTickRetryWithoutInitialization(dsd_qt::KnownFrequencyIndex* index) {
+    SessionHost desktop;
+    dsd_qt::SignalSearchModel search(&desktop, index);
+    assert(search.arm().isEmpty());
+    desktop.enter(dsd_qt::DecoderHost::Running);
+    assert(search.error().isEmpty());
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    for (int waited = 0; waited < 5000 && !startQueued(); waited += 50) {
+        spin(50);
+    }
+    assert(startQueued());
+    reopenAdmission();
+    spin(300);
+    assert(!startQueued());
+    desktop.enter(dsd_qt::DecoderHost::Idle);
+    dsd_app_frontend_runtime_stop();
+}
+
+/* A Resume refused while the session winds down (admission already closed) is kept until that session ends, and
+   ends with it. */
+void
+testResumeWhileWindingDown(dsd_qt::KnownFrequencyIndex* index) {
+    SessionHost desktop;
+    dsd_qt::SignalSearchModel search(&desktop, index);
+    desktop.enter(dsd_qt::DecoderHost::Running);
+    assert(search.arm().isEmpty());
+    desktop.enter(dsd_qt::DecoderHost::Stopping);
+    desktop.enter(dsd_qt::DecoderHost::Idle);
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    desktop.enter(dsd_qt::DecoderHost::Running);
+    spin(300);
+    assert(!startQueued());
+    desktop.enter(dsd_qt::DecoderHost::Idle);
+    dsd_app_frontend_runtime_stop();
+}
 } // namespace
 
 static void
@@ -389,16 +567,31 @@ main(int argc, char** argv) {
     model.cancelArm();
 
     // A refused arm leaves nothing armed. It rebuilds the pending configuration as it checks it, so an earlier arm
-    // left standing would start that half-built configuration when the session comes up. No decoder session is open
-    // here, so a start the model attempts surfaces as its refusal text.
-    SessionHost host;
-    dsd_qt::SignalSearchModel armed(&host, &index);
-    assert(armed.arm().isEmpty());
-    assert(armed.saveRange(-1, large).isEmpty());
-    assert(armed.arm().contains(QStringLiteral("100,000")));
-    host.enter(dsd_qt::DecoderHost::Running);
-    assert(!armed.error().contains(QStringLiteral("did not accept")));
-    armed.removeRange(1);
+    // left standing would start that half-built configuration when the session comes up. The decoder session's
+    // command admission is open, so a start the model submitted would be queued.
+    {
+        SessionHost host;
+        dsd_qt::SignalSearchModel armed(&host, &index);
+        assert(armed.arm().isEmpty());
+        assert(armed.saveRange(-1, large).isEmpty());
+        assert(armed.arm().contains(QStringLiteral("100,000")));
+        dsd_app_frontend_runtime_start(nullptr, nullptr);
+        host.enter(dsd_qt::DecoderHost::Running);
+        assert(!startQueued() && armed.error().isEmpty());
+        host.enter(dsd_qt::DecoderHost::Idle);
+        dsd_app_frontend_runtime_stop();
+        armed.removeRange(1);
+    }
+
+    // A start is submitted once the decoder's command admission takes it, and never outlives its session.
+    testRunningBeforeAdmission(&index);
+    testInitializedWhileStarting(&index);
+    testArmWaitsThroughIdle(&index);
+    testArmEndsWithSession(&index, false);
+    testArmEndsWithSession(&index, true);
+    testRunningEdgeWithoutInitialization(&index);
+    testTickRetryWithoutInitialization(&index);
+    testResumeWhileWindingDown(&index);
     return 0;
 }
 

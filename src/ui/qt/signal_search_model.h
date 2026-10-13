@@ -88,10 +88,15 @@ class SignalSearchModel : public QObject {
     QString m_error, m_persistenceError;
     QTimer m_timer;
     dsd_signal_search_config m_pending{};
-    bool m_armed = false;
+    /* A start waiting for the decoder to take it, and whether the session it waits for has been seen up. */
+    bool m_armed = false, m_armSessionSeen = false;
     uint64_t m_revision = UINT64_MAX, m_session = 0;
     uint64_t m_historyRevision = UINT64_MAX, m_avoidsRevision = UINT64_MAX;
     bool m_owned = false;
+    void followSession();
+    bool armSessionUp() const;
+    void submitArm();
+    void disarm();
     bool persistRanges(const QVariantList& list);
     bool refreshAvoids();
     bool refreshHistory();
