@@ -159,7 +159,8 @@ constexpr double kMirrorSymmetry = 0.5;
 constexpr double kWeakCentreRatio = 0.01;
 constexpr double kTwoSourceMargin = 0.06;
 /* A transmitter is sustained when each window holds at least a tenth of the other's power over the bins it occupies,
-   spread over them alike: the windows' shares of it overlap by at least a quarter. */
+   and is not two transmitters pooled: windows whose shares of it overlap by less than a quarter must not each centre
+   it outside its channel. */
 constexpr double kSustainedRatio = 10.0;
 constexpr double kSustainedOverlap = 0.25;
 /* Leakage analysis aggregates bins until a channel's half width spans at most this many (a power of two apart). */
@@ -806,8 +807,36 @@ struct beside {
 
     /* What the mirror does not explain, where at least half the power is that remainder: it must peak inside that
        region (a skirt merely taller than its mirror, or mirrored about a slightly wrong centre, leaves more and more
-       toward the source's own edge). Only up to the first transmitter other than the source: beyond it, what the
-       source's mirror does not explain is that transmitter's own skirt, and the valley rises find any other. */
+       toward the source's own edge). The envelope itself must also rise to that peak from a dip: a transmitter on the
+       skirt bumps it, while a lopsided transmitter's own skirt only falls, however much taller than its mirror. Only up
+       to the first transmitter other than the source: beyond it, what the source's mirror does not explain is that
+       transmitter's own skirt, and the valley rises find any other. */
+    bool
+    bumps(long long top) const {
+        double dip = a.near_env(top);
+        for (long long j = start; (top - j) * side > 0; j += side) {
+            dip = std::min(dip, a.near_env(j));
+        }
+        return a.near_env(top) > dip;
+    }
+
+    /* The top of what the mirror does not explain, climbed from @p k within the region where at least half the power
+       is that remainder. */
+    long long
+    excess_top(long long k) const {
+        auto unexplained = [&](long long j) {
+            return outside(j) && a.near_env(j) >= 2 * mirrored(j) && std::llabs(j - k) <= a.reach;
+        };
+        long long top = k;
+        while (unexplained(top + 1) && remainder(top + 1, 0) > remainder(top, 0)) {
+            ++top;
+        }
+        while (unexplained(top - 1) && remainder(top - 1, 0) > remainder(top, 0)) {
+            --top;
+        }
+        return top;
+    }
+
     void
     mirror_excess() {
         for (long long i = a.half + 1; i <= a.reach; ++i) {
@@ -815,17 +844,9 @@ struct beside {
             if (!outside(k) || !(a.near_env(k) >= kMirrorRiseRatio * mirrored(k))) {
                 continue;
             }
-            auto unexplained = [&](long long j) {
-                return outside(j) && a.near_env(j) >= 2 * mirrored(j) && std::llabs(j - k) <= a.reach;
-            };
-            long long top = k;
-            while (unexplained(top + 1) && remainder(top + 1, 0) > remainder(top, 0)) {
-                ++top;
-            }
-            while (unexplained(top - 1) && remainder(top - 1, 0) > remainder(top, 0)) {
-                --top;
-            }
-            if (remainder(top + 1, 0) <= remainder(top, 0) && remainder(top - 1, 0) <= remainder(top, 0)) {
+            const long long top = excess_top(k);
+            if (remainder(top + 1, 0) <= remainder(top, 0) && remainder(top - 1, 0) <= remainder(top, 0)
+                && bumps(top)) {
                 const located h = separate(top, 0, start);
                 const int match = sources->find(h, a.decimation);
                 if (match == source_index) {
@@ -999,23 +1020,31 @@ locate_sources(dsd_signal_detector* d, const analysis& a, const bool* seeds) {
     }
 }
 
-/* The power of window @p w (0 the first, 1 the second) per transform over analysis bin @p b. */
+/* The power of window @p w (0 the first, 1 the second) per transform over analysis bin @p b; its first moment about
+   FFT bin 0 (rotation applied) into @p moment when given. */
 double
-window_power(const dsd_signal_detector* d, const analysis& both, int w, long long b) {
+window_power(const dsd_signal_detector* d, const analysis& both, int w, long long b, double* moment = nullptr) {
     const double* power = w ? d->power : d->first_power;
-    double sum = 0;
+    double sum = 0, weighted = 0;
     for (long long f = b * both.decimation; f < (b + 1) * both.decimation; ++f) {
         sum += power[wrap_index(f, d->n)];
+        weighted += power[wrap_index(f, d->n)] * (double)f;
     }
-    return sum / (w ? d->frames : d->first_frames);
+    const double frames = w ? d->frames : d->first_frames;
+    if (moment) {
+        *moment = weighted / frames;
+    }
+    return sum / frames;
 }
 
-/* Whether a transmitter located in @p both holds its own power in both windows, over the bins it occupies (within
-   10 dB of its peak): within 10 dB of each other, not a neighbour's skirt beside it; and spread over those bins alike,
-   the windows' three-bin sums overlapping by at least a quarter once each is scaled to its total, not two transmitters
-   that each fill one window and pool into one between them. */
+/* Whether a transmitter located in @p both, and owned by the channel [@p low, @p high) (FFT bins), holds its own power
+   in both windows over the bins it occupies (within 10 dB of its peak): within 10 dB of each other, not a neighbour's
+   skirt beside it. And not two transmitters that each fill one window and pool into one between them: that is the
+   windows spreading it over those bins differently (their three-bin sums, each scaled to its total, overlapping by less
+   than a quarter) with each window's power centred outside the channel, on either side. One transmitter whose
+   modulation differs between the windows (a slow tone a half cycle apart) keeps both centres within its channel. */
 bool
-sustained(const dsd_signal_detector* d, const analysis& both, const located& s) {
+sustained(const dsd_signal_detector* d, const analysis& both, const located& s, double low, double high) {
     double peak = 0;
     for (long long b = s.first; b <= s.last; ++b) {
         peak = std::max(peak, both.at(b));
@@ -1024,11 +1053,13 @@ sustained(const dsd_signal_detector* d, const analysis& both, const located& s) 
     auto three = [&](int w, long long b) {
         return window_power(d, both, w, b - 1) + window_power(d, both, w, b) + window_power(d, both, w, b + 1);
     };
-    double power[2] = {0, 0}, spread[2] = {0, 0};
+    double power[2] = {0, 0}, moment[2] = {0, 0}, spread[2] = {0, 0};
     for (long long b = s.first; b <= s.last; ++b) {
         if (occupied(b)) {
             for (int w = 0; w < 2; ++w) {
-                power[w] += window_power(d, both, w, b);
+                double m = 0;
+                power[w] += window_power(d, both, w, b, &m);
+                moment[w] += m;
                 spread[w] += three(w, b);
             }
         }
@@ -1043,7 +1074,9 @@ sustained(const dsd_signal_detector* d, const analysis& both, const located& s) 
             overlap += std::min(three(0, b) / spread[0], three(1, b) / spread[1]);
         }
     }
-    return overlap >= kSustainedOverlap;
+    const double first_at = moment[0] / power[0], second_at = moment[1] / power[1];
+    const bool apart = (first_at < low && second_at >= high) || (second_at < low && first_at >= high);
+    return overlap >= kSustainedOverlap || !apart;
 }
 
 /* Whether a sustained transmitter located in @p both is centred in [@p low, @p high). */
@@ -1051,7 +1084,7 @@ bool
 owns_sustained(const dsd_signal_detector* d, const analysis& both, double low, double high) {
     for (int j = 0; j < d->sources.count; ++j) {
         const located& s = d->sources.items[j];
-        if (s.centre >= low && s.centre < high && sustained(d, both, s)) {
+        if (s.centre >= low && s.centre < high && sustained(d, both, s, low, high)) {
             return true;
         }
     }
@@ -1090,8 +1123,8 @@ reject_leakage(dsd_signal_detector* d, const bool* second_raw) {
 /* The mean power per FFT bin of a channel's noise sidebands, from 1.5 to 3 widths either side of @p position (FFT bins,
    rotation applied) in four blocks a side, over prefix sums @p bins: the mean of the blocks within 6 dB of the third
    lowest. A block a transmitter raises more than that is left out (up to five of the eight); one it raises less still
-   counts, so with up to five raised blocks the mean reads at most about 4.6 dB high. Noise alone (a sloping floor too)
-   is measured over all of them. Negative when a side has too few bins. */
+   counts, so with up to five raised blocks the mean reads at most 2.875 times the third lowest (about 4.6 dB high over a
+   flat floor). Noise alone (a sloping floor too) is measured over all of them. Negative when a side has too few bins. */
 template <typename S>
 double
 sideband_noise(const S& bins, double position, double width_bins) {

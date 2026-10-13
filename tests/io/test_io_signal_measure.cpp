@@ -340,6 +340,27 @@ test_neighbours(dsd_signal_detector* d) {
     const auto finer = grid_request(1536000, 384000, 163450000, 2500, 16000, 162997500, 13);
     assert((detected(d, finer, {{163010000, 0.3, 0, 1000, 0}, {163015000, 0.3, 0, 1000, 0}})
             == std::vector<uint32_t>{163010000, 163015000}));
+    // A transmitter whose modulation is lopsided (1 kHz times sin 700 Hz plus cos 1400 Hz) stands far above its own
+    // mirror on one side, but its skirt only falls: no neighbour.
+    {
+        const auto lopsided = grid_request(1536000, 384000, 163450000, 2500, 8000, 162962500, 41);
+        auto iq = samples(lopsided, lopsided.frequencies[0], 0, request_samples(lopsided));
+        double phase = 0;
+        for (size_t i = 0; i < iq.size() / 2; ++i) {
+            const double t = (double)i / lopsided.capture.rate_hz;
+            const double deviation =
+                1000.0 * (std::sin(6.283185307179586 * 700 * t) + std::cos(6.283185307179586 * 1400 * t));
+            phase += 6.283185307179586
+                     * (163012500.0 - lopsided.capture.capture_hz + lopsided.capture.rotation_hz + deviation)
+                     / lopsided.capture.rate_hz;
+            iq[2 * i] += (float)(0.3 * std::cos(phase));
+            iq[2 * i + 1] += (float)(0.3 * std::sin(phase));
+        }
+        const auto report = run(d, lopsided, iq, 4096);
+        for (uint32_t i = 0; i < lopsided.count; ++i) {
+            assert(report.candidates[i].detected == (lopsided.frequencies[i] == 163012500));
+        }
+    }
     // A carrier 6 dB down 5 kHz beside a stronger one, within its 20 kHz window: unmirrored, beyond a deep valley.
     const auto close = grid_request(1536000, 384000, 163450000, 2500, 20000, 163002500, 13);
     assert((detected(d, close, {{163012500, 0.3, 0, 1000, 0}, {163017500, 0.15, 0, 1000, 0}})
@@ -384,6 +405,10 @@ test_sustained(dsd_signal_detector* d) {
             assert(!report.candidates[i].detected);
         }
     }
+    // One transmitter whose slow tone (50 Hz) puts each window on a different side of its carrier is sustained: both
+    // windows keep it centred within its own channel.
+    const auto slow = grid_request(1536000, 384000, 163450000, 5000, 16000, 162992500, 9);
+    assert(detected(d, slow, {{163012500, 0.3, 2500, 50, 0}}) == std::vector<uint32_t>{163012500});
 }
 
 /* Noise alone at the lowest sensitivity, white or coloured, reports nothing; and the robust local noise reads the
