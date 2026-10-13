@@ -2942,7 +2942,7 @@ test_am_mode_and_bandwidth_roundtrip(void) {
 static int
 test_tetra_mode_roundtrip(void) {
     int rc = 0;
-    dsdneoUserConfig cfg;
+    static dsdneoUserConfig cfg;
     if (load_am_config_text("[mode]\ndecode = \"TETRA\"\n", &cfg) != 0 || !cfg.has_mode
         || cfg.decode_mode != DSDCFG_MODE_TETRA) {
         DSD_FPRINTF(stderr, "FAIL: decode = TETRA did not load as the TETRA preset (mode %d)\n", (int)cfg.decode_mode);

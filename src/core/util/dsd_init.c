@@ -167,6 +167,17 @@ init_opts_squelch_defaults(dsd_opts* opts) {
     opts->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
 }
 
+/* TETRA off, with no uplink decoding and no network identity preset (--tetra-uplink, --tetra-net). */
+static void
+init_opts_tetra_defaults(dsd_opts* opts) {
+    opts->frame_tetra = 0;
+    opts->tetra_uplink = 0;
+    opts->tetra_net_preset = 0;
+    opts->tetra_net_mcc = 0;
+    opts->tetra_net_mnc = 0;
+    opts->tetra_net_colour = 0;
+}
+
 static void
 init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->dmr_stereo_wav = 0;  //flag for per call dmr stereo wav recordings
@@ -193,12 +204,6 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->frame_provoice = 0;
     opts->frame_ysf = 1;
     opts->frame_m17 = 0;
-    opts->frame_tetra = 0;
-    opts->tetra_uplink = 0;
-    opts->tetra_net_preset = 0;
-    opts->tetra_net_mcc = 0;
-    opts->tetra_net_mnc = 0;
-    opts->tetra_net_colour = 0;
     opts->mod_c4fm = 1;
     opts->mod_qpsk = 0;
     opts->mod_gfsk = 0;
@@ -485,6 +490,7 @@ initOpts(dsd_opts* opts) {
     init_opts_display_and_audio_defaults(opts);
     init_opts_output_defaults(opts);
     init_opts_decoder_and_input_defaults(opts);
+    init_opts_tetra_defaults(opts);
     init_opts_squelch_defaults(opts);
     init_opts_runtime_and_network_defaults(opts);
     init_opts_trunking_and_filter_defaults(opts);
