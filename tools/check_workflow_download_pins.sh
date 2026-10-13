@@ -340,6 +340,10 @@ def top_level_terms(condition, block):
     expr = condition.strip()
     if block:
         expr = BLOCK_HEADER.sub("", expr, count=1)
+    elif expr.startswith('"') and "\\" in expr:
+        # A double-quoted YAML scalar decodes escapes (\u005f is "_", \x7c is "|"),
+        # which could hide an event name or an operator: not read.
+        return None
     elif len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in "'\"":
         expr = expr[1:-1].replace("''", "'") if expr[0] == "'" else expr[1:-1]
     expr = expr.strip()
@@ -383,7 +387,7 @@ def excludes(condition, events, block):
     if terms is None:
         return False
     for term in terms:
-        match = re.fullmatch(r"github\.event_name == '([^']*)'", term)
+        match = re.fullmatch(r"github\.event_name == '([a-z_]+)'", term)
         if match and match.group(1) not in PR_EVENTS:
             return True
     return all(f"github.event_name != '{event}'" in terms for event in events)

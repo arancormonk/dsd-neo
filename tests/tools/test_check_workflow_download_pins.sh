@@ -555,6 +555,17 @@ run_credentials_case escaped_trigger < <(
 )
 expect_credentials_verdict escaped_trigger fail
 
+# A double-quoted condition decodes its escapes, which could hide an event name or
+# an operator, so one with a backslash never excludes.
+run_credentials_case escaped_event_in_condition < <(
+  credentialed_job build: "    if: \"github.event_name == 'pull\\u005frequest'\""
+)
+expect_credentials_verdict escaped_event_in_condition fail
+run_credentials_case escaped_operator_in_condition < <(
+  credentialed_job build: "    if: \"github.event_name != 'pull_request' && always() \\x7c\\x7c true\""
+)
+expect_credentials_verdict escaped_operator_in_condition fail
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:
