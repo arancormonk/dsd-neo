@@ -8,6 +8,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -157,23 +158,32 @@ typedef struct {
     int volume;
 } airspy_tuning;
 
+/* The DSP bandwidth an Airspy runs @p bw at: @p bw when it is a selectable one an Airspy takes, otherwise the default,
+   with a warning. 72 kHz is selectable for the other radio inputs, but no Airspy sample rate halves to it
+   (DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ). */
 static int
-valid_dsp_bandwidth(int bw) {
-    const int allowed[] = {4, 6, 8, 12, 16, 24, 48};
-    for (size_t i = 0; i < sizeof allowed / sizeof allowed[0]; ++i) {
-        if (bw == allowed[i]) {
-            return 1;
-        }
+airspy_dsp_bandwidth(int bw) {
+    if (dsd_analog_airspy_dsp_bw_is_selectable(bw)) {
+        return bw;
     }
-    return 0;
+    if (dsd_analog_rtl_dsp_bw_is_selectable(bw)) {
+        LOG_WARN("Airspy bandwidth %d kHz is unsupported: no Airspy sample rate halves to it; using %d kHz.\n", bw,
+                 DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ);
+    } else {
+        LOG_WARN("Airspy bandwidth %d kHz is unsupported; using %d kHz.\n", bw, DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ);
+    }
+    return DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
 }
 
 static void
 parse_airspy_bandwidth(const char* text, airspy_tuning* tuning) {
-    if (dsd_parse_int_strict(text, 10, 4, 48, &tuning->bw) != 0 || !valid_dsp_bandwidth(tuning->bw)) {
-        LOG_WARN("Airspy bandwidth '%s' is unsupported; using 48 kHz.\n", text);
-        tuning->bw = 48;
+    int bw = 0;
+    if (dsd_parse_int_strict(text, 10, INT_MIN, INT_MAX, &bw) != 0) {
+        LOG_WARN("Airspy bandwidth '%s' is unsupported; using %d kHz.\n", text, DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ);
+        tuning->bw = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
+        return;
     }
+    tuning->bw = airspy_dsp_bandwidth(bw);
 }
 
 static void
@@ -284,7 +294,8 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     opts->airspy_config_error = 0;
     opts->airspy = cfg;
     opts->rtlsdr_center_freq = tuning.hz;
-    opts->rtl_dsp_bw_khz = tuning.bw;
+    /* A spec without a bandwidth field runs the one in force, which another input may have taken (72 kHz). */
+    opts->rtl_dsp_bw_khz = airspy_dsp_bandwidth(tuning.bw);
     /* --squelch wins over the spec's field. */
     if (!opts->rtl_squelch_cli_set) {
         dsd_squelch_setting_store(opts, &tuning.squelch);

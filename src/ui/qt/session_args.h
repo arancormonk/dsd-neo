@@ -103,6 +103,9 @@ bool session_args_freq_valid(const QString& freqMhz);
  */
 bool session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz);
 
+/** @brief The DSP bandwidths, in kHz, that filter the 6 kHz AM channel: "8, 12, 16, 24, 48 or 72". */
+QString session_args_am_bandwidth_choices();
+
 /**
  * @brief The CLI-shaped argv for @p system, or an empty list with @p error set.
  *
@@ -129,7 +132,8 @@ class SessionArgsBuilder : public QObject {
 
     /**
      * @brief Validate one saved-system field map without returning key-bearing argv.
-     * @return {"ok": bool, "error": category, "errorText": sentence}.
+     * @return {"ok": bool, "error": category, "errorText": sentence}, and for "am-bandwidth" "bandwidthChoices":
+     *         session_args_am_bandwidth_choices().
      */
     Q_INVOKABLE QVariantMap build(const QVariantMap& system) const;
     /** Resolve retained keys and start entirely in C++; adds a non-secret "started" boolean. */

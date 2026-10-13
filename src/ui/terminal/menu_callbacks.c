@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <stdint.h>
@@ -1060,19 +1061,13 @@ cb_rtl_bw(void* u, int ok, int bw) {
     }
     if (ok) {
         int adjusted = 0;
-        const int allowed[] = {4, 6, 8, 12, 16, 24, 48};
-        int best = allowed[0];
-        int64_t best_dist = llabs((int64_t)bw - (int64_t)allowed[0]);
-        for (size_t i = 1; i < (sizeof allowed / sizeof allowed[0]); i++) {
-            int64_t d = llabs((int64_t)bw - (int64_t)allowed[i]);
-            if (d < best_dist) {
-                best_dist = d;
-                best = allowed[i];
-            }
-        }
+        /* Snapped to the nearest selectable bandwidth, the narrower of two as near. */
+        const int best = dsd_analog_rtl_dsp_bw_nearest(bw, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ);
         if (best != bw) {
+            char allowed[64];
+            (void)dsd_analog_rtl_dsp_bw_list(DSD_ANALOG_RTL_DSP_BW_MAX_KHZ, allowed, sizeof allowed);
             adjusted = 1;
-            ui_statusf("RTL BW adjusted to %d kHz (allowed: 4,6,8,12,16,24,48)", best);
+            ui_statusf("RTL BW adjusted to %d kHz (allowed: %s)", best, allowed);
         }
         bw = best;
         int32_t v = bw;

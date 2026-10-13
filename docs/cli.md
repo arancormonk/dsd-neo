@@ -648,6 +648,7 @@ rate), and the filter within its 288 taps. For an RTL-SDR or rtl_tcp input the D
 
 | DSP bandwidth (`bw`, `rtl_bw_khz`) | Widest channel it filters | NFM widths that fit | AM widths that fit |
 | --- | --- | --- | --- |
+| 72 kHz | 63.6 kHz | all, 8 to 25 kHz | all, 5 to 20 kHz |
 | 48 kHz (default) | 42 kHz | all, 8 to 25 kHz | all, 5 to 20 kHz |
 | 24 kHz | 20.4 kHz | 8 to 20.4 kHz | all, 5 to 20 kHz |
 | 16 kHz | 13.2 kHz | 8 to 13.2 kHz | 5 to 13.2 kHz |
@@ -657,7 +658,7 @@ rate), and the filter within its 288 taps. For an RTL-SDR or rtl_tcp input the D
 
 A width the DSP rate cannot filter is refused with the width, the rate, the widest width that rate filters and the
 DSP bandwidths that would fit, for example `NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width
-it fits is 20.4 kHz); set the RTL DSP bandwidth to 48 kHz`. For RTL-SDR and rtl_tcp inputs this happens at startup,
+it fits is 20.4 kHz); set the RTL DSP bandwidth to 48 or 72 kHz`. For RTL-SDR and rtl_tcp inputs this happens at startup,
 from the input spec alone, before the input looks for its device. The other radio inputs are checked when the stream
 starts, against the rate actually delivered, and a width that rate cannot filter stops the stream from starting; the
 fix it names follows what sets that rate:
@@ -680,7 +681,7 @@ fix it names follows what sets that rate:
 A refusal while running (the terminal row, the Radio sheet, a loaded config, a switch to Analog) is a short message
 that names the width, the rate, the widest width it filters and the fix, and the full text goes to the log. On an
 RTL-SDR or rtl_tcp input the fix is a DSP bandwidth: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use
-a 48 kHz DSP bandwidth`. On a running SoapySDR, Airspy or I/Q replay stream the message names the demod rate the
+a 48 or 72 kHz DSP bandwidth`. On a running SoapySDR, Airspy or I/Q replay stream the message names the demod rate the
 stream runs at and the fix above for that input: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise
 the DSP bandwidth or narrow the NFM width` on a device, `...; narrow the NFM width` on a replay. A DSP bandwidth
 refused for the width in use says to narrow the width first, or, at 4, 6 or 8 kHz, where no NFM width fits, to leave
@@ -695,7 +696,7 @@ the first, or the first when it did. An AM or NFM width changed just before such
 took, goes back to the width the front end runs when the moved rate cannot filter it; after a scan stop, the rate a
 row left may filter neither, and the width of the mode put back is then settled as for a refused scan stop (the decode
 mode row under When changes apply). AM refusals read the same way with AM's values (`AM 20 kHz does not fit the 16 kHz
-DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth`),
+DSP rate (max 13.2 kHz); use a 24, 48 or 72 kHz DSP bandwidth`),
 and a DSP bandwidth that filters no AM width at all says to keep a wider one (`DSP BW 6 kHz cannot filter AM 6 kHz
 (max 4.2 kHz); no AM width fits it; keep a wider DSP bandwidth`), since narrowing cannot help and AM has no unset
 default that runs without its filter.
@@ -989,7 +990,7 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   since AM always runs its channel filter; `DSD_NEO_CHANNEL_LPF=0` therefore refuses AM. An RTL-SDR or rtl_tcp input's
   rate is its DSP bandwidth, so a width it cannot filter is refused at startup before the device opens, and without a
   dongle plugged in: `AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz);
-  set the RTL DSP bandwidth to 24 or 48 kHz`, and a non-zero exit (`-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz
+  set the RTL DSP bandwidth to 24, 48 or 72 kHz`, and a non-zero exit (`-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz
   20000`; `-fM` alone at a 6 kHz DSP bandwidth likewise). The interactive setup's AM entry is held to the same rule:
   after an RTL-SDR or rtl_tcp source at a 4 or 6 kHz DSP bandwidth (or one the configured AM width does not fit) it
   prints that text and asks for the decode mode again. The other radio inputs are checked when the stream starts,
@@ -1662,10 +1663,12 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48, 72), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
   is one whole word: `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no` (any case). A value or trailing option it cannot
   read is ignored with a warning and leaves the bias tee as it was; the startup `RTL #N:` line ends in `BIAS=on` when
-  it is on. TETRA should use 72 kHz, which gives an integer 4 samples/symbol at 18 ksym/s.
+  it is on. 72 kHz is TETRA's bandwidth: it gives `-fT` a whole 4 samples per symbol at 18 ksym/s. The other modes run
+  best at the 48 kHz default: at 72 kHz their channel filter would need more taps than it has, and runs its wider fixed
+  prototype instead.
 - A `sql` value that is neither a number, `auto[+N]` nor `noise[+N]` leaves the squelch as it was rather than switching
   it off. A
   disabled squelch is reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP

@@ -1875,7 +1875,7 @@ test_nfm_row_warnings_once_per_row(void) {
     assert(strstr(g_analog_warning_rows[1], "until then it is skipped at every visit"));
     /* The fix is the one the input allows (issue #525's wording): an RTL-SDR's DSP bandwidth is its rate, a SoapySDR or
        Airspy device's capture rate only follows the DSP bandwidth, and an I/Q replay's is fixed. */
-    assert(strstr(g_analog_warning_rows[1], "set the RTL DSP bandwidth to 24 or 48 kHz"));
+    assert(strstr(g_analog_warning_rows[1], "set the RTL DSP bandwidth to 24, 48 or 72 kHz"));
     g_nfm_warning_input_dev = "soapy:driver=airspy";
     assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
     assert(strstr(g_analog_warning_rows[1], "raise the DSP bandwidth or narrow the NFM width"));
@@ -1974,8 +1974,9 @@ test_nfm_row_warnings_for_the_configured_width(void) {
     assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit"));
     assert(strstr(g_analog_warning_rows[2], "Scan channel 2 (150.000000 MHz): it sets no NFM width of its own, and the "
                                             "configured NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate"));
-    assert(strstr(g_analog_warning_rows[2], "set the RTL DSP bandwidth to 24 or 48 kHz; until then it is skipped at "
-                                            "every visit"));
+    assert(strstr(g_analog_warning_rows[2],
+                  "set the RTL DSP bandwidth to 24, 48 or 72 kHz; until then it is skipped at "
+                  "every visit"));
     assert(strstr(g_analog_warning_rows[3], "Scan channel 4 (150.000000 MHz): it sets no NFM width of its own"));
     assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 2 more: NFM 20 kHz does "
                                  "not fit the 16 kHz DSP rate")

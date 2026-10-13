@@ -9,6 +9,7 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 
 #include <stdio.h>
@@ -142,7 +143,9 @@ dsd_cli_usage_section_io(void) {
 }
 
 static void
-dsd_cli_usage_section_radio_and_encoder(void) {
+dsd_cli_usage_section_radio(void) {
+    char bw_list[64];
+    (void)dsd_analog_rtl_dsp_bw_list(DSD_ANALOG_RTL_DSP_BW_MAX_KHZ, bw_list, sizeof bw_list);
     printf("RTL-SDR options:\n");
     printf(" Usage: rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]\n");
     printf("  NOTE: all arguments after rtl are optional now for trunking, but user configuration is recommended\n");
@@ -150,7 +153,9 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M)\n");
     printf("  gain <num>    RTL-SDR Device Gain (0-49)(default = 0; Hardware AGC recommended)\n");
     printf("  ppm  <num>    RTL-SDR PPM Error (default = 0)\n");
-    printf("  bw   <num>    RTL-SDR DSP Bandwidth (kHz) (default 48). Allowed: 4,6,8,12,16,24,48,72.\n");
+    printf("  bw   <num>    RTL-SDR DSP Bandwidth (kHz) (default %d): %s.\n", DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ,
+           bw_list);
+    printf("                   72 gives TETRA (-fT) a whole 4 samples per symbol.\n");
     printf("                   Note: This is the DSP baseband used to derive capture rate;\n");
     printf("                         it is NOT the tuner IF filter.\n");
     printf("  sq   <val>    RTL-SDR Squelch Threshold (Optional)\n");
@@ -195,6 +200,11 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("  --airspy-mixer-agc <0|1>             Manual-mode mixer AGC\n");
     printf("  --airspy-bias-tee <0|1>              Antenna bias power (default off)\n");
     printf("  Example: dsd-neo -i airspy:851.375M -ft --frontend terminal\n\n");
+}
+
+static void
+dsd_cli_usage_section_radio_and_encoder(void) {
+    dsd_cli_usage_section_radio();
     printf("Encoder options:\n");
     printf("  -fZ           M17 Stream Voice Encoder\n");
     printf("\n");
@@ -296,7 +306,8 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fe           Decode only EDACS EA/ProVoice\n");
     printf("  -fE           Decode only EDACS EA/ProVoice with ESK 0xA0\n");
     printf("  -fm           Decode only dPMR\n");
-    printf("  -fT           Decode only TETRA NDB (pi/4-DQPSK, 18 kHz channel)\n");
+    printf("  -fT           Decode only TETRA (pi/4-DQPSK at 18 ksym/s): needs an I/Q radio input whose DSP\n");
+    printf("                rate is a multiple of 18 kHz (rtl:...:72), or a symbol capture\n");
     printf("      --tetra-codec <file>  TETRA speech codec library to play TETRA speech with (see\n");
     printf("                            tools/tetra/README.md); without one TETRA speech is not played\n");
     printf("      --tetra-key <mcc,mnc,hex>  TETRA air interface cipher key (SCK or CCK, 20 hex digits) of one\n");

@@ -128,7 +128,7 @@ analogRateWarning(const QVariantMap& list, const SessionArgPrefs& prefs, const Q
     }
     const int listKhz = list.value("bandwidthKhz", -1).toInt();
     const int khz = listKhz > 0 ? listKhz : prefs.bandwidthKhz;
-    const int rateHz = (dsd_analog_rtl_dsp_bw_is_selectable(khz) ? khz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ) * 1000;
+    const int rateHz = dsd_analog_rtl_dsp_bw_or_default(khz) * 1000;
     const int nfmHz = configuredAnalogWidthHz(prefs.extraArgs, DSD_ANALOG_DEMOD_FM);
     const int amHz = configuredAnalogWidthHz(prefs.extraArgs, DSD_ANALOG_DEMOD_AM);
     int skipped = 0;

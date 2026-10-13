@@ -2004,8 +2004,14 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
     if (!opts || !state) {
         return -1;
     }
-    if (!dsd_analog_rtl_dsp_bw_is_selectable(khz)) {
-        khz = 48;
+    khz = dsd_analog_rtl_dsp_bw_or_default(khz);
+    if (!dsd_analog_airspy_dsp_bw_is_selectable(khz) && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        /* The Airspy would run at the rate it runs at 48 kHz (DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ): say so instead of
+           storing a bandwidth its stream start then replaces. */
+        svc_why(why, why_size,
+                "an Airspy cannot run a %d kHz DSP bandwidth: no Airspy sample rate halves to it; use %d kHz or less",
+                khz, DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ);
+        return -1;
     }
     if (!svc_rtl_bandwidth_fits_analog_width(opts, state, khz, why, why_size)) {
         return -1;

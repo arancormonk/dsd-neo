@@ -2020,7 +2020,12 @@ rtl_set_ppm(void* v) {
 void
 rtl_set_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("DSP Bandwidth kHz (4,6,8,12,16,24,48)", c->opts->rtl_dsp_bw_khz, cb_rtl_bw, c);
+    /* The prompt keeps the title pointer while it is open, so the text lives in static storage. */
+    static char title[96];
+    char list[64];
+    (void)dsd_analog_rtl_dsp_bw_list(DSD_ANALOG_RTL_DSP_BW_MAX_KHZ, list, sizeof list);
+    DSD_SNPRINTF(title, sizeof title, "DSP Bandwidth kHz (%s)", list);
+    ui_prompt_open_int_async(title, c->opts->rtl_dsp_bw_khz, cb_rtl_bw, c);
 }
 
 void

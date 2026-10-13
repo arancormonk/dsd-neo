@@ -6778,7 +6778,7 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
            is only copied when the stream opens, so a reopen for it alone runs at the rate the Airspy runs now, which
            the running front end holds the configured width the stream opens on to, changed or not (issue #578). */
         const int bw_khz = cfg_reopen_rtl_bw_khz(opts, cfg);
-        const int next_bw_khz = dsd_analog_rtl_dsp_bw_is_selectable(bw_khz) ? bw_khz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+        const int next_bw_khz = dsd_analog_airspy_dsp_bw_or_default(bw_khz);
         const int next_volume = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
         if (!svc_airspy_settings_reopen(&opts->airspy, &cfg->airspy, opts->rtl_dsp_bw_khz, next_bw_khz,
                                         opts->rtl_volume_multiplier, next_volume)) {

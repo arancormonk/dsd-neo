@@ -1403,7 +1403,8 @@ expect_analog_explicit_width_forces_lpf(void) {
     opts.analog_nfm_bandwidth_hz = 16000;
     char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
     rc |= expect_int_eq("16 kHz at 16 kHz refused", configure_and_finalize(demod, &opts, 16000, err, sizeof err), -1);
-    if (!std::strstr(err, "NFM bandwidth 16 kHz") || !std::strstr(err, "set the RTL DSP bandwidth to 24 or 48 kHz")) {
+    if (!std::strstr(err, "NFM bandwidth 16 kHz")
+        || !std::strstr(err, "set the RTL DSP bandwidth to 24, 48 or 72 kHz")) {
         DSD_FPRINTF(stderr, "unrealizable explicit width message: %s\n", err);
         rc = 1;
     }
@@ -1537,8 +1538,8 @@ expect_forced_rate_refusal_names_the_width(void) {
         {"iqreplay:/tmp/capture24k.iq.json", 1, 1, "; narrow the NFM width"},
         {"soapy:driver=airspy", 0, 1, "; raise the DSP bandwidth or narrow the NFM width"},
         {"airspy", 0, 1, "; raise the DSP bandwidth or narrow the NFM width"},
-        {"rtl:0:851.375M:0:0:24", 0, 0, "; set the RTL DSP bandwidth to 48 kHz"},
-        {"rtltcp:127.0.0.1:1234", 0, 0, "; set the RTL DSP bandwidth to 48 kHz"},
+        {"rtl:0:851.375M:0:0:24", 0, 0, "; set the RTL DSP bandwidth to 48 or 72 kHz"},
+        {"rtltcp:127.0.0.1:1234", 0, 0, "; set the RTL DSP bandwidth to 48 or 72 kHz"},
     };
 
     int rc = 0;
@@ -1986,7 +1987,7 @@ expect_analog_am_open(void) {
     rc |=
         expect_int_eq("AM 20 kHz @16k start refused", configure_and_finalize(demod, &opts, 16000, err, sizeof err), -1);
     if (!std::strstr(err, "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate") || !std::strstr(err, "13.2 kHz")
-        || !std::strstr(err, "set the RTL DSP bandwidth to 24 or 48 kHz")) {
+        || !std::strstr(err, "set the RTL DSP bandwidth to 24, 48 or 72 kHz")) {
         DSD_FPRINTF(stderr, "AM rate refusal message: %s\n", err);
         rc = 1;
     }

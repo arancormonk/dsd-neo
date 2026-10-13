@@ -239,5 +239,21 @@ main(int argc, char** argv) {
     CHECK(dsd_normalize_airspy_input_spec(&opts) != 0);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851M:extra");
     CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 48);
+
+    /* 72 kHz is a selectable DSP bandwidth elsewhere, but no Airspy sample rate halves to it: the spec's field and a
+       bandwidth in force from another input both run at 48 kHz, and say why. The Airspy bandwidths are kept. */
+    last_warning[0] = '\0';
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:420.1M:72:0:2");
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 48);
+    CHECK(strstr(last_warning, "Airspy bandwidth 72 kHz is unsupported: no Airspy sample rate halves to it") != NULL);
+    last_warning[0] = '\0';
+    opts.rtl_dsp_bw_khz = 72;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:420.1M");
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 48);
+    CHECK(strstr(last_warning, "no Airspy sample rate halves to it") != NULL);
+    last_warning[0] = '\0';
+    opts.rtl_dsp_bw_khz = 24;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:420.1M");
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 24 && last_warning[0] == '\0');
     return 0;
 }

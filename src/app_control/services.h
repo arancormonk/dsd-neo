@@ -900,9 +900,10 @@ int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**
- * @brief Set RTL DSP baseband bandwidth (kHz: 4,6,8,12,16,24,48), restarting if needed.
+ * @brief Set RTL DSP baseband bandwidth (kHz, dsd_analog_rtl_dsp_bw_is_selectable()), restarting if needed.
  *
- * An unsupported value becomes 48. A bandwidth an analog channel width in use cannot run at, on an RTL-SDR or rtl_tcp
+ * An unsupported value becomes the 48 kHz default (dsd_analog_rtl_dsp_bw_or_default()). On an Airspy input a bandwidth
+ * above DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ (72 kHz, which no Airspy rate halves to) is refused and nothing changes. A bandwidth an analog channel width in use cannot run at, on an RTL-SDR or rtl_tcp
  * input, whose DSP rate this sets, is refused and nothing changes: the width is never clamped to fit. The widths held
  * to it are the configured analog preset's explicit width, or the AM default, which AM always filters at (a typed
  * digital scan row on an analog session included), beside it the configured width of a kind while the scan has an

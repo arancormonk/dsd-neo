@@ -1389,8 +1389,12 @@ suite runs under this compiler.
     width is accepted only when it is in range, width/2 + 600 Hz stays within 0.45 × the DSP rate, and the Blackman
     tap count fits the 288-tap analog capacity; the refusal names the width, the rate, the largest width that rate
     fits and the RTL DSP bandwidths that would fit (`dsd_analog_width_fitting_rtl_bandwidths()`, which the short
-    refusals reuse; `dsd_analog_rtl_dsp_bw_is_selectable()` is the list of selectable DSP bandwidths that the services,
-    config apply and validation share). `dsd_analog_width_check_at()` words a rate refusal for what sets the rate
+    refusals reuse). It holds the one list of selectable DSP bandwidths (4, 6, 8, 12, 16, 24, 48 and 72 kHz; 72 is
+    TETRA's): `dsd_analog_rtl_dsp_bw_is_selectable()`, `_or_default()` (the 48 kHz default,
+    `DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ`), `_nearest()` and `_list()`, which the input specs, the config schema, apply and
+    validation, the services, the terminal menu, the interactive setup and the Qt session read rather than a copy;
+    `dsd_analog_airspy_dsp_bw_is_selectable()` caps it at `DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ` (48), since no Airspy
+    sample rate halves to 72 kHz. `dsd_analog_width_check_at()` words a rate refusal for what sets the rate
     (`dsd_analog_rate_source`, fix text from `dsd_analog_width_rate_fix()`): the RTL DSP bandwidth, a SoapySDR or Airspy
     device (whose capture rate is halved down to the first rate at or above the DSP bandwidth: raise the DSP bandwidth or
     narrow the width) or an I/Q replay's capture (narrow the width); where the rate filters no width of the kind it

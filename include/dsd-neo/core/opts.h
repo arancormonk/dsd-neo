@@ -206,8 +206,8 @@ struct dsd_opts {
     int rtl_udp_port;
     /* Control/telemetry API (docs/api.md) listening port; 0 disables the server. */
     int api_port;
-    /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24,48). Influences capture rate planning.
-       Not the hardware tuner IF bandwidth. */
+    /* Base DSP bandwidth for RTL path in kHz (dsd_analog_rtl_dsp_bw_is_selectable(): 4, 6, 8, 12, 16, 24, 48 or 72).
+       Influences capture rate planning. Not the hardware tuner IF bandwidth. */
     int rtl_dsp_bw_khz;
     int rtl_bias_tee;       /* 1 to enable RTL-SDR bias tee (if supported) */
     int soapy_bandwidth_hz; /* -1=profile/default, 0=driver automatic, >0 explicit Soapy hardware bandwidth */

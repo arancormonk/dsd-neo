@@ -580,7 +580,7 @@ Window {
             } else if (built.error === "am-needs-radio") {
                 mainRoot.startError = qsTr("“%1” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "am-bandwidth") {
-                mainRoot.startError = qsTr("“%1” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to 8, 12, 16, 24 or 48 kHz.").arg(sys.name);
+                mainRoot.startError = qsTr("“%1” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to %2 kHz.").arg(sys.name).arg(built.bandwidthChoices);
             } else {
                 mainRoot.startError = qsTr("The session options are invalid. Review them before starting.");
             }

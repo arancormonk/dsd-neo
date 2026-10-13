@@ -401,9 +401,7 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     int sql = cfg->rtl_sql;
     int vol = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
 
-    if (!dsd_analog_rtl_dsp_bw_is_selectable(bw)) {
-        bw = 48;
-    }
+    bw = dsd_analog_rtl_dsp_bw_or_default(bw);
 
     opts->rtl_gain_value = gain;
     opts->rtlsdr_ppm_error = ppm;

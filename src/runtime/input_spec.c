@@ -7,6 +7,7 @@
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
@@ -18,11 +19,6 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
-
-static int
-is_valid_rtl_bw_khz(int bw) {
-    return (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48 || bw == 72);
-}
 
 static int
 looks_like_soapy_kv_args(const char* tok) {
@@ -192,7 +188,7 @@ parse_soapy_optional_front(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int*
         return -1;
     }
     if (rc > 0) {
-        *bw = is_valid_rtl_bw_khz(iv) ? iv : 48;
+        *bw = dsd_analog_rtl_dsp_bw_or_default(iv);
     }
 
     return 0;
@@ -399,12 +395,9 @@ int
 dsd_rtl_spec_bw_khz_or_default(const char* token) {
     int bw = 0;
     if (!token || rtl_spec_parse_int(token, &bw) != 0) {
-        return 48;
+        return DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
     }
-    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48 || bw == 72) {
-        return bw;
-    }
-    return 48;
+    return dsd_analog_rtl_dsp_bw_or_default(bw);
 }
 
 /* A trailing token: `bias` or `b` alone (or with an empty value) turns the bias tee on, and `bias=<value>` /

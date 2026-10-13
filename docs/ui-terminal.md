@@ -503,6 +503,10 @@ rows' chooser is titled `NFM passband` or `AM passband`, and their `This channel
 channel (8000..25000)`) opens on the passband the row runs: its own width, the configured one it follows, or `-B`
 standing in for an unset NFM width. See [Live per-channel edits](trunk-scan.md#runtime-behavior).
 
+`DSP bandwidth...` prompts with the selectable bandwidths (4, 6, 8, 12, 16, 24, 48 or 72 kHz; 72 is TETRA's) and snaps
+another value to the nearest of them, the narrower of two as near. On an Airspy it refuses 72 kHz, since no Airspy
+sample rate halves to it.
+
 `DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
 `-fA` (or `-fM`, reading `Analog: AM ...;`) the line also shows the analog channel width in force beside it, `Analog:
 NFM 12.5 kHz;`: the width the front end reports while a running stream runs the analog monitor, otherwise the configured

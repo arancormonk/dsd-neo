@@ -93,23 +93,13 @@ resolve_hangtime(const QVariantMap& system, const SessionArgPrefs& prefs, double
     return ok && std::isfinite(seconds) && seconds >= 0.0 && seconds <= 30.0;
 }
 
-/** @brief Snap the shared bandwidth preference to Airspy's supported DSP widths. */
+/** @brief Snap the shared bandwidth preference to the DSP bandwidths an Airspy takes (the narrower of two as near). */
 int
 airspy_bandwidth(int requested) {
     if (requested <= 0) {
-        return 48;
+        return DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
     }
-    int nearest = 4;
-    int nearest_distance = requested > nearest ? requested - nearest : nearest - requested;
-    for (const int candidate : {6, 8, 12, 16, 24, 48}) {
-        const int distance = requested > candidate ? requested - candidate : candidate - requested;
-        // Prefer the lower width when the request is exactly between two choices.
-        if (distance < nearest_distance) {
-            nearest = candidate;
-            nearest_distance = distance;
-        }
-    }
-    return nearest;
+    return dsd_analog_rtl_dsp_bw_nearest(requested, DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ);
 }
 
 /** @brief Append "-i <spec>" for the system's source type. */
@@ -414,10 +404,17 @@ session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz) {
         return true;
     }
     /* The engine reads the spec's bandwidth field this way: a value it does not run is the 48 kHz default. */
-    const int khz = dsd_analog_rtl_dsp_bw_is_selectable(bandwidthKhz) ? bandwidthKhz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+    const int khz = dsd_analog_rtl_dsp_bw_or_default(bandwidthKhz);
     return dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM), khz * 1000,
                                   nullptr, 0U)
            == 0;
+}
+
+QString
+session_args_am_bandwidth_choices() {
+    char fits[64];
+    (void)dsd_analog_width_fitting_rtl_bandwidths(dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM), fits, sizeof fits);
+    return QString::fromUtf8(fits);
 }
 
 QString
@@ -499,9 +496,9 @@ constexpr SessionArgsErrorText k_error_texts[] = {
                                      "Remove prohibited options and write each short option separately."},
     {SessionArgsError::AmNeedsRadio, "AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio "
                                      "arrives already demodulated. Choose a radio source, or another decode mode."},
+    /* %1: session_args_am_bandwidth_choices(). */
     {SessionArgsError::AmBandwidth, "AM needs a bandwidth of 8 kHz or more: its 6 kHz channel does not fit a "
-                                    "narrower one. Set the bandwidth to 8, 12, 16, 24 or 48 kHz, or choose another "
-                                    "decode mode."},
+                                    "narrower one. Set the bandwidth to %1 kHz, or choose another decode mode."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -529,7 +526,8 @@ session_args_error_text(SessionArgsError error) {
     if (error == SessionArgsError::None || index >= k_error_text_count) {
         return QString();
     }
-    return QString::fromUtf8(k_error_texts[index].text);
+    const QString text = QString::fromUtf8(k_error_texts[index].text);
+    return error == SessionArgsError::AmBandwidth ? text.arg(session_args_am_bandwidth_choices()) : text;
 }
 
 bool
@@ -762,6 +760,9 @@ validationResult(SessionArgsError error) {
                                            : error == SessionArgsError::None         ? QString()
                                                                                      : QStringLiteral("encryption"));
     result.insert(QStringLiteral("errorText"), session_args_error_text(error));
+    if (error == SessionArgsError::AmBandwidth) {
+        result.insert(QStringLiteral("bandwidthChoices"), session_args_am_bandwidth_choices());
+    }
     return result;
 }
 

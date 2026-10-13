@@ -12026,7 +12026,7 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
                                          "configured NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate");
     const int named_20 = count_text(buf, "Trunk scan target 'plain': it sets no NFM width of its own, and the "
                                          "configured NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
-    const int named_fix = count_text(buf, "set the RTL DSP bandwidth to 24 or 48 kHz; until then it is skipped at "
+    const int named_fix = count_text(buf, "set the RTL DSP bandwidth to 24, 48 or 72 kHz; until then it is skipped at "
                                           "every visit");
     const int named_12_5 = count_text(buf, "configured NFM bandwidth 12.5 kHz");
     const int failed = count_text(buf, "Trunk scan target 'plain' retune failed");

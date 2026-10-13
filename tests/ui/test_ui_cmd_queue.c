@@ -10387,9 +10387,9 @@ test_nfm_bandwidth_set_applies_live_and_refuses(void) {
     rc |= submit_nfm_width(&opts, &state, 25000, "nfm 25000");
     rc |= expect_int("nfm 25000 keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("nfm 25000 not requested", g_analog_req_calls, 0);
-    rc |=
-        expect_toast("nfm 25000 toast", &state,
-                     "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    rc |= expect_toast(
+        "nfm 25000 toast", &state,
+        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
     rc |= expect_received_tone_kept("nfm 25000 keeps the received tone", &state, seeded);
     /* Refused for a reason the rate does not explain (DSD_NEO_CHANNEL_LPF=0, say): the front end logged it. */
     rc |= submit_nfm_width(&opts, &state, 20000, "nfm 20000 refused");
@@ -10434,9 +10434,9 @@ test_nfm_bandwidth_set_applies_live_and_refuses(void) {
     rc |= submit_nfm_width(&opts, &state, 25000, "nfm no stream");
     rc |= expect_int("nfm no stream keeps the width", opts.analog_nfm_bandwidth_hz, 20000);
     rc |= expect_int("nfm no stream asks no front end", g_analog_check_calls, 0);
-    rc |=
-        expect_toast("nfm no stream toast", &state,
-                     "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    rc |= expect_toast(
+        "nfm no stream toast", &state,
+        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
 
     /* A digital session does not use the width: only its range is checked, and the front end is not asked. */
@@ -11119,8 +11119,9 @@ test_config_apply_holds_nfm_width_to_the_front_end(void) {
     rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_ANALOG, 25000, "cfg nfm 25000");
     rc |= expect_int("cfg nfm 25000 not applied", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("cfg nfm 25000 not requested", g_analog_req_calls, 0);
-    rc |= expect_toast("cfg nfm 25000 toast", &state,
-                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz");
+    rc |= expect_toast(
+        "cfg nfm 25000 toast", &state,
+        "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz");
     rc |= expect_received_tone_kept("cfg nfm 25000 keeps the received tone", &state, seeded);
     /* A [mode] without a decode key applies no preset, so the session stays on the monitor and the width is held the
        same way: it is not a move onto a digital decoder that leaves the width unused. */
@@ -11131,8 +11132,9 @@ test_config_apply_holds_nfm_width_to_the_front_end(void) {
     rc |= expect_int("cfg nfm 25000 no decode: front end asked", g_analog_check_width_hz, 25000);
     rc |= expect_int("cfg nfm 25000 no decode: not applied", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("cfg nfm 25000 no decode: not requested", g_analog_req_calls, 0);
-    rc |= expect_toast("cfg nfm 25000 no decode toast", &state,
-                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz");
+    rc |= expect_toast(
+        "cfg nfm 25000 no decode toast", &state,
+        "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz");
     g_analog_check_result = 0;
 
     /* The same width again is not a change: nothing to ask or request. */
@@ -11418,9 +11420,10 @@ test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth(void) {
     rc |= expect_str("cfg 48->16: input unchanged", opts.audio_in_dev, dev_before);
     rc |= expect_int("cfg 48->16: stream kept", state.rtl_ctx == (RtlSdrContext*)fake_ctx, 1);
     rc |= expect_int("cfg 48->16: front end not asked", g_analog_check_calls, 0);
-    rc |= expect_toast("cfg 48->16 toast", &state,
-                       "Config not applied: NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 "
-                       "kHz DSP bandwidth");
+    rc |= expect_toast(
+        "cfg 48->16 toast", &state,
+        "Config not applied: NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 "
+        "kHz DSP bandwidth");
 
     /* The default keeps its historical rule at any rate: nothing to hold. */
     opts.analog_nfm_bandwidth_hz = 0;
@@ -11455,9 +11458,10 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
     reset_rx_family_wrap();
     rc |= submit_config_rtl_bw(&opts, &state, 20, -1, "cfg rtl_bw_khz 20");
     rc |= expect_int("cfg rtl_bw_khz 20: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_toast("cfg rtl_bw_khz 20 toast", &state,
-                       "Config not applied: NFM 20 kHz does not fit the 20 kHz DSP rate (max 16.8 kHz); use a 24 or 48 "
-                       "kHz DSP bandwidth");
+    rc |= expect_toast(
+        "cfg rtl_bw_khz 20 toast", &state,
+        "Config not applied: NFM 20 kHz does not fit the 20 kHz DSP rate (max 16.8 kHz); use a 24, 48 or 72 "
+        "kHz DSP bandwidth");
     /* The loader keeps any integer for rtl_bw_khz (its range only warns). One too large for a rate in Hz is held as
        the saturated rate, which no width fits, rather than overflowing into a negative one, and the refusal names the
        setting rather than a DSP rate built from it. So does one above every selectable bandwidth that no width fits
@@ -11465,12 +11469,13 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
     rc |= submit_config_rtl_bw(&opts, &state, 3000000, -1, "cfg rtl_bw_khz 3000000");
     rc |= expect_int("cfg rtl_bw_khz 3000000: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
     rc |= expect_toast("cfg rtl_bw_khz 3000000 toast", &state,
-                       "Config not applied: rtl_bw_khz 3000000 is not a DSP bandwidth; use a 24 or 48 kHz DSP "
+                       "Config not applied: rtl_bw_khz 3000000 is not a DSP bandwidth; use a 24, 48 or 72 kHz DSP "
                        "bandwidth");
     rc |= submit_config_rtl_bw(&opts, &state, 200, -1, "cfg rtl_bw_khz 200");
     rc |= expect_int("cfg rtl_bw_khz 200: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_toast("cfg rtl_bw_khz 200 toast", &state,
-                       "Config not applied: rtl_bw_khz 200 is not a DSP bandwidth; use a 24 or 48 kHz DSP bandwidth");
+    rc |=
+        expect_toast("cfg rtl_bw_khz 200 toast", &state,
+                     "Config not applied: rtl_bw_khz 200 is not a DSP bandwidth; use a 24, 48 or 72 kHz DSP bandwidth");
 
     /* An Airspy running an explicit 25 kHz at its forced rate; a config moving to an RTL-SDR at the same 24 kHz
        rtl_bw_khz value would reopen at 24 kHz, which cannot filter it. */
@@ -11481,9 +11486,10 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
     rc |= submit_config_rtl_bw(&opts, &state, 24, -1, "cfg airspy to rtl");
     rc |= expect_str("cfg airspy to rtl: input unchanged", opts.audio_in_dev, "airspy");
     rc |= expect_int("cfg airspy to rtl: front end not asked", g_analog_check_calls, 0);
-    rc |= expect_toast("cfg airspy to rtl toast", &state,
-                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz "
-                       "DSP bandwidth");
+    rc |= expect_toast(
+        "cfg airspy to rtl toast", &state,
+        "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz "
+        "DSP bandwidth");
 
     /* rtl_tcp at the host and port in use, no rtl_freq: nothing reopens, so the rtl_bw_khz it carries moves nothing. */
     opts.rtl_dsp_bw_khz = 48;
@@ -13243,9 +13249,10 @@ expect_back_on_dmr(const char* label, const dsd_opts* opts, const dsd_state* sta
     rc |= expect_int(label, opts->frame_dmr, 1);
     rc |= expect_int(label, dsd_infer_decode_mode_preset(opts) == DSDCFG_MODE_DMR, 1);
     rc |= expect_int(label, opts->mod_cli_lock, 1);
-    rc |= expect_toast(label, state,
-                       "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 "
-                       "kHz DSP bandwidth");
+    rc |=
+        expect_toast(label, state,
+                     "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 "
+                     "kHz DSP bandwidth");
     return rc;
 }
 
@@ -13672,7 +13679,7 @@ test_refused_switch_between_fm_and_am_puts_the_mode_back(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] =
-        "Failed: AM -> AM 15 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth";
+        "Failed: AM -> AM 15 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 kHz DSP bandwidth";
     int rc = 0;
     init_nfm_session_with_am_width(&opts, &state, (RtlSdrContext*)fake_ctx, 15000);
 
@@ -13775,7 +13782,7 @@ test_refused_switch_after_an_unpublished_toggle_puts_the_mode_back(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] =
-        "Failed: AM -> AM 15 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth";
+        "Failed: AM -> AM 15 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 kHz DSP bandwidth";
     int rc = 0;
     for (size_t i = 0; i < sizeof k_unpublished_toggles / sizeof k_unpublished_toggles[0]; i++) {
         char label[128];
@@ -13859,7 +13866,7 @@ test_refused_switch_after_a_pending_switch_puts_the_running_mode_back(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] = "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use "
-                                    "a 24 or 48 kHz DSP bandwidth";
+                                    "a 24, 48 or 72 kHz DSP bandwidth";
     int rc = 0;
 
     /* DMR -> AM -> Analog in two drains, the last refused where it landed: the front end stayed digital. */
@@ -13996,7 +14003,7 @@ test_refused_switch_after_a_taken_switch_puts_the_running_mode_back(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] = "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use "
-                                    "a 24 or 48 kHz DSP bandwidth";
+                                    "a 24, 48 or 72 kHz DSP bandwidth";
     int rc = 0;
 
     /* Taken between the two commands of one drain; the second refused where it landed. */
@@ -14048,7 +14055,7 @@ test_refused_switch_after_a_width_change_holds_the_width(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] = "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use "
-                                    "a 24 or 48 kHz DSP bandwidth";
+                                    "a 24, 48 or 72 kHz DSP bandwidth";
     static const int32_t k_widths[2] = {20000, 10000};
     int rc = 0;
     for (int i = 0; i < 2; i++) {
@@ -14701,9 +14708,10 @@ test_config_apply_holds_a_scan_row_width_to_a_reopen(void) {
     rc |= expect_int("row reopen 24->16: rate kept", opts.rtl_dsp_bw_khz, 24);
     rc |= expect_str("row reopen 24->16: input unchanged", opts.audio_in_dev, dev_before);
     rc |= expect_int("row reopen 24->16: stream kept", state.rtl_ctx == (RtlSdrContext*)fake_ctx, 1);
-    rc |= expect_toast("row reopen 24->16 toast", &state,
-                       "Config not applied: NFM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 "
-                       "kHz DSP bandwidth");
+    rc |= expect_toast(
+        "row reopen 24->16 toast", &state,
+        "Config not applied: NFM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 "
+        "kHz DSP bandwidth");
     rc |= expect_int("row reopen 24->16: the row keeps its width",
                      dsd_scan_mode_active(&state) == DSD_SCAN_MODE_NFM && opts.analog_nfm_bandwidth_hz == 20000, 1);
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
@@ -16234,9 +16242,9 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     rc |= expect_int("airspy to rtl drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_str("airspy to rtl: input unchanged", opts.audio_in_dev, "airspy");
     rc |= expect_int("airspy to rtl: nothing reopened", g_config_rtl_creates, 0);
-    rc |=
-        expect_toast("airspy to rtl toast", &state,
-                     "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    rc |= expect_toast(
+        "airspy to rtl toast", &state,
+        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
 
     /* PCM input: the switch opens the RTL-SDR the "pulse" device string becomes on an RTL input. A refused switch
        keeps the input, and with it the tone received on it (issue #522). */
@@ -16252,7 +16260,7 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     rc |= expect_int("pcm to rtl: still PCM", opts.audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_int("pcm to rtl: nothing opened", g_config_rtl_creates, 0);
     rc |= expect_toast("pcm to rtl toast", &state,
-                       "Refused: NFM 16 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); use a 24 or 48 kHz DSP "
+                       "Refused: NFM 16 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); use a 24, 48 or 72 kHz DSP "
                        "bandwidth");
     rc |= expect_received_tone_kept("pcm to rtl refused: received tone kept", &state, seeded);
 
@@ -16307,9 +16315,9 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     rc |= expect_int("row width to rtl drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("row width to rtl: still PCM", opts.audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_int("row width to rtl: nothing opened", g_config_rtl_creates, 0);
-    rc |=
-        expect_toast("row width to rtl toast", &state,
-                     "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    rc |= expect_toast(
+        "row width to rtl toast", &state,
+        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
     /* The same row at a 48 kHz DSP bandwidth opens. */
     opts.rtl_dsp_bw_khz = 48;
     (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);

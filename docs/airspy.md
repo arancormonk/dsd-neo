@@ -39,6 +39,11 @@ The optional trailing fields are DSP bandwidth in kHz, squelch in dB (0 disables
 [noise squelch](cli.md#noise-squelch---squelch-noise)),
 and monitor volume (0–3); gain uses the separate native controls. Bandwidth must
 be one of 4, 6, 8, 12, 16, 24, or 48 kHz; other values warn and fall back to 48.
+72 kHz, the RTL DSP bandwidth TETRA needs, is refused the same way: an Airspy's
+sample rate halves to 78.125 or 93.75 kHz at both 48 and 72 kHz, never to 72 kHz
+or any other multiple of 18 kHz, so TETRA (`-fT`) does not run on an Airspy. The
+same holds for a bandwidth an Airspy input inherits (from `rtl_bw_khz` or another
+input) and for the terminal's DSP bandwidth row, which refuses 72 on an Airspy.
 Numeric volume values are clamped to 0–3. Invalid squelch or volume text warns
 and keeps the previous/default value; invalid frequencies still prevent startup.
 An explicit serial must match exactly. Without one, the first enumerated device

@@ -594,7 +594,7 @@ test_analog_am_bandwidth_validation(void) {
          "am_bandwidth_hz = 20000\n",
          "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz); set the RTL "
          "DSP "
-         "bandwidth to 24 or 48 kHz"},
+         "bandwidth to 24, 48 or 72 kHz"},
         {"[input]\nsource = rtltcp\nrtltcp_host = 127.0.0.1\nrtl_freq = 118.1M\nrtl_bw_khz = 6\n[mode]\ndecode = am\n",
          "AM bandwidth 6 kHz does not fit the 6 kHz DSP rate (the largest width it fits is 4.2 kHz)"},
         {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 24\n[mode]\ndecode = am\n[analog]\n"
@@ -1247,6 +1247,52 @@ test_int_out_of_range(void) {
     return result;
 }
 
+/* rtl_bw_khz takes the selectable DSP bandwidths, 72 kHz among them, with no warning; any other value warns with the list
+   and the 48 kHz default that runs instead, inside the schema's range (60) or outside it (96). */
+static int
+test_rtl_bw_khz_selectable_list(void) {
+    static const struct {
+        const char* value;
+        const char* want; /* the warning, or NULL for none */
+    } cases[] = {
+        {"72", NULL},
+        {"48", NULL},
+        {"4", NULL},
+        {"60", "Value 60 is not a DSP bandwidth (4, 6, 8, 12, 16, 24, 48 or 72 kHz); 48 kHz is used"},
+        {"96", "Value 96 is not a DSP bandwidth (4, 6, 8, 12, 16, 24, 48 or 72 kHz); 48 kHz is used"},
+    };
+
+    int result = 0;
+    for (const auto& c : cases) {
+        char ini[128];
+        DSD_SNPRINTF(ini, sizeof ini, "[input]\nsource = \"rtl\"\nrtl_freq = \"420.1M\"\nrtl_bw_khz = %s\n", c.value);
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdcfg_diagnostics_t diags;
+        DSD_MEMSET(&diags, 0, sizeof(diags));
+        (void)dsd_user_config_validate(path, &diags);
+        const int want_warnings = c.want ? 1 : 0;
+        int matched = 0;
+        for (int i = 0; i < diags.count; i++) {
+            if (c.want && strcmp(diags.items[i].key, "rtl_bw_khz") == 0
+                && strcmp(diags.items[i].message, c.want) == 0) {
+                matched++;
+            }
+        }
+        if (diags.error_count != 0 || diags.warning_count != want_warnings || matched != want_warnings) {
+            DSD_FPRINTF(stderr, "FAIL: rtl_bw_khz = %s: %d error(s), %d warning(s), %d matching\n", c.value,
+                        diags.error_count, diags.warning_count, matched);
+            dsdcfg_diags_print(&diags, stderr, path);
+            result = 1;
+        }
+        dsdcfg_diags_free(&diags);
+        (void)remove(path);
+    }
+    return result;
+}
+
 static int
 test_int_out_of_range_negative_max(void) {
     // rtl_sql has range [-120, 0], so positive values are out of range
@@ -1467,10 +1513,10 @@ test_analog_nfm_bandwidth_validation(void) {
        builds with it (an rtl_freq, and for rtl_tcp a host). */
     rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 24\n[mode]\n"
                                 "decode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 25000\n",
-                                "does not fit the 24 kHz DSP rate", "set the RTL DSP bandwidth to 48 kHz");
+                                "does not fit the 24 kHz DSP rate", "set the RTL DSP bandwidth to 48 or 72 kHz");
     rc |= run_analog_width_case("[input]\nsource = \"rtltcp\"\nrtltcp_host = \"127.0.0.1\"\nrtl_freq = \"146.52M\"\n"
                                 "rtl_bw_khz = 16\n[mode]\ndecode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 16000\n",
-                                "does not fit the 16 kHz DSP rate", "24 or 48 kHz");
+                                "does not fit the 16 kHz DSP rate", "24, 48 or 72 kHz");
     rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 16\n[mode]\n"
                                 "decode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 12500\n",
                                 "", NULL);
@@ -2053,6 +2099,7 @@ main(void) {
     rc |= test_invalid_source_rejected_after_soapy_added();
     rc |= test_int_out_of_range();
     rc |= test_int_out_of_range_negative_max();
+    rc |= test_rtl_bw_khz_selectable_list();
     rc |= test_scan_voice_ms_out_of_range();
     rc |= test_scan_max_visit_ms_validation();
     rc |= test_analog_nfm_bandwidth_validation();

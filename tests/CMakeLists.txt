@@ -3000,6 +3000,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_callbacks
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )

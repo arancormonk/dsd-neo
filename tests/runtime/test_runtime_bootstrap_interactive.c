@@ -381,7 +381,8 @@ test_am_entry_needs_an_iq_source(void) {
 /* AM's channel has to fit the DSP bandwidth the source runs at (issue #524), which startup holds it to before the device
  * opens. At 4 or 6 kHz no AM width fits, so the pick is refused and asked again, here answered with Analog; at 8 kHz
  * the 6 kHz default fits. A configured AM width is held the same way, and a bandwidth startup does not run (5) runs at
- * 48 kHz, where AM fits. The bandwidth the wizard read stays in the options with the spec it wrote. */
+ * 48 kHz, where AM fits. The bandwidth the wizard read stays in the options with the spec it wrote: 72 kHz among them,
+ * and the prompt holds a larger figure to it. */
 typedef struct {
     const char* tag;
     const char* script;
@@ -400,6 +401,9 @@ test_am_entry_needs_a_dsp_bandwidth_that_fits(void) {
          DSDCFG_MODE_ANALOG},
         {"rtl-16k-10k-width-taken", "2\n118.1M\n0\n22\n0\n16\n0\n1\n15\nn\nn\nn\n", 10000, 16, DSDCFG_MODE_AM},
         {"rtl-unsupported-5k-runs-at-48k", "2\n118.1M\n0\n22\n0\n5\n0\n1\n15\nn\nn\nn\n", 0, 48, DSDCFG_MODE_AM},
+        /* 72 kHz (TETRA's) is offered and kept; a figure past it is held to it. */
+        {"rtl-72k-taken", "2\n118.1M\n0\n22\n0\n72\n0\n1\n15\nn\nn\nn\n", 0, 72, DSDCFG_MODE_AM},
+        {"rtltcp-100k-held-to-72k", "3\n\n\n118.1M\n22\n0\n100\n0\n1\n15\nn\nn\nn\n", 0, 72, DSDCFG_MODE_AM},
     };
     int rc = 0;
     static dsd_opts opts;

@@ -247,6 +247,64 @@ test_radioreference_config_roundtrip(void) {
     return rc;
 }
 
+/* [input] rtl_bw_khz = 72 (TETRA's DSP bandwidth) loads, reaches the RTL spec the config builds, runs once that spec is
+   read (as the input opens), and saves back; a value that is no selectable bandwidth runs, and saves, as the 48 kHz
+   default. */
+static int
+test_rtl_bw_khz_72_round_trip(void) {
+    static const struct {
+        int configured_khz;
+        int want_khz;
+    } cases[] = {{72, 72}, {24, 24}, {60, 48}};
+
+    int rc = 0;
+    for (const auto& c : cases) {
+        char ini[128];
+        DSD_SNPRINTF(ini, sizeof ini, "[input]\nsource = \"rtl\"\nrtl_freq = \"420.1M\"\nrtl_bw_khz = %d\n",
+                     c.configured_khz);
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        static dsdneoUserConfig cfg;
+        if (dsd_user_config_load(path, &cfg) != 0) {
+            DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+            (void)remove(path);
+            return 1;
+        }
+        (void)remove(path);
+        if (cfg.rtl_bw_khz != c.configured_khz) {
+            DSD_FPRINTF(stderr, "FAIL: rtl_bw_khz = %d loaded as %d\n", c.configured_khz, cfg.rtl_bw_khz);
+            rc |= 1;
+        }
+
+        static dsd_opts opts;
+        static dsd_state state;
+        reset_opts_and_state(opts, state);
+        opts.rtl_dsp_bw_khz = 48;
+        dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+        char want_spec[64];
+        DSD_SNPRINTF(want_spec, sizeof want_spec, ":420.1M:0:0:%d:", c.configured_khz);
+        if (strstr(opts.audio_in_dev, want_spec) == NULL || dsd_rtl_input_spec_apply(&opts) != 1
+            || opts.rtl_dsp_bw_khz != c.want_khz) {
+            DSD_FPRINTF(stderr, "FAIL: rtl_bw_khz = %d applied as %d (spec %s)\n", c.configured_khz,
+                        opts.rtl_dsp_bw_khz, opts.audio_in_dev);
+            rc |= 1;
+        }
+
+        static dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        char rendered[8192];
+        if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+            return 1;
+        }
+        char want_line[32];
+        DSD_SNPRINTF(want_line, sizeof want_line, "rtl_bw_khz = %d\n", c.want_khz);
+        rc |= expect_contains("rtl_bw_khz saved", rendered, want_line);
+    }
+    return rc;
+}
+
 static int
 test_radioreference_save_atomic_roundtrip(void) {
     dsdneoUserConfig cfg;
@@ -4512,6 +4570,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_imports_dir_follows_config_dir();
+    rc |= test_rtl_bw_khz_72_round_trip();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_decode_mode_and_load_guards();
     rc |= test_persisted_v1_load_boundary();

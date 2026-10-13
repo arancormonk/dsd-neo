@@ -229,7 +229,7 @@ Item {
                 tc.wizard.bwText = "6"
                 verify(!tc.wizard.stepValid(), "AM at a 6 kHz bandwidth passes step 1")
                 verify(note.visible, "the refusal is not shown")
-                verify(note.text.indexOf("Set the bandwidth to 8, 12, 16, 24 or 48 kHz") > 0, "the note names no fix")
+                verify(note.text.indexOf("Set the bandwidth to 8, 12, 16, 24, 48 or 72 kHz") > 0, "the note names no fix")
                 tc.wizard.bwText = "4"
                 verify(!tc.wizard.stepValid(), "AM at a 4 kHz bandwidth passes step 1")
                 tc.wizard.bwText = "8"
