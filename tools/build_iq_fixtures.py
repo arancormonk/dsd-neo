@@ -384,6 +384,10 @@ TETRA_MULTIPATH_NAME = "tetra_bsch_two_ray"
 TETRA_CLOCK_FAST_NAME = "tetra_bsch_clock_100ppm"
 TETRA_CLOCK_SLOW_NAME = "tetra_bsch_clock_minus_100ppm"
 TETRA_BAD_CRC_IMPAIRED_NAME = "tetra_bsch_bad_crc_cfo_awgn"
+# The same bursts at the 72 kHz RTL DSP bandwidth (4 samples per symbol), the rate an RTL-SDR runs TETRA at; fewer
+# repeats, since the replay only has to show that the 72 kHz chain decodes.
+TETRA_72K_NAME = "tetra_bsch_synth_72k"
+TETRA_72K_BURST_REPEATS = 25
 TETRA_SYMBOL_RATE = 18000
 TETRA_BURST_REPEATS = 100
 TETRA_IMPAIRED_SEED = 0x54455452
@@ -1347,8 +1351,9 @@ def tetra_tch_fs_dibits():
     return dibits[:108], dibits[108:]
 
 
-def modulate_tetra(dibits):
-    sample_rate = 54000  # exactly three complex samples per TETRA symbol
+def modulate_tetra(dibits, sample_rate=54000):
+    # A whole number of complex samples per TETRA symbol: three at 54 kHz, four at 72 kHz.
+    assert sample_rate % TETRA_SYMBOL_RATE == 0
     sps = sample_rate // TETRA_SYMBOL_RATE
     # Give carrier/timing recovery a non-repeating acquisition preamble before
     # the first asserted burst.
@@ -1395,7 +1400,8 @@ def tetra_sample_clock_error(samples, ppm):
             + 1j * np.interp(source_positions, source_axis, samples.imag))
 
 
-def build_tetra_synth(out_dir):
+def tetra_synth_bursts():
+    """One synchronisation burst, one SCH/HD burst and one TCH/FS burst, as dibits."""
     bsch = tetra_bsch_dibits()
     sysinfo = tetra_sysinfo_dibits()
     allocation = tetra_channel_allocation_dibits()
@@ -1411,7 +1417,19 @@ def build_tetra_synth(out_dir):
     # SCH/HD half-slots; NTS1 joins its blocks into one TCH/FS codeword.
     ndb = sysinfo + ([0] * 7) + nts2 + ([0] * 8) + allocation
     voice_ndb = tch_b1 + ([0] * 7) + nts1 + ([0] * 8) + tch_b2
-    samples = modulate_tetra((sb + ndb + voice_ndb) * TETRA_BURST_REPEATS)
+    return sb + ndb + voice_ndb
+
+
+def build_tetra_synth_72k(out_dir):
+    samples = modulate_tetra(tetra_synth_bursts() * TETRA_72K_BURST_REPEATS, sample_rate=72000)
+    written = write_fixture(out_dir, TETRA_72K_NAME, samples, sample_rate=72000, dsp_bw_khz=72)
+    print(f"{TETRA_72K_NAME:28s} synth   {written // 1024:6d} KiB")
+    return written
+
+
+def build_tetra_synth(out_dir):
+    sync = [int(char) for char in TETRA_SSB_SYNC]
+    samples = modulate_tetra(tetra_synth_bursts() * TETRA_BURST_REPEATS)
     written = write_fixture(out_dir, TETRA_SYNTH_NAME, samples, sample_rate=54000, dsp_bw_khz=54)
     print(f"{TETRA_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
     # Complex conjugation reverses every differential phase step. For TETRA's
@@ -1458,7 +1476,8 @@ def build_tetra_synth(out_dir):
     print(f"{TETRA_BAD_CRC_IMPAIRED_NAME:28s} synth   {bad_impaired_written // 1024:6d} KiB")
     return (written + inverted_written + impaired_written + threshold_pass_written
             + two_ray_written + clock_fast_written
-            + clock_slow_written + bad_written + bad_impaired_written)
+            + clock_slow_written + bad_written + bad_impaired_written
+            + build_tetra_synth_72k(out_dir))
 
 def build_attenuated(out_dir):
     """Write the level-shifted replays of committed fixtures (issue #521)."""
@@ -1722,6 +1741,7 @@ def derived_fixture_names():
             TETRA_CLOCK_FAST_NAME,
             TETRA_CLOCK_SLOW_NAME,
             TETRA_BAD_CRC_IMPAIRED_NAME,
+            TETRA_72K_NAME,
         ]
     )
 

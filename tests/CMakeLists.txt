@@ -13419,6 +13419,25 @@ if(DSD_HAS_RADIO)
         "crc=bad"
         90
     )
+    # The same bursts at the 72 kHz RTL DSP bandwidth, 4 samples per symbol (tetra_bsch_synth_72k, 25 of each):
+    # TETRA decodes at the rate an RTL-SDR runs it at, with no warning that the rate is unusable, and every
+    # TCH/FS class-2 CRC passes.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_72K
+        tetra_bsch_synth_72k
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+        "TETRA needs a DSP rate"
+        24
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_72K
+        tetra_bsch_synth_72k
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        "crc=bad"
+        24
+    )
     # Apache-2.0 real-air SCBS capture from GopherTrunk, deterministically
     # resampled from its preserved 50 kHz source to 54 kHz (3 samples/symbol).
     # The identity was independently checked upstream with a commercial
