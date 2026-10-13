@@ -16191,6 +16191,24 @@ if(DSD_HAS_RADIO)
         NAME ENGINE_SIGNAL_SEARCH
         COMMAND dsd-neo_test_engine_signal_search
     )
+    # The coordinator against the real detector and shared tap, fed synthetic capture I/Q.
+    add_executable(
+        dsd-neo_test_engine_signal_search_scene
+        engine/test_engine_signal_search_scene.c
+        ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_signal_search_scene
+        PRIVATE USE_RADIO
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_signal_search_scene
+        PRIVATE dsd-neo_io_radio dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_SIGNAL_SEARCH_SCENE
+        COMMAND dsd-neo_test_engine_signal_search_scene
+    )
     # Manual only: this executable opens the requested hardware source.
     add_executable(
         dsd-neo_test_signal_search_bench
