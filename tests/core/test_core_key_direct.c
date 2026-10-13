@@ -33,6 +33,18 @@ check(int ok, const char* label) {
 }
 
 #ifdef DSD_NEO_TEST_ARGV_FREE_WRAP
+/* Whether two TETRA air key tables hold the same keys, field by field: dsd_tetra_air_key has padding bytes. */
+static int
+tetra_air_keys_equal(const dsd_tetra_air_key* a, const dsd_tetra_air_key* b) {
+    for (int i = 0; i < DSD_TETRA_AIR_KEY_SLOTS; i++) {
+        if (a[i].loaded != b[i].loaded || a[i].mcc != b[i].mcc || a[i].mnc != b[i].mnc
+            || memcmp(a[i].key, b[i].key, sizeof a[i].key) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void* watched_argv[8];
 static size_t watched_sizes[8];
 static int watched_frees;
@@ -371,8 +383,7 @@ test_tetra_air_keys(void) {
     static dsd_opts other_opts;
     seed(&other_opts, &other);
     dsd_key_set_install(&other, &captured);
-    check(memcmp(other.tetra_air_keys, state.tetra_air_keys, sizeof state.tetra_air_keys) == 0,
-          "install carries TETRA keys");
+    check(tetra_air_keys_equal(other.tetra_air_keys, state.tetra_air_keys), "install carries TETRA keys");
     check(dsd_key_set_capture(&again, &other) == 0 && dsd_key_set_equal(&captured, &again), "TETRA keys compare equal");
     other.tetra_air_keys[2].key[9] ^= 1U;
     dsd_key_set_free(&again);
