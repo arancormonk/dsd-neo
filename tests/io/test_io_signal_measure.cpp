@@ -432,6 +432,26 @@ test_sustained(dsd_signal_detector* d) {
     assert(detected(d, slow, {{163012500, 0.3, 2500, 50, 0}}) == std::vector<uint32_t>{163012500});
     const auto slower = grid_request(1536000, 384000, 163450000, 6250, 16000, 162987500, 9);
     assert(detected(d, slower, {{163012500, 0.3, 5000, 45, 0}}) == std::vector<uint32_t>{163012500});
+    // Clipped, the slow tone dwells on one side of the carrier per window, and the location splits the two dwells
+    // apart where the centre is weak: the channel still holds the transmitter's power in both windows.
+    {
+        const auto clipped = grid_request(1536000, 384000, 163450000, 2500, 8000, 163012500 - 8 * 2500, 17);
+        auto iq = samples(clipped, clipped.frequencies[0], 0, request_samples(clipped));
+        double phase = 0;
+        for (size_t i = 0; i < iq.size() / 2; ++i) {
+            const double t = (double)i / clipped.capture.rate_hz;
+            const double deviation = 1000.0 * std::max(-0.7, std::min(0.7, 2.0 * std::sin(6.283185307179586 * 45 * t)));
+            phase += 6.283185307179586
+                     * (163012500.0 - clipped.capture.capture_hz + clipped.capture.rotation_hz + deviation)
+                     / clipped.capture.rate_hz;
+            iq[2 * i] += (float)(0.3 * std::cos(phase));
+            iq[2 * i + 1] += (float)(0.3 * std::sin(phase));
+        }
+        const auto report = run(d, clipped, iq, 4096);
+        for (uint32_t i = 0; i < clipped.count; ++i) {
+            assert(report.candidates[i].detected == (clipped.frequencies[i] == 163012500));
+        }
+    }
 }
 
 /* Noise alone at the lowest sensitivity, white or coloured, reports nothing; and the robust local noise reads the

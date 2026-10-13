@@ -1029,11 +1029,11 @@ window_power(const dsd_signal_detector* d, const analysis& both, int w, long lon
     return sum / (w ? d->frames : d->first_frames);
 }
 
-/* Whether a transmitter located in @p both holds its own power in both windows: within 10 dB of each other over the
-   bins it occupies (within 10 dB of its peak), not a neighbour's skirt beside it. */
-bool
-sustained(const dsd_signal_detector* d, const analysis& both, const located& s) {
-    double peak = 0, power[2] = {0, 0};
+/* Adds the power of each window per transform over the bins a transmitter located in @p both occupies (within 10 dB
+   of its peak) into @p power. */
+void
+occupied_power(const dsd_signal_detector* d, const analysis& both, const located& s, double* power) {
+    double peak = 0;
     for (long long b = s.first; b <= s.last; ++b) {
         peak = std::max(peak, both.at(b));
     }
@@ -1044,19 +1044,41 @@ sustained(const dsd_signal_detector* d, const analysis& both, const located& s) 
             }
         }
     }
+}
+
+/* Whether the windows' powers @p power are within 10 dB of each other. */
+bool
+balanced(const double* power) {
     return power[0] * kSustainedRatio >= power[1] && power[1] * kSustainedRatio >= power[0];
 }
 
-/* Whether a sustained transmitter located in @p both is centred in [@p low, @p high). */
+/* Whether a sustained transmitter located in @p both is centred in [@p low, @p high) (FFT bins): one holds its own
+   power in both windows (within 10 dB of each other over the bins it occupies), not a neighbour's skirt beside it; or
+   the channel does over the bins it occupies (within 10 dB of its tallest), one transmitter whose modulation dwells on
+   either side of its carrier in turn, which the location split where its centre was weak. */
 bool
 owns_sustained(const dsd_signal_detector* d, const analysis& both, double low, double high) {
+    bool any = false;
     for (int j = 0; j < d->sources.count; ++j) {
         const located& s = d->sources.items[j];
-        if (s.centre >= low && s.centre < high && sustained(d, both, s)) {
-            return true;
+        if (s.centre >= low && s.centre < high) {
+            double power[2] = {0, 0};
+            occupied_power(d, both, s, power);
+            if (balanced(power)) {
+                return true;
+            }
+            any = true;
         }
     }
-    return false;
+    if (!any) {
+        return false;
+    }
+    const long long first = (long long)std::floor(both.to_coarse(low)),
+                    last = (long long)std::ceil(both.to_coarse(high));
+    const located channel{0, first, last, first, last, LLONG_MIN};
+    double power[2] = {0, 0};
+    occupied_power(d, both, channel, power);
+    return balanced(power);
 }
 
 /* Clear raw detections that a transmitter centred on another channel explains: its skirt and the window's leakage
