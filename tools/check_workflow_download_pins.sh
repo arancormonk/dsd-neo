@@ -105,37 +105,163 @@ report_violation "Inline archlinux:base-devel image differs from ARCHLINUX_BASE_
 # secrets behind them are empty: GitHub rejects an empty username or password before
 # the job runs. Dependabot and fork PRs get no Docker Hub secrets, so after #665 every
 # Dependabot PR failed the two Arch jobs at "Set up job". In a workflow that runs on
-# pull requests, such a job must keep itself off them with a job-level
-# `github.event_name != 'pull_request'` condition; a job that has to run there pulls
-# in a step (tools/ci_arch_toolchain.sh) after an optional login.
+# pull requests, such a job must keep itself off them: `github.event_name !=
+# 'pull_request'` has to be one of the &&-joined terms at the top of its job-level
+# condition, so no other branch of the expression can let a pull request through. A
+# job that has to run there pulls in a step (tools/ci_arch_toolchain.sh) after an
+# optional login.
+if ! command -v python3 > /dev/null 2>&1; then
+  echo "python3 is required for workflow download pin guardrail checks." >&2
+  exit 2
+fi
 pr_job_credentials=$(
-  while IFS= read -r workflow; do
-    awk -v file="$workflow" '
-      function finish() {
-        if (job != "" && cred_line > 0 && !skips_pr) {
-          printf "%s:%d: job %s\n", file, cred_line, job
-        }
-      }
-      /^jobs:/ { in_jobs = 1; next }
-      in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
-        finish()
-        job = $1
-        sub(/:$/, "", job)
-        cred_line = 0
-        skips_pr = 0
-        in_if = 0
-        next
-      }
-      job == "" { next }
-      # The job-level condition runs from "    if:" to the next line indented four
-      # spaces or less; a step-level if sits deeper and does not count.
-      /^    if:/ { in_if = 1 }
-      in_if && !/^    if:/ && !/^     / && !/^[[:space:]]*(#|$)/ { in_if = 0 }
-      in_if && index($0, "github.event_name != '\''pull_request'\''") { skips_pr = 1 }
-      /^      [ ]*credentials:/ && cred_line == 0 { cred_line = NR }
-      END { finish() }
-    ' "$workflow"
-  done < <(rg -l -e '^  pull_request(_target)?:' -e '^on:.*pull_request' .github/workflows --glob '*.y*ml' || true)
+  python3 - << 'PY'
+import pathlib
+import re
+
+KEY = re.compile(r"""^(?:"([^"]*)"|'([^']*)'|([^\s"'#][^:#]*?))\s*:(?:\s+(.*))?$""")
+EXCLUSION = "github.event_name != 'pull_request'"
+
+
+def strip_comment(line):
+    """Drop a YAML comment: a '#' at the start or after a blank, outside quotes."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            return line[:i].rstrip()
+    return line.rstrip()
+
+
+def entries(text):
+    """(line number, indent, key, value) for each mapping-key line; None key otherwise."""
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = strip_comment(raw.replace("\t", " "))
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        match = KEY.match(line.strip())
+        if match:
+            key = next(g for g in match.groups()[:3] if g is not None)
+            yield number, indent, key.strip(), (match.group(4) or "").strip()
+        else:
+            yield number, indent, None, line.strip()
+
+
+def unwrap(expr):
+    """Strip parentheses that enclose the whole expression."""
+    while expr.startswith("(") and expr.endswith(")"):
+        depth = 0
+        quote = None
+        for i, ch in enumerate(expr):
+            if quote:
+                quote = None if ch == quote else quote
+            elif ch == "'":
+                quote = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and i != len(expr) - 1:
+                    return expr
+        expr = expr[1:-1].strip()
+    return expr
+
+
+def excludes_pull_requests(condition):
+    expr = re.sub(r"^[|>][+-]?\s*", "", condition.strip())
+    if len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in "'\"":
+        expr = expr[1:-1].replace("''", "'") if expr[0] == "'" else expr[1:-1]
+    expr = expr.strip()
+    if expr.startswith("${{") and expr.endswith("}}"):
+        expr = expr[3:-2].strip()
+    expr = unwrap(expr)
+    terms = []
+    depth = 0
+    quote = None
+    current = ""
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch == "'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and expr.startswith("||", i):
+            return False
+        elif depth == 0 and expr.startswith("&&", i):
+            terms.append(current)
+            current = ""
+            i += 2
+            continue
+        current += ch
+        i += 1
+    terms.append(current)
+    return any(" ".join(unwrap(t.strip()).split()) == EXCLUSION for t in terms)
+
+
+for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
+    rows = list(entries(workflow.read_text(encoding="utf-8")))
+    on_text = []
+    section = None
+    for _, indent, key, value in rows:
+        if indent == 0:
+            section = key
+            if key in ("on", "true"):
+                on_text.append(value)
+            continue
+        if section in ("on", "true"):
+            on_text.append(f"{key or ''} {value}")
+    if not re.search(r"\bpull_request(_target)?\b", " ".join(on_text)):
+        continue
+
+    section = None
+    job_indent = field_indent = None
+    job = job_line = None
+    field = None
+    condition = []
+    credentials_line = None
+
+    def finish():
+        if job is not None and credentials_line is not None and not excludes_pull_requests(" ".join(condition)):
+            print(f"{workflow}:{credentials_line}: job {job}")
+
+    for number, indent, key, value in rows:
+        if indent == 0:
+            finish()
+            section, job = key, None
+            continue
+        if section != "jobs":
+            continue
+        if job_indent is None:
+            job_indent = indent
+        if indent <= job_indent:
+            finish()
+            job, field, condition, credentials_line, field_indent = key, None, [], None, None
+            continue
+        if job is None:
+            continue
+        if field_indent is None:
+            field_indent = indent
+        if indent == field_indent:
+            field = key
+            if key == "if":
+                condition = [value]
+            continue
+        if field == "if":
+            condition.append(value if key is None else f"{key}: {value}")
+        elif field in ("container", "services") and key == "credentials" and credentials_line is None:
+            credentials_line = number
+    finish()
+PY
 )
 report_violation "Job pulls its container with credentials yet can run on a pull request, where Dependabot and forks have no secrets:" \
   "$pr_job_credentials"

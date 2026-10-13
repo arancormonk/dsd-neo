@@ -239,6 +239,57 @@ jobs:
 EOF
 expect_credentials_verdict folded_condition_after_container pass
 
+# credentialed_job KEY CONDITION_LINE...: a pull_request workflow whose one job,
+# under KEY, pulls with credentials and carries the given job-level lines.
+credentialed_job() {
+  local key="$1"
+  shift
+  printf 'on: [push, pull_request]\njobs:\n  %s\n    runs-on: ubuntu-latest\n' "$key"
+  printf '%s\n' "$@"
+  printf '    container:\n      image: %s\n      credentials:\n' "$pinned"
+  # shellcheck disable=SC2016 # the workflow, not this test, expands these
+  printf '        username: ${{ secrets.DOCKERHUB_USERNAME }}\n        password: ${{ secrets.DOCKERHUB_TOKEN }}\n'
+  printf '    steps:\n      - run: true\n'
+}
+
+# A condition only keeps pull requests out when no branch of it lets one through:
+# the exclusion has to be a top-level && term, outside comments. The workflow goes
+# in through process substitution: a pipe would run the case, and set rc, in a
+# subshell.
+run_credentials_case same_repo_alternative < <(credentialed_job build: \
+  "    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository")
+expect_credentials_verdict same_repo_alternative fail
+run_credentials_case exclusion_in_a_comment < <(credentialed_job build: \
+  "    if: always() # github.event_name != 'pull_request'")
+expect_credentials_verdict exclusion_in_a_comment fail
+run_credentials_case exclusion_inside_an_alternative < <(credentialed_job build: \
+  "    if: \${{ (github.event_name != 'pull_request' || github.ref == 'refs/heads/main') && always() }}")
+expect_credentials_verdict exclusion_inside_an_alternative fail
+run_credentials_case parenthesized_conjunction < <(credentialed_job build: \
+  "    if: \${{ (github.repository == 'arancormonk/dsd-neo' && github.event_name != 'pull_request') }}")
+expect_credentials_verdict parenthesized_conjunction pass
+run_credentials_case single_quoted_scalar < <(credentialed_job build: \
+  "    if: 'github.event_name != ''pull_request'''")
+expect_credentials_verdict single_quoted_scalar pass
+
+# Quoted and commented job keys are jobs too.
+run_credentials_case quoted_job_key < <(credentialed_job '"build":')
+expect_credentials_verdict quoted_job_key fail
+run_credentials_case commented_job_key < <(credentialed_job 'build: # required check')
+expect_credentials_verdict commented_job_key fail
+
+# A job does not inherit the exemption of the one before it.
+run_credentials_case exemption_does_not_carry_over < <(
+  credentialed_job release: "    if: github.event_name != 'pull_request'"
+  credentialed_job '"build":' | sed '1,2d'
+)
+expect_credentials_verdict exemption_does_not_carry_over fail
+
+run_credentials_case pull_request_target_trigger < <(
+  credentialed_job build: | sed 's/^on: .*/on:\n  pull_request_target:/'
+)
+expect_credentials_verdict pull_request_target_trigger fail
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:
