@@ -13415,11 +13415,16 @@ if(DSD_HAS_RADIO)
         -fT
         "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
     )
+    # Each of the fixture's 100 TCH/FS bursts carries its class-2 CRC (EN 300 395-2 clause 5.5.1): the clean
+    # replays decode every one with the CRC passing and the burst re-encoding exactly; the impaired ones below must
+    # still pass the CRC on at least 90.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS
         tetra_bsch_synth
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok  mismatches=0"
+        "crc=bad"
+        90
     )
     # Apache-2.0 real-air SCBS capture from GopherTrunk, deterministically
     # resampled from its preserved 50 kHz source to 54 kHz (3 samples/symbol).
@@ -13479,7 +13484,9 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_TCH_FS_INVERTED
         tetra_bsch_inverted
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok  mismatches=0"
+        "crc=bad"
+        90
     )
     # Deterministic 300 Hz carrier error plus 14 dB complex-AWGN SNR. These
     # assertions prove acquisition and protected control decoding through the
@@ -13506,7 +13513,9 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_TCH_FS_CFO_AWGN
         tetra_bsch_cfo_awgn
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        ""
+        90
     )
     # The same 300 Hz CFO and noise realization as the 14 dB case at 6 dB SNR:
     # the CRC-protected control messages must still decode.
@@ -13553,7 +13562,9 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_TCH_FS_TWO_RAY
         tetra_bsch_two_ray
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        ""
+        90
     )
     # A +100 ppm transmitter/receiver sample-clock mismatch accumulates timing
     # drift across the repeated bursts and exercises continuous timing recovery.
@@ -13579,7 +13590,9 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_TCH_FS_CLOCK_100PPM
         tetra_bsch_clock_100ppm
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        ""
+        90
     )
     # Repeat in the opposite direction; a slow source lengthens the waveform
     # and makes the timing loop walk across symbol boundaries in reverse.
@@ -13605,7 +13618,9 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_TCH_FS_CLOCK_MINUS_100PPM
         tetra_bsch_clock_minus_100ppm
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        ""
+        90
     )
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_TETRA_BAD_CRC_REJECT
