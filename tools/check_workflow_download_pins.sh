@@ -113,9 +113,11 @@ report_violation "Inline archlinux:base-devel image differs from ARCHLINUX_BASE_
 # run there pulls in a step (tools/ci_arch_toolchain.sh) after an optional login.
 #
 # The check reads the workflow line by line rather than through a YAML library, which
-# the hosts that run it do not all have. A job it cannot read that way (a flow-style
-# job, or a container or services built from aliases or merge keys) fails closed
-# whenever it could hide credentials: write such a job out in block style.
+# the hosts that run it do not all have. That is sound for block style, where
+# indentation alone gives the structure. What it cannot read that way (a top level
+# not in block style, a flow collection spread over lines, a job written in flow
+# style, aliases or merge keys) fails closed whenever it could hide credentials:
+# write such a workflow out in block style.
 if ! command -v python3 > /dev/null 2>&1; then
   echo "python3 is required for workflow download pin guardrail checks." >&2
   exit 2
@@ -160,6 +162,22 @@ def entries(text):
             yield number, indent, key.strip(), (match.group(4) or "").strip(), body
         else:
             yield number, indent, None, body, body
+
+
+def unbalanced(text):
+    """True when a flow collection opened on this line does not close on it."""
+    depth = 0
+    quote = None
+    for ch in text:
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+    return depth != 0
 
 
 def drop_anchor(value):
@@ -232,14 +250,17 @@ def trigger_names(rows):
             continue
         if in_on:
             on_rows.append(row)
-    if not on_rows:
+    # A flow collection spread over lines is not read: it counts as unreadable.
+    if not on_rows or any(unbalanced(r[4]) for r in on_rows):
         return None
     value = drop_anchor(on_rows[0][3])
     rest = on_rows[1:]
     if not value and rest and rest[0][4].startswith(FLOW):
         value, rest = rest[0][4], rest[1:]
     if value.startswith(FLOW):
-        names = flow_names(" ".join([value] + [r[4] for r in rest]))
+        if rest:
+            return None
+        names = flow_names(value)
     elif value:
         names = [unquote(value)]
     else:
@@ -357,7 +378,17 @@ class Job:
 
 
 for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
-    rows = list(entries(workflow.read_text(encoding="utf-8")))
+    text = workflow.read_text(encoding="utf-8")
+    rows = list(entries(text))
+    # The reader relies on block style: keys at column 0 for the top level and
+    # indentation for everything below. A workflow that is not written that way
+    # fails whenever it mentions credentials at all.
+    first = next((r for r in rows if r[4] != "---"), None)
+    if first is None or first[1] != 0 or first[2] is None:
+        if CREDENTIALS.search(text):
+            line = first[0] if first else 1
+            print(f"{workflow}:{line}: workflow (not block style at the top level; write it in block style)")
+        continue
     triggers = trigger_names(rows)
     if triggers is None:
         # Triggers it cannot read count as pull requests: fail closed.
@@ -397,6 +428,8 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
                 job_indent = -1
             else:
                 job = Job(key, drop_anchor(value), number)
+            if unbalanced(body) and job.unreadable is None:
+                job.unreadable = number
             continue
         if job is None:
             continue
@@ -414,6 +447,8 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
         if indent == job.field_indent:
             job.field = key
             text = value
+            if unbalanced(body) and job.unreadable is None:
+                job.unreadable = number
             if key == "if":
                 job.condition = [value]
             if key == "<<" and job.unreadable is None:
@@ -422,6 +457,8 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
             job.condition.append(body)
         if job.field in ("container", "services"):
             job.scan(text, number)
+            if unbalanced(text) and job.unreadable is None:
+                job.unreadable = number
     if job is not None:
         job.report(workflow, events)
 PY

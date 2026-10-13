@@ -14,6 +14,9 @@
 set -euo pipefail
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
+# The default-tree cases must not inherit the caller's analysis tree; the one case
+# that needs another sets it itself.
+unset DSD_ANALYSIS_BUILD_DIR
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 

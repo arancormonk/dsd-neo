@@ -16,8 +16,9 @@ ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 
 # shellcheck source=tests/tools/missing_tool.sh
 source "$(dirname -- "$0")/missing_tool.sh"
-if ! command -v git > /dev/null 2>&1 || ! command -v rg > /dev/null 2>&1; then
-  missing_tool "git or ripgrep not available"
+if ! command -v git > /dev/null 2>&1 || ! command -v rg > /dev/null 2>&1 ||
+  ! command -v python3 > /dev/null 2>&1; then
+  missing_tool "git, ripgrep or python3 not available"
 fi
 
 WORK=$(mktemp -d)
@@ -241,10 +242,12 @@ expect_credentials_verdict folded_condition_after_container pass
 
 # credentialed_job KEY CONDITION_LINE...: a pull_request workflow whose one job,
 # under KEY, pulls with credentials and carries the given job-level lines.
+# The trigger lines come from CREDENTIALED_ON (default: push and pull_request), so a
+# case changes them without a sed newline, which BSD sed does not support.
 credentialed_job() {
   local key="$1"
   shift
-  printf 'on: [push, pull_request]\njobs:\n  %s\n    runs-on: ubuntu-latest\n' "$key"
+  printf '%s\njobs:\n  %s\n    runs-on: ubuntu-latest\n' "${CREDENTIALED_ON:-on: [push, pull_request]}" "$key"
   printf '%s\n' "$@"
   printf '    container:\n      image: %s\n      credentials:\n' "$pinned"
   # shellcheck disable=SC2016 # the workflow, not this test, expands these
@@ -286,7 +289,7 @@ run_credentials_case exemption_does_not_carry_over < <(
 expect_credentials_verdict exemption_does_not_carry_over fail
 
 run_credentials_case pull_request_target_trigger < <(
-  credentialed_job build: | sed 's/^on: .*/on:\n  pull_request_target:/'
+  CREDENTIALED_ON=$'on:\n  pull_request_target:' credentialed_job build:
 )
 expect_credentials_verdict pull_request_target_trigger fail
 
@@ -297,7 +300,7 @@ run_credentials_case flow_style_container < <(
 )
 expect_credentials_verdict flow_style_container fail
 run_credentials_case indentless_trigger_list < <(
-  credentialed_job build: | sed 's/^on: .*/on:\n- push\n- pull_request/'
+  CREDENTIALED_ON=$'on:\n- push\n- pull_request' credentialed_job build:
 )
 expect_credentials_verdict indentless_trigger_list fail
 
@@ -354,8 +357,8 @@ expect_credentials_verdict mixed_case_exclusion pass
 # Only event names count as triggers, not an input that happens to be called
 # pull_request.
 run_credentials_case dispatch_input_named_pull_request < <(
-  credentialed_job build: |
-    sed 's/^on: .*/on:\n  workflow_dispatch:\n    inputs:\n      pull_request:\n        description: number/'
+  CREDENTIALED_ON=$'on:\n  workflow_dispatch:\n    inputs:\n      pull_request:\n        description: number' \
+    credentialed_job build:
 )
 expect_credentials_verdict dispatch_input_named_pull_request pass
 
@@ -411,7 +414,7 @@ run_credentials_case compact_flow_trigger < <(
 )
 expect_credentials_verdict compact_flow_trigger fail
 run_credentials_case next_line_flow_trigger < <(
-  credentialed_job build: | sed 's/^on: .*/on:\n  [push, pull_request]/'
+  CREDENTIALED_ON=$'on:\n  [push, pull_request]' credentialed_job build:
 )
 expect_credentials_verdict next_line_flow_trigger fail
 run_credentials_case unreadable_trigger < <(
@@ -434,6 +437,51 @@ jobs:
     {runs-on: ubuntu-latest, container: {image: $pinned, credentials: {username: u, password: p}}, steps: [{run: "true"}]}
 EOF
 expect_credentials_verdict next_line_flow_job fail
+
+# The reader relies on block style; a top level written otherwise, or a flow
+# collection spread over lines, fails closed.
+run_credentials_case indented_top_level < <(credentialed_job build: | sed 's/^/  /')
+if [[ $rc -eq 0 ]] || ! grep -qF "workflow (not block style" "$WORK/indented_top_level.out"; then
+  fail "indented_top_level: an indented top level was not refused"
+  cat "$WORK/indented_top_level.out" >&2
+fi
+run_credentials_case flow_top_level << EOF
+{on: [pull_request], jobs: {build: {runs-on: ubuntu-latest, container: {image: $pinned, credentials: {username: u, password: p}}}}}
+EOF
+if [[ $rc -eq 0 ]] || ! grep -qF "workflow (not block style" "$WORK/flow_top_level.out"; then
+  fail "flow_top_level: a flow-style top level was not refused"
+  cat "$WORK/flow_top_level.out" >&2
+fi
+run_credentials_case multiline_flow_trigger < <(
+  CREDENTIALED_ON=$'on: [\n  push,\n  pull_request\n]' credentialed_job build:
+)
+expect_credentials_verdict multiline_flow_trigger fail
+run_credentials_case multiline_flow_container << EOF
+on: [pull_request]
+jobs:
+  build:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container: {
+    image: $pinned,
+    credentials: {username: u, password: p}
+    }
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict multiline_flow_container fail
+run_credentials_case multiline_flow_services << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      cache: {image: $pinned,
+        credentials: {username: u, password: p}}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict multiline_flow_services fail
 
 run_credentials_case push_only_workflow << EOF
 on:
