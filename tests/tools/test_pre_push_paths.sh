@@ -96,6 +96,16 @@ run_hook "$(git rev-parse HEAD)" "$vendored" || true
 grep -q 'analysis_full=1' "$WORK/out" || fail "deleting a vendored file did not ask for the full tree: $(cat "$WORK/out")"
 echo "PASS deleting a vendored file analyzes the whole tree"
 
+# Moving a file out of a dependency removes it from the dependency, though git would
+# call it a rename.
+git checkout -q -f --detach "$vendored"
+mkdir -p docs
+git mv src/third_party/ezpwd/rs docs/rs
+git commit -q -m 'move vendored file out'
+run_hook "$(git rev-parse HEAD)" "$vendored" || true
+grep -q 'analysis_full=1' "$WORK/out" || fail "moving a vendored file out did not ask for the full tree: $(cat "$WORK/out")"
+echo "PASS moving a file out of a vendored snapshot analyzes the whole tree"
+
 # A full-tree run reconfigures dev-debug even where a compile database exists, so a
 # changed pin (PFFFT) is refetched before the analyzers read it; a scoped run keeps
 # the existing database. These two cases run the hook to the end with its check
@@ -126,9 +136,16 @@ mv pins.env tools/ci-dependency-pins.env
 git add tools/ci-dependency-pins.env
 git commit -q -m 'pin change'
 run_full_hook "$(git rev-parse HEAD)" "$base"
-grep -qx -- '--preset dev-debug' "$WORK/cmake.calls" ||
+grep -qx -- '--preset dev-debug -B build/dev-debug' "$WORK/cmake.calls" ||
   fail "a full-tree run kept a stale compile database: $(cat "$WORK/cmake.calls") $(cat "$WORK/out")"
 echo "PASS a full-tree run reconfigures dev-debug over an existing compile database"
+# The analyzers read DSD_ANALYSIS_BUILD_DIR when it is set; that tree is refreshed.
+mkdir -p build/other
+printf '[]\n' > build/other/compile_commands.json
+DSD_ANALYSIS_BUILD_DIR=build/other run_full_hook "$(git rev-parse HEAD)" "$base"
+grep -qx -- '--preset dev-debug -B build/other' "$WORK/cmake.calls" ||
+  fail "a full-tree run refreshed a tree the analyzers do not read: $(cat "$WORK/cmake.calls")"
+echo "PASS a full-tree run reconfigures the tree DSD_ANALYSIS_BUILD_DIR names"
 git checkout -q -f --detach "$base"
 printf 'int scoped;\n' > base.c
 git commit -q -am 'scoped change'

@@ -22,6 +22,7 @@ Writes the paths the push of <local-sha> adds, copies, modifies or renames
 (--diff-filter=ACMR), NUL-separated and unquoted, to stdout. The arguments are
 one line of a pre-push hook's input, plus the remote's name. A <diff-filter>
 (git diff's letters, e.g. D for the paths the push deletes) replaces ACMR.
+Renames are not detected: a renamed file is listed as deleted and added.
 
 - An existing ref is compared with what the remote has (<remote-sha>...<local-sha>).
 - A new ref, or one whose <remote-sha> this clone does not have, is compared with
@@ -110,8 +111,9 @@ select_best_remote_merge_base() {
   return 1
 }
 
+# --no-renames, so a file moved out of a dependency shows up among the deletions.
 diff_or_die() {
-  if ! git diff -z --name-only "--diff-filter=${diff_filter}" "$@"; then
+  if ! git diff -z --name-only --no-renames "--diff-filter=${diff_filter}" "$@"; then
     echo "push-changed-files: git diff $* failed for ${local_ref}" >&2
     exit 1
   fi

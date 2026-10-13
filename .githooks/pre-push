@@ -622,8 +622,9 @@ echo "pre-push: jobs=${JOBS} (clang-tidy=${jobs_tidy} cppcheck=${jobs_cppcheck}"
   "fanalyzer=${jobs_fanalyzer} iwyu=${jobs_iwyu} lizard=${jobs_lizard}" \
   "clang-format=${jobs_format}) serial=${RUNNER_SERIAL}"
 
-# The per-TU analyzers all read build/dev-debug/compile_commands.json and each
-# would configure the preset itself if it were missing. Do that once, up front,
+# The per-TU analyzers all read build/dev-debug/compile_commands.json (or
+# DSD_ANALYSIS_BUILD_DIR's) and each would configure the preset itself if it
+# were missing. Do that once, up front,
 # so concurrent lanes never race on the same build tree. If it fails there is no
 # database to analyze against, and letting the lanes start would have three of
 # them configure the same build directory at the same time, so they are skipped:
@@ -633,14 +634,17 @@ echo "pre-push: jobs=${JOBS} (clang-tidy=${jobs_tidy} cppcheck=${jobs_cppcheck}"
 # refetches a changed pin (PFFFT) into build/dev-debug, whose compile database the
 # per-TU analyzers and whose cache tools/cppcheck.sh read. An existing tree would
 # otherwise be analyzed against the old dependency and pass.
+# The analyzers read DSD_ANALYSIS_BUILD_DIR when it is set, so that is the tree
+# configured here.
+analysis_build_dir="${DSD_ANALYSIS_BUILD_DIR:-build/dev-debug}"
 compile_db_ready=1
 configure_label="CMake configure (dev-debug compile database)"
 if [[ $analysis_full_scan -eq 1 ]]; then
-  configure_label="CMake configure (dev-debug; refetch the pinned dependencies)"
+  configure_label="CMake configure (dev-debug in ${analysis_build_dir}; refetch the pinned dependencies)"
 fi
-if [[ $tu_count -gt 0 ]] && [[ $analysis_full_scan -eq 1 || (! -f build/dev-debug/compile_commands.json && ! -f compile_commands.json) ]]; then
+if [[ $tu_count -gt 0 ]] && [[ $analysis_full_scan -eq 1 || (! -f "$analysis_build_dir/compile_commands.json" && ! -f compile_commands.json) ]]; then
   if command -v cmake > /dev/null 2>&1; then
-    run_check "$configure_label" cmake --preset dev-debug
+    run_check "$configure_label" cmake --preset dev-debug -B "$analysis_build_dir"
     if [[ "$RUNNER_LAST_RC" -ne 0 ]]; then
       compile_db_ready=0
       echo "pre-push: skipping the per-TU analyzers (no compile database)." >&2

@@ -172,6 +172,14 @@ git rm -q "$path"
 git commit -q -m "remove $path"
 expect_full_scan "deleting a vendored file analyzes the whole tree" "HEAD~1" 1
 git checkout -q -f --detach "$base"
+mkdir -p src/third_party/ezpwd
+printf 'vendored\n' > src/third_party/ezpwd/rs
+git add -A
+git commit -q -m 'vendored file'
+git mv src/third_party/ezpwd/rs docs/rs
+git commit -q -m 'move vendored file out'
+expect_full_scan "moving a file out of a vendored snapshot analyzes the whole tree" "HEAD~1" 1
+git checkout -q -f --detach "$base"
 git clean -q -fdx
 printf 'glue\n' > CMakeLists.txt
 mkdir -p android/third_party

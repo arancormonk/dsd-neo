@@ -206,8 +206,10 @@ trap 'rm -f "$DIFF_RAW"' EXIT
 # pattern below and fails the existence check, so it dropped out of every list. A
 # diff that fails ends the run, because an empty list reads as "nothing changed" and
 # would let every job that consumes it skip its work and pass.
-if ! git diff -z --name-only --diff-filter=ACMRD "${BASE_REF}...${HEAD_REF}" > "$DIFF_RAW"; then
-  if ! git diff -z --name-only --diff-filter=ACMRD "$BASE_REF" "$HEAD_REF" > "$DIFF_RAW"; then
+# --no-renames: a rename is listed as its deletion and its addition, so a file
+# moved out of a dependency (src/third_party, say) still counts as a change to it.
+if ! git diff -z --name-only --no-renames --diff-filter=ACMRD "${BASE_REF}...${HEAD_REF}" > "$DIFF_RAW"; then
+  if ! git diff -z --name-only --no-renames --diff-filter=ACMRD "$BASE_REF" "$HEAD_REF" > "$DIFF_RAW"; then
     echo "ci-changed-files: git diff between ${BASE_REF} and ${HEAD_REF} failed" >&2
     exit 1
   fi
