@@ -5,7 +5,9 @@ set -euo pipefail
 # This mirrors the local pre-push targeting rules: changed source files are
 # analyzed directly, and changed headers expand to representative C and C++ TUs
 # (capped per tree and language) for the slower analyzers, and to every includer
-# for IWYU, whose verdict depends on the header's types and is cheap to run.
+# for IWYU, whose verdict depends on the header's types and is cheap to run. A
+# change to a pinned or vendored dependency sets analysis_full_scan instead, and
+# the per-TU analyzers then take the whole tree.
 
 # Needs bash 4.4: `mapfile -d` reads git's NUL-separated names, and expanding an
 # empty array under `set -u` is an error before 4.4.
@@ -204,8 +206,10 @@ trap 'rm -f "$DIFF_RAW"' EXIT
 # pattern below and fails the existence check, so it dropped out of every list. A
 # diff that fails ends the run, because an empty list reads as "nothing changed" and
 # would let every job that consumes it skip its work and pass.
-if ! git diff -z --name-only --diff-filter=ACMRD "${BASE_REF}...${HEAD_REF}" > "$DIFF_RAW"; then
-  if ! git diff -z --name-only --diff-filter=ACMRD "$BASE_REF" "$HEAD_REF" > "$DIFF_RAW"; then
+# --no-renames: a rename is listed as its deletion and its addition, so a file
+# moved out of a dependency (src/third_party, say) still counts as a change to it.
+if ! git diff -z --name-only --no-renames --diff-filter=ACMRD "${BASE_REF}...${HEAD_REF}" > "$DIFF_RAW"; then
+  if ! git diff -z --name-only --no-renames --diff-filter=ACMRD "$BASE_REF" "$HEAD_REF" > "$DIFF_RAW"; then
     echo "ci-changed-files: git diff between ${BASE_REF} and ${HEAD_REF} failed" >&2
     exit 1
   fi
@@ -240,6 +244,7 @@ changed_headers=()
 format_files=()
 semgrep_targets=()
 semgrep_full_scan=0
+analysis_full_scan=0
 cmake_format_files=()
 workflow_security_targets=()
 dependency_scan_targets=()
@@ -248,6 +253,16 @@ for p in "${changed_paths[@]}"; do
   case "$p" in
     .github/dependabot.yml | .github/requirements/* | vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh | tools/ci-dependency-pins.env | cmake/Pffft.cmake | tools/update_pffft.py | tools/update_aur_pffft.py | tools/pffft_metadata.py | CMakeLists.txt)
       dependency_scan_targets+=("$p")
+      ;;
+  esac
+  # Our sources compile against these, so a change to one can move a finding into a
+  # file the pull request did not touch: #690's PFFFT fork took a const setup, and the
+  # header that calls it became a cppcheck finding only the push to main reported.
+  # The per-TU analyzers then take the whole tree, as on push. Matched before the
+  # vendored snapshots are dropped below.
+  case "$p" in
+    tools/ci-dependency-pins.env | cmake/Pffft.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
+      analysis_full_scan=1
       ;;
   esac
   case "$p" in
@@ -382,7 +397,7 @@ echo "ci-changed-files: base=${BASE_REF} head=${HEAD_REF}"
 echo "ci-changed-files: changed=${#changed_paths[@]} format=${#format_files[@]}" \
   "tus=${#analysis_tus[@]} iwyu=${#iwyu_tus[@]} cppcheck=${#cppcheck_sources[@]} semgrep=${#semgrep_targets[@]}" \
   "cmake=${#cmake_format_files[@]} workflows=${#workflow_security_targets[@]}" \
-  "deps=${#dependency_scan_targets[@]} semgrep_full=${semgrep_full_scan}"
+  "deps=${#dependency_scan_targets[@]} semgrep_full=${semgrep_full_scan} analysis_full=${analysis_full_scan}"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
@@ -394,6 +409,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "cppcheck_sources=${#cppcheck_sources[@]}"
     echo "semgrep_targets=${#semgrep_targets[@]}"
     echo "semgrep_full_scan=${semgrep_full_scan}"
+    echo "analysis_full_scan=${analysis_full_scan}"
     echo "cmake_format_files=${#cmake_format_files[@]}"
     echo "workflow_security_targets=${#workflow_security_targets[@]}"
     echo "dependency_scan_targets=${#dependency_scan_targets[@]}"
