@@ -404,6 +404,37 @@ jobs:
 EOF
 expect_credentials_verdict anchored_job pass
 
+# Flow-style triggers are read in their compact and next-line forms, and triggers
+# that cannot be read at all count as pull requests.
+run_credentials_case compact_flow_trigger < <(
+  credentialed_job build: | sed 's/^on: .*/on: {"pull_request":{}}/'
+)
+expect_credentials_verdict compact_flow_trigger fail
+run_credentials_case next_line_flow_trigger < <(
+  credentialed_job build: | sed 's/^on: .*/on:\n  [push, pull_request]/'
+)
+expect_credentials_verdict next_line_flow_trigger fail
+run_credentials_case unreadable_trigger < <(
+  credentialed_job build: | sed 's/^on: .*/on: *triggers/'
+)
+expect_credentials_verdict unreadable_trigger fail
+
+# A jobs mapping, or a job, written in flow style fails closed on credentials.
+run_credentials_case inline_jobs_mapping << EOF
+on: [pull_request]
+jobs: {build: {runs-on: ubuntu-latest, container: {image: $pinned, credentials: {username: u, password: p}}, steps: [{run: "true"}]}}
+EOF
+if [[ $rc -eq 0 ]]; then
+  fail "inline_jobs_mapping: passed"
+fi
+run_credentials_case next_line_flow_job << EOF
+on: [pull_request]
+jobs:
+  build:
+    {runs-on: ubuntu-latest, container: {image: $pinned, credentials: {username: u, password: p}}, steps: [{run: "true"}]}
+EOF
+expect_credentials_verdict next_line_flow_job fail
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:
