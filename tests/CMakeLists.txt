@@ -11074,6 +11074,7 @@ add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 # the normal ALL_BUILD + CTest workflow.
 set(_dsd_tetra_test_sources
     acelp_reference
+    tetra_bits
     air_chain_vector
     d_tx_granted_chan
     depuncture_regression

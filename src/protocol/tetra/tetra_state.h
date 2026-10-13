@@ -17,6 +17,11 @@ extern "C" {
 #endif
 
 typedef struct tetra_state {
+    /* Diagnostic gates mirrored from the options at every burst (tetra_frame_enter()), so parsers that are not handed
+     * the options can still keep per-burst detail behind -Z (payload) and -v (verbose). */
+    uint8_t log_payload;
+    uint8_t log_verbose;
+
     /* uplink: 1 with --tetra-uplink. Normal bursts are then NUBs
      * (EN 300 392-2 table 9.5): the same training sequence as a downlink NDB,
      * but block 1 sits directly against it (no AACH). Scrambling stays the

@@ -1032,6 +1032,8 @@ tetra_frame_enter(const dsd_opts* opts, dsd_state* state) {
         return NULL;
     }
     ts->uplink = (uint8_t)(opts->tetra_uplink != 0);
+    ts->log_payload = (uint8_t)(opts->payload == 1);
+    ts->log_verbose = (uint8_t)(opts->verbose > 0 ? (opts->verbose > 255 ? 255 : opts->verbose) : 0);
     if (opts->tetra_net_preset && !ts->net_known) {
         ts->mcc = opts->tetra_net_mcc;
         ts->mnc = opts->tetra_net_mnc;
