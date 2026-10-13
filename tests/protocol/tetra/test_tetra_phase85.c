@@ -4,7 +4,6 @@
  *
  * Covers functionality introduced in Phases 81-84:
  *
- * Phase 81: tetra_bits.h shared header (bits_to_uint unification)
  * Phase 83: D-FACILITY parser
  * SDS transport messages are covered by test_mle_cmce.c; they are carried
  * inside D-SDS-DATA or D-STATUS, not separate CMCE PDU types.
@@ -69,33 +68,6 @@ wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_n
     pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
     DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = total;
-}
-
-/* -----------------------------------------------------------------------
- * Phase 81: tetra_bits_to_uint shared utility
- * ----------------------------------------------------------------------- */
-static void
-test_tetra_bits_to_uint(void) {
-    printf("[Phase 81] tetra_bits_to_uint shared header\n");
-
-    /* Pack 0xAB = 10101011 into bit array */
-    uint8_t bits[32];
-    DSD_MEMSET(bits, 0, sizeof(bits));
-    pack_bits(bits, 0xAB, 0, 8);
-
-    uint32_t v = tetra_bits_to_uint(bits, 0, 8);
-    CHECK(v == 0xAB, "tetra_bits_to_uint full byte 0xAB");
-
-    uint32_t hi = tetra_bits_to_uint(bits, 0, 4);
-    CHECK(hi == 0x0A, "tetra_bits_to_uint high nibble 0x0A");
-
-    uint32_t lo = tetra_bits_to_uint(bits, 4, 4);
-    CHECK(lo == 0x0B, "tetra_bits_to_uint low nibble 0x0B");
-
-    /* 24-bit value */
-    pack_bits(bits, 0x123456, 0, 24);
-    v = tetra_bits_to_uint(bits, 0, 24);
-    CHECK(v == 0x123456u, "tetra_bits_to_uint 24-bit value");
 }
 
 /* -----------------------------------------------------------------------
@@ -299,9 +271,6 @@ test_cmce_constants(void) {
 int
 main(void) {
     printf("=== TETRA Phase 85 Tests ===\n\n");
-
-    /* Phase 81 */
-    test_tetra_bits_to_uint();
 
     /* Phase 82 */
 

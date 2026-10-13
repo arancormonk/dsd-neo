@@ -105,19 +105,6 @@ tetra_bits_skip_type34(tetra_bit_reader* r) {
     return tetra_bits_ok(r);
 }
 
-/**
- * Read @p n bits starting at @p bits[@p off], MSB first, without a bound check.
- * Kept for callers not yet on tetra_bit_reader; new code uses the reader.
- */
-static inline uint32_t
-tetra_bits_to_uint(const uint8_t* bits, int off, int n) {
-    uint32_t v = 0;
-    for (int i = 0; i < n; i++) {
-        v = (v << 1) | (bits[off + i] & 1u);
-    }
-    return v;
-}
-
 #ifdef __cplusplus
 }
 #endif
