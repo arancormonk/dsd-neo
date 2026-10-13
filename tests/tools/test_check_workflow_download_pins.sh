@@ -511,6 +511,32 @@ run_credentials_case two_interpolations < <(
 )
 expect_credentials_verdict two_interpolations fail
 
+# A trigger written as a quoted scalar on the line after `on:` is still read.
+run_credentials_case next_line_quoted_trigger < <(
+  CREDENTIALED_ON=$'on:\n  "pull_request"' credentialed_job build:
+)
+expect_credentials_verdict next_line_quoted_trigger fail
+
+# Inside a block scalar a '#' is content and quotes are literal, so these
+# conditions are strings, which are always true.
+run_credentials_case block_scalar_with_hash < <(
+  credentialed_job build: "    if: >-" "      \${{ github.event_name != 'pull_request' }} # no PRs"
+)
+expect_credentials_verdict block_scalar_with_hash fail
+run_credentials_case block_scalar_quoted < <(
+  credentialed_job build: "    if: |" "      '\${{ github.event_name != ''pull_request'' }}'"
+)
+expect_credentials_verdict block_scalar_quoted fail
+run_credentials_case block_scalar_expression < <(
+  credentialed_job build: "    if: >-" "      \${{ github.event_name != 'pull_request' }}"
+)
+expect_credentials_verdict block_scalar_expression pass
+# A quoted condition over several lines is not read, so it never excludes.
+run_credentials_case multiline_quoted_condition < <(
+  credentialed_job build: "    if: \"github.event_name != 'pull_request' &&" "      github.repository != ''\""
+)
+expect_credentials_verdict multiline_quoted_condition fail
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:

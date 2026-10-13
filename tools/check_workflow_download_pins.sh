@@ -132,6 +132,7 @@ CREDENTIALS = re.compile(r"""(?:^|[\s{,])["']?credentials["']?\s*:""")
 ALIAS = re.compile(r"""(?:^|[\s:,{\[])\*[^\s,\]}]+|<<\s*:""")
 PR_EVENTS = ("pull_request", "pull_request_target")
 FLOW = ("{", "[")
+BLOCK_HEADER = re.compile(r"^[|>](?:[+-]?[1-9]?|[1-9][+-])(?:\s+|$)")
 
 
 def strip_comment(line):
@@ -280,7 +281,7 @@ def trigger_names(rows):
             if body.startswith("-"):
                 names.append(unquote((flow_names("[" + body[1:] + "]") or [""])[0]))
             else:
-                names.append(key if key is not None else body)
+                names.append(key if key is not None else unquote(body))
     names = [n.strip().lower() for n in names]
     if not names or any(not n or n.startswith(("*", "{", "[")) or n == "<<" for n in names):
         return None
@@ -307,11 +308,14 @@ def unwrap(expr):
     return expr
 
 
-def top_level_terms(condition):
+def top_level_terms(condition, block):
     """The &&-joined terms at the top of a condition, lower-cased (GitHub compares
-    names and strings case-insensitively), or None when it has a top-level ||."""
-    expr = re.sub(r"^[|>][+-]?\s*", "", condition.strip())
-    if len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in "'\"":
+    names and strings case-insensitively), or None when it has a top-level ||. A
+    block scalar's content is literal: no quotes are removed from it."""
+    expr = condition.strip()
+    if block:
+        expr = BLOCK_HEADER.sub("", expr, count=1)
+    elif len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in "'\"":
         expr = expr[1:-1].replace("''", "'") if expr[0] == "'" else expr[1:-1]
     expr = expr.strip()
     if "${{" in expr:
@@ -349,8 +353,8 @@ def top_level_terms(condition):
     return [" ".join(unwrap(t.strip()).split()).lower() for t in terms]
 
 
-def excludes(condition, events):
-    terms = top_level_terms(condition)
+def excludes(condition, events, block):
+    terms = top_level_terms(condition, block)
     if terms is None:
         return False
     for term in terms:
@@ -367,6 +371,11 @@ class Job:
         self.name = name
         self.opaque = bool(inline)
         self.condition = []
+        # A block scalar condition (if: >- or |) is read from the raw lines, where a
+        # '#' is content, not a comment. A quoted condition over several lines is not
+        # read: its comment-like text cannot be told apart, so it never excludes.
+        self.block = False
+        self.condition_readable = True
         self.field = None
         self.field_indent = None
         self.credentials = None
@@ -383,13 +392,18 @@ class Job:
     def report(self, workflow, events):
         if self.unreadable is not None:
             print(f"{workflow}:{self.unreadable}: job {self.name} (aliases, merge keys or flow style; write it in block style)")
-        elif self.credentials is not None and (self.opaque or not excludes(" ".join(self.condition), events)):
+        elif self.credentials is not None and (
+            self.opaque
+            or not self.condition_readable
+            or not excludes(" ".join(self.condition), events, self.block)
+        ):
             print(f"{workflow}:{self.credentials}: job {self.name}")
 
 
 for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
     text = workflow.read_text(encoding="utf-8")
     rows = list(entries(text))
+    raw_lines = text.splitlines()
     # The reader relies on block style: keys at column 0 for the top level and
     # indentation for everything below. A workflow that is not written that way
     # fails whenever it mentions credentials at all.
@@ -461,10 +475,16 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
                 job.unreadable = number
             if key == "if":
                 job.condition = [value]
+                job.block = bool(BLOCK_HEADER.match(value))
             if key == "<<" and job.unreadable is None:
                 job.unreadable = number
         elif job.field == "if":
-            job.condition.append(body)
+            if job.block:
+                job.condition.append(raw_lines[number - 1].strip())
+            else:
+                if job.condition[0][:1] in ("'", '"'):
+                    job.condition_readable = False
+                job.condition.append(body)
         if job.field in ("container", "services"):
             job.scan(text, number)
             if unbalanced(value if key is not None else body) and job.unreadable is None:
