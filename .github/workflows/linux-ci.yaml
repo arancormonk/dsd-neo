@@ -1664,28 +1664,36 @@ jobs:
             --head HEAD
 
       - name: Skip cppcheck
-        if: github.event_name == 'pull_request' && steps.changed.outputs.cppcheck_sources == '0'
+        if: github.event_name == 'pull_request' && steps.changed.outputs.cppcheck_sources == '0' && steps.changed.outputs.analysis_full_scan != '1'
         run: echo "No changed source files for cppcheck."
 
       - name: Run cppcheck
-        if: github.event_name != 'pull_request' || steps.changed.outputs.cppcheck_sources != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.cppcheck_sources != '0' || steps.changed.outputs.analysis_full_scan == '1'
         shell: bash
+        env:
+          ANALYSIS_FULL_SCAN: ${{ steps.changed.outputs.analysis_full_scan }}
         run: |
+          # A changed dependency can move a finding into a file the PR did not touch,
+          # so a pull request that changes one is checked over the whole tree.
+          scope=full
+          if [[ "${{ github.event_name }}" == "pull_request" && "${ANALYSIS_FULL_SCAN}" != "1" ]]; then
+            scope=changed
+          fi
           bash tools/ci_arch_toolchain.sh bash -lc '
             set -euo pipefail
             source tools/ci-dependency-pins.env
             tools/fetch-pinned-git.sh https://github.com/arancormonk/pffft "$PFFFT_SHA" /tmp/dsd-pffft
             export DSD_PFFFT_SOURCE_DIR=/tmp/dsd-pffft
-            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            if [[ "$1" == "changed" ]]; then
               mapfile -t files < .ci/changed-files/cppcheck_sources.txt
               tools/cppcheck.sh --strict -- "${files[@]}"
             else
               tools/cppcheck.sh --strict
             fi
-          '
+          ' bash "$scope"
 
       - name: Upload cppcheck output
-        if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.cppcheck_sources != '0')
+        if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.cppcheck_sources != '0' || steps.changed.outputs.analysis_full_scan == '1')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cppcheck-report
@@ -1748,11 +1756,11 @@ jobs:
             --head HEAD
 
       - name: Skip ${{ matrix.name }}
-        if: github.event_name == 'pull_request' && steps.changed.outputs.analysis_tus == '0'
+        if: github.event_name == 'pull_request' && steps.changed.outputs.analysis_tus == '0' && steps.changed.outputs.analysis_full_scan != '1'
         run: echo "No changed translation units for ${{ matrix.name }}."
 
       - name: Compute dependency SHAs (for cache key)
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
         id: dep-shas
         run: |
           set -euxo pipefail
@@ -1763,7 +1771,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .deps
@@ -1772,7 +1780,7 @@ jobs:
             arch-deps-${{ runner.os }}-
 
       - name: Validate dependency cache
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
         run: |
           set -euxo pipefail
           mf=".deps/.manifest"
@@ -1788,7 +1796,7 @@ jobs:
           mkdir -p .deps
 
       - name: Restore IWYU toolchain cache
-        if: (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0') && matrix.name == 'iwyu'
+        if: (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1') && matrix.name == 'iwyu'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .deps-arch-toolchain
@@ -1797,7 +1805,7 @@ jobs:
             arch-iwyu-${{ runner.os }}-
 
       - name: Restore ccache
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ccache
@@ -1808,11 +1816,18 @@ jobs:
             ccache-${{ runner.os }}-arch-
 
       - name: Run ${{ matrix.name }} under Arch toolchain
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
         shell: bash
         env:
           CI_ARCH_IWYU_SHA: ${{ steps.dep-shas.outputs.iwyu_sha }}
+          ANALYSIS_FULL_SCAN: ${{ steps.changed.outputs.analysis_full_scan }}
         run: |
+          # A changed dependency can move a finding into a file the PR did not touch,
+          # so a pull request that changes one is checked over the whole tree.
+          scope=full
+          if [[ "${{ github.event_name }}" == "pull_request" && "${ANALYSIS_FULL_SCAN}" != "1" ]]; then
+            scope=changed
+          fi
           bash tools/ci_arch_toolchain.sh bash -lc '
             set -euxo pipefail
 
@@ -1854,7 +1869,7 @@ jobs:
             rm -rf build/dev-debug
             cmake --preset dev-debug
 
-            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            if [[ "$1" == "changed" ]]; then
               mapfile -t files < ".ci/changed-files/${{ matrix.tus_file }}"
               ${{ matrix.run_cmd }} -- "${files[@]}"
             else
@@ -1862,10 +1877,10 @@ jobs:
             fi
 
             ccache -s
-          '
+          ' bash "$scope"
 
       - name: Upload ${{ matrix.name }} output
-        if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0')
+        if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}

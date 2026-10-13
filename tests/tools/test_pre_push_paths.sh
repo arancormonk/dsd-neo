@@ -6,8 +6,10 @@
 # newline in it would split into two paths that do not exist: skipped with a
 # warning for a ref that is not checked out, or reported as local deletions for
 # the one that is. The hook must refuse the push and say why. It must also leave
-# nothing behind in the temporary directory. This runs the hook, with tools/push_changed_files.sh, in a
-# throwaway repository; both cases end before the hook loads its check runner.
+# nothing behind in the temporary directory. A change to a pinned or vendored
+# dependency must run the per-TU analyzers over the whole tree. This runs the hook,
+# with tools/push_changed_files.sh, in a throwaway repository; every case ends
+# before the hook loads its check runner.
 set -euo pipefail
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
@@ -55,3 +57,26 @@ fi
 grep -q 'path with a newline in it' "$WORK/out" || fail "newline not reported: $(cat "$WORK/out")"
 [[ -z "$(ls -A "$hook_tmp")" ]] || fail "temporary files left behind: $(ls -A "$hook_tmp")"
 echo "PASS a pushed name with a newline is refused"
+
+# A change to a pinned or vendored dependency runs the per-TU analyzers over the
+# whole tree, as tools/ci_changed_files.sh asks of CI; an ordinary source change
+# does not. The hook prints its scope before it starts the checks, and this
+# repository has no check runner, so it stops right after that line.
+git checkout -q --detach "$base"
+printf 'int edited;\n' > base.c
+git commit -q -am 'ordinary source change'
+run_hook "$(git rev-parse HEAD)" "$base" || true
+grep -q 'analysis_full=0' "$WORK/out" || fail "a source change asked for the full tree: $(cat "$WORK/out")"
+echo "PASS an ordinary source change keeps the analysis to the changed files"
+for path in tools/ci-dependency-pins.env cmake/Pffft.cmake src/third_party/ezpwd/rs \
+  android/third_party/libusb/libusb.h android/third_party/librtlsdr/rtl-sdr.h \
+  android/third_party/libairspy/airspy.h; do
+  git checkout -q -f --detach "$base"
+  mkdir -p "$(dirname "$path")"
+  printf 'changed\n' > "$path"
+  git add -A
+  git commit -q -m "change $path"
+  run_hook "$(git rev-parse HEAD)" "$base" || true
+  grep -q 'analysis_full=1' "$WORK/out" || fail "$path did not ask for the full tree: $(cat "$WORK/out")"
+  echo "PASS a change to $path analyzes the whole tree"
+done

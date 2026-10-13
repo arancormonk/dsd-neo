@@ -141,6 +141,47 @@ echo 'PASS FFT changes and deletions trigger dependency scanning'
 git checkout -q -f --detach "$base"
 git clean -q -fdx
 
+# A pinned or vendored dependency can move a finding into a file the pull request
+# did not touch (#690: the forked PFFFT's const setup made an unchanged header a
+# cppcheck finding, reported only on main), so it asks for a full-tree analysis.
+# An ordinary source change does not.
+expect_full_scan() {
+  local label="$1"
+  local from="$2"
+  local want="$3"
+  GITHUB_OUTPUT="$WORK/full.out" bash "$SCRIPT" --base "$from" --head HEAD \
+    --out-dir "$WORK/full" > /dev/null
+  grep -qx "analysis_full_scan=$want" "$WORK/full.out" || fail "$label: $(cat "$WORK/full.out")"
+  rm -f "$WORK/full.out"
+  echo "PASS $label"
+}
+printf 'int edited;\n' > src/core/base.c
+git commit -q -am 'ordinary source change'
+expect_full_scan "an ordinary source change keeps the analysis to the changed files" "$base" 0
+for path in tools/ci-dependency-pins.env cmake/Pffft.cmake src/third_party/ezpwd/rs \
+  android/third_party/libusb/libusb.h android/third_party/librtlsdr/rtl-sdr.h \
+  android/third_party/libairspy/airspy.h; do
+  git checkout -q -f --detach "$base"
+  mkdir -p "$(dirname "$path")"
+  printf 'changed\n' > "$path"
+  git add -A
+  git commit -q -m "change $path"
+  expect_full_scan "a change to $path analyzes the whole tree" "$base" 1
+done
+git rm -q "$path"
+git commit -q -m "remove $path"
+expect_full_scan "deleting a vendored file analyzes the whole tree" "HEAD~1" 1
+git checkout -q -f --detach "$base"
+git clean -q -fdx
+printf 'glue\n' > CMakeLists.txt
+mkdir -p android/third_party
+printf 'glue\n' > android/third_party/CMakeLists.txt
+git add -A
+git commit -q -m 'build glue'
+expect_full_scan "the build glue beside the vendored snapshots keeps the scoped analysis" "$base" 0
+git checkout -q -f --detach "$base"
+git clean -q -fdx
+
 # A diff that fails fails the helper. Both commits resolve, so it gets past its ref
 # checks, but git diff rejects an invalid diff setting.
 git config diff.context notanumber

@@ -101,6 +101,7 @@ format_files=()
 cmake_format_files=()
 semgrep_targets=()
 semgrep_full_scan=0
+analysis_full_scan=0
 shell_lint_targets=()
 workflow_lint_targets=()
 workflow_security_targets=()
@@ -108,6 +109,15 @@ dependency_scan_targets=()
 missing_worktree_paths=()
 skipped_missing_paths=()
 for p in "${changed_paths[@]}"; do
+  # A change to a pinned or vendored dependency runs the per-TU analyzers over the
+  # whole tree (see tools/ci_changed_files.sh). Matched before the vendored
+  # snapshots are dropped below.
+  case "$p" in
+    tools/ci-dependency-pins.env | cmake/Pffft.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
+      analysis_full_scan=1
+      ;;
+  esac
+
   # Vendored upstream snapshots are never formatted or analyzed: they are carried
   # as-is so they can be diffed against upstream and re-synced. The build glue
   # around them (android/third_party/CMakeLists.txt) is ours and stays in scope.
@@ -301,12 +311,14 @@ if [[ ${#iwyu_tus[@]} -gt 0 ]]; then
 fi
 
 echo "pre-push: changed paths=${#changed_paths[@]} sources=${#changed_sources[@]}" \
-  "headers=${#changed_headers[@]} tus=${#analysis_tus[@]} iwyu=${#iwyu_tus[@]}"
+  "headers=${#changed_headers[@]} tus=${#analysis_tus[@]} iwyu=${#iwyu_tus[@]}" \
+  "analysis_full=${analysis_full_scan}"
 
+# The same tree tools/cppcheck.sh scans, as in tools/ci_changed_files.sh.
 cppcheck_sources=()
 for p in "${analysis_tus[@]}"; do
   case "$p" in
-    src/*) cppcheck_sources+=("$p") ;;
+    src/* | include/* | android/*) cppcheck_sources+=("$p") ;;
   esac
 done
 if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
@@ -362,6 +374,29 @@ mark_missing_tool() {
 tu_count=${#analysis_tus[@]}
 iwyu_count=${#iwyu_tus[@]}
 cppcheck_count=${#cppcheck_sources[@]}
+
+# The per-TU analyzers' file arguments, and what their labels say they cover. A
+# full-tree run passes no file list; the project's translation units size its
+# shares and start its lanes.
+analysis_files=(-- "${analysis_tus[@]}")
+iwyu_files=(-- "${iwyu_tus[@]}")
+cppcheck_files=(-- "${cppcheck_sources[@]}")
+analysis_scope="${tu_count} TU(s)"
+iwyu_scope="${iwyu_count} TU(s)"
+cppcheck_scope="${cppcheck_count} TU(s)"
+if [[ $analysis_full_scan -eq 1 ]]; then
+  mapfile -t project_tus < <(git ls-files -- '*.c' '*.cc' '*.cpp' '*.cxx' \
+    ':!:build/*' ':!:src/third_party/*' ':!:android/third_party/*')
+  tu_count=${#project_tus[@]}
+  iwyu_count=$tu_count
+  cppcheck_count=$tu_count
+  analysis_files=()
+  iwyu_files=()
+  cppcheck_files=()
+  analysis_scope="full tree; a dependency changed"
+  iwyu_scope=$analysis_scope
+  cppcheck_scope=$analysis_scope
+fi
 
 # analyzer_share BUDGET PERMILLE CAP -> workers, at least 1, at most CAP (0: uncapped)
 analyzer_share() {
@@ -527,7 +562,7 @@ lane_scan() {
 # shellcheck disable=SC2329 # Started through runner_spawn.
 lane_clang_tidy() {
   if command -v clang-tidy > /dev/null 2>&1; then
-    run_check "clang-tidy (${tu_count} TU(s), ${jobs_tidy} worker(s))" tools/clang_tidy.sh --jobs "$jobs_tidy" -- "${analysis_tus[@]}"
+    run_check "clang-tidy (${analysis_scope}, ${jobs_tidy} worker(s))" tools/clang_tidy.sh --jobs "$jobs_tidy" "${analysis_files[@]}"
   else
     mark_missing_tool "clang-tidy" "clang-tidy analysis"
   fi
@@ -536,7 +571,7 @@ lane_clang_tidy() {
 # shellcheck disable=SC2329 # Started through runner_spawn.
 lane_cppcheck() {
   if command -v cppcheck > /dev/null 2>&1; then
-    run_check "cppcheck strict (${cppcheck_count} TU(s), ${jobs_cppcheck} worker(s))" tools/cppcheck.sh --strict --jobs "$jobs_cppcheck" -- "${cppcheck_sources[@]}"
+    run_check "cppcheck strict (${cppcheck_scope}, ${jobs_cppcheck} worker(s))" tools/cppcheck.sh --strict --jobs "$jobs_cppcheck" "${cppcheck_files[@]}"
   else
     mark_missing_tool "cppcheck" "cppcheck analysis"
   fi
@@ -545,7 +580,7 @@ lane_cppcheck() {
 # shellcheck disable=SC2329 # Started through runner_spawn.
 lane_iwyu() {
   if command -v include-what-you-use > /dev/null 2>&1; then
-    run_check "IWYU strict (${iwyu_count} TU(s), ${jobs_iwyu} worker(s))" tools/iwyu.sh --strict --jobs "$jobs_iwyu" -- "${iwyu_tus[@]}"
+    run_check "IWYU strict (${iwyu_scope}, ${jobs_iwyu} worker(s))" tools/iwyu.sh --strict --jobs "$jobs_iwyu" "${iwyu_files[@]}"
   else
     mark_missing_tool "include-what-you-use" "IWYU analysis"
   fi
@@ -556,7 +591,7 @@ lane_fanalyzer() {
   # gcc alone: the analyzer covers C only, so the script no longer calls g++, and
   # a host that builds C++ with clang should not lose the analysis over it.
   if command -v gcc > /dev/null 2>&1; then
-    run_check "GCC fanalyzer strict (${tu_count} TU(s), ${jobs_fanalyzer} worker(s))" tools/gcc_fanalyzer.sh --strict --jobs "$jobs_fanalyzer" -- "${analysis_tus[@]}"
+    run_check "GCC fanalyzer strict (${analysis_scope}, ${jobs_fanalyzer} worker(s))" tools/gcc_fanalyzer.sh --strict --jobs "$jobs_fanalyzer" "${analysis_files[@]}"
   else
     mark_missing_tool "gcc" "GCC fanalyzer analysis"
   fi
