@@ -36,6 +36,16 @@
 #include "tetra_state.h"
 #include "tetra_test_pdu.h"
 
+/* Trunking can follow a TETRA carrier (the Qt "Follow this system" control asks), and the negative syncs are the
+ * inverted polarity. */
+_Static_assert(DSD_SYNC_IS_TRUNKABLE(DSD_SYNC_TETRA_NDB_POS) && DSD_SYNC_IS_TRUNKABLE(DSD_SYNC_TETRA_NDB_NEG)
+                   && DSD_SYNC_IS_TRUNKABLE(DSD_SYNC_TETRA_SB_POS) && DSD_SYNC_IS_TRUNKABLE(DSD_SYNC_TETRA_SB_NEG),
+               "TETRA syncs are trunkable");
+_Static_assert(DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_NDB_NEG) && DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_SB_NEG),
+               "negative TETRA syncs are inverted");
+_Static_assert(!DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_NDB_POS) && !DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_SB_POS),
+               "positive TETRA syncs are not inverted");
+
 enum {
     BSCH_DIBITS = 60,
     SB_BB_DIBITS = 15,

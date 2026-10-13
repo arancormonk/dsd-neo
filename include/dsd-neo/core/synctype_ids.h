@@ -205,10 +205,13 @@ extern "C" {
  * not a promise that this particular carrier is a control channel — only the
  * decoded signalling says that — but the protocols left out (D-STAR, M17, YSF,
  * dPMR) have no trunking to follow at all, so offering it there would be a
- * control that does nothing.
+ * control that does nothing. TETRA direct mode shares the trunked-mode sync
+ * words, so its carriers are offered too; there the TETRA state machine finds
+ * no control channel and follows nothing.
  */
 #define DSD_SYNC_IS_TRUNKABLE(s)                                                                                       \
-    (DSD_SYNC_IS_P25(s) || DSD_SYNC_IS_DMR(s) || DSD_SYNC_IS_NXDN(s) || DSD_SYNC_IS_EDACS(s) || DSD_SYNC_IS_X2TDMA(s))
+    (DSD_SYNC_IS_P25(s) || DSD_SYNC_IS_DMR(s) || DSD_SYNC_IS_NXDN(s) || DSD_SYNC_IS_EDACS(s) || DSD_SYNC_IS_X2TDMA(s)  \
+     || DSD_SYNC_IS_TETRA(s))
 
 /** Check if synctype is inverted (negative polarity) */
 #define DSD_SYNC_IS_INVERTED(s)                                                                                        \
@@ -219,7 +222,7 @@ extern "C" {
      || (s) == DSD_SYNC_DMR_BS_DATA_NEG || (s) == DSD_SYNC_PROVOICE_NEG || (s) == DSD_SYNC_EDACS_NEG                   \
      || (s) == DSD_SYNC_NXDN_NEG || (s) == DSD_SYNC_YSF_NEG || (s) == DSD_SYNC_P25P2_NEG                               \
      || (s) == DSD_SYNC_DPMR_FS1_NEG || (s) == DSD_SYNC_DPMR_FS2_NEG || (s) == DSD_SYNC_DPMR_FS3_NEG                   \
-     || (s) == DSD_SYNC_DPMR_FS4_NEG)
+     || (s) == DSD_SYNC_DPMR_FS4_NEG || (s) == DSD_SYNC_TETRA_NDB_NEG || (s) == DSD_SYNC_TETRA_SB_NEG)
 
 /* ============================================================================
  * Safe String Mapping Function
