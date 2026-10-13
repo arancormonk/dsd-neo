@@ -361,6 +361,27 @@ test_neighbours(dsd_signal_detector* d) {
             assert(report.candidates[i].detected == (lopsided.frequencies[i] == 163012500));
         }
     }
+    // A wide FM transmitter with two tones (5 kHz times sin 500 Hz plus sin 1000 Hz) has lobes either side of a
+    // valley; one transmitter, at its carrier, not its lobes' channels.
+    {
+        const auto lobed = grid_request(1536000, 384000, 163450000, 12500, 25000, 162962500, 9);
+        auto iq = samples(lobed, lobed.frequencies[0], 0, request_samples(lobed));
+        double phase = 0;
+        for (size_t i = 0; i < iq.size() / 2; ++i) {
+            const double t = (double)i / lobed.capture.rate_hz;
+            const double deviation =
+                5000.0 * (std::sin(6.283185307179586 * 500 * t) + std::sin(6.283185307179586 * 1000 * t));
+            phase += 6.283185307179586
+                     * (163012500.0 - lobed.capture.capture_hz + lobed.capture.rotation_hz + deviation)
+                     / lobed.capture.rate_hz;
+            iq[2 * i] += (float)(0.3 * std::cos(phase));
+            iq[2 * i + 1] += (float)(0.3 * std::sin(phase));
+        }
+        const auto report = run(d, lobed, iq, 4096);
+        for (uint32_t i = 0; i < lobed.count; ++i) {
+            assert(report.candidates[i].detected == (lobed.frequencies[i] == 163012500));
+        }
+    }
     // A carrier 6 dB down 5 kHz beside a stronger one, within its 20 kHz window: unmirrored, beyond a deep valley.
     const auto close = grid_request(1536000, 384000, 163450000, 2500, 20000, 163002500, 13);
     assert((detected(d, close, {{163012500, 0.3, 0, 1000, 0}, {163017500, 0.15, 0, 1000, 0}})
@@ -379,8 +400,8 @@ test_neighbours(dsd_signal_detector* d) {
     assert(found.empty() || found == std::vector<uint32_t>{163012500});
 }
 
-/* Sustained energy: each window must find the transmitter itself, not another one's skirt that only one window has,
-   nor two transmitters, one in each window, whose spectra overlap enough to pool into one between them. */
+/* Sustained energy: each window must find the transmitter itself, not another one's skirt that only one window has;
+   and a transmitter whose modulation differs between the windows is still sustained. */
 static void
 test_sustained(dsd_signal_detector* d) {
     struct alternation {
@@ -390,7 +411,7 @@ test_sustained(dsd_signal_detector* d) {
 
     const alternation cases[] = {
         {12500, 162962500, {163012500, 0.3, 2500, 1000, 0}, {163025000, 0.3, 2500, 1000, 0}},
-        {5000, 162992500, {163012500, 0.3, 5000, 1000, 0}, {163022500, 0.3, 2500, 700, 0}},
+        {5000, 162982500, {163002500, 0.3, 2500, 1000, 0}, {163022500, 0.3, 2500, 700, 0}},
     };
     for (const alternation& c : cases) {
         const auto g = grid_request(1536000, 384000, 163450000, c.step, 16000, c.first, 9);
@@ -405,10 +426,12 @@ test_sustained(dsd_signal_detector* d) {
             assert(!report.candidates[i].detected);
         }
     }
-    // One transmitter whose slow tone (50 Hz) puts each window on a different side of its carrier is sustained: both
-    // windows keep it centred within its own channel.
+    // One transmitter whose slow tone puts each window on a different side of its carrier is sustained, even where
+    // each window's power lies in another channel (45 Hz at 5 kHz deviation on a 6.25 kHz grid).
     const auto slow = grid_request(1536000, 384000, 163450000, 5000, 16000, 162992500, 9);
     assert(detected(d, slow, {{163012500, 0.3, 2500, 50, 0}}) == std::vector<uint32_t>{163012500});
+    const auto slower = grid_request(1536000, 384000, 163450000, 6250, 16000, 162987500, 9);
+    assert(detected(d, slower, {{163012500, 0.3, 5000, 45, 0}}) == std::vector<uint32_t>{163012500});
 }
 
 /* Noise alone at the lowest sensitivity, white or coloured, reports nothing; and the robust local noise reads the

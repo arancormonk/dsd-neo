@@ -158,11 +158,8 @@ constexpr double kMirrorRiseRatio = 10.0;
 constexpr double kMirrorSymmetry = 0.5;
 constexpr double kWeakCentreRatio = 0.01;
 constexpr double kTwoSourceMargin = 0.06;
-/* A transmitter is sustained when each window holds at least a tenth of the other's power over the bins it occupies,
-   and is not two transmitters pooled: windows whose shares of it overlap by less than a quarter must not each centre
-   it outside its channel. */
+/* A transmitter is sustained when each window holds at least a tenth of the other's power over the bins it occupies. */
 constexpr double kSustainedRatio = 10.0;
-constexpr double kSustainedOverlap = 0.25;
 /* Leakage analysis aggregates bins until a channel's half width spans at most this many (a power of two apart). */
 constexpr long long kAnalysisHalfBins = 32;
 /* How far the envelopes reach either side. Within a source's segment, an FM transmitter's sideband line spacing for the
@@ -462,10 +459,11 @@ lobes_bridged(const analysis& a, long long anchor, long long edge, long long bey
 }
 
 /* Whether the segment @p first..@p last and the next on @p side, @p next_first..@p next_last, are one transmitter's
-   lobes: adjacent, and better explained by one source than two. */
+   lobes: no more than a reach apart (each segment stops short of the valley between them, which the lobes' filled
+   valley already showed is one transmitter's), and better explained by one source than two. */
 bool
 lobes_of_one(const analysis& a, int side, long long first, long long last, long long next_first, long long next_last) {
-    if (side < 0 ? next_last < first - 1 : next_first > last + 1) {
+    if (side < 0 ? next_last < first - 1 - a.reach : next_first > last + 1 + a.reach) {
         return false;
     }
     double merged = 0;
@@ -1020,63 +1018,33 @@ locate_sources(dsd_signal_detector* d, const analysis& a, const bool* seeds) {
     }
 }
 
-/* The power of window @p w (0 the first, 1 the second) per transform over analysis bin @p b; its first moment about
-   FFT bin 0 (rotation applied) into @p moment when given. */
+/* The power of window @p w (0 the first, 1 the second) per transform over analysis bin @p b. */
 double
-window_power(const dsd_signal_detector* d, const analysis& both, int w, long long b, double* moment = nullptr) {
+window_power(const dsd_signal_detector* d, const analysis& both, int w, long long b) {
     const double* power = w ? d->power : d->first_power;
-    double sum = 0, weighted = 0;
+    double sum = 0;
     for (long long f = b * both.decimation; f < (b + 1) * both.decimation; ++f) {
         sum += power[wrap_index(f, d->n)];
-        weighted += power[wrap_index(f, d->n)] * (double)f;
     }
-    const double frames = w ? d->frames : d->first_frames;
-    if (moment) {
-        *moment = weighted / frames;
-    }
-    return sum / frames;
+    return sum / (w ? d->frames : d->first_frames);
 }
 
-/* Whether a transmitter located in @p both, and owned by the channel [@p low, @p high) (FFT bins), holds its own power
-   in both windows over the bins it occupies (within 10 dB of its peak): within 10 dB of each other, not a neighbour's
-   skirt beside it. And not two transmitters that each fill one window and pool into one between them: that is the
-   windows spreading it over those bins differently (their three-bin sums, each scaled to its total, overlapping by less
-   than a quarter) with each window's power centred outside the channel, on either side. One transmitter whose
-   modulation differs between the windows (a slow tone a half cycle apart) keeps both centres within its channel. */
+/* Whether a transmitter located in @p both holds its own power in both windows: within 10 dB of each other over the
+   bins it occupies (within 10 dB of its peak), not a neighbour's skirt beside it. */
 bool
-sustained(const dsd_signal_detector* d, const analysis& both, const located& s, double low, double high) {
-    double peak = 0;
+sustained(const dsd_signal_detector* d, const analysis& both, const located& s) {
+    double peak = 0, power[2] = {0, 0};
     for (long long b = s.first; b <= s.last; ++b) {
         peak = std::max(peak, both.at(b));
     }
-    auto occupied = [&](long long b) { return !(both.at(b) * 10 < peak); };
-    auto three = [&](int w, long long b) {
-        return window_power(d, both, w, b - 1) + window_power(d, both, w, b) + window_power(d, both, w, b + 1);
-    };
-    double power[2] = {0, 0}, moment[2] = {0, 0}, spread[2] = {0, 0};
     for (long long b = s.first; b <= s.last; ++b) {
-        if (occupied(b)) {
+        if (!(both.at(b) * 10 < peak)) {
             for (int w = 0; w < 2; ++w) {
-                double m = 0;
-                power[w] += window_power(d, both, w, b, &m);
-                moment[w] += m;
-                spread[w] += three(w, b);
+                power[w] += window_power(d, both, w, b);
             }
         }
     }
-    if (!(power[0] * kSustainedRatio >= power[1] && power[1] * kSustainedRatio >= power[0] && spread[0] > 0
-          && spread[1] > 0)) {
-        return false;
-    }
-    double overlap = 0;
-    for (long long b = s.first; b <= s.last; ++b) {
-        if (occupied(b)) {
-            overlap += std::min(three(0, b) / spread[0], three(1, b) / spread[1]);
-        }
-    }
-    const double first_at = moment[0] / power[0], second_at = moment[1] / power[1];
-    const bool apart = (first_at < low && second_at >= high) || (second_at < low && first_at >= high);
-    return overlap >= kSustainedOverlap || !apart;
+    return power[0] * kSustainedRatio >= power[1] && power[1] * kSustainedRatio >= power[0];
 }
 
 /* Whether a sustained transmitter located in @p both is centred in [@p low, @p high). */
@@ -1084,7 +1052,7 @@ bool
 owns_sustained(const dsd_signal_detector* d, const analysis& both, double low, double high) {
     for (int j = 0; j < d->sources.count; ++j) {
         const located& s = d->sources.items[j];
-        if (s.centre >= low && s.centre < high && sustained(d, both, s, low, high)) {
+        if (s.centre >= low && s.centre < high && sustained(d, both, s)) {
             return true;
         }
     }
