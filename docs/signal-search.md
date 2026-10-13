@@ -171,12 +171,7 @@ assigned the same way for the whole measurement. It must also hold its own power
 each window (within 10 dB of the other over the bins it occupies), so energy one
 window only owes to another transmitter is not sustained. A transmitter whose
 modulation differs between the windows (a slow tone half a cycle apart) is still
-sustained, and where clipping makes it dwell on one side of its carrier per window
-and the location leaves one dwell out, its channel holds its power in both windows
-over the channel's bins (within 10 dB of their tallest). Bins in the segment of a
-transmitter centred on another channel do not count there unless the channel's own
-transmitter occupies them, so a burst in one window beside a continuous transmitter
-does not borrow that transmitter's power.
+sustained, as long as the bins it occupies hold its power in both.
 
 Transmitters are located in the spectrum itself, not only among the requested
 channels, so one past a range or span boundary counts. Each channel's window climbs
@@ -252,6 +247,11 @@ other. Known limits:
   can have such a line, beyond its channel width, reported as a neighbour: its pair on
   the other side mirrors it as exactly as a weaker transmitter on either side of a
   strong one mirrors the other, and those are reported.
+- A transmitter that sits on a different frequency in each window is not sustained
+  for that measurement: a clipped slow tone (45 Hz clipped to 700 Hz on a 2.5 kHz grid)
+  whose windows fall on its two dwells matches, window for window, two carriers that
+  each fill one window, which must not be sustained. That transmitter is missed at
+  about one tone phase in six and found at the others, so a later pass measures it.
 - A transmitter wider than the channel width whose slow modulation puts each window
   on a different side of it can be reported a channel from where it sits.
 - A weaker transmitter beside a stronger one is located from what rises out of the
@@ -301,7 +301,9 @@ rotation-free capture and channels at the DC and edge guards; transmitters 25 an
 37.5 kHz apart (local noise), equal ones 5 and 10 kHz apart on fine grids, a carrier
 6 dB down 5 kHz beside a stronger one within its window, a weak neighbour on an
 ownership boundary, transmitters present in only one window each against one whose
-45 or 50 Hz tone puts its windows on either side of its carrier, a transmitter with
+45 or 50 Hz tone puts its windows on either side of its carrier, a clipped 45 Hz tone
+measured across its changes of side against two carriers at its dwells that each fill
+one window, a carrier in one window beside a continuous transmitter, a transmitter with
 lopsided modulation whose skirt stands far above its mirror, a two-tone wide FM
 transmitter whose lobes stand either side of a valley, and noise alone at 3 dB
 sensitivity. The shared tap is tested for

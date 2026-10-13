@@ -69,8 +69,9 @@ Generated (do not edit/commit):
     (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s. `DSD_SEARCH_ACTION_UNAVOID`
     lifts a session avoid by frequency. Published status carries `owned` (a coordinator
     holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
-    frequency are restored on exit: a search Stop tunes back, and a decoder session that
-    ends under the search (the Qt Stop) restores the options in
+    frequency are restored on exit: a search Stop tunes back, running the carrier boundary
+    and acquisition reset as each visit's tune does, and a decoder session that ends
+    under the search (the Qt Stop) restores the options in
     `dsd_engine_signal_search_shutdown()` before the engine's autosave, so the saved
     configuration never keeps a visited frequency. Protocol details enter only through
     CRC/FEC confirmation or validated activity hooks, never a generic sync or dispatcher
@@ -3161,9 +3162,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   other transmitter) or, within its width, an unmirrored rise beyond a 20 dB valley, and
   located once (as a source of their own where their segment allows). A channel keeps a
   raw detection only for a transmitter centred within its half-open interval on the
-  range's rational grid that holds its own power in both windows (within 10 dB), or whose
-  channel does over its bins (no transmitter centred elsewhere lends the bins of its
-  segment, unless the channel's own transmitter occupies them).
+  range's rational grid that holds its own power in both windows (within 10 dB).
   `docs/signal-search.md` lists the measured limits. The tap's `feed_mutex`
   serialises the detector (feeding and analysis, request, cancel); `tap_mutex` guards only
   the published capture, readiness and report, so polls never wait for analysis; locks
