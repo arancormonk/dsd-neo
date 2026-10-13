@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
+#include <stddef.h>
 #include <stdint.h>
 
 static void

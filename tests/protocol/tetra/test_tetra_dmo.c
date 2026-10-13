@@ -7,11 +7,10 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
-#include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
-#include <dsd-neo/protocol/tetra/tetra_mac.h>
 
 #include <stdint.h>
 #include <stdio.h>

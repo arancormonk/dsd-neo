@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 #include <mbelib-neo/mbelib.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "../../src/app_control/commands_internal.h"

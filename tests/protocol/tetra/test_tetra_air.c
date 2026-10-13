@@ -5,9 +5,11 @@
  * Vectors are the published TEA1/2/3 cases from Midnight Blue's Apache-2.0 tests. */
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/crypto/tetra_tea.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
