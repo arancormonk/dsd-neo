@@ -200,8 +200,6 @@ tetra_decode_tch_fs(const uint16_t* type4, int cc, dsd_opts* opts, dsd_state* st
     const int good = crc_ok && mismatches <= TETRA_TCH_MAX_MISMATCH;
     if (good) {
         ts->decode_ok++;
-    } else {
-        ts->decode_errors++;
     }
     TETRA_LOG_PAYLOAD(ts, "[TETRA TCH/FS] CC=%d  dec_bits=%d  crc=%s  mismatches=%d\n", cc, TETRA_SPEECH_FULL_BITS,
                       crc_ok ? "ok" : "bad", mismatches);
@@ -231,8 +229,6 @@ tetra_decode_tch_half(const uint16_t* soft_block, dsd_opts* opts, dsd_state* sta
     if (good) {
         ts->decode_ok++;
         DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "STCH+TCH");
-    } else {
-        ts->decode_errors++;
     }
     TETRA_LOG_PAYLOAD(ts, "[TETRA TCH/H] crc=%s  mismatches=%d\n", crc_ok ? "ok" : "bad", mismatches);
     tetra_voice_half_slot(opts, state, bits, good);
@@ -309,16 +305,10 @@ tetra_nb_half(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, uint16_
 static void
 tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* b2_dibits,
               const float* b2_soft) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!ts) {
-        return;
-    }
     uint16_t block[NB_BLOCK_BITS];
     if (state->tetra_sync.b1_valid) {
         tetra_expand_block1(state, block);
-        if (!tetra_nb_half(opts, state, ctx, block, "STCH-1")) {
-            ts->decode_errors++;
-        }
+        (void)tetra_nb_half(opts, state, ctx, block, "STCH-1");
         if (!tetra_confirm_burst_current(state)) {
             return;
         }
@@ -480,7 +470,6 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     tetra_block1_consumed(state);
 
     if (!tetra_sch_hu_decode(type4, mac)) {
-        ts->decode_errors++;
         return;
     }
     ts->decode_ok++;
@@ -627,8 +616,6 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     if (h_ok) {
         ts->decode_ok++;
         tetra_confirm_note_block(state);
-    } else {
-        ts->decode_errors++;
     }
 
     if (s.sync_pdu_type == 1) {
@@ -708,7 +695,6 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     state->tetra_sync.sb1_soft_valid = 0;
     tetra_sb_log_bits(state, ts, decoded);
     if (!crc_ok) {
-        ts->decode_errors++;
         return 0;
     }
     ts->decode_ok++;
@@ -732,16 +718,14 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
    may just have set. Without a network identity there is nothing to descramble it with. */
 static void
 tetra_sb_block2(dsd_opts* opts, dsd_state* state, const uint8_t* dibits, const float* soft) {
-    tetra_state_t* const ts = tetra_st(state);
+    const tetra_state_t* const ts = tetra_st(state);
     if (!ts || !ts->net_known || ts->dmo) {
         return;
     }
     uint16_t block[NB_BLOCK_BITS];
     const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, ""};
     tetra_expand_dibits(state, dibits, soft, SB_BKN2_DIBITS, block);
-    if (!tetra_nb_half(opts, state, &ctx, block, "BNCH")) {
-        ts->decode_errors++;
-    }
+    (void)tetra_nb_half(opts, state, &ctx, block, "BNCH");
 }
 
 /* A synchronisation burst (EN 300 392-2 clause 9.4.4.2.6): the BSCH block before the training sequence, which the frame

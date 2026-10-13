@@ -85,26 +85,6 @@ wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_n
 }
 
 /* -----------------------------------------------------------------------
- * Phase 39 tests: FEC decode quality counter fields
- * ----------------------------------------------------------------------- */
-static void
-test_decode_quality_fields_zero(void) {
-    printf("[test_decode_quality_fields_zero]\n");
-    dsd_state* st = alloc_state();
-
-    CHECK(tetra_st(st)->decode_ok == 0, "decode_ok zero after calloc");
-    CHECK(tetra_st(st)->decode_errors == 0, "decode_errors zero after calloc");
-
-    /* counters must be directly writable */
-    tetra_st(st)->decode_ok = 99;
-    tetra_st(st)->decode_errors = 3;
-    CHECK(tetra_st(st)->decode_ok == 99, "decode_ok writable");
-    CHECK(tetra_st(st)->decode_errors == 3, "decode_errors writable");
-
-    free(st);
-}
-
-/* -----------------------------------------------------------------------
  * Phase 40 tests: D-SDS-DATA (CMCE type 15) parser
  * ----------------------------------------------------------------------- */
 
@@ -236,7 +216,6 @@ main(void) {
     printf("[TETRA Phase 42 tests: Phases 39-41]\n");
 
     /* Phase 39: FEC decode quality counters */
-    test_decode_quality_fields_zero();
     test_hard_bits_preserve_viterbi_evidence();
 
     /* Phase 40: D-SDS-DATA parser */

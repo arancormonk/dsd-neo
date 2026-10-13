@@ -40,8 +40,7 @@ test_nothing_before_a_decoded_block(void) {
     assert(state->tetra_pub.mode == DSD_TETRA_MODE_NONE && state->tetra_pub.net_known == 0U);
     tetra_state_t* const ts = tetra_st(state);
     assert(ts != NULL);
-    ts->decode_errors = 12U;
-    tetra_publish(state);
+    tetra_publish(state); /* a TETRA state, but no block has passed its CRC yet */
     assert(state->tetra_pub.mode == DSD_TETRA_MODE_NONE);
     ts->decode_ok = 1U;
     tetra_publish(state);

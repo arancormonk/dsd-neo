@@ -230,8 +230,7 @@ typedef struct tetra_state {
     uint32_t frames_resource;
     uint8_t enc_mode;
 
-    /* Bursts and blocks whose CRC failed (decode_errors) and passed (decode_ok); TETRA reads as decoded once one did. */
-    uint32_t decode_errors;
+    /* Bursts and blocks whose CRC passed; TETRA reads as decoded once one did (tetra_publish()). */
     uint32_t decode_ok;
 
     /* TDMA clock (EN 300 392-2 clause 7.3), set by a BSCH and run by tetra_tdma_follow(): while tdma_valid, the slot
