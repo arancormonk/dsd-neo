@@ -867,9 +867,9 @@ tetra_pub_network(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_pub
 /* Call following, the SYSINFO main carrier and the allocated traffic channel; a zero timeslot bitmap releases it. */
 static void
 tetra_pub_channels(const tetra_state_t* ts, dsd_tetra_publication* pub) {
-    pub->trunk_state = ts->trunk_state == TETRA_SM_TUNED   ? DSD_TETRA_TRUNK_ON_TRAFFIC
-                       : ts->trunk_state == TETRA_SM_ON_CC ? DSD_TETRA_TRUNK_ON_CONTROL
-                                                           : DSD_TETRA_TRUNK_IDLE;
+    pub->trunk_state = ts->sm.state == TETRA_SM_TUNED   ? DSD_TETRA_TRUNK_ON_TRAFFIC
+                       : ts->sm.state == TETRA_SM_ON_CC ? DSD_TETRA_TRUNK_ON_CONTROL
+                                                        : DSD_TETRA_TRUNK_IDLE;
     pub->cc_known = (uint8_t)(ts->frames_sysinfo != 0);
     pub->cc_carrier = pub->cc_known ? (uint16_t)(ts->sysinfo_main_carrier & 0xFFFu) : 0U;
     pub->cc_freq_hz = pub->cc_known ? tetra_pub_hz(ts->dl_carrier_hz) : 0U;

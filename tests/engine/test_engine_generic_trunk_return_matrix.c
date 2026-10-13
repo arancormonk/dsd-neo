@@ -148,7 +148,7 @@ setup_generic_fixture(dsd_opts** opts_out, dsd_state** state_out, const generic_
         tetra_st(state)->tx_granted_valid = 1;
         tetra_st(state)->tx_wait = 1;
         tetra_st(state)->vc_assignment_valid = 1;
-        tetra_st(state)->vc_timeslot_bitmap = tetra_st(state)->vc_slot = 8;
+        tetra_st(state)->vc_timeslot_bitmap = 8;
         tetra_st(state)->vc_carrier = 40;
         tetra_st(state)->vc_freq_hz = GENERIC_TRUNK_VC_HZ;
     }
@@ -250,7 +250,7 @@ run_stale_vc_with_cc_case(const generic_return_case* test_case) {
                         !tetra_st(state)->call_active && !tetra_st(state)->tx_granted_valid && !tetra_st(state)->tx_wait
                             && !tetra_st(state)->vc_assignment_valid && tetra_st(state)->vc_freq_hz == 0);
         rc |= expect_true(test_case->name, "stale-vc-with-cc", "TETRA SM reconciled to CC",
-                          tetra_sm_get_state() == TETRA_SM_ON_CC);
+                          tetra_sm_get_state(state) == TETRA_SM_ON_CC);
     }
 
     free_test_runtime(opts, state);
@@ -284,7 +284,7 @@ run_stale_vc_without_cc_case(const generic_return_case* test_case) {
                           !tetra_st(state)->call_active && !tetra_st(state)->vc_assignment_valid
                               && tetra_st(state)->vc_freq_hz == 0);
         rc |= expect_true(test_case->name, "stale-vc-without-cc", "TETRA SM returned to IDLE",
-                          tetra_sm_get_state() == TETRA_SM_IDLE);
+                          tetra_sm_get_state(state) == TETRA_SM_IDLE);
     }
 
     free_test_runtime(opts, state);

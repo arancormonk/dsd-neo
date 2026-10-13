@@ -11100,7 +11100,6 @@ set(_dsd_tetra_test_sources
     tetra_air
     tetra_speech_channel
     tetra_sch_hu
-    tetra_sm_hangtime
     tetra_trunk_sm
     tetra_publication
     tetra_voice_gate

@@ -74,13 +74,6 @@ extern "C" {
  */
 void tetra_mle_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state);
 
-/**
- * @brief Does nothing; concatenated SDS reassembly is held in the TETRA state and is dropped with it.
- *
- * Kept only because tetra_sm_init() still calls it; remove both together.
- */
-void tetra_sds_concat_reset(void);
-
 /** Display name of the 2-bit MAC-RESOURCE encryption mode (EN 300 392-2 table 21.55; EN 300 392-7 defines 1 to 3). */
 static inline const char*
 tetra_enc_mode_name(uint8_t mode) {

@@ -259,7 +259,7 @@ parse_cmce_release(tetra_bit_reader* r, const mle_ctx* ctx, int is_disconnect) {
     ts->cmce_release_notification_valid = type2_present(present, 0);
     ts->cmce_release_was_disconnect = (uint8_t)(is_disconnect ? 1 : 0);
     /* The trunking state machine retunes and records it in the options; the MAC hands the MLE read-only options. */
-    tetra_sm_on_release((dsd_opts*)ctx->opts, ctx->state);
+    tetra_sm_on_release((dsd_opts*)ctx->opts, ctx->state, call_id);
     return 1;
 }
 
@@ -1087,11 +1087,6 @@ typedef struct {
 } sds_concat_part;
 
 enum { SDS_CONCAT_REJECTED = -1, SDS_CONCAT_PENDING = 0, SDS_CONCAT_COMPLETE = 1, SDS_CONCAT_DUPLICATE = 2 };
-
-void
-tetra_sds_concat_reset(void) {
-    /* Reassembly is per session in the TETRA state; see tetra_mle.h. */
-}
 
 static struct tetra_sds_concat_store*
 sds_concat_store(tetra_state_t* ts) {

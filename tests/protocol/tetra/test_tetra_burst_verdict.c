@@ -21,6 +21,10 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/protocol/tetra/tetra_fec.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +34,7 @@
 #include "test_support.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
+#include "tetra_test_pdu.h"
 
 enum {
     BSCH_DIBITS = 60,
@@ -52,6 +57,73 @@ dibits_of(const char* text, uint8_t* dibits, size_t count) {
     for (size_t i = 0; i < count; i++) {
         dibits[i] = (uint8_t)(((text[2U * i] - '0') << 1) | (text[(2U * i) + 1U] - '0'));
     }
+}
+
+/* SCH/HD transmit chain (EN 300 392-2 clauses 8.2.3, 8.2.4 and 8.2.5, 8.3.1.4.1) for 124 type-1 bits: CRC-16 and
+ * four tail bits, the rate-1/4 mother code punctured to 2/3, block interleaving with a = 101 and scrambling with
+ * @p seed, as the dibits the decoder reads. */
+static void
+encode_sch_hd(const uint8_t* type1, uint32_t seed, uint8_t* dibits) {
+    enum { TYPE1 = 124, TYPE2 = 144, MOTHER = TYPE2 * 4, CODED = 216 };
+
+    uint8_t type2[TYPE2] = {0};
+    uint8_t mother[MOTHER];
+    uint8_t type3[CODED];
+    uint8_t type4[CODED];
+    uint16_t pn[CODED];
+    DSD_MEMCPY(type2, type1, TYPE1);
+    unsigned crc = 0;
+    for (; crc < 65536U; crc++) {
+        for (int i = 0; i < 16; i++) {
+            type2[TYPE1 + i] = (uint8_t)((crc >> (15 - i)) & 1U);
+        }
+        if (tetra_crc16_ccitt_bits(type2, TYPE1 + 16) == TETRA_CRC16_OK) {
+            break;
+        }
+    }
+    assert(crc < 65536U);
+    /* G1 = 1 + D + D^4, G2 = 1 + D^2 + D^3 + D^4, G3 = 1 + D + D^2 + D^4, G4 = 1 + D + D^3 + D^4 (8.2.3.1.1). */
+    uint8_t d1 = 0;
+    uint8_t d2 = 0;
+    uint8_t d3 = 0;
+    uint8_t d4 = 0;
+    for (size_t i = 0; i < TYPE2; i++) {
+        const uint8_t b = type2[i];
+        mother[(i * 4U) + 0U] = (uint8_t)(b ^ d1 ^ d4);
+        mother[(i * 4U) + 1U] = (uint8_t)(b ^ d2 ^ d3 ^ d4);
+        mother[(i * 4U) + 2U] = (uint8_t)(b ^ d1 ^ d2 ^ d4);
+        mother[(i * 4U) + 3U] = (uint8_t)(b ^ d1 ^ d3 ^ d4);
+        d4 = d3;
+        d3 = d2;
+        d2 = d1;
+        d1 = b;
+    }
+    const int punctured = tetra_rcpc_puncture_by_id(TETRA_RCPC_PUNCT_2_3, mother, MOTHER, type3, CODED);
+    assert(punctured == CODED);
+    tetra_block_interleave(type3, type4, CODED, 101);
+    /* The scrambling sequence is what descrambling flips in an all-zero block. */
+    const uint8_t zeros[CODED] = {0};
+    tetra_hard_bits_to_soft(zeros, pn, CODED);
+    tetra_descramble_soft(pn, CODED, seed);
+    for (size_t i = 0; i < CODED / 2U; i++) {
+        const uint8_t b0 = (uint8_t)(type4[2U * i] ^ (pn[2U * i] == 0xFFFFU ? 1U : 0U));
+        const uint8_t b1 = (uint8_t)(type4[(2U * i) + 1U] ^ (pn[(2U * i) + 1U] == 0xFFFFU ? 1U : 0U));
+        dibits[i] = (uint8_t)((b0 << 1) | b1);
+    }
+}
+
+static int g_tunes;
+static long g_tuned_hz;
+
+static dsd_trunk_tune_result
+tune_accepted(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    g_tunes++;
+    g_tuned_hz = freq;
+    opts->trunk_is_tuned = 1;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 typedef struct {
@@ -211,11 +283,51 @@ test_normal_burst_failure_and_colour(void) {
     session_close(&s);
 }
 
+/* A channel allocation in the first half of a normal burst moves the receiver: the second half was sent on the carrier
+ * left, so it is not decoded, and nothing in it counts for the traffic carrier. */
+static void
+test_retune_leaves_the_rest_of_the_burst(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 1;
+    s.opts->trunk_tune_group_calls = 1;
+    s.opts->trunk_tune_private_calls = 1;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tune_accepted});
+    dsd_trunk_tuning_requests_reset();
+    g_tunes = 0;
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    const dsd_frame_verdict sync_verdict = sync_burst(&s, bsch, sysinfo);
+    assert(sync_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && tetra_confirm_carrier_proven(s.state));
+
+    /* A header-only MAC-RESOURCE to SSI 0xBEEF with a channel allocation: carrier 50, timeslot 2. */
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0x00BEEFu);
+    ttb_resource_flags(&b, 1);
+    ttb_allocation(&b, 4, 1, 50);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+    uint8_t grant[BLOCK_DIBITS];
+    encode_sch_hd(b.bits, tetra_st_existing(s.state)->lfsr_seed, grant);
+
+    const dsd_frame_verdict verdict = nts2_burst(&s, grant, sysinfo);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(g_tunes == 1 && g_tuned_hz > 0 && tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->frames_sysinfo == 1U);
+    assert(!tetra_confirm_carrier_proven(s.state));
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    session_close(&s);
+}
+
 int
 main(void) {
     test_noise_is_unproductive();
     test_sync_burst_decodes_bnch();
     test_normal_burst_failure_and_colour();
+    test_retune_leaves_the_rest_of_the_burst();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;
 }

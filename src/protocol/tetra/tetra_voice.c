@@ -5,7 +5,6 @@
  */
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -16,6 +15,7 @@
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_codec_abi.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/log.h>
 #include <stddef.h>
@@ -290,8 +290,9 @@ voice_burst(const dsd_opts* opts, dsd_state* state, const uint8_t* frames, const
         voice_frame_play(opts, state, &ts->voice, frames + ((size_t)i * DSD_TETRA_CODEC_FRAME_BITS), bad[i], &route);
     }
     if (good) {
-        /* Speech whose CRC passed is reception activity, whatever the codec or the gates made of it. */
-        dsd_mark_vc_sync(state);
+        /* Speech whose CRC passed is reception activity, whatever the codec or the gates made of it; on the followed
+           timeslot it also keeps the trunking state machine on the traffic channel. */
+        tetra_sm_note_voice(state, ts->tn);
     }
 }
 

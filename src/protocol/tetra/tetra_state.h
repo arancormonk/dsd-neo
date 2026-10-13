@@ -10,13 +10,49 @@
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_STATE_H_
 
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "tetra_voice_state.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* The shared tuning state (dsd_opts, dsd_state) a trunking tune changes, kept to put back when the tune fails. */
+typedef struct {
+    long p25_vc_freq[2];
+    long trunk_vc_freq[2];
+    double last_vc_sync_time_m;
+    double last_cc_sync_time_m;
+    double p25_last_vc_tune_time_m;
+    time_t last_vc_sync_time;
+    time_t last_cc_sync_time;
+    time_t p25_last_vc_tune_time;
+    int trunk_is_tuned;
+} tetra_sm_tune_snapshot;
+
+/* Everything a tune puts back when it fails: the shared tuning state and the state machine's own. */
+typedef struct {
+    tetra_sm_tune_snapshot tuning;
+    tetra_sm_grant followed;
+    double t_tune_m;
+    double t_voice_m;
+    uint8_t state;
+} tetra_sm_rollback;
+
+/* The trunking state machine (tetra_trunk_sm.c). Times are decode-clock monotonic seconds. */
+typedef struct {
+    tetra_sm_rollback pending_prev; /* what the tune in flight puts back if it fails */
+    tetra_sm_grant followed;        /* the call followed while TUNED */
+    double t_tune_m;  /* the followed tune completed, or the grant was taken on the same carrier; 0 in flight */
+    double t_voice_m; /* last speech on a followed timeslot since then; 0 for none */
+    double pending_deadline_m;   /* the tune in flight counts as failed past this */
+    uint64_t pending_request_id; /* the correlated trunk-tuning request in flight; 0 for none */
+    uint8_t state;               /* tetra_sm_state_e */
+    uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel */
+} tetra_sm_t;
 
 /* CRC evidence about the carrier on air and the burst being decoded (tetra_confirm.c). A training sequence alone is
  * weak enough for noise to match; a block whose CRC-16 passed (EN 300 392-2 clause 8.2.3.3) is not. Cleared at every
@@ -370,7 +406,8 @@ typedef struct tetra_state {
     /* The speech path: codec library, speech integrity and PCM carry (tetra_voice.c). */
     tetra_voice_t voice;
 
-    /* The CRC evidence trunking and the speech path rely on (tetra_confirm.c). */
+    /* Call following (tetra_trunk_sm.c) and the CRC evidence it and the speech path rely on (tetra_confirm.c). */
+    tetra_sm_t sm;
     tetra_confirm_t confirm;
 
     /* Downlink frequencies in Hz, 0 while unknown: the SYSINFO main carrier (dl_carrier_hz) and the carrier of the
@@ -515,20 +552,18 @@ typedef struct tetra_state {
      *
      * vc_assignment_type:  allocation type.
      * vc_carrier:          12-bit carrier number.
-     * vc_slot:             timeslot bitmap, copy of vc_timeslot_bitmap kept for the audio diagnostics.
      * vc_freq_hz:          downlink frequency in Hz, 0 when unknown.
      * vc_addr:             address of the PDU that made the assignment. A later allocation with timeslot
      *                      assigned 0000 (go to the common control channel) releases the assignment only when it
-     *                      is addressed to the same party, by SSI or by an event label assigned to that SSI. */
+     *                      is addressed to the same party, by SSI or by an event label assigned to that SSI.
+     * The trunking state machine drops the assignment whenever it stops following a call. */
     tetra_mac_address vc_addr;
     uint16_t vc_carrier;
     uint8_t vc_assignment_type;
-    uint8_t vc_slot;
     uint8_t vc_assignment_valid;
     uint8_t vc_timeslot_bitmap;
     uint8_t vc_uplink_downlink;
     uint8_t vc_addr_event_label_valid;
-    uint8_t trunk_state; /* tetra_sm_state_e, mirrored for UI/state snapshots */
 
     /* SDS, EN 300 392-2 clauses 14.7.1.10/14.7.1.11 and 29, published by tetra_mle.c.
      *

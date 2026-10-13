@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/*
- * TETRA trunking state machine.
- * Phase 13: frequency-hop on D-TX-GRANTED, return-to-CC after hangtime.
+/**
+ * @file
+ * @brief TETRA trunking state machine: following one traffic channel off the control channel.
  *
- * Three states:
- *   TETRA_SM_IDLE   – trunking disabled or CC not yet known
- *   TETRA_SM_ON_CC  – parked on CC, listening for grants
- *   TETRA_SM_TUNED  – on voice channel (active or hanging)
+ * The control channel of a TETRA cell (EN 300 392-2 clause 9.5.1, the MCCH on timeslot 1 of the main carrier) assigns
+ * traffic channels with the channel allocation element of a MAC-RESOURCE or MAC-END PDU (clause 21.5.2, table 21.87):
+ * a carrier and a timeslot bitmap. The decoder follows at most one of them. The caller decides which one (talkgroup
+ * policy, priority) and hands it to tetra_sm_on_grant(); the state machine retunes through the runtime trunk-tuning
+ * hooks, returns to the control channel when the followed call is released or falls silent, and keeps all of its
+ * state in the session's TETRA state extension, so two sessions never share it.
  *
- * The SM is a module-global singleton; call tetra_sm_init() once at startup
- * (or omit it — the zero-initialised global is a valid IDLE state).
+ *   TETRA_SM_IDLE   not trunking, or no control channel known yet
+ *   TETRA_SM_ON_CC  on the control channel, waiting for a grant
+ *   TETRA_SM_TUNED  on the followed traffic channel (a tune in flight included)
+ *
+ * The engine ticks it between frames and after every frame, under the P25 SM tick guard. Decoder thread only.
  */
 #ifndef DSD_NEO_PROTOCOL_TETRA_TRUNK_SM_H
 #define DSD_NEO_PROTOCOL_TETRA_TRUNK_SM_H
@@ -22,93 +27,102 @@
 extern "C" {
 #endif
 
-/* -----------------------------------------------------------------------
- * SM state enum
- * ----------------------------------------------------------------------- */
 typedef enum {
-    TETRA_SM_IDLE = 0, /* not trunking / CC unknown    */
-    TETRA_SM_ON_CC,    /* on CC, awaiting grants        */
-    TETRA_SM_TUNED,    /* on VC (active or hanging)     */
+    TETRA_SM_IDLE = 0, /**< not trunking, or no control channel known */
+    TETRA_SM_ON_CC,    /**< on the control channel, awaiting grants */
+    TETRA_SM_TUNED,    /**< on the followed traffic channel */
 } tetra_sm_state_e;
 
-/* -----------------------------------------------------------------------
- * Event entry points
- * ----------------------------------------------------------------------- */
+/** One traffic channel the caller decided to follow (the caller has already applied talkgroup policy). */
+typedef struct {
+    long freq_hz;      /**< downlink frequency of the allocated carrier */
+    uint16_t carrier;  /**< carrier number (12 bits), for key derivation and logging */
+    uint8_t timeslots; /**< EN 300 392-2 table 21.80 bitmap: bit 3 = timeslot 1 ... bit 0 = timeslot 4 */
+    uint16_t call_id;  /**< CMCE call identifier (14 bits), 0 when the allocation carried none */
+} tetra_sm_grant;
+
+/** Grant timeout: seconds a followed traffic channel is kept without decoded speech after the tune completes. */
+#define TETRA_SM_GRANT_TIMEOUT_S 4.0
+/** Seconds without decoded speech on the followed timeslots after which the speech counts as ended and the hangtime
+ * (opts->trunk_hangtime) starts: longer than the frame 18 gap of a speech timeslot (two frames, 113 ms). */
+#define TETRA_SM_SPEECH_GAP_S    0.25
+/** Seconds a tune the backend reported in flight may take before it counts as failed. */
+#define TETRA_SM_TUNE_TIMEOUT_S  5.0
 
 /**
- * @brief Reset SM to IDLE (call once at engine init, optional).
- */
-void tetra_sm_init(void);
-
-/**
- * @brief Called when SYSINFO is decoded and trunk_cc_freq is valid.
+ * @brief Start the session's state machine over: IDLE, no followed call, no tune in flight.
  *
- * When trunking is enabled and the CC frequency is positive, transitions
- * IDLE→ON_CC and registers the CC in the CC-candidates list.
+ * The engine calls it at start and app-control when the decode mode changes. A tune still in flight is retired as
+ * rolled back. A session without TETRA state already reads IDLE and gets none.
+ */
+void tetra_sm_init(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief CRC-passed MCCH signalling named the control channel (SYSINFO with a valid main carrier, after the caller set
+ * state->trunk_cc_freq to it).
+ *
+ * IDLE becomes ON_CC while trunking is on; ON_CC takes the frequency as its return destination. A traffic channel's
+ * SYSINFO names the same main carrier and changes nothing while TUNED.
  */
 void tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief Called when a MAC Channel Allocation IE resolves a VC frequency.
+ * @brief Follow @p grant.
  *
- * If trunking is enabled and vc_freq_hz > 0 the SM tunes to the VC.
- * @param vc_freq_hz  Resolved downlink VC frequency in Hz (0 = same as CC).
- * @param slot        Four-bit assigned timeslot bitmap.
+ * Ignored unless trunking is on, a control channel is known, the grant names a frequency, no tune is in flight and a
+ * CRC-passed BSCH or MAC block was decoded on the carrier the receiver is on before the block that carried the grant
+ * (tetra_confirm). A grant for the call already followed is ignored. A grant on the carrier the receiver is on (a
+ * traffic timeslot of the main carrier, or another call on the followed carrier) is followed without a retune; any
+ * other is tuned to with no symbol-timing override (ted_sps 0). A refused or deferred tune changes nothing.
+ *
+ * @return 1 when the state machine now follows @p grant (tuned, tune in flight, or retargeted on the same carrier);
+ *         0 when it ignored it.
  */
-void tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, long vc_freq_hz, uint8_t slot);
+int tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, const tetra_sm_grant* grant);
 
 /**
- * @brief Called on D-RELEASE / D-DISCONNECT or MAC allocation release.
+ * @brief The call @p call_id was released (D-RELEASE, D-DISCONNECT, or a timeslot-0000 allocation to its party).
  *
- * Immediately returns to CC (hangtime elapsed or call cleared).
+ * Only the followed call releases: TUNED with a followed call id equal to @p call_id returns to the control channel
+ * (or, for a traffic timeslot of the control channel's carrier, just stops following). Any other id is ignored. A
+ * return the backend refuses or defers keeps the call; the next tick tries again.
  */
-void tetra_sm_on_release(dsd_opts* opts, dsd_state* state);
+void tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id);
 
 /**
- * @brief Reconcile a control-channel return completed by generic engine code.
+ * @brief Speech whose CRC passed was decoded on timeslot @p tn (1..4; 0 when the TDMA clock is not running).
  *
- * Clears traffic-only TETRA state without issuing another tuning request.
- * The resulting state is ON_CC when a positive control frequency remains,
- * otherwise IDLE.
+ * Reception activity (state->last_vc_sync_time and _m) in any state. While TUNED, speech on a followed timeslot (or
+ * on a timeslot the decoder cannot place) restarts the hangtime and ends the grant timeout.
  */
-void tetra_sm_on_external_cc_return(dsd_state* state);
+void tetra_sm_note_voice(dsd_state* state, uint8_t tn);
 
 /**
- * @brief Settle a correlated asynchronous tune without requiring a TETRA frame.
- *
- * The engine calls this before its frame-dispatch gate. This lets a failed VC
- * or CC-return request roll staged state back and retire its failed gate even
- * though that gate is deliberately preventing protocol-frame dispatch.
- */
-void tetra_sm_poll_tuning(dsd_opts* opts, dsd_state* state);
-
-/**
- * @brief Periodic tick: enforces hangtime timeout while TUNED.
- *
- * Also returns to the CC when trunking is disabled while tuned. Call from
- * processTetraFrame() once per NDB burst (every 56.67 ms).
+ * @brief Time-driven transitions: settle the tune in flight, then while TUNED end the followed call when trunking was
+ * turned off (return to the control channel), when another owner released the shared tuning state (no tune), on the
+ * grant timeout or after the hangtime that follows the last speech. ON_CC drops to IDLE once trunking is off.
  */
 void tetra_sm_tick(dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief Return the current SM state (for testing / display).
+ * @brief The engine already returned the receiver to the control channel (no-carrier return, manual Return to CC):
+ * drop the followed call and any tune in flight, forget the traffic carrier, and come to rest ON_CC (IDLE without a
+ * control channel). No tuning.
  */
-tetra_sm_state_e tetra_sm_get_state(void);
+void tetra_sm_on_external_cc_return(const dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief Override the hangtime used for VC→CC return.  (Phase 37)
- *
- * When seconds > 0, this value is used instead of opts->trunk_hangtime
- * in tetra_sm_tick().  Call with 0 to revert to the opts value.
+ * @brief A carrier boundary moves the receiver elsewhere: drop the followed call and any tune in flight and release the
+ * shared tuning state, without asking the tuner for anything (the caller owns it). Rests ON_CC, or IDLE without a
+ * control channel or with trunking off.
  */
-void tetra_sm_set_hangtime(uint32_t seconds);
+void tetra_sm_abandon_carrier(dsd_opts* opts, dsd_state* state);
 
-/**
- * @brief Return the currently configured hangtime override in seconds.
- *
- * Returns 0 when no per-SM override is set (opts default is used).
- */
-uint32_t tetra_sm_get_hangtime(void);
+/** @brief The session's state; IDLE for a NULL @p state or a session without TETRA state. */
+tetra_sm_state_e tetra_sm_get_state(const dsd_state* state);
+
+/** @brief 1 and the followed grant in @p out (when not NULL) while TUNED; 0 otherwise. */
+int tetra_sm_followed(const dsd_state* state, tetra_sm_grant* out);
 
 #ifdef __cplusplus
 }

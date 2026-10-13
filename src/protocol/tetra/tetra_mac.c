@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "tetra_confirm.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
 
@@ -292,11 +293,18 @@ sync_call_target(tetra_state_t* ts) {
     ts->gssi = ts->cmce_com_type == 0 ? 0u : ts->active_ssi;
 }
 
+/* Hand the trunking state machine the traffic channel of @p a, for the call @p call_id (0 when none is known). */
+static void
+follow_allocation(const mac_block* b, const mac_allocation* a, uint16_t call_id) {
+    const tetra_sm_grant grant = {a->freq_hz, a->carrier, a->timeslots, call_id};
+    (void)tetra_sm_on_grant(b->opts, b->state, &grant);
+}
+
 /* An allocation whose PDU also carried a TM-SDU tunes only when that TM-SDU established a call the policy allows. */
 static void
 grant_with_call(const mac_block* b, const mac_allocation* a, uint32_t generation_before) {
     if (b->ts->cmce_call_generation != generation_before && call_policy_allows(b)) {
-        tetra_sm_on_grant(b->opts, b->state, a->freq_hz, a->timeslots);
+        follow_allocation(b, a, b->ts->call_id);
     }
 }
 
@@ -311,7 +319,7 @@ deliver_tm_sdu(const mac_block* b, const uint8_t* sdu, int sdu_bits, const mac_a
             grant_with_call(b, grant, generation_before);
         }
     } else if (grant) {
-        tetra_sm_on_grant(b->opts, b->state, grant->freq_hz, grant->timeslots);
+        follow_allocation(b, grant, 0U);
     }
 }
 
@@ -407,11 +415,13 @@ release_assignment(const mac_block* b, const mac_allocation* a, const tetra_mac_
     ts->vc_assignment_type = a->type;
     ts->vc_uplink_downlink = a->up_down;
     ts->vc_timeslot_bitmap = 0;
-    ts->vc_slot = 0;
     ts->vc_carrier = 0;
     ts->vc_freq_hz = 0;
     ts->tx_granted_valid = 0;
-    tetra_sm_on_release(b->opts, b->state);
+    tetra_sm_grant followed;
+    if (tetra_sm_followed(b->state, &followed)) {
+        tetra_sm_on_release(b->opts, b->state, followed.call_id);
+    }
 }
 
 /* Record the allocation of a clear PDU addressed to @p addr. Returns 1 when it assigns a pi/4-DQPSK downlink the
@@ -432,7 +442,6 @@ apply_allocation(const mac_block* b, const mac_allocation* a, const tetra_mac_ad
     ts->vc_assignment_valid = 1;
     ts->vc_assignment_type = a->type;
     ts->vc_timeslot_bitmap = a->timeslots;
-    ts->vc_slot = a->timeslots;
     ts->vc_uplink_downlink = a->up_down;
     ts->vc_carrier = a->carrier;
     ts->vc_freq_hz = a->freq_hz;
@@ -1049,7 +1058,9 @@ tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd
     int off = 0;
     while (nbits - off >= (b.first ? 2 : MAC_NULL_PDU_BITS)) {
         const int used = parse_pdu(&b, bits + off, nbits - off);
-        if (used <= 0) {
+        /* A PDU that moved the receiver (a followed channel allocation) ends the block: the PDUs after it were sent
+         * on the carrier the receiver left (tetra_confirm.h). */
+        if (used <= 0 || !tetra_confirm_burst_current(state)) {
             break;
         }
         off += used;

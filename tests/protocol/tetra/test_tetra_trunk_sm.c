@@ -1,602 +1,638 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Unit tests for the TETRA trunking state machine (Phase 13).
+ * The TETRA trunking state machine (tetra_trunk_sm.h): per-session state, the CRC evidence a grant needs, tunes the
+ * backend completes at once or later, the grant timeout and the hangtime after speech, releases by call identifier,
+ * and the hand-overs the engine makes (external control-channel return, carrier abandon).
  *
- * Uses dsd_trunk_tuning_hooks_set() to install counting stubs that track
- * whether tune_to_freq / return_to_cc were actually called.
- *
- * Link requirements:
- *   tetra_trunk_sm.c, dsd-neo_runtime, dsd-neo_core
+ * The tuning backend is a pair of stand-in hooks that do to the shared tuning state what the engine's do. Time is the
+ * decode clock's TEST source.
  */
 
+#include <assert.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
-#include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+
+#include "tetra_confirm.h"
 #include "tetra_state.h"
 
-/* -----------------------------------------------------------------------
- * Test infrastructure
- * ----------------------------------------------------------------------- */
-static int g_failures = 0;
+enum {
+    CC_HZ = 380012500,
+    VC_HZ = 390012500,
+    VC2_HZ = 391012500,
+};
 
-#define CHECK(cond, msg)                                                                                               \
-    do {                                                                                                               \
-        if (!(cond)) {                                                                                                 \
-            fprintf(stderr, "FAIL [%s:%d] %s\n", __FILE__, __LINE__, msg);                                             \
-            g_failures++;                                                                                              \
-        }                                                                                                              \
-    } while (0)
+#define SECOND_NS 1000000000ULL
 
-/* -----------------------------------------------------------------------
- * Mock hooks
- * ----------------------------------------------------------------------- */
-static int g_tune_calls = 0;
-static long g_tuned_freq = 0;
-static int g_release_calls = 0;
-static uint64_t g_last_request_id = 0U;
-static dsd_trunk_tune_result g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-static dsd_trunk_tune_result g_release_result = DSD_TRUNK_TUNE_RESULT_OK;
+static uint64_t g_now_ns;
+static int g_tunes;
+static int g_returns;
+static long g_tuned_hz;
+static int g_ted_sps;
+static uint64_t g_request;
+static dsd_trunk_tune_result g_tune_result;
+static dsd_trunk_tune_result g_return_result;
 
+/* What the engine's tune hook does to the shared tuning state when it accepts a voice-channel tune. */
 static dsd_trunk_tune_result
-mock_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
-    (void)ted_sps;
-    g_tune_calls++;
-    g_tuned_freq = freq;
-    g_last_request_id = request_id;
-    if (opts && state && dsd_trunk_tune_result_is_ok(g_tune_result)) {
+tune_hook(dsd_opts* opts, dsd_state* state, long freq, int ted_sps, uint64_t request_id) {
+    g_tunes++;
+    g_tuned_hz = freq;
+    g_ted_sps = ted_sps;
+    g_request = request_id;
+    if (dsd_trunk_tune_result_is_ok(g_tune_result)) {
         opts->trunk_is_tuned = 1;
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-        state->last_vc_sync_time = state->last_cc_sync_time = 999;
-        state->last_vc_sync_time_m = state->last_cc_sync_time_m = 999.0;
-        state->p25_last_vc_tune_time = 999;
-        state->p25_last_vc_tune_time_m = 999.0;
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
     return g_tune_result;
 }
 
+/* And to it when it accepts a return to the control channel (dsd_engine_release_tuned_call_state()). */
 static dsd_trunk_tune_result
-mock_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
-    g_release_calls++;
-    g_last_request_id = request_id;
-    if (opts && state && dsd_trunk_tune_result_is_ok(g_release_result)) {
+return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    g_returns++;
+    g_request = request_id;
+    if (dsd_trunk_tune_result_is_ok(g_return_result)) {
         opts->trunk_is_tuned = 0;
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->last_vc_sync_time = 0;
         state->last_vc_sync_time_m = 0.0;
     }
-    return g_release_result;
+    return g_return_result;
 }
 
 static void
-install_hooks(void) {
-    dsd_trunk_tuning_hooks h = {0};
-    h.tune_to_freq_request = mock_tune_to_freq;
-    h.return_to_cc_request = mock_return_to_cc;
-    dsd_trunk_tuning_hooks_set(h);
+at_seconds(double seconds) {
+    g_now_ns = (uint64_t)(seconds * (double)SECOND_NS);
+    dsd_decode_clock_test_set_ns(g_now_ns);
 }
 
 static void
-reset_counters(void) {
-    g_tune_calls = 0;
-    g_tuned_freq = 0;
-    g_release_calls = 0;
-    g_last_request_id = 0U;
-    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-    g_release_result = DSD_TRUNK_TUNE_RESULT_OK;
+reset_backend(void) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_request = tune_hook;
+    hooks.return_to_cc_request = return_hook;
+    dsd_trunk_tuning_hooks_set(hooks);
     dsd_trunk_tuning_requests_reset();
+    g_tunes = 0;
+    g_returns = 0;
+    g_tuned_hz = 0;
+    g_ted_sps = -1;
+    g_request = 0U;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_decode_clock_use_test(SECOND_NS * 1000ULL);
+    at_seconds(1000.0);
 }
 
-/* Build a minimal opts/state pair ready for trunking (heap-allocated). */
-static void
-make_pair(dsd_opts** opts_out, dsd_state** state_out) {
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
-    opts->trunk_enable = 1;
-    opts->trunk_hangtime = 5.0f;       /* 5 second hangtime */
-    state->trunk_cc_freq = 380000000L; /* 380 MHz CC */
-    tetra_st(state)->dl_carrier_hz = state->trunk_cc_freq;
-    state->samplesPerSymbol = 10;
-    *opts_out = opts;
-    *state_out = state;
-}
-
-/* -----------------------------------------------------------------------
- * Test 1: on_grant with trunking enabled → tune hook called
- * ----------------------------------------------------------------------- */
-static void
-test_grant_tunes(void) {
+typedef struct {
     dsd_opts* opts;
     dsd_state* state;
-    make_pair(&opts, &state);
-    reset_counters();
-    tetra_sm_init();
+} session;
 
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-
-    CHECK(g_tune_calls == 1, "tune hook must be called once on grant");
-    CHECK(g_tuned_freq == 390000000L, "tuned to correct VC frequency");
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "SM must be TUNED");
-    CHECK(tetra_st(state)->trunk_state == TETRA_SM_TUNED, "snapshot state must mirror TUNED");
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_grant_tunes\n");
+/* A trunking session on a control channel that a CRC-passed block has proved, with a 2 s hangtime. */
+static session
+session_open(void) {
+    session s;
+    s.opts = (dsd_opts*)calloc(1U, sizeof(*s.opts));
+    s.state = (dsd_state*)calloc(1U, sizeof(*s.state));
+    assert(s.opts != NULL && s.state != NULL);
+    s.opts->trunk_enable = 1;
+    s.opts->trunk_hangtime = 2.0F;
+    s.opts->frame_tetra = 1;
+    s.state->trunk_cc_freq = CC_HZ;
+    assert(tetra_st(s.state) != NULL);
+    tetra_sm_on_cc_sync(s.opts, s.state);
+    tetra_confirm_note_signalling(s.state);
+    return s;
 }
 
 static void
-test_main_carrier_grant_keeps_receiver(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    reset_counters();
-    tetra_sm_init();
-    tetra_sm_on_cc_sync(opts, state);
-    tetra_sm_on_grant(opts, state, state->trunk_cc_freq, 1);
-    CHECK(g_tune_calls == 0, "main-carrier grant must not retune RTL");
-    CHECK(opts->trunk_is_tuned == 1, "main-carrier traffic must open voice gate");
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "main-carrier grant must enter TUNED");
-    tetra_sm_on_release(opts, state);
-    CHECK(g_release_calls == 0, "main-carrier release must not retune RTL");
-    CHECK(opts->trunk_is_tuned == 0, "main-carrier release must close voice gate");
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "main-carrier release must return to CC");
-    free(opts);
-    free(state);
+session_close(session* s) {
+    dsd_state_ext_free_all(s->state);
+    free(s->state);
+    free(s->opts);
 }
 
-/* -----------------------------------------------------------------------
- * Test 2: on_grant with trunk_enable=0 → no tuning
- * ----------------------------------------------------------------------- */
-static void
-test_grant_disabled(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    opts->trunk_enable = 0;
-    reset_counters();
-    tetra_sm_init();
-
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-
-    CHECK(g_tune_calls == 0, "tune hook must NOT be called when trunking disabled");
-    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "SM must remain IDLE");
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_grant_disabled\n");
+static tetra_sm_grant
+grant_of(long freq_hz, uint8_t timeslots, uint16_t call_id) {
+    const tetra_sm_grant g = {freq_hz, 40U, timeslots, call_id};
+    return g;
 }
 
-/* -----------------------------------------------------------------------
- * Test 3: duplicate grant same freq → no second tune, hangtime refreshed
- * ----------------------------------------------------------------------- */
+static int
+followed_call(const dsd_state* state) {
+    tetra_sm_grant g;
+    return tetra_sm_followed(state, &g) ? (int)g.call_id : -1;
+}
+
+/* The control channel comes from CRC-passed SYSINFO, and only while trunking. */
 static void
-test_double_grant_same_freq(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    reset_counters();
-    tetra_sm_init();
+test_control_channel(void) {
+    reset_backend();
+    session s = session_open();
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    assert(s.state->tetra_pub.trunk_state == DSD_TETRA_TRUNK_ON_CONTROL);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
 
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    int first_calls = g_tune_calls;
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
+    tetra_sm_on_cc_sync(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
+    session_close(&s);
 
-    CHECK(first_calls == 1, "first grant must tune");
-    CHECK(g_tune_calls == 1, "duplicate grant (same freq) must NOT re-tune");
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "SM must remain TUNED");
-    opts->trunk_is_tuned = 0; /* Generic no-carrier return completed. */
+    assert(tetra_sm_get_state(NULL) == TETRA_SM_IDLE);
+    assert(!tetra_sm_followed(NULL, NULL));
+}
+
+/* Two sessions never share state machine state. */
+static void
+test_sessions_are_separate(void) {
+    reset_backend();
+    session a = session_open();
+    session b = session_open();
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(a.opts, a.state, &g) == 1);
+    assert(tetra_sm_get_state(a.state) == TETRA_SM_TUNED && followed_call(a.state) == 0x123);
+    assert(tetra_sm_get_state(b.state) == TETRA_SM_ON_CC && followed_call(b.state) == -1);
+    tetra_sm_on_release(b.opts, b.state, 0x123U);
+    assert(tetra_sm_get_state(a.state) == TETRA_SM_TUNED && g_returns == 0);
+    session_close(&a);
+    session_close(&b);
+}
+
+/* No grant is followed before a CRC-passed BSCH or MAC block on the carrier; the tune has no timing override. */
+static void
+test_grant_needs_carrier_evidence(void) {
+    reset_backend();
+    session s = session_open();
+    tetra_confirm_reset(s.state);
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 0);
+    assert(g_tunes == 0 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+
+    tetra_confirm_note_signalling(s.state);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    assert(g_tunes == 1 && g_tuned_hz == VC_HZ && g_ted_sps == 0);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && s.opts->trunk_is_tuned == 1);
+    assert(s.state->tetra_pub.trunk_state == DSD_TETRA_TRUNK_ON_TRAFFIC);
+    /* The receiver is on another carrier now: the control channel's evidence and TDMA clock are gone. */
+    assert(!tetra_confirm_carrier_proven(s.state) && !tetra_confirm_followed_call_proven(s.state));
+    assert(tetra_st(s.state)->tdma_valid == 0);
+    session_close(&s);
+}
+
+/* Grants that cannot be followed change nothing. */
+static void
+test_ignored_grants(void) {
+    reset_backend();
+    session s = session_open();
+    tetra_sm_grant g = grant_of(0, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 0);
+    g = grant_of(VC_HZ, 0x4U, 0x123U);
+    s.opts->trunk_enable = 0;
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 0);
+    s.opts->trunk_enable = 1;
+    s.state->trunk_cc_freq = 0;
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 0);
+    s.state->trunk_cc_freq = CC_HZ;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 0);
     g_tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    CHECK(g_tune_calls == 2 && opts->trunk_is_tuned == 0, "failed reacquisition must not claim shared tuned state");
-    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    CHECK(g_tune_calls == 3, "same-frequency grant must retry after failed reacquisition");
-    CHECK(opts->trunk_is_tuned == 1, "successful reacquisition restores shared tuned state");
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_double_grant_same_freq\n");
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 0);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(tetra_sm_on_grant(s.opts, s.state, NULL) == 0);
+    session_close(&s);
 }
 
-/* -----------------------------------------------------------------------
- * Test 4: on_release after grant → return_to_cc hook called, SM on ON_CC
- * ----------------------------------------------------------------------- */
+/* No speech after the tune: the grant timeout returns to the control channel. */
 static void
-test_release_returns_to_cc(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    reset_counters();
-    tetra_sm_init();
-
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    reset_counters();
-    tetra_sm_on_release(opts, state);
-
-    CHECK(g_release_calls == 1, "return_to_cc hook must be called on release");
-    CHECK(g_tune_calls == 0, "no tune during release");
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "SM must be ON_CC after release");
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_release_returns_to_cc\n");
+test_grant_timeout(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    at_seconds(1000.0 + TETRA_SM_GRANT_TIMEOUT_S - 0.1);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    at_seconds(1000.0 + TETRA_SM_GRANT_TIMEOUT_S);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 1 && s.opts->trunk_is_tuned == 0);
+    assert(followed_call(s.state) == -1);
+    session_close(&s);
 }
 
-/* -----------------------------------------------------------------------
- * Test 5: trunk_cc_freq=0 → grant blocked even if trunk_enable=1
- * ----------------------------------------------------------------------- */
+/* Speech on a followed timeslot keeps the channel; the hangtime counts from the end of the last speech. */
 static void
-test_no_cc_freq_blocks_grant(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    state->trunk_cc_freq = 0L; /* no CC known */
-    reset_counters();
-    tetra_sm_init();
-
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-
-    CHECK(g_tune_calls == 0, "grant must be blocked when CC freq unknown");
-    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "SM must remain IDLE");
-    state->trunk_cc_freq = -1L;
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    CHECK(g_tune_calls == 0, "negative CC must not allow a tune without a valid return frequency");
-    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "invalid CC keeps SM IDLE");
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_no_cc_freq_blocks_grant\n");
-}
-
-/* -----------------------------------------------------------------------
- * Test 6: on_cc_sync transitions IDLE→ON_CC
- * ----------------------------------------------------------------------- */
-static void
-test_cc_sync_transitions_state(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    reset_counters();
-    tetra_sm_init();
-
-    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "SM starts IDLE");
-    tetra_sm_on_cc_sync(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "SM transitions to ON_CC after cc_sync");
-    CHECK(tetra_st(state)->trunk_state == TETRA_SM_ON_CC, "snapshot state must mirror ON_CC");
-    /* subsequent cc_sync while ON_CC must keep ON_CC state */
-    tetra_sm_on_cc_sync(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "SM stays ON_CC on repeated cc_sync");
-    tetra_sm_set_hangtime(7);
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    tetra_sm_on_cc_sync(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "sync while shared state is tuned must retain traffic tracking");
-    opts->trunk_is_tuned = 0;
-    tetra_sm_on_cc_sync(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "confirmed CC sync reconciles an external return");
-    CHECK(g_release_calls == 0, "reconciliation must not retune a second time");
-    CHECK(tetra_sm_get_hangtime() == 7, "reconciliation preserves configured hangtime");
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_cc_sync_transitions_state\n");
-}
-
-static void
-test_external_return_clears_traffic_state(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    reset_counters();
-    tetra_sm_init();
-    tetra_sm_on_grant(opts, state, 390000000L, 8);
-    tetra_st(state)->call_active = 1;
-    tetra_st(state)->tx_granted_valid = 1;
-    tetra_st(state)->tx_granted_ssi = 0x112233u;
-    tetra_st(state)->cmce_tx_granted_party_type_valid = 1;
-    tetra_st(state)->tx_event_party_ssi_valid = 1;
-    tetra_st(state)->tx_continue = tetra_st(state)->tx_interrupted = tetra_st(state)->tx_wait = 1;
-    tetra_st(state)->vc_assignment_valid = 1;
-    tetra_st(state)->vc_assignment_type = 2;
-    tetra_st(state)->vc_timeslot_bitmap = tetra_st(state)->vc_slot = 8;
-    tetra_st(state)->vc_carrier = 12;
-    tetra_st(state)->vc_freq_hz = 390000000L;
-    reset_counters();
-    tetra_sm_on_external_cc_return(state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "external return reconciles SM");
-    CHECK(tetra_st(state)->trunk_state == TETRA_SM_ON_CC, "external return mirrors ON_CC");
-    CHECK(g_tune_calls == 0 && g_release_calls == 0, "external return issues no tuner request");
-    CHECK(!tetra_st(state)->call_active && !tetra_st(state)->tx_granted_valid,
-          "external return clears call and floor grant");
-    CHECK(!tetra_st(state)->tx_granted_ssi && !tetra_st(state)->cmce_tx_granted_party_type_valid
-              && !tetra_st(state)->tx_event_party_ssi_valid,
-          "external return clears floor-control identities");
-    CHECK(!tetra_st(state)->tx_continue && !tetra_st(state)->tx_interrupted && !tetra_st(state)->tx_wait,
-          "external return clears floor events");
-    CHECK(!tetra_st(state)->vc_assignment_valid && !tetra_st(state)->vc_timeslot_bitmap && !tetra_st(state)->vc_freq_hz
-              && !tetra_st(state)->vc_carrier,
-          "external return clears traffic allocation");
-    state->trunk_cc_freq = 0;
-    tetra_sm_on_external_cc_return(state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "traffic end without a usable CC returns SM to IDLE");
-    CHECK(tetra_st(state)->trunk_state == TETRA_SM_IDLE, "missing CC mirrors IDLE");
-    free(opts);
-    free(state);
-}
-
-static void
-test_cc_sync_requires_enabled_valid_cc(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    tetra_sm_init();
-
-    opts->trunk_enable = 0;
-    tetra_sm_on_cc_sync(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "disabled trunking must not enter ON_CC");
-
-    opts->trunk_enable = 1;
-    state->trunk_cc_freq = 0;
-    tetra_sm_on_cc_sync(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "invalid CC frequency must not enter ON_CC");
-
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_cc_sync_requires_enabled_valid_cc\n");
-}
-
-/* -----------------------------------------------------------------------
- * Test 7: tick while TUNED with expired hangtime → release
- *
- * Use hangtime=0.0f so that any real elapsed time triggers the release.
- * ----------------------------------------------------------------------- */
-static void
-test_hangtime_expires(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    opts->trunk_hangtime = 0.0f; /* expire immediately */
-    reset_counters();
-    tetra_sm_init();
-
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "SM must be TUNED before tick");
-
-    reset_counters();
-    tetra_sm_tick(opts, state); /* hangtime=0 → should release */
-
-    CHECK(g_release_calls == 1, "return_to_cc must be called when hangtime expires");
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "SM must be ON_CC after hangtime");
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_hangtime_expires\n");
-}
-
-static void
-test_active_call_suspends_hangtime(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    opts->trunk_hangtime = 0.0f;
-    reset_counters();
-    tetra_sm_init();
-
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    tetra_st(state)->call_active = 1;
-    tetra_sm_tick(opts, state);
-
-    CHECK(g_release_calls == 0, "active call must suspend the idle hangtime");
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "active call must remain tuned after hangtime would expire");
-
-    tetra_st(state)->call_active = 0;
-    tetra_sm_tick(opts, state);
-    CHECK(g_release_calls == 1, "hangtime must resume after the call becomes inactive");
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "inactive call must return to CC after hangtime");
-
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_active_call_suspends_hangtime\n");
-}
-
-static void
-test_disable_while_tuned_returns_to_cc(void) {
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    reset_counters();
-    tetra_sm_init();
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "SM must be TUNED before disabling trunking");
-
-    reset_counters();
-    opts->trunk_enable = 0;
-    tetra_sm_tick(opts, state);
-    CHECK(g_release_calls == 1, "disabling trunking while tuned must request return to CC");
-    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE, "successful disabled cleanup must finish IDLE");
-    CHECK(tetra_st(state)->trunk_state == TETRA_SM_IDLE, "disabled cleanup snapshot must mirror IDLE");
-
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_disable_while_tuned_returns_to_cc\n");
-}
-
-static void
-test_grant_result_matrix(void) {
-    const dsd_trunk_tune_result rejected[] = {
-        DSD_TRUNK_TUNE_RESULT_DEFERRED,
-        DSD_TRUNK_TUNE_RESULT_FAILED,
-        DSD_TRUNK_TUNE_RESULT_TIMEOUT,
-    };
-
-    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
-        dsd_opts* opts;
-        dsd_state* state;
-        make_pair(&opts, &state);
-        reset_counters();
-        tetra_sm_init();
-        tetra_sm_on_cc_sync(opts, state);
-        g_tune_result = rejected[i];
-
-        tetra_sm_on_grant(opts, state, 390000000L, 1);
-        CHECK(g_tune_calls == 1, "rejected grant must call tune hook once");
-        CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "rejected grant must keep the previous state");
-
-        g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-        tetra_sm_on_grant(opts, state, 390000000L, 1);
-        CHECK(g_tune_calls == 2, "grant must be retryable after rejection");
-        CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "successful retry must advance to TUNED");
-        free(opts);
-        free(state);
+test_hangtime_after_speech(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U); /* timeslot 2 */
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    for (int i = 1; i <= 100; i++) {
+        at_seconds(1000.0 + 0.0567 * i);
+        tetra_sm_note_voice(s.state, 2U);
+        tetra_sm_tick(s.opts, s.state);
     }
+    const double last = 1000.0 + 0.0567 * 100;
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    assert(s.state->last_vc_sync_time_m > 1000.0);
 
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    reset_counters();
-    tetra_sm_init();
-    tetra_sm_on_cc_sync(opts, state);
-    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "pending grant must stage the TUNED state");
-    const uint64_t failed_request = g_last_request_id;
-    CHECK(failed_request != 0U, "pending grant must retain a correlated request");
-    tetra_sm_on_grant(opts, state, 391000000L, 2);
-    CHECK(g_tune_calls == 1, "a second grant must not overtake a pending tune");
-    dsd_trunk_tuning_request_publish(failed_request, DSD_TRUNK_TUNE_RESULT_FAILED);
-    CHECK(!dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()),
-          "failed asynchronous grant must keep frames gated before owner rollback");
-    tetra_sm_poll_tuning(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC && !opts->trunk_is_tuned,
-          "failed asynchronous grant must roll back to ON_CC");
-    CHECK(state->trunk_vc_freq[0] == 0 && state->p25_vc_freq[0] == 0 && state->last_vc_sync_time == 0
-              && state->last_vc_sync_time_m == 0.0,
-          "failed asynchronous grant must restore shared tune caches and timers");
-    CHECK(dsd_trunk_tuning_pending_request() == 0U, "failed asynchronous grant must retire its frame gate");
-
-    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
-    tetra_sm_on_grant(opts, state, 392000000L, 4);
-    const uint64_t successful_request = g_last_request_id;
-    dsd_trunk_tuning_request_publish(successful_request, DSD_TRUNK_TUNE_RESULT_OK);
-    tetra_sm_poll_tuning(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED && opts->trunk_is_tuned,
-          "successful asynchronous grant must commit TUNED");
-    CHECK(state->trunk_vc_freq[0] == 392000000L && state->p25_vc_freq[1] == 392000000L && state->last_vc_sync_time > 0
-              && state->last_vc_sync_time_m > 0.0,
-          "successful asynchronous grant must publish its VC and completion time");
-    CHECK(dsd_trunk_tuning_pending_request() == 0U, "successful asynchronous grant must open the frame gate");
-
-    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
-    tetra_sm_on_grant(opts, state, 393000000L, 8);
-    const uint64_t reassignment_request = g_last_request_id;
-    dsd_trunk_tuning_request_publish(reassignment_request, DSD_TRUNK_TUNE_RESULT_TIMEOUT);
-    tetra_sm_poll_tuning(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED && opts->trunk_is_tuned,
-          "failed asynchronous reassignment must retain the old VC state");
-    CHECK(state->trunk_vc_freq[0] == 392000000L && state->p25_vc_freq[1] == 392000000L,
-          "failed asynchronous reassignment must restore the old shared VC caches");
-    const int calls_before_old_grant = g_tune_calls;
-    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-    tetra_sm_on_grant(opts, state, 392000000L, 4);
-    CHECK(g_tune_calls == calls_before_old_grant,
-          "rollback must preserve the old VC identity for duplicate suppression");
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_grant_result_matrix\n");
+    /* Speech on timeslot 3, which the call was not given, is not the call's. */
+    at_seconds(last + TETRA_SM_SPEECH_GAP_S + 1.0);
+    tetra_sm_note_voice(s.state, 3U);
+    at_seconds(last + TETRA_SM_SPEECH_GAP_S + 1.99);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    at_seconds(last + TETRA_SM_SPEECH_GAP_S + 2.0);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 1);
+    session_close(&s);
 }
 
+/* Speech the decoder cannot place on a timeslot (no TDMA clock) counts. */
 static void
-test_release_result_matrix(void) {
-    const dsd_trunk_tune_result rejected[] = {
-        DSD_TRUNK_TUNE_RESULT_DEFERRED,
-        DSD_TRUNK_TUNE_RESULT_FAILED,
-        DSD_TRUNK_TUNE_RESULT_TIMEOUT,
-    };
-
-    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
-        dsd_opts* opts;
-        dsd_state* state;
-        make_pair(&opts, &state);
-        reset_counters();
-        tetra_sm_init();
-        tetra_sm_on_grant(opts, state, 390000000L, 1);
-        g_release_result = rejected[i];
-
-        tetra_sm_on_release(opts, state);
-        CHECK(g_release_calls == 1, "rejected release must call return hook once");
-        CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "rejected release must keep TUNED state");
-
-        g_release_result = DSD_TRUNK_TUNE_RESULT_OK;
-        tetra_sm_on_release(opts, state);
-        CHECK(g_release_calls == 2, "release must be retryable after rejection");
-        CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "successful retry must advance to ON_CC");
-        free(opts);
-        free(state);
-    }
-
-    dsd_opts* opts;
-    dsd_state* state;
-    make_pair(&opts, &state);
-    reset_counters();
-    tetra_sm_init();
-    tetra_sm_on_grant(opts, state, 390000000L, 1);
-    g_release_result = DSD_TRUNK_TUNE_RESULT_PENDING;
-    tetra_sm_on_release(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "pending return must stage the ON_CC state");
-    const uint64_t failed_request = g_last_request_id;
-    CHECK(failed_request != 0U, "pending return must retain a correlated request");
-    tetra_sm_on_release(opts, state);
-    CHECK(g_release_calls == 1, "a second release must not overtake a pending return");
-    dsd_trunk_tuning_request_publish(failed_request, DSD_TRUNK_TUNE_RESULT_FAILED);
-    CHECK(!dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()),
-          "failed asynchronous return must keep frames gated before owner rollback");
-    tetra_sm_poll_tuning(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED && opts->trunk_is_tuned,
-          "failed asynchronous return must roll back to TUNED");
-    CHECK(state->trunk_vc_freq[0] == 390000000L && state->p25_vc_freq[1] == 390000000L
-              && state->last_vc_sync_time == 999 && state->last_vc_sync_time_m == 999.0,
-          "failed asynchronous return must restore shared VC caches and timers");
-    CHECK(dsd_trunk_tuning_pending_request() == 0U, "failed asynchronous return must retire its frame gate");
-
-    g_release_result = DSD_TRUNK_TUNE_RESULT_PENDING;
-    tetra_sm_on_release(opts, state);
-    const uint64_t successful_request = g_last_request_id;
-    dsd_trunk_tuning_request_publish(successful_request, DSD_TRUNK_TUNE_RESULT_OK);
-    tetra_sm_poll_tuning(opts, state);
-    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC && !opts->trunk_is_tuned,
-          "successful asynchronous return must commit ON_CC");
-    CHECK(dsd_trunk_tuning_pending_request() == 0U, "successful asynchronous return must open the frame gate");
-    free(opts);
-    free(state);
-    fprintf(stderr, "  PASS test_release_result_matrix\n");
+test_unplaced_speech_counts(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    at_seconds(1003.9);
+    tetra_sm_note_voice(s.state, 0U);
+    at_seconds(1005.0);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
+    at_seconds(1003.9 + TETRA_SM_SPEECH_GAP_S + 2.0);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    session_close(&s);
 }
 
-/* -----------------------------------------------------------------------
- * main
- * ----------------------------------------------------------------------- */
+/* Only the followed call releases. */
+static void
+test_release_by_call_id(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    tetra_st(s.state)->vc_assignment_valid = 1;
+    tetra_st(s.state)->vc_timeslot_bitmap = 0x4U;
+    tetra_st(s.state)->call_active = 1;
+    tetra_sm_on_release(s.opts, s.state, 0x124U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    tetra_sm_on_release(s.opts, s.state, 0x123U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 1);
+    /* Leaving the call drops the MAC's assignment and the CMCE call with it. */
+    assert(!tetra_st(s.state)->vc_assignment_valid && !tetra_st(s.state)->call_active);
+    tetra_sm_on_release(s.opts, s.state, 0x123U);
+    assert(g_returns == 1);
+    session_close(&s);
+}
+
+/* A return the backend refuses keeps the call; the next tick tries again. */
+static void
+test_refused_return_keeps_call(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    s.state->p25_cc_freq = 0;
+    g_return_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    tetra_sm_on_release(s.opts, s.state, 0x123U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x123 && g_returns == 1);
+    assert(s.opts->trunk_is_tuned == 1);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+    at_seconds(1000.0 + TETRA_SM_GRANT_TIMEOUT_S);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 2);
+    session_close(&s);
+}
+
+/* A grant on the carrier the receiver is on needs no retune: a traffic timeslot of the main carrier. */
+static void
+test_grant_on_this_carrier(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant g = grant_of(CC_HZ, 0x2U, 0x77U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    assert(g_tunes == 0 && tetra_sm_get_state(s.state) == TETRA_SM_TUNED && s.opts->trunk_is_tuned == 1);
+    assert(s.state->trunk_vc_freq[0] == CC_HZ);
+    /* The grant was the call's CRC-passed signalling on this carrier, whose evidence stays. */
+    assert(tetra_confirm_followed_call_proven(s.state) && tetra_confirm_carrier_proven(s.state));
+
+    /* The same call again is nothing new; one without a call identifier names no other call. */
+    const tetra_sm_grant same = grant_of(CC_HZ, 0x2U, 0U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &same) == 0 && followed_call(s.state) == 0x77);
+
+    tetra_sm_on_release(s.opts, s.state, 0x77U);
+    assert(g_returns == 0 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
+    assert(s.state->trunk_vc_freq[0] == 0);
+    session_close(&s);
+}
+
+/* A call identifier arriving after a header-only allocation is adopted; another call on the followed carrier is taken
+ * without a retune. */
+static void
+test_same_carrier_grants(void) {
+    reset_backend();
+    session s = session_open();
+    tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1 && followed_call(s.state) == 0);
+    g = grant_of(VC_HZ, 0x4U, 0x55U);
+    tetra_confirm_note_signalling(s.state);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 0 && followed_call(s.state) == 0x55 && g_tunes == 1);
+    g = grant_of(VC_HZ, 0x1U, 0x56U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1 && followed_call(s.state) == 0x56 && g_tunes == 1);
+    assert(tetra_confirm_followed_call_proven(s.state));
+    /* Preemption onto another carrier retunes. */
+    g = grant_of(VC2_HZ, 0x8U, 0x57U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1 && g_tunes == 2 && g_tuned_hz == VC2_HZ);
+    assert(followed_call(s.state) == 0x57);
+    session_close(&s);
+}
+
+/* A tune the backend reports in flight: TUNED is staged, the tick settles the completion. */
+static void
+test_pending_grant_completes(void) {
+    reset_backend();
+    session s = session_open();
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    const uint64_t request = g_request;
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && dsd_trunk_tuning_pending_request() == request);
+    /* A second grant waits for the first tune. */
+    const tetra_sm_grant other = grant_of(VC2_HZ, 0x8U, 0x124U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &other) == 0 && g_tunes == 1);
+    tetra_sm_tick(s.opts, s.state);
+    assert(dsd_trunk_tuning_pending_request() == request);
+
+    at_seconds(1001.0);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    tetra_sm_tick(s.opts, s.state);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && s.opts->trunk_is_tuned == 1);
+    /* The grant timeout runs from the completion. */
+    at_seconds(1001.0 + TETRA_SM_GRANT_TIMEOUT_S - 0.1);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
+    at_seconds(1001.0 + TETRA_SM_GRANT_TIMEOUT_S);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    session_close(&s);
+}
+
+/* A tune that fails after being reported in flight puts everything back and opens the frame gate. */
+static void
+test_pending_grant_fails(void) {
+    reset_backend();
+    session s = session_open();
+    s.state->last_vc_sync_time = 77;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    const uint64_t request = g_request;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_pending_request() == request);
+    tetra_sm_tick(s.opts, s.state);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    assert(s.opts->trunk_is_tuned == 0 && s.state->trunk_vc_freq[0] == 0 && s.state->last_vc_sync_time == 77);
+    /* Nothing was forgotten: the receiver never left the control channel. */
+    assert(tetra_confirm_carrier_proven(s.state));
+    session_close(&s);
+}
+
+/* A backend that never answers fails the tune after TETRA_SM_TUNE_TIMEOUT_S. */
+static void
+test_pending_grant_times_out(void) {
+    reset_backend();
+    session s = session_open();
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    const uint64_t request = g_request;
+    at_seconds(1000.0 + TETRA_SM_TUNE_TIMEOUT_S - 0.1);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && dsd_trunk_tuning_pending_request() == request);
+    at_seconds(1000.0 + TETRA_SM_TUNE_TIMEOUT_S);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && dsd_trunk_tuning_pending_request() == 0U);
+    /* A completion arriving afterwards cannot revive it. */
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
+    session_close(&s);
+}
+
+/* A return reported in flight stages ON_CC; one that then fails puts the call back. */
+static void
+test_pending_return(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    tetra_st(s.state)->vc_assignment_valid = 1;
+    g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    tetra_sm_on_release(s.opts, s.state, 0x123U);
+    uint64_t request = g_request;
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x123);
+    assert(s.opts->trunk_is_tuned == 1 && s.state->trunk_vc_freq[0] == VC_HZ);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+
+    tetra_sm_on_release(s.opts, s.state, 0x123U);
+    request = g_request;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
+    assert(!tetra_st(s.state)->vc_assignment_valid && dsd_trunk_tuning_pending_request() == 0U);
+    session_close(&s);
+}
+
+/* The engine returned the receiver itself: reconcile without tuning, retiring a tune in flight. */
+static void
+test_external_return(void) {
+    reset_backend();
+    session s = session_open();
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    tetra_st(s.state)->vc_assignment_valid = 1;
+    tetra_st(s.state)->vc_addr.ssi = 0x1234U;
+    tetra_st(s.state)->tdma_valid = 1;
+    s.opts->trunk_is_tuned = 0;
+    tetra_sm_on_external_cc_return(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    assert(dsd_trunk_tuning_pending_request() == 0U && g_returns == 0 && g_tunes == 1);
+    assert(!tetra_st(s.state)->vc_assignment_valid && tetra_st(s.state)->vc_addr.ssi == 0U);
+    assert(tetra_st(s.state)->tdma_valid == 0 && !tetra_confirm_carrier_proven(s.state));
+
+    s.state->trunk_cc_freq = 0;
+    tetra_sm_on_external_cc_return(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
+    session_close(&s);
+}
+
+/* A carrier boundary drops the call without tuning and keeps the TETRA state allocated. */
+static void
+test_abandon_carrier(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    const tetra_state_t* const before = tetra_st(s.state);
+    tetra_sm_abandon_carrier(s.opts, s.state);
+    assert(tetra_st_existing(s.state) == before);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    assert(s.opts->trunk_is_tuned == 0 && s.state->trunk_vc_freq[0] == 0 && g_returns == 0 && g_tunes == 1);
+    tetra_sm_abandon_carrier(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 0);
+    session_close(&s);
+
+    dsd_state* bare = (dsd_state*)calloc(1U, sizeof(*bare));
+    assert(bare != NULL);
+    tetra_sm_abandon_carrier(NULL, bare);
+    tetra_sm_on_external_cc_return(NULL, bare);
+    tetra_sm_init(NULL, bare);
+    tetra_forget_carrier(bare);
+    assert(tetra_st_existing(bare) == NULL);
+    free(bare);
+}
+
+/* Another owner released the shared tuning state: the call is dropped where the receiver is. Turning trunking off
+ * while tuned returns to the control channel. */
+static void
+test_released_elsewhere_and_trunking_off(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    s.opts->trunk_is_tuned = 0;
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 0);
+
+    tetra_confirm_note_signalling(s.state);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE && g_returns == 1 && s.opts->trunk_is_tuned == 0);
+    session_close(&s);
+}
+
+/* Starting over retires a tune in flight. */
+static void
+test_init_retires_pending(void) {
+    reset_backend();
+    session s = session_open();
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_sm_init(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE && dsd_trunk_tuning_pending_request() == 0U);
+    session_close(&s);
+}
+
+/* Dropping the TETRA state (a decode-mode change, the end of the session) retires a tune in flight: nothing is left to
+ * settle it. */
+static void
+test_dropped_state_retires_pending(void) {
+    reset_backend();
+    session s = session_open();
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_pending_request() == g_request);
+    tetra_state_reset(s.state);
+    assert(dsd_trunk_tuning_pending_request() == 0U && tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
+    session_close(&s);
+}
+
+/* CRC evidence: a burst that decoded a block proves itself; a reset during a burst leaves the rest of it to the
+ * carrier that was left. */
+static void
+test_confirm_evidence(void) {
+    reset_backend();
+    session s = session_open();
+    tetra_confirm_reset(s.state);
+    tetra_confirm_burst_begin(s.state);
+    assert(tetra_confirm_burst_end(s.state) == 0);
+
+    tetra_confirm_burst_begin(s.state);
+    tetra_confirm_note_block(s.state);
+    assert(!tetra_confirm_carrier_proven(s.state));
+    assert(tetra_confirm_burst_end(s.state) == 1);
+
+    tetra_confirm_burst_begin(s.state);
+    tetra_confirm_note_signalling(s.state);
+    assert(tetra_confirm_carrier_proven(s.state) && tetra_confirm_burst_current(s.state));
+    tetra_confirm_reset(s.state);
+    assert(!tetra_confirm_burst_current(s.state));
+    tetra_confirm_note_signalling(s.state);
+    tetra_confirm_note_followed_call(s.state);
+    assert(!tetra_confirm_carrier_proven(s.state) && !tetra_confirm_followed_call_proven(s.state));
+    assert(tetra_confirm_burst_end(s.state) == 1);
+    /* What a burst decoded after the carrier was left still proves the burst. */
+    tetra_confirm_burst_begin(s.state);
+    tetra_confirm_reset(s.state);
+    tetra_confirm_note_signalling(s.state);
+    assert(!tetra_confirm_carrier_proven(s.state));
+    assert(tetra_confirm_burst_end(s.state) == 1);
+    assert(tetra_confirm_burst_current(s.state));
+    tetra_confirm_note_followed_call(s.state);
+    assert(tetra_confirm_followed_call_proven(s.state));
+    tetra_confirm_forget_followed_call(s.state);
+    assert(!tetra_confirm_followed_call_proven(s.state));
+    session_close(&s);
+}
+
 int
 main(void) {
-    install_hooks();
-
-    fprintf(stderr, "=== TETRA SM tests ===\n");
-    test_grant_tunes();
-    test_main_carrier_grant_keeps_receiver();
-    test_grant_disabled();
-    test_double_grant_same_freq();
-    test_release_returns_to_cc();
-    test_external_return_clears_traffic_state();
-    test_no_cc_freq_blocks_grant();
-    test_cc_sync_transitions_state();
-    test_cc_sync_requires_enabled_valid_cc();
-    test_hangtime_expires();
-    test_active_call_suspends_hangtime();
-    test_disable_while_tuned_returns_to_cc();
-    test_grant_result_matrix();
-    test_release_result_matrix();
-    fprintf(stderr, "=== %d failure(s) ===\n", g_failures);
-
-    /* Reset hooks so other tests are not affected */
+    test_control_channel();
+    test_sessions_are_separate();
+    test_grant_needs_carrier_evidence();
+    test_ignored_grants();
+    test_grant_timeout();
+    test_hangtime_after_speech();
+    test_unplaced_speech_counts();
+    test_release_by_call_id();
+    test_refused_return_keeps_call();
+    test_grant_on_this_carrier();
+    test_same_carrier_grants();
+    test_pending_grant_completes();
+    test_pending_grant_fails();
+    test_pending_grant_times_out();
+    test_pending_return();
+    test_external_return();
+    test_abandon_carrier();
+    test_released_elsewhere_and_trunking_off();
+    test_init_retires_pending();
+    test_dropped_state_retires_pending();
+    test_confirm_evidence();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
-
-    return g_failures != 0 ? 1 : 0;
+    dsd_decode_clock_use_system();
+    DSD_FPRINTF(stdout, "TETRA_TRUNK_SM: OK\n");
+    return 0;
 }

@@ -6,9 +6,11 @@
 
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -17,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_confirm.h"
 #include "tetra_state.h"
 #include "tetra_test_pdu.h"
 
@@ -65,6 +68,14 @@ free_state(dsd_state* state) {
     free(state);
 }
 
+/* The trunking state machine starts over on a control channel some CRC-passed block has already proved: these tests
+ * hand the MAC blocks straight, without the bursts that would have proved it. */
+static void
+start_on_proven_control_channel(dsd_opts* opts, dsd_state* state) {
+    tetra_sm_init(opts, state);
+    tetra_confirm_note_signalling(state);
+}
+
 /* A control channel on band 4 with offset -6,25 kHz and trunking that follows every call type. */
 static void
 setup_trunking(dsd_opts* opts, dsd_state* state) {
@@ -77,7 +88,7 @@ setup_trunking(dsd_opts* opts, dsd_state* state) {
     opts->trunk_tune_private_calls = 1;
     opts->trunk_tune_data_calls = 1;
     opts->trunk_tune_enc_calls = 1;
-    tetra_sm_init();
+    start_on_proven_control_channel(opts, state);
     tune_calls = 0;
     return_calls = 0;
     tuned_freq = 0;
@@ -408,7 +419,7 @@ run_call_block(dsd_opts* opts, dsd_state* state, uint32_t basic_service, uint32_
     ttb_block b = {0};
     const int type_pos = put_call_block(&b, 0x345678u, basic_service, 1);
     ttb_set(&b, type_pos, cmce_type, 5);
-    tetra_sm_init();
+    start_on_proven_control_channel(opts, state);
     tune_calls = 0;
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
     return tune_calls;
@@ -676,14 +687,43 @@ test_mac_resource_channel_allocation(void) {
                    "channel allocation fields");
     ok &= check(tune_calls == 1 && tuned_freq == 401243750L, "header-only allocation tunes");
 
-    /* Timeslot assigned 0000 for the holder of the assignment releases it. */
+    /* Timeslot assigned 0000 for the holder of the assignment releases it, and the trunking state machine, which
+     * followed it, returns to the control channel and drops the assignment. */
     ts->tx_granted_valid = 1;
     b = (ttb_block){0};
     put_allocation_block(&b, TETRA_MAC_ADDR_SSI, 0x00BEEFu, 0, 50);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-    ok &= check(ts->vc_assignment_valid && ts->vc_timeslot_bitmap == 0 && ts->vc_carrier == 0 && ts->vc_freq_hz == 0
-                    && ts->tx_granted_valid == 0 && return_calls == 1,
+    ok &= check(!ts->vc_assignment_valid && ts->vc_timeslot_bitmap == 0 && ts->vc_carrier == 0 && ts->vc_freq_hz == 0
+                    && ts->tx_granted_valid == 0 && return_calls == 1 && tetra_sm_get_state(state) == TETRA_SM_ON_CC,
                 "release to the assignment holder clears the assignment");
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* A channel allocation the trunking state machine tunes to ends its block: the PDUs after it were sent on the carrier
+ * the receiver left, so the second allocation here neither replaces the assignment nor is followed. */
+static int
+test_retune_ends_the_block(void) {
+    dsd_state* state = new_state();
+    dsd_opts* opts = new_opts();
+    setup_trunking(opts, state);
+    const tetra_state_t* ts = tetra_st(state);
+    ttb_block b = {0};
+    int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0x00BEEFu);
+    ttb_resource_flags(&b, 1);
+    ttb_allocation(&b, 4, 1, 50);
+    ttb_close_resource(&b, start);
+    start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0x00F00Du);
+    ttb_resource_flags(&b, 1);
+    ttb_allocation(&b, 2, 1, 61);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_confirm_burst_begin(state);
+    tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
+    (void)tetra_confirm_burst_end(state);
+    const int ok = check(tune_calls == 1 && tuned_freq == 401243750L && ts->vc_carrier == 50,
+                         "the PDU after a followed allocation is the left carrier's");
     free_state(state);
     free(opts);
     return ok;
@@ -710,7 +750,7 @@ test_zero_timeslots_for_another_party(void) {
     put_allocation_block(&b, TETRA_MAC_ADDR_SSI, 0x00F00Du, 0, 50);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
     ok &= check(ts->vc_timeslot_bitmap == 4 && ts->vc_freq_hz == 401243750L && ts->tx_granted_valid == 1
-                    && return_calls == 0 && tetra_sm_get_state() == TETRA_SM_TUNED,
+                    && return_calls == 0 && tetra_sm_get_state(state) == TETRA_SM_TUNED,
                 "a release for another SSI keeps the followed assignment");
 
     /* SSI + event label assignment (address type 101) to the holder, then a release by that event label. */
@@ -896,6 +936,7 @@ main(void) {
     ok &= test_mac_d_blck_payload_offset();
     ok &= test_nwrk_broadcast_comes_through_llc();
     ok &= test_mac_resource_channel_allocation();
+    ok &= test_retune_ends_the_block();
     ok &= test_zero_timeslots_for_another_party();
     ok &= test_allocation_after_call_setup();
     ok &= test_rejected_augmented_allocations();

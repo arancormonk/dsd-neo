@@ -1,83 +1,41 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * TETRA trunking state machine.
- * Frequency-hop on MAC channel allocation, with hangtime return to CC.
+ * TETRA trunking state machine (tetra_trunk_sm.h): one followed traffic channel per session.
  *
- * States
- * ------
- *   IDLE   – trunking disabled or no CC known yet
- *   ON_CC  – parked on the CC, waiting for grants
- *   TUNED  – following an active VC (call in progress or hanging)
+ * All of it lives in tetra_state_t::sm. Tunes go through the runtime trunk-tuning hooks. A request the backend reports
+ * in flight (PENDING) is settled by the next entry point or tick: a completed one commits, a failed one -- or one still
+ * unanswered after TETRA_SM_TUNE_TIMEOUT_S -- puts the state machine and the shared tuning state back first and then
+ * completes the request, so the frame gate it holds opens on restored state (trunk_tuning_hooks.h).
  *
- * Thread-safety: all calls must come from the single decoder thread.
+ * The receiver's carrier changes only when a tune completes: then the carrier's evidence, partial TM-SDUs, TDMA clock
+ * and speech in progress are forgotten (tetra_forget_carrier()). The pointer to the TETRA state the MAC holds while it
+ * calls in here stays valid: nothing here frees or replaces the state extension.
  */
 
-#include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-
+#include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
+
+#include "tetra_confirm.h"
 #include "tetra_state.h"
 
-/* ============================================================================
- * Singleton context
- * ============================================================================ */
-
-typedef struct {
-    int trunk_is_tuned;
-    long p25_vc_freq[2];
-    long trunk_vc_freq[2];
-    time_t last_vc_sync_time;
-    double last_vc_sync_time_m;
-    time_t last_cc_sync_time;
-    double last_cc_sync_time_m;
-    time_t p25_last_vc_tune_time;
-    double p25_last_vc_tune_time_m;
-} tetra_sm_tune_snapshot_t;
-
-typedef struct {
-    tetra_sm_state_e state;
-    tetra_sm_state_e pending_prev_state; /* rollback state for an async tune */
-    long pending_prev_vc_freq_hz;
-    uint8_t pending_prev_vc_slot;
-    double pending_prev_t_tune_m;
-    long vc_freq_hz; /* freq we last tuned to            */
-    uint8_t vc_slot; /* timeslot bitmap for that tune    */
-    double t_tune_m; /* monotonic time of last tune()    */
-    uint64_t pending_request_id;
-    uint8_t pending_kind; /* 1 = grant to VC, 2 = return to CC */
-    tetra_sm_tune_snapshot_t pending_snapshot;
-} tetra_sm_ctx_t;
-
-static tetra_sm_ctx_t g_tetra_sm;    /* zero-init == IDLE */
-static double g_sm_hangtime_s = 0.0; /* 0 = use opts->trunk_hangtime */
-
-/* ============================================================================
- * Internal helpers
- * ============================================================================ */
-
-static inline double
-now_m(void) {
-    return dsd_decode_now_mono_s();
-}
-
-static void
-sm_log(dsd_opts* opts, const char* msg) {
-    if (opts && opts->verbose > 1 && msg) {
-        fprintf(stderr, "\n[TETRA SM] %s\n", msg);
-    }
-}
+enum { SM_PENDING_NONE = 0, SM_PENDING_GRANT = 1, SM_PENDING_RETURN = 2 };
 
 static const char*
-state_name(tetra_sm_state_e s) {
-    switch (s) {
+sm_state_name(uint8_t s) {
+    switch ((tetra_sm_state_e)s) {
         case TETRA_SM_IDLE: return "IDLE";
         case TETRA_SM_ON_CC: return "ON_CC";
         case TETRA_SM_TUNED: return "TUNED";
@@ -85,413 +43,534 @@ state_name(tetra_sm_state_e s) {
     }
 }
 
-static void
-set_state(dsd_state* state, tetra_sm_state_e next) {
-    tetra_state_t* const ts = tetra_st(state);
-    g_tetra_sm.state = next;
-    if (ts) {
-        ts->trunk_state = (uint8_t)next;
-    }
-}
-
-static tetra_sm_tune_snapshot_t
-capture_tune_snapshot(const dsd_opts* opts, const dsd_state* state) {
-    tetra_sm_tune_snapshot_t snapshot = {0};
-    if (!opts || !state) {
-        return snapshot;
-    }
-    snapshot.trunk_is_tuned = opts->trunk_is_tuned;
-    memcpy(snapshot.p25_vc_freq, state->p25_vc_freq, sizeof(snapshot.p25_vc_freq));
-    memcpy(snapshot.trunk_vc_freq, state->trunk_vc_freq, sizeof(snapshot.trunk_vc_freq));
-    snapshot.last_vc_sync_time = state->last_vc_sync_time;
-    snapshot.last_vc_sync_time_m = state->last_vc_sync_time_m;
-    snapshot.last_cc_sync_time = state->last_cc_sync_time;
-    snapshot.last_cc_sync_time_m = state->last_cc_sync_time_m;
-    snapshot.p25_last_vc_tune_time = state->p25_last_vc_tune_time;
-    snapshot.p25_last_vc_tune_time_m = state->p25_last_vc_tune_time_m;
-    return snapshot;
-}
-
-static void
-restore_tune_snapshot(dsd_opts* opts, dsd_state* state, const tetra_sm_tune_snapshot_t* snapshot) {
-    if (!opts || !state || !snapshot) {
-        return;
-    }
-    opts->trunk_is_tuned = snapshot->trunk_is_tuned;
-    memcpy(state->p25_vc_freq, snapshot->p25_vc_freq, sizeof(snapshot->p25_vc_freq));
-    memcpy(state->trunk_vc_freq, snapshot->trunk_vc_freq, sizeof(snapshot->trunk_vc_freq));
-    state->last_vc_sync_time = snapshot->last_vc_sync_time;
-    state->last_vc_sync_time_m = snapshot->last_vc_sync_time_m;
-    state->last_cc_sync_time = snapshot->last_cc_sync_time;
-    state->last_cc_sync_time_m = snapshot->last_cc_sync_time_m;
-    state->p25_last_vc_tune_time = snapshot->p25_last_vc_tune_time;
-    state->p25_last_vc_tune_time_m = snapshot->p25_last_vc_tune_time_m;
-}
-
-static void
-stamp_completed_vc_tune(dsd_state* state, double completed_m) {
-    if (!state) {
-        return;
-    }
-    const time_t completed_wall = dsd_decode_time();
-    const double completed_monotonic = completed_m > 0.0 ? completed_m : now_m();
-    state->last_vc_sync_time = completed_wall;
-    state->last_vc_sync_time_m = completed_monotonic;
-    state->last_cc_sync_time = completed_wall;
-    state->last_cc_sync_time_m = completed_monotonic;
-    state->p25_last_vc_tune_time = completed_wall;
-    state->p25_last_vc_tune_time_m = completed_monotonic;
-}
-
+/* State-machine narration prints at -v @p level (tetra_log.h); @p ts is never NULL here. */
 static int
-settle_pending(dsd_opts* opts, dsd_state* state) {
-    if (g_tetra_sm.pending_request_id == 0U) {
+sm_narrates(const tetra_state_t* ts, int level) {
+    return ts->log_verbose >= level;
+}
+
+/* A change is published at once: the engine ticks between bursts, and the frontends read the publication. */
+static void
+sm_set_state(dsd_state* state, tetra_state_t* ts, tetra_sm_state_e next, const char* reason) {
+    if (ts->sm.state == (uint8_t)next) {
+        return;
+    }
+    if (sm_narrates(ts, 1)) {
+        DSD_FPRINTF(stderr, "[TETRA SM] %s -> %s (%s)\n", sm_state_name(ts->sm.state), sm_state_name((uint8_t)next),
+                    reason);
+    }
+    ts->sm.state = (uint8_t)next;
+    tetra_publish(state);
+}
+
+/* Where the state machine rests when it follows nothing: on the control channel while trunking with one known. */
+static tetra_sm_state_e
+sm_rest_state(const dsd_opts* opts, const dsd_state* state) {
+    return (opts && opts->trunk_enable == 1 && state->trunk_cc_freq > 0) ? TETRA_SM_ON_CC : TETRA_SM_IDLE;
+}
+
+static tetra_sm_rollback
+sm_capture(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts) {
+    tetra_sm_rollback r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    r.tuning.trunk_is_tuned = opts->trunk_is_tuned;
+    DSD_MEMCPY(r.tuning.p25_vc_freq, state->p25_vc_freq, sizeof r.tuning.p25_vc_freq);
+    DSD_MEMCPY(r.tuning.trunk_vc_freq, state->trunk_vc_freq, sizeof r.tuning.trunk_vc_freq);
+    r.tuning.last_vc_sync_time = state->last_vc_sync_time;
+    r.tuning.last_vc_sync_time_m = state->last_vc_sync_time_m;
+    r.tuning.last_cc_sync_time = state->last_cc_sync_time;
+    r.tuning.last_cc_sync_time_m = state->last_cc_sync_time_m;
+    r.tuning.p25_last_vc_tune_time = state->p25_last_vc_tune_time;
+    r.tuning.p25_last_vc_tune_time_m = state->p25_last_vc_tune_time_m;
+    r.followed = ts->sm.followed;
+    r.t_tune_m = ts->sm.t_tune_m;
+    r.t_voice_m = ts->sm.t_voice_m;
+    r.state = ts->sm.state;
+    return r;
+}
+
+static void
+sm_restore(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_rollback* r) {
+    opts->trunk_is_tuned = r->tuning.trunk_is_tuned;
+    DSD_MEMCPY(state->p25_vc_freq, r->tuning.p25_vc_freq, sizeof state->p25_vc_freq);
+    DSD_MEMCPY(state->trunk_vc_freq, r->tuning.trunk_vc_freq, sizeof state->trunk_vc_freq);
+    state->last_vc_sync_time = r->tuning.last_vc_sync_time;
+    state->last_vc_sync_time_m = r->tuning.last_vc_sync_time_m;
+    state->last_cc_sync_time = r->tuning.last_cc_sync_time;
+    state->last_cc_sync_time_m = r->tuning.last_cc_sync_time_m;
+    state->p25_last_vc_tune_time = r->tuning.p25_last_vc_tune_time;
+    state->p25_last_vc_tune_time_m = r->tuning.p25_last_vc_tune_time_m;
+    ts->sm.followed = r->followed;
+    ts->sm.t_tune_m = r->t_tune_m;
+    ts->sm.t_voice_m = r->t_voice_m;
+    sm_set_state(state, ts, (tetra_sm_state_e)r->state, "tune failed; put back");
+}
+
+/* The receiver is on the followed channel as of @p at_m: the times the engine's generic no-carrier return and the
+ * frontends measure the channel from. */
+static void
+sm_stamp_tuned(dsd_state* state, double at_m) {
+    const time_t wall = dsd_decode_time();
+    state->last_vc_sync_time = wall;
+    state->last_vc_sync_time_m = at_m;
+    state->last_cc_sync_time = wall;
+    state->last_cc_sync_time_m = at_m;
+    state->p25_last_vc_tune_time = wall;
+    state->p25_last_vc_tune_time_m = at_m;
+}
+
+/* The shared state of a followed traffic channel the receiver did not have to retune for. */
+static void
+sm_claim_shared_tuning(dsd_opts* opts, dsd_state* state, long freq_hz) {
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq_hz;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq_hz;
+}
+
+static void
+sm_release_shared_tuning(dsd_opts* opts, dsd_state* state) {
+    opts->trunk_is_tuned = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+}
+
+/* The MAC's traffic-channel assignment and the CMCE call and floor state belong to the call the state machine stopped
+ * following: a stale one would gate the next call's timeslots and show a traffic channel the receiver left. */
+static void
+sm_forget_traffic(tetra_state_t* ts) {
+    ts->call_active = 0;
+    ts->tx_granted_valid = 0;
+    ts->tx_granted_ssi = 0;
+    ts->cmce_tx_granted_notification_valid = 0;
+    ts->cmce_tx_granted_party_type_valid = 0;
+    ts->cmce_tx_granted_party_extension_valid = 0;
+    ts->tx_continue = 0;
+    ts->tx_interrupted = 0;
+    ts->tx_wait = 0;
+    ts->tx_event_notification_valid = 0;
+    ts->tx_event_party_type_valid = 0;
+    ts->tx_event_party_ssi_valid = 0;
+    ts->tx_event_party_extension_valid = 0;
+    ts->vc_assignment_valid = 0;
+    ts->vc_assignment_type = 0;
+    ts->vc_timeslot_bitmap = 0;
+    ts->vc_carrier = 0;
+    ts->vc_freq_hz = 0;
+    DSD_MEMSET(&ts->vc_addr, 0, sizeof ts->vc_addr);
+    ts->vc_addr_event_label_valid = 0;
+}
+
+static void
+sm_follow(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
+    ts->sm.followed = *grant;
+    ts->sm.followed.timeslots &= 0x0Fu;
+    ts->sm.followed.carrier &= 0x0FFFu;
+    ts->sm.followed.call_id &= 0x3FFFu;
+    ts->sm.t_tune_m = 0.0;
+    ts->sm.t_voice_m = 0.0;
+    tetra_confirm_forget_followed_call(state);
+}
+
+static void
+sm_unfollow(dsd_state* state, tetra_state_t* ts) {
+    DSD_MEMSET(&ts->sm.followed, 0, sizeof ts->sm.followed);
+    ts->sm.t_tune_m = 0.0;
+    ts->sm.t_voice_m = 0.0;
+    tetra_confirm_forget_followed_call(state);
+    sm_forget_traffic(ts);
+}
+
+/* A tune the state machine no longer owns: retired as rolled back, so a failed or unanswered one cannot keep the frame
+ * gate closed. One that already completed is left as it is. */
+static void
+sm_retire_pending(tetra_state_t* ts) {
+    const uint64_t request_id = ts->sm.pending_request_id;
+    if (request_id == 0U) {
+        return;
+    }
+    ts->sm.pending_request_id = 0U;
+    ts->sm.pending_kind = SM_PENDING_NONE;
+    dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+}
+
+static void
+sm_stage_pending(tetra_state_t* ts, uint8_t kind, uint64_t request_id, const tetra_sm_rollback* prev) {
+    ts->sm.pending_prev = *prev;
+    ts->sm.pending_request_id = request_id;
+    ts->sm.pending_kind = kind;
+    ts->sm.pending_deadline_m = dsd_decode_now_mono_s() + TETRA_SM_TUNE_TIMEOUT_S;
+}
+
+/* The receiver reached the followed traffic channel at @p completed_m (0: now). */
+static void
+sm_grant_tune_completed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, double completed_m) {
+    opts->trunk_is_tuned = 1;
+    ts->sm.t_tune_m = completed_m > 0.0 ? completed_m : dsd_decode_now_mono_s();
+    sm_stamp_tuned(state, ts->sm.t_tune_m);
+    tetra_forget_carrier(state);
+    if (sm_narrates(ts, 1)) {
+        DSD_FPRINTF(stderr, "[TETRA SM] on traffic channel %ld Hz (carrier %u, timeslots 0x%X, call %u)\n",
+                    ts->sm.followed.freq_hz, (unsigned)ts->sm.followed.carrier, (unsigned)ts->sm.followed.timeslots,
+                    (unsigned)ts->sm.followed.call_id);
+    }
+}
+
+/* The receiver is back on the control channel. */
+static void
+sm_return_completed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    opts->trunk_is_tuned = 0;
+    sm_unfollow(state, ts);
+    tetra_forget_carrier(state);
+    if (sm_narrates(ts, 1)) {
+        DSD_FPRINTF(stderr, "[TETRA SM] back on the control channel %ld Hz\n", state->trunk_cc_freq);
+    }
+}
+
+/* Settle the tune in flight. Returns 1 when none is in flight any more. */
+static int
+sm_settle_pending(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    const uint64_t request_id = ts->sm.pending_request_id;
+    if (request_id == 0U) {
         return 1;
     }
-
     double completed_m = 0.0;
-    const uint64_t request_id = g_tetra_sm.pending_request_id;
-    const uint8_t kind = g_tetra_sm.pending_kind;
-    const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, &completed_m);
+    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, &completed_m);
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        return 0;
+        if (dsd_decode_now_mono_s() < ts->sm.pending_deadline_m) {
+            return 0;
+        }
+        /* A backend that never answers fails the tune; a late completion cannot revive it. */
+        dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_TIMEOUT);
+        result = dsd_trunk_tuning_request_status(request_id, &completed_m);
     }
-
-    g_tetra_sm.pending_request_id = 0U;
-    g_tetra_sm.pending_kind = 0;
+    const uint8_t kind = ts->sm.pending_kind;
+    ts->sm.pending_request_id = 0U;
+    ts->sm.pending_kind = SM_PENDING_NONE;
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
-        if (kind == 1) {
-            if (opts) {
-                opts->trunk_is_tuned = 1;
-            }
-            stamp_completed_vc_tune(state, completed_m);
-            g_tetra_sm.t_tune_m = completed_m > 0.0 ? completed_m : now_m();
-            sm_log(opts, "asynchronous VC tune completed");
+        if (kind == SM_PENDING_GRANT) {
+            sm_grant_tune_completed(opts, state, ts, completed_m);
         } else {
-            if (opts) {
-                opts->trunk_is_tuned = 0;
-            }
-            g_tetra_sm.vc_freq_hz = 0;
-            g_tetra_sm.vc_slot = 0;
-            g_tetra_sm.t_tune_m = 0.0;
-            sm_log(opts, "asynchronous return to CC completed");
+            sm_return_completed(opts, state, ts);
         }
         return 1;
     }
-
-    /* The hook wrapper marked the staged state ready. A failed backend keeps
-     * the process-wide frame gate closed until its owner explicitly rolls the
-     * decoder state back with the same terminal result. */
-    dsd_trunk_tuning_request_complete(request_id, result);
-    set_state(state, g_tetra_sm.pending_prev_state);
-    restore_tune_snapshot(opts, state, &g_tetra_sm.pending_snapshot);
-    if (kind == 1) {
-        g_tetra_sm.vc_freq_hz = g_tetra_sm.pending_prev_vc_freq_hz;
-        g_tetra_sm.vc_slot = g_tetra_sm.pending_prev_vc_slot;
-        g_tetra_sm.t_tune_m = g_tetra_sm.pending_prev_t_tune_m;
-        sm_log(opts, "asynchronous VC tune failed; state rolled back");
-    } else {
-        sm_log(opts, "asynchronous return to CC failed; keeping TUNED state");
+    /* Put back first: completing the request opens the frame gate onto the state it finds. */
+    if (sm_narrates(ts, 1)) {
+        DSD_FPRINTF(stderr, "[TETRA SM] %s failed (result %d)\n", kind == SM_PENDING_GRANT ? "tune" : "return",
+                    (int)result);
     }
+    sm_restore(opts, state, ts, &ts->sm.pending_prev);
+    dsd_trunk_tuning_request_complete(request_id, result);
+    return 1;
+}
+
+/* Return to the control channel, or stop following on its carrier. Returns 1 when the call was let go (the return
+ * done or in flight), 0 when the backend refused or deferred the return and the call is kept. */
+static int
+sm_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const char* reason) {
+    const long cc = state->trunk_cc_freq;
+    if (cc <= 0 || ts->sm.followed.freq_hz == cc) {
+        /* A traffic timeslot of the control channel's carrier, or no control channel to go to: the receiver stays. */
+        sm_release_shared_tuning(opts, state);
+        sm_unfollow(state, ts);
+        sm_set_state(state, ts, sm_rest_state(opts, state), reason);
+        return 1;
+    }
+    const tetra_sm_rollback prev = sm_capture(opts, state, ts);
+    /* The shared return prefers the P25 control channel; TETRA returns to its own, and an alias another protocol left
+     * would also bring that protocol's symbol profile. */
+    const long p25_cc = state->p25_cc_freq;
+    state->p25_cc_freq = 0;
+    uint64_t request_id = 0U;
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+        state->p25_cc_freq = p25_cc;
+        if (sm_narrates(ts, 1)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] return to the control channel (%s) %s; call kept\n", reason,
+                        result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "deferred" : "refused");
+        }
+        return 0;
+    }
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        sm_stage_pending(ts, SM_PENDING_RETURN, request_id, &prev);
+        DSD_MEMSET(&ts->sm.followed, 0, sizeof ts->sm.followed);
+        sm_set_state(state, ts, sm_rest_state(opts, state), reason);
+        return 1;
+    }
+    sm_return_completed(opts, state, ts);
+    sm_set_state(state, ts, sm_rest_state(opts, state), reason);
+    return 1;
+}
+
+/* Calls are the same when the allocations match and no call identifier says otherwise. */
+static int
+sm_same_call(const tetra_sm_grant* followed, const tetra_sm_grant* grant) {
+    return followed->freq_hz == grant->freq_hz && followed->timeslots == (grant->timeslots & 0x0Fu)
+           && (followed->call_id == 0U || grant->call_id == 0U || followed->call_id == (grant->call_id & 0x3FFFu));
+}
+
+/* A grant on the carrier the receiver is on: followed without a retune. The grant itself is CRC-passed signalling of
+ * the call on this carrier. */
+static int
+sm_follow_here(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
+    const int was_tuned = ts->sm.state == (uint8_t)TETRA_SM_TUNED;
+    if (was_tuned && sm_same_call(&ts->sm.followed, grant)) {
+        if (ts->sm.followed.call_id == 0U) {
+            ts->sm.followed.call_id = (uint16_t)(grant->call_id & 0x3FFFu);
+        }
+        return 0;
+    }
+    sm_follow(state, ts, grant);
+    ts->sm.t_tune_m = dsd_decode_now_mono_s();
+    if (!was_tuned) {
+        sm_claim_shared_tuning(opts, state, grant->freq_hz);
+        sm_stamp_tuned(state, ts->sm.t_tune_m);
+    }
+    tetra_confirm_note_followed_call(state);
+    if (sm_narrates(ts, 1)) {
+        DSD_FPRINTF(stderr, "[TETRA SM] follow call %u on this carrier (timeslots 0x%X)\n",
+                    (unsigned)ts->sm.followed.call_id, (unsigned)ts->sm.followed.timeslots);
+    }
+    sm_set_state(state, ts, TETRA_SM_TUNED, "grant on this carrier");
     return 1;
 }
 
 static int
-do_release(dsd_opts* opts, dsd_state* state) {
-    const tetra_sm_state_e next =
-        opts && opts->trunk_enable && state && state->trunk_cc_freq > 0 ? TETRA_SM_ON_CC : TETRA_SM_IDLE;
-    if (g_tetra_sm.vc_freq_hz == state->trunk_cc_freq && g_tetra_sm.vc_freq_hz > 0) {
-        /* The traffic slot was on the main carrier. Keep the receiver and
-         * demodulator synchronized while switching back to control traffic. */
-        opts->trunk_is_tuned = 0;
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-        set_state(state, next);
-        g_tetra_sm.vc_freq_hz = 0;
-        g_tetra_sm.vc_slot = 0;
-        g_tetra_sm.t_tune_m = 0.0;
-        return 1;
-    }
+sm_tune_grant(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
+    const tetra_sm_rollback prev = sm_capture(opts, state, ts);
     uint64_t request_id = 0U;
-    const tetra_sm_tune_snapshot_t snapshot = capture_tune_snapshot(opts, state);
-    dsd_trunk_tune_result result = dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id);
+    /* No symbol-timing override: a TETRA traffic carrier keeps the control channel's symbol rate. */
+    const dsd_trunk_tune_result result =
+        dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant->freq_hz, 0, &request_id);
     if (!dsd_trunk_tune_result_is_ok(result)) {
-        sm_log(opts, result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "return to CC deferred; keeping TUNED state"
-                                                              : "return to CC failed; keeping TUNED state");
+        if (sm_narrates(ts, 1)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] tune to %ld Hz %s; grant ignored\n", grant->freq_hz,
+                        result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "deferred" : "refused");
+        }
         return 0;
     }
-
-    set_state(state, next);
+    sm_follow(state, ts, grant);
+    sm_set_state(state, ts, TETRA_SM_TUNED, "grant");
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        g_tetra_sm.pending_prev_state = TETRA_SM_TUNED;
-        g_tetra_sm.pending_request_id = request_id;
-        g_tetra_sm.pending_kind = 2;
-        g_tetra_sm.pending_snapshot = snapshot;
-        sm_log(opts, next == TETRA_SM_ON_CC ? "return to CC pending" : "trunk disable cleanup pending");
+        sm_stage_pending(ts, SM_PENDING_GRANT, request_id, &prev);
         return 1;
     }
-
-    sm_log(opts, next == TETRA_SM_ON_CC ? "do_release -> ON_CC" : "do_release -> IDLE");
-    g_tetra_sm.vc_freq_hz = 0;
-    g_tetra_sm.vc_slot = 0;
-    g_tetra_sm.t_tune_m = 0.0;
+    sm_grant_tune_completed(opts, state, ts, 0.0);
     return 1;
 }
 
-/* ============================================================================
- * Public API
- * ============================================================================ */
+/* Trunking on, a control channel known, a frequency to go to, and a CRC-passed block on this carrier before the one
+ * that carried the grant. */
+static int
+sm_grant_followable(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts,
+                    const tetra_sm_grant* grant) {
+    if (opts->trunk_enable != 1) {
+        return 0;
+    }
+    if (state->trunk_cc_freq <= 0 || grant->freq_hz <= 0) {
+        if (sm_narrates(ts, 2)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] grant ignored: no control channel or no traffic frequency known\n");
+        }
+        return 0;
+    }
+    if (!tetra_confirm_carrier_proven(state)) {
+        if (sm_narrates(ts, 2)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] grant ignored: no CRC-passed block on this carrier before it\n");
+        }
+        return 0;
+    }
+    return 1;
+}
 
 void
-tetra_sm_init(void) {
-    memset(&g_tetra_sm, 0, sizeof(g_tetra_sm));
-    tetra_sds_concat_reset();
-    g_sm_hangtime_s = 0.0;
-    /* g_tetra_sm.state == TETRA_SM_IDLE after memset */
-}
-
-tetra_sm_state_e
-tetra_sm_get_state(void) {
-    return g_tetra_sm.state;
-}
-
-void
-tetra_sm_set_hangtime(uint32_t seconds) {
-    g_sm_hangtime_s = (double)seconds;
-}
-
-uint32_t
-tetra_sm_get_hangtime(void) {
-    return (uint32_t)g_sm_hangtime_s;
+tetra_sm_init(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    (void)opts;
+    if (!ts) {
+        return;
+    }
+    sm_retire_pending(ts);
+    if (ts->sm.state == (uint8_t)TETRA_SM_TUNED) {
+        sm_unfollow(state, ts);
+    }
+    DSD_MEMSET(&ts->sm, 0, sizeof ts->sm);
+    tetra_confirm_forget_followed_call(state);
 }
 
 void
 tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
     if (!opts || !state) {
         return;
     }
-
-    ts->trunk_state = (uint8_t)g_tetra_sm.state;
-
-    if (!settle_pending(opts, state)) {
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts || !sm_settle_pending(opts, state, ts)) {
         return;
     }
-
-    if (!opts->trunk_enable || state->trunk_cc_freq <= 0) {
-        sm_log(opts, "cc_sync ignored: trunking disabled or CC frequency invalid");
+    if (opts->trunk_enable != 1 || state->trunk_cc_freq <= 0) {
         return;
     }
-
-    dsd_trunk_cc_candidates_add(state, state->trunk_cc_freq, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
-
-    if (g_tetra_sm.state == TETRA_SM_TUNED && !opts->trunk_is_tuned) {
-        /* The generic return path already moved the receiver. Reconcile
-         * on confirmed CC sync without issuing another hardware request. */
-        memset(&g_tetra_sm, 0, sizeof(g_tetra_sm));
+    (void)dsd_trunk_cc_candidates_add(state, state->trunk_cc_freq, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    if (ts->sm.state == (uint8_t)TETRA_SM_TUNED) {
+        return;
     }
-
-    if (g_tetra_sm.state == TETRA_SM_IDLE) {
-        if (opts->verbose > 1) {
-            fprintf(stderr, "\n[TETRA SM] IDLE -> ON_CC (cc_sync, cc=%ld Hz)\n", state->trunk_cc_freq);
-        }
-        set_state(state, TETRA_SM_ON_CC);
+    dsd_mark_cc_sync(state);
+    if (ts->sm.state == (uint8_t)TETRA_SM_IDLE) {
+        sm_set_state(state, ts, TETRA_SM_ON_CC, "control channel");
     }
 }
 
-void
-tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, long vc_freq_hz, uint8_t slot) {
+int
+tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, const tetra_sm_grant* grant) {
+    if (!opts || !state || !grant) {
+        return 0;
+    }
     tetra_state_t* const ts = tetra_st(state);
+    if (!ts) {
+        return 0;
+    }
+    if (!sm_settle_pending(opts, state, ts)) {
+        if (sm_narrates(ts, 3)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] grant ignored: a tune is in flight\n");
+        }
+        return 0;
+    }
+    if (!sm_grant_followable(opts, state, ts, grant)) {
+        return 0;
+    }
+    const long here = ts->sm.state == (uint8_t)TETRA_SM_TUNED ? ts->sm.followed.freq_hz : state->trunk_cc_freq;
+    if (grant->freq_hz == here) {
+        return sm_follow_here(opts, state, ts, grant);
+    }
+    return sm_tune_grant(opts, state, ts, grant);
+}
+
+void
+tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id) {
     if (!opts || !state) {
         return;
     }
-
-    ts->trunk_state = (uint8_t)g_tetra_sm.state;
-
-    if (!settle_pending(opts, state)) {
-        sm_log(opts, "on_grant: tune transition already pending");
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || !sm_settle_pending(opts, state, ts)) {
         return;
     }
-
-    /* Guard: trunking must be enabled and a CC must be known */
-    if (!opts->trunk_enable || state->trunk_cc_freq <= 0) {
-        sm_log(opts, "on_grant: trunking disabled or no CC known – ignored");
+    if (ts->sm.state != (uint8_t)TETRA_SM_TUNED) {
         return;
     }
-
-    /* If vc_freq_hz is zero fall back to CC (same-carrier grant with no offset) */
-    if (vc_freq_hz <= 0) {
-        sm_log(opts, "on_grant: vc_freq_hz=0 – staying on CC");
-        return;
-    }
-
-    /* Generic no-carrier handling can return to CC independently of this
-     * singleton. Require the shared tuning state before suppressing a tune. */
-    if (g_tetra_sm.state == TETRA_SM_TUNED && opts->trunk_is_tuned == 1 && g_tetra_sm.vc_freq_hz == vc_freq_hz) {
-        /* refresh hangtime even on duplicate grant */
-        g_tetra_sm.vc_slot = slot;
-        g_tetra_sm.t_tune_m = now_m();
-        if (opts->verbose > 1) {
-            fprintf(stderr, "\n[TETRA SM] on_grant: same VC %ld Hz – refreshing hangtime\n", vc_freq_hz);
+    if (ts->sm.followed.call_id != (uint16_t)(call_id & 0x3FFFu)) {
+        if (sm_narrates(ts, 3)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] release of call %u ignored: the followed call is %u\n", (unsigned)call_id,
+                        (unsigned)ts->sm.followed.call_id);
         }
         return;
     }
-
-    if (opts->verbose > 0) {
-        fprintf(stderr, "\n[TETRA SM] %s -> TUNED (grant VC=%ld Hz slot=%u)\n", state_name(g_tetra_sm.state),
-                vc_freq_hz, (unsigned)slot);
-    }
-
-    if (vc_freq_hz == state->trunk_cc_freq) {
-        /* A main-carrier traffic slot needs slot gating, not an RTL retune.
-         * Retuning the same frequency resets timing and can lose the call. */
-        opts->trunk_is_tuned = 1;
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = vc_freq_hz;
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = vc_freq_hz;
-        stamp_completed_vc_tune(state, now_m());
-        set_state(state, TETRA_SM_TUNED);
-        g_tetra_sm.vc_freq_hz = vc_freq_hz;
-        g_tetra_sm.vc_slot = slot;
-        g_tetra_sm.t_tune_m = now_m();
-        return;
-    }
-
-    /* Tune to VC */
-    const tetra_sm_state_e previous = g_tetra_sm.state;
-    const long previous_vc_freq_hz = g_tetra_sm.vc_freq_hz;
-    const uint8_t previous_vc_slot = g_tetra_sm.vc_slot;
-    const double previous_t_tune_m = g_tetra_sm.t_tune_m;
-    const tetra_sm_tune_snapshot_t snapshot = capture_tune_snapshot(opts, state);
-    uint64_t request_id = 0U;
-    dsd_trunk_tune_result result =
-        dsd_trunk_tuning_hook_tune_to_freq(opts, state, vc_freq_hz, state->samplesPerSymbol, &request_id);
-    if (!dsd_trunk_tune_result_is_ok(result)) {
-        sm_log(opts, result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "grant tune deferred; state unchanged"
-                                                              : "grant tune failed; state unchanged");
-        return;
-    }
-
-    set_state(state, TETRA_SM_TUNED);
-    g_tetra_sm.vc_freq_hz = vc_freq_hz;
-    g_tetra_sm.vc_slot = slot;
-    g_tetra_sm.t_tune_m = now_m();
-    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        g_tetra_sm.pending_prev_state = previous;
-        g_tetra_sm.pending_prev_vc_freq_hz = previous_vc_freq_hz;
-        g_tetra_sm.pending_prev_vc_slot = previous_vc_slot;
-        g_tetra_sm.pending_prev_t_tune_m = previous_t_tune_m;
-        g_tetra_sm.pending_request_id = request_id;
-        g_tetra_sm.pending_kind = 1;
-        g_tetra_sm.pending_snapshot = snapshot;
-    }
+    (void)sm_release(opts, state, ts, "release");
 }
 
 void
-tetra_sm_on_release(dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!opts || !state) {
+tetra_sm_note_voice(dsd_state* state, uint8_t tn) {
+    if (!state) {
         return;
     }
-
-    ts->trunk_state = (uint8_t)g_tetra_sm.state;
-
-    if (!settle_pending(opts, state)) {
+    /* Speech whose CRC passed is reception activity, whichever timeslot it is on. */
+    dsd_mark_vc_sync(state);
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U) {
         return;
     }
-
-    if (g_tetra_sm.state != TETRA_SM_TUNED) {
-        /* Nothing to tear down */
+    /* Bit 3 of the timeslot bitmap is timeslot 1 (EN 300 392-2 table 21.80). */
+    if (tn >= 1U && tn <= 4U && (ts->sm.followed.timeslots & (1U << (4U - tn))) == 0U) {
         return;
     }
-
-    if (opts->verbose > 0) {
-        fprintf(stderr, "\n[TETRA SM] TUNED -> ON_CC (release)\n");
-    }
-
-    do_release(opts, state);
+    ts->sm.t_voice_m = dsd_decode_now_mono_s();
 }
 
-void
-tetra_sm_on_external_cc_return(dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (ts) {
-        ts->call_active = 0;
-        ts->tx_granted_valid = 0;
-        ts->tx_granted_ssi = 0;
-        ts->cmce_tx_granted_notification_valid = 0;
-        ts->cmce_tx_granted_party_type_valid = 0;
-        ts->cmce_tx_granted_party_extension_valid = 0;
-        ts->tx_continue = 0;
-        ts->tx_interrupted = 0;
-        ts->tx_wait = 0;
-        ts->tx_event_notification_valid = 0;
-        ts->tx_event_party_type_valid = 0;
-        ts->tx_event_party_ssi_valid = 0;
-        ts->tx_event_party_extension_valid = 0;
-        ts->vc_assignment_valid = 0;
-        ts->vc_assignment_type = 0;
-        ts->vc_timeslot_bitmap = 0;
-        ts->vc_slot = 0;
-        ts->vc_carrier = 0;
-        ts->vc_freq_hz = 0;
-    }
-    set_state(state, state && state->trunk_cc_freq > 0 ? TETRA_SM_ON_CC : TETRA_SM_IDLE);
-    g_tetra_sm.vc_freq_hz = 0;
-    g_tetra_sm.vc_slot = 0;
-    g_tetra_sm.t_tune_m = 0.0;
-    g_tetra_sm.pending_request_id = 0U;
-    g_tetra_sm.pending_kind = 0;
-}
-
-void
-tetra_sm_poll_tuning(dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!opts || !state) {
+/* TUNED: whether the followed call is over, and the move back to the control channel when it is. */
+static void
+sm_tick_tuned(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    if (opts->trunk_is_tuned != 1) {
+        /* Another owner released the shared tuning state (a tuner hand-back, a stale follow cleanup): the receiver is
+         * no longer ours to move. */
+        sm_unfollow(state, ts);
+        sm_set_state(state, ts, sm_rest_state(opts, state), "released elsewhere");
         return;
     }
-    ts->trunk_state = (uint8_t)g_tetra_sm.state;
-    (void)settle_pending(opts, state);
+    if (opts->trunk_enable != 1) {
+        (void)sm_release(opts, state, ts, "trunking off");
+        return;
+    }
+    const double now_m = dsd_decode_now_mono_s();
+    if (ts->sm.t_voice_m > 0.0) {
+        /* Hangtime counts from the end of speech: the first speech gap longer than a frame 18 slot. */
+        const double hangtime = opts->trunk_hangtime > 0.0F ? (double)opts->trunk_hangtime : 0.0;
+        if (now_m - ts->sm.t_voice_m >= TETRA_SM_SPEECH_GAP_S + hangtime) {
+            (void)sm_release(opts, state, ts, "hangtime");
+        }
+        return;
+    }
+    if (ts->sm.t_tune_m > 0.0 && now_m - ts->sm.t_tune_m >= TETRA_SM_GRANT_TIMEOUT_S) {
+        (void)sm_release(opts, state, ts, "grant timeout");
+    }
 }
 
 void
 tetra_sm_tick(dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
     if (!opts || !state) {
         return;
     }
-
-    ts->trunk_state = (uint8_t)g_tetra_sm.state;
-
-    if (!settle_pending(opts, state)) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || !sm_settle_pending(opts, state, ts)) {
         return;
     }
-
-    if (g_tetra_sm.state != TETRA_SM_TUNED) {
+    if (ts->sm.state == (uint8_t)TETRA_SM_ON_CC && opts->trunk_enable != 1) {
+        sm_set_state(state, ts, TETRA_SM_IDLE, "trunking off");
         return;
     }
+    if (ts->sm.state == (uint8_t)TETRA_SM_TUNED) {
+        sm_tick_tuned(opts, state, ts);
+    }
+}
 
-    if (!opts->trunk_enable) {
-        sm_log(opts, "trunking disabled while tuned; returning to CC");
-        do_release(opts, state);
+void
+tetra_sm_on_external_cc_return(const dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
         return;
     }
+    sm_retire_pending(ts);
+    sm_unfollow(state, ts);
+    tetra_forget_carrier(state);
+    sm_set_state(state, ts, sm_rest_state(opts, state), "returned to the control channel");
+}
 
-    /* Hangtime is the idle dwell after a call, not a maximum call duration.
-     * D-SETUP/D-CONNECT mark the call active after the MAC allocation has
-     * tuned us, and D-RELEASE/D-DISCONNECT return immediately through
-     * tetra_sm_on_release().  Keep the timer fresh while call control still
-     * says the traffic channel is in use so a long call cannot be cut off. */
-    if (ts->call_active) {
-        g_tetra_sm.t_tune_m = now_m();
+void
+tetra_sm_abandon_carrier(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
         return;
     }
-
-    double elapsed = now_m() - g_tetra_sm.t_tune_m;
-    double hangtime = (g_sm_hangtime_s > 0.0) ? g_sm_hangtime_s : (double)opts->trunk_hangtime;
-    if (elapsed >= hangtime) {
-        if (opts->verbose > 0) {
-            fprintf(stderr, "\n[TETRA SM] hangtime %.1f s exceeded (%.1f s) -> release\n", hangtime, elapsed);
-        }
-        do_release(opts, state);
+    const int held = ts->sm.state == (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U;
+    sm_retire_pending(ts);
+    if (held && opts) {
+        sm_release_shared_tuning(opts, state);
     }
+    sm_unfollow(state, ts);
+    sm_set_state(state, ts, sm_rest_state(opts, state), "carrier abandoned");
+}
+
+tetra_sm_state_e
+tetra_sm_get_state(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return ts ? (tetra_sm_state_e)ts->sm.state : TETRA_SM_IDLE;
+}
+
+int
+tetra_sm_followed(const dsd_state* state, tetra_sm_grant* out) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED) {
+        return 0;
+    }
+    if (out) {
+        *out = ts->sm.followed;
+    }
+    return 1;
 }

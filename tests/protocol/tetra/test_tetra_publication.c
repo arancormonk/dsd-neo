@@ -62,7 +62,7 @@ test_trunked_downlink(void) {
     ts->colour = 0x19U;
     ts->frames_resource = 1U;
     ts->enc_mode = TETRA_ENC_MODE_NONE;
-    ts->trunk_state = (uint8_t)TETRA_SM_ON_CC;
+    ts->sm.state = (uint8_t)TETRA_SM_ON_CC;
     ts->frames_sysinfo = 2U;
     ts->sysinfo_main_carrier = 321U;
     ts->dl_carrier_hz = 392012500L;
@@ -88,7 +88,7 @@ test_trunked_downlink(void) {
     ts->vc_timeslot_bitmap = 0x0AU;
     ts->vc_freq_hz = 392125000L;
     ts->enc_mode = TETRA_ENC_MODE_ON_AUTH;
-    ts->trunk_state = (uint8_t)TETRA_SM_TUNED;
+    ts->sm.state = (uint8_t)TETRA_SM_TUNED;
     assert(tetra_air_ksg_remember(state, 262U, 1001U, 1U) == 1);
     tetra_publish(state);
     assert(pub->traffic_valid == 1U && pub->traffic_carrier == 654U && pub->traffic_slots == 0x0AU);

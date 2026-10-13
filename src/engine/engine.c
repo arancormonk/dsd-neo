@@ -1927,9 +1927,9 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
         if (accepted_cc_return && dsd_trunk_dmr_recovery_allowed(opts, state)) {
             dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, request_id);
         }
-        if (tetra_sm_get_state() == TETRA_SM_TUNED || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
+        if (tetra_sm_get_state(state) == TETRA_SM_TUNED || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
             tetra_voice_reset(state);
-            tetra_sm_on_external_cc_return(state);
+            tetra_sm_on_external_cc_return(opts, state);
         }
         (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;

@@ -7,14 +7,21 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdlib.h>
 
-/* The state holds operator air keys, so it is wiped before it is freed; the codec library it loaded goes first. */
+/* The state holds operator air keys, so it is wiped before it is freed; the codec library it loaded goes first. A
+ * trunking tune still in flight has no owner left to settle it: it is retired as rolled back, so it cannot hold the
+ * frame gate shut (trunk_tuning_hooks.h). */
 static void
 tetra_state_free(void* ptr) {
     if (ptr) {
-        free(((tetra_state_t*)ptr)->sds_concat);
-        tetra_voice_release(&((tetra_state_t*)ptr)->voice);
+        tetra_state_t* const ts = (tetra_state_t*)ptr;
+        if (ts->sm.pending_request_id != 0U) {
+            dsd_trunk_tuning_request_complete(ts->sm.pending_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+        }
+        free(ts->sds_concat);
+        tetra_voice_release(&ts->voice);
         DSD_SECURE_ZERO(ptr, sizeof(tetra_state_t));
         free(ptr);
     }
