@@ -262,6 +262,12 @@ main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
     dsd_state* s = calloc(1, sizeof(*s));
     assert(o && s);
+    // Controls must reject absent sessions before validating their action payload.
+    dsd_signal_search_control absent = {42, 0, DSD_SEARCH_ACTION_STOP};
+    assert(dsd_engine_signal_search_control(o, NULL, &absent) < 0);
+    assert(dsd_engine_signal_search_control(o, s, &absent) < 0);
+    assert(dsd_engine_signal_search_control(o, s, NULL) < 0);
+    assert(!dsd_engine_signal_search_active(s) && !tuner_owner && !cancelled);
     o->audio_in_type = AUDIO_IN_RTL;
     o->rtlsdr_center_freq = 100000000;
     o->frame_dstar = 1;
@@ -280,6 +286,7 @@ main(void) {
     assert(dsd_engine_signal_search_start(o, s, &config, observer, NULL, error, sizeof(error)) == 0);
     assert(bypassed && dsd_signal_search_is_running(s));
     assert(tuner_owner == 42);
+    assert(dsd_engine_signal_search_control(o, s, NULL) < 0);
     defer = 1;
     tick(o, s);
     assert(status.phase == DSD_SEARCH_TUNING && !tune_pending);
@@ -383,6 +390,7 @@ main(void) {
     land(o, s);
     assert(status.phase == DSD_SEARCH_STOPPED && !bypassed && !dsd_signal_search_is_running(s));
     assert(!tuner_owner);
+    assert(dsd_engine_signal_search_control(o, s, &absent) < 0);
     assert(o->frame_dstar && o->rtlsdr_center_freq == 100000000 && gain_value == 123 && autogain);
     // A new session releases temporary avoids, and failed tunes never begin measurement.
     config.session_id = 43;

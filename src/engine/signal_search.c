@@ -519,7 +519,7 @@ dsd_engine_signal_search_should_yield(const dsd_opts* opts, dsd_state* state) {
 
 static int
 search_valid_action(const search_coord* c, const dsd_signal_search_control* action) {
-    if (!c || !action || action->session_id != c->status.session_id || c->status.phase == DSD_SEARCH_STOPPED) {
+    if (!action || action->session_id != c->status.session_id || c->status.phase == DSD_SEARCH_STOPPED) {
         return 0;
     }
     if (action->action >= DSD_SEARCH_ACTION_HOLD
@@ -534,7 +534,7 @@ int
 dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_signal_search_control* action) {
     // cppcheck-suppress constVariablePointer -- Mutated below when USE_RADIO is enabled.
     search_coord* c = search_get(state);
-    if (!search_valid_action(c, action)) {
+    if (!c || !search_valid_action(c, action)) {
         return -1;
     }
     (void)opts;
