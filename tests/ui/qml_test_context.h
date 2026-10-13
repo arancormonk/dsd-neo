@@ -2537,6 +2537,18 @@ class Setup : public QObject {
         metrics[QStringLiteral("nfmBandwidthUnsetHz")] = 16000;
         metrics[QStringLiteral("amBandwidthUnsetHz")] = 6000;
         metrics[QStringLiteral("ppm")] = 0;
+        // The TETRA rows (app_control/tetra_view.h): hidden at rest, until the TETRA preset has decoded a block.
+        metrics[QStringLiteral("tetraVisible")] = false;
+        metrics[QStringLiteral("tetraModeText")] = QString();
+        metrics[QStringLiteral("tetraEncrypted")] = false;
+        metrics[QStringLiteral("tetraNetworkText")] = QString();
+        metrics[QStringLiteral("tetraTrunkText")] = QString();
+        metrics[QStringLiteral("tetraOnTraffic")] = false;
+        metrics[QStringLiteral("tetraControlText")] = QString();
+        metrics[QStringLiteral("tetraTrafficText")] = QString();
+        metrics[QStringLiteral("tetraMmStatusText")] = QString();
+        metrics[QStringLiteral("tetraCodecText")] = QString();
+        metrics[QStringLiteral("tetraCodecFault")] = false;
         m_metrics = metrics;
         m_engine = engine;
         m_metric_readings = new ReadingMap(engine);

@@ -23,6 +23,7 @@
 #include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -37,6 +38,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -1484,9 +1486,91 @@ test_rigctl_audio_passband() {
     freeState(&state);
 }
 
+/* The TETRA rows reach QML from the snapshot handed to refresh(), through the app-control view the terminal shares:
+   hidden outside the TETRA preset and until the publication holds a working mode, every value spelled by the view, and
+   announced on their own signal only when they change. */
+static void
+test_tetra_rows() {
+    dsd_opts* opts = static_cast<dsd_opts*>(calloc(1U, sizeof(dsd_opts)));
+    dsd_state* snapshot = static_cast<dsd_state*>(calloc(1U, sizeof(dsd_state)));
+    if (opts == nullptr || snapshot == nullptr) {
+        expect("TETRA test allocates", false);
+        free(opts);
+        free(snapshot);
+        return;
+    }
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    dsd_tetra_publication* const pub = &snapshot->tetra_pub;
+    pub->mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    pub->air_encryption = DSD_TETRA_AIR_ENC_ENCRYPTED;
+    pub->tea = 2U;
+    pub->net_known = 1U;
+    pub->mcc = 262U;
+    pub->mnc = 1001U;
+    pub->colour = 25U;
+    pub->trunk_state = DSD_TETRA_TRUNK_ON_TRAFFIC;
+    pub->cc_known = 1U;
+    pub->cc_carrier = 321U;
+    pub->cc_freq_hz = 392012500U;
+    pub->traffic_valid = 1U;
+    pub->traffic_carrier = 654U;
+    pub->traffic_slots = 0x0AU; /* timeslots 1 and 3: bit 3 is timeslot 1 */
+    pub->traffic_freq_hz = 392125000U;
+    pub->mm_status_valid = 1U;
+    pub->mm_status_code = 7U;
+    pub->codec_status = DSD_TETRA_CODEC_DECODE_ERRORS;
+    pub->codec_frames = 18U;
+    pub->codec_errors = 2U;
+
+    dsd_qt::MetricsModel model;
+    int changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::tetraChanged, [&changes]() { ++changes; });
+    model.refresh(opts, snapshot);
+    expect("TETRA rows stay hidden outside the TETRA preset",
+           !model.tetraVisible() && model.tetraModeText().isEmpty() && changes == 0);
+
+    opts->frame_tetra = 1;
+    opts->trunk_enable = 1;
+    model.refresh(opts, snapshot);
+    expect("TETRA rows show under the TETRA preset", model.tetraVisible() && changes == 1);
+    expect("TETRA mode line", model.tetraModeText() == QString::fromUtf8("TMO downlink \xC2\xB7 encrypted (TEA2)"));
+    expect("TETRA encryption flag", model.tetraEncrypted());
+    expect("TETRA network names its colour code in decimal",
+           model.tetraNetworkText() == QString::fromUtf8("MCC 262 \xC2\xB7 MNC 1001 \xC2\xB7 CC 25"));
+    expect("TETRA trunk state", model.tetraTrunkText() == QStringLiteral("traffic channel") && model.tetraOnTraffic());
+    expect("TETRA control channel", model.tetraControlText() == QString::fromUtf8("carrier 321 \xC2\xB7 392.0125 MHz"));
+    expect("TETRA traffic channel lists timeslots TN1 first",
+           model.tetraTrafficText() == QString::fromUtf8("carrier 654 \xC2\xB7 TS 1,3 \xC2\xB7 392.1250 MHz"));
+    expect("TETRA MM status", model.tetraMmStatusText() == QString::fromUtf8("7 \xC2\xB7 MS frequency bands request"));
+    expect("TETRA codec health",
+           model.tetraCodecText() == QString::fromUtf8("decode errors \xC2\xB7 18 frames \xC2\xB7 2 errors")
+               && model.tetraCodecFault());
+
+    model.refresh(opts, snapshot);
+    expect("an unchanged TETRA publication announces nothing", changes == 1);
+
+    /* Trunking off: no trunk row, the channels stay. */
+    opts->trunk_enable = 0;
+    model.refresh(opts, snapshot);
+    expect("TETRA trunk row needs trunking", model.tetraTrunkText().isEmpty() && !model.tetraOnTraffic()
+                                                 && !model.tetraControlText().isEmpty() && changes == 2);
+
+    /* A reset (a mode change, or the TETRA state dropped) hides the rows again. */
+    dsd_tetra_publication_reset(pub);
+    model.refresh(opts, snapshot);
+    expect("a reset TETRA publication hides the rows",
+           !model.tetraVisible() && model.tetraModeText().isEmpty() && model.tetraNetworkText().isEmpty()
+               && model.tetraCodecText().isEmpty() && !model.tetraCodecFault() && changes == 3);
+
+    dsd_state_ext_free_all(snapshot);
+    free(snapshot);
+    free(opts);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    test_tetra_rows();
     test_scan_row();
     test_rigctl_audio_passband();
     test_options_readiness();
