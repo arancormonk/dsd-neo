@@ -69,9 +69,12 @@ Generated (do not edit/commit):
     (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s. `DSD_SEARCH_ACTION_UNAVOID`
     lifts a session avoid by frequency. Published status carries `owned` (a coordinator
     holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
-    frequency are restored on exit. Protocol details enter only through CRC/FEC
-    confirmation or validated activity hooks, never a generic sync or dispatcher verdict.
-    See [Signal search](signal-search.md).
+    frequency are restored on exit: a search Stop tunes back, and a decoder session that
+    ends under the search (the Qt Stop) restores the options in
+    `dsd_engine_signal_search_shutdown()` before the engine's autosave, so the saved
+    configuration never keeps a visited frequency. Protocol details enter only through
+    CRC/FEC confirmation or validated activity hooks, never a generic sync or dispatcher
+    verdict. See [Signal search](signal-search.md).
   - Trunk retune policy and bookkeeping: `src/engine/trunk_tuning.c` implements the tune-to-frequency,
     tune-to-control-channel and return-to-control-channel requests behind
     `include/dsd-neo/engine/trunk_tuning.h`, and `src/engine/trunk_tuning_hooks_install.c` installs them into the
@@ -3159,7 +3162,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   located once (as a source of their own where their segment allows). A channel keeps a
   raw detection only for a transmitter centred within its half-open interval on the
   range's rational grid that holds its own power in both windows (within 10 dB), or whose
-  channel does over the bins it occupies.
+  channel does over its bins (no transmitter centred elsewhere lends the bins of its
+  segment, unless the channel's own transmitter occupies them).
   `docs/signal-search.md` lists the measured limits. The tap's `feed_mutex`
   serialises the detector (feeding and analysis, request, cancel); `tap_mutex` guards only
   the published capture, readiness and report, so polls never wait for analysis; locks

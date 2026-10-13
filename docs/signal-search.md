@@ -72,7 +72,9 @@ That fallback does not establish that the transmission is analog.
   running session too.
 - **Pause** permits range edits. **Resume** applies them and restarts the pass,
   retaining session avoids. **Stop** ends the radio session and leaves Signal
-  search open on the same receiver, ready to start again.
+  search open on the same receiver, ready to start again. The session's settings
+  return to those it had before the search, frequency included, so the configuration
+  it autosaves never keeps a frequency the search visited.
 - A start waiting for Android USB permission belongs to the search: leaving Signal
   search, or a later **Start search** it refuses, cancels it, so a permission
   granted afterwards starts nothing.
@@ -170,8 +172,11 @@ each window (within 10 dB of the other over the bins it occupies), so energy one
 window only owes to another transmitter is not sustained. A transmitter whose
 modulation differs between the windows (a slow tone half a cycle apart) is still
 sustained, and where clipping makes it dwell on one side of its carrier per window
-and the location splits those dwells apart, its channel holds its power in both
-windows over the bins the channel occupies (within 10 dB of its tallest).
+and the location leaves one dwell out, its channel holds its power in both windows
+over the channel's bins (within 10 dB of their tallest). Bins in the segment of a
+transmitter centred on another channel do not count there unless the channel's own
+transmitter occupies them, so a burst in one window beside a continuous transmitter
+does not borrow that transmitter's power.
 
 Transmitters are located in the spectrum itself, not only among the requested
 channels, so one past a range or span boundary counts. Each channel's window climbs
@@ -311,7 +316,8 @@ block and then plans its first span from it. Coordinator
 tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,
-live strength, lifting session avoids, pause/restart and scoped restoration.
+live strength, lifting session avoids, pause/restart and scoped restoration, and
+that a session ending under a search leaves the frequency it started from.
 Stalled-input regressions check that the live read gives up after 100 ms only while
 a search owns the tuner, and that the FSK, monitor and CQPSK symbol readers alike
 take that as an interruption rather than the end of the session, then read the
