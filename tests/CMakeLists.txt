@@ -11268,10 +11268,16 @@ foreach(_dsd_tetra_voice_test IN ITEMS voice_pipeline voice_codec)
         "${_dsd_tetra_target}"
         PRIVATE ${_dsd_tetra_codec_definitions}
     )
-    # initState() and the audio output reach the codecs and sinks ${LIBS} carries.
+    # initState() and the audio output reach the codecs and sinks ${LIBS} carries; dsd-neo_core goes ahead of them so
+    # an --as-needed link still finds its codec2 calls.
     target_link_libraries(
         "${_dsd_tetra_target}"
-        PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support ${LIBS}
+        PRIVATE
+            dsd-neo_proto_tetra
+            dsd-neo_core
+            dsd-neo_fec
+            dsd-neo_test_support
+            ${LIBS}
     )
     foreach(_dsd_tetra_codec_variant IN LISTS _dsd_tetra_codec_variants)
         add_dependencies(
@@ -11306,7 +11312,12 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_tetra_burst_verdict
-    PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support ${LIBS}
+    PRIVATE
+        dsd-neo_proto_tetra
+        dsd-neo_core
+        dsd-neo_fec
+        dsd-neo_test_support
+        ${LIBS}
 )
 add_test(NAME TETRA_BURST_VERDICT COMMAND dsd-neo_test_tetra_burst_verdict)
 set_tests_properties(TETRA_BURST_VERDICT PROPERTIES LABELS "protocol;tetra")
