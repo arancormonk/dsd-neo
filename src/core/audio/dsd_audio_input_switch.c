@@ -69,18 +69,12 @@ typedef struct {
 dsd_audio_input_kind
 dsd_audio_path_input_kind(const char* path) {
     /* The extension dispatch of openAudioInDevice() (dsd_audio_open_extension_input()), which reads the last '.' of
-       the whole path and compares its first four characters. */
+       the whole path and compares its first four characters (dsd_opts_audio_in_dev_is_symbol_capture()). */
     const char* extension = path ? strrchr(path, '.') : NULL;
-    if (extension == NULL) {
+    if (extension == NULL || !dsd_opts_audio_in_dev_is_symbol_capture(path)) {
         return DSD_AUDIO_INPUT_PCM_FILE;
     }
-    if (strncmp(extension, ".raw", 4) == 0 || strncmp(extension, ".sym", 4) == 0) {
-        return DSD_AUDIO_INPUT_SYMBOL_FLT;
-    }
-    if (strncmp(extension, ".bin", 4) == 0) {
-        return DSD_AUDIO_INPUT_SYMBOL_BIN;
-    }
-    return DSD_AUDIO_INPUT_PCM_FILE;
+    return strncmp(extension, ".bin", 4) == 0 ? DSD_AUDIO_INPUT_SYMBOL_BIN : DSD_AUDIO_INPUT_SYMBOL_FLT;
 }
 
 static int

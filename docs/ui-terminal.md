@@ -352,7 +352,9 @@ preset back (`Mode... [P25 Phase 1]`), and the footer toasts `Decoding <mode>` o
 
 AM (`-fM`) needs an I/Q radio input. On a PCM input the picker's AM row reads `AM (needs an I/Q radio input)`, and
 choosing it sends nothing: the footer gives the reason
-(`AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`). A running AM session
+(`AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`). TETRA (`-fT`) needs an
+I/Q radio input or a symbol capture: elsewhere its row reads `TETRA (needs an I/Q radio input)` and choosing it gives
+its reason the same way. A running AM session
 whose input is switched to a PCM one falls back to Analog, and the footer says why. **Input -> AM bandwidth...
 [default]**, right after `NFM bandwidth...` below `Squelch...`, sets the AM channel-filter width (5000..20000 Hz, 0 for
 the 6000 default) as **NFM bandwidth...** sets the NFM one (below): offered on a radio input while AM is the configured

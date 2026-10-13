@@ -184,6 +184,14 @@ Item {
                     sentence: "“First” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it."
                 },
                 {
+                    tag: "tetra-needs-iq",
+                    fields: {
+                        sourceType: "tcp",
+                        decodeFlag: "-fT"
+                    },
+                    sentence: "“First” decodes TETRA, which needs a radio source or a symbol capture (.bin): network audio and audio files arrive already demodulated. Edit the source to correct it."
+                },
+                {
                     tag: "am-bandwidth",
                     fields: {
                         decodeFlag: "-fM",

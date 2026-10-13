@@ -163,6 +163,16 @@ const char* dsd_decode_mode_display_name(dsdneoUserDecodeMode mode);
 #define DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT                                                                               \
     "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA"
 
+/** @brief Why TETRA is refused on an input that delivers already demodulated audio. */
+#define DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT                                                                            \
+    "TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated audio"
+
+/**
+ * @brief Why @p mode cannot run on an input that delivers demodulated audio: DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT for AM,
+ * DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT for TETRA, NULL for every mode that runs on any input.
+ */
+const char* dsd_decode_mode_needs_iq_text(dsdneoUserDecodeMode mode);
+
 /**
  * @brief Whether the open input delivers I/Q the radio front end demodulates.
  *
@@ -192,13 +202,22 @@ int dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts);
 /**
  * @brief Whether @p mode can run on the open input @p opts name (dsd_decode_mode_input_is_iq()).
  *
- * AM needs an I/Q radio input; every other preset runs on any input (the Analog preset monitors PCM audio as it
- * arrives, whatever demodulated it). Before the engine opens the input, ask dsd_decode_mode_input_spec_is_iq().
+ * AM needs an I/Q radio input. TETRA needs one too, or a symbol capture (a .bin, .raw or .sym file), which carries the
+ * symbols an I/Q radio input's CQPSK demodulator recovered: discriminator audio has lost the phase steps its
+ * pi/4-DQPSK carries. Every other preset runs on any input (the Analog preset monitors PCM audio as it arrives,
+ * whatever demodulated it). Before the engine opens the input, ask dsd_decode_mode_runs_on_input_spec().
  *
- * @return 1 when it can, 0 when the caller must refuse it (or fall back to Analog) with
- *         DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT.
+ * @return 1 when it can, 0 when the caller must refuse it (or fall back) with dsd_decode_mode_needs_iq_text().
  */
 int dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts);
+
+/**
+ * @brief dsd_decode_mode_runs_on_input() for the input @p opts name, before the engine opens it.
+ *
+ * I/Q is dsd_decode_mode_input_spec_is_iq(); a symbol capture is a file whose name ends in .bin, .raw or .sym, as
+ * openAudioInDevice() dispatches it (dsd_audio_path_input_kind()).
+ */
+int dsd_decode_mode_runs_on_input_spec(dsdneoUserDecodeMode mode, const dsd_opts* opts);
 
 /** @brief The log notice for dsd_decode_mode_keep_saved_am() turning autosave off, which its callers log. */
 #define DSD_DECODE_MODE_KEEP_SAVED_AM_NOTICE "Autosave disabled for this session so the saved decode = am is kept"

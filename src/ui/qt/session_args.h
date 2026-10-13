@@ -69,12 +69,14 @@ enum class SessionArgsError {
     /* Issue #524: an AM system (-fM) on a source whose audio arrives already demodulated (network or file). */
     AmNeedsRadio,
     /* Issue #524: an AM system on a USB or rtl_tcp radio whose DSP bandwidth cannot filter the AM channel. */
-    AmBandwidth
+    AmBandwidth,
+    /* A TETRA system (-fT) on a source that is neither a radio nor a symbol capture file: its audio arrives demodulated. */
+    TetraNeedsIq
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::AmBandwidth;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::TetraNeedsIq;
 
 /** ASCII whitespace removed, optional 0x stripped, uppercase hex. QString copies
  * cannot promise erasure; never expose returned key text in diagnostics. */

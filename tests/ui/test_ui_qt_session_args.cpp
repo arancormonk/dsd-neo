@@ -256,6 +256,42 @@ test_am_system(void) {
     error = SessionArgsError::None;
     expect("NFM still builds on TCP audio",
            !session_args_build(composite, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+
+    /* TETRA (-fT) reads its symbols from a radio's I/Q, or from a symbol capture file of them: on network audio or an
+       audio file it is refused here, as the engine refuses it, with its own reason. */
+    QVariantMap tetra = usb_system();
+    tetra.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fT"));
+    error = SessionArgsError::None;
+    expect("a TETRA system builds on a USB dongle",
+           !session_args_build(tetra, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+    for (const char* source : {"tcp", "udp", "file"}) {
+        QVariantMap pcm = tetra;
+        pcm.insert(QStringLiteral("sourceType"), QString::fromLatin1(source));
+        pcm.insert(QStringLiteral("host"), QStringLiteral("127.0.0.1"));
+        pcm.insert(QStringLiteral("port"), 7355);
+        pcm.insert(QStringLiteral("filePath"), QStringLiteral("/tmp/capture.wav"));
+        error = SessionArgsError::None;
+        expect("a TETRA system on network audio or an audio file is refused",
+               session_args_build(pcm, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::TetraNeedsIq);
+    }
+    for (const char* capture : {"/tmp/tetra.bin", "/tmp/tetra.raw", "/tmp/tetra.sym"}) {
+        QVariantMap symbols = tetra;
+        symbols.insert(QStringLiteral("sourceType"), QStringLiteral("file"));
+        symbols.insert(QStringLiteral("filePath"), QString::fromLatin1(capture));
+        error = SessionArgsError::None;
+        const QStringList args = session_args_build(symbols, SessionArgPrefs(), &error);
+        expect("a TETRA system replays a symbol capture",
+               !args.isEmpty() && error == SessionArgsError::None && input_spec(args) == QString::fromLatin1(capture));
+    }
+    expect("the TETRA refusal says why", session_args_error_text(SessionArgsError::TetraNeedsIq)
+                                             .startsWith(QStringLiteral("TETRA needs a radio source")));
+    const dsd_qt::SessionArgsBuilder tetraBuilder(nullptr);
+    QVariantMap tcpTetra = tetra;
+    tcpTetra.insert(QStringLiteral("sourceType"), QStringLiteral("tcp"));
+    tcpTetra.insert(QStringLiteral("host"), QStringLiteral("127.0.0.1"));
+    tcpTetra.insert(QStringLiteral("port"), 7355);
+    expect("the TETRA start refusal carries its category",
+           tetraBuilder.build(tcpTetra).value(QStringLiteral("error")).toString() == QStringLiteral("tetra-needs-iq"));
 }
 
 /*
@@ -714,7 +750,7 @@ test_every_error_has_text() {
         }
     }
     expect("the last error value is AM on a radio whose bandwidth cannot filter it",
-           dsd_qt::SessionArgsErrorLast == SessionArgsError::AmBandwidth);
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::TetraNeedsIq);
     expect("a value past the last one has no text",
            dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
 }

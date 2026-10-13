@@ -471,6 +471,15 @@ Notes
   where it delivers 1.152 MS/s, no Airspy sample rate halves to a multiple of 18 kHz, and an I/Q replay keeps its
   capture's rate. A switch to TETRA at run time keeps the mode and says the same in its toast (`Decoding TETRA: DSP rate
   48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz`).
+  TETRA reads its symbols from an I/Q radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`) or from a symbol
+  capture of them (`-c` writes one; `-i capture.bin`, `.raw` or `.sym` replays it): discriminator audio has lost the
+  phase steps of its pi/4-DQPSK, so `-fT` on a PCM input (Pulse, a WAV file, stdin, TCP or UDP audio) stops at startup
+  with `-fT: TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated
+  audio`, as `-fM` does. A config whose `[mode] decode = tetra` meets such an input keeps the mode and logs that nothing
+  decodes there. A switch to TETRA on one (terminal picker, Qt chip, API) is refused with that reason; the terminal
+  picker's entry reads `TETRA (needs an I/Q radio input)` there and the Qt setup wizard greys its chip out (it offers it
+  for a `.bin` capture). A running TETRA session whose input moves to a PCM one keeps the mode, and a toast says once
+  that nothing decodes there.
   Speech plays only through a TETRA speech codec library the user supplies:
   `--tetra-codec <file>` names its shared library (`.so`, `.dylib` or `.dll`), opened by that path, relative to the
   working directory when it is not absolute. dsd-neo loads it when the first TETRA speech frame needs decoding and

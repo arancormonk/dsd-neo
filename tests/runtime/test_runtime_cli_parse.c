@@ -6412,6 +6412,82 @@ test_f_am_refused_on_pcm_input(void) {
     return test_rc;
 }
 
+/* TETRA's pi/4-DQPSK symbols come from an I/Q radio input's CQPSK demodulator, or from a symbol capture of them:
+ * -fT on an I/Q input or a .bin, .raw or .sym capture selects TETRA, and on a PCM input it stops with the reason, as -fM
+ * does. A loaded config's decode = tetra on a PCM input keeps the mode and says that nothing will decode. */
+static int
+test_f_tetra_needs_iq_or_symbols(void) {
+    static const char* const runs[] = {"rtl:0:420.1M:22:0:72", "rtltcp:127.0.0.1:1234", "soapy:driver=rtlsdr", "airspy",
+                                       "capture.bin",          "capture.raw",           "capture.sym"};
+    static const char* const refused[] = {NULL,          "pulse", "tcp:127.0.0.1:7355", "udp:127.0.0.1:7355",
+                                          "capture.wav", "-"};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof runs / sizeof runs[0]; i++) {
+        const char* const args[] = {"dsd-neo", "-fT", "-i", runs[i], NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_CONTINUE || run.opts->frame_tetra != 1
+            || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_TETRA) {
+            DSD_FPRINTF(stderr, "-fT -i %s: rc=%d frame_tetra=%d\n%s\n", runs[i], run.rc, run.opts->frame_tetra,
+                        run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        const char* const with_input[] = {"dsd-neo", "-fT", "-i", refused[i], NULL};
+        const char* const default_input[] = {"dsd-neo", "-fT", NULL};
+        am_cli_run run;
+        if (am_cli_parse(refused[i] ? with_input : default_input, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_ERROR || run.exit_rc != 1
+            || !strstr(run.err, "-fT: TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot "
+                                "be read from demodulated audio")) {
+            DSD_FPRINTF(stderr, "-fT on %s: rc=%d exit_rc=%d\n%s\n", refused[i] ? refused[i] : "(default input)",
+                        run.rc, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+
+    /* The config's preset, with no -f on the command line: kept, with a warning. */
+    const char* const config_args[] = {"dsd-neo", "-i", "tcp:127.0.0.1:7355", NULL};
+    am_cli_run run;
+    DSD_MEMSET(&run, 0, sizeof run);
+    run.opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    run.state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!run.opts || !run.state) {
+        free(run.opts);
+        free(run.state);
+        return 1;
+    }
+    initOpts(run.opts);
+    initState(run.state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CONFIG, run.opts, run.state);
+    static char storage[3][32];
+    char* argv[4] = {NULL};
+    for (int i = 0; i < 3; i++) {
+        DSD_SNPRINTF(storage[i], sizeof storage[i], "%s", config_args[i]);
+        argv[i] = storage[i];
+    }
+    int argc_effective = 0;
+    run.exit_rc = -1;
+    run.rc =
+        parse_args_capture_stderr(3, argv, run.opts, run.state, &argc_effective, &run.exit_rc, run.err, sizeof run.err);
+    if (run.rc != DSD_PARSE_CONTINUE || run.opts->frame_tetra != 1
+        || !strstr(run.err, "WARNING: [mode] decode = tetra: TETRA needs an IQ radio input or a symbol capture")
+        || !strstr(run.err, "Nothing decodes on this input.")) {
+        DSD_FPRINTF(stderr, "config TETRA on TCP audio: rc=%d frame_tetra=%d\n%s\n", run.rc, run.opts->frame_tetra,
+                    run.err);
+        test_rc = 1;
+    }
+    am_cli_free(&run);
+    return test_rc;
+}
+
 /* The selectors the -f case handles itself leave AM for FM as they leave the analog monitor: the M17 encoder shares
  * the analog front end and must not run the AM detector. */
 static int
@@ -9688,8 +9764,9 @@ test_tg_lockout_persistence_flags(void) {
     return rc;
 }
 
-/* --tetra-codec names the TETRA speech codec library, in both spellings and alongside -fT; it is only recorded here
-   (the decoder loads it when speech needs it). A missing value, an empty one or one too long for the path refuses. */
+/* --tetra-codec names the TETRA speech codec library, in both spellings and alongside -fT (on an I/Q input, which TETRA
+   needs); it is only recorded here (the decoder loads it when speech needs it). A missing value, an empty one or one
+   too long for the path refuses. */
 static int
 test_tetra_codec_option_records_the_library(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -9707,10 +9784,12 @@ test_tetra_codec_option_records_the_library(void) {
     char option[] = "--tetra-codec";
     char path[] = "codecs/libtetra-codec.so";
     char joined[] = "--tetra-codec=other/tetra-codec.dll";
-    char* separate[] = {name, mode, option, path, NULL};
+    char input_flag[] = "-i";
+    char input[] = "rtl:0:420.1M:22:0:72";
+    char* separate[] = {name, mode, input_flag, input, option, path, NULL};
     int effective = 0;
     int exit_rc = -1;
-    int parsed = dsd_parse_args(4, separate, opts, state, &effective, &exit_rc);
+    int parsed = dsd_parse_args(6, separate, opts, state, &effective, &exit_rc);
     rc |= parsed != DSD_PARSE_CONTINUE || strcmp(opts->tetra_codec_path, "codecs/libtetra-codec.so") != 0
           || opts->frame_tetra != 1;
     char* attached[] = {name, joined, NULL};
@@ -9989,6 +10068,7 @@ main(void) {
     rc |= test_f_manual_selectors_leave_analog_monitor();
     rc |= test_f_am_preset_on_iq_inputs();
     rc |= test_f_am_refused_on_pcm_input();
+    rc |= test_f_tetra_needs_iq_or_symbols();
     rc |= test_f_manual_selectors_leave_am();
     rc |= test_am_bandwidth_option();
     rc |= test_config_am_on_pcm_input_falls_back();

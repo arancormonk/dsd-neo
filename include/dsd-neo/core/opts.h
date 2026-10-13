@@ -717,6 +717,20 @@ dsd_opts_audio_in_dev_is_m17udp_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "m17udp", "m17udp:");
 }
 
+/**
+ * Whether @p dev names a symbol capture file, as openAudioInDevice() dispatches a file (dsd_audio_path_input_kind()): the
+ * last '.' of the whole name starts ".bin" (dibits), ".raw" or ".sym" (float symbols).
+ */
+static inline int
+dsd_opts_audio_in_dev_is_symbol_capture(const char* dev) {
+    const char* extension = dev ? strrchr(dev, '.') : NULL;
+    return (extension
+            && (strncmp(extension, ".bin", 4) == 0 || strncmp(extension, ".raw", 4) == 0
+                || strncmp(extension, ".sym", 4) == 0))
+               ? 1
+               : 0;
+}
+
 /** Whether @p dev names a radio input: an RTL-SDR, rtl_tcp, Airspy, SoapySDR or I/Q replay spec. */
 static inline int
 dsd_opts_audio_in_dev_is_radio_spec(const char* dev) {

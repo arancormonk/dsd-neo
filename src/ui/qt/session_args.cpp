@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 
+#include <QByteArray>
 #include <QChar>
 #include <QLatin1String>
 #include <QList>
@@ -23,6 +24,7 @@
 #include <QVariant>
 #include <Qt>
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/analog_channel.h>
 
 #include "app_prefs.h"
@@ -499,6 +501,9 @@ constexpr SessionArgsErrorText k_error_texts[] = {
     /* %1: session_args_am_bandwidth_choices(). */
     {SessionArgsError::AmBandwidth, "AM needs a bandwidth of 8 kHz or more: its 6 kHz channel does not fit a "
                                     "narrower one. Set the bandwidth to %1 kHz, or choose another decode mode."},
+    {SessionArgsError::TetraNeedsIq, "TETRA needs a radio source (USB, Airspy or rtl_tcp) or a symbol capture (.bin) "
+                                     "file: network audio and audio files arrive already demodulated. Choose a radio "
+                                     "source, or another decode mode."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -583,11 +588,12 @@ append_profile_args(QStringList& args, const QVariantMap& system) {
     }
 }
 
-/* Whether a saved decode flag selects the AM preset (-fM, issue #524), alone or among other tokens. */
+/* Whether a saved decode flag selects the preset @p flag names (-fM for AM, issue #524; -fT for TETRA), alone or among
+   other tokens. */
 static bool
-decode_flag_names_am(const QString& decodeFlag) {
+decode_flag_names(const QString& decodeFlag, const QString& flag) {
     static const QRegularExpression whitespace(QStringLiteral("\\s+"));
-    return decodeFlag.split(whitespace, Qt::SkipEmptyParts).contains(QStringLiteral("-fM"));
+    return decodeFlag.split(whitespace, Qt::SkipEmptyParts).contains(flag);
 }
 
 static bool
@@ -605,13 +611,22 @@ session_args_bandwidth_khz(const QVariantMap& system, const SessionArgPrefs& pre
 /* What the source allows. A radio source needs a frequency it can tune. Issue #524: -fM demodulates AM from the radio's
    I/Q, and the engine refuses it on audio that arrives already demodulated; the wizard keeps the pair from being saved,
    and a system saved before that fails here with a reason rather than at engine startup. The same holds for an AM
-   channel the radio's DSP bandwidth cannot filter (session_args_am_fits_bandwidth()). */
+   channel the radio's DSP bandwidth cannot filter (session_args_am_fits_bandwidth()), and for -fT, whose symbols the
+   engine reads from a radio's I/Q or a symbol capture file only (dsd_opts_audio_in_dev_is_symbol_capture()). */
 static SessionArgsError
 session_args_source_error(const QVariantMap& system, const QString& sourceType, int bandwidthKhz,
                           const QString& freqMhz) {
-    const bool am = decode_flag_names_am(system.value(QStringLiteral("decodeFlag")).toString());
+    const QString decodeFlag = system.value(QStringLiteral("decodeFlag")).toString();
+    const bool am = decode_flag_names(decodeFlag, QStringLiteral("-fM"));
     if (!is_radio_source(sourceType)) {
-        return am ? SessionArgsError::AmNeedsRadio : SessionArgsError::None;
+        if (am) {
+            return SessionArgsError::AmNeedsRadio;
+        }
+        const QByteArray path = system.value(QStringLiteral("filePath")).toString().toUtf8();
+        const bool symbols =
+            sourceType == QLatin1String("file") && dsd_opts_audio_in_dev_is_symbol_capture(path.constData());
+        return decode_flag_names(decodeFlag, QStringLiteral("-fT")) && !symbols ? SessionArgsError::TetraNeedsIq
+                                                                                : SessionArgsError::None;
     }
     if (!session_args_freq_valid(freqMhz)) {
         return SessionArgsError::Frequency;
@@ -757,6 +772,7 @@ validationResult(SessionArgsError error) {
                                            : error == SessionArgsError::UnsafeOption ? QStringLiteral("unsafe-option")
                                            : error == SessionArgsError::AmNeedsRadio ? QStringLiteral("am-needs-radio")
                                            : error == SessionArgsError::AmBandwidth  ? QStringLiteral("am-bandwidth")
+                                           : error == SessionArgsError::TetraNeedsIq ? QStringLiteral("tetra-needs-iq")
                                            : error == SessionArgsError::None         ? QString()
                                                                                      : QStringLiteral("encryption"));
     result.insert(QStringLiteral("errorText"), session_args_error_text(error));

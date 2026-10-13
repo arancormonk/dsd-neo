@@ -845,9 +845,41 @@ dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts) {
                : 0;
 }
 
+const char*
+dsd_decode_mode_needs_iq_text(dsdneoUserDecodeMode mode) {
+    switch (mode) {
+        case DSDCFG_MODE_AM: return DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT;
+        case DSDCFG_MODE_TETRA: return DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT;
+        default: return NULL;
+    }
+}
+
 int
 dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts) {
-    return (mode != DSDCFG_MODE_AM || dsd_decode_mode_input_is_iq(opts)) ? 1 : 0;
+    if (mode == DSDCFG_MODE_AM) {
+        return dsd_decode_mode_input_is_iq(opts);
+    }
+    if (mode == DSDCFG_MODE_TETRA) {
+        return (dsd_decode_mode_input_is_iq(opts)
+                || (opts && (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT)))
+                   ? 1
+                   : 0;
+    }
+    return 1;
+}
+
+int
+dsd_decode_mode_runs_on_input_spec(dsdneoUserDecodeMode mode, const dsd_opts* opts) {
+    if (mode == DSDCFG_MODE_AM) {
+        return dsd_decode_mode_input_spec_is_iq(opts);
+    }
+    if (mode == DSDCFG_MODE_TETRA) {
+        return (dsd_decode_mode_input_spec_is_iq(opts)
+                || (opts && dsd_opts_audio_in_dev_is_symbol_capture(opts->audio_in_dev)))
+                   ? 1
+                   : 0;
+    }
+    return 1;
 }
 
 /* How long the toast stays: a start sets it before any frontend is up to show it. */

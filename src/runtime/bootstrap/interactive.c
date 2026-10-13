@@ -290,13 +290,28 @@ interactive_am_refused(const dsd_opts* opts, char* err, size_t err_size) {
     return dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, width_hz, rate_hz, err, err_size) != 0;
 }
 
-/* AM the configured source cannot run is refused with the reason and asked again (end of input answers with the
+/* Why the wizard's @p mode cannot run on the source it configured, written to @p err; 0 when it can. AM is held to the
+   I/Q and the DSP bandwidth (interactive_am_refused()); TETRA needs an I/Q radio input or a symbol capture file, since
+   its pi/4-DQPSK symbols cannot be read from demodulated audio (dsd_decode_mode_runs_on_input_spec()). */
+static int
+interactive_mode_refused(int mode, const dsd_opts* opts, char* err, size_t err_size) {
+    if (mode == INTERACTIVE_MODE_AM) {
+        return interactive_am_refused(opts, err, err_size);
+    }
+    if (mode == INTERACTIVE_MODE_TETRA && !dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_TETRA, opts)) {
+        DSD_SNPRINTF(err, err_size, "%s", DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT);
+        return 1;
+    }
+    return 0;
+}
+
+/* A mode the configured source cannot run is refused with the reason and asked again (end of input answers with the
    default). */
 static int
 interactive_choose_decode_mode(const dsd_opts* opts) {
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     int mode = interactive_prompt_decode_mode();
-    while (mode == INTERACTIVE_MODE_AM && interactive_am_refused(opts, err, sizeof err)) {
+    while (interactive_mode_refused(mode, opts, err, sizeof err)) {
         DSD_FPRINTF(stderr, "%s.\n", err);
         mode = interactive_prompt_decode_mode();
     }

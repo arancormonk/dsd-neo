@@ -782,6 +782,76 @@ test_am_input_rules(void) {
     return 0;
 }
 
+/* TETRA reads its pi/4-DQPSK symbols from an I/Q radio input's CQPSK demodulator, or from a symbol capture of them; on
+ * any other input (Pulse, a WAV file, stdin, TCP or UDP audio) the audio arrives demodulated and is refused, before the
+ * input opens (from its spec) and after (from its type). AM and TETRA name their reasons; the other modes run anywhere. */
+static int
+test_tetra_input_rules(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    static const int runs[] = {AUDIO_IN_RTL, AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT};
+    static const int refused[] = {AUDIO_IN_PULSE, AUDIO_IN_WAV, AUDIO_IN_STDIN, AUDIO_IN_TCP, AUDIO_IN_UDP};
+    for (size_t i = 0; i < sizeof runs / sizeof runs[0]; i++) {
+        opts.audio_in_type = runs[i];
+        if (!dsd_decode_mode_runs_on_input(DSDCFG_MODE_TETRA, &opts)) {
+            DSD_FPRINTF(stderr, "TETRA should run on input type %d\n", runs[i]);
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        opts.audio_in_type = refused[i];
+        if (dsd_decode_mode_runs_on_input(DSDCFG_MODE_TETRA, &opts)) {
+            DSD_FPRINTF(stderr, "TETRA should not run on input type %d\n", refused[i]);
+            return 1;
+        }
+    }
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    if (dsd_decode_mode_runs_on_input(DSDCFG_MODE_AM, &opts)) {
+        DSD_FPRINTF(stderr, "AM should not run on a symbol capture\n");
+        return 1;
+    }
+
+    static const char* const spec_runs[] = {
+        "rtl:0:420.1M:22:0:72", "rtltcp:127.0.0.1:1234", "soapy:driver=x", "airspy",
+        "iqreplay:/tmp/x.iq",   "/tmp/cap.bin",          "cap.raw",        "cap.sym",
+        "a.b/cap.bin"};
+    static const char* const spec_refused[] = {"pulse", "/tmp/a.wav",        "-",     "tcp:127.0.0.1:7355", "udp",
+                                               "",      "/tmp/cap.binx.wav", "cap.bi"};
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    for (size_t i = 0; i < sizeof spec_runs / sizeof spec_runs[0]; i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", spec_runs[i]);
+        if (!dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_TETRA, &opts)) {
+            DSD_FPRINTF(stderr, "TETRA should run on spec %s\n", spec_runs[i]);
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof spec_refused / sizeof spec_refused[0]; i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", spec_refused[i]);
+        if (dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_TETRA, &opts)) {
+            DSD_FPRINTF(stderr, "TETRA should not run on spec '%s'\n", spec_refused[i]);
+            return 1;
+        }
+    }
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "/tmp/cap.bin");
+    if (dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_AM, &opts)
+        || !dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_DMR, &opts)) {
+        DSD_FPRINTF(stderr, "AM should not run on a symbol capture spec, DMR should\n");
+        return 1;
+    }
+    if (dsd_decode_mode_runs_on_input(DSDCFG_MODE_TETRA, NULL)
+        || dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_TETRA, NULL)) {
+        DSD_FPRINTF(stderr, "no options should not run TETRA\n");
+        return 1;
+    }
+    if (strcmp(dsd_decode_mode_needs_iq_text(DSDCFG_MODE_AM), DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT) != 0
+        || strcmp(dsd_decode_mode_needs_iq_text(DSDCFG_MODE_TETRA), DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT) != 0
+        || dsd_decode_mode_needs_iq_text(DSDCFG_MODE_DMR) != NULL) {
+        DSD_FPRINTF(stderr, "the I/Q reasons are AM's and TETRA's only\n");
+        return 1;
+    }
+    return 0;
+}
+
 /* TETRA's symbols are timed at a whole number of samples per symbol, so only a DSP rate that is a multiple of 18 kHz runs
  * it. Elsewhere the advice names the rate and the fix for the input in force, in a full form for the log and a brief one
  * a toast holds. */
@@ -976,6 +1046,7 @@ main(void) {
     rc |= test_am_preset();
     rc |= test_am_input_rules();
     rc |= test_tetra_rate_rules();
+    rc |= test_tetra_input_rules();
     return rc;
 }
 

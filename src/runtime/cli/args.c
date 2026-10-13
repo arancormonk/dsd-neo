@@ -761,6 +761,36 @@ cli_check_am_input(dsd_opts* opts, dsd_state* state, int cli_chose_am, int* out_
     return 0;
 }
 
+/* TETRA decodes from an I/Q radio input or a symbol capture only (dsd_decode_mode_runs_on_input_spec()): discriminator
+ * audio has lost the phase steps of its pi/4-DQPSK. -fT on a PCM input is an error, as -fM is. [mode] decode = tetra
+ * from a loaded config keeps the mode, which has no Analog sibling to fall back to as AM has, and says that nothing will
+ * decode on this input. */
+static int
+cli_check_tetra_input(const dsd_opts* opts, int cli_chose_tetra, int* out_exit_rc) {
+    if (dsd_infer_decode_mode_preset_exact(opts) != DSDCFG_MODE_TETRA
+        || dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_TETRA, opts)) {
+        return 0;
+    }
+    if (cli_chose_tetra) {
+        LOG_ERROR("-fT: %s\n", DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return -1;
+    }
+    LOG_WARN("WARNING: [mode] decode = tetra: %s. Nothing decodes on this input.\n",
+             DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT);
+    return 0;
+}
+
+/* The presets an input cannot carry (cli_check_am_input(), cli_check_tetra_input()), with @p cli_mode the preset a -f
+   selector chose, DSDCFG_MODE_UNSET for none. */
+static int
+cli_check_preset_input(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode cli_mode, int* out_exit_rc) {
+    if (cli_check_am_input(opts, state, cli_mode == DSDCFG_MODE_AM, out_exit_rc) != 0) {
+        return -1;
+    }
+    return cli_check_tetra_input(opts, cli_mode == DSDCFG_MODE_TETRA, out_exit_rc);
+}
+
 static int
 cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     if (!opts || !path) {
@@ -3546,7 +3576,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
             }
         }
     }
-    if (cli_check_am_input(opts, state, cli_decode_timing_seen && cli_decode_timing_mode == DSDCFG_MODE_AM, out_exit_rc)
+    if (cli_check_preset_input(opts, state, cli_decode_timing_seen ? cli_decode_timing_mode : DSDCFG_MODE_UNSET,
+                               out_exit_rc)
         != 0) {
         return DSD_PARSE_ERROR;
     }

@@ -98,6 +98,19 @@ dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts) {
     return opts && (strncmp(opts->audio_in_dev, "rtl:", 4) == 0 || strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0);
 }
 
+/* TETRA's pre-open rule as the runtime has it (RUNTIME_DECODE_MODE tests it): an I/Q spec, or a symbol capture file. */
+int
+dsd_decode_mode_runs_on_input_spec(dsdneoUserDecodeMode mode, const dsd_opts* opts) {
+    if (mode != DSDCFG_MODE_TETRA) {
+        return 1;
+    }
+    const char* ext = opts ? strrchr(opts->audio_in_dev, '.') : NULL;
+    const int symbols = ext && (strcmp(ext, ".bin") == 0 || strcmp(ext, ".raw") == 0 || strcmp(ext, ".sym") == 0);
+    return opts
+           && (strncmp(opts->audio_in_dev, "rtl:", 4) == 0 || strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0
+               || symbols);
+}
+
 void
 dsd_bootstrap_choose_audio_input(dsd_opts* opts) {
     ++g_audio_input_calls;
@@ -262,7 +275,9 @@ test_pulse_defaults_apply_decode_and_ncurses(void) {
     return rc;
 }
 
-/* The wizard's last entry, 16, is TETRA; the entries before it keep their numbers. */
+/* The wizard's last entry, 16, is TETRA; the entries before it keep their numbers. TETRA needs an I/Q source or a
+ * symbol capture file: on an RTL-SDR or a .bin capture it is taken, and on PulseAudio it is refused with the reason
+ * and asked again, here answered with DMR. */
 static int
 test_tetra_entry_selects_tetra(void) {
     int rc = 0;
@@ -272,9 +287,23 @@ test_tetra_entry_selects_tetra(void) {
     reset_harness();
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    rc |= with_stdin_text("\n16\n\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= with_stdin_text("2\n420.1M\n0\n22\n0\n72\n0\n1\n16\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("tetra-rtl-audio-in", opts.audio_in_dev, "rtl:0:420.1M:22:0:72:0:1");
     rc |= expect_int("tetra-decode-mode", g_last_decode_mode, DSDCFG_MODE_TETRA);
     rc |= expect_int("tetra-decode-profile", g_last_decode_profile, DSD_DECODE_PRESET_PROFILE_INTERACTIVE);
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("4\ntetra.bin\n\n16\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("tetra-symbol-capture-audio-in", opts.audio_in_dev, "tetra.bin");
+    rc |= expect_int("tetra-symbol-capture-decode-mode", g_last_decode_mode, DSDCFG_MODE_TETRA);
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("\n16\n4\n\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_int("pulse-tetra-refused-then-dmr", g_last_decode_mode, DSDCFG_MODE_DMR);
     return rc;
 }
 

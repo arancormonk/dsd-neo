@@ -584,7 +584,11 @@ field, and the decoder refuses the rest when it applies the command.
 * **`decode_mode_set`** and **`rr_apply_import`**: `decode_mode` is a
   `dsdneoUserDecodeMode` (`1` auto, `2` P25p1, `3` P25p2, `4` DMR, `5` NXDN48,
   `6` NXDN96, `7` X2-TDMA, `8` YSF, `9` D-STAR, `10` EDACS/ProVoice, `11` dPMR,
-  `12` M17, `13` TDMA, `14` analog, `15` DMR mono, `16` AM, `17` TETRA).
+  `12` M17, `13` TDMA, `14` analog, `15` DMR mono, `16` AM, `17` TETRA). AM on
+  an input that delivers demodulated audio, and TETRA on one that is neither an
+  I/Q radio nor a symbol capture, are refused, and `status.message` says why;
+  TETRA at a DSP rate that is no multiple of 18 kHz is kept, with a message
+  naming the fix (`rtl_set_bw` 72 on an RTL-SDR).
 * Key words (`key_rc4des_set`, `key_hytera_set`, `key_aes_set`) are 64-bit:
   send them as `"0x..."` strings.
 

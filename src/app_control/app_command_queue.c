@@ -4709,8 +4709,8 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
     }
     *out_mode = (dsdneoUserDecodeMode)requested;
     if (!dsd_decode_mode_runs_on_input(*out_mode, opts)) {
-        /* AM on a PCM input (issue #524): the audio arrives demodulated. */
-        ui_set_toast(state, 5, "Refused: %s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
+        /* AM (issue #524) or TETRA on a PCM input: the audio arrives demodulated. */
+        ui_set_toast(state, 5, "Refused: %s", dsd_decode_mode_needs_iq_text(*out_mode));
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     if (*out_mode != DSDCFG_MODE_AUTO && dsd_infer_decode_mode_preset(opts) == *out_mode) {
@@ -7514,6 +7514,30 @@ apply_cmd_fall_back_from_am_on_pcm(dsd_opts* opts, dsd_state* state, const struc
     ui_set_toast(state, 6, "Decoding Analog: %s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
 }
 
+/* Whether the last command left the configured TETRA preset on an input that cannot carry it, already said. */
+static int g_tetra_on_pcm_noted;
+
+/*
+ * TETRA decodes from an I/Q radio input or a symbol capture only (dsd_decode_mode_runs_on_input()). A command that leaves
+ * the configured TETRA preset on another (a live input switch to Pulse, a WAV file, TCP or UDP audio, or a config that
+ * moves the input there) keeps the mode, which has no Analog to fall back to as AM has, but says once that nothing will
+ * decode until the input changes. Checked after every command, like apply_cmd_fall_back_from_am_on_pcm().
+ */
+static void
+apply_cmd_note_tetra_on_pcm(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || dsd_scan_mode_configured_preset_exact(opts, state) != DSDCFG_MODE_TETRA
+        || dsd_decode_mode_runs_on_input(DSDCFG_MODE_TETRA, opts)) {
+        g_tetra_on_pcm_noted = 0;
+        return;
+    }
+    if (g_tetra_on_pcm_noted) {
+        return;
+    }
+    g_tetra_on_pcm_noted = 1;
+    LOG_WARN("WARNING: %s. Nothing decodes on this input.\n", DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT);
+    ui_set_toast(state, 6, "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+}
+
 /* The configured width of each analog kind (dsd_scan_mode_configured_analog_width()). */
 static ui_analog_widths
 ui_configured_analog_widths(const dsd_opts* opts, const dsd_state* state) {
@@ -7704,6 +7728,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
         return UI_CMD_APPLY_FAILED;
     }
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);
+    apply_cmd_note_tetra_on_pcm(opts, state);
     const int rigctl_refused = apply_cmd_follow_rigctl_passband(opts, state, &rigctl_before, &widths_before, guarded);
     ui_warn_tone_filter_unreached(opts, state, &tone_before);
     return rigctl_refused ? UI_CMD_APPLY_FAILED : result;

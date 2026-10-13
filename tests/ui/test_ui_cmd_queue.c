@@ -2475,6 +2475,8 @@ test_decode_mode_set_reaches_tetra(void) {
     static dsd_opts opts;
     static dsd_state state;
     init_decode_mode_context(&opts, &state);
+    /* A symbol capture: TETRA reads its symbols there, as from an I/Q radio input. */
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
     rc |= expect_int("tetra mode queued",
                      dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -2498,6 +2500,65 @@ test_decode_mode_set_reaches_tetra(void) {
     rc |= expect_int("dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("leaving tetra turns its decoder off", opts.frame_tetra, 0);
     rc |= expect_int("leaving tetra clears its publication", state.tetra_pub.mode, DSD_TETRA_MODE_NONE);
+    freeState(&state);
+    return rc;
+}
+
+/* TETRA's pi/4-DQPSK symbols cannot be read from demodulated audio: DECODE_MODE_SET refuses TETRA on a PCM input with
+   the reason and changes nothing, as it refuses AM. A command that leaves the configured TETRA preset on PCM input (an
+   input switch) keeps the mode but says once that nothing decodes there. */
+static int
+test_decode_mode_set_refuses_tetra_on_pcm(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |=
+        expect_int("pcm tetra queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pcm tetra drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("pcm tetra refused", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 0);
+    rc |= expect_int("pcm tetra decoder stays off", opts.frame_tetra, 0);
+    rc |=
+        expect_str("pcm tetra says why", state.ui_msg,
+                   "Refused: TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read "
+                   "from demodulated audio");
+
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    rc |= expect_int("symbol tetra queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("symbol tetra drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("symbol tetra taken", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+
+    /* The input moves to PCM under TETRA: the next command keeps the mode and says so, once. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.ui_msg[0] = '\0';
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    rc |= expect_int("tetra on pcm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tetra on pcm kept", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+    rc |= expect_str("tetra on pcm says so", state.ui_msg,
+                     "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+    state.ui_msg[0] = '\0';
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    rc |= expect_int("tetra on pcm drained again", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tetra on pcm says it once", state.ui_msg[0] == '\0', 1);
+    /* Back on a symbol capture and off again: said again. */
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.ui_msg[0] = '\0';
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("tetra on pcm said again", state.ui_msg,
+                     "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR);
+    (void)dsd_app_drain_cmds(&opts, &state);
     freeState(&state);
     return rc;
 }
@@ -17854,6 +17915,7 @@ main(void) {
     rc |= test_modulation_and_decode_mode_setters();
     rc |= test_decode_mode_change_clears_received_tone();
     rc |= test_decode_mode_set_reaches_tetra();
+    rc |= test_decode_mode_set_refuses_tetra_on_pcm();
     rc |= test_tone_filter_warns_when_a_command_leaves_it_unheard();
     rc |= test_tone_filter_warns_when_a_channel_map_leaves_it_unheard();
     rc |= test_tone_filter_set_edits_the_configured_policy();
