@@ -101,6 +101,45 @@ inline_arch_images=$(
 report_violation "Inline archlinux:base-devel image differs from ARCHLINUX_BASE_DEVEL_IMAGE in tools/ci-dependency-pins.env:" \
   "$inline_arch_images"
 
+# A job container or service that pulls with `credentials:` cannot start where the
+# secrets behind them are empty: GitHub rejects an empty username or password before
+# the job runs. Dependabot and fork PRs get no Docker Hub secrets, so after #665 every
+# Dependabot PR failed the two Arch jobs at "Set up job". In a workflow that runs on
+# pull requests, such a job must keep itself off them with a job-level
+# `github.event_name != 'pull_request'` condition; a job that has to run there pulls
+# in a step (tools/ci_arch_toolchain.sh) after an optional login.
+pr_job_credentials=$(
+  while IFS= read -r workflow; do
+    awk -v file="$workflow" '
+      function finish() {
+        if (job != "" && cred_line > 0 && !skips_pr) {
+          printf "%s:%d: job %s\n", file, cred_line, job
+        }
+      }
+      /^jobs:/ { in_jobs = 1; next }
+      in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+        finish()
+        job = $1
+        sub(/:$/, "", job)
+        cred_line = 0
+        skips_pr = 0
+        in_if = 0
+        next
+      }
+      job == "" { next }
+      # The job-level condition runs from "    if:" to the next line indented four
+      # spaces or less; a step-level if sits deeper and does not count.
+      /^    if:/ { in_if = 1 }
+      in_if && !/^    if:/ && !/^     / && !/^[[:space:]]*(#|$)/ { in_if = 0 }
+      in_if && index($0, "github.event_name != '\''pull_request'\''") { skips_pr = 1 }
+      /^      [ ]*credentials:/ && cred_line == 0 { cred_line = NR }
+      END { finish() }
+    ' "$workflow"
+  done < <(rg -l -e '^  pull_request(_target)?:' -e '^on:.*pull_request' .github/workflows --glob '*.y*ml' || true)
+)
+report_violation "Job pulls its container with credentials yet can run on a pull request, where Dependabot and forks have no secrets:" \
+  "$pr_job_credentials"
+
 for var in CMAKE_LINUX_X86_64_SHA256 CMAKE_LINUX_AARCH64_SHA256 KOTLIN_COMPILER_SHA256; do
   value=${!var:-}
   if [[ ! "$value" =~ ^[0-9a-f]{64}$ ]]; then

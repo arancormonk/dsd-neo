@@ -346,95 +346,103 @@ jobs:
   # bit tests can fold away silently; only runtime tests fed NaN or infinity catch
   # those dead guards, another reason to run the suite under this compiler.
   # That diagnostic needs a current Clang (Ubuntu 24.04's default
-  # Clang 18 lacks it), hence the Arch container the v4 job below also uses, and
+  # Clang 18 lacks it), hence the Arch toolchain the v4 job below also uses, and
   # a probe that fails the job if the compiler stops enforcing it.
+  #
+  # The image is entered through tools/ci_arch_toolchain.sh, not as a job
+  # container: a job container pulls with container.credentials, and GitHub
+  # rejects empty credentials before the job starts, so a Dependabot or fork PR
+  # (no Docker Hub secrets) could not run this required check at all. The
+  # wrapper's pull goes out anonymously there.
   optimized-v3-ctest-clang:
     name: Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    container:
-      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
-      # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
-      # A fork PR has no secrets; the runner then skips the login and pulls anonymously.
-      credentials:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      CC: clang
-      CXX: clang++
     steps:
-      - name: Install build dependencies
-        run: |
-          pacman -Syu --noconfirm --needed \
-            clang cmake ninja git pkgconf python ripgrep jdk-openjdk kotlin \
-            libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran \
-            codec2 rtl-sdr soapysdr airspy curl expat
-
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Mark workspace as safe
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       # A runner without the ISA would SIGILL in the first test and read as a
       # test failure; fail here with the reason instead.
       - name: Require an x86-64-v3 runner
         run: |
           set -euo pipefail
-          /usr/lib/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
+          /lib64/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
 
-      # Require a working compiler and the specific -Wnan-infinity-disabled
-      # diagnostic; an unrelated compile failure must not satisfy the probe.
-      - name: Require Clang to reject NaN tests under fast-math
-        run: |
-          set -euo pipefail
-          clang --version
-          printf 'int probe(double x) { return __builtin_isnan(x); }\n' > "$RUNNER_TEMP/nan_probe.c"
-          clang -Werror -c "$RUNNER_TEMP/nan_probe.c" -o "$RUNNER_TEMP/nan_probe.o"
-          if clang -ffast-math -Werror -c "$RUNNER_TEMP/nan_probe.c" -o "$RUNNER_TEMP/nan_probe.o" 2> "$RUNNER_TEMP/nan_probe.err"; then
-            echo "::error::this Clang does not diagnose NaN tests under fast-math (-Wnan-infinity-disabled)" >&2
-            exit 1
-          fi
-          if ! grep -F -e "-Wnan-infinity-disabled" "$RUNNER_TEMP/nan_probe.err"; then
-            cat "$RUNNER_TEMP/nan_probe.err" >&2
-            echo "::error::the fast-math NaN probe failed without -Wnan-infinity-disabled" >&2
-            exit 1
-          fi
-
-      - name: Build and install mbelib-neo
-        run: |
-          set -euxo pipefail
-          source tools/ci-dependency-pins.env
-          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
-          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-            -DCMAKE_INSTALL_PREFIX=/usr/local
-          cmake --build /tmp/mbelib-neo/build -j
-          cmake --install /tmp/mbelib-neo/build
-          ldconfig
-
-      - name: Configure (perf-bench, x86-64-v3, clang)
-        run: |
-          cmake --preset perf-bench -G Ninja \
-            -DCMAKE_C_FLAGS=-march=x86-64-v3 \
-            -DCMAKE_CXX_FLAGS=-march=x86-64-v3 \
-            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON
-
-      - name: Build (perf-bench, x86-64-v3, clang)
-        run: cmake --build --preset perf-bench -j
-
-      - name: Test (perf-bench, x86-64-v3, clang)
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
         env:
-          # A test whose tool is missing fails here instead of skipping.
-          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          ctest --preset perf-bench -N | tail -n 1
-          ctest --preset perf-bench --output-on-failure
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      # One wrapper call: every call installs the toolchain into a fresh container.
+      - name: Build and test under Arch toolchain (perf-bench, x86-64-v3, clang)
+        env:
+          CI_ARCH_EXTRA_PACKAGES: airspy expat jdk-openjdk kotlin
+        run: |
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euxo pipefail
+            export CC=clang CXX=clang++
+
+            # Require a working compiler and the specific -Wnan-infinity-disabled
+            # diagnostic; an unrelated compile failure must not satisfy the probe.
+            clang --version
+            probe_dir=$(mktemp -d)
+            printf "int probe(double x) { return __builtin_isnan(x); }\n" > "$probe_dir/nan_probe.c"
+            clang -Werror -c "$probe_dir/nan_probe.c" -o "$probe_dir/nan_probe.o"
+            if clang -ffast-math -Werror -c "$probe_dir/nan_probe.c" -o "$probe_dir/nan_probe.o" 2> "$probe_dir/nan_probe.err"; then
+              echo "::error::this Clang does not diagnose NaN tests under fast-math (-Wnan-infinity-disabled)" >&2
+              exit 1
+            fi
+            if ! grep -F -e "-Wnan-infinity-disabled" "$probe_dir/nan_probe.err"; then
+              cat "$probe_dir/nan_probe.err" >&2
+              echo "::error::the fast-math NaN probe failed without -Wnan-infinity-disabled" >&2
+              exit 1
+            fi
+
+            source tools/ci-dependency-pins.env
+            tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+            cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+              -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/mbelib-neo/build -j
+            cmake --install /tmp/mbelib-neo/build
+
+            cmake --preset perf-bench -G Ninja \
+              -DCMAKE_C_FLAGS=-march=x86-64-v3 \
+              -DCMAKE_CXX_FLAGS=-march=x86-64-v3 \
+              -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON
+            cmake --build --preset perf-bench -j
+
+            # A test whose tool is missing fails here instead of skipping.
+            export DSD_NEO_REQUIRE_TEST_TOOLS=1
+            ctest --preset perf-bench -N | tail -n 1
+            ctest --preset perf-bench --output-on-failure
+          '
 
   build-linux:
     runs-on: ubuntu-latest
@@ -657,11 +665,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+
       - name: Login to Docker Hub (optional)
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
-        # needs a login of its own (the job container credentials do not cover it).
-        # Only on trusted contexts (not forked PRs), where the secrets exist.
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         continue-on-error: true
         env:
@@ -707,70 +729,79 @@ jobs:
     # Required status check. -Wstringop-overflow is version- and vectorizer-sensitive and the
     # container is a rolling tag, so a GCC point release can break this job on an unrelated PR;
     # pin the image digest to the last good release when that happens rather than merging around it.
+    #
+    # Built through tools/ci_arch_toolchain.sh rather than in a job container, for the
+    # reason given at optimized-v3-ctest-clang: a job container cannot start on a
+    # Dependabot or fork PR.
     name: gcc lto link (x86-64-v4)
     runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
-      # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
-      # A fork PR has no secrets; the runner then skips the login and pulls anonymously.
-      credentials:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-    defaults:
-      run:
-        shell: bash
     steps:
-      - name: Install build dependencies
-        run: |
-          pacman -Syu --noconfirm --needed \
-            cmake ninja git pkgconf \
-            libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran \
-            codec2 rtl-sdr soapysdr airspy curl
-
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Mark workspace as safe
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Report compiler version
-        run: gcc --version
-
-      - name: Build and install mbelib-neo
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          set -euxo pipefail
-          source tools/ci-dependency-pins.env
-          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
-          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-            -DCMAKE_INSTALL_PREFIX=/usr/local
-          cmake --build /tmp/mbelib-neo/build -j
-          cmake --install /tmp/mbelib-neo/build
-          ldconfig
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
 
-      - name: Configure (Release + LTO + -march=x86-64-v4)
-        run: |
-          set -euxo pipefail
-          # HELP2MAN_FOUND is forced off: the man-page step runs the freshly built binary,
-          # which SIGILLs on a runner without AVX-512 and reads as a build failure.
-          cmake -S . -B build/avx512 -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_FLAGS="-march=x86-64-v4" \
-            -DCMAKE_CXX_FLAGS="-march=x86-64-v4" \
-            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-            -DDSD_WARNINGS_AS_ERRORS=ON \
-            -DBUILD_TESTING=OFF \
-            -DHELP2MAN_FOUND=HELP2MAN_FOUND-NOTFOUND
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
-      - name: Build and link (never executed)
+      # One wrapper call: every call installs the toolchain into a fresh container.
+      - name: Build and link under Arch toolchain (Release + LTO + -march=x86-64-v4, never executed)
+        env:
+          CI_ARCH_EXTRA_PACKAGES: airspy
         run: |
-          set -euxo pipefail
-          # The link is the point: the diagnostic appears when LTO widens the copy loops.
-          # The resulting binary targets an ISA the runner lacks, so it is never run.
-          cmake --build build/avx512 -j
-          test -x build/avx512/apps/dsd-cli/dsd-neo
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euxo pipefail
+            gcc --version
+
+            source tools/ci-dependency-pins.env
+            tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+            cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+              -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/mbelib-neo/build -j
+            cmake --install /tmp/mbelib-neo/build
+
+            # HELP2MAN_FOUND is forced off: the man-page step runs the freshly built binary,
+            # which SIGILLs on a runner without AVX-512 and reads as a build failure.
+            cmake -S . -B build/avx512 -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_FLAGS="-march=x86-64-v4" \
+              -DCMAKE_CXX_FLAGS="-march=x86-64-v4" \
+              -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+              -DDSD_WARNINGS_AS_ERRORS=ON \
+              -DBUILD_TESTING=OFF \
+              -DHELP2MAN_FOUND=HELP2MAN_FOUND-NOTFOUND
+
+            # The link is the point: the diagnostic appears when LTO widens the copy loops.
+            # The resulting binary targets an ISA the runner lacks, so it is never run.
+            cmake --build build/avx512 -j
+            test -x build/avx512/apps/dsd-cli/dsd-neo
+          '
 
   semgrep:
     name: semgrep
@@ -921,7 +952,9 @@ jobs:
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
       # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
-      # A fork PR has no secrets; the runner then skips the login and pulls anonymously.
+      # GitHub rejects empty credentials before the job starts. That is safe only because this
+      # job never runs on a pull request, where Dependabot and fork PRs have no secrets; a job
+      # that can pulls the image in a step through tools/ci_arch_toolchain.sh instead.
       credentials:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -1117,7 +1150,9 @@ jobs:
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
       # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
-      # A fork PR has no secrets; the runner then skips the login and pulls anonymously.
+      # GitHub rejects empty credentials before the job starts. That is safe only because this
+      # job never runs on a pull request, where Dependabot and fork PRs have no secrets; a job
+      # that can pulls the image in a step through tools/ci_arch_toolchain.sh instead.
       credentials:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -1569,11 +1604,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+
       - name: Login to Docker Hub (optional)
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
-        # needs a login of its own (the job container credentials do not cover it).
-        # Only on trusted contexts (not forked PRs), where the secrets exist.
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         continue-on-error: true
         env:
@@ -1638,11 +1687,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+
       - name: Login to Docker Hub (optional)
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
-        # needs a login of its own (the job container credentials do not cover it).
-        # Only on trusted contexts (not forked PRs), where the secrets exist.
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         continue-on-error: true
         env:
@@ -1730,11 +1793,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+
       - name: Login to Docker Hub (optional)
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
-        # needs a login of its own (the job container credentials do not cover it).
-        # Only on trusted contexts (not forked PRs), where the secrets exist.
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         continue-on-error: true
         env:

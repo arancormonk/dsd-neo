@@ -5,7 +5,9 @@
 # tools/check_workflow_download_pins.sh keeps the inline archlinux:base-devel
 # digests in the workflows equal to ARCHLINUX_BASE_DEVEL_IMAGE. The jobs that run
 # in the image name it inline (a container image cannot read the env file), and
-# the copies drifted from the pin once. The script runs inside a throwaway
+# the copies drifted from the pin once. It also keeps a job that pulls its
+# container with credentials off pull requests, where Dependabot and forks have
+# no secrets and GitHub rejects the empty ones. The script runs inside a throwaway
 # repository holding the real pins file and one workflow, so each case edits only
 # the workflow.
 set -euo pipefail
@@ -116,6 +118,155 @@ if ! grep -qF "Kotlin compiler download in .github/workflows/ci.yaml must be ver
   fail "the unverified Kotlin download was not reported"
   cat "$WORK/kotlin_unverified.out" >&2
 fi
+
+# run_credentials_case NAME: the workflow on stdin replaces ci.yaml; the verdict is
+# left in rc and the output in $WORK/NAME.out.
+run_credentials_case() {
+  local name="$1"
+  cat > "$REPO/.github/workflows/ci.yaml"
+  rc=0
+  (cd "$REPO" && ./tools/check_workflow_download_pins.sh) > "$WORK/$name.out" 2>&1 || rc=$?
+}
+# expect_credentials_verdict NAME WANT: WANT is "pass" or "fail".
+expect_credentials_verdict() {
+  local name="$1" want="$2"
+  if [[ "$want" == pass && $rc -ne 0 ]]; then
+    fail "$name: failed the check"
+    cat "$WORK/$name.out" >&2
+  elif [[ "$want" == fail ]]; then
+    if [[ $rc -eq 0 ]]; then
+      fail "$name: passed"
+    elif ! grep -qF "can run on a pull request" "$WORK/$name.out" ||
+      ! grep -qF "job build" "$WORK/$name.out"; then
+      fail "$name: the job was not reported"
+      cat "$WORK/$name.out" >&2
+    fi
+  fi
+}
+
+# GitHub rejects empty container credentials before the job starts, and Dependabot
+# and fork PRs get no secrets: a job that pulls with credentials must stay off pull
+# requests (#665 put them on two that did not, and every Dependabot PR failed both).
+run_credentials_case pr_job_with_credentials << EOF
+on:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: $pinned
+      credentials:
+        username: \${{ secrets.DOCKERHUB_USERNAME }}
+        password: \${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict pr_job_with_credentials fail
+
+run_credentials_case pr_service_with_credentials << EOF
+on:
+  push:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      cache:
+        image: $pinned
+        credentials:
+          username: \${{ secrets.DOCKERHUB_USERNAME }}
+          password: \${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict pr_service_with_credentials fail
+
+# A step-level condition does not keep the job, and its container pull, off a PR.
+run_credentials_case step_condition_only << EOF
+on:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: $pinned
+      credentials:
+        username: \${{ secrets.DOCKERHUB_USERNAME }}
+        password: \${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - if: github.event_name != 'pull_request'
+        run: true
+EOF
+expect_credentials_verdict step_condition_only fail
+
+run_credentials_case job_off_pull_requests << EOF
+on:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    container:
+      image: $pinned
+      credentials:
+        username: \${{ secrets.DOCKERHUB_USERNAME }}
+        password: \${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict job_off_pull_requests pass
+
+# The AUR jobs' shape: the container first, and a folded condition after it.
+run_credentials_case folded_condition_after_container << EOF
+on:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: $pinned
+      credentials:
+        username: \${{ secrets.DOCKERHUB_USERNAME }}
+        password: \${{ secrets.DOCKERHUB_TOKEN }}
+    if: >-
+      \${{
+        always() &&
+        github.event_name != 'pull_request' &&
+        github.repository == 'arancormonk/dsd-neo'
+      }}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict folded_condition_after_container pass
+
+run_credentials_case push_only_workflow << EOF
+on:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: $pinned
+      credentials:
+        username: \${{ secrets.DOCKERHUB_USERNAME }}
+        password: \${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict push_only_workflow pass
+
+run_credentials_case persist_credentials_only << EOF
+on:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+EOF
+expect_credentials_verdict persist_credentials_only pass
 
 if [[ $failures -ne 0 ]]; then
   echo "TOOLS_CHECK_WORKFLOW_DOWNLOAD_PINS: $failures failure(s)" >&2
