@@ -1476,7 +1476,7 @@ dmo_mode_tmo(const dsd_state* state, const tetra_state_t* ts, dmo_text* t) {
         return;
     }
     dmo_put(t, "  MCC=%u MNC=%u CC=0x%02x", (unsigned)ts->mcc, (unsigned)ts->mnc, (unsigned)ts->colour);
-    if (ts->enc_mode == TETRA_ENC_MODE_ON || ts->enc_mode == TETRA_ENC_MODE_ON_AUTH) {
+    if (tetra_enc_mode_encrypted(ts->enc_mode)) {
         const char* ksg = tetra_air_ksg_name(tetra_air_ksg_lookup(state, ts->mcc, ts->mnc));
         dmo_put(t, "  encrypted%s%s", ksg ? " " : "", ksg ? ksg : "");
     }

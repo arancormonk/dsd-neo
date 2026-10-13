@@ -10,7 +10,9 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
@@ -18,7 +20,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -47,6 +48,12 @@ alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
 }
 
+static void
+free_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 static dsd_opts*
 alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -55,18 +62,18 @@ alloc_opts(void) {
 static void
 wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_nbits) {
     int total = 3 + cmce_nbits;
-    memset(out, 0, (size_t)total);
+    DSD_MEMSET(out, 0, (size_t)total);
     pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
-    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
+    DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = total;
 }
 
 static void
 wrap_mle_mm(const uint8_t* mm_body, int mm_nbits, uint8_t* out, int* out_nbits) {
     int total = 3 + mm_nbits;
-    memset(out, 0, (size_t)total);
+    DSD_MEMSET(out, 0, (size_t)total);
     pack_bits(out, TETRA_MLE_PD_MM, 0, 3);
-    memcpy(out + 3, mm_body, (size_t)mm_nbits);
+    DSD_MEMCPY(out + 3, mm_body, (size_t)mm_nbits);
     *out_nbits = total;
 }
 
@@ -85,7 +92,7 @@ test_phase77_mac_resource(void) {
     n += 1; // fill_bits = 1
     pack_bits(bits, 0, n, 1);
     n += 1; // grant_pos = 0
-    pack_bits(bits, TETRA_ENC_MODE_ON, n, 2);
+    pack_bits(bits, TETRA_ENC_MODE_RESERVED, n, 2);
     n += 2; // enc_mode = 1
     pack_bits(bits, 1, n, 1);
     n += 1; // rand_acc = 1
@@ -111,7 +118,7 @@ test_phase77_mac_resource(void) {
     CHECK(tetra_st(st)->mac_addr_type == TETRA_MAC_ADDR_SSI_EVENT, "tetra_mac_addr_type");
     CHECK(tetra_st(st)->mac_event_label == 511, "tetra_mac_event_label");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -149,7 +156,7 @@ test_phase77_mac_resource_usage(void) {
 
     CHECK(tetra_st(st)->mac_usage_marker == 33, "tetra_mac_usage_marker");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -205,7 +212,7 @@ test_phase77_sysinfo(void) {
     CHECK(tetra_st(st)->sysinfo_opt_field_type == 2, "tetra_sysinfo_opt_field_type");
     CHECK(tetra_st(st)->sysinfo_opt_field_data == 0xABCDE, "tetra_sysinfo_opt_field_data");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -248,7 +255,7 @@ test_phase77_access_define(void) {
 
     CHECK(tetra_st(st)->access_common_flag == 1, "tetra_access_common_flag");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -284,7 +291,7 @@ test_phase78_cmce_d_tx_granted(void) {
     CHECK(tetra_st(st)->cmce_tx_granted_perm == 1, "tetra_cmce_tx_granted_perm");
     CHECK(tetra_st(st)->cmce_tx_granted_reserv == 1, "tetra_cmce_tx_granted_reserv");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -317,7 +324,7 @@ test_phase78_mle_nwrk_broadcast(void) {
 
     /* Annex E.17 explicitly carries the zero value meaning no neighbour-cell
      * information is available. */
-    memset(pdu, 0, sizeof(pdu));
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
     n = 0;
     pack_bits(pdu, TETRA_MLE_PD_MLE, n, 3);
     n += 3;
@@ -341,7 +348,7 @@ test_phase78_mle_nwrk_broadcast(void) {
 
     /* Annex E.18: two CA neighbours.  The first has no optional fields; the
      * second carries only its Location Area from the ten standardized P-bits. */
-    memset(pdu, 0, sizeof(pdu));
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
     n = 0;
     pack_bits(pdu, TETRA_MLE_PD_MLE, n, 3);
     n += 3;
@@ -419,7 +426,7 @@ test_phase78_mle_nwrk_broadcast(void) {
     CHECK(tetra_st(st)->mle_cell_reselect_params == 0x2222 && tetra_st(st)->mle_ca_neighbor_count == 2,
           "truncated Annex E.18 preserves the previous network broadcast");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -455,7 +462,7 @@ test_phase79_mm_attach_detach(void) {
     CHECK(tetra_st(st)->mm_group_identity_ack_request == 1, "tetra_mm_group_identity_ack_request");
     CHECK(tetra_st(st)->mm_group_identity_attach_detach_mode == 1, "tetra_mm_group_identity_attach_detach_mode");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 

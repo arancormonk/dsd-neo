@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/crypto/tetra_tea.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -41,7 +42,7 @@ static dsd_state*
 new_encrypted_state(void) {
     dsd_state* st = (dsd_state*)calloc(1, sizeof(dsd_state));
     tetra_state_t* ts = tetra_st(st);
-    ts->enc_mode = 1;
+    ts->enc_mode = TETRA_ENC_MODE_EVEN;
     ts->net_known = 1;
     ts->mcc = 86;
     ts->mnc = 28;
@@ -105,7 +106,7 @@ test_preconditions(void) {
 
     printf("[when speech is decrypted]\n");
     DSD_MEMSET(bits, 1, sizeof(bits));
-    tetra_st(st)->enc_mode = 1;
+    tetra_st(st)->enc_mode = TETRA_ENC_MODE_EVEN;
     tetra_st(st)->net_known = 1;
     tetra_st(st)->mcc = 86;
     tetra_st(st)->mnc = 28;
@@ -139,7 +140,12 @@ test_preconditions(void) {
     tetra_st(st)->fn = 0;
     CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0 && bits[0] == 1, "a reserved frame number is no IV");
     tetra_st(st)->fn = 1;
-    tetra_st(st)->enc_mode = 0;
+    tetra_st(st)->enc_mode = TETRA_ENC_MODE_ODD;
+    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 1, "the odd key version is encrypted too");
+    tetra_st(st)->enc_mode = TETRA_ENC_MODE_RESERVED;
+    DSD_MEMSET(bits, 1, sizeof(bits));
+    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0 && bits[0] == 1, "the reserved mode is not decrypted");
+    tetra_st(st)->enc_mode = TETRA_ENC_MODE_NONE;
     CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0 && bits[0] == 1, "clear call is unchanged");
     free_state(st);
 }

@@ -304,12 +304,12 @@ test_null_pdu_leaves_state(void) {
         dsd_opts* opts = new_opts();
         setup_trunking(opts, state);
         tetra_state_t* ts = tetra_st(state);
-        ts->enc_mode = TETRA_ENC_MODE_ON_AUTH;
+        ts->enc_mode = TETRA_ENC_MODE_EVEN;
         ts->ssi_valid = 1;
         ts->active_ssi = 777;
         tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
         ok &= check(!has_traffic(state) && tune_calls == 0, "a Null PDU carries no channel allocation");
-        ok &= check(ts->enc_mode == TETRA_ENC_MODE_ON_AUTH && ts->ssi_valid && ts->active_ssi == 777
+        ok &= check(ts->enc_mode == TETRA_ENC_MODE_EVEN && ts->ssi_valid && ts->active_ssi == 777
                         && ts->frames_resource == 0,
                     "a Null PDU leaves the address and encryption state");
         free_state(state);
@@ -526,7 +526,7 @@ test_encrypted_pdus_not_parsed(void) {
     ts->active_ssi = 0x111111u;
 
     ttb_block b = {0};
-    int start = ttb_resource(&b, TETRA_ENC_MODE_ON_AUTH, TETRA_MAC_ADDR_SSI, 0x345678u);
+    int start = ttb_resource(&b, TETRA_ENC_MODE_EVEN, TETRA_MAC_ADDR_SSI, 0x345678u);
     ttb_resource_flags(&b, 0);
     ttb_put(&b, 2, 4);
     ttb_d_setup(&b, 0x0ABCu, TTB_SPEECH_GROUP);
@@ -535,11 +535,11 @@ test_encrypted_pdus_not_parsed(void) {
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
     int ok = check(tetra_calls_peek(state, 0x0ABCu) == NULL && ts->mac_encrypted_sdus == 1,
                    "an encrypted TM-SDU is not handed to the MLE");
-    ok &= check(ts->enc_mode == TETRA_ENC_MODE_ON_AUTH && !ts->ssi_valid && ts->active_ssi == 0x111111u,
+    ok &= check(ts->enc_mode == TETRA_ENC_MODE_EVEN && !ts->ssi_valid && ts->active_ssi == 0x111111u,
                 "an encrypted short identity is not published as an SSI");
 
     b = (ttb_block){0};
-    start = ttb_resource(&b, TETRA_ENC_MODE_RSVD, TETRA_MAC_ADDR_SSI, 0x345678u);
+    start = ttb_resource(&b, TETRA_ENC_MODE_ODD, TETRA_MAC_ADDR_SSI, 0x345678u);
     ttb_resource_flags(&b, 1);
     ttb_allocation(&b, 4, 1, 50);
     ttb_close_resource(&b, start);
@@ -550,7 +550,7 @@ test_encrypted_pdus_not_parsed(void) {
 
     /* The encryption mode of a first fragment applies to every fragment of its TM-SDU. */
     b = (ttb_block){0};
-    start = ttb_resource(&b, TETRA_ENC_MODE_ON_AUTH, TETRA_MAC_ADDR_SSI, 0x345678u);
+    start = ttb_resource(&b, TETRA_ENC_MODE_EVEN, TETRA_MAC_ADDR_SSI, 0x345678u);
     ttb_set(&b, start + 7, 63, 6);
     ttb_resource_flags(&b, 0);
     ttb_put(&b, 2, 4);

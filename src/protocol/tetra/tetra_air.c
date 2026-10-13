@@ -104,7 +104,7 @@ tetra_air_key_usable(const dsd_state* state) {
 /* The key, algorithm and initial value for the current slot, or NULL when this speech is not decrypted here. */
 static const uint8_t*
 tetra_air_slot_key(const dsd_state* state, const tetra_state_t* ts, int* ksg, uint32_t* iv) {
-    if (ts->dmo || (ts->enc_mode != TETRA_ENC_MODE_ON && ts->enc_mode != TETRA_ENC_MODE_ON_AUTH)) {
+    if (ts->dmo || !tetra_enc_mode_encrypted(ts->enc_mode)) {
         return NULL;
     }
     if (!ts->net_known || !ts->hyperframe_valid || !ts->tdma_valid) {

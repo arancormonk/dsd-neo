@@ -87,18 +87,21 @@ test_trunked_downlink(void) {
     ts->sm.followed.timeslots = 0x0AU;
     ts->sm.followed.freq_hz = 392125000L;
     ts->sm.followed.call_id = 0x55U;
-    ts->enc_mode = TETRA_ENC_MODE_ON_AUTH;
+    ts->enc_mode = TETRA_ENC_MODE_EVEN;
     ts->sm.state = (uint8_t)TETRA_SM_TUNED;
     assert(tetra_air_ksg_remember(state, 262U, 1001U, 1U) == 1);
     tetra_publish(state);
     assert(pub->traffic_valid == 1U && pub->traffic_carrier == 654U && pub->traffic_slots == 0x0AU);
     assert(pub->traffic_freq_hz == 392125000U && pub->trunk_state == DSD_TETRA_TRUNK_ON_TRAFFIC);
     assert(pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED && pub->tea == 2U);
+    ts->enc_mode = TETRA_ENC_MODE_ODD;
+    tetra_publish(state);
+    assert(pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED);
 
     /* No timeslot is no traffic channel; an unresolved or impossible frequency publishes as 0. */
     ts->sm.followed.timeslots = 0U;
     ts->dl_carrier_hz = -5L;
-    ts->enc_mode = 3U; /* reserved */
+    ts->enc_mode = TETRA_ENC_MODE_RESERVED;
     tetra_publish(state);
     assert(pub->traffic_valid == 0U && pub->traffic_carrier == 0U && pub->traffic_freq_hz == 0U);
     assert(pub->cc_freq_hz == 0U && pub->air_encryption == DSD_TETRA_AIR_ENC_UNKNOWN);

@@ -71,8 +71,6 @@ typedef struct {
     int body;     /* first bit after the channel allocation flag */
 } mac_resource_header;
 
-static const char* const k_enc_mode_name[4] = {"none", "reserved", "on(even)", "on(odd)"};
-
 /* 1 for the SSI family (SSI, USSI and their event label or usage marker forms), 2 for the SMI family, 0 for event
  * labels and the Null PDU. */
 static int
@@ -420,7 +418,7 @@ print_resource(const mac_block* b, const mac_resource_header* h, int sdu_bits) {
         note = "  first fragment";
     }
     DSD_FPRINTF(stderr, "[TETRA MAC-RESOURCE] CC=%d  enc=%s  rand_acc=%u  len_ind=%u  addr=%s  sdu_bits=%d%s\n", b->cc,
-                k_enc_mode_name[h->enc_mode & 3u], (unsigned)h->random_access, (unsigned)h->length_ind, addr, sdu_bits,
+                tetra_enc_mode_name(h->enc_mode), (unsigned)h->random_access, (unsigned)h->length_ind, addr, sdu_bits,
                 note);
 }
 
@@ -836,7 +834,7 @@ parse_supplementary(mac_block* b, const uint8_t* bits, int nbits) {
         return 0;
     }
     DSD_FPRINTF(stderr, "[TETRA MAC-D-BLCK] CC=%d  enc=%s  event_label=%u  sdu_bits=%d%s\n", b->cc,
-                k_enc_mode_name[enc_mode & 3u], (unsigned)event_label, end - r.pos,
+                tetra_enc_mode_name((uint8_t)enc_mode), (unsigned)event_label, end - r.pos,
                 enc_mode != TETRA_ENC_MODE_NONE ? "  encrypted; not decoded" : "");
     if (enc_mode != TETRA_ENC_MODE_NONE) {
         b->ts->mac_encrypted_sdus++;

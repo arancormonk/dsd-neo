@@ -46,13 +46,30 @@ extern "C" {
 #define TETRA_MAC_ADDR_SSI_USAGE   6 /* SSI + usage marker assignment (30 bits) */
 #define TETRA_MAC_ADDR_SMI_EVENT   7 /* SMI + event label assignment (34 bits) */
 
-/* Encryption mode of MAC-RESOURCE and MAC-D-BLCK (table 21.55, EN 300 392-7 clause 6.5.1). Any value other than
- * TETRA_ENC_MODE_NONE means the TM-SDU and the channel allocation element are ciphertext and the SSI part of the
- * address is an encrypted short identity. */
-#define TETRA_ENC_MODE_NONE        0 /* not encrypted */
-#define TETRA_ENC_MODE_ON          1 /* reserved in EN 300 392-7 class 2 and 3 cells */
-#define TETRA_ENC_MODE_ON_AUTH     2 /* encrypted, SCK-VN or CCK-id even */
-#define TETRA_ENC_MODE_RSVD        3 /* encrypted, SCK-VN or CCK-id odd */
+/* Encryption mode element of MAC-RESOURCE and MAC-D-BLCK (EN 300 392-7 clause 6.5.1, tables 6.6 and 6.7). Any value
+ * other than TETRA_ENC_MODE_NONE means the TM-SDU and the channel allocation element are not plaintext (the reserved
+ * value cannot be read either) and the SSI part of the address is an encrypted short identity. */
+#define TETRA_ENC_MODE_NONE        0 /* PDU not encrypted */
+#define TETRA_ENC_MODE_RESERVED    1 /* reserved */
+#define TETRA_ENC_MODE_EVEN        2 /* PDU encrypted, SCK-VN or CCK-id even */
+#define TETRA_ENC_MODE_ODD         3 /* PDU encrypted, SCK-VN or CCK-id odd */
+
+/** 1 for the encryption modes that say the PDU is air interface encrypted (EN 300 392-7 tables 6.6 and 6.7). */
+static inline int
+tetra_enc_mode_encrypted(uint8_t mode) {
+    return mode == TETRA_ENC_MODE_EVEN || mode == TETRA_ENC_MODE_ODD;
+}
+
+/** Display name of an encryption mode element. */
+static inline const char*
+tetra_enc_mode_name(uint8_t mode) {
+    switch (mode & 0x03u) {
+        case TETRA_ENC_MODE_NONE: return "none";
+        case TETRA_ENC_MODE_RESERVED: return "reserved";
+        case TETRA_ENC_MODE_EVEN: return "on(even)";
+        default: return "on(odd)";
+    }
+}
 
 /**
  * Decode one downlink signalling MAC block.

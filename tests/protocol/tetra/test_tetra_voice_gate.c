@@ -79,7 +79,7 @@ test_crypto_class(dsd_state* st) {
     ts->enc_mode = TETRA_ENC_MODE_NONE;
     expect(tetra_voice_crypto_class(st, 0) == DSD_VOICE_CRYPTO_CLEAR, "not encrypted is clear");
     expect(tetra_voice_crypto_class(st, 1) == DSD_VOICE_CRYPTO_CLEAR, "a stray keystream does not make it encrypted");
-    for (uint8_t mode = TETRA_ENC_MODE_ON; mode <= TETRA_ENC_MODE_RSVD; mode++) {
+    for (uint8_t mode = TETRA_ENC_MODE_RESERVED; mode <= TETRA_ENC_MODE_ODD; mode++) {
         ts->enc_mode = mode;
         expect(tetra_voice_crypto_class(st, 1) == DSD_VOICE_CRYPTO_DECRYPTABLE, "encrypted and decrypted");
         expect(tetra_voice_crypto_class(st, 0) == DSD_VOICE_CRYPTO_UNDECRYPTABLE, "encrypted, no keystream");

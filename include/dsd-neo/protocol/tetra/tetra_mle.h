@@ -77,17 +77,6 @@ extern "C" {
  */
 void tetra_mle_dispatch(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state);
 
-/** Display name of the 2-bit MAC-RESOURCE encryption mode (EN 300 392-2 table 21.55; EN 300 392-7 defines 1 to 3). */
-static inline const char*
-tetra_enc_mode_name(uint8_t mode) {
-    switch (mode & 0x03u) {
-        case 0: return "none";
-        case 1: return "on";
-        case 2: return "on+auth";
-        default: return "rsvd";
-    }
-}
-
 #ifdef __cplusplus
 }
 #endif

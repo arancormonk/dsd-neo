@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * TETRA name helpers: the MAC-RESOURCE encryption mode (EN 300 392-2 table 21.55) and the MM status downlink
+ * TETRA name helpers: the MAC-RESOURCE encryption mode element (EN 300 392-7 clause 6.5.1) and the MM status downlink
  * (EN 300 392-2 clause 16.10.48) names.
  */
 
-#include <dsd-neo/protocol/tetra/tetra_mle.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 
 #include <stdio.h>
@@ -29,9 +29,9 @@ main(void) {
     printf("[TETRA name helpers]\n");
 
     CHECK_STR(tetra_enc_mode_name(0), "none", "enc_mode 0 == none");
-    CHECK_STR(tetra_enc_mode_name(1), "on", "enc_mode 1 == on");
-    CHECK_STR(tetra_enc_mode_name(2), "on+auth", "enc_mode 2 == on+auth");
-    CHECK_STR(tetra_enc_mode_name(3), "rsvd", "enc_mode 3 == rsvd");
+    CHECK_STR(tetra_enc_mode_name(1), "reserved", "enc_mode 1 == reserved");
+    CHECK_STR(tetra_enc_mode_name(2), "on(even)", "enc_mode 2 == encrypted, even key version");
+    CHECK_STR(tetra_enc_mode_name(3), "on(odd)", "enc_mode 3 == encrypted, odd key version");
 
     CHECK_STR(tetra_mm_status_name(1), "change energy saving request", "status downlink 1");
     CHECK_STR(tetra_mm_status_name(7), "MS frequency bands request", "status downlink 7");

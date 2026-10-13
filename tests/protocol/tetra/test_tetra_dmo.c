@@ -9,6 +9,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -927,7 +928,7 @@ test_names_and_mode(void) {
     CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "TEA") == NULL
               && strstr(mode, "encrypted") == NULL,
           "a known KSG is not shown while the call is clear");
-    tetra_st(st)->enc_mode = 1;
+    tetra_st(st)->enc_mode = TETRA_ENC_MODE_EVEN;
     CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "encrypted TEA2") != NULL,
           "encrypted trunked call names the network KSG");
     tetra_st(st)->mnc = 29;

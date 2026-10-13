@@ -816,8 +816,9 @@ tetra_pub_mode(const dsd_state* state, const tetra_state_t* ts) {
 }
 
 /* Air-interface encryption: in direct mode the security class of the current call (DM-2-A/B/C encrypt the air
- * interface; DM-1, with or without end-to-end encryption, leaves it clear); in trunked mode the MAC-RESOURCE
- * encryption mode (EN 300 392-2: 0 clear, 1 and 2 encrypted, 3 reserved), once one has been decoded. */
+ * interface; DM-1, with or without end-to-end encryption, leaves it clear); in trunked mode the encryption mode element
+ * of the last addressed MAC-RESOURCE (EN 300 392-7 clause 6.5.1: 0 clear, 2 and 3 encrypted, 1 reserved and so
+ * unknown), once one has been decoded. */
 static uint8_t
 tetra_pub_air_encryption(const tetra_state_t* ts) {
     if (ts->dmo) {
@@ -829,7 +830,7 @@ tetra_pub_air_encryption(const tetra_state_t* ts) {
             default: return DSD_TETRA_AIR_ENC_UNKNOWN;
         }
     }
-    if (ts->enc_mode == TETRA_ENC_MODE_ON || ts->enc_mode == TETRA_ENC_MODE_ON_AUTH) {
+    if (tetra_enc_mode_encrypted(ts->enc_mode)) {
         return DSD_TETRA_AIR_ENC_ENCRYPTED;
     }
     return (ts->frames_resource != 0 && ts->enc_mode == TETRA_ENC_MODE_NONE) ? DSD_TETRA_AIR_ENC_CLEAR

@@ -322,7 +322,7 @@ static const uint8_t k_air_key[10] = {0x1F, 0x2E, 0x3D, 0x4C, 0x5B, 0x6A, 0x79, 
 static void
 air_encrypted_call(fixture* f, int key_loaded) {
     tetra_state_t* ts = tetra_st(f->state);
-    ts->enc_mode = TETRA_ENC_MODE_ON;
+    ts->enc_mode = TETRA_ENC_MODE_ODD;
     ts->net_known = 1;
     ts->mcc = 262;
     ts->mnc = 1001;
