@@ -403,7 +403,6 @@ Item {
                 onClicked: screen.signalSearch()
             }
 
-
             // Deliberately not a system card: there is nothing saved here, nothing
             // named, and nothing to come back to. It is a door, so it carries a
             // chevron rather than a play button, and its meta line states what the

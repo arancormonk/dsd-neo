@@ -17,11 +17,15 @@ Item {
             squelchLevel: -60, probe: 2, visit: 30}]
         property var history: []
         property var avoids: []
+        property var sessionAvoids: []
         property var status: ({phase: 0})
         property string error: ""
         property var actions: []
+        property var lifted: []
         property int arms: 0
         function control(action, session, hit) { actions = [action, session, hit]; return true; }
+        function removeSessionAvoid(frequency) { lifted = lifted.concat(["session:" + frequency]); return true; }
+        function removeAvoid(frequency) { lifted = lifted.concat(["permanent:" + frequency]); }
         function arm() { arms++; return ""; }
         function saveRange(row, range) { ranges = [range]; return ""; }
         function defaultRange() { return Object.assign({}, ranges[0]); }
@@ -49,7 +53,10 @@ Item {
             verify(loader.item !== null);
             loader.item.sessionActive = true;
             model.actions = [];
-            model.status = {phase: 4, session: "17", pass: 2, range: 0, channel: 80, count: 801,
+            model.lifted = [];
+            model.sessionAvoids = [];
+            model.avoids = [];
+            model.status = {phase: 4, session: "17", owned: true, pass: 2, range: 0, channel: 80, count: 801,
                 hit: {id: "42", session: "17", freqMHz: "463.552100", frequency: 463552100, power: -32.1,
                     noise: -63.2, range: "Local UHF", width: 12500, unresolved: true, ended: false,
                     knownLabel: "Warehouse · 463.5500 MHz", confirmed: false, am: false}};
@@ -95,6 +102,28 @@ Item {
             compare(findChild(loader.item, "searchIdentification").text, "Trying digital identification…");
             model.status = Object.assign({}, model.status, {phase: 5, identifying: true});
             compare(findChild(loader.item, "searchIdentification").text, "Trying digital identification…");
+        }
+        function test_live_strength_is_shown_beside_detection_power() {
+            var strength = findChild(loader.item, "searchStrength");
+            compare(strength.text, "-32.1 dBFS · Local UHF");
+            model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.25});
+            compare(strength.text, "Now -47.3 dBFS · detected -32.1 dBFS · Local UHF");
+        }
+        function test_session_and_permanent_avoids_can_be_lifted_while_searching() {
+            model.sessionAvoids = [463550000];
+            model.avoids = [154430000];
+            wait(0);
+            var session = findChild(loader.item, "searchSessionAvoid");
+            verify(session && session.visible && session.enabled);
+            session.clicked();
+            var permanent = findChild(loader.item, "searchPermanentAvoid");
+            verify(permanent && permanent.enabled);
+            permanent.clicked();
+            compare(model.lifted.join(","), "session:463550000,permanent:154430000");
+            // Session avoids end with the session: nothing to list once it stopped.
+            loader.item.sessionActive = false;
+            wait(0);
+            verify(!findChild(loader.item, "searchSessionAvoid"));
         }
         function test_paused_edits_are_applied_on_resume() {
             model.status = {phase: 6, session: "17"};

@@ -275,7 +275,7 @@ Window {
     }
     property bool wizardOpen: false
     property bool exploreSetupOpen: false
-    property bool signalSearchOpen: typeof signalSearch !== "undefined" && decoderHost.sessionActive && (signalSearch.status.phase || 0) > 0
+    property bool signalSearchOpen: typeof signalSearch !== "undefined" && decoderHost.sessionActive && !!signalSearch.status.owned
     property bool licensesOpen: false
     property bool radioReferenceAccountOpen: false
     property bool diagnosticsOpen: false // WP-F5

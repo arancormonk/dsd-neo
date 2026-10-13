@@ -31,7 +31,7 @@ suppressed until the next pass.
 | AM bandwidth / listening squelch | 6,000 Hz / `auto+10` |
 | Digital identification | Explicit Auto for NFM, or a selected existing profile; analog-only is available |
 | Probe duration | 2 seconds after fresh tuned samples arrive; adjustable through 10 seconds |
-| Quiet time | Resume after 500 ms without relevant carrier or validated digital activity |
+| Quiet time | Resume after 500 ms without relevant carrier or validated digital activity; an analog visit counts it from the monitor's first verdict on the landed channel (at most 3 seconds after landing) |
 | Maximum visit | 30 seconds; adjustable through 600 seconds, or 0 to disable |
 | Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls |
 
@@ -42,7 +42,16 @@ the selected profile. Auto normally takes about six seconds to rotate its symbol
 profiles, so the two-second default cannot identify every supported signal.
 
 A detection displays frequency and measured strength immediately, while its
-listening tune is still pending. Only validated protocol content can add a
+listening tune is still pending. While listening, the screen also shows the
+channel's current RF level (**Now … dBFS**), measured on the same detector scale
+roughly four times a second; history keeps the detection-time level. Live level
+needs the receiver's Fs/4 offset tuning, which keeps the landed channel away from
+hardware DC; inputs without it show only the detection level.
+
+Analog monitoring starts its quiet timing only once the monitor has read the
+landed channel. A receiver that is still preparing its listening squelch (the NFM
+noise squelch designs its filters the first time a channel width is used) delivers
+no samples for a moment, and a closed carrier then is not a quiet channel. Only validated protocol content can add a
 confirmed digital identity, access code or call details. When a digital probe
 expires, the display says **NFM monitoring · digital identification unresolved**.
 That fallback does not establish that the transmission is analog.
@@ -53,8 +62,11 @@ That fallback does not establish that the transmission is analog.
   back when its identification window expires.
 - **Skip** suppresses this frequency for the current pass.
 - **Avoid this session** lasts until the session ends, including across Activity
-  recreation. **Avoid permanently** also saves it for future searches. Permanent
-  avoids can be removed when stopped.
+  recreation. Session avoids are listed under **Avoided this session**, and
+  **Stop avoiding** lifts one for the following measurements; a frequency already
+  visited in the current pass returns with the next pass. **Avoid permanently** also saves it for
+  future searches; removing a permanent avoid during a search lifts it from the
+  running session too.
 - **Pause** permits range edits. **Resume** applies them and restarts the pass,
   retaining session avoids. **Stop** ends the radio session.
 - Android Back follows the existing background-listening preference. The native
@@ -107,6 +119,26 @@ the channel and guard region. Clipping and capture discontinuities invalidate th
 measurement. Allocations, FFT size, candidates and total channels are bounded;
 unsupported plans report an error.
 
+A strong transmitter's skirt and the window's leakage reach the neighbouring
+channels' windows, particularly with the default 16 kHz width on a 12.5 kHz grid,
+and would pass their thresholds on their own. Each raw detection therefore looks
+for a stronger transmitter within two channel widths in the spectrum itself (not
+only among the requested channels, so a transmitter past a range or span boundary
+counts), ignoring energy within half a step of its own grid position. A transmitter
+belongs to the channel nearest its centre. A candidate next to a stronger
+transmitter is kept only with independent energy. Walking from that transmitter
+through the candidate's window, the power must rise again inside the window after
+the skirt has fallen at least 6 dB; the rise threshold (at least 4.5 dB) grows with
+the statistical spread of the averaged spectrum. Rises within the transmitter's own
+channel width are its own sidebands and never count. Alternatively, where its other
+side is a clean skirt, the window must exceed that side mirrored about its centre
+by 10 dB. A genuinely separate weaker transmitter on the next channel is still
+reported, including one beside a strong transmitter that has another neighbour on
+its far side. A transmitter that is off-grid, or wide enough to span several grid
+channels, is reported once. A much weaker neighbour hidden under a strong
+transmitter's skirt (for example 25 dB or more below noise-like voice FM) is not
+reported until that transmitter ends.
+
 The coverage planner conservatively uses one usable side of hardware DC per
 capture, leaving noise sidebands and edge guards. It explicitly accounts for
 capture frequency, rate and Fs/4 ingest rotation. The first remaining channel
@@ -124,13 +156,23 @@ ctest --preset dev-debug -L iq-decode --output-on-failure
 ```
 
 The detector tests cover calibrated power, noise, carriers, modulated signals,
-bursts, off-grid signals, nearby transmitters, clipping, gain/rate/drop boundaries,
-DC, rotation, edges and fragmented input. Coordinator tests exercise stale reports
-and controls, deferred/failed tunes, fresh-sample waits, short probes, fallback,
-hold during tuning, quiet release, visit caps, pause/restart and scoped restoration.
+bursts, off-grid signals, nearby transmitters, adjacent-channel leakage from a
+single strong NFM transmitter (narrow, wide, off-grid, at a range boundary and on a
+6.25 kHz grid), weaker separate neighbours (including two either side of a strong
+transmitter), clipping,
+gain/rate/drop boundaries, DC, rotation, edges and fragmented input. Coordinator
+tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
+waits, short probes, fallback, hold during tuning, quiet release, an analog
+monitor that has not judged the landed channel yet (and its deadline), visit caps,
+live strength, lifting session avoids, pause/restart and scoped restoration.
 Persistence and Qt tests cover bounded history, duplicate suppression, failed
 writes/retry, recreation, fractional steps, ambiguous matches, nested channel maps,
-immutable saves, phone text scaling and navigation ownership.
+immutable saves, phone text scaling and navigation ownership. They also check that
+status-only refreshes leave history untouched (it is copied only when its store
+revision moves), session avoids, the aggregate 100,000-channel check before a start
+is submitted, and that a start the engine rejects owns nothing and is retired when
+the decoder session ends, so a recreated frontend never restores the search screen
+over a later ordinary session.
 The app-control provenance regression also checks that a later false sync or
 unvalidated code change cannot enrich an already confirmed detection during a
 periodic refresh, and that a new detection starts without the preceding details.

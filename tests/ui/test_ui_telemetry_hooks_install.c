@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/notification_status.h>
+#include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
@@ -20,6 +21,7 @@ static int g_snapshot_calls;
 static int g_opts_snapshot_calls;
 static int g_notification_resets;
 static int g_session_open;
+static int g_search_session_ends;
 
 void
 dsd_app_command_session_set_open(int open) { // NOLINT(misc-use-internal-linkage)
@@ -29,6 +31,11 @@ dsd_app_command_session_set_open(int open) { // NOLINT(misc-use-internal-linkage
 void
 dsd_app_notification_reset(void) { // NOLINT(misc-use-internal-linkage)
     g_notification_resets++;
+}
+
+void
+dsd_app_signal_search_session_ended(void) { // NOLINT(misc-use-internal-linkage)
+    g_search_session_ends++;
 }
 
 void
@@ -101,11 +108,13 @@ main(void) {
        the previous one's last call. */
     dsd_app_frontend_runtime_start(NULL, NULL);
     assert(g_session_open == 1);
-    assert(g_notification_resets == 0);
+    assert(g_notification_resets == 0 && g_search_session_ends == 0);
     /* A silent input's wait asks the queue whether a command waits (issue #634). */
     assert(g_controls_pending == dsd_app_commands_pending);
     dsd_app_frontend_runtime_stop();
     assert(g_notification_resets == 1);
+    /* So does a Signal search status a rejected start left with no coordinator to stop it. */
+    assert(g_search_session_ends == 1);
     assert(g_session_open == 0);
     assert(g_controls_pending == NULL);
     assert(g_hooks.publish_snapshot == NULL);

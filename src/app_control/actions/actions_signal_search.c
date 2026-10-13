@@ -118,9 +118,17 @@ start_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd
     char error[192] = "";
     if (dsd_engine_signal_search_start(opts, state, &config, publish_search, NULL, error, sizeof(error))) {
         dsd_signal_search_status status = {0};
-        status.session_id = config.session_id;
-        status.phase = DSD_SEARCH_ERROR;
-        status.revision = 1;
+        dsd_app_signal_search_status_get(&status, NULL, 0);
+        const uint64_t revision = status.revision + 1;
+        if (!dsd_engine_signal_search_active(state)) {
+            /* No coordinator owns the tuner: the error is for display, and session teardown retires it. */
+            DSD_MEMSET(&status, 0, sizeof(status));
+            status.session_id = config.session_id;
+            status.phase = DSD_SEARCH_ERROR;
+            status.owned = 0;
+        }
+        /* A rejected restart of a paused session leaves that coordinator, its phase and its ownership as they were. */
+        status.revision = revision;
         DSD_SNPRINTF(status.message, sizeof(status.message), "%s", error);
         dsd_app_signal_search_publish(&status, NULL, NULL);
         return 2;
@@ -140,8 +148,13 @@ control_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c
     if (dsd_engine_signal_search_control(opts, state, &control)) {
         return 2;
     }
-    if (control.action == DSD_SEARCH_ACTION_AVOID_PERMANENT) {
-        dsd_app_signal_search_permanent_avoid(before.hit.frequency_hz);
+    switch (control.action) {
+        case DSD_SEARCH_ACTION_AVOID:
+            dsd_app_signal_search_session_avoid_add(control.session_id, before.hit.frequency_hz);
+            break;
+        case DSD_SEARCH_ACTION_AVOID_PERMANENT: dsd_app_signal_search_permanent_avoid(before.hit.frequency_hz); break;
+        case DSD_SEARCH_ACTION_UNAVOID: dsd_app_signal_search_session_avoid_remove(control.frequency_hz); break;
+        default: break;
     }
     return 1;
 }

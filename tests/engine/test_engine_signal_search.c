@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -30,6 +31,8 @@ static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0
 static dsd_signal_measure_request request;
 static uint32_t ticket, target, generation = 1;
 static int tune_pending, buffered, defer, failed, live = 1, ready, cancelled, bypassed, carrier, boundary;
+/* The monitor has judged the landed channel (dsd_analog_rx_carrier_observed_now()). */
+static int observed = 1;
 static int family, gain_value = 123, gain_auto, autogain = 1;
 static uint64_t now_ms = 1000;
 static uint64_t tuner_owner;
@@ -64,7 +67,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner == 42 || owner == 43);
+    assert(owner == 42 || owner == 43 || owner == 44);
     if (defer) {
         --defer;
         return 1;
@@ -126,7 +129,8 @@ rtl_signal_measure_get(dsd_signal_measure_report* out) {
         out->candidates[i].frequency_hz = request.frequencies[i];
         out->candidates[i].valid = 1;
         out->candidates[i].detected = ready == 1;
-        out->candidates[i].power_dbfs = -30 + (float)i;
+        // A single-channel request is the live strength of a landed visit; give it its own level.
+        out->candidates[i].power_dbfs = out->count == 1 ? -40.0f : -30 + (float)i;
         out->candidates[i].noise_dbfs = -70;
     }
     if (ready == 3) {
@@ -222,6 +226,13 @@ dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
     return carrier;
 }
 
+int
+dsd_analog_rx_carrier_observed_now(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return observed;
+}
+
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind reason, int guard) {
     (void)opts;
@@ -246,7 +257,7 @@ tick(dsd_opts* o, dsd_state* s) {
 
 static void
 act(dsd_opts* o, dsd_state* s, int action) {
-    dsd_signal_search_control a = {status.session_id, status.hit.hit_id, action};
+    dsd_signal_search_control a = {status.session_id, status.hit.hit_id, action, 0};
     assert(dsd_engine_signal_search_control(o, s, &a) == 0);
     tick(o, s);
 }
@@ -257,13 +268,130 @@ land(dsd_opts* o, dsd_state* s) {
     tick(o, s);
 }
 
+/* Land on a detection from a fresh span measurement: the strongest candidate is the last one. */
+static void
+visit_strongest(dsd_opts* o, dsd_state* s) {
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended);
+    land(o, s);
+}
+
+static void
+test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    failed = 0;
+    live = 1;
+    carrier = 0;
+    config->session_id = 44;
+    config->avoid_count = 0;
+    config->ranges[0].digital = 0;
+    config->ranges[0].max_visit_ms = 0;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+
+    // An analog monitor that has not judged the landed channel yet is no quiet channel: a front end still designing
+    // its noise-squelch plan delivers nothing for it to read. Quiet timing starts at the first verdict.
+    observed = 0;
+    visit_strongest(o, s);
+    const uint32_t first = status.hit.frequency_hz;
+    assert(status.phase == DSD_SEARCH_LISTENING && first == 100025000);
+    advance(2000);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    assert(!dsd_engine_signal_search_should_yield(o, s));
+    observed = 1; // the first read finds no carrier: quiet timing starts now
+    tick(o, s);
+    advance(499);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !dsd_engine_signal_search_should_yield(o, s));
+    advance(1);
+    assert(dsd_engine_signal_search_should_yield(o, s));
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+
+    // A verdict that never comes is bounded: quiet timing starts at the deadline.
+    observed = 0;
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100012500);
+    advance(2999);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    advance(1);
+    tick(o, s);
+    advance(499);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    advance(1);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+
+    // Live strength: the landed channel alone, on the detector's scale, and never carried past the visit.
+    observed = 1;
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+    ready = 1;
+    tick(o, s); // the one detection not yet visited this pass
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100000000);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.live_power_valid);
+    carrier = 1;
+    tick(o, s);
+    assert(request.count == 1 && request.frequencies[0] == status.hit.frequency_hz);
+    assert(request.capture.capture_hz - request.capture.capture_offset_hz == status.hit.frequency_hz);
+    ready = 2; // measured, below the detection threshold: strength is still reported
+    advance(100);
+    tick(o, s);
+    assert(status.live_power_valid && status.live_power_dbfs > -40.5f && status.live_power_dbfs < -39.5f);
+    assert(status.hit.power_dbfs > -30.5f && status.hit.power_dbfs < -29.5f); // detection-time power is kept apart
+
+    // A session avoid can be lifted by frequency, without a hit; lifting a missing one is harmless.
+    const uint32_t avoided = status.hit.frequency_hz;
+    act(o, s, DSD_SEARCH_ACTION_AVOID);
+    assert(status.phase == DSD_SEARCH_TUNING && !status.live_power_valid);
+    dsd_signal_search_control lift = {44, 0, DSD_SEARCH_ACTION_UNAVOID, avoided};
+    assert(dsd_engine_signal_search_control(o, s, &lift) == 0);
+    assert(dsd_engine_signal_search_control(o, s, &lift) == 0);
+    lift.frequency_hz = 0;
+    assert(dsd_engine_signal_search_control(o, s, &lift) < 0);
+    // The lifted frequency is eligible again from the next pass, while frequencies still avoided stay excluded.
+    carrier = 0;
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+    ready = 1;
+    tick(o, s); // every channel was visited this pass
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.pass == 2);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100025000);
+    act(o, s, DSD_SEARCH_ACTION_AVOID);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100012500);
+    act(o, s, DSD_SEARCH_ACTION_AVOID);
+    visit_strongest(o, s); // the strongest two are avoided; only the lifted one remains
+    assert(status.hit.frequency_hz == avoided && avoided == 100000000);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    tick(o, s); // nothing eligible in pass 2 now: on to pass 3
+    assert(status.phase == DSD_SEARCH_TUNING && status.pass == 3);
+    visit_strongest(o, s); // the still-avoided 100.025 and 100.0125 MHz never come back
+    assert(status.hit.frequency_hz == avoided);
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED && !status.owned);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
     dsd_state* s = calloc(1, sizeof(*s));
     assert(o && s);
     // Controls must reject absent sessions before validating their action payload.
-    dsd_signal_search_control absent = {42, 0, DSD_SEARCH_ACTION_STOP};
+    dsd_signal_search_control absent = {42, 0, DSD_SEARCH_ACTION_STOP, 0};
     assert(dsd_engine_signal_search_control(o, NULL, &absent) < 0);
     assert(dsd_engine_signal_search_control(o, s, &absent) < 0);
     assert(dsd_engine_signal_search_control(o, s, NULL) < 0);
@@ -284,7 +412,7 @@ main(void) {
     config.ranges[0].end_hz = 100025000;
     char error[192];
     assert(dsd_engine_signal_search_start(o, s, &config, observer, NULL, error, sizeof(error)) == 0);
-    assert(bypassed && dsd_signal_search_is_running(s));
+    assert(bypassed && dsd_signal_search_is_running(s) && status.owned);
     assert(tuner_owner == 42);
     assert(dsd_engine_signal_search_control(o, s, NULL) < 0);
     defer = 1;
@@ -333,7 +461,7 @@ main(void) {
     advance(40000);
     tick(o, s);
     assert(status.phase == DSD_SEARCH_HELD);
-    dsd_signal_search_control stale = {42, status.hit.hit_id + 1, DSD_SEARCH_ACTION_SKIP};
+    dsd_signal_search_control stale = {42, status.hit.hit_id + 1, DSD_SEARCH_ACTION_SKIP, 0};
     assert(dsd_engine_signal_search_control(o, s, &stale) < 0);
     act(o, s, DSD_SEARCH_ACTION_AVOID);
     assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
@@ -388,7 +516,7 @@ main(void) {
     failed = 0;
     act(o, s, DSD_SEARCH_ACTION_STOP);
     land(o, s);
-    assert(status.phase == DSD_SEARCH_STOPPED && !bypassed && !dsd_signal_search_is_running(s));
+    assert(status.phase == DSD_SEARCH_STOPPED && !bypassed && !dsd_signal_search_is_running(s) && !status.owned);
     assert(!tuner_owner);
     assert(dsd_engine_signal_search_control(o, s, &absent) < 0);
     assert(o->frame_dstar && o->rtlsdr_center_freq == 100000000 && gain_value == 123 && autogain);
@@ -403,6 +531,7 @@ main(void) {
     act(o, s, DSD_SEARCH_ACTION_STOP);
     assert(status.phase == DSD_SEARCH_STOPPED);
     assert(boundary > 0 && cancelled > 0);
+    test_listening_verdict_and_live_strength(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

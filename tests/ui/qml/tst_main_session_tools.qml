@@ -12,7 +12,8 @@ Item {
     }
     QtObject {
         id: searchStub
-        property var status: ({phase: 4, session: "17", hit: {id: "1", freqMHz: "450.125000", ended: false}})
+        property var status: ({phase: 4, owned: true, session: "17", hit: {id: "1", freqMHz: "450.125000", ended: false}})
+        property var sessionAvoids: []
         property var ranges: []
         property var history: []
         property var avoids: []

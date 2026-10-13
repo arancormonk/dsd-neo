@@ -3061,6 +3061,7 @@ test_carrier_stamp_at_an_unusable_tap_rate(void) {
     feed_tone_blocks(&opts, &state, 2);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE && state.analog_rx.carrier_open == 1);
     assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+    assert(dsd_analog_rx_carrier_observed_now(&opts, &state) == 1);
     assert(state.last_cc_sync_time != 0 && state.last_cc_sync_time_m > 0.0);
     assert(state.last_vc_sync_time != 0 && state.last_vc_sync_time_m > 0.0);
 
@@ -3068,10 +3069,19 @@ test_carrier_stamp_at_an_unusable_tap_rate(void) {
        sees the retune is dropped (at this rate a read is a whole block), and the next one opens the new channel's. */
     dsd_trunk_tuning_generation_advance();
     assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    /* Nor has the tap judged the new channel: a closed carrier there is no verdict yet (Signal search waits on this). */
+    assert(dsd_analog_rx_carrier_observed_now(&opts, &state) == 0);
     feed_tone_blocks(&opts, &state, 1);
     assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    assert(dsd_analog_rx_carrier_observed_now(&opts, &state) == 0);
     feed_tone_blocks(&opts, &state, 1);
     assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+    assert(dsd_analog_rx_carrier_observed_now(&opts, &state) == 1);
+    /* A reset sets the samples in hand aside: nothing is judged until the next read. */
+    dsd_analog_rx_reset(&state);
+    assert(dsd_analog_rx_carrier_observed_now(&opts, &state) == 0);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(dsd_analog_rx_carrier_observed_now(&opts, &state) == 1);
 
     /* The squelch closes over the -23.8 dBFS block: the carrier holds through the 200 ms hangover (76800 samples, 80
        blocks), then nothing stamps. */
@@ -3080,6 +3090,8 @@ test_carrier_stamp_at_an_unusable_tap_rate(void) {
     assert(state.analog_rx.carrier_open == 1 && dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
     feed_tone_blocks(&opts, &state, 1);
     assert(state.analog_rx.carrier_open == 0 && dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    /* A judged, closed channel: a verdict, which a quiet timer may count from. */
+    assert(dsd_analog_rx_carrier_observed_now(&opts, &state) == 1);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
     clear_carrier_stamps(&state);
     feed_tone_blocks(&opts, &state, 2);

@@ -245,10 +245,13 @@ struct Store {
     std::thread worker;
     std::string path, avoid_path, error;
     std::vector<Hit> history, pending;
-    std::vector<uint32_t> avoids;
+    std::vector<uint32_t> avoids, session_avoids;
     dsd_signal_search_status status{};
     bool stop = false, dirty_avoids = false, busy = false, compact = true, failed = false;
     size_t records = 0;
+    /* Bumped on every change a frontend shows: history rows (upserts, trims, reloads) and either avoid list. */
+    uint64_t history_revision = 1, avoids_revision = 1;
+    uint64_t session_avoids_session = 0;
 
     ~Store() { close(); }
 
@@ -302,6 +305,8 @@ struct Store {
         history.clear();
         avoids.clear();
         records = 0;
+        ++history_revision;
+        ++avoids_revision;
         load_history();
         FILE* f = dsd_fopen_private(avoid_path.c_str(), "rb");
         if (!f) {
@@ -427,6 +432,15 @@ struct Store {
 };
 
 Store store;
+
+void
+session_avoids_clear_locked() {
+    if (!store.session_avoids.empty() || store.session_avoids_session) {
+        store.session_avoids.clear();
+        store.session_avoids_session = 0;
+        ++store.avoids_revision;
+    }
+}
 } // namespace
 
 extern "C" int
@@ -449,6 +463,8 @@ dsd_app_signal_search_store_open(const char* path) {
     store.failed = false;
     store.error.clear();
     store.pending.clear();
+    store.session_avoids.clear();
+    store.session_avoids_session = 0;
     store.load();
     store.worker = std::thread([] { store.run(); });
     return 0;
@@ -478,6 +494,9 @@ dsd_app_signal_search_publish(const dsd_signal_search_status* status, const Hit*
     (void)context;
     std::lock_guard<std::mutex> lock(store.mutex);
     store.status = *status;
+    if (status->phase == DSD_SEARCH_STOPPED) {
+        session_avoids_clear_locked();
+    }
     if (hit && hit->hit_id) {
         auto found =
             std::find_if(store.history.begin(), store.history.end(), [&](const Hit& h) { return same(h, *hit); });
@@ -486,6 +505,7 @@ dsd_app_signal_search_publish(const dsd_signal_search_status* status, const Hit*
         }
         upsert(store.history, *hit);
         upsert(store.pending, *hit);
+        ++store.history_revision;
         store.wake.notify_all();
     }
 }
@@ -501,14 +521,97 @@ dsd_app_signal_search_status_get(dsd_signal_search_status* status, char* error, 
     }
 }
 
-extern "C" size_t
-dsd_app_signal_search_history_get(Hit* hits, size_t capacity) {
-    std::lock_guard<std::mutex> lock(store.mutex);
+static size_t
+history_copy_locked(Hit* hits, size_t capacity) {
     size_t n = hits ? std::min(capacity, store.history.size()) : 0;
     for (size_t i = 0; i < n; ++i) {
         hits[i] = store.history[store.history.size() - 1 - i];
     }
     return n;
+}
+
+extern "C" size_t
+dsd_app_signal_search_history_get(Hit* hits, size_t capacity) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    return history_copy_locked(hits, capacity);
+}
+
+extern "C" uint64_t
+dsd_app_signal_search_history_revision(void) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    return store.history_revision;
+}
+
+extern "C" size_t
+dsd_app_signal_search_history_snapshot(Hit* hits, size_t capacity, uint64_t* revision) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    if (revision) {
+        *revision = store.history_revision;
+    }
+    return history_copy_locked(hits, capacity);
+}
+
+extern "C" uint64_t
+dsd_app_signal_search_avoids_revision(void) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    return store.avoids_revision;
+}
+
+extern "C" size_t
+dsd_app_signal_search_session_avoids_get(uint32_t* frequencies, size_t capacity) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    size_t n = frequencies ? std::min(capacity, store.session_avoids.size()) : 0;
+    for (size_t i = 0; i < n; ++i) {
+        frequencies[i] = store.session_avoids[i];
+    }
+    return n;
+}
+
+extern "C" void
+dsd_app_signal_search_session_avoid_add(uint64_t session, uint32_t frequency) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    if (session != store.session_avoids_session) {
+        store.session_avoids.clear();
+        store.session_avoids_session = session;
+        ++store.avoids_revision;
+    }
+    if (frequency
+        && std::find(store.session_avoids.begin(), store.session_avoids.end(), frequency) == store.session_avoids.end()
+        && store.session_avoids.size() < DSD_SEARCH_MAX_AVOIDS) {
+        store.session_avoids.push_back(frequency);
+        ++store.avoids_revision;
+    }
+}
+
+extern "C" void
+dsd_app_signal_search_session_avoid_remove(uint32_t frequency) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    auto found = std::find(store.session_avoids.begin(), store.session_avoids.end(), frequency);
+    if (found != store.session_avoids.end()) {
+        store.session_avoids.erase(found);
+        ++store.avoids_revision;
+    }
+}
+
+extern "C" void
+dsd_app_signal_search_session_avoids_clear(void) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    session_avoids_clear_locked();
+}
+
+extern "C" void
+dsd_app_signal_search_session_ended(void) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    session_avoids_clear_locked();
+    /* A rejected start leaves an error with no coordinator to publish STOPPED. Keep its message for the idle screen,
+       but nothing the next session sees may claim the tuner or a running phase. */
+    if (store.status.phase != DSD_SEARCH_STOPPED || store.status.owned) {
+        store.status.phase = DSD_SEARCH_STOPPED;
+        store.status.owned = 0;
+        store.status.identifying = 0;
+        store.status.live_power_valid = 0;
+        ++store.status.revision;
+    }
 }
 
 extern "C" size_t
@@ -527,6 +630,7 @@ dsd_app_signal_search_permanent_avoid(uint32_t frequency) {
     if (std::find(store.avoids.begin(), store.avoids.end(), frequency) == store.avoids.end()
         && store.avoids.size() < DSD_SEARCH_MAX_AVOIDS) {
         store.avoids.push_back(frequency);
+        ++store.avoids_revision;
         store.dirty_avoids = true;
         store.wake.notify_all();
     }
@@ -540,6 +644,7 @@ dsd_app_signal_search_avoid_remove(uint32_t frequency) {
         return -1;
     }
     store.avoids.erase(found);
+    ++store.avoids_revision;
     store.dirty_avoids = true;
     store.wake.notify_all();
     return 0;

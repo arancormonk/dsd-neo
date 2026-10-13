@@ -11,6 +11,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -33,6 +34,17 @@
 #include <dsd-neo/io/signal_measure.h>
 #endif
 
+enum {
+    /* A listening visit ends this long after its last relevant activity. */
+    SEARCH_QUIET_MS = 500,
+    /* An analog visit whose monitor has not judged the landed channel yet keeps waiting for a verdict this long:
+       the front end may be designing a noise-squelch plan before it delivers any sample. */
+    SEARCH_ANALOG_VERDICT_MAX_MS = 3000,
+    /* Live strength while listening: one measurement this often; longer after a geometry that cannot be measured. */
+    SEARCH_LIVE_INTERVAL_MS = 250,
+    SEARCH_LIVE_RETRY_MS = 1000
+};
+
 typedef struct {
     dsd_signal_search_config config;
     dsd_signal_search_status status;
@@ -46,12 +58,17 @@ typedef struct {
     size_t suppressed_count;
     uint64_t request, next_hit, acquired, probe_started, activity, tune_started, last_publish;
     uint64_t measurement_started;
+    /* Decode-clock landing of the current visit; quiet timing of an analog visit starts at the monitor's first verdict. */
+    uint64_t landed;
     int hold, skip, need_span, visit, measuring, stopping, probing, restored, restore_queued;
+    int analog_visit, listen_ready;
     uint32_t ticket, target, before_generation;
 #ifdef USE_RADIO
     dsd_signal_search_span span;
     dsd_signal_measure_report report;
     int report_pending;
+    int live_measuring;
+    uint64_t live_request, live_next;
 #endif
 } search_coord;
 
@@ -69,6 +86,7 @@ search_publish(search_coord* c, int hit_changed) {
     c->report_pending = 0;
 #endif
     c->status.identifying = c->probing && !c->status.hit.ended;
+    c->status.owned = c->status.phase != DSD_SEARCH_STOPPED;
     ++c->status.revision;
     c->last_publish = dsd_realtime_mono_ms();
     if (c->publish) {
@@ -92,11 +110,20 @@ search_end_hit(search_coord* c) {
 }
 
 #ifdef USE_RADIO
+/* Retire every outstanding detector request, the search measurement and the live strength alike. */
+static void
+search_cancel_measurements(search_coord* c) {
+    rtl_signal_measure_cancel();
+    c->measuring = 0;
+    c->live_measuring = 0;
+    c->live_next = 0;
+    c->status.live_power_valid = 0;
+}
+
 static void
 search_error(search_coord* c, const char* message) {
     search_end_hit(c);
-    rtl_signal_measure_cancel();
-    c->measuring = 0;
+    search_cancel_measurements(c);
     c->stopping = 0;
     rtl_signal_search_bypass(1);
     c->status.phase = DSD_SEARCH_ERROR;
@@ -228,13 +255,14 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
 
 static int
 search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t target, int visit, int analog) {
-    rtl_signal_measure_cancel();
-    c->measuring = 0;
+    search_cancel_measurements(c);
     c->measurement_started = 0;
     rtl_signal_search_bypass(1);
     c->visit = visit;
     c->target = target;
     c->probing = visit && !analog;
+    c->analog_visit = visit && analog;
+    c->listen_ready = 0;
     c->before_generation = rtl_stream_output_generation();
     c->ticket = 0;
     c->tune_started = dsd_realtime_mono_ms();
@@ -304,34 +332,6 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-search_validate_ranges(const dsd_signal_search_config* config, char* error, size_t capacity) {
-    int enabled = 0;
-    uint64_t total_channels = 0;
-    for (uint32_t i = 0; i < config->range_count; ++i) {
-        if (dsd_signal_search_validate(&config->ranges[i], error, capacity)) {
-            return -1;
-        }
-        enabled += config->ranges[i].enabled != 0;
-        if (config->ranges[i].enabled) {
-            total_channels += dsd_signal_search_channel_count(&config->ranges[i]);
-        }
-    }
-    if (!enabled) {
-        if (error && capacity) {
-            DSD_SNPRINTF(error, capacity, "%s", "Enable at least one range");
-        }
-        return -1;
-    }
-    if (total_channels > DSD_SEARCH_MAX_CHANNELS) {
-        if (error && capacity) {
-            DSD_SNPRINTF(error, capacity, "%s", "A search supports up to 100,000 enabled channels");
-        }
-        return -1;
-    }
-    return 0;
-}
-
-static int
 search_valid_config(const dsd_signal_search_config* config) {
     return config && config->session_id && config->range_count && config->range_count <= DSD_SEARCH_MAX_RANGES
            && config->avoid_count <= DSD_SEARCH_MAX_AVOIDS;
@@ -367,7 +367,7 @@ search_validate_start(const dsd_opts* opts, const dsd_state* state, const dsd_si
         }
         return -1;
     }
-    return search_validate_ranges(config, error, capacity);
+    return dsd_signal_search_validate_config(config, error, capacity);
 }
 
 #endif
@@ -482,6 +482,80 @@ dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, 
     search_publish(c, 1);
 }
 
+#ifdef USE_RADIO
+/* The landed channel's own RF power while listening, measured by the capture-rate detector on the same dBFS scale as
+   the detection. Only a capture that is the landed tune is measured; a report is accepted for its own request. Both the
+   main-loop tick and the in-frame yield check service it: a continuous digital transmission keeps the decoder in its
+   synced-frame loop, where only the latter runs. */
+static void
+search_live_strength(search_coord* c) {
+    const uint64_t now = dsd_realtime_mono_ms();
+    if (c->live_measuring) {
+        dsd_signal_measure_report report;
+        const int rc = rtl_signal_measure_get(&report);
+        if (rc == 0) {
+            return;
+        }
+        c->live_measuring = 0;
+        c->live_next = now + SEARCH_LIVE_INTERVAL_MS;
+        if (rc == 1 && report.session_id == c->status.session_id && report.request_id == c->live_request
+            && report.count == 1) {
+            if (report.candidates[0].valid) {
+                c->status.live_power_dbfs = report.candidates[0].power_dbfs;
+                c->status.live_power_valid = 1;
+                search_publish(c, 0);
+            } else {
+                c->live_next = now + SEARCH_LIVE_RETRY_MS;
+            }
+        }
+        return;
+    }
+    if (now < c->live_next) {
+        return;
+    }
+    dsd_signal_capture capture;
+    if (!rtl_signal_capture_get(&capture) || capture.generation != rtl_stream_output_generation()
+        || (int64_t)capture.capture_hz - capture.capture_offset_hz != (int64_t)c->status.hit.frequency_hz) {
+        c->live_next = now + SEARCH_LIVE_INTERVAL_MS;
+        return;
+    }
+    dsd_signal_measure_request r;
+    DSD_MEMSET(&r, 0, sizeof(r));
+    r.session_id = c->status.session_id;
+    r.request_id = c->live_request = ++c->request;
+    r.capture = capture;
+    r.range = c->config.ranges[c->status.range_index];
+    r.count = 1;
+    r.frequencies[0] = c->status.hit.frequency_hz;
+    if (rtl_signal_measure_request(&r) == 0) {
+        c->live_measuring = 1;
+    } else {
+        c->live_next = now + SEARCH_LIVE_RETRY_MS;
+    }
+}
+
+#endif
+
+/* Listening activity, refreshed on the decoder thread by both expiration paths. A carrier the monitor holds is
+   activity. An analog visit starts quiet timing only once the monitor has judged the landed channel, or at a bounded
+   deadline: until its first samples reach the tap (a front end still designing its noise-squelch plan delivers none),
+   a closed carrier says nothing about the channel. */
+static void
+search_note_activity(search_coord* c, const dsd_opts* opts, const dsd_state* state, uint64_t now) {
+    if (dsd_scan_analog_carrier_open(opts, state)) {
+        c->activity = now;
+        c->listen_ready = 1;
+        return;
+    }
+    if (!c->analog_visit || c->listen_ready) {
+        return;
+    }
+    if (dsd_analog_rx_carrier_observed_now(opts, state) || now - c->landed >= SEARCH_ANALOG_VERDICT_MAX_MS) {
+        c->listen_ready = 1;
+    }
+    c->activity = now;
+}
+
 static int
 search_visit_expired(const search_coord* c, uint64_t now) {
     if (c->hold) {
@@ -489,7 +563,7 @@ search_visit_expired(const search_coord* c, uint64_t now) {
     }
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
     return (r->max_visit_ms && now - c->acquired >= (uint64_t)r->max_visit_ms)
-           || (!c->probing && now - c->activity >= 500);
+           || (!c->probing && now - c->activity >= SEARCH_QUIET_MS);
 }
 
 int
@@ -508,9 +582,12 @@ dsd_engine_signal_search_should_yield(const dsd_opts* opts, dsd_state* state) {
     }
     uint64_t now = dsd_decode_now_mono_ms();
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
-    if (dsd_scan_analog_carrier_open(opts, state)) {
-        c->activity = now;
+    search_note_activity(c, opts, state, now);
+#ifdef USE_RADIO
+    if (c->visit) {
+        search_live_strength(c);
     }
+#endif
     if (c->probing && now - c->probe_started >= (uint64_t)r->probe_ms) {
         return 1;
     }
@@ -522,12 +599,50 @@ search_valid_action(const search_coord* c, const dsd_signal_search_control* acti
     if (!action || action->session_id != c->status.session_id || c->status.phase == DSD_SEARCH_STOPPED) {
         return 0;
     }
+    if (action->action == DSD_SEARCH_ACTION_UNAVOID) {
+        return action->frequency_hz != 0;
+    }
     if (action->action >= DSD_SEARCH_ACTION_HOLD
         && (!c->visit || action->hit_id != c->status.hit.hit_id || c->status.hit.ended)) {
         return 0;
     }
     return 1;
 }
+
+#ifdef USE_RADIO
+/* Avoid the current hit for the rest of the session and leave it; -1 when the avoid list is full. */
+static int
+search_avoid_hit(search_coord* c) {
+    if (!search_contains(c->config.avoids, c->config.avoid_count, c->status.hit.frequency_hz)) {
+        if (c->config.avoid_count == DSD_SEARCH_MAX_AVOIDS) {
+            return -1;
+        }
+        c->config.avoids[c->config.avoid_count++] = c->status.hit.frequency_hz;
+    }
+    c->skip = 1;
+    return 0;
+}
+
+static void
+search_pause(search_coord* c) {
+    search_end_hit(c);
+    search_cancel_measurements(c);
+    c->hold = c->skip = c->visit = 0;
+    rtl_signal_search_bypass(1);
+    c->status.phase = DSD_SEARCH_PAUSED;
+}
+
+/* Lifting an avoid that is not there is not an error: the caller's list and the session's agree afterwards. */
+static void
+search_unavoid(search_coord* c, uint32_t frequency) {
+    for (uint32_t i = 0; i < c->config.avoid_count; ++i) {
+        if (c->config.avoids[i] == frequency) {
+            c->config.avoids[i] = c->config.avoids[--c->config.avoid_count];
+            return;
+        }
+    }
+}
+#endif
 
 int
 // cppcheck-suppress constParameterPointer -- Radio-enabled action handling mutates the coordinator attached to state.
@@ -544,14 +659,7 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
             c->stopping = 1;
             c->tune_started = dsd_realtime_mono_ms();
             break;
-        case DSD_SEARCH_ACTION_PAUSE:
-            search_end_hit(c);
-            rtl_signal_measure_cancel();
-            c->measuring = 0;
-            c->hold = c->skip = c->visit = 0;
-            rtl_signal_search_bypass(1);
-            c->status.phase = DSD_SEARCH_PAUSED;
-            break;
+        case DSD_SEARCH_ACTION_PAUSE: search_pause(c); break;
         case DSD_SEARCH_ACTION_RESUME:
             if (c->status.phase != DSD_SEARCH_PAUSED) {
                 return -1;
@@ -568,15 +676,12 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
             break;
         case DSD_SEARCH_ACTION_AVOID:
         case DSD_SEARCH_ACTION_AVOID_PERMANENT:
-            if (!search_contains(c->config.avoids, c->config.avoid_count, c->status.hit.frequency_hz)) {
-                if (c->config.avoid_count == DSD_SEARCH_MAX_AVOIDS) {
-                    return -1;
-                }
-                c->config.avoids[c->config.avoid_count++] = c->status.hit.frequency_hz;
+            if (search_avoid_hit(c)) {
+                return -1;
             }
-            c->skip = 1;
             break;
         case DSD_SEARCH_ACTION_SKIP: c->skip = 1; break;
+        case DSD_SEARCH_ACTION_UNAVOID: search_unavoid(c, action->frequency_hz); break;
         default: return -1;
     }
     search_publish(c, 0);
@@ -590,7 +695,7 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
 static int
 search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
     search_end_hit(c);
-    rtl_signal_measure_cancel();
+    search_cancel_measurements(c);
     rtl_signal_search_bypass(1);
     rtl_stream_clear_pending_retune_profile();
     search_restore(c, opts, state);
@@ -714,7 +819,8 @@ search_wait_tune(search_coord* c, dsd_opts* opts, const dsd_signal_capture* capt
         if (!c->acquired) {
             c->acquired = now;
         }
-        c->probe_started = c->activity = now;
+        c->probe_started = c->activity = c->landed = now;
+        c->listen_ready = 0;
         c->status.phase = search_reception_phase(c);
         rtl_signal_search_bypass(0);
     } else {
@@ -814,9 +920,7 @@ static int
 search_visit_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
     uint64_t now = dsd_decode_now_mono_ms();
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
-    if (dsd_scan_analog_carrier_open(opts, state)) {
-        c->activity = now;
-    }
+    search_note_activity(c, opts, state, now);
     if (c->skip || (!c->hold && r->max_visit_ms && now - c->acquired >= (uint64_t)r->max_visit_ms)) {
         search_return_to_span(c, opts, state);
         return 1;
@@ -825,10 +929,11 @@ search_visit_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
         (void)search_queue_tune(c, opts, state, c->status.hit.frequency_hz, 1, 1);
         return 1;
     }
-    if (!c->hold && !c->probing && now - c->activity >= 500) {
+    if (!c->hold && !c->probing && now - c->activity >= SEARCH_QUIET_MS) {
         search_return_to_span(c, opts, state);
         return 1;
     }
+    search_live_strength(c);
     if (dsd_realtime_mono_ms() - c->last_publish >= 100) {
         search_publish(c, 0);
     }
@@ -895,7 +1000,7 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
     }
     search_end_hit(c);
 #ifdef USE_RADIO
-    rtl_signal_measure_cancel();
+    search_cancel_measurements(c);
     search_restore(c, opts, state);
     rtl_stream_clear_pending_retune_profile();
     rtl_signal_search_bypass(0);

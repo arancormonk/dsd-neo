@@ -52,9 +52,15 @@ Generated (do not edit/commit):
     through `scan_owner.h`; extension IDs are unchanged. Search excludes other tuner
     owners, suppresses visited frequencies per pass and retains native session avoids.
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
-    loops. Receive profiles, gain and frequency are restored on exit. Protocol details
-    enter only through CRC/FEC confirmation or validated activity hooks, never a generic
-    sync or dispatcher verdict. See [Signal search](signal-search.md).
+    loops; the in-frame yield check also services live strength, since a continuous
+    digital transmission keeps the decoder in its synced-frame loop. An analog visit's
+    500 ms quiet timing starts only at the monitor's first verdict on the landed channel
+    (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s. `DSD_SEARCH_ACTION_UNAVOID`
+    lifts a session avoid by frequency. Published status carries `owned` (a coordinator
+    holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
+    frequency are restored on exit. Protocol details enter only through CRC/FEC
+    confirmation or validated activity hooks, never a generic sync or dispatcher verdict.
+    See [Signal search](signal-search.md).
   - Trunk retune policy and bookkeeping: `src/engine/trunk_tuning.c` implements the tune-to-frequency,
     tune-to-control-channel and return-to-control-channel requests behind
     `include/dsd-neo/engine/trunk_tuning.h`, and `src/engine/trunk_tuning_hooks_install.c` installs them into the
@@ -1228,8 +1234,9 @@ suite runs under this compiler.
 - Path: `src/runtime`, `include/dsd-neo/runtime`
 - Target: `dsd-neo_runtime`
 - Responsibilities:
-  - Frontend-neutral Signal search records, rational range validation and conservative
-    DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
+  - Frontend-neutral Signal search records, rational range validation, the aggregate
+    configuration check engine and frontends share (`dsd_signal_search_validate_config()`)
+    and conservative DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
     carries validated protocol evidence and the decoder-thread active query, with no-op
     defaults. It does not own radio I/O, persistence or Qt state.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
@@ -1604,7 +1611,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     refreshes cannot promote fields from a subsequent unconfirmed sync.
     `signal_search_store.cpp` owns the mutex-protected snapshots and a native worker for
     the versioned private journal, bounded upserts and atomic compaction/avoids. The
-    worker survives QML teardown; it never reads live decoder state.
+    worker survives QML teardown; it never reads live decoder state. History and avoid
+    revisions let frontends copy history only when it changed. The control actions mirror
+    the session's own avoid list (cleared when it stops). A rejected start publishes an
+    unowned error, and `dsd_app_frontend_runtime_stop()` retires any status left behind
+    (`dsd_app_signal_search_session_ended()`).
   - Frontend metrics and raw telemetry snapshots used by the terminal renderer
   - Command queue dispatch and menu service helpers. Decoder-owner runtime start/stop opens/closes admission under
     the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
@@ -2351,8 +2362,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issues #522 CTCSS, #523 DCS), public entry points in `include/dsd-neo/dsp/analog_rx.h`:
   `dsd_analog_rx_tap()`, `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()`,
-  `dsd_analog_rx_carrier_open_now()`, `dsd_analog_rx_block_straddles_boundary()`, the monitor playback
-  bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()` and the live input read bracket
+  `dsd_analog_rx_carrier_open_now()`, `dsd_analog_rx_carrier_observed_now()` (the tap has judged the channel on air,
+  so a closed carrier is a verdict rather than no read yet), `dsd_analog_rx_block_straddles_boundary()`, the monitor
+  playback bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()` and the live input read bracket
   `dsd_analog_rx_input_wait_begin()` / `dsd_analog_rx_input_wait_end()`. The same header holds the CTCSS timing
   contract in sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and
   per-event ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800).
@@ -3110,7 +3122,13 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   PFFFT/Hann cache at the capture-rate I/Q boundary. Linear channel power and neighboring
   noise are energy-normalized over two sample-count windows. Session/request IDs and
   applied generation accompany every report; gain, rate, drops, tuning and input changes
-  invalidate partial and ready reports. Search bypass preserves capture/control health
+  invalidate partial and ready reports. Leakage rejection: a raw detection looks in the
+  spectrum (not just the requested channels) for a stronger transmitter within two channel
+  widths, outside half a step of its own grid position, and keeps the detection only if its
+  window rises again after that transmitter's skirt has fallen (outside the transmitter's
+  own width; frame-adaptive threshold of at least 4.5 dB) or, where the transmitter's far
+  side is a clean skirt, exceeds that side mirrored about its -10 dB centre by 10 dB.
+  Search bypass preserves capture/control health
   while skipping demodulation, protocol/audio work and display FFTs. Decoder-dependent
   gain/PPM supervision is suspended during discovery. `rtl_stream_tune_async()` and
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
@@ -4224,8 +4242,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 - Qt Signal search uses `SignalSearchModel`, `SignalSearchScreen.qml` and
   `SignalSearchRangeEditor.qml`, sharing Theme/Plex controls, source startup and the
-  save-found-system wizard. Native status/history are copied on a 250 ms timer. Back
-  delegates to Main's session policy; active search is a navigation root so its controls
+  save-found-system wizard. Native status is copied on a 250 ms timer; history and the
+  avoid lists only when their store revisions move. Back delegates to Main's session
+  policy; a search a coordinator owns (`status.owned`) is a navigation root so its controls
   remain accessible after Activity recreation. Range edits apply on paused restart.
   `KnownFrequencyIndex` caches saved frequencies and referenced CSVs, rebuilding on model
   or file changes; Signal search, Spectrum and Live Exploring look up labels without

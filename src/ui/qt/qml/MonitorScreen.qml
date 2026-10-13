@@ -800,7 +800,6 @@ Item {
                     elide: Text.ElideRight
                 }
 
-
                 Row {
                     spacing: 5
 

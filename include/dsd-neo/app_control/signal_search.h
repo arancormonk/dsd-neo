@@ -22,8 +22,23 @@ void dsd_app_signal_search_store_flush(void);
 void dsd_app_signal_search_status_get(dsd_signal_search_status* status, char* error, size_t capacity);
 /** Newest first; consistent copied records, retained even without any frontend screen. */
 size_t dsd_app_signal_search_history_get(dsd_signal_search_hit* hits, size_t capacity);
+/** Bumped by every history change (upsert, trim, reload); status refreshes leave it alone. */
+uint64_t dsd_app_signal_search_history_revision(void);
+/** dsd_app_signal_search_history_get() and the revision of that copy, taken together. */
+size_t dsd_app_signal_search_history_snapshot(dsd_signal_search_hit* hits, size_t capacity, uint64_t* revision);
+/** Permanent avoids. */
 size_t dsd_app_signal_search_avoids_get(uint32_t* frequencies, size_t capacity);
 int dsd_app_signal_search_avoid_remove(uint32_t frequency);
+/** Bumped by every change to the permanent or session avoid lists. */
+uint64_t dsd_app_signal_search_avoids_revision(void);
+/** Frequencies avoided for the running search session only; cleared when it stops. */
+size_t dsd_app_signal_search_session_avoids_get(uint32_t* frequencies, size_t capacity);
+/** Decoder-thread mirror of the session's own avoid list, kept by the control actions. */
+void dsd_app_signal_search_session_avoid_add(uint64_t session, uint32_t frequency);
+void dsd_app_signal_search_session_avoid_remove(uint32_t frequency);
+void dsd_app_signal_search_session_avoids_clear(void);
+/** Decoder session teardown: no status may outlive it as a running or owned search. */
+void dsd_app_signal_search_session_ended(void);
 /** Decoder-thread publication; no disk access. */
 void dsd_app_signal_search_publish(const dsd_signal_search_status*, const dsd_signal_search_hit*, void*);
 void dsd_app_signal_search_permanent_avoid(uint32_t frequency);

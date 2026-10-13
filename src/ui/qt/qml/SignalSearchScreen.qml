@@ -130,8 +130,9 @@ Item {
                     wrapMode: Text.Wrap
                 }
                 Text {
+                    objectName: "searchStrength"
                     width: parent.width
-                    text: Number(screen.hit.power || 0).toFixed(1) + qsTr(" dBFS · ") + (screen.hit.range || "")
+                    text: (screen.status.livePowerValid ? qsTr("Now %1 dBFS · detected %2 dBFS").arg(Number(screen.status.livePower).toFixed(1)).arg(Number(screen.hit.power || 0).toFixed(1)) : Number(screen.hit.power || 0).toFixed(1) + qsTr(" dBFS")) + " · " + (screen.hit.range || "")
                     color: Theme.textSecondary
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(14)
@@ -248,14 +249,25 @@ Item {
                 }
             }
             OutlineButton { text: qsTr("Show more"); visible: searchModel && searchModel.history.length > historyLimit; onClicked: historyLimit += 25 }
+            Text { visible: screen.sessionActive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            Repeater {
+                model: screen.sessionActive && searchModel ? (searchModel.sessionAvoids || []) : []
+                OutlineButton {
+                    required property var modelData
+                    objectName: "searchSessionAvoid"
+                    width: parent.width
+                    text: qsTr("Stop avoiding · %1 MHz").arg((Number(modelData) / 1e6).toFixed(6))
+                    onClicked: searchModel.removeSessionAvoid(Number(modelData))
+                }
+            }
             Text { visible: searchModel && searchModel.avoids.length > 0; text: qsTr("Permanent avoids"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             Repeater {
                 model: searchModel ? searchModel.avoids : []
                 OutlineButton {
                     required property var modelData
+                    objectName: "searchPermanentAvoid"
                     width: parent.width
                     text: qsTr("Remove avoid · %1 MHz").arg((Number(modelData) / 1e6).toFixed(6))
-                    enabled: !screen.sessionActive
                     onClicked: searchModel.removeAvoid(Number(modelData))
                 }
             }

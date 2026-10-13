@@ -81,6 +81,11 @@ typedef struct {
     uint32_t range_index, channel_index, channel_count;
     uint32_t capture_rate_hz;
     int identifying;
+    /** 1 while a coordinator owns the tuner; 0 for a rejected start or a stopped session. */
+    int owned;
+    /** Current-channel RF power while listening, on the detector's dBFS scale; detection power stays in hit. */
+    int live_power_valid;
+    float live_power_dbfs;
     uint64_t measurement_latency_us;
     dsd_signal_search_hit hit;
     char message[192];
@@ -106,16 +111,22 @@ typedef enum {
     DSD_SEARCH_ACTION_HOLD,
     DSD_SEARCH_ACTION_SKIP,
     DSD_SEARCH_ACTION_AVOID,
-    DSD_SEARCH_ACTION_AVOID_PERMANENT
+    DSD_SEARCH_ACTION_AVOID_PERMANENT,
+    /** Lift a session avoid by frequency_hz; not tied to a hit. */
+    DSD_SEARCH_ACTION_UNAVOID
 } dsd_signal_search_action;
 
 typedef struct {
     uint64_t session_id, hit_id;
     int action;
+    uint32_t frequency_hz;
 } dsd_signal_search_control;
 
 void dsd_signal_search_range_default(dsd_signal_search_range* range);
 int dsd_signal_search_validate(const dsd_signal_search_range* range, char* error, size_t capacity);
+/** Every range valid, at least one enabled, and at most DSD_SEARCH_MAX_CHANNELS enabled channels in total.
+ * Shared by the engine and frontends so a start the engine would reject is refused before submission. */
+int dsd_signal_search_validate_config(const dsd_signal_search_config* config, char* error, size_t capacity);
 uint32_t dsd_signal_search_channel_count(const dsd_signal_search_range* range);
 uint32_t dsd_signal_search_frequency(const dsd_signal_search_range* range, uint32_t index);
 int dsd_signal_search_fft_size(uint32_t rate, const dsd_signal_search_range* range);

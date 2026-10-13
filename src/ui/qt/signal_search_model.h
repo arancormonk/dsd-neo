@@ -24,8 +24,9 @@ class KnownFrequencyIndex;
 class SignalSearchModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList ranges READ ranges NOTIFY rangesChanged)
-    Q_PROPERTY(QVariantList history READ history NOTIFY changed)
-    Q_PROPERTY(QVariantList avoids READ avoids NOTIFY changed)
+    Q_PROPERTY(QVariantList history READ history NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList avoids READ avoids NOTIFY avoidsChanged)
+    Q_PROPERTY(QVariantList sessionAvoids READ sessionAvoids NOTIFY avoidsChanged)
     Q_PROPERTY(QVariantMap status READ status NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
   public:
@@ -47,6 +48,11 @@ class SignalSearchModel : public QObject {
         return m_avoids;
     }
 
+    QVariantList
+    sessionAvoids() const {
+        return m_sessionAvoids;
+    }
+
     QVariantMap
     status() const {
         return m_status;
@@ -65,23 +71,31 @@ class SignalSearchModel : public QObject {
     Q_INVOKABLE void cancelArm();
     Q_INVOKABLE bool control(int action, const QString& session, const QString& hit);
     Q_INVOKABLE void removeAvoid(double frequency);
+    Q_INVOKABLE bool removeSessionAvoid(double frequency);
     Q_INVOKABLE QVariantMap systemForHit(const QVariantMap& hit, const QVariantMap& source) const;
     void refresh();
   Q_SIGNALS:
     void rangesChanged();
     void changed();
+    void historyChanged();
+    void avoidsChanged();
 
   private:
     DecoderHost* m_host;
     KnownFrequencyIndex* m_index;
-    QVariantList m_ranges, m_history, m_avoids;
+    QVariantList m_ranges, m_history, m_avoids, m_sessionAvoids;
     QVariantMap m_status;
     QString m_error, m_persistenceError;
     QTimer m_timer;
     dsd_signal_search_config m_pending{};
     bool m_armed = false;
     uint64_t m_revision = UINT64_MAX, m_session = 0;
+    uint64_t m_historyRevision = UINT64_MAX, m_avoidsRevision = UINT64_MAX;
+    bool m_owned = false;
     bool persistRanges(const QVariantList& list);
+    bool refreshAvoids();
+    bool refreshHistory();
+    bool unavoid(uint32_t frequency);
     QVariantMap hitMap(const dsd_signal_search_hit& h) const;
 };
 } // namespace dsd_qt

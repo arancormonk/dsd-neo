@@ -25,6 +25,9 @@ static dsd_signal_search_publish_fn observer;
 static void* observer_user;
 static dsd_signal_search_status published;
 static dsd_call_snapshot call;
+static int reject_start, coordinator_active;
+static uint32_t session_avoid_added, session_avoid_removed, permanent_avoided;
+static uint64_t session_avoid_session;
 
 int
 dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
@@ -32,11 +35,19 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     (void)opts;
     (void)state;
     (void)config;
-    (void)error;
-    (void)capacity;
+    if (reject_start) {
+        DSD_SNPRINTF(error, capacity, "%s", "A search supports up to 100,000 enabled channels");
+        return -1;
+    }
     observer = callback;
     observer_user = user;
     return 0;
+}
+
+int
+dsd_engine_signal_search_active(const dsd_state* state) {
+    (void)state;
+    return coordinator_active;
 }
 
 int
@@ -74,7 +85,18 @@ dsd_app_signal_search_store_flush(void) {}
 
 void
 dsd_app_signal_search_permanent_avoid(uint32_t frequency) {
-    (void)frequency;
+    permanent_avoided = frequency;
+}
+
+void
+dsd_app_signal_search_session_avoid_add(uint64_t session, uint32_t frequency) {
+    session_avoid_session = session;
+    session_avoid_added = frequency;
+}
+
+void
+dsd_app_signal_search_session_avoid_remove(uint32_t frequency) {
+    session_avoid_removed = frequency;
 }
 
 int
@@ -154,6 +176,43 @@ main(void) {
     status.hit.protocol[0] = '\0';
     observer(&status, &status.hit, observer_user);
     assert(published.hit.access[0] == '\0' && published.hit.source_text[0] == '\0');
+
+    // Controls mirror the session's own avoid list for the frontends; a permanent avoid goes to the store instead.
+    struct dsd_app_command* control = calloc(1, sizeof(*control));
+    assert(control);
+    control->n = sizeof(dsd_signal_search_control);
+    dsd_signal_search_control action = {1, 2, DSD_SEARCH_ACTION_AVOID, 0};
+    published.hit.frequency_hz = 463552100;
+    DSD_MEMCPY(control->data, &action, sizeof(action));
+    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
+    assert(session_avoid_session == 1 && session_avoid_added == 463552100 && !permanent_avoided);
+    action.action = DSD_SEARCH_ACTION_UNAVOID;
+    action.frequency_hz = 463552100;
+    DSD_MEMCPY(control->data, &action, sizeof(action));
+    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
+    assert(session_avoid_removed == 463552100);
+    action.action = DSD_SEARCH_ACTION_AVOID_PERMANENT;
+    DSD_MEMCPY(control->data, &action, sizeof(action));
+    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
+    assert(permanent_avoided == 463552100);
+    free(control);
+
+    // A start the engine rejects is shown, but owns nothing: no coordinator will ever publish STOPPED for it.
+    reject_start = 1;
+    published.revision = 9;
+    assert(dsd_app_actions_signal_search[0].fn(opts, state, command) == 2);
+    assert(published.phase == DSD_SEARCH_ERROR && !published.owned && published.revision == 10);
+    assert(strstr(published.message, "100,000") != NULL);
+
+    // A rejected restart of a paused session keeps that coordinator's phase, session and ownership.
+    published.session_id = 5;
+    published.phase = DSD_SEARCH_PAUSED;
+    published.owned = 1;
+    published.message[0] = '\0';
+    coordinator_active = 1;
+    assert(dsd_app_actions_signal_search[0].fn(opts, state, command) == 2);
+    assert(published.phase == DSD_SEARCH_PAUSED && published.owned && published.session_id == 5);
+    assert(published.revision == 11 && strstr(published.message, "100,000") != NULL);
 
     free(command);
     free(state);

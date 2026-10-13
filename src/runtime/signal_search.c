@@ -117,6 +117,43 @@ dsd_signal_search_validate(const dsd_signal_search_range* range, char* error, si
     return why ? -1 : 0;
 }
 
+static int
+search_config_error(char* error, size_t capacity, const char* why) {
+    if (error && capacity) {
+        DSD_SNPRINTF(error, capacity, "%s", why);
+    }
+    return -1;
+}
+
+int
+dsd_signal_search_validate_config(const dsd_signal_search_config* config, char* error, size_t capacity) {
+    if (!config || !config->range_count || config->range_count > DSD_SEARCH_MAX_RANGES
+        || config->avoid_count > DSD_SEARCH_MAX_AVOIDS) {
+        return search_config_error(error, capacity, "Invalid signal search configuration");
+    }
+    int enabled = 0;
+    uint64_t total_channels = 0;
+    for (uint32_t i = 0; i < config->range_count; ++i) {
+        if (dsd_signal_search_validate(&config->ranges[i], error, capacity)) {
+            return -1;
+        }
+        if (config->ranges[i].enabled) {
+            ++enabled;
+            total_channels += dsd_signal_search_channel_count(&config->ranges[i]);
+        }
+    }
+    if (!enabled) {
+        return search_config_error(error, capacity, "Enable at least one range");
+    }
+    if (total_channels > DSD_SEARCH_MAX_CHANNELS) {
+        return search_config_error(error, capacity, "A search supports up to 100,000 enabled channels");
+    }
+    if (error && capacity) {
+        error[0] = '\0';
+    }
+    return 0;
+}
+
 int
 dsd_signal_search_fft_size(uint32_t rate, const dsd_signal_search_range* range) {
     if (!rate || dsd_signal_search_validate(range, NULL, 0)) {

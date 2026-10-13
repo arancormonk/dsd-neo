@@ -193,6 +193,7 @@ SignalSearchModel::SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* ind
     if (m_index) {
         connect(m_index, &KnownFrequencyIndex::changed, this, [this] {
             m_revision = UINT64_MAX;
+            m_historyRevision = UINT64_MAX;
             refresh();
         });
     }
@@ -314,6 +315,11 @@ SignalSearchModel::arm() {
         return tr("Enable at least one range.");
     }
     m_pending.avoid_count = (uint32_t)dsd_app_signal_search_avoids_get(m_pending.avoids, DSD_SEARCH_MAX_AVOIDS);
+    /* The engine's own aggregate rules, so a start it would reject is never submitted (the channel total included). */
+    char configError[192];
+    if (dsd_signal_search_validate_config(&m_pending, configError, sizeof(configError)) != 0) {
+        return QString::fromUtf8(configError);
+    }
     m_armed = true;
     m_error.clear();
     if (m_host && m_host->sessionState() == 2) {
@@ -345,12 +351,38 @@ SignalSearchModel::control(int action, const QString& session, const QString& hi
     return true;
 }
 
+bool
+SignalSearchModel::unavoid(uint32_t frequency) {
+    dsd_signal_search_control c{};
+    c.action = DSD_SEARCH_ACTION_UNAVOID;
+    c.session_id = m_session;
+    c.frequency_hz = frequency;
+    if (dsd_app_signal_search_control(&c) < 0) {
+        m_error = tr("The decoder did not accept this action.");
+        Q_EMIT changed();
+        return false;
+    }
+    return true;
+}
+
 void
 SignalSearchModel::removeAvoid(double frequency) {
     if (std::isfinite(frequency) && frequency > 0 && frequency <= UINT32_MAX) {
         dsd_app_signal_search_avoid_remove((uint32_t)frequency);
+        /* A running session loaded this avoid when it started; lift it there too. */
+        if (m_owned) {
+            (void)unavoid((uint32_t)frequency);
+        }
         refresh();
     }
+}
+
+bool
+SignalSearchModel::removeSessionAvoid(double frequency) {
+    if (!m_owned || !std::isfinite(frequency) || frequency <= 0 || frequency > UINT32_MAX) {
+        return false;
+    }
+    return unavoid((uint32_t)frequency);
 }
 
 QVariantMap
@@ -394,42 +426,77 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
             {QStringLiteral("knownLabel"), labels.join(QStringLiteral(" / "))}};
 }
 
+static QVariantList
+frequencyList(size_t (*get)(uint32_t*, size_t)) {
+    std::vector<uint32_t> frequencies(DSD_SEARCH_MAX_AVOIDS);
+    const size_t n = get(frequencies.data(), frequencies.size());
+    QVariantList list;
+    for (size_t i = 0; i < n; ++i) {
+        list.append(frequencies[i]);
+    }
+    return list;
+}
+
+bool
+SignalSearchModel::refreshAvoids() {
+    const uint64_t revision = dsd_app_signal_search_avoids_revision();
+    if (revision == m_avoidsRevision) {
+        return false;
+    }
+    m_avoidsRevision = revision;
+    m_avoids = frequencyList(dsd_app_signal_search_avoids_get);
+    m_sessionAvoids = frequencyList(dsd_app_signal_search_session_avoids_get);
+    return true;
+}
+
+/* History is copied and converted only when the store changed it (or the saved-frequency labels did), not on every
+   status revision: a search publishes those several times a second, the history far less often. */
+bool
+SignalSearchModel::refreshHistory() {
+    if (dsd_app_signal_search_history_revision() == m_historyRevision) {
+        return false;
+    }
+    std::vector<dsd_signal_search_hit> hits(DSD_SEARCH_HISTORY_LIMIT);
+    const size_t n = dsd_app_signal_search_history_snapshot(hits.data(), hits.size(), &m_historyRevision);
+    m_history.clear();
+    for (size_t i = 0; i < n; ++i) {
+        m_history.append(hitMap(hits[i]));
+    }
+    return true;
+}
+
 void
 SignalSearchModel::refresh() {
+    if (refreshAvoids()) {
+        Q_EMIT avoidsChanged();
+    }
+    if (refreshHistory()) {
+        Q_EMIT historyChanged();
+    }
     dsd_signal_search_status s{};
     char errorText[256];
     dsd_app_signal_search_status_get(&s, errorText, sizeof(errorText));
     const QString persistenceError = QString::fromUtf8(errorText);
     bool changedError = persistenceError != m_persistenceError;
     m_persistenceError = persistenceError;
-    std::vector<uint32_t> frequencies(DSD_SEARCH_MAX_AVOIDS);
-    size_t n = dsd_app_signal_search_avoids_get(frequencies.data(), frequencies.size());
-    QVariantList list;
-    for (size_t i = 0; i < n; ++i) {
-        list.append(frequencies[i]);
-    }
-    bool changedAvoids = list != m_avoids;
-    m_avoids = list;
-    if (s.revision == m_revision && s.session_id == m_session && !changedAvoids && !changedError) {
+    if (s.revision == m_revision && s.session_id == m_session && !changedError) {
         return;
     }
     m_revision = s.revision;
     m_session = s.session_id;
+    m_owned = s.owned != 0;
     m_status = {{QStringLiteral("phase"), (int)s.phase},
+                {QStringLiteral("owned"), s.owned != 0},
                 {QStringLiteral("identifying"), s.identifying != 0},
                 {QStringLiteral("session"), QString::number(s.session_id)},
                 {QStringLiteral("pass"), (qulonglong)s.pass},
                 {QStringLiteral("range"), s.range_index},
                 {QStringLiteral("channel"), s.channel_index},
                 {QStringLiteral("count"), s.channel_count},
+                {QStringLiteral("livePowerValid"), s.live_power_valid != 0},
+                {QStringLiteral("livePower"), s.live_power_dbfs},
                 {QStringLiteral("message"), QString::fromUtf8(s.message)},
                 {QStringLiteral("hit"), hitMap(s.hit)}};
-    std::vector<dsd_signal_search_hit> hits(DSD_SEARCH_HISTORY_LIMIT);
-    n = dsd_app_signal_search_history_get(hits.data(), hits.size());
-    m_history.clear();
-    for (size_t i = 0; i < n; ++i) {
-        m_history.append(hitMap(hits[i]));
-    }
     Q_EMIT changed();
 }
 

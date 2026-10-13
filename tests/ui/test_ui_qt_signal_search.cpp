@@ -13,10 +13,12 @@
 #include <QFileInfo>
 #include <QList>
 #include <QMap>
+#include <QObject>
 #include <QString>
 #include <QTemporaryDir>
 #include <QVariant>
 #include <cassert>
+#include <cmath>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -199,6 +201,84 @@ main(int argc, char** argv) {
     assert(model.systemForHit(nxdn, {}).value(QStringLiteral("decodeFlag")) == QStringLiteral("-fi"));
     nxdn[QStringLiteral("protocol")] = QStringLiteral("NXDN96");
     assert(model.systemForHit(nxdn, {}).value(QStringLiteral("decodeFlag")) == QStringLiteral("-fn"));
+
+    // History is copied and rebuilt only when the store changed it, not on every status revision.
+    int historySignals = 0, statusSignals = 0, avoidSignals = 0;
+    QObject::connect(&model, &dsd_qt::SignalSearchModel::historyChanged, [&] { ++historySignals; });
+    QObject::connect(&model, &dsd_qt::SignalSearchModel::changed, [&] { ++statusSignals; });
+    QObject::connect(&model, &dsd_qt::SignalSearchModel::avoidsChanged, [&] { ++avoidSignals; });
+    const uint64_t historyRevision = dsd_app_signal_search_history_revision();
+    for (int i = 0; i < 5; ++i) {
+        dsd_signal_search_status searching{};
+        searching.session_id = 17;
+        searching.revision = 5000 + (uint64_t)i;
+        searching.phase = DSD_SEARCH_LISTENING;
+        searching.owned = 1;
+        searching.live_power_valid = 1;
+        searching.live_power_dbfs = -42.5f - (float)i;
+        dsd_app_signal_search_publish(&searching, nullptr, nullptr);
+        model.refresh();
+    }
+    assert(statusSignals == 5 && historySignals == 0);
+    assert(dsd_app_signal_search_history_revision() == historyRevision);
+    assert(model.status().value(QStringLiteral("owned")).toBool());
+    assert(model.status().value(QStringLiteral("livePowerValid")).toBool());
+    assert(std::abs(model.status().value(QStringLiteral("livePower")).toDouble() + 46.5) < 1e-3);
+    publish(78, true); // the same record again: coalesced, so the history is unchanged
+    model.refresh();
+    assert(historySignals == 0 && dsd_app_signal_search_history_revision() == historyRevision);
+    publish(79);
+    model.refresh();
+    assert(historySignals == 1 && model.history().front().toMap().value(QStringLiteral("id")) == QStringLiteral("79"));
+    uint64_t snapshotRevision = 0;
+    std::vector<dsd_signal_search_hit> newest(2);
+    assert(dsd_app_signal_search_history_snapshot(newest.data(), newest.size(), &snapshotRevision) == 2);
+    assert(newest[0].hit_id == 79 && snapshotRevision == dsd_app_signal_search_history_revision());
+
+    // Session avoids are mirrored per session, listed apart from permanent ones and cleared when the session stops.
+    dsd_app_signal_search_session_avoid_add(17, 463550000);
+    dsd_app_signal_search_session_avoid_add(17, 463550000);
+    dsd_app_signal_search_session_avoid_add(17, 463575000);
+    model.refresh();
+    assert(avoidSignals == 1 && model.sessionAvoids().size() == 2 && model.avoids().isEmpty());
+    dsd_app_signal_search_session_avoid_remove(463550000);
+    model.refresh();
+    assert(model.sessionAvoids().size() == 1 && model.sessionAvoids().front().toUInt() == 463575000);
+    dsd_app_signal_search_session_avoid_add(18, 463600000); // another session starts its own list
+    model.refresh();
+    assert(model.sessionAvoids().size() == 1 && model.sessionAvoids().front().toUInt() == 463600000);
+    dsd_signal_search_status stopped{};
+    stopped.session_id = 18;
+    stopped.revision = 6000;
+    stopped.phase = DSD_SEARCH_STOPPED;
+    dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    model.refresh();
+    assert(model.sessionAvoids().isEmpty() && !model.status().value(QStringLiteral("owned")).toBool());
+
+    // A rejected start owns nothing, and decoder-session teardown retires it while keeping its message.
+    dsd_signal_search_status rejected{};
+    rejected.session_id = 19;
+    rejected.revision = 7000;
+    rejected.phase = DSD_SEARCH_ERROR;
+    DSD_SNPRINTF(rejected.message, sizeof(rejected.message), "%s", "A search supports up to 100,000 enabled channels");
+    dsd_app_signal_search_publish(&rejected, nullptr, nullptr);
+    model.refresh();
+    assert(model.status().value(QStringLiteral("phase")).toInt() == DSD_SEARCH_ERROR);
+    assert(!model.status().value(QStringLiteral("owned")).toBool());
+    dsd_app_signal_search_session_ended();
+    model.refresh();
+    assert(model.status().value(QStringLiteral("phase")).toInt() == DSD_SEARCH_STOPPED);
+    assert(model.status().value(QStringLiteral("message")).toString().contains(QStringLiteral("100,000")));
+
+    // The engine's aggregate limit is checked before a start is ever submitted.
+    auto large = model.defaultRange();
+    large[QStringLiteral("startMHz")] = QStringLiteral("100.000000");
+    large[QStringLiteral("endMHz")] = QStringLiteral("850.000000"); // 60,001 channels at 12.5 kHz
+    assert(model.saveRange(0, large).isEmpty() && model.saveRange(-1, large).isEmpty());
+    assert(model.arm().contains(QStringLiteral("100,000")));
+    model.removeRange(1);
+    assert(model.arm().isEmpty());
+    model.cancelArm();
     return 0;
 }
 
