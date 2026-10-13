@@ -700,6 +700,10 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
     search_cancel_measurements(c);
     rtl_signal_search_bypass(1);
     rtl_stream_clear_pending_retune_profile();
+    /* Leaving the channel the search left the receiver on is a carrier change like any visit's: the call heard there
+       ends at the boundary, so nothing received on the restored frequency joins it. */
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_frame_sync_reset_acquisition(opts, state, 1);
     search_restore(c, opts, state);
     dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(dsd_infer_decode_mode_preset(opts));
     rtl_stream_retune_gain_profile gain = {1, c->saved_gain, c->saved_gain_auto, 1, c->saved_autogain};

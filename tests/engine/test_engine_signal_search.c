@@ -67,7 +67,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 45);
+    assert(owner >= 42 && owner <= 46);
     if (defer) {
         --defer;
         return 1;
@@ -404,6 +404,25 @@ test_teardown_restores_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_co
     assert(o->rtlsdr_center_freq == 100000000);
 }
 
+/* A Stop's restore tune moves the receiver off the channel the search left it on, a carrier change like any visit's:
+   the call heard there ends at the boundary, so nothing received on the restored frequency joins it. */
+static void
+test_stop_restore_is_a_carrier_boundary(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    o->rtlsdr_center_freq = 100000000;
+    config->session_id = 46;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && o->rtlsdr_center_freq == 100025000);
+    const int before = boundary;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(boundary == before + 1 && target == 100000000);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && boundary == before + 1 && o->rtlsdr_center_freq == 100000000);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -558,6 +577,7 @@ main(void) {
     assert(boundary > 0 && cancelled > 0);
     test_listening_verdict_and_live_strength(o, s, &config);
     test_teardown_restores_frequency(o, s, &config);
+    test_stop_restore_is_a_carrier_boundary(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);
