@@ -38,22 +38,19 @@ dsd-neo -fT -i rtl:0:392.5M:0:0:72
 
 ## Crypto libraries
 
-TETRA air-interface and end-to-end decryption use two pinned upstream
-libraries, built the same way on every platform:
+TETRA air-interface decryption uses one pinned upstream library, built the
+same way on every platform:
 
 | Package | Upstream | Provides |
 | --- | --- | --- |
 | `tetracrypto` | MidnightBlueLabs/TETRA_crypto (Apache-2.0) | TEA1, TEA2, TEA3, HURDLE, TAA1 |
-| `tetraetee` | MidnightBlueLabs/TETRA_etee (Apache-2.0) | End-to-end E-functions; links OpenSSL |
 
-Windows and Android builds get them from the overlay ports in
-`vcpkg-ports/tetracrypto` and `vcpkg-ports/tetraetee`. Linux and macOS builds
-install the same CMake projects with `tools/install_tetra_crypto_deps.sh
-<prefix>`. Both read the commit and archive pins in
-`tools/ci-dependency-pins.env`. The `tetracrypto` port force-includes a small
-endian compatibility header so its sources compile unchanged on MSVC; the
-`tetraetee` port replaces the GNU `min()` macro and the variable-length arrays
-MSVC rejects with fixed-size buffers.
+Windows and Android builds get it from the overlay port in
+`vcpkg-ports/tetracrypto`. Linux and macOS builds install the same CMake
+project with `tools/install_tetra_crypto_deps.sh <prefix>`. Both read the
+commit and archive pins in `tools/ci-dependency-pins.env`. The port
+force-includes a small endian compatibility header so its sources compile
+unchanged on MSVC.
 
 ## Real-air fixtures
 

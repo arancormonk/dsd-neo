@@ -12,8 +12,8 @@ Required dependencies are:
 - CMake 3.20 or newer
 - OpenSSL 3.x libcrypto
 - `mbe-neo` 2.3+ CMake package from mbelib-neo
-- `tetracrypto` and `tetraetee` CMake packages. On Windows and Android they
-  come from the vcpkg overlay ports. Other builds install the same ports with
+- `tetracrypto` CMake package. On Windows and Android it comes from the vcpkg
+  overlay port. Other builds install the same port with
   `tools/install_tetra_crypto_deps.sh`.
 - libsndfile
 - curses backend: ncursesw/PDCurses. macOS ships no `libncursesw` — its unified

@@ -2,11 +2,11 @@
 
 DSD-neo's canonical installer is still CMake. For Linux users who want a
 copy/paste bootstrap path, `tools/install_linux.sh` installs distro build
-dependencies, builds the pinned `mbelib-neo`, `tetracrypto`, and `tetraetee`
-dependencies, builds this checkout, smoke-tests `dsd-neo -h`, and installs
-through CMake. The bootstrap build
-disables warnings-as-errors so source installs are not broken by warning drift
-in newer distro compilers; developer and CI presets still enforce warnings.
+dependencies, builds the pinned `mbelib-neo` and `tetracrypto` dependencies,
+builds this checkout, smoke-tests `dsd-neo -h`, and installs through CMake.
+The bootstrap build disables warnings-as-errors so source installs are not
+broken by warning drift in newer distro compilers; developer and CI presets
+still enforce warnings.
 
 Arch Linux users should normally use the AUR packages linked from `README.md`.
 The pacman path exists for source-build validation and Arch-family derivatives

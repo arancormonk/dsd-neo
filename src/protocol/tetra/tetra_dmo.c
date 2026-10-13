@@ -6,7 +6,6 @@
  */
 
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/crypto/tetra_etee.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
@@ -1341,9 +1340,6 @@ tetra_dmo_describe_elems(const tetra_dmo_sync_h_t* h, char* buf, int buf_len) {
         return 0;
     }
     buf[0] = '\0';
-    if (h->e2ee) {
-        (void)tetra_etee_library_ready();
-    }
     tetra_dmo_timing_text(h, timing, (int)sizeof(timing));
     if (h->elems & TETRA_DMO_ELEMS_CALL) {
         n = snprintf(buf, (size_t)buf_len, "%s %s prio=%s pwr=%u%s%s", h->group_call ? "group" : "individual",

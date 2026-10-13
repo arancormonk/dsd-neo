@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Install the tetracrypto and tetraetee CMake packages for builds that do not
-# use the vcpkg manifest (Linux and macOS). Windows and Android presets install
-# the same ports through vcpkg.json.
+# Install the tetracrypto CMake package for builds that do not use the vcpkg
+# manifest (Linux and macOS). Windows and Android presets install the same port
+# through vcpkg.json.
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -19,10 +19,9 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$root/tools/ci-dependency-pins.env"
 
 : "${TETRA_CRYPTO_SHA:?TETRA_CRYPTO_SHA is required}"
-: "${TETRA_ETEE_SHA:?TETRA_ETEE_SHA is required}"
 
 stamp="$prefix/.tetra-crypto-deps"
-want="crypto=$TETRA_CRYPTO_SHA etee=$TETRA_ETEE_SHA"
+want="crypto=$TETRA_CRYPTO_SHA"
 if [[ -f "$stamp" ]] && [[ $(cat "$stamp") == "$want" ]]; then
   echo "TETRA crypto dependencies already installed in $prefix"
   exit 0
@@ -50,7 +49,6 @@ install_port() {
 }
 
 install_port tetracrypto "https://github.com/MidnightBlueLabs/TETRA_crypto.git" "$TETRA_CRYPTO_SHA"
-install_port tetraetee "https://github.com/MidnightBlueLabs/TETRA_etee.git" "$TETRA_ETEE_SHA"
 
 mkdir -p "$prefix"
 printf '%s\n' "$want" > "$stamp"

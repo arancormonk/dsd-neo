@@ -3,7 +3,6 @@
  * Vectors are the published TEA1/2/3 cases from Midnight Blue's Apache-2.0 tests. */
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/crypto/tetra_etee.h>
 #include <dsd-neo/crypto/tetra_tea.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 
@@ -50,7 +49,6 @@ main(void) {
     CHECK(tetra_air_build_iv(4, 18, 60, 0x7FFF, 1) == (3u | (18u << 2) | (60u << 7) | (0x7FFFu << 13) | (1u << 28)),
           "uplink IV packs the direction bit");
     CHECK(tetra_air_build_iv(0, 1, 1, 0, 0) == 0, "timeslot 0 is not an IV");
-    CHECK(tetra_etee_library_ready(), "end-to-end library recognises AES and IDEA");
 
     CHECK(ks_eq(0, 0x11111111u, zero_key, tea1_zero_ks), "TEA1 zero key vector");
     CHECK(ks_eq(0, 0x01234567u, tea1_key, tea1_ks), "TEA1 keyed vector");
