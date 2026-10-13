@@ -67,7 +67,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner == 42 || owner == 43 || owner == 44);
+    assert(owner >= 42 && owner <= 45);
     if (defer) {
         --defer;
         return 1;
@@ -385,6 +385,25 @@ test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_s
     assert(status.phase == DSD_SEARCH_STOPPED && !status.owned);
 }
 
+/* A session that ends under a search (the decoder stops, so no Stop runs its restore tune) leaves the frequency the
+   search started from: the teardown autosaves the configuration next, which must not keep a visit's frequency. */
+static void
+test_teardown_restores_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    config->session_id = 45;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100025000);
+    assert(o->rtlsdr_center_freq == 100025000);
+    dsd_engine_signal_search_shutdown(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && !status.owned && !dsd_engine_signal_search_active(s));
+    assert(o->rtlsdr_center_freq == 100000000);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -538,6 +557,7 @@ main(void) {
     assert(status.phase == DSD_SEARCH_STOPPED);
     assert(boundary > 0 && cancelled > 0);
     test_listening_verdict_and_live_strength(o, s, &config);
+    test_teardown_restores_frequency(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

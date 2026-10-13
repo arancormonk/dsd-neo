@@ -1004,6 +1004,9 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
     search_cancel_measurements(c);
     search_restore(c, opts, state);
+    /* The session's frequency is the one the search started from, as after a Stop's restore tune: a session ending
+       under the search autosaves its configuration next, which must not keep a visit's frequency. */
+    opts->rtlsdr_center_freq = c->saved_frequency;
     rtl_stream_clear_pending_retune_profile();
     rtl_signal_search_bypass(0);
     rtl_signal_search_set_owner(0);
