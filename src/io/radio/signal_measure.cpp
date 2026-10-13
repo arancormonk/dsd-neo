@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <dsd-neo/core/safe_api.h>
@@ -16,20 +17,70 @@
 #include <stdint.h>
 #include "rtl_fft_cache.h"
 
+namespace {
+/* A located transmitter: its centre in FFT bins, the analysis bins of its own channel width (where a transmitter
+   beside it does not lie), and where its own spectrum may lie (its segment, cut where a bridged gap left its centre
+   without power). */
+struct located {
+    double centre;
+    long long first, last;
+    long long own_first, own_last;
+};
+
+/* Every transmitter located in one spectrum: primaries strongest first, then the separate ones beside them. */
+struct source_list {
+    located items[2 * DSD_SEARCH_MAX_CANDIDATES];
+    int count;
+
+    /* Whether @p s was already located: either one's centre lies within the other's channel width. */
+    bool
+    known(const located& s, int decimation) const {
+        /* Decimations are powers of two, so scaling by the reciprocal is exact. */
+        const double scale = 1.0 / decimation, s_coarse = s.centre * scale;
+        for (int i = 0; i < count; ++i) {
+            const located& t = items[i];
+            const double t_coarse = t.centre * scale;
+            if ((s_coarse >= (double)t.first && s_coarse <= (double)t.last + 1)
+                || (t_coarse >= (double)s.first && t_coarse <= (double)s.last + 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void
+    add(const located& s) {
+        if (count < (int)(sizeof(items) / sizeof(items[0]))) {
+            items[count++] = s;
+        }
+    }
+};
+} // namespace
+
 struct dsd_signal_detector {
     /* Keep aligned buffers first so records never require interior alignment padding. */
     alignas(16) float samples[2 * DSD_SEARCH_MAX_FFT]{};
     dsd_io::HannWindowCache<DSD_SEARCH_MAX_FFT> hann;
     dsd_io::FftSetupCache fft;
     dsd_signal_measure_request request{};
+    /* This window's power, and the first window's once it is complete. */
     double power[DSD_SEARCH_MAX_FFT]{};
+    double first_power[DSD_SEARCH_MAX_FFT]{};
+    /* Scratch: prefix sums of a window (one longer than the spectrum), and leakage rejection's spectrum, its three-bin
+       sums, their two envelopes and the transmitters located in it. */
+    double prefix[DSD_SEARCH_MAX_FFT + 1]{};
+    double analysed[DSD_SEARCH_MAX_FFT]{};
+    double three[DSD_SEARCH_MAX_FFT]{};
+    double envelope[DSD_SEARCH_MAX_FFT]{};
+    double near_envelope[DSD_SEARCH_MAX_FFT]{};
+    source_list sources{};
     double energy = 0;
     size_t filled = 0, window_samples = 0, total_samples = 0, clipped = 0;
-    unsigned frames = 0, windows = 0;
+    unsigned frames = 0, first_frames = 0, windows = 0;
     int n = 0;
     bool armed = false;
+    /* Each candidate's threshold verdict in the first window, and in the current one. */
     bool first[DSD_SEARCH_MAX_CANDIDATES]{};
-    /* Per-window scratch: each candidate's threshold verdict before leakage rejection. */
     bool raw[DSD_SEARCH_MAX_CANDIDATES]{};
 };
 
@@ -71,8 +122,8 @@ dsd_signal_detector_begin(dsd_signal_detector* detector, const dsd_signal_measur
         detector->energy += (double)window[i] * window[i];
     }
     detector->filled = detector->window_samples = detector->total_samples = detector->clipped = 0;
-    detector->frames = detector->windows = 0;
-    DSD_MEMSET(detector->power, 0, sizeof(detector->power));
+    detector->frames = detector->first_frames = detector->windows = 0;
+    DSD_MEMSET(detector->power, 0, (size_t)n * sizeof(detector->power[0]));
     DSD_MEMSET(detector->first, 0, sizeof(detector->first));
     detector->armed = true;
     return 0;
@@ -86,16 +137,33 @@ same_capture(const dsd_signal_capture& a, const dsd_signal_capture& b) {
 }
 
 namespace {
-/* Leakage rejection thresholds. A source's skirt has ended once the three-bin power falls this far below its peak
-   (6 dB). A candidate is then a separate transmitter when its window rises clearly above the lowest point since
-   (valley_rise_ratio()), or, where the source's other side is a clean skirt, this far above that side mirrored
-   (10 dB). */
+/* Leakage rejection thresholds. A skirt has ended once the envelope falls this far below its peak (6 dB). A transmitter
+   beside a source stands this far above the source's far side mirrored (10 dB), and is only compared with a mirror when
+   the source's spectrum overlaps its own mirror image at least this much (half). A source centre with this little of
+   the source's peak power (20 dB down) may lie between two transmitters, which are told apart from one when two sources
+   each symmetric about their own centres explain at least as much of the power, less this margin. */
 constexpr double kSkirtFallRatio = 3.9810717055349722;
 constexpr double kMirrorRiseRatio = 10.0;
+constexpr double kMirrorSymmetry = 0.5;
+constexpr double kWeakCentreRatio = 0.01;
+constexpr double kTwoSourceMargin = 0.06;
+/* A transmitter is sustained when each window holds at least a tenth of the other's power over the bins it occupies. */
+constexpr double kSustainedRatio = 10.0;
+/* Leakage analysis aggregates bins until a channel's half width spans at most this many (a power of two apart). */
+constexpr long long kAnalysisHalfBins = 32;
+/* How far the envelopes reach either side. Within a source's segment, an FM transmitter's sideband line spacing for the
+   highest voice tone (3 kHz), so a weak carrier between its first sidebands is not a valley; walking out past the
+   source, half that, which still bridges the gaps between its sideband lines but not a gap before a neighbour. */
+constexpr double kEnvelopeHz = 3000.0;
+constexpr double kNearEnvelopeHz = 1500.0;
+/* A channel whose window climbs toward a transmitter further than this many reaches away is only that transmitter's
+   skirt; the analysis covers that much spectrum around its channels. */
+constexpr long long kClimbReaches = 6;
+constexpr long long kFarSource = LLONG_MIN;
 
 /* A three-bin sum of a noise-like spectrum averaged over @p frames transforms fluctuates by about
    4.34 / sqrt(3 * frames) dB. A rise must clear three standard deviations of the difference of two such sums plus
-   1.5 dB, and never less than 4.5 dB: at the 15 frames a 12.5 kHz channel averages, 4.5 dB; at 4 frames, 6.8 dB. */
+   1.5 dB, and never less than 4.5 dB: at the 30 frames two windows of a 12.5 kHz channel average, 4.5 dB; at 2, 9 dB. */
 double
 valley_rise_ratio(unsigned frames) {
     const double sigma_db = 4.3429448190325175 / std::sqrt(3.0 * std::max(1U, frames));
@@ -103,288 +171,864 @@ valley_rise_ratio(unsigned frames) {
     return std::pow(10.0, rise_db / 10.0);
 }
 
-double
-bin_hz_of(const dsd_signal_detector* d) {
-    return (double)d->request.capture.rate_hz / d->n;
-}
-
+/* FFT sizes are powers of two, so a mask wraps a bin (negative ones too). */
 int
-wrap_bin(const dsd_signal_detector* d, long long b) {
-    return (int)(((b % d->n) + d->n) % d->n);
+wrap_index(long long b, int n) {
+    return (int)((unsigned long long)b & (unsigned long long)(n - 1));
 }
 
+/* Sum of @p count values of the circular sequence whose prefix sums are @p prefix, from index @p first. */
 double
-power_of(const dsd_signal_detector* d, long long b) {
-    return d->power[wrap_bin(d, b)];
+circular_sum(const double* prefix, int n, long long first, long long count) {
+    if (count <= 0) {
+        return 0;
+    }
+    const long long a = wrap_index(first, n);
+    if (a + count <= n) {
+        return prefix[a + count] - prefix[a];
+    }
+    return prefix[n] - prefix[a] + prefix[a + count - n];
 }
 
-double
-three_bins(const dsd_signal_detector* d, long long b) {
-    return power_of(d, b - 1) + power_of(d, b) + power_of(d, b + 1);
-}
+/* A spectrum for leakage rejection: one window's power or both windows', aggregated so a channel's half width spans at
+   most kAnalysisHalfBins analysis bins, with its three-bin sums and their two envelopes. Positions are fractional bins from
+   bin 0 before wrapping, so the ingest rotation is already applied; fine positions count FFT bins, coarse ones
+   analysis bins. */
+struct analysis {
+    const double* first;
+    const double* second; /* the other window's power, or null */
+    const double* three;
+    const double* envelope;
+    const double* near_envelope;
+    int fine_n, n, decimation;
+    double fine_bin_hz;
+    long long half, reach;
+    double rise;
 
-/* Three-bin power centred on a fractional bin position, interpolated linearly. */
-double
-three_bins_at(const dsd_signal_detector* d, double position) {
-    const double floor_position = std::floor(position);
-    const double t = position - floor_position;
-    const long long b = (long long)floor_position;
-    return three_bins(d, b) * (1.0 - t) + three_bins(d, b + 1) * t;
-}
+    double
+    fine(long long b) const {
+        const int i = wrap_index(b, fine_n);
+        return first[i] + (second ? second[i] : 0.0);
+    }
 
-/* Visit every bin whose centre lies within @p half Hz of @p center (an offset from the capture centre), wrapping after
-   the ingest rotation; @p f receives the bin and the offset of its centre. */
-template <typename F>
+    /* Unaggregated, the analysis bins' three-bin sums are the FFT bins' own. */
+    double
+    fine_three(long long b) const {
+        return decimation == 1 ? at(b) : fine(b - 1) + fine(b) + fine(b + 1);
+    }
+
+    double
+    at(long long b) const {
+        return three[wrap_index(b, n)];
+    }
+
+    double
+    env(long long b) const {
+        return envelope[wrap_index(b, n)];
+    }
+
+    double
+    near_env(long long b) const {
+        return near_envelope[wrap_index(b, n)];
+    }
+
+    /* The near envelope at a fractional position, interpolated linearly. */
+    double
+    near_env(double position) const {
+        const double floor_position = std::floor(position);
+        const double t = position - floor_position;
+        const long long b = (long long)floor_position;
+        return near_env(b) * (1.0 - t) + near_env(b + 1) * t;
+    }
+
+    double
+    to_fine(double coarse) const {
+        return coarse * decimation + (decimation - 1) / 2.0;
+    }
+
+    double
+    to_coarse(double fine_position) const {
+        return (fine_position - (decimation - 1) / 2.0) / decimation;
+    }
+
+    /* A requested frequency's position in analysis bins. */
+    double
+    position_of(const dsd_signal_measure_request& r, uint32_t frequency) const {
+        return to_coarse(((double)frequency - r.capture.capture_hz + r.capture.rotation_hz) / fine_bin_hz);
+    }
+};
+
+/* The envelope over bins @p lo..@p hi: the largest three-bin sum within @p spread bins, directly when that is a few
+   bins, otherwise by a running maximum. */
 void
-for_window_bins(const dsd_signal_detector* d, double center, double half, F f) {
-    const double bin_hz = bin_hz_of(d);
-    const double rotation = d->request.capture.rotation_hz;
-    const long long begin = (long long)std::ceil((center - half + rotation) / bin_hz);
-    const long long end = (long long)std::floor((center + half + rotation) / bin_hz);
-    for (long long b = begin; b <= end; ++b) {
-        f(wrap_bin(d, b), (double)b * bin_hz - rotation);
+build_envelope(const double* three, int n, long long lo, long long hi, long long spread, double* envelope) {
+    if (spread <= 3) {
+        for (long long j = lo; j <= hi; ++j) {
+            double e = three[wrap_index(j - spread, n)];
+            for (long long k = j - spread + 1; k <= j + spread; ++k) {
+                e = std::max(e, three[wrap_index(k, n)]);
+            }
+            envelope[wrap_index(j, n)] = e;
+        }
+        return;
+    }
+    /* Bin indices of a non-increasing run of sums, oldest first; a window holds 2 * spread + 1. */
+    constexpr unsigned long long kCapacity = 1024;
+    long long queue[kCapacity];
+    spread = std::min(spread, (long long)kCapacity / 2 - 1);
+    unsigned long long head = 0, tail = 0;
+    for (long long k = lo - spread; k <= hi + spread; ++k) {
+        const double v = three[wrap_index(k, n)];
+        while (tail > head && three[wrap_index(queue[(tail - 1) % kCapacity], n)] <= v) {
+            --tail;
+        }
+        queue[tail++ % kCapacity] = k;
+        const long long j = k - spread;
+        if (queue[head % kCapacity] < j - spread) {
+            ++head;
+        }
+        if (j >= lo) {
+            envelope[wrap_index(j, n)] = three[wrap_index(queue[head % kCapacity], n)];
+        }
     }
 }
 
-/* The power-weighted centre of the bins within @p half of @p around that @p weight keeps. */
+/* The source's own segment of spectrum: from its peak outwards until the envelope, after a valley clearly (by the valley
+   rise) below the peak, rises as clearly again, the valley before another transmitter; or until reach ends. Shallower
+   dips are the source's own (the plateau between a wide FM transmitter's horns). */
+void
+segment_of(const analysis& a, long long peak, long long* first, long long* last, bool* cut_low = nullptr,
+           bool* cut_high = nullptr) {
+    const double deep = a.env(peak) / a.rise;
+    for (int side = -1; side <= 1; side += 2) {
+        long long edge = peak;
+        double lowest = a.env(peak);
+        bool cut = false;
+        for (long long i = 1; i <= a.reach && !cut; ++i) {
+            const long long k = peak + side * i;
+            const double e = a.env(k);
+            cut = lowest <= deep && e >= a.rise * lowest;
+            if (!cut) {
+                lowest = std::min(lowest, e);
+                edge = k;
+            }
+        }
+        *(side < 0 ? first : last) = edge;
+        if (side < 0 && cut_low) {
+            *cut_low = cut;
+        }
+        if (side > 0 && cut_high) {
+            *cut_high = cut;
+        }
+    }
+}
+
+/* The tallest bin of the segment around @p peak, reached by climbing and then moving to each segment's tallest in
+   turn, so every channel that sees a source locates it from the same bin; kFarSource once that leads further than
+   kClimbReaches from where it started. Each move is to a taller bin, so the moves end. */
+long long
+anchor_of(const analysis& a, long long peak) {
+    const long long origin = peak, limit = kClimbReaches * a.reach;
+    while (a.at(peak + 1) > a.at(peak) || a.at(peak - 1) > a.at(peak)) {
+        peak += a.at(peak + 1) > a.at(peak - 1) ? 1 : -1;
+        if (std::llabs(peak - origin) > limit) {
+            return kFarSource;
+        }
+    }
+    for (;;) {
+        long long first = peak, last = peak, tallest = peak;
+        segment_of(a, peak, &first, &last);
+        for (long long b = first; b <= last; ++b) {
+            if (a.at(b) > a.at(tallest)) {
+                tallest = b;
+            }
+        }
+        if (tallest == peak) {
+            return peak;
+        }
+        if (std::llabs(tallest - origin) > limit) {
+            return kFarSource;
+        }
+        peak = tallest;
+    }
+}
+
+/* The half-bin position, from @p lowest_m / 2 to @p highest_m / 2, about which the most of @p value over
+   @p first..@p last overlaps its own mirror image, refined parabolically. Writes that overlap's share of the power (all
+   of it for a perfectly symmetric spectrum) to @p symmetry when given. A transmitter's extent is symmetric about its
+   carrier even where its short-term power is not (a slow tone or voice part-way through a cycle leaves one side
+   taller), a notch inside it overlaps its mirror notch, and a neighbour within the range overlaps only the source's far
+   skirt. */
+template <typename V>
+double
+symmetric_centre(long long first, long long last, long long lowest_m, long long highest_m, V value, double* symmetry) {
+    auto overlap = [&](long long m) {
+        double pairs = 0;
+        long long b = std::max(first, m - last);
+        for (; 2 * b < m; ++b) {
+            pairs += std::min(value(b), value(m - b));
+        }
+        return 2 * pairs + (2 * b == m ? value(b) : 0.0);
+    };
+    long long best_m = lowest_m;
+    double best = -1, before = 0, after = 0, previous = 0;
+    for (long long m = lowest_m; m <= highest_m; ++m) {
+        const double score = overlap(m);
+        if (m == best_m + 1) {
+            after = score;
+        }
+        if (score > best) {
+            before = previous;
+            best = score;
+            best_m = m;
+        }
+        previous = score;
+    }
+    double offset = 0;
+    if (best_m > lowest_m && best_m < highest_m) {
+        const double curvature = before - 2 * best + after;
+        if (curvature < 0) {
+            offset = std::max(-0.5, std::min(0.5, 0.5 * (before - after) / curvature));
+        }
+    }
+    const double centre = (best_m + offset) / 2;
+    if (symmetry) {
+        /* Its share at the refined centre, mirroring between bins by linear interpolation: a source mirrored about the
+           nearest half bin overlaps itself less than two identical transmitters mirror onto each other. */
+        double total = 0, overlapping = 0;
+        for (long long b = first; b <= last; ++b) {
+            total += value(b);
+            const double mirror = 2 * centre - (double)b;
+            if (mirror >= (double)first && mirror <= (double)last) {
+                const long long low = (long long)std::floor(mirror);
+                const double t = mirror - (double)low;
+                const double mirrored = value(low) * (1.0 - t) + (t > 0 ? value(low + 1) * t : 0.0);
+                overlapping += std::min(value(b), mirrored);
+            }
+        }
+        *symmetry = total > 0 ? overlapping / total : 0;
+    }
+    return centre;
+}
+
+/* Whether two sources over @p low_first..@p low_last and @p high_first..@p high_last, each symmetric about its own
+   centre, explain at least as much of the power as one over both (less kTwoSourceMargin). Writes the one source's
+   symmetry to @p whole. */
+bool
+two_sources(const analysis& a, long long low_first, long long low_last, long long high_first, long long high_last,
+            double* whole) {
+    auto coarse = [&](long long b) { return a.at(b); };
+    double low_symmetry = 0, high_symmetry = 0, low_power = 0, high_power = 0;
+    symmetric_centre(low_first, high_last, 2 * low_first, 2 * high_last, coarse, whole);
+    symmetric_centre(low_first, low_last, 2 * low_first, 2 * low_last, coarse, &low_symmetry);
+    symmetric_centre(high_first, high_last, 2 * high_first, 2 * high_last, coarse, &high_symmetry);
+    for (long long b = low_first; b <= low_last; ++b) {
+        low_power += a.at(b);
+    }
+    for (long long b = high_first; b <= high_last; ++b) {
+        high_power += a.at(b);
+    }
+    const double two = (low_symmetry * low_power + high_symmetry * high_power) / (low_power + high_power);
+    return two >= *whole - kTwoSourceMargin;
+}
+
+/* Whether the peak at @p beyond, past the valley at @p edge, may be one of @p anchor's transmitter's lobes: within twice
+   the channel width of it, with its own power filling the valley between them (within 20 dB of the lower, where a gap
+   between two transmitters falls to the floor). */
+bool
+lobes_bridged(const analysis& a, long long anchor, long long edge, long long beyond) {
+    if (std::llabs(beyond - anchor) > 4 * a.half) {
+        return false;
+    }
+    double valley = a.env(edge);
+    for (long long k = std::min(edge, beyond); k <= std::max(edge, beyond); ++k) {
+        valley = std::min(valley, a.env(k));
+    }
+    return valley >= std::min(a.env(anchor), a.env(beyond)) * kWeakCentreRatio;
+}
+
+/* Whether the segment @p first..@p last and the next on @p side, @p next_first..@p next_last, are one transmitter's
+   lobes: adjacent, and better explained by one source than two. */
+bool
+lobes_of_one(const analysis& a, int side, long long first, long long last, long long next_first, long long next_last) {
+    if (side < 0 ? next_last < first - 1 : next_first > last + 1) {
+        return false;
+    }
+    double merged = 0;
+    return side < 0 ? !two_sources(a, next_first, next_last, first, last, &merged)
+                    : !two_sources(a, first, last, next_first, next_last, &merged);
+}
+
+/* Across a valley the segment of @p anchor stopped at on @p side (when @p cut), takes in the segments beyond while they
+   are the same transmitter's lobes (the plateau between a wide FM transmitter's horns, each lopsided). */
+void
+merge_lobes(const analysis& a, long long anchor, int side, bool cut, long long* first, long long* last) {
+    for (int merges = 0; merges < 2 && cut; ++merges) {
+        const long long edge = side < 0 ? *first : *last;
+        long long beyond = edge + side;
+        for (long long i = 2; i <= a.reach; ++i) {
+            if (a.at(edge + side * i) > a.at(beyond)) {
+                beyond = edge + side * i;
+            }
+        }
+        if (!lobes_bridged(a, anchor, edge, beyond)) {
+            return;
+        }
+        long long next_first = beyond, next_last = beyond;
+        bool next_low = false, next_high = false;
+        segment_of(a, beyond, &next_first, &next_last, &next_low, &next_high);
+        if (!lobes_of_one(a, side, *first, *last, next_first, next_last)) {
+            return;
+        }
+        if (side < 0) {
+            *first = next_first;
+            cut = next_low;
+        } else {
+            *last = next_last;
+            cut = next_high;
+        }
+    }
+}
+
+/* The centre of @p first..@p last, with its symmetry in @p whole. A centre with little power is a carrier its
+   modulation weakens, or the gap between two transmitters the envelope bridged: when two sources, each symmetric about
+   its own centre, explain the halves as well as one (a carrier-null FM transmitter's halves do not mirror themselves),
+   the range is cut there and the anchor's side located alone. */
+double
+centre_or_split(const analysis& a, long long anchor, long long* first, long long* last, double* whole) {
+    auto coarse = [&](long long b) { return a.at(b); };
+    const double centre = symmetric_centre(*first, *last, 2 * *first, 2 * *last, coarse, whole);
+    const long long cut = std::llround(centre);
+    double unused = 0;
+    if (a.at(cut) >= a.at(anchor) * kWeakCentreRatio || cut <= *first || cut >= *last
+        || !two_sources(a, *first, cut - 1, cut + 1, *last, &unused)) {
+        return centre;
+    }
+    if (anchor < cut) {
+        *last = cut - 1;
+    } else {
+        *first = cut + 1;
+    }
+    return symmetric_centre(*first, *last, 2 * *first, 2 * *last, coarse, whole);
+}
+
+/* The centre near @p fine_centre (FFT bins) of the source over analysis bins @p first..@p last, refined on the FFT bins
+   of its body: within an analysis bin, from the tallest FFT bin out to 40 dB below it. */
+double
+refine_on_fft_bins(const analysis& a, long long first, long long last, double fine_centre) {
+    const long long limit_first = first * a.decimation, limit_last = last * a.decimation + a.decimation - 1;
+    const long long around = std::llround(fine_centre);
+    long long tallest = std::max(limit_first, std::min(limit_last, around));
+    for (long long b = std::max(limit_first, around - a.decimation); b <= std::min(limit_last, around + a.decimation);
+         ++b) {
+        if (a.fine_three(b) > a.fine_three(tallest)) {
+            tallest = b;
+        }
+    }
+    const double floor_level = a.fine_three(tallest) * 1e-4;
+    long long fine_first = tallest, fine_last = tallest;
+    while (fine_first > limit_first && a.fine_three(fine_first - 1) >= floor_level) {
+        --fine_first;
+    }
+    while (fine_last < limit_last && a.fine_three(fine_last + 1) >= floor_level) {
+        ++fine_last;
+    }
+    const long long twice = std::llround(2 * fine_centre);
+    return symmetric_centre(
+        fine_first, fine_last, twice - 2LL * a.decimation, twice + 2LL * a.decimation,
+        [&](long long b) { return a.fine_three(b); }, nullptr);
+}
+
+/* The source anchored at @p anchor, with its symmetry: centred at the most symmetric point of its segment, which takes
+   in the same transmitter's lobes beyond a valley and is cut at a centre between two transmitters. With aggregated bins
+   the centre is refined on the FFT bins. */
+located
+locate_source(const analysis& a, long long anchor, double* symmetry) {
+    long long first = anchor, last = anchor;
+    bool cut_low = false, cut_high = false;
+    segment_of(a, anchor, &first, &last, &cut_low, &cut_high);
+    merge_lobes(a, anchor, -1, cut_low, &first, &last);
+    merge_lobes(a, anchor, 1, cut_high, &first, &last);
+    const double centre = centre_or_split(a, anchor, &first, &last, symmetry);
+    const double fine_centre =
+        a.decimation > 1 ? refine_on_fft_bins(a, first, last, a.to_fine(centre)) : a.to_fine(centre);
+    const double coarse_centre = a.to_coarse(fine_centre);
+    return located{fine_centre, std::max(first, (long long)std::floor(coarse_centre - a.half)),
+                   std::min(last, (long long)std::ceil(coarse_centre + a.half)), first, last};
+}
+
+/* The power-weighted centre in FFT bins of @p weight over analysis bins @p first..@p last. */
 template <typename W>
 double
-centre_of(long long around, long long half, W weight) {
+fine_centroid(const analysis& a, long long first, long long last, W weight) {
     double total = 0, moment = 0;
-    for (long long b = around - half; b <= around + half; ++b) {
+    for (long long b = first * a.decimation; b <= last * a.decimation + a.decimation - 1; ++b) {
         const double w = weight(b);
         total += w;
         moment += w * (double)b;
     }
-    return total > 0 ? moment / total : (double)around;
+    return total > 0 ? moment / total : a.to_fine(0.5 * (double)(first + last));
 }
 
-double
-window_power(const dsd_signal_detector* d, long long centre, long long half) {
-    double sum = 0;
-    for (long long b = centre - half; b <= centre + half; ++b) {
-        sum += power_of(d, b);
+/* Transmitters beside a located source on one side. A skirt only falls away from its transmitter, so walking out from
+   the source a separate transmitter makes the envelope rise clearly above the lowest point after the skirt has fallen
+   6 dB. A weak transmitter sitting on the skirt may never clear that valley; when the source's other side is a clean
+   skirt and its spectrum mostly overlaps its mirror image, a transmitter beside it also stands 10 dB above that side
+   mirrored about the source. Rises within the source's own channel width are its own spectrum (an FM transmitter's
+   sidebands) and never count. Each separate transmitter is located once, however it was found: the centre of what
+   remains of its hump once the source's mirror image (or, without a clean mirror, the valley's level) is taken away. */
+struct beside {
+    const analysis& a;
+    const located& source;
+    source_list* sources;
+    double centre; /* the source's, in analysis bins */
+    long long start;
+    int side;
+    bool mirror;
+
+    bool
+    outside(long long k) const {
+        return std::abs((double)k - centre) > (double)a.half || k < source.own_first || k > source.own_last;
     }
-    return sum;
-}
 
-/* Where a transmitter's three-bin power, walking from its peak at @p peak_bin in direction @p step, first falls to
-   @p floor, interpolated in dB between bins; 0 when it does not within @p limit bins. */
-int
-falls_to(const dsd_signal_detector* d, long long peak_bin, long long step, long long limit, double floor,
-         double* position) {
-    double previous = three_bins(d, peak_bin);
-    for (long long i = 1; i <= limit; ++i) {
-        const long long k = peak_bin + step * i;
-        const double current = three_bins(d, k);
-        if (current <= floor) {
-            const double above = 10 * std::log10(std::max(previous, 1e-300));
-            const double below = 10 * std::log10(std::max(current, 1e-300));
-            const double level = 10 * std::log10(std::max(floor, 1e-300));
-            const double t = above > below ? (above - level) / (above - below) : 0.0;
-            *position = (double)(k - step) + (double)step * t;
-            return 1;
+    double
+    mirrored(long long k) const {
+        return a.near_env(2 * centre - (double)k);
+    }
+
+    double
+    remainder(long long k, double floor_level) const {
+        return std::max(0.0, a.near_env(k) - (mirror ? mirrored(k) : floor_level));
+    }
+
+    /* Whether the side away from this one is a clean skirt: no valley rise there within reach. */
+    bool
+    clean_far_side() const {
+        double peak = 0, valley = 0;
+        bool fallen = false;
+        for (long long i = 0; i <= a.reach; ++i) {
+            const long long k = start - side * i;
+            const double e = a.near_env(k);
+            if (!fallen) {
+                peak = std::max(peak, e);
+                fallen = e * kSkirtFallRatio <= peak;
+                valley = e;
+                continue;
+            }
+            valley = std::min(valley, e);
+            if (outside(k) && e >= a.rise * valley) {
+                return false;
+            }
         }
-        previous = current;
+        return true;
     }
-    return 0;
-}
 
-/* A transmitter located near bin @p rough: its peak three-bin power, where the skirt walk starts, and its centre,
-   midway between the points where that power has fallen 10 dB below the peak on either side. Neither a window that
-   truncates a wide transmitter nor its internal sideband structure biases that centre the way a windowed centroid is
-   biased, which matters because the mirrored-skirt comparison mirrors about it; and 10 dB stays inside the
-   transmitter's own body, so a weaker neighbour close by does not drag it. The centre stays @p rough when either side
-   does not fall that far nearby. */
-struct source_location {
-    long long peak;
-    double centre;
+    /* The hump around bin @p k beyond @p inner on this side: what remains above the mirror, or above @p floor_level
+       without one, falling away from its top on both sides down to a tenth of it. */
+    located
+    hump(long long k, double floor_level, long long inner) const {
+        auto inside = [&](long long j) { return outside(j) && (j - inner) * side > 0 && std::llabs(j - k) <= a.reach; };
+        long long top = k;
+        while (inside(top + side) && remainder(top + side, floor_level) > remainder(top, floor_level)) {
+            top += side;
+        }
+        while (inside(top - side) && remainder(top - side, floor_level) > remainder(top, floor_level)) {
+            top -= side;
+        }
+        const double level = remainder(top, floor_level) / 10;
+        auto falls = [&](long long next, long long from) {
+            return inside(next) && remainder(next, floor_level) > level
+                   && remainder(next, floor_level) <= remainder(from, floor_level) && std::llabs(next - top) <= a.reach;
+        };
+        long long lo = top, hi = top;
+        while (falls(lo - 1, lo)) {
+            --lo;
+        }
+        while (falls(hi + 1, hi)) {
+            ++hi;
+        }
+        const double fine_floor = floor_level / (3.0 * a.decimation);
+        const double twice = 2 * source.centre;
+        const double at = fine_centroid(a, lo, hi, [&](long long b) {
+            return std::max(0.0,
+                            a.fine_three(b) - (mirror ? a.fine_three(std::llround(twice - (double)b)) : fine_floor));
+        });
+        return located{at, lo, hi, lo, hi};
+    }
+
+    /* Records @p s unless already located; returns how far out it reaches. */
+    long long
+    record(const located& s) {
+        if (!sources->known(s, a.decimation)) {
+            sources->add(s);
+        }
+        return std::llabs((side > 0 ? s.last : s.first) - start);
+    }
+
+    /* The valley rise. It must also climb above the ridge just before its valley: the source's outer sideband lines
+       decay one after another, a transmitter beside it stands above the last of them. */
+    void
+    valley_rises() {
+        double peak = 0, valley = 0, ridge = 0, ridge_before = 0;
+        long long valley_at = start;
+        bool fallen = false;
+        for (long long i = 0; i <= a.reach; ++i) {
+            const long long k = start + side * i;
+            const double e = a.near_env(k);
+            if (!fallen) {
+                peak = std::max(peak, e);
+                fallen = e * kSkirtFallRatio <= peak;
+                valley = ridge = ridge_before = e;
+                valley_at = k;
+                continue;
+            }
+            ridge = std::max(ridge, e);
+            if (e < valley) {
+                valley = e;
+                valley_at = k;
+                ridge_before = ridge;
+                ridge = e;
+            }
+            if (outside(k) && e >= a.rise * valley && e > ridge_before) {
+                /* Past this hump, the next must fall away from it first. */
+                i = std::max(i, record(hump(k, valley, valley_at)));
+                fallen = false;
+                peak = a.near_env(start + side * i);
+            }
+        }
+    }
+
+    /* What the mirror does not explain, where at least half the power is that remainder: it must peak inside that
+       region (a skirt merely taller than its mirror, or mirrored about a slightly wrong centre, leaves more and more
+       toward the source's own edge). */
+    void
+    mirror_excess() {
+        for (long long i = a.half + 1; i <= a.reach; ++i) {
+            const long long k = start + side * i;
+            if (!outside(k) || !(a.near_env(k) >= kMirrorRiseRatio * mirrored(k))) {
+                continue;
+            }
+            auto unexplained = [&](long long j) {
+                return outside(j) && a.near_env(j) >= 2 * mirrored(j) && std::llabs(j - k) <= a.reach;
+            };
+            long long top = k;
+            while (unexplained(top + 1) && remainder(top + 1, 0) > remainder(top, 0)) {
+                ++top;
+            }
+            while (unexplained(top - 1) && remainder(top - 1, 0) > remainder(top, 0)) {
+                --top;
+            }
+            if (remainder(top + 1, 0) <= remainder(top, 0) && remainder(top - 1, 0) <= remainder(top, 0)) {
+                i = std::max(i, record(hump(top, 0, start)));
+            }
+        }
+    }
 };
 
-source_location
-locate_source(const dsd_signal_detector* d, double rough, long long half, long long limit) {
-    const long long around = std::llround(rough);
-    long long peak_bin = around;
-    double peak = three_bins(d, around);
-    for (long long b = around - half; b <= around + half; ++b) {
-        const double sum = three_bins(d, b);
-        if (sum > peak) {
-            peak = sum;
-            peak_bin = b;
+/* The separate transmitters on either side of @p source (with @p symmetry), into @p sources. */
+void
+add_neighbours(const analysis& a, const located& source, double symmetry, source_list* sources) {
+    const double centre = a.to_coarse(source.centre);
+    for (int side = -1; side <= 1; side += 2) {
+        beside search{a, source, sources, centre, std::llround(centre), side, false};
+        search.mirror = symmetry >= kMirrorSymmetry && search.clean_far_side();
+        search.valley_rises();
+        if (search.mirror) {
+            search.mirror_excess();
         }
     }
-    double low = 0, high = 0;
-    double centre = rough;
-    if (falls_to(d, peak_bin, -1, limit, peak / 10.0, &low) && falls_to(d, peak_bin, 1, limit, peak / 10.0, &high)
-        && std::abs((low + high) / 2 - rough) <= (double)half) {
-        centre = (low + high) / 2;
-    }
-    return source_location{peak_bin, centre};
 }
 
-/* The strongest transmitter near candidate bin @p centre other than the candidate's own signal: the strongest local
-   maximum of channel-window power within @p reach bins, counting only bins more than @p own bins from the candidate
-   (its own grid position, where an off-grid signal of its own may sit). Returns 0 when there is none, else 1 with the
-   transmitter's location (locate_source()). The spectrum is searched rather than the requested candidates, so a
-   transmitter past a range or span boundary is found too. */
-int
-strongest_source(const dsd_signal_detector* d, long long centre, long long half, long long reach, double own,
-                 source_location* source) {
-    auto outside = [&](long long b) { return std::abs((double)(b - centre)) > own ? power_of(d, b) : 0.0; };
-    const long long first = centre - reach - 1;
-    double current = 0;
-    for (long long b = first - half; b <= first + half; ++b) {
-        current += outside(b);
-    }
-    double previous = -1, best = 0;
-    long long best_p = 0;
-    for (long long p = first; p <= centre + reach; ++p) {
-        const double next = current - outside(p - half) + outside(p + 1 + half);
-        if (previous >= 0 && current >= previous && current >= next && current > best) {
-            best = current;
-            best_p = p;
+/* The candidate's grid channel, [@p low, @p high) in FFT bins: half a step either side of its exact position on the
+   range's rational grid, so neighbouring channels share boundaries however the grid frequencies were rounded; or of its
+   own frequency when it is not one of the range's grid frequencies. */
+void
+channel_bounds(const dsd_signal_measure_request& r, double fine_bin_hz, uint32_t frequency, double* low, double* high) {
+    const double step = (double)r.range.step_num / r.range.step_den;
+    double exact = frequency;
+    if (frequency >= r.range.start_hz) {
+        const uint64_t index =
+            ((uint64_t)(frequency - r.range.start_hz) * r.range.step_den + r.range.step_num / 2) / r.range.step_num;
+        const uint64_t grid = r.range.start_hz + (index * r.range.step_num + r.range.step_den / 2) / r.range.step_den;
+        if (grid == frequency) {
+            exact = r.range.start_hz + (double)index * step;
         }
-        previous = current;
-        current = next;
     }
-    if (!(best > 0)) {
-        return 0;
-    }
-    *source = locate_source(d, centre_of(best_p, half, outside), half, reach);
-    return 1;
+    const double offset = (double)r.capture.rotation_hz - r.capture.capture_hz;
+    *low = (exact - step / 2 + offset) / fine_bin_hz;
+    *high = (exact + step / 2 + offset) / fine_bin_hz;
 }
 
-/* Walk @p length bins from bin @p start in direction @p step. Returns 1 when the three-bin power rises again after the
-   source's skirt has fallen away (a separate transmitter there), counting rises only at bins @p judged accepts. */
-template <typename J>
-bool
-rises_after_skirt(const dsd_signal_detector* d, long long start, long long step, long long length, J judged) {
-    double peak = 0, valley = 0;
-    bool fallen = false;
-    for (long long i = 0; i <= length; ++i) {
-        const long long k = start + step * i;
-        const double sum = three_bins(d, k);
-        if (!fallen) {
-            peak = std::max(peak, sum);
-            if (sum * kSkirtFallRatio <= peak) {
-                fallen = true;
-                valley = sum;
-            }
+/* Builds the analysis of @p first (plus @p second) power over @p frames transforms into the detector's scratch, over
+   the spectrum around the channels @p seeds marks. Every walk stays within this of its channel: its window, an anchor
+   kClimbReaches away, a segment a reach from that, and from the source's centre a reach out, a reach of climb and a
+   reach of hump (or their mirror images). */
+analysis
+build_analysis(dsd_signal_detector* d, const double* first, const double* second, unsigned frames, const bool* seeds) {
+    const auto& request = d->request;
+    const double fine_bin_hz = (double)request.capture.rate_hz / d->n;
+    const double width = request.range.bandwidth_hz;
+    int decimation = 1;
+    while (std::floor(width / 2 / (fine_bin_hz * decimation)) > kAnalysisHalfBins && d->n / decimation > 64) {
+        decimation *= 2;
+    }
+    analysis a{};
+    a.first = first;
+    a.second = second;
+    a.fine_n = d->n;
+    a.n = d->n / decimation;
+    a.decimation = decimation;
+    a.fine_bin_hz = fine_bin_hz;
+    const double bin_hz = fine_bin_hz * decimation;
+    a.half = std::max(1LL, (long long)std::floor(width / 2 / bin_hz));
+    a.reach = (long long)std::ceil(2 * width / bin_hz);
+    a.rise = valley_rise_ratio(frames);
+    /* Three-bin sums of Hann-windowed bins already reach about two bins either side. */
+    const long long spread = std::max(0LL, (long long)std::ceil(kEnvelopeHz / bin_hz - 2));
+    const long long near_spread = std::max(0LL, (long long)std::ceil(kNearEnvelopeHz / bin_hz - 2));
+    long long lo = LLONG_MAX, hi = LLONG_MIN;
+    for (uint32_t i = 0; i < request.count; ++i) {
+        if (seeds[i]) {
+            const long long position = std::llround(a.position_of(request, request.frequencies[i]));
+            lo = std::min(lo, position);
+            hi = std::max(hi, position);
+        }
+    }
+    const long long margin = a.half + (kClimbReaches + 5) * a.reach + 2;
+    if (lo > hi || hi - lo + 1 + 2 * (margin + spread + 1) >= a.n) {
+        lo = 0;
+        hi = a.n - 1;
+    } else {
+        lo -= margin;
+        hi += margin;
+    }
+    for (long long j = lo - spread - 1; j <= hi + spread + 1; ++j) {
+        double sum = 0;
+        for (int i = 0; i < decimation; ++i) {
+            sum += a.fine(j * decimation + i);
+        }
+        d->analysed[wrap_index(j, a.n)] = sum;
+    }
+    for (long long j = lo - spread; j <= hi + spread; ++j) {
+        d->three[wrap_index(j, a.n)] =
+            d->analysed[wrap_index(j - 1, a.n)] + d->analysed[wrap_index(j, a.n)] + d->analysed[wrap_index(j + 1, a.n)];
+    }
+    a.three = d->three;
+    a.envelope = d->three;
+    a.near_envelope = d->three;
+    if (spread > 0) {
+        build_envelope(d->three, a.n, lo, hi, spread, d->envelope);
+        a.envelope = d->envelope;
+    }
+    if (near_spread > 0) {
+        build_envelope(d->three, a.n, lo, hi, near_spread, d->near_envelope);
+        a.near_envelope = d->near_envelope;
+    }
+    return a;
+}
+
+/* Locates the transmitters around the channels @p seeds marks into the detector's source list: the source dominating
+   each one's window, strongest first, then the separate transmitters beside each. */
+void
+locate_sources(dsd_signal_detector* d, const analysis& a, const bool* seeds) {
+    const auto& request = d->request;
+    source_list* sources = &d->sources;
+    sources->count = 0;
+    long long anchors[DSD_SEARCH_MAX_CANDIDATES];
+    int anchor_count = 0;
+    /* Neighbouring channels on a fine grid share their window's tallest bin; climb from each once. */
+    long long climbed_from[16], climbed_to[16];
+    std::fill(climbed_from, climbed_from + 16, LLONG_MIN);
+    for (uint32_t i = 0; i < request.count; ++i) {
+        if (!seeds[i]) {
             continue;
         }
-        valley = std::min(valley, sum);
-        if (judged(k, sum, valley)) {
+        const double position = a.position_of(request, request.frequencies[i]);
+        long long peak = (long long)std::ceil(position - a.half);
+        for (long long b = peak; b <= (long long)std::floor(position + a.half); ++b) {
+            if (a.at(b) > a.at(peak)) {
+                peak = b;
+            }
+        }
+        const int slot = (int)(peak & 15);
+        if (climbed_from[slot] != peak) {
+            climbed_from[slot] = peak;
+            climbed_to[slot] = anchor_of(a, peak);
+        }
+        const long long anchor = climbed_to[slot];
+        if (anchor != kFarSource && std::find(anchors, anchors + anchor_count, anchor) == anchors + anchor_count) {
+            anchors[anchor_count++] = anchor;
+        }
+    }
+    std::sort(anchors, anchors + anchor_count, [&](long long x, long long y) { return a.at(x) > a.at(y); });
+    located primaries[DSD_SEARCH_MAX_CANDIDATES];
+    double symmetries[DSD_SEARCH_MAX_CANDIDATES];
+    int primary_count = 0;
+    for (int i = 0; i < anchor_count; ++i) {
+        double symmetry = 0;
+        const located s = locate_source(a, anchors[i], &symmetry);
+        if (!sources->known(s, a.decimation)) {
+            sources->add(s);
+            primaries[primary_count] = s;
+            symmetries[primary_count++] = symmetry;
+        }
+    }
+    for (int i = 0; i < primary_count; ++i) {
+        add_neighbours(a, primaries[i], symmetries[i], sources);
+    }
+}
+
+/* Whether a transmitter located in @p both holds its own power in both windows: within 10 dB of each other over the
+   bins it occupies (within 10 dB of its peak), not a neighbour's skirt beside it. */
+bool
+sustained(const dsd_signal_detector* d, const analysis& both, const located& s) {
+    double peak = 0, first = 0, second = 0;
+    for (long long b = s.first; b <= s.last; ++b) {
+        peak = std::max(peak, both.at(b));
+    }
+    for (long long b = s.first; b <= s.last; ++b) {
+        if (both.at(b) * 10 < peak) {
+            continue;
+        }
+        for (long long f = b * both.decimation; f < (b + 1) * both.decimation; ++f) {
+            first += d->first_power[wrap_index(f, d->n)];
+            second += d->power[wrap_index(f, d->n)];
+        }
+    }
+    first /= d->first_frames;
+    second /= d->frames;
+    return first * kSustainedRatio >= second && second * kSustainedRatio >= first;
+}
+
+/* Whether a sustained transmitter located in @p both is centred in [@p low, @p high). */
+bool
+owns_sustained(const dsd_signal_detector* d, const analysis& both, double low, double high) {
+    for (int j = 0; j < d->sources.count; ++j) {
+        const located& s = d->sources.items[j];
+        if (s.centre >= low && s.centre < high && sustained(d, both, s)) {
             return true;
         }
     }
     return false;
 }
 
-/* Whether the candidate at bin @p centre is a transmitter of its own rather than the skirt of the stronger @p source.
-   A skirt only falls away from its transmitter, so walking from the source through the candidate's window, a
-   separate transmitter makes the power rise again inside that window after the skirt has fallen. Leakage, an
-   off-grid neighbour truncated by the window and a wide transmitter spanning several channels all fall monotonically
-   there, whatever lies on the source's other side. Rises within the source's own channel width are its own spectrum
-   (an FM transmitter's sidebands, which need not fall monotonically) and never count. A weak transmitter sitting on
-   the skirt may never clear that valley; when the source's other side is itself a clean skirt, the window is also
-   compared with that side mirrored about the source, a transmitter's spectrum being close to symmetric. */
-bool
-independent_of(const dsd_signal_detector* d, const source_location& source, long long centre, long long half) {
-    const long long start = source.peak;
-    const long long step = centre >= start ? 1 : -1;
-    const long long length = std::llabs(centre + step * half - start);
-    const double rise = valley_rise_ratio(d->frames);
-    auto beyond_source = [&](long long k) { return std::abs((double)k - source.centre) > (double)half; };
-    const bool clean_far_side =
-        !rises_after_skirt(d, start, -step, length, [&](long long k, double sum, double valley) {
-            return beyond_source(k) && sum >= rise * valley;
-        });
-    return rises_after_skirt(d, start, step, length, [&](long long k, double sum, double valley) {
-        if (std::llabs(k - centre) > half || !beyond_source(k)) {
-            return false;
+/* Clear raw detections that a transmitter centred on another channel explains: its skirt and the window's leakage
+   reach a neighbouring channel's window and can pass that channel's threshold on its own. A transmitter belongs to the
+   grid channel nearest its centre. That is decided once, on both windows' power, so a transmitter is assigned the same
+   way for the whole request; and it must hold its own power in both windows, so energy that one window only owes to
+   another transmitter is not sustained. */
+void
+reject_leakage(dsd_signal_detector* d, const bool* second_raw) {
+    const auto& request = d->request;
+    bool keep[DSD_SEARCH_MAX_CANDIDATES]{};
+    bool any = false;
+    for (uint32_t i = 0; i < request.count; ++i) {
+        keep[i] = d->first[i] && second_raw[i];
+        any = any || keep[i];
+    }
+    /* A request always has a transform of at least 32 points; nothing to analyse without one. */
+    if (any && d->n >= 32) {
+        const analysis both = build_analysis(d, d->first_power, d->power, d->first_frames + d->frames, keep);
+        locate_sources(d, both, keep);
+        for (uint32_t i = 0; i < request.count; ++i) {
+            double low = 0, high = 0;
+            channel_bounds(request, both.fine_bin_hz, request.frequencies[i], &low, &high);
+            keep[i] = keep[i] && owns_sustained(d, both, low, high);
         }
-        return sum >= rise * valley
-               || (clean_far_side && sum >= kMirrorRiseRatio * three_bins_at(d, 2 * source.centre - (double)k));
-    });
+    } else {
+        DSD_MEMSET(keep, 0, sizeof(keep));
+    }
+    DSD_MEMCPY(d->raw, keep, sizeof(keep));
 }
 
-/* Clear raw detections that a stronger transmitter within two channel widths explains: its skirt and the window's
-   leakage reach a neighbouring channel's window and can pass that channel's threshold on its own. */
-void
-reject_leakage(dsd_signal_detector* d) {
-    const auto& request = d->request;
-    const double bin_hz = bin_hz_of(d);
-    const double width = request.range.bandwidth_hz;
-    const double own = (double)request.range.step_num / request.range.step_den / 2 / bin_hz;
-    const long long half = std::max(1LL, (long long)std::floor(width / 2 / bin_hz));
-    const long long reach = (long long)std::ceil(2 * width / bin_hz);
-    bool keep[DSD_SEARCH_MAX_CANDIDATES]{};
-    for (uint32_t c = 0; c < request.count; ++c) {
-        if (!d->raw[c]) {
-            continue;
+/* The mean power per FFT bin of a channel's noise sidebands, from 1.5 to 3 widths either side of @p position (FFT bins,
+   rotation applied) in four blocks a side, over prefix sums @p bins: the mean of the blocks within 6 dB of the third
+   lowest, so transmitters in up to five of the eight blocks do not raise it, and noise alone (a sloping floor too) is
+   measured over all of them. Negative when a side has too few bins. */
+template <typename S>
+double
+sideband_noise(const S& bins, double position, double width_bins) {
+    constexpr int kBlocks = 8;
+    double blocks[kBlocks];
+    for (int side = -1; side <= 1; side += 2) {
+        const double inner = position + side * 1.5 * width_bins, outer = position + side * 3 * width_bins;
+        const long long lowest = (long long)std::ceil(std::min(inner, outer));
+        const long long highest = (long long)std::floor(std::max(inner, outer));
+        const long long count = highest - lowest + 1;
+        if (count < 4) {
+            return -1;
         }
-        const double delta = (double)request.frequencies[c] - request.capture.capture_hz;
-        const long long centre = std::llround((delta + request.capture.rotation_hz) / bin_hz);
-        /* A transmitter belongs to the grid channel nearest its centre: one centred on this channel's own grid
-           position, or no stronger than this channel's window, leaves it standing. */
-        source_location source{0, 0};
-        keep[c] = !strongest_source(d, centre, half, reach, own, &source)
-                  || std::abs(source.centre - (double)centre) <= own
-                  || window_power(d, std::llround(source.centre), half) <= window_power(d, centre, half)
-                  || independent_of(d, source, centre, half);
+        for (int j = 0; j < 4; ++j) {
+            const long long from = lowest + count * j / 4, to = lowest + count * (j + 1) / 4 - 1;
+            blocks[(side + 1) * 2 + j] = bins(from, to) / (double)(to - from + 1);
+        }
     }
-    for (uint32_t c = 0; c < request.count; ++c) {
-        d->raw[c] = keep[c];
+    std::sort(blocks, blocks + kBlocks);
+    double quiet = 0;
+    int quiet_count = 0;
+    for (int j = 0; j < kBlocks; ++j) {
+        if (blocks[j] <= 4 * blocks[2]) {
+            quiet += blocks[j];
+            ++quiet_count;
+        }
     }
+    return quiet / quiet_count;
 }
 } // namespace
 
 static void
-measure_window(dsd_signal_detector* detector, dsd_signal_measure_report* report) {
+measure_window(dsd_signal_detector* detector, dsd_signal_measure_report* report, bool last) {
     const auto& request = detector->request;
-    const double bin_hz = bin_hz_of(detector);
+    const int n = detector->n;
+    const double bin_hz = (double)request.capture.rate_hz / n;
     const double width = request.range.bandwidth_hz;
-    const double norm = 1.0 / (detector->n * detector->energy * detector->frames);
+    const double rotation = request.capture.rotation_hz;
+    const double norm = 1.0 / (n * detector->energy * detector->frames);
+    detector->prefix[0] = 0;
+    for (int i = 0; i < n; ++i) {
+        detector->prefix[i + 1] = detector->prefix[i] + detector->power[i];
+    }
+    auto bins = [&](long long first, long long last) {
+        return circular_sum(detector->prefix, n, first, last - first + 1);
+    };
     for (uint32_t c = 0; c < request.count; ++c) {
         auto& out = report->candidates[c];
         detector->raw[c] = false;
         out.frequency_hz = request.frequencies[c];
-        double delta = (double)out.frequency_hz - request.capture.capture_hz;
+        const double delta = (double)out.frequency_hz - request.capture.capture_hz;
         const double dc_guard = std::max(bin_hz * 3, request.capture.rate_hz / 100.0);
         out.valid =
             std::abs(delta) > dc_guard + 3 * width && std::abs(delta) + 3 * width < request.capture.rate_hz * 0.45;
         if (!out.valid) {
             continue;
         }
-        double signal = 0, noise = 0;
-        int signal_bins = 0, noise_bins = 0;
-        /* Iterate only the candidate and its sidebands, wrapping after ingest rotation. */
-        for_window_bins(detector, delta, 3 * width, [&](int bin, double offset) {
-            const double distance = std::abs(offset - delta);
-            if (distance <= width / 2) {
-                signal += detector->power[bin];
-                ++signal_bins;
-            } else if (distance >= width * 1.5) {
-                noise += detector->power[bin];
-                ++noise_bins;
-            }
-        });
-        if (!signal_bins || noise_bins < 8) {
+        /* The channel's bins, and the local noise of its sidebands. */
+        const long long signal_first = (long long)std::ceil((delta - width / 2 + rotation) / bin_hz);
+        const long long signal_last = (long long)std::floor((delta + width / 2 + rotation) / bin_hz);
+        const long long signal_bins = signal_last - signal_first + 1;
+        const double per_bin = sideband_noise(bins, (delta + rotation) / bin_hz, width / bin_hz);
+        if (signal_bins <= 0 || per_bin < 0) {
             out.valid = 0;
             continue;
         }
-        signal *= norm;
-        noise *= norm * signal_bins / noise_bins;
+        const double signal = bins(signal_first, signal_last) * norm;
+        const double noise = per_bin * norm * (double)signal_bins;
         out.power_dbfs = (float)(10 * std::log10(std::max(signal, 1e-16)));
         out.noise_dbfs = (float)(10 * std::log10(std::max(noise, 1e-16)));
         detector->raw[c] = out.power_dbfs - out.noise_dbfs >= request.range.sensitivity_db
                            && (!request.range.minimum_set || out.power_dbfs >= request.range.minimum_dbfs);
     }
-    reject_leakage(detector);
+    if (!last) {
+        DSD_MEMCPY(detector->first, detector->raw, sizeof(detector->first));
+        DSD_MEMCPY(detector->first_power, detector->power, (size_t)n * sizeof(detector->power[0]));
+        detector->first_frames = detector->frames;
+        return;
+    }
+    bool second[DSD_SEARCH_MAX_CANDIDATES];
+    DSD_MEMCPY(second, detector->raw, sizeof(second));
+    reject_leakage(detector, second);
     for (uint32_t c = 0; c < request.count; ++c) {
-        auto& out = report->candidates[c];
-        out.detected = detector->raw[c] && detector->first[c];
-        detector->first[c] = detector->raw[c];
+        report->candidates[c].detected = detector->raw[c];
     }
 }
 
@@ -400,38 +1044,45 @@ finish_window(dsd_signal_detector* detector, dsd_signal_measure_report* report) 
     report->generation = detector->request.capture.generation;
     report->count = detector->request.count;
     report->sample_count = detector->total_samples;
-    measure_window(detector, report);
-    if (++detector->windows == 2) {
+    const bool last = ++detector->windows == 2;
+    measure_window(detector, report, last);
+    if (last) {
         detector->armed = false;
         return 1;
     }
     detector->window_samples = 0;
     detector->frames = 0;
-    DSD_MEMSET(detector->power, 0, sizeof(detector->power));
+    DSD_MEMSET(detector->power, 0, (size_t)detector->n * sizeof(detector->power[0]));
     return 0;
 }
 
-static int
-accumulate_sample(dsd_signal_detector* detector, float i, float q, const float* window) {
-    if (!std::isfinite(i) || !std::isfinite(q)) {
+/* Windows as many of the @p pairs samples at @p iq as the frame has room for into it, in one pass: how many it took, or
+   -1 on a non-finite sample. */
+static long long
+fill_frame(dsd_signal_detector* detector, const float* iq, size_t pairs, const float* window) {
+    const size_t start = detector->filled;
+    const size_t take = std::min(pairs, (size_t)detector->n - start);
+    float* out = detector->samples + 2 * start;
+    const float* weights = window + start;
+    /* A sample below full scale is finite and unclipped; without a non-finite one, the others are the clipped ones. */
+    size_t clipped = 0, wild = 0;
+    for (size_t p = 0; p < take; ++p) {
+        const float i = iq[2 * p], q = iq[2 * p + 1];
+        out[2 * p] = i * weights[p];
+        out[2 * p + 1] = q * weights[p];
+        if (!(std::abs(i) < 0.999f) || !(std::abs(q) < 0.999f)) {
+            ++clipped;
+            wild += (size_t)(!std::isfinite(i) || !std::isfinite(q));
+        }
+    }
+    if (wild) {
         detector->armed = false;
         return -1;
     }
-    if (std::abs(i) >= 0.999f || std::abs(q) >= 0.999f) {
-        ++detector->clipped;
-    }
-    detector->samples[2 * detector->filled] = i * window[detector->filled];
-    detector->samples[2 * detector->filled + 1] = q * window[detector->filled];
-    ++detector->filled;
-    ++detector->total_samples;
-    if (detector->filled != (size_t)detector->n) {
-        return 0;
-    }
-    if (!detector->fft.forward(detector->n, detector->samples)) {
-        detector->armed = false;
-        return -1;
-    }
-    return 1;
+    detector->clipped += clipped;
+    detector->filled += take;
+    detector->total_samples += take;
+    return (long long)take;
 }
 
 extern "C" int
@@ -445,13 +1096,18 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
         return -1;
     }
     const float* window = detector->hann.get(detector->n);
-    for (size_t p = 0; p < pairs; ++p) {
-        int frame = accumulate_sample(detector, iq[2 * p], iq[2 * p + 1], window);
-        if (frame < 0) {
+    for (size_t p = 0; p < pairs;) {
+        const long long took = fill_frame(detector, iq + 2 * p, pairs - p, window);
+        if (took < 0) {
             return -1;
         }
-        if (!frame) {
+        p += (size_t)took;
+        if (detector->filled != (size_t)detector->n) {
             continue;
+        }
+        if (!detector->fft.forward(detector->n, detector->samples)) {
+            detector->armed = false;
+            return -1;
         }
         for (int b = 0; b < detector->n; ++b) {
             double re = detector->samples[2 * (size_t)b], im = detector->samples[2 * (size_t)b + 1];
@@ -472,9 +1128,15 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
 }
 
 namespace {
+/* The shared tap. feed_mutex serialises the detector: the demod thread holds it while it transforms and analyses, and
+   requests and cancels take it to reset or disarm the detector. tap_mutex guards only what is published (the capture,
+   the time of its latest samples, readiness and the finished report), so polling never waits for analysis. Locks are
+   always taken feed first, then tap. */
+std::mutex feed_mutex;
 std::mutex tap_mutex;
-dsd_signal_capture tap_capture{};
 dsd_signal_detector* tap_detector = nullptr;
+dsd_signal_measure_report feed_report{};
+dsd_signal_capture tap_capture{};
 dsd_signal_measure_report tap_report{};
 int tap_ready = 0;
 uint64_t tap_last_ms = 0;
@@ -484,26 +1146,35 @@ std::atomic<uint64_t> search_owner{0};
 
 extern "C" int
 rtl_signal_measure_request(const dsd_signal_measure_request* request) {
-    std::lock_guard<std::mutex> lock(tap_mutex);
+    std::lock_guard<std::mutex> feed(feed_mutex);
     if (!tap_detector) {
         tap_detector = dsd_signal_detector_create();
     }
+    const int rc = dsd_signal_detector_begin(tap_detector, request);
+    std::lock_guard<std::mutex> lock(tap_mutex);
     tap_ready = 0;
-    return dsd_signal_detector_begin(tap_detector, request);
+    return rc;
 }
 
 extern "C" void
 rtl_signal_measure_feed(const float* iq, size_t pairs, const dsd_signal_capture* capture) {
     const uint64_t received = dsd_realtime_mono_ns();
-    std::lock_guard<std::mutex> lock(tap_mutex);
-    if (!same_capture(tap_capture, *capture) && tap_ready) {
-        tap_ready = -1;
+    std::lock_guard<std::mutex> feed(feed_mutex);
+    {
+        std::lock_guard<std::mutex> lock(tap_mutex);
+        if (!same_capture(tap_capture, *capture) && tap_ready) {
+            tap_ready = -1;
+        }
+        tap_capture = *capture;
+        tap_last_ms = dsd_realtime_mono_ms();
     }
-    tap_capture = *capture;
-    tap_last_ms = dsd_realtime_mono_ms();
-    int rc = dsd_signal_detector_feed(tap_detector, iq, pairs, capture, &tap_report);
+    const int rc = dsd_signal_detector_feed(tap_detector, iq, pairs, capture, &feed_report);
     if (rc) {
-        tap_report.received_realtime_ns = received;
+        std::lock_guard<std::mutex> lock(tap_mutex);
+        if (rc == 1) {
+            tap_report = feed_report;
+            tap_report.received_realtime_ns = received;
+        }
         tap_ready = rc;
     }
 }
@@ -540,10 +1211,11 @@ rtl_signal_capture_last_ms(void) {
 
 extern "C" void
 rtl_signal_measure_cancel(void) {
-    std::lock_guard<std::mutex> lock(tap_mutex);
+    std::lock_guard<std::mutex> feed(feed_mutex);
     if (tap_detector) {
         tap_detector->armed = false;
     }
+    std::lock_guard<std::mutex> lock(tap_mutex);
     tap_ready = 0;
 }
 

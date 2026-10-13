@@ -51,7 +51,9 @@ int dsd_signal_detector_begin(dsd_signal_detector* detector, const dsd_signal_me
  * A discontinuity invalidates the entire request and returns -1, never a partial detection. */
 int dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t pairs,
                              const dsd_signal_capture* capture, dsd_signal_measure_report* report);
-/** Shared radio tap. The demod thread feeds it under the capture reconfiguration gate. */
+/** Shared radio tap. The demod thread feeds it under the capture reconfiguration gate. Requests and cancels wait for a
+ * feed in progress; reading the report and the capture never waits for its analysis. A report is delivered only for the
+ * request outstanding when it completed, and never after a cancel or a newer request returns. */
 int rtl_signal_measure_request(const dsd_signal_measure_request* request);
 int rtl_signal_measure_get(dsd_signal_measure_report* report);
 void rtl_signal_measure_cancel(void);

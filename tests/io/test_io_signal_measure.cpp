@@ -7,12 +7,17 @@
 // NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/signal_search.h>
-#include <stddef.h>
+#include <limits>
+#include <random>
 #include <stdint.h>
+#include <stdlib.h>
+#include <thread>
 #include <vector>
 
 static std::vector<float>
@@ -55,6 +60,405 @@ run(dsd_signal_detector* d, const dsd_signal_measure_request& r, const std::vect
     }
     assert(rc == 1);
     return report;
+}
+
+/* Exactly the samples one request needs: two windows of whole transforms, each at least 10 ms. */
+static size_t
+request_samples(const dsd_signal_measure_request& r) {
+    const size_t n = (size_t)dsd_signal_search_fft_size(r.capture.rate_hz, &r.range);
+    return 2 * n * ((r.capture.rate_hz / 100 + n - 1) / n);
+}
+
+/* Add a noise-like FM transmitter: low-passed Gaussian modulation (1.5 kHz) clipped at @p deviation. */
+static void
+add_voice(std::vector<float>& iq, const dsd_signal_measure_request& r, double frequency, double amplitude,
+          double deviation, unsigned seed) {
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> gauss(0, 1);
+    const double a = std::exp(-6.283185307179586 * 1500 / r.capture.rate_hz);
+    double phase = 0, m = 0;
+    for (size_t i = 0; i < iq.size() / 2; ++i) {
+        m = a * m + (1 - a) * gauss(rng) * 6.0;
+        phase +=
+            6.283185307179586
+            * (frequency - r.capture.capture_hz + r.capture.rotation_hz + deviation * std::max(-1.0, std::min(1.0, m)))
+            / r.capture.rate_hz;
+        iq[2 * i] += (float)(amplitude * std::cos(phase));
+        iq[2 * i + 1] += (float)(amplitude * std::sin(phase));
+    }
+}
+
+namespace {
+/* A transmitter in a scene: tone FM (a CW without deviation), or noise-like FM when @c voice is a seed. */
+struct transmitter {
+    double frequency, amplitude, deviation, tone;
+    unsigned voice;
+};
+} // namespace
+
+/* @p count channels @p step_num / @p step_den apart from @p first, captured at @p capture_hz. */
+static dsd_signal_measure_request
+grid_request(uint32_t rate, int32_t rotation, uint32_t capture_hz, uint32_t step_num, uint32_t width, uint32_t first,
+             uint32_t count) {
+    dsd_signal_measure_request g{};
+    dsd_signal_search_range_default(&g.range);
+    g.range.step_num = step_num;
+    g.range.bandwidth_hz = width;
+    g.session_id = 3;
+    g.request_id = 4;
+    g.capture.rate_hz = rate;
+    g.capture.rotation_hz = rotation;
+    g.capture.capture_hz = capture_hz;
+    g.capture.generation = 1;
+    g.count = count;
+    for (uint32_t i = 0; i < count; ++i) {
+        g.frequencies[i] = (uint32_t)(first + (uint64_t)i * step_num);
+    }
+    return g;
+}
+
+/* The frequencies detected in a scene of @p transmitters over a quiet floor. */
+static std::vector<uint32_t>
+detected(dsd_signal_detector* d, const dsd_signal_measure_request& r, const std::vector<transmitter>& transmitters) {
+    auto iq = samples(r, r.frequencies[0], 0, request_samples(r));
+    for (const transmitter& t : transmitters) {
+        if (t.voice) {
+            add_voice(iq, r, t.frequency, t.amplitude, t.deviation, t.voice);
+        } else {
+            add_nfm(iq, r, t.frequency, t.amplitude, t.deviation, t.tone);
+        }
+    }
+    const auto report = run(d, r, iq, 4096);
+    std::vector<uint32_t> out;
+    for (uint32_t i = 0; i < r.count; ++i) {
+        if (report.candidates[i].detected) {
+            out.push_back(report.candidates[i].frequency_hz);
+        }
+    }
+    return out;
+}
+
+/* The grid frequency of @p r nearest @p frequency. */
+static uint32_t
+nearest(const dsd_signal_measure_request& r, double frequency) {
+    uint32_t best = r.frequencies[0];
+    for (uint32_t i = 1; i < r.count; ++i) {
+        if (std::abs(r.frequencies[i] - frequency) < std::abs(best - frequency)) {
+            best = r.frequencies[i];
+        }
+    }
+    return best;
+}
+
+/* A transmitter belongs to the grid channel nearest its centre, so it is reported once, there; a weaker transmitter
+   beside a stronger one is reported too, on its own channel. */
+static void
+test_ownership(dsd_signal_detector* d) {
+    // Finding 1: a genuine neighbour 6 dB down, 12.5 kHz beside 5 kHz deviation, on either side and at four bin
+    // alignments of the 1.5 kHz bins (the stronger one's sidebands meet it with only a shallow valley).
+    for (int side : {-1, 1}) {
+        for (uint32_t shift : {0U, 375U, 750U, 1125U}) {
+            const auto g = grid_request(1536000, 384000, 163450000 + shift, 12500, 16000, 162962500, 9);
+            const auto found =
+                detected(d, g, {{163012500, 0.3, 5000, 1000, 0}, {163012500 + side * 12500.0, 0.15, 2500, 700, 0}});
+            const std::vector<uint32_t> want =
+                side < 0 ? std::vector<uint32_t>{163000000, 163012500} : std::vector<uint32_t>{163012500, 163025000};
+            assert(found == want);
+        }
+    }
+
+    // Finding 2: one transmitter on a fine grid (5 and 6.25 kHz steps, 16 kHz windows) at several FFT resolutions and
+    // bin alignments, with and without ingest rotation: its sidebands, carrier nulls and horns are its own.
+    struct geometry {
+        uint32_t rate;
+        int32_t rotation;
+        uint32_t capture;
+    };
+
+    const geometry geometries[] = {{1536000, 384000, 163450000},
+                                   {1536000, 384000, 163450250},
+                                   {2500000, 0, 162387833},
+                                   {6000000, 0, 161512833},
+                                   {10000000, 0, 160512833}};
+    const transmitter modulations[] = {{0, 0.3, 2500, 1000, 0}, {0, 0.3, 2500, 2000, 0}, {0, 0.3, 5000, 2000, 0},
+                                       {0, 0.3, 5000, 2400, 0}, {0, 0.3, 5000, 300, 0},  {0, 0.3, 5000, 0, 7}};
+    for (uint32_t step : {5000U, 6250U}) {
+        for (const geometry& geo : geometries) {
+            const auto g = grid_request(geo.rate, geo.rotation, geo.capture, step, 16000, 163012500 - 4 * step, 9);
+            for (transmitter t : modulations) {
+                t.frequency = 163012500;
+                assert(detected(d, g, {t}) == std::vector<uint32_t>{163012500});
+            }
+        }
+    }
+    // Finding 3: a carrier 6 kHz above a 12.5 kHz grid channel (inside its half step, between rounded bin positions),
+    // and noise-like FM 2 kHz above a 5 kHz grid channel at four transforms a window.
+    {
+        const auto g = grid_request(1536000, 384000, 163450000, 12500, 16000, 162962500, 9);
+        assert(detected(d, g, {{163018500, 0.3, 0, 1000, 0}}) == std::vector<uint32_t>{163012500});
+        const auto fine = grid_request(1536000, 384000, 163450000, 5000, 16000, 162992500, 9);
+        assert(detected(d, fine, {{163014500, 0.3, 5000, 0, 1}}) == std::vector<uint32_t>{163012500});
+    }
+    // Across ownership boundaries: exactly one detection everywhere, at the nearest channel except within a hair of a
+    // tie; and on the boundary itself, give or take a hertz.
+    for (uint32_t step : {5000U, 6250U, 12500U}) {
+        const auto g = grid_request(1536000, 384000, 163450000, step, 16000, 163012500 - 4 * step, 9);
+        for (int twentieth = -11; twentieth <= 11; ++twentieth) {
+            const double frequency = 163012500 + twentieth * (double)step / 20;
+            for (double deviation : {0.0, 2500.0}) {
+                const auto found = detected(d, g, {{frequency, 0.3, deviation, 1000, 0}});
+                assert(found.size() == 1);
+                assert(std::abs(std::abs(twentieth) - 10) <= 1 || found[0] == nearest(g, frequency));
+            }
+        }
+        for (double offset : {-1.0, 0.0, 1.0}) {
+            assert(detected(d, g, {{163012500 + step / 2.0 + offset, 0.3, 0, 1000, 0}}).size() == 1);
+        }
+    }
+    // A rational step's grid frequencies are rounded to whole hertz; neighbouring channels still share one boundary.
+    {
+        dsd_signal_measure_request g = grid_request(1536000, 384000, 100400000, 25000, 12500, 0, 7);
+        g.range.start_hz = 100000000;
+        g.range.end_hz = 101000000;
+        g.range.step_den = 3;
+        for (uint32_t i = 0; i < g.count; ++i) {
+            g.frequencies[i] = dsd_signal_search_frequency(&g.range, i);
+        }
+        const double boundary = 100000000 + 2.5 * 25000.0 / 3;
+        for (double offset : {-0.5, -0.25, 0.0, 0.25, 0.5}) {
+            assert(detected(d, g, {{boundary + offset, 0.3, 0, 1000, 0}}).size() == 1);
+        }
+    }
+    // A grid finer than an analysis bin (250 Hz steps, 25 kHz windows: 65536-point transforms, aggregated): each
+    // carrier at its nearest channel, a comb of them one detection each, and one NFM transmitter once.
+    {
+        dsd_signal_measure_request g{};
+        dsd_signal_search_range_default(&g.range);
+        g.range.start_hz = 163000000;
+        g.range.end_hz = 165000000;
+        g.range.step_num = 250;
+        g.range.bandwidth_hz = 25000;
+        g.range.sensitivity_db = 3;
+        g.session_id = 3;
+        g.request_id = 4;
+        g.capture.rate_hz = 1536000;
+        g.capture.rotation_hz = g.capture.capture_offset_hz = 384000;
+        g.capture.generation = 1;
+        dsd_signal_search_span span{};
+        assert(dsd_signal_search_plan(&g.range, 0, g.capture.rate_hz, g.capture.capture_offset_hz, &span) == 1);
+        assert(span.count == DSD_SEARCH_MAX_CANDIDATES);
+        g.count = span.count;
+        g.capture.capture_hz = (uint32_t)(span.tune_hz + g.capture.capture_offset_hz);
+        for (uint32_t i = 0; i < g.count; ++i) {
+            g.frequencies[i] = span.frequencies[i];
+        }
+        const uint32_t middle_index = g.count / 2;
+        const double middle = g.frequencies[middle_index];
+        for (double offset : {0.0, 60.0, 250.0, 375.0, -1100.0}) {
+            const auto found = detected(d, g, {{middle + offset, 0.015, 0, 1000, 0}});
+            assert(found.size() == 1 && std::abs(found[0] - (middle + offset)) <= 125);
+        }
+        std::vector<transmitter> comb;
+        for (uint32_t f = g.frequencies[0]; f <= g.frequencies[g.count - 1]; f += 25000) {
+            comb.push_back({(double)f, 0.015, 0, 1000, 0});
+        }
+        const auto found = detected(d, g, comb);
+        assert(found.size() == comb.size());
+        for (size_t i = 0; i < comb.size(); ++i) {
+            assert(found[i] == (uint32_t)comb[i].frequency);
+        }
+        assert(detected(d, g, {{middle, 0.3, 5000, 1000, 0}}) == std::vector<uint32_t>{(uint32_t)middle});
+    }
+    // A transmitter whose window wraps FFT bin 0 (just above the capture less the ingest rotation), one below the
+    // capture without rotation, and channels just inside the DC and edge guards.
+    {
+        const auto wrapped = grid_request(1536000, 384000, 163450000, 12500, 16000, 163066000 - 4 * 12500, 9);
+        assert(detected(d, wrapped, {{163066000, 0.3, 2500, 1000, 0}}) == std::vector<uint32_t>{163066000});
+        const auto below = grid_request(2500000, 0, 163312500, 12500, 16000, 163012500 - 4 * 12500, 9);
+        assert(detected(d, below, {{163012500, 0.3, 2500, 1000, 0}}) == std::vector<uint32_t>{163012500});
+        // Valid channels are more than 1% of the rate plus three widths from the capture centre, and three widths
+        // inside 45% of the rate.
+        const uint32_t dc = 163450000 - (15360 + 3 * 16000 + 500);
+        const auto near_dc = grid_request(1536000, 384000, 163450000, 12500, 16000, dc - 4 * 12500, 5);
+        assert(detected(d, near_dc, {{(double)dc, 0.3, 2500, 1000, 0}}) == std::vector<uint32_t>{dc});
+        const uint32_t edge = 163450000 - (691200 - 3 * 16000 - 500);
+        const auto near_edge = grid_request(1536000, 384000, 163450000, 12500, 16000, edge, 5);
+        assert(detected(d, near_edge, {{(double)edge, 0.3, 2500, 1000, 0}}) == std::vector<uint32_t>{edge});
+    }
+}
+
+/* Neighbours: a transmitter's presence never hides another's, and two of them never invent one between. */
+static void
+test_neighbours(dsd_signal_detector* d) {
+    // Transmitters two and three channels apart: neither one's noise sidebands hide the other, and the empty channel
+    // between them reports nothing.
+    const auto g = grid_request(1536000, 384000, 163450000, 12500, 16000, 162950000, 13);
+    for (int apart : {2, 3}) {
+        for (double weaker : {0.3, 0.15}) {
+            const double other = 163012500 + apart * 12500.0;
+            assert((detected(d, g, {{163012500, 0.3, 2500, 1000, 0}, {other, weaker, 2500, 700, 0}})
+                    == std::vector<uint32_t>{163012500, (uint32_t)other}));
+        }
+    }
+    // Equal transmitters 10 kHz apart on a 5 kHz grid, and equal carriers 5 kHz apart on a 2.5 kHz grid: the
+    // envelope that bridges an FM transmitter's sideband lines bridges them too, but neither the gap between them
+    // nor its channel is a transmitter.
+    const auto fine = grid_request(1536000, 384000, 163450000, 5000, 16000, 162982500, 13);
+    assert((detected(d, fine, {{163012500, 0.3, 2500, 1000, 0}, {163022500, 0.3, 2500, 700, 0}})
+            == std::vector<uint32_t>{163012500, 163022500}));
+    const auto finer = grid_request(1536000, 384000, 163450000, 2500, 16000, 162997500, 13);
+    assert((detected(d, finer, {{163010000, 0.3, 0, 1000, 0}, {163015000, 0.3, 0, 1000, 0}})
+            == std::vector<uint32_t>{163010000, 163015000}));
+    // A weak neighbour exactly on the boundary between two 5 kHz channels belongs to one of them.
+    assert(detected(d, fine, {{163012500, 0.3, 2500, 1000, 0}, {163025000, 0.03, 2500, 700, 0}}).size() == 2);
+    // Two weaker transmitters either side of a strong one on a fine grid, 10 kHz out.
+    assert(
+        (detected(d, fine,
+                  {{163012500, 0.3, 2500, 1000, 0}, {163002500, 0.03, 2500, 700, 0}, {163022500, 0.03, 2500, 900, 0}})
+         == std::vector<uint32_t>{163002500, 163012500, 163022500}));
+    // With an 8 kHz window on a 25 kHz grid, a wide transmitter 11.25 kHz off its channel lies outside every window
+    // but its sidebands reach in: at most one detection, at its nearest channel.
+    const auto sparse = grid_request(1536000, 384000, 163450000, 25000, 8000, 162912500, 9);
+    const auto found = detected(d, sparse, {{163023750, 0.3, 5000, 2400, 0}});
+    assert(found.empty() || found == std::vector<uint32_t>{163012500});
+}
+
+/* Sustained energy: each window must find the transmitter itself, not another one's skirt that only one window has. */
+static void
+test_sustained(dsd_signal_detector* d) {
+    const auto g = grid_request(1536000, 384000, 163450000, 12500, 16000, 162962500, 9);
+    const size_t half = request_samples(g) / 2;
+    auto first = samples(g, g.frequencies[0], 0, 2 * half), second = first;
+    add_nfm(first, g, 163012500, 0.3, 2500, 1000);
+    add_nfm(second, g, 163025000, 0.3, 2500, 1000);
+    std::vector<float> iq(first.begin(), first.begin() + (std::ptrdiff_t)(2 * half));
+    iq.insert(iq.end(), second.begin() + (std::ptrdiff_t)(2 * half), second.end());
+    const auto report = run(d, g, iq, 4096);
+    for (uint32_t i = 0; i < g.count; ++i) {
+        assert(!report.candidates[i].detected);
+    }
+}
+
+/* Noise alone at the lowest sensitivity, white or coloured, reports nothing; and the robust local noise reads the
+   level of a plain mean over noise alone. */
+static void
+test_noise(dsd_signal_detector* d) {
+    for (uint32_t step : {12500U, 250U}) {
+        dsd_signal_measure_request g{};
+        dsd_signal_search_range_default(&g.range);
+        g.range.start_hz = 163000000;
+        g.range.end_hz = 165000000;
+        g.range.step_num = step;
+        g.range.bandwidth_hz = step == 250 ? 25000 : 16000;
+        g.range.sensitivity_db = 3;
+        g.session_id = 3;
+        g.request_id = 4;
+        g.capture.rate_hz = 1536000;
+        g.capture.rotation_hz = g.capture.capture_offset_hz = 384000;
+        g.capture.generation = 1;
+        dsd_signal_search_span span{};
+        assert(dsd_signal_search_plan(&g.range, 0, g.capture.rate_hz, g.capture.capture_offset_hz, &span) == 1);
+        g.count = span.count;
+        g.capture.capture_hz = (uint32_t)(span.tune_hz + g.capture.capture_offset_hz);
+        for (uint32_t i = 0; i < g.count; ++i) {
+            g.frequencies[i] = span.frequencies[i];
+        }
+        for (unsigned seed = 1; seed <= 4; ++seed) {
+            for (int coloured = 0; coloured < 2; ++coloured) {
+                std::vector<float> iq(2 * request_samples(g));
+                std::mt19937 rng(seed);
+                std::normal_distribution<float> gauss(0, 0.001f);
+                for (float& v : iq) {
+                    v = gauss(rng);
+                }
+                for (size_t i = 2; coloured && i < iq.size(); ++i) {
+                    iq[i] = 0.8f * iq[i - 2] + 0.2f * iq[i];
+                }
+                const auto report = run(d, g, iq, 8192);
+                double snr = 0;
+                for (uint32_t i = 0; i < g.count; ++i) {
+                    assert(report.candidates[i].valid && !report.candidates[i].detected);
+                    snr += report.candidates[i].power_dbfs - report.candidates[i].noise_dbfs;
+                }
+                assert(coloured || std::abs(snr / g.count) < 0.5);
+            }
+        }
+    }
+}
+
+/* The shared tap publishes a report for the request it was made for, or nothing. */
+static void
+test_tap_schedules(const dsd_signal_measure_request& r, const std::vector<float>& iq) {
+    const size_t pairs = iq.size() / 2;
+    dsd_signal_measure_report report{};
+    // A request made before the last report was taken retires that report; the next one is its own.
+    dsd_signal_measure_request first = r, second = r;
+    first.request_id = 101;
+    second.request_id = 102;
+    assert(rtl_signal_measure_request(&first) == 0);
+    rtl_signal_measure_feed(iq.data(), pairs, &r.capture);
+    assert(rtl_signal_measure_request(&second) == 0);
+    assert(rtl_signal_measure_get(&report) == 0);
+    rtl_signal_measure_feed(iq.data(), pairs, &r.capture);
+    assert(rtl_signal_measure_get(&report) == 1 && report.request_id == 102);
+    assert(rtl_signal_measure_get(&report) == 0);
+    // A cancel retires the request: the rest of its samples publish nothing.
+    assert(rtl_signal_measure_request(&first) == 0);
+    rtl_signal_measure_feed(iq.data(), pairs / 4, &r.capture);
+    rtl_signal_measure_cancel();
+    rtl_signal_measure_feed(iq.data(), pairs, &r.capture);
+    assert(rtl_signal_measure_get(&report) == 0);
+    // A completed report taken before a capture change is still delivered; one left waiting is invalidated.
+    assert(rtl_signal_measure_request(&first) == 0);
+    rtl_signal_measure_feed(iq.data(), pairs, &r.capture);
+    assert(rtl_signal_measure_get(&report) == 1 && report.request_id == 101);
+    auto moved = r.capture;
+    ++moved.drops;
+    rtl_signal_measure_feed(iq.data(), 1, &moved);
+    assert(rtl_signal_measure_get(&report) == 0);
+    rtl_signal_measure_cancel();
+}
+
+/* The demod thread feeding while the decoder thread requests, polls and cancels: every report delivered is for the
+   request outstanding, a cancel leaves nothing to deliver, and polling the capture never waits for analysis. */
+static void
+test_tap_threads(const dsd_signal_measure_request& r, const std::vector<float>& iq) {
+    std::atomic<bool> stop{false};
+    std::thread demod([&] {
+        const size_t block = 4096;
+        for (size_t at = 0; !stop.load(std::memory_order_acquire); at = (at + block) % (iq.size() / 2 - block)) {
+            rtl_signal_measure_feed(iq.data() + 2 * at, block, &r.capture);
+        }
+    });
+    dsd_signal_measure_request request = r;
+    int delivered = 0;
+    for (uint64_t id = 1; id <= 60; ++id) {
+        request.request_id = 1000 + id;
+        assert(rtl_signal_measure_request(&request) == 0);
+        if (id % 4 == 0) {
+            rtl_signal_measure_cancel();
+            dsd_signal_measure_report none{};
+            assert(rtl_signal_measure_get(&none) == 0);
+            continue;
+        }
+        for (int poll = 0; poll < 2000000; ++poll) {
+            dsd_signal_measure_report report{};
+            dsd_signal_capture capture{};
+            assert(rtl_signal_capture_get(&capture) == 1 && capture.rate_hz == r.capture.rate_hz);
+            const int rc = rtl_signal_measure_get(&report);
+            if (rc == 1) {
+                assert(report.request_id == request.request_id);
+                ++delivered;
+                break;
+            }
+            assert(rc == 0);
+            std::this_thread::yield();
+        }
+    }
+    stop.store(true, std::memory_order_release);
+    demod.join();
+    rtl_signal_measure_cancel();
+    assert(delivered > 0);
 }
 
 int
@@ -189,6 +593,29 @@ main() {
     dsd_signal_measure_report invalid{};
     assert(dsd_signal_detector_begin(d, &r) == 0);
     assert(dsd_signal_detector_feed(d, clipping.data(), 30000, &r.capture, &invalid) == -1);
+    // A sample clips when either component reaches full scale: under 1% of them still measures, over it does not.
+    for (int component = 0; component < 2; ++component) {
+        for (size_t every : {size_t{200}, size_t{50}}) {
+            auto peaks = samples(r, r.frequencies[0], 0.1, 30000);
+            for (size_t i = 0; i < peaks.size() / 2; i += every) {
+                peaks[2 * i + (size_t)component] = component ? -0.999f : 0.999f;
+            }
+            assert(dsd_signal_detector_begin(d, &r) == 0);
+            assert(dsd_signal_detector_feed(d, peaks.data(), 30000, &r.capture, &invalid) == (every == 200 ? 1 : -1));
+        }
+    }
+    // A non-finite sample in either component retires the request in the call that delivers it, mid-frame.
+    for (int component = 0; component < 2; ++component) {
+        for (float wild : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(),
+                           -std::numeric_limits<float>::infinity()}) {
+            auto poisoned = samples(r, r.frequencies[0], 0.1, 3000);
+            poisoned[size_t{2} * 1500 + (size_t)component] = wild;
+            assert(dsd_signal_detector_begin(d, &r) == 0);
+            assert(dsd_signal_detector_feed(d, poisoned.data(), 1000, &r.capture, &invalid) == 0);
+            assert(dsd_signal_detector_feed(d, poisoned.data() + 2000, 2000, &r.capture, &invalid) == -1);
+            assert(dsd_signal_detector_feed(d, poisoned.data(), 1000, &r.capture, &invalid) == 0);
+        }
+    }
     // A completed report is invalidated too: a gain change must not publish old power.
     rtl_signal_measure_feed(off_grid.data(), 1, &r.capture);
     assert(rtl_signal_measure_request(&r) == 0);
@@ -198,6 +625,8 @@ main() {
     rtl_signal_measure_feed(off_grid.data(), 1, &moved);
     assert(rtl_signal_measure_get(&invalid) == -1);
     rtl_signal_measure_cancel();
+    test_tap_schedules(r, off_grid);
+    test_tap_threads(r, off_grid);
     // A burst shorter than the first 10 ms cannot pass two windows.
     for (size_t i = size_t{5000} * 2; i < iq.size(); ++i) {
         iq[i] = noise[i];
@@ -234,6 +663,10 @@ main() {
     assert(run(d, r, samples(r, r.frequencies[0], 0.1, 30000), 509).candidates[0].detected);
     r.frequencies[0] = r.capture.capture_hz + 300000;
     assert(run(d, r, samples(r, r.frequencies[0], 0.1, 30000), 509).candidates[0].detected);
+    test_ownership(d);
+    test_neighbours(d);
+    test_sustained(d);
+    test_noise(d);
     dsd_signal_detector_destroy(d);
     auto range = r.range;
     range.start_hz = 450000000;
