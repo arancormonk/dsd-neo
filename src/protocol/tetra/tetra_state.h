@@ -16,6 +16,206 @@
 extern "C" {
 #endif
 
+/* Mobility management snapshots (EN 300 392-2 clause 16, EN 300 392-7 annex A). tetra_mm.c decodes a whole PDU
+ * before it replaces the snapshot of its kind, so each one holds the last complete PDU. Sealed keys are kept as
+ * received; a passive monitor never unwraps them. */
+
+/** Address extension: the MCC and MNC of a TSI (EN 300 392-2 table 16.28). */
+typedef struct {
+    uint16_t mcc;
+    uint16_t mnc;
+    uint8_t valid;
+} tetra_mm_address_t;
+
+/** Time a key change takes effect (EN 300 392-7 table A.111). */
+typedef struct {
+    uint64_t network_time; /**< time type 1: EN 300 392-2 clause 18.5.24 network time */
+    uint16_t hyperframe;   /**< time type 0: absolute IV */
+    uint8_t type;          /**< 0 absolute IV, 1 network time, 2 next multiframe, 3 currently in use */
+    uint8_t slot;
+    uint8_t frame;
+    uint8_t multiframe;
+} tetra_mm_time_t;
+
+/** SCKs a key change activates (EN 300 392-7 tables A.26 and A.27d): count 0 selects one SCK subset. */
+typedef struct {
+    uint16_t subset_vn;   /**< SCK-VN of the subset */
+    uint16_t version[15]; /**< SCK-VN of each SCK */
+    uint8_t count;
+    uint8_t grouping; /**< SCK subset grouping type (table A.100a) */
+    uint8_t subset;   /**< SCK subset number (table A.100b) */
+    uint8_t number[15];
+} tetra_mm_sck_set_t;
+
+/** CCK information with its location area information (EN 300 392-7 tables A.42 and A.43). */
+typedef struct {
+    uint16_t id;
+    uint16_t la[15];
+    uint16_t la_mask;
+    uint16_t la_selector;
+    uint16_t la_low;
+    uint16_t la_high;
+    uint8_t key_type; /**< 0 current, 1 future */
+    uint8_t sealed[15];
+    uint8_t la_type; /**< 0 all, 1 list, 2 mask and selector, 3 range */
+    uint8_t la_count;
+    uint8_t future;
+    uint8_t future_sealed[15];
+} tetra_mm_cck_info_t;
+
+/** D-AUTHENTICATION demand, response, result or reject (EN 300 392-7 tables A.1 to A.4). */
+typedef struct {
+    uint32_t response; /**< RES2 */
+    uint8_t valid;
+    uint8_t subtype;              /**< table A.40 */
+    uint8_t random_challenge[10]; /**< RAND1 */
+    uint8_t random_seed[10];      /**< RS */
+    uint8_t mutual;
+    uint8_t result;
+    uint8_t reject_reason;
+} tetra_mm_auth_t;
+
+/** D-OTAR (EN 300 392-7 tables A.9, A.12, A.15, A.16, A.19, A.20, A.23, A.24, A.27d, A.27f, A.27h, A.30 and A.30a):
+ * the union of the fields of every downlink sub-type; fields the last sub-type does not carry are zero. */
+typedef struct {
+    tetra_mm_cck_info_t cck;
+    tetra_mm_address_t address;
+    tetra_mm_sck_set_t dm_sck;
+    tetra_mm_time_t dm_sck_time;
+    uint32_t gssi;
+    uint32_t gck_select;
+    uint32_t group_gssi[30];
+    uint32_t gck_reject_gssi[7];
+    uint16_t max_response_timer;
+    uint16_t gsko_version;
+    uint16_t sck_version[7];
+    uint16_t gck_number[7];
+    uint16_t gck_version[7];
+    uint16_t key_status_gck_number;
+    uint16_t key_delete_gck_number[15];
+    uint8_t valid;
+    uint8_t subtype; /**< table A.85 */
+    uint8_t cck_provision;
+    uint8_t dck_forwarding_result;
+    uint8_t ack;
+    uint8_t explicit_response;
+    uint8_t session_key;
+    uint8_t random_seed[10];
+    uint8_t key_count;
+    uint8_t sck_number[7];
+    uint8_t sck_use[7];
+    uint8_t sck_sealed[7][15];
+    uint8_t gck_sealed[7][15];
+    uint8_t reject_reason[7];
+    uint8_t group_association;
+    uint8_t gck_reject_group_association[7];
+    uint8_t key_association_type;
+    uint8_t sck_select;
+    uint8_t sck_subset_grouping;
+    uint8_t group_count;
+    uint8_t group_is_range;
+    uint8_t group_value_count;
+    uint8_t ksg;
+    uint8_t retry_interval;
+    uint8_t gsko_sealed[15];
+    uint8_t key_status_type;
+    uint8_t key_status_sck_number;
+    uint8_t key_status_sck_grouping;
+    uint8_t key_status_sck_subset;
+    uint8_t key_delete_type;
+    uint8_t key_delete_sck_count;
+    uint8_t key_delete_sck_number[31];
+    uint8_t key_delete_sck_grouping;
+    uint8_t key_delete_sck_subset;
+    uint8_t key_delete_gck_count;
+    uint8_t dm_sck_ack;
+} tetra_mm_otar_t;
+
+/** D-CK CHANGE DEMAND (EN 300 392-7 table A.26). */
+typedef struct {
+    tetra_mm_sck_set_t sck;
+    tetra_mm_time_t time;
+    uint16_t cck_id;
+    uint16_t gck_vn;
+    uint16_t gck_number[15];
+    uint16_t gck_version[15];
+    uint8_t valid;
+    uint8_t ack;
+    uint8_t security_class;
+    uint8_t key_type; /**< key change type (table A.71) */
+    uint8_t sck_use;
+    uint8_t gck_count;
+} tetra_mm_ck_change_t;
+
+/** D-ENABLE or D-DISABLE (EN 300 392-7 tables A.31 and A.32). */
+typedef struct {
+    uint64_t tei;
+    uint32_t ssi;
+    uint16_t mcc;
+    uint16_t mnc;
+    uint8_t valid;
+    uint8_t is_enable;
+    uint8_t intent; /**< 0 intent, 1 confirm */
+    uint8_t permanent;
+    uint8_t equipment;
+    uint8_t subscription;
+    uint8_t auth_valid;
+    uint8_t auth_challenge[20]; /**< RAND1 then RS (table A.37) */
+} tetra_mm_enable_disable_t;
+
+/** D-LOCATION UPDATE ACCEPT (EN 300 392-2 table 16.11) type 1 and type 2 elements. */
+typedef struct {
+    uint32_t ssi;
+    tetra_mm_address_t address;
+    uint16_t subscriber_class;
+    uint16_t energy_saving;
+    uint8_t valid;
+    uint8_t type;
+    uint8_t ssi_valid;
+    uint8_t subscriber_class_valid;
+    uint8_t energy_saving_valid;
+    uint8_t scch;
+    uint8_t scch_valid;
+} tetra_mm_lu_accept_t;
+
+/** D-LOCATION UPDATE COMMAND (EN 300 392-2 table 16.12). */
+typedef struct {
+    tetra_mm_address_t address;
+    uint16_t cipher_params;
+    uint8_t valid;
+    uint8_t group_report;
+    uint8_t cipher_control;
+} tetra_mm_lu_command_t;
+
+/** D-LOCATION UPDATE REJECT (EN 300 392-2 table 16.13). */
+typedef struct {
+    tetra_mm_address_t address;
+    uint16_t cipher_params;
+    uint8_t valid;
+    uint8_t type;
+    uint8_t cause;
+    uint8_t cipher_control;
+} tetra_mm_lu_reject_t;
+
+/** D-LOCATION UPDATE PROCEEDING (EN 300 392-2 table 16.14). */
+typedef struct {
+    uint32_t ssi;
+    tetra_mm_address_t address;
+    uint8_t valid;
+} tetra_mm_lu_proceeding_t;
+
+/** One group identity of a group identity downlink element (EN 300 392-2 table 16.54). */
+typedef struct {
+    uint32_t gssi;
+    uint32_t vgssi;
+    tetra_mm_address_t address; /**< present with a GTSI (address types 1 and 3) */
+    uint8_t action;             /**< 0 attachment, 1 detachment */
+    uint8_t attachment_lifetime;
+    uint8_t class_of_usage;
+    uint8_t detachment_reason;
+    uint8_t address_type; /**< 0 GSSI, 1 GTSI, 2 (V)GSSI, 3 GTSI and (V)GSSI */
+} tetra_mm_group_entry_t;
+
 typedef struct tetra_state {
     /* Diagnostic gates mirrored from the options at every burst (tetra_frame_enter()), so parsers that are not handed
      * the options can still keep per-burst detail behind -Z (payload) and -v (verbose). */
@@ -133,87 +333,29 @@ typedef struct tetra_state {
     uint8_t tx_granted_valid;
     uint32_t tx_granted_ssi;
 
-    uint8_t ms_enabled;
-    uint8_t mm_status_code;
-    uint8_t mm_status_valid;
-    /* EN 300 392-7 tables A.31/A.32.  A complete command replaces this
-     * snapshot; truncated identity or authentication data publishes nothing. */
-    uint8_t mm_enable_disable_valid;
-    uint8_t mm_enable_disable_is_enable;
-    uint8_t mm_enable_disable_intent;
-    uint8_t mm_disable_permanent;
-    uint8_t mm_enable_disable_equipment;
-    uint64_t mm_enable_disable_tei;
-    uint8_t mm_enable_disable_subscription;
-    uint16_t mm_enable_disable_mcc;
-    uint16_t mm_enable_disable_mnc;
-    uint32_t mm_enable_disable_ssi;
-    uint8_t mm_enable_disable_auth_valid;
-    uint8_t mm_enable_disable_auth_challenge[20];
-    /* EN 300 392-7 table A.26 D-CK CHANGE DEMAND.  Arrays retain every
-     * repeated SCK/GCK descriptor (the four-bit count limits each to 15). */
-    uint8_t mm_ck_change_valid;
-    uint8_t mm_ck_change_ack;
-    uint8_t mm_ck_change_security_class;
-    uint8_t mm_ck_change_key_type;
-    uint8_t mm_ck_change_sck_use;
-    uint8_t mm_ck_change_sck_count;
-    uint8_t mm_ck_change_sck_grouping;
-    uint8_t mm_ck_change_sck_subset;
-    uint16_t mm_ck_change_sck_vn;
-    uint8_t mm_ck_change_sck_number[15];
-    uint16_t mm_ck_change_sck_version[15];
-    uint16_t mm_ck_change_cck_id;
-    uint8_t mm_ck_change_gck_count;
-    uint16_t mm_ck_change_gck_number[15];
-    uint16_t mm_ck_change_gck_version[15];
-    uint16_t mm_ck_change_gck_vn;
-    uint8_t mm_ck_change_time_type;
-    uint8_t mm_ck_change_slot;
-    uint8_t mm_ck_change_frame;
-    uint8_t mm_ck_change_multiframe;
-    uint16_t mm_ck_change_hyperframe;
-    uint64_t mm_ck_change_network_time;
-    uint8_t mm_lu_accept_type;
-    uint8_t mm_lu_accept_valid;
-    uint32_t mm_lu_accept_ssi;
-    uint8_t mm_lu_accept_ssi_valid;
-    uint16_t mm_lu_accept_mcc;
-    uint16_t mm_lu_accept_mnc;
-    uint8_t mm_lu_accept_address_ext_valid;
-    uint16_t mm_lu_accept_subscriber_class;
-    uint8_t mm_lu_accept_subscriber_class_valid;
-    uint16_t mm_lu_accept_energy_saving;
-    uint8_t mm_lu_accept_energy_saving_valid;
-    uint8_t mm_lu_accept_scch;
-    uint8_t mm_lu_accept_scch_valid;
-    uint8_t mm_lu_command_group_report;
-    uint8_t mm_lu_command_cipher_control;
-    uint16_t mm_lu_command_cipher_params;
-    uint8_t mm_lu_command_valid;
-    uint16_t mm_lu_command_mcc;
-    uint16_t mm_lu_command_mnc;
-    uint8_t mm_lu_command_address_ext_valid;
-    uint32_t mm_lu_proceeding_ssi;
-    uint32_t mm_lu_proceeding_mni;
-    uint8_t mm_lu_proceeding_valid;
+    /* Mobility management (tetra_mm.c), widest alignment first so the block adds no padding. The group identity,
+     * MM status and function-not-supported fields stay flat because tetra_channel_info.c reads them. */
+    tetra_mm_otar_t mm_otar;
+    tetra_mm_ck_change_t mm_ck_change;
+    tetra_mm_enable_disable_t mm_enable_disable;
+    tetra_mm_auth_t mm_auth;
+    tetra_mm_lu_accept_t mm_lu_accept;
+    tetra_mm_lu_proceeding_t mm_lu_proceeding;
+    tetra_mm_group_entry_t mm_group_entry[63];
+    tetra_mm_lu_command_t mm_lu_command;
+    tetra_mm_lu_reject_t mm_lu_reject;
+    uint8_t mm_group_entry_count;
     uint8_t mm_group_identity_valid;
     uint8_t mm_group_identity_report;
     uint8_t mm_group_identity_ack_request;
     uint8_t mm_group_identity_attach_detach_mode;
-    uint8_t mm_group_entry_count;
-    uint8_t mm_group_entry_action[63];
-    uint8_t mm_group_entry_attachment_lifetime[63];
-    uint8_t mm_group_entry_class_of_usage[63];
-    uint8_t mm_group_entry_detachment_reason[63];
-    uint8_t mm_group_entry_address_type[63];
-    uint32_t mm_group_entry_gssi[63];
-    uint32_t mm_group_entry_extension[63];
-    uint32_t mm_group_entry_vgssi[63];
     uint8_t mm_group_ack_result;
     uint8_t mm_group_ack_valid;
+    uint8_t mm_status_code;
+    uint8_t mm_status_valid;
     uint8_t mm_fns_pdu_type;
     uint8_t mm_fns_valid;
+    uint8_t mm_addr_type; /* Read by tetra_channel_info.c. */
     long dl_carrier_hz;
 
     /* ───────────────────────────────────────────────────────────────────────
@@ -377,21 +519,6 @@ typedef struct tetra_state {
     uint8_t tn;
     uint8_t fn;
     uint8_t mn;
-
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA MM D-LOCATION-UPDATING-REJECT fields (Phase 44):
-     *
-     * mm_lu_reject_cause:  5-bit rejection cause code.
-     * mm_lu_reject_valid:  1 when cause has been populated.
-     * ───────────────────────────────────────────────────────────────────────── */
-    uint8_t mm_lu_reject_cause;
-    uint8_t mm_lu_reject_valid;
-    uint8_t mm_lu_reject_type;
-    uint8_t mm_lu_reject_cipher_control;
-    uint16_t mm_lu_reject_cipher_params;
-    uint16_t mm_lu_reject_mcc;
-    uint16_t mm_lu_reject_mnc;
-    uint8_t mm_lu_reject_address_ext_valid;
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA CMCE D-SDS-DATA tracking fields (Phase 46):
@@ -642,86 +769,6 @@ typedef struct tetra_state {
     uint16_t mle_da_neighbor_irregular_extension[63];
     uint8_t mle_da_neighbor_irregular_extension_valid[63];
 
-    /* EN 300 392-7 tables A.1-A.4 D-AUTHENTICATION snapshot. */
-    uint8_t mm_auth_valid;
-    uint8_t mm_auth_subtype;
-    uint8_t mm_auth_random_challenge[10];
-    uint8_t mm_auth_random_seed[10];
-    uint32_t mm_auth_response;
-    uint8_t mm_auth_mutual;
-    uint8_t mm_auth_result;
-    uint8_t mm_auth_reject_reason;
-
-    /* EN 300 392-7 D-OTAR downlink key-management snapshot. */
-    uint8_t mm_otar_valid;
-    uint8_t mm_otar_subtype;
-    uint8_t mm_otar_cck_provision;
-    uint16_t mm_otar_cck_id;
-    uint8_t mm_otar_cck_key_type;
-    uint8_t mm_otar_cck_sealed[15];
-    uint8_t mm_otar_cck_la_type;
-    uint8_t mm_otar_cck_la_count;
-    uint16_t mm_otar_cck_la[15];
-    uint16_t mm_otar_cck_la_mask;
-    uint16_t mm_otar_cck_la_selector;
-    uint16_t mm_otar_cck_la_low;
-    uint16_t mm_otar_cck_la_high;
-    uint8_t mm_otar_cck_future;
-    uint8_t mm_otar_cck_future_sealed[15];
-    uint8_t mm_otar_ack;
-    uint8_t mm_otar_explicit_response;
-    uint16_t mm_otar_max_response_timer;
-    uint8_t mm_otar_session_key;
-    uint8_t mm_otar_random_seed[10];
-    uint16_t mm_otar_gsko_version;
-    uint8_t mm_otar_key_count;
-    uint8_t mm_otar_sck_number[7];
-    uint16_t mm_otar_sck_version[7];
-    uint8_t mm_otar_sck_use[7];
-    uint8_t mm_otar_sck_sealed[7][15];
-    uint16_t mm_otar_gck_number[7];
-    uint16_t mm_otar_gck_version[7];
-    uint8_t mm_otar_gck_sealed[7][15];
-    uint8_t mm_otar_group_association;
-    uint8_t mm_otar_gck_reject_group_association[7];
-    uint32_t mm_otar_gck_reject_gssi[7];
-    uint8_t mm_otar_key_association_type;
-    uint8_t mm_otar_sck_select;
-    uint8_t mm_otar_sck_subset_grouping;
-    uint32_t mm_otar_gck_select;
-    uint8_t mm_otar_group_count;
-    uint8_t mm_otar_group_is_range;
-    uint8_t mm_otar_group_value_count;
-    uint32_t mm_otar_group_gssi[30];
-    uint8_t mm_otar_dck_forwarding_result;
-    uint8_t mm_otar_key_status_type;
-    uint8_t mm_otar_key_status_sck_number;
-    uint8_t mm_otar_key_status_sck_grouping;
-    uint8_t mm_otar_key_status_sck_subset;
-    uint16_t mm_otar_key_status_gck_number;
-    uint8_t mm_otar_key_delete_type;
-    uint8_t mm_otar_key_delete_sck_count;
-    uint8_t mm_otar_key_delete_sck_number[31];
-    uint8_t mm_otar_key_delete_sck_grouping;
-    uint8_t mm_otar_key_delete_sck_subset;
-    uint8_t mm_otar_key_delete_gck_count;
-    uint16_t mm_otar_key_delete_gck_number[15];
-    uint8_t mm_otar_dm_sck_ack;
-    uint8_t mm_otar_dm_sck_count;
-    uint8_t mm_otar_dm_sck_grouping;
-    uint8_t mm_otar_dm_sck_subset;
-    uint16_t mm_otar_dm_sck_vn;
-    uint8_t mm_otar_dm_sck_number[15];
-    uint16_t mm_otar_dm_sck_version[15];
-    uint8_t mm_otar_dm_sck_time_type;
-    uint8_t mm_otar_dm_sck_slot;
-    uint8_t mm_otar_dm_sck_frame;
-    uint8_t mm_otar_dm_sck_multiframe;
-    uint16_t mm_otar_dm_sck_hyperframe;
-    uint64_t mm_otar_dm_sck_network_time;
-    uint8_t mm_otar_reject_reason[7];
-    uint8_t mm_otar_ksg;
-    uint8_t mm_otar_retry_interval;
     /* KSG 0..3 remembered from D-OTAR SCK/GCK Provide, keyed by MCC/MNC.
      * hyperframe is the SYSINFO value from a burst whose CCK flag is clear,
      * kept apart from cck_id so a later CCK identifier does not erase it.
@@ -732,11 +779,6 @@ typedef struct tetra_state {
     uint8_t air_ksg[4];
     uint8_t hyperframe_valid;
     uint16_t hyperframe;
-    uint8_t mm_otar_address_valid;
-    uint16_t mm_otar_mcc;
-    uint16_t mm_otar_mnc;
-    uint8_t mm_otar_gsko_sealed[15];
-    uint32_t mm_otar_gssi;
 
     /* ───────────────────────────────────────────────────────────────────────
      * Phase 64: CMCE D-ALERT call_id.
@@ -883,11 +925,6 @@ typedef struct tetra_state {
     uint8_t cmce_tx_granted_party_extension_valid;
 
     uint8_t cmce_sds_data_type;
-
-    /* --- Phase 79: TETRA MM dropped variables --- */
-    uint8_t mm_detach_flag;
-    uint8_t mm_class_of_grp;
-    uint8_t mm_addr_type;
 
     /* --- Phase 82-83: additional CMCE PDU fields --- */
     uint8_t facility_valid;

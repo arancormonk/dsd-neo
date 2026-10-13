@@ -860,8 +860,8 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 0, off, 1);
     off++;
     tetra_mle_dispatch(bits, off, 2, opts, state);
-    ok = ok && tetra_st(state)->mle_new_cell_channel_command == 1 && tetra_st(state)->mm_lu_accept_valid
-         && tetra_st(state)->mm_lu_accept_type == 5;
+    ok = ok && tetra_st(state)->mle_new_cell_channel_command == 1 && tetra_st(state)->mm_lu_accept.valid
+         && tetra_st(state)->mm_lu_accept.type == 5;
 
     /* E.21: D-PREPARE-FAIL without an MM SDU. */
     memset(bits, 0, sizeof bits);
@@ -899,8 +899,8 @@ test_annex_e19_e24_mle_responses(void) {
     pack_bits(bits, 0, off, 1);
     off++;
     tetra_mle_dispatch(bits, off, 3, opts, state);
-    ok = ok && tetra_st(state)->mle_prepare_fail_cause == 1 && tetra_st(state)->mm_lu_reject_valid
-         && tetra_st(state)->mm_lu_reject_type == 2 && tetra_st(state)->mm_lu_reject_cause == 17;
+    ok = ok && tetra_st(state)->mle_prepare_fail_cause == 1 && tetra_st(state)->mm_lu_reject.valid
+         && tetra_st(state)->mm_lu_reject.type == 2 && tetra_st(state)->mm_lu_reject.cause == 17;
 
     /* E.23: D-RESTORE-ACK carrying CMCE D-CALL-RESTORE. */
     memset(bits, 0, sizeof bits);

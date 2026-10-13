@@ -1,35 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/*
- * TETRA MM (Mobility Management) PDU dispatcher.
- * ETSI EN 300 392-2, Chapter 16.
+/**
+ * @file
+ * @brief TETRA Mobility Management (MM) downlink PDU decoder.
  *
- * MM PDUs follow Protocol Discriminator 001 directly (table 18.87).
- *
- * ETSI EN 300 392-2 Table 16.75 defines a 4-bit PDU type field. This module
- * decodes the mandatory fields used by a passive monitor and publishes state
- * only after the complete mandatory portion has arrived.
- *
- * The passive-monitor state covers enable/disable, location-update accept,
- * command, reject and proceeding, group identity/acknowledgement, D-MM-STATUS,
- * MM PDU/FUNCTION NOT SUPPORTED, and the EN 300 392-7 D-OTAR CCK/SCK/GCK/GSKO
- * provision and rejection messages, KEY ASSOCIATE/KEY DELETE/KEY STATUS and
- * DM-SCK ACTIVATE demands, OTAR NEWCELL, CMG GTSI provision, D-AUTHENTICATION, D-CK CHANGE,
- * D-DISABLE, and D-ENABLE.
+ * MM PDUs follow protocol discriminator 001 (EN 300 392-2 table 18.87). The decoder covers the downlink PDUs of
+ * EN 300 392-2 clause 16 (location update accept, command, reject and proceeding, attach/detach group identity and
+ * its acknowledgement, D-MM STATUS, MM PDU/FUNCTION NOT SUPPORTED) and the MM-carried security PDUs of
+ * EN 300 392-7 annex A (D-AUTHENTICATION, D-OTAR, D-CK CHANGE DEMAND, D-DISABLE and D-ENABLE). A PDU updates the
+ * decoder state only when all of it, optional elements included, was received.
  */
 #ifndef DSD_NEO_PROTOCOL_TETRA_MM_H
 #define DSD_NEO_PROTOCOL_TETRA_MM_H
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* -----------------------------------------------------------------------
- * MM PDU type constants — downlink, ETSI EN 300 392-2 Table 16.75 (4 bits).
- * ----------------------------------------------------------------------- */
+/* Downlink MM PDU types (EN 300 392-2 table 16.75, 4 bits). */
 #define TETRA_MM_D_OTAR                         0
 #define TETRA_MM_D_AUTHENTICATION               1
 #define TETRA_MM_D_CK_CHANGE_DEMAND             2
@@ -62,25 +53,18 @@ extern "C" {
  */
 long tetra_carrier_to_dl_hz(uint32_t main_carrier, uint32_t freq_band, uint32_t freq_offset);
 
-/* -----------------------------------------------------------------------
- * tetra_mm_dispatch()
+/**
+ * @brief Decode one downlink MM PDU and update the TETRA decoder state.
  *
- * Parse a TETRA MM PDU (bit array, one byte per bit, MSB-first) and update
- * dsd_state with any extracted mobility-management information.
- *
- * @bits   – one byte per bit, value 0 or 1, MSB-first, MM PDU at bit 0
- * @nbits  – number of valid bits
- * @cc     – Colour Code (for log prefix)
- * @opts   – dsd_opts verbosity flags
- * @state  – dsd_state to update; may be NULL
- * ----------------------------------------------------------------------- */
+ * @param bits  One byte per bit (0 or 1), MSB first, the 4-bit PDU type at bit 0.
+ * @param nbits Number of bits in the PDU.
+ * @param cc    Colour code, for the log prefix.
+ * @param opts  Decoder options (unused; the diagnostics gates come from the TETRA state).
+ * @param state Decoder state; nothing happens when it is NULL.
+ */
 void tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state);
 
-/* -----------------------------------------------------------------------
- * tetra_mm_status_name()  (Phase 34)
- *
- * Return the ETSI label for the 6-bit Status Downlink value (Table 16.92).
- * ----------------------------------------------------------------------- */
+/** ETSI label of a 6-bit status downlink value (EN 300 392-2 table 16.92). */
 static inline const char*
 tetra_mm_status_name(uint8_t code) {
     switch (code) {

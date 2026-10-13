@@ -1,24 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * TETRA MM (Mobility Management) PDU dispatcher.
- * ETSI EN 300 392-2, Chapter 16.
+ * TETRA Mobility Management (MM) downlink PDU decoder: EN 300 392-2 clause 16, and the authentication, OTAR, cipher
+ * key change and enable/disable PDUs of EN 300 392-7 annex A that share the MM protocol discriminator.
  *
- * Phase 11: MM decoding and SYSINFO-based DL carrier frequency computation.
+ * Every parser reads its PDU through a bounded bit reader into a local snapshot, including the O-bit, P-bits and the
+ * M-bit chain of EN 300 392-2 annex E.1.1, and replaces the published snapshot only when the whole PDU was there. A
+ * truncated or malformed PDU leaves the previous snapshot in place.
  */
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
+#include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 
-#include <dsd-neo/protocol/tetra/tetra_bits.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include "tetra_log.h"
 #include "tetra_state.h"
-
-/* Phase 81: bits_to_uint unified — see tetra_bits.h */
-#define mm_bits_to_uint tetra_bits_to_uint
 
 /* EN 300 392-2 clause 21.4.4.1: downlink main carrier frequency = base frequency + main carrier x 25 kHz + offset.
  * ETSI TS 100 392-15 table 1 gives frequency band values 1 to 9 the base frequency value x 100 MHz. Value 0 means the
@@ -32,1683 +33,973 @@ tetra_carrier_to_dl_hz(uint32_t main_carrier, uint32_t freq_band, uint32_t freq_
     return (long)freq_band * 100000000L + (long)main_carrier * 25000L + offset_hz[freq_offset];
 }
 
-/* Mandatory downlink MM fields from ETSI EN 300 392-2, tables 16.1-16.27. */
-
-/* Validate and skip the Annex E M-bit chain of type 3/4 information elements. */
-static int
-mm_skip_type34_tail(const uint8_t* bits, int nbits, int* off) {
-    while (*off < nbits) {
-        uint8_t more = bits[(*off)++] & 1u;
-        if (!more) {
-            return 1;
-        }
-        if (*off + 15 > nbits) {
-            return 0;
-        }
-        *off += 4; /* element identifier */
-        uint32_t length = mm_bits_to_uint(bits, *off, 11);
-        *off += 11;
-        if (length == 0 || length > (uint32_t)(nbits - *off)) {
-            return 0;
-        }
-        *off += (int)length;
-    }
-    return 0; /* O=1 requires a terminating M-bit. */
-}
-
-static void
-mm_read_octets(const uint8_t* bits, int off, uint8_t* out, unsigned count) {
-    for (unsigned i = 0; i < count; i++) {
-        out[i] = (uint8_t)mm_bits_to_uint(bits, off + (int)i * 8, 8);
-    }
-}
-
-/* EN 300 392-7 V3.5.1 tables A.1-A.4. */
-static void
-mm_parse_authentication(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    int off = 4;
-    uint8_t subtype, challenge[10] = {0}, seed[10] = {0};
-    uint32_t response = 0;
-    uint8_t mutual = 0, result = 0, reject_reason = 0;
-
-    if (off + 2 > nbits) {
-        goto truncated;
-    }
-    subtype = (uint8_t)mm_bits_to_uint(bits, off, 2);
-    off += 2;
-
-    switch (subtype) {
-        case 0: /* D-AUTHENTICATION DEMAND */
-            if (off + 160 > nbits) {
-                goto truncated;
-            }
-            mm_read_octets(bits, off, challenge, sizeof(challenge));
-            off += 80;
-            mm_read_octets(bits, off, seed, sizeof(seed));
-            off += 80;
-            break;
-        case 1: /* D-AUTHENTICATION RESPONSE */
-            if (off + 113 > nbits) {
-                goto truncated;
-            }
-            mm_read_octets(bits, off, seed, sizeof(seed));
-            off += 80;
-            response = mm_bits_to_uint(bits, off, 32);
-            off += 32;
-            mutual = bits[off++] & 1u;
-            if (mutual) {
-                if (off + 80 > nbits) {
-                    goto truncated;
-                }
-                mm_read_octets(bits, off, challenge, sizeof(challenge));
-                off += 80;
-            }
-            break;
-        case 2: /* D-AUTHENTICATION RESULT */
-            if (off + 2 > nbits) {
-                goto truncated;
-            }
-            result = bits[off++] & 1u;
-            mutual = bits[off++] & 1u;
-            if (mutual) {
-                if (off + 32 > nbits) {
-                    goto truncated;
-                }
-                response = mm_bits_to_uint(bits, off, 32);
-                off += 32;
-            }
-            break;
-        case 3: /* D-AUTHENTICATION REJECT has no optional tail. */
-            if (off + 3 > nbits) {
-                goto truncated;
-            }
-            reject_reason = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (reject_reason != 0) {
-                goto truncated; /* remaining values reserved */
-            }
-            goto publish;
-    }
-
-    /* Demand, response and result can carry a proprietary Type 3 element. */
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if ((bits[off++] & 1u) && !mm_skip_type34_tail(bits, nbits, &off)) {
-        goto truncated;
-    }
-
-publish:
-    fprintf(stderr, "[TETRA MM D-AUTHENTICATION] CC=%d subtype=%u\n", cc, subtype);
-    if (ts) {
-        ts->mm_auth_subtype = subtype;
-        memcpy(ts->mm_auth_random_challenge, challenge, sizeof(challenge));
-        memcpy(ts->mm_auth_random_seed, seed, sizeof(seed));
-        ts->mm_auth_response = response;
-        ts->mm_auth_mutual = mutual;
-        ts->mm_auth_result = result;
-        ts->mm_auth_reject_reason = reject_reason;
-        ts->mm_auth_valid = 1;
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA MM D-AUTHENTICATION] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
-}
-
-static int
-mm_parse_otar_optional_tail(const uint8_t* bits, int nbits, int* off, uint8_t* address_valid, uint16_t* mcc,
-                            uint16_t* mnc) {
-    if (*off >= nbits) {
-        return 0;
-    }
-    if (!(bits[(*off)++] & 1u)) {
-        return 1;
-    }
-    if (*off >= nbits) {
-        return 0;
-    }
-    if (bits[(*off)++] & 1u) {
-        if (*off + 24 > nbits) {
-            return 0;
-        }
-        *mcc = (uint16_t)mm_bits_to_uint(bits, *off, 10);
-        *off += 10;
-        *mnc = (uint16_t)mm_bits_to_uint(bits, *off, 14);
-        *off += 14;
-        *address_valid = 1;
-    }
-    return mm_skip_type34_tail(bits, nbits, off);
-}
-
-static int
-mm_valid_sck_subset(uint8_t grouping, uint8_t subset) {
-    static const uint8_t max_subsets[10] = {1, 2, 3, 4, 5, 6, 7, 10, 15, 30};
-    return grouping <= 9 && subset >= 1 && subset <= max_subsets[grouping];
-}
-
+/* One MM PDU being decoded: the reader starts after the 4-bit PDU type. */
 typedef struct {
-    uint16_t id;
-    uint8_t key_type;
-    uint8_t sealed[15];
-    uint8_t la_type;
-    uint8_t la_count;
-    uint16_t la[15];
-    uint16_t la_mask;
-    uint16_t la_selector;
-    uint16_t la_low;
-    uint16_t la_high;
-    uint8_t future;
-    uint8_t future_sealed[15];
-} mm_otar_cck_fields;
+    tetra_bit_reader r;
+    dsd_state* state;
+    tetra_state_t* ts;
+    int cc;
+} mm_pdu;
 
-/* Tables A.42/A.43 CCK information, shared by CCK Provide and NEWCELL. */
+static uint8_t
+mm_u8(tetra_bit_reader* r, int width) {
+    return (uint8_t)tetra_bits_read(r, width);
+}
+
+static uint16_t
+mm_u16(tetra_bit_reader* r, int width) {
+    return (uint16_t)tetra_bits_read(r, width);
+}
+
+static void
+mm_read_octets(tetra_bit_reader* r, uint8_t* out, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        out[i] = mm_u8(r, 8);
+    }
+}
+
+/* Address extension: a 10-bit MCC and a 14-bit MNC (EN 300 392-2 table 16.28). */
+static void
+mm_address_from(uint32_t value, tetra_mm_address_t* address) {
+    address->mcc = (uint16_t)((value >> 14) & 0x3FFu);
+    address->mnc = (uint16_t)(value & 0x3FFFu);
+    address->valid = 1;
+}
+
+static void
+mm_read_address(tetra_bit_reader* r, tetra_mm_address_t* address) {
+    mm_address_from(tetra_bits_read(r, 24), address);
+}
+
+static void
+mm_log_invalid(const mm_pdu* pdu, const char* name) {
+    TETRA_LOG_PAYLOAD(pdu->ts, "[TETRA MM %s] CC=%d (invalid/truncated: %d bits)\n", name, pdu->cc, pdu->r.nbits);
+}
+
+/* The optional part of a PDU (EN 300 392-2 annex E.1.1): the O-bit; when it is set, a P-bit and, if that is set, a
+ * value for each of the @p count type 2 elements, then the M-bit chain of type 3/4 elements. A PDU that defines no
+ * optional element still carries the O-bit (annex E.1.1 note 4); one set there introduces type 3/4 elements a later
+ * edition added. 1 when the whole optional part was inside the PDU. */
 static int
-mm_parse_otar_cck_information(const uint8_t* bits, int nbits, int* off, mm_otar_cck_fields* cck) {
-    if (*off + 139 > nbits) {
-        return 0;
+mm_read_optional(tetra_bit_reader* r, const uint8_t* width, size_t count, uint32_t* value, uint8_t* present) {
+    if (!tetra_bits_present(r)) {
+        return tetra_bits_ok(r);
     }
-    cck->id = (uint16_t)mm_bits_to_uint(bits, *off, 16);
-    *off += 16;
-    cck->key_type = bits[(*off)++] & 1u;
-    mm_read_octets(bits, *off, cck->sealed, sizeof(cck->sealed));
-    *off += 120;
-    cck->la_type = (uint8_t)mm_bits_to_uint(bits, *off, 2);
-    *off += 2;
-    switch (cck->la_type) {
-        case 0: break;
-        case 1:
-            if (*off + 4 > nbits) {
-                return 0;
-            }
-            cck->la_count = (uint8_t)mm_bits_to_uint(bits, *off, 4);
-            *off += 4;
-            if (cck->la_count == 0 || *off + 14 * cck->la_count > nbits) {
-                return 0;
-            }
-            for (uint8_t i = 0; i < cck->la_count; i++) {
-                cck->la[i] = (uint16_t)mm_bits_to_uint(bits, *off, 14);
-                *off += 14;
-            }
-            break;
-        case 2:
-            if (*off + 28 > nbits) {
-                return 0;
-            }
-            cck->la_mask = (uint16_t)mm_bits_to_uint(bits, *off, 14);
-            *off += 14;
-            cck->la_selector = (uint16_t)mm_bits_to_uint(bits, *off, 14);
-            *off += 14;
-            break;
-        case 3:
-            if (*off + 28 > nbits) {
-                return 0;
-            }
-            cck->la_low = (uint16_t)mm_bits_to_uint(bits, *off, 14);
-            *off += 14;
-            cck->la_high = (uint16_t)mm_bits_to_uint(bits, *off, 14);
-            *off += 14;
-            if (cck->la_high <= cck->la_low) {
-                return 0;
-            }
-            break;
-    }
-    if (*off >= nbits) {
-        return 0;
-    }
-    cck->future = bits[(*off)++] & 1u;
-    if (cck->key_type && cck->future) {
-        return 0;
-    }
-    if (cck->future) {
-        if (*off + 120 > nbits) {
-            return 0;
+    for (size_t i = 0; i < count; i++) {
+        present[i] = (uint8_t)tetra_bits_present(r);
+        if (present[i]) {
+            value[i] = tetra_bits_read(r, width[i]);
         }
-        mm_read_octets(bits, *off, cck->future_sealed, sizeof(cck->future_sealed));
-        *off += 120;
+    }
+    return tetra_bits_skip_type34(r);
+}
+
+/* Optional part of a PDU with no type 2 element. */
+static int
+mm_read_type34_tail(tetra_bit_reader* r) {
+    return mm_read_optional(r, NULL, 0, NULL, NULL);
+}
+
+/* Optional part of a PDU whose only type 2 element is the address extension. */
+static int
+mm_read_address_tail(tetra_bit_reader* r, tetra_mm_address_t* address) {
+    static const uint8_t width[1] = {24};
+    uint32_t value[1] = {0};
+    uint8_t present[1] = {0};
+    if (!mm_read_optional(r, width, 1, value, present)) {
+        return 0;
+    }
+    if (present[0]) {
+        mm_address_from(value[0], address);
     }
     return 1;
 }
 
-static void
-mm_clear_otar_snapshot(dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    ts->mm_otar_cck_provision = 0;
-    ts->mm_otar_cck_id = 0;
-    ts->mm_otar_cck_key_type = 0;
-    memset(ts->mm_otar_cck_sealed, 0, sizeof(ts->mm_otar_cck_sealed));
-    ts->mm_otar_cck_la_type = 0;
-    ts->mm_otar_cck_la_count = 0;
-    memset(ts->mm_otar_cck_la, 0, sizeof(ts->mm_otar_cck_la));
-    ts->mm_otar_cck_la_mask = 0;
-    ts->mm_otar_cck_la_selector = 0;
-    ts->mm_otar_cck_la_low = 0;
-    ts->mm_otar_cck_la_high = 0;
-    ts->mm_otar_cck_future = 0;
-    memset(ts->mm_otar_cck_future_sealed, 0, sizeof(ts->mm_otar_cck_future_sealed));
-    ts->mm_otar_ack = 0;
-    ts->mm_otar_explicit_response = 0;
-    ts->mm_otar_max_response_timer = 0;
-    ts->mm_otar_session_key = 0;
-    memset(ts->mm_otar_random_seed, 0, sizeof(ts->mm_otar_random_seed));
-    ts->mm_otar_gsko_version = 0;
-    ts->mm_otar_key_count = 0;
-    memset(ts->mm_otar_sck_number, 0, sizeof(ts->mm_otar_sck_number));
-    memset(ts->mm_otar_sck_version, 0, sizeof(ts->mm_otar_sck_version));
-    memset(ts->mm_otar_sck_use, 0, sizeof(ts->mm_otar_sck_use));
-    memset(ts->mm_otar_sck_sealed, 0, sizeof(ts->mm_otar_sck_sealed));
-    memset(ts->mm_otar_gck_number, 0, sizeof(ts->mm_otar_gck_number));
-    memset(ts->mm_otar_gck_version, 0, sizeof(ts->mm_otar_gck_version));
-    memset(ts->mm_otar_gck_sealed, 0, sizeof(ts->mm_otar_gck_sealed));
-    ts->mm_otar_group_association = 0;
-    memset(ts->mm_otar_gck_reject_group_association, 0, sizeof(ts->mm_otar_gck_reject_group_association));
-    memset(ts->mm_otar_gck_reject_gssi, 0, sizeof(ts->mm_otar_gck_reject_gssi));
-    ts->mm_otar_key_association_type = 0;
-    ts->mm_otar_sck_select = 0;
-    ts->mm_otar_sck_subset_grouping = 0;
-    ts->mm_otar_gck_select = 0;
-    ts->mm_otar_group_count = 0;
-    ts->mm_otar_group_is_range = 0;
-    ts->mm_otar_group_value_count = 0;
-    memset(ts->mm_otar_group_gssi, 0, sizeof(ts->mm_otar_group_gssi));
-    memset(ts->mm_otar_reject_reason, 0, sizeof(ts->mm_otar_reject_reason));
-    ts->mm_otar_ksg = 0;
-    ts->mm_otar_retry_interval = 0;
-    ts->mm_otar_address_valid = 0;
-    ts->mm_otar_mcc = 0;
-    ts->mm_otar_mnc = 0;
-    memset(ts->mm_otar_gsko_sealed, 0, sizeof(ts->mm_otar_gsko_sealed));
-    ts->mm_otar_gssi = 0;
-    ts->mm_otar_dck_forwarding_result = 0;
-    ts->mm_otar_key_status_type = 0;
-    ts->mm_otar_key_status_sck_number = 0;
-    ts->mm_otar_key_status_sck_grouping = 0;
-    ts->mm_otar_key_status_sck_subset = 0;
-    ts->mm_otar_key_status_gck_number = 0;
-    ts->mm_otar_key_delete_type = 0;
-    ts->mm_otar_key_delete_sck_count = 0;
-    memset(ts->mm_otar_key_delete_sck_number, 0, sizeof(ts->mm_otar_key_delete_sck_number));
-    ts->mm_otar_key_delete_sck_grouping = 0;
-    ts->mm_otar_key_delete_sck_subset = 0;
-    ts->mm_otar_key_delete_gck_count = 0;
-    memset(ts->mm_otar_key_delete_gck_number, 0, sizeof(ts->mm_otar_key_delete_gck_number));
-    ts->mm_otar_dm_sck_ack = 0;
-    ts->mm_otar_dm_sck_count = 0;
-    ts->mm_otar_dm_sck_grouping = 0;
-    ts->mm_otar_dm_sck_subset = 0;
-    ts->mm_otar_dm_sck_vn = 0;
-    memset(ts->mm_otar_dm_sck_number, 0, sizeof(ts->mm_otar_dm_sck_number));
-    memset(ts->mm_otar_dm_sck_version, 0, sizeof(ts->mm_otar_dm_sck_version));
-    ts->mm_otar_dm_sck_time_type = 0;
-    ts->mm_otar_dm_sck_slot = 0;
-    ts->mm_otar_dm_sck_frame = 0;
-    ts->mm_otar_dm_sck_multiframe = 0;
-    ts->mm_otar_dm_sck_hyperframe = 0;
-    ts->mm_otar_dm_sck_network_time = 0;
+/* EN 300 392-7 tables A.1 to A.4: D-AUTHENTICATION. */
+
+/* Table A.1 DEMAND: RAND1, RS and a proprietary element. */
+static int
+mm_auth_demand(tetra_bit_reader* r, tetra_mm_auth_t* a) {
+    mm_read_octets(r, a->random_challenge, sizeof a->random_challenge);
+    mm_read_octets(r, a->random_seed, sizeof a->random_seed);
+    return mm_read_type34_tail(r);
 }
 
-/* EN 300 392-7 V3.5.1 tables A.9, A.12, A.15, A.16, A.19, A.20, A.23,
- * A.24, A.27d, A.27f, A.27h, A.30 and A.30a. Sealed keys are opaque values; a passive monitor
- * records but never decrypts them. */
-static void
-mm_parse_otar(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    int off = 4;
-    uint8_t subtype, provision = 0, dck_forwarding_result = 0;
-    mm_otar_cck_fields cck = {0};
-    uint8_t ack = 0, explicit_response = 0, session_key = 0, random_seed[10] = {0};
-    uint16_t max_response_timer = 0, gsko_version = 0;
-    uint8_t key_count = 0, sck_number[7] = {0}, sck_use[7] = {0};
-    uint16_t sck_version[7] = {0};
-    uint8_t sck_sealed[7][15] = {{0}}, reject_reason[7] = {0};
-    uint16_t gck_number[7] = {0}, gck_version[7] = {0};
-    uint8_t gck_sealed[7][15] = {{0}}, group_association = 0;
-    uint8_t gck_reject_group_association[7] = {0};
-    uint32_t gck_reject_gssi[7] = {0};
-    uint8_t key_association_type = 0, sck_select = 0, sck_subset_grouping = 0;
-    uint32_t gck_select = 0, group_gssi[30] = {0};
-    uint8_t group_count = 0, group_is_range = 0, group_value_count = 0;
-    uint8_t ksg = 0, retry = 0, address_valid = 0, gsko_sealed[15] = {0};
-    uint16_t mcc = 0, mnc = 0;
-    uint32_t gssi = 0;
-    uint8_t key_status_type = 0, key_status_sck_number = 0;
-    uint8_t key_status_sck_grouping = 0, key_status_sck_subset = 0;
-    uint16_t key_status_gck_number = 0;
-    uint8_t key_delete_type = 0, key_delete_sck_count = 0;
-    uint8_t key_delete_sck_number[31] = {0};
-    uint8_t key_delete_sck_grouping = 0, key_delete_sck_subset = 0;
-    uint8_t key_delete_gck_count = 0;
-    uint16_t key_delete_gck_number[15] = {0};
-    uint8_t dm_sck_ack = 0, dm_sck_count = 0, dm_sck_grouping = 0;
-    uint8_t dm_sck_subset = 0, dm_sck_number[15] = {0};
-    uint16_t dm_sck_vn = 0, dm_sck_version[15] = {0};
-    uint8_t dm_sck_time_type = 0, dm_sck_slot = 0, dm_sck_frame = 0;
-    uint8_t dm_sck_multiframe = 0;
-    uint16_t dm_sck_hyperframe = 0;
-    uint64_t dm_sck_network_time = 0;
-
-    if (off + 4 > nbits) {
-        goto truncated;
+/* Table A.3 RESPONSE: RS, RES2, the mutual authentication flag, RAND1 when it is set, and a proprietary element. */
+static int
+mm_auth_response(tetra_bit_reader* r, tetra_mm_auth_t* a) {
+    mm_read_octets(r, a->random_seed, sizeof a->random_seed);
+    a->response = tetra_bits_read(r, 32);
+    a->mutual = mm_u8(r, 1);
+    if (a->mutual) {
+        mm_read_octets(r, a->random_challenge, sizeof a->random_challenge);
     }
-    subtype = (uint8_t)mm_bits_to_uint(bits, off, 4);
-    off += 4;
-
-    switch (subtype) {
-        case 0: /* Table A.9 D-OTAR CCK Provide. */
-            if (off + 1 > nbits) {
-                goto truncated;
-            }
-            provision = bits[off++] & 1u;
-            if (provision && !mm_parse_otar_cck_information(bits, nbits, &off, &cck)) {
-                goto truncated;
-            }
-            if (off >= nbits) {
-                goto truncated;
-            }
-            if ((bits[off++] & 1u) && !mm_skip_type34_tail(bits, nbits, &off)) {
-                goto truncated;
-            }
-            break;
-
-        case 7: /* Table A.30 D-OTAR NEWCELL. */
-            if (off + 2 > nbits) {
-                goto truncated;
-            }
-            dck_forwarding_result = bits[off++] & 1u;
-            provision = bits[off++] & 1u;
-            if (provision && !mm_parse_otar_cck_information(bits, nbits, &off, &cck)) {
-                goto truncated;
-            }
-            if (off >= nbits) {
-                goto truncated;
-            }
-            if ((bits[off++] & 1u) && !mm_skip_type34_tail(bits, nbits, &off)) {
-                goto truncated;
-            }
-            break;
-
-        case 2: /* Table A.16 D-OTAR SCK Provide. */
-            if (off + 22 > nbits) {
-                goto truncated;
-            }
-            ack = bits[off++] & 1u;
-            explicit_response = bits[off++] & 1u;
-            if (!ack && explicit_response) {
-                goto truncated; /* reserved bit must be zero */
-            }
-            max_response_timer = (uint16_t)mm_bits_to_uint(bits, off, 16);
-            off += 16;
-            session_key = bits[off++] & 1u;
-            if (session_key) {
-                if (off + 16 > nbits) {
-                    goto truncated;
-                }
-                gsko_version = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-            } else {
-                if (off + 80 > nbits) {
-                    goto truncated;
-                }
-                mm_read_octets(bits, off, random_seed, sizeof(random_seed));
-                off += 80;
-            }
-            if (off + 3 > nbits) {
-                goto truncated;
-            }
-            key_count = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (off + 143 * key_count > nbits) {
-                goto truncated;
-            }
-            for (uint8_t i = 0; i < key_count; i++) {
-                sck_number[i] = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                off += 5;
-                sck_version[i] = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-                sck_use[i] = bits[off++] & 1u;
-                if (bits[off++] & 1u) {
-                    goto truncated;
-                }
-                mm_read_octets(bits, off, sck_sealed[i], 15);
-                off += 120;
-            }
-            if (off + 7 > nbits) {
-                goto truncated;
-            }
-            ksg = (uint8_t)mm_bits_to_uint(bits, off, 4);
-            off += 4;
-            if (ksg >= 4 && ksg <= 7) {
-                goto truncated;
-            }
-            retry = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-
-        case 3: /* Table A.19 D-OTAR SCK Reject. */
-            if (off + 6 > nbits) {
-                goto truncated;
-            }
-            key_count = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (off + 8 * key_count + 3 > nbits) {
-                goto truncated;
-            }
-            for (uint8_t i = 0; i < key_count; i++) {
-                reject_reason[i] = (uint8_t)mm_bits_to_uint(bits, off, 3);
-                off += 3;
-                if (reject_reason[i] > 3) {
-                    goto truncated;
-                }
-                sck_number[i] = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                off += 5;
-            }
-            retry = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-
-        case 4: /* Table A.12 D-OTAR GCK Provide. */
-            if (off + 22 > nbits) {
-                goto truncated;
-            }
-            ack = bits[off++] & 1u;
-            explicit_response = bits[off++] & 1u;
-            if (!ack && explicit_response) {
-                goto truncated; /* reserved bit must be zero */
-            }
-            max_response_timer = (uint16_t)mm_bits_to_uint(bits, off, 16);
-            off += 16;
-            session_key = bits[off++] & 1u;
-            if (session_key) {
-                if (off + 16 > nbits) {
-                    goto truncated;
-                }
-                gsko_version = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-            } else {
-                if (off + 80 > nbits) {
-                    goto truncated;
-                }
-                mm_read_octets(bits, off, random_seed, sizeof(random_seed));
-                off += 80;
-            }
-            if (off + 3 > nbits) {
-                goto truncated;
-            }
-            key_count = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (off + 152 * key_count > nbits) {
-                goto truncated;
-            }
-            for (uint8_t i = 0; i < key_count; i++) {
-                gck_number[i] = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-                gck_version[i] = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-                mm_read_octets(bits, off, gck_sealed[i], 15);
-                off += 120;
-            }
-            if (off + 8 > nbits) {
-                goto truncated;
-            }
-            ksg = (uint8_t)mm_bits_to_uint(bits, off, 4);
-            off += 4;
-            if (ksg >= 4 && ksg <= 7) {
-                goto truncated;
-            }
-            group_association = bits[off++] & 1u;
-            if (group_association) {
-                for (uint8_t i = 1; i < key_count; i++) {
-                    if (gck_number[i] != gck_number[0]) {
-                        goto truncated;
-                    }
-                    for (uint8_t j = 0; j < i; j++) {
-                        if (gck_version[i] == gck_version[j]) {
-                            goto truncated;
-                        }
-                    }
-                }
-                if (off + 24 > nbits) {
-                    goto truncated;
-                }
-                gssi = mm_bits_to_uint(bits, off, 24);
-                off += 24;
-            }
-            retry = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-
-        case 5: /* Table A.15 D-OTAR GCK Reject. */
-            if (off + 3 > nbits) {
-                goto truncated;
-            }
-            key_count = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (key_count == 0) {
-                goto truncated; /* Table A.79d reserves zero. */
-            }
-            for (uint8_t i = 0; i < key_count; i++) {
-                if (off + 20 > nbits) {
-                    goto truncated;
-                }
-                reject_reason[i] = (uint8_t)mm_bits_to_uint(bits, off, 3);
-                off += 3;
-                if (reject_reason[i] > 3) {
-                    goto truncated;
-                }
-                gck_reject_group_association[i] = bits[off++] & 1u;
-                if (gck_reject_group_association[i]) {
-                    if (off + 24 > nbits) {
-                        goto truncated;
-                    }
-                    gck_reject_gssi[i] = mm_bits_to_uint(bits, off, 24);
-                    off += 24;
-                } else {
-                    gck_number[i] = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                    off += 16;
-                }
-            }
-            if (off + 3 > nbits) {
-                goto truncated;
-            }
-            retry = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-
-        case 6: /* Table A.24 D-OTAR KEY ASSOCIATE Demand. */
-            if (off + 19 > nbits) {
-                goto truncated;
-            }
-            ack = bits[off++] & 1u;
-            explicit_response = bits[off++] & 1u;
-            if (!ack && explicit_response) {
-                goto truncated;
-            }
-            max_response_timer = (uint16_t)mm_bits_to_uint(bits, off, 16);
-            off += 16;
-            key_association_type = bits[off++] & 1u;
-            if (key_association_type) {
-                if (off + 17 > nbits) {
-                    goto truncated;
-                }
-                gck_select = mm_bits_to_uint(bits, off, 17);
-                off += 17;
-                if (gck_select > 0x10000u) {
-                    goto truncated;
-                }
-            } else {
-                if (off + 10 > nbits) {
-                    goto truncated;
-                }
-                sck_select = (uint8_t)mm_bits_to_uint(bits, off, 6);
-                off += 6;
-                sck_subset_grouping = (uint8_t)mm_bits_to_uint(bits, off, 4);
-                off += 4;
-                if (sck_select > 32 || sck_subset_grouping > 9) {
-                    goto truncated;
-                }
-            }
-            if (off + 5 > nbits) {
-                goto truncated;
-            }
-            group_count = (uint8_t)mm_bits_to_uint(bits, off, 5);
-            off += 5;
-            if (group_count == 0) {
-                goto truncated;
-            }
-            group_is_range = (uint8_t)(group_count == 31);
-            group_value_count = group_is_range ? 2 : group_count;
-            if (off + 24 * group_value_count > nbits) {
-                goto truncated;
-            }
-            for (uint8_t i = 0; i < group_value_count; i++) {
-                group_gssi[i] = mm_bits_to_uint(bits, off, 24);
-                off += 24;
-            }
-            if (group_is_range && group_gssi[1] <= group_gssi[0]) {
-                goto truncated;
-            }
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-
-        case 8: /* Table A.20 D-OTAR GSKO Provide. */
-            if (off + 240 > nbits) {
-                goto truncated;
-            }
-            mm_read_octets(bits, off, random_seed, sizeof(random_seed));
-            off += 80;
-            gsko_version = (uint16_t)mm_bits_to_uint(bits, off, 16);
-            off += 16;
-            mm_read_octets(bits, off, gsko_sealed, sizeof(gsko_sealed));
-            off += 120;
-            gssi = mm_bits_to_uint(bits, off, 24);
-            off += 24;
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-
-        case 9: /* Table A.23 D-OTAR GSKO Reject. */
-            if (off + 30 > nbits) {
-                goto truncated;
-            }
-            reject_reason[0] = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (reject_reason[0] > 3) {
-                goto truncated;
-            }
-            gssi = mm_bits_to_uint(bits, off, 24);
-            off += 24;
-            retry = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-
-        case 10: /* Table A.27f D-OTAR KEY DELETE Demand. */
-            if (off + 3 > nbits) {
-                goto truncated;
-            }
-            key_delete_type = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            switch (key_delete_type) {
-                case 0: /* Individual SCKs. */
-                case 1: /* Members of a KAG. */
-                    if (off + 5 > nbits) {
-                        goto truncated;
-                    }
-                    key_delete_sck_count = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                    off += 5;
-                    if (off + 5 * key_delete_sck_count > nbits) {
-                        goto truncated;
-                    }
-                    for (uint8_t i = 0; i < key_delete_sck_count; i++) {
-                        key_delete_sck_number[i] = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                        off += 5;
-                    }
-                    break;
-                case 2: /* SCK subset. */
-                    if (off + 9 > nbits) {
-                        goto truncated;
-                    }
-                    key_delete_sck_grouping = (uint8_t)mm_bits_to_uint(bits, off, 4);
-                    off += 4;
-                    key_delete_sck_subset = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                    off += 5;
-                    if (!mm_valid_sck_subset(key_delete_sck_grouping, key_delete_sck_subset)) {
-                        goto truncated;
-                    }
-                    break;
-                case 3: /* All SCKs. */
-                case 5: /* All GCKs. */
-                case 6: /* GSKO. */ break;
-                case 4: /* Individual GCKs. */
-                    if (off + 4 > nbits) {
-                        goto truncated;
-                    }
-                    key_delete_gck_count = (uint8_t)mm_bits_to_uint(bits, off, 4);
-                    off += 4;
-                    if (off + 16 * key_delete_gck_count > nbits) {
-                        goto truncated;
-                    }
-                    for (uint8_t i = 0; i < key_delete_gck_count; i++) {
-                        key_delete_gck_number[i] = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                        off += 16;
-                    }
-                    break;
-                default: /* Key-delete extension is defined for the uplink result. */ goto truncated;
-            }
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-
-        case 11: { /* Table A.27h D-OTAR KEY STATUS Demand. */
-            if (off + 19 > nbits) {
-                goto truncated;
-            }
-            ack = bits[off++] & 1u;
-            explicit_response = bits[off++] & 1u;
-            if (!ack && explicit_response) {
-                goto truncated;
-            }
-            max_response_timer = (uint16_t)mm_bits_to_uint(bits, off, 16);
-            off += 16;
-            key_status_type = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-            switch (key_status_type) {
-                case 0: /* Individual SCK. */
-                    if (off + 5 > nbits) {
-                        goto truncated;
-                    }
-                    key_status_sck_number = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                    off += 5;
-                    break;
-                case 1: /* SCK subset. */
-                    if (off + 9 > nbits) {
-                        goto truncated;
-                    }
-                    key_status_sck_grouping = (uint8_t)mm_bits_to_uint(bits, off, 4);
-                    off += 4;
-                    key_status_sck_subset = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                    off += 5;
-                    if (!mm_valid_sck_subset(key_status_sck_grouping, key_status_sck_subset)) {
-                        goto truncated;
-                    }
-                    break;
-                case 2: /* All SCKs. */
-                case 4: /* All GCKs. */
-                case 5: /* GSKO. */ break;
-                case 3: /* Individual GCK. */
-                    if (off + 16 > nbits) {
-                        goto truncated;
-                    }
-                    key_status_gck_number = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                    off += 16;
-                    break;
-                default: /* Reject and reserved are response-only/invalid. */ goto truncated;
-            }
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-        }
-
-        case 12: /* Table A.30a D-OTAR CMG GTSI Provide. */
-            if (off + 24 > nbits) {
-                goto truncated;
-            }
-            gssi = mm_bits_to_uint(bits, off, 24);
-            off += 24;
-            if (!mm_parse_otar_optional_tail(bits, nbits, &off, &address_valid, &mcc, &mnc)) {
-                goto truncated;
-            }
-            break;
-
-        case 13: /* Table A.27d D-DM-SCK ACTIVATE DEMAND. */
-            if (off + 5 > nbits) {
-                goto truncated;
-            }
-            dm_sck_ack = bits[off++] & 1u;
-            dm_sck_count = (uint8_t)mm_bits_to_uint(bits, off, 4);
-            off += 4;
-            if (dm_sck_count == 0) {
-                if (off + 25 > nbits) {
-                    goto truncated;
-                }
-                dm_sck_grouping = (uint8_t)mm_bits_to_uint(bits, off, 4);
-                off += 4;
-                dm_sck_subset = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                off += 5;
-                dm_sck_vn = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-                if (!mm_valid_sck_subset(dm_sck_grouping, dm_sck_subset)) {
-                    goto truncated;
-                }
-            } else {
-                if (off + 21 * dm_sck_count > nbits) {
-                    goto truncated;
-                }
-                for (uint8_t i = 0; i < dm_sck_count; i++) {
-                    dm_sck_number[i] = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                    off += 5;
-                    dm_sck_version[i] = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                    off += 16;
-                }
-            }
-            if (off + 2 > nbits) {
-                goto truncated;
-            }
-            dm_sck_time_type = (uint8_t)mm_bits_to_uint(bits, off, 2);
-            off += 2;
-            if (dm_sck_time_type == 0) {
-                if (off + 29 > nbits) {
-                    goto truncated;
-                }
-                dm_sck_slot = (uint8_t)mm_bits_to_uint(bits, off, 2);
-                off += 2;
-                dm_sck_frame = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                off += 5;
-                dm_sck_multiframe = (uint8_t)mm_bits_to_uint(bits, off, 6);
-                off += 6;
-                dm_sck_hyperframe = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-            } else if (dm_sck_time_type == 1) {
-                if (off + 48 > nbits) {
-                    goto truncated;
-                }
-                dm_sck_network_time =
-                    ((uint64_t)mm_bits_to_uint(bits, off, 16) << 32) | mm_bits_to_uint(bits, off + 16, 32);
-                off += 48;
-            }
-            /* Unlike other D-OTAR messages, the DMO network MNI is mandatory. */
-            if (off + 24 > nbits) {
-                goto truncated;
-            }
-            mcc = (uint16_t)mm_bits_to_uint(bits, off, 10);
-            off += 10;
-            mnc = (uint16_t)mm_bits_to_uint(bits, off, 14);
-            off += 14;
-            address_valid = 1;
-            break;
-
-        default: fprintf(stderr, "[TETRA MM D-OTAR] CC=%d unsupported subtype=%u\n", cc, subtype); return;
-    }
-
-    fprintf(stderr, "[TETRA MM D-OTAR] CC=%d subtype=%u keys=%u\n", cc, subtype, key_count);
-    if (ts) {
-        mm_clear_otar_snapshot(state);
-        ts->mm_otar_subtype = subtype;
-        ts->mm_otar_cck_provision = provision;
-        ts->mm_otar_cck_id = cck.id;
-        ts->mm_otar_cck_key_type = cck.key_type;
-        memcpy(ts->mm_otar_cck_sealed, cck.sealed, sizeof(cck.sealed));
-        ts->mm_otar_cck_la_type = cck.la_type;
-        ts->mm_otar_cck_la_count = cck.la_count;
-        memcpy(ts->mm_otar_cck_la, cck.la, sizeof(cck.la));
-        ts->mm_otar_cck_la_mask = cck.la_mask;
-        ts->mm_otar_cck_la_selector = cck.la_selector;
-        ts->mm_otar_cck_la_low = cck.la_low;
-        ts->mm_otar_cck_la_high = cck.la_high;
-        ts->mm_otar_cck_future = cck.future;
-        memcpy(ts->mm_otar_cck_future_sealed, cck.future_sealed, sizeof(cck.future_sealed));
-        ts->mm_otar_ack = ack;
-        ts->mm_otar_explicit_response = explicit_response;
-        ts->mm_otar_max_response_timer = max_response_timer;
-        ts->mm_otar_session_key = session_key;
-        memcpy(ts->mm_otar_random_seed, random_seed, sizeof(random_seed));
-        ts->mm_otar_gsko_version = gsko_version;
-        ts->mm_otar_key_count = key_count;
-        memcpy(ts->mm_otar_sck_number, sck_number, sizeof(sck_number));
-        memcpy(ts->mm_otar_sck_version, sck_version, sizeof(sck_version));
-        memcpy(ts->mm_otar_sck_use, sck_use, sizeof(sck_use));
-        memcpy(ts->mm_otar_sck_sealed, sck_sealed, sizeof(sck_sealed));
-        memcpy(ts->mm_otar_gck_number, gck_number, sizeof(gck_number));
-        memcpy(ts->mm_otar_gck_version, gck_version, sizeof(gck_version));
-        memcpy(ts->mm_otar_gck_sealed, gck_sealed, sizeof(gck_sealed));
-        ts->mm_otar_group_association = group_association;
-        memcpy(ts->mm_otar_gck_reject_group_association, gck_reject_group_association,
-               sizeof(gck_reject_group_association));
-        memcpy(ts->mm_otar_gck_reject_gssi, gck_reject_gssi, sizeof(gck_reject_gssi));
-        ts->mm_otar_key_association_type = key_association_type;
-        ts->mm_otar_sck_select = sck_select;
-        ts->mm_otar_sck_subset_grouping = sck_subset_grouping;
-        ts->mm_otar_gck_select = gck_select;
-        ts->mm_otar_group_count = group_count;
-        ts->mm_otar_group_is_range = group_is_range;
-        ts->mm_otar_group_value_count = group_value_count;
-        memcpy(ts->mm_otar_group_gssi, group_gssi, sizeof(group_gssi));
-        memcpy(ts->mm_otar_reject_reason, reject_reason, sizeof(reject_reason));
-        ts->mm_otar_ksg = ksg;
-        ts->mm_otar_retry_interval = retry;
-        ts->mm_otar_address_valid = address_valid;
-        ts->mm_otar_mcc = mcc;
-        ts->mm_otar_mnc = mnc;
-        memcpy(ts->mm_otar_gsko_sealed, gsko_sealed, sizeof(gsko_sealed));
-        ts->mm_otar_gssi = gssi;
-        ts->mm_otar_dck_forwarding_result = dck_forwarding_result;
-        ts->mm_otar_key_status_type = key_status_type;
-        ts->mm_otar_key_status_sck_number = key_status_sck_number;
-        ts->mm_otar_key_status_sck_grouping = key_status_sck_grouping;
-        ts->mm_otar_key_status_sck_subset = key_status_sck_subset;
-        ts->mm_otar_key_status_gck_number = key_status_gck_number;
-        ts->mm_otar_key_delete_type = key_delete_type;
-        ts->mm_otar_key_delete_sck_count = key_delete_sck_count;
-        memcpy(ts->mm_otar_key_delete_sck_number, key_delete_sck_number, sizeof(key_delete_sck_number));
-        ts->mm_otar_key_delete_sck_grouping = key_delete_sck_grouping;
-        ts->mm_otar_key_delete_sck_subset = key_delete_sck_subset;
-        ts->mm_otar_key_delete_gck_count = key_delete_gck_count;
-        memcpy(ts->mm_otar_key_delete_gck_number, key_delete_gck_number, sizeof(key_delete_gck_number));
-        ts->mm_otar_dm_sck_ack = dm_sck_ack;
-        ts->mm_otar_dm_sck_count = dm_sck_count;
-        ts->mm_otar_dm_sck_grouping = dm_sck_grouping;
-        ts->mm_otar_dm_sck_subset = dm_sck_subset;
-        ts->mm_otar_dm_sck_vn = dm_sck_vn;
-        memcpy(ts->mm_otar_dm_sck_number, dm_sck_number, sizeof(dm_sck_number));
-        memcpy(ts->mm_otar_dm_sck_version, dm_sck_version, sizeof(dm_sck_version));
-        ts->mm_otar_dm_sck_time_type = dm_sck_time_type;
-        ts->mm_otar_dm_sck_slot = dm_sck_slot;
-        ts->mm_otar_dm_sck_frame = dm_sck_frame;
-        ts->mm_otar_dm_sck_multiframe = dm_sck_multiframe;
-        ts->mm_otar_dm_sck_hyperframe = dm_sck_hyperframe;
-        ts->mm_otar_dm_sck_network_time = dm_sck_network_time;
-        ts->mm_otar_valid = 1;
-        if (subtype == 2 || subtype == 4) {
-            uint16_t net_mcc = 0;
-            uint16_t net_mnc = 0;
-            int have_net = 0;
-            if (address_valid) {
-                net_mcc = mcc;
-                net_mnc = mnc;
-                have_net = 1;
-            } else if (ts->net_known) {
-                net_mcc = ts->mcc;
-                net_mnc = ts->mnc;
-                have_net = 1;
-            }
-            if (have_net) {
-                tetra_air_ksg_remember(state, net_mcc, net_mnc, ksg);
-            }
-        }
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA MM D-OTAR] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
+    return mm_read_type34_tail(r);
 }
 
-/* EN 300 392-7 V3.5.1 table A.26.  Decode all conditional and repeated
- * fields into locals so a malformed security command cannot replace the
- * last complete key-change snapshot. */
-static void
-mm_parse_ck_change_demand(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    int off = 4;
-    uint8_t ack, security_class, key_type;
-    uint8_t sck_use = 0, sck_count = 0, sck_grouping = 0, sck_subset = 0;
-    uint16_t sck_vn = 0, cck_id = 0, gck_vn = 0;
-    uint8_t sck_number[15] = {0};
-    uint16_t sck_version[15] = {0};
-    uint8_t gck_count = 0;
-    uint16_t gck_number[15] = {0}, gck_version[15] = {0};
-    uint8_t time_type, slot = 0, frame = 0, multiframe = 0;
-    uint16_t hyperframe = 0;
-    uint64_t network_time = 0;
-
-    if (off + 6 > nbits) {
-        goto truncated;
+/* Table A.4 RESULT: R1, the mutual authentication flag, RES2 when it is set, and a proprietary element. */
+static int
+mm_auth_result(tetra_bit_reader* r, tetra_mm_auth_t* a) {
+    a->result = mm_u8(r, 1);
+    a->mutual = mm_u8(r, 1);
+    if (a->mutual) {
+        a->response = tetra_bits_read(r, 32);
     }
-    ack = bits[off++] & 1u;
-    security_class = (uint8_t)mm_bits_to_uint(bits, off, 2);
-    off += 2;
-    key_type = (uint8_t)mm_bits_to_uint(bits, off, 3);
-    off += 3;
-    if (key_type > 5) {
-        goto truncated; /* 6 and 7 are reserved. */
-    }
-
-    switch (key_type) {
-        case 0: /* SCK */
-            if (off + 5 > nbits) {
-                goto truncated;
-            }
-            sck_use = bits[off++] & 1u;
-            sck_count = (uint8_t)mm_bits_to_uint(bits, off, 4);
-            off += 4;
-            if (sck_count == 0) {
-                /* A zero count selects a subset only for DMO SCK use. */
-                if (!sck_use || off + 25 > nbits) {
-                    goto truncated;
-                }
-                sck_grouping = (uint8_t)mm_bits_to_uint(bits, off, 4);
-                off += 4;
-                sck_subset = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                off += 5;
-                sck_vn = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-            } else {
-                if (off + 21 * sck_count > nbits) {
-                    goto truncated;
-                }
-                for (uint8_t i = 0; i < sck_count; i++) {
-                    sck_number[i] = (uint8_t)mm_bits_to_uint(bits, off, 5);
-                    off += 5;
-                    sck_version[i] = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                    off += 16;
-                }
-            }
-            break;
-        case 1: /* CCK */
-            if (off + 16 > nbits) {
-                goto truncated;
-            }
-            cck_id = (uint16_t)mm_bits_to_uint(bits, off, 16);
-            off += 16;
-            break;
-        case 2: /* GCK */
-            if (off + 4 > nbits) {
-                goto truncated;
-            }
-            gck_count = (uint8_t)mm_bits_to_uint(bits, off, 4);
-            off += 4;
-            if (gck_count == 0 || off + 32 * gck_count > nbits) {
-                goto truncated;
-            }
-            for (uint8_t i = 0; i < gck_count; i++) {
-                gck_number[i] = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-                gck_version[i] = (uint16_t)mm_bits_to_uint(bits, off, 16);
-                off += 16;
-            }
-            break;
-        case 3: /* Class 3 CCK and GCK activation */
-            if (off + 32 > nbits) {
-                goto truncated;
-            }
-            cck_id = (uint16_t)mm_bits_to_uint(bits, off, 16);
-            off += 16;
-            gck_vn = (uint16_t)mm_bits_to_uint(bits, off, 16);
-            off += 16;
-            break;
-        case 4: /* All GCKs */
-            if (off + 16 > nbits) {
-                goto truncated;
-            }
-            gck_vn = (uint16_t)mm_bits_to_uint(bits, off, 16);
-            off += 16;
-            break;
-        case 5: /* No cipher key */ break;
-    }
-
-    if (off + 2 > nbits) {
-        goto truncated;
-    }
-    time_type = (uint8_t)mm_bits_to_uint(bits, off, 2);
-    off += 2;
-    if (time_type == 0) {
-        if (off + 29 > nbits) {
-            goto truncated;
-        }
-        slot = (uint8_t)mm_bits_to_uint(bits, off, 2);
-        off += 2;
-        frame = (uint8_t)mm_bits_to_uint(bits, off, 5);
-        off += 5;
-        multiframe = (uint8_t)mm_bits_to_uint(bits, off, 6);
-        off += 6;
-        hyperframe = (uint16_t)mm_bits_to_uint(bits, off, 16);
-        off += 16;
-    } else if (time_type == 1) {
-        if (off + 48 > nbits) {
-            goto truncated;
-        }
-        network_time = ((uint64_t)mm_bits_to_uint(bits, off, 16) << 32) | mm_bits_to_uint(bits, off + 16, 32);
-        off += 48;
-    }
-
-    fprintf(stderr, "[TETRA MM D-CK-CHANGE] CC=%d key_type=%u time_type=%u\n", cc, key_type, time_type);
-    if (ts) {
-        ts->mm_ck_change_ack = ack;
-        ts->mm_ck_change_security_class = security_class;
-        ts->mm_ck_change_key_type = key_type;
-        ts->mm_ck_change_sck_use = sck_use;
-        ts->mm_ck_change_sck_count = sck_count;
-        ts->mm_ck_change_sck_grouping = sck_grouping;
-        ts->mm_ck_change_sck_subset = sck_subset;
-        ts->mm_ck_change_sck_vn = sck_vn;
-        memcpy(ts->mm_ck_change_sck_number, sck_number, sizeof(sck_number));
-        memcpy(ts->mm_ck_change_sck_version, sck_version, sizeof(sck_version));
-        ts->mm_ck_change_cck_id = cck_id;
-        ts->mm_ck_change_gck_count = gck_count;
-        memcpy(ts->mm_ck_change_gck_number, gck_number, sizeof(gck_number));
-        memcpy(ts->mm_ck_change_gck_version, gck_version, sizeof(gck_version));
-        ts->mm_ck_change_gck_vn = gck_vn;
-        ts->mm_ck_change_time_type = time_type;
-        ts->mm_ck_change_slot = slot;
-        ts->mm_ck_change_frame = frame;
-        ts->mm_ck_change_multiframe = multiframe;
-        ts->mm_ck_change_hyperframe = hyperframe;
-        ts->mm_ck_change_network_time = network_time;
-        ts->mm_ck_change_valid = 1;
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA MM D-CK-CHANGE] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
+    return mm_read_type34_tail(r);
 }
 
-/* EN 300 392-7 tables A.31/A.32.  These messages can change whether the
- * receiver accepts normal services, so validate every conditional identity,
- * the complete optional authentication challenge, and the proprietary tail
- * before changing the public state. */
-static void
-mm_parse_enable_disable(const uint8_t* bits, int nbits, int cc, int is_enable, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    int off = 4;
-    uint8_t intent, permanent = 0, equipment, subscription;
-    uint64_t tei = 0;
-    uint16_t mcc = 0, mnc = 0;
-    uint32_t ssi = 0;
-    uint8_t auth_valid = 0, auth_challenge[20] = {0};
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    intent = bits[off++] & 1u;
-    if (!is_enable) {
-        if (off >= nbits) {
-            goto truncated;
-        }
-        permanent = bits[off++] & 1u;
-    }
-    if (off >= nbits) {
-        goto truncated;
-    }
-    equipment = bits[off++] & 1u;
-    if (equipment) {
-        if (off + 60 > nbits) {
-            goto truncated;
-        }
-        tei = ((uint64_t)mm_bits_to_uint(bits, off, 28) << 32) | mm_bits_to_uint(bits, off + 28, 32);
-        off += 60;
-    }
-    if (off >= nbits) {
-        goto truncated;
-    }
-    subscription = bits[off++] & 1u;
-    if (subscription) {
-        if (off + 48 > nbits) {
-            goto truncated;
-        }
-        mcc = (uint16_t)mm_bits_to_uint(bits, off, 10);
-        off += 10;
-        mnc = (uint16_t)mm_bits_to_uint(bits, off, 14);
-        off += 14;
-        ssi = mm_bits_to_uint(bits, off, 24);
-        off += 24;
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        /* Authentication challenge is the sole Type-2 element. */
-        if (off >= nbits) {
-            goto truncated;
-        }
-        if (bits[off++] & 1u) {
-            if (off + 160 > nbits) {
-                goto truncated;
-            }
-            for (unsigned byte = 0; byte < sizeof(auth_challenge); byte++) {
-                auth_challenge[byte] = (uint8_t)mm_bits_to_uint(bits, off + (int)byte * 8, 8);
-            }
-            off += 160;
-            auth_valid = 1;
-        }
-        if (!mm_skip_type34_tail(bits, nbits, &off)) {
-            goto truncated;
-        }
-    }
-
-    fprintf(stderr, "[TETRA MM D-%s] CC=%d intent=%u equipment=%u subscription=%u%s\n",
-            is_enable ? "ENABLE" : "DISABLE", cc, intent, equipment, subscription,
-            !is_enable && permanent ? " permanent" : "");
-    if (ts) {
-        ts->ms_enabled = (uint8_t)is_enable;
-        ts->mm_enable_disable_valid = 1;
-        ts->mm_enable_disable_is_enable = (uint8_t)is_enable;
-        ts->mm_enable_disable_intent = intent;
-        ts->mm_disable_permanent = permanent;
-        ts->mm_enable_disable_equipment = equipment;
-        ts->mm_enable_disable_tei = tei;
-        ts->mm_enable_disable_subscription = subscription;
-        ts->mm_enable_disable_mcc = mcc;
-        ts->mm_enable_disable_mnc = mnc;
-        ts->mm_enable_disable_ssi = ssi;
-        ts->mm_enable_disable_auth_valid = auth_valid;
-        memcpy(ts->mm_enable_disable_auth_challenge, auth_challenge, sizeof(auth_challenge));
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA MM D-%s] CC=%d (invalid/truncated: %d bits)\n", is_enable ? "ENABLE" : "DISABLE", cc,
-            nbits);
+/* Table A.2 REJECT: the reject reason, of which table A.38 defines only 0 (authentication not supported). */
+static int
+mm_auth_reject(tetra_bit_reader* r, tetra_mm_auth_t* a) {
+    a->reject_reason = mm_u8(r, 3);
+    return a->reject_reason == 0;
 }
 
 static void
-mm_parse_lu_accept(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 8) {
-        fprintf(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d (too short: %d bits)\n", cc, nbits);
+mm_parse_authentication(mm_pdu* pdu) {
+    typedef int (*reader)(tetra_bit_reader*, tetra_mm_auth_t*);
+    static const reader readers[4] = {mm_auth_demand, mm_auth_response, mm_auth_result, mm_auth_reject};
+    static const char* const names[4] = {"DEMAND", "RESPONSE", "RESULT", "REJECT"}; /* table A.40 */
+    tetra_mm_auth_t a = {0};
+    a.subtype = mm_u8(&pdu->r, 2);
+    if (!readers[a.subtype](&pdu->r, &a) || !tetra_bits_ok(&pdu->r)) {
+        mm_log_invalid(pdu, "D-AUTHENTICATION");
         return;
     }
-    uint8_t type = (uint8_t)mm_bits_to_uint(bits, 4, 3);
-    int off = 7;
-    uint32_t ssi = 0;
-    uint16_t mcc = 0, mnc = 0, subscriber_class = 0, energy_saving = 0;
-    uint8_t scch = 0;
-    uint8_t ssi_valid = 0, address_valid = 0, subscriber_valid = 0;
-    uint8_t energy_valid = 0, scch_valid = 0;
-
-    uint8_t optional = bits[off++] & 1u;
-    if (optional) {
-#define MM_ACCEPT_TYPE2(width, body)                                                                                   \
-    do {                                                                                                               \
-        if (off >= nbits)                                                                                              \
-            return;                                                                                                    \
-        uint8_t present = bits[off++] & 1u;                                                                            \
-        if (present) {                                                                                                 \
-            if (off + (width) > nbits)                                                                                 \
-                return;                                                                                                \
-            body;                                                                                                      \
-            off += (width);                                                                                            \
-        }                                                                                                              \
-    } while (0)
-        MM_ACCEPT_TYPE2(24, ssi = mm_bits_to_uint(bits, off, 24); ssi_valid = 1);
-        MM_ACCEPT_TYPE2(24, mcc = (uint16_t)mm_bits_to_uint(bits, off, 10);
-                        mnc = (uint16_t)mm_bits_to_uint(bits, off + 10, 14); address_valid = 1);
-        MM_ACCEPT_TYPE2(16, subscriber_class = (uint16_t)mm_bits_to_uint(bits, off, 16); subscriber_valid = 1);
-        MM_ACCEPT_TYPE2(14, energy_saving = (uint16_t)mm_bits_to_uint(bits, off, 14); energy_valid = 1);
-        MM_ACCEPT_TYPE2(6, scch = (uint8_t)mm_bits_to_uint(bits, off, 6); scch_valid = 1);
-#undef MM_ACCEPT_TYPE2
-        if (!mm_skip_type34_tail(bits, nbits, &off)) {
-            fprintf(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d (truncated optional tail)\n", cc);
-            return;
-        }
+    const char* outcome = "";
+    if (a.subtype == 2) {
+        outcome = a.result ? " successful" : " failed"; /* Table A.39. */
     }
-    fprintf(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d type=%u\n", cc, type);
-    if (ts) {
-        ts->mm_lu_accept_type = type;
-        ts->mm_lu_accept_ssi = ssi;
-        ts->mm_lu_accept_ssi_valid = ssi_valid;
-        ts->mm_lu_accept_mcc = mcc;
-        ts->mm_lu_accept_mnc = mnc;
-        ts->mm_lu_accept_address_ext_valid = address_valid;
-        ts->mm_lu_accept_subscriber_class = subscriber_class;
-        ts->mm_lu_accept_subscriber_class_valid = subscriber_valid;
-        ts->mm_lu_accept_energy_saving = energy_saving;
-        ts->mm_lu_accept_energy_saving_valid = energy_valid;
-        ts->mm_lu_accept_scch = scch;
-        ts->mm_lu_accept_scch_valid = scch_valid;
-        ts->mm_lu_accept_valid = 1;
-    }
+    DSD_FPRINTF(stderr, "[TETRA MM D-AUTHENTICATION] CC=%d %s%s%s\n", pdu->cc, names[a.subtype], outcome,
+                a.mutual ? " mutual" : "");
+    a.valid = 1;
+    pdu->ts->mm_auth = a;
 }
 
-static void
-mm_parse_lu_command(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 6) {
-        fprintf(stderr, "[TETRA MM D-LU-COMMAND] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
-    }
-    uint8_t report = bits[4] & 1u;
-    uint8_t cipher = bits[5] & 1u;
-    uint16_t params = 0;
-    uint16_t mcc = 0, mnc = 0;
-    uint8_t address_ext_valid = 0;
-    int off = 6;
-    if (cipher) {
-        if (nbits < 16) {
-            fprintf(stderr, "[TETRA MM D-LU-COMMAND] CC=%d (truncated cipher parameters)\n", cc);
-            return;
-        }
-        params = (uint16_t)mm_bits_to_uint(bits, 6, 10);
-        off = 16;
-    }
-    if (off >= nbits) {
-        fprintf(stderr, "[TETRA MM D-LU-COMMAND] CC=%d (missing O-bit)\n", cc);
-        return;
-    }
-    uint8_t optional = bits[off++] & 1u;
-    if (optional) {
-        if (off >= nbits) {
-            return;
-        }
-        uint8_t address_ext_present = bits[off++] & 1u;
-        if (address_ext_present) {
-            if (off + 24 > nbits) {
-                return;
+/* EN 300 392-7 annex A.2 to A.5: D-OTAR. */
+
+/* Table A.84b defines OTAR reject reasons 0 to 3. */
+static int
+mm_reject_reason_defined(uint8_t reason) {
+    return reason <= 3u;
+}
+
+/* Table A.73 reserves KSG numbers 4 to 7; 8 to 15 are proprietary algorithms. */
+static int
+mm_ksg_defined(uint8_t ksg) {
+    return ksg < 4u || ksg > 7u;
+}
+
+/* Table A.100a groupings 0 to 9 split the SCKs into this many subsets; table A.100b numbers them from 1. */
+static int
+mm_sck_subset_defined(uint8_t grouping, uint8_t subset) {
+    static const uint8_t max_subsets[10] = {1, 2, 3, 4, 5, 6, 7, 10, 15, 30};
+    return grouping <= 9u && subset >= 1u && subset <= max_subsets[grouping];
+}
+
+/* Table A.43 CCK location area information. */
+static int
+mm_read_cck_location(tetra_bit_reader* r, tetra_mm_cck_info_t* cck) {
+    cck->la_type = mm_u8(r, 2);
+    switch (cck->la_type) {
+        case 1: /* Table A.76 list; table A.81 reserves an empty one. */
+            cck->la_count = mm_u8(r, 4);
+            for (uint8_t i = 0; i < cck->la_count; i++) {
+                cck->la[i] = mm_u16(r, 14);
             }
-            mcc = (uint16_t)mm_bits_to_uint(bits, off, 10);
-            off += 10;
-            mnc = (uint16_t)mm_bits_to_uint(bits, off, 14);
-            off += 14;
-            address_ext_valid = 1;
-        }
-        if (!mm_skip_type34_tail(bits, nbits, &off)) {
-            fprintf(stderr, "[TETRA MM D-LU-COMMAND] CC=%d (truncated optional tail)\n", cc);
-            return;
-        }
-    }
-    fprintf(stderr, "[TETRA MM D-LU-COMMAND] CC=%d group_report=%u cipher=%u\n", cc, report, cipher);
-    if (ts) {
-        ts->mm_lu_command_group_report = report;
-        ts->mm_lu_command_cipher_control = cipher;
-        ts->mm_lu_command_cipher_params = params;
-        ts->mm_lu_command_mcc = mcc;
-        ts->mm_lu_command_mnc = mnc;
-        ts->mm_lu_command_address_ext_valid = address_ext_valid;
-        ts->mm_lu_command_valid = 1;
+            return cck->la_count != 0;
+        case 2: /* Tables A.74 and A.75. */
+            cck->la_mask = mm_u16(r, 14);
+            cck->la_selector = mm_u16(r, 14);
+            return 1;
+        case 3: /* Table A.77: the high value is above the low value. */
+            cck->la_low = mm_u16(r, 14);
+            cck->la_high = mm_u16(r, 14);
+            return cck->la_high > cck->la_low;
+        default: return 1; /* All location areas. */
     }
 }
 
+/* Table A.42 CCK information, in CCK Provide and NEWCELL. */
+static int
+mm_read_cck_info(tetra_bit_reader* r, tetra_mm_cck_info_t* cck) {
+    cck->id = mm_u16(r, 16);
+    cck->key_type = mm_u8(r, 1);
+    mm_read_octets(r, cck->sealed, sizeof cck->sealed);
+    if (!mm_read_cck_location(r, cck)) {
+        return 0;
+    }
+    cck->future = mm_u8(r, 1);
+    if (cck->future) {
+        mm_read_octets(r, cck->future_sealed, sizeof cck->future_sealed);
+    }
+    /* The future key flag is always false when the key type flag says future. */
+    return !(cck->key_type && cck->future);
+}
+
+/* Table A.9 CCK Provide. */
+static int
+mm_otar_cck_provide(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->cck_provision = mm_u8(r, 1);
+    if (o->cck_provision && !mm_read_cck_info(r, &o->cck)) {
+        return 0;
+    }
+    return mm_read_type34_tail(r);
+}
+
+/* Table A.30 NEWCELL: the DCK forwarding result, then the CCK Provide body. */
+static int
+mm_otar_newcell(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->dck_forwarding_result = mm_u8(r, 1);
+    return mm_otar_cck_provide(r, o);
+}
+
+/* Acknowledgement flag, explicit response and max response timer value (tables A.36, A.59a and A.77a). */
 static void
-mm_parse_lu_reject(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 13) {
-        fprintf(stderr, "[TETRA MM D-LU-REJECT] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
+mm_read_response_request(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->ack = mm_u8(r, 1);
+    o->explicit_response = mm_u8(r, 1);
+    o->max_response_timer = mm_u16(r, 16);
+}
+
+/* Tables A.12 and A.16: the response request, then the session key flag and the random seed (individual session
+ * key) or GSKO-VN (group session key) it selects. */
+static int
+mm_read_provide_header(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    mm_read_response_request(r, o);
+    o->session_key = mm_u8(r, 1);
+    if (o->session_key) {
+        o->gsko_version = mm_u16(r, 16);
+    } else {
+        mm_read_octets(r, o->random_seed, sizeof o->random_seed);
     }
-    uint8_t update_type = (uint8_t)mm_bits_to_uint(bits, 4, 3);
-    uint8_t cause = (uint8_t)mm_bits_to_uint(bits, 7, 5);
-    uint8_t cipher = bits[12] & 1u;
-    uint16_t params = 0;
-    uint16_t mcc = 0, mnc = 0;
-    uint8_t address_valid = 0;
-    int off = 13;
-    if (cipher && nbits < 23) {
-        fprintf(stderr, "[TETRA MM D-LU-REJECT] CC=%d (truncated cipher parameters)\n", cc);
-        return;
+    /* Without an acknowledgement request the explicit response position is a reserved zero bit. */
+    return o->ack || !o->explicit_response;
+}
+
+/* Table A.16 SCK Provide. */
+static int
+mm_otar_sck_provide(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    if (!mm_read_provide_header(r, o)) {
+        return 0;
     }
-    if (cipher) {
-        params = (uint16_t)mm_bits_to_uint(bits, 13, 10);
-        off = 23;
-    }
-    if (off >= nbits) {
-        fprintf(stderr, "[TETRA MM D-LU-REJECT] CC=%d (missing O-bit)\n", cc);
-        return;
-    }
-    uint8_t optional = bits[off++] & 1u;
-    if (optional) {
-        if (off >= nbits) {
-            return;
+    o->key_count = mm_u8(r, 3);
+    for (uint8_t i = 0; i < o->key_count; i++) {
+        /* Table A.95: SCKN, SCK-VN, SCK use, a reserved zero bit and the sealed SCK. */
+        o->sck_number[i] = mm_u8(r, 5);
+        o->sck_version[i] = mm_u16(r, 16);
+        o->sck_use[i] = mm_u8(r, 1);
+        if (mm_u8(r, 1) != 0) {
+            return 0;
         }
-        uint8_t address_present = bits[off++] & 1u;
-        if (address_present) {
-            if (off + 24 > nbits) {
-                return;
+        mm_read_octets(r, o->sck_sealed[i], sizeof o->sck_sealed[i]);
+    }
+    o->ksg = mm_u8(r, 4);
+    o->retry_interval = mm_u8(r, 3);
+    return mm_ksg_defined(o->ksg) && mm_read_address_tail(r, &o->address);
+}
+
+/* Table A.19 SCK Reject. */
+static int
+mm_otar_sck_reject(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->key_count = mm_u8(r, 3);
+    for (uint8_t i = 0; i < o->key_count; i++) {
+        /* Table A.99a SCK rejected. */
+        o->reject_reason[i] = mm_u8(r, 3);
+        o->sck_number[i] = mm_u8(r, 5);
+        if (!mm_reject_reason_defined(o->reject_reason[i])) {
+            return 0;
+        }
+    }
+    o->retry_interval = mm_u8(r, 3);
+    return mm_read_address_tail(r, &o->address);
+}
+
+/* Table A.12 note 4: GCKs provided for one GSSI all carry its GCKN and differ in GCK-VN. */
+static int
+mm_gck_group_consistent(const tetra_mm_otar_t* o) {
+    for (uint8_t i = 1; i < o->key_count; i++) {
+        if (o->gck_number[i] != o->gck_number[0]) {
+            return 0;
+        }
+        for (uint8_t j = 0; j < i; j++) {
+            if (o->gck_version[i] == o->gck_version[j]) {
+                return 0;
             }
-            mcc = (uint16_t)mm_bits_to_uint(bits, off, 10);
-            off += 10;
-            mnc = (uint16_t)mm_bits_to_uint(bits, off, 14);
-            off += 14;
-            address_valid = 1;
-        }
-        if (!mm_skip_type34_tail(bits, nbits, &off)) {
-            fprintf(stderr, "[TETRA MM D-LU-REJECT] CC=%d (truncated optional tail)\n", cc);
-            return;
         }
     }
-    fprintf(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u\n", cc, update_type, cause, cipher);
-    if (ts) {
-        ts->mm_lu_reject_type = update_type;
-        ts->mm_lu_reject_cause = cause;
-        ts->mm_lu_reject_cipher_control = cipher;
-        ts->mm_lu_reject_cipher_params = params;
-        ts->mm_lu_reject_mcc = mcc;
-        ts->mm_lu_reject_mnc = mnc;
-        ts->mm_lu_reject_address_ext_valid = address_valid;
-        ts->mm_lu_reject_valid = 1;
+    return 1;
+}
+
+/* Table A.12 GCK Provide. */
+static int
+mm_otar_gck_provide(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    if (!mm_read_provide_header(r, o)) {
+        return 0;
+    }
+    o->key_count = mm_u8(r, 3);
+    for (uint8_t i = 0; i < o->key_count; i++) {
+        /* Table A.62 GCK key and identifier. */
+        o->gck_number[i] = mm_u16(r, 16);
+        o->gck_version[i] = mm_u16(r, 16);
+        mm_read_octets(r, o->gck_sealed[i], sizeof o->gck_sealed[i]);
+    }
+    o->ksg = mm_u8(r, 4);
+    o->group_association = mm_u8(r, 1);
+    if (o->group_association) {
+        o->gssi = tetra_bits_read(r, 24);
+    }
+    o->retry_interval = mm_u8(r, 3);
+    if (!mm_ksg_defined(o->ksg) || (o->group_association && !mm_gck_group_consistent(o))) {
+        return 0;
+    }
+    return mm_read_address_tail(r, &o->address);
+}
+
+/* Table A.15 GCK Reject. */
+static int
+mm_otar_gck_reject(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->key_count = mm_u8(r, 3);
+    if (o->key_count == 0) {
+        return 0; /* Table A.79d reserves zero. */
+    }
+    for (uint8_t i = 0; i < o->key_count; i++) {
+        /* Table A.63b GCK rejected: the GCKN, or the GSSI when the group association says so. */
+        o->reject_reason[i] = mm_u8(r, 3);
+        o->gck_reject_group_association[i] = mm_u8(r, 1);
+        if (o->gck_reject_group_association[i]) {
+            o->gck_reject_gssi[i] = tetra_bits_read(r, 24);
+        } else {
+            o->gck_number[i] = mm_u16(r, 16);
+        }
+        if (!mm_reject_reason_defined(o->reject_reason[i])) {
+            return 0;
+        }
+    }
+    o->retry_interval = mm_u8(r, 3);
+    return mm_read_address_tail(r, &o->address);
+}
+
+/* Table A.80 number of groups: 0 is reserved, 1 to 30 count the GSSIs, and 31 gives a range as its lowest and highest
+ * GSSI (table A.24 note 1). */
+static int
+mm_read_group_list(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->group_count = mm_u8(r, 5);
+    o->group_is_range = (uint8_t)(o->group_count == 31u);
+    o->group_value_count = o->group_is_range ? 2u : o->group_count;
+    for (uint8_t i = 0; i < o->group_value_count; i++) {
+        o->group_gssi[i] = tetra_bits_read(r, 24);
+    }
+    if (o->group_count == 0) {
+        return 0;
+    }
+    return !o->group_is_range || o->group_gssi[1] > o->group_gssi[0];
+}
+
+/* Table A.24 KEY ASSOCIATE demand. */
+static int
+mm_otar_key_associate(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    mm_read_response_request(r, o);
+    if (!o->ack && o->explicit_response) {
+        return 0;
+    }
+    o->key_association_type = mm_u8(r, 1);
+    if (o->key_association_type) {
+        /* Table A.64: GCKN 0 to 65535, or 65536 for no GCKN; higher values are reserved. */
+        o->gck_select = tetra_bits_read(r, 17);
+        if (o->gck_select > 0x10000u) {
+            return 0;
+        }
+    } else {
+        /* Table A.100 SCK select number; table A.100a groupings 0 to 9. */
+        o->sck_select = mm_u8(r, 6);
+        o->sck_subset_grouping = mm_u8(r, 4);
+        if (o->sck_select > 32u || o->sck_subset_grouping > 9u) {
+            return 0;
+        }
+    }
+    return mm_read_group_list(r, o) && mm_read_address_tail(r, &o->address);
+}
+
+/* Table A.20 GSKO Provide. */
+static int
+mm_otar_gsko_provide(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    mm_read_octets(r, o->random_seed, sizeof o->random_seed);
+    o->gsko_version = mm_u16(r, 16);
+    mm_read_octets(r, o->gsko_sealed, sizeof o->gsko_sealed);
+    o->gssi = tetra_bits_read(r, 24);
+    return mm_read_address_tail(r, &o->address);
+}
+
+/* Table A.23 GSKO Reject. */
+static int
+mm_otar_gsko_reject(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->reject_reason[0] = mm_u8(r, 3);
+    o->gssi = tetra_bits_read(r, 24);
+    o->retry_interval = mm_u8(r, 3);
+    return mm_reject_reason_defined(o->reject_reason[0]) && mm_read_address_tail(r, &o->address);
+}
+
+/* Table A.27f KEY DELETE demand, by key delete type (table A.71a). */
+static int
+mm_otar_key_delete(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->key_delete_type = mm_u8(r, 3);
+    switch (o->key_delete_type) {
+        case 0: /* Individual SCKs. */
+        case 1: /* Members of a KAG. */
+            o->key_delete_sck_count = mm_u8(r, 5);
+            for (uint8_t i = 0; i < o->key_delete_sck_count; i++) {
+                o->key_delete_sck_number[i] = mm_u8(r, 5);
+            }
+            break;
+        case 2: /* SCK subset. */
+            o->key_delete_sck_grouping = mm_u8(r, 4);
+            o->key_delete_sck_subset = mm_u8(r, 5);
+            if (!mm_sck_subset_defined(o->key_delete_sck_grouping, o->key_delete_sck_subset)) {
+                return 0;
+            }
+            break;
+        case 4: /* Individual GCKs: the PDU table gives the count 4 bits, although table A.79a lists 5. */
+            o->key_delete_gck_count = mm_u8(r, 4);
+            for (uint8_t i = 0; i < o->key_delete_gck_count; i++) {
+                o->key_delete_gck_number[i] = mm_u16(r, 16);
+            }
+            break;
+        case 7: return 0; /* The key delete extension belongs to the uplink result only. */
+        default: break;   /* All SCKs, all GCKs, or the GSKO. */
+    }
+    return mm_read_address_tail(r, &o->address);
+}
+
+/* Table A.27h KEY STATUS demand, by key status type (table A.71b). */
+static int
+mm_otar_key_status(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    mm_read_response_request(r, o);
+    if (!o->ack && o->explicit_response) {
+        return 0;
+    }
+    o->key_status_type = mm_u8(r, 3);
+    switch (o->key_status_type) {
+        case 0: /* Individual SCK. */ o->key_status_sck_number = mm_u8(r, 5); break;
+        case 1: /* SCK subset. */
+            o->key_status_sck_grouping = mm_u8(r, 4);
+            o->key_status_sck_subset = mm_u8(r, 5);
+            if (!mm_sck_subset_defined(o->key_status_sck_grouping, o->key_status_sck_subset)) {
+                return 0;
+            }
+            break;
+        case 3: /* Individual GCK. */ o->key_status_gck_number = mm_u16(r, 16); break;
+        case 6: /* Reject is a response value. */
+        case 7: /* Reserved. */ return 0;
+        default: break; /* All SCKs, all GCKs, or the GSKO. */
+    }
+    return mm_read_address_tail(r, &o->address);
+}
+
+/* Table A.30a CMG GTSI PROVIDE. */
+static int
+mm_otar_cmg_gtsi(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->gssi = tetra_bits_read(r, 24);
+    return mm_read_address_tail(r, &o->address);
+}
+
+/* Number of SCKs changed, then the subset it selects when zero or that many SCK data elements (tables A.26, A.27d,
+ * A.82 and A.93). */
+static int
+mm_read_sck_set(tetra_bit_reader* r, tetra_mm_sck_set_t* set, int subset_allowed) {
+    set->count = mm_u8(r, 4);
+    if (set->count == 0) {
+        set->grouping = mm_u8(r, 4);
+        set->subset = mm_u8(r, 5);
+        set->subset_vn = mm_u16(r, 16);
+        return subset_allowed;
+    }
+    for (uint8_t i = 0; i < set->count; i++) {
+        set->number[i] = mm_u8(r, 5);
+        set->version[i] = mm_u16(r, 16);
+    }
+    return 1;
+}
+
+/* Time type and the time it selects (table A.111). */
+static void
+mm_read_time(tetra_bit_reader* r, tetra_mm_time_t* t) {
+    t->type = mm_u8(r, 2);
+    if (t->type == 0) {
+        t->slot = mm_u8(r, 2);
+        t->frame = mm_u8(r, 5);
+        t->multiframe = mm_u8(r, 6);
+        t->hyperframe = mm_u16(r, 16);
+    } else if (t->type == 1) {
+        t->network_time = tetra_bits_read64(r, 48);
     }
 }
 
-static void
-mm_parse_lu_proceeding(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 53) {
-        fprintf(stderr, "[TETRA MM D-LU-PROCEEDING] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
+/* Table A.27d DM-SCK ACTIVATE DEMAND. The MNI of the DMO network is a mandatory type 1 element. */
+static int
+mm_otar_dm_sck_activate(tetra_bit_reader* r, tetra_mm_otar_t* o) {
+    o->dm_sck_ack = mm_u8(r, 1);
+    if (!mm_read_sck_set(r, &o->dm_sck, 1)
+        || (o->dm_sck.count == 0 && !mm_sck_subset_defined(o->dm_sck.grouping, o->dm_sck.subset))) {
+        return 0;
     }
-    uint32_t ssi = mm_bits_to_uint(bits, 4, 24);
-    uint32_t mni = mm_bits_to_uint(bits, 28, 24);
-    int off = 52;
-    uint8_t optional = bits[off++] & 1u;
-    if (optional && !mm_skip_type34_tail(bits, nbits, &off)) {
-        fprintf(stderr, "[TETRA MM D-LU-PROCEEDING] CC=%d (truncated optional tail)\n", cc);
-        return;
-    }
-    fprintf(stderr, "[TETRA MM D-LU-PROCEEDING] CC=%d SSI=%u MNI=%u\n", cc, ssi, mni);
-    if (ts) {
-        ts->mm_lu_proceeding_ssi = ssi;
-        ts->mm_lu_proceeding_mni = mni;
-        ts->mm_lu_proceeding_valid = 1;
-    }
+    mm_read_time(r, &o->dm_sck_time);
+    mm_read_address(r, &o->address);
+    return tetra_bits_ok(r);
 }
 
 typedef struct {
-    uint8_t count;
-    uint8_t action[63];
-    uint8_t attachment_lifetime[63];
-    uint8_t class_of_usage[63];
-    uint8_t detachment_reason[63];
-    uint8_t address_type[63];
-    uint32_t gssi[63];
-    uint32_t extension[63];
-    uint32_t vgssi[63];
-} mm_group_snapshot;
+    const char* name;
+    int (*parse)(tetra_bit_reader* r, tetra_mm_otar_t* o);
+} mm_otar_subtype;
 
-/* Table 16.54 Group Identity Downlink collection. */
-static int
-mm_parse_group_downlink_value(const uint8_t* bits, int nbits, mm_group_snapshot* snapshot) {
-    if (!bits || !snapshot || nbits < 6) {
-        return 0;
-    }
-    int off = 0;
-    uint8_t count = (uint8_t)mm_bits_to_uint(bits, off, 6);
-    off += 6;
-    if ((unsigned)snapshot->count + count > 63u) {
-        return 0;
-    }
+/* Table A.85 downlink OTAR sub-types. Sub-type 1 has no downlink PDU table; 14 and 15 are reserved. */
+static const mm_otar_subtype k_otar_subtypes[16] = {
+    {"CCK PROVIDE", mm_otar_cck_provide},
+    {"CCK REJECT", NULL},
+    {"SCK PROVIDE", mm_otar_sck_provide},
+    {"SCK REJECT", mm_otar_sck_reject},
+    {"GCK PROVIDE", mm_otar_gck_provide},
+    {"GCK REJECT", mm_otar_gck_reject},
+    {"KEY ASSOCIATE DEMAND", mm_otar_key_associate},
+    {"NEWCELL", mm_otar_newcell},
+    {"GSKO PROVIDE", mm_otar_gsko_provide},
+    {"GSKO REJECT", mm_otar_gsko_reject},
+    {"KEY DELETE DEMAND", mm_otar_key_delete},
+    {"KEY STATUS DEMAND", mm_otar_key_status},
+    {"CMG GTSI PROVIDE", mm_otar_cmg_gtsi},
+    {"DM-SCK ACTIVATE DEMAND", mm_otar_dm_sck_activate},
+    {"reserved", NULL},
+    {"reserved", NULL},
+};
 
-    for (uint8_t i = 0; i < count; i++) {
-        if (off >= nbits) {
-            return 0;
-        }
-        unsigned dst = snapshot->count++;
-        uint8_t action = bits[off++] & 1u;
-        snapshot->action[dst] = action;
-        if (!action) {
-            if (off + 5 > nbits) {
-                return 0;
-            }
-            snapshot->attachment_lifetime[dst] = (uint8_t)mm_bits_to_uint(bits, off, 2);
-            off += 2;
-            snapshot->class_of_usage[dst] = (uint8_t)mm_bits_to_uint(bits, off, 3);
-            off += 3;
-        } else {
-            if (off + 2 > nbits) {
-                return 0;
-            }
-            snapshot->detachment_reason[dst] = (uint8_t)mm_bits_to_uint(bits, off, 2);
-            off += 2;
-        }
-
-        if (off + 2 > nbits) {
-            return 0;
-        }
-        uint8_t address_type = (uint8_t)mm_bits_to_uint(bits, off, 2);
-        off += 2;
-        snapshot->address_type[dst] = address_type;
-        if (address_type == 0 || address_type == 1 || address_type == 3) {
-            if (off + 24 > nbits) {
-                return 0;
-            }
-            snapshot->gssi[dst] = mm_bits_to_uint(bits, off, 24);
-            off += 24;
-        }
-        if (address_type == 1 || address_type == 3) {
-            if (off + 24 > nbits) {
-                return 0;
-            }
-            snapshot->extension[dst] = mm_bits_to_uint(bits, off, 24);
-            off += 24;
-        }
-        if (address_type == 2 || address_type == 3) {
-            if (off + 24 > nbits) {
-                return 0;
-            }
-            snapshot->vgssi[dst] = mm_bits_to_uint(bits, off, 24);
-            off += 24;
-        }
+/* Summary detail for SCK and GCK Provide and Reject: how many are carried, and the algorithm of a Provide. */
+static void
+mm_otar_detail(const tetra_mm_otar_t* o, char* out, size_t cap) {
+    out[0] = '\0';
+    if (o->subtype < 2u || o->subtype > 5u) {
+        return;
     }
-    return off == nbits;
+    const char* alg = "";
+    if (o->subtype == 2u || o->subtype == 4u) {
+        const char* const tea = tetra_air_ksg_name(o->ksg);
+        alg = tea ? tea : "proprietary";
+    }
+    DSD_SNPRINTF(out, cap, " count=%u%s%s", (unsigned)o->key_count, alg[0] ? " alg=" : "", alg);
 }
 
-/* D-ATTACH/DETACH GROUP IDENTITY Annex E M-chain.  Type 4 identifier 7 is
- * Group Identity Downlink (table 16.95); other bounded elements are skipped. */
-static int
-mm_parse_group_identity_tail(const uint8_t* bits, int nbits, int* off, mm_group_snapshot* snapshot) {
-    if (!bits || !off || !snapshot) {
-        return 0;
+/* SCK and GCK Provide name the algorithm (table A.73) for the network in their address extension, or for the
+ * serving network when they carry none (tables A.12 and A.16, address extension notes). */
+static void
+mm_otar_remember_ksg(const mm_pdu* pdu, const tetra_mm_otar_t* o) {
+    if (o->subtype != 2u && o->subtype != 4u) {
+        return;
     }
-    for (;;) {
-        if (*off >= nbits) {
-            return 0;
-        }
-        uint8_t more = bits[(*off)++] & 1u;
-        if (!more) {
+    if (o->address.valid) {
+        (void)tetra_air_ksg_remember(pdu->state, o->address.mcc, o->address.mnc, o->ksg);
+    } else if (pdu->ts->net_known) {
+        (void)tetra_air_ksg_remember(pdu->state, pdu->ts->mcc, pdu->ts->mnc, o->ksg);
+    }
+}
+
+static void
+mm_parse_otar(mm_pdu* pdu) {
+    tetra_mm_otar_t o;
+    DSD_MEMSET(&o, 0, sizeof o);
+    o.subtype = mm_u8(&pdu->r, 4);
+    const mm_otar_subtype* const sub = &k_otar_subtypes[o.subtype];
+    if (!tetra_bits_ok(&pdu->r)) {
+        mm_log_invalid(pdu, "D-OTAR");
+        return;
+    }
+    if (!sub->parse) {
+        TETRA_LOG_PAYLOAD(pdu->ts, "[TETRA MM D-OTAR] CC=%d %s sub-type %u not decoded\n", pdu->cc, sub->name,
+                          (unsigned)o.subtype);
+        return;
+    }
+    if (!sub->parse(&pdu->r, &o) || !tetra_bits_ok(&pdu->r)) {
+        mm_log_invalid(pdu, "D-OTAR");
+        return;
+    }
+    char detail[48];
+    mm_otar_detail(&o, detail, sizeof detail);
+    DSD_FPRINTF(stderr, "[TETRA MM D-OTAR] CC=%d %s%s\n", pdu->cc, sub->name, detail);
+    o.valid = 1;
+    pdu->ts->mm_otar = o;
+    mm_otar_remember_ksg(pdu, &o);
+}
+
+/* EN 300 392-7 table A.26: D-CK CHANGE DEMAND. */
+
+/* Table A.26 GCK change: the number of GCKs changed (zero is reserved) and that many GCK data elements (table A.61). */
+static int
+mm_read_gck_change(tetra_bit_reader* r, tetra_mm_ck_change_t* c) {
+    c->gck_count = mm_u8(r, 4);
+    for (uint8_t i = 0; i < c->gck_count; i++) {
+        c->gck_number[i] = mm_u16(r, 16);
+        c->gck_version[i] = mm_u16(r, 16);
+    }
+    return c->gck_count != 0;
+}
+
+/* The elements that depend on the key change type (table A.71). An SCK subset is selected only for DMO use. */
+static int
+mm_read_change_target(tetra_bit_reader* r, tetra_mm_ck_change_t* c) {
+    switch (c->key_type) {
+        case 0: c->sck_use = mm_u8(r, 1); return mm_read_sck_set(r, &c->sck, c->sck_use);
+        case 1: c->cck_id = mm_u16(r, 16); return 1;
+        case 2: return mm_read_gck_change(r, c);
+        case 3:
+            c->cck_id = mm_u16(r, 16);
+            c->gck_vn = mm_u16(r, 16);
             return 1;
-        }
-        if (*off + 15 > nbits) {
+        case 4: c->gck_vn = mm_u16(r, 16); return 1;
+        case 5: return 1;
+        default: return 0; /* 6 and 7 are reserved. */
+    }
+}
+
+static void
+mm_parse_ck_change(mm_pdu* pdu) {
+    static const char* const targets[6] = {"SCK", "CCK", "GCK", "CCK and GCK", "all GCKs", "no cipher key"};
+    static const char* const times[4] = {"at absolute IV", "at network time", "from next multiframe", "already in use"};
+    tetra_bit_reader* const r = &pdu->r;
+    tetra_mm_ck_change_t c;
+    DSD_MEMSET(&c, 0, sizeof c);
+    c.ack = mm_u8(r, 1);
+    c.security_class = mm_u8(r, 2);
+    c.key_type = mm_u8(r, 3);
+    int ok = mm_read_change_target(r, &c);
+    mm_read_time(r, &c.time);
+    if (!ok || !tetra_bits_ok(r)) {
+        mm_log_invalid(pdu, "D-CK-CHANGE");
+        return;
+    }
+    const char* const target = targets[c.key_type];
+    char transition[32] = "";
+    if (c.security_class != 0) {
+        /* Table A.45: values 1 to 3 move the cell to that security class. */
+        DSD_SNPRINTF(transition, sizeof transition, " to security class %u", (unsigned)c.security_class);
+    }
+    DSD_FPRINTF(stderr, "[TETRA MM D-CK-CHANGE] CC=%d %s %s%s\n", pdu->cc, target, times[c.time.type], transition);
+    c.valid = 1;
+    pdu->ts->mm_ck_change = c;
+}
+
+/* EN 300 392-7 tables A.31 and A.32: D-DISABLE and D-ENABLE. These change whether the addressed MS gives service, so
+ * the whole PDU, conditional identities and authentication challenge included, has to be there. */
+
+static int
+mm_read_enable_disable(tetra_bit_reader* r, tetra_mm_enable_disable_t* e) {
+    e->intent = mm_u8(r, 1);
+    if (!e->is_enable) {
+        e->permanent = mm_u8(r, 1); /* Table A.52 disabling type. */
+    }
+    e->equipment = mm_u8(r, 1);
+    if (e->equipment) {
+        e->tei = tetra_bits_read64(r, 60);
+    }
+    e->subscription = mm_u8(r, 1);
+    if (e->subscription) {
+        e->mcc = mm_u16(r, 10);
+        e->mnc = mm_u16(r, 14);
+        e->ssi = tetra_bits_read(r, 24);
+    }
+    if (!tetra_bits_present(r)) {
+        return tetra_bits_ok(r);
+    }
+    /* The 160-bit authentication challenge (table A.37) is the one type 2 element. */
+    if (tetra_bits_present(r)) {
+        mm_read_octets(r, e->auth_challenge, sizeof e->auth_challenge);
+        e->auth_valid = 1;
+    }
+    return tetra_bits_skip_type34(r);
+}
+
+static void
+mm_parse_enable_disable(mm_pdu* pdu, uint8_t is_enable) {
+    const char* const name = is_enable ? "D-ENABLE" : "D-DISABLE";
+    tetra_mm_enable_disable_t e;
+    DSD_MEMSET(&e, 0, sizeof e);
+    e.is_enable = is_enable;
+    if (!mm_read_enable_disable(&pdu->r, &e)) {
+        mm_log_invalid(pdu, name);
+        return;
+    }
+    DSD_FPRINTF(stderr, "[TETRA MM %s] CC=%d intent=%u equipment=%u subscription=%u%s\n", name, pdu->cc,
+                (unsigned)e.intent, (unsigned)e.equipment, (unsigned)e.subscription, e.permanent ? " permanent" : "");
+    e.valid = 1;
+    pdu->ts->mm_enable_disable = e;
+}
+
+static void
+mm_parse_disable(mm_pdu* pdu) {
+    mm_parse_enable_disable(pdu, 0);
+}
+
+static void
+mm_parse_enable(mm_pdu* pdu) {
+    mm_parse_enable_disable(pdu, 1);
+}
+
+/* EN 300 392-2 clause 16.9.2: location update and group identity PDUs. */
+
+/* Table 16.11 D-LOCATION UPDATE ACCEPT: the location update accept type, then the type 2 SSI, address extension,
+ * subscriber class, energy saving information and SCCH information; every type 3/4 element is skipped. */
+static void
+mm_parse_lu_accept(mm_pdu* pdu) {
+    static const uint8_t width[5] = {24, 24, 16, 14, 6};
+    uint32_t value[5] = {0};
+    uint8_t present[5] = {0};
+    tetra_mm_lu_accept_t a;
+    DSD_MEMSET(&a, 0, sizeof a);
+    a.type = mm_u8(&pdu->r, 3);
+    if (!mm_read_optional(&pdu->r, width, 5, value, present)) {
+        mm_log_invalid(pdu, "D-LU-ACCEPT");
+        return;
+    }
+    a.ssi = value[0];
+    a.ssi_valid = present[0];
+    if (present[1]) {
+        mm_address_from(value[1], &a.address);
+    }
+    a.subscriber_class = (uint16_t)value[2];
+    a.subscriber_class_valid = present[2];
+    a.energy_saving = (uint16_t)value[3];
+    a.energy_saving_valid = present[3];
+    a.scch = (uint8_t)value[4];
+    a.scch_valid = present[4];
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d type=%u\n", pdu->cc, (unsigned)a.type);
+    a.valid = 1;
+    pdu->ts->mm_lu_accept = a;
+}
+
+/* Cipher control and the ciphering parameters it announces (EN 300 392-2 tables 16.12 and 16.13). */
+static void
+mm_read_cipher(tetra_bit_reader* r, uint8_t* control, uint16_t* params) {
+    *control = mm_u8(r, 1);
+    if (*control) {
+        *params = mm_u16(r, 10);
+    }
+}
+
+/* Table 16.12 D-LOCATION UPDATE COMMAND. */
+static void
+mm_parse_lu_command(mm_pdu* pdu) {
+    tetra_mm_lu_command_t c;
+    DSD_MEMSET(&c, 0, sizeof c);
+    c.group_report = mm_u8(&pdu->r, 1);
+    mm_read_cipher(&pdu->r, &c.cipher_control, &c.cipher_params);
+    if (!mm_read_address_tail(&pdu->r, &c.address)) {
+        mm_log_invalid(pdu, "D-LU-COMMAND");
+        return;
+    }
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-COMMAND] CC=%d group_report=%u cipher=%u\n", pdu->cc, (unsigned)c.group_report,
+                (unsigned)c.cipher_control);
+    c.valid = 1;
+    pdu->ts->mm_lu_command = c;
+}
+
+/* Table 16.13 D-LOCATION UPDATE REJECT. */
+static void
+mm_parse_lu_reject(mm_pdu* pdu) {
+    tetra_mm_lu_reject_t rej;
+    DSD_MEMSET(&rej, 0, sizeof rej);
+    rej.type = mm_u8(&pdu->r, 3);
+    rej.cause = mm_u8(&pdu->r, 5);
+    mm_read_cipher(&pdu->r, &rej.cipher_control, &rej.cipher_params);
+    if (!mm_read_address_tail(&pdu->r, &rej.address)) {
+        mm_log_invalid(pdu, "D-LU-REJECT");
+        return;
+    }
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u\n", pdu->cc, (unsigned)rej.type,
+                (unsigned)rej.cause, (unsigned)rej.cipher_control);
+    rej.valid = 1;
+    pdu->ts->mm_lu_reject = rej;
+}
+
+/* Table 16.14 D-LOCATION UPDATE PROCEEDING: the (V)ASSI and the MNI are both type 1 elements. */
+static void
+mm_parse_lu_proceeding(mm_pdu* pdu) {
+    tetra_mm_lu_proceeding_t p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.ssi = tetra_bits_read(&pdu->r, 24);
+    mm_read_address(&pdu->r, &p.address);
+    if (!mm_read_type34_tail(&pdu->r)) {
+        mm_log_invalid(pdu, "D-LU-PROCEEDING");
+        return;
+    }
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-PROCEEDING] CC=%d SSI=%u MCC=%u MNC=%u\n", pdu->cc, (unsigned)p.ssi,
+                (unsigned)p.address.mcc, (unsigned)p.address.mnc);
+    p.valid = 1;
+    pdu->ts->mm_lu_proceeding = p;
+}
+
+typedef struct {
+    tetra_mm_group_entry_t entry[63];
+    uint8_t count;
+} mm_group_entries;
+
+/* One group identity of table 16.54: attachment (lifetime and class of usage) or detachment (reason), then the
+ * address type and the GSSI, address extension and (V)GSSI it selects. */
+static void
+mm_read_group_entry(tetra_bit_reader* r, tetra_mm_group_entry_t* e) {
+    e->action = mm_u8(r, 1);
+    if (e->action == 0) {
+        e->attachment_lifetime = mm_u8(r, 2);
+        e->class_of_usage = mm_u8(r, 3);
+    } else {
+        e->detachment_reason = mm_u8(r, 2);
+    }
+    e->address_type = mm_u8(r, 2);
+    if (e->address_type != 2u) {
+        e->gssi = tetra_bits_read(r, 24);
+    }
+    if (e->address_type & 1u) {
+        mm_read_address(r, &e->address);
+    }
+    if (e->address_type >= 2u) {
+        e->vgssi = tetra_bits_read(r, 24);
+    }
+}
+
+/* Type 4 group identity downlink element: a 6-bit number of repeated elements, then that many group identities,
+ * filling exactly @p length bits. */
+static int
+mm_read_group_downlink(const tetra_bit_reader* r, int length, mm_group_entries* entries) {
+    tetra_bit_reader element = tetra_bits_reader(r->bits, r->pos + length, r->pos);
+    const uint8_t count = mm_u8(&element, 6);
+    if ((unsigned)entries->count + count > 63u) {
+        return 0;
+    }
+    for (uint8_t i = 0; i < count; i++) {
+        mm_read_group_entry(&element, &entries->entry[entries->count++]);
+    }
+    return tetra_bits_ok(&element) && tetra_bits_left(&element) == 0;
+}
+
+/* The M-bit chain of D-ATTACH/DETACH GROUP IDENTITY (table 16.1): group identity downlink elements (identifier 7,
+ * table 16.95) are decoded, the other type 3/4 elements skipped. */
+static int
+mm_read_group_identity_chain(tetra_bit_reader* r, mm_group_entries* entries) {
+    while (tetra_bits_read(r, 1) != 0) {
+        const uint32_t identifier = tetra_bits_read(r, 4);
+        const int length = (int)tetra_bits_read(r, 11);
+        if (!tetra_bits_ok(r) || length == 0 || length > tetra_bits_left(r)) {
             return 0;
         }
-        uint8_t identifier = (uint8_t)mm_bits_to_uint(bits, *off, 4);
-        *off += 4;
-        uint32_t length = mm_bits_to_uint(bits, *off, 11);
-        *off += 11;
-        if (length == 0 || length > (uint32_t)(nbits - *off)) {
+        if (identifier == 7u && !mm_read_group_downlink(r, length, entries)) {
             return 0;
         }
-        if (identifier == 7 && !mm_parse_group_downlink_value(bits + *off, (int)length, snapshot)) {
-            return 0;
-        }
-        *off += (int)length;
+        (void)tetra_bits_skip(r, length);
     }
+    return tetra_bits_ok(r);
 }
 
+/* Table 16.1 D-ATTACH/DETACH GROUP IDENTITY. */
 static void
-mm_parse_group_identity(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 8) {
-        fprintf(stderr, "[TETRA MM D-GROUP-IDENTITY] CC=%d (too short: %d bits)\n", cc, nbits);
+mm_parse_group_identity(mm_pdu* pdu) {
+    tetra_bit_reader* const r = &pdu->r;
+    mm_group_entries entries;
+    DSD_MEMSET(&entries, 0, sizeof entries);
+    const uint8_t report = mm_u8(r, 1);
+    const uint8_t ack_request = mm_u8(r, 1);
+    const uint8_t mode = mm_u8(r, 1);
+    const int optional = tetra_bits_present(r);
+    if (!tetra_bits_ok(r) || (optional && !mm_read_group_identity_chain(r, &entries))) {
+        mm_log_invalid(pdu, "D-GROUP-IDENTITY");
         return;
     }
-    uint8_t report = bits[4] & 1u;
-    uint8_t ack_request = bits[5] & 1u;
-    uint8_t mode = bits[6] & 1u;
-    int off = 7;
-    mm_group_snapshot snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
-    uint8_t optional = bits[off++] & 1u;
-    if (optional && !mm_parse_group_identity_tail(bits, nbits, &off, &snapshot)) {
-        fprintf(stderr, "[TETRA MM D-GROUP-IDENTITY] CC=%d (truncated optional tail)\n", cc);
-        return;
-    }
-    if (ts) {
-        ts->mm_group_identity_report = report;
-        ts->mm_group_identity_ack_request = ack_request;
-        ts->mm_group_identity_attach_detach_mode = mode;
-        ts->mm_group_entry_count = snapshot.count;
-        memcpy(ts->mm_group_entry_action, snapshot.action, sizeof(snapshot.action));
-        memcpy(ts->mm_group_entry_attachment_lifetime, snapshot.attachment_lifetime,
-               sizeof(snapshot.attachment_lifetime));
-        memcpy(ts->mm_group_entry_class_of_usage, snapshot.class_of_usage, sizeof(snapshot.class_of_usage));
-        memcpy(ts->mm_group_entry_detachment_reason, snapshot.detachment_reason, sizeof(snapshot.detachment_reason));
-        memcpy(ts->mm_group_entry_address_type, snapshot.address_type, sizeof(snapshot.address_type));
-        memcpy(ts->mm_group_entry_gssi, snapshot.gssi, sizeof(snapshot.gssi));
-        memcpy(ts->mm_group_entry_extension, snapshot.extension, sizeof(snapshot.extension));
-        memcpy(ts->mm_group_entry_vgssi, snapshot.vgssi, sizeof(snapshot.vgssi));
-        /* Keep the historic public fields synchronized for API compatibility. */
-        ts->mm_class_of_grp = report;
-        ts->mm_addr_type = ack_request;
-        ts->mm_detach_flag = mode;
-        ts->mm_group_identity_valid = 1;
-    }
+    DSD_FPRINTF(stderr, "[TETRA MM D-GROUP-IDENTITY] CC=%d report=%u ack_request=%u detach_all=%u groups=%u\n", pdu->cc,
+                (unsigned)report, (unsigned)ack_request, (unsigned)mode, (unsigned)entries.count);
+    tetra_state_t* const ts = pdu->ts;
+    ts->mm_group_identity_report = report;
+    ts->mm_group_identity_ack_request = ack_request;
+    ts->mm_group_identity_attach_detach_mode = mode;
+    ts->mm_group_entry_count = entries.count;
+    DSD_MEMCPY(ts->mm_group_entry, entries.entry, sizeof ts->mm_group_entry);
+    ts->mm_addr_type = ack_request; /* Shown by tetra_channel_info.c. */
+    ts->mm_group_identity_valid = 1;
 }
 
+/* Table 16.2 D-ATTACH/DETACH GROUP IDENTITY ACKNOWLEDGEMENT: accept/reject (table 16.44), a reserved bit, and type
+ * 3/4 elements that are skipped. */
 static void
-mm_parse_group_ack(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 7) {
-        fprintf(stderr, "[TETRA MM D-GROUP-ACK] CC=%d (too short: %d bits)\n", cc, nbits);
+mm_parse_group_ack(mm_pdu* pdu) {
+    const uint8_t rejected = mm_u8(&pdu->r, 1);
+    (void)tetra_bits_skip(&pdu->r, 1);
+    if (!mm_read_type34_tail(&pdu->r)) {
+        mm_log_invalid(pdu, "D-GROUP-ACK");
         return;
     }
-    uint8_t result = bits[4] & 1u;
-    int off = 6; /* skip the mandatory reserved bit at bit 5 */
-    uint8_t optional = bits[off++] & 1u;
-    if (optional && !mm_skip_type34_tail(bits, nbits, &off)) {
-        fprintf(stderr, "[TETRA MM D-GROUP-ACK] CC=%d (truncated optional tail)\n", cc);
-        return;
-    }
-    if (ts) {
-        ts->mm_group_ack_result = result;
-        ts->mm_group_ack_valid = 1;
-    }
+    DSD_FPRINTF(stderr, "[TETRA MM D-GROUP-ACK] CC=%d %s\n", pdu->cc,
+                rejected ? "at least one rejected" : "all accepted");
+    pdu->ts->mm_group_ack_result = rejected;
+    pdu->ts->mm_group_ack_valid = 1;
 }
 
+/* Table 16.3 D-MM STATUS: the 6-bit status downlink. */
 static void
-mm_parse_status(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 10) {
-        fprintf(stderr, "[TETRA MM D-MM-STATUS] CC=%d (too short: %d bits)\n", cc, nbits);
+mm_parse_status(mm_pdu* pdu) {
+    const uint8_t status = mm_u8(&pdu->r, 6);
+    if (!tetra_bits_ok(&pdu->r)) {
+        mm_log_invalid(pdu, "D-MM-STATUS");
         return;
     }
-    uint8_t status = (uint8_t)mm_bits_to_uint(bits, 4, 6);
-    if (ts) {
-        ts->mm_status_code = status;
-        ts->mm_status_valid = 1;
-    }
+    DSD_FPRINTF(stderr, "[TETRA MM D-MM-STATUS] CC=%d status=%u (%s)\n", pdu->cc, (unsigned)status,
+                tetra_mm_status_name(status));
+    pdu->ts->mm_status_code = status;
+    pdu->ts->mm_status_valid = 1;
 }
 
+/* Table 16.27 MM PDU/FUNCTION NOT SUPPORTED: the not-supported PDU type. */
 static void
-mm_parse_fns(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 8) {
-        fprintf(stderr, "[TETRA MM FUNCTION-NOT-SUPPORTED] CC=%d (too short: %d bits)\n", cc, nbits);
+mm_parse_function_not_supported(mm_pdu* pdu) {
+    const uint8_t type = mm_u8(&pdu->r, 4);
+    if (!tetra_bits_ok(&pdu->r)) {
+        mm_log_invalid(pdu, "FUNCTION-NOT-SUPPORTED");
         return;
     }
-    if (ts) {
-        ts->mm_fns_pdu_type = (uint8_t)mm_bits_to_uint(bits, 4, 4);
-        ts->mm_fns_valid = 1;
-    }
+    DSD_FPRINTF(stderr, "[TETRA MM FUNCTION-NOT-SUPPORTED] CC=%d pdu_type=%u\n", pdu->cc, (unsigned)type);
+    pdu->ts->mm_fns_pdu_type = type;
+    pdu->ts->mm_fns_valid = 1;
 }
 
-/* Public entry point: 4-bit downlink type, ETSI Table 16.75. */
+/* EN 300 392-2 table 16.75 downlink PDU types; 8, 13 and 14 are reserved. */
+static void (*const k_mm_parsers[16])(mm_pdu*) = {
+    mm_parse_otar,                   /* 0 D-OTAR */
+    mm_parse_authentication,         /* 1 D-AUTHENTICATION */
+    mm_parse_ck_change,              /* 2 D-CK CHANGE DEMAND */
+    mm_parse_disable,                /* 3 D-DISABLE */
+    mm_parse_enable,                 /* 4 D-ENABLE */
+    mm_parse_lu_accept,              /* 5 D-LOCATION UPDATE ACCEPT */
+    mm_parse_lu_command,             /* 6 D-LOCATION UPDATE COMMAND */
+    mm_parse_lu_reject,              /* 7 D-LOCATION UPDATE REJECT */
+    NULL,                            /* 8 reserved */
+    mm_parse_lu_proceeding,          /* 9 D-LOCATION UPDATE PROCEEDING */
+    mm_parse_group_identity,         /* 10 D-ATTACH/DETACH GROUP IDENTITY */
+    mm_parse_group_ack,              /* 11 D-ATTACH/DETACH GROUP IDENTITY ACKNOWLEDGEMENT */
+    mm_parse_status,                 /* 12 D-MM STATUS */
+    NULL,                            /* 13 reserved */
+    NULL,                            /* 14 reserved */
+    mm_parse_function_not_supported, /* 15 MM PDU/FUNCTION NOT SUPPORTED */
+};
+
 void
 tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
-    if (!bits || nbits < 4) {
+    (void)opts;
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts || !bits) {
         return;
     }
-
-    uint32_t pdu_type = mm_bits_to_uint(bits, 0, 4);
-
-    switch (pdu_type) {
-
-        case TETRA_MM_D_OTAR: mm_parse_otar(bits, nbits, cc, state); break;
-
-        case TETRA_MM_D_AUTHENTICATION: mm_parse_authentication(bits, nbits, cc, state); break;
-
-        case TETRA_MM_D_CK_CHANGE_DEMAND: mm_parse_ck_change_demand(bits, nbits, cc, state); break;
-
-        case TETRA_MM_D_DISABLE: mm_parse_enable_disable(bits, nbits, cc, 0, state); break;
-
-        case TETRA_MM_D_ENABLE: mm_parse_enable_disable(bits, nbits, cc, 1, state); break;
-
-        case TETRA_MM_D_LOCATION_UPDATING_ACCEPT: mm_parse_lu_accept(bits, nbits, cc, state); break;
-
-        case TETRA_MM_D_LOCATION_UPDATING_COMMAND: mm_parse_lu_command(bits, nbits, cc, state); break;
-
-        case TETRA_MM_D_LOCATION_UPDATING_REJECT: mm_parse_lu_reject(bits, nbits, cc, state); break;
-
-        case TETRA_MM_D_LOCATION_UPDATING_PROCEEDING: mm_parse_lu_proceeding(bits, nbits, cc, state); break;
-
-        case TETRA_MM_D_ATTACH_DETACH_GROUP: mm_parse_group_identity(bits, nbits, cc, state); break;
-
-        case TETRA_MM_D_ATTACH_DETACH_GROUP_ACK: mm_parse_group_ack(bits, nbits, cc, state); break;
-
-        case TETRA_MM_D_MM_STATUS: mm_parse_status(bits, nbits, cc, state); break;
-
-        case TETRA_MM_FUNCTION_NOT_SUPPORTED: mm_parse_fns(bits, nbits, cc, state); break;
-
-        default:
-            if (opts && opts->errorbars) {
-                fprintf(stderr, "[TETRA MM] CC=%d  pdu_type=%u  (%d bits)\n", cc, pdu_type, nbits);
-            }
-            break;
+    mm_pdu pdu = {tetra_bits_reader(bits, nbits, 0), state, ts, cc};
+    const uint8_t type = mm_u8(&pdu.r, 4);
+    if (!tetra_bits_ok(&pdu.r)) {
+        return;
+    }
+    if (k_mm_parsers[type]) {
+        k_mm_parsers[type](&pdu);
+    } else {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA MM] CC=%d reserved PDU type %u (%d bits)\n", cc, (unsigned)type, nbits);
     }
 }

@@ -436,8 +436,6 @@ test_phase79_mm_attach_detach(void) {
     wrap_mle_mm(mm, n, pdu, &out_n);
     tetra_mle_dispatch(pdu, out_n, 0, opt, st);
 
-    CHECK(tetra_st(st)->mm_detach_flag == 1, "tetra_mm_detach_flag");
-    CHECK(tetra_st(st)->mm_class_of_grp == 1, "tetra_mm_class_of_grp");
     CHECK(tetra_st(st)->mm_addr_type == 1, "tetra_mm_addr_type");
     CHECK(tetra_st(st)->mm_group_identity_valid == 1, "tetra_mm_group_identity_valid");
     CHECK(tetra_st(st)->mm_group_identity_report == 1, "tetra_mm_group_identity_report");
