@@ -3938,7 +3938,7 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - Targets (one per protocol):
   - `dsd-neo_proto_dmr`, `dsd-neo_proto_dpmr`, `dsd-neo_proto_dstar`, `dsd-neo_proto_nxdn`, `dsd-neo_proto_p25`
     (phase1/phase2), `dsd-neo_proto_m17`, `dsd-neo_proto_x2tdma`, `dsd-neo_proto_edacs`, `dsd-neo_proto_provoice`,
-    `dsd-neo_proto_ysf`
+    `dsd-neo_proto_ysf`, `dsd-neo_proto_tetra`
 
 Notes:
 
@@ -4362,6 +4362,93 @@ Private per-protocol modules worth knowing about:
   leaves confirmation standing, so a half no verified half speaks for since it (`DPMR_HALF_UNVERIFIED`) plays nothing
   and leaves the call's classification alone, rather than playing a scrambled call's first undecodable halves as
   clear.
+
+- `src/protocol/tetra/tetra_confirm.{c,h}` — the same module for TETRA, whose 22-bit normal-burst training sequence
+  receiver noise matches under the frame sync's eight hypotheses. A burst proves itself with a block whose CRC passed:
+  a BSCH, SCH/HD, SCH/F, STCH or BNCH block (the CRC-16 of EN 300 392-2 clause 8.2.3.3), direct-mode or uplink
+  signalling, or a speech frame that passes its CRC and re-encodes like speech. `processTetraFrame()` and
+  `processTetraSBFrame()` return it and `dsd_dispatch_handle_tetra()` maps it to `PROFILE_PROVEN` or `UNPRODUCTIVE`.
+  The carrier's evidence (CRC-passed BSCH and MAC blocks, and the followed call's signalling) gates trunking and
+  speech; see TETRA below. The engine clears it with the carrier through `tetra_confirm_reset()`, exported in
+  `<dsd-neo/protocol/tetra/tetra.h>`.
+
+### TETRA
+
+#### Trunking
+
+`src/protocol/tetra/tetra_trunk_sm.c` behind `include/dsd-neo/protocol/tetra/tetra_trunk_sm.h` follows at most one
+traffic channel off a TETRA control channel (the MCCH, EN 300 392-2 clause 9.5.1), with three states: IDLE (not
+trunking, or no control channel known), ON_CC and TUNED (on the followed channel, a tune in flight included). Its state
+is `tetra_state_t::sm` in the session's TETRA state extension (`DSD_STATE_EXT_PROTO_TETRA`), so two sessions never share
+it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk scan never runs it.
+
+- Grants. The caller decides what to follow (talkgroup policy, priority) and hands the state machine a
+  `tetra_sm_grant`: downlink frequency, carrier number, timeslot bitmap (table 21.80: bit 3 is timeslot 1) and CMCE
+  call identifier (0 when the allocation carried none). `tetra_sm_on_grant()` follows it only with trunking on, a
+  control channel known (`state->trunk_cc_freq`, which a SYSINFO with a valid main carrier sets before calling
+  `tetra_sm_on_cc_sync()`), a frequency, no tune in flight, and a CRC-passed BSCH or MAC block decoded on the carrier
+  the receiver is on before the block that carried the grant (`tetra_confirm_carrier_proven()`: `tetra.c` notes a
+  block only after the MAC acted on it). A grant for the followed call is ignored, a call identifier arriving after a
+  header-only allocation is adopted, and a grant on the carrier the receiver is on (a traffic timeslot of the main
+  carrier, or another call on the followed carrier) is followed without a retune; the grant itself then proves the
+  call on that carrier (`tetra_confirm_note_followed_call()`). Every other grant tunes through
+  `dsd_trunk_tuning_hook_tune_to_freq()` with `ted_sps` 0: a TETRA traffic carrier keeps the control channel's
+  symbol rate, and `dsd_engine_cc_is_p25()` (`trunk_tuning.c`) answers 0 for TETRA syncs, before looking at `rf_mod`,
+  whose QPSK value would otherwise read as P25 CQPSK.
+- Releases. `tetra_sm_on_release()` releases only the followed call: its call identifier must match (the MAC's
+  timeslot-0000 allocation to the assignment's holder passes the followed one). A traffic timeslot of the control
+  channel's carrier, or a release with no control channel to go to, stops following without a tune; anything else
+  returns through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared, so no P25 alias or its symbol
+  profile comes along. A return the backend refuses or defers keeps the call, and the next tick tries again.
+- Timers. Liveness never depends on CMCE call state, which one missed release would leave stuck. The speech path
+  (`voice_burst()` in `tetra_voice.c`) calls `tetra_sm_note_voice()` for each burst its channel and timeslot gates let
+  through with a speech frame whose CRC passed, with the timeslot the TDMA clock gives it: that stamps
+  `last_vc_sync_time(_m)` in any state, and while TUNED it restarts the hangtime when the timeslot is a followed one
+  (or 0, a timeslot the decoder cannot place). The tick returns `opts->trunk_hangtime` seconds after
+  speech ends (the first gap of `TETRA_SM_SPEECH_GAP_S`, longer than a frame 18 gap), and after
+  `TETRA_SM_GRANT_TIMEOUT_S` (4 s, DMR's default; no option) when no speech followed the tune. It also returns when
+  trunking is turned off while tuned, drops the call without a tune when another owner released the shared tuning
+  state (`opts->trunk_is_tuned` cleared: a tuner hand-back, the stale-follow cleanup), and drops ON_CC to IDLE once
+  trunking is off.
+- Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
+  (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state). Every entry point and the
+  tick settle it first: a completion commits, a failure -- or a request still unanswered after
+  `TETRA_SM_TUNE_TIMEOUT_S`, which is published as a timeout so a late completion cannot revive it -- restores the
+  rollback first and completes the request after, so the frame gate opens onto restored state
+  (`trunk_tuning_hooks.h`). `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own
+  cleanup (a decode-mode change drops the extension) retire a request they find as rolled back.
+- The carrier. The receiver's carrier changes when a tune completes, not when it is asked for: then
+  `tetra_forget_carrier()` (`tetra.c`) drops the carrier's CRC evidence, the partial TM-SDUs
+  (`tetra_mac_forget_fragments()`), the TDMA clock (`tetra_tdma_stop()`), which counts symbols a retune may have
+  dropped, and the speech in progress (`tetra_voice_reset()`). A tune completed inside a burst (a grant in its first
+  block) leaves the rest of that burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops
+  parsing the block and the normal-burst decoder skips the second half, and nothing the burst decoded counts for the
+  new carrier, though the burst's verdict still does. Nothing here frees or replaces the state extension: the MAC
+  holds its `tetra_state_t` pointer across these calls, so every reset clears fields.
+- Leaving a call drops the MAC's traffic-channel assignment (`vc_*`, `vc_addr` included) and the CMCE call and floor
+  state with it, so a stale one gates no later timeslot and shows no traffic channel the receiver left.
+- Engine. `dsd_engine_tetra_trunk_tick_locked()` (`engine.c`) runs `tetra_sm_tick()` in a TETRA session (`-fT`)
+  outside trunk scan, from `live_scanner_main_loop()` under the P25 SM tick guard, at every pass and after every frame,
+  withheld ones included, since a TETRA carrier syncs on every burst and the synced-frames loop may never hand back.
+  The decoders never tick it. `tetra_sm_init()` runs at engine start. `carrier_boundary_release_followed()` abandons
+  a TUNED machine without tuning (`tetra_sm_abandon_carrier()`); `carrier_boundary_forget_evidence()` clears the
+  evidence (`tetra_confirm_reset()`), and `dsd_engine_forget_carrier_decoding()` and the no-carrier reset
+  (`no_carrier_reset_decode_state()`) forget the carrier (`tetra_forget_carrier()`). `no_carrier_finish_cc_return()`
+  reconciles an accepted return (`tetra_sm_on_external_cc_return()`: ON_CC, no tune); when it cleared the voice state
+  without a return (the P25 helper failed, or no control channel) a TUNED machine drops its call where the receiver
+  is; a return that failed or was deferred never gets there and leaves the call. The manual Return to CC in
+  `app_command_queue.c` hands the machine over the same way.
+- Synctypes. `DSD_SYNC_IS_TRUNKABLE` includes TETRA, which offers the Qt "Follow this system" control on a TETRA
+  carrier; direct mode shares the sync words, and there the state machine finds no control channel and follows
+  nothing. `DSD_SYNC_IS_INVERTED` includes the negative TETRA syncs.
+
+Tests: `TETRA_TRUNK_SM` (the state machine per session against stand-in tuning hooks), `ENGINE_TETRA_TRUNK` (the
+engine tick, the carrier boundary and the no-carrier pass with the real machine), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX`
+(the TETRA rows: accepted, unreturnable and failed no-carrier returns with real machine state),
+`ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC, decode-mode
+change), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
+CRCs and given the colour code, a retune inside a burst; and, at compile time, the TETRA syncs in the two synctype
+macros), `TETRA_MAC_STATE`.
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 

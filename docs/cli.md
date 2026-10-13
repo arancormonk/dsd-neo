@@ -471,6 +471,9 @@ Notes
   without audio. Without `--tetra-codec` TETRA decodes as usual and plays no speech. A speech burst plays once its
   CRC has passed; later bursts whose CRC fails are concealed by the codec, and a run of them ends the speech until the
   next good burst. The interface, and building a library from the ETSI reference code, are in `tools/tetra/README.md`.
+  With `-T` the decoder follows a call's traffic channel off a TETRA control channel, once a block whose CRC passed
+  has been decoded on the carrier it is on, and returns `-t` seconds after the call's speech ends, or 4 seconds after
+  the tune when no speech follows. TETRA is not a `--trunk-scan` target type.
 
 Notes
 
