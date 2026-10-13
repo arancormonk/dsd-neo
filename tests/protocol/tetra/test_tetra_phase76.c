@@ -16,6 +16,7 @@
  *   8. Handles SDS valid text
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/tetra/tetra_channel_info.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>

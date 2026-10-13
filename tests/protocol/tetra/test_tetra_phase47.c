@@ -23,6 +23,7 @@
  *  18.  Two SDS PDUs with different msg_ref values update sds_msg_ref correctly
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>

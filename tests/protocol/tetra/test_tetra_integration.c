@@ -15,6 +15,7 @@
  *  7.  BSCH parse increments tetra_bsch_count
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch_fmt.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
