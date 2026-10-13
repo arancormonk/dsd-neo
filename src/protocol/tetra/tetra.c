@@ -20,6 +20,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/tetra_training.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_acelp.h>
@@ -1044,11 +1045,105 @@ tetra_frame_enter(const dsd_opts* opts, dsd_state* state) {
     return ts;
 }
 
+/* The working mode of the burst just taken. The DMO communication type is the DMAC-SYNC field of EN 300 396-3:
+ * 0 direct, 1 through a DM-REP, 2 through a DM-GATE, 3 through a DM-REP/GATE. */
+static uint8_t
+tetra_pub_mode(const dsd_state* state, const tetra_state_t* ts) {
+    if (ts->dmo) {
+        static const uint8_t dmo_modes[4] = {DSD_TETRA_MODE_DMO_DIRECT, DSD_TETRA_MODE_DMO_REPEATER,
+                                             DSD_TETRA_MODE_DMO_GATEWAY, DSD_TETRA_MODE_DMO_REPEATER_GATEWAY};
+        return dmo_modes[ts->dmo_comm_type & 3u];
+    }
+    if (ts->uplink) {
+        return state->tetra_sync.cb ? DSD_TETRA_MODE_TMO_CONTROL_UPLINK : DSD_TETRA_MODE_TMO_UPLINK;
+    }
+    return DSD_TETRA_MODE_TMO_DOWNLINK;
+}
+
+/* Air-interface encryption: the DMAC-SYNC encryption state in direct mode; in trunked mode the MAC-RESOURCE
+ * encryption mode (EN 300 392-2: 0 clear, 1 and 2 encrypted, 3 reserved), once one has been decoded. */
+static uint8_t
+tetra_pub_air_encryption(const tetra_state_t* ts) {
+    if (ts->dmo) {
+        return ts->dmo_enc_state != 0 ? DSD_TETRA_AIR_ENC_ENCRYPTED : DSD_TETRA_AIR_ENC_CLEAR;
+    }
+    if (ts->enc_mode == TETRA_ENC_MODE_ON || ts->enc_mode == TETRA_ENC_MODE_ON_AUTH) {
+        return DSD_TETRA_AIR_ENC_ENCRYPTED;
+    }
+    return (ts->frames_resource != 0 && ts->enc_mode == TETRA_ENC_MODE_NONE) ? DSD_TETRA_AIR_ENC_CLEAR
+                                                                             : DSD_TETRA_AIR_ENC_UNKNOWN;
+}
+
+static uint8_t
+tetra_pub_codec_status(const tetra_state_t* ts) {
+    switch ((tetra_vocoder_status_e)ts->vocoder_status) {
+        case TETRA_VOCODER_STATUS_READY: return DSD_TETRA_CODEC_READY;
+        case TETRA_VOCODER_STATUS_COMMAND_MISSING: return DSD_TETRA_CODEC_MISSING;
+        case TETRA_VOCODER_STATUS_START_FAILED: return DSD_TETRA_CODEC_LOAD_FAILED;
+        case TETRA_VOCODER_STATUS_TIMEOUT:
+        case TETRA_VOCODER_STATUS_SHORT_OUTPUT: return DSD_TETRA_CODEC_DECODE_ERRORS;
+        case TETRA_VOCODER_STATUS_UNKNOWN:
+        default: return DSD_TETRA_CODEC_UNKNOWN;
+    }
+}
+
+/* A downlink frequency the publication can carry: 1..DSD_TRUNK_FREQ_MAX_HZ, else 0 (not resolved). */
+static uint32_t
+tetra_pub_hz(long hz) {
+    return (hz > 0L && hz <= DSD_TRUNK_FREQ_MAX_HZ) ? (uint32_t)hz : 0U;
+}
+
+/* The network identity and its air-interface encryption: the network's TEA comes from the KSG an OTAR named for it. */
+static void
+tetra_pub_network(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_publication* pub) {
+    pub->net_known = (uint8_t)(ts->net_known != 0);
+    pub->mcc = ts->net_known ? ts->mcc : 0U;
+    pub->mnc = ts->net_known ? ts->mnc : 0U;
+    pub->colour = ts->net_known ? (uint8_t)(ts->colour & 0x3Fu) : 0U;
+    pub->air_encryption = tetra_pub_air_encryption(ts);
+    const int ksg = (ts->net_known && !ts->dmo) ? tetra_air_ksg_lookup(state, ts->mcc, ts->mnc) : -1;
+    pub->tea = (ksg >= 0 && ksg < DSD_TETRA_TEA_MAX) ? (uint8_t)(ksg + 1) : 0U;
+}
+
+/* Call following, the SYSINFO main carrier and the allocated traffic channel; a zero timeslot bitmap releases it. */
+static void
+tetra_pub_channels(const tetra_state_t* ts, dsd_tetra_publication* pub) {
+    pub->trunk_state = ts->trunk_state == TETRA_SM_TUNED   ? DSD_TETRA_TRUNK_ON_TRAFFIC
+                       : ts->trunk_state == TETRA_SM_ON_CC ? DSD_TETRA_TRUNK_ON_CONTROL
+                                                           : DSD_TETRA_TRUNK_IDLE;
+    pub->cc_known = (uint8_t)(ts->frames_sysinfo != 0);
+    pub->cc_carrier = pub->cc_known ? (uint16_t)(ts->sysinfo_main_carrier & 0xFFFu) : 0U;
+    pub->cc_freq_hz = pub->cc_known ? tetra_pub_hz(ts->dl_carrier_hz) : 0U;
+    pub->traffic_valid = (uint8_t)(ts->vc_assignment_valid && (ts->vc_timeslot_bitmap & 0x0Fu) != 0);
+    pub->traffic_carrier = pub->traffic_valid ? (uint16_t)(ts->vc_carrier & 0xFFFu) : 0U;
+    pub->traffic_slots = pub->traffic_valid ? (uint8_t)(ts->vc_timeslot_bitmap & 0x0Fu) : 0U;
+    pub->traffic_freq_hz = pub->traffic_valid ? tetra_pub_hz(ts->vc_freq_hz) : 0U;
+}
+
+void
+tetra_publish(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    dsd_tetra_publication* const pub = &state->tetra_pub;
+    /* Nothing reads as decoded until a block has passed its CRC: a sync word alone is weak enough for noise. */
+    pub->mode = ts->decode_ok != 0 ? tetra_pub_mode(state, ts) : DSD_TETRA_MODE_NONE;
+    tetra_pub_network(state, ts, pub);
+    tetra_pub_channels(ts, pub);
+    pub->mm_status_valid = (uint8_t)(ts->mm_status_valid != 0);
+    pub->mm_status_code = ts->mm_status_valid ? (uint8_t)(ts->mm_status_code & 0x3Fu) : 0U;
+    pub->codec_status = tetra_pub_codec_status(ts);
+    pub->codec_frames = ts->vocoder_frames;
+    pub->codec_errors = ts->vocoder_errors;
+}
+
 /* Tell the frame sync where block 1 of the next normal burst sits: right against the training sequence in direct
- * mode and on the uplink, behind AACH half 1 on the downlink. */
+ * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show. */
 static void
 tetra_frame_leave(dsd_state* state, const tetra_state_t* ts) {
     state->tetra_sync.block1_follows_training = (uint8_t)((ts->dmo || ts->uplink) ? 1 : 0);
+    tetra_publish(state);
 }
 
 void

@@ -33,6 +33,7 @@ target_sources(
         squelch_view.c
         symbol_profile.c
         tcp_audio_connect.c
+        tetra_view.c
         telemetry_hooks_install.c
         telemetry_observers.c
         ui_history.c

@@ -169,6 +169,11 @@ _Static_assert(offsetof(dsd_state, analog_rx) >= offsetof(dsd_state, vertex_ks_c
 _Static_assert(offsetof(dsd_state, squelch_auto_active) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(squelch_edacs_call) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "the squelch_* status must ride the vertex_ks_count..ui_msg range");
+/* The TETRA publication reaches every frontend through the same range; the decoder state behind it stays in its
+ * state_ext slot, which is never copied. */
+_Static_assert(offsetof(dsd_state, tetra_pub) >= offsetof(dsd_state, vertex_ks_count)
+                   && UI_SNAPSHOT_FIELD_END(tetra_pub) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "tetra_pub must ride the vertex_ks_count..ui_msg range");
 
 /* The embedded trunk_lcn_freq[] is a plain array copied by the byte ranges
  * above; the scan-list heap tail past it needs an explicit deep copy.

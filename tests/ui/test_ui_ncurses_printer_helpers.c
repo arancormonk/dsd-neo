@@ -19,12 +19,12 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/protocol/tetra/tetra_messages.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -3312,33 +3312,127 @@ test_scan_timing_row_real_cursor(void) {
 }
 #endif
 
+/* A TMO downlink control channel as the TETRA decoder publishes it: network known, SYSINFO and an allocation seen. */
+static void
+tetra_publish_control_channel(dsd_state* state) {
+    dsd_tetra_publication* const pub = &state->tetra_pub;
+    pub->mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    pub->net_known = 1U;
+    pub->mcc = 262U;
+    pub->mnc = 1001U;
+    pub->colour = 25U;
+    pub->air_encryption = DSD_TETRA_AIR_ENC_CLEAR;
+    pub->cc_known = 1U;
+    pub->cc_carrier = 321U;
+    pub->cc_freq_hz = 392012500U;
+}
+
+/* Append one message to the decoder's ring as the decoder would, its text as it arrived off the air. */
+static void
+tetra_ring_push(dsd_state* state, const char* text) {
+    dsd_tetra_message* const item = &state->tetra_messages[state->tetra_message_sequence % DSD_TETRA_MESSAGE_CAPACITY];
+    item->category = DSD_TETRA_MESSAGE_SDS;
+    DSD_SNPRINTF(item->text, sizeof item->text, "%s", text);
+    state->tetra_message_sequence++;
+}
+
+/* The TETRA rows come from the shared view, from the snapshot alone: no protocol call, no environment. They show only
+   while the TETRA preset runs and the publication holds a working mode, and a terminal without UTF-8 gets ASCII. */
+static void
+test_tetra_rows_follow_the_view(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    ui_tetra_lines lines;
+
+    tetra_publish_control_channel(state);
+    assert(ui_format_tetra_lines(opts, state, &lines) == 0); /* not the TETRA preset */
+    opts->frame_tetra = 1;
+    g_unicode_stub = 1;
+    assert(ui_format_tetra_lines(opts, state, &lines) == 3);
+    assert(strcmp(lines.text[0], "TETRA: TMO downlink \xC2\xB7 clear") == 0);
+    assert(strcmp(lines.text[1], "Network: MCC 262 \xC2\xB7 MNC 1001 \xC2\xB7 CC 25") == 0);
+    assert(strcmp(lines.text[2], "Control: carrier 321 \xC2\xB7 392.0125 MHz") == 0);
+
+    opts->trunk_enable = 1;
+    state->tetra_pub.trunk_state = DSD_TETRA_TRUNK_ON_TRAFFIC;
+    state->tetra_pub.traffic_valid = 1U;
+    state->tetra_pub.traffic_carrier = 654U;
+    state->tetra_pub.traffic_slots = 0x0AU; /* timeslots 1 and 3 */
+    state->tetra_pub.traffic_freq_hz = 392125000U;
+    state->tetra_pub.mm_status_valid = 1U;
+    state->tetra_pub.mm_status_code = 7U;
+    state->tetra_pub.codec_status = DSD_TETRA_CODEC_MISSING;
+    g_unicode_stub = 0;
+    assert(ui_format_tetra_lines(opts, state, &lines) == 7);
+    assert(strcmp(lines.text[0], "TETRA: TMO downlink - clear") == 0);
+    assert(strcmp(lines.text[1], "Network: MCC 262 - MNC 1001 - CC 25") == 0);
+    assert(strcmp(lines.text[2], "Trunk: traffic channel") == 0);
+    assert(strcmp(lines.text[3], "Control: carrier 321 - 392.0125 MHz") == 0);
+    assert(strcmp(lines.text[4], "Traffic: carrier 654 - TS 1,3 - 392.1250 MHz") == 0);
+    assert(strcmp(lines.text[5], "MM status: 7 - MS frequency bands request") == 0);
+    assert(strcmp(lines.text[6], "Codec: missing") == 0);
+
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_starts_with("| TETRA: TMO downlink - clear\n| Network: ");
+    assert(strstr(g_printw_capture, "TETRA messages") == NULL); /* an empty ring prints no heading */
+
+    state->tetra_pub.mode = DSD_TETRA_MODE_NONE; /* reset: nothing decoded yet */
+    assert(ui_format_tetra_lines(opts, state, &lines) == 0);
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_equals("");
+
+    g_unicode_stub = 1;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+/* Radio text in the ring reaches the terminal without its control characters (C0 and C1 alike: U+009B is CSI to a
+   UTF-8 terminal), cut on a character boundary at the line's width, and as ASCII without UTF-8. Every message shows:
+   there is no category filter. */
+static void
+test_tetra_messages_are_printable(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    opts->frame_tetra = 1;
+    tetra_publish_control_channel(state);
+    tetra_ring_push(state, "SYSINFO carrier=321");
+    tetra_ring_push(state, "SDS \x1B[31mred\xC2\x9B"
+                           "2J caf\xC3\xA9 \xFF!");
+
+    g_unicode_stub = 1;
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_contains("| TETRA messages\n| SDS  [31mred 2J caf\xC3\xA9 \xEF\xBF\xBD!\n| SYSINFO carrier=321\n");
+    assert(strchr(g_printw_capture, 0x1B) == NULL);
+    assert(strstr(g_printw_capture, "\xC2\x9B") == NULL);
+
+    g_unicode_stub = 0;
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_contains("| SDS  [31mred 2J caf? ?!\n");
+
+    /* Narrow: the cut lands after a whole character, never inside the two bytes of the e-acute. */
+    g_unicode_stub = 1;
+    g_stub_max_x = 3 + 20;
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_contains("| SDS  [31mred 2J caf\xC3\xA9\n");
+    g_stub_max_x = 80;
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
-    dsd_state* tetra_state = (dsd_state*)calloc(1U, sizeof(*tetra_state));
-    assert(tetra_state != NULL);
-    ncurses_last_synctype = DSD_SYNC_TETRA_NDB_POS;
-    tetra_message_push(tetra_state, DSD_TETRA_MESSAGE_CONTROL, "SYSINFO carrier=321");
-    tetra_message_push(tetra_state, DSD_TETRA_MESSAGE_SDS, "SDS hello");
-    reset_printw_capture();
-    ui_render_tetra_messages(tetra_state);
-    assert(strstr(g_printw_capture, "SDS hello") != NULL);
-    assert(strstr(g_printw_capture, "SYSINFO carrier=321") != NULL);
-#ifdef _WIN32
-    assert(_putenv_s("DSD_TETRA_UI_FILTER", "sds") == 0);
-#else
-    assert(setenv("DSD_TETRA_UI_FILTER", "sds", 1) == 0);
-#endif
-    reset_printw_capture();
-    ui_render_tetra_messages(tetra_state);
-    assert(strstr(g_printw_capture, "SDS hello") != NULL);
-    assert(strstr(g_printw_capture, "SYSINFO carrier=321") == NULL);
-#ifdef _WIN32
-    assert(_putenv_s("DSD_TETRA_UI_FILTER", "") == 0);
-#else
-    assert(unsetenv("DSD_TETRA_UI_FILTER") == 0);
-#endif
-    ncurses_last_synctype = DSD_SYNC_NONE;
-    free(tetra_state);
+    test_tetra_rows_follow_the_view();
+    test_tetra_messages_are_printable();
     test_voice_average_units();
     test_source_alias_rendering();
     test_input_source_helpers();

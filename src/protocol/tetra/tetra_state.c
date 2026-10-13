@@ -3,7 +3,10 @@
 #include "tetra_state.h"
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <stdlib.h>
 
 /* The state holds operator air keys, so it is wiped before it is freed. */
@@ -52,4 +55,6 @@ tetra_state_reset(dsd_state* state) {
         return;
     }
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, NULL, NULL);
+    /* The frontends' view of the dropped state goes with it. */
+    dsd_tetra_publication_reset(&state->tetra_pub);
 }

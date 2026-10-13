@@ -2,8 +2,8 @@
 #ifndef DSD_NEO_PROTOCOL_TETRA_H
 #define DSD_NEO_PROTOCOL_TETRA_H
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,6 +14,10 @@ void processTetraSBFrame(dsd_opts* opts, dsd_state* state);
 
 /* Advance a BSCH-synchronised TDMA timestamp to the next normal burst. */
 void tetra_tdma_advance_ndb(dsd_state* state);
+
+/* Copy what the frontends show of the TETRA decoder state into dsd_state::tetra_pub (core/tetra_publication.h).
+ * Runs at the end of every burst; NULL is ignored. */
+void tetra_publish(dsd_state* state);
 
 #ifdef __cplusplus
 }

@@ -16,7 +16,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/protocol/tetra/tetra_messages.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -162,6 +162,15 @@ assert_cc_candidates(const dsd_state* snap) {
     assert(cc->used == 3U);
 }
 
+/* Append one message to the TETRA decoder's ring as the decoder would. */
+static void
+tetra_ring_push(dsd_state* state, dsd_tetra_message_category category, const char* text) {
+    dsd_tetra_message* const item = &state->tetra_messages[state->tetra_message_sequence % DSD_TETRA_MESSAGE_CAPACITY];
+    item->category = (uint8_t)category;
+    DSD_SNPRINTF(item->text, sizeof item->text, "%s", text);
+    state->tetra_message_sequence++;
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -266,9 +275,18 @@ main(void) {
     mark_history(&history[1]);
 
     dsd_app_snapshot_test_reset_event_history_copy_counts();
-    tetra_message_push(state, DSD_TETRA_MESSAGE_SDS, "first SDS");
+    tetra_ring_push(state, DSD_TETRA_MESSAGE_SDS, "first SDS");
+    /* The TETRA publication reaches the frontends with the snapshot, not with the live state. */
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    state->tetra_pub.net_known = 1U;
+    state->tetra_pub.mcc = 262U;
+    state->tetra_pub.traffic_slots = 0x0AU;
+    state->tetra_pub.codec_frames = 18U;
     dsd_app_telemetry_publish_snapshot(state);
-    tetra_message_push(state, DSD_TETRA_MESSAGE_CALL, "later call");
+    tetra_ring_push(state, DSD_TETRA_MESSAGE_CALL, "later call");
+    state->tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
+    state->tetra_pub.mcc = 1U;
+    state->tetra_pub.codec_frames = 99U;
     observation.ota_source_id = 999U;
     observation.observed_m = 2.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 1);
@@ -289,6 +307,9 @@ main(void) {
     const dsd_state* snap = dsd_app_get_latest_snapshot();
     assert(snap->tetra_message_sequence == 1);
     assert(strcmp(snap->tetra_messages[0].text, "first SDS") == 0);
+    assert(snap->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK && snap->tetra_pub.net_known == 1U);
+    assert(snap->tetra_pub.mcc == 262U && snap->tetra_pub.traffic_slots == 0x0AU
+           && snap->tetra_pub.codec_frames == 18U);
     assert_slot_tail(snap, 123U, 456U);
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
     /* A shared pointer would let the next reserve() on either side realloc the other's

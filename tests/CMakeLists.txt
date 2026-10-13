@@ -2948,16 +2948,18 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
     )
 
-    # The shared scan-timing, squelch and received-tone views come in as sources rather than
-    # stubs: the Scan Timing, SQL and Rx tone goldens are only worth anything if they run through
-    # the real display rules.
+    # The shared scan-timing, squelch, received-tone and TETRA views come in as sources rather
+    # than stubs: the Scan Timing, SQL, Rx tone and TETRA goldens are only worth anything if they
+    # run through the real display rules.
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
@@ -2982,27 +2984,6 @@ if(DSD_ENABLE_TERMINAL_UI)
             dsd-neo_test_call_state_support
             ${CURSES_LIBRARIES}
             ${DSD_NEO_TEST_MATH_LIB}
-    )
-    # The printer is compiled into this executable and formats a TETRA mode line.
-    # Link the protocol archive directly: that target also exposes the core
-    # library, whose symbols this test stubs. Crypto is linked as a target so
-    # its TEA import libraries stay on the link line.
-    target_link_options(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE "$<TARGET_LINKER_FILE:dsd-neo_proto_tetra>"
-    )
-    set_property(
-        TARGET dsd-neo_test_ui_ncurses_printer_helpers
-        APPEND
-        PROPERTY LINK_DEPENDS "$<TARGET_LINKER_FILE:dsd-neo_proto_tetra>"
-    )
-    target_link_libraries(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE dsd-neo_crypto
-    )
-    add_dependencies(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        dsd-neo_proto_tetra
     )
     if(MSVC)
         target_compile_definitions(
@@ -3728,6 +3709,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_metrics_model
         ui/test_ui_qt_metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
@@ -3735,6 +3717,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -11120,6 +11103,7 @@ set(_dsd_tetra_test_sources
     tetra_sm_hangtime
     tetra_tch_slot_gate
     tetra_trunk_sm
+    tetra_publication
 )
 
 foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
@@ -11160,6 +11144,52 @@ unset(_dsd_tetra_target)
 unset(_dsd_tetra_test)
 unset(_dsd_tetra_test_name)
 unset(_dsd_tetra_test_sources)
+
+# The TETRA rows every frontend shows, read from a snapshot of the decoder's publication, and the decoder's recent
+# messages made safe for the terminal.
+add_executable(
+    dsd-neo_test_app_control_tetra_view
+    ui/test_app_control_tetra_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_tetra_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_tetra_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_TETRA_VIEW
+    COMMAND dsd-neo_test_app_control_tetra_view
+)
+set_tests_properties(APP_CONTROL_TETRA_VIEW PROPERTIES LABELS "tetra")
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_tetra_view
+  HEADERS_PUBLIC_APP_CONTROL_TETRA_VIEW
+  dsd-neo/app_control/tetra_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_tetra_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_TETRA_VIEW_CXX
+  dsd-neo/app_control/tetra_view.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_tetra_publication
+  HEADERS_PUBLIC_CORE_TETRA_PUBLICATION
+  dsd-neo/core/tetra_publication.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_tetra_publication_cxx
+  HEADERS_PUBLIC_CORE_TETRA_PUBLICATION_CXX
+  dsd-neo/core/tetra_publication.h
+  CXX
+)
 
 # Exercise the actual persistent vocoder subprocess and WAV routing with the
 # deterministic silence stub. Keep the protocol suite usable when Python is

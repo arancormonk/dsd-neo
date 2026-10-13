@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * What the TETRA decoder publishes for the frontends (dsd_state::tetra_pub): taken from its private state at the end of
+ * a burst, nothing before a block has decoded, the timeslot bitmap TN1 first, no key, and cleared with the state.
+ */
+
+#include <assert.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_acelp.h>
+#include <dsd-neo/protocol/tetra/tetra_air.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <stdlib.h>
+#include "tetra_state.h"
+
+static dsd_state*
+state_open(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    return state;
+}
+
+static void
+state_close(dsd_state* state) {
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* A sync word alone is no evidence: the publication holds no mode until a block has passed its CRC. */
+static void
+test_nothing_before_a_decoded_block(void) {
+    dsd_state* state = state_open();
+    tetra_publish(NULL);
+    tetra_publish(state); /* no TETRA state at all: the zero default */
+    assert(state->tetra_pub.mode == DSD_TETRA_MODE_NONE && state->tetra_pub.net_known == 0U);
+    tetra_state_t* const ts = tetra_st(state);
+    assert(ts != NULL);
+    ts->decode_errors = 12U;
+    tetra_publish(state);
+    assert(state->tetra_pub.mode == DSD_TETRA_MODE_NONE);
+    ts->decode_ok = 1U;
+    tetra_publish(state);
+    assert(state->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK);
+    state_close(state);
+}
+
+/* A trunked downlink: network, encryption, the network's TEA, call following, channels, MM status and codec. */
+static void
+test_trunked_downlink(void) {
+    dsd_state* state = state_open();
+    tetra_state_t* const ts = tetra_st(state);
+    assert(ts != NULL);
+    ts->decode_ok = 3U;
+    ts->net_known = 1U;
+    ts->mcc = 262U;
+    ts->mnc = 1001U;
+    ts->colour = 0x19U;
+    ts->frames_resource = 1U;
+    ts->enc_mode = TETRA_ENC_MODE_NONE;
+    ts->trunk_state = (uint8_t)TETRA_SM_ON_CC;
+    ts->frames_sysinfo = 2U;
+    ts->sysinfo_main_carrier = 321U;
+    ts->dl_carrier_hz = 392012500L;
+    ts->mm_status_valid = 1U;
+    ts->mm_status_code = 7U;
+    ts->vocoder_status = (uint8_t)TETRA_VOCODER_STATUS_READY;
+    ts->vocoder_frames = 18U;
+    ts->vocoder_errors = 2U;
+    tetra_publish(state);
+    const dsd_tetra_publication* const pub = &state->tetra_pub;
+    assert(pub->mode == DSD_TETRA_MODE_TMO_DOWNLINK);
+    assert(pub->net_known == 1U && pub->mcc == 262U && pub->mnc == 1001U && pub->colour == 0x19U);
+    assert(pub->air_encryption == DSD_TETRA_AIR_ENC_CLEAR && pub->tea == 0U);
+    assert(pub->trunk_state == DSD_TETRA_TRUNK_ON_CONTROL);
+    assert(pub->cc_known == 1U && pub->cc_carrier == 321U && pub->cc_freq_hz == 392012500U);
+    assert(pub->traffic_valid == 0U && pub->traffic_slots == 0U);
+    assert(pub->mm_status_valid == 1U && pub->mm_status_code == 7U);
+    assert(pub->codec_status == DSD_TETRA_CODEC_READY && pub->codec_frames == 18U && pub->codec_errors == 2U);
+
+    /* An allocation on timeslots 1 and 3 (bit 3 is TN1), encrypted traffic, and the network's KSG from OTAR. */
+    ts->vc_assignment_valid = 1U;
+    ts->vc_carrier = 654U;
+    ts->vc_timeslot_bitmap = 0x0AU;
+    ts->vc_freq_hz = 392125000L;
+    ts->enc_mode = TETRA_ENC_MODE_ON_AUTH;
+    ts->trunk_state = (uint8_t)TETRA_SM_TUNED;
+    assert(tetra_air_ksg_remember(state, 262U, 1001U, 1U) == 1);
+    tetra_publish(state);
+    assert(pub->traffic_valid == 1U && pub->traffic_carrier == 654U && pub->traffic_slots == 0x0AU);
+    assert(pub->traffic_freq_hz == 392125000U && pub->trunk_state == DSD_TETRA_TRUNK_ON_TRAFFIC);
+    assert(pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED && pub->tea == 2U);
+
+    /* A zero bitmap releases the traffic channel; an unresolved or impossible frequency publishes as 0. */
+    ts->vc_timeslot_bitmap = 0U;
+    ts->dl_carrier_hz = -5L;
+    ts->enc_mode = 3U; /* reserved */
+    tetra_publish(state);
+    assert(pub->traffic_valid == 0U && pub->traffic_carrier == 0U && pub->traffic_freq_hz == 0U);
+    assert(pub->cc_freq_hz == 0U && pub->air_encryption == DSD_TETRA_AIR_ENC_UNKNOWN);
+    state_close(state);
+}
+
+/* The codec statuses the decoder reports, each on the publication's. */
+static void
+test_codec_status(void) {
+    static const struct {
+        tetra_vocoder_status_e decoder;
+        uint8_t published;
+    } map[] = {
+        {TETRA_VOCODER_STATUS_UNKNOWN, DSD_TETRA_CODEC_UNKNOWN},
+        {TETRA_VOCODER_STATUS_READY, DSD_TETRA_CODEC_READY},
+        {TETRA_VOCODER_STATUS_COMMAND_MISSING, DSD_TETRA_CODEC_MISSING},
+        {TETRA_VOCODER_STATUS_START_FAILED, DSD_TETRA_CODEC_LOAD_FAILED},
+        {TETRA_VOCODER_STATUS_TIMEOUT, DSD_TETRA_CODEC_DECODE_ERRORS},
+        {TETRA_VOCODER_STATUS_SHORT_OUTPUT, DSD_TETRA_CODEC_DECODE_ERRORS},
+    };
+
+    dsd_state* state = state_open();
+    tetra_state_t* const ts = tetra_st(state);
+    assert(ts != NULL);
+    for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
+        ts->vocoder_status = (uint8_t)map[i].decoder;
+        tetra_publish(state);
+        assert(state->tetra_pub.codec_status == map[i].published);
+    }
+    state_close(state);
+}
+
+/* Direct mode: the communication type names the mode, the DMAC-SYNC encryption state the encryption, and no KSG. */
+static void
+test_direct_mode_and_uplink(void) {
+    static const uint8_t dmo_modes[4] = {DSD_TETRA_MODE_DMO_DIRECT, DSD_TETRA_MODE_DMO_REPEATER,
+                                         DSD_TETRA_MODE_DMO_GATEWAY, DSD_TETRA_MODE_DMO_REPEATER_GATEWAY};
+    dsd_state* state = state_open();
+    tetra_state_t* const ts = tetra_st(state);
+    assert(ts != NULL);
+    ts->decode_ok = 1U;
+    ts->dmo = 1U;
+    ts->net_known = 1U;
+    assert(tetra_air_ksg_remember(state, 0U, 0U, 0U) == 1);
+    for (uint8_t comm = 0; comm < 4U; comm++) {
+        ts->dmo_comm_type = comm;
+        ts->dmo_enc_state = comm & 1U;
+        tetra_publish(state);
+        assert(state->tetra_pub.mode == dmo_modes[comm]);
+        assert(state->tetra_pub.air_encryption
+               == ((comm & 1U) ? DSD_TETRA_AIR_ENC_ENCRYPTED : DSD_TETRA_AIR_ENC_CLEAR));
+        assert(state->tetra_pub.tea == 0U);
+    }
+
+    ts->dmo = 0U;
+    ts->uplink = 1U;
+    state->tetra_sync.cb = 0U;
+    tetra_publish(state);
+    assert(state->tetra_pub.mode == DSD_TETRA_MODE_TMO_UPLINK);
+    state->tetra_sync.cb = 1U;
+    tetra_publish(state);
+    assert(state->tetra_pub.mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK);
+    state_close(state);
+}
+
+/* Dropping the TETRA state drops what it published, and bumps the generation for the frontends. */
+static void
+test_reset_clears_the_publication(void) {
+    dsd_state* state = state_open();
+    tetra_state_t* const ts = tetra_st(state);
+    assert(ts != NULL);
+    ts->decode_ok = 1U;
+    ts->net_known = 1U;
+    ts->mcc = 1U;
+    tetra_publish(state);
+    const uint32_t generation = state->tetra_pub.generation;
+    assert(state->tetra_pub.mode != DSD_TETRA_MODE_NONE);
+    tetra_state_reset(state);
+    assert(state->tetra_pub.mode == DSD_TETRA_MODE_NONE && state->tetra_pub.net_known == 0U);
+    assert(state->tetra_pub.mcc == 0U && state->tetra_pub.generation == generation + 1U);
+    tetra_publish(state); /* the next burst starts from the fresh state */
+    assert(state->tetra_pub.mode == DSD_TETRA_MODE_NONE && state->tetra_pub.generation == generation + 1U);
+    state_close(state);
+}
+
+int
+main(void) {
+    test_nothing_before_a_decoded_block();
+    test_trunked_downlink();
+    test_codec_status();
+    test_direct_mode_and_uplink();
+    test_reset_clears_the_publication();
+    return 0;
+}

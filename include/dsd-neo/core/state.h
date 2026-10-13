@@ -29,6 +29,7 @@
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/tetra_publication.h>
 
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -2066,6 +2067,9 @@ struct dsd_state {
        the readout shows the tracker during a call and what it is for between calls. Written on the decoder thread;
        rides the vertex_ks_count..ui_msg range. */
     uint8_t squelch_edacs_call;
+    /* What the TETRA decoder shows every frontend (dsd_tetra_publication), copied from its private state extension at
+       the end of each burst. Rides the vertex_ks_count..ui_msg range. */
+    dsd_tetra_publication tetra_pub;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
