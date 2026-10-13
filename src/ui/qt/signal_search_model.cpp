@@ -287,6 +287,9 @@ SignalSearchModel::moveRange(int row, int direction) {
 
 QString
 SignalSearchModel::arm() {
+    /* Each attempt replaces the last, and a refused one leaves nothing armed: m_pending is rebuilt as it is checked, so
+       an earlier arm left standing would start a half-built configuration when the session comes up. */
+    m_armed = false;
     if (m_ranges.isEmpty()) {
         return tr("Add a range before searching.");
     }

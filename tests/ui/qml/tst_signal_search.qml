@@ -47,6 +47,7 @@ Item {
     SignalSpy { id: back; target: loader.item; signalName: "backRequested" }
     SignalSpy { id: closed; target: loader.item; signalName: "closed" }
     SignalSpy { id: started; target: loader.item; signalName: "start" }
+    SignalSpy { id: refused; target: loader.item; signalName: "startRefused" }
     TestCase {
         name: "SignalSearch"
         when: windowShown
@@ -56,6 +57,8 @@ Item {
             root.height = 891;
             var editor = findChild(loader.item, "signalSearchRangeEditor");
             editor.visible = false;
+            loader.item.sessionSource = {};
+            loader.item.sourceType = "usb";
         }
         function init() {
             verify(loader.item !== null);
@@ -74,6 +77,7 @@ Item {
             back.clear();
             closed.clear();
             started.clear();
+            refused.clear();
         }
         function test_back_is_delegated_to_session_owner() {
             loader.item.requestClose();
@@ -193,6 +197,53 @@ Item {
             verify(!message.visible, "a refusal must not greet the next visit");
             root.hostFailure = "No permission for RTL-SDR";
             compare(message.text, "No permission for RTL-SDR");
+        }
+        // A refused Start tells Main, which abandons any start this screen asked
+        // for earlier that is still waiting for USB access.
+        function test_refused_start_is_announced() {
+            loader.item.sessionActive = false;
+            model.armError = "Enable at least one range.";
+            var button = findChild(loader.item, "searchStartPause");
+            button.clicked();
+            compare(refused.count, 1);
+            compare(started.count, 0);
+            model.armError = "";
+            button.clicked();
+            compare(refused.count, 1);
+            compare(started.count, 1);
+        }
+        // Main binds sessionSource to the receiver in the decoder's options
+        // snapshot. While a search the decoder owns runs, the source fields follow
+        // it (a screen reopened over that search after Activity recreation never
+        // had Home seed them), and they keep it once the session stops.
+        function test_source_follows_the_owned_session() {
+            var screen = loader.item;
+            var editor = findChild(screen, "signalSearchRangeEditor");
+            screen.host = "192.168.1.10";
+            screen.port = 1234;
+            screen.sessionSource = {sourceType: "airspy"};
+            compare(screen.sourceType, "airspy");
+            compare(editor.sourceType, "airspy");
+            compare(screen.host, "192.168.1.10", "an Airspy leaves the rtl_tcp server alone");
+            screen.sessionSource = {sourceType: "rtltcp", host: "10.0.0.5", port: 1235};
+            compare(screen.sourceType, "rtltcp");
+            compare(screen.host, "10.0.0.5");
+            compare(screen.port, 1235);
+            // A cleared reading and a receiver no Qt start offers change nothing.
+            screen.sessionSource = {};
+            screen.sessionSource = {sourceType: "soapy"};
+            compare(screen.sourceType, "rtltcp");
+            // Stopped: the receiver it ran on stays for a restart.
+            screen.sessionActive = false;
+            screen.sessionSource = {sourceType: "usb"};
+            compare(screen.sourceType, "rtltcp");
+            // A session no search owns is not the search's receiver, until one does.
+            model.status = {phase: 1, session: "18", owned: false};
+            screen.sessionActive = true;
+            screen.sessionSource = {sourceType: "airspy"};
+            compare(screen.sourceType, "rtltcp");
+            model.status = {phase: 1, session: "18", owned: true};
+            compare(screen.sourceType, "airspy");
         }
         function test_reception_is_visible_before_tune_finishes() {
             model.status = Object.assign({}, model.status, {phase: 2});

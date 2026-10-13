@@ -32,11 +32,52 @@
 #include <utility>
 #include <vector>
 #include "../test_support/qt_test_paths.h"
+#include "decoder_host.h"
 #include "known_frequency_index.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
 #include "signal_search_model.h"
+
+namespace {
+/** A host whose session state a case moves, so the model's start on the Running edge can be observed. */
+class SessionHost : public dsd_qt::DecoderHost {
+  public:
+    bool
+    isRunning() const override {
+        return m_state == Running;
+    }
+
+    QString
+    statusText() const override {
+        return {};
+    }
+
+    SessionState
+    sessionState() const override {
+        return m_state;
+    }
+
+    bool
+    start(const QStringList& /*argv*/) override {
+        return false;
+    }
+
+    void
+    stop() override {
+        enter(Idle);
+    }
+
+    void
+    enter(SessionState state) {
+        m_state = state;
+        Q_EMIT sessionStateChanged();
+    }
+
+  private:
+    SessionState m_state = Idle;
+};
+} // namespace
 
 static void
 publish(uint64_t id, bool confirmed = false) {
@@ -346,6 +387,18 @@ main(int argc, char** argv) {
     model.removeRange(1);
     assert(model.arm().isEmpty());
     model.cancelArm();
+
+    // A refused arm leaves nothing armed. It rebuilds the pending configuration as it checks it, so an earlier arm
+    // left standing would start that half-built configuration when the session comes up. No decoder session is open
+    // here, so a start the model attempts surfaces as its refusal text.
+    SessionHost host;
+    dsd_qt::SignalSearchModel armed(&host, &index);
+    assert(armed.arm().isEmpty());
+    assert(armed.saveRange(-1, large).isEmpty());
+    assert(armed.arm().contains(QStringLiteral("100,000")));
+    host.enter(dsd_qt::DecoderHost::Running);
+    assert(!armed.error().contains(QStringLiteral("did not accept")));
+    armed.removeRange(1);
     return 0;
 }
 

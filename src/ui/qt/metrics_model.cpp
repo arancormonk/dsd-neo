@@ -1011,6 +1011,27 @@ MetricsModel::airspyView(const dsd_opts* opts_snapshot) {
     return native;
 }
 
+/* The source vocabulary is session_args' append_input_args(): "usb" builds an rtl spec, "airspy" an airspy spec,
+   "rtltcp" an rtltcp spec. The rtl_tcp server is the one the engine parsed from that spec. */
+QVariantMap
+MetricsModel::radioSourceView(const dsd_opts* opts_snapshot) {
+    QVariantMap source;
+    if (dsd_opts_input_is_radio(opts_snapshot) == 0) {
+        return source;
+    }
+    const char* dev = opts_snapshot->audio_in_dev;
+    if (dsd_opts_audio_in_dev_is_airspy_spec(dev) != 0) {
+        source.insert(QStringLiteral("sourceType"), QStringLiteral("airspy"));
+    } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev) != 0) {
+        source.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
+        source.insert(QStringLiteral("host"), QString::fromUtf8(opts_snapshot->rtltcp_hostname));
+        source.insert(QStringLiteral("port"), opts_snapshot->rtltcp_portno);
+    } else if (dsd_opts_audio_in_dev_is_rtl_spec(dev) != 0) {
+        source.insert(QStringLiteral("sourceType"), QStringLiteral("usb"));
+    }
+    return source;
+}
+
 QString
 MetricsModel::tunerGainText(const dsd_frontend_metrics& metrics) {
     if (metrics.tuner_gain_is_auto != 0) {
@@ -1054,6 +1075,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * the last one costs no binding re-evaluation. See MetricsModel::View. */
     View next;
     next.airspy = airspyView(opts_snapshot);
+    next.radio_source = radioSourceView(opts_snapshot);
 
     // Published atomically with the scan flags. Until this first valid snapshot,
     // a cleared model cannot prove that a new session is not scanning.

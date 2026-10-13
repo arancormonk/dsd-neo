@@ -20,16 +20,40 @@ Item {
     property string sourceType: "usb"
     property string host: ""
     property int port: 1234
+    // The receiver the running session uses, copied from the decoder's options
+    // snapshot (Main binds metrics.radioSource). Home seeds the source fields
+    // only when it opens this screen; one reopened over a running search after
+    // Activity recreation never passed through it. So while a search the decoder
+    // owns runs, the fields follow its receiver: a paused range edit offers that
+    // receiver's gain controls, and a stopped search restarts on it.
+    property var sessionSource: ({})
     readonly property var status: searchModel ? searchModel.status : ({})
     readonly property var hit: status.hit || ({})
     readonly property int phase: status.phase || 0
     readonly property bool receiving: sessionActive && !!hit.id && hit.id !== "0" && !hit.ended && (phase === 2 || phase === 3 || phase === 4 || phase === 5)
     readonly property bool editable: !sessionActive || phase === 6
+    readonly property bool ownedSession: sessionActive && !!status.owned
     signal closed
     signal backRequested
     signal start(string sourceType, string host, int port, string frequency)
+    // A Start refused before it reached Main: any start asked for earlier and
+    // still waiting (for USB access) is no longer what this screen wants.
+    signal startRefused
     signal stop
     signal saveDetection(var hit)
+    function followSessionSource() {
+        var source = sessionSource || {};
+        if (!ownedSession || ["usb", "airspy", "rtltcp"].indexOf(source.sourceType) < 0)
+            return;
+        sourceType = source.sourceType;
+        if (source.sourceType === "rtltcp") {
+            host = source.host || "";
+            port = source.port || 1234;
+        }
+    }
+    onSessionSourceChanged: followSessionSource()
+    onOwnedSessionChanged: followSessionSource()
+    Component.onCompleted: followSessionSource()
     function requestClose() {
         if (!sessionActive) {
             localFailure = "";
@@ -307,6 +331,7 @@ Item {
                 var error = searchModel.arm();
                 if (error.length) {
                     screen.localFailure = error;
+                    screen.startRefused();
                     return;
                 }
                 var ranges = searchModel.ranges.filter(function (r) { return r.enabled; });
