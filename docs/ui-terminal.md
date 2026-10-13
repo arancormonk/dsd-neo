@@ -346,8 +346,8 @@ frame is waited for, as before.
 ### Decoder mode
 
 **Decoder -> Mode** opens a picker of the decode presets — Auto, P25 (Phase 1 + 2), P25 Phase 1, P25 Phase 2, DMR,
-DMR (single slot), NXDN48, NXDN96, X2-TDMA, YSF, D-STAR, EDACS / ProVoice, dPMR, M17, Analog, AM — and switches which
-protocols are decoded without restarting, the same way the CLI `-f` presets do at startup. The row reads the live
+DMR (single slot), NXDN48, NXDN96, X2-TDMA, YSF, D-STAR, EDACS / ProVoice, dPMR, M17, TETRA, Analog, AM — and switches
+which protocols are decoded without restarting, the same way the CLI `-f` presets do at startup. The row reads the live
 preset back (`Mode... [P25 Phase 1]`), and the footer toasts `Decoding <mode>` once the change has applied.
 
 AM (`-fM`) needs an I/Q radio input. On a PCM input the picker's AM row reads `AM (needs an I/Q radio input)`, and
@@ -856,6 +856,25 @@ nothing; an earlier edit still waiting to apply is applied all the same. The row
 Config > Save writes: while a scan row with its own policy is on air the row keeps it, and the status line says so
 (`Default tone filter -> allow 100.0 Hz; this channel overrides it (block 67.0 Hz)`). The row is always there; set to a
 list policy on a session where nothing detects tones, the log says once that it has no effect.
+
+Under the TETRA preset (`-fT`), once a block has decoded, Call Info shows what the Qt/Android monitor shows: the
+working mode with the air encryption, the network (its colour code in decimal, as the call history names one), where
+call following stands while trunking is on, the control and traffic channels, the last MM status and the speech
+codec's health, each line only once the decoder has something for it, and under them the latest decoded messages:
+
+```text
+| TETRA: TMO downlink · encrypted (TEA2)
+| Network: MCC 262 · MNC 1001 · CC 25
+| Trunk: traffic channel
+| Control: carrier 321 · 392.0125 MHz
+| Traffic: carrier 654 · TS 1,3 · 392.1250 MHz
+| Codec: ready · 18 frames · 2 errors
+| TETRA messages
+| SDS ...
+```
+
+A terminal without UTF-8 gets ` - ` between the parts. Message text from the air is shown without control
+characters, and cut on a character boundary at the screen's width.
 
 ## Compact View
 

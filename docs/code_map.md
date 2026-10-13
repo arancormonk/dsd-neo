@@ -880,6 +880,20 @@ suite runs under this compiler.
   and receive policy ask instead. UNAVAILABLE means detection is on but the input rate is one the front end cannot
   use; `carrier_open` is still kept there (issue #526), and on the AM monitor, where no detection runs and `tone_state`
   stays INACTIVE (issue #524).
+- API note: `dsd_state::tetra_pub` (`dsd_tetra_publication` in `<dsd-neo/core/tetra_publication.h>`, which `state.h`
+  includes) is what the TETRA decoder shows every frontend. Its working state lives in its state extension, which no
+  snapshot copies; at the end of every burst `tetra_publish()` (`src/protocol/tetra/tetra.c`, from
+  `tetra_frame_leave()`) copies into the publication the working mode (TMO downlink, uplink or control uplink, DMO
+  direct or through a DM-REP, DM-GATE or both), taken only once a block passed its CRC, the network (MCC, MNC, 6-bit
+  colour code), the air-interface encryption and the network's TEA (1..4, 0 unknown; never a key), where call
+  following stands, the SYSINFO main carrier and its frequency, the channel allocation's carrier, timeslot bitmap (bit
+  3 is timeslot 1, as the Timeslot assigned field carries it) and frequency, the last D-MM STATUS, and the speech
+  codec's status (`dsd_tetra_codec_status`: unknown, ready, missing, load failed, decode errors) with its frame and
+  error counts. Integers only, so it rides the `vertex_ks_count..ui_msg` snapshot range, pinned by a `_Static_assert`
+  in `ui_snapshot.c`. `dsd_tetra_publication_reset()` clears it and bumps its `generation`: a preset other than TETRA
+  does (`dsd_apply_decode_mode_preset()`), and so does `tetra_state_reset()` with the state it drops. The decoder's
+  recent-message ring (`tetra_messages`, its own snapshot range) is read only through the TETRA view. Tests:
+  `TETRA_PUBLICATION`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `RUNTIME_DECODE_MODE`.
 - API note: `<dsd-neo/core/analog_tone.h>` (issue #527) holds the receive policy's types only: `dsd_tone_filter_mode`
   (off, allow, block) and `dsd_tone_set`, a bounded bitmask (one bit per standard CTCSS tone; one per standard DCS code
   and polarity, as written) that copies by value into `dsd_opts::analog_tone_filter` / `analog_tone_set`, the scan
@@ -2313,6 +2327,22 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `_LONG`) for a caller that shows one at a time; the view is built on it. The public header names the kinds through
   `core/access_code.h` only, never `state.h`. The Qt call history's `accessCode`/`accessCodeText` roles come from it,
   each formatting only its own text. Test: `APP_CONTROL_ACCESS_CODE_VIEW`.
+  `include/dsd-neo/app_control/tetra_view.h` and `src/app_control/tetra_view.c` turn a snapshot of
+  `dsd_state::tetra_pub` into the TETRA rows every frontend shows: `dsd_app_tetra_view()` makes them visible while the
+  options run the TETRA preset (`frame_tetra`) and the publication has a working mode, and writes the mode line with
+  the air encryption (`TMO downlink · encrypted (TEA2)`, `DMO direct · clear`), the network (`MCC 262 · MNC 1001 · CC
+  25`: the colour code through `dsd_app_access_code_format()`, in decimal as the call history names one), where call
+  following stands (`control channel`, `traffic channel`, `idle`, only with trunking on and on a TMO downlink), the
+  control and traffic channels (`carrier 654 · TS 1,3 · 392.1250 MHz`, a frequency to five decimals with a trailing
+  zero dropped, as Qt's `Util.mhzText()` writes one), the MM status (`7 · MS frequency bands request`) and the codec's
+  health (`ready · 18 frames · 2 errors`, `missing`, `failed to load`, `decode errors`), with flags for colour
+  (`encrypted`, `on_traffic`, `codec_fault`) so no frontend compares words. `DSD_APP_TETRA_ASCII` swaps the ` · `
+  separator for ` - ` on a terminal without UTF-8. `dsd_app_tetra_message()` reads the decoder's recent-message ring,
+  newest first, as text safe to print: it decodes UTF-8 strictly (each byte of an invalid sequence becomes U+FFFD),
+  turns every C0 and C1 control into a space (`dsd_unicode_scalar_is_control()`), cuts on a character boundary at a
+  column count or where the buffer ends, and with `DSD_APP_TETRA_ASCII` writes `?` outside ASCII. No category filter:
+  the terminal shows every message. Tests: `APP_CONTROL_TETRA_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
+  `UI_QT_METRICS_MODEL`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -4684,6 +4714,18 @@ Qt Quick frontend (`src/ui/qt`):
   nor the trunk-scan targets, so on a scan that mixes `nfm` rows or `nfm-conventional` targets with other modes it is
   reachable while one of those is on air; the terminal row is always shown. Tests: `UI_QT_METRICS_MODEL`,
   `UI_QT_CONTROLLER`, `UI_QT_QML_CALL_LISTS` (`tst_tone_filter_sheet.qml`, `tst_monitor_rx_tone.qml`).
+- TETRA: `MetricsModel` publishes the `tetra*` group (`tetraVisible`, `tetraModeText`, `tetraEncrypted`,
+  `tetraNetworkText`, `tetraTrunkText`, `tetraOnTraffic`, `tetraControlText`, `tetraTrafficText`, `tetraMmStatusText`,
+  `tetraCodecText`, `tetraCodecFault`) on its own `tetraChanged` signal, filled in `fillTetraView()` from
+  `app_control/tetra_view` over the snapshot `refresh()` is handed, so no Qt source includes a protocol header.
+  `qml/MonitorScreen.qml` shows the rows (`monitorTetra`, `monitorTetraChannels`, `monitorTetraMmStatus`,
+  `monitorTetraCodec`) only while `tetraVisible`, each part only while its text is set, coloured from the flags
+  (magenta for encryption, cyan on a traffic channel, the alert colour for a codec fault). The terminal shows the same
+  view as Call Info lines (`TETRA:`, `Network:`, `Trunk:`, `Control:`, `Traffic:`, `MM status:`, `Codec:`,
+  `ui_format_tetra_lines()`) and the recent messages under them (`ui_render_tetra_messages()`), with no protocol call
+  and no environment variable. The TETRA decode chip (`-fT`, `qml/Util.js`) carries no `trunked` suggestion: it covers
+  direct mode too, whose speech call following would mute. Tests: `UI_QT_METRICS_MODEL` (`test_tetra_rows()`),
+  `UI_QT_QML_CALL_LISTS` (`tst_monitor_tetra.qml`, `tst_wizard_decode_chip.qml`), `UI_NCURSES_PRINTER_HELPERS`.
 - `dsd_app_lead_slot()` in `app_control/call_view.c` selects the earliest exact start among identified active
   calls for the Monitor hero, its quality row and the Android notification. Later calls on the other slot do not
   displace it. Exact ties prefer the lower slot; when no call is active, the lowest ended slot wins. An earlier
