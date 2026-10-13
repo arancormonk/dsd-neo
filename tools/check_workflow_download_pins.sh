@@ -152,7 +152,12 @@ def strip_comment(line):
     return line.rstrip()
 
 
-def entries(text):
+# A double-quoted key with an escape ("con\u0074ainer") or an explicit "? " key
+# could spell any key, so the reader does not try to decode it.
+ODD_KEY = re.compile(r"""^(?:-\s+)*(?:\?(?:\s|$)|"[^"]*\\[^"]*"\s*:)""")
+
+
+def entries(text, odd_keys):
     """(line number, indent, key, value, text) per line; key is None for a non-key line.
 
     The lines of a block scalar (key: | or >) come back as non-key lines with their
@@ -172,6 +177,8 @@ def entries(text):
         if not line.strip():
             continue
         body = line.strip()
+        if ODD_KEY.match(body):
+            odd_keys.append(number)
         # The column of the key (past any "- " of a list item) bounds the scalar.
         item = re.match(r"^(?:-\s+)*", body).end()
         match = KEY.match(body[item:])
@@ -409,6 +416,10 @@ class Job:
         self.field_indent = None
         self.credentials = None
         self.unreadable = None
+        # Indentation of the container's keys, of the services, and of a service's keys.
+        self.container_keys = None
+        self.service_indent = None
+        self.service_keys = None
         if inline:
             self.scan(inline, number)
 
@@ -417,6 +428,15 @@ class Job:
             self.unreadable = number
         if self.credentials is None and CREDENTIALS.search(text):
             self.credentials = number
+
+    def found_credentials(self, number):
+        if self.credentials is None:
+            self.credentials = number
+
+    def flow_credentials(self, value, number):
+        """A one-line flow mapping ({image: ..., credentials: ...}) with credentials."""
+        if value.startswith("{") and "credentials" in flow_names(value):
+            self.found_credentials(number)
 
     def report(self, workflow, events):
         if self.unreadable is not None:
@@ -431,7 +451,11 @@ class Job:
 
 for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
     text = workflow.read_text(encoding="utf-8")
-    rows = list(entries(text))
+    odd_keys = []
+    rows = list(entries(text, odd_keys))
+    if odd_keys:
+        print(f"{workflow}:{odd_keys[0]}: workflow (an escaped or explicit (?) key; write keys plainly)")
+        continue
     # The reader relies on block style: keys at column 0 for the top level and
     # indentation for everything below. A workflow that is not written that way
     # fails whenever it mentions credentials at all.
@@ -513,8 +537,36 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
                 if job.condition[0][:1] in ("'", '"'):
                     job.condition_readable = False
                 job.condition.append(body)
+        # Only a credentials key of the container itself, or of a service, counts:
+        # the same word in an env value or a nested mapping is not registry auth.
+        if job.field == "container":
+            if indent == job.field_indent:
+                job.container_keys = None
+                job.flow_credentials(value, number)
+            else:
+                if job.container_keys is None:
+                    job.container_keys = indent
+                if indent == job.container_keys and key == "credentials":
+                    job.found_credentials(number)
+        elif job.field == "services":
+            if indent == job.field_indent:
+                job.service_indent = job.service_keys = None
+                if value.startswith("{"):
+                    # Services and their settings on one line: any mention counts.
+                    job.scan(value, number)
+            else:
+                if job.service_indent is None:
+                    job.service_indent = indent
+                if indent == job.service_indent:
+                    job.service_keys = None
+                    job.flow_credentials(value, number)
+                elif job.service_keys is None or indent == job.service_keys:
+                    job.service_keys = indent
+                    if key == "credentials":
+                        job.found_credentials(number)
         if job.field in ("container", "services"):
-            job.scan(text, number)
+            if job.unreadable is None and ALIAS.search(text):
+                job.unreadable = number
             if unbalanced(value if key is not None else body) and job.unreadable is None:
                 job.unreadable = number
     if job is not None:

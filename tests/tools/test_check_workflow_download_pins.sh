@@ -566,6 +566,72 @@ run_credentials_case escaped_operator_in_condition < <(
 )
 expect_credentials_verdict escaped_operator_in_condition fail
 
+# An escaped or explicit (?) key could spell container, jobs or credentials, so
+# the workflow is refused whatever it says.
+run_credentials_case escaped_container_key < <(
+  credentialed_job build: | sed 's/^    container:/    "con\\u0074ainer":/'
+)
+if [[ $rc -eq 0 ]] || ! grep -qF "workflow (an escaped or explicit" "$WORK/escaped_container_key.out"; then
+  fail "escaped_container_key: an escaped key was not refused"
+  cat "$WORK/escaped_container_key.out" >&2
+fi
+run_credentials_case explicit_container_key << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    ? container
+    : {image: $pinned, credentials: {username: u, password: p}}
+    steps:
+      - run: true
+EOF
+if [[ $rc -eq 0 ]] || ! grep -qF "workflow (an escaped or explicit" "$WORK/explicit_container_key.out"; then
+  fail "explicit_container_key: an explicit key was not refused"
+  cat "$WORK/explicit_container_key.out" >&2
+fi
+
+# Only the container's or a service's own credentials key is registry auth: the
+# word in an env value, or a deeper key, is not.
+run_credentials_case credentials_in_container_env << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: $pinned
+      env:
+        APP_CONFIG: '{"credentials": {"username": "app"}}'
+        credentials: not-registry-auth
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict credentials_in_container_env pass
+run_credentials_case credentials_in_service_env << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      cache:
+        image: $pinned
+        env:
+          APP_CONFIG: '{"credentials": {"username": "app"}}'
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict credentials_in_service_env pass
+run_credentials_case flow_service_with_credentials << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      cache: {image: $pinned, credentials: {username: u, password: p}}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict flow_service_with_credentials fail
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:
