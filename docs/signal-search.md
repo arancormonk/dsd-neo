@@ -93,6 +93,11 @@ so are the receiver settings the detection was made with: PPM correction and bia
 tee on an RTL-SDR or rtl_tcp source, serial, sample rate, gain and bias tee on an
 Airspy. They are saved as explicit values, so a later change to the app-wide
 defaults does not change the saved system; a bias tee that was off stays off.
+A saved system holds an RTL-SDR or rtl_tcp gain in whole dB, where 0 means the
+tuner's automatic gain, so a detection made on automatic gain saves automatic
+gain, and a manual gain saves as the nearest whole dB from 1 to 49: a detection
+at manual 0 or 0.9 dB saves as manual 1 dB, not automatic, and the tuner then
+runs the nearest step it supports. An Airspy keeps its own gain settings.
 Confirmed NXDN48 and NXDN96 detections preserve their respective decoder rates.
 Unresolved identification stays explicit. The user must choose the normal Save
 action; later detections do not change the open draft.
@@ -109,6 +114,11 @@ A stalled radio input (an rtl_tcp stall, for example) does not hold a visit or
 end the session: after 100 ms without samples the decoder leaves the frame it was
 reading and returns to the coordinator, so controls and visit deadlines still take
 effect, and it reads the input again on its next pass.
+
+A search started with the radio session waits up to 10 seconds for the receiver's
+first samples. Samples from an earlier radio session do not count: the measurement
+tap forgets a stream when it stops, so a long pause between sessions is not taken
+for a stalled input.
 
 Implementation is divided into four reviewable parts:
 
@@ -129,8 +139,9 @@ in both. Local noise comes from sidebands 1.5 to 3 channel widths out on either
 side, in four blocks each: the mean of the blocks within 6 dB of the third lowest.
 A block a transmitter raises by more than that is left out, up to five of the eight;
 one it raises by less still counts, so with up to five raised blocks the estimate
-reads at most about 4.6 dB high (five blocks 4.8 dB above three quiet ones read
-3.5 dB high). Clipping and capture discontinuities invalidate the measurement.
+reads at most 2.875 times the third lowest block: over a flat floor about 4.6 dB high
+(five blocks 4.8 dB above three quiet ones read 3.5 dB high), more where the
+uncontaminated blocks themselves differ. Clipping and capture discontinuities invalidate the measurement.
 Allocations, FFT size, candidates and total channels are bounded; unsupported plans
 report an error.
 
@@ -143,10 +154,12 @@ channels share one boundary however the grid frequencies were rounded. This is
 decided once per measurement, on both windows' power together, so a transmitter is
 assigned the same way for the whole measurement. It must also hold its own power in
 each window (within 10 dB of the other over the bins it occupies), so energy one
-window only owes to another transmitter is not sustained, and spread over those bins
-alike (each window's share of it overlapping the other's by at least a quarter), so
-two transmitters that each fill one window and pool into one between them are not
-either.
+window only owes to another transmitter is not sustained. Two transmitters that each
+fill one window can also pool into one between them; that is told apart from one
+transmitter whose modulation differs between the windows (a slow tone half a cycle
+apart) by both of these: the windows spread it over those bins differently (their
+shares of it overlapping by less than a quarter), and each window centres it
+outside its channel, on either side.
 
 Transmitters are located in the spectrum itself, not only among the requested
 channels, so one past a range or span boundary counts. Each channel's window climbs
@@ -175,9 +188,11 @@ a threshold (at least 4.5 dB) that grows with the statistical spread of the aver
 spectrum, and climb above the last ridge before the valley and every ridge passed
 since (the transmitter's own outer sideband lines decay one after another). Or,
 where its other side is a clean skirt and its spectrum mostly overlaps its mirror
-image, the energy beside it stands 10 dB above that side mirrored about its centre
-and peaks away from the transmitter's own edge; that looks only as far as the first
-other transmitter, beyond which the mirror says nothing. Within the transmitter's own
+image, the energy beside it stands 10 dB above that side mirrored about its centre,
+peaks away from the transmitter's own edge, and makes the envelope itself rise from
+a dip (a lopsided transmitter's own skirt only falls, however far above its mirror);
+that looks only as far as the first other transmitter, beyond which the mirror says
+nothing. Within the transmitter's own
 channel width a rise is usually its own spectrum (an FM transmitter's sidebands): it
 counts only when the transmitter mostly overlaps its mirror image, the rise stands
 10 dB above its own mirror image (sideband lines come in mirrored pairs) and its
@@ -200,9 +215,10 @@ other. Known limits:
 - Two transmitters whose spectra merge within the FFT resolution can count as one,
   at the channel of their combined centre (for example a neighbour 3 dB down,
   12.5 kHz beside 5 kHz deviation, at 1.2 to 1.5 kHz bins without rotation).
-- A weak neighbour hidden under a strong transmitter's skirt or splatter (for
-  example 26 dB or more below noise-like voice FM, or 20 dB below a heavily
-  modulated AM transmitter) is not reported until that transmitter ends.
+- A weak neighbour hidden under a strong transmitter's skirt or splatter, raising
+  neither a valley rise nor the envelope (for example 26 dB or more below noise-like
+  voice FM, 36 dB below 5 kHz deviation, or 20 dB below a heavily modulated AM
+  transmitter), is not reported until that transmitter ends.
 - A transmitter whose centre lies outside every channel's window (a window narrower
   than the step, far off-grid) is reported at most once, at the nearest channel its
   sidebands reach, or not at all.
@@ -210,6 +226,13 @@ other. Known limits:
   can move a transmitter to the neighbouring channel.
 - Two weaker transmitters placed symmetrically within a stronger one's channel width
   mirror each other and are taken for its own spectrum.
+- A transmitter whose modulation is lopsided has no symmetric extent about its
+  carrier; it is centred where its spectrum is most symmetric, which on 250 Hz
+  grids can be a channel or more from its carrier.
+- A transmitter wider than the channel width whose slow modulation puts each window
+  on a different side of it, or two transmitters with overlapping spectra each
+  present in only one window, can be reported a channel from where it (or either)
+  sits.
 - A weaker transmitter beside a stronger one is located from what rises out of the
   valley between them. In crowded spectrum on 250 or 625 Hz grids that places it
   within its own width, which spans many channels, so it can be reported several
@@ -234,7 +257,7 @@ spans, rather than the planning estimate of 9–10 before exclusions.
 Run the focused native and QML regressions in a Qt-enabled build:
 
 ```sh
-ctest --preset dev-debug -R 'SIGNAL_(MEASURE|SEARCH)|UI_QT_QML_SESSION_TOOLS' --output-on-failure
+ctest --preset dev-debug -R 'SIGNAL_(MEASURE|SEARCH|TAP)|UI_QT_QML_SESSION_TOOLS' --output-on-failure
 ctest --preset dev-debug -L iq-decode --output-on-failure
 ```
 
@@ -257,12 +280,18 @@ rotation-free capture and channels at the DC and edge guards; transmitters 25 an
 37.5 kHz apart (local noise), equal ones 5 and 10 kHz apart on fine grids, a carrier
 6 dB down 5 kHz beside a stronger one within its window, a weak neighbour on an
 ownership boundary, transmitters present in only one window each (including two
-whose spectra overlap on either side of an empty channel), and noise alone at 3 dB
+whose spectra overlap on either side of an empty channel) against one whose 50 Hz
+tone puts its windows on either side of its carrier, a transmitter with lopsided
+modulation whose skirt stands far above its mirror, and noise alone at 3 dB
 sensitivity. The shared tap is tested for
 reports delivered only to their own request, cancels and capture changes, with a
-feeding thread racing requests, polls and cancels. A coordinator regression runs
+feeding thread racing requests, polls and cancels. An I/Q replay stream checks that
+stopping a stream leaves the tap with no capture or latest-sample time, and that the
+next stream publishes its own. A coordinator regression runs
 the real detector and tap on synthetic capture I/Q over three passes at six capture
-alignments and checks that only the transmitter's channel is ever visited. Coordinator
+alignments and checks that only the transmitter's channel is ever visited; it also
+starts a search on a tap a stopped stream has emptied, which waits for the first
+block and then plans its first span from it. Coordinator
 tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,
@@ -275,9 +304,10 @@ Persistence and Qt tests cover bounded history, duplicate suppression, failed
 writes/retry (history and avoids each stay owed until their own write succeeds,
 including when storage only recovers by close), recreation, fractional steps,
 ambiguous matches, nested channel maps, immutable saves (including each source's own
-receiver settings reaching the saved system), phone text scaling and navigation
-ownership. They also check that
-status-only refreshes leave history untouched (it is copied only when its store
+receiver settings and the detection's gain mode reaching the saved system), phone
+text scaling and navigation ownership. They also check that connection and USB-access
+failures reported after Start or Resume still reach the search screen beside its own
+refusals, that status-only refreshes leave history untouched (it is copied only when its store
 revision moves), session avoids, the aggregate 100,000-channel check before a start
 is submitted, and that a start the engine rejects with no search left owns nothing
 and is retired when the decoder session ends, so a recreated frontend never restores

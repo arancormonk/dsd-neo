@@ -3143,16 +3143,22 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   segment best overlaps its own mirror image, with segments cut and merged at valleys and
   weak centres by comparing one source with two (refined on the FFT bins of the whole body
   with aggregated bins); transmitters beside each are found by a valley rise above every
-  skirt ridge passed, 10 dB above the mirrored far side (up to the first other
-  transmitter) or, within its width, an unmirrored rise beyond a 20 dB valley, and located
-  once (as a source of their own where their segment allows). A channel keeps a raw
-  detection only for a transmitter centred within its half-open interval on the range's
-  rational grid that holds its own power in both windows (within 10 dB, spread alike).
+  skirt ridge passed, 10 dB above the mirrored far side (rising from a dip, up to the first
+  other transmitter) or, within its width, an unmirrored rise beyond a 20 dB valley, and
+  located once (as a source of their own where their segment allows). A channel keeps a
+  raw detection only for a transmitter centred within its half-open interval on the
+  range's rational grid that holds its own power in both windows (within 10 dB), unless
+  the windows spread it apart and each centres it outside that channel.
   `docs/signal-search.md` lists the measured limits. The tap's `feed_mutex`
   serialises the detector (feeding and analysis, request, cancel); `tap_mutex` guards only
   the published capture, readiness and report, so polls never wait for analysis; locks
-  are taken feed first. Search bypass preserves capture/control health
-  while skipping demodulation, protocol/audio work and display FFTs. Decoder-dependent
+  are taken feed first. The tap describes only the stream feeding it: once the demod
+  thread has joined, the stream's soft stop resets it (`rtl_signal_measure_reset()`), so
+  no capture, latest-sample time or request outlives the stream. A search started on the
+  next stream before its first block then waits for that block under the startup
+  deadline instead of reading the stopped stream's age as a stall. Search bypass
+  preserves capture/control health while skipping demodulation, protocol/audio work and
+  display FFTs. Decoder-dependent
   gain/PPM supervision is suspended during discovery. `rtl_stream_tune_async()` and
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
@@ -4269,6 +4275,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   avoid lists only when their store revisions move. Back delegates to Main's session
   policy; a search a coordinator owns (`status.owned`) is a navigation root so its controls
   remain accessible after Activity recreation. Range edits apply on paused restart.
+  Main binds the screen's `failure` to its own failure text, and the screen never assigns
+  it: an assignment would drop the binding, and a connection, USB-access or configuration
+  failure after Start or Resume would never reach the screen that covers Home's banner.
+  The screen's own `arm()` refusals live in `localFailure`, shown beside the host's failure
+  until the next attempt or Back (`tst_signal_search.qml`, `tst_main_session_tools.qml`).
   `KnownFrequencyIndex` caches saved frequencies and referenced CSVs, rebuilding on model
   or file changes; Signal search, Spectrum and Live Exploring look up labels without
   reading files during rendering. Exact matches win, nearest matches use half the smaller
@@ -4276,7 +4287,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   hit snapshot, including its original source settings and unresolved identity.
   `SignalSearchModel::systemForHit()` shapes the captured receiver settings as saved-system
   fields, each source only its own: an Airspy's native `airspy` map, or an RTL's `ppm`
-  text and explicit `biasTee` (0 or 1, never the follow-the-app -1).
+  text and explicit `biasTee` (0 or 1, never the follow-the-app -1). The detection's tuner
+  gain (`gain` dB, `gainAuto`) becomes the whole-dB `gainDb` a saved session starts with,
+  the `-i` spec's gain field, where 0 is the tuner's AGC: AGC stays 0, and a manual gain
+  rounds to the nearest whole dB from 1 to 49, so a manual 0–1.4 dB detection stays manual
+  at 1 dB instead of becoming AGC. An Airspy's `gainDb` is -1, its gains being in its map.
+  The start path has no tenth-dB or manual-0 gain; the tuner runs its nearest step.
   `WizardScreen.openForFound()` copies them into the draft only for a detection; the
   Spectrum's save passes none and keeps the app defaults its session ran on
   (`tst_wizard_search_save.qml`, `UI_QT_SIGNAL_SEARCH`).
