@@ -5,7 +5,6 @@
 
 #include <QSet>
 #include <algorithm>
-#include <initializer_list>
 #include <utility>
 #include "radio_reference_model.h"
 #include "site_groups.h"

@@ -30,9 +30,9 @@
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
-#include <initializer_list>
 #include <stdio.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"

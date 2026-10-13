@@ -45,7 +45,6 @@
 #include <algorithm>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference.h>
-#include <initializer_list>
 #include <memory>
 #include <stdio.h>
 #include <stdlib.h>

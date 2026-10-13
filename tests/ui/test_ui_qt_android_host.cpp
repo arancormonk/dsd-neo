@@ -7,7 +7,6 @@
 #include <QVariant>
 #include <QtGlobal>
 #include <cstdio>
-#include <initializer_list>
 #include <utility>
 #include "../../android/decoder_host_android.h"
 #include "../../android/run_status.h"

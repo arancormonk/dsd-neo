@@ -16,10 +16,11 @@
 #include <QTemporaryFile>
 #include <QVariant>
 #include <QVariantList>
+#include <Qt>
+#include <QtGlobal>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/runtime/analog_channel.h>
-#include <initializer_list>
 #include <stdint.h>
 #include <utility>
 #include "app_prefs.h"
@@ -275,7 +276,7 @@ ScanListStarter::resolveSystems(const QVariantMap& list, QString* error) const {
                 }
                 const auto configuration = m_profiles->configuration(profile, &profileError);
                 if (!profileError.isEmpty()) {
-                    *error = profileError;
+                    *error = std::move(profileError);
                     return {};
                 }
                 for (auto i = configuration.cbegin(); i != configuration.cend(); ++i) {
@@ -311,7 +312,7 @@ ScanListStarter::resolveEntryProfiles(QVariantMap& prepared, QString* error) con
             const auto configuration =
                 m_profiles->configuration(entry.value("decryptionProfileUid").toString(), &profileError);
             if (!profileError.isEmpty()) {
-                *error = profileError;
+                *error = std::move(profileError);
                 return false;
             }
             entry.insert("decryptionConfiguration", configuration);
