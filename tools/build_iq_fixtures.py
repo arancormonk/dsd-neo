@@ -1280,6 +1280,20 @@ def tetra_channel_allocation_dibits():
     return tetra_control_block_dibits(info, 101, seed, 216)
 
 
+def tetra_speech_crc(bits, degree, low):
+    """EN 300 395-2 equations 43 to 45: F(X) = X^degree I(X) mod G(X) with I(X) = C(1) + C(2) X + ..., and
+    low the terms of G(X) below X^degree. Element i is f(i), sent as parity bit b(i + 1)."""
+    top = 1 << (degree - 1)
+    mask = (1 << degree) - 1
+    reg = 0
+    for bit in reversed(bits):
+        feedback = bool(reg & top) != bool(bit & 1)
+        reg = (reg << 1) & mask
+        if feedback:
+            reg ^= low
+    return [(reg >> i) & 1 for i in range(degree)]
+
+
 def tetra_tch_fs_dibits():
     """Two 216-bit NDB blocks carrying one known TCH/FS codeword."""
     speech = [((i * 13 + 5) >> 2) & 1 for i in range(274)]
@@ -1312,9 +1326,11 @@ def tetra_tch_fs_dibits():
           (1, 1, 1, 1, 1, 1, 1, 1),
           (1, 0, 0, 0, 1, 0, 0, 0))
     class1 = encode_segment(speech[102:214], a1)
-    # The deterministic fixture does not use BFI yet; zero CRC bits still
-    # exercise the exact protected length and the four terminating bits.
-    class2 = encode_segment(speech[214:] + [0] * 8 + [0] * 4, a2)
+    # Clause 5.5.1: seven CRC bits over class 2 from G(X) = 1 + X^3 + X^7, then
+    # b8, the sum of the class-2 and CRC bits, then four tail bits.
+    crc = tetra_speech_crc(speech[214:], 7, 0x09)
+    parity = sum(speech[214:] + crc) & 1
+    class2 = encode_segment(speech[214:] + crc + [parity] + [0] * 4, a2)
     deinterleaved = speech[:102] + class1 + class2
     assert len(deinterleaved) == 432 and state == 0
 
@@ -1323,13 +1339,12 @@ def tetra_tch_fs_dibits():
         for line in range(24):
             interleaved[column * 24 + line] = deinterleaved[line * 18 + column]
 
+    # The 432 type-4 bits are one block, scrambled as one sequence across both
+    # halves of the burst (EN 300 392-2 clause 8.2.5).
     seed = (((17 | (4242 << 6) | (460 << 20)) << 2) | 3) & 0xFFFFFFFF
-    blocks = []
-    for block in (interleaved[:216], interleaved[216:]):
-        scrambled = tetra_scramble(block, seed)
-        blocks.append([(scrambled[i] << 1) | scrambled[i + 1]
-                       for i in range(0, 216, 2)])
-    return blocks[0], blocks[1]
+    scrambled = tetra_scramble(interleaved, seed)
+    dibits = [(scrambled[i] << 1) | scrambled[i + 1] for i in range(0, 432, 2)]
+    return dibits[:108], dibits[108:]
 
 
 def modulate_tetra(dibits):
