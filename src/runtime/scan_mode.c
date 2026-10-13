@@ -214,6 +214,7 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->frame_provoice = opts->frame_provoice;
     out->frame_ysf = opts->frame_ysf;
     out->frame_m17 = opts->frame_m17;
+    out->frame_tetra = opts->frame_tetra;
     out->mod_c4fm = opts->mod_c4fm;
     out->mod_qpsk = opts->mod_qpsk;
     out->mod_gfsk = opts->mod_gfsk;
@@ -319,6 +320,7 @@ scan_settings_restore_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->frame_provoice = saved->frame_provoice;
     opts->frame_ysf = saved->frame_ysf;
     opts->frame_m17 = saved->frame_m17;
+    opts->frame_tetra = saved->frame_tetra;
     opts->mod_c4fm = saved->mod_c4fm;
     opts->mod_qpsk = saved->mod_qpsk;
     opts->mod_gfsk = saved->mod_gfsk;
@@ -418,6 +420,7 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
         offsetof(dsd_scan_settings, frame_provoice),
         offsetof(dsd_scan_settings, frame_ysf),
         offsetof(dsd_scan_settings, frame_m17),
+        offsetof(dsd_scan_settings, frame_tetra),
         offsetof(dsd_scan_settings, mod_c4fm),
         offsetof(dsd_scan_settings, mod_qpsk),
         offsetof(dsd_scan_settings, mod_gfsk),

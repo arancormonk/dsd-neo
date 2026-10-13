@@ -1624,8 +1624,55 @@ test_gfsk_target_timed_for_its_fsk_landing(void) {
     free(o);
 }
 
+/* A TETRA session (-fT) whose conventional scan visits a typed row, which clears frame_tetra, decodes TETRA again on an
+ * inherited row and once the scan ends: frame_tetra is a decoder flag like the others, captured, restored and compared
+ * with them. */
+static void
+test_tetra_session_survives_typed_rows(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->pulse_digi_out_channels = 1;
+    o->pulse_digi_rate_out = 8000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0);
+    dsd_scan_settings baseline;
+    dsd_scan_settings_capture(o, s, &baseline);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->frame_tetra == 0 && o->frame_dmr == 1);
+    assert(dsd_scan_mode_configured_preset(o, s) == DSDCFG_MODE_TETRA);
+    dsd_scan_settings dmr_row;
+    dsd_scan_settings_capture(o, s, &dmr_row);
+    assert(!dsd_scan_settings_equal(&baseline, &dmr_row, 0));
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_INHERIT) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    dsd_scan_mode_leave(o, s);
+    dsd_scan_settings restored;
+    dsd_scan_settings_capture(o, s, &restored);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0 && settings_identical(&baseline, &restored));
+
+    /* Only frame_tetra differs: another decoder set, which re-acquires. */
+    o->frame_tetra = 0;
+    dsd_scan_settings without;
+    dsd_scan_settings_capture(o, s, &without);
+    assert(!dsd_scan_settings_equal(&baseline, &without, 0));
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
+    test_tetra_session_survives_typed_rows();
     test_nfm_class_names();
     test_configured_nfm_width_edit();
     test_configured_am_width_edit();
