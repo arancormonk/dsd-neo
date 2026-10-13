@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
 
@@ -156,9 +157,6 @@ test_d_tx_expanded(void) {
 static void
 test_sndcp_parser(void) {
     printf("--- Item 4: SNDCP parser ---\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
     /* SN-UNITDATA (table 28.43): SN PDU type 4, NSAPI 5, then PCOMP/DCOMP. */
     uint8_t sndcp[16];
     DSD_MEMSET(sndcp, 0, sizeof(sndcp));
@@ -169,33 +167,25 @@ test_sndcp_parser(void) {
     uint8_t mle[64];
     int mle_nbits;
     wrap_mle_pd(sndcp, 16, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 3, opt, st);
-
-    CHECK(tetra_st(st)->sndcp_valid == 1, "SNDCP valid flag set");
-    CHECK(tetra_st(st)->sndcp_nsapi == 5, "SNDCP NSAPI = 5");
-    CHECK(tetra_st(st)->sndcp_pdu_type == 4, "SNDCP PDU type = SN-UNITDATA");
-    CHECK(tetra_st(st)->sndcp_nbits == 16, "SNDCP nbits = 16");
+    tetra_sndcp_pdu pdu;
+    CHECK(tetra_sndcp_decode(mle, mle_nbits, &pdu) == 1, "SNDCP header decodes");
+    CHECK(pdu.nsapi == 5, "SNDCP NSAPI = 5");
+    CHECK(pdu.pdu_type == 4, "SNDCP PDU type = SN-UNITDATA");
+    CHECK(pdu.nbits == 16, "SNDCP nbits = 16");
 
     /* SN-END OF DATA (table 28.34) carries no NSAPI. */
     DSD_MEMSET(sndcp, 0, sizeof(sndcp));
     pack_bits(sndcp, 8, 0, 4);
     pack_bits(sndcp, 1, 4, 1); /* immediate service change */
     wrap_mle_pd(sndcp, 5, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 3, opt, st);
-    CHECK(tetra_st(st)->sndcp_pdu_type == 8 && tetra_st(st)->sndcp_nsapi == 0, "SN-END OF DATA has no NSAPI");
+    CHECK(tetra_sndcp_decode(mle, mle_nbits, &pdu) && pdu.pdu_type == 8 && pdu.nsapi == 0,
+          "SN-END OF DATA has no NSAPI");
 
     /* Test short SNDCP: an SN-ACTIVATE PDP CONTEXT ACCEPT cut before its NSAPI */
-    tetra_state_reset(st);
     uint8_t sndcp_short[4];
     DSD_MEMSET(sndcp_short, 0, sizeof(sndcp_short));
     wrap_mle_pd(sndcp_short, 4, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 3, opt, st);
-
-    CHECK(tetra_st(st)->sndcp_valid == 0, "SNDCP short: rejected");
-    CHECK(tetra_st(st)->sndcp_nsapi == 0, "SNDCP short: NSAPI stays 0");
-
-    free_state(st);
-    free(opt);
+    CHECK(!tetra_sndcp_decode(mle, mle_nbits, &pdu), "SNDCP short: rejected");
 }
 
 /* ==================================================================== */

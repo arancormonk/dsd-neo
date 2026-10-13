@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file
- * @brief TETRA MLE protocol PDUs and CMCE short data PDUs as decoded (EN 300 392-2 clauses 14, 18 and 29).
+ * @brief TETRA MLE protocol PDUs, CMCE short data PDUs and SN-PDU headers as decoded (EN 300 392-2 clauses 14, 18,
+ * 28 and 29).
  *
  * tetra_mle_decode() reads one downlink MLE protocol PDU (protocol discriminator 101, table 18.87) into a
- * tetra_mle_pdu, and tetra_sds_decode() one D-STATUS or D-SDS-DATA (protocol discriminator 010) into a tetra_sds_pdu.
- * The MLE dispatcher decodes through them and acts only on a PDU that decoded completely. Fields a PDU does not carry
- * read zero. Module-private.
+ * tetra_mle_pdu, tetra_sds_decode() one D-STATUS or D-SDS-DATA (protocol discriminator 010) into a tetra_sds_pdu, and
+ * tetra_sndcp_decode() the header of one SN-PDU (protocol discriminator 100). The MLE dispatcher decodes through them
+ * and acts only on a PDU that decoded completely. Fields a PDU does not carry read zero. Module-private.
  */
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_MLE_PDU_H_
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_MLE_PDU_H_
@@ -295,6 +296,24 @@ typedef struct {
  *         otherwise. Concatenated parts are only decoded here: reassembling them is the dispatcher's.
  */
 int tetra_sds_decode(const uint8_t* bits, int nbits, tetra_sds_pdu* out);
+
+/** The header of an SN-PDU (EN 300 392-2 clause 28.4.4). */
+typedef struct {
+    uint16_t nbits;   /**< bits of the SN-PDU, after the protocol discriminator */
+    uint8_t pdu_type; /**< SN PDU type (table 28.121) */
+    uint8_t nsapi;    /**< NSAPI for the PDU types that carry one; 0 (a reserved value) for the others */
+} tetra_sndcp_pdu;
+
+/**
+ * @brief Decode the header of one SN-PDU without acting on it.
+ *
+ * @param bits  TM-SDU, one bit per byte (0 or 1), MSB first, starting at the protocol discriminator.
+ * @param nbits Number of bits in @p bits.
+ * @param out   Receives the header; zeroed first.
+ * @return 1 when the TM-SDU is an SN-PDU whose SN PDU type, and NSAPI where its type carries one, were inside @p nbits;
+ *         0 otherwise.
+ */
+int tetra_sndcp_decode(const uint8_t* bits, int nbits, tetra_sndcp_pdu* out);
 
 #ifdef __cplusplus
 }

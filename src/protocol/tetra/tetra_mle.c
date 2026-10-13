@@ -1345,20 +1345,34 @@ sndcp_type_has_nsapi(uint32_t type) {
     return (k_mask >> type) & 1u;
 }
 
+/* The SN PDU type and, for the types that carry one, the NSAPI; @p r is after the protocol discriminator. */
+static int
+sndcp_read_header(tetra_bit_reader* r, tetra_sndcp_pdu* out) {
+    out->nbits = (uint16_t)tetra_bits_left(r);
+    out->pdu_type = (uint8_t)tetra_bits_read(r, 4);
+    out->nsapi = sndcp_type_has_nsapi(out->pdu_type) ? (uint8_t)tetra_bits_read(r, 4) : 0U;
+    return tetra_bits_ok(r);
+}
+
+int
+tetra_sndcp_decode(const uint8_t* bits, int nbits, tetra_sndcp_pdu* out) {
+    if (!out) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof *out);
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 0);
+    return tetra_bits_read(&r, 3) == TETRA_MLE_PD_SNDCP && tetra_bits_ok(&r) && sndcp_read_header(&r, out);
+}
+
+/* Packet data is not decoded further; an SN-PDU too short for its header is noted with -Z. */
 static void
 parse_sndcp(tetra_bit_reader* r, const mle_ctx* ctx) {
-    tetra_state_t* const ts = ctx->ts;
     const int nbits = tetra_bits_left(r);
-    const uint32_t type = tetra_bits_read(r, 4);
-    const uint32_t nsapi = sndcp_type_has_nsapi(type) ? tetra_bits_read(r, 4) : 0;
-    if (!tetra_bits_ok(r)) {
-        TETRA_LOG_PAYLOAD(ts, "[TETRA SNDCP] CC=%d (too short: %d bits)\n", ctx->cc, nbits);
-        return;
+    tetra_sndcp_pdu pdu;
+    DSD_MEMSET(&pdu, 0, sizeof pdu);
+    if (!sndcp_read_header(r, &pdu)) {
+        TETRA_LOG_PAYLOAD(ctx->ts, "[TETRA SNDCP] CC=%d (too short: %d bits)\n", ctx->cc, nbits);
     }
-    ts->sndcp_pdu_type = (uint8_t)type;
-    ts->sndcp_nsapi = (uint8_t)nsapi;
-    ts->sndcp_nbits = (uint16_t)nbits;
-    ts->sndcp_valid = 1;
 }
 
 /* MLE protocol PDUs (clause 18.4.1.4). */

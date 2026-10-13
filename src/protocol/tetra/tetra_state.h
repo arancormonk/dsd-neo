@@ -372,13 +372,6 @@ typedef struct tetra_state {
     uint32_t sysinfo_opt_field_data;
 
     uint8_t access_common_flag;
-
-    /* The last SN-PDU (EN 300 392-2 clause 28.4.4): its SN PDU type (table 28.121), its NSAPI (0, a reserved value,
-     * for PDU types that carry none) and its length in bits. */
-    uint16_t sndcp_nbits;
-    uint8_t sndcp_valid;
-    uint8_t sndcp_nsapi;
-    uint8_t sndcp_pdu_type;
 } tetra_state_t;
 
 /** The TETRA state of @p state, created on first use; NULL only when @p state is NULL or memory runs out. */
