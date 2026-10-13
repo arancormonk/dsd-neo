@@ -12,6 +12,7 @@
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_acelp.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
+#include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <stdlib.h>
@@ -130,11 +131,16 @@ test_codec_status(void) {
     state_close(state);
 }
 
-/* Direct mode: the communication type names the mode, the DMAC-SYNC encryption state the encryption, and no KSG. */
+/* Direct mode: the communication type names the mode, the call's security class the air encryption (end-to-end
+ * encryption leaves the air interface clear), and no KSG. */
 static void
 test_direct_mode_and_uplink(void) {
     static const uint8_t dmo_modes[4] = {DSD_TETRA_MODE_DMO_DIRECT, DSD_TETRA_MODE_DMO_REPEATER,
                                          DSD_TETRA_MODE_DMO_GATEWAY, DSD_TETRA_MODE_DMO_REPEATER_GATEWAY};
+    static const uint8_t crypts[4] = {TETRA_DMO_CRYPT_UNKNOWN, TETRA_DMO_CRYPT_CLEAR, TETRA_DMO_CRYPT_AIR,
+                                      TETRA_DMO_CRYPT_E2E};
+    static const uint8_t air_encryption[4] = {DSD_TETRA_AIR_ENC_UNKNOWN, DSD_TETRA_AIR_ENC_CLEAR,
+                                              DSD_TETRA_AIR_ENC_ENCRYPTED, DSD_TETRA_AIR_ENC_CLEAR};
     dsd_state* state = state_open();
     tetra_state_t* const ts = tetra_st(state);
     assert(ts != NULL);
@@ -144,11 +150,10 @@ test_direct_mode_and_uplink(void) {
     assert(tetra_air_ksg_remember(state, 0U, 0U, 0U) == 1);
     for (uint8_t comm = 0; comm < 4U; comm++) {
         ts->dmo_comm_type = comm;
-        ts->dmo_enc_state = comm & 1U;
+        ts->dmo_crypt = crypts[comm];
         tetra_publish(state);
         assert(state->tetra_pub.mode == dmo_modes[comm]);
-        assert(state->tetra_pub.air_encryption
-               == ((comm & 1U) ? DSD_TETRA_AIR_ENC_ENCRYPTED : DSD_TETRA_AIR_ENC_CLEAR));
+        assert(state->tetra_pub.air_encryption == air_encryption[comm]);
         assert(state->tetra_pub.tea == 0U);
     }
 

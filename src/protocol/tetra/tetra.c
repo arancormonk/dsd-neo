@@ -1052,12 +1052,19 @@ tetra_pub_mode(const dsd_state* state, const tetra_state_t* ts) {
     return DSD_TETRA_MODE_TMO_DOWNLINK;
 }
 
-/* Air-interface encryption: the DMAC-SYNC encryption state in direct mode; in trunked mode the MAC-RESOURCE
+/* Air-interface encryption: in direct mode the security class of the current call (DM-2-A/B/C encrypt the air
+ * interface; DM-1, with or without end-to-end encryption, leaves it clear); in trunked mode the MAC-RESOURCE
  * encryption mode (EN 300 392-2: 0 clear, 1 and 2 encrypted, 3 reserved), once one has been decoded. */
 static uint8_t
 tetra_pub_air_encryption(const tetra_state_t* ts) {
     if (ts->dmo) {
-        return ts->dmo_enc_state != 0 ? DSD_TETRA_AIR_ENC_ENCRYPTED : DSD_TETRA_AIR_ENC_CLEAR;
+        switch ((tetra_dmo_crypt_e)ts->dmo_crypt) {
+            case TETRA_DMO_CRYPT_AIR: return DSD_TETRA_AIR_ENC_ENCRYPTED;
+            case TETRA_DMO_CRYPT_CLEAR:
+            case TETRA_DMO_CRYPT_E2E: return DSD_TETRA_AIR_ENC_CLEAR;
+            case TETRA_DMO_CRYPT_UNKNOWN:
+            default: return DSD_TETRA_AIR_ENC_UNKNOWN;
+        }
     }
     if (ts->enc_mode == TETRA_ENC_MODE_ON || ts->enc_mode == TETRA_ENC_MODE_ON_AUTH) {
         return DSD_TETRA_AIR_ENC_ENCRYPTED;
