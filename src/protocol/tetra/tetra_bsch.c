@@ -10,6 +10,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 
@@ -186,6 +187,9 @@ tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state)
     ts->lfsr_seed = tetra_compute_scramb_seed(p.mcc, p.mnc, p.colour);
     ts->net_known = 1;
     tdma_anchor(ts, &p, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
+    /* What the burst's block 2 signals reads the cell's colour code from the publication (dsd_access_code_current()):
+     * it describes this cell from here, not the burst before. */
+    tetra_publish(state);
 
     DSD_FPRINTF(stderr, "[TETRA BSCH] MCC=%u MNC=%u CC=0x%02x TN=%u FN=%u MN=%u\n", (unsigned)p.mcc, (unsigned)p.mnc,
                 (unsigned)p.colour, (unsigned)p.tn, (unsigned)p.fn, (unsigned)p.mn);

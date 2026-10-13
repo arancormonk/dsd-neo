@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 
@@ -1267,12 +1268,8 @@ dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_s
     }
 }
 
-void
-tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_dmo_sync_h_t* h) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !s) {
-        return;
-    }
+static void
+dmo_apply_sync(dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_s_t* s, tetra_dmo_sync_h_t* h) {
     ts->dmo = 1;
     /* The TMO timebase does not run on a direct mode carrier. */
     tetra_tdma_stop(state);
@@ -1289,6 +1286,18 @@ tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_dmo_sy
         dmo_settle(h, s->enc_state);
         dmo_apply_call(ts, s, h);
     }
+}
+
+void
+tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_dmo_sync_h_t* h) {
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts || !s) {
+        return;
+    }
+    dmo_apply_sync(state, ts, s, h);
+    /* The call records and short data notices that follow read the carrier's mode and colour code from the
+     * publication (dsd_access_code_current()): it describes direct mode from here, not the burst before. */
+    tetra_publish(state);
 }
 
 tetra_dmo_crypt_e

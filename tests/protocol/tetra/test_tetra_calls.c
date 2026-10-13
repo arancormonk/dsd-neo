@@ -9,6 +9,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
@@ -20,7 +21,9 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
@@ -615,7 +618,6 @@ test_direct_mode_calls(void) {
     assert(call.phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_TETRA(call.protocol));
     assert(call.kind == DSD_CALL_KIND_GROUP_VOICE && call.ota_target_id == 0x800001u && call.ota_source_id == 100u);
     assert(call.crypto == DSD_CALL_CRYPTO_CLEAR);
-    tetra_publish(s.state);
     dsd_event_sync_slot(s.opts, s.state, 0U);
     const Event_History* row = &s.state->event_history_s[0].Event_History_Items[0];
     assert(strcmp(row->sysid_string, "TETRA_DMO") == 0
@@ -642,6 +644,49 @@ test_direct_mode_calls(void) {
     call = canonical(s.state);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0u && call.ota_source_id == 0u
            && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    session_close(&s);
+}
+
+/* A SYNC PDU (EN 300 392-2 table 21.76) of network 262/1001 with colour code @p colour, timeslot 1 of frame 1 of
+ * multiframe 1. */
+static void
+bsch_of(ttb_block* b, uint32_t colour) {
+    ttb_put(b, 0x4u, 4); /* system code */
+    ttb_put(b, colour, 6);
+    ttb_put(b, 0, 2); /* timeslot 1 */
+    ttb_put(b, 1, 5); /* frame 1 */
+    ttb_put(b, 1, 6); /* multiframe 1 */
+    ttb_put(b, 0, 8); /* sharing mode, reserved frames, U-plane DTX, frame 18 extension, reserved */
+    ttb_put(b, 262, 10);
+    ttb_put(b, 1001, 14);
+    ttb_put(b, 0, 5); /* neighbour cell broadcast, cell load CA, late entry supported */
+}
+
+/* An event takes the colour code of the carrier from what a synchronisation burst just set, not from the last burst's
+ * view: the direct mode call a DSB sets up after a trunked cell, and its short data, carry no colour code, and short
+ * data decoded after the BSCH of another cell carries that cell's. */
+static void
+test_events_read_the_new_carrier(void) {
+    session s = session_open();
+    session_history(&s);
+    assert(s.state->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK && s.state->tetra_pub.colour == 25U);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    const Event_History* const staged = &s.state->event_history_s[0].Event_History_Items[0];
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && staged->target_id == 0x800001u);
+    assert(staged->access_code_kind == DSD_ACCESS_CODE_NONE && strcmp(staged->sysid_string, "TETRA_DMO") == 0);
+    dmo_data(&s, TETRA_DMO_MSG_SDS_DATA, 200u, 300u, 0x1234u);
+    const Event_History* committed = &s.state->event_history_s[0].Event_History_Items[1];
+    assert(strstr(committed->event_string, "DMO SDS SRC: 200; TGT: 300;") != NULL);
+    assert(committed->access_code_kind == DSD_ACCESS_CODE_NONE);
+
+    ttb_block sync = {0};
+    bsch_of(&sync, 30u);
+    tetra_st(s.state)->dmo = 0; /* as a BSCH with a trunked system code leaves it */
+    assert(tetra_bsch_parse(sync.bits, sync.n, s.opts, s.state) == 1);
+    send_sds_text(&s, 0x101u, 0x2222u, "cell");
+    committed = &s.state->event_history_s[0].Event_History_Items[1];
+    assert(strcmp(committed->text_message, "cell") == 0);
+    assert(committed->access_code_kind == DSD_ACCESS_CODE_COLOR_CODE && committed->access_code == 30U);
     session_close(&s);
 }
 
@@ -832,6 +877,7 @@ main(void) {
     test_sds_and_status_notices();
     test_direct_mode_calls();
     test_direct_mode_short_data();
+    test_events_read_the_new_carrier();
     test_followed_call_speech();
     test_heard_call_speech();
     test_direct_mode_speech();

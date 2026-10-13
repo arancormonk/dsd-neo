@@ -893,16 +893,18 @@ suite runs under this compiler.
   snapshot copies; at the end of every burst `tetra_publish()` (`src/protocol/tetra/tetra.c`, from
   `tetra_frame_leave()`) copies into the publication the working mode (TMO downlink, uplink or control uplink, DMO
   direct or through a DM-REP, DM-GATE or both), taken only once a block passed its CRC, the network (MCC, MNC, 6-bit
-  colour code), the air-interface encryption and the network's TEA (1..4, 0 unknown; never a key), where call
-  following stands, the SYSINFO main carrier and its frequency, the channel allocation's carrier, timeslot bitmap (bit
-  3 is timeslot 1, as the Timeslot assigned field carries it) and frequency, the last D-MM STATUS, and the speech
-  codec's status (`dsd_tetra_codec_status`: unknown, ready, missing, load failed, decode errors) with its frame and
-  error counts. Integers only, so it rides the `vertex_ks_count..ui_msg` snapshot range, pinned by a `_Static_assert`
-  in `ui_snapshot.c`. `dsd_tetra_publication_reset()` clears it and bumps its `generation`: a preset other than TETRA
-  does (`dsd_apply_decode_mode_preset()`), and so does `tetra_state_reset()` with the state it drops. TETRA calls,
-  short data and status messages reach the frontends as canonical calls and event history notices (TETRA "Calls"
-  below), not through the publication. Tests: `TETRA_PUBLICATION`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`,
-  `RUNTIME_DECODE_MODE`.
+  colour code), the air-interface encryption and the network's TEA (1..4, 0 unknown; never a key), where call following
+  stands, the SYSINFO main carrier and its frequency, the channel allocation's carrier, timeslot bitmap (bit 3 is
+  timeslot 1, as the Timeslot assigned field carries it) and frequency, the last D-MM STATUS, and the speech codec's
+  status (`dsd_tetra_codec_status`: unknown, ready, missing, load failed, decode errors) with its frame and error
+  counts. A synchronisation burst that sets the mode or the network publishes at once (`tetra_bsch_parse()`,
+  `tetra_dmo_apply_sync()`): the calls and notices the rest of its burst emits read the carrier's colour code from the
+  publication (`dsd_access_code_current()`), so they carry the cell or direct mode channel they were decoded on, not the
+  last burst's. Integers only, so it rides the `vertex_ks_count..ui_msg` snapshot range, pinned by a `_Static_assert` in
+  `ui_snapshot.c`. `dsd_tetra_publication_reset()` clears it and bumps its `generation`: a preset other than TETRA does
+  (`dsd_apply_decode_mode_preset()`), and so does `tetra_state_reset()` with the state it drops. TETRA calls, short data
+  and status messages reach the frontends as canonical calls and event history notices (TETRA "Calls" below), not
+  through the publication. Tests: `TETRA_PUBLICATION`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `RUNTIME_DECODE_MODE`.
 - API note: `<dsd-neo/core/analog_tone.h>` (issue #527) holds the receive policy's types only: `dsd_tone_filter_mode`
   (off, allow, block) and `dsd_tone_set`, a bounded bitmask (one bit per standard CTCSS tone; one per standard DCS code
   and polarity, as written) that copies by value into `dsd_opts::analog_tone_filter` / `analog_tone_set`, the scan
