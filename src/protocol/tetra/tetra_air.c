@@ -90,6 +90,17 @@ tetra_air_key_lookup(const dsd_state* state, uint16_t mcc, uint16_t mnc) {
     return NULL;
 }
 
+int
+tetra_air_key_usable(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || ts->dmo || !ts->net_known) {
+        return 0;
+    }
+    /* TEA4 is named in the KSG number but its key stream generator is not available. */
+    const int ksg = tetra_air_ksg_lookup(state, ts->mcc, ts->mnc);
+    return ksg >= 0 && ksg <= 2 && tetra_air_key_lookup(state, ts->mcc, ts->mnc) != NULL;
+}
+
 /* The key, algorithm and initial value for the current slot, or NULL when this speech is not decrypted here. */
 static const uint8_t*
 tetra_air_slot_key(const dsd_state* state, const tetra_state_t* ts, int* ksg, uint32_t* iv) {

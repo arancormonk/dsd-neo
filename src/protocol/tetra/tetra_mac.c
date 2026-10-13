@@ -15,16 +15,15 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_messages.h>
-#include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <stdint.h>
 #include <stdio.h>
 
+#include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
@@ -58,17 +57,6 @@ typedef struct {
     int fragment_seen;        /* the block carried a fragment of its timeslot's TM-SDU */
     tetra_mac_fragment* frag; /* fragment context of the block's timeslot */
 } mac_block;
-
-/* Channel allocation element, table 21.87. */
-typedef struct {
-    uint8_t type;       /* allocation type */
-    uint8_t timeslots;  /* timeslot assigned */
-    uint8_t up_down;    /* up/downlink assigned; for an augmented allocation, the augmented value */
-    uint8_t bandwidth;  /* augmented allocations only; 0 is 25 kHz */
-    uint8_t modulation; /* augmented allocations only; 0 is pi/4-DQPSK */
-    uint16_t carrier;
-    long freq_hz; /* downlink frequency, 0 when the band is unknown */
-} mac_allocation;
 
 /* MAC-RESOURCE header, table 21.55, up to the channel allocation flag. */
 typedef struct {
@@ -215,10 +203,10 @@ static const char* const k_llc_other[8] = {
     "AL-RECONNECT", "supplementary LLC PDU", "layer 2 signalling PDU", "AL-DISC",
 };
 
-/* Decapsulate an LLC PDU (clause 21.2) and hand a basic-link TL-SDU to the MLE. Advanced-link segments and layer 2
- * signalling are not TL-SDUs the MLE can use. */
+/* Decapsulate an LLC PDU (clause 21.2) and hand a basic-link TL-SDU to the MLE, with the MAC context @p sdu of the PDU
+ * that carried it. Advanced-link segments and layer 2 signalling are not TL-SDUs the MLE can use. */
 static void
-llc_deliver(const mac_block* b, const uint8_t* pdu, int nbits) {
+llc_deliver(const mac_block* b, const uint8_t* pdu, int nbits, tetra_mac_sdu* sdu_ctx) {
     tetra_bit_reader r = tetra_bits_reader(pdu, nbits, 0);
     const uint32_t type = tetra_bits_read(&r, 4);
     if (!tetra_bits_ok(&r)) {
@@ -251,82 +239,24 @@ llc_deliver(const mac_block* b, const uint8_t* pdu, int nbits) {
         }
     }
     TETRA_LOG_PAYLOAD(b->ts, "[TETRA LLC %s] CC=%d  tl_sdu_bits=%d\n", bl->name, b->cc, sdu_bits);
-    tetra_mle_dispatch(sdu, sdu_bits, b->cc, b->opts, b->state);
+    tetra_mle_dispatch_sdu(sdu, sdu_bits, b->cc, sdu_ctx, b->opts, b->state);
 }
 
-/* The talkgroup policy decision for the call the CMCE just published. */
-static int
-call_policy_allows(const mac_block* b) {
-    const tetra_state_t* const ts = b->ts;
-    dsd_tg_policy_decision decision;
-    int rc;
-    if (!b->opts || !ts->call_active || !ts->ssi_valid) {
-        return 1;
-    }
-    const int encrypted = ts->enc_mode != TETRA_ENC_MODE_NONE;
-    const int data_call = ts->call_type != 0;
-    if (ts->cmce_com_type == 0) {
-        rc = dsd_tg_policy_evaluate_private_call(b->opts, b->state, ts->calling_ssi, ts->active_ssi, encrypted,
-                                                 data_call, &decision);
-    } else {
-        rc = dsd_tg_policy_evaluate_group_call(b->opts, b->state, ts->gssi, ts->calling_ssi, encrypted, data_call,
-                                               &decision);
-    }
-    if (rc != 0) {
-        return 0;
-    }
-    if (!decision.tune_allowed) {
-        TETRA_LOG_VERBOSE(ts, 1, "[TETRA CHANNEL-ALLOCATION] target=%u blocked by %s\n", decision.target_id,
-                          dsd_tg_policy_block_reason_label(decision.block_reasons));
-    }
-    return decision.tune_allowed;
-}
-
-/* A downlink MAC-RESOURCE SSI is the called party of the CMCE call PDU it carries. Communication type 0 is point to
- * point; the other values are point to multipoint, acknowledged or broadcast (table 14.54). The address is bound
- * only after the CMCE published a complete call PDU, so truncated payloads cannot create a talkgroup. */
+/* Hand a complete clear TM-SDU to the LLC. The channel allocation that came with it (in @p ctx) goes to the call a call
+ * PDU in it names, and is followed only then; one no call PDU took attaches to the call of the addressed party, and a
+ * header-only allocation likewise, without tuning (tetra_calls.h). */
 static void
-sync_call_target(tetra_state_t* ts) {
-    if (!ts->call_active || !ts->ssi_valid) {
-        return;
-    }
-    ts->gssi = ts->cmce_com_type == 0 ? 0u : ts->active_ssi;
-}
-
-/* Hand the trunking state machine the traffic channel of @p a, for the call @p call_id (0 when none is known). */
-static void
-follow_allocation(const mac_block* b, const mac_allocation* a, uint16_t call_id) {
-    const tetra_sm_grant grant = {a->freq_hz, a->carrier, a->timeslots, call_id};
-    (void)tetra_sm_on_grant(b->opts, b->state, &grant);
-}
-
-/* An allocation whose PDU also carried a TM-SDU tunes only when that TM-SDU established a call the policy allows. */
-static void
-grant_with_call(const mac_block* b, const mac_allocation* a, uint32_t generation_before) {
-    if (b->ts->cmce_call_generation != generation_before && call_policy_allows(b)) {
-        follow_allocation(b, a, b->ts->call_id);
-    }
-}
-
-/* Hand a complete clear TM-SDU to the LLC, then act on the downlink allocation that came with it, if any. */
-static void
-deliver_tm_sdu(const mac_block* b, const uint8_t* sdu, int sdu_bits, const mac_allocation* grant,
-               uint32_t generation_before) {
+deliver_tm_sdu(const mac_block* b, const uint8_t* sdu, int sdu_bits, tetra_mac_sdu* ctx) {
     if (sdu_bits > 0) {
-        llc_deliver(b, sdu, sdu_bits);
-        sync_call_target(b->ts);
-        if (grant) {
-            grant_with_call(b, grant, generation_before);
-        }
-    } else if (grant) {
-        follow_allocation(b, grant, 0U);
+        llc_deliver(b, sdu, sdu_bits, ctx);
     }
+    tetra_calls_on_allocation(b->opts, b->state, ctx);
 }
 
 /* Augmented part of table 21.87 (up/downlink assigned 00). Returns 0 when the receiver discards the allocation and
  * the TM-SDU with it: reserved augmented up/downlink value 00 (note 5) or further augmentation (note 15). */
 static int
-read_augmented_allocation(tetra_bit_reader* r, mac_allocation* a) {
+read_augmented_allocation(tetra_bit_reader* r, tetra_chan_alloc* a) {
     a->up_down = (uint8_t)tetra_bits_read(r, 2);
     a->bandwidth = (uint8_t)tetra_bits_read(r, 3);
     a->modulation = (uint8_t)tetra_bits_read(r, 3);
@@ -350,9 +280,9 @@ read_augmented_allocation(tetra_bit_reader* r, mac_allocation* a) {
 /* Channel allocation element, table 21.87. Without extended carrier numbering the band and offset are those of the
  * cell's SYSINFO (clause 21.5.2). Returns 1 for a usable allocation; 0 when it runs past the PDU or is discarded. */
 static int
-read_allocation(tetra_bit_reader* r, const tetra_state_t* ts, mac_allocation* a) {
+read_allocation(tetra_bit_reader* r, const tetra_state_t* ts, tetra_chan_alloc* a) {
     static const long k_bandwidth_offset_hz[4] = {0L, 12500L, 37500L, 62500L}; /* (bandwidth / 2) - 12,5 kHz */
-    *a = (mac_allocation){0};
+    *a = (tetra_chan_alloc){0};
     a->type = (uint8_t)tetra_bits_read(r, 2);
     a->timeslots = (uint8_t)tetra_bits_read(r, 4);
     a->up_down = (uint8_t)tetra_bits_read(r, 2);
@@ -381,79 +311,25 @@ read_allocation(tetra_bit_reader* r, const tetra_state_t* ts, mac_allocation* a)
     return 1;
 }
 
-/* @p addr is the party that holds the traffic-channel assignment: the same SSI or SMI, or an event label assigned
- * to it. */
-static int
-is_assignment_holder(const tetra_state_t* ts, const tetra_mac_address* addr) {
-    const int family = address_family(addr->type);
-    if (family != 0 && !addr->esi && family == address_family(ts->vc_addr.type) && addr->ssi == ts->vc_addr.ssi) {
-        return 1;
-    }
-    return address_has_event_label(addr->type) && ts->vc_addr_event_label_valid
-           && addr->event_label == ts->vc_addr.event_label;
-}
-
 static void
-push_allocation_summary(const mac_block* b, const mac_allocation* a) {
-    char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
-    DSD_SNPRINTF(summary, sizeof summary, "Allocation CC=%d carrier=%u slots=0x%X freq=%ld", b->cc,
-                 (unsigned)a->carrier, (unsigned)a->timeslots, a->freq_hz);
-    tetra_message_push(b->state, DSD_TETRA_MESSAGE_CONTROL, summary);
-}
-
-/* Timeslot assigned 0000 sends the addressed party back to the common control channel (table 21.87). It ends the
- * followed assignment only when it is addressed to that assignment's holder. */
-static void
-release_assignment(const mac_block* b, const mac_allocation* a, const tetra_mac_address* addr) {
-    tetra_state_t* const ts = b->ts;
-    if (!ts->vc_assignment_valid || ts->vc_timeslot_bitmap == 0u || !is_assignment_holder(ts, addr)) {
-        TETRA_LOG_VERBOSE(ts, 1, "[TETRA CHANNEL-ALLOCATION] CC=%d return to control channel for another party\n",
-                          b->cc);
-        return;
-    }
-    push_allocation_summary(b, a);
-    ts->vc_assignment_type = a->type;
-    ts->vc_uplink_downlink = a->up_down;
-    ts->vc_timeslot_bitmap = 0;
-    ts->vc_carrier = 0;
-    ts->vc_freq_hz = 0;
-    ts->tx_granted_valid = 0;
-    tetra_sm_grant followed;
-    if (tetra_sm_followed(b->state, &followed)) {
-        tetra_sm_on_release(b->opts, b->state, followed.call_id);
-    }
-}
-
-/* Record the allocation of a clear PDU addressed to @p addr. Returns 1 when it assigns a pi/4-DQPSK downlink the
- * trunking state machine can follow. */
-static int
-apply_allocation(const mac_block* b, const mac_allocation* a, const tetra_mac_address* addr) {
-    tetra_state_t* const ts = b->ts;
+print_allocation(const mac_block* b, const tetra_chan_alloc* a) {
     DSD_FPRINTF(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d type=%u slots=0x%X dir=%u carrier=%u freq=%ld bw=%u mod=%u\n",
                 b->cc, (unsigned)a->type, (unsigned)a->timeslots, (unsigned)a->up_down, (unsigned)a->carrier,
                 a->freq_hz, (unsigned)a->bandwidth, (unsigned)a->modulation);
-    if (a->timeslots == 0u) {
-        release_assignment(b, a, addr);
-        return 0;
-    }
-    if (!ts->vc_assignment_valid || ts->vc_timeslot_bitmap != a->timeslots || ts->vc_carrier != a->carrier) {
-        push_allocation_summary(b, a);
-    }
-    ts->vc_assignment_valid = 1;
-    ts->vc_assignment_type = a->type;
-    ts->vc_timeslot_bitmap = a->timeslots;
-    ts->vc_uplink_downlink = a->up_down;
-    ts->vc_carrier = a->carrier;
-    ts->vc_freq_hz = a->freq_hz;
-    ts->vc_addr = *addr;
-    ts->vc_addr_event_label_valid = (uint8_t)address_has_event_label(addr->type);
-    return (a->up_down == 1u || a->up_down == 3u) && a->freq_hz > 0L && a->modulation == 0u;
 }
 
-/* Publish the address and encryption mode of an addressed PDU. An event label assignment (address types 101 and
- * 111) to the holder of the traffic-channel assignment lets later PDUs address that holder by event label. */
+/* The fragment context of the block being decoded: its TDMA timeslot 1..4, or 0 while the clock is not running. */
+static int
+fragment_timeslot(const tetra_state_t* ts) {
+    return ts->tdma_valid && ts->tn >= 1u && ts->tn <= 4u ? (int)ts->tn : 0;
+}
+
+/* Publish the address and encryption mode of an addressed PDU, and tell the call records (tetra_calls.h): an event
+ * label or usage marker the address assigns, an encrypted allocation to a call's party, and the timeslot's signalling
+ * encryption. */
 static void
-publish_address(tetra_state_t* ts, const tetra_mac_address* addr, uint8_t enc_mode) {
+publish_address(const mac_block* b, const tetra_mac_address* addr, uint8_t enc_mode, int alloc_present) {
+    tetra_state_t* const ts = b->ts;
     ts->enc_mode = enc_mode;
     ts->ssi_valid = (uint8_t)(address_family(addr->type) != 0 && !addr->esi);
     if (ts->ssi_valid) {
@@ -462,20 +338,17 @@ publish_address(tetra_state_t* ts, const tetra_mac_address* addr, uint8_t enc_mo
     ts->mac_addr_type = addr->type;
     ts->mac_event_label = addr->event_label;
     ts->mac_usage_marker = addr->usage_marker;
-    if ((addr->type == TETRA_MAC_ADDR_SSI_EVENT || addr->type == TETRA_MAC_ADDR_SMI_EVENT) && !addr->esi
-        && address_family(addr->type) == address_family(ts->vc_addr.type) && addr->ssi == ts->vc_addr.ssi) {
-        ts->vc_addr.event_label = addr->event_label;
-        ts->vc_addr_event_label_valid = 1;
-    }
+    tetra_calls_on_addressed(b->state, addr, enc_mode, alloc_present, (uint8_t)fragment_timeslot(ts));
 }
 
 static void
-publish_resource_header(tetra_state_t* ts, const mac_resource_header* h) {
+publish_resource_header(const mac_block* b, const mac_resource_header* h) {
+    tetra_state_t* const ts = b->ts;
     ts->mac_fill_bits = h->fill;
     ts->mac_grant_pos = h->grant_pos;
     ts->mac_rand_acc = h->random_access;
     ts->mac_len_ind = h->length_ind;
-    publish_address(ts, &h->addr, h->enc_mode);
+    publish_address(b, &h->addr, h->enc_mode, h->alloc_present);
 }
 
 static void
@@ -609,7 +482,7 @@ read_resource_header(const mac_block* b, const uint8_t* bits, int nbits, mac_res
 static void
 resource_encrypted(mac_block* b, const mac_resource_header* h, int sdu_bits) {
     print_resource(b, h, sdu_bits);
-    publish_resource_header(b->ts, h);
+    publish_resource_header(b, h);
     if (h->length_ind == MAC_LI_FRAGMENT_START) {
         b->ts->mac_encrypted_sdus++;
         start_fragment(b, &h->addr, 1, NULL, 0);
@@ -632,8 +505,12 @@ parse_mac_resource(mac_block* b, const uint8_t* bits, int nbits) {
         resource_encrypted(b, &h, end > h.body ? end - h.body : 0);
         return h.pdu_bits;
     }
-    mac_allocation alloc = {0};
-    if (h.alloc_present && !read_allocation(&r, b->ts, &alloc)) {
+    tetra_mac_sdu ctx = {
+        .addr = h.addr,
+        .has_addr = 1,
+        .has_alloc = h.alloc_present,
+    };
+    if (h.alloc_present && !read_allocation(&r, b->ts, &ctx.alloc)) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; PDU discarded\n",
                           b->cc);
         return h.pdu_bits;
@@ -649,14 +526,15 @@ parse_mac_resource(mac_block* b, const uint8_t* bits, int nbits) {
         if (h.alloc_present) {
             TETRA_LOG_VERBOSE(b->ts, 1, "[TETRA MAC-RESOURCE] CC=%d  allocation in a first fragment ignored\n", b->cc);
         }
-        publish_resource_header(b->ts, &h);
+        publish_resource_header(b, &h);
         start_fragment(b, &h.addr, 0, bits + r.pos, end - r.pos);
         return h.pdu_bits;
     }
-    const uint32_t generation_before = b->ts->cmce_call_generation;
-    const int grant = h.alloc_present && apply_allocation(b, &alloc, &h.addr);
-    publish_resource_header(b->ts, &h);
-    deliver_tm_sdu(b, bits + r.pos, end - r.pos, grant ? &alloc : NULL, generation_before);
+    if (h.alloc_present) {
+        print_allocation(b, &ctx.alloc);
+    }
+    publish_resource_header(b, &h);
+    deliver_tm_sdu(b, bits + r.pos, end - r.pos, &ctx);
     return h.pdu_bits;
 }
 
@@ -685,14 +563,20 @@ parse_mac_frag(mac_block* b, const uint8_t* bits, int nbits) {
 /* Deliver the rebuilt TM-SDU of the block's timeslot. Its address is that of the MAC-RESOURCE that started it, and
  * the only allocation that applies is the one in this MAC-END. */
 static void
-complete_fragment(mac_block* b, const mac_allocation* alloc) {
-    tetra_state_t* const ts = b->ts;
+complete_fragment(mac_block* b, const tetra_chan_alloc* alloc) {
     tetra_mac_fragment* const f = b->frag;
-    const uint32_t generation_before = ts->cmce_call_generation;
-    const int grant = alloc && apply_allocation(b, alloc, &f->addr);
-    publish_address(ts, &f->addr, TETRA_ENC_MODE_NONE);
+    tetra_mac_sdu ctx = {
+        .addr = f->addr,
+        .has_addr = 1,
+        .has_alloc = alloc != NULL,
+    };
+    if (alloc) {
+        ctx.alloc = *alloc;
+        print_allocation(b, alloc);
+    }
+    publish_address(b, &f->addr, TETRA_ENC_MODE_NONE, alloc != NULL);
     TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  TM-SDU of %u bits rebuilt\n", b->cc, (unsigned)f->nbits);
-    deliver_tm_sdu(b, f->bits, f->nbits, grant ? alloc : NULL, generation_before);
+    deliver_tm_sdu(b, f->bits, f->nbits, &ctx);
     discard_fragment(f);
 }
 
@@ -707,7 +591,7 @@ finish_fragment(mac_block* b, const uint8_t* bits, int pdu_bits, int body, uint3
         return;
     }
     tetra_bit_reader r = tetra_bits_reader(bits, pdu_bits, body);
-    mac_allocation alloc = {0};
+    tetra_chan_alloc alloc = {0};
     if (alloc_present != 0u && !read_allocation(&r, b->ts, &alloc)) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; TM-SDU dropped\n",
                           b->cc);
@@ -957,7 +841,12 @@ parse_supplementary(mac_block* b, const uint8_t* bits, int nbits) {
     if (enc_mode != TETRA_ENC_MODE_NONE) {
         b->ts->mac_encrypted_sdus++;
     } else if (end > r.pos) {
-        llc_deliver(b, bits + r.pos, end - r.pos);
+        /* MAC-D-BLCK addresses its party by event label alone. */
+        tetra_mac_sdu ctx = {
+            .addr = {.type = TETRA_MAC_ADDR_EVENT_LABEL, .event_label = (uint16_t)event_label},
+            .has_addr = 1,
+        };
+        llc_deliver(b, bits + r.pos, end - r.pos, &ctx);
     }
     /* The implicit length of a pi/4-DQPSK MAC-D-BLCK is the rest of the block (clause 23.4.2.3). */
     return nbits;
@@ -1007,12 +896,6 @@ log_raw_block(const tetra_state_t* ts, const uint8_t* bits, int nbits) {
         used += 3;
     }
     TETRA_LOG_PAYLOAD(ts, "[TETRA MAC raw] %d bits:%s\n", nbits, hex);
-}
-
-/* The fragment context of the block being decoded: its TDMA timeslot 1..4, or 0 while the clock is not running. */
-static int
-fragment_timeslot(const tetra_state_t* ts) {
-    return ts->tdma_valid && ts->tn >= 1u && ts->tn <= 4u ? (int)ts->tn : 0;
 }
 
 void

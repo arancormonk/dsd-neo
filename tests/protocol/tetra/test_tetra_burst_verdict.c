@@ -312,11 +312,13 @@ test_retune_leaves_the_rest_of_the_burst(void) {
     assert(sync_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && tetra_confirm_carrier_proven(s.state));
 
-    /* A header-only MAC-RESOURCE to SSI 0xBEEF with a channel allocation: carrier 50, timeslot 2. */
+    /* A D-SETUP to group 0xBEEF in a MAC-RESOURCE with its channel allocation: carrier 50, timeslot 2. */
     ttb_block b = {0};
     const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0x00BEEFu);
     ttb_resource_flags(&b, 1);
     ttb_allocation(&b, 4, 1, 50);
+    ttb_put(&b, 2, 4); /* BL-UDATA */
+    ttb_d_setup(&b, 0x0BEEu, TTB_SPEECH_GROUP);
     ttb_close_resource(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     uint8_t grant[BLOCK_DIBITS];

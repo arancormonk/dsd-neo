@@ -65,6 +65,95 @@ typedef struct {
     uint8_t burst_proven;       /* the open (or last) burst decoded a block whose CRC passed */
 } tetra_confirm_t;
 
+/** A channel allocation element (EN 300 392-2 table 21.87) as the MAC read it from a clear PDU. */
+typedef struct {
+    long freq_hz;       /**< downlink frequency of the carrier, 0 when its band is unknown */
+    uint16_t carrier;   /**< carrier number */
+    uint8_t type;       /**< allocation type */
+    uint8_t timeslots;  /**< timeslot assigned: bit 3 is timeslot 1 ... bit 0 timeslot 4; 0 is "go to the MCCH" */
+    uint8_t up_down;    /**< up/downlink assigned; for an augmented allocation, the augmented value */
+    uint8_t bandwidth;  /**< augmented allocations only; 0 is 25 kHz */
+    uint8_t modulation; /**< augmented allocations only; 0 is pi/4-DQPSK */
+} tetra_chan_alloc;
+
+/* Phase of a CMCE call (EN 300 392-2 clause 14.5): set up (D-SETUP, D-ALERT, D-CALL PROCEEDING), through-connected
+ * (D-CONNECT, D-CONNECT ACKNOWLEDGE), a transmission granted (D-TX GRANTED), the transmission ceased (D-TX CEASED). */
+enum {
+    TETRA_CALL_FREE = 0,
+    TETRA_CALL_SETUP,
+    TETRA_CALL_CONNECTED,
+    TETRA_CALL_TX_GRANTED,
+    TETRA_CALL_CEASED,
+};
+
+/* tetra_call_t::flags */
+enum {
+    TETRA_CALL_F_SETUP_SEEN = 1u << 0,   /* a D-SETUP named the called party and the basic service */
+    TETRA_CALL_F_EVENT_LABEL = 1u << 1,  /* event_label is assigned to a party of the call */
+    TETRA_CALL_F_USAGE_MARKER = 1u << 2, /* usage_marker is assigned to the call */
+};
+
+/** One CMCE call the downlink signalled, keyed by its 14-bit call identifier (tetra_calls.c). */
+typedef struct {
+    double seen_m;          /**< decode clock: the last CRC-passed PDU that named the call, or its speech */
+    double alloc_m;         /**< decode clock: when its channel allocation was last set; 0 for none */
+    tetra_chan_alloc alloc; /**< the traffic channel it was last allocated; no timeslots for none */
+    uint32_t called_ssi;    /**< called party: the GSSI of a group call, the ISSI of an individual one; 0 unknown */
+    uint32_t calling_ssi;   /**< calling party; 0 unknown */
+    uint32_t talker_ssi;    /**< transmitting party of the transmission in progress; 0 none or unknown */
+    uint16_t call_id;       /**< call identifier */
+    uint16_t event_label;   /**< event label assigned to a party of the call (TETRA_CALL_F_EVENT_LABEL) */
+    uint8_t phase;          /**< TETRA_CALL_*; TETRA_CALL_FREE for an unused entry */
+    uint8_t flags;          /**< TETRA_CALL_F_* */
+    uint8_t basic_service;  /**< basic service information (table 14.35) as last signalled */
+    uint8_t e2ee;           /**< end-to-end encrypted: the basic service or D-TX GRANTED encryption control says so */
+    uint8_t air_enc;        /**< encryption mode (TETRA_ENC_MODE_*) of the MAC-RESOURCE that allocated its channel */
+    uint8_t priority;       /**< call priority from D-SETUP */
+    uint8_t timeout;        /**< call time-out (table 14.50) */
+    uint8_t usage_marker;   /**< usage marker assigned to the call (TETRA_CALL_F_USAGE_MARKER) */
+} tetra_call_t;
+
+/* The CMCE calls tracked at once. The MCCH of a carrier with four timeslots signals the calls of every carrier of the
+ * cell, so eight leave room for calls that are set up while others are on air. */
+#define TETRA_CALLS_MAX 8
+
+/* What canonical call slot 0 carries for TETRA (tetra_calls_t::published). */
+enum {
+    TETRA_PUB_NONE = 0, /* nothing */
+    TETRA_PUB_CALL,     /* the CMCE call published_call_id */
+    TETRA_PUB_ANON,     /* trunked-mode speech no call record names */
+    TETRA_PUB_DMO,      /* the direct mode call */
+};
+
+/** The direct mode call on the channel, from its DMAC-SYNC and DMAC-DATA PDUs (EN 300 396-3 clause 9). */
+typedef struct {
+    double seen_m;     /**< decode clock: the last PDU of the call */
+    uint32_t src;      /**< source address (talker) */
+    uint32_t dst;      /**< destination address; 0 when DM-2-B hides it */
+    uint8_t active;    /**< a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED set it up and no end has come since */
+    uint8_t addressed; /**< the addresses were clear (no DM-2-C) */
+    uint8_t group;     /**< call type element: 1 group call, 0 individual call (group_known) */
+    uint8_t group_known;
+    uint8_t circuit_mode; /**< circuit mode type (0 speech); circuit_known */
+    uint8_t circuit_known;
+} tetra_dmo_call_t;
+
+/** Calls (tetra_calls.c): the trunked mode call table, the direct mode call and what the decoder publishes. */
+typedef struct {
+    tetra_call_t call[TETRA_CALLS_MAX];
+    tetra_dmo_call_t dmo;
+    double heard_m;             /* decode clock: the last good speech of the heard call (not trunking) */
+    uint16_t published_call_id; /* the call TETRA_PUB_CALL names */
+    uint16_t heard_call_id;     /* the call the heard speech belongs to; heard_known */
+    uint8_t published;          /* TETRA_PUB_* */
+    uint8_t heard;              /* speech is being heard on heard_tn (not trunking): other timeslots are not */
+    uint8_t heard_tn;           /* its timeslot, 0 while the TDMA clock does not place it */
+    uint8_t heard_known;        /* heard_call_id names its call */
+    /* Per timeslot (index TN, 0 while the TDMA clock is stopped): 1 + the encryption mode of the last addressed
+     * MAC-RESOURCE decoded on it, 0 for none since the carrier was taken. */
+    uint8_t slot_enc[5];
+} tetra_calls_t;
+
 /* Mobility management snapshots (EN 300 392-2 clause 16, EN 300 392-7 annex A). tetra_mm.c decodes a whole PDU
  * before it replaces the snapshot of its kind, so each one holds the last complete PDU. Sealed keys are kept as
  * received; a passive monitor never unwraps them. */
@@ -410,10 +499,12 @@ typedef struct tetra_state {
     tetra_sm_t sm;
     tetra_confirm_t confirm;
 
-    /* Downlink frequencies in Hz, 0 while unknown: the SYSINFO main carrier (dl_carrier_hz) and the carrier of the
-     * last traffic-channel assignment (vc_freq_hz). Their blocks below describe them; they sit here for alignment. */
+    /* The calls the decoder tracks, follows and publishes (tetra_calls.c). */
+    tetra_calls_t calls;
+
+    /* Downlink frequency in Hz of the SYSINFO main carrier, 0 while unknown. Its block below describes it; it sits here
+     * for alignment. */
     long dl_carrier_hz;
-    long vc_freq_hz;
 
     /* Mobility management (tetra_mm.c), widest alignment first so the block adds no padding. The group identity,
      * MM status and function-not-supported fields stay flat because tetra_channel_info.c reads them. */
@@ -501,7 +592,8 @@ typedef struct tetra_state {
     uint16_t subscr_class;
 
     /* Address and encryption mode of the last addressed MAC-RESOURCE (or of the MAC-RESOURCE that started the
-     * TM-SDU a MAC-END completed). Null PDUs leave them alone.
+     * TM-SDU a MAC-END completed). Null PDUs leave them alone. They describe the cell's signalling, for display: the
+     * calls keep the encryption mode of their own allocation (tetra_call_t::air_enc), and no CMCE element writes them.
      *
      * ssi_valid:  1 when active_ssi holds a clear SSI, USSI or SMI; 0 for event labels and encrypted short
      *             identities, which are not subscriber identities.
@@ -511,59 +603,11 @@ typedef struct tetra_state {
     uint8_t ssi_valid;
     uint8_t enc_mode;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA MLE / CMCE call-event state — updated by tetra_mle_dispatch().
-     *
-     * call_active:  1 while a call is in progress (set on D-SETUP or
-     *                     D-CONNECT, cleared on D-RELEASE / D-DISCONNECT).
-     * call_type:    3-bit circuit-mode type from D-SETUP basic service.
-     * calling_ssi:  24-bit SSI of the calling party extracted from the
-     *                     CMCE D-SETUP "Calling party" optional IE.
-     * gssi:         24-bit Group SSI (talkgroup ID) from the MAC-RESOURCE
-     *                     address. Set for group/multipoint calls and cleared
-     *                     for point-to-point calls.
-     * call_id:      14-bit call identifier from CMCE D-SETUP.
-     * ───────────────────────────────────────────────────────────────────────── */
-    uint16_t call_id;
-    uint32_t calling_ssi;
-    uint32_t gssi;
-    uint32_t cmce_call_generation; /* increments after complete call-establishment state */
-    uint8_t call_active;
-    uint8_t call_type;
-
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA floor-control state — updated by CMCE D-TX-GRANTED / D-TX-CEASED.
-     *
-     * tx_granted_valid: 1 while a transmit grant is in force.
-     * tx_granted_ssi:   24-bit SSI of the currently-speaking party
-     *                          (from the D-TX-GRANTED optional IE).
-     * ───────────────────────────────────────────────────────────────────────── */
-    uint32_t tx_granted_ssi;
-    uint8_t tx_granted_valid;
-
     /* Frequency band and offset of the main carrier from the last SYSINFO with a valid main carrier. A channel
      * allocation without extended carrier numbering uses them (EN 300 392-2 clause 21.5.2). freq_band 0 means
      * none is known yet. */
     uint8_t freq_band;
     uint8_t freq_offset;
-
-    /* Traffic-channel assignment from the last channel allocation element (EN 300 392-2 table 21.87) of a
-     * MAC-RESOURCE or MAC-END PDU.
-     *
-     * vc_assignment_type:  allocation type.
-     * vc_carrier:          12-bit carrier number.
-     * vc_freq_hz:          downlink frequency in Hz, 0 when unknown.
-     * vc_addr:             address of the PDU that made the assignment. A later allocation with timeslot
-     *                      assigned 0000 (go to the common control channel) releases the assignment only when it
-     *                      is addressed to the same party, by SSI or by an event label assigned to that SSI.
-     * The trunking state machine drops the assignment whenever it stops following a call. */
-    tetra_mac_address vc_addr;
-    uint16_t vc_carrier;
-    uint8_t vc_assignment_type;
-    uint8_t vc_assignment_valid;
-    uint8_t vc_timeslot_bitmap;
-    uint8_t vc_uplink_downlink;
-    uint8_t vc_addr_event_label_valid;
 
     /* SDS, EN 300 392-2 clauses 14.7.1.10/14.7.1.11 and 29, published by tetra_mle.c.
      *
@@ -635,11 +679,6 @@ typedef struct tetra_state {
      * different timeslots are never joined (EN 300 392-2 clause 23.4.3.1.1). */
     tetra_mac_fragment mac_frag[5];
 
-    /* call_timeout: call time-out (table 14.50) from D-SETUP, D-CONNECT, D-CONNECT ACKNOWLEDGE or D-INFO.
-     * call_slots: speech service or slots per frame, the last two bits of the basic service information (table 14.35). */
-    uint8_t call_timeout;
-    uint8_t call_slots;
-
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA decode quality counters (Phase 35):
      *
@@ -662,27 +701,17 @@ typedef struct tetra_state {
     uint8_t sds_msg_ref;
     int8_t sds_last_cc;
 
-    /* D-CONNECT (table 14.7): the encryption flag and circuit mode type of its optional basic service information
-     * (both 0 when absent), and connect_valid once a complete D-CONNECT was decoded. */
-    uint8_t connect_enc_mode;
-    uint8_t connect_call_type;
-    uint8_t connect_valid;
-
     /* D-SDS-DATA with short data type identifier 0: user defined data-1 (16 bits) and its calling party SSI;
      * sds_short_valid is cleared by any other D-SDS-DATA. */
     uint32_t sds_short_src;
     uint16_t sds_short_data;
     uint8_t sds_short_valid;
 
-    /* Floor-control events (tables 14.17, 14.19 and 14.20): tx_continue, tx_interrupted and tx_wait latch when
-     * D-TX CONTINUE, D-TX INTERRUPT or D-TX WAIT arrives for the active call and clear on release; tx_event_* hold
-     * the last such PDU's fields. tx_timed_out has no downlink PDU and stays 0. */
+    /* Floor-control events (tables 14.17, 14.19 and 14.20): tx_event_* hold the fields of the last D-TX CONTINUE,
+     * D-TX INTERRUPT or D-TX WAIT decoded, whichever call it named. tx_timed_out has no downlink PDU and stays 0. */
     uint32_t tx_event_party_ssi;
     uint32_t tx_event_party_extension;
     uint16_t tx_event_call_id;
-    uint8_t tx_continue;
-    uint8_t tx_interrupted;
-    uint8_t tx_wait;
     uint8_t tx_timed_out;
     uint8_t tx_event_notification;
     uint8_t tx_event_continue;

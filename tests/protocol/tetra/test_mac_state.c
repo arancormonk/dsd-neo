@@ -5,6 +5,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -19,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
 #include "tetra_test_pdu.h"
@@ -92,6 +94,13 @@ setup_trunking(dsd_opts* opts, dsd_state* state) {
     tune_calls = 0;
     return_calls = 0;
     tuned_freq = 0;
+}
+
+/* Whether any call record holds a traffic channel (tetra_calls_traffic()). */
+static int
+has_traffic(const dsd_state* state) {
+    tetra_chan_alloc a;
+    return tetra_calls_traffic(state, &a);
 }
 
 static int
@@ -298,13 +307,11 @@ test_null_pdu_leaves_state(void) {
         ts->enc_mode = TETRA_ENC_MODE_ON_AUTH;
         ts->ssi_valid = 1;
         ts->active_ssi = 777;
-        ts->call_active = 1;
-        ts->cmce_call_generation = 1;
         tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-        ok &= check(!ts->vc_assignment_valid && tune_calls == 0, "a Null PDU carries no channel allocation");
-        ok &= check(ts->enc_mode == TETRA_ENC_MODE_ON_AUTH && ts->ssi_valid && ts->active_ssi == 777 && ts->call_active
+        ok &= check(!has_traffic(state) && tune_calls == 0, "a Null PDU carries no channel allocation");
+        ok &= check(ts->enc_mode == TETRA_ENC_MODE_ON_AUTH && ts->ssi_valid && ts->active_ssi == 777
                         && ts->frames_resource == 0,
-                    "a Null PDU leaves call and encryption state");
+                    "a Null PDU leaves the address and encryption state");
         free_state(state);
         free(opts);
     }
@@ -367,33 +374,44 @@ test_optional_elements_bounded_by_pdu_length(void) {
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
     setup_trunking(opts, state);
-    tetra_st(state)->call_active = 1;
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
     const tetra_state_t* ts = tetra_st(state);
-    const int ok = check(!ts->vc_assignment_valid && tune_calls == 0 && !ts->ssi_valid,
+    const int ok = check(!has_traffic(state) && tune_calls == 0 && !ts->ssi_valid,
                          "a header longer than its length indication is discarded");
     free_state(state);
     free(opts);
     return ok;
 }
 
-/* A call setup addressed to @p target: MAC-RESOURCE (table 21.55) with an optional channel allocation, BL-UDATA
- * (table 21.10) and CMCE D-SETUP. Returns the position of the CMCE PDU type. */
+/* A MAC-RESOURCE (table 21.55) addressed to @p target carrying BL-UDATA (table 21.10) and a CMCE D-SETUP for call
+ * @p call_id, with a channel allocation on carrier @p carrier when @p timeslots is not 0, closed but not finished.
+ * Returns the position of the CMCE PDU type. */
 static int
-put_call_block(ttb_block* b, uint32_t target, uint32_t basic_service, int with_allocation) {
+put_call_pdu(ttb_block* b, uint32_t target, uint32_t call_id, uint32_t basic_service, uint32_t timeslots,
+             uint32_t carrier) {
     const int start = ttb_resource(b, 0, TETRA_MAC_ADDR_SSI, target);
-    ttb_resource_flags(b, with_allocation ? 1u : 0u);
-    if (with_allocation) {
-        ttb_allocation(b, 1, 1, 60); /* timeslot 4, downlink, carrier 60 */
+    ttb_resource_flags(b, timeslots != 0u ? 1u : 0u);
+    if (timeslots != 0u) {
+        ttb_allocation(b, timeslots, 1, carrier);
     }
     ttb_put(b, 2, 4); /* LLC PDU type 0010: BL-UDATA without FCS */
     const int cmce_type = b->n + 3;
-    ttb_d_setup(b, 0x1234u, basic_service);
+    ttb_d_setup(b, call_id, basic_service);
     ttb_close_resource(b, start);
+    return cmce_type;
+}
+
+/* A call setup addressed to @p target in a block of its own: call 0x1234, timeslot 4 of carrier 60 when
+ * @p with_allocation. Returns the position of the CMCE PDU type. */
+static int
+put_call_block(ttb_block* b, uint32_t target, uint32_t basic_service, int with_allocation) {
+    const int cmce_type = put_call_pdu(b, target, 0x1234u, basic_service, with_allocation ? 1u : 0u, 60);
     ttb_finish(b, TTB_SCH_HD_BITS, -1);
     return cmce_type;
 }
 
+/* The MAC-RESOURCE address of a D-SETUP is its called party: a GSSI for a group call, an ISSI for an individual one. A
+ * D-SETUP that reuses a call identifier for another kind of call starts a new call. */
 static int
 test_mac_resource_binds_group_target(void) {
     ttb_block b = {0};
@@ -401,14 +419,16 @@ test_mac_resource_binds_group_target(void) {
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    tetra_state_t* ts = tetra_st(state);
-    int ok = check(ts->call_active && ts->call_id == 0x1234u && ts->cmce_com_type == 1 && ts->active_ssi == 0x234567u
-                       && ts->gssi == 0x234567u,
+    const tetra_call_t* c = tetra_calls_peek(state, 0x1234u);
+    int ok = check(c && c->called_ssi == 0x234567u && c->basic_service == TTB_SPEECH_GROUP
+                       && c->phase == TETRA_CALL_SETUP && (c->flags & TETRA_CALL_F_SETUP_SEEN) != 0u,
                    "MAC SSI bound to the CMCE group call");
     b = (ttb_block){0};
-    put_call_block(&b, 0x234567u, TTB_SPEECH_P2P, 0);
+    put_call_block(&b, 0x345678u, TTB_SPEECH_P2P, 0);
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    ok &= check(ts->cmce_com_type == 0 && ts->gssi == 0, "a point-to-point setup clears the group");
+    c = tetra_calls_peek(state, 0x1234u);
+    ok &= check(c && c->called_ssi == 0x345678u && c->basic_service == TTB_SPEECH_P2P,
+                "a point-to-point setup under the same identifier is a new individual call");
     free_state(state);
     free(opts);
     return ok;
@@ -431,9 +451,11 @@ test_call_allocation_obeys_group_policy(void) {
     dsd_opts* opts = new_opts();
     setup_trunking(opts, state);
     opts->trunk_tune_group_calls = 0;
+    const tetra_call_t* c = NULL;
     int ok = check(run_call_block(opts, state, TTB_SPEECH_GROUP, TETRA_CMCE_D_SETUP) == 0
-                       && tetra_st(state)->gssi == 0x345678u,
-                   "group calls off: no tune");
+                       && (c = tetra_calls_peek(state, 0x1234u)) != NULL && c->called_ssi == 0x345678u
+                       && c->alloc.carrier == 60u && c->alloc.timeslots == 1u,
+                   "group calls off: no tune, the call keeps its channel");
     opts->trunk_tune_group_calls = 1;
     state->tg_hold = 0x345679u;
     ok &= check(run_call_block(opts, state, TTB_SPEECH_GROUP, TETRA_CMCE_D_SETUP) == 0, "held other group: no tune");
@@ -442,17 +464,18 @@ test_call_allocation_obeys_group_policy(void) {
                 "held group: tuned to carrier 60");
     state->tg_hold = 0;
     opts->trunk_tune_private_calls = 0;
-    ok &= check(run_call_block(opts, state, TTB_SPEECH_P2P, TETRA_CMCE_D_SETUP) == 0 && tetra_st(state)->gssi == 0,
-                "private calls off: no tune");
+    ok &= check(run_call_block(opts, state, TTB_SPEECH_P2P, TETRA_CMCE_D_SETUP) == 0, "private calls off: no tune");
     opts->trunk_tune_private_calls = 1;
     ok &= check(run_call_block(opts, state, TTB_SPEECH_P2P, TETRA_CMCE_D_SETUP) == 1, "private call tuned");
     opts->trunk_tune_enc_calls = 0;
-    ok &= check(run_call_block(opts, state, 0x10u, TETRA_CMCE_D_SETUP) == 0, "encrypted calls off: no tune");
+    ok &= check(run_call_block(opts, state, 0x14u, TETRA_CMCE_D_SETUP) == 0
+                    && dsd_enc_lockout_entry_active(state, 0x345678u, 1),
+                "end-to-end encrypted calls off: no tune, and the group is locked out");
     opts->trunk_tune_enc_calls = 1;
     opts->trunk_tune_data_calls = 0;
     ok &= check(run_call_block(opts, state, 0x20u, TETRA_CMCE_D_SETUP) == 0, "data calls off: no tune");
     opts->trunk_tune_data_calls = 1;
-    /* A TM-SDU that publishes no call must not let its allocation tune. */
+    /* A TM-SDU that names no call must not let its allocation tune. */
     ok &= check(run_call_block(opts, state, TTB_SPEECH_GROUP, 31u) == 0, "unassigned CMCE PDU: no tune");
     free_state(state);
     free(opts);
@@ -479,11 +502,12 @@ test_fill_bits_removed_before_tm_sdu(void) {
         dsd_opts* opts = new_opts();
         tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
         const tetra_state_t* ts = tetra_st(state);
+        const tetra_call_t* const c = tetra_calls_peek(state, 0x0ABCu);
+        (void)ts;
         if (corrupt) {
-            ok &= check(!ts->call_active, "an FCS mismatch discards the TL-SDU");
+            ok &= check(c == NULL, "an FCS mismatch discards the TL-SDU");
         } else {
-            ok &= check(ts->call_active && ts->call_id == 0x0ABCu && ts->gssi == 0x345678u,
-                        "TL-SDU with FCS delivered once fill bits are removed");
+            ok &= check(c && c->called_ssi == 0x345678u, "TL-SDU with FCS delivered once fill bits are removed");
         }
         free_state(state);
         free(opts);
@@ -509,7 +533,8 @@ test_encrypted_pdus_not_parsed(void) {
     ttb_close_resource(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    int ok = check(!ts->call_active && ts->mac_encrypted_sdus == 1, "an encrypted TM-SDU is not handed to the MLE");
+    int ok = check(tetra_calls_peek(state, 0x0ABCu) == NULL && ts->mac_encrypted_sdus == 1,
+                   "an encrypted TM-SDU is not handed to the MLE");
     ok &= check(ts->enc_mode == TETRA_ENC_MODE_ON_AUTH && !ts->ssi_valid && ts->active_ssi == 0x111111u,
                 "an encrypted short identity is not published as an SSI");
 
@@ -520,7 +545,7 @@ test_encrypted_pdus_not_parsed(void) {
     ttb_close_resource(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    ok &= check(!ts->vc_assignment_valid && tune_calls == 0 && ts->mac_encrypted_sdus == 2,
+    ok &= check(!has_traffic(state) && tune_calls == 0 && ts->mac_encrypted_sdus == 2,
                 "an encrypted channel allocation is not applied");
 
     /* The encryption mode of a first fragment applies to every fragment of its TM-SDU. */
@@ -538,7 +563,7 @@ test_encrypted_pdus_not_parsed(void) {
     ttb_close_end(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    ok &= check(!ts->call_active && ts->mac_encrypted_sdus == 3 && !ts->mac_frag[0].active,
+    ok &= check(tetra_calls_peek(state, 0x0ABCu) == NULL && ts->mac_encrypted_sdus == 3 && !ts->mac_frag[0].active,
                 "the last fragment of an encrypted TM-SDU is not handed to the MLE");
     free_state(state);
     free(opts);
@@ -574,10 +599,7 @@ test_llc_pdu_types(void) {
         dsd_state* state = new_state();
         dsd_opts* opts = new_opts();
         tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-        const tetra_state_t* ts = tetra_st(state);
-        ok &= check(ts->call_active == (k_cases[i].delivered ? 1 : 0)
-                        && (!k_cases[i].delivered || ts->call_id == 0x0ABCu),
-                    k_cases[i].what);
+        ok &= check((tetra_calls_peek(state, 0x0ABCu) != NULL) == (k_cases[i].delivered != 0), k_cases[i].what);
         free_state(state);
         free(opts);
     }
@@ -608,11 +630,12 @@ test_mac_d_blck_payload_offset(void) {
         dsd_state* state = new_state();
         dsd_opts* opts = new_opts();
         tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-        const tetra_state_t* ts = tetra_st(state);
+        const tetra_call_t* const c = tetra_calls_peek(state, 0x0777u);
         if (full_slot) {
-            ok &= check(ts->call_active && ts->call_id == 0x0777u, "MAC-D-BLCK TM-SDU decoded after its header");
+            /* MAC-D-BLCK addresses its party by event label: the call is known, its called party is not. */
+            ok &= check(c && c->called_ssi == 0u, "MAC-D-BLCK TM-SDU decoded after its header");
         } else {
-            ok &= check(!ts->call_active, "MAC-U-SIGNAL is not C-plane signalling");
+            ok &= check(c == NULL, "MAC-U-SIGNAL is not C-plane signalling");
         }
         free_state(state);
         free(opts);
@@ -673,56 +696,65 @@ put_allocation_block(ttb_block* b, uint32_t addr_type, uint32_t address, uint32_
     ttb_finish(b, TTB_SCH_HD_BITS, -1);
 }
 
+/* A D-SETUP to group 0x00BEEF for call 0x0BEE with a channel allocation on timeslot 2 of carrier 50. */
+static void
+put_followed_setup(ttb_block* b) {
+    put_call_pdu(b, 0x00BEEFu, 0x0BEEu, TTB_SPEECH_GROUP, 4, 50);
+    ttb_finish(b, TTB_SCH_HD_BITS, -1);
+}
+
+/* A channel allocation is followed only with the call PDU that came in its MAC PDU: a header-only one never tunes. Its
+ * fields go to the call; timeslot assigned 0000 to the followed call's party ends it. */
 static int
 test_mac_resource_channel_allocation(void) {
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
     setup_trunking(opts, state);
-    tetra_state_t* ts = tetra_st(state);
     ttb_block b = {0};
     put_allocation_block(&b, TETRA_MAC_ADDR_SSI, 0x00BEEFu, 4, 50);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-    int ok = check(ts->vc_assignment_valid && ts->vc_assignment_type == 0 && ts->vc_timeslot_bitmap == 4
-                       && ts->vc_uplink_downlink == 1 && ts->vc_carrier == 50 && ts->vc_freq_hz == 401243750L,
-                   "channel allocation fields");
-    ok &= check(tune_calls == 1 && tuned_freq == 401243750L, "header-only allocation tunes");
+    int ok = check(tune_calls == 0 && !has_traffic(state), "a header-only allocation to no call: nothing tunes");
 
-    /* Timeslot assigned 0000 for the holder of the assignment releases it, and the trunking state machine, which
-     * followed it, returns to the control channel and drops the assignment. */
-    ts->tx_granted_valid = 1;
+    b = (ttb_block){0};
+    put_followed_setup(&b);
+    tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
+    const tetra_call_t* c = tetra_calls_peek(state, 0x0BEEu);
+    ok &= check(c && c->alloc.type == 0 && c->alloc.timeslots == 4 && c->alloc.up_down == 1 && c->alloc.carrier == 50
+                    && c->alloc.freq_hz == 401243750L && c->air_enc == TETRA_ENC_MODE_NONE,
+                "channel allocation fields go to the call");
+    tetra_sm_grant g;
+    ok &= check(tune_calls == 1 && tuned_freq == 401243750L && tetra_sm_followed(state, &g) && g.call_id == 0x0BEEu
+                    && g.timeslots == 4,
+                "the allocation of a D-SETUP tunes, for its call");
+
+    /* Timeslot assigned 0000 for the followed call's party sends it back to the control channel. */
     b = (ttb_block){0};
     put_allocation_block(&b, TETRA_MAC_ADDR_SSI, 0x00BEEFu, 0, 50);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-    ok &= check(!ts->vc_assignment_valid && ts->vc_timeslot_bitmap == 0 && ts->vc_carrier == 0 && ts->vc_freq_hz == 0
-                    && ts->tx_granted_valid == 0 && return_calls == 1 && tetra_sm_get_state(state) == TETRA_SM_ON_CC,
-                "release to the assignment holder clears the assignment");
+    c = tetra_calls_peek(state, 0x0BEEu);
+    ok &= check(c && c->alloc.timeslots == 0 && return_calls == 1 && tetra_sm_get_state(state) == TETRA_SM_ON_CC,
+                "release to the followed call's party ends it");
     free_state(state);
     free(opts);
     return ok;
 }
 
 /* A channel allocation the trunking state machine tunes to ends its block: the PDUs after it were sent on the carrier
- * the receiver left, so the second allocation here neither replaces the assignment nor is followed. */
+ * the receiver left, so the second call setup here is neither recorded nor followed. */
 static int
 test_retune_ends_the_block(void) {
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
     setup_trunking(opts, state);
-    const tetra_state_t* ts = tetra_st(state);
     ttb_block b = {0};
-    int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0x00BEEFu);
-    ttb_resource_flags(&b, 1);
-    ttb_allocation(&b, 4, 1, 50);
-    ttb_close_resource(&b, start);
-    start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0x00F00Du);
-    ttb_resource_flags(&b, 1);
-    ttb_allocation(&b, 2, 1, 61);
-    ttb_close_resource(&b, start);
+    put_call_pdu(&b, 0x00BEEFu, 0x0BEEu, TTB_SPEECH_GROUP, 4, 50);
+    put_call_pdu(&b, 0x00F00Du, 0x0F00u, TTB_SPEECH_GROUP, 2, 61);
     ttb_finish(&b, TTB_SCH_F_BITS, -1);
     tetra_confirm_burst_begin(state);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
     (void)tetra_confirm_burst_end(state);
-    const int ok = check(tune_calls == 1 && tuned_freq == 401243750L && ts->vc_carrier == 50,
+    const int ok = check(tune_calls == 1 && tuned_freq == 401243750L && tetra_calls_peek(state, 0x0BEEu) != NULL
+                             && tetra_calls_peek(state, 0x0F00u) == NULL,
                          "the PDU after a followed allocation is the left carrier's");
     free_state(state);
     free(opts);
@@ -735,25 +767,23 @@ test_zero_timeslots_for_another_party(void) {
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
     setup_trunking(opts, state);
-    tetra_state_t* ts = tetra_st(state);
     ttb_block b = {0};
 
     put_allocation_block(&b, TETRA_MAC_ADDR_SSI, 0x00F00Du, 0, 50);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-    int ok = check(!ts->vc_assignment_valid, "a release without an assignment does not create one");
+    int ok = check(!has_traffic(state) && return_calls == 0, "a release for no call does nothing");
 
     b = (ttb_block){0};
-    put_allocation_block(&b, TETRA_MAC_ADDR_SSI, 0x00BEEFu, 4, 50);
+    put_followed_setup(&b);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-    ts->tx_granted_valid = 1;
     b = (ttb_block){0};
     put_allocation_block(&b, TETRA_MAC_ADDR_SSI, 0x00F00Du, 0, 50);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-    ok &= check(ts->vc_timeslot_bitmap == 4 && ts->vc_freq_hz == 401243750L && ts->tx_granted_valid == 1
-                    && return_calls == 0 && tetra_sm_get_state(state) == TETRA_SM_TUNED,
-                "a release for another SSI keeps the followed assignment");
+    const tetra_call_t* c = tetra_calls_peek(state, 0x0BEEu);
+    ok &= check(c && c->alloc.timeslots == 4 && return_calls == 0 && tetra_sm_get_state(state) == TETRA_SM_TUNED,
+                "a release for another SSI keeps the followed call");
 
-    /* SSI + event label assignment (address type 101) to the holder, then a release by that event label. */
+    /* SSI + event label assignment (address type 101) to the called group, then a release by that event label. */
     b = (ttb_block){0};
     const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI_EVENT, 0x00BEEFu);
     ttb_put(&b, 0x2A5u, 10);
@@ -761,32 +791,40 @@ test_zero_timeslots_for_another_party(void) {
     ttb_close_resource(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
+    ok &= check(c && (c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x2A5u,
+                "an event label assigned to the called group binds to its call");
     b = (ttb_block){0};
     put_allocation_block(&b, TETRA_MAC_ADDR_EVENT_LABEL, 0x2A4u, 0, 50);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-    ok &= check(ts->vc_timeslot_bitmap == 4 && return_calls == 0, "a release for another event label is ignored");
+    ok &= check(c && c->alloc.timeslots == 4 && return_calls == 0, "a release for another event label is ignored");
     b = (ttb_block){0};
     put_allocation_block(&b, TETRA_MAC_ADDR_EVENT_LABEL, 0x2A5u, 0, 50);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-    ok &= check(ts->vc_timeslot_bitmap == 0 && ts->tx_granted_valid == 0 && return_calls == 1,
-                "a release by the holder's event label ends the assignment");
+    ok &= check(c && c->alloc.timeslots == 0 && return_calls == 1, "a release by the call's event label ends it");
     free_state(state);
     free(opts);
     return ok;
 }
 
-/* A call setup can arrive before its separate channel allocation; the later allocation still tunes. */
+/* A call setup can arrive before its separate, header-only channel allocation: the allocation goes to the call of the
+ * addressed party, which shows it, and is not followed. */
 static int
 test_allocation_after_call_setup(void) {
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
     setup_trunking(opts, state);
-    tetra_st(state)->call_active = 1;
-    tetra_st(state)->cmce_call_generation = 1;
     ttb_block b = {0};
+    put_call_pdu(&b, 0x00BEEFu, 0x0BEEu, TTB_SPEECH_GROUP, 0, 0);
+    ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
+    b = (ttb_block){0};
     put_allocation_block(&b, TETRA_MAC_ADDR_SSI, 0x00BEEFu, 4, 50);
     tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-    const int ok = check(tune_calls == 1 && tuned_freq == 401243750L, "allocation after a call setup tunes");
+    const tetra_call_t* c = tetra_calls_peek(state, 0x0BEEu);
+    tetra_chan_alloc shown;
+    const int ok = check(tune_calls == 0 && c && c->alloc.carrier == 50 && c->alloc.timeslots == 4
+                             && tetra_calls_traffic(state, &shown) && shown.carrier == 50,
+                         "a header-only allocation after a call setup attaches to the call and does not tune");
     free_state(state);
     free(opts);
     return ok;
@@ -818,14 +856,17 @@ test_rejected_augmented_allocations(void) {
         ttb_finish(&b, TTB_SCH_HD_BITS, -1);
         dsd_state* state = new_state();
         dsd_opts* opts = new_opts();
+        /* The call to 0x00BEEF holds timeslot 1 of carrier 77, set up while not trunking. */
+        ttb_block setup = {0};
+        put_call_pdu(&setup, 0x00BEEFu, 0x0BEEu, TTB_SPEECH_GROUP, 8, 77);
+        ttb_finish(&setup, TTB_SCH_HD_BITS, -1);
+        tetra_st(state)->freq_band = 4;
+        tetra_st(state)->freq_offset = 2;
+        tetra_mac_parse_schd(setup.bits, setup.n, 2, opts, state);
         setup_trunking(opts, state);
-        tetra_state_t* ts = tetra_st(state);
-        ts->vc_assignment_valid = 1;
-        ts->vc_timeslot_bitmap = 8;
-        ts->vc_carrier = 77;
-        ts->vc_freq_hz = 461918750L;
         tetra_mac_parse_schd(b.bits, b.n, 2, opts, state);
-        ok &= check(ts->vc_timeslot_bitmap == 8 && ts->vc_carrier == 77 && ts->vc_freq_hz == 461918750L
+        const tetra_call_t* c = tetra_calls_peek(state, 0x0BEEu);
+        ok &= check(c && c->alloc.timeslots == 8 && c->alloc.carrier == 77 && c->alloc.freq_hz == 401918750L
                         && tune_calls == 0,
                     further ? "further augmentation discarded" : "reserved augmented up/downlink discarded");
         free_state(state);
@@ -835,7 +876,7 @@ test_rejected_augmented_allocations(void) {
 }
 
 /* Fragmented call setup (clause 23.4.2.1.1): the channel allocation comes in the MAC-END and is the only one that
- * applies; an older assignment in the state is never used. */
+ * applies. */
 static int
 test_fragmented_call_uses_mac_end_allocation(void) {
     ttb_block sdu = {0};
@@ -869,22 +910,21 @@ test_fragmented_call_uses_mac_end_allocation(void) {
         dsd_opts* opts = new_opts();
         setup_trunking(opts, state);
         opts->trunk_tune_group_calls = pass != 0;
-        tetra_state_t* ts = tetra_st(state);
-        ts->vc_assignment_valid = 1;
-        ts->vc_timeslot_bitmap = 8;
-        ts->vc_carrier = 77;
-        ts->vc_freq_hz = 461918750L;
+        const tetra_state_t* ts = tetra_st(state);
         tetra_mac_parse_schd(first.bits, first.n, 1, opts, state);
-        ok &= check(tune_calls == 0 && ts->mac_frag[0].active && !ts->call_active, "first fragment buffered");
+        ok &= check(tune_calls == 0 && ts->mac_frag[0].active && tetra_calls_peek(state, 0x2345u) == NULL,
+                    "first fragment buffered");
         tetra_mac_parse_schd(end.bits, end.n, 1, opts, state);
+        const tetra_call_t* const c = tetra_calls_peek(state, 0x2345u);
         if (pass == 0) {
-            ok &= check(tune_calls == 0 && ts->call_active && ts->gssi == 0x456789u && !ts->mac_frag[0].active,
+            ok &= check(tune_calls == 0 && c && c->called_ssi == 0x456789u && c->alloc.carrier == 61
+                            && !ts->mac_frag[0].active,
                         "fragmented setup decoded; policy blocks the tune");
         } else if (pass == 1) {
-            ok &= check(tune_calls == 1 && tuned_freq == 401518750L && ts->vc_carrier == 61,
+            ok &= check(tune_calls == 1 && tuned_freq == 401518750L && c && c->alloc.carrier == 61,
                         "MAC-END allocation tunes to its own carrier");
         } else {
-            ok &= check(!ts->call_active && tune_calls == 0, "LLC FCS failure publishes no call and tunes nowhere");
+            ok &= check(c == NULL && tune_calls == 0, "LLC FCS failure publishes no call and tunes nowhere");
         }
         free_state(state);
         free(opts);

@@ -39,6 +39,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
@@ -862,19 +863,29 @@ tetra_pub_network(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_pub
     pub->tea = (ksg >= 0 && ksg < DSD_TETRA_TEA_MAX) ? (uint8_t)(ksg + 1) : 0U;
 }
 
-/* Call following, the SYSINFO main carrier and the allocated traffic channel; a zero timeslot bitmap releases it. */
+/* Call following, the SYSINFO main carrier and the traffic channel: the followed call's, else the channel last
+ * allocated to a call still on record (tetra_calls_traffic()). */
+static uint8_t
+tetra_pub_trunk_state(const tetra_state_t* ts) {
+    switch ((tetra_sm_state_e)ts->sm.state) {
+        case TETRA_SM_TUNED: return DSD_TETRA_TRUNK_ON_TRAFFIC;
+        case TETRA_SM_ON_CC: return DSD_TETRA_TRUNK_ON_CONTROL;
+        case TETRA_SM_IDLE:
+        default: return DSD_TETRA_TRUNK_IDLE;
+    }
+}
+
 static void
-tetra_pub_channels(const tetra_state_t* ts, dsd_tetra_publication* pub) {
-    pub->trunk_state = ts->sm.state == TETRA_SM_TUNED   ? DSD_TETRA_TRUNK_ON_TRAFFIC
-                       : ts->sm.state == TETRA_SM_ON_CC ? DSD_TETRA_TRUNK_ON_CONTROL
-                                                        : DSD_TETRA_TRUNK_IDLE;
+tetra_pub_channels(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_publication* pub) {
+    pub->trunk_state = tetra_pub_trunk_state(ts);
     pub->cc_known = (uint8_t)(ts->frames_sysinfo != 0);
     pub->cc_carrier = pub->cc_known ? (uint16_t)(ts->sysinfo_main_carrier & 0xFFFu) : 0U;
     pub->cc_freq_hz = pub->cc_known ? tetra_pub_hz(ts->dl_carrier_hz) : 0U;
-    pub->traffic_valid = (uint8_t)(ts->vc_assignment_valid && (ts->vc_timeslot_bitmap & 0x0Fu) != 0);
-    pub->traffic_carrier = pub->traffic_valid ? (uint16_t)(ts->vc_carrier & 0xFFFu) : 0U;
-    pub->traffic_slots = pub->traffic_valid ? (uint8_t)(ts->vc_timeslot_bitmap & 0x0Fu) : 0U;
-    pub->traffic_freq_hz = pub->traffic_valid ? tetra_pub_hz(ts->vc_freq_hz) : 0U;
+    tetra_chan_alloc traffic;
+    pub->traffic_valid = (uint8_t)tetra_calls_traffic(state, &traffic);
+    pub->traffic_carrier = pub->traffic_valid ? (uint16_t)(traffic.carrier & 0xFFFu) : 0U;
+    pub->traffic_slots = pub->traffic_valid ? (uint8_t)(traffic.timeslots & 0x0Fu) : 0U;
+    pub->traffic_freq_hz = pub->traffic_valid ? tetra_pub_hz(traffic.freq_hz) : 0U;
 }
 
 void
@@ -887,7 +898,7 @@ tetra_publish(dsd_state* state) {
     /* Nothing reads as decoded until a block has passed its CRC: a sync word alone is weak enough for noise. */
     pub->mode = ts->decode_ok != 0 ? tetra_pub_mode(state, ts) : DSD_TETRA_MODE_NONE;
     tetra_pub_network(state, ts, pub);
-    tetra_pub_channels(ts, pub);
+    tetra_pub_channels(state, ts, pub);
     pub->mm_status_valid = (uint8_t)(ts->mm_status_valid != 0);
     pub->mm_status_code = ts->mm_status_valid ? (uint8_t)(ts->mm_status_code & 0x3Fu) : 0U;
     pub->codec_status = tetra_pub_codec_status(&ts->voice);
@@ -937,4 +948,5 @@ tetra_forget_carrier(dsd_state* state) {
     tetra_mac_forget_fragments(state);
     tetra_tdma_stop(state);
     tetra_voice_reset(state);
+    tetra_calls_forget_carrier(state);
 }

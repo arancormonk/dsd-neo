@@ -12,9 +12,11 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <stdint.h>
 
+#include "tetra_calls.h"
 #include "tetra_state.h"
 
 int
@@ -24,14 +26,15 @@ tetra_voice_channel_gate_passes(const dsd_opts* opts) {
 
 /* The TDMA timeslot comes from the BSCH and advances with every normal burst (tetra_tdma_advance_ndb()). A channel
    allocation's timeslot bitmap is sent TN1 first (EN 300 392-2 clause 21.5.2), so its bit 3 is TN1 and bit 0 TN4.
-   Until both are known every timeslot passes, so single-carrier monitoring still plays. */
+   Without a followed call, or before the TDMA timing is known, every timeslot passes. */
 int
 tetra_voice_slot_gate_passes(const dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (!ts || !ts->vc_assignment_valid) {
+    tetra_sm_grant followed;
+    if (!ts || !tetra_sm_followed(state, &followed)) {
         return 1;
     }
-    const uint8_t bitmap = (uint8_t)(ts->vc_timeslot_bitmap & 0x0Fu);
+    const uint8_t bitmap = (uint8_t)(followed.timeslots & 0x0Fu);
     if (bitmap == 0) {
         return 0;
     }
@@ -63,8 +66,9 @@ tetra_voice_crypto_class(const dsd_state* state, int keystream_applied) {
 unsigned long
 tetra_voice_talkgroup(const dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (!ts || ts->dmo) {
+    const tetra_call_t* const call = tetra_calls_followed(state);
+    if (!ts || ts->dmo || !call || ((call->basic_service >> 2) & 3u) == 0u) {
         return 0UL;
     }
-    return (unsigned long)ts->gssi;
+    return (unsigned long)call->called_ssi;
 }

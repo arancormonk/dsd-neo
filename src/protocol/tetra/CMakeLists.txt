@@ -6,6 +6,7 @@ target_sources(
         tetra.c
         tetra_air.c
         tetra_bsch.c
+        tetra_calls.c
         tetra_confirm.c
         tetra_dmo.c
         tetra_fec.c

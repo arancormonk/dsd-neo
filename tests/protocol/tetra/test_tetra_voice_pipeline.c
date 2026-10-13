@@ -37,6 +37,7 @@
 #include <stdlib.h>
 
 #include "test_support.h"
+#include "tetra_calls.h"
 #include "tetra_state.h"
 #include "tetra_test_codec.h"
 #include "tetra_voice_state.h"
@@ -281,6 +282,18 @@ played_by_burst(fixture* f) {
     return fixture_output(f, out, MAX_OUT) - before;
 }
 
+/* The trunking state machine follows a group call to @p gssi on the timeslots of @p timeslots. */
+static void
+follow_group(fixture* f, uint32_t gssi, uint8_t timeslots) {
+    tetra_call_event setup = {.call_id = 9, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
+    tetra_calls_on_event(NULL, f->state, &setup, NULL);
+    tetra_calls_find(f->state, 9)->called_ssi = gssi;
+    tetra_state_t* ts = tetra_st(f->state);
+    ts->sm.state = (uint8_t)TETRA_SM_TUNED;
+    ts->sm.followed.call_id = 9;
+    ts->sm.followed.timeslots = timeslots;
+}
+
 static void
 test_channel_and_slot_gates(void) {
     fixture f;
@@ -293,8 +306,7 @@ test_channel_and_slot_gates(void) {
     expect(played_by_burst(&f) == 2 * FRAME, "gates: the traffic channel plays");
 
     tetra_state_t* ts = tetra_st(f.state);
-    ts->vc_assignment_valid = 1;
-    ts->vc_timeslot_bitmap = 8; /* TN1 */
+    follow_group(&f, 1, 8); /* TN1 */
     ts->tdma_valid = 1;
     ts->tn = 2;
     expect(played_by_burst(&f) == 0, "gates: another timeslot does not play");
@@ -405,11 +417,10 @@ static void
 test_talkgroup_gate(void) {
     fixture f;
     expect(fixture_open(&f) == 0, "talkgroup: fixture");
-    tetra_state_t* ts = tetra_st(f.state);
-    ts->gssi = 1234;
+    follow_group(&f, 1234, 0x0F);
     expect(dsd_tg_policy_session_avoid_add(f.state, 1234) == 0, "talkgroup: avoid 1234");
     expect(played_by_burst(&f) == 0, "talkgroup: an avoided group is muted");
-    ts->gssi = 1235;
+    tetra_calls_find(f.state, 9)->called_ssi = 1235;
     expect(played_by_burst(&f) == 2 * FRAME, "talkgroup: another group plays");
     fixture_close(&f);
 }
@@ -450,7 +461,7 @@ test_record_gate(void) {
     call.policy_target_id = 500U;
     call.observed_m = 1.0;
     expect(dsd_call_state_observe(f.state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1, "record: call active");
-    tetra_st(f.state)->gssi = 500;
+    follow_group(&f, 500, 0x0F);
 
     expect(played_by_burst(&f) == 2 * FRAME, "record: the call plays");
     if (f.opts->wav_out_f) {

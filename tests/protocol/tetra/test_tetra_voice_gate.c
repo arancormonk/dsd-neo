@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "tetra_calls.h"
 #include "tetra_state.h"
 #include "tetra_voice_gate.h"
 
@@ -40,26 +41,35 @@ test_channel_gate(dsd_opts* opts) {
     expect(tetra_voice_channel_gate_passes(NULL), "no options pass");
 }
 
+/* The trunking state machine follows call @p call_id on the timeslots of @p timeslots. */
+static void
+follow(dsd_state* st, uint16_t call_id, uint8_t timeslots) {
+    tetra_state_t* ts = tetra_st(st);
+    ts->sm.state = (uint8_t)TETRA_SM_TUNED;
+    ts->sm.followed.call_id = call_id;
+    ts->sm.followed.timeslots = timeslots;
+}
+
 static void
 test_slot_gate(dsd_state* st) {
     tetra_state_t* ts = tetra_st(st);
-    expect(tetra_voice_slot_gate_passes(st), "no allocation passes every timeslot");
-    ts->vc_assignment_valid = 1;
+    expect(tetra_voice_slot_gate_passes(st), "no followed call passes every timeslot");
     ts->tdma_valid = 0;
-    ts->vc_timeslot_bitmap = 4;
-    expect(tetra_voice_slot_gate_passes(st), "an allocation without TDMA timing passes");
+    follow(st, 1, 4);
+    expect(tetra_voice_slot_gate_passes(st), "a followed call without TDMA timing passes");
     ts->tdma_valid = 1;
     for (unsigned tn = 1; tn <= 4; ++tn) {
         ts->tn = (uint8_t)tn;
         for (unsigned assigned = 1; assigned <= 4; ++assigned) {
-            ts->vc_timeslot_bitmap = (uint8_t)(1u << (4u - assigned));
+            ts->sm.followed.timeslots = (uint8_t)(1u << (4u - assigned));
             char label[64];
             DSD_SNPRINTF(label, sizeof(label), "TN%u under an allocation of TN%u", tn, assigned);
             expect(tetra_voice_slot_gate_passes(st) == (tn == assigned), label);
         }
     }
-    ts->vc_timeslot_bitmap = 0;
-    expect(!tetra_voice_slot_gate_passes(st), "an allocation to the control channel (no timeslot) passes none");
+    ts->sm.followed.timeslots = 0;
+    expect(!tetra_voice_slot_gate_passes(st), "a followed call with no timeslot passes none");
+    ts->sm.state = (uint8_t)TETRA_SM_IDLE;
     expect(tetra_voice_slot_gate_passes(NULL), "no state passes");
 }
 
@@ -93,8 +103,11 @@ static void
 test_talkgroup(dsd_state* st) {
     tetra_state_t* ts = tetra_st(st);
     ts->dmo = 0;
-    ts->gssi = 0x123456u;
-    expect(tetra_voice_talkgroup(st) == 0x123456ul, "trunked speech is judged by the call's GSSI");
+    tetra_call_event setup = {.call_id = 9, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
+    tetra_calls_on_event(NULL, st, &setup, NULL);
+    tetra_calls_find(st, 9)->called_ssi = 0x123456u;
+    follow(st, 9, 8);
+    expect(tetra_voice_talkgroup(st) == 0x123456ul, "trunked speech is judged by the followed call's GSSI");
     ts->dmo = 1;
     expect(tetra_voice_talkgroup(st) == 0ul, "direct mode has no group address yet");
     expect(tetra_voice_talkgroup(NULL) == 0ul, "no state has none");

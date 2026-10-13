@@ -24,13 +24,14 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -59,6 +60,12 @@ alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
 }
 
+static void
+free_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 static dsd_opts*
 alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -66,9 +73,9 @@ alloc_opts(void) {
 
 static void
 wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_nbits) {
-    memset(out, 0, (size_t)(3 + cmce_nbits));
+    DSD_MEMSET(out, 0, (size_t)(3 + cmce_nbits));
     pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
-    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
+    DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = 3 + cmce_nbits;
 }
 
@@ -85,7 +92,7 @@ test_floor_control_events(void) {
 
     /* D-TX-CONTINUE: call=0x1234, continue=1, request=1. */
     uint8_t cmce[32];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_TX_CONTINUE, 0, 5);
     pack_bits(cmce, 0x1234, 5, 14);
     pack_bits(cmce, 1, 19, 1);
@@ -93,11 +100,11 @@ test_floor_control_events(void) {
     pack_bits(cmce, 0, 21, 1); /* O-bit */
     wrap_mle_cmce(cmce, 22, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(tetra_st(st)->tx_continue == 1, "D-TX-CONTINUE sets flag");
+    CHECK(tetra_st(st)->tx_event_continue == 1, "D-TX-CONTINUE continue value decoded");
     CHECK(tetra_st(st)->tx_event_call_id == 0x1234, "D-TX-CONTINUE keeps 14-bit call id");
 
     /* D-TX-INTERRUPT uses the same mandatory grant fields as D-TX-GRANTED. */
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_TX_INTERRUPT, 0, 5);
     pack_bits(cmce, 0x22, 5, 14);
     pack_bits(cmce, 3, 19, 2);
@@ -106,21 +113,20 @@ test_floor_control_events(void) {
     pack_bits(cmce, 0, 24, 1); /* O-bit */
     wrap_mle_cmce(cmce, 25, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(tetra_st(st)->tx_interrupted == 1, "D-TX-INTERRUPT sets flag");
+    CHECK(tetra_st(st)->tx_event_encryption == 1, "D-TX-INTERRUPT encryption control decoded");
     CHECK(tetra_st(st)->tx_event_grant == 3, "D-TX-INTERRUPT grant decoded");
 
     /* D-TX-WAIT: call id plus request permission. */
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_TX_WAIT, 0, 5);
     pack_bits(cmce, 0x321, 5, 14);
     pack_bits(cmce, 0, 19, 1);
     pack_bits(cmce, 0, 20, 1); /* O-bit */
     wrap_mle_cmce(cmce, 21, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(tetra_st(st)->tx_wait == 1, "D-TX-WAIT sets flag");
     CHECK(tetra_st(st)->tx_event_call_id == 0x321, "D-TX-WAIT call id decoded");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -132,20 +138,20 @@ test_mle_restore(void) {
 
     /* Truncated MLE header: PD without its three-bit PDU type. */
     uint8_t mle_ack[5];
-    memset(mle_ack, 0, sizeof(mle_ack));
+    DSD_MEMSET(mle_ack, 0, sizeof(mle_ack));
     pack_bits(mle_ack, TETRA_MLE_PD_MLE, 0, 3);
     tetra_mle_dispatch(mle_ack, 5, 0, opt, st);
     CHECK(tetra_st(st)->restore_ack == 0, "truncated MLE D-RESTORE-ACK rejected");
 
     /* D-RESTORE-FAIL without the mandatory O-bit is rejected. */
     uint8_t mle_res[8];
-    memset(mle_res, 0, sizeof(mle_res));
+    DSD_MEMSET(mle_res, 0, sizeof(mle_res));
     pack_bits(mle_res, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle_res, TETRA_MLE_D_RESTORE_FAIL, 3, 3);
     tetra_mle_dispatch(mle_res, 8, 0, opt, st);
     CHECK(tetra_st(st)->mle_restore_fail_valid == 0, "truncated MLE D-RESTORE-FAIL rejected");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -165,7 +171,7 @@ test_nwrk_ext(void) {
     dsd_opts* opt = alloc_opts();
 
     uint8_t mle[256];
-    memset(mle, 0, sizeof(mle));
+    DSD_MEMSET(mle, 0, sizeof(mle));
     int off = 0;
     pack_bits(mle, TETRA_MLE_PD_MLE, off, 3);
     off += 3;
@@ -265,7 +271,7 @@ test_nwrk_ext(void) {
     mle[off - 1] = 0;
 
     /* O=0 is a complete empty snapshot and clears all prior list presence. */
-    memset(mle, 0, sizeof(mle));
+    DSD_MEMSET(mle, 0, sizeof(mle));
     pack_bits(mle, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle, TETRA_MLE_D_NWRK_BCAST_EXT, 3, 3);
     tetra_mle_dispatch(mle, 7, 0, opt, st);
@@ -274,7 +280,7 @@ test_nwrk_ext(void) {
               && !tetra_st(st)->mle_ext.neighbor_irregular_present,
           "O=0 commits an empty extension snapshot");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -380,7 +386,7 @@ test_nwrk_remove(void) {
     tetra_mle_dispatch(mle, off, 0, opt, st);
     CHECK(tetra_st(st)->mle_remove.ca[0].cell_id == 19, "reserved removal field is rejected atomically");
 
-    memset(mle, 0, sizeof(mle));
+    DSD_MEMSET(mle, 0, sizeof(mle));
     pack_bits(mle, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle, TETRA_MLE_EXTENDED_PDU, 3, 3);
     pack_bits(mle, TETRA_MLE_D_NWRK_BCAST_REMOVE, 6, 4);
@@ -389,7 +395,7 @@ test_nwrk_remove(void) {
               && !tetra_st(st)->mle_remove.serving_present,
           "O=0 commits an empty removal snapshot");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -581,7 +587,7 @@ test_nwrk_broadcast_da(void) {
     tetra_mle_dispatch(mle, off, 0, opt, st);
     CHECK(tetra_st(st)->mle_da.cell_id == 0xEE, "nonzero mandatory DA reserved bits are rejected atomically");
 
-    memset(mle, 0, sizeof(mle));
+    DSD_MEMSET(mle, 0, sizeof(mle));
     pack_bits(mle, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle, TETRA_MLE_EXTENDED_PDU, 3, 3);
     pack_bits(mle, TETRA_MLE_D_NWRK_BROADCAST_DA, 6, 4);
@@ -591,7 +597,7 @@ test_nwrk_broadcast_da(void) {
               && !tetra_st(st)->mle_da.lists.neighbor_irregular_present,
           "O=0 commits an empty DA broadcast snapshot");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 

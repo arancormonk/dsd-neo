@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <time.h>
 
+#include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
 
@@ -134,32 +135,6 @@ sm_release_shared_tuning(dsd_opts* opts, dsd_state* state) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
 }
 
-/* The MAC's traffic-channel assignment and the CMCE call and floor state belong to the call the state machine stopped
- * following: a stale one would gate the next call's timeslots and show a traffic channel the receiver left. */
-static void
-sm_forget_traffic(tetra_state_t* ts) {
-    ts->call_active = 0;
-    ts->tx_granted_valid = 0;
-    ts->tx_granted_ssi = 0;
-    ts->cmce_tx_granted_notification_valid = 0;
-    ts->cmce_tx_granted_party_type_valid = 0;
-    ts->cmce_tx_granted_party_extension_valid = 0;
-    ts->tx_continue = 0;
-    ts->tx_interrupted = 0;
-    ts->tx_wait = 0;
-    ts->tx_event_notification_valid = 0;
-    ts->tx_event_party_type_valid = 0;
-    ts->tx_event_party_ssi_valid = 0;
-    ts->tx_event_party_extension_valid = 0;
-    ts->vc_assignment_valid = 0;
-    ts->vc_assignment_type = 0;
-    ts->vc_timeslot_bitmap = 0;
-    ts->vc_carrier = 0;
-    ts->vc_freq_hz = 0;
-    DSD_MEMSET(&ts->vc_addr, 0, sizeof ts->vc_addr);
-    ts->vc_addr_event_label_valid = 0;
-}
-
 static void
 sm_follow(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
     ts->sm.followed = *grant;
@@ -171,13 +146,14 @@ sm_follow(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
     tetra_confirm_forget_followed_call(state);
 }
 
+/* The calls stay in the call records (tetra_calls.h), which age them; what goes is the following of one. */
 static void
 sm_unfollow(dsd_state* state, tetra_state_t* ts) {
     DSD_MEMSET(&ts->sm.followed, 0, sizeof ts->sm.followed);
     ts->sm.t_tune_m = 0.0;
     ts->sm.t_voice_m = 0.0;
     tetra_confirm_forget_followed_call(state);
-    sm_forget_traffic(ts);
+    tetra_calls_unfollowed(state);
 }
 
 /* A tune the state machine no longer owns: retired as rolled back, so a failed or unanswered one cannot keep the frame
@@ -512,13 +488,9 @@ sm_tick_tuned(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     }
 }
 
-void
-tetra_sm_tick(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return;
-    }
-    tetra_state_t* const ts = tetra_st_existing(state);
-    if (!ts || !sm_settle_pending(opts, state, ts)) {
+static void
+sm_tick(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    if (!sm_settle_pending(opts, state, ts)) {
         return;
     }
     if (ts->sm.state == (uint8_t)TETRA_SM_ON_CC && opts->trunk_enable != 1) {
@@ -528,6 +500,20 @@ tetra_sm_tick(dsd_opts* opts, dsd_state* state) {
     if (ts->sm.state == (uint8_t)TETRA_SM_TUNED) {
         sm_tick_tuned(opts, state, ts);
     }
+}
+
+void
+tetra_sm_tick(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    sm_tick(opts, state, ts);
+    /* The call records age on the same clock, whatever the state machine did. */
+    tetra_calls_tick(opts, state);
 }
 
 void

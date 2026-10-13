@@ -26,6 +26,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
 
@@ -184,13 +185,18 @@ setup_generic_fixture(dsd_opts** opts_out, dsd_state** state_out, const generic_
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     if (DSD_SYNC_IS_TETRA(test_case->synctype)) {
-        tetra_st(state)->call_active = 1;
-        tetra_st(state)->tx_granted_valid = 1;
-        tetra_st(state)->tx_wait = 1;
-        tetra_st(state)->vc_assignment_valid = 1;
-        tetra_st(state)->vc_timeslot_bitmap = 8;
-        tetra_st(state)->vc_carrier = 40;
-        tetra_st(state)->vc_freq_hz = GENERIC_TRUNK_VC_HZ;
+        /* The followed call's record: a group call on timeslot 1 of carrier 40, transmitting. */
+        tetra_call_event setup;
+        DSD_MEMSET(&setup, 0, sizeof setup);
+        setup.kind = TETRA_CALL_EV_SETUP;
+        setup.call_id = 0x321U;
+        setup.basic_service = 0x04U;
+        tetra_calls_on_event(NULL, state, &setup, NULL);
+        tetra_call_t* const call = tetra_calls_find(state, 0x321U);
+        call->phase = TETRA_CALL_TX_GRANTED;
+        call->alloc.timeslots = 8;
+        call->alloc.carrier = 40;
+        call->alloc.freq_hz = GENERIC_TRUNK_VC_HZ;
     }
     const dsd_call_observation observation = {
         .protocol = test_case->synctype,
@@ -289,10 +295,8 @@ run_stale_vc_with_cc_case(const generic_return_case* test_case) {
     rc |= expect_true(test_case->name, "stale-vc-with-cc", "canonical call ended", canonical_call_ended(state));
     rc |= expect_true(test_case->name, "stale-vc-with-cc", "recent activity cleared", recent_activity_cleared(state));
     if (DSD_SYNC_IS_TETRA(test_case->synctype)) {
-        rc |=
-            expect_true(test_case->name, "stale-vc-with-cc", "TETRA traffic state cleared",
-                        !tetra_st(state)->call_active && !tetra_st(state)->tx_granted_valid && !tetra_st(state)->tx_wait
-                            && !tetra_st(state)->vc_assignment_valid && tetra_st(state)->vc_freq_hz == 0);
+        rc |= expect_true(test_case->name, "stale-vc-with-cc", "TETRA follows no call",
+                          tetra_calls_followed(state) == NULL);
         rc |= expect_true(test_case->name, "stale-vc-with-cc", "TETRA SM reconciled to CC",
                           tetra_sm_get_state(state) == TETRA_SM_ON_CC && !tetra_sm_followed(state, NULL));
     }
@@ -324,9 +328,8 @@ run_stale_vc_without_cc_case(const generic_return_case* test_case) {
     rc |= expect_true(test_case->name, "stale-vc-without-cc", "p25 slot and audio aliases cleared",
                       p25_p2_voice_aliases_cleared(state));
     if (DSD_SYNC_IS_TETRA(test_case->synctype)) {
-        rc |= expect_true(test_case->name, "stale-vc-without-cc", "unreturnable TETRA traffic cleared",
-                          !tetra_st(state)->call_active && !tetra_st(state)->vc_assignment_valid
-                              && tetra_st(state)->vc_freq_hz == 0);
+        rc |= expect_true(test_case->name, "stale-vc-without-cc", "unreturnable TETRA call no longer followed",
+                          tetra_calls_followed(state) == NULL);
         rc |= expect_true(test_case->name, "stale-vc-without-cc", "TETRA SM returned to IDLE",
                           tetra_sm_get_state(state) == TETRA_SM_IDLE && !tetra_sm_followed(state, NULL));
     }

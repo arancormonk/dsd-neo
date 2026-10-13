@@ -25,14 +25,16 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include "tetra_calls.h"
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -61,6 +63,12 @@ alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
 }
 
+static void
+free_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 static dsd_opts*
 alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -70,9 +78,9 @@ alloc_opts(void) {
 static void
 wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_nbits) {
     int total = 3 + cmce_nbits;
-    memset(out, 0, (size_t)total);
+    DSD_MEMSET(out, 0, (size_t)total);
     pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
-    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
+    DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = total;
 }
 
@@ -84,7 +92,7 @@ test_sds_text_len_type(void) {
     printf("[test_sds_text_len_type]\n");
     dsd_state* st = alloc_state();
     CHECK(sizeof(tetra_st(st)->sds_text_len) == 2, "tetra_sds_text_len is uint16_t (2 bytes)");
-    free(st);
+    free_state(st);
 }
 
 /* =======================================================================
@@ -107,13 +115,16 @@ test_d_tx_ceased(void) {
 
     /* PDU type, 14-bit call identifier, request permission. */
     uint8_t cmce[21];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, 9, 0, 5); /* D-TX-CEASED */
     pack_bits(cmce, 0x1234, 5, 14);
     pack_bits(cmce, 1, 19, 1); /* requests remain permitted */
     pack_bits(cmce, 0, 20, 1); /* O-bit */
 
-    tetra_st(st)->tx_granted_valid = 1; /* pre-condition */
+    /* Pre-condition: call 0x1234 has a transmission. */
+    tetra_call_event setup = {.call_id = 0x1234, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
+    tetra_calls_on_event(opt, st, &setup, NULL);
+    tetra_calls_find(st, 0x1234)->phase = TETRA_CALL_TX_GRANTED;
 
     uint8_t pdu[21 + 3];
     int n;
@@ -121,9 +132,9 @@ test_d_tx_ceased(void) {
     tetra_mle_dispatch(pdu, n, 0, opt, st);
 
     CHECK(tetra_st(st)->tx_ceased_tx_perm == 1, "D-TX-CEASED request permission extracted");
-    CHECK(tetra_st(st)->tx_granted_valid == 0, "D-TX-CEASED clears grant");
+    CHECK(tetra_calls_peek(st, 0x1234)->phase == TETRA_CALL_CEASED, "D-TX-CEASED ends the transmission");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -138,7 +149,7 @@ test_mle_restore_fields(void) {
 
     /* D-RESTORE-ACK carrying CMCE D-CALL-RESTORE (table 18.8). */
     uint8_t mle_ack[31];
-    memset(mle_ack, 0, sizeof(mle_ack));
+    DSD_MEMSET(mle_ack, 0, sizeof(mle_ack));
     pack_bits(mle_ack, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle_ack, TETRA_MLE_D_RESTORE_ACK, 3, 3);
     pack_bits(mle_ack, 0, 6, 1); /* mandatory MLE O-bit */
@@ -155,7 +166,7 @@ test_mle_restore_fields(void) {
     CHECK(tetra_st(st)->call_restore_id == 777, "D-CALL-RESTORE identifier extracted");
 
     uint8_t mle_res[9];
-    memset(mle_res, 0, sizeof(mle_res));
+    DSD_MEMSET(mle_res, 0, sizeof(mle_res));
     pack_bits(mle_res, TETRA_MLE_PD_MLE, 0, 3);
     pack_bits(mle_res, TETRA_MLE_D_RESTORE_FAIL, 3, 3);
     pack_bits(mle_res, 1, 6, 2);
@@ -165,7 +176,7 @@ test_mle_restore_fields(void) {
     CHECK(tetra_st(st)->mle_restore_fail_valid == 1, "D-RESTORE-FAIL valid");
     CHECK(tetra_st(st)->mle_restore_fail_cause == 1, "D-RESTORE-FAIL cause extracted");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 

@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
 
@@ -293,15 +294,13 @@ test_release_by_call_id(void) {
     session s = session_open();
     const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
     assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
-    tetra_st(s.state)->vc_assignment_valid = 1;
-    tetra_st(s.state)->vc_timeslot_bitmap = 0x4U;
-    tetra_st(s.state)->call_active = 1;
     tetra_sm_on_release(s.opts, s.state, 0x124U);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
     tetra_sm_on_release(s.opts, s.state, 0x123U);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 1);
-    /* Leaving the call drops the MAC's assignment and the CMCE call with it. */
-    assert(!tetra_st(s.state)->vc_assignment_valid && !tetra_st(s.state)->call_active);
+    /* Leaving the call leaves no followed call behind for the speech gates or the traffic row. */
+    tetra_chan_alloc shown;
+    assert(tetra_calls_followed(s.state) == NULL && !tetra_calls_traffic(s.state, &shown));
     tetra_sm_on_release(s.opts, s.state, 0x123U);
     assert(g_returns == 1);
     session_close(&s);
@@ -450,7 +449,6 @@ test_pending_return(void) {
     session s = session_open();
     const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
     assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
-    tetra_st(s.state)->vc_assignment_valid = 1;
     g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     tetra_sm_on_release(s.opts, s.state, 0x123U);
     uint64_t request = g_request;
@@ -466,7 +464,7 @@ test_pending_return(void) {
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     tetra_sm_tick(s.opts, s.state);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
-    assert(!tetra_st(s.state)->vc_assignment_valid && dsd_trunk_tuning_pending_request() == 0U);
+    assert(!tetra_sm_followed(s.state, NULL) && dsd_trunk_tuning_pending_request() == 0U);
     session_close(&s);
 }
 
@@ -478,14 +476,11 @@ test_external_return(void) {
     g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
     assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
-    tetra_st(s.state)->vc_assignment_valid = 1;
-    tetra_st(s.state)->vc_addr.ssi = 0x1234U;
     tetra_st(s.state)->tdma_valid = 1;
     s.opts->trunk_is_tuned = 0;
     tetra_sm_on_external_cc_return(s.opts, s.state);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
     assert(dsd_trunk_tuning_pending_request() == 0U && g_returns == 0 && g_tunes == 1);
-    assert(!tetra_st(s.state)->vc_assignment_valid && tetra_st(s.state)->vc_addr.ssi == 0U);
     assert(tetra_st(s.state)->tdma_valid == 0 && !tetra_confirm_carrier_proven(s.state));
 
     s.state->trunk_cc_freq = 0;

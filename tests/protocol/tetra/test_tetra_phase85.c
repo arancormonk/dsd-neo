@@ -11,14 +11,16 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include "tetra_calls.h"
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -47,6 +49,12 @@ alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
 }
 
+static void
+free_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 static dsd_opts*
 alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -55,9 +63,9 @@ alloc_opts(void) {
 static void
 wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_nbits) {
     int total = 3 + cmce_nbits;
-    memset(out, 0, (size_t)total);
+    DSD_MEMSET(out, 0, (size_t)total);
     pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
-    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
+    DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = total;
 }
 
@@ -70,7 +78,7 @@ test_tetra_bits_to_uint(void) {
 
     /* Pack 0xAB = 10101011 into bit array */
     uint8_t bits[32];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bits(bits, 0xAB, 0, 8);
 
     uint32_t v = tetra_bits_to_uint(bits, 0, 8);
@@ -99,7 +107,7 @@ test_d_facility_annex_e3(void) {
     dsd_opts* op = alloc_opts();
 
     uint8_t cmce[40];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_FACILITY, 0, 5);
     pack_bits(cmce, 1, 5, 4);   /* one SS-PDU */
     pack_bits(cmce, 12, 9, 11); /* twelve content bits */
@@ -121,7 +129,7 @@ test_d_facility_annex_e3(void) {
     tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
     CHECK(tetra_st(st)->facility_valid == 0, "truncated D-FACILITY rejected");
 
-    free(st);
+    free_state(st);
     free(op);
 }
 
@@ -137,7 +145,7 @@ test_d_facility_annex_e2_two_ss_pdus(void) {
     uint8_t cmce[80];
     uint8_t mle[88];
     int mle_nbits = 0;
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
 
     pack_bits(cmce, TETRA_CMCE_D_FACILITY, 0, 5);
     pack_bits(cmce, 2, 5, 4); /* Annex E.2: two independent SS-PDUs */
@@ -169,7 +177,7 @@ test_d_facility_annex_e2_two_ss_pdus(void) {
     tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
     CHECK(tetra_st(st)->facility_type == 9, "missing outer D-FACILITY O-bit preserves state");
 
-    free(st);
+    free_state(st);
     free(op);
 }
 
@@ -187,7 +195,7 @@ test_d_connect_annex_e8_ss_al_facility(void) {
     uint8_t mle[136];
     int mle_nbits = 0;
     int off = 0;
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
 
     pack_bits(cmce, TETRA_CMCE_D_CONNECT, off, 5);
     off += 5;
@@ -237,30 +245,32 @@ test_d_connect_annex_e8_ss_al_facility(void) {
     off++; /* D-CONNECT terminal M-bit */
     CHECK(off == 93, "Annex E.8 CMCE body is exactly 93 bits");
 
+    tetra_call_event setup = {.kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
+    setup.call_id = 0x1234;
+    tetra_calls_on_event(op, st, &setup, NULL);
+    setup.call_id = 0x2222;
+    tetra_calls_on_event(op, st, &setup, NULL);
     wrap_mle_cmce(cmce, off, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
-    CHECK(tetra_st(st)->connect_valid == 1, "Annex E.8 D-CONNECT accepted");
-    CHECK(tetra_st(st)->call_id == 0x1234 && tetra_st(st)->call_timeout == 9,
-          "Annex E.8 mandatory call fields published");
+    CHECK(tetra_calls_peek(st, 0x1234)->phase == TETRA_CALL_CONNECTED, "Annex E.8 D-CONNECT accepted");
+    CHECK(tetra_calls_peek(st, 0x1234)->timeout == 9, "Annex E.8 mandatory call fields published");
     CHECK(tetra_st(st)->cmce_connect_tx_grant == 1, "Annex E.8 transmission grant published");
-    CHECK(tetra_st(st)->cmce_call_generation == 1, "Annex E.8 complete message advances generation");
 
     /* The 42-bit Facility is length-delimited.  Stopping inside it must not
      * replace the last complete call state. */
     pack_bits(cmce, 0x2222, 5, 14);
     wrap_mle_cmce(cmce, 91, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
-    CHECK(tetra_st(st)->call_id == 0x1234 && tetra_st(st)->cmce_call_generation == 1,
-          "truncated Annex E.8 Facility preserves call state");
+    CHECK(tetra_calls_peek(st, 0x2222)->phase == TETRA_CALL_SETUP, "truncated Annex E.8 Facility preserves call state");
 
     /* The value is complete at bit 92, but Annex E still requires the
      * terminating outer M-bit at bit 93. */
     wrap_mle_cmce(cmce, 92, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
-    CHECK(tetra_st(st)->call_id == 0x1234 && tetra_st(st)->cmce_call_generation == 1,
+    CHECK(tetra_calls_peek(st, 0x2222)->phase == TETRA_CALL_SETUP,
           "missing Annex E.8 terminal M-bit preserves call state");
 
-    free(st);
+    free_state(st);
     free(op);
 }
 

@@ -10,14 +10,15 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -46,6 +47,12 @@ alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
 }
 
+static void
+free_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 static dsd_opts*
 alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -55,9 +62,9 @@ alloc_opts(void) {
 static void
 wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_nbits) {
     int total = 3 + cmce_nbits;
-    memset(out, 0, (size_t)total);
+    DSD_MEMSET(out, 0, (size_t)total);
     pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
-    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
+    DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = total;
 }
 
@@ -65,9 +72,9 @@ wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_n
 static void
 wrap_mle_pd(const uint8_t* body, int body_nbits, uint32_t pd, uint8_t* out, int* out_nbits) {
     int total = 3 + body_nbits;
-    memset(out, 0, (size_t)total);
+    DSD_MEMSET(out, 0, (size_t)total);
     pack_bits(out, pd, 0, 3);
-    memcpy(out + 3, body, (size_t)body_nbits);
+    DSD_MEMCPY(out + 3, body, (size_t)body_nbits);
     *out_nbits = total;
 }
 
@@ -85,7 +92,7 @@ test_d_tx_expanded(void) {
 
     /* Table 14.17: call id, continue, request permission, notification. */
     uint8_t cmce[32];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_TX_CONTINUE, 0, 5);
     pack_bits(cmce, 0x2345, 5, 14);
     pack_bits(cmce, 1, 19, 1); /* continue */
@@ -100,14 +107,14 @@ test_d_tx_expanded(void) {
     wrap_mle_cmce(cmce, 30, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
 
-    CHECK(tetra_st(st)->tx_continue == 1, "D-TX-CONTINUE flag set");
     CHECK(tetra_st(st)->tx_event_call_id == 0x2345, "D-TX-CONTINUE 14-bit call id");
     CHECK(tetra_st(st)->tx_event_notification == 7, "D-TX-CONTINUE notification");
     CHECK(tetra_st(st)->tx_event_continue == 1, "D-TX-CONTINUE continue value");
 
     /* D-TX-WAIT: call_id=0, notification=0 */
-    memset(st, 0, sizeof(*st));
-    memset(cmce, 0, sizeof(cmce));
+    dsd_state_ext_free_all(st);
+    DSD_MEMSET(st, 0, sizeof(*st));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_TX_WAIT, 0, 5);
     pack_bits(cmce, 0, 5, 14);
     pack_bits(cmce, 0, 19, 1);
@@ -116,13 +123,13 @@ test_d_tx_expanded(void) {
     wrap_mle_cmce(cmce, 21, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
 
-    CHECK(tetra_st(st)->tx_wait == 1, "D-TX-WAIT flag set");
     CHECK(tetra_st(st)->tx_event_call_id == 0, "D-TX-WAIT call_id = 0");
     CHECK(tetra_st(st)->tx_event_notification == 0, "D-TX-WAIT notification = 0");
 
     /* Table 14.19 D-TX-INTERRUPT. */
-    memset(st, 0, sizeof(*st));
-    memset(cmce, 0, sizeof(cmce));
+    dsd_state_ext_free_all(st);
+    DSD_MEMSET(st, 0, sizeof(*st));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_TX_INTERRUPT, 0, 5);
     pack_bits(cmce, 0x123, 5, 14);
     pack_bits(cmce, 1, 19, 2); /* transmission not granted */
@@ -133,11 +140,10 @@ test_d_tx_expanded(void) {
     wrap_mle_cmce(cmce, 25, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
 
-    CHECK(tetra_st(st)->tx_interrupted == 1, "D-TX-INTERRUPT flag set");
     CHECK(tetra_st(st)->tx_event_call_id == 0x123, "D-TX-INTERRUPT call id");
     CHECK(tetra_st(st)->tx_event_encryption == 1, "D-TX-INTERRUPT encryption");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -153,7 +159,7 @@ test_sndcp_parser(void) {
 
     /* SN-UNITDATA (table 28.43): SN PDU type 4, NSAPI 5, then PCOMP/DCOMP. */
     uint8_t sndcp[16];
-    memset(sndcp, 0, sizeof(sndcp));
+    DSD_MEMSET(sndcp, 0, sizeof(sndcp));
     pack_bits(sndcp, 4, 0, 4); /* SN PDU type = SN-UNITDATA */
     pack_bits(sndcp, 5, 4, 4); /* NSAPI = 5 */
 
@@ -169,7 +175,7 @@ test_sndcp_parser(void) {
     CHECK(tetra_st(st)->sndcp_nbits == 16, "SNDCP nbits = 16");
 
     /* SN-END OF DATA (table 28.34) carries no NSAPI. */
-    memset(sndcp, 0, sizeof(sndcp));
+    DSD_MEMSET(sndcp, 0, sizeof(sndcp));
     pack_bits(sndcp, 8, 0, 4);
     pack_bits(sndcp, 1, 4, 1); /* immediate service change */
     wrap_mle_pd(sndcp, 5, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
@@ -179,14 +185,14 @@ test_sndcp_parser(void) {
     /* Test short SNDCP: an SN-ACTIVATE PDP CONTEXT ACCEPT cut before its NSAPI */
     tetra_state_reset(st);
     uint8_t sndcp_short[4];
-    memset(sndcp_short, 0, sizeof(sndcp_short));
+    DSD_MEMSET(sndcp_short, 0, sizeof(sndcp_short));
     wrap_mle_pd(sndcp_short, 4, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 3, opt, st);
 
     CHECK(tetra_st(st)->sndcp_valid == 0, "SNDCP short: rejected");
     CHECK(tetra_st(st)->sndcp_nsapi == 0, "SNDCP short: NSAPI stays 0");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 

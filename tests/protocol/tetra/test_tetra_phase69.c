@@ -114,8 +114,7 @@ test_full_fragment_sequence(void) {
     last_fragment(&b, sdu.bits + 18, sdu.n - 18);
     parse(state, opts, &b, 2);
     check(!f->active && f->nbits == 0, "MAC-END closes the TM-SDU");
-    check(ts->d_alert_valid && ts->d_alert_call_id == 5 && ts->call_active,
-          "TM-SDU taken from after the MAC-END header elements");
+    check(ts->d_alert_valid && ts->d_alert_call_id == 5, "TM-SDU taken from after the MAC-END header elements");
     check(ts->ssi_valid && ts->active_ssi == 0x001234u, "rebuilt TM-SDU keeps the first fragment's address");
     free_state(state);
     free(opts);

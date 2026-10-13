@@ -68,11 +68,14 @@ extern "C" {
  *
  * @param bits  TM-SDU, one bit per byte (0 or 1), MSB first, starting at the protocol discriminator.
  * @param nbits Number of valid bits in @p bits.
+ * Call PDUs update the call records of the TETRA state by call identifier. Decoded this way, without the MAC PDU that
+ * carried it, a TM-SDU names no addressed party and brings no channel allocation; the MAC passes both.
+ *
  * @param cc    Colour code, for the log lines.
- * @param opts  Options; handed on to the MM decoder and the trunking state machine.
+ * @param opts  Options; handed on to the MM decoder, the call records and the trunking state machine. May be NULL.
  * @param state Decoder state; nothing is decoded when it is NULL.
  */
-void tetra_mle_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state);
+void tetra_mle_dispatch(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state);
 
 /** Display name of the 2-bit MAC-RESOURCE encryption mode (EN 300 392-2 table 21.55; EN 300 392-7 defines 1 to 3). */
 static inline const char*

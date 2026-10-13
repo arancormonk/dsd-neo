@@ -41,6 +41,10 @@ const char* tetra_air_ksg_name(int ksg);
  * bits of the hyperframe number hn are used; dir is 0 downlink, 1 uplink. Returns 0 when a field is out of range. */
 uint32_t tetra_air_build_iv(uint8_t tn, uint8_t fn, uint8_t mn, uint16_t hn, uint8_t dir);
 
+/* 1 when trunked mode speech of this network could be decrypted: the network identity is known, its KSG is TEA1..TEA3
+ * and an operator key is loaded for it. */
+int tetra_air_key_usable(const dsd_state* state);
+
 /* XOR speech bits with the key stream when this is trunked mode, the call is encrypted, the network KSG is TEA1..TEA3,
  * an operator key is loaded, and the hyperframe and TDMA clock are known. The uplink carries no BSCH, so its clock is
  * never set and uplink speech stays as received. ks_bit_offset is the first key stream bit for this speech fragment

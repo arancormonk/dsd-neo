@@ -27,12 +27,14 @@
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_calls.h"
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -84,9 +86,9 @@ bsch_build(uint8_t* bits, uint8_t colour, uint8_t tn_air, uint8_t fn, uint8_t mn
  * ----------------------------------------------------------------------- */
 static void
 wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_nbits) {
-    memset(out, 0, (size_t)(3 + cmce_nbits));
+    DSD_MEMSET(out, 0, (size_t)(3 + cmce_nbits));
     pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
-    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
+    DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = 3 + cmce_nbits;
 }
 
@@ -99,7 +101,7 @@ wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_n
  * ======================================================================= */
 
 static void
-free_tdma_state(dsd_state* st) {
+free_state(dsd_state* st) {
     if (st) {
         dsd_state_ext_free_all(st);
     }
@@ -151,7 +153,7 @@ test_bsch_sets_clock(void) {
         bsch_build(bits, 0x15, 0, 1, 1, 234, 30);
         CHECK(tetra_bsch_parse(bits, 59, NULL, st) == 0 && clock_is(st, 3, 15, 30), "a short PDU changes nothing");
     }
-    free_tdma_state(st);
+    free_state(st);
 }
 
 /* Frame 0 and multiframe 0 are reserved (table 21.76): such a BSCH names the network but sets no clock. */
@@ -168,7 +170,7 @@ test_bsch_reserved_numbers(void) {
     CHECK(bsch_at(st, 5000, 0, 1, 1) == 1 && clock_is(st, 1, 1, 1), "FN 1 MN 1 sets it");
     CHECK(bsch_at(st, 5000 + 255, 0, 0, 1) == 1 && tetra_st(st)->tdma_valid == 0,
           "a reserved number stops a running clock");
-    free_tdma_state(st);
+    free_state(st);
 }
 
 static void
@@ -196,7 +198,7 @@ test_ndb_follows_slots(void) {
     ndb_at(st, s0, 7, 0);
     ndb_at(st, s0, 7, 0);
     CHECK(clock_is(st, 2, 11, 37), "the same slot twice moves nothing");
-    free_tdma_state(st);
+    free_state(st);
 }
 
 /* EN 300 392-2 clause 7.3.2: FN 18 is followed by FN 1, MN 60 by MN 1 (and the next hyperframe). The 0-based wrap
@@ -228,7 +230,7 @@ test_frame_and_multiframe_wrap(void) {
     tetra_st(st)->hyperframe = 0xFFFF;
     ndb_at(st, s1, 1 + 4u * 18u * 60u, 0);
     CHECK(tetra_st(st)->tdma_valid == 0, "a whole hyperframe without a burst stops the clock");
-    free_tdma_state(st);
+    free_state(st);
 }
 
 static void
@@ -245,7 +247,7 @@ test_hyperframe_count_long_run(void) {
         ndb_at(st, start, slot, 0);
     }
     CHECK(clock_is(st, 1, 1, 1) && tetra_st(st)->hyperframe == 1, "two hyperframes later the number has moved by 2");
-    free_tdma_state(st);
+    free_state(st);
 }
 
 static void
@@ -270,7 +272,7 @@ test_clock_stops(void) {
     bsch_at(st, 0xFFFFFF00u, 0, 1, 1);
     ndb_at(st, 0xFFFFFF00u - TETRA_TDMA_SB_PARSE_SYMBOL, 2, 0);
     CHECK(st->symbolcnt < 0x1000u && clock_is(st, 3, 1, 1), "the clock is followed across the symbol count wrap");
-    free_tdma_state(st);
+    free_state(st);
 }
 
 /* A BSCH after the clock ran on its own: the hyperframe number follows the clock to the BSCH slot, and moves by one
@@ -305,7 +307,7 @@ test_bsch_keeps_hyperframe(void) {
         CHECK(tetra_st(st)->hyperframe_valid == 0 && clock_is(st, 1, 1, 1) && tetra_st(st)->colour == 0x16,
               "another cell's BSCH drops the hyperframe number");
     }
-    free_tdma_state(st);
+    free_state(st);
 }
 
 /* =======================================================================
@@ -320,7 +322,7 @@ test_tx_granted_ui_fields_zero(void) {
     CHECK(tetra_st(st)->sds_msg_ref == 0, "sds_msg_ref zero after calloc");
     CHECK(tetra_st(st)->sds_last_cc == 0, "sds_last_cc zero after calloc");
 
-    free(st);
+    free_state(st);
 }
 
 /*
@@ -332,7 +334,7 @@ test_tx_granted_ui_fields_zero(void) {
  */
 static void
 build_d_tx_granted(uint8_t* cmce, uint32_t granted_ssi) {
-    memset(cmce, 0, 54);
+    DSD_MEMSET(cmce, 0, 54);
     pack_bits(cmce, 11u, 0, 5);           /* D-TX-GRANTED */
     pack_bits(cmce, 1u, 5, 14);           /* call identifier */
     pack_bits(cmce, 3u, 19, 2);           /* granted to another */
@@ -345,6 +347,25 @@ build_d_tx_granted(uint8_t* cmce, uint32_t granted_ssi) {
     pack_bits(cmce, 1u, 27, 2);           /* TPTI = SSI */
     pack_bits(cmce, granted_ssi, 29, 24); /* SSI */
     pack_bits(cmce, 0u, 53, 1);           /* terminating M-bit */
+}
+
+/* Call 1 to group @p gssi: a D-SETUP (table 14.15) in the MAC context of a MAC-RESOURCE addressed to the group. */
+static void
+setup_call(dsd_state* st, dsd_opts* opt, uint32_t gssi) {
+    uint8_t cmce[41];
+    DSD_MEMSET(cmce, 0, sizeof cmce);
+    pack_bits(cmce, TETRA_CMCE_D_SETUP, 0, 5);
+    pack_bits(cmce, 1u, 5, 14);    /* call identifier */
+    pack_bits(cmce, 0x04u, 25, 8); /* basic service: clear speech, point to multipoint */
+    uint8_t mle[3 + 41];
+    int mle_nbits;
+    wrap_mle_cmce(cmce, 41, mle, &mle_nbits);
+    tetra_mac_sdu sdu;
+    DSD_MEMSET(&sdu, 0, sizeof sdu);
+    sdu.addr.type = TETRA_MAC_ADDR_SSI;
+    sdu.addr.ssi = gssi;
+    sdu.has_addr = 1;
+    tetra_mle_dispatch_sdu(mle, mle_nbits, 0, &sdu, opt, st);
 }
 
 static void
@@ -361,15 +382,15 @@ test_tx_granted_identity_set(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
-    tetra_st(st)->gssi = 44444;
-
+    setup_call(st, opt, 44444u);
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    CHECK(tetra_st(st)->tx_granted_ssi == 88888u, "TX-GRANTED: tx_granted_ssi = 88888");
-    CHECK(tetra_st(st)->tx_granted_valid == 1, "TX-GRANTED: valid = 1");
-    CHECK(tetra_st(st)->gssi == 44444u, "TX-GRANTED: current GSSI retained");
+    const tetra_call_t* const c = tetra_calls_peek(st, 1);
+    CHECK(c && c->talker_ssi == 88888u, "TX-GRANTED: talker = 88888");
+    CHECK(c && c->phase == TETRA_CALL_TX_GRANTED, "TX-GRANTED: transmission granted");
+    CHECK(c && c->called_ssi == 44444u, "TX-GRANTED: the called group is retained");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -386,14 +407,16 @@ test_tx_granted_without_channel_assignment(void) {
 
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
-    tetra_st(st)->vc_freq_hz = 390000000L;
+    setup_call(st, opt, 44444u);
+    tetra_calls_find(st, 1)->alloc.freq_hz = 390000000L;
 
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    CHECK(tetra_st(st)->tx_granted_ssi == 12345u, "TX-GRANTED: granted SSI is retained");
-    CHECK(tetra_st(st)->vc_freq_hz == 390000000L, "TX-GRANTED: absent channel IE does not overwrite VC frequency");
+    const tetra_call_t* const c = tetra_calls_peek(st, 1);
+    CHECK(c && c->talker_ssi == 12345u, "TX-GRANTED: granted SSI is retained");
+    CHECK(c && c->alloc.freq_hz == 390000000L, "TX-GRANTED: absent channel IE does not overwrite the call's channel");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -411,12 +434,13 @@ test_tx_granted_floor_state(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
+    setup_call(st, opt, 44444u);
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    CHECK(tetra_st(st)->tx_granted_valid == 1, "TX-GRANTED: floor grant marked valid");
+    CHECK(tetra_calls_peek(st, 1)->phase == TETRA_CALL_TX_GRANTED, "TX-GRANTED: floor grant marked valid");
     CHECK(tetra_st(st)->cmce_tx_granted_perm == 1, "TX-GRANTED: transmit permission retained");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -433,7 +457,7 @@ test_tx_granted_floor_state(void) {
  */
 static void
 build_d_sds_data(uint8_t* cmce, uint32_t src_ssi, uint8_t sdti) {
-    memset(cmce, 0, 61);
+    DSD_MEMSET(cmce, 0, 61);
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 1, 5, 2); /* CPTI: SSI */
     pack_bits(cmce, src_ssi, 7, 24);
@@ -459,7 +483,7 @@ test_sds_msg_ref_stored(void) {
     tetra_mle_dispatch(mle, n, 3, opt, st);
     CHECK(tetra_st(st)->cmce_sds_data_type == 0, "SDS SDTI = 0");
     CHECK(tetra_st(st)->sds_last_cc == 3, "SDS last_cc = 3");
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -475,7 +499,7 @@ test_sds_last_cc_stored(void) {
     dsd_opts* opt = alloc_opts();
     tetra_mle_dispatch(mle, n, 11, opt, st);
     CHECK(tetra_st(st)->sds_last_cc == 11, "SDS last_cc = 11");
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -494,7 +518,7 @@ test_sds_msg_ref_overwrite(void) {
     wrap_mle_cmce(cmce, 50, mle, &n);
     tetra_mle_dispatch(mle, n, 0, opt, st);
     CHECK(tetra_st(st)->sds_src == 10002u, "second SDS source overwrites first");
-    free(st);
+    free_state(st);
     free(opt);
 }
 

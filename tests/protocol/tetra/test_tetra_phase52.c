@@ -6,7 +6,7 @@
  *
  * Phase 49 — D-CONNECT full parse:
  *   6.  D-CONNECT extracts the mandatory fields from ETSI table 14.7
- *   7.  D-CONNECT sets tetra_call_active=1
+ *   7.  D-CONNECT connects the call it names, and only a call a record holds
  *   8.  D-CONNECT records transmission grant and ownership
  *   9.  D-CONNECT rejects a too-short PDU
  *
@@ -17,18 +17,19 @@
  *
  * Phase 51 — MAC-SUPPL → MLE dispatch:
  *  13.  state.h new fields zero-initialise correctly
- *  15.  tetra_connect_valid zero after calloc
  *  16.  tetra_sds_short_valid zero after calloc
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include "tetra_calls.h"
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -62,12 +63,30 @@ alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
 }
 
+static void
+free_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
+/* Call @p call_id, set up by a D-SETUP (table 14.15) to a group. */
+static void
+setup_call(dsd_state* st, dsd_opts* opt, uint16_t call_id) {
+    uint8_t mle[44];
+    DSD_MEMSET(mle, 0, sizeof mle);
+    pack_bits(mle, TETRA_MLE_PD_CMCE, 0, 3);
+    pack_bits(mle, TETRA_CMCE_D_SETUP, 3, 5);
+    pack_bits(mle, call_id, 8, 14);
+    pack_bits(mle, 0x04u, 28, 8); /* basic service: clear speech, point to multipoint */
+    tetra_mle_dispatch(mle, 44, 0, opt, st);
+}
+
 /* MLE wrappers */
 static void
 wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_nbits) {
-    memset(out, 0, (size_t)(3 + cmce_nbits));
+    DSD_MEMSET(out, 0, (size_t)(3 + cmce_nbits));
     pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
-    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
+    DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = 3 + cmce_nbits;
 }
 
@@ -81,7 +100,7 @@ test_d_connect_parse(void) {
     printf("[test_d_connect_parse]\n");
 
     uint8_t cmce[30];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, 2u, 0, 5);
     pack_bits(cmce, 0x2345u, 5, 14);
     pack_bits(cmce, 9u, 19, 4);
@@ -99,25 +118,26 @@ test_d_connect_parse(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
+    setup_call(st, opt, 0x2345);
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(tetra_st(st)->connect_valid == 1, "D-CONNECT: valid=1");
-    CHECK(tetra_st(st)->call_id == 0x2345, "D-CONNECT: call identifier");
-    CHECK(tetra_st(st)->call_timeout == 9, "D-CONNECT: call timeout");
+    const tetra_call_t* const c = tetra_calls_peek(st, 0x2345);
+    CHECK(c && c->phase == TETRA_CALL_CONNECTED, "D-CONNECT: the call it names is connected");
+    CHECK(c && c->timeout == 9, "D-CONNECT: call timeout");
     CHECK(tetra_st(st)->cmce_connect_hook == 1, "D-CONNECT: hook method");
     CHECK(tetra_st(st)->cmce_connect_duplex == 1, "D-CONNECT: simplex/duplex");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
-/* Test 7: D-CONNECT sets call_active */
+/* Test 7: D-CONNECT connects the call it names, and makes no record for a call no D-SETUP was heard for. */
 static void
 test_d_connect_call_active(void) {
     printf("[test_d_connect_call_active]\n");
 
     uint8_t cmce[30];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, 2u, 0, 5);
 
     uint8_t mle[3 + 30];
@@ -128,10 +148,13 @@ test_d_connect_call_active(void) {
     dsd_opts* opt = alloc_opts();
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
+    CHECK(tetra_calls_peek(st, 0) == NULL, "D-CONNECT of an unknown call: no record");
+    setup_call(st, opt, 0);
+    tetra_mle_dispatch(mle, n, 0, opt, st);
+    CHECK(tetra_calls_peek(st, 0) && tetra_calls_peek(st, 0)->phase == TETRA_CALL_CONNECTED,
+          "D-CONNECT: the known call is connected");
 
-    CHECK(tetra_st(st)->call_active == 1, "D-CONNECT: call_active=1");
-
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -141,7 +164,7 @@ test_d_connect_transmission_control(void) {
     printf("[test_d_connect_transmission_control]\n");
 
     uint8_t cmce[30];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, 2u, 0, 5);
     pack_bits(cmce, 3u, 25, 2);
     pack_bits(cmce, 1u, 27, 1);
@@ -161,7 +184,7 @@ test_d_connect_transmission_control(void) {
     CHECK(tetra_st(st)->cmce_connect_tx_permission == 1, "D-CONNECT: request permission");
     CHECK(tetra_st(st)->cmce_connect_ownership == 1, "D-CONNECT: ownership");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -171,7 +194,7 @@ test_d_connect_too_short(void) {
     printf("[test_d_connect_too_short]\n");
 
     uint8_t cmce[5];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, 2u, 0, 5);
 
     uint8_t mle[9 + 5];
@@ -183,10 +206,11 @@ test_d_connect_too_short(void) {
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(tetra_st(st)->call_active == 0, "D-CONNECT short: call stays inactive");
-    CHECK(tetra_st(st)->connect_valid == 0, "D-CONNECT short: remains invalid");
+    CHECK(tetra_calls_peek(st, 0) == NULL, "D-CONNECT short: no call");
+    CHECK(tetra_st(st)->cmce_connect_tx_grant == 0 && tetra_st(st)->cmce_connect_hook == 0,
+          "D-CONNECT short: nothing published");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -207,7 +231,7 @@ test_d_sds_data_sdti0_payload(void) {
      *   [32-47] pre-defined status = 0xABCD (16 bits)
      * Total: 48 bits */
     uint8_t cmce[50];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 1u, 5, 2);
     pack_bits(cmce, 99999u, 7, 24);
@@ -227,7 +251,7 @@ test_d_sds_data_sdti0_payload(void) {
     CHECK(tetra_st(st)->sds_short_valid == 1, "D-SDS-DATA SDTI=0: valid=1");
     CHECK(tetra_st(st)->sds_short_data == 0xABCDu, "D-SDS-DATA SDTI=0: data=0xABCD");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -237,7 +261,7 @@ test_d_sds_data_sdti0_src(void) {
     printf("[test_d_sds_data_sdti0_src]\n");
 
     uint8_t cmce[50];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 1u, 5, 2);
     pack_bits(cmce, 55555u, 7, 24);
@@ -259,7 +283,7 @@ test_d_sds_data_sdti0_src(void) {
     /* Also sets the shared sds_src field */
     CHECK(tetra_st(st)->sds_src == 55555u, "D-SDS-DATA SDTI=0: shared src=55555");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -269,7 +293,7 @@ test_d_sds_data_sdti0_too_short(void) {
     printf("[test_d_sds_data_sdti0_too_short]\n");
 
     uint8_t cmce[10];
-    memset(cmce, 0, sizeof(cmce));
+    DSD_MEMSET(cmce, 0, sizeof(cmce));
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
 
     uint8_t mle[9 + 10];
@@ -284,7 +308,7 @@ test_d_sds_data_sdti0_too_short(void) {
 
     CHECK(tetra_st(st)->sds_short_valid == 0, "truncated D-SDS-DATA stays invalid");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -297,17 +321,12 @@ test_new_fields_zero(void) {
     printf("[test_new_fields_zero]\n");
     dsd_state* st = alloc_state();
 
-    /* Phase 49 fields */
-    CHECK(tetra_st(st)->connect_valid == 0, "connect_valid zero");
-    CHECK(tetra_st(st)->connect_enc_mode == 0, "connect_enc_mode zero");
-    CHECK(tetra_st(st)->connect_call_type == 0, "connect_call_type zero");
-
     /* Phase 50 fields */
     CHECK(tetra_st(st)->sds_short_valid == 0, "sds_short_valid zero");
     CHECK(tetra_st(st)->sds_short_data == 0, "sds_short_data zero");
     CHECK(tetra_st(st)->sds_short_src == 0, "sds_short_src zero");
 
-    free(st);
+    free_state(st);
 }
 
 /* =======================================================================

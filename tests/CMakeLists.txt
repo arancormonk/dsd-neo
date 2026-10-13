@@ -11136,6 +11136,7 @@ set(_dsd_tetra_test_sources
     tetra_trunk_sm
     tetra_publication
     tetra_voice_gate
+    tetra_calls
 )
 
 foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)

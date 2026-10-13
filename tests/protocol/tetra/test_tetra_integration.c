@@ -10,19 +10,21 @@
  *  2.  SYSINFO → frame counter tetra_frames_sysinfo incremented
  *  3.  D-SETUP with call_timeout=1 / slots=1 → tetra_call_timeout/slots set
  *  4.  D-CONNECT-ACK (type 3) → call_active=1
- *  5.  D-TX-GRANTED → tetra_enc_mode synced from enc_mode field
+ *  5.  D-TX-GRANTED encryption control marks the call end-to-end encrypted, never the air interface
  *  6.  D-STATUS ring buffer — 4 statuses → ring wraps correctly
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include "tetra_calls.h"
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -51,6 +53,12 @@ alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
 }
 
+static void
+free_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
 static dsd_opts*
 alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -63,7 +71,7 @@ static void
 test_sysinfo_extended_fields(void) {
     const int NBITS = 124;
     uint8_t bits[124];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
 
     /* PDU type = 2 (BROADCAST), bcast_type = 0 (SYSINFO) */
     pack_bits(bits, 2u, 0, 2);
@@ -113,7 +121,7 @@ test_sysinfo_extended_fields(void) {
     CHECK(tetra_st(st)->cck_valid == 1, "SYSINFO cck_valid=1 cached");
     CHECK(tetra_st(st)->cck_id == 0xABCDu, "SYSINFO cck_id=0xABCD cached");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -123,7 +131,7 @@ test_sysinfo_extended_fields(void) {
 static void
 test_frame_counters(void) {
     uint8_t bits[124];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bits(bits, 2u, 0, 2); /* BROADCAST */
     pack_bits(bits, 0u, 2, 2); /* SYSINFO   */
     /* pad to 124 bits */
@@ -135,7 +143,7 @@ test_frame_counters(void) {
     CHECK(tetra_st(st)->frames_total == 1, "frame_total incremented after SYSINFO PDU");
     CHECK(tetra_st(st)->frames_sysinfo == 1, "frame_sysinfo incremented");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
@@ -146,7 +154,7 @@ test_frame_counters(void) {
 /* Test 4: D-CONNECT-ACK (type 3) sets call_active (Phase 19)               */
 /* ----------------------------------------------------------------------- */
 /* ----------------------------------------------------------------------- */
-/* Test 5: D-TX-GRANTED syncs tetra_enc_mode (Phase 26)                     */
+/* Test 5: D-TX-GRANTED encryption control is end-to-end encryption          */
 /* ----------------------------------------------------------------------- */
 static void
 test_d_tx_granted_enc_mode(void) {
@@ -162,7 +170,7 @@ test_d_tx_granted_enc_mode(void) {
     enum { NBITS = 28 };
 
     uint8_t bits[NBITS];
-    memset(bits, 0, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
 
     pack_bits(bits, TETRA_MLE_PD_CMCE, 0, 3);
     pack_bits(bits, 11u, 3, 5); /* D-TX-GRANTED */
@@ -175,12 +183,15 @@ test_d_tx_granted_enc_mode(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
+    tetra_call_event setup = {.call_id = 2, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
+    tetra_calls_on_event(opt, st, &setup, NULL);
     tetra_st(st)->enc_mode = 0; /* start at none */
     tetra_mle_dispatch(bits, NBITS, 0, opt, st);
 
-    CHECK(tetra_st(st)->enc_mode == 1, "D-TX-GRANTED syncs encryption control");
+    CHECK(tetra_calls_peek(st, 2)->e2ee == 1, "D-TX-GRANTED encryption control marks the call end-to-end encrypted");
+    CHECK(tetra_st(st)->enc_mode == 0, "D-TX-GRANTED leaves the air interface encryption mode alone");
 
-    free(st);
+    free_state(st);
     free(opt);
 }
 
