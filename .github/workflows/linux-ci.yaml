@@ -135,7 +135,6 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
-          bash tools/install_tetra_crypto_deps.sh "$HOME/.local"
 
       - name: Prepare local dependency environment
         run: |
@@ -224,7 +223,6 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
-          bash tools/install_tetra_crypto_deps.sh "$HOME/.local"
 
       - name: Prepare local dependency environment
         run: |
@@ -563,7 +561,6 @@ jobs:
           if [ -f "$pc1" ] || [ -f "$pc2" ]; then
             if [ -f "$mf" ] && grep -q "^mbe_sha=$want_sha$" "$mf"; then
               echo "Using cached mbelib-neo in $DEPS_PREFIX"
-              bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX"
               exit 0
             fi
             echo "Cached mbelib-neo does not match desired SHA; rebuilding"
@@ -572,7 +569,6 @@ jobs:
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
-          bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX"
 
       - name: Ensure codec2 (cached fallback if not found)
         run: |
@@ -708,7 +704,6 @@ jobs:
               -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
             cmake --build /tmp/mbelib-neo/build -j
             cmake --install /tmp/mbelib-neo/build
-            bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX"
             tools/scan_build.sh --strict \
               --cmake-arg -DDSD_REQUIRE_RTLSDR=ON \
               --cmake-arg -DDSD_REQUIRE_SOAPYSDR=ON
@@ -1073,11 +1068,12 @@ jobs:
           echo "pkgver=$new_pkgver" >> "$GITHUB_OUTPUT"
           echo "Computed pkgver from $ref ($(git rev-parse --short=7 "$ref")): $new_pkgver"
 
-      - name: Prepare pinned PFFFT source for AUR
+      - name: Prepare pinned PFFFT and TETRA_crypto sources for AUR
         if: steps.aur_up.outputs.available == 'true'
         run: |
-          git show origin/main:tools/ci-dependency-pins.env > "$RUNNER_TEMP/aur-pffft-pins.env"
-          python3 tools/update_aur_pffft.py --pins "$RUNNER_TEMP/aur-pffft-pins.env" aur-package/PKGBUILD
+          git show origin/main:tools/ci-dependency-pins.env > "$RUNNER_TEMP/aur-pins.env"
+          python3 tools/update_aur_pffft.py --pins "$RUNNER_TEMP/aur-pins.env" aur-package/PKGBUILD
+          python3 tools/update_aur_tetra_crypto.py --pins "$RUNNER_TEMP/aur-pins.env" aur-package/PKGBUILD
 
       - name: Validate AUR VCS metadata
         if: steps.aur_up.outputs.available == 'true'
@@ -1311,9 +1307,11 @@ jobs:
           }
           PKGBUILD
 
-      - name: Prepare pinned PFFFT source for AUR
+      - name: Prepare pinned PFFFT and TETRA_crypto sources for AUR
         if: steps.aur_up.outputs.available == 'true'
-        run: python3 tools/update_aur_pffft.py aur-package/PKGBUILD
+        run: |
+          python3 tools/update_aur_pffft.py aur-package/PKGBUILD
+          python3 tools/update_aur_tetra_crypto.py aur-package/PKGBUILD
 
       - name: Check if update needed
         id: check
@@ -1499,7 +1497,6 @@ jobs:
           if [ -f "$pc1" ] || [ -f "$pc2" ]; then
             if [ -f "$mf" ] && grep -q "^mbe_sha=$want_sha$" "$mf"; then
               echo "Using cached mbelib-neo in $DEPS_PREFIX"
-              bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX"
               exit 0
             fi
             echo "Cached mbelib-neo does not match desired SHA; rebuilding"
@@ -1508,7 +1505,6 @@ jobs:
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
-          bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX"
 
       - name: Ensure codec2 (cached fallback if not found)
         run: |
@@ -1943,7 +1939,6 @@ jobs:
               cmake --build /tmp/mbelib-neo/build -j
               cmake --install /tmp/mbelib-neo/build
             fi
-            bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX"
             mkdir -p "$DEPS_PREFIX"
             {
               echo "mbe_sha=$want_sha"

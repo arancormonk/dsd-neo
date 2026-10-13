@@ -134,7 +134,6 @@ Requirements
   - Required: libsndfile; OpenSSL 3.x libcrypto; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
   - Optional: librtlsdr (RTL‑SDR support; 2.0.3 or newer for RTL‑SDR Blog V4/V4L dongles), SoapySDR >= 0.8.1 (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl >= 7.56.0 (rdio API uploads), expat 2.x (RadioReference import), PortAudio on non-Windows builds, help2man (man page generation).
   - Vocoder: mbelib-neo 2.3+ (`mbe-neo` CMake package) is required.
-  - TETRA crypto: the `tetracrypto` CMake package is required. Windows and Android presets install the vcpkg port. Linux and macOS use `tools/install_tetra_crypto_deps.sh`.
   - TETRA speech is not a build dependency. At runtime, `TETRA_VOCODER_CMD` names an external decoder. The ETSI ACELP sources stay on the developer's machine; see `tools/tetra/README.md`.
 
 OS package hints
@@ -168,7 +167,6 @@ git clone https://github.com/arancormonk/mbelib-neo
 cmake -S mbelib-neo -B mbelib-neo/build -DCMAKE_BUILD_TYPE=Release
 cmake --build mbelib-neo/build -j
 cmake --install mbelib-neo/build --prefix "$HOME/.local"
-bash tools/install_tetra_crypto_deps.sh "$HOME/.local"
 
 # Linux: user-prefix installs need this when running installed binaries.
 export LD_LIBRARY_PATH="$HOME/.local/lib:$HOME/.local/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -482,7 +480,7 @@ Quick examples
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
 - UI: `src/ui/terminal` (ncurses frontend, target `dsd-neo_ui_terminal`), `src/ui/qt` (Qt Quick frontend, target `dsd-neo_ui_qt`, option `DSD_ENABLE_QT_UI`).
 - Android app: `android/` — Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr for USB‑OTG dongles.
-- Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), pinned PFFFT fork via `cmake/Pffft.cmake` (STATIC target `dsd-neo_pffft`).
+- Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), pinned PFFFT fork via `cmake/Pffft.cmake` (STATIC target `dsd-neo_pffft`), pinned TETRA_crypto TEA1/2/3 keystream generators via `cmake/TetraCrypto.cmake` (STATIC target `dsd-neo_tetra_crypto`).
 
 ## Tooling
 
@@ -549,3 +547,13 @@ DSD-neo. For offline packaging, provide
 `-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft`; see
 [dependency management](docs/dependencies.md#pinned-pffft-source) for checksums,
 manual updates, scalar builds and AUR packaging. No PFFFT runtime package is needed.
+
+### TETRA crypto source acquisition
+
+The build also downloads a pinned, checksum-verified TETRA_crypto revision and
+compiles its TEA1/TEA2/TEA3 keystream generators into DSD-neo. For offline
+packaging, provide
+`-DFETCHCONTENT_SOURCE_DIR_DSD_TETRA_CRYPTO=/absolute/path/to/TETRA_crypto`; see
+[dependency management](docs/dependencies.md#pinned-tetra_crypto-source) for
+checksums, manual updates and AUR packaging. No TETRA crypto runtime package is
+needed.

@@ -38,19 +38,14 @@ dsd-neo -fT -i rtl:0:392.5M:0:0:72
 
 ## Crypto libraries
 
-TETRA air-interface decryption uses one pinned upstream library, built the
-same way on every platform:
-
-| Package | Upstream | Provides |
-| --- | --- | --- |
-| `tetracrypto` | MidnightBlueLabs/TETRA_crypto (Apache-2.0) | TEA1, TEA2, TEA3, HURDLE, TAA1 |
-
-Windows and Android builds get it from the overlay port in
-`vcpkg-ports/tetracrypto`. Linux and macOS builds install the same CMake
-project with `tools/install_tetra_crypto_deps.sh <prefix>`. Both read the
-commit and archive pins in `tools/ci-dependency-pins.env`. The port
-force-includes a small endian compatibility header so its sources compile
-unchanged on MSVC.
+TETRA air-interface decryption uses the TEA1, TEA2 and TEA3 keystream
+generators from MidnightBlueLabs/TETRA_crypto (Apache-2.0). Like PFFFT, the
+build downloads the archive pinned in `tools/ci-dependency-pins.env`, checks its
+SHA-256 and compiles `tea1.c`, `tea2.c` and `tea3.c` into the internal
+`dsd-neo_tetra_crypto` target on every platform, so no package has to be
+installed first. `src/crypto/tetra_tea.c` is the only file that includes them
+and packs the frame-number IV itself. Offline builds, updates and AUR packaging
+are described in `docs/dependencies.md` ("Pinned TETRA_crypto source").
 
 ## Real-air fixtures
 

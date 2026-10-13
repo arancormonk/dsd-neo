@@ -157,3 +157,5 @@ Risky or broad changes should receive a second human review before merge.
 PFFFT sources are downloaded at a fixed revision instead of edited in-tree.
 Use `tools/update_pffft.py` for manual updates and follow the validation and
 offline-build instructions in [dependency management](docs/dependencies.md#pinned-pffft-source).
+TETRA_crypto sources are handled the same way with `tools/update_tetra_crypto.py`;
+see [its section](docs/dependencies.md#pinned-tetra_crypto-source).

@@ -21,16 +21,17 @@ target_sources(
         tetra_tea.c
 )
 
-find_package(tetracrypto CONFIG REQUIRED)
-
 target_include_directories(
     dsd-neo_crypto
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${_PUBLIC_INCLUDES}
 )
 
-target_link_libraries(dsd-neo_crypto PUBLIC tetracrypto::tetracrypto)
-target_link_libraries(dsd-neo_crypto PRIVATE dsd-neo_warnings OpenSSL::Crypto)
+# dsd-neo_tetra_crypto holds the TEA generators from cmake/TetraCrypto.cmake.
+target_link_libraries(
+    dsd-neo_crypto
+    PRIVATE dsd-neo_warnings OpenSSL::Crypto dsd-neo_tetra_crypto
+)
 
 install(
     TARGETS dsd-neo_crypto

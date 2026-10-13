@@ -142,8 +142,9 @@ DecoderHost::copyText(const QString& text) const {
 QString
 DecoderHost::licenseNotices() const {
     QStringList notices;
-    for (const auto* name : {"LICENSE", "COPYRIGHT", "THIRD_PARTY.md", "src/ui/qt/fonts/IBMPlex-LICENSE.txt",
-                             "src/third_party/ezpwd/lesser.txt", "pffft-LICENSE.txt", "pffft-NOTICES.txt"}) {
+    for (const auto* name :
+         {"LICENSE", "COPYRIGHT", "THIRD_PARTY.md", "src/ui/qt/fonts/IBMPlex-LICENSE.txt",
+          "src/third_party/ezpwd/lesser.txt", "pffft-LICENSE.txt", "pffft-NOTICES.txt", "tetra_crypto-LICENSE.txt"}) {
         QFile file(QStringLiteral(":/dsdneo/notices/") + QLatin1String(name));
         if (file.open(QIODevice::ReadOnly)) {
             notices.append(QLatin1String(name) + QStringLiteral("\n\n") + QString::fromUtf8(file.readAll()));

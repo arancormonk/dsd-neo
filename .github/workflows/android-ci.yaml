@@ -202,7 +202,6 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
-          bash tools/install_tetra_crypto_deps.sh "$HOME/.local"
 
       # Qt is installed with aqtinstall rather than a Qt-installing action: every
       # action used here must be hash-pinned, transitively, and the available
@@ -774,6 +773,7 @@ jobs:
             licenses/ezpwd-LGPL-2.1-or-later.txt
             licenses/pffft-LICENSE.txt
             licenses/pffft-NOTICES.txt
+            licenses/tetra_crypto-LICENSE.txt
             licenses/libusb-LGPL-2.1-or-later.txt
             licenses/librtlsdr-GPL-2.0-or-later.txt
             licenses/ibm-plex-OFL-1.1.txt
@@ -855,7 +855,7 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Record pinned PFFFT in SBOM
+      - name: Record pinned PFFFT and TETRA_crypto in SBOM
         if: github.event_name != 'pull_request'
         shell: bash
         env:
@@ -863,8 +863,10 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           fi
 
       - name: Upload enriched SBOM
@@ -1050,7 +1052,7 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Record pinned PFFFT in SBOM
+      - name: Record pinned PFFFT and TETRA_crypto in SBOM
         id: aab_sbom_metadata
         if: steps.aab.outputs.AAB_PATH != ''
         continue-on-error: true
@@ -1060,8 +1062,10 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           fi
 
       - name: Upload enriched SBOM

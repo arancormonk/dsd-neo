@@ -12,9 +12,6 @@ Required dependencies are:
 - CMake 3.20 or newer
 - OpenSSL 3.x libcrypto
 - `mbe-neo` 2.3+ CMake package from mbelib-neo
-- `tetracrypto` CMake package. On Windows and Android it comes from the vcpkg
-  overlay port. Other builds install the same port with
-  `tools/install_tetra_crypto_deps.sh`.
 - libsndfile
 - curses backend: ncursesw/PDCurses. macOS ships no `libncursesw` — its unified
   `libncurses` carries the wide entry points behind `_XOPEN_SOURCE_EXTENDED` —
@@ -51,6 +48,9 @@ Vendored and embedded third-party components include:
 - ezpwd Reed-Solomon under `src/third_party/ezpwd/`
 - PFFFT from the immutable `arancormonk/pffft` fork revision in
   `tools/ci-dependency-pins.env`, compiled into the internal `dsd-neo_pffft` target
+- TETRA_crypto TEA1/TEA2/TEA3 keystream generators from the immutable
+  `MidnightBlueLabs/TETRA_crypto` revision in `tools/ci-dependency-pins.env`,
+  compiled into the internal `dsd-neo_tetra_crypto` target
 - Tiny AES code in `src/crypto/crypt-aes.c`
 
 Vendored code and embedded upstream-derived snippets retain upstream notices.
@@ -155,8 +155,10 @@ codeload.github.com. PFFFT stays embedded, with no additional runtime package.
 
 For fresh offline builds, extract the pinned archive and configure with
 `-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft` and
-`-DFETCHCONTENT_FULLY_DISCONNECTED=ON`. The override accepts a checkout or source
-archive without Git metadata; its provenance is the packager's responsibility.
+`-DFETCHCONTENT_FULLY_DISCONNECTED=ON`, together with the
+[TETRA_crypto override](#pinned-tetra_crypto-source). The override accepts a
+checkout or source archive without Git metadata; its provenance is the
+packager's responsibility.
 Cached build trees can reconfigure with disconnected mode alone. Turn that mode
 off before updating a downloaded pin. The fork selects SIMD only when supported
 by the compiler target; `-DDSD_PFFFT_ENABLE_SIMD=OFF` selects scalar-one code.
@@ -192,3 +194,44 @@ mbelib's FFT through vcpkg's verified download/cache mechanism and passes an
 offline override. Its independent `MBELIB_PFFFT_*` pins are mirrored in
 `vcpkg-ports/mbe-neo/pffft.cmake` by `tools/check_vcpkg_overlay_pins.sh --fix`.
 When changing the mbelib revision, align these with that revision's PFFFT pin.
+
+## Pinned TETRA_crypto source
+
+`cmake/TetraCrypto.cmake` acquires the fixed `MidnightBlueLabs/TETRA_crypto`
+commit archive the same way, with TLS and SHA-256 verification, from the
+`TETRA_CRYPTO_SHA` and `TETRA_CRYPTO_ARCHIVE_SHA256` pins. Upstream ships only a
+Makefile, so nothing is configured from the archive: `tea1.c`, `tea2.c` and
+`tea3.c` are compiled into the internal `dsd-neo_tetra_crypto` target, and
+`common.c`, HURDLE, TAA1 and the upstream test programs are not built. The
+frame-number packing of EN 300 392-7 clause 6.3.2.1 lives in
+`src/crypto/tetra_tea.c` instead of upstream's assert-based `build_iv()`. The
+upstream files are held to the release hardening flags but not to the project
+warning set. The first configure needs HTTPS access to codeload.github.com; no
+runtime package is added.
+
+For fresh offline builds, extract the pinned archive and configure with
+`-DFETCHCONTENT_SOURCE_DIR_DSD_TETRA_CRYPTO=/absolute/path/to/TETRA_crypto` and
+`-DFETCHCONTENT_FULLY_DISCONNECTED=ON`. Disconnected mode covers every fetched
+source, so pass the PFFFT override as well. As with PFFFT, the override accepts a
+checkout or a source archive without Git metadata, and its provenance is the
+packager's responsibility.
+
+To update, run `python3 tools/update_tetra_crypto.py FULL_COMMIT_SHA`. Review the
+upstream changes and both updated pins, then run the TETRA tests
+(`ctest -L tetra`), acquisition checks and quality preflight. Roll back by
+restoring both pin lines and reconfiguring. No patches are applied to downloaded
+sources.
+`tests/tools/test_tetra_crypto_acquisition.py` exercises network,
+cached/offline, invalid source-layout, missing-path and checksum-error cases.
+
+The only project file that includes TETRA_crypto headers is
+`src/crypto/tetra_tea.c`. OSV scans the pinned commit, and release SBOMs record
+its repository, revision and checksum.
+Installed, Qt, Android and portable packages carry the upstream Apache-2.0 text
+as `tetra_crypto-LICENSE.txt`, copied to the build tree's
+`tetra_crypto-licenses/` directory.
+
+For AUR, run `python3 tools/update_aur_tetra_crypto.py /path/to/PKGBUILD` next to
+the PFFFT helper and regenerate `.SRCINFO`. It adds the archive and checksum to
+makepkg's sources, supplies the offline override, and rejects a stale pin; both
+AUR CI jobs run it.

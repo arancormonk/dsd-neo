@@ -1402,6 +1402,19 @@ target_link_libraries(dsd-neo_test_des PRIVATE dsd-neo_crypto)
 
 add_test(NAME DES COMMAND dsd-neo_test_des)
 
+# TEA wrapper over the fetched TETRA_crypto sources (cmake/TetraCrypto.cmake).
+add_executable(dsd-neo_test_tetra_crypto crypto/test_tetra_crypto.c)
+target_include_directories(
+    dsd-neo_test_tetra_crypto
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_tetra_crypto
+    PRIVATE dsd-neo_crypto dsd-neo_warnings
+)
+add_test(NAME TETRA_CRYPTO COMMAND dsd-neo_test_tetra_crypto)
+set_tests_properties(TETRA_CRYPTO PROPERTIES LABELS "tetra")
+
 add_executable(dsd-neo_test_pc4_tyt crypto/test_pc4_tyt.c)
 target_include_directories(
     dsd-neo_test_pc4_tyt
@@ -16008,6 +16021,12 @@ if(Python3_Interpreter_FOUND)
         COMMAND
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pffft_metadata.py
+    )
+    add_test(
+        NAME TOOLS_TETRA_CRYPTO_METADATA
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tetra_crypto_metadata.py
     )
     add_test(
         NAME TOOLS_RELEASE_SBOM_FILENAMES

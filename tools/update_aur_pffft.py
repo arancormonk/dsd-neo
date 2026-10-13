@@ -32,9 +32,11 @@ sha256sums+=('{pins["PFFFT_ARCHIVE_SHA256"]}')
         anchor = "        -DCMAKE_INSTALL_PREFIX=/usr \\\n"
         if text.count(anchor) != 1:
             raise ValueError("Unsupported PKGBUILD: expected one CMake install prefix")
-        text = text.replace(anchor, anchor +
-                            '        -DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/pffft-$_pffft_sha" \\\n'
-                            '        -DFETCHCONTENT_FULLY_DISCONNECTED=ON \\\n')
+        options = '        -DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/pffft-$_pffft_sha" \\\n'
+        # The TETRA_crypto helper may already have disconnected FetchContent.
+        if "-DFETCHCONTENT_FULLY_DISCONNECTED=ON" not in text:
+            options += '        -DFETCHCONTENT_FULLY_DISCONNECTED=ON \\\n'
+        text = text.replace(anchor, anchor + options)
         # A -git recipe must reject a branch whose dependency pin moved before
         # the AUR metadata was refreshed, rather than silently compile stale FFT.
         text = text.replace("build() {\n", '''build() {

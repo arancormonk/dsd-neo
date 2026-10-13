@@ -71,8 +71,7 @@ tetra_air_ksg_name(int ksg) {
 
 uint32_t
 tetra_air_build_iv(uint8_t tn, uint8_t fn, uint8_t mn, uint16_t hn, uint8_t dir) {
-    /* Packing is build_iv() in TETRA_crypto. Reject illegal fields first so
-     * that helper's asserts are not reached. */
+    /* The crypto wrapper packs the fields and rejects illegal ones. */
     return tetra_tea_build_iv(tn, fn, mn, hn, dir);
 }
 

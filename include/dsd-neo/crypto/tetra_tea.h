@@ -1,6 +1,7 @@
-// SPDX-License-Identifier: Apache-2.0
-/* Air-interface TEA1/2/3. The ciphers and frame-number packing come from
- * the tetracrypto vcpkg port. This wrapper does not unwrap OTAR keys. */
+// SPDX-License-Identifier: GPL-3.0-or-later
+/* Air-interface TEA1/2/3. The keystream generators are the pinned TETRA_crypto
+ * sources compiled into DSD-neo; the frame-number packing is implemented here.
+ * This wrapper does not unwrap OTAR keys. */
 #ifndef DSD_NEO_CRYPTO_TETRA_TEA_H
 #define DSD_NEO_CRYPTO_TETRA_TEA_H
 

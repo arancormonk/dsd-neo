@@ -7,6 +7,7 @@ Required license/notice files in every shipped asset:
 - `THIRD_PARTY.md`
 - `licenses/ezpwd-LGPL-2.1-or-later.txt` (from `src/third_party/ezpwd/lesser.txt`)
 - `licenses/pffft-LICENSE.txt` and `licenses/pffft-NOTICES.txt` (from the configured build tree's `pffft-licenses/`, including the pinned revision and backend copyright notices)
+- `licenses/tetra_crypto-LICENSE.txt` (the Apache-2.0 text of the pinned TETRA_crypto revision, from the configured build tree's `tetra_crypto-licenses/`)
 
 Assets that bundle the Qt Quick frontend (`DSD_ENABLE_QT_UI=ON`, today the APK)
 additionally require `licenses/ibm-plex-OFL-1.1.txt` (from

@@ -176,7 +176,6 @@ check_port "mbe-neo" "arancormonk/pffft" "MBELIB_PFFFT_SHA" "MBELIB_PFFFT_TARBAL
 check_port "codec2" "arancormonk/codec2" "CODEC2_SHA" "CODEC2_TARBALL_SHA512"
 check_port "rtlsdr" "arancormonk/rtl-sdr" "RTL_SDR_SHA" "RTL_SDR_TARBALL_SHA512"
 check_port "airspy" "airspy/airspyone_host" "AIRSPY_SHA" "AIRSPY_TARBALL_SHA512"
-check_port "tetracrypto" "MidnightBlueLabs/TETRA_crypto" "TETRA_CRYPTO_SHA" "TETRA_CRYPTO_TARBALL_SHA512"
 
 if [[ $fix -eq 1 && $fixed -eq 1 && $failed -eq 0 ]]; then
   exit 0

@@ -3887,6 +3887,10 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - `dmr_mi.c` / `<dsd-neo/crypto/dmr_keystream.h>` own RC4 MI advancement and the pure DMR AES
   `dmr_aes_expand_iv()` helper. The live protocol wrapper `LFSR128d()` retains slot-state updates and logging;
   MBE playback uses the same expansion without those side effects.
+- `tetra_tea.c` / `<dsd-neo/crypto/tetra_tea.h>` wrap the pinned TETRA_crypto TEA1/2/3 keystream generators
+  (`dsd-neo_tetra_crypto`, see Third-Party) and pack the EN 300 392-7 clause 6.3.2.1 frame-number IV themselves,
+  returning 0 for an out-of-range slot, frame, multiframe or direction. It is the only file that includes the
+  upstream headers.
 - Build files: `src/crypto/CMakeLists.txt`
 
 ## Protocols
@@ -4327,6 +4331,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Paths:
   - `src/third_party/ezpwd` — Target: `dsd-neo_ezpwd` (INTERFACE; headers included via `src/third_party` path)
   - `cmake/Pffft.cmake` — Target: `dsd-neo_pffft` (STATIC; pinned fork sources for spectrum/diagnostics; accessed only through `src/io/radio/rtl_fft_cache.h`)
+  - `cmake/TetraCrypto.cmake` — Target: `dsd-neo_tetra_crypto` (STATIC; pinned TETRA_crypto TEA1/2/3 keystream generators, linked privately into `dsd-neo_crypto`; accessed only through `src/crypto/tetra_tea.c`)
 - Build files: `src/third_party/CMakeLists.txt` and subdirectory `CMakeLists.txt` files
 
 ## UI
