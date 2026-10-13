@@ -2937,6 +2937,43 @@ test_am_mode_and_bandwidth_roundtrip(void) {
     return rc;
 }
 
+/* [mode] decode = tetra rides INI -> cfg -> opts -> snapshot -> render and loads back: the TETRA preset (-fT) has an
+ * INI name like every other preset, so a TETRA session's save does not drop its mode. */
+static int
+test_tetra_mode_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg;
+    if (load_am_config_text("[mode]\ndecode = \"TETRA\"\n", &cfg) != 0 || !cfg.has_mode
+        || cfg.decode_mode != DSDCFG_MODE_TETRA) {
+        DSD_FPRINTF(stderr, "FAIL: decode = TETRA did not load as the TETRA preset (mode %d)\n", (int)cfg.decode_mode);
+        return 1;
+    }
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.frame_tetra != 1 || opts.frame_dmr != 0 || dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_TETRA) {
+        DSD_FPRINTF(stderr, "FAIL: decode = tetra did not reach dsd_opts (frame_tetra %d)\n", opts.frame_tetra);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        dsd_state_ext_free_all(&state);
+        return 1;
+    }
+    rc |= expect_contains("TETRA decode mode", rendered, "decode = \"tetra\"\n");
+    if (load_am_config_text(rendered, &cfg) != 0 || cfg.decode_mode != DSDCFG_MODE_TETRA) {
+        DSD_FPRINTF(stderr, "FAIL: a saved TETRA session did not load back as TETRA\n");
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /*
  * Issue #527: [analog] tone_filter and tone_list ride INI -> cfg -> opts -> snapshot -> render. The mode is written
  * when it is on, the list whenever there is one (off keeps it), and both load back. A refused list, or a list policy
@@ -4522,6 +4559,7 @@ main(void) {
     rc |= test_analog_nfm_bandwidth_roundtrip();
     rc |= test_radio_input_spec();
     rc |= test_am_mode_and_bandwidth_roundtrip();
+    rc |= test_tetra_mode_roundtrip();
     rc |= test_tone_policy_roundtrip();
     rc |= test_tone_policy_edit_roundtrip();
     rc |= test_tg_lockout_persistence_roundtrip();

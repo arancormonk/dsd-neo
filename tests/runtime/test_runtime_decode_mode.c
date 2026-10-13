@@ -8,9 +8,12 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -264,7 +267,7 @@ test_cli_preset_mapping_and_guards(void) {
         {'a', DSDCFG_MODE_AUTO},   {'A', DSDCFG_MODE_ANALOG}, {'d', DSDCFG_MODE_DSTAR}, {'x', DSDCFG_MODE_X2TDMA},
         {'t', DSDCFG_MODE_TDMA},   {'1', DSDCFG_MODE_P25P1},  {'2', DSDCFG_MODE_P25P2}, {'s', DSDCFG_MODE_DMR},
         {'i', DSDCFG_MODE_NXDN48}, {'n', DSDCFG_MODE_NXDN96}, {'y', DSDCFG_MODE_YSF},   {'m', DSDCFG_MODE_DPMR},
-        {'z', DSDCFG_MODE_M17},    {'M', DSDCFG_MODE_AM},
+        {'z', DSDCFG_MODE_M17},    {'M', DSDCFG_MODE_AM},     {'T', DSDCFG_MODE_TETRA},
     };
 
     dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
@@ -805,6 +808,7 @@ test_display_names(void) {
         {DSDCFG_MODE_M17, "M17"},
         {DSDCFG_MODE_ANALOG, "Analog"},
         {DSDCFG_MODE_AM, "AM"},
+        {DSDCFG_MODE_TETRA, "TETRA"},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -815,8 +819,8 @@ test_display_names(void) {
             return 1;
         }
     }
-    /* Every enumerator between UNSET and the last preset (AM) is covered by the table above. */
-    for (int m = (int)DSDCFG_MODE_UNSET; m <= (int)DSDCFG_MODE_AM; m++) {
+    /* Every enumerator between UNSET and the last preset (TETRA) is covered by the table above. */
+    for (int m = (int)DSDCFG_MODE_UNSET; m <= (int)DSDCFG_MODE_TETRA; m++) {
         if (strcmp(dsd_decode_mode_display_name((dsdneoUserDecodeMode)m), "Unknown") == 0) {
             DSD_FPRINTF(stderr, "mode %d has no display name\n", m);
             return 1;
@@ -830,10 +834,49 @@ test_display_names(void) {
     return 0;
 }
 
+/* Leaving the TETRA preset drops what the TETRA decoder published for the frontends (bumping its generation), as it
+   drops the decoder's state; staying on TETRA keeps it. */
+static int
+test_leaving_tetra_clears_its_publication(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    int rc = 0;
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0
+        || opts->frame_tetra != 1) {
+        DSD_FPRINTF(stderr, "TETRA preset did not enable the TETRA decoder\n");
+        rc = 1;
+    }
+    state->tetra_pub.generation = 4U;
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    state->tetra_pub.mcc = 262U;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0
+        || state->tetra_pub.mode != DSD_TETRA_MODE_TMO_DOWNLINK || state->tetra_pub.generation != 4U) {
+        DSD_FPRINTF(stderr, "re-applying TETRA should keep its publication\n");
+        rc = 1;
+    }
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0
+        || opts->frame_tetra != 0 || state->tetra_pub.mode != DSD_TETRA_MODE_NONE || state->tetra_pub.mcc != 0U
+        || state->tetra_pub.generation != 5U) {
+        DSD_FPRINTF(stderr, "leaving TETRA should clear its publication: mode %u generation %u\n",
+                    (unsigned)state->tetra_pub.mode, (unsigned)state->tetra_pub.generation);
+        rc = 1;
+    }
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_display_names();
+    rc |= test_leaving_tetra_clears_its_publication();
     rc |= test_auto_profile_differences();
     rc |= test_p25p2_prefers_qpsk();
     rc |= test_dmr_prefers_gfsk();

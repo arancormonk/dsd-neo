@@ -31,9 +31,10 @@ var DECODE_MODES = [
         // grant would tune and stay permanently mute. -ft keeps the P25p1
         // control channel plus both voice phases.
         // trunked: an explicit P25 pick almost certainly means a trunked
-        // system, so the wizard suggests turning call-following on. Only these
-        // two chips carry it — DMR and NXDN trunk too, but conventional use is
-        // common enough there that neither answer is a safe suggestion.
+        // system, so the wizard suggests turning call-following on. Only the
+        // two P25 chips carry it — DMR, NXDN and TETRA trunk too, but
+        // conventional use (TETRA's direct mode) is common enough there that
+        // neither answer is a safe suggestion.
         label: "P25", short: "P25", flag: "-ft", trunked: true,
         hint: "Standard P25 — most statewide and county digital systems."
     },
@@ -68,8 +69,13 @@ var DECODE_MODES = [
         hint: "M17 — open-source ham digital voice."
     },
     {
-        label: "TETRA", short: "TETRA", flag: "-fT", trunked: true,
-        hint: "TETRA — pi/4-DQPSK trunked voice and control channels."
+        // No `trunked`: -fT decodes a trunked (TMO) network and direct mode
+        // (DMO) alike, and DMO is not trunked. With call-following on, the
+        // decoder keeps speech off any channel it has not tuned to for a call,
+        // so suggesting it would leave a DMO channel silent with no error to
+        // explain it; on a TMO control channel the user turns it on.
+        label: "TETRA", short: "TETRA", flag: "-fT",
+        hint: "TETRA — trunked networks (TMO) and direct mode (DMO)."
     },
     {
         // -fA is the analog monitor. On a radio it receives narrowband FM through

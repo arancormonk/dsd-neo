@@ -559,7 +559,7 @@ submit_rr_apply(const api_command_desc* d, const dsd_json_node* params, uint64_t
     dsd_app_rr_apply_payload p;
     DSD_MEMSET(&p, 0, sizeof p);
     int64_t mode = 0;
-    if (param_i64(params, "decode_mode", DSDCFG_MODE_AUTO, DSDCFG_MODE_AM, &mode) != 0
+    if (param_i64(params, "decode_mode", DSDCFG_MODE_AUTO, DSDCFG_MODE_TETRA, &mode) != 0
         || rr_apply_flags(params, &p) != 0 || param_str_opt(params, "chan_path", p.chan_path, sizeof p.chan_path) != 0
         || param_str_opt(params, "group_path", p.group_path, sizeof p.group_path) != 0
         || (dsd_json_obj_get(params, "tune_hz") != NULL && param_u32(params, "tune_hz", &p.tune_hz) != 0)) {
@@ -890,8 +890,8 @@ static const api_command_desc k_commands[] = {
     API_U32("manual_tune", DSD_APP_CMD_MANUAL_TUNE, "{value:Hz}"),
     API_ACTION("tuner_release", DSD_APP_CMD_TUNER_RELEASE),
     API_I32_RANGE("mod_set", DSD_APP_CMD_MOD_SET, 0, 2, "{value:0=C4FM|1=QPSK|2=GFSK}"),
-    API_I32_RANGE("decode_mode_set", DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_AUTO, DSDCFG_MODE_AM,
-                  "{value:decode mode 1..16}"),
+    API_I32_RANGE("decode_mode_set", DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_AUTO, DSDCFG_MODE_TETRA,
+                  "{value:decode mode 1..17}"),
     API_I32_RANGE("trunk_set", DSD_APP_CMD_TRUNK_SET, 0, 1, "{value:0|1}"),
     API_KIND("airspy_set", DSD_APP_CMD_AIRSPY_SET, submit_airspy, "{key,value}"),
     API_ACTION("airspy_enable_input", DSD_APP_CMD_AIRSPY_ENABLE_INPUT),

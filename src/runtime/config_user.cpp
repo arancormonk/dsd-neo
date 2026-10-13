@@ -267,7 +267,7 @@ static const decode_mode_name_map_t k_decode_mode_names[] = {
     {DSDCFG_MODE_NXDN96, "nxdn96"}, {DSDCFG_MODE_X2TDMA, "x2tdma"},     {DSDCFG_MODE_YSF, "ysf"},
     {DSDCFG_MODE_DSTAR, "dstar"},   {DSDCFG_MODE_EDACS_PV, "edacs_pv"}, {DSDCFG_MODE_DPMR, "dpmr"},
     {DSDCFG_MODE_M17, "m17"},       {DSDCFG_MODE_TDMA, "tdma"},         {DSDCFG_MODE_ANALOG, "analog"},
-    {DSDCFG_MODE_AM, "am"},
+    {DSDCFG_MODE_AM, "am"},         {DSDCFG_MODE_TETRA, "tetra"},
 };
 
 /* Read-only compatibility spellings are translated directly to the current decode-mode enum. Canonical config

@@ -254,6 +254,12 @@ test_scalars(void) {
     assert(g_last_id == DSD_APP_CMD_LOCKOUT_SLOT && g_last_n == 1U && g_last[0] == 1U);
     refused("{\"cmd\":\"lockout_slot\",\"params\":{\"value\":2}}");
     refused("{\"cmd\":\"mod_set\",\"params\":{\"value\":3}}");
+    /* The decode-mode range ends at the last preset, TETRA (17). */
+    assert(ok("{\"cmd\":\"decode_mode_set\",\"params\":{\"value\":17}}"));
+    DSD_MEMCPY(&i32, g_last, sizeof i32);
+    assert(g_last_id == DSD_APP_CMD_DECODE_MODE_SET && i32 == (int32_t)DSDCFG_MODE_TETRA);
+    refused("{\"cmd\":\"decode_mode_set\",\"params\":{\"value\":18}}");
+    refused("{\"cmd\":\"decode_mode_set\",\"params\":{\"value\":0}}");
     refused("{\"cmd\":\"trunk_set\",\"params\":{\"value\":-1}}");
 
     assert(ok("{\"cmd\":\"key_rc4des_set\",\"params\":{\"value\":\"0xFFEEDDCCBBAA9988\"}}"));
@@ -442,6 +448,12 @@ test_structured(void) {
 
     refused("{\"cmd\":\"rr_apply_import\",\"params\":{\"decode_mode\":2,\"trunking\":true,\"scanner\":true}}");
     refused("{\"cmd\":\"rr_apply_import\",\"params\":{\"decode_mode\":0}}");
+    refused("{\"cmd\":\"rr_apply_import\",\"params\":{\"decode_mode\":18}}");
+    assert(ok("{\"cmd\":\"rr_apply_import\",\"params\":{\"decode_mode\":17}}"));
+    dsd_app_rr_apply_payload rr;
+    DSD_MEMSET(&rr, 0, sizeof rr);
+    DSD_MEMCPY(&rr, g_last, sizeof rr);
+    assert(g_last_id == DSD_APP_CMD_RR_APPLY_IMPORT && rr.decode_mode == (int32_t)DSDCFG_MODE_TETRA);
 }
 
 static void

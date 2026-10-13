@@ -622,7 +622,9 @@ Output format:
 The `decode` key in `[mode]` configures the frame types and modulation.
 Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `dmr_mono`, `nxdn48`,
 `nxdn96`, `x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`,
-`analog`, `am`. `dmr_mono` selects the same single-slot decoder as CLI `-fr`.
+`analog`, `am`, `tetra`. `dmr_mono` selects the same single-slot decoder as
+CLI `-fr`, and `tetra` the TETRA decoder of CLI `-fT` (`--tetra-net` and
+`--tetra-uplink` stay command-line options).
 `am` is native AM (CLI `-fM`), which needs an I/Q radio input: RTL-SDR,
 rtl_tcp, SoapySDR, Airspy or an I/Q replay. On a PCM input the session logs
 `AM demodulation needs an IQ radio input; monitor externally demodulated AM

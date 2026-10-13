@@ -33,6 +33,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
@@ -2460,6 +2461,41 @@ test_decode_mode_change_clears_received_tone(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("code mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_received_tone_cleared("decode mode change clears the received code", &state, seeded_code);
+    freeState(&state);
+    return rc;
+}
+
+/* DECODE_MODE_SET takes every preset through TETRA, the last (17), and refuses the value past it with nothing
+   changed. Leaving TETRA drops what its decoder published for the frontends. */
+static int
+test_decode_mode_set_reaches_tetra(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("tetra mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tetra mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tetra preset applied", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+    rc |= expect_int("tetra decoder on", opts.frame_tetra, 1);
+    rc |= expect_int("tetra toast", strstr(state.ui_msg, "Decoding TETRA") != NULL, 1);
+
+    state.tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("past tetra queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA + 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("past tetra drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("past tetra refused", strstr(state.ui_msg, "Decode mode not available") != NULL, 1);
+    rc |= expect_int("past tetra keeps tetra", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+    rc |= expect_int("past tetra keeps the publication", state.tetra_pub.mode, DSD_TETRA_MODE_TMO_DOWNLINK);
+
+    rc |= expect_int("dmr mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("leaving tetra turns its decoder off", opts.frame_tetra, 0);
+    rc |= expect_int("leaving tetra clears its publication", state.tetra_pub.mode, DSD_TETRA_MODE_NONE);
     freeState(&state);
     return rc;
 }
@@ -17267,12 +17303,12 @@ test_am_refused_on_pcm_input(void) {
     rc |= expect_int("pcm analog drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("pcm analog applied", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
 
-    /* AM is the last preset id: one past it is not a mode. */
+    /* TETRA is the last preset id: one past it is not a mode. */
     state.ui_msg[0] = '\0';
-    rc |= expect_int("past-am queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_AM + 1),
+    rc |= expect_int("past-last queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_TETRA + 1),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("past-am drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("past-am refused", strstr(state.ui_msg, "Decode mode not available") != NULL, 1);
+    rc |= expect_int("past-last drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("past-last refused", strstr(state.ui_msg, "Decode mode not available") != NULL, 1);
     freeState(&state);
     return rc;
 }
@@ -17541,6 +17577,7 @@ main(void) {
     rc |= test_config_apply_switches_rtl_receive_family();
     rc |= test_config_apply_refused_analog_profile_changes_nothing();
     rc |= test_decode_mode_set_am_switches_live();
+    rc |= test_decode_mode_set_reaches_tetra();
     rc |= test_decode_mode_set_am_clears_received_tone();
     rc |= test_am_bandwidth_set_applies_live();
     rc |= test_config_apply_am_within_the_analog_family();

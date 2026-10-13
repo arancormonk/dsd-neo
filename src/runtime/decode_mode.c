@@ -6,6 +6,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -671,11 +672,12 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
     }
 
     /* Every preset other than TETRA leaves the TETRA decoder disabled, and drops what it had decoded (its state
-     * extension and the burst the frame sync last captured for it). */
+     * extension, the burst the frame sync last captured for it, and what it published for the frontends). */
     if (mode != DSDCFG_MODE_TETRA) {
         opts->frame_tetra = 0;
         (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, NULL, NULL);
         DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+        dsd_tetra_publication_reset(&state->tetra_pub);
     }
 
     if (decode_mode_dispatch(mode, profile, opts, state) != 0) {
@@ -814,6 +816,7 @@ dsd_decode_mode_display_name(dsdneoUserDecodeMode mode) {
         {DSDCFG_MODE_M17, "M17"},
         {DSDCFG_MODE_ANALOG, "Analog"},
         {DSDCFG_MODE_AM, "AM"},
+        {DSDCFG_MODE_TETRA, "TETRA"},
     };
 
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {

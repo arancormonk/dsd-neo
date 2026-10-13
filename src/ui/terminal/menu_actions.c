@@ -2182,8 +2182,9 @@ act_lockout_slot2(void* v) {
 // ---- Decoder mode ----
 
 /* Picker order: the catch-all first, then the P25 family, DMR, and the rest
-   roughly by how often they are asked for. The names come from the runtime so
-   the picker and the label that reads the mode back cannot disagree. */
+   roughly by how often they are asked for, the digital modes before the analog
+   monitor. The names come from the runtime so the picker and the label that
+   reads the mode back cannot disagree. */
 static const dsdneoUserDecodeMode k_decode_mode_choices[] = {
     DSDCFG_MODE_AUTO,
     DSDCFG_MODE_TDMA,
@@ -2199,6 +2200,7 @@ static const dsdneoUserDecodeMode k_decode_mode_choices[] = {
     DSDCFG_MODE_EDACS_PV,
     DSDCFG_MODE_DPMR,
     DSDCFG_MODE_M17,
+    DSDCFG_MODE_TETRA,
     DSDCFG_MODE_ANALOG,
     /* AM needs an I/Q radio input: see g_decode_mode_am_offered. */
     DSDCFG_MODE_AM,

@@ -74,11 +74,16 @@ Item {
                    "the catalog must be intact for an ordinary flag")
         }
 
-        function test_01b_tetra_is_a_trunked_catalog_mode() {
+        // TETRA covers trunked (TMO) and direct mode (DMO) alike, so like DMR
+        // and NXDN its pick answers for itself: picked on the 800 MHz prefill,
+        // it suggests no call-following, which would leave DMO speech muted.
+        function test_01b_tetra_is_a_catalog_mode_that_suggests_no_trunking() {
+            compare(tc.wizard.trunking, true, "the 800 MHz prefill suggests trunking before the pick")
             tc.wizard.pickDecodeFlag("-fT")
             compare(tc.selectedLabels(), ["TETRA"])
             compare(tc.chipFor("TETRA").modelData.flag, "-fT")
-            verify(tc.chipFor("TETRA").modelData.trunked)
+            verify(tc.chipFor("TETRA").modelData.trunked !== true)
+            compare(tc.wizard.trunking, false, "picking TETRA suggested call-following")
         }
 
         // The simulcast import. "-mq -^" is what dsd_rr_decode_flag() answers

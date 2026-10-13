@@ -4696,7 +4696,7 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
                               dsdneoUserDecodeMode* out_mode) {
     int32_t requested = 0;
     DSD_MEMCPY(&requested, c->data, sizeof requested);
-    if (requested < 0 || requested > (int32_t)DSDCFG_MODE_AM) {
+    if (requested < 0 || requested > (int32_t)DSDCFG_MODE_TETRA) {
         ui_set_toast(state, 4, "Decode mode not available");
         return UI_CMD_APPLY_UNSUPPORTED;
     }
@@ -5296,7 +5296,7 @@ rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_appl
        would run dsd_apply_decode_mode_preset() and republish a symbol profile for
        "no mode". Neither producer can emit it today; the guard is what keeps that
        true. */
-    if (p->decode_mode <= (int32_t)DSDCFG_MODE_UNSET || p->decode_mode > (int32_t)DSDCFG_MODE_AM
+    if (p->decode_mode <= (int32_t)DSDCFG_MODE_UNSET || p->decode_mode > (int32_t)DSDCFG_MODE_TETRA
         || !dsd_decode_mode_runs_on_input((dsdneoUserDecodeMode)p->decode_mode, opts)) {
         ui_set_toast(state, 4, "Failed: RR import -> decode mode");
         return UI_CMD_APPLY_FAILED;

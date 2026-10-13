@@ -450,9 +450,9 @@ test_apply_refusals(void) {
 }
 
 /*
- * Issue #524: the import's decode-mode bound runs through AM, the last preset. AM on a radio input applies; the value
- * past it is refused, as is AM on a PCM input, whose audio arrives already demodulated (dsd_decode_mode_runs_on_input(),
- * as DECODE_MODE_SET refuses it). A refusal changes nothing.
+ * Issue #524: the import's decode-mode bound runs through TETRA, the last preset. AM on a radio input applies, and
+ * TETRA; the value past TETRA is refused, as is AM on a PCM input, whose audio arrives already demodulated
+ * (dsd_decode_mode_runs_on_input(), as DECODE_MODE_SET refuses it). A refusal changes nothing.
  */
 static int
 test_apply_am_bounds(void) {
@@ -464,12 +464,19 @@ test_apply_am_bounds(void) {
     init_test_context(&opts, &state);
     opts.audio_in_type = AUDIO_IN_RTL; /* a radio input, no stream running */
     DSD_MEMSET(&p, 0, sizeof p);
-    p.decode_mode = (int32_t)DSDCFG_MODE_AM + 1;
+    p.decode_mode = (int32_t)DSDCFG_MODE_TETRA + 1;
     state.ui_msg[0] = '\0';
-    rc |= expect_int("past am queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("past am drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("past am refused", state.ui_msg, "Failed: RR import -> decode mode");
-    rc |= expect_int("past am leaves the mode", opts.analog_only, 0);
+    rc |= expect_int("past tetra queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("past tetra drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("past tetra refused", state.ui_msg, "Failed: RR import -> decode mode");
+    rc |= expect_int("past tetra leaves the mode", opts.analog_only, 0);
+    rc |= expect_int("past tetra leaves the TETRA decoder off", opts.frame_tetra, 0);
+
+    p.decode_mode = (int32_t)DSDCFG_MODE_TETRA;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("tetra queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tetra drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tetra applied", dsd_infer_decode_mode_preset(&opts), (int)DSDCFG_MODE_TETRA);
 
     p.decode_mode = (int32_t)DSDCFG_MODE_AM;
     state.ui_msg[0] = '\0';
