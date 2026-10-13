@@ -76,8 +76,9 @@ Detection history is separate from call history: an RF detection need not decode
 anything. The newest 1,000 detections are retained, with one row updated as details
 arrive. Ended, confirmed and RF-only detections remain distinguishable. The private
 versioned journal is compacted atomically; write failures are reported while
-available records remain in memory. Orderly stop flushes the journal. Ranges and
-permanent avoids are also stored privately.
+available records remain in memory. History and permanent avoids are saved separately,
+and a failed one stays reported and is retried by later saves until it is written.
+Orderly stop flushes the journal. Ranges and permanent avoids are also stored privately.
 
 Saved-system labels come from a cached index of saved frequencies, referenced
 channel maps and scan lists. Exact matches win; otherwise the nearest frequency
@@ -87,7 +88,11 @@ channel with 12.5 kHz spacing. A label suggests a saved frequency, not proof of
 system identity, and never retunes the radio.
 
 **Save as system** opens the normal save wizard from an immutable detection
-snapshot. Frequency, receive mode, source, bandwidth and gain are prefilled.
+snapshot. Frequency, receive mode, source, bandwidth and gain are prefilled, and
+so are the receiver settings the detection was made with: PPM correction and bias
+tee on an RTL-SDR or rtl_tcp source, serial, sample rate, gain and bias tee on an
+Airspy. They are saved as explicit values, so a later change to the app-wide
+defaults does not change the saved system; a bias tee that was off stays off.
 Confirmed NXDN48 and NXDN96 detections preserve their respective decoder rates.
 Unresolved identification stays explicit. The user must choose the normal Save
 action; later detections do not change the open draft.
@@ -99,6 +104,11 @@ RTL-SDR, Airspy, rtl_tcp and Soapy inputs; the Qt source chooser offers the exis
 Explore sources. PCM, rigctl-only inputs and production I/Q replay cannot search.
 Conventional scanning and trunk following must stop first. CLI controls, public
 TCP API commands and simultaneous analog/digital reception are not provided.
+
+A stalled radio input (an rtl_tcp stall, for example) does not hold a visit or
+end the session: after 100 ms without samples the decoder leaves the frame it was
+reading and returns to the coordinator, so controls and visit deadlines still take
+effect, and it reads the input again on its next pass.
 
 Implementation is divided into four reviewable parts:
 
@@ -116,10 +126,13 @@ normalization. It requires two complete measurements of at least 10 ms each,
 accumulated by sample count across arbitrary input blocks, and at least eight FFT
 bins across the smaller channel width/spacing; each channel must pass its threshold
 in both. Local noise comes from sidebands 1.5 to 3 channel widths out on either
-side, in four blocks each: the mean of the blocks within 6 dB of the third lowest,
-so transmitters in up to five of the eight blocks do not raise it. Clipping and
-capture discontinuities invalidate the measurement. Allocations, FFT size,
-candidates and total channels are bounded; unsupported plans report an error.
+side, in four blocks each: the mean of the blocks within 6 dB of the third lowest.
+A block a transmitter raises by more than that is left out, up to five of the eight;
+one it raises by less still counts, so with up to five raised blocks the estimate
+reads at most about 4.6 dB high (five blocks 4.8 dB above three quiet ones read
+3.5 dB high). Clipping and capture discontinuities invalidate the measurement.
+Allocations, FFT size, candidates and total channels are bounded; unsupported plans
+report an error.
 
 A strong transmitter's skirt and the window's leakage reach neighbouring channels'
 windows, particularly with the default 16 kHz width on a 12.5 kHz grid or on any
@@ -130,7 +143,10 @@ channels share one boundary however the grid frequencies were rounded. This is
 decided once per measurement, on both windows' power together, so a transmitter is
 assigned the same way for the whole measurement. It must also hold its own power in
 each window (within 10 dB of the other over the bins it occupies), so energy one
-window only owes to another transmitter is not sustained.
+window only owes to another transmitter is not sustained, and spread over those bins
+alike (each window's share of it overlapping the other's by at least a quarter), so
+two transmitters that each fill one window and pool into one between them are not
+either.
 
 Transmitters are located in the spectrum itself, not only among the requested
 channels, so one past a range or span boundary counts. Each channel's window climbs
@@ -149,19 +165,30 @@ only the far skirt. A centre with less than 1% of the peak power splits the segm
 when two transmitters, each symmetric about its own centre, explain it at least as
 well as one (two carriers the envelope bridged), while a carrier its FM modulation
 weakens keeps the transmitter whole. With 250 Hz or similarly fine steps the
-analysis aggregates bins and refines centres on the FFT bins.
+analysis aggregates bins and refines centres on the FFT bins of the transmitter's
+whole body within its channel width, every spectral line taking part, so a tone FM
+transmitter whose first sidebands outweigh its carrier is centred on its carrier.
 
 Beside each such transmitter, a separate one is found in two ways. Walking out
 from it, the envelope must rise again after the skirt has fallen at least 6 dB, by
 a threshold (at least 4.5 dB) that grows with the statistical spread of the averaged
-spectrum, and climb above the last ridge before the valley (the transmitter's own
-outer sideband lines decay one after another). Or, where its other side is a clean
-skirt and its spectrum mostly overlaps its mirror image, the energy beside it stands
-10 dB above that side mirrored about its centre and peaks away from the
-transmitter's own edge. Rises within the transmitter's own channel width are its
-own spectrum and never count. Each separate transmitter is located once, at the
-centre of what remains of it after the mirror (or the valley's level), and reported
-by the channel that owns that centre.
+spectrum, and climb above the last ridge before the valley and every ridge passed
+since (the transmitter's own outer sideband lines decay one after another). Or,
+where its other side is a clean skirt and its spectrum mostly overlaps its mirror
+image, the energy beside it stands 10 dB above that side mirrored about its centre
+and peaks away from the transmitter's own edge; that looks only as far as the first
+other transmitter, beyond which the mirror says nothing. Within the transmitter's own
+channel width a rise is usually its own spectrum (an FM transmitter's sidebands): it
+counts only when the transmitter mostly overlaps its mirror image, the rise stands
+10 dB above its own mirror image (sideband lines come in mirrored pairs) and its
+valley falls 20 dB below it (a lopsided edge of the transmitter's own modulation
+leaves the valley filled). A rise that does not count stays the transmitter's own
+until it falls back, even where its envelope reaches past the channel width. Each
+separate transmitter is located once: as a transmitter of its own when its own
+segment's tallest bin lies beyond the valley; otherwise at the centre of what
+remains of it after the mirror (or the valley's level), from where it rose out
+through the ripples of its sideband lines to where it falls to a tenth. It is
+reported by the channel that owns that centre.
 
 These rules come from measured cases, not a guarantee of detection or uniqueness.
 The regressions and sweeps below report every transmitter once at its nearest
@@ -181,6 +208,14 @@ other. Known limits:
   sidebands reach, or not at all.
 - Within a few hundred hertz of an ownership boundary a short-term lopsided spectrum
   can move a transmitter to the neighbouring channel.
+- Two weaker transmitters placed symmetrically within a stronger one's channel width
+  mirror each other and are taken for its own spectrum.
+- A weaker transmitter beside a stronger one is located from what rises out of the
+  valley between them. In crowded spectrum on 250 or 625 Hz grids that places it
+  within its own width, which spans many channels, so it can be reported several
+  channels from its carrier; and one wider than the channel width (for example 5 kHz
+  deviation with 8 kHz windows) can be reported at its deviation horns, a channel
+  either side of its own on a 5 kHz grid.
 - A window that only climbs toward a transmitter more than six reaches (twelve
   channel widths) away is that transmitter's skirt and is not reported.
 - On a strongly coloured noise floor with 25 kHz widths, local noise can read about
@@ -215,11 +250,15 @@ alignments; single transmitters on 5 and 6.25 kHz grids at five FFT resolutions
 and alignments (tone FM with carrier nulls, horns and wide sidebands, noise-like
 FM); an off-grid carrier and low-frame noise-like FM near ownership boundaries;
 offset sweeps across boundaries on 5, 6.25 and 12.5 kHz grids and a rational
-25000/3 grid, with no gaps or duplicates; a 250 Hz grid of 512 channels; windows
-that wrap FFT bin 0, rotation-free capture and channels at the DC and edge guards;
-transmitters 25 and 37.5 kHz apart (local noise), equal ones 5 and 10 kHz apart on
-fine grids, a weak neighbour on an ownership boundary, transmitters present in only
-one window each, and noise alone at 3 dB sensitivity. The shared tap is tested for
+25000/3 grid, with no gaps or duplicates; a 250 Hz grid of 512 channels, including
+a tone FM transmitter whose first sidebands outweigh its carrier; a transmitter's
+own decaying sideband lines past its channel width; windows that wrap FFT bin 0,
+rotation-free capture and channels at the DC and edge guards; transmitters 25 and
+37.5 kHz apart (local noise), equal ones 5 and 10 kHz apart on fine grids, a carrier
+6 dB down 5 kHz beside a stronger one within its window, a weak neighbour on an
+ownership boundary, transmitters present in only one window each (including two
+whose spectra overlap on either side of an empty channel), and noise alone at 3 dB
+sensitivity. The shared tap is tested for
 reports delivered only to their own request, cancels and capture changes, with a
 feeding thread racing requests, polls and cancels. A coordinator regression runs
 the real detector and tap on synthetic capture I/Q over three passes at six capture
@@ -228,9 +267,16 @@ tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,
 live strength, lifting session avoids, pause/restart and scoped restoration.
+Stalled-input regressions check that the live read gives up after 100 ms only while
+a search owns the tuner, and that the FSK, monitor and CQPSK symbol readers alike
+take that as an interruption rather than the end of the session, then read the
+rest of the frame as erasures without waiting again.
 Persistence and Qt tests cover bounded history, duplicate suppression, failed
-writes/retry, recreation, fractional steps, ambiguous matches, nested channel maps,
-immutable saves, phone text scaling and navigation ownership. They also check that
+writes/retry (history and avoids each stay owed until their own write succeeds,
+including when storage only recovers by close), recreation, fractional steps,
+ambiguous matches, nested channel maps, immutable saves (including each source's own
+receiver settings reaching the saved system), phone text scaling and navigation
+ownership. They also check that
 status-only refreshes leave history untouched (it is copied only when its store
 revision moves), session avoids, the aggregate 100,000-channel check before a start
 is submitted, and that a start the engine rejects with no search left owns nothing

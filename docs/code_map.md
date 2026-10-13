@@ -53,7 +53,14 @@ Generated (do not edit/commit):
     owners, suppresses visited frequencies per pass and retains native session avoids.
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
-    digital transmission keeps the decoder in its synced-frame loop. An analog visit's
+    digital transmission keeps the decoder in its synced-frame loop. A stalled input
+    cannot hold a visit: while a search owns the tuner (`rtl_signal_search_owner()`; the
+    orchestrator's read carries no decoder state), a live radio read that finds no
+    samples for 100 ms gives up, and every RTL symbol reader (FSK discriminator, monitor,
+    CQPSK symbol rate) records that as `dsd_state::input_interrupted` instead of ending
+    the session. `getSymbol()` checks a recorded interruption before its every-64-symbol
+    yield throttle, so the rest of the frame reads as erasures without waiting again
+    until the engine loop consumes it. An analog visit's
     500 ms quiet timing starts only at the monitor's first verdict on the landed channel
     (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s. `DSD_SEARCH_ACTION_UNAVOID`
     lifts a session avoid by frequency. Published status carries `owned` (a coordinator
@@ -1610,14 +1617,19 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     Decoded-field enrichment runs only on confirmation callbacks; periodic status
     refreshes cannot promote fields from a subsequent unconfirmed sync.
     `signal_search_store.cpp` owns the mutex-protected snapshots and a native worker for
-    the versioned private journal, bounded upserts and atomic compaction/avoids. The
-    worker survives QML teardown; it never reads live decoder state. History and avoid
-    revisions let frontends copy history only when it changed. The control actions mirror
-    the session's own avoid list (cleared when it stops). A rejected start with no
-    coordinator left publishes an unowned error, and `dsd_app_frontend_runtime_stop()`
-    retires any status left behind (`dsd_app_signal_search_session_ended()`). A rejected
-    restart of a paused coordinator keeps that coordinator's phase, session and
-    ownership; only the published message changes.
+    the versioned private journal, bounded upserts and atomic compaction/avoids. History
+    and permanent avoids are separate files with separate write state: one whose write
+    failed stays owed, with its error, until its own write succeeds, so saving the other
+    neither retires it nor clears the error. Each later worker pass, flush and close
+    retries it; a history retry compacts every retained record, so nothing is appended
+    twice. The worker survives QML teardown; it never reads live decoder state. History
+    and avoid revisions let frontends copy history only when it changed. The control
+    actions mirror the session's own avoid list (cleared when it stops). A rejected start
+    with no coordinator left publishes an unowned error, and
+    `dsd_app_frontend_runtime_stop()` retires any status left behind
+    (`dsd_app_signal_search_session_ended()`). A rejected restart of a paused coordinator
+    keeps that coordinator's phase, session and ownership; only the published message
+    changes.
   - Frontend metrics and raw telemetry snapshots used by the terminal renderer
   - Command queue dispatch and menu service helpers. Decoder-owner runtime start/stop opens/closes admission under
     the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
@@ -3129,11 +3141,14 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   windows' power: transmitters are located in the spectrum (not just the requested
   channels), each from the anchor its channels' windows climb to, centred where its
   segment best overlaps its own mirror image, with segments cut and merged at valleys and
-  weak centres by comparing one source with two; transmitters beside each are found by a
-  valley rise above the last skirt ridge or 10 dB above the mirrored far side, and located
-  once. A channel keeps a raw detection only for a transmitter centred within its half-open
-  interval on the range's rational grid that holds its own power in both windows (within
-  10 dB). `docs/signal-search.md` lists the measured limits. The tap's `feed_mutex`
+  weak centres by comparing one source with two (refined on the FFT bins of the whole body
+  with aggregated bins); transmitters beside each are found by a valley rise above every
+  skirt ridge passed, 10 dB above the mirrored far side (up to the first other
+  transmitter) or, within its width, an unmirrored rise beyond a 20 dB valley, and located
+  once (as a source of their own where their segment allows). A channel keeps a raw
+  detection only for a transmitter centred within its half-open interval on the range's
+  rational grid that holds its own power in both windows (within 10 dB, spread alike).
+  `docs/signal-search.md` lists the measured limits. The tap's `feed_mutex`
   serialises the detector (feeding and analysis, request, cancel); `tap_mutex` guards only
   the published capture, readiness and report, so polls never wait for analysis; locks
   are taken feed first. Search bypass preserves capture/control health
@@ -4259,6 +4274,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   reading files during rendering. Exact matches win, nearest matches use half the smaller
   applicable channel width/spacing, and ties remain ambiguous. Saving uses an immutable
   hit snapshot, including its original source settings and unresolved identity.
+  `SignalSearchModel::systemForHit()` shapes the captured receiver settings as saved-system
+  fields, each source only its own: an Airspy's native `airspy` map, or an RTL's `ppm`
+  text and explicit `biasTee` (0 or 1, never the follow-the-app -1).
+  `WizardScreen.openForFound()` copies them into the draft only for a detection; the
+  Spectrum's save passes none and keeps the app defaults its session ran on
+  (`tst_wizard_search_save.qml`, `UI_QT_SIGNAL_SEARCH`).
 
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
