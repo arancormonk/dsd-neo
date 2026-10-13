@@ -55,6 +55,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -90,6 +91,7 @@
 
 #include <dsd-neo/core/audio_input_switch.h>
 #include "../../src/app_control/commands_internal.h"
+#include "../../src/protocol/tetra/tetra_confirm.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -5140,6 +5142,75 @@ test_return_cc_keeps_the_dmr_decode_gate(void) {
     g_dmr_burst_handler_armed = 0;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     freeState(&state);
+    return rc;
+}
+
+static dsd_trunk_tune_result g_tetra_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+static uint64_t g_tetra_tune_request = 0U;
+
+static dsd_trunk_tune_result
+tetra_tune_accepted(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)state;
+    (void)ted_sps;
+    g_tetra_tune_request = request_id;
+    opts->trunk_is_tuned = 1;
+    return freq > 0 ? g_tetra_tune_result : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+/* The real TETRA trunking state machine on a traffic channel: a control channel a CRC-passed block proved, and a
+   followed grant, its tune ending with @p result. */
+static int
+tetra_follow_a_call(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result result) {
+    opts->frame_tetra = 1;
+    opts->trunk_enable = 1;
+    state->trunk_cc_freq = 380012500L;
+    tetra_sm_on_cc_sync(opts, state);
+    tetra_confirm_note_signalling(state);
+    g_tetra_tune_result = result;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tetra_tune_accepted});
+    const tetra_sm_grant grant = {390012500L, 40U, 0x4U, 0x123U};
+    const int followed = tetra_sm_on_grant(opts, state, &grant);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    return followed == 1 && tetra_sm_get_state(state) == TETRA_SM_TUNED;
+}
+
+/* A manual return to the control channel hands the TETRA trunking state machine over as it does P25's: the followed
+   call goes, with no return of the machine's own, so its next tick finds nothing to release. A decode-mode change
+   drops the TETRA state, and with it a tune it had in flight, which could otherwise hold the frame gate shut. */
+static int
+test_return_cc_and_mode_change_hand_tetra_over(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    rc |= expect_true("TETRA follows a call before the return",
+                      tetra_follow_a_call(&opts, &state, DSD_TRUNK_TUNE_RESULT_OK));
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("TETRA return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("TETRA return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("TETRA return-to-CC tunes the control channel", g_io_control_tune_calls, 1);
+    rc |= expect_true("TETRA return-to-CC parks the state machine on the control channel",
+                      tetra_sm_get_state(&state) == TETRA_SM_ON_CC && !tetra_sm_followed(&state, NULL));
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    dsd_trunk_tuning_requests_reset();
+    rc |= expect_true("TETRA follows a call before the mode change",
+                      tetra_follow_a_call(&opts, &state, DSD_TRUNK_TUNE_RESULT_PENDING));
+    dsd_trunk_tuning_request_publish(g_tetra_tune_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("the failed tune holds the gate", dsd_trunk_tuning_pending_request() == g_tetra_tune_request);
+    rc |=
+        expect_int("mode change queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("leaving TETRA drops its state machine",
+                      tetra_sm_get_state(&state) == TETRA_SM_IDLE && !tetra_sm_followed(&state, NULL));
+    rc |= expect_true("leaving TETRA retires its tune in flight", dsd_trunk_tuning_pending_request() == 0U);
+    rc |= expect_int("leaving TETRA keeps its publication cleared", state.tetra_pub.trunk_state, DSD_TETRA_TRUNK_IDLE);
+    freeState(&state);
+    dsd_trunk_tuning_requests_reset();
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
 }
 
@@ -17772,6 +17843,7 @@ main(void) {
     rc |= test_trunked_tune_away_flushes_the_followed_tail_first();
 #endif
     rc |= test_return_cc_keeps_the_dmr_decode_gate();
+    rc |= test_return_cc_and_mode_change_hand_tetra_over();
     rc |= test_scan_row_keys_commands();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP

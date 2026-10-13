@@ -6088,6 +6088,39 @@ add_test(
     COMMAND dsd-neo_test_engine_generic_trunk_return_matrix
 )
 
+# The engine's side of TETRA trunking with the real state machine: its tick, the carrier boundary and the no-carrier
+# pass.
+add_executable(dsd-neo_test_engine_tetra_trunk engine/test_engine_tetra_trunk.c)
+target_include_directories(
+    dsd-neo_test_engine_tetra_trunk
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_tetra_trunk
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_tetra_trunk
+        PRIVATE
+            dsd-neo_engine
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME ENGINE_TETRA_TRUNK COMMAND dsd-neo_test_engine_tetra_trunk)
+set_tests_properties(ENGINE_TETRA_TRUNK PROPERTIES LABELS "tetra")
+
 add_executable(
     dsd-neo_test_engine_cleanup_audio
     engine/test_engine_cleanup_audio.c

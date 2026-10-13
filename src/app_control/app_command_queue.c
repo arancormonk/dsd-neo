@@ -59,6 +59,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -3086,6 +3087,11 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
     set_cc_symbol_timing(opts, state, sym_rate);
     if (p25_live) {
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "return-to-cc");
+    }
+    /* The TETRA state machine likewise: the receiver is on the control channel now, and a followed call it kept would
+       have its next tick release it again, with a return of its own. */
+    if (tetra_sm_get_state(state) != TETRA_SM_IDLE) {
+        tetra_sm_on_external_cc_return(opts, state);
     }
     LOG_INFO("User Activated Return to CC\n");
     return UI_CMD_APPLY_COMPLETED;

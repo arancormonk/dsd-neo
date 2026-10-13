@@ -72,7 +72,6 @@
 #include <dsd-neo/protocol/provoice/provoice.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
-#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
@@ -1914,6 +1913,21 @@ no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
     return active;
 }
 
+/* The TETRA state machine's part in a no-carrier return. An accepted return moved the receiver to the control channel,
+   which it reconciles to without tuning. Without one the voice state was cleared where the receiver is (the P25 helper
+   failed, or there is no control channel to return to): a followed call is dropped there, without tuning either. A
+   return that failed or was deferred never reaches here and keeps the call for the next pass. */
+static void
+no_carrier_hand_tetra_over(dsd_opts* opts, dsd_state* state, int accepted_cc_return) {
+    if (accepted_cc_return) {
+        if (tetra_sm_get_state(state) != TETRA_SM_IDLE) {
+            tetra_sm_on_external_cc_return(opts, state);
+        }
+    } else if (tetra_sm_get_state(state) == TETRA_SM_TUNED) {
+        tetra_sm_abandon_carrier(opts, state);
+    }
+}
+
 static void
 no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accepted_cc_return,
                             int clear_failed_helper_state, int clear_unreturnable_voice_state, uint64_t request_id) {
@@ -1927,10 +1941,7 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
         if (accepted_cc_return && dsd_trunk_dmr_recovery_allowed(opts, state)) {
             dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, request_id);
         }
-        if (tetra_sm_get_state(state) == TETRA_SM_TUNED || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
-            tetra_voice_reset(state);
-            tetra_sm_on_external_cc_return(opts, state);
-        }
+        no_carrier_hand_tetra_over(opts, state, accepted_cc_return);
         (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;
     }
@@ -2455,6 +2466,7 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
     const int release_machines = carrier_boundary_takes_guard(kind) && opts->trunk_scan_enabled != 1;
     int p25_tuned = 0;
     int dmr_tuned = 0;
+    int tetra_tuned = 0;
     p25_sm_ctx_t* p25 = NULL;
     dmr_sm_ctx_t* dmr = NULL;
     if (release_machines) {
@@ -2462,8 +2474,9 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
         dmr = dmr_sm_get_ctx();
         p25_tuned = p25_sm_get_state(p25) == P25_SM_TUNED;
         dmr_tuned = dmr->state == DMR_SM_TUNED;
+        tetra_tuned = tetra_sm_get_state(state) == TETRA_SM_TUNED;
     }
-    if (opts->trunk_is_tuned != 1 && !p25_tuned && !dmr_tuned) {
+    if (opts->trunk_is_tuned != 1 && !p25_tuned && !dmr_tuned && !tetra_tuned) {
         return;
     }
     if (p25_tuned) {
@@ -2471,6 +2484,9 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
     }
     if (dmr_tuned) {
         dmr_sm_abandon_carrier(dmr, opts, state, "carrier-boundary");
+    }
+    if (tetra_tuned) {
+        tetra_sm_abandon_carrier(opts, state);
     }
     dsd_engine_release_tuned_call_state(opts, state);
 }
@@ -2940,6 +2956,9 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
              * field, so the skip has to stamp it itself. */
             state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
         }
+        /* A TETRA carrier syncs on every burst, so this loop may never hand back to the outer one: the TETRA state
+         * machine settles its tune and runs its hangtime here too, withheld frames included. */
+        dsd_engine_tetra_trunk_tick_locked(opts, state);
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
         if (dsd_engine_signal_search_should_yield(opts, state)) {
@@ -3058,6 +3077,13 @@ dsd_engine_end_input_boundary(dsd_opts* opts, dsd_state* state) {
     dsd_symbol_matched_filter_reset(state);
 }
 
+void
+dsd_engine_tetra_trunk_tick_locked(dsd_opts* opts, dsd_state* state) {
+    if (opts && state && opts->frame_tetra == 1 && opts->trunk_scan_enabled != 1) {
+        tetra_sm_tick(opts, state);
+    }
+}
+
 static void
 live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     dsd_engine_slicer_threshold_cache threshold_cache;
@@ -3083,6 +3109,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
                 dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
             }
+            dsd_engine_tetra_trunk_tick_locked(opts, state);
             p25_sm_tick_guard_leave();
         }
         dsd_trunk_scan_hook_tick(opts, state);
@@ -3413,6 +3440,7 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
 
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
     dmr_sm_init(opts, state);
+    tetra_sm_init(opts, state);
 
     if (opts->resume > 0) {
         openSerial(opts, state);

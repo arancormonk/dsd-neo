@@ -366,10 +366,9 @@ tetra_nb_decode(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const
     }
 }
 
-/* The end of every burst: the trunking state machine, the frontends and the event watchdog. */
+/* The end of every burst: the frontends and the event watchdog. The engine ticks the trunking state machine. */
 static void
 tetra_burst_done(dsd_opts* opts, dsd_state* state) {
-    tetra_sm_tick(opts, state);
     if (dsd_opts_frontend_active(opts)) {
         dsd_telemetry_publish_both_and_redraw(opts, state);
     }
@@ -759,7 +758,6 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
         skipDibit(opts, state, SB_BKN2_DIBITS);
         TETRA_LOG_PAYLOAD(ts, "[TETRA SB] no BSCH block captured\n");
         state->tetra_sync.sb1_soft_valid = 0;
-        tetra_sm_tick(opts, state);
         return;
     }
     state->tetra_sync.sb1_valid = 0;
