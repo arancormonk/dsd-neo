@@ -149,6 +149,25 @@ tetra_read_dibits(dsd_opts* opts, dsd_state* state, uint8_t* dibits, float* soft
     }
 }
 
+/* Block 2 of a normal burst whose block 1 sits against the training sequence (uplink, direct mode): first the dibits
+   the frame sync already read past the training (dsd_tetra_sync_capture::b2_lead_count, an uplink lock), then the rest
+   from the input. Returns the soft values to decode with: @p soft, or NULL when the lead came without soft values, so
+   the block is decoded from its hard decisions alone. */
+static const float*
+tetra_read_block2(dsd_opts* opts, dsd_state* state, uint8_t* dibits, float* soft) {
+    dsd_tetra_sync_capture* const sync = &state->tetra_sync;
+    const int lead = sync->b2_lead_count <= sizeof sync->b2_lead_dibits ? (int)sync->b2_lead_count : 0;
+    for (int i = 0; i < lead; i++) {
+        dibits[i] = (uint8_t)(sync->b2_lead_dibits[i] & 3u);
+        soft[i] = sync->b2_lead_soft_valid ? sync->b2_lead_soft[i] : 0.0F;
+    }
+    const int soft_ok = lead == 0 || sync->b2_lead_soft_valid;
+    sync->b2_lead_count = 0;
+    sync->b2_lead_soft_valid = 0;
+    tetra_read_dibits(opts, state, dibits + lead, soft + lead, NB_BLOCK_DIBITS - lead);
+    return soft_ok ? soft : NULL;
+}
+
 /* ---------------------------------------------------------------------------------------------------------------
  * Channel decoders.
  * ------------------------------------------------------------------------------------------------------------- */
@@ -398,7 +417,7 @@ tetra_dmo_process_ndb(dsd_opts* opts, dsd_state* state) {
     }
     uint8_t b2_dibits[NB_BLOCK_DIBITS];
     float b2_soft[NB_BLOCK_DIBITS];
-    tetra_read_dibits(opts, state, b2_dibits, b2_soft, NB_BLOCK_DIBITS);
+    const float* const soft = tetra_read_block2(opts, state, b2_dibits, b2_soft);
 
     const tetra_nb_ctx ctx = {ts->dmo_dcc_seed, 0, 1, "DNB "};
     tetra_nb_subtype(state, &ctx, state->tetra_sync.nts2 ? "NTS2" : "NTS1");
@@ -414,7 +433,7 @@ tetra_dmo_process_ndb(dsd_opts* opts, dsd_state* state) {
                       (int)state->tetra_sync.polarity, (int)(state->tetra_sync.phase_rot & 3), (int)ts->dmo_dcc_valid);
 
     if (ts->dmo_dcc_valid && state->tetra_sync.b1_valid) {
-        tetra_nb_decode(opts, state, &ctx, b2_dibits, b2_soft);
+        tetra_nb_decode(opts, state, &ctx, b2_dibits, soft);
     }
     tetra_block1_consumed(state);
     tetra_burst_done(opts, state);
@@ -430,7 +449,7 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
     }
     uint8_t b2_dibits[NB_BLOCK_DIBITS];
     float b2_soft[NB_BLOCK_DIBITS];
-    tetra_read_dibits(opts, state, b2_dibits, b2_soft, NB_BLOCK_DIBITS);
+    const float* const soft = tetra_read_block2(opts, state, b2_dibits, b2_soft);
 
     const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "NUB "};
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA UL");
@@ -439,7 +458,7 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
                       (int)state->tetra_sync.polarity, (int)(state->tetra_sync.phase_rot & 3));
 
     if (tetra_uplink_net_known(ts)) {
-        tetra_nb_decode(opts, state, &ctx, b2_dibits, b2_soft);
+        tetra_nb_decode(opts, state, &ctx, b2_dibits, soft);
     }
     tetra_block1_consumed(state);
     tetra_burst_done(opts, state);

@@ -343,9 +343,47 @@ test_retune_leaves_the_rest_of_the_burst(void) {
     session_close(&s);
 }
 
+/* An uplink normal burst (--tetra-uplink) locks two symbols after its training sequence, which the frame sync hands
+ * over as the first two dibits of block 2 (dsd_tetra_sync_capture::b2_lead_count): block 2 is those and the 106 dibits
+ * after them, so its SCH/HD block decodes. Read from the input alone it would start two dibits late. */
+static void
+test_uplink_normal_burst_takes_the_lead(void) {
+    session s = session_open();
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    s.opts->tetra_uplink = 1;
+
+    ttb_block b = {0};
+    ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+    uint8_t block2[BLOCK_DIBITS];
+    encode_sch_hd(b.bits, tetra_st_existing(s.state)->lfsr_seed, block2);
+    uint8_t tail[BLOCK_DIBITS] = {0};
+    DSD_MEMCPY(tail, block2 + 2, BLOCK_DIBITS - 2);
+    feed(&s, tail, (int)sizeof tail);
+    DSD_MEMCPY(s.state->tetra_sync.b1_dibuf, zeros, BLOCK_DIBITS);
+    s.state->tetra_sync.b1_valid = 1;
+    s.state->tetra_sync.b1_soft_valid = 0;
+    s.state->tetra_sync.nts2 = 1;
+    s.state->tetra_sync.cb = 0;
+    s.state->tetra_sync.b2_lead_dibits[0] = block2[0];
+    s.state->tetra_sync.b2_lead_dibits[1] = block2[1];
+    s.state->tetra_sync.b2_lead_count = 2;
+    s.state->tetra_sync.b2_lead_soft_valid = 0;
+    s.state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    s.state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    assert(dsd_dispatch_handle_tetra(s.opts, s.state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_sync.b2_lead_count == 0);
+    session_close(&s);
+}
+
 int
 main(void) {
     test_noise_is_unproductive();
+    test_uplink_normal_burst_takes_the_lead();
     test_sync_burst_decodes_bnch();
     test_normal_burst_failure_and_colour();
     test_retune_leaves_the_rest_of_the_burst();

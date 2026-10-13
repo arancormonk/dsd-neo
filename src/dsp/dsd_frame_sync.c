@@ -1015,13 +1015,16 @@ dsd_frame_sync_test_capture_tetra_soft(const dsd_state* state, float* dst, int p
 }
 #endif
 
-/* The part of a TETRA lock every burst kind shares, before its blocks are captured. */
+/* The part of a TETRA lock every burst kind shares, before its blocks are captured. Only a normal burst on the uplink
+ * has read into its block 2 when it locks. */
 static void
 frame_sync_tetra_begin(frame_sync_match_ctx* ctx, int phase_rot) {
     frame_sync_set_basic_lock(ctx);
     DSD_SNPRINTF(ctx->state->ftype, sizeof(ctx->state->ftype), "TETRA");
     /* phase_rot undoes a Costas 90 degree step before the payload is sliced. */
     ctx->state->tetra_sync.phase_rot = (uint8_t)(phase_rot & 3);
+    ctx->state->tetra_sync.b2_lead_count = 0;
+    ctx->state->tetra_sync.b2_lead_soft_valid = 0;
 }
 
 /* The rest of a TETRA lock: the sync line, the sync type dispatch reads and the slicer's warm start on the
@@ -1050,16 +1053,37 @@ frame_sync_tetra_capture_block1(frame_sync_match_ctx* ctx, int count, int age) {
     }
 }
 
-/* Normal burst: the 11-dibit training sequence NTS1, or NTS2, which is NTS1 inverted. */
+/* Dibits of block 2 an uplink normal burst has read when it locks (dsd_tetra_sync_capture::b2_lead_count). */
+enum { FRAME_SYNC_TETRA_UPLINK_LEAD = 2 };
+
+/* The @p lead newest dibits, the first of block 2, hard and soft. */
+static void
+frame_sync_tetra_capture_lead(frame_sync_match_ctx* ctx, int lead) {
+    dsd_tetra_sync_capture* const sync = &ctx->state->tetra_sync;
+    if (lead <= 0) {
+        return;
+    }
+    frame_sync_capture_tetra_dibits(ctx->synctest119 + 119 - lead, sync->b2_lead_dibits, lead);
+    sync->b2_lead_soft_valid = (uint8_t)frame_sync_capture_tetra_soft_aged(ctx->state, sync->b2_lead_soft, lead, 0);
+    sync->b2_lead_count = (uint8_t)lead;
+}
+
+/* Normal burst: the 11-dibit training sequence NTS1, or NTS2, which is NTS1 inverted. On the uplink NTS1 is also the
+ * middle of the control burst's extended training sequence (EN 300 392-2 clause 9.4.4.3.3 holds the normal training
+ * sequence 1 of clause 9.4.4.3.2 two symbols before its end), so there the training is matched two symbols back, once
+ * those two symbols showed it ends no control burst (frame_sync_try_tetra() tries that first), and they are block 2's
+ * first two dibits. */
 static int
 frame_sync_try_tetra_ndb(frame_sync_match_ctx* ctx) {
     if (!frame_sync_match_window_ready(ctx, 119)) {
         return DSD_SYNC_NONE;
     }
+    const int uplink = ctx->opts->tetra_uplink != 0;
+    const int lead = uplink ? FRAME_SYNC_TETRA_UPLINK_LEAD : 0;
     int phase_rot = 0;
     int inverted = 0;
-    if (!tetra_training_derotation(ctx->synctest119 + 108, TETRA_NDB_NTS_SYNC, INV_TETRA_NDB_NTS_SYNC, 11, &phase_rot,
-                                   &inverted)) {
+    if (!tetra_training_derotation(ctx->synctest119 + 108 - lead, TETRA_NDB_NTS_SYNC, INV_TETRA_NDB_NTS_SYNC, 11,
+                                   &phase_rot, &inverted)) {
         return DSD_SYNC_NONE;
     }
     dsd_state* state = ctx->state;
@@ -1068,12 +1092,14 @@ frame_sync_try_tetra_ndb(frame_sync_match_ctx* ctx) {
      * matched. */
     state->tetra_sync.nts2 = (uint8_t)(inverted ^ (state->tetra_sync.polarity ? 1 : 0));
     state->tetra_sync.cb = 0;
-    /* Training occupies ages 0..10. TMO downlink: AACH half 1 is ages 11..17 and block 1 is the 108 dibits at ages
-     * 18..125. DMO and the TMO normal uplink burst have no AACH, so block 1 sits right behind the training: ages
-     * 11..118. */
-    frame_sync_tetra_capture_block1(ctx, 108, state->tetra_sync.block1_follows_training ? 11 : 18);
+    /* Training occupies ages lead..lead + 10. TMO downlink: AACH half 1 is ages 11..17 and block 1 is the 108 dibits
+     * at ages 18..125. DMO and the TMO normal uplink burst have no AACH, so block 1 sits right behind the training:
+     * ages 11..118 in direct mode, 13..120 on the uplink. */
+    const int follows = uplink || state->tetra_sync.block1_follows_training;
+    frame_sync_tetra_capture_block1(ctx, 108, (follows ? 11 : 18) + lead);
+    frame_sync_tetra_capture_lead(ctx, lead);
     return frame_sync_tetra_finish(ctx, inverted ? "-TETRA NDB" : "+TETRA NDB",
-                                   inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS, 11);
+                                   inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS, 11 + lead);
 }
 
 /* Synchronisation burst: the 19-dibit training sequence, which also sets the polarity. */
@@ -1121,17 +1147,19 @@ frame_sync_try_tetra_cb(frame_sync_match_ctx* ctx) {
                                    inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS, 15);
 }
 
+/* The control burst goes first: on the uplink a normal burst's training is matched two symbols back, where it can be
+ * the middle of a control burst's extended training sequence that ends here. Off the uplink it never matches. */
 static int
 frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
     if (ctx->opts->frame_tetra != 1) {
         return DSD_SYNC_NONE;
     }
-    int synctype = frame_sync_try_tetra_ndb(ctx);
+    int synctype = frame_sync_try_tetra_cb(ctx);
     if (synctype == DSD_SYNC_NONE) {
-        synctype = frame_sync_try_tetra_sb(ctx);
+        synctype = frame_sync_try_tetra_ndb(ctx);
     }
     if (synctype == DSD_SYNC_NONE) {
-        synctype = frame_sync_try_tetra_cb(ctx);
+        synctype = frame_sync_try_tetra_sb(ctx);
     }
     return synctype;
 }
@@ -3214,6 +3242,7 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
         .synctest48 = rt.synctest48,
         .synctest79 = rt.synctest79,
         .synctest119 = rt.synctest119,
+        .history = &rt,
     };
     return frame_sync_try_protocol_matches(&match_ctx);
 }

@@ -81,6 +81,73 @@ test_tetra_inverted_sync_patterns_flip_only_dibit_msb(void) {
     }
 }
 
+/* Pseudo-random data dibits for the TETRA burst windows. */
+static void
+tetra_data_dibits(char* out, int count, uint32_t* seed) {
+    for (int i = 0; i < count; i++) {
+        *seed = (*seed * 1103515245u) + 12345u;
+        out[i] = (char)('0' + ((*seed >> 16) & 3u));
+    }
+}
+
+static int
+tetra_block1_is(const dsd_state* state, const char* expected, int count) {
+    for (int i = 0; i < count; i++) {
+        if (state->tetra_sync.b1_dibuf[i] != (uint8_t)(expected[i] - '0')) {
+            return 0;
+        }
+    }
+    return state->tetra_sync.b1_valid == 1;
+}
+
+/* The control uplink burst's training sequence holds NTS1 two symbols before its end (TETRA_CB_SYNC[2..12], EN 300
+ * 392-2 clause 9.4.4.3.2). With --tetra-uplink a control burst locks as one at the end of its training, not as a normal
+ * burst two symbols earlier. An uplink normal burst locks two symbols after its training, once they show it is no
+ * control burst, and hands them to the decoder as the first two dibits of block 2. The downlink normal burst still
+ * locks at the end of its training. */
+static void
+test_tetra_uplink_control_burst_is_not_a_normal_burst(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->frame_tetra = 1;
+    opts->tetra_uplink = 1;
+    char stream[160];
+    uint32_t seed = 7u;
+
+    /* A control burst: data, its 42-dibit block 1 and its 15-dibit training sequence. */
+    tetra_data_dibits(stream, 112, &seed);
+    DSD_MEMCPY(stream + 112, TETRA_CB_SYNC, 15);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 125) == DSD_SYNC_NONE);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 127) == DSD_SYNC_TETRA_NDB_POS);
+    assert(state->tetra_sync.cb == 1 && state->tetra_sync.b2_lead_count == 0);
+    assert(tetra_block1_is(state, stream + 70, 42));
+
+    /* An uplink normal burst: block 1, NTS1, then two dibits of block 2 that complete no control burst. */
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    tetra_data_dibits(stream, 118, &seed);
+    DSD_MEMCPY(stream + 118, TETRA_NDB_NTS_SYNC, 11);
+    stream[129] = '1';
+    stream[130] = '2';
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 129) == DSD_SYNC_NONE);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 131) == DSD_SYNC_TETRA_NDB_POS);
+    assert(state->tetra_sync.cb == 0 && state->tetra_sync.nts2 == 0);
+    assert(tetra_block1_is(state, stream + 10, 108));
+    assert(state->tetra_sync.b2_lead_count == 2 && state->tetra_sync.b2_lead_dibits[0] == 1
+           && state->tetra_sync.b2_lead_dibits[1] == 2);
+
+    /* The downlink normal burst: block 1, AACH half 1, NTS1; nothing of block 2 is read yet. */
+    opts->tetra_uplink = 0;
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    tetra_data_dibits(stream, 125, &seed);
+    DSD_MEMCPY(stream + 125, TETRA_NDB_NTS_SYNC, 11);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 136) == DSD_SYNC_TETRA_NDB_POS);
+    assert(state->tetra_sync.cb == 0 && state->tetra_sync.b2_lead_count == 0);
+    assert(tetra_block1_is(state, stream + 10, 108));
+    free(state);
+    free(opts);
+}
+
 static int g_vc_sync_hook_calls;
 static int g_vc_no_sync_hook_calls;
 static int g_release_hook_calls;
@@ -3330,6 +3397,7 @@ int
 main(void) {
     test_tetra_soft_history_capture();
     test_tetra_inverted_sync_patterns_flip_only_dibit_msb();
+    test_tetra_uplink_control_burst_is_not_a_normal_burst();
     test_scan_class_matchers_and_no_sync();
     test_p25_vc_acquisition_hooks();
     test_sps_hunt_skips_disabled_protocol_rates();

@@ -76,6 +76,16 @@ typedef struct {
     /* Set by the decoder: 1 when block 1 sits directly against the training sequence (direct mode and the
      * uplink normal burst have no AACH), so the frame sync captures it from the right symbols. */
     uint8_t block1_follows_training;
+
+    /* The first b2_lead_count dibits of block 2 (0 or 2), hard and soft, which the frame sync read past the training
+     * sequence before it locked: on the uplink, normal training sequence 1 is also the middle of the control burst's
+     * extended training sequence, so an uplink normal burst is told from a control burst only two symbols after its
+     * training. The decoder takes them before it reads on; b2_lead_soft_valid is 0 when no soft values came with
+     * them. Every TETRA lock sets the count. */
+    uint8_t b2_lead_dibits[2];
+    float b2_lead_soft[2];
+    uint8_t b2_lead_count;
+    uint8_t b2_lead_soft_valid;
 } dsd_tetra_sync_capture;
 
 /* The highest frequency, in Hz, a trunking channel is stored or tuned at, the same on every platform: the largest value

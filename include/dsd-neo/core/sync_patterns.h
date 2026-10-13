@@ -91,8 +91,8 @@
  * NTS1 carries one logical channel (TCH/FS or SCH/F). NTS2 carries two. */
 #define TETRA_NDB_NTS_SYNC             "31003221310" /* NTS1 */
 #define INV_TETRA_NDB_NTS_SYNC         "13221003132" /* NTS2, also inverted NTS1 */
-/* Control uplink burst extended training sequence, EN 300 392-2 (9.9):
- * 15 dibits, distinct from NTS (11) and SSB (19). */
+/* Control uplink burst extended training sequence, EN 300 392-2 clause 9.4.4.3.3: 15 dibits whose dibits 2..12 are
+ * NTS1, so an uplink frame sync tries it before the normal training sequence (dsd_frame_sync.c). */
 #define TETRA_CB_SYNC                  "213100322131003"
 #define INV_TETRA_CB_SYNC              "031322100313221"
 
