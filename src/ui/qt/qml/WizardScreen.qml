@@ -205,6 +205,8 @@ Item {
      * decode and whether to follow calls are real questions about the system just
      * found, and answering them for the user would produce a card that does not
      * work. @a sys supplies the source; it is the explore session's own map.
+     * A Signal search @a detection (SignalSearchModel::systemForHit()) also
+     * supplies the decoder, gain, bandwidth and receiver settings it captured.
      */
     function openForFound(sys, freqMhz, detection) {
         resetImport();
@@ -247,6 +249,12 @@ Item {
             trunkingAnswered = true;
             gainField.text = String(detection.gainDb);
             bwField.text = String(detection.bandwidthKhz > 0 ? detection.bandwidthKhz : 48);
+            // The receiver the detection was made with, not the app defaults
+            // reset above: an Airspy's own settings, or an RTL's PPM and its
+            // explicit bias tee. A field the source does not use stays unset.
+            airspySettings = detection.airspy || ({});
+            ppmField.text = detection.ppm !== undefined ? String(detection.ppm) : "";
+            biasTee = detection.biasTee !== undefined ? detection.biasTee : -1;
             extraField.text = detection.extraArgs || "";
             csvNotice = detection.searchUnresolved ? qsTr("Digital identification is unresolved. NFM monitoring does not confirm an analog transmission.") : "";
         }

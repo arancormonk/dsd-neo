@@ -517,7 +517,8 @@ SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& sourc
     QString spec = hit.value(QStringLiteral("inputSpec")).toString();
     if (!spec.isEmpty()) {
         result.clear();
-        result[QStringLiteral("sourceType")] = spec.startsWith(QLatin1String("airspy"))   ? QStringLiteral("airspy")
+        const bool airspy = spec.startsWith(QLatin1String("airspy"));
+        result[QStringLiteral("sourceType")] = airspy                                     ? QStringLiteral("airspy")
                                                : spec.startsWith(QLatin1String("rtltcp")) ? QStringLiteral("rtltcp")
                                                                                           : QStringLiteral("usb");
         if (spec.startsWith(QLatin1String("rtltcp:"))) {
@@ -525,9 +526,15 @@ SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& sourc
             result[QStringLiteral("host")] = parts.value(1);
             result[QStringLiteral("port")] = parts.value(2).toInt();
         }
-        result[QStringLiteral("airspy")] = hit.value(QStringLiteral("airspy"));
-        result[QStringLiteral("ppm")] = hit.value(QStringLiteral("ppm"));
-        result[QStringLiteral("biasTee")] = hit.value(QStringLiteral("biasTee"));
+        /* The receiver settings the detection was made with, in the saved-system shape the wizard copies: an Airspy's
+           native map (its own bias tee lives there; it takes no PPM), or an RTL's PPM text and bias tee. The tee is
+           explicit either way, so a later app-wide default can neither power nor unpower this antenna. */
+        if (airspy) {
+            result[QStringLiteral("airspy")] = hit.value(QStringLiteral("airspy"));
+        } else {
+            result[QStringLiteral("ppm")] = QString::number(hit.value(QStringLiteral("ppm")).toInt());
+            result[QStringLiteral("biasTee")] = hit.value(QStringLiteral("biasTee")).toBool() ? 1 : 0;
+        }
         result[QStringLiteral("bandwidthKhz")] = 48;
     }
     result[QStringLiteral("freqMhz")] = hit.value(QStringLiteral("freqMHz"));

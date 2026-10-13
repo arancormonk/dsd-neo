@@ -13,10 +13,12 @@
 #include <QFileInfo>
 #include <QList>
 #include <QMap>
+#include <QMetaType>
 #include <QObject>
 #include <QString>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QVariantMap>
 #include <cassert>
 #include <cmath>
 #include <dsd-neo/app_control/signal_search.h>
@@ -201,6 +203,33 @@ main(int argc, char** argv) {
     assert(model.systemForHit(nxdn, {}).value(QStringLiteral("decodeFlag")) == QStringLiteral("-fi"));
     nxdn[QStringLiteral("protocol")] = QStringLiteral("NXDN96");
     assert(model.systemForHit(nxdn, {}).value(QStringLiteral("decodeFlag")) == QStringLiteral("-fn"));
+    // The captured receiver settings reach the found system in the saved-system shape, each source only its own:
+    // PPM text and an explicit bias tee (an Off is 0, never the "follow the app" -1) for an RTL, the native map for
+    // an Airspy.
+    auto rtl = frozen;
+    rtl[QStringLiteral("ppm")] = -3;
+    rtl[QStringLiteral("biasTee")] = true;
+    const auto rtlSystem = model.systemForHit(rtl, {});
+    assert(rtlSystem.value(QStringLiteral("ppm")).typeId() == QMetaType::QString);
+    assert(rtlSystem.value(QStringLiteral("ppm")).toString() == QStringLiteral("-3"));
+    assert(rtlSystem.value(QStringLiteral("biasTee")).typeId() == QMetaType::Int);
+    assert(rtlSystem.value(QStringLiteral("biasTee")).toInt() == 1);
+    assert(!rtlSystem.contains(QStringLiteral("airspy")));
+    rtl[QStringLiteral("biasTee")] = false;
+    assert(model.systemForHit(rtl, {}).value(QStringLiteral("biasTee")).toInt() == 0);
+    auto airspy = frozen;
+    airspy[QStringLiteral("inputSpec")] = QStringLiteral("airspy:463.55M");
+    QVariantMap native = airspy.value(QStringLiteral("airspy")).toMap();
+    assert(native.size() == 11);
+    native[QStringLiteral("serial")] = QStringLiteral("A1B2C3D4E5F60718");
+    native[QStringLiteral("gain_mode")] = QStringLiteral("manual");
+    native[QStringLiteral("lna_gain")] = 12;
+    native[QStringLiteral("bias_tee")] = 1;
+    airspy[QStringLiteral("airspy")] = native;
+    const auto airspySystem = model.systemForHit(airspy, {});
+    assert(airspySystem.value(QStringLiteral("sourceType")) == QStringLiteral("airspy"));
+    assert(airspySystem.value(QStringLiteral("airspy")).toMap() == native);
+    assert(!airspySystem.contains(QStringLiteral("ppm")) && !airspySystem.contains(QStringLiteral("biasTee")));
 
     // History is copied and rebuilt only when the store changed it, not on every status revision.
     int historySignals = 0, statusSignals = 0, avoidSignals = 0;
