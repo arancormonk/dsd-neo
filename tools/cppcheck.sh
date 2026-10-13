@@ -92,16 +92,28 @@ fi
 CPPCHECK_BUILD_DIR="${CPPCHECK_BUILD_DIR:-.cppcheck-build}"
 mkdir -p "$CPPCHECK_BUILD_DIR"
 
-PFFFT_BUILD_DIR="${DSD_ANALYSIS_BUILD_DIR:-build/dev-debug}"
+# The fetched PFFFT and TETRA_crypto headers come from the environment or from
+# a configured build tree; their sources are never reported on.
+FETCHED_BUILD_DIR="${DSD_ANALYSIS_BUILD_DIR:-build/dev-debug}"
 PFFFT_SOURCE_DIR="${DSD_PFFFT_SOURCE_DIR:-}"
-if [[ -z "$PFFFT_SOURCE_DIR" ]]; then
-  if [[ ! -f "$PFFFT_BUILD_DIR/CMakeCache.txt" ]]; then
-    cmake --preset dev-debug -B "$PFFFT_BUILD_DIR"
+TETRA_CRYPTO_SOURCE_DIR="${DSD_TETRA_CRYPTO_SOURCE_DIR:-}"
+if [[ -z "$PFFFT_SOURCE_DIR" || -z "$TETRA_CRYPTO_SOURCE_DIR" ]]; then
+  if [[ ! -f "$FETCHED_BUILD_DIR/CMakeCache.txt" ]]; then
+    cmake --preset dev-debug -B "$FETCHED_BUILD_DIR"
   fi
-  PFFFT_SOURCE_DIR=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$PFFFT_BUILD_DIR/CMakeCache.txt")
+  if [[ -z "$PFFFT_SOURCE_DIR" ]]; then
+    PFFFT_SOURCE_DIR=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$FETCHED_BUILD_DIR/CMakeCache.txt")
+  fi
+  if [[ -z "$TETRA_CRYPTO_SOURCE_DIR" ]]; then
+    TETRA_CRYPTO_SOURCE_DIR=$(sed -n 's/^DSD_TETRA_CRYPTO_SOURCE_DIR:INTERNAL=//p' "$FETCHED_BUILD_DIR/CMakeCache.txt")
+  fi
 fi
 if [[ ! -f "$PFFFT_SOURCE_DIR/include/pffft/pffft.h" ]]; then
-  echo "Configure $PFFFT_BUILD_DIR or set DSD_PFFFT_SOURCE_DIR to the pinned PFFFT source before running cppcheck." >&2
+  echo "Configure $FETCHED_BUILD_DIR or set DSD_PFFFT_SOURCE_DIR to the pinned PFFFT source before running cppcheck." >&2
+  exit 1
+fi
+if [[ ! -f "$TETRA_CRYPTO_SOURCE_DIR/tea1.h" ]]; then
+  echo "Configure $FETCHED_BUILD_DIR or set DSD_TETRA_CRYPTO_SOURCE_DIR to the pinned TETRA_crypto source before running cppcheck." >&2
   exit 1
 fi
 
@@ -139,6 +151,8 @@ CPPCHECK_ARGS=(
   -I src/third_party
   -I "$PFFFT_SOURCE_DIR/include/pffft"
   "--suppress=*:$PFFFT_SOURCE_DIR/*"
+  -I "$TETRA_CRYPTO_SOURCE_DIR"
+  "--suppress=*:$TETRA_CRYPTO_SOURCE_DIR/*"
   -j "$JOBS"
   --error-exitcode=1
 )
@@ -177,6 +191,8 @@ if [[ $STRICT -eq 1 ]]; then
     -I src/third_party
     -I "$PFFFT_SOURCE_DIR/include/pffft"
     "--suppress=*:$PFFFT_SOURCE_DIR/*"
+    -I "$TETRA_CRYPTO_SOURCE_DIR"
+    "--suppress=*:$TETRA_CRYPTO_SOURCE_DIR/*"
     -j "$JOBS"
     --error-exitcode=1
   )

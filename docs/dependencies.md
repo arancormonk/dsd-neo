@@ -225,8 +225,10 @@ sources.
 cached/offline, invalid source-layout, missing-path and checksum-error cases.
 
 The only project file that includes TETRA_crypto headers is
-`src/crypto/tetra_tea.c`. OSV scans the pinned commit, and release SBOMs record
-its repository, revision and checksum.
+`src/crypto/tetra_tea.c`. Analyzers exclude the resolved dependency location,
+including a source override; for cppcheck without a configured DSD build, set
+`DSD_TETRA_CRYPTO_SOURCE_DIR` as well as `DSD_PFFFT_SOURCE_DIR`. OSV scans the
+pinned commit, and release SBOMs record its repository, revision and checksum.
 Installed, Qt, Android and portable packages carry the upstream Apache-2.0 text
 as `tetra_crypto-LICENSE.txt`, copied to the build tree's
 `tetra_crypto-licenses/` directory.

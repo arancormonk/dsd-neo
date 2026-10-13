@@ -48,6 +48,10 @@ class PinTests(unittest.TestCase):
             source = work / "fft"
             (source / "include/pffft").mkdir(parents=True)
             (source / "include/pffft/pffft.h").touch()
+            # cppcheck.sh resolves both fetched sources the same way.
+            tea = work / "tea"
+            tea.mkdir()
+            (tea / "tea1.h").touch()
             (work / "src").mkdir()
             (work / "src/example.c").write_text("int example(void) { return 0; }\n")
             script = work / "cppcheck.sh"
@@ -55,10 +59,14 @@ class PinTests(unittest.TestCase):
             result = subprocess.run(["bash", str(script), "--strict", "--", "src/example.c"], cwd=work,
                                     env={**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
                                          "DSD_PFFFT_SOURCE_DIR": str(source),
+                                         "DSD_TETRA_CRYPTO_SOURCE_DIR": str(tea),
                                          "DSD_ANALYSIS_BUILD_DIR": str(work / "unconfigured"),
                                          "PFFFT_TEST_CPP_ARGS": str(args_log)}, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn(str(source / "include/pffft"), args_log.read_text().splitlines())
+            arguments = args_log.read_text().splitlines()
+            self.assertIn(str(source / "include/pffft"), arguments)
+            self.assertIn(str(tea), arguments)
+            self.assertIn(f"--suppress=*:{tea}/*", arguments)
 
     def test_sbom_records_exact_source(self):
         pins = metadata.read_pins()

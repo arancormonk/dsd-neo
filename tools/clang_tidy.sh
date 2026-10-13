@@ -145,13 +145,17 @@ except Exception as exc:
     raise SystemExit(f"Failed to read {pdb_path}: {exc}")
 
 
-# Exclude the resolved dependency, including an override inside the checkout.
+# Exclude the resolved dependencies, including an override inside the checkout.
 cache = pdb_path.parent / "CMakeCache.txt"
-pffft_source = None
+dependency_sources = []
 if cache.exists():
     for line in cache.read_text().splitlines():
-        if line.startswith("DSD_PFFFT_SOURCE_DIR:INTERNAL="):
-            pffft_source = pathlib.Path(line.split("=", 1)[1]).resolve()
+        if line.startswith(("DSD_PFFFT_SOURCE_DIR:INTERNAL=", "DSD_TETRA_CRYPTO_SOURCE_DIR:INTERNAL=")):
+            dependency_sources.append(pathlib.Path(line.split("=", 1)[1]).resolve())
+
+
+def in_dependency(path):
+    return any(path == source or source in path.parents for source in dependency_sources)
 
 def normalize_file(entry):
     file_field = entry.get("file")
@@ -167,7 +171,7 @@ def normalize_file(entry):
     except Exception:
         file_path = file_path.absolute()
 
-    if pffft_source and (file_path == pffft_source or pffft_source in file_path.parents):
+    if in_dependency(file_path):
         return None, None
     try:
         rel = file_path.relative_to(root)
@@ -267,7 +271,7 @@ def normalize_requested(path_str):
     p = pathlib.Path(path_str)
     if not p.is_absolute():
         p = (root / p).resolve()
-    if pffft_source and (p == pffft_source or pffft_source in p.parents):
+    if in_dependency(p):
         return None
     try:
         rel = p.relative_to(root)
