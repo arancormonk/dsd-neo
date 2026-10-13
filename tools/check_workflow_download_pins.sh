@@ -111,6 +111,11 @@ report_violation "Inline archlinux:base-devel image differs from ARCHLINUX_BASE_
 # event, has to be one of the &&-joined terms at the top of its job-level condition,
 # so no other branch of the expression lets a pull request through. A job that has to
 # run there pulls in a step (tools/ci_arch_toolchain.sh) after an optional login.
+#
+# The check reads the workflow line by line rather than through a YAML library, which
+# the hosts that run it do not all have. A job it cannot read that way (a flow-style
+# job, or a container or services built from aliases or merge keys) fails closed
+# whenever it could hide credentials: write such a job out in block style.
 if ! command -v python3 > /dev/null 2>&1; then
   echo "python3 is required for workflow download pin guardrail checks." >&2
   exit 2
@@ -120,7 +125,9 @@ pr_job_credentials=$(
 import pathlib
 import re
 
-KEY = re.compile(r"""^(?:"([^"]*)"|'([^']*)'|([^\s"'#\-{[][^:#]*?))\s*:(?:\s+(.*))?$""")
+KEY = re.compile(r"""^(?:"([^"]*)"|'([^']*)'|([^\s"'#\-{[*&!][^:#]*?))\s*:(?:\s+(.*))?$""")
+CREDENTIALS = re.compile(r"""(?:^|[\s{,])["']?credentials["']?\s*:""")
+ALIAS = re.compile(r"""(?:^|[\s:,{\[])\*[^\s,\]}]+|<<\s*:""")
 PR_EVENTS = ("pull_request", "pull_request_target")
 
 
@@ -154,6 +161,85 @@ def entries(text):
             yield number, indent, None, body, body
 
 
+def unquote(token):
+    token = token.strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "'\"":
+        return token[1:-1]
+    return token
+
+
+def flow_names(text):
+    """Event names in a flow sequence or mapping: its items, or its keys."""
+    names = []
+    depth = 0
+    quote = None
+    item = ""
+    for ch in text:
+        if quote:
+            quote = None if ch == quote else quote
+            item += ch
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch in "[{":
+            depth += 1
+            if depth == 1:
+                continue
+        elif ch in "]}":
+            depth -= 1
+            if depth == 0:
+                names.append(item)
+                item = ""
+                continue
+        elif ch == "," and depth == 1:
+            names.append(item)
+            item = ""
+            continue
+        if depth >= 1:
+            item += ch
+    keys = []
+    for name in names:
+        head = re.split(r":(?:\s|$)", name.strip(), maxsplit=1)[0]
+        if head.strip():
+            keys.append(unquote(head))
+    return keys
+
+
+def trigger_names(rows):
+    """The event names under the workflow's `on`, in any of its forms."""
+    names = []
+    on_rows = []
+    in_on = False
+    for row in rows:
+        _, indent, key, value, body = row
+        if indent == 0 and not body.startswith("-"):
+            in_on = key in ("on", "true")
+            if in_on:
+                on_rows.append(row)
+            continue
+        if in_on:
+            on_rows.append(row)
+    if not on_rows:
+        return names
+    value = on_rows[0][3]
+    if value.startswith(("[", "{")):
+        return [n.lower() for n in flow_names(" ".join([value] + [r[4] for r in on_rows[1:]]))]
+    if value:
+        return [unquote(value).lower()]
+    child_indent = None
+    for _, indent, key, _, body in on_rows[1:]:
+        if child_indent is None:
+            child_indent = indent
+        if indent != child_indent:
+            continue
+        if body.startswith("-"):
+            item = body[1:].strip()
+            names.append(unquote(re.split(r":(?:\s|$)", item, maxsplit=1)[0]))
+        elif key is not None:
+            names.append(key)
+    return [n.lower() for n in names]
+
+
 def unwrap(expr):
     """Strip parentheses that enclose the whole expression."""
     while expr.startswith("(") and expr.endswith(")"):
@@ -175,7 +261,8 @@ def unwrap(expr):
 
 
 def top_level_terms(condition):
-    """The &&-joined terms at the top of a condition, or None when it has a top-level ||."""
+    """The &&-joined terms at the top of a condition, lower-cased (GitHub compares
+    names and strings case-insensitively), or None when it has a top-level ||."""
     expr = re.sub(r"^[|>][+-]?\s*", "", condition.strip())
     if len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in "'\"":
         expr = expr[1:-1].replace("''", "'") if expr[0] == "'" else expr[1:-1]
@@ -208,7 +295,7 @@ def top_level_terms(condition):
         current += ch
         i += 1
     terms.append(current)
-    return [" ".join(unwrap(t.strip()).split()) for t in terms]
+    return [" ".join(unwrap(t.strip()).split()).lower() for t in terms]
 
 
 def excludes(condition, events):
@@ -224,46 +311,61 @@ def excludes(condition, events):
 
 for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
     rows = list(entries(workflow.read_text(encoding="utf-8")))
-
-    def sections():
-        """(section, row) for each row; an indentless list item stays in its section."""
-        section = None
-        for row in rows:
-            _, indent, key, value, body = row
-            if indent == 0 and not body.startswith("-"):
-                section = key
-            yield section, row
-
-    on_text = " ".join(body for section, (_, _, _, _, body) in sections() if section in ("on", "true"))
-    events = {e for e in PR_EVENTS if re.search(rf"\b{e}\b", on_text)}
-    if re.search(r"\bworkflow_call\b", on_text):
+    triggers = trigger_names(rows)
+    events = {e for e in PR_EVENTS if e in triggers}
+    if "workflow_call" in triggers:
         events.update(PR_EVENTS)
     if not events:
         continue
 
+    in_jobs = False
     job_indent = field_indent = None
     job = None
+    opaque = False
     field = None
     condition = []
     credentials_line = None
+    unreadable_line = None
 
     def finish():
-        if job is not None and credentials_line is not None and not excludes(" ".join(condition), events):
+        if job is None:
+            return
+        if unreadable_line is not None:
+            print(f"{workflow}:{unreadable_line}: job {job} (aliases, merge keys or a flow-style job; write it in block style)")
+        elif credentials_line is not None and (opaque or not excludes(" ".join(condition), events)):
             print(f"{workflow}:{credentials_line}: job {job}")
 
-    for section, (number, indent, key, value, body) in sections():
-        if section != "jobs" or indent == 0:
-            if indent == 0 and not body.startswith("-"):
-                finish()
-                job = None
+    for number, indent, key, value, body in rows:
+        if indent == 0 and not body.startswith("-"):
+            finish()
+            job = None
+            in_jobs = key == "jobs"
+            continue
+        if not in_jobs:
             continue
         if job_indent is None:
             job_indent = indent
         if indent <= job_indent:
             finish()
-            job, field, condition, credentials_line, field_indent = key, None, [], None, None
+            job, field, condition, field_indent = key, None, [], None
+            credentials_line = unreadable_line = None
+            # A job written inline (a flow mapping, or an alias to one) is not read
+            # field by field: any credentials or alias in it fails the job. An anchor
+            # or tag alone leaves the mapping on the lines below.
+            value = re.sub(r"^(?:[&!]\S+\s*)+", "", value)
+            opaque = bool(value)
+            if opaque and ALIAS.search(value):
+                unreadable_line = number
+            if opaque and CREDENTIALS.search(value):
+                credentials_line = number
             continue
         if job is None:
+            continue
+        if opaque:
+            if ALIAS.search(body) and unreadable_line is None:
+                unreadable_line = number
+            if CREDENTIALS.search(body) and credentials_line is None:
+                credentials_line = number
             continue
         if field_indent is None:
             field_indent = indent
@@ -273,15 +375,19 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
             text = value
             if key == "if":
                 condition = [value]
+            if key == "<<" and unreadable_line is None:
+                unreadable_line = number
         elif field == "if":
             condition.append(body)
-        # Any credentials key under a container or the services, block or flow style.
-        if field in ("container", "services") and credentials_line is None and re.search(r"\bcredentials\s*:", text):
-            credentials_line = number
+        if field in ("container", "services"):
+            if CREDENTIALS.search(text) and credentials_line is None:
+                credentials_line = number
+            if ALIAS.search(text) and unreadable_line is None:
+                unreadable_line = number
     finish()
 PY
 )
-report_violation "Job pulls its container with credentials yet can run on a pull request, where Dependabot and forks have no secrets:" \
+report_violation "Job pulls its container with credentials yet can run on a pull request, where Dependabot and forks have no secrets (or cannot be read to tell):" \
   "$pr_job_credentials"
 
 for var in CMAKE_LINUX_X86_64_SHA256 CMAKE_LINUX_AARCH64_SHA256 KOTLIN_COMPILER_SHA256; do

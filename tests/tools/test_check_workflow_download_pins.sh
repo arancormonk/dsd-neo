@@ -329,6 +329,81 @@ run_credentials_case push_only_condition < <(
 )
 expect_credentials_verdict push_only_condition pass
 
+# A quoted credentials key is the same key.
+run_credentials_case quoted_credentials_key < <(
+  credentialed_job build: | sed 's/^      credentials:/      "credentials":/'
+)
+expect_credentials_verdict quoted_credentials_key fail
+run_credentials_case quoted_credentials_key_in_flow < <(
+  credentialed_job build: | sed '/^      image:/,/^        password:/d' |
+    sed "s|^    container:|    container: {image: $pinned, 'credentials': {username: u, password: p}}|"
+)
+expect_credentials_verdict quoted_credentials_key_in_flow fail
+
+# GitHub compares strings case-insensitively: == 'PULL_REQUEST' selects pull
+# requests, and != 'Pull_Request' excludes them.
+run_credentials_case uppercase_equality < <(
+  credentialed_job build: "    if: github.event_name == 'PULL_REQUEST'"
+)
+expect_credentials_verdict uppercase_equality fail
+run_credentials_case mixed_case_exclusion < <(
+  credentialed_job build: "    if: github.event_name != 'Pull_Request'"
+)
+expect_credentials_verdict mixed_case_exclusion pass
+
+# Only event names count as triggers, not an input that happens to be called
+# pull_request.
+run_credentials_case dispatch_input_named_pull_request < <(
+  credentialed_job build: |
+    sed 's/^on: .*/on:\n  workflow_dispatch:\n    inputs:\n      pull_request:\n        description: number/'
+)
+expect_credentials_verdict dispatch_input_named_pull_request pass
+
+# A job the line reader cannot see into fails closed: a flow-style job with
+# credentials, whatever its condition, and a container taken from an alias.
+run_credentials_case flow_style_job << EOF
+on: [pull_request]
+jobs:
+  build: {runs-on: ubuntu-latest, if: "github.event_name != 'pull_request'", container: {image: $pinned, credentials: {username: u, password: p}}, steps: [{run: "true"}]}
+EOF
+expect_credentials_verdict flow_style_job fail
+run_credentials_case container_from_alias << EOF
+on: [pull_request]
+jobs:
+  release:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container: &arch
+      image: $pinned
+      credentials:
+        username: \${{ secrets.DOCKERHUB_USERNAME }}
+        password: \${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - run: true
+  build:
+    runs-on: ubuntu-latest
+    container: *arch
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict container_from_alias fail
+grep -qF "job build (aliases" "$WORK/container_from_alias.out" || fail "container_from_alias: the alias was not named as the reason"
+run_credentials_case anchored_job << EOF
+on: [pull_request]
+jobs:
+  build: &build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: $pinned
+      credentials:
+        username: \${{ secrets.DOCKERHUB_USERNAME }}
+        password: \${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict anchored_job pass
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:
