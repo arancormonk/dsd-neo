@@ -617,18 +617,10 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
 
 void
 tetra_tdma_advance_ndb(dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !ts->tdma_valid || ts->tn < 1 || ts->tn > 4) {
-        return;
-    }
-    if (ts->tn < 4) {
-        ts->tn++;
-        return;
-    }
-    ts->tn = 1;
-    ts->fn = (uint8_t)((ts->fn + 1u) % 18u);
-    if (ts->fn == 0) {
-        ts->mn = (uint8_t)((ts->mn + 1u) % 60u);
+    /* Called straight after the burst's training sequence: its slot started TETRA_TDMA_NDB_SYNC_SYMBOL symbols ago
+     * (EN 300 392-2 table 9.7). */
+    if (state) {
+        tetra_tdma_follow(state, state->symbolcnt - TETRA_TDMA_NDB_SYNC_SYMBOL);
     }
 }
 

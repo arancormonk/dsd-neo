@@ -9,7 +9,9 @@
  * it is intentionally not described as an IQ/frontend validation.
  */
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 
@@ -53,7 +55,8 @@ main(void) {
     int sysinfo_len = decode_bits(sysinfo_text, sysinfo, sizeof(sysinfo));
     int ok = bsch_len == 60 && sysinfo_len == 124 && tetra_bsch_parse(bsch, bsch_len, opts, state);
     ok = ok && tetra_st(state)->mcc == 293 && tetra_st(state)->mnc == 7 && tetra_st(state)->colour == 3
-         && tetra_st(state)->tn == 4 && tetra_st(state)->fn == 5 && tetra_st(state)->mn == 58;
+         && tetra_st(state)->tdma_valid && tetra_st(state)->tn == 4 && tetra_st(state)->fn == 5
+         && tetra_st(state)->mn == 58;
 
     if (ok) {
         tetra_mac_parse_schd(sysinfo, sysinfo_len, 0, opts, state);
@@ -62,13 +65,14 @@ main(void) {
          && tetra_st(state)->bs_service_det == 0x0D77u;
 
     if (!ok) {
-        fprintf(stderr,
-                "FAIL real-air trace: MCC=%u MNC=%u CC=%u TN/FN/MN=%u/%u/%u "
-                "DL=%ld service=0x%04X\n",
-                tetra_st(state)->mcc, tetra_st(state)->mnc, tetra_st(state)->colour, tetra_st(state)->tn,
-                tetra_st(state)->fn, tetra_st(state)->mn, tetra_st(state)->dl_carrier_hz,
-                tetra_st(state)->bs_service_det);
+        DSD_FPRINTF(stderr,
+                    "FAIL real-air trace: MCC=%u MNC=%u CC=%u TN/FN/MN=%u/%u/%u "
+                    "DL=%ld service=0x%04X\n",
+                    tetra_st(state)->mcc, tetra_st(state)->mnc, tetra_st(state)->colour, tetra_st(state)->tn,
+                    tetra_st(state)->fn, tetra_st(state)->mn, tetra_st(state)->dl_carrier_hz,
+                    tetra_st(state)->bs_service_det);
     }
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return ok ? 0 : 1;

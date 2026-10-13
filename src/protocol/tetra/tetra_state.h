@@ -366,22 +366,13 @@ typedef struct tetra_state {
      * tetra_cb: this sync is a control uplink burst (extended training). */
     uint8_t uplink;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA network identity — populated when a BSCH (SB1 block) is decoded.
-     *
-     * net_known:  1 once MCC/MNC/colour have been parsed from BSCH.
-     * mcc:        10-bit Mobile Country Code (valid bits 9:0).
-     * mnc:        14-bit Mobile Network Code (valid bits 13:0).
-     * colour:     6-bit full colour code from BSCH (CB field carries the
-     *                   lower 2 bits of this value as the 2-bit CC).
-     * lfsr_seed:  Cached scrambling seed = tetra_compute_scramb_seed(mcc,mnc,colour).
-     *                   When net_known==0 this defaults to 3 (all-zero seed).
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* Network identity from the BSCH (EN 300 392-2 table 21.76) or --tetra-net: net_known once MCC, MNC and the 6-bit
+     * colour code are set, and lfsr_seed, the scrambling seed they give (tetra_compute_scramb_seed()). */
     uint8_t net_known;
+    uint32_t lfsr_seed;
     uint16_t mcc;
     uint16_t mnc;
     uint8_t colour;
-    uint32_t lfsr_seed;
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA Direct Mode Operation (DMO, EN 300 396-2/-3).
@@ -577,15 +568,6 @@ typedef struct tetra_state {
     uint8_t access_imm;
     uint8_t access_wait_time;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA BSCH statistics (Phase 24):
-     *
-     * bsch_count:          number of BSCH frames parsed so far.
-     * bsch_colour_changed: 1 if colour code changed since last reset.
-     * ───────────────────────────────────────────────────────────────────────── */
-    uint32_t bsch_count;
-    uint8_t bsch_colour_changed;
-
     /* Upper MAC counters.
      *
      * frames_total:       signalling MAC blocks decoded.
@@ -616,18 +598,13 @@ typedef struct tetra_state {
     uint32_t decode_errors;
     uint32_t decode_ok;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA TDMA timestamps extracted from BSCH (Phase 43):
-     *
-     * tdma_valid:  1 once the first SB1 has been decoded successfully.
-     * tn:          Timeslot Number 1-4 (BSCH bits[10..11] + 1).
-     * fn:          Frame Number 0-17  (BSCH bits[12..16]).
-     * mn:          Multiframe Number 0-59 (BSCH bits[17..22]).
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* TDMA clock (EN 300 392-2 clause 7.3), set by a BSCH and run by tetra_tdma_follow(): while tdma_valid, the slot
+     * that started at symbol count tdma_slot_start is timeslot tn 1..4 of frame fn 1..18 of multiframe mn 1..60. */
     uint8_t tdma_valid;
     uint8_t tn;
     uint8_t fn;
     uint8_t mn;
+    uint32_t tdma_slot_start;
 
     /* sds_msg_ref: message reference (table 29.19) of the last SDS-TL TRANSFER, REPORT or ACK.
      * sds_last_cc: colour code the last accepted D-SDS-DATA arrived with. */
@@ -726,7 +703,9 @@ typedef struct tetra_state {
 
     /* KSG 0..3 remembered from D-OTAR SCK/GCK Provide, keyed by MCC/MNC.
      * hyperframe is the SYSINFO value from a burst whose CCK flag is clear,
-     * kept apart from cck_id so a later CCK identifier does not erase it.
+     * kept apart from cck_id so a later CCK identifier does not erase it, and
+     * counted on by the TDMA clock at each MN 60 to MN 1; hyperframe_valid
+     * drops with the clock and on a change of cell.
      * The operator air keys live in the key set (dsd_state::tetra_air_keys). */
     uint8_t air_ksg_valid[4];
     uint16_t air_ksg_mcc[4];

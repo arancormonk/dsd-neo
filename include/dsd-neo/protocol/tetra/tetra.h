@@ -12,7 +12,8 @@ extern "C" {
 void processTetraFrame(dsd_opts* opts, dsd_state* state);
 void processTetraSBFrame(dsd_opts* opts, dsd_state* state);
 
-/* Advance a BSCH-synchronised TDMA timestamp to the next normal burst. */
+/* Run the BSCH-set TDMA clock to the slot of the normal downlink burst being decoded; call it straight after the
+ * burst's training sequence. */
 void tetra_tdma_advance_ndb(dsd_state* state);
 
 /* Copy what the frontends show of the TETRA decoder state into dsd_state::tetra_pub (core/tetra_publication.h).
