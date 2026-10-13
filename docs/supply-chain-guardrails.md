@@ -11,6 +11,20 @@ DSD-neo keeps release and CI dependencies explicit so analyzer results and binar
 - Release and packaging workflows must not execute mutable downloaded helper binaries. AppImage helper tools are built from pinned source SHAs, AppImage and CI fallback container images are pinned by digest, and installer downloads must be SHA256-verified before execution. `tools/check_workflow_download_pins.sh` enforces these rules for workflow and CI helper images.
 - Workflow changes that add secrets, write permissions, artifact publication, release upload, or external actions need human review.
 
+### Release SBOM filenames
+
+Generate and enrich each SBOM at `<package filename>.spdx.json`, then upload and
+attest that same file. An Actions artifact's label is separate from the filename
+inside it: `actions/upload-artifact` preserves the package extension in the SBOM
+basename. Publishers use that basename directly and require both files to exist.
+
+Before tagging, run `python3 tests/tools/test_release_sbom_filenames.py` (also
+registered as `TOOLS_RELEASE_SBOM_FILENAMES` in CTest). It replays the publisher
+steps for nightly and fixture release names, checks the artifact/SBOM pairing,
+and exercises tagged-release upload commands with a fake GitHub CLI. It creates
+no Git tags and performs no uploads. Signature/OIDC attestation still runs in
+the actual trusted tag workflows.
+
 ## Pinned CI Source Checkouts
 
 `tools/ci-dependency-pins.env` is the checked-in source of truth for CI-only GitHub source dependencies such as OpenSSL, `mbelib-neo`, `codec2`, `rtl-sdr`, SoapySDR, `include-what-you-use`, AppImage helper projects, CI container digests, vcpkg overlay archive SHA512 values, and installer SHA256 values.

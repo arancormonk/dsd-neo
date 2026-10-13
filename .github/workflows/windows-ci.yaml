@@ -326,11 +326,7 @@ jobs:
         with:
           name: ${{ steps.names.outputs.ART_NAME }}.spdx.json
           path: dist
-      - name: Normalize downloaded SBOM filename
-        shell: bash
-        run: |
-          set -euo pipefail
-          mv -f "dist/${{ steps.names.outputs.ART_NAME }}.spdx.json" "${{ steps.names.outputs.ZIP_PATH }}.spdx.json"
+      # upload-artifact preserves the SBOM basename, including the package extension.
       - name: Verify downloaded release files
         shell: bash
         run: |
