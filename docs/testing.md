@@ -1616,7 +1616,10 @@ forcing the legacy filter on at the 8 kHz RTL rate, misses 1.1% of 6 dB carriers
 model does not cover spurs or adjacent channels: a steady tone inside the channel is a carrier to the coherence test,
 and with these thresholds a birdie from -12 dB (widest plans) to -3.6 dB (narrowest) against the noise reads as one.
 `python3 tools/squelch_model.py` reproduces the report (`build/squelch_model/report.md`) in about 25 minutes on 8
-workers; `--quick` takes about a minute.
+workers; `--quick` takes about a minute. The 72 kHz RTL DSP bandwidth, selectable since TETRA needs it, came after that
+run, and the model now plans it too (an SDDC at 2 MS/s then runs 125 kHz): `--quick` counts 448 combinations, 270 that
+run and 210 carrier plans, and the scheme the squelch uses (`norm/40ms/cdb` in the report) passes all 210, as it passes
+all 196 of a `--quick` run without 72 kHz.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (design gate)
 
