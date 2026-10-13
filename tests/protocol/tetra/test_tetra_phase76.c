@@ -9,16 +9,10 @@
  *
  * Phase 74 — MAC ACCESS-DEFINE exact state caching
  *   5. Parses MAC ACCESS-DEFINE and saves num_ra, frame_len_f, ts_ptr, min_pdu_pri
- *
- * Phase 75 — tetra_channel_info_fmt extension
- *   6. Handles TDMA timestamp (TN/FN/MN)
- *   7. Handles VC freq
- *   8. Handles SDS valid text
  */
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/tetra/tetra_channel_info.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
@@ -147,58 +141,12 @@ test_mac_access_define(void) {
     free(opt);
 }
 
-/* =======================================================================
- * Phase 75: channel_info format extensions
- * ======================================================================= */
-static void
-test_channel_info_fmt(void) {
-    printf("[test_channel_info_fmt]\n");
-    dsd_state* st = alloc_state();
-
-    /* Base net setup */
-    tetra_st(st)->net_known = 1;
-    tetra_st(st)->mcc = 123;
-    tetra_st(st)->mnc = 45;
-    tetra_st(st)->colour = 6;
-    tetra_st(st)->enc_mode = 0; /* none */
-
-    /* TDMA Phase 75 */
-    tetra_st(st)->tdma_valid = 1;
-    tetra_st(st)->tn = 1;
-    tetra_st(st)->fn = 2;
-    tetra_st(st)->mn = 3;
-
-    /* VC freq Phase 75 */
-    tetra_st(st)->vc_freq_hz = 405125000;
-
-    /* SDS Text Phase 75 */
-    tetra_st(st)->sds_src = 999;
-    strcpy(tetra_st(st)->sds_text, "TESTMSG");
-    tetra_st(st)->sds_text_len = 7;
-
-    char buf[256];
-    tetra_channel_info_fmt(st, buf, sizeof(buf));
-
-    CHECK(strstr(buf, "TN:1 FN:2 MN:3") != NULL, "Includes TDMA timestamp");
-    CHECK(strstr(buf, "VC:405.125MHz") != NULL, "Includes VC frequency");
-    CHECK(strstr(buf, "SDS(999):\"TESTMSG\"") != NULL, "Includes SDS text and src");
-
-    /* Clear text to ensure it's not printed when empty */
-    tetra_st(st)->sds_text_len = 0;
-    tetra_st(st)->sds_text[0] = '\0';
-    tetra_channel_info_fmt(st, buf, sizeof(buf));
-    CHECK(strstr(buf, "SDS") == NULL, "Omits SDS when empty");
-
-    free(st);
-}
-
 int
 main(void) {
     printf("=== TETRA Phase 76 Test Suite ===\n\n");
 
     test_sds_data_truncation();
     test_mac_access_define();
-    test_channel_info_fmt();
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

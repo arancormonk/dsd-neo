@@ -7,8 +7,6 @@ target_sources(
         tetra_acelp.c
         tetra_air.c
         tetra_bsch.c
-        tetra_bsch_fmt.c
-        tetra_channel_info.c
         tetra_dmo.c
         tetra_fec.c
         tetra_mac.c

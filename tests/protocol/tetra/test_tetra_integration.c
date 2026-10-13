@@ -12,12 +12,10 @@
  *  4.  D-CONNECT-ACK (type 3) → call_active=1
  *  5.  D-TX-GRANTED → tetra_enc_mode synced from enc_mode field
  *  6.  D-STATUS ring buffer — 4 statuses → ring wraps correctly
- *  7.  BSCH parse increments tetra_bsch_count
  */
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/tetra/tetra_bsch_fmt.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
@@ -190,38 +188,6 @@ test_d_tx_granted_enc_mode(void) {
 /* Test 6: D-STATUS ring buffer (Phase 30)                                   */
 /* ----------------------------------------------------------------------- */
 /* ----------------------------------------------------------------------- */
-/* Test 7: BSCH bsch_count increment (Phase 24) — direct state simulation   */
-/* ----------------------------------------------------------------------- */
-static void
-test_bsch_count(void) {
-    /* Simulate what tetra_bsch_parse() does (we don't call it here since it
-     * requires FEC-decoded bits; we just verify the logic by calling the
-     * actual parser with a hand-crafted 60-bit BSCH payload). */
-
-    /* Instead, verify the tetra_bsch_fmt_net helper with a non-zero count
-     * (confirming the state struct has the new field). */
-    dsd_state* st = alloc_state();
-    tetra_st(st)->net_known = 1;
-    tetra_st(st)->mcc = 100;
-    tetra_st(st)->mnc = 200;
-    tetra_st(st)->colour = 7;
-    tetra_st(st)->bsch_count = 42;
-
-    CHECK(tetra_st(st)->bsch_count == 42, "tetra_bsch_count field accessible");
-
-    /* Simulate BSCH colour change detection logic */
-    uint8_t old_colour = tetra_st(st)->colour;
-    tetra_st(st)->colour = 8; /* changed */
-    if (tetra_st(st)->net_known && tetra_st(st)->colour != old_colour) {
-        tetra_st(st)->bsch_colour_changed = 1;
-    }
-
-    CHECK(tetra_st(st)->bsch_colour_changed == 1, "bsch_colour_changed detected");
-
-    free(st);
-}
-
-/* ----------------------------------------------------------------------- */
 int
 main(void) {
     printf("[TETRA integration tests]\n");
@@ -229,7 +195,6 @@ main(void) {
     test_sysinfo_extended_fields();
     test_frame_counters();
     test_d_tx_granted_enc_mode();
-    test_bsch_count();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

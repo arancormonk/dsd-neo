@@ -8,13 +8,11 @@
  * Phase 83: D-FACILITY parser
  * SDS transport messages are covered by test_mle_cmce.c; they are carried
  * inside D-SDS-DATA or D-STATUS, not separate CMCE PDU types.
- * Phase 84: channel_info_fmt extensions (release cause, access, mm_addr)
  */
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
-#include <dsd-neo/protocol/tetra/tetra_channel_info.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
 #include <stdint.h>
@@ -267,64 +265,6 @@ test_d_connect_annex_e8_ss_al_facility(void) {
 }
 
 /* -----------------------------------------------------------------------
- * Phase 84: channel_info_fmt extensions
- * ----------------------------------------------------------------------- */
-static void
-test_channel_info_release_cause(void) {
-    printf("[Phase 84] channel_info release cause\n");
-
-    dsd_state* st = alloc_state();
-    tetra_st(st)->net_known = 1;
-    tetra_st(st)->mcc = 1;
-    tetra_st(st)->mnc = 1;
-    tetra_st(st)->colour = 1;
-    tetra_st(st)->cmce_release_cause_type = 1; /* flag that release cause is present */
-    tetra_st(st)->cmce_release_cause = 2;      /* pre-emption */
-
-    char buf[512];
-    tetra_channel_info_fmt(st, buf, sizeof(buf));
-    CHECK(strstr(buf, "rel:pre-emption") != NULL, "channel_info shows release cause");
-
-    free(st);
-}
-
-static void
-test_channel_info_access_common(void) {
-    printf("[Phase 84] channel_info access common flag\n");
-
-    dsd_state* st = alloc_state();
-    tetra_st(st)->net_known = 1;
-    tetra_st(st)->mcc = 1;
-    tetra_st(st)->mnc = 1;
-    tetra_st(st)->colour = 1;
-    tetra_st(st)->access_common_flag = 1;
-
-    char buf[512];
-    tetra_channel_info_fmt(st, buf, sizeof(buf));
-    CHECK(strstr(buf, "acc:common") != NULL, "channel_info shows access common");
-
-    free(st);
-}
-
-static void
-test_channel_info_mm_addr_type(void) {
-    printf("[Phase 84] channel_info MM addr type\n");
-
-    dsd_state* st = alloc_state();
-    tetra_st(st)->net_known = 1;
-    tetra_st(st)->mcc = 1;
-    tetra_st(st)->mnc = 1;
-    tetra_st(st)->colour = 1;
-    tetra_st(st)->mm_addr_type = 3; /* SMI */
-
-    char buf[512];
-    tetra_channel_info_fmt(st, buf, sizeof(buf));
-    CHECK(strstr(buf, "mm_addr:SMI") != NULL, "channel_info shows mm_addr:SMI");
-
-    free(st);
-}
-
-/* -----------------------------------------------------------------------
  * CMCE constant sanity checks
  * ----------------------------------------------------------------------- */
 static void
@@ -357,11 +297,6 @@ main(void) {
     test_d_facility_annex_e3();
     test_d_facility_annex_e2_two_ss_pdus();
     test_d_connect_annex_e8_ss_al_facility();
-
-    /* Phase 84 */
-    test_channel_info_release_cause();
-    test_channel_info_access_common();
-    test_channel_info_mm_addr_type();
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

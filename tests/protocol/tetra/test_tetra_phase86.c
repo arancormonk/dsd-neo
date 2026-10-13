@@ -6,14 +6,12 @@
  *
  * Item 1: D-INFO IE expansion (call_timeout, notification)
  * Item 2: D-TX-* stub expansion (call_id, notification parsed)
- * Item 3: channel_info consumption++ (30+ state fields displayed)
  * Item 4: SNDCP minimal parser
  */
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
-#include <dsd-neo/protocol/tetra/tetra_channel_info.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 
 #include <stdint.h>
@@ -144,118 +142,6 @@ test_d_tx_expanded(void) {
 }
 
 /* ====================================================================
- * Item 3: channel_info consumption
- * ==================================================================== */
-static void
-test_channel_info_expanded(void) {
-    printf("--- Item 3+5: channel_info expanded ---\n");
-    dsd_state* st = alloc_state();
-
-    /* Populate many state fields */
-    tetra_st(st)->net_known = 1;
-    tetra_st(st)->mcc = 206;
-    tetra_st(st)->mnc = 1;
-    tetra_st(st)->colour = 42;
-    tetra_st(st)->dl_carrier_hz = 390000000L;
-    tetra_st(st)->mle_ca_neighbor_count_valid = 1;
-    tetra_st(st)->mle_ca_neighbor_count = 2;
-    tetra_st(st)->mm_group_identity_valid = 1;
-    tetra_st(st)->mm_group_entry_count = 3;
-    tetra_st(st)->call_active = 1;
-    tetra_st(st)->gssi = 100;
-    tetra_st(st)->calling_ssi = 999;
-    tetra_st(st)->tdma_valid = 1;
-    tetra_st(st)->tn = 2;
-    tetra_st(st)->fn = 10;
-    tetra_st(st)->mn = 30;
-    tetra_st(st)->cck_valid = 1;
-    tetra_st(st)->cck_id = 0x1234;
-    tetra_st(st)->call_timeout = 1;
-    tetra_st(st)->call_slots = 1;
-    tetra_st(st)->bsch_count = 5;
-    tetra_st(st)->decode_ok = 100;
-    tetra_st(st)->decode_errors = 3;
-    tetra_st(st)->frames_total = 200;
-    tetra_st(st)->mm_status_valid = 1;
-    tetra_st(st)->mm_status_code = 7;
-    tetra_st(st)->tx_continue = 1;
-    tetra_st(st)->tx_interrupted = 1;
-    tetra_st(st)->sds_status = 0x8001;
-    tetra_st(st)->sds_short_valid = 1;
-    tetra_st(st)->sds_short_data = 42;
-    tetra_st(st)->sds_short_src = 12345;
-    tetra_st(st)->sds_report_valid = 1;
-    tetra_st(st)->sds_report_delivery_ok = 1;
-    tetra_st(st)->facility_valid = 1;
-    tetra_st(st)->facility_type = 3;
-    tetra_st(st)->sds_ack_valid = 1;
-    tetra_st(st)->sds_ack_msg_ref = 7;
-    tetra_st(st)->sds_short_report_valid = 1;
-    tetra_st(st)->sds_short_report_result = 2;
-    tetra_st(st)->sndcp_valid = 1;
-    tetra_st(st)->sndcp_nsapi = 5;
-    tetra_st(st)->sndcp_pdu_type = 1;
-    tetra_st(st)->d_info_valid = 1;
-    tetra_st(st)->d_info_call_id = 1;
-    tetra_st(st)->d_info_call_timeout = 1;
-    tetra_st(st)->d_info_new_call_id = 2;
-    tetra_st(st)->d_info_new_call_id_valid = 1;
-    tetra_st(st)->d_info_timeout = 9;
-    tetra_st(st)->d_info_timeout_valid = 1;
-    tetra_st(st)->d_info_status = 3;
-    tetra_st(st)->d_info_status_valid = 1;
-    tetra_st(st)->d_info_notification_indicator = 42;
-    tetra_st(st)->d_info_notification_indicator_valid = 1;
-    tetra_st(st)->call_restore_valid = 1;
-    tetra_st(st)->call_restore_id = 17;
-    tetra_st(st)->call_restore_grant = 3;
-    tetra_st(st)->call_restore_new_id = 18;
-    tetra_st(st)->call_restore_new_id_valid = 1;
-    tetra_st(st)->call_restore_status = 3;
-    tetra_st(st)->call_restore_status_valid = 1;
-
-    char buf[1024];
-    tetra_channel_info_fmt(st, buf, sizeof(buf));
-
-    printf("  channel_info: %s\n", buf);
-
-    /* Verify key substrings present */
-    CHECK(strstr(buf, "MCC:206") != NULL, "MCC displayed");
-    CHECK(strstr(buf, "nbr:2") != NULL, "CA neighbour count displayed");
-    CHECK(strstr(buf, "groups:3") != NULL, "MM group count displayed");
-    CHECK(strstr(buf, "TG:100") != NULL, "TG displayed");
-    CHECK(strstr(buf, "SRC:999") != NULL, "SRC displayed");
-    CHECK(strstr(buf, "CCK:4660") != NULL, "CCK displayed"); /* 0x1234 = 4660 */
-    CHECK(strstr(buf, "tmo:1") != NULL, "call_timeout displayed");
-    CHECK(strstr(buf, "bsch:5") != NULL, "BSCH count displayed");
-    CHECK(strstr(buf, "ok:100") != NULL, "decode_ok displayed");
-    CHECK(strstr(buf, "err:3") != NULL, "decode_errors displayed");
-    CHECK(strstr(buf, "fr:200") != NULL, "frames_total displayed");
-    CHECK(strstr(buf, "mm:7/MS frequency bands request") != NULL, "MM status displayed with ETSI label");
-    CHECK(strstr(buf, "tx:CI") != NULL, "floor-control flags displayed");
-    CHECK(strstr(buf, "sts:32769") != NULL, "SDS status displayed");
-    CHECK(strstr(buf, "sds_s:42") != NULL, "SDS short data displayed");
-    CHECK(strstr(buf, "rpt:ok") != NULL, "SDS report displayed");
-    CHECK(strstr(buf, "fac:3") != NULL, "facility displayed");
-    CHECK(strstr(buf, "sds_ack:ref7") != NULL, "SDS ACK displayed");
-    CHECK(strstr(buf, "srpt:2") != NULL, "SDS short report displayed");
-    CHECK(strstr(buf, "sndcp:5/1") != NULL, "SNDCP info displayed");
-    CHECK(strstr(buf, "dinfo:id1/t1") != NULL, "D-INFO summary displayed");
-    CHECK(strstr(buf, "dinfo:id1/t1->2/to9/st3/n42") != NULL, "D-INFO optional state displayed");
-    CHECK(strstr(buf, "restore:id17/g3->18/st3") != NULL, "call restore state displayed");
-
-    tetra_st(st)->sds_report_cause = 0x21;
-    tetra_st(st)->sds_report_msg_ref = 231;
-    tetra_channel_info_fmt(st, buf, sizeof(buf));
-    CHECK(strstr(buf, "rpt:retry/21 ref:231") != NULL, "Stored message is retrying, not a terminal failure");
-    tetra_st(st)->sds_report_cause = 0x4a;
-    tetra_channel_info_fmt(st, buf, sizeof(buf));
-    CHECK(strstr(buf, "rpt:fail/4A") != NULL, "Terminal failure status displayed");
-
-    free(st);
-}
-
-/* ====================================================================
  * Item 4: SNDCP parser (EN 300 392-2 clause 28.4.4): the SN PDU type comes
  * first (table 28.121); the NSAPI follows only in the PDU types that carry one.
  * ==================================================================== */
@@ -310,7 +196,6 @@ main(void) {
     printf("=== TETRA Phase 86 Tests ===\n");
 
     test_d_tx_expanded();
-    test_channel_info_expanded();
     test_sndcp_parser();
 
     printf("\n=== Phase 86 Results: %d passed, %d failed ===\n", g_pass, g_fail);
