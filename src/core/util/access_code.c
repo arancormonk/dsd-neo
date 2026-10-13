@@ -11,6 +11,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/tetra_publication.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -19,7 +20,7 @@
 
 dsd_access_code_kind
 dsd_access_code_kind_for_protocol(int synctype) {
-    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_DPMR(synctype)) {
+    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_DPMR(synctype) || DSD_SYNC_IS_TETRA(synctype)) {
         return DSD_ACCESS_CODE_COLOR_CODE;
     }
     if (DSD_SYNC_IS_P25(synctype)) {
@@ -92,6 +93,19 @@ access_code_read_dpmr(const dsd_state* state, uint16_t* value) {
     return 1;
 }
 
+/* The TETRA publication's colour code, while it describes a trunked mode carrier: a direct mode carrier has none. */
+static int
+access_code_read_tetra(const dsd_state* state, uint16_t* value) {
+    const dsd_tetra_publication* const pub = &state->tetra_pub;
+    const int trunked = pub->mode == DSD_TETRA_MODE_TMO_DOWNLINK || pub->mode == DSD_TETRA_MODE_TMO_UPLINK
+                        || pub->mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK;
+    if (!trunked || pub->net_known == 0U) {
+        return 0;
+    }
+    *value = (uint16_t)(pub->colour & 0x3FU);
+    return 1;
+}
+
 static int
 access_code_read_m17(uint16_t service_options, uint8_t has_service_metadata, uint16_t* value) {
     if (has_service_metadata == 0U) {
@@ -118,6 +132,9 @@ access_code_read(const dsd_state* state, int protocol, uint16_t service_options,
     }
     if (DSD_SYNC_IS_M17(protocol)) {
         return access_code_read_m17(service_options, has_service_metadata, value);
+    }
+    if (DSD_SYNC_IS_TETRA(protocol)) {
+        return access_code_read_tetra(state, value);
     }
     return 0;
 }

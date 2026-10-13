@@ -14,6 +14,12 @@
  * judged by the talkgroup policy and the encryption lockout, and the trunking state machine (tetra_trunk_sm.h) is
  * handed the chosen one. A header-only allocation, or one addressed to a party no call record holds, never tunes.
  *
+ * Canonical calls: the followed call publishes on canonical call slot 0 (core/call_state.h) from its CRC-passed
+ * signalling once a block before it proved the carrier (tetra_confirm), with its called party as the target, its
+ * transmitting party as the source, its traffic channel, its basic service as the service options and its crypto
+ * class. D-TX CEASED and a release end it as over-the-air terminators; the state machine leaving it ends it as a
+ * teardown. Decoded short data, status messages and MM enable/disable become data and control notices.
+ *
  * Direct mode (EN 300 396-3) carries one call on its channel, described by the DMAC-SYNC and DMAC-DATA PDUs of the
  * master; it is kept apart from the trunked mode table.
  *
@@ -134,10 +140,22 @@ const tetra_call_t* tetra_calls_peek(const dsd_state* state, uint16_t call_id);
 const tetra_call_t* tetra_calls_followed(const dsd_state* state);
 
 /**
- * @brief The trunking state machine stopped following a call (tetra_trunk_sm.c): its talkgroup-policy route is cleared.
- * Never creates TETRA state.
+ * @brief The trunking state machine stopped following a call (tetra_trunk_sm.c): its canonical call ends as a
+ * teardown and its talkgroup-policy route is cleared. @p opts may be NULL when the engine ended and committed the
+ * canonical calls itself. Never creates TETRA state.
  */
-void tetra_calls_unfollowed(dsd_state* state);
+void tetra_calls_unfollowed(dsd_opts* opts, dsd_state* state);
+
+/** @brief The SSI the MAC PDU of @p sdu names in the clear (tetra_mac_address), 0 for none or a NULL @p sdu. */
+uint32_t tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu);
+
+/**
+ * @brief Commit a notice of TETRA traffic to the event history: a data notice (SDS) or, with @p control, a control
+ * notice (status, MM), from @p src to @p dst, with @p text (may be NULL) as its message. Only once a CRC-passed block
+ * before the one that carried it proved the carrier (tetra_confirm_carrier_proven()).
+ */
+void tetra_calls_notice(dsd_opts* opts, dsd_state* state, int control, uint32_t src, uint32_t dst, const char* notice,
+                        const char* text);
 
 /** @brief Drop the records no PDU or speech named for TETRA_CALL_IDLE_S (the followed call excepted). */
 void tetra_calls_tick(dsd_opts* opts, dsd_state* state);

@@ -59,10 +59,11 @@ long tetra_carrier_to_dl_hz(uint32_t main_carrier, uint32_t freq_band, uint32_t 
  * @param bits  One byte per bit (0 or 1), MSB first, the 4-bit PDU type at bit 0.
  * @param nbits Number of bits in the PDU.
  * @param cc    Colour code, for the log prefix.
- * @param opts  Decoder options (unused; the diagnostics gates come from the TETRA state).
+ * @param opts  Decoder options, for the event history notices of D-ENABLE and D-DISABLE; may be NULL. The diagnostics
+ *              gates come from the TETRA state.
  * @param state Decoder state; nothing happens when it is NULL.
  */
-void tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state);
+void tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state);
 
 /** ETSI label of a 6-bit status downlink value (EN 300 392-2 table 16.92). */
 static inline const char*

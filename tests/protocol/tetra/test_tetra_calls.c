@@ -8,7 +8,9 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -16,14 +18,17 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
+#include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
@@ -105,9 +110,34 @@ session_open(void) {
 static void
 session_close(session* s) {
     dsd_state_ext_free_all(s->state);
+    free(s->state->event_history_s);
     free(s->state);
     free(s->opts);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* The event history the canonical calls and the notices go to, on network 262/1001 with colour code 25. */
+static void
+session_history(session* s) {
+    s->state->event_history_s = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(s->state->event_history_s != NULL);
+    init_event_history(&s->state->event_history_s[0], 0, 255);
+    init_event_history(&s->state->event_history_s[1], 0, 255);
+    tetra_state_t* const ts = tetra_st(s->state);
+    ts->decode_ok = 1U;
+    ts->net_known = 1U;
+    ts->mcc = 262U;
+    ts->mnc = 1001U;
+    ts->colour = 25U;
+    tetra_publish(s->state);
+}
+
+static dsd_call_snapshot
+canonical(const dsd_state* state) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    (void)dsd_call_state_get(state, 0U, &call);
+    return call;
 }
 
 /* A MAC-RESOURCE to @p ssi carrying @p cmce (the CMCE PDU after its protocol discriminator, @p cmce_bits long) and,
@@ -319,6 +349,166 @@ test_table_eviction_and_ageing(void) {
     session_close(&s);
 }
 
+/* D-TX GRANTED (table 14.18) of call @p call_id to another user, @p talker transmitting. */
+static void
+send_tx_granted(session* s, uint32_t ssi, uint16_t call_id, uint32_t talker) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_TX_GRANTED, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, 3, 2); /* granted to another user */
+    ttb_put(&cmce, 0, 3); /* request permission, encryption control, reserved */
+    ttb_put(&cmce, 1, 1); /* O-bit */
+    ttb_put(&cmce, 0, 1); /* no notification indicator */
+    ttb_put(&cmce, 1, 1); /* transmitting party type identifier present */
+    ttb_put(&cmce, 1, 2); /* SSI */
+    ttb_put(&cmce, talker, 24);
+    ttb_put(&cmce, 0, 1); /* M-bit */
+    send_block(s, ssi, &cmce, 0, 0);
+}
+
+/* The followed call is the canonical call: its called group, its talker, its traffic channel and basic service, from
+ * its CRC-passed signalling; D-TX CEASED and D-RELEASE end it as terminators, a new talker starts the next
+ * transmission, and the state machine leaving a call ends it as a teardown. Its event history row names TETRA, the
+ * network and the colour code. */
+static void
+test_followed_call_publishes(void) {
+    session s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_TETRA(call.protocol));
+    assert(call.kind == DSD_CALL_KIND_GROUP_VOICE && call.ota_target_id == 0x100u && call.policy_target_id == 0x100u);
+    assert(call.channel == 120U && call.frequency_hz == CARRIER_HZ(120) && call.service_options == TTB_SPEECH_GROUP);
+    assert(call.crypto == DSD_CALL_CRYPTO_CLEAR && call.audio_permitted == 1U);
+    const Event_History* row = &s.state->event_history_s[0].Event_History_Items[0];
+    assert(strstr(row->event_string, "TETRA TGT: 00000256; SRC: 00000000; CC: 25; CARRIER: 120;") != NULL);
+    assert(strstr(row->event_string, "Group;") != NULL && strcmp(row->sysid_string, "TETRA_262_1001_CC_25") == 0);
+    const uint64_t first = call.epoch;
+
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == first && call.ota_source_id == 0x4444u);
+
+    send_call_pdu(&s, 0x100u, TETRA_CMCE_D_TX_CEASED, 0x0A, 1);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_TERMINATOR && call.epoch == first);
+    /* A late-entry D-SETUP of the call while no one transmits opens nothing. */
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+
+    send_tx_granted(&s, 0x100u, 0x0A, 0x5555u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != first && call.ota_source_id == 0x5555u);
+
+    send_call_pdu(&s, 0x100u, TETRA_CMCE_D_RELEASE, 0x0A, 5);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_TERMINATOR && g_returns == 1);
+
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_P2P, 2, 130);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == DSD_CALL_KIND_PRIVATE_VOICE
+           && call.ota_target_id == 0x200u);
+    tetra_sm_abandon_carrier(s.opts, s.state);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_EXPLICIT);
+    session_close(&s);
+}
+
+/* An end-to-end encrypted call publishes as encrypted, without audio; a call no one follows publishes nothing. */
+static void
+test_encrypted_and_unfollowed_calls(void) {
+    session s = session_open();
+    session_history(&s);
+    s.opts->trunk_enable = 0;
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 120);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_IDLE);
+    s.opts->trunk_enable = 1;
+    tetra_sm_on_cc_sync(s.opts, s.state);
+    send_setup(&s, 0x300u, 0x0D, TTB_SPEECH_GROUP | 0x10u, 4, 120);
+    const dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING
+           && call.audio_permitted == 0U);
+    assert(strstr(s.state->event_history_s[0].Event_History_Items[0].event_string, "ENC;") != NULL);
+    session_close(&s);
+}
+
+/* D-SDS-DATA (table 14.13) with a simple text message (EN 300 392-2 clause 29.5.2, Latin-1). */
+static void
+send_sds_text(session* s, uint32_t dst, uint32_t src, const char* text) {
+    const int text_bits = (int)strlen(text) * 8;
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_SDS_DATA, 5);
+    ttb_put(&cmce, 1, 2); /* calling party type identifier: SSI */
+    ttb_put(&cmce, src, 24);
+    ttb_put(&cmce, 3, 2);                           /* short data type identifier: user defined data-4 */
+    ttb_put(&cmce, (uint32_t)(16 + text_bits), 11); /* length indicator */
+    ttb_put(&cmce, 2, 8);                           /* protocol identifier: simple text messaging */
+    ttb_put(&cmce, 0, 1);                           /* reserved */
+    ttb_put(&cmce, 1, 7);                           /* text coding scheme: ISO/IEC 8859-1 */
+    for (const char* c = text; *c != '\0'; ++c) {
+        ttb_put(&cmce, (uint32_t)(unsigned char)*c, 8);
+    }
+    ttb_put(&cmce, 0, 1); /* O-bit */
+    send_block(s, dst, &cmce, 0, 0);
+}
+
+/* Short data becomes a data notice, its text the message; a status a control notice. */
+static void
+test_sds_and_status_notices(void) {
+    session s = session_open();
+    session_history(&s);
+    send_sds_text(&s, 0x101u, 0x2222u, "Hi there");
+    const Event_History* committed = &s.state->event_history_s[0].Event_History_Items[1];
+    assert(committed->category == DSD_EVENT_CATEGORY_DATA && committed->source_id == 0x2222u
+           && committed->target_id == 0x101u);
+    assert(strstr(committed->event_string, "SDS SRC: 8738; TGT: 257;") != NULL);
+    assert(strcmp(committed->text_message, "Hi there") == 0);
+
+    /* D-STATUS (table 14.14): calling party SSI and a 16-bit pre-coded status. */
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_STATUS, 5);
+    ttb_put(&cmce, 1, 2);
+    ttb_put(&cmce, 0x3333u, 24);
+    ttb_put(&cmce, 0x8001u, 16);
+    ttb_put(&cmce, 0, 1); /* O-bit */
+    send_block(&s, 0x102u, &cmce, 0, 0);
+    committed = &s.state->event_history_s[0].Event_History_Items[1];
+    assert(committed->category == DSD_EVENT_CATEGORY_CONTROL
+           && strstr(committed->event_string, "STATUS SRC: 13107; TGT: 258; STATUS: 0x8001;") != NULL);
+
+    /* D-DISABLE (EN 300 392-7 table A.31): confirm, permanent, subscription 262/1001 SSI 0x1234. */
+    ttb_block mm = {0};
+    ttb_put(&mm, 3, 4); /* PDU type: D-DISABLE */
+    ttb_put(&mm, 1, 1); /* intent/confirm: confirm */
+    ttb_put(&mm, 1, 1); /* disabling type: permanent */
+    ttb_put(&mm, 0, 1); /* equipment disable */
+    ttb_put(&mm, 1, 1); /* subscription disable */
+    ttb_put(&mm, 262, 10);
+    ttb_put(&mm, 1001, 14);
+    ttb_put(&mm, 0x1234u, 24);
+    ttb_put(&mm, 0, 1); /* O-bit */
+    tetra_mm_dispatch(mm.bits, mm.n, 1, s.opts, s.state);
+    committed = &s.state->event_history_s[0].Event_History_Items[1];
+    assert(committed->category == DSD_EVENT_CATEGORY_CONTROL && committed->target_id == 0x1234u
+           && strstr(committed->event_string, "D-DISABLE CONFIRM; SSI: 4660; Permanent;") != NULL);
+
+    /* Nothing is noted before a CRC-passed block proved the carrier. */
+    tetra_confirm_reset(s.state);
+    ttb_block sds = {0};
+    ttb_put(&sds, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&sds, TETRA_CMCE_D_STATUS, 5);
+    ttb_put(&sds, 1, 2);
+    ttb_put(&sds, 0x4444u, 24);
+    ttb_put(&sds, 0x8002u, 16);
+    ttb_put(&sds, 0, 1);
+    tetra_mle_dispatch(sds.bits, sds.n, 1, s.opts, s.state);
+    assert(strstr(s.state->event_history_s[0].Event_History_Items[1].event_string, "0x8002") == NULL);
+    session_close(&s);
+}
+
 int
 main(void) {
     test_pdus_act_on_their_own_call();
@@ -328,6 +518,9 @@ main(void) {
     test_followed_call_turns_encrypted();
     test_followed_call_renamed();
     test_table_eviction_and_ageing();
+    test_followed_call_publishes();
+    test_encrypted_and_unfollowed_calls();
+    test_sds_and_status_notices();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");
     return 0;
 }

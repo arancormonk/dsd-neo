@@ -5,11 +5,15 @@
 
 #include "tetra_calls.h"
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
@@ -177,8 +181,6 @@ tetra_calls_followed(const dsd_state* state) {
     return id >= 0 ? tetra_calls_peek(state, (uint16_t)id) : NULL;
 }
 
-/* ---- Following ------------------------------------------------------------------------------------------------- */
-
 /* Speech of @p c the listener cannot decrypt: end-to-end encrypted, or air encrypted without a key stream for it. */
 static int
 call_undecryptable(const dsd_state* state, const tetra_call_t* c) {
@@ -189,6 +191,119 @@ static uint32_t
 call_source(const tetra_call_t* c) {
     return c->talker_ssi != 0u ? c->talker_ssi : c->calling_ssi;
 }
+
+/* ---- Canonical calls ------------------------------------------------------------------------------------------- */
+
+/* The TETRA synchronisation burst type the decoder is on: every canonical TETRA call carries one. */
+static int
+calls_protocol(const dsd_state* state) {
+    if (DSD_SYNC_IS_TETRA(state->synctype)) {
+        return state->synctype;
+    }
+    return DSD_SYNC_IS_TETRA(state->lastsynctype) ? state->lastsynctype : DSD_SYNC_TETRA_NDB_POS;
+}
+
+static dsd_call_kind
+call_kind(const tetra_call_t* c) {
+    if ((c->flags & TETRA_CALL_F_SETUP_SEEN) == 0u) {
+        return DSD_CALL_KIND_VOICE;
+    }
+    if (basic_is_data(c->basic_service)) {
+        return DSD_CALL_KIND_DATA;
+    }
+    return basic_is_group(c->basic_service) ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
+}
+
+/* End-to-end encryption is never decrypted here; air interface encryption is when a key stream can be made. */
+static dsd_call_crypto_state
+call_crypto_state(const dsd_state* state, const tetra_call_t* c) {
+    if (c->e2ee) {
+        return DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    }
+    if (c->air_enc == TETRA_ENC_MODE_NONE) {
+        return DSD_CALL_CRYPTO_CLEAR;
+    }
+    return tetra_air_key_usable(state) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+}
+
+/* End what canonical slot 0 carries for TETRA, when it is still an active TETRA call: an ended one keeps the reason
+ * the engine or a terminator gave it. */
+static void
+calls_end_published(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, dsd_call_end_reason reason) {
+    if (ts->calls.published == TETRA_PUB_NONE) {
+        return;
+    }
+    ts->calls.published = TETRA_PUB_NONE;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && DSD_SYNC_IS_TETRA(call.protocol) && dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0 && opts) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+}
+
+/* Observe @p c on canonical slot 0, heard on traffic channel @p chan, and its crypto class. Another TETRA call there
+ * ends first. */
+static void
+calls_publish_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c,
+                   const tetra_chan_alloc* chan) {
+    if (ts->calls.published != TETRA_PUB_CALL || ts->calls.published_call_id != c->call_id) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    dsd_call_observation o;
+    DSD_MEMSET(&o, 0, sizeof o);
+    o.protocol = calls_protocol(state);
+    o.kind = call_kind(c);
+    o.ota_target_id = c->called_ssi;
+    o.policy_target_id = c->called_ssi;
+    o.ota_source_id = c->talker_ssi;
+    o.channel = chan->carrier;
+    o.frequency_hz = chan->freq_hz;
+    o.service_options = c->basic_service;
+    o.priority = c->priority;
+    o.has_service_metadata = (uint8_t)((c->flags & TETRA_CALL_F_SETUP_SEEN) != 0u);
+    (void)dsd_call_state_observe(state, &o, DSD_CALL_BOUNDARY_CONTINUE);
+    const dsd_call_crypto_state crypto = call_crypto_state(state, c);
+    dsd_call_crypto_update update;
+    DSD_MEMSET(&update, 0, sizeof update);
+    update.classification = crypto;
+    update.audio_permitted = (uint8_t)(crypto == DSD_CALL_CRYPTO_CLEAR || crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    (void)dsd_call_state_update_crypto(state, 0U, &update);
+    ts->calls.published = TETRA_PUB_CALL;
+    ts->calls.published_call_id = c->call_id;
+    if (opts) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+}
+
+/* The followed call, once its tune has settled and while a transmission is not known to have ceased, publishes on
+ * its traffic channel. */
+static void
+calls_publish_followed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    tetra_sm_grant g;
+    if (!tetra_sm_followed(state, &g) || ts->sm.pending_request_id != 0U) {
+        return;
+    }
+    const tetra_call_t* const c = calls_find(ts, g.call_id);
+    if (!c || c->phase == TETRA_CALL_CEASED) {
+        return;
+    }
+    tetra_chan_alloc chan;
+    DSD_MEMSET(&chan, 0, sizeof chan);
+    chan.freq_hz = g.freq_hz;
+    chan.carrier = g.carrier;
+    chan.timeslots = g.timeslots;
+    calls_publish_call(opts, state, ts, c, &chan);
+}
+
+/* An over-the-air end of call @p call_id (D-TX CEASED, D-RELEASE, D-DISCONNECT) ends its canonical call. */
+static void
+calls_end_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
+    if (ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == call_id) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_TERMINATOR);
+    }
+}
+
+/* ---- Following ------------------------------------------------------------------------------------------------- */
 
 /* The talkgroup policy's decision on @p c: a group call on its GSSI, an individual call on its two parties. */
 static int
@@ -271,7 +386,7 @@ call_log_skip(const tetra_state_t* ts, const tetra_call_t* c, const char* why) {
 /* Trunking: hand the state machine the channel just allocated to @p c, when the policy lets it be followed. The
  * followed call's own allocation moves it. */
 static void
-call_consider(dsd_opts* opts, dsd_state* state, const tetra_state_t* ts, const tetra_call_t* c) {
+call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c) {
     if (!opts || opts->trunk_enable != 1 || !alloc_followable(&c->alloc)) {
         return;
     }
@@ -300,13 +415,14 @@ call_consider(dsd_opts* opts, dsd_state* state, const tetra_state_t* ts, const t
     if (tetra_sm_on_grant(opts, state, &grant) == 1) {
         const dsd_tg_policy_call_route route = call_route(c, 0);
         (void)dsd_tg_policy_note_active_call(state, &route, &d, dsd_decode_now_mono_s());
+        calls_publish_followed(opts, state, ts);
     }
 }
 
 /* @p alloc is @p c's traffic channel now. A "go to the MCCH" allocation (timeslot assigned 0000, table 21.87) ends the
  * followed call; any other may be followed when @p may_follow. */
 static void
-call_attach(dsd_opts* opts, dsd_state* state, const tetra_state_t* ts, tetra_call_t* c, const tetra_chan_alloc* alloc,
+call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_chan_alloc* alloc,
             int may_follow) {
     const uint16_t id = c->call_id;
     if (alloc->timeslots == 0u) {
@@ -509,14 +625,26 @@ call_check_followed_crypto(dsd_opts* opts, dsd_state* state, const tetra_call_t*
     tetra_sm_on_release(opts, state, c->call_id);
 }
 
-/* A release ends the record it names: the followed call's goes back to the control channel. */
+/* A release ends the record it names and its canonical call; the followed call's goes back to the control channel. */
 static void
-call_release(dsd_opts* opts, dsd_state* state, tetra_call_t* c) {
+call_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c) {
     const uint16_t id = c->call_id;
     const int followed = followed_id(state) == (int)id;
+    calls_end_call(opts, state, ts, id);
     calls_free(c);
     if (followed && opts) {
         tetra_sm_on_release(opts, state, id);
+    }
+}
+
+/* What a PDU of the followed call means beyond its record: the call is on this carrier (tetra_confirm), may have
+ * turned undecryptable, and its canonical call carries what the PDU said. */
+static void
+call_followed_pdu(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c) {
+    tetra_confirm_note_followed_call(state);
+    call_check_followed_crypto(opts, state, c);
+    if (tetra_confirm_carrier_proven(state)) {
+        calls_publish_followed(opts, state, ts);
     }
 }
 
@@ -541,7 +669,7 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
         return;
     }
     if (ev->kind == TETRA_CALL_EV_RELEASE) {
-        call_release(opts, state, c);
+        call_release(opts, state, ts, c);
         return;
     }
     const uint16_t old_id = c->call_id;
@@ -551,9 +679,11 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     if (sdu && sdu->has_addr) {
         call_bind_address(ts, c, &sdu->addr);
     }
+    if (ev->kind == TETRA_CALL_EV_TX_CEASED) {
+        calls_end_call(opts, state, ts, c->call_id);
+    }
     if (followed_id(state) == (int)c->call_id) {
-        tetra_confirm_note_followed_call(state);
-        call_check_followed_crypto(opts, state, c);
+        call_followed_pdu(opts, state, ts, c);
     }
     if (alloc) {
         call_attach(opts, state, ts, c, &sdu->alloc, 1);
@@ -604,10 +734,35 @@ tetra_calls_on_addressed(dsd_state* state, const tetra_mac_address* addr, uint8_
 /* ---- Housekeeping ---------------------------------------------------------------------------------------------- */
 
 void
-tetra_calls_unfollowed(dsd_state* state) {
-    if (tetra_st_existing(state)) {
-        (void)dsd_tg_policy_clear_active_call(state, -1);
+tetra_calls_unfollowed(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
     }
+    if (ts->calls.published == TETRA_PUB_CALL) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    (void)dsd_tg_policy_clear_active_call(state, -1);
+}
+
+uint32_t
+tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu) {
+    uint32_t ssi = 0;
+    return sdu_ssi(sdu, &ssi) ? ssi : 0u;
+}
+
+void
+tetra_calls_notice(dsd_opts* opts, dsd_state* state, int control, uint32_t src, uint32_t dst, const char* notice,
+                   const char* text) {
+    if (!opts || !state || !notice || !tetra_confirm_carrier_proven(state)) {
+        return;
+    }
+    const dsd_call_observation o = dsd_call_observation_data(calls_protocol(state), 0U, src, dst);
+    if (text && text[0] != '\0') {
+        dsd_event_stage_text(state, 0U, text);
+    }
+    (void)dsd_event_emit_data_notice_classified(opts, state, 0U, &o,
+                                                control ? DSD_EVENT_CATEGORY_CONTROL : DSD_EVENT_CATEGORY_DATA, notice);
 }
 
 void

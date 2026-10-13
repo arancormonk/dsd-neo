@@ -18,6 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "tetra_calls.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
 
@@ -36,6 +37,7 @@ tetra_carrier_to_dl_hz(uint32_t main_carrier, uint32_t freq_band, uint32_t freq_
 /* One MM PDU being decoded: the reader starts after the 4-bit PDU type. */
 typedef struct {
     tetra_bit_reader r;
+    dsd_opts* opts; /* may be NULL */
     dsd_state* state;
     tetra_state_t* ts;
     int cc;
@@ -687,6 +689,24 @@ mm_parse_ck_change(mm_pdu* pdu) {
 /* EN 300 392-7 tables A.31 and A.32: D-DISABLE and D-ENABLE. These change whether the addressed MS gives service, so
  * the whole PDU, conditional identities and authentication challenge included, has to be there. */
 
+/* Enabling or disabling a terminal or a subscription is worth a line in the event history (tetra_calls_notice()): the
+ * SSI and TEI it names, whether it is an intent or the confirmation, and a permanent disable. */
+static void
+mm_notice_enable_disable(const mm_pdu* pdu, const tetra_mm_enable_disable_t* e, const char* name) {
+    char notice[128];
+    int n = DSD_SNPRINTF(notice, sizeof notice, "%s %s;", name, e->intent ? "CONFIRM" : "INTENT");
+    if (n > 0 && (size_t)n < sizeof notice && e->subscription) {
+        n += DSD_SNPRINTF(notice + n, sizeof notice - (size_t)n, " SSI: %u;", (unsigned)e->ssi);
+    }
+    if (n > 0 && (size_t)n < sizeof notice && e->equipment) {
+        n += DSD_SNPRINTF(notice + n, sizeof notice - (size_t)n, " TEI: %015llX;", (unsigned long long)e->tei);
+    }
+    if (n > 0 && (size_t)n < sizeof notice && e->permanent) {
+        DSD_SNPRINTF(notice + n, sizeof notice - (size_t)n, " Permanent;");
+    }
+    tetra_calls_notice(pdu->opts, pdu->state, 1, 0U, e->subscription ? e->ssi : 0U, notice, NULL);
+}
+
 static int
 mm_read_enable_disable(tetra_bit_reader* r, tetra_mm_enable_disable_t* e) {
     e->intent = mm_u8(r, 1);
@@ -728,6 +748,7 @@ mm_parse_enable_disable(mm_pdu* pdu, uint8_t is_enable) {
                 (unsigned)e.intent, (unsigned)e.equipment, (unsigned)e.subscription, e.permanent ? " permanent" : "");
     e.valid = 1;
     pdu->ts->mm_enable_disable = e;
+    mm_notice_enable_disable(pdu, &e, name);
 }
 
 static void
@@ -1015,13 +1036,12 @@ static void (*const k_mm_parsers[16])(mm_pdu*) = {
 };
 
 void
-tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
-    (void)opts;
+tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !bits) {
         return;
     }
-    mm_pdu pdu = {tetra_bits_reader(bits, nbits, 0), state, ts, cc};
+    mm_pdu pdu = {tetra_bits_reader(bits, nbits, 0), opts, state, ts, cc};
     const uint8_t type = mm_u8(&pdu.r, 4);
     if (!tetra_bits_ok(&pdu.r)) {
         return;

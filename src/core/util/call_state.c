@@ -192,6 +192,9 @@ dsd_call_state_protocol_family(int protocol) {
     if (DSD_SYNC_IS_YSF(protocol)) {
         return 10;
     }
+    if (DSD_SYNC_IS_TETRA(protocol)) {
+        return 11;
+    }
     return protocol == DSD_SYNC_NONE ? 0 : 1000 + protocol;
 }
 

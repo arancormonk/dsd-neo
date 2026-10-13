@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief The access code a call was heard with: DMR/dPMR colour code, P25 NAC, NXDN RAN, M17 CAN.
+ * @brief The access code a call was heard with: DMR/dPMR/TETRA colour code, P25 NAC, NXDN RAN, M17 CAN.
  *
  * A call history row records the code of the carrier its call was decoded on (issue #575). This header names the
  * kinds and reads the live code for a protocol. It stays out of `state.h` so app-control's public views, which may
@@ -31,6 +31,10 @@
  *   is confirmed; -1 between carriers.
  * - M17 CAN: the low four bits of the call's service options, which the CRC-checked LSF carries; only once the call
  *   has service metadata.
+ * - TETRA `tetra_pub.colour`: the 6-bit colour code of a CRC-checked BSCH (EN 300 392-2 table 21.76), or the one
+ *   `--tetra-net` gives, while the publication's mode is a trunked mode one; a direct mode carrier has none. Every
+ *   carrier of a cell scrambles with the cell's colour code, so it stays across a trunking retune; a call is published
+ *   only from blocks descrambled with it whose CRC passed, which proves it on the carrier.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_ACCESS_CODE_H_H
@@ -50,7 +54,7 @@ extern "C" {
  */
 typedef enum {
     DSD_ACCESS_CODE_NONE = 0,       /**< No code, or none known. */
-    DSD_ACCESS_CODE_COLOR_CODE = 1, /**< DMR (0..15) or dPMR (0..63) colour code. */
+    DSD_ACCESS_CODE_COLOR_CODE = 1, /**< DMR (0..15), dPMR (0..63) or TETRA (0..63) colour code. */
     DSD_ACCESS_CODE_NAC = 2,        /**< P25 network access code (0x001..0xFFE). */
     DSD_ACCESS_CODE_RAN = 3,        /**< NXDN radio access number (0..63). */
     DSD_ACCESS_CODE_CAN = 4,        /**< M17 channel access number (0..15). */
@@ -60,8 +64,8 @@ typedef enum {
  * Say which access code a protocol carries.
  *
  * @param synctype A `DSD_SYNC_*` value.
- * @return COLOR_CODE for DMR (BS and MS) and dPMR, NAC for P25 Phase 1 and 2, RAN for NXDN, CAN for M17; NONE for
- *         everything else (D-STAR, YSF, EDACS, ProVoice, X2-TDMA, analog, no sync).
+ * @return COLOR_CODE for DMR (BS and MS), dPMR and TETRA, NAC for P25 Phase 1 and 2, RAN for NXDN, CAN for M17; NONE
+ *         for everything else (D-STAR, YSF, EDACS, ProVoice, X2-TDMA, analog, no sync).
  */
 dsd_access_code_kind dsd_access_code_kind_for_protocol(int synctype);
 

@@ -146,14 +146,15 @@ sm_follow(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
     tetra_confirm_forget_followed_call(state);
 }
 
-/* The calls stay in the call records (tetra_calls.h), which age them; what goes is the following of one. */
+/* The call stays in the call records (tetra_calls.h), which age it; its canonical call and its talkgroup-policy route
+ * go with the following. @p opts is NULL when the engine ended and committed the canonical calls itself. */
 static void
-sm_unfollow(dsd_state* state, tetra_state_t* ts) {
+sm_unfollow(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     DSD_MEMSET(&ts->sm.followed, 0, sizeof ts->sm.followed);
     ts->sm.t_tune_m = 0.0;
     ts->sm.t_voice_m = 0.0;
     tetra_confirm_forget_followed_call(state);
-    tetra_calls_unfollowed(state);
+    tetra_calls_unfollowed(opts, state);
 }
 
 /* A tune the state machine no longer owns: retired as rolled back, so a failed or unanswered one cannot keep the frame
@@ -195,7 +196,7 @@ sm_grant_tune_completed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, dou
 static void
 sm_return_completed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     opts->trunk_is_tuned = 0;
-    sm_unfollow(state, ts);
+    sm_unfollow(opts, state, ts);
     tetra_forget_carrier(state);
     if (sm_narrates(ts, 1)) {
         DSD_FPRINTF(stderr, "[TETRA SM] back on the control channel %ld Hz\n", state->trunk_cc_freq);
@@ -248,7 +249,7 @@ sm_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const char* reas
     if (cc <= 0 || ts->sm.followed.freq_hz == cc) {
         /* A traffic timeslot of the control channel's carrier, or no control channel to go to: the receiver stays. */
         sm_release_shared_tuning(opts, state);
-        sm_unfollow(state, ts);
+        sm_unfollow(opts, state, ts);
         sm_set_state(state, ts, sm_rest_state(opts, state), reason);
         return 1;
     }
@@ -367,7 +368,7 @@ tetra_sm_init(dsd_opts* opts, dsd_state* state) {
     }
     sm_retire_pending(ts);
     if (ts->sm.state == (uint8_t)TETRA_SM_TUNED) {
-        sm_unfollow(state, ts);
+        sm_unfollow(opts, state, ts);
     }
     DSD_MEMSET(&ts->sm, 0, sizeof ts->sm);
     tetra_confirm_forget_followed_call(state);
@@ -466,7 +467,7 @@ sm_tick_tuned(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     if (opts->trunk_is_tuned != 1) {
         /* Another owner released the shared tuning state (a tuner hand-back, a stale follow cleanup): the receiver is
          * no longer ours to move. */
-        sm_unfollow(state, ts);
+        sm_unfollow(opts, state, ts);
         sm_set_state(state, ts, sm_rest_state(opts, state), "released elsewhere");
         return;
     }
@@ -523,7 +524,8 @@ tetra_sm_on_external_cc_return(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     sm_retire_pending(ts);
-    sm_unfollow(state, ts);
+    /* The engine ended and committed the canonical calls before it handed over. */
+    sm_unfollow(NULL, state, ts);
     tetra_forget_carrier(state);
     sm_set_state(state, ts, sm_rest_state(opts, state), "returned to the control channel");
 }
@@ -539,7 +541,7 @@ tetra_sm_abandon_carrier(dsd_opts* opts, dsd_state* state) {
     if (held && opts) {
         sm_release_shared_tuning(opts, state);
     }
-    sm_unfollow(state, ts);
+    sm_unfollow(opts, state, ts);
     sm_set_state(state, ts, sm_rest_state(opts, state), "carrier abandoned");
 }
 

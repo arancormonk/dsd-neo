@@ -439,6 +439,11 @@ parse_cmce_d_status(tetra_bit_reader* r, const mle_ctx* ctx) {
     DSD_FPRINTF(stderr, "[TETRA CMCE D-STATUS] CC=%d src_SSI=%u status=0x%04X\n", ctx->cc, calling.ssi, status);
     ts->sds_status_src = calling.ssi;
     ts->sds_status = status;
+    const uint32_t dst = tetra_calls_addressed_ssi(ctx->sdu);
+    char notice[64];
+    DSD_SNPRINTF(notice, sizeof notice, "STATUS SRC: %u; TGT: %u; STATUS: 0x%04X;", (unsigned)calling.ssi,
+                 (unsigned)dst, (unsigned)status);
+    tetra_calls_notice(ctx->opts, ctx->state, 1, calling.ssi, dst, notice, NULL);
     /* Table 29.13: a pre-coded status starting 011111 is an SDS-TL SDS-SHORT REPORT. */
     if ((status >> 10) == 0x1fu) {
         ts->sds_short_report_result = (uint8_t)((status >> 8) & 3u);
@@ -1443,6 +1448,25 @@ sds_push_message(dsd_state* state, uint32_t src_ssi, const sds_text* t, int data
     tetra_message_push(state, DSD_TETRA_MESSAGE_SDS, summary);
 }
 
+/* A data notice for the event history (tetra_calls_notice()): who sent the message to whom, its text as the notice's
+ * message, or what it held when it had no text. */
+static void
+sds_notice(const mle_ctx* ctx, const sds_pdu* pdu, const sds_message* msg) {
+    const uint32_t dst = tetra_calls_addressed_ssi(ctx->sdu);
+    char notice[96];
+    if (msg->text.len > 0) {
+        DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u;", (unsigned)pdu->calling.ssi, (unsigned)dst);
+    } else if (pdu->sdti == 0) {
+        DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u; DATA: 0x%04X;", (unsigned)pdu->calling.ssi,
+                     (unsigned)dst, (unsigned)msg->short_data);
+    } else {
+        DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u; DATA: %d bits;", (unsigned)pdu->calling.ssi,
+                     (unsigned)dst, msg->concat.complete ? msg->concat.assembled_bits : pdu->data_bits);
+    }
+    tetra_calls_notice(ctx->opts, ctx->state, 0, pdu->calling.ssi, dst, notice,
+                       msg->text.len > 0 ? msg->text.text : NULL);
+}
+
 static void
 sds_publish(const mle_ctx* ctx, const sds_pdu* pdu, const sds_message* msg) {
     tetra_state_t* const ts = ctx->ts;
@@ -1467,6 +1491,7 @@ sds_publish(const mle_ctx* ctx, const sds_pdu* pdu, const sds_message* msg) {
         ts->sds_short_src = pdu->calling.ssi;
     }
     sds_push_message(ctx->state, pdu->calling.ssi, &msg->text, pdu->data_bits);
+    sds_notice(ctx, pdu, msg);
 }
 
 /* D-SDS-DATA, table 14.13. */
