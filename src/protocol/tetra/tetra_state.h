@@ -374,31 +374,26 @@ typedef struct tetra_state {
     uint16_t mnc;
     uint8_t colour;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA Direct Mode Operation (DMO, EN 300 396-2/-3).
-     *
-     * dmo:           1 once a DSB (SCH/S with a DMO system code) has been
-     *                      decoded; selects DNB block layout (no AACH) and the
-     *                      DM colour code scrambler. Cleared by a TMO BSCH.
-     * dmo_dcc_valid: 1 when dmo_dcc_seed was derived from a
-     *                      DM-SETUP / DM-CONNECT ACK / DM-OCCUPIED DMAC-SYNC.
-     * dmo_dcc_seed:  LFSR seed for SCH/F, STCH and TCH.
-     * dmo_since_sync: DNBs processed since the last DSB (staleness).
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* Direct mode (EN 300 396-2, EN 300 396-3), set by tetra_dmo_apply_sync().
+     * dmo:                1 once a DSB with a DMO system code was decoded: normal bursts have no AACH and use the DM
+     *                     colour code. Cleared by a TMO BSCH.
+     * dmo_dcc_valid:      1 while dmo_dcc_seed holds the DM colour code of the current transmission (clause 8.2.4).
+     * dmo_slot/frame:     slot 1..4 and frame 1..18 of the last DSB (frame 0 when it was reserved).
+     * dmo_comm_type:      communication type of the last DSB: 0 direct, 1 DM-REP, 2 DM-GATE, 3 DM-REP/GATE.
+     * dmo_ab_usage:       A/B channel usage of the last DSB.
+     * dmo_crypt:          tetra_dmo_crypt_e of the current call; dmo_security_class its air interface encryption
+     *                     state when that is DM-2-A, DM-2-B or DM-2-C.
+     * dmo_since_sync:     DNBs processed since the last DMAC-SYNC (colour code staleness). */
     uint8_t dmo;
     uint8_t dmo_dcc_valid;
     uint8_t dmo_slot;
     uint8_t dmo_frame;
     uint8_t dmo_comm_type;
     uint8_t dmo_ab_usage;
-    uint8_t dmo_enc_state;
-    uint8_t dmo_msg_type;
+    uint8_t dmo_crypt;
+    uint8_t dmo_security_class;
     uint16_t dmo_since_sync;
     uint32_t dmo_dcc_seed;
-    uint32_t dmo_mni;
-    uint32_t dmo_src;
-    uint32_t dmo_dst;
-    uint32_t dmo_sync_count;
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA network parameters — populated by MAC-BROADCAST/SYSINFO (MLE).

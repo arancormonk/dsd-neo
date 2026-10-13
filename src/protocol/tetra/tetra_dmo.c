@@ -1,27 +1,584 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * TETRA DMO (Direct Mode Operation) sync-burst and MAC helpers.
- * ETSI EN 300 396-2 V1.4.1 clauses 8.2.5 / 9.4.3, EN 300 396-3 V1.4.1 clauses
- * 8.2.4 / 9.1 / 9.2 / 9.3.
+ * TETRA Direct Mode Operation: DM-MAC synchronization and signalling PDUs, the DM colour code and the protection of the
+ * current call. EN 300 396-2 clauses 8.2.5 and 9.4.3; EN 300 396-3 clauses 8.2.4, 8.5.3 and 9; EN 300 396-4 clause 10;
+ * EN 300 396-5 clause 14.
+ *
+ * The element tables follow the ETSI tables row for row. Reserved elements at the very end of a PDU are left out:
+ * nothing after them is read, so a block that ends inside them is not short.
  */
 
+#include <dsd-neo/protocol/tetra/tetra_dmo.h>
+
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
-#include <dsd-neo/protocol/tetra/tetra_dmo.h>
+#include <dsd-neo/protocol/tetra/tetra_bsch.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_messages.h>
 
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
+#include "tetra_log.h"
 #include "tetra_state.h"
+
+#define DMO_SCH_S_BITS 60
+#define DMO_SCH_H_BITS 124
+#define DMO_COUNT(a)   (sizeof(a) / sizeof((a)[0]))
+
+/* ---- Element tables ------------------------------------------------------------------------------------------- */
+
+enum { DMO_NONE = 0xFF };
+
+enum {
+    DMO_STEP_FIELD = 0, /* `width` bits into e[elem], or skipped when elem is DMO_NONE */
+    DMO_STEP_EXTERNAL,  /* external subscriber number, EN 300 396-5 clause 14.7.6 */
+    DMO_STEP_SDS_DATA,  /* the user data an SDTI announces, EN 300 396-3 clause 9.7.16 */
+};
+
+/* One row of a PDU table. A row whose `cond` is not DMO_NONE is present only when bit e[cond] of `mask` is set. */
+typedef struct {
+    uint8_t elem;
+    uint8_t width;
+    uint8_t cond;
+    uint8_t kind;
+    uint16_t mask;
+} dmo_step;
+
+#define DMO_IS(v)             ((uint16_t)(1u << (v)))
+#define DMO_EL(e, w)          {(uint8_t)(e), (uint8_t)(w), DMO_NONE, DMO_STEP_FIELD, 0u}
+#define DMO_EL_IF(e, w, c, m) {(uint8_t)(e), (uint8_t)(w), (uint8_t)(c), DMO_STEP_FIELD, (uint16_t)(m)}
+#define DMO_SKIP(w)           {DMO_NONE, (uint8_t)(w), DMO_NONE, DMO_STEP_FIELD, 0u}
+#define DMO_SKIP_IF(w, c, m)  {DMO_NONE, (uint8_t)(w), (uint8_t)(c), DMO_STEP_FIELD, (uint16_t)(m)}
+#define DMO_DO(k)             {DMO_NONE, 0u, DMO_NONE, (uint8_t)(k), 0u}
+#define DMO_DO_IF(k, c, m)    {DMO_NONE, 0u, (uint8_t)(c), (uint8_t)(k), (uint16_t)(m)}
+
+/* Timing change announced (or required) and the timing adjustment it brings, clauses 9.6.19 to 9.6.21. */
+#define DMO_TIMING_CHANGE                                                                                              \
+    DMO_EL(TETRA_DMO_E_TIMING_CHANGE, 1), DMO_EL_IF(TETRA_DMO_E_TIMING_ADJUST, 12, TETRA_DMO_E_TIMING_CHANGE, DMO_IS(1))
+
+/* A calling party TSI (MNI then SSI, clause 9.7.4) present when e[c] is one of `m`. */
+#define DMO_CALLING_TSI_IF(c, m)                                                                                       \
+    DMO_EL_IF(TETRA_DMO_E_CALLING_MNI, 24, c, m), DMO_EL_IF(TETRA_DMO_E_CALLING_SSI, 24, c, m)
+
+/* Additional addressing flag and address types (EN 300 396-5 table 25): 1 calling TSI, 2 area, 3 area and TSI, 4
+ * external number, 5 external number and TSI; in each case the TSI comes first. */
+#define DMO_ADDR_TYPE_TSI  (DMO_IS(1) | DMO_IS(3) | DMO_IS(5))
+#define DMO_ADDR_TYPE_AREA (DMO_IS(2) | DMO_IS(3))
+#define DMO_ADDR_TYPE_EXT  (DMO_IS(4) | DMO_IS(5))
+#define DMO_EXTRA_ADDRESSING                                                                                           \
+    DMO_EL(TETRA_DMO_E_EXTRA_ADDR, 1), DMO_EL_IF(TETRA_DMO_E_ADDR_TYPE, 4, TETRA_DMO_E_EXTRA_ADDR, DMO_IS(1)),         \
+        DMO_CALLING_TSI_IF(TETRA_DMO_E_ADDR_TYPE, DMO_ADDR_TYPE_TSI)
+
+/* EN 300 396-3 table 27, DM-RESERVED. The dual watch synchronization and two-frequency call flags at its end were not
+ * in the first edition, so they are not read. */
+static const dmo_step k_reserved_md[] = {
+    DMO_SKIP(1), /* channel reservation type */
+    DMO_EL(TETRA_DMO_E_RESERVATION, 6),
+    DMO_EL(TETRA_DMO_E_TIMING_FLAG, 1),
+    DMO_EL(TETRA_DMO_E_REQUESTS_FLAG, 1),
+    DMO_SKIP(1),                                          /* changeover requests flag */
+    DMO_SKIP_IF(8, TETRA_DMO_E_REQUESTS_FLAG, DMO_IS(1)), /* requests bitmap */
+    DMO_EL(TETRA_DMO_E_POWER_CLASS, 3),
+    DMO_EL(TETRA_DMO_E_POWER_CONTROL, 1),
+    DMO_EL(TETRA_DMO_E_PRIORITY, 2),
+};
+
+/* Table 28, DM-SDS OCCUPIED. */
+static const dmo_step k_sds_occupied_md[] = {
+    DMO_EL(TETRA_DMO_E_SDS_REMAINING, 4),
+    DMO_EL(TETRA_DMO_E_SDS_TX_TYPE, 1),
+    DMO_EL(TETRA_DMO_E_PRIORITY, 2),
+};
+
+/* Tables 29 and 30, DM-TIMING REQUEST and DM-TIMING ACK. */
+static const dmo_step k_timing_req_md[] = {DMO_EL(TETRA_DMO_E_TIMING_ADJUST, 12)};
+static const dmo_step k_timing_ack_md[] = {DMO_EL(TETRA_DMO_E_TIMING_ACCEPT, 1), DMO_TIMING_CHANGE};
+
+/* Tables 31, 35 and 36: DM-SETUP, DM-CONNECT ACK and DM-OCCUPIED. Table 32, DM-SETUP PRES, starts with 3 reserved bits
+ * in place of the three flags. */
+#define DMO_CALL_MD_TAIL                                                                                               \
+    DMO_EL(TETRA_DMO_E_POWER_CLASS, 3), DMO_EL(TETRA_DMO_E_POWER_CONTROL, 1), DMO_SKIP(2),                             \
+        DMO_EL(TETRA_DMO_E_DUAL_WATCH, 1), DMO_EL(TETRA_DMO_E_TWO_FREQ, 1), DMO_EL(TETRA_DMO_E_CIRCUIT_MODE, 4),       \
+        DMO_SKIP(4), DMO_EL(TETRA_DMO_E_PRIORITY, 2)
+static const dmo_step k_setup_md[] = {
+    DMO_EL(TETRA_DMO_E_TIMING_FLAG, 1),
+    DMO_EL(TETRA_DMO_E_LCH_FRAME3, 1),
+    DMO_EL(TETRA_DMO_E_PREEMPT_FLAG, 1),
+    DMO_CALL_MD_TAIL,
+};
+static const dmo_step k_setup_pres_md[] = {DMO_SKIP(3), DMO_CALL_MD_TAIL};
+static const dmo_step k_setup_sdu[] = {
+    DMO_EL(TETRA_DMO_E_E2EE, 1),
+    DMO_EL(TETRA_DMO_E_CALL_TYPE, 1),
+    DMO_EL(TETRA_DMO_E_EXT_SOURCE, 1),
+};
+
+/* Tables 33 and 34, DM-CONNECT and DM-DISCONNECT. */
+static const dmo_step k_connect_md[] = {DMO_EL(TETRA_DMO_E_CIRCUIT_MODE, 4)};
+static const dmo_step k_disconnect_sdu[] = {DMO_EL(TETRA_DMO_E_DISCONNECT_CAUSE, 4)};
+
+/* Table 37, DM-RELEASE: the release cause extension follows release cause 15. */
+static const dmo_step k_release_sdu[] = {
+    DMO_EL(TETRA_DMO_E_RELEASE_CAUSE, 4),
+    DMO_EL_IF(TETRA_DMO_E_RELEASE_EXT, 5, TETRA_DMO_E_RELEASE_CAUSE, DMO_IS(15)),
+};
+
+/* Table 38, DM-TX CEASED. */
+static const dmo_step k_tx_ceased_md[] = {
+    DMO_EL(TETRA_DMO_E_RESERVATION, 6),
+    DMO_EL(TETRA_DMO_E_TIMING_FLAG, 1),
+    DMO_EL(TETRA_DMO_E_REQUESTS_FLAG, 1),
+    DMO_SKIP(1),                                          /* changeover requests flag */
+    DMO_SKIP_IF(8, TETRA_DMO_E_REQUESTS_FLAG, DMO_IS(1)), /* requests bitmap */
+    DMO_SKIP(1),                                          /* recent user priority flag */
+    DMO_TIMING_CHANGE,
+    DMO_EL(TETRA_DMO_E_PRIORITY, 2),
+};
+static const dmo_step k_tx_ceased_sdu[] = {DMO_EL(TETRA_DMO_E_CEASE_CAUSE, 4)};
+
+/* Tables 39 to 42: DM-TX REQUEST, DM-TX ACCEPT, DM-PREEMPT and DM-PRE ACCEPT. */
+static const dmo_step k_tx_request_md[] = {DMO_TIMING_CHANGE, DMO_EL(TETRA_DMO_E_PRIORITY, 2)};
+static const dmo_step k_tx_accept_md[] = {DMO_TIMING_CHANGE};
+static const dmo_step k_preempt_md[] = {
+    DMO_EL(TETRA_DMO_E_CHANNEL_STATE, 2), DMO_TIMING_CHANGE,
+    DMO_EL(TETRA_DMO_E_NEW_CALL, 1),      DMO_EL(TETRA_DMO_E_PREEMPT_TYPE, 4),
+    DMO_EL(TETRA_DMO_E_PRIORITY, 2),
+};
+static const dmo_step k_pre_accept_md[] = {
+    DMO_TIMING_CHANGE,
+    DMO_EL(TETRA_DMO_E_NEW_CALL, 1),
+    DMO_EL(TETRA_DMO_E_PREEMPT_TYPE, 4),
+};
+
+/* Table 43, DM-REJECT. */
+static const dmo_step k_reject_sdu[] = {DMO_EL(TETRA_DMO_E_REJECT_CAUSE, 4)};
+
+/* Table 44 with EN 300 396-5 table 7, DM-INFO: information type 0 is the calling TSI, 1 an external number, 2 both. */
+static const dmo_step k_info_sdu[] = {
+    DMO_EL(TETRA_DMO_E_INFO_TYPE, 3),
+    DMO_CALLING_TSI_IF(TETRA_DMO_E_INFO_TYPE, DMO_IS(0) | DMO_IS(2)),
+    DMO_DO_IF(DMO_STEP_EXTERNAL, TETRA_DMO_E_INFO_TYPE, DMO_IS(1) | DMO_IS(2)),
+};
+
+/* Tables 45 and 46 with EN 300 396-5 table 8: DM-SDS UDATA and DM-SDS DATA. */
+static const dmo_step k_sds_md[] = {
+    DMO_EL(TETRA_DMO_E_SDS_REMAINING, 4),
+    DMO_EL(TETRA_DMO_E_SDS_TX_TYPE, 1),
+    DMO_EL(TETRA_DMO_E_PRIORITY, 2),
+    DMO_EL(TETRA_DMO_E_FCS_FLAG, 1),
+};
+static const dmo_step k_sds_sdu[] = {
+    DMO_EXTRA_ADDRESSING,
+    DMO_EL_IF(TETRA_DMO_E_AREA, 4, TETRA_DMO_E_ADDR_TYPE, DMO_ADDR_TYPE_AREA),
+    DMO_DO_IF(DMO_STEP_EXTERNAL, TETRA_DMO_E_ADDR_TYPE, DMO_ADDR_TYPE_EXT),
+    DMO_EL(TETRA_DMO_E_SDTI, 4),
+    DMO_DO(DMO_STEP_SDS_DATA),
+    DMO_EL_IF(TETRA_DMO_E_FCS, 32, TETRA_DMO_E_FCS_FLAG, DMO_IS(1)),
+};
+
+/* Table 47, DM-SDS ACK: acknowledgement type 1 carries data. */
+static const dmo_step k_sds_ack_md[] = {DMO_EL(TETRA_DMO_E_FCS_FLAG, 1)};
+static const dmo_step k_sds_ack_sdu[] = {
+    DMO_EL(TETRA_DMO_E_ACK_TYPE, 4),
+    DMO_EL_IF(TETRA_DMO_E_SDTI, 4, TETRA_DMO_E_ACK_TYPE, DMO_IS(1)),
+    DMO_DO_IF(DMO_STEP_SDS_DATA, TETRA_DMO_E_ACK_TYPE, DMO_IS(1)),
+    DMO_EL_IF(TETRA_DMO_E_FCS, 32, TETRA_DMO_E_FCS_FLAG, DMO_IS(1)),
+};
+
+/* EN 300 396-5 tables 9 to 22, gateway-specific messages, after the gateway message subtype. */
+static const dmo_step k_gsetup_md[] = {
+    DMO_EL(TETRA_DMO_E_CIRCUIT_MODE, 4),
+    DMO_SKIP(4),
+    DMO_EL(TETRA_DMO_E_PRIORITY, 2),
+};
+static const dmo_step k_gsetup_sdu[] = {
+    DMO_EL(TETRA_DMO_E_E2EE, 1),
+    DMO_EL(TETRA_DMO_E_CALL_TYPE, 1),
+    DMO_SKIP(2),
+    DMO_EL(TETRA_DMO_E_REQUEST_LABEL, 4),
+    DMO_EL(TETRA_DMO_E_CALLED_TSI_FLAG, 1),
+    DMO_EL(TETRA_DMO_E_CALLED_SSI, 24),
+    DMO_EL_IF(TETRA_DMO_E_CALLED_MNI, 24, TETRA_DMO_E_CALLED_TSI_FLAG, DMO_IS(1)),
+    DMO_EL(TETRA_DMO_E_AREA, 4),
+    DMO_EXTRA_ADDRESSING,
+    DMO_DO_IF(DMO_STEP_EXTERNAL, TETRA_DMO_E_ADDR_TYPE, DMO_ADDR_TYPE_EXT),
+};
+/* DM-GCONNECT, DM-GTX ACCEPT and DM-GPRE ACCEPT share their message dependent elements. */
+static const dmo_step k_gconnect_md[] = {
+    DMO_EL(TETRA_DMO_E_POWER_CLASS, 3), DMO_EL(TETRA_DMO_E_POWER_CONTROL, 1), DMO_SKIP(1),
+    DMO_EL(TETRA_DMO_E_GW_ENC, 1),      DMO_EL(TETRA_DMO_E_CIRCUIT_MODE, 4),  DMO_SKIP(4),
+};
+static const dmo_step k_gconnect_sdu[] = {
+    DMO_EL(TETRA_DMO_E_E2EE, 1),
+    DMO_EL(TETRA_DMO_E_CALL_TYPE, 1),
+    DMO_EL(TETRA_DMO_E_REQUEST_LABEL, 4),
+};
+static const dmo_step k_gtx_accept_sdu[] = {DMO_EL(TETRA_DMO_E_E2EE, 1), DMO_EL(TETRA_DMO_E_CALL_TYPE, 1)};
+static const dmo_step k_gack_md[] = {
+    DMO_TIMING_CHANGE,
+    DMO_EL(TETRA_DMO_E_RESERVATION_ANNOUNCED, 1),
+    DMO_SKIP_IF(1, TETRA_DMO_E_RESERVATION_ANNOUNCED, DMO_IS(1)), /* channel reservation type */
+    DMO_EL_IF(TETRA_DMO_E_RESERVATION, 6, TETRA_DMO_E_RESERVATION_ANNOUNCED, DMO_IS(1)),
+    DMO_EL_IF(TETRA_DMO_E_REQUESTS_FLAG, 1, TETRA_DMO_E_RESERVATION_ANNOUNCED, DMO_IS(1)),
+    DMO_SKIP_IF(1, TETRA_DMO_E_RESERVATION_ANNOUNCED, DMO_IS(1)), /* changeover requests flag */
+    DMO_SKIP_IF(8, TETRA_DMO_E_REQUESTS_FLAG, DMO_IS(1)),         /* requests bitmap */
+    DMO_EL_IF(TETRA_DMO_E_POWER_CLASS, 3, TETRA_DMO_E_RESERVATION_ANNOUNCED, DMO_IS(1)),
+    DMO_EL_IF(TETRA_DMO_E_POWER_CONTROL, 1, TETRA_DMO_E_RESERVATION_ANNOUNCED, DMO_IS(1)),
+    DMO_SKIP_IF(1, TETRA_DMO_E_RESERVATION_ANNOUNCED, DMO_IS(1)),
+    DMO_EL_IF(TETRA_DMO_E_PRIORITY, 2, TETRA_DMO_E_RESERVATION_ANNOUNCED, DMO_IS(1)),
+    DMO_SKIP(4),
+};
+static const dmo_step k_gack_sdu[] = {DMO_EL(TETRA_DMO_E_GACK_TYPE, 2), DMO_EL(TETRA_DMO_E_WAIT_CODE, 3)};
+static const dmo_step k_grelease_sdu[] = {DMO_EL(TETRA_DMO_E_RELEASE_CAUSE, 4)};
+static const dmo_step k_gtx_request_md[] = {
+    DMO_EL(TETRA_DMO_E_GTX_TYPE, 1), DMO_SKIP(3), DMO_EL(TETRA_DMO_E_CIRCUIT_MODE, 4), DMO_SKIP(4),
+    DMO_EL(TETRA_DMO_E_PRIORITY, 2),
+};
+static const dmo_step k_gpreempt_md[] = {
+    DMO_EL(TETRA_DMO_E_CHANNEL_STATE, 2), DMO_SKIP(2), DMO_EL(TETRA_DMO_E_CIRCUIT_MODE, 4), DMO_SKIP(4),
+    DMO_EL(TETRA_DMO_E_PRIORITY, 2),
+};
+static const dmo_step k_gtx_request_sdu[] = {
+    DMO_EL(TETRA_DMO_E_E2EE, 1),
+    DMO_EL(TETRA_DMO_E_CALL_TYPE, 1),
+    DMO_SKIP(2),
+    DMO_EL(TETRA_DMO_E_CALLING_TSI_FLAG, 1),
+    DMO_CALLING_TSI_IF(TETRA_DMO_E_CALLING_TSI_FLAG, DMO_IS(1)),
+};
+static const dmo_step k_greject_sdu[] = {DMO_EL(TETRA_DMO_E_REJECT_CAUSE, 4)};
+static const dmo_step k_greg_request_md[] = {
+    DMO_EL(TETRA_DMO_E_REG_TYPE, 1),
+    DMO_EL(TETRA_DMO_E_REG_TIME, 4),
+    DMO_SKIP(2),
+};
+static const dmo_step k_greg_request_sdu[] = {
+    DMO_EL(TETRA_DMO_E_CALLING_TSI_FLAG, 1),
+    DMO_CALLING_TSI_IF(TETRA_DMO_E_CALLING_TSI_FLAG, DMO_IS(1)),
+    DMO_EL(TETRA_DMO_E_GSSI_FLAG, 1),
+    DMO_EL_IF(TETRA_DMO_E_GSSI, 24, TETRA_DMO_E_GSSI_FLAG, DMO_IS(1)),
+};
+static const dmo_step k_greg_answer_md[] = {DMO_EL(TETRA_DMO_E_REG_TYPE, 1), DMO_SKIP(2)};
+static const dmo_step k_greg_accept_sdu[] = {DMO_EL(TETRA_DMO_E_REG_LABEL, 4)};
+static const dmo_step k_greg_reject_sdu[] = {DMO_EL(TETRA_DMO_E_REG_LABEL, 4), DMO_EL(TETRA_DMO_E_REJECT_CAUSE, 4)};
+static const dmo_step k_greg_cancel_md[] = {DMO_EL(TETRA_DMO_E_REG_TIME, 4), DMO_SKIP(2)};
+static const dmo_step k_gcancel_ack_md[] = {DMO_SKIP(2)};
+
+typedef struct {
+    const dmo_step* md;
+    const dmo_step* sdu;
+    uint8_t n_md;
+    uint8_t n_sdu;
+} dmo_layout;
+
+#define DMO_LAYOUT(md, sdu) {(md), (sdu), (uint8_t)DMO_COUNT(md), (uint8_t)DMO_COUNT(sdu)}
+#define DMO_LAYOUT_MD(md)   {(md), NULL, (uint8_t)DMO_COUNT(md), 0u}
+#define DMO_LAYOUT_SDU(sdu) {NULL, (sdu), 0u, (uint8_t)DMO_COUNT(sdu)}
+
+/* By message type. Types with no entry (reserved, proprietary, and 25 whose layout is per gateway subtype) read no
+ * elements. */
+static const dmo_layout k_msg_layouts[32] = {
+    [TETRA_DMO_MSG_RESERVED] = DMO_LAYOUT_MD(k_reserved_md),
+    [TETRA_DMO_MSG_SDS_OCCUPIED] = DMO_LAYOUT_MD(k_sds_occupied_md),
+    [TETRA_DMO_MSG_TIMING_REQ] = DMO_LAYOUT_MD(k_timing_req_md),
+    [TETRA_DMO_MSG_TIMING_ACK] = DMO_LAYOUT_MD(k_timing_ack_md),
+    [TETRA_DMO_MSG_SETUP] = DMO_LAYOUT(k_setup_md, k_setup_sdu),
+    [TETRA_DMO_MSG_SETUP_PRES] = DMO_LAYOUT(k_setup_pres_md, k_setup_sdu),
+    [TETRA_DMO_MSG_CONNECT] = DMO_LAYOUT_MD(k_connect_md),
+    [TETRA_DMO_MSG_DISCONNECT] = DMO_LAYOUT_SDU(k_disconnect_sdu),
+    [TETRA_DMO_MSG_CONNECT_ACK] = DMO_LAYOUT(k_setup_md, k_setup_sdu),
+    [TETRA_DMO_MSG_OCCUPIED] = DMO_LAYOUT(k_setup_md, k_setup_sdu),
+    [TETRA_DMO_MSG_RELEASE] = DMO_LAYOUT_SDU(k_release_sdu),
+    [TETRA_DMO_MSG_TX_CEASED] = DMO_LAYOUT(k_tx_ceased_md, k_tx_ceased_sdu),
+    [TETRA_DMO_MSG_TX_REQUEST] = DMO_LAYOUT_MD(k_tx_request_md),
+    [TETRA_DMO_MSG_TX_ACCEPT] = DMO_LAYOUT_MD(k_tx_accept_md),
+    [TETRA_DMO_MSG_PREEMPT] = DMO_LAYOUT_MD(k_preempt_md),
+    [TETRA_DMO_MSG_PRE_ACCEPT] = DMO_LAYOUT_MD(k_pre_accept_md),
+    [TETRA_DMO_MSG_REJECT] = DMO_LAYOUT_SDU(k_reject_sdu),
+    [TETRA_DMO_MSG_INFO] = DMO_LAYOUT_SDU(k_info_sdu),
+    [TETRA_DMO_MSG_SDS_UDATA] = DMO_LAYOUT(k_sds_md, k_sds_sdu),
+    [TETRA_DMO_MSG_SDS_DATA] = DMO_LAYOUT(k_sds_md, k_sds_sdu),
+    [TETRA_DMO_MSG_SDS_ACK] = DMO_LAYOUT(k_sds_ack_md, k_sds_ack_sdu),
+};
+
+/* By gateway message subtype, EN 300 396-5 clause 14.6.1. */
+static const dmo_layout k_gw_layouts[TETRA_DMO_GW_CANCEL_ACK + 1] = {
+    [TETRA_DMO_GW_SETUP] = DMO_LAYOUT(k_gsetup_md, k_gsetup_sdu),
+    [TETRA_DMO_GW_CONNECT] = DMO_LAYOUT(k_gconnect_md, k_gconnect_sdu),
+    [TETRA_DMO_GW_ACK] = DMO_LAYOUT(k_gack_md, k_gack_sdu),
+    [TETRA_DMO_GW_RELEASE] = DMO_LAYOUT_SDU(k_grelease_sdu),
+    [TETRA_DMO_GW_TX_REQUEST] = DMO_LAYOUT(k_gtx_request_md, k_gtx_request_sdu),
+    [TETRA_DMO_GW_TX_ACCEPT] = DMO_LAYOUT(k_gconnect_md, k_gtx_accept_sdu),
+    [TETRA_DMO_GW_PREEMPT] = DMO_LAYOUT(k_gpreempt_md, k_gtx_request_sdu),
+    [TETRA_DMO_GW_PRE_ACCEPT] = DMO_LAYOUT(k_gconnect_md, k_gtx_accept_sdu),
+    [TETRA_DMO_GW_REJECT] = DMO_LAYOUT_SDU(k_greject_sdu),
+    [TETRA_DMO_GW_REG_REQUEST] = DMO_LAYOUT(k_greg_request_md, k_greg_request_sdu),
+    [TETRA_DMO_GW_REG_ACCEPT] = DMO_LAYOUT(k_greg_answer_md, k_greg_accept_sdu),
+    [TETRA_DMO_GW_REG_REJECT] = DMO_LAYOUT(k_greg_answer_md, k_greg_reject_sdu),
+    [TETRA_DMO_GW_REG_CANCEL] = DMO_LAYOUT(k_greg_cancel_md, k_greg_reject_sdu),
+    [TETRA_DMO_GW_CANCEL_ACK] = DMO_LAYOUT(k_gcancel_ack_md, k_greg_accept_sdu),
+};
+
+/* The element layout of `h`'s message, or NULL when it has none. A gateway message needs its subtype read first. */
+static const dmo_layout*
+dmo_layout_of(const tetra_dmo_sync_h_t* h) {
+    const dmo_layout* lay = NULL;
+    if (h->msg_type == TETRA_DMO_MSG_GATEWAY) {
+        const uint32_t sub = h->e[TETRA_DMO_E_GW_SUBTYPE];
+        lay = sub < DMO_COUNT(k_gw_layouts) ? &k_gw_layouts[sub] : NULL;
+    } else if (h->msg_type < DMO_COUNT(k_msg_layouts)) {
+        lay = &k_msg_layouts[h->msg_type];
+    }
+    return (lay != NULL && lay->n_md + lay->n_sdu > 0) ? lay : NULL;
+}
+
+/* ---- Element reader ------------------------------------------------------------------------------------------- */
+
+static int
+dmo_step_present(const dmo_step* st, const uint32_t* e) {
+    if (st->cond == DMO_NONE) {
+        return 1;
+    }
+    const uint32_t v = e[st->cond];
+    return v < 16u && ((st->mask >> v) & 1u) != 0u;
+}
+
+/* External subscriber number (EN 300 396-5 clause 14.7.6): a digit count of at most 24, then 4 bits a digit. */
+static int
+dmo_read_external(tetra_bit_reader* r, tetra_dmo_sync_h_t* h) {
+    static const char k_digits[] = "0123456789*#+???";
+    const uint32_t n = tetra_bits_read(r, 5);
+    if (!tetra_bits_ok(r) || n > 24u) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t d = tetra_bits_read(r, 4);
+        if (!tetra_bits_ok(r)) {
+            return 0;
+        }
+        h->external[i] = k_digits[d & 15u];
+        h->external[i + 1u] = '\0';
+        h->external_n = (uint8_t)(i + 1u);
+    }
+    return 1;
+}
+
+/* The user data an SDTI announces (EN 300 396-3 clauses 9.7.12 and 9.7.16 to 9.7.20): 16, 32 or 64 bits, an 11-bit
+ * length indicator and that many bits (the first 64 kept), or a 16-bit pre-coded status. A reserved SDTI has no known
+ * length, so nothing after it can be read. */
+static int
+dmo_read_sds_data(tetra_bit_reader* r, tetra_dmo_sync_h_t* h) {
+    static const uint8_t k_width[5] = {16u, 32u, 64u, 0u, 16u};
+    const uint32_t sdti = h->e[TETRA_DMO_E_SDTI];
+    uint32_t width;
+    if (sdti >= DMO_COUNT(k_width)) {
+        return 0;
+    }
+    width = sdti == 3u ? tetra_bits_read(r, 11) : k_width[sdti];
+    if (!tetra_bits_ok(r)) {
+        return 0;
+    }
+    h->e[TETRA_DMO_E_SDS_LENGTH] = width;
+    const uint32_t keep = width > 64u ? 64u : width;
+    h->sds_value = tetra_bits_read64(r, (int)keep);
+    return tetra_bits_skip(r, (int)(width - keep));
+}
+
+static int
+dmo_step_read(tetra_bit_reader* r, const dmo_step* st, tetra_dmo_sync_h_t* h) {
+    if (st->kind == DMO_STEP_EXTERNAL) {
+        return dmo_read_external(r, h);
+    }
+    if (st->kind == DMO_STEP_SDS_DATA) {
+        return dmo_read_sds_data(r, h);
+    }
+    if (st->elem == DMO_NONE) {
+        return tetra_bits_skip(r, st->width);
+    }
+    const uint32_t v = tetra_bits_read(r, st->width);
+    if (!tetra_bits_ok(r)) {
+        return 0;
+    }
+    h->e[st->elem] = v;
+    return 1;
+}
+
+/* Read the rows of one table. Returns 0 when the block ended inside an element; the elements before it are kept. */
+static int
+dmo_run(tetra_bit_reader* r, const dmo_step* steps, size_t n, tetra_dmo_sync_h_t* h) {
+    for (size_t i = 0; i < n; i++) {
+        if (dmo_step_present(&steps[i], h->e) && !dmo_step_read(r, &steps[i], h)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The elements after the message type of a PDU read under air interface encryption state `enc`. */
+static void
+dmo_parse_elems(tetra_bit_reader* r, uint8_t enc, tetra_dmo_sync_h_t* h) {
+    if (h->msg_type == TETRA_DMO_MSG_GATEWAY) {
+        h->e[TETRA_DMO_E_GW_SUBTYPE] = tetra_bits_read(r, 5);
+        if (!tetra_bits_ok(r)) {
+            return;
+        }
+    }
+    const dmo_layout* lay = dmo_layout_of(h);
+    if (lay == NULL || !dmo_run(r, lay->md, lay->n_md, h)) {
+        return;
+    }
+    h->md_ok = 1;
+    if (lay->n_sdu == 0u) {
+        return;
+    }
+    if (enc != TETRA_DMO_AIE_DM1) {
+        h->sdu_state = TETRA_DMO_SDU_ENCRYPTED;
+    } else if (!dmo_run(r, lay->sdu, lay->n_sdu, h)) {
+        h->sdu_state = TETRA_DMO_SDU_TRUNCATED;
+    }
+}
+
+/* Addresses and message type (EN 300 396-3 tables 22 and 23), then the elements. The MNI is always present for direct
+ * and DM-REP operation; through a gateway only when either address is a true SSI (EN 300 396-5 clauses 14.1.1 and
+ * 14.2). */
+static void
+dmo_read_addressed(tetra_bit_reader* r, int comm_type, uint8_t enc, tetra_dmo_sync_h_t* h) {
+    h->dst_type = (uint8_t)tetra_bits_read(r, 2);
+    if (h->dst_type != 2u) {
+        h->dst = tetra_bits_read(r, 24);
+    }
+    h->src_type = (uint8_t)tetra_bits_read(r, 2);
+    if (h->src_type != 2u) {
+        h->src = tetra_bits_read(r, 24);
+    }
+    if ((comm_type != 2 && comm_type != 3) || h->dst_type == 0u || h->src_type == 0u) {
+        h->mni = tetra_bits_read(r, 24);
+    }
+    h->msg_type = (uint8_t)tetra_bits_read(r, 5);
+    if (!tetra_bits_ok(r)) {
+        return;
+    }
+    h->has_addrs = 1;
+    dmo_parse_elems(r, enc, h);
+}
+
+static void
+dmo_hide_dst(tetra_dmo_sync_h_t* h) {
+    h->dst = 0;
+    h->dst_encrypted = (uint8_t)(h->dst_type != 2u);
+}
+
+static void
+dmo_hide_sdu(tetra_dmo_sync_h_t* h) {
+    const dmo_layout* lay = dmo_layout_of(h);
+    DSD_MEMSET(&h->e[TETRA_DMO_E_SDU_FIRST], 0, sizeof(h->e[0]) * (size_t)(TETRA_DMO_E_COUNT - TETRA_DMO_E_SDU_FIRST));
+    DSD_MEMSET(h->external, 0, sizeof(h->external));
+    h->external_n = 0;
+    h->sds_value = 0;
+    h->sdu_state = (lay != NULL && lay->n_sdu > 0u && h->md_ok) ? TETRA_DMO_SDU_ENCRYPTED : TETRA_DMO_SDU_CLEAR;
+}
+
+/* Clear what security class `enc` encrypts in a DMAC-SYNC SCH/H that was read as if it were clear (EN 300 396-3
+ * clauses 8.5.3 and 9.3.2). DM-2-C leaves only the header up to the address types in the clear. */
+static void
+dmo_settle(tetra_dmo_sync_h_t* h, uint8_t enc) {
+    h->enc_state = enc;
+    if (enc == TETRA_DMO_AIE_DM1) {
+        return;
+    }
+    dmo_hide_sdu(h);
+    if (enc != TETRA_DMO_AIE_DM2A) {
+        dmo_hide_dst(h);
+    }
+    if (enc == TETRA_DMO_AIE_DM2C) {
+        DSD_MEMSET(h->e, 0, sizeof(h->e));
+        h->src = 0;
+        h->mni = 0;
+        h->msg_type = 0;
+        h->has_addrs = 0;
+        h->md_ok = 0;
+        h->sdu_state = TETRA_DMO_SDU_ENCRYPTED;
+    }
+}
+
+/* ---- DSB and DNB parsers -------------------------------------------------------------------------------------- */
 
 int
 tetra_dmo_system_code_is_dmo(const uint8_t* sch_s_bits) {
-    if (!sch_s_bits) {
-        return 0;
+    tetra_bit_reader r = tetra_bits_reader(sch_s_bits, DMO_SCH_S_BITS, 0);
+    /* 0xxx TMO, 100y reserved, 1010..1111 DMO (EN 300 396-3 clause 9.3.29). */
+    const uint32_t code = tetra_bits_read(&r, 4);
+    return tetra_bits_ok(&r) && code >= 0xAu;
+}
+
+static uint8_t
+dmo_frame_number(uint32_t v) {
+    return (uint8_t)((v >= 1u && v <= 18u) ? v : 0u);
+}
+
+/* DMAC-SYNC SCH/S after the communication type, EN 300 396-3 table 21. */
+static void
+dmo_read_dmac_sync_s(tetra_bit_reader* r, tetra_dmo_sync_s_t* s) {
+    /* Master/slave link flag (via DM-REP or DM-REP/GATE) or reserved, then the gateway generated message flag (via
+     * DM-GATE or DM-REP/GATE) or reserved. */
+    const uint32_t link = tetra_bits_read(r, 1);
+    const uint32_t gateway = tetra_bits_read(r, 1);
+    s->ms_link_flag = (uint8_t)((s->comm_type & 1u) ? link : 0u);
+    s->gw_flag = (uint8_t)((s->comm_type & 2u) ? gateway : 0u);
+    s->ab_usage = (uint8_t)tetra_bits_read(r, 2);
+    s->slot = (uint8_t)(tetra_bits_read(r, 2) + 1u);
+    s->frame = dmo_frame_number(tetra_bits_read(r, 5));
+    s->enc_state = (uint8_t)tetra_bits_read(r, 2);
+    if (s->enc_state != TETRA_DMO_AIE_DM1) {
+        s->tvp = tetra_bits_read(r, 29);
+        (void)tetra_bits_skip(r, 1);
+        s->ksg = (uint8_t)tetra_bits_read(r, 4);
+        s->key_number = (uint8_t)tetra_bits_read(r, 5);
     }
-    /* 0xxx = TMO, 100y reserved, 1010..1111 = DMO (EN 300 396-3 clause 9.3.29). */
-    return tetra_bits_to_uint(sch_s_bits, 0, 4) >= 0xAu;
+}
+
+/* DPRES-SYNC SCH/S after the communication type (EN 300 396-4 table 2, EN 300 396-5 table 5). Each conditional element
+ * of these tables shares its width with the reserved element that stands in for it, so every field has a fixed place;
+ * what it means is settled from the flags afterwards. */
+static void
+dmo_read_pres_s(tetra_bit_reader* r, tetra_dmo_sync_s_t* s, tetra_dmo_pres_t* p) {
+    const int gateway = s->comm_type >= 2u;
+    p->comm_type = s->comm_type;
+    p->mdmo = (uint8_t)tetra_bits_read(r, 1);
+    const uint32_t gw_flags = tetra_bits_read(r, 2); /* SwMI availability and DM-REP function flags, or reserved */
+    const uint32_t two_freq = tetra_bits_read(r, 1); /* two-frequency repeater flag, or reserved */
+    (void)tetra_bits_skip(r, 2);                     /* repeater operating modes, or reserved */
+    const uint32_t spacing = tetra_bits_read(r, 5);  /* spacing of uplink: duplex spacing, then normal/reverse */
+    const uint32_t reverse = tetra_bits_read(r, 1);
+    p->ms_link = (uint8_t)tetra_bits_read(r, 1);
+    p->channel_usage = (uint8_t)tetra_bits_read(r, 2);
+    p->channel_state = (uint8_t)tetra_bits_read(r, 2);
+    s->slot = (uint8_t)(tetra_bits_read(r, 2) + 1u);
+    s->frame = dmo_frame_number(tetra_bits_read(r, 5));
+    p->power_class = (uint8_t)tetra_bits_read(r, 3);
+    (void)tetra_bits_skip(r, 4);                     /* power control, reserved or registration phase, countdown */
+    const uint32_t priority = tetra_bits_read(r, 2); /* priority level, or reserved, or timing for DM-REP function */
+    if (gateway) {
+        (void)tetra_bits_skip(r, 2); /* registrations permitted */
+        p->reg_label = (uint8_t)tetra_bits_read(r, 4);
+        (void)tetra_bits_skip(r, 8); /* registration phase time or DN232/DN233; access parameter or DT264; forwarded */
+        p->gw_enc = (uint8_t)tetra_bits_read(r, 1);
+    }
+    p->swmi_up = (uint8_t)(gateway ? (gw_flags >> 1) : 0u);
+    p->dmrep = (uint8_t)(gateway ? (gw_flags & 1u) : 0u);
+    p->two_freq = (uint8_t)((!gateway || s->comm_type == 3u || p->dmrep) ? two_freq : 0u);
+    p->spacing = (uint8_t)(p->two_freq ? spacing : 0u);
+    p->reverse = (uint8_t)(p->two_freq ? reverse : 0u);
+    p->priority = (uint8_t)(p->channel_state != 0u ? priority : 0u);
+    s->ms_link_flag = p->ms_link;
+    s->ab_usage = p->channel_usage;
 }
 
 int
@@ -29,1389 +586,763 @@ tetra_dmo_parse_sync_s(const uint8_t* bits, tetra_dmo_sync_s_t* out) {
     if (!bits || !out) {
         return 0;
     }
-    memset(out, 0, sizeof(*out));
-    out->system_code = (uint8_t)tetra_bits_to_uint(bits, 0, 4);
-    out->sync_pdu_type = (uint8_t)tetra_bits_to_uint(bits, 4, 2);
-    out->comm_type = (uint8_t)tetra_bits_to_uint(bits, 6, 2);
-    /* Bit 8 is the master/slave link flag (comm 01/11) or reserved; bit 9 is
-     * the gateway flag (comm 10/11) or reserved. */
-    out->ms_link_flag = bits[8] & 1u;
-    out->gw_flag = bits[9] & 1u;
-    out->ab_usage = (uint8_t)tetra_bits_to_uint(bits, 10, 2);
-    out->slot = (uint8_t)(tetra_bits_to_uint(bits, 12, 2) + 1u);
-    out->frame = (uint8_t)tetra_bits_to_uint(bits, 14, 5);
-    out->enc_state = (uint8_t)tetra_bits_to_uint(bits, 19, 2);
-    return 1;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    tetra_bit_reader r = tetra_bits_reader(bits, DMO_SCH_S_BITS, 0);
+    out->system_code = (uint8_t)tetra_bits_read(&r, 4);
+    out->sync_pdu_type = (uint8_t)tetra_bits_read(&r, 2);
+    out->comm_type = (uint8_t)tetra_bits_read(&r, 2);
+    if (out->sync_pdu_type == TETRA_DMO_SYNC_DMAC) {
+        dmo_read_dmac_sync_s(&r, out);
+        out->parsed = (uint8_t)tetra_bits_ok(&r);
+    } else if (out->sync_pdu_type == TETRA_DMO_SYNC_PRES && out->comm_type != 0u) {
+        /* Communication type 00 is managed direct mode (EN 300 396-10), which is not read. */
+        tetra_dmo_pres_t pres;
+        DSD_MEMSET(&pres, 0, sizeof(pres));
+        dmo_read_pres_s(&r, out, &pres);
+        out->parsed = (uint8_t)tetra_bits_ok(&r);
+    }
+    return out->parsed;
 }
 
-static int
-take(const uint8_t* bits, int len, int* pos, int n) {
-    int v;
-    if (!bits || *pos + n > len) {
-        return -1;
-    }
-    v = (int)tetra_bits_to_uint(bits, *pos, n);
-    *pos += n;
-    return v;
+/* DPRES-SYNC SCH/H (EN 300 396-4 table 3, EN 300 396-5 table 6) up to the usage restriction type. */
+static void
+dmo_read_pres_h(tetra_bit_reader* r, tetra_dmo_pres_t* p) {
+    p->repeater = (uint16_t)tetra_bits_read(r, 10);
+    p->mni = tetra_bits_read(r, 24);
+    (void)tetra_bits_skip(r, 12); /* validity time unit and units, maximum DM-MS power class, reserved */
+    p->urt = (uint8_t)tetra_bits_read(r, 4);
 }
 
 int
 tetra_dmo_parse_presence(const uint8_t* sch_s, const uint8_t* sch_h, tetra_dmo_sync_s_t* s, tetra_dmo_pres_t* out) {
-    int pos = 8; /* system code, SYNC PDU type and communication type already consumed */
-    int v;
     if (!sch_s || !s || !out) {
         return 0;
     }
-    memset(out, 0, sizeof(*out));
-    if (s->comm_type < 1 || s->comm_type > 3) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (s->sync_pdu_type != TETRA_DMO_SYNC_PRES || s->comm_type == 0u) {
         return 0;
     }
-    out->comm_type = s->comm_type;
-
-    if (s->comm_type != 1) {
-        /* Gateway DPRES-SYNC (EN 300 396-5 table 5). Conditional elements
-         * always occupy the same number of bits, so the cursor is fixed. */
-        int dmrep;
-        int two_present;
-        int two = 0;
-        if (take(sch_s, 60, &pos, 1) < 0) {
-            return 0; /* M-DMO flag */
-        }
-        if ((v = take(sch_s, 60, &pos, 1)) < 0) {
-            return 0;
-        }
-        out->swmi_up = (uint8_t)v;
-        if ((v = take(sch_s, 60, &pos, 1)) < 0) {
-            return 0;
-        }
-        dmrep = v;
-        two_present = (s->comm_type == 3 || dmrep);
-        if (two_present) {
-            if ((v = take(sch_s, 60, &pos, 1)) < 0) {
-                return 0;
-            }
-            two = v;
-        } else if (take(sch_s, 60, &pos, 1) < 0) {
-            return 0; /* reserved bit in place of the two-frequency flag */
-        }
-        if (take(sch_s, 60, &pos, 2) < 0) {
-            return 0; /* operating modes, or reserved */
-        }
-        if (two_present && two) {
-            out->two_freq = 1;
-            if ((v = take(sch_s, 60, &pos, 5)) < 0) {
-                return 0;
-            }
-            out->spacing = (uint8_t)v;
-            if ((v = take(sch_s, 60, &pos, 1)) < 0) {
-                return 0;
-            }
-            out->reverse = (uint8_t)v;
-        } else if (take(sch_s, 60, &pos, 6) < 0) {
-            return 0;
-        }
-        if ((v = take(sch_s, 60, &pos, 1)) < 0) {
-            return 0;
-        }
-        out->ms_link = (uint8_t)v;
-        s->ms_link_flag = out->ms_link;
-        if (take(sch_s, 60, &pos, 2) < 0) {
-            return 0; /* channel usage */
-        }
-        if ((v = take(sch_s, 60, &pos, 2)) < 0) {
-            return 0;
-        }
-        out->channel_state = (uint8_t)v;
-        if ((v = take(sch_s, 60, &pos, 2)) < 0) {
-            return 0;
-        }
-        s->slot = (uint8_t)(v + 1);
-        if ((v = take(sch_s, 60, &pos, 5)) < 0) {
-            return 0;
-        }
-        s->frame = (uint8_t)v;
-        if ((v = take(sch_s, 60, &pos, 3)) < 0) {
-            return 0;
-        }
-        out->power_class = (uint8_t)v;
-        if (take(sch_s, 60, &pos, 1) < 0) {
-            return 0; /* power control */
-        }
-        if (take(sch_s, 60, &pos, 1) < 0) {
-            return 0; /* registration-terminated, or reserved */
-        }
-        if (take(sch_s, 60, &pos, 2) < 0) {
-            return 0; /* frame countdown */
-        }
-        if (out->channel_state == 0) {
-            if (take(sch_s, 60, &pos, 2) < 0) {
-                return 0;
-            }
-        } else {
-            if ((v = take(sch_s, 60, &pos, 2)) < 0) {
-                return 0;
-            }
-            out->priority = (uint8_t)v;
-        }
-        if (take(sch_s, 60, &pos, 2) < 0) {
-            return 0; /* registrations permitted */
-        }
-        if (take(sch_s, 60, &pos, 4) < 0) {
-            return 0; /* registration label */
-        }
-        if (take(sch_s, 60, &pos, 4) < 0) {
-            return 0; /* phase time, DN232/DN233, or reserved */
-        }
-        if (take(sch_s, 60, &pos, 3) < 0) {
-            return 0; /* access parameter or DT264 */
-        }
-        if (take(sch_s, 60, &pos, 1) < 0) {
-            return 0; /* registrations forwarded */
-        }
-        if (take(sch_s, 60, &pos, 1) < 0) {
-            return 0; /* gateway encryption on the SwMI */
-        }
-        if (take(sch_s, 60, &pos, 1) < 0) {
-            return 0; /* system-wide services */
-        }
-        if (take(sch_s, 60, &pos, 3) < 0) {
-            return 0; /* reserved */
-        }
-    } else if ((v = take(sch_s, 60, &pos, 1)) < 0) {
-        return 0; /* M-DMO flag */
-    } else {
-        if (take(sch_s, 60, &pos, 2) < 0) {
-            return 0; /* reserved */
-        }
-        if ((v = take(sch_s, 60, &pos, 1)) < 0) {
-            return 0;
-        }
-        out->two_freq = (uint8_t)v;
-        if (take(sch_s, 60, &pos, 2) < 0) {
-            return 0; /* repeater operating modes */
-        }
-        if (out->two_freq) {
-            if ((v = take(sch_s, 60, &pos, 5)) < 0) {
-                return 0;
-            }
-            out->spacing = (uint8_t)v;
-            if ((v = take(sch_s, 60, &pos, 1)) < 0) {
-                return 0;
-            }
-            out->reverse = (uint8_t)v;
-        } else if (take(sch_s, 60, &pos, 6) < 0) {
-            return 0;
-        }
-        if ((v = take(sch_s, 60, &pos, 1)) < 0) {
-            return 0;
-        }
-        out->ms_link = (uint8_t)v;
-        s->ms_link_flag = out->ms_link;
-        if (take(sch_s, 60, &pos, 2) < 0) {
-            return 0; /* channel usage */
-        }
-        if ((v = take(sch_s, 60, &pos, 2)) < 0) {
-            return 0;
-        }
-        out->channel_state = (uint8_t)v;
-        if ((v = take(sch_s, 60, &pos, 2)) < 0) {
-            return 0;
-        }
-        s->slot = (uint8_t)(v + 1);
-        if ((v = take(sch_s, 60, &pos, 5)) < 0) {
-            return 0;
-        }
-        s->frame = (uint8_t)v;
-        if ((v = take(sch_s, 60, &pos, 3)) < 0) {
-            return 0;
-        }
-        out->power_class = (uint8_t)v;
-        if (take(sch_s, 60, &pos, 2) < 0) {
-            return 0; /* power control, reserved */
-        }
-        if (take(sch_s, 60, &pos, 2) < 0) {
-            return 0; /* frame countdown */
-        }
-        if (out->channel_state == 0) {
-            if (take(sch_s, 60, &pos, 2) < 0) {
-                return 0;
-            }
-        } else {
-            if ((v = take(sch_s, 60, &pos, 2)) < 0) {
-                return 0;
-            }
-            out->priority = (uint8_t)v;
-        }
-    }
-
-    if (!sch_h) {
-        out->parsed = 1;
-        return 1;
-    }
-    pos = 0;
-    if ((v = take(sch_h, 124, &pos, 10)) < 0) {
+    tetra_bit_reader r = tetra_bits_reader(sch_s, DMO_SCH_S_BITS, 8);
+    dmo_read_pres_s(&r, s, out);
+    if (!tetra_bits_ok(&r)) {
         return 0;
     }
-    out->repeater = (uint16_t)v;
-    if ((v = take(sch_h, 124, &pos, 24)) < 0) {
-        return 0;
+    s->parsed = 1;
+    if (sch_h) {
+        tetra_bit_reader rh = tetra_bits_reader(sch_h, DMO_SCH_H_BITS, 0);
+        dmo_read_pres_h(&rh, out);
+        out->parsed = (uint8_t)tetra_bits_ok(&rh);
     }
-    out->mni = (uint32_t)v;
-    if ((v = take(sch_h, 124, &pos, 2)) < 0) {
-        return 0; /* validity time unit */
-    }
-    if (take(sch_h, 124, &pos, 6) < 0) {
-        return 0; /* units, or reserved when unrestricted */
-    }
-    if (take(sch_h, 124, &pos, 3) < 0) {
-        return 0; /* maximum DM-MS power class */
-    }
-    if (take(sch_h, 124, &pos, 1) < 0) {
-        return 0;
-    }
-    if ((v = take(sch_h, 124, &pos, 4)) < 0) {
-        return 0;
-    }
-    out->urt = (uint8_t)v;
-    out->parsed = 1;
     return 1;
-}
-
-int
-tetra_dmo_describe_presence(const tetra_dmo_pres_t* p, char* buf, int buf_len) {
-    static const char* const state_name[] = {"free", "occupied", "reserved", "gateway"};
-    static const int spacing_khz[9] = {0, 1600, 4500, 8000, 10000, 18000, 30000, 39000, 45000};
-    const char* link;
-    const char* st;
-    int n;
-    if (!p || !buf || buf_len <= 0) {
-        return 0;
-    }
-    link = p->ms_link ? "master" : "slave";
-    if (p->comm_type >= 2 && p->channel_state == 3) {
-        st = "registration";
-    } else {
-        st = p->channel_state < 4 ? state_name[p->channel_state] : "reserved-state";
-    }
-    if (p->two_freq && p->spacing >= 1 && p->spacing <= 8) {
-        n = snprintf(buf, (size_t)buf_len, "%s=%u MNI=%u/%u %s %s pwr=%u urt=%u%s uplink=%s%d.%03d MHz",
-                     p->comm_type >= 2 ? "gw" : "rep", p->repeater, (p->mni >> 14) & 0x3FFu, p->mni & 0x3FFFu, link, st,
-                     p->power_class, p->urt, (p->comm_type >= 2) ? (p->swmi_up ? " swmi=up" : " swmi=down") : "",
-                     p->reverse ? "-" : "+", spacing_khz[p->spacing] / 1000, spacing_khz[p->spacing] % 1000);
-    } else {
-        n = snprintf(buf, (size_t)buf_len, "%s=%u MNI=%u/%u %s %s pwr=%u urt=%u%s", p->comm_type >= 2 ? "gw" : "rep",
-                     p->repeater, (p->mni >> 14) & 0x3FFu, p->mni & 0x3FFFu, link, st, p->power_class, p->urt,
-                     (p->comm_type >= 2) ? (p->swmi_up ? " swmi=up" : " swmi=down") : "");
-    }
-    return n < 0 ? 0 : n;
-}
-
-/* Read up to 64 bits, most significant bit first. Returns 0, or -1 when the
- * block ends early. */
-static int
-take_u64(const uint8_t* bits, int len, int* pos, int n, uint64_t* out) {
-    uint64_t v = 0;
-    int i;
-    if (n < 0 || n > 64 || *pos + n > len) {
-        return -1;
-    }
-    for (i = 0; i < n; i++) {
-        v = (v << 1) | (uint64_t)(bits[(*pos)++] & 1u);
-    }
-    *out = v;
-    return 0;
-}
-
-static char
-tetra_dmo_digit(int d) {
-    if (d >= 0 && d <= 9) {
-        return (char)('0' + d);
-    }
-    if (d == 10) {
-        return '*';
-    }
-    if (d == 11) {
-        return '#';
-    }
-    if (d == 12) {
-        return '+';
-    }
-    return '?';
-}
-
-/* Additional addressing (EN 300 396-3 9.7.3 and EN 300 396-5 table 25).
- * Order when several elements are present: calling TSI, area, external number.
- * Returns -1 when a variable element runs past `len`; the fields already read stay. */
-static int
-tetra_dmo_parse_extra(const uint8_t* bits, int len, int* pos, tetra_dmo_sync_h_t* out) {
-    int kind;
-    int n;
-    int i;
-    if ((kind = take(bits, len, pos, 4)) < 0) {
-        return -1;
-    }
-    out->addr_type = (uint8_t)kind;
-    if (kind == 1 || kind == 3 || kind == 5) {
-        int mni;
-        int ssi;
-        if ((mni = take(bits, len, pos, 24)) < 0 || (ssi = take(bits, len, pos, 24)) < 0) {
-            return -1;
-        }
-        out->calling_mni = (uint32_t)mni;
-        out->calling_ssi = (uint32_t)ssi;
-        out->has_calling_tsi = 1;
-    }
-    if (kind == 2 || kind == 3) {
-        int area;
-        if ((area = take(bits, len, pos, 4)) < 0) {
-            return -1;
-        }
-        out->extra_area = (uint8_t)area;
-        out->has_extra_area = 1;
-    }
-    if (kind == 4 || kind == 5) {
-        if ((n = take(bits, len, pos, 5)) < 0) {
-            return -1;
-        }
-        if (n > 24) {
-            return -1;
-        }
-        for (i = 0; i < n; i++) {
-            int d;
-            if ((d = take(bits, len, pos, 4)) < 0) {
-                out->external[i] = '\0';
-                out->external_n = (uint8_t)i;
-                return -1;
-            }
-            out->external[i] = tetra_dmo_digit(d);
-        }
-        out->external[n] = '\0';
-        out->external_n = (uint8_t)n;
-    }
-    return 0;
-}
-
-/* SDTI payload (EN 300 396-3 9.7.16). Data 4 keeps its bit length and the first
- * 64 bits. Returns -1 when the block ends inside the payload. */
-static int
-tetra_dmo_parse_sdti(const uint8_t* bits, int len, int* pos, tetra_dmo_sync_h_t* out) {
-    int sdti;
-    int width;
-    int keep;
-    if ((sdti = take(bits, len, pos, 4)) < 0) {
-        return -1;
-    }
-    out->sdti = (uint8_t)sdti;
-    switch (sdti) {
-        case 0: width = 16; break;
-        case 1: width = 32; break;
-        case 2: width = 64; break;
-        case 4: width = 16; break;
-        case 3: {
-            int nbytes;
-            if ((nbytes = take(bits, len, pos, 11)) < 0) {
-                return -1;
-            }
-            out->sds_len = (uint16_t)nbytes;
-            keep = nbytes > 64 ? 64 : nbytes;
-            if (keep > 0 && take_u64(bits, len, pos, keep, &out->sds_value) < 0) {
-                return -1;
-            }
-            if (nbytes > keep) {
-                if (*pos + (nbytes - keep) > len) {
-                    return -1;
-                }
-                *pos += nbytes - keep;
-            }
-            return 0;
-        }
-        default: return 0;
-    }
-    out->sds_len = (uint16_t)width;
-    return take_u64(bits, len, pos, width, &out->sds_value);
-}
-
-static int
-tetra_dmo_parse_fcs(const uint8_t* bits, int len, int* pos, tetra_dmo_sync_h_t* out) {
-    uint64_t fcs;
-    if (!out->fcs_flag) {
-        return 0;
-    }
-    if (take_u64(bits, len, pos, 32, &fcs) < 0) {
-        return -1;
-    }
-    out->sds_fcs = (uint32_t)fcs;
-    out->has_fcs = 1;
-    return 0;
-}
-
-/* Gateway-specific layer 3 PDU after the 5-bit message type (EN 300 396-5
- * clause 14.5). A variable external number that runs past the block is marked
- * truncated and does not consume a guessed tail. */
-static void
-tetra_dmo_parse_gateway(const uint8_t* bits, int pos, int len, tetra_dmo_sync_h_t* out) {
-    int p = pos;
-    int v;
-    if ((v = take(bits, len, &p, 5)) < 0 || v > TETRA_DMO_GW_CANCEL_ACK) {
-        return;
-    }
-    out->gw_subtype = (uint8_t)v;
-    switch (v) {
-        case TETRA_DMO_GW_SETUP:
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->circuit_mode = (uint8_t)v;
-            if (take(bits, len, &p, 4) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 2)) < 0) {
-                return;
-            }
-            out->priority = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->e2ee = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->group_call = (uint8_t)v;
-            if (take(bits, len, &p, 2) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->request_label = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->called_tsi = (uint8_t)v;
-            if ((v = take(bits, len, &p, 24)) < 0) {
-                return;
-            }
-            out->called_ssi = (uint32_t)v;
-            if (out->called_tsi) {
-                if ((v = take(bits, len, &p, 24)) < 0) {
-                    return;
-                }
-                out->called_mni = (uint32_t)v;
-            }
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->area = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->extra_addr = (uint8_t)v;
-            if (out->extra_addr && tetra_dmo_parse_extra(bits, len, &p, out) < 0) {
-                out->sds_truncated = 1;
-            }
-            break;
-        case TETRA_DMO_GW_CONNECT:
-        case TETRA_DMO_GW_TX_ACCEPT:
-        case TETRA_DMO_GW_PRE_ACCEPT:
-            if ((v = take(bits, len, &p, 3)) < 0) {
-                return;
-            }
-            out->power_class = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->power_control = (uint8_t)v;
-            if (take(bits, len, &p, 1) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->gw_enc = (uint8_t)v;
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->circuit_mode = (uint8_t)v;
-            if (take(bits, len, &p, 4) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->e2ee = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->group_call = (uint8_t)v;
-            if (out->gw_subtype == TETRA_DMO_GW_CONNECT) {
-                if ((v = take(bits, len, &p, 4)) < 0) {
-                    return;
-                }
-                out->request_label = (uint8_t)v;
-            }
-            break;
-        case TETRA_DMO_GW_ACK: {
-            int reservation;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->timing_change = (uint8_t)v;
-            if (out->timing_change) {
-                if ((v = take(bits, len, &p, 12)) < 0) {
-                    return;
-                }
-                out->timing_adjust = (uint16_t)v;
-            }
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            reservation = v;
-            out->has_reservation = (uint8_t)reservation;
-            if (reservation) {
-                int requests;
-                if (take(bits, len, &p, 1) < 0) {
-                    return;
-                }
-                if ((v = take(bits, len, &p, 6)) < 0) {
-                    return;
-                }
-                out->reservation = (uint8_t)v;
-                if ((v = take(bits, len, &p, 1)) < 0) {
-                    return;
-                }
-                requests = v;
-                if (take(bits, len, &p, 1) < 0) {
-                    return;
-                }
-                if (requests && take(bits, len, &p, 8) < 0) {
-                    return;
-                }
-                if ((v = take(bits, len, &p, 3)) < 0) {
-                    return;
-                }
-                out->power_class = (uint8_t)v;
-                if ((v = take(bits, len, &p, 1)) < 0) {
-                    return;
-                }
-                out->power_control = (uint8_t)v;
-                if (take(bits, len, &p, 1) < 0) {
-                    return;
-                }
-                if ((v = take(bits, len, &p, 2)) < 0) {
-                    return;
-                }
-                out->priority = (uint8_t)v;
-            }
-            if (take(bits, len, &p, 4) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 2)) < 0) {
-                return;
-            }
-            out->gack_type = (uint8_t)v;
-            if ((v = take(bits, len, &p, 3)) < 0) {
-                return;
-            }
-            out->wait_code = (uint8_t)v;
-            break;
-        }
-        case TETRA_DMO_GW_RELEASE:
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->release_cause = (uint8_t)v;
-            break;
-        case TETRA_DMO_GW_REJECT:
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->reject_cause = (uint8_t)v;
-            break;
-        case TETRA_DMO_GW_TX_REQUEST:
-        case TETRA_DMO_GW_PREEMPT:
-            if (v == TETRA_DMO_GW_TX_REQUEST) {
-                if ((v = take(bits, len, &p, 1)) < 0) {
-                    return;
-                }
-                out->after_preempt = (uint8_t)v;
-                if (take(bits, len, &p, 3) < 0) {
-                    return;
-                }
-            } else {
-                if ((v = take(bits, len, &p, 2)) < 0) {
-                    return;
-                }
-                out->channel_state = (uint8_t)v;
-                if (take(bits, len, &p, 2) < 0) {
-                    return;
-                }
-            }
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->circuit_mode = (uint8_t)v;
-            if (take(bits, len, &p, 4) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 2)) < 0) {
-                return;
-            }
-            out->priority = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->e2ee = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->group_call = (uint8_t)v;
-            if (take(bits, len, &p, 2) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->has_calling_tsi = (uint8_t)v;
-            if (out->has_calling_tsi) {
-                if ((v = take(bits, len, &p, 24)) < 0) {
-                    return;
-                }
-                out->calling_mni = (uint32_t)v;
-                if ((v = take(bits, len, &p, 24)) < 0) {
-                    return;
-                }
-                out->calling_ssi = (uint32_t)v;
-            }
-            break;
-        case TETRA_DMO_GW_REG_REQUEST:
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->reg_unsolicited = (uint8_t)v;
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->reg_frames = (uint8_t)v;
-            if (take(bits, len, &p, 2) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->has_calling_tsi = (uint8_t)v;
-            if (out->has_calling_tsi) {
-                if ((v = take(bits, len, &p, 24)) < 0) {
-                    return;
-                }
-                out->calling_mni = (uint32_t)v;
-                if ((v = take(bits, len, &p, 24)) < 0) {
-                    return;
-                }
-                out->calling_ssi = (uint32_t)v;
-            }
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->has_gssi = (uint8_t)v;
-            if (out->has_gssi) {
-                if ((v = take(bits, len, &p, 24)) < 0) {
-                    return;
-                }
-                out->gssi = (uint32_t)v;
-            }
-            break;
-        case TETRA_DMO_GW_REG_ACCEPT:
-        case TETRA_DMO_GW_REG_REJECT:
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->reg_unsolicited = (uint8_t)v;
-            if (take(bits, len, &p, 2) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->reg_label = (uint8_t)v;
-            if (out->gw_subtype == TETRA_DMO_GW_REG_REJECT) {
-                if ((v = take(bits, len, &p, 4)) < 0) {
-                    return;
-                }
-                out->reject_cause = (uint8_t)v;
-            }
-            break;
-        case TETRA_DMO_GW_REG_CANCEL:
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->reg_frames = (uint8_t)v;
-            if (take(bits, len, &p, 2) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->reg_label = (uint8_t)v;
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->reject_cause = (uint8_t)v;
-            break;
-        case TETRA_DMO_GW_CANCEL_ACK:
-            if (take(bits, len, &p, 2) < 0) {
-                return;
-            }
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->reg_label = (uint8_t)v;
-            break;
-        default: return;
-    }
-    out->elems = TETRA_DMO_ELEMS_GW;
-}
-
-/* Message-dependent elements and DM-SDU elements that follow the message type
- * (EN 300 396-3 tables 31 to 44). Fields that run past `len` stay 0. */
-static void
-tetra_dmo_parse_elems(const uint8_t* bits, int pos, int len, tetra_dmo_sync_h_t* out) {
-    switch (out->msg_type) {
-        case TETRA_DMO_MSG_SETUP:
-        case TETRA_DMO_MSG_SETUP_PRES:
-        case TETRA_DMO_MSG_CONNECT_ACK:
-        case TETRA_DMO_MSG_OCCUPIED:
-            if (pos + 26 > len) {
-                return;
-            }
-            /* DM-SETUP PRES starts with 3 reserved bits. The following fields
-             * sit at the same offsets as DM-SETUP (table 32 versus table 31). */
-            if (out->msg_type != TETRA_DMO_MSG_SETUP_PRES) {
-                out->timing_flag = bits[pos] & 1u;
-                out->lch_frame3 = bits[pos + 1] & 1u;
-                out->preempt_flag = bits[pos + 2] & 1u;
-            }
-            out->power_class = (uint8_t)tetra_bits_to_uint(bits, pos + 3, 3);
-            out->power_control = bits[pos + 6] & 1u;
-            /* 2 reserved bits */
-            out->dual_watch = bits[pos + 9] & 1u;
-            out->two_freq = bits[pos + 10] & 1u;
-            out->circuit_mode = (uint8_t)tetra_bits_to_uint(bits, pos + 11, 4);
-            /* 4 reserved bits */
-            out->priority = (uint8_t)tetra_bits_to_uint(bits, pos + 19, 2);
-            out->e2ee = bits[pos + 21] & 1u;
-            out->group_call = bits[pos + 22] & 1u;
-            out->ext_source = bits[pos + 23] & 1u;
-            out->elems = TETRA_DMO_ELEMS_CALL;
-            break;
-        case TETRA_DMO_MSG_TX_CEASED: {
-            int p = pos;
-            if (p + 12 > len) {
-                return;
-            }
-            out->reservation = (uint8_t)tetra_bits_to_uint(bits, p, 6);
-            p += 6;
-            p += 1; /* timing flag */
-            const unsigned requests = bits[p++] & 1u;
-            p += 1; /* changeover requests flag */
-            if (requests) {
-                p += 8; /* requests bitmap */
-            }
-            p += 1; /* recent user priority flag */
-            const unsigned timing_change = bits[p++] & 1u;
-            if (timing_change) {
-                p += 12; /* timing adjustment */
-            }
-            if (p + 6 > len) {
-                return;
-            }
-            out->priority = (uint8_t)tetra_bits_to_uint(bits, p, 2);
-            out->cease_cause = (uint8_t)tetra_bits_to_uint(bits, p + 2, 4);
-            out->elems = TETRA_DMO_ELEMS_CEASED;
-            break;
-        }
-        case TETRA_DMO_MSG_RESERVED: {
-            int p = pos + 1; /* channel reservation type */
-            if (p + 9 > len) {
-                return;
-            }
-            out->reservation = (uint8_t)tetra_bits_to_uint(bits, p, 6);
-            p += 6;
-            p += 1; /* timing flag */
-            const unsigned requests = bits[p++] & 1u;
-            p += 1; /* changeover requests flag */
-            if (requests) {
-                p += 8;
-            }
-            if (p + 6 > len) {
-                return;
-            }
-            out->power_class = (uint8_t)tetra_bits_to_uint(bits, p, 3);
-            out->priority = (uint8_t)tetra_bits_to_uint(bits, p + 4, 2);
-            out->elems = TETRA_DMO_ELEMS_RESERVED;
-            break;
-        }
-        case TETRA_DMO_MSG_SDS_OCCUPIED:
-            if (pos + 7 > len) {
-                return;
-            }
-            out->sds_remaining = (uint8_t)tetra_bits_to_uint(bits, pos, 4);
-            out->priority = (uint8_t)tetra_bits_to_uint(bits, pos + 5, 2);
-            out->elems = TETRA_DMO_ELEMS_SDS_OCC;
-            break;
-        case TETRA_DMO_MSG_RELEASE:
-            if (pos + 4 > len) {
-                return;
-            }
-            out->release_cause = (uint8_t)tetra_bits_to_uint(bits, pos, 4);
-            if (out->release_cause == 15 && pos + 9 <= len) {
-                out->release_ext = (uint8_t)tetra_bits_to_uint(bits, pos + 4, 5);
-                out->has_release_ext = 1;
-            }
-            out->elems = TETRA_DMO_ELEMS_RELEASE;
-            break;
-        case TETRA_DMO_MSG_CONNECT:
-            if (pos + 4 > len) {
-                return;
-            }
-            out->circuit_mode = (uint8_t)tetra_bits_to_uint(bits, pos, 4);
-            out->elems = TETRA_DMO_ELEMS_CONNECT;
-            break;
-        case TETRA_DMO_MSG_DISCONNECT:
-            if (pos + 4 > len) {
-                return;
-            }
-            out->disconnect_cause = (uint8_t)tetra_bits_to_uint(bits, pos, 4);
-            out->elems = TETRA_DMO_ELEMS_DISCONNECT;
-            break;
-        case TETRA_DMO_MSG_TX_REQUEST:
-        case TETRA_DMO_MSG_TX_ACCEPT:
-        case TETRA_DMO_MSG_PREEMPT:
-        case TETRA_DMO_MSG_PRE_ACCEPT: {
-            int p = pos;
-            int v;
-            if (out->msg_type == TETRA_DMO_MSG_PREEMPT) {
-                if ((v = take(bits, len, &p, 2)) < 0) {
-                    return;
-                }
-                out->channel_state = (uint8_t)v;
-            }
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->timing_change = (uint8_t)v;
-            if (out->timing_change) {
-                if ((v = take(bits, len, &p, 12)) < 0) {
-                    return;
-                }
-                out->timing_adjust = (uint16_t)v;
-            }
-            if (out->msg_type == TETRA_DMO_MSG_PREEMPT || out->msg_type == TETRA_DMO_MSG_PRE_ACCEPT) {
-                if ((v = take(bits, len, &p, 1)) < 0) {
-                    return;
-                }
-                out->new_call = (uint8_t)v;
-                if ((v = take(bits, len, &p, 4)) < 0) {
-                    return;
-                }
-                out->preempt_type = (uint8_t)v;
-            }
-            if (out->msg_type == TETRA_DMO_MSG_TX_REQUEST || out->msg_type == TETRA_DMO_MSG_PREEMPT) {
-                if ((v = take(bits, len, &p, 2)) < 0) {
-                    return;
-                }
-                out->priority = (uint8_t)v;
-            }
-            if (out->msg_type == TETRA_DMO_MSG_TX_REQUEST) {
-                out->elems = TETRA_DMO_ELEMS_TX_REQ;
-            } else if (out->msg_type == TETRA_DMO_MSG_TX_ACCEPT) {
-                out->elems = TETRA_DMO_ELEMS_TX_ACCEPT;
-            } else if (out->msg_type == TETRA_DMO_MSG_PREEMPT) {
-                out->elems = TETRA_DMO_ELEMS_PREEMPT;
-            } else {
-                out->elems = TETRA_DMO_ELEMS_PRE_ACCEPT;
-            }
-            break;
-        }
-        case TETRA_DMO_MSG_REJECT:
-            if (pos + 4 > len) {
-                return;
-            }
-            out->reject_cause = (uint8_t)tetra_bits_to_uint(bits, pos, 4);
-            out->elems = TETRA_DMO_ELEMS_REJECT;
-            break;
-        case TETRA_DMO_MSG_TIMING_REQ: {
-            int v;
-            int p = pos;
-            if ((v = take(bits, len, &p, 12)) < 0) {
-                return;
-            }
-            out->timing_change = 1;
-            out->timing_adjust = (uint16_t)v;
-            out->elems = TETRA_DMO_ELEMS_TIMING;
-            break;
-        }
-        case TETRA_DMO_MSG_TIMING_ACK: {
-            int v;
-            int p = pos;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->timing_accept = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->timing_change = (uint8_t)v;
-            if (out->timing_change) {
-                if ((v = take(bits, len, &p, 12)) < 0) {
-                    return;
-                }
-                out->timing_adjust = (uint16_t)v;
-            }
-            out->elems = TETRA_DMO_ELEMS_TIMING;
-            break;
-        }
-        case TETRA_DMO_MSG_SDS_UDATA:
-        case TETRA_DMO_MSG_SDS_DATA: {
-            int v;
-            int p = pos;
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->sds_remaining = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->sds_tx_type = (uint8_t)v;
-            if ((v = take(bits, len, &p, 2)) < 0) {
-                return;
-            }
-            out->priority = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->fcs_flag = (uint8_t)v;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->extra_addr = (uint8_t)v;
-            if (out->extra_addr && tetra_dmo_parse_extra(bits, len, &p, out) < 0) {
-                out->sds_truncated = 1;
-            } else if (tetra_dmo_parse_sdti(bits, len, &p, out) < 0 || tetra_dmo_parse_fcs(bits, len, &p, out) < 0) {
-                out->sds_truncated = 1;
-            }
-            out->elems = TETRA_DMO_ELEMS_SDS;
-            break;
-        }
-        case TETRA_DMO_MSG_SDS_ACK: {
-            int v;
-            int p = pos;
-            if ((v = take(bits, len, &p, 1)) < 0) {
-                return;
-            }
-            out->fcs_flag = (uint8_t)v;
-            if ((v = take(bits, len, &p, 4)) < 0) {
-                return;
-            }
-            out->ack_type = (uint8_t)v;
-            if (out->ack_type == 1 && tetra_dmo_parse_sdti(bits, len, &p, out) < 0) {
-                out->sds_truncated = 1;
-            } else if (tetra_dmo_parse_fcs(bits, len, &p, out) < 0) {
-                out->sds_truncated = 1;
-            }
-            out->elems = TETRA_DMO_ELEMS_SDS;
-            break;
-        }
-        case TETRA_DMO_MSG_GATEWAY: tetra_dmo_parse_gateway(bits, pos, len, out); break;
-        case TETRA_DMO_MSG_INFO: {
-            int p = pos;
-            int v;
-            if ((v = take(bits, len, &p, 3)) < 0) {
-                return;
-            }
-            out->info_type = (uint8_t)v;
-            if (out->info_type == 0 && p + 48 <= len) {
-                out->calling_mni = tetra_bits_to_uint(bits, p, 24);
-                out->calling_ssi = tetra_bits_to_uint(bits, p + 24, 24);
-            }
-            out->elems = TETRA_DMO_ELEMS_INFO;
-            break;
-        }
-        default: break;
-    }
 }
 
 int
 tetra_dmo_parse_sync_h(const uint8_t* bits, int comm_type, tetra_dmo_sync_h_t* out) {
-    int pos = 10; /* repeater / gateway address / reserved: 10 bits in every variant */
     if (!bits || !out) {
         return 0;
     }
-    memset(out, 0, sizeof(*out));
-    out->relay_addr = (uint16_t)tetra_bits_to_uint(bits, 0, 10);
-    out->has_relay = comm_type != 0;
-    out->fill_bit = bits[pos++] & 1u;
-    out->frag_flag = bits[pos++] & 1u;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    tetra_bit_reader r = tetra_bits_reader(bits, DMO_SCH_H_BITS, 0);
+    /* Repeater address (via DM-REP), gateway address (via a gateway) or reserved: 10 bits in every case. */
+    out->relay_addr = (uint16_t)tetra_bits_read(&r, 10);
+    out->has_relay = (uint8_t)(comm_type != 0);
+    out->fill_bit = (uint8_t)tetra_bits_read(&r, 1);
+    out->frag_flag = (uint8_t)tetra_bits_read(&r, 1);
     if (out->frag_flag) {
-        out->num_schf = (uint8_t)tetra_bits_to_uint(bits, pos, 4);
-        pos += 4;
+        out->num_schf = (uint8_t)tetra_bits_read(&r, 4);
     }
-    out->frame_countdown = (uint8_t)tetra_bits_to_uint(bits, pos, 2);
-    pos += 2;
-    out->dst_type = (uint8_t)tetra_bits_to_uint(bits, pos, 2);
-    pos += 2;
-    if (out->dst_type != 2u) {
-        out->dst = tetra_bits_to_uint(bits, pos, 24);
-        pos += 24;
-    }
-    out->src_type = (uint8_t)tetra_bits_to_uint(bits, pos, 2);
-    pos += 2;
-    if (out->src_type != 2u) {
-        out->src = tetra_bits_to_uint(bits, pos, 24);
-        pos += 24;
-    }
-    /* The MNI is always present for direct (00) and DM-REP (01). For a gateway
-     * (10 or 11) it is present when either address is a true SSI (type 00),
-     * EN 300 396-5 clause 14.1.1. The colour code uses the gateway address, so
-     * a source address is enough even when the MNI is absent. */
-    {
-        int gateway = (comm_type == 2 || comm_type == 3);
-        int mni_present = !gateway || out->dst_type == 0 || out->src_type == 0;
-        if (mni_present && pos + 24 <= 124) {
-            out->mni = tetra_bits_to_uint(bits, pos, 24);
-            pos += 24;
-            if (!gateway) {
-                out->has_addrs = 1;
-            }
-        }
-        if (gateway && out->src_type != 2u) {
-            out->has_addrs = 1;
-        }
-    }
-    out->msg_type = (uint8_t)tetra_bits_to_uint(bits, pos, 5);
-    pos += 5;
-    tetra_dmo_parse_elems(bits, pos, 124, out);
+    out->frame_countdown = (uint8_t)tetra_bits_read(&r, 2);
+    dmo_read_addressed(&r, comm_type, TETRA_DMO_AIE_DM1, out);
     return 1;
 }
 
-static const char*
-tetra_dmo_circuit_name(unsigned mode) {
-    if (mode == 0) {
-        return "speech";
-    }
-    if (mode == 8) {
-        return "prop-speech";
-    }
-    return "data";
-}
-
-static const char*
-tetra_dmo_disconnect_name(unsigned cause) {
-    static const char* const name[] = {
-        "unknown",     "no E2EE support", "service unsupported", "rejected by called party",
-        "SCK failure", "poor quality",    "E2EE required",       "security mismatch"};
-    return cause < 8 ? name[cause] : "reserved";
-}
-
-static const char*
-tetra_dmo_reject_name(unsigned cause) {
-    switch (cause) {
-        case 0: return "unknown";
-        case 1: return "invalid";
-        case 2: return "master will transmit";
-        case 3: return "no short data";
-        case 6: return "security mismatch";
-        default: return "reserved";
-    }
-}
-
-static const char*
-tetra_dmo_preempt_kind(unsigned kind) {
-    switch (kind) {
-        case 0: return "circuit";
-        case 1: return "short data";
-        case 2: return "late gateway";
-        case 3: return "TMO interrupt";
-        case 4: return "TMO wait";
-        case 5: return "TMO break";
-        case 6: return "TMO timing";
-        case 7: return "TMO timer";
-        case 8: return "gateway pre-emption";
-        default: return "reserved";
-    }
-}
-
-static int
-tetra_dmo_timing_text(const tetra_dmo_sync_h_t* h, char* buf, int buf_len) {
-    if (!h->timing_change) {
-        buf[0] = '\0';
+int
+tetra_dmo_parse_data(const uint8_t* bits, int len, int comm_type, tetra_dmo_sync_h_t* out) {
+    if (!bits || !out) {
         return 0;
     }
-    if (h->timing_adjust >= 1 && h->timing_adjust <= 3671) {
-        return snprintf(buf, (size_t)buf_len, " timing=+%u symbols", (unsigned)h->timing_adjust * 5u);
+    DSD_MEMSET(out, 0, sizeof(*out));
+    tetra_bit_reader r = tetra_bits_reader(bits, len, 0);
+    /* EN 300 396-3 table 23: MAC PDU type 00 is DMAC-DATA. */
+    if (tetra_bits_read(&r, 2) != 0u || !tetra_bits_ok(&r)) {
+        return 0;
     }
-    return snprintf(buf, (size_t)buf_len, " timing=reserved");
+    out->fill_bit = (uint8_t)tetra_bits_read(&r, 1);
+    out->stolen2 = (uint8_t)tetra_bits_read(&r, 1);
+    out->frag_flag = (uint8_t)tetra_bits_read(&r, 1);
+    out->null_pdu = (uint8_t)tetra_bits_read(&r, 1);
+    if (out->null_pdu) {
+        return 1;
+    }
+    out->frame_countdown = (uint8_t)tetra_bits_read(&r, 2);
+    out->enc_state = (uint8_t)tetra_bits_read(&r, 2);
+    if (out->enc_state == TETRA_DMO_AIE_DM2C) {
+        /* DM-2-C encrypts a DMAC-DATA PDU from the destination address type on (clause 9.3.2). */
+        out->sdu_state = TETRA_DMO_SDU_ENCRYPTED;
+        return 1;
+    }
+    dmo_read_addressed(&r, comm_type, out->enc_state, out);
+    if (out->enc_state == TETRA_DMO_AIE_DM2B) {
+        dmo_hide_dst(out);
+    }
+    return 1;
+}
+
+/* ---- Text ----------------------------------------------------------------------------------------------------- */
+
+typedef struct {
+    char* buf;
+    size_t cap;
+    size_t len;
+} dmo_text;
+
+static void dmo_put(dmo_text* t, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 2, 3);
+
+/* Append to `t`, truncating at its capacity. */
+static void
+dmo_put(dmo_text* t, const char* fmt, ...) {
+    if (t->len + 1u >= t->cap) {
+        return;
+    }
+    const size_t room = t->cap - t->len;
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = DSD_VSNPRINTF(t->buf + t->len, room, fmt, ap);
+    va_end(ap);
+    if (n > 0) {
+        t->len += (size_t)n < room ? (size_t)n : room - 1u;
+    }
+}
+
+/* names[v], or "reserved" for a value the table does not name. */
+static const char*
+dmo_name(const char* const* names, size_t n, uint32_t v) {
+    return (v < n && names[v] != NULL) ? names[v] : "reserved";
+}
+
+#define DMO_NAME(names, v) dmo_name((names), DMO_COUNT(names), (v))
+
+static const char* const k_priority[] = {"normal", "high", "pre-emptive", "emergency"};
+
+/* Circuit mode type, clause 9.6.3. */
+static const char*
+dmo_circuit_name(uint32_t mode) {
+    if (mode == 0u) {
+        return "speech";
+    }
+    if (mode == 8u) {
+        return "prop-speech";
+    }
+    return mode <= 7u ? "data" : "reserved";
 }
 
 static const char*
-tetra_dmo_gw_name(unsigned subtype) {
-    switch (subtype) {
-        case TETRA_DMO_GW_SETUP: return "DM-GSETUP";
-        case TETRA_DMO_GW_CONNECT: return "DM-GCONNECT";
-        case TETRA_DMO_GW_ACK: return "DM-GACK";
-        case TETRA_DMO_GW_RELEASE: return "DM-GRELEASE";
-        case TETRA_DMO_GW_TX_REQUEST: return "DM-GTX REQUEST";
-        case TETRA_DMO_GW_TX_ACCEPT: return "DM-GTX ACCEPT";
-        case TETRA_DMO_GW_PREEMPT: return "DM-GPREEMPT";
-        case TETRA_DMO_GW_PRE_ACCEPT: return "DM-GPRE ACCEPT";
-        case TETRA_DMO_GW_REJECT: return "DM-GREJECT";
-        case TETRA_DMO_GW_REG_REQUEST: return "DM-GREGISTER REQUEST";
-        case TETRA_DMO_GW_REG_ACCEPT: return "DM-GREGISTER ACCEPT";
-        case TETRA_DMO_GW_REG_REJECT: return "DM-GREGISTER REJECT";
-        case TETRA_DMO_GW_REG_CANCEL: return "DM-GREGISTER CANCEL";
-        case TETRA_DMO_GW_CANCEL_ACK: return "DM-GCANCEL ACK";
-        default: return "gateway";
+dmo_call_kind(const tetra_dmo_sync_h_t* h) {
+    if (h->sdu_state == TETRA_DMO_SDU_ENCRYPTED) {
+        return "call";
     }
-}
-
-static const char*
-tetra_dmo_gw_release_name(unsigned cause) {
-    switch (cause) {
-        case 0: return "unknown";
-        case 1: return "TMO resource lost";
-        case 2: return "TMO call timer expired";
-        default: return "reserved";
-    }
-}
-
-static const char*
-tetra_dmo_gw_reject_name(unsigned cause) {
-    switch (cause) {
-        case 0: return "unknown";
-        case 1: return "invalid";
-        case 2: return "rejected by gateway";
-        case 3: return "rejected by SwMI";
-        case 4: return "TMO transmission failure";
-        default: return "reserved";
-    }
-}
-
-static const char*
-tetra_dmo_reg_reject_name(unsigned cause) {
-    switch (cause) {
-        case 0: return "unknown";
-        case 1: return "ITSI unknown";
-        case 2: return "no SwMI response";
-        case 3: return "attachment rejected";
-        case 4: return "rejected by gateway";
-        case 5: return "group unsupported";
-        default: return "reserved";
-    }
+    return h->e[TETRA_DMO_E_CALL_TYPE] ? "group" : "individual";
 }
 
 static int
-tetra_dmo_describe_gateway(const tetra_dmo_sync_h_t* h, char* buf, int buf_len) {
-    static const char* const prio[4] = {"normal", "high", "pre-emptive", "emergency"};
-    static const int wait_s[8] = {0, 1, 2, 5, 10, 20, 30, 60};
-    char timing[40];
-    const char* name = tetra_dmo_gw_name(h->gw_subtype);
-    tetra_dmo_timing_text(h, timing, (int)sizeof(timing));
-    switch (h->gw_subtype) {
-        case TETRA_DMO_GW_SETUP: {
-            char area[8];
-            char called[48];
-            if (h->area == 0) {
-                snprintf(area, sizeof(area), "unset");
-            } else if (h->area == 15) {
-                snprintf(area, sizeof(area), "all");
-            } else {
-                snprintf(area, sizeof(area), "%u", h->area);
-            }
-            if (h->called_tsi) {
-                snprintf(called, sizeof(called), "called=%u MNI=%u/%u", h->called_ssi, (h->called_mni >> 14) & 0x3FFu,
-                         h->called_mni & 0x3FFFu);
-            } else {
-                snprintf(called, sizeof(called), "called=%u", h->called_ssi);
-            }
-            return snprintf(buf, (size_t)buf_len, "%s %s %s prio=%s label=%u %s area=%s%s%s%s", name,
-                            h->group_call ? "group" : "individual", tetra_dmo_circuit_name(h->circuit_mode),
-                            prio[h->priority & 3u], h->request_label, called, area,
-                            h->external_n ? " ext=" : (h->extra_addr ? " extra-addr" : ""),
-                            h->external_n ? h->external : "", h->sds_truncated ? " truncated" : "");
-        }
-        case TETRA_DMO_GW_CONNECT:
-            return snprintf(buf, (size_t)buf_len, "%s %s %s pwr=%u label=%u%s", name,
-                            h->group_call ? "group" : "individual", tetra_dmo_circuit_name(h->circuit_mode),
-                            h->power_class, h->request_label, h->gw_enc ? " SwMI-enc" : "");
-        case TETRA_DMO_GW_TX_ACCEPT:
-        case TETRA_DMO_GW_PRE_ACCEPT:
-            return snprintf(buf, (size_t)buf_len, "%s %s %s pwr=%u%s", name, h->group_call ? "group" : "individual",
-                            tetra_dmo_circuit_name(h->circuit_mode), h->power_class, h->gw_enc ? " SwMI-enc" : "");
-        case TETRA_DMO_GW_ACK: {
-            const char* wait;
-            char wait_buf[24];
-            if (h->wait_code == 0) {
-                wait = "predefined";
-            } else {
-                snprintf(wait_buf, sizeof(wait_buf), "%ds", h->wait_code < 8 ? wait_s[h->wait_code] : 0);
-                wait = wait_buf;
-            }
-            if (h->has_reservation) {
-                return snprintf(buf, (size_t)buf_len, "%s %s wait=%s%s reserve=%u frames prio=%s", name,
-                                h->gack_type == 1 ? "incomplete" : "full", wait, timing, h->reservation * 6u,
-                                prio[h->priority & 3u]);
-            }
-            return snprintf(buf, (size_t)buf_len, "%s %s wait=%s%s", name, h->gack_type == 1 ? "incomplete" : "full",
-                            wait, timing);
-        }
-        case TETRA_DMO_GW_RELEASE:
-            return snprintf(buf, (size_t)buf_len, "%s %s", name, tetra_dmo_gw_release_name(h->release_cause));
-        case TETRA_DMO_GW_REJECT:
-            return snprintf(buf, (size_t)buf_len, "%s %s", name, tetra_dmo_gw_reject_name(h->reject_cause));
-        case TETRA_DMO_GW_TX_REQUEST:
-        case TETRA_DMO_GW_PREEMPT:
-            if (h->has_calling_tsi) {
-                return snprintf(buf, (size_t)buf_len, "%s%s %s %s prio=%s calling=%u/%u ssi=%u", name,
-                                h->after_preempt ? " after-preempt" : "", h->group_call ? "group" : "individual",
-                                tetra_dmo_circuit_name(h->circuit_mode), prio[h->priority & 3u],
-                                (h->calling_mni >> 14) & 0x3FFu, h->calling_mni & 0x3FFFu, h->calling_ssi);
-            }
-            return snprintf(buf, (size_t)buf_len, "%s%s %s %s prio=%s", name, h->after_preempt ? " after-preempt" : "",
-                            h->group_call ? "group" : "individual", tetra_dmo_circuit_name(h->circuit_mode),
-                            prio[h->priority & 3u]);
-        case TETRA_DMO_GW_REG_REQUEST:
-            if (h->has_gssi) {
-                return snprintf(buf, (size_t)buf_len, "%s %s time=%u frames gssi=%u", name,
-                                h->reg_unsolicited ? "unsolicited" : "solicited", h->reg_frames, h->gssi);
-            }
-            if (h->has_calling_tsi) {
-                return snprintf(buf, (size_t)buf_len, "%s %s time=%u frames calling=%u/%u ssi=%u", name,
-                                h->reg_unsolicited ? "unsolicited" : "solicited", h->reg_frames,
-                                (h->calling_mni >> 14) & 0x3FFu, h->calling_mni & 0x3FFFu, h->calling_ssi);
-            }
-            return snprintf(buf, (size_t)buf_len, "%s %s time=%u frames", name,
-                            h->reg_unsolicited ? "unsolicited" : "solicited", h->reg_frames);
-        case TETRA_DMO_GW_REG_ACCEPT: return snprintf(buf, (size_t)buf_len, "%s label=%u", name, h->reg_label);
-        case TETRA_DMO_GW_REG_REJECT:
-        case TETRA_DMO_GW_REG_CANCEL:
-            return snprintf(buf, (size_t)buf_len, "%s label=%u %s", name, h->reg_label,
-                            tetra_dmo_reg_reject_name(h->reject_cause));
-        case TETRA_DMO_GW_CANCEL_ACK: return snprintf(buf, (size_t)buf_len, "%s label=%u", name, h->reg_label);
-        default: return 0;
-    }
+dmo_sdu_clear(const tetra_dmo_sync_h_t* h) {
+    return h->sdu_state != TETRA_DMO_SDU_ENCRYPTED;
 }
 
-static int
-tetra_dmo_describe_sds(const tetra_dmo_sync_h_t* h, char* buf, int buf_len) {
-    static const char* const prio[4] = {"normal", "high", "pre-emptive", "emergency"};
-    static const char* const ack[] = {"full", "full+data", "fcs failed", "incomplete"};
-    int n;
-    if (h->msg_type == TETRA_DMO_MSG_SDS_ACK) {
-        const char* name = h->ack_type < 4 ? ack[h->ack_type] : "reserved";
-        n = snprintf(buf, (size_t)buf_len, "SDS ack %s", name);
-    } else if (h->sdti == 4) {
-        n = snprintf(buf, (size_t)buf_len, "SDS status=0x%04x prio=%s%s", (unsigned)(h->sds_value & 0xFFFFu),
-                     prio[h->priority & 3u], h->sds_tx_type ? " in-call" : "");
+/* Timing adjustment, clause 9.6.19: the delay in units of 5 symbols, 1 to 3671. */
+static void
+dmo_put_adjust(dmo_text* t, uint32_t adjust) {
+    if (adjust >= 1u && adjust <= 3671u) {
+        dmo_put(t, " timing=+%u symbols", (adjust * 5u));
     } else {
-        n = snprintf(buf, (size_t)buf_len, "SDS data sdti=%u len=%u prio=%s%s", h->sdti, h->sds_len,
-                     prio[h->priority & 3u], h->sds_tx_type ? " in-call" : "");
+        dmo_put(t, " timing=reserved");
     }
-    if (n < 0 || n >= buf_len) {
-        return n < 0 ? 0 : n;
+}
+
+static void
+dmo_put_timing(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    if (h->e[TETRA_DMO_E_TIMING_CHANGE]) {
+        dmo_put_adjust(t, h->e[TETRA_DMO_E_TIMING_ADJUST]);
+    }
+}
+
+static void
+dmo_put_calling(const tetra_dmo_sync_h_t* h, dmo_text* t, int present) {
+    if (present) {
+        const uint32_t mni = h->e[TETRA_DMO_E_CALLING_MNI];
+        dmo_put(t, " calling=%u/%u ssi=%u", ((mni >> 14) & 0x3FFu), (mni & 0x3FFFu),
+                (unsigned)h->e[TETRA_DMO_E_CALLING_SSI]);
     }
     if (h->external_n) {
-        n += snprintf(buf + n, (size_t)(buf_len - n), " ext=%s", h->external);
+        dmo_put(t, " ext=%s", h->external);
     }
-    if (n >= 0 && n < buf_len && h->has_fcs) {
-        n += snprintf(buf + n, (size_t)(buf_len - n), " fcs=0x%08x", h->sds_fcs);
-    }
-    if (n >= 0 && n < buf_len && h->sds_truncated) {
-        n += snprintf(buf + n, (size_t)(buf_len - n), " truncated");
-    }
-    return n < 0 ? 0 : n;
 }
+
+static void
+dmo_describe_call(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "%s %s prio=%s pwr=%u", dmo_call_kind(h), dmo_circuit_name(h->e[TETRA_DMO_E_CIRCUIT_MODE]),
+            DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]), (unsigned)h->e[TETRA_DMO_E_POWER_CLASS]);
+    if (h->e[TETRA_DMO_E_E2EE]) {
+        dmo_put(t, " E2EE");
+    }
+    if (h->e[TETRA_DMO_E_PREEMPT_FLAG]) {
+        dmo_put(t, " preempt");
+    }
+}
+
+static void
+dmo_describe_reserved(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "reserved %u frames prio=%s pwr=%u", (h->e[TETRA_DMO_E_RESERVATION] * 6u),
+            DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]), (unsigned)h->e[TETRA_DMO_E_POWER_CLASS]);
+}
+
+static void
+dmo_describe_sds_occupied(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "SDS time remaining=%u prio=%s", (unsigned)h->e[TETRA_DMO_E_SDS_REMAINING],
+            DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]));
+}
+
+static void
+dmo_describe_timing_req(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "timing request");
+    dmo_put_adjust(t, h->e[TETRA_DMO_E_TIMING_ADJUST]);
+}
+
+static void
+dmo_describe_timing_ack(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "timing %s", h->e[TETRA_DMO_E_TIMING_ACCEPT] ? "accepted" : "rejected");
+    dmo_put_timing(h, t);
+}
+
+static void
+dmo_describe_connect(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "accept %s", dmo_circuit_name(h->e[TETRA_DMO_E_CIRCUIT_MODE]));
+}
+
+static void
+dmo_describe_disconnect(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    /* Clause 9.7.7. */
+    static const char* const k_cause[] = {
+        "unknown",     "no E2EE support", "service unsupported", "rejected by called party",
+        "SCK failure", "poor quality",    "E2EE required",       "security mismatch",
+    };
+    dmo_put(t, "disconnect");
+    if (dmo_sdu_clear(h)) {
+        dmo_put(t, " %s", DMO_NAME(k_cause, h->e[TETRA_DMO_E_DISCONNECT_CAUSE]));
+    }
+}
+
+static void
+dmo_describe_release(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    const uint32_t cause = h->e[TETRA_DMO_E_RELEASE_CAUSE];
+    dmo_put(t, "release");
+    if (!dmo_sdu_clear(h)) {
+        return;
+    }
+    /* Clauses 9.7.15 and 9.7.15A. */
+    if (cause == 15u && h->e[TETRA_DMO_E_RELEASE_EXT] == 0u) {
+        dmo_put(t, " occupied by other users");
+    } else if (cause == 15u) {
+        dmo_put(t, " extension=%u", (unsigned)h->e[TETRA_DMO_E_RELEASE_EXT]);
+    } else {
+        dmo_put(t, " cause=%u", (unsigned)cause);
+    }
+}
+
+static void
+dmo_describe_tx_ceased(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    /* Clause 9.7.6 and EN 300 396-5 table 26. */
+    static const char* const k_cause[] = {
+        "unknown",    "normal end",        "pre-emption",
+        "time limit", "TMO interruption",  "TMO wait",
+        "TMO break",  "TMO timing change", "TMO call timer expired",
+    };
+    dmo_put(t, "ceased reserve=%u frames prio=%s", (h->e[TETRA_DMO_E_RESERVATION] * 6u),
+            DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]));
+    if (dmo_sdu_clear(h)) {
+        dmo_put(t, " cause=%s", DMO_NAME(k_cause, h->e[TETRA_DMO_E_CEASE_CAUSE]));
+    }
+}
+
+static void
+dmo_describe_tx_request(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "changeover prio=%s", DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]));
+    dmo_put_timing(h, t);
+}
+
+static void
+dmo_describe_tx_accept(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "changeover accepted");
+    dmo_put_timing(h, t);
+}
+
+/* Type of pre-emption, clause 9.6.23 and EN 300 396-5 table 24. */
+static const char* const k_preempt_type[] = {
+    "circuit",   "short data", "late gateway", "TMO interrupt",       "TMO wait",
+    "TMO break", "TMO timing", "TMO timer",    "gateway pre-emption",
+};
+
+static void
+dmo_describe_preempt(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    /* Perceived channel state, clause 9.6.7 and EN 300 396-5 table 23. */
+    static const char* const k_seen[] = {
+        "circuit occupation",
+        "reservation",
+        "short data occupation",
+        "registration phase",
+    };
+    dmo_put(t, "preempt %s %s %s prio=%s", h->e[TETRA_DMO_E_NEW_CALL] ? "new-call" : "ongoing",
+            DMO_NAME(k_seen, h->e[TETRA_DMO_E_CHANNEL_STATE]), DMO_NAME(k_preempt_type, h->e[TETRA_DMO_E_PREEMPT_TYPE]),
+            DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]));
+    dmo_put_timing(h, t);
+}
+
+static void
+dmo_describe_pre_accept(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "preempt accepted %s %s", h->e[TETRA_DMO_E_NEW_CALL] ? "new-call" : "ongoing",
+            DMO_NAME(k_preempt_type, h->e[TETRA_DMO_E_PREEMPT_TYPE]));
+    dmo_put_timing(h, t);
+}
+
+static void
+dmo_describe_reject(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    /* Clause 9.7.14 and EN 300 396-5 table 28. */
+    static const char* const k_cause[] = {
+        "unknown",
+        "invalid",
+        "master will transmit",
+        "no short data",
+        "gateway no short data",
+        "rejected by gateway",
+        "security mismatch",
+    };
+    dmo_put(t, "reject");
+    if (dmo_sdu_clear(h)) {
+        dmo_put(t, " %s", DMO_NAME(k_cause, h->e[TETRA_DMO_E_REJECT_CAUSE]));
+    }
+}
+
+static void
+dmo_describe_info(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    const uint32_t type = h->e[TETRA_DMO_E_INFO_TYPE];
+    dmo_put(t, "info");
+    if (dmo_sdu_clear(h)) {
+        dmo_put_calling(h, t, type == 0u || type == 2u);
+    }
+}
+
+static void
+dmo_describe_sds(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    const uint32_t sdti = h->e[TETRA_DMO_E_SDTI];
+    const char* in_call = h->e[TETRA_DMO_E_SDS_TX_TYPE] ? " in-call" : "";
+    if (!dmo_sdu_clear(h)) {
+        dmo_put(t, "SDS prio=%s%s", DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]), in_call);
+        return;
+    }
+    if (sdti == 4u) {
+        dmo_put(t, "SDS status=0x%04x", (unsigned)(h->sds_value & 0xFFFFu));
+    } else {
+        dmo_put(t, "SDS data sdti=%u len=%u", (unsigned)sdti, (unsigned)h->e[TETRA_DMO_E_SDS_LENGTH]);
+    }
+    dmo_put(t, " prio=%s%s", DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]), in_call);
+    dmo_put_calling(h, t, (DMO_ADDR_TYPE_TSI >> (h->e[TETRA_DMO_E_ADDR_TYPE] & 15u)) & 1u);
+    if (h->e[TETRA_DMO_E_FCS_FLAG] && h->sdu_state == TETRA_DMO_SDU_CLEAR) {
+        dmo_put(t, " fcs=0x%08x", (unsigned)h->e[TETRA_DMO_E_FCS]);
+    }
+}
+
+static void
+dmo_describe_sds_ack(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    /* Acknowledgement type, clause 9.7.1. */
+    static const char* const k_ack[] = {"full", "full+data", "fcs failed", "incomplete"};
+    dmo_put(t, "SDS ack");
+    if (dmo_sdu_clear(h)) {
+        dmo_put(t, " %s", DMO_NAME(k_ack, h->e[TETRA_DMO_E_ACK_TYPE]));
+    }
+}
+
+/* ---- Gateway-specific messages, EN 300 396-5 clause 14.5 ------------------------------------------------------ */
+
+static const char* const k_gw_names[] = {
+    "DM-GSETUP",
+    "DM-GCONNECT",
+    "DM-GACK",
+    "DM-GRELEASE",
+    "DM-GTX REQUEST",
+    "DM-GTX ACCEPT",
+    "DM-GPREEMPT",
+    "DM-GPRE ACCEPT",
+    "DM-GREJECT",
+    "DM-GREGISTER REQUEST",
+    "DM-GREGISTER ACCEPT",
+    "DM-GREGISTER REJECT",
+    "DM-GREGISTER CANCEL",
+    "DM-GCANCEL ACK",
+};
+
+static void
+dmo_describe_gsetup(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, " %s %s prio=%s", dmo_call_kind(h), dmo_circuit_name(h->e[TETRA_DMO_E_CIRCUIT_MODE]),
+            DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]));
+    if (!dmo_sdu_clear(h)) {
+        return;
+    }
+    const uint32_t mni = h->e[TETRA_DMO_E_CALLED_MNI];
+    const uint32_t area = h->e[TETRA_DMO_E_AREA];
+    dmo_put(t, " label=%u called=%u", (unsigned)h->e[TETRA_DMO_E_REQUEST_LABEL],
+            (unsigned)h->e[TETRA_DMO_E_CALLED_SSI]);
+    if (h->e[TETRA_DMO_E_CALLED_TSI_FLAG]) {
+        dmo_put(t, " MNI=%u/%u", ((mni >> 14) & 0x3FFu), (mni & 0x3FFFu));
+    }
+    /* Area selection, EN 300 396-5 clause 14.7.1. */
+    if (area == 0u) {
+        dmo_put(t, " area=unset");
+    } else if (area == 15u) {
+        dmo_put(t, " area=all");
+    } else {
+        dmo_put(t, " area=%u", (unsigned)area);
+    }
+    dmo_put_calling(h, t, (DMO_ADDR_TYPE_TSI >> (h->e[TETRA_DMO_E_ADDR_TYPE] & 15u)) & 1u);
+}
+
+static void
+dmo_describe_gconnect(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, " %s %s pwr=%u", dmo_call_kind(h), dmo_circuit_name(h->e[TETRA_DMO_E_CIRCUIT_MODE]),
+            (unsigned)h->e[TETRA_DMO_E_POWER_CLASS]);
+    if (h->e[TETRA_DMO_E_GW_SUBTYPE] == TETRA_DMO_GW_CONNECT && dmo_sdu_clear(h)) {
+        dmo_put(t, " label=%u", (unsigned)h->e[TETRA_DMO_E_REQUEST_LABEL]);
+    }
+    if (h->e[TETRA_DMO_E_GW_ENC]) {
+        dmo_put(t, " SwMI-enc");
+    }
+}
+
+static void
+dmo_describe_gack(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    /* Value of DM-MS waiting timer, EN 300 396-5 clause 14.7.15. */
+    static const char* const k_wait[] = {"predefined", "1s", "2s", "5s", "10s", "20s", "30s", "60s"};
+    if (dmo_sdu_clear(h)) {
+        dmo_put(t, " %s wait=%s", h->e[TETRA_DMO_E_GACK_TYPE] == 1u ? "incomplete" : "full",
+                DMO_NAME(k_wait, h->e[TETRA_DMO_E_WAIT_CODE]));
+    }
+    dmo_put_timing(h, t);
+    if (h->e[TETRA_DMO_E_RESERVATION_ANNOUNCED]) {
+        dmo_put(t, " reserve=%u frames prio=%s", (h->e[TETRA_DMO_E_RESERVATION] * 6u),
+                DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]));
+    }
+}
+
+static void
+dmo_describe_grelease(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    /* Gateway release cause, EN 300 396-5 clause 14.7.8. */
+    static const char* const k_cause[] = {"unknown", "TMO resource lost", "TMO call timer expired"};
+    if (dmo_sdu_clear(h)) {
+        dmo_put(t, " %s", DMO_NAME(k_cause, h->e[TETRA_DMO_E_RELEASE_CAUSE]));
+    }
+}
+
+static void
+dmo_describe_greject(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    /* Gateway reject cause, EN 300 396-5 clause 14.7.7. */
+    static const char* const k_cause[] = {
+        "unknown", "invalid", "rejected by gateway", "rejected by SwMI", "TMO transmission failure",
+    };
+    if (dmo_sdu_clear(h)) {
+        dmo_put(t, " %s", DMO_NAME(k_cause, h->e[TETRA_DMO_E_REJECT_CAUSE]));
+    }
+}
+
+static void
+dmo_describe_gtx_request(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    dmo_put(t, "%s %s %s prio=%s", h->e[TETRA_DMO_E_GTX_TYPE] ? " after-preempt" : "", dmo_call_kind(h),
+            dmo_circuit_name(h->e[TETRA_DMO_E_CIRCUIT_MODE]), DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]));
+    if (dmo_sdu_clear(h)) {
+        dmo_put_calling(h, t, h->e[TETRA_DMO_E_CALLING_TSI_FLAG] != 0u);
+    }
+}
+
+static void
+dmo_describe_greg(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    /* Registration reject cause, EN 300 396-5 clause 14.7.10. */
+    static const char* const k_cause[] = {
+        "unknown",           "ITSI unknown", "no SwMI response", "attachment rejected", "rejected by gateway",
+        "group unsupported",
+    };
+    const uint32_t sub = h->e[TETRA_DMO_E_GW_SUBTYPE];
+    if (sub == TETRA_DMO_GW_REG_REQUEST || sub == TETRA_DMO_GW_REG_CANCEL) {
+        dmo_put(t, " time=%u frames", (unsigned)h->e[TETRA_DMO_E_REG_TIME]);
+    }
+    if (sub != TETRA_DMO_GW_REG_CANCEL && sub != TETRA_DMO_GW_CANCEL_ACK) {
+        dmo_put(t, " %s", h->e[TETRA_DMO_E_REG_TYPE] ? "unsolicited" : "solicited");
+    }
+    if (!dmo_sdu_clear(h)) {
+        return;
+    }
+    if (sub == TETRA_DMO_GW_REG_REQUEST) {
+        dmo_put_calling(h, t, h->e[TETRA_DMO_E_CALLING_TSI_FLAG] != 0u);
+        if (h->e[TETRA_DMO_E_GSSI_FLAG]) {
+            dmo_put(t, " gssi=%u", (unsigned)h->e[TETRA_DMO_E_GSSI]);
+        }
+        return;
+    }
+    dmo_put(t, " label=%u", (unsigned)h->e[TETRA_DMO_E_REG_LABEL]);
+    if (sub == TETRA_DMO_GW_REG_REJECT || sub == TETRA_DMO_GW_REG_CANCEL) {
+        dmo_put(t, " %s", DMO_NAME(k_cause, h->e[TETRA_DMO_E_REJECT_CAUSE]));
+    }
+}
+
+typedef void (*dmo_describer)(const tetra_dmo_sync_h_t* h, dmo_text* t);
+
+static const dmo_describer k_gw_describers[TETRA_DMO_GW_CANCEL_ACK + 1] = {
+    [TETRA_DMO_GW_SETUP] = dmo_describe_gsetup,
+    [TETRA_DMO_GW_CONNECT] = dmo_describe_gconnect,
+    [TETRA_DMO_GW_ACK] = dmo_describe_gack,
+    [TETRA_DMO_GW_RELEASE] = dmo_describe_grelease,
+    [TETRA_DMO_GW_TX_REQUEST] = dmo_describe_gtx_request,
+    [TETRA_DMO_GW_TX_ACCEPT] = dmo_describe_gconnect,
+    [TETRA_DMO_GW_PREEMPT] = dmo_describe_gtx_request,
+    [TETRA_DMO_GW_PRE_ACCEPT] = dmo_describe_gconnect,
+    [TETRA_DMO_GW_REJECT] = dmo_describe_greject,
+    [TETRA_DMO_GW_REG_REQUEST] = dmo_describe_greg,
+    [TETRA_DMO_GW_REG_ACCEPT] = dmo_describe_greg,
+    [TETRA_DMO_GW_REG_REJECT] = dmo_describe_greg,
+    [TETRA_DMO_GW_REG_CANCEL] = dmo_describe_greg,
+    [TETRA_DMO_GW_CANCEL_ACK] = dmo_describe_greg,
+};
+
+static void
+dmo_describe_gateway(const tetra_dmo_sync_h_t* h, dmo_text* t) {
+    const uint32_t sub = h->e[TETRA_DMO_E_GW_SUBTYPE];
+    dmo_put(t, "%s", DMO_NAME(k_gw_names, sub));
+    if (sub < DMO_COUNT(k_gw_describers) && k_gw_describers[sub] != NULL) {
+        k_gw_describers[sub](h, t);
+    }
+}
+
+static const dmo_describer k_describers[32] = {
+    [TETRA_DMO_MSG_RESERVED] = dmo_describe_reserved,
+    [TETRA_DMO_MSG_SDS_OCCUPIED] = dmo_describe_sds_occupied,
+    [TETRA_DMO_MSG_TIMING_REQ] = dmo_describe_timing_req,
+    [TETRA_DMO_MSG_TIMING_ACK] = dmo_describe_timing_ack,
+    [TETRA_DMO_MSG_SETUP] = dmo_describe_call,
+    [TETRA_DMO_MSG_SETUP_PRES] = dmo_describe_call,
+    [TETRA_DMO_MSG_CONNECT] = dmo_describe_connect,
+    [TETRA_DMO_MSG_DISCONNECT] = dmo_describe_disconnect,
+    [TETRA_DMO_MSG_CONNECT_ACK] = dmo_describe_call,
+    [TETRA_DMO_MSG_OCCUPIED] = dmo_describe_call,
+    [TETRA_DMO_MSG_RELEASE] = dmo_describe_release,
+    [TETRA_DMO_MSG_TX_CEASED] = dmo_describe_tx_ceased,
+    [TETRA_DMO_MSG_TX_REQUEST] = dmo_describe_tx_request,
+    [TETRA_DMO_MSG_TX_ACCEPT] = dmo_describe_tx_accept,
+    [TETRA_DMO_MSG_PREEMPT] = dmo_describe_preempt,
+    [TETRA_DMO_MSG_PRE_ACCEPT] = dmo_describe_pre_accept,
+    [TETRA_DMO_MSG_REJECT] = dmo_describe_reject,
+    [TETRA_DMO_MSG_INFO] = dmo_describe_info,
+    [TETRA_DMO_MSG_SDS_UDATA] = dmo_describe_sds,
+    [TETRA_DMO_MSG_SDS_DATA] = dmo_describe_sds,
+    [TETRA_DMO_MSG_SDS_ACK] = dmo_describe_sds_ack,
+    [TETRA_DMO_MSG_GATEWAY] = dmo_describe_gateway,
+};
 
 int
 tetra_dmo_describe_elems(const tetra_dmo_sync_h_t* h, char* buf, int buf_len) {
-    static const char* const prio[4] = {"normal", "high", "pre-emptive", "emergency"};
-    static const char* const seen[] = {"circuit occupation", "reservation", "short data occupation", "registration"};
-    char timing[40];
-    int n = 0;
     if (!h || !buf || buf_len <= 0) {
         return 0;
     }
+    dmo_text t = {buf, (size_t)buf_len, 0u};
     buf[0] = '\0';
-    tetra_dmo_timing_text(h, timing, (int)sizeof(timing));
-    if (h->elems & TETRA_DMO_ELEMS_CALL) {
-        n = snprintf(buf, (size_t)buf_len, "%s %s prio=%s pwr=%u%s%s", h->group_call ? "group" : "individual",
-                     tetra_dmo_circuit_name(h->circuit_mode), prio[h->priority & 3u], h->power_class,
-                     h->e2ee ? " E2EE" : "", h->preempt_flag ? " preempt" : "");
-    } else if (h->elems & TETRA_DMO_ELEMS_CEASED) {
-        n = snprintf(buf, (size_t)buf_len, "cause=%u reserve=%u frames prio=%s", h->cease_cause, h->reservation * 6u,
-                     prio[h->priority & 3u]);
-    } else if (h->elems & TETRA_DMO_ELEMS_RESERVED) {
-        n = snprintf(buf, (size_t)buf_len, "reserved %u frames prio=%s pwr=%u", h->reservation * 6u,
-                     prio[h->priority & 3u], h->power_class);
-    } else if (h->elems & TETRA_DMO_ELEMS_SDS_OCC) {
-        n = snprintf(buf, (size_t)buf_len, "SDS time remaining=%u prio=%s", h->sds_remaining, prio[h->priority & 3u]);
-    } else if (h->elems & TETRA_DMO_ELEMS_RELEASE) {
-        if (h->has_release_ext && h->release_ext == 0) {
-            n = snprintf(buf, (size_t)buf_len, "release occupied by other users");
-        } else if (h->has_release_ext) {
-            n = snprintf(buf, (size_t)buf_len, "release extension=%u", h->release_ext);
-        } else {
-            n = snprintf(buf, (size_t)buf_len, "release cause=%u", h->release_cause);
-        }
-    } else if (h->elems & TETRA_DMO_ELEMS_CONNECT) {
-        n = snprintf(buf, (size_t)buf_len, "accept %s", tetra_dmo_circuit_name(h->circuit_mode));
-    } else if (h->elems & TETRA_DMO_ELEMS_DISCONNECT) {
-        n = snprintf(buf, (size_t)buf_len, "disconnect %s", tetra_dmo_disconnect_name(h->disconnect_cause));
-    } else if (h->elems & TETRA_DMO_ELEMS_TX_REQ) {
-        n = snprintf(buf, (size_t)buf_len, "changeover prio=%s%s", prio[h->priority & 3u], timing);
-    } else if (h->elems & TETRA_DMO_ELEMS_TX_ACCEPT) {
-        n = snprintf(buf, (size_t)buf_len, "changeover accepted%s", timing);
-    } else if (h->elems & TETRA_DMO_ELEMS_PREEMPT) {
-        const char* st = h->channel_state < 4 ? seen[h->channel_state] : "reserved-state";
-        n = snprintf(buf, (size_t)buf_len, "preempt %s %s %s prio=%s%s", h->new_call ? "new-call" : "ongoing", st,
-                     tetra_dmo_preempt_kind(h->preempt_type), prio[h->priority & 3u], timing);
-    } else if (h->elems & TETRA_DMO_ELEMS_PRE_ACCEPT) {
-        n = snprintf(buf, (size_t)buf_len, "preempt accepted %s %s%s", h->new_call ? "new-call" : "ongoing",
-                     tetra_dmo_preempt_kind(h->preempt_type), timing);
-    } else if (h->elems & TETRA_DMO_ELEMS_REJECT) {
-        n = snprintf(buf, (size_t)buf_len, "reject %s", tetra_dmo_reject_name(h->reject_cause));
-    } else if (h->elems & TETRA_DMO_ELEMS_INFO && h->info_type == 0) {
-        n = snprintf(buf, (size_t)buf_len, "calling %u/%u ssi=%u", (h->calling_mni >> 14) & 0x3FFu,
-                     h->calling_mni & 0x3FFFu, h->calling_ssi);
-    } else if (h->elems & TETRA_DMO_ELEMS_GW) {
-        n = tetra_dmo_describe_gateway(h, buf, buf_len);
-    } else if (h->elems & TETRA_DMO_ELEMS_TIMING) {
-        if (h->msg_type == TETRA_DMO_MSG_TIMING_ACK) {
-            n = snprintf(buf, (size_t)buf_len, "timing %s%s", h->timing_accept ? "accepted" : "rejected", timing);
-        } else {
-            n = snprintf(buf, (size_t)buf_len, "timing request%s", timing);
-        }
-    } else if (h->elems & TETRA_DMO_ELEMS_SDS) {
-        n = tetra_dmo_describe_sds(h, buf, buf_len);
+    if (!h->md_ok || h->msg_type >= DMO_COUNT(k_describers) || k_describers[h->msg_type] == NULL) {
+        return 0;
     }
-    return n < 0 ? 0 : n;
+    k_describers[h->msg_type](h, &t);
+    if (h->sdu_state == TETRA_DMO_SDU_TRUNCATED) {
+        dmo_put(&t, " truncated");
+    } else if (h->sdu_state == TETRA_DMO_SDU_ENCRYPTED) {
+        dmo_put(&t, " DM-SDU encrypted");
+    }
+    return (int)t.len;
 }
+
+int
+tetra_dmo_describe_presence(const tetra_dmo_pres_t* p, char* buf, int buf_len) {
+    /* Channel state (EN 300 396-4 clause 10.3.5): value 3 is the gateway registration phase (EN 300 396-5). */
+    static const char* const k_state[] = {"free", "occupied", "reserved", "registration"};
+    /* Duplex spacing in kHz (EN 300 396-4 clause 10.3.13), code 0 reserved. */
+    static const uint16_t k_spacing_khz[9] = {0u, 1600u, 4500u, 8000u, 10000u, 18000u, 30000u, 39000u, 45000u};
+    if (!p || !buf || buf_len <= 0) {
+        return 0;
+    }
+    dmo_text t = {buf, (size_t)buf_len, 0u};
+    const int gateway = p->comm_type >= 2u;
+    buf[0] = '\0';
+    dmo_put(&t, "%s=%u MNI=%u/%u %s %s pwr=%u urt=%u", gateway ? "gw" : "rep", (unsigned)p->repeater,
+            ((p->mni >> 14) & 0x3FFu), (p->mni & 0x3FFFu), p->ms_link ? "master" : "slave",
+            (gateway || p->channel_state < 3u) ? DMO_NAME(k_state, p->channel_state) : "reserved",
+            (unsigned)p->power_class, (unsigned)p->urt);
+    if (gateway) {
+        dmo_put(&t, " swmi=%s label=%u", p->swmi_up ? "up" : "down", (unsigned)p->reg_label);
+    }
+    if (p->two_freq && p->spacing >= 1u && p->spacing < DMO_COUNT(k_spacing_khz)) {
+        const unsigned khz = k_spacing_khz[p->spacing];
+        dmo_put(&t, " uplink=%s%u.%03u MHz", p->reverse ? "-" : "+", khz / 1000u, khz % 1000u);
+    }
+    return (int)t.len;
+}
+
+/* ---- Decoder state -------------------------------------------------------------------------------------------- */
 
 uint32_t
 tetra_dmo_dcc_seed(uint32_t net_id, uint32_t src_addr) {
-    /* e(1) is the most significant bit of the 30-bit colour code, exactly like
-     * the TMO extended colour code, so the same "<<2 | 3" LFSR seed applies.
-     * `net_id` is the MNI, or the gateway address; only its low 6 bits are used. */
-    uint32_t e = ((net_id & 0x3Fu) << 24) | (src_addr & 0xFFFFFFu);
-    return ((e << 2) | 3u) & 0xFFFFFFFFu;
+    /* e(1) is the most significant bit of the 30-bit colour code, as for the TMO extended colour code, so the same
+     * "<<2 | 3" LFSR seed applies (EN 300 396-2 clause 8.2.5). Only the low 6 bits of `net_id` are used. */
+    const uint32_t e = ((net_id & 0x3Fu) << 24) | (src_addr & 0xFFFFFFu);
+    return (e << 2) | 3u;
 }
 
-static uint32_t
-tetra_dmo_call_seed(const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
-    uint32_t net_id = (s->comm_type >= 2) ? (uint32_t)h->relay_addr : h->mni;
-    return tetra_dmo_dcc_seed(net_id, h->src);
+/* What a DMAC-SYNC does to the call state, by message type. */
+enum { DMO_ROLE_NONE = 0, DMO_ROLE_CALL, DMO_ROLE_FRAGMENTS, DMO_ROLE_END };
+
+static int
+dmo_sync_role(const tetra_dmo_sync_h_t* h) {
+    static const uint8_t k_roles[32] = {
+        [TETRA_DMO_MSG_SETUP] = DMO_ROLE_CALL,         [TETRA_DMO_MSG_CONNECT_ACK] = DMO_ROLE_CALL,
+        [TETRA_DMO_MSG_OCCUPIED] = DMO_ROLE_CALL,      [TETRA_DMO_MSG_SDS_UDATA] = DMO_ROLE_FRAGMENTS,
+        [TETRA_DMO_MSG_SDS_DATA] = DMO_ROLE_FRAGMENTS, [TETRA_DMO_MSG_SDS_ACK] = DMO_ROLE_FRAGMENTS,
+        [TETRA_DMO_MSG_TX_CEASED] = DMO_ROLE_END,      [TETRA_DMO_MSG_DISCONNECT] = DMO_ROLE_END,
+        [TETRA_DMO_MSG_RELEASE] = DMO_ROLE_END,
+    };
+    if (h->msg_type == TETRA_DMO_MSG_GATEWAY) {
+        /* A fragmented DM-GSETUP scrambles its SCH/F like a fragmented short data message (EN 300 396-5 clause
+         * 8.2.4); DM-GRELEASE ends the call. The subtype is known only once the elements were read. */
+        const uint32_t sub = h->md_ok ? h->e[TETRA_DMO_E_GW_SUBTYPE] : (uint32_t)DMO_NONE;
+        if (sub == TETRA_DMO_GW_SETUP) {
+            return DMO_ROLE_FRAGMENTS;
+        }
+        return sub == TETRA_DMO_GW_RELEASE ? DMO_ROLE_END : DMO_ROLE_NONE;
+    }
+    return h->msg_type < DMO_COUNT(k_roles) ? k_roles[h->msg_type] : DMO_ROLE_NONE;
+}
+
+/* The DM colour code from the "mobile network identity" (or the gateway address) and "source address" of this
+ * DMAC-SYNC (EN 300 396-3 clause 8.2.4, EN 300 396-5 clause 8.2.4). */
+static void
+dmo_learn_dcc(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
+    if (h->src_type == 2u) {
+        ts->dmo_dcc_valid = 0;
+        return;
+    }
+    const uint32_t net_id = s->comm_type >= 2u ? (uint32_t)h->relay_addr : h->mni;
+    ts->dmo_dcc_seed = tetra_dmo_dcc_seed(net_id, h->src);
+    ts->dmo_dcc_valid = 1;
+}
+
+static void
+dmo_set_crypt(tetra_state_t* ts, tetra_dmo_crypt_e crypt, uint8_t security_class) {
+    ts->dmo_crypt = (uint8_t)crypt;
+    ts->dmo_security_class = security_class;
+}
+
+/* A DMAC-SYNC that sets up or occupies the channel defines the protection of the traffic that follows (EN 300 396-3
+ * clause 8.5.3); the end of a transmission leaves it unknown until the next talker's. */
+static void
+dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
+    if (s->enc_state == TETRA_DMO_AIE_DM2C) {
+        /* DM-2-C hides the message type and scrambles with the encrypted short identity, which needs the key. */
+        ts->dmo_dcc_valid = 0;
+        dmo_set_crypt(ts, TETRA_DMO_CRYPT_AIR, s->enc_state);
+        return;
+    }
+    if (!h->has_addrs) {
+        return;
+    }
+    const int role = dmo_sync_role(h);
+    if (role == DMO_ROLE_CALL) {
+        tetra_dmo_crypt_e crypt = TETRA_DMO_CRYPT_AIR;
+        if (s->enc_state == TETRA_DMO_AIE_DM1) {
+            crypt = h->e[TETRA_DMO_E_E2EE] ? TETRA_DMO_CRYPT_E2E : TETRA_DMO_CRYPT_CLEAR;
+        }
+        dmo_learn_dcc(ts, s, h);
+        dmo_set_crypt(ts, crypt, s->enc_state);
+    } else if (role == DMO_ROLE_FRAGMENTS && h->frag_flag) {
+        dmo_learn_dcc(ts, s, h);
+    } else if (role == DMO_ROLE_END) {
+        ts->dmo_dcc_valid = 0;
+        dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN, TETRA_DMO_AIE_DM1);
+    }
+}
+
+void
+tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_dmo_sync_h_t* h) {
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts || !s) {
+        return;
+    }
+    ts->dmo = 1;
+    /* The TMO timebase does not run on a direct mode carrier. */
+    tetra_tdma_stop(state);
+    if (!s->parsed) {
+        return;
+    }
+    ts->dmo_comm_type = s->comm_type;
+    ts->dmo_ab_usage = s->ab_usage;
+    ts->dmo_slot = s->slot;
+    ts->dmo_frame = s->frame;
+    /* A presence signal describes the repeater or gateway, not a call. */
+    if (s->sync_pdu_type != TETRA_DMO_SYNC_DMAC) {
+        return;
+    }
+    ts->dmo_since_sync = 0;
+    if (h) {
+        dmo_settle(h, s->enc_state);
+        dmo_apply_call(ts, s, h);
+    }
+}
+
+tetra_dmo_crypt_e
+tetra_dmo_call_crypt(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || !ts->dmo || ts->dmo_crypt > (uint8_t)TETRA_DMO_CRYPT_E2E) {
+        return TETRA_DMO_CRYPT_UNKNOWN;
+    }
+    return (tetra_dmo_crypt_e)ts->dmo_crypt;
+}
+
+/* ---- Logging and terminal lines ------------------------------------------------------------------------------- */
+
+const char*
+tetra_dmo_msg_name(int msg_type) {
+    /* Message type, EN 300 396-3 clause 9.3.19. */
+    static const char* const k_names[32] = {
+        [TETRA_DMO_MSG_RESERVED] = "DM-RESERVED",
+        [TETRA_DMO_MSG_SDS_OCCUPIED] = "DM-SDS OCCUPIED",
+        [TETRA_DMO_MSG_TIMING_REQ] = "DM-TIMING REQUEST",
+        [TETRA_DMO_MSG_TIMING_ACK] = "DM-TIMING ACK",
+        [TETRA_DMO_MSG_SETUP] = "DM-SETUP",
+        [TETRA_DMO_MSG_SETUP_PRES] = "DM-SETUP PRES",
+        [TETRA_DMO_MSG_CONNECT] = "DM-CONNECT",
+        [TETRA_DMO_MSG_DISCONNECT] = "DM-DISCONNECT",
+        [TETRA_DMO_MSG_CONNECT_ACK] = "DM-CONNECT ACK",
+        [TETRA_DMO_MSG_OCCUPIED] = "DM-OCCUPIED",
+        [TETRA_DMO_MSG_RELEASE] = "DM-RELEASE",
+        [TETRA_DMO_MSG_TX_CEASED] = "DM-TX CEASED",
+        [TETRA_DMO_MSG_TX_REQUEST] = "DM-TX REQUEST",
+        [TETRA_DMO_MSG_TX_ACCEPT] = "DM-TX ACCEPT",
+        [TETRA_DMO_MSG_PREEMPT] = "DM-PREEMPT",
+        [TETRA_DMO_MSG_PRE_ACCEPT] = "DM-PRE ACCEPT",
+        [TETRA_DMO_MSG_REJECT] = "DM-REJECT",
+        [TETRA_DMO_MSG_INFO] = "DM-INFO",
+        [TETRA_DMO_MSG_SDS_UDATA] = "DM-SDS UDATA",
+        [TETRA_DMO_MSG_SDS_DATA] = "DM-SDS DATA",
+        [TETRA_DMO_MSG_SDS_ACK] = "DM-SDS ACK",
+        [TETRA_DMO_MSG_GATEWAY] = "GATEWAY-SPECIFIC",
+        [30] = "proprietary",
+        [31] = "proprietary",
+    };
+    return msg_type >= 0 ? DMO_NAME(k_names, (uint32_t)msg_type) : "reserved";
 }
 
 static int
-tetra_dmo_ui_category(int msg_type) {
+dmo_ui_category(int msg_type) {
     switch (msg_type) {
         case TETRA_DMO_MSG_SDS_OCCUPIED:
         case TETRA_DMO_MSG_SDS_UDATA:
@@ -1424,11 +1355,11 @@ tetra_dmo_ui_category(int msg_type) {
 }
 
 static void
-tetra_dmo_ui_push(dsd_state* state, int category, const char* text) {
+dmo_ui_push(dsd_state* state, int category, const char* text) {
     if (!state || !text || text[0] == '\0') {
         return;
     }
-    if (state->tetra_message_sequence > 0) {
+    if (state->tetra_message_sequence > 0u) {
         const dsd_tetra_message* last =
             &state->tetra_messages[(state->tetra_message_sequence - 1u) % DSD_TETRA_MESSAGE_CAPACITY];
         if (strcmp(last->text, text) == 0) {
@@ -1442,58 +1373,13 @@ void
 tetra_dmo_publish(dsd_state* state, int msg_type, uint32_t src, uint32_t dst, const char* desc) {
     char line[DSD_TETRA_MESSAGE_TEXT_SIZE];
     if (desc && desc[0] != '\0') {
-        DSD_SNPRINTF(line, sizeof line, "DMO %s src=%u dst=%u | %s", tetra_dmo_msg_name(msg_type), src, dst, desc);
+        DSD_SNPRINTF(line, sizeof line, "DMO %s src=%u dst=%u | %s", tetra_dmo_msg_name(msg_type), (unsigned)src,
+                     (unsigned)dst, desc);
     } else {
-        DSD_SNPRINTF(line, sizeof line, "DMO %s src=%u dst=%u", tetra_dmo_msg_name(msg_type), src, dst);
+        DSD_SNPRINTF(line, sizeof line, "DMO %s src=%u dst=%u", tetra_dmo_msg_name(msg_type), (unsigned)src,
+                     (unsigned)dst);
     }
-    tetra_dmo_ui_push(state, tetra_dmo_ui_category(msg_type), line);
-}
-
-int
-tetra_dmo_format_mode(const dsd_state* state, char* buf, int buf_len) {
-    const tetra_state_t* const ts = tetra_st_peek(state);
-    const char* mode;
-    const char* channel;
-    int n;
-    if (!ts || !buf || buf_len <= 0) {
-        return 0;
-    }
-    if (ts->dmo) {
-        switch (ts->dmo_comm_type) {
-            case 1: mode = "DMO repeater"; break;
-            case 2: mode = "DMO gateway"; break;
-            case 3: mode = "DMO repeater+gateway"; break;
-            default: mode = "DMO direct"; break;
-        }
-        channel = ts->dmo_ab_usage == 2 ? "ch B" : ts->dmo_ab_usage == 1 ? "ch A freq-eff" : "ch A";
-        n = snprintf(buf, (size_t)buf_len, "%s  %s  %s  slot %u frame %u", mode, channel,
-                     ts->dmo_enc_state == 0 ? "clear" : "encrypted", ts->dmo_slot, ts->dmo_frame);
-    } else if (ts->uplink) {
-        if (ts->net_known) {
-            n = snprintf(buf, (size_t)buf_len, "TMO uplink%s  MCC=%u MNC=%u CC=0x%02x",
-                         state->tetra_sync.cb ? " control" : "", ts->mcc, ts->mnc, ts->colour);
-        } else {
-            n = snprintf(buf, (size_t)buf_len, "TMO uplink%s", state->tetra_sync.cb ? " control" : "");
-        }
-    } else if (ts->net_known) {
-        n = snprintf(buf, (size_t)buf_len, "TMO downlink  MCC=%u MNC=%u CC=0x%02x", ts->mcc, ts->mnc, ts->colour);
-    } else {
-        n = snprintf(buf, (size_t)buf_len, "TMO downlink");
-    }
-    if (n > 0 && n < buf_len && !ts->dmo && ts->net_known) {
-        const char* extra = tetra_air_ksg_name(tetra_air_ksg_lookup(state, ts->mcc, ts->mnc));
-        int extra_n;
-        if (!extra && (ts->enc_mode == 1 || ts->enc_mode == 2)) {
-            extra = "encrypted";
-        }
-        if (extra) {
-            extra_n = snprintf(buf + n, (size_t)(buf_len - n), "  %s", extra);
-            if (extra_n > 0) {
-                n += extra_n;
-            }
-        }
-    }
-    return n < 0 ? 0 : n;
+    dmo_ui_push(state, dmo_ui_category(msg_type), line);
 }
 
 void
@@ -1503,178 +1389,107 @@ tetra_dmo_publish_presence(dsd_state* state, const char* desc) {
         return;
     }
     DSD_SNPRINTF(line, sizeof line, "DMO presence | %s", desc);
-    tetra_dmo_ui_push(state, DSD_TETRA_MESSAGE_CONTROL, line);
+    dmo_ui_push(state, DSD_TETRA_MESSAGE_CONTROL, line);
 }
 
-const char*
-tetra_dmo_msg_name(int msg_type) {
-    switch (msg_type) {
-        case 0: return "DM-RESERVED";
-        case 1: return "DM-SDS OCCUPIED";
-        case 2: return "DM-TIMING REQUEST";
-        case 3: return "DM-TIMING ACK";
-        case 8: return "DM-SETUP";
-        case 9: return "DM-SETUP PRES";
-        case 10: return "DM-CONNECT";
-        case 11: return "DM-DISCONNECT";
-        case 12: return "DM-CONNECT ACK";
-        case 13: return "DM-OCCUPIED";
-        case 14: return "DM-RELEASE";
-        case 15: return "DM-TX CEASED";
-        case 16: return "DM-TX REQUEST";
-        case 17: return "DM-TX ACCEPT";
-        case 18: return "DM-PREEMPT";
-        case 19: return "DM-PRE ACCEPT";
-        case 20: return "DM-REJECT";
-        case 21: return "DM-INFO";
-        case 22: return "DM-SDS UDATA";
-        case 23: return "DM-SDS DATA";
-        case 24: return "DM-SDS ACK";
-        case 25: return "GATEWAY-SPECIFIC";
-        default: return "reserved";
-    }
+/* Security class name for logs and the mode line. */
+static const char*
+dmo_security_name(uint32_t enc) {
+    static const char* const k_names[] = {"DM-1", "DM-2-C", "DM-2-A", "DM-2-B"};
+    return DMO_NAME(k_names, enc);
 }
 
-void
-tetra_dmo_apply_sync(struct dsd_state* state, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !s) {
+/* One decoded DMAC-DATA PDU: a signalling summary by default, the MAC header detail with -Z. */
+static void
+dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_state* state, const tetra_state_t* ts) {
+    tetra_dmo_sync_h_t h;
+    char desc[160];
+    char dst[16];
+    (void)tetra_dmo_parse_data(bits, len, ts ? ts->dmo_comm_type : 0, &h);
+    if (h.null_pdu) {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] DMAC-DATA null PDU\n", chan);
         return;
     }
-    ts->dmo = 1;
-    ts->dmo_since_sync = 0;
-    ts->dmo_slot = s->slot;
-    ts->dmo_frame = s->frame;
-    ts->dmo_comm_type = s->comm_type;
-    ts->dmo_ab_usage = s->ab_usage;
-    ts->dmo_enc_state = s->enc_state;
-    ts->dmo_sync_count++;
-    /* Keep the TDMA display fields meaningful for the UI. */
-    ts->tn = s->slot;
-    ts->fn = s->frame;
-    ts->tdma_valid = 1;
+    TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] DMAC-DATA fill=%u stolen2=%u frag=%u cd=%u %s\n", chan, h.fill_bit, h.stolen2,
+                      h.frag_flag, h.frame_countdown, dmo_security_name(h.enc_state));
+    if (!h.has_addrs) {
+        DSD_FPRINTF(stderr, "[TETRA DMO %s] DMAC-DATA %s encrypted\n", chan, dmo_security_name(h.enc_state));
+        return;
+    }
+    (void)tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc));
+    tetra_dmo_publish(state, h.msg_type, h.src, h.dst, desc);
+    if (h.dst_encrypted) {
+        DSD_SNPRINTF(dst, sizeof dst, "encrypted");
+    } else {
+        DSD_SNPRINTF(dst, sizeof dst, "%u", (unsigned)h.dst);
+    }
+    DSD_FPRINTF(stderr, "[TETRA DMO %s] %s src=%u dst=%s MNI=%u/%u%s%s\n", chan, tetra_dmo_msg_name(h.msg_type),
+                (unsigned)h.src, dst, (unsigned)((h.mni >> 14) & 0x3FFu), (unsigned)(h.mni & 0x3FFFu),
+                desc[0] ? " | " : "", desc);
+}
 
-    if (!h || !h->has_addrs) {
-        return;
+int
+tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    const char* chan = kind ? kind : "DNB";
+    tetra_bit_reader r = tetra_bits_reader(bits, len, 0);
+    /* MAC PDU type, EN 300 396-3 clause 9.3.16, and the two flags after it. */
+    const uint32_t type = tetra_bits_read(&r, 2);
+    const uint32_t flag2 = tetra_bits_read(&r, 1);
+    const uint32_t flag3 = tetra_bits_read(&r, 1);
+    if (!tetra_bits_ok(&r)) {
+        return -1;
     }
-    ts->dmo_msg_type = h->msg_type;
-    switch (h->msg_type) {
-        case TETRA_DMO_MSG_SETUP:
-        case TETRA_DMO_MSG_CONNECT_ACK:
-        case TETRA_DMO_MSG_OCCUPIED:
-            if (s->enc_state == 0) {
-                ts->dmo_mni = h->mni;
-                ts->dmo_src = h->src;
-                ts->dmo_dst = h->dst;
-                ts->dmo_dcc_seed = tetra_dmo_call_seed(s, h);
-                ts->dmo_dcc_valid = 1;
-            } else {
-                /* DM-2-C scrambles with an encrypted short identity (EDSI);
-                 * that needs key material this decoder does not have. */
-                ts->dmo_dcc_valid = 0;
-            }
-            break;
-        case TETRA_DMO_MSG_SDS_UDATA:
-        case TETRA_DMO_MSG_SDS_DATA:
-        case TETRA_DMO_MSG_SDS_ACK:
-            /* The SCH/F fragments of a short data message are scrambled with the
-             * colour code of the DMAC-SYNC that started the fragmentation
-             * (EN 300 396-3 clause 8.2.4, EN 300 396-5 clause 8.2.4). */
-            if (h->frag_flag && s->enc_state == 0) {
-                ts->dmo_mni = h->mni;
-                ts->dmo_src = h->src;
-                ts->dmo_dst = h->dst;
-                ts->dmo_dcc_seed = tetra_dmo_call_seed(s, h);
-                ts->dmo_dcc_valid = 1;
-            }
-            break;
-        case TETRA_DMO_MSG_TX_CEASED:
-        case TETRA_DMO_MSG_DISCONNECT:
-        case TETRA_DMO_MSG_RELEASE:
-            /* The next talker sends its own DM-SETUP / DM-OCCUPIED. Until then
-             * the old colour code would turn traffic into noise. */
-            ts->dmo_dcc_valid = 0;
-            break;
-        case TETRA_DMO_MSG_GATEWAY:
-            if (h->gw_subtype == TETRA_DMO_GW_SETUP && h->frag_flag && s->enc_state == 0) {
-                /* A fragmented DM-GSETUP scrambles its SCH/F with this burst's
-                 * gateway address and source address (EN 300 396-5 clause 8.2.4). */
-                ts->dmo_mni = h->mni;
-                ts->dmo_src = h->src;
-                ts->dmo_dst = h->dst;
-                ts->dmo_dcc_seed = tetra_dmo_call_seed(s, h);
-                ts->dmo_dcc_valid = 1;
-            } else if (h->gw_subtype == TETRA_DMO_GW_RELEASE) {
-                ts->dmo_dcc_valid = 0;
-            }
-            break;
+    switch (type) {
+        case 0u: dmo_log_data(bits, len, chan, state, ts); break;
+        case 1u: TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] DMAC-%s fill=%u\n", chan, flag2 ? "END" : "FRAG", flag3); break;
+        case 3u: TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] DMAC-U-SIGNAL stolen2=%u\n", chan, flag2); break;
+        default: TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] reserved MAC PDU type\n", chan); break;
+    }
+    return (int)type;
+}
+
+static void
+dmo_mode_dmo(const tetra_state_t* ts, dmo_text* t) {
+    static const char* const k_comm[] = {"DMO direct", "DMO repeater", "DMO gateway", "DMO repeater+gateway"};
+    static const char* const k_channel[] = {"ch A", "ch A freq-eff", "ch B"};
+    dmo_put(t, "%s  %s", DMO_NAME(k_comm, ts->dmo_comm_type), DMO_NAME(k_channel, ts->dmo_ab_usage));
+    switch (ts->dmo_crypt) {
+        case TETRA_DMO_CRYPT_CLEAR: dmo_put(t, "  clear"); break;
+        case TETRA_DMO_CRYPT_AIR: dmo_put(t, "  %s encrypted", dmo_security_name(ts->dmo_security_class)); break;
+        case TETRA_DMO_CRYPT_E2E: dmo_put(t, "  end-to-end encrypted"); break;
         default: break;
+    }
+    if (ts->dmo_frame != 0u) {
+        dmo_put(t, "  slot %u frame %u", (unsigned)ts->dmo_slot, (unsigned)ts->dmo_frame);
+    }
+}
+
+static void
+dmo_mode_tmo(const dsd_state* state, const tetra_state_t* ts, dmo_text* t) {
+    dmo_put(t, "TMO %s%s", ts->uplink ? "uplink" : "downlink", (ts->uplink && state->tetra_sync.cb) ? " control" : "");
+    if (!ts->net_known) {
+        return;
+    }
+    dmo_put(t, "  MCC=%u MNC=%u CC=0x%02x", (unsigned)ts->mcc, (unsigned)ts->mnc, (unsigned)ts->colour);
+    if (ts->enc_mode == TETRA_ENC_MODE_ON || ts->enc_mode == TETRA_ENC_MODE_ON_AUTH) {
+        const char* ksg = tetra_air_ksg_name(tetra_air_ksg_lookup(state, ts->mcc, ts->mnc));
+        dmo_put(t, "  encrypted%s%s", ksg ? " " : "", ksg ? ksg : "");
     }
 }
 
 int
-tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, struct dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    int pos;
-    int type;
-    uint32_t dst = 0;
-    uint32_t src = 0;
-    uint32_t mni = 0;
-    uint32_t msg;
-    int gateway = state && ts->dmo_comm_type >= 2;
-    if (!bits || len < 60) {
-        return -1;
+tetra_dmo_format_mode(const dsd_state* state, char* buf, int buf_len) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || !buf || buf_len <= 0) {
+        return 0;
     }
-    type = (int)tetra_bits_to_uint(bits, 0, 2);
-    if (type == 3) {
-        fprintf(stderr, "[TETRA DMO %s] DMAC-U-SIGNAL stolen2=%u\n", kind, bits[2] & 1u);
-    } else if (type == 1) {
-        fprintf(stderr, "[TETRA DMO %s] DMAC-%s fill=%u\n", kind, (bits[2] & 1u) ? "END/FRAG(subtype=END)" : "FRAG",
-                bits[3] & 1u);
-    } else if (type == 0) {
-        unsigned fill = bits[2] & 1u;
-        unsigned stolen2 = bits[3] & 1u;
-        unsigned frag = bits[4] & 1u;
-        unsigned null_pdu = bits[5] & 1u;
-        if (null_pdu) {
-            fprintf(stderr, "[TETRA DMO %s] DMAC-DATA null PDU\n", kind);
-            return type;
-        }
-        unsigned countdown = (unsigned)tetra_bits_to_uint(bits, 6, 2);
-        unsigned enc = (unsigned)tetra_bits_to_uint(bits, 8, 2);
-        unsigned dst_type = (unsigned)tetra_bits_to_uint(bits, 10, 2);
-        pos = 12;
-        if (dst_type != 2u) {
-            dst = tetra_bits_to_uint(bits, pos, 24);
-            pos += 24;
-        }
-        unsigned src_type = (unsigned)tetra_bits_to_uint(bits, pos, 2);
-        pos += 2;
-        if (src_type != 2u) {
-            src = tetra_bits_to_uint(bits, pos, 24);
-            pos += 24;
-        }
-        /* Same MNI rule as DMAC-SYNC: always for direct and DM-REP, and for a
-         * gateway only when a true SSI is present. */
-        if ((!gateway || dst_type == 0 || src_type == 0) && pos + 24 <= len) {
-            mni = tetra_bits_to_uint(bits, pos, 24);
-            pos += 24;
-        }
-        msg = tetra_bits_to_uint(bits, pos, 5);
-        tetra_dmo_sync_h_t elems;
-        char desc[160];
-        memset(&elems, 0, sizeof(elems));
-        elems.msg_type = (uint8_t)msg;
-        tetra_dmo_parse_elems(bits, pos + 5, len, &elems);
-        desc[0] = '\0';
-        tetra_dmo_describe_elems(&elems, desc, (int)sizeof(desc));
-        tetra_dmo_publish(state, (int)msg, src, dst, desc);
-        fprintf(stderr,
-                "[TETRA DMO %s] DMAC-DATA fill=%u stolen2=%u frag=%u cd=%u enc=%u %s src=%u dst=%u MNI=%u/%u%s%s\n",
-                kind, fill, stolen2, frag, countdown, enc, tetra_dmo_msg_name((int)msg), src, dst, (mni >> 14) & 0x3FFu,
-                mni & 0x3FFFu, desc[0] ? " | " : "", desc);
+    dmo_text t = {buf, (size_t)buf_len, 0u};
+    buf[0] = '\0';
+    if (ts->dmo) {
+        dmo_mode_dmo(ts, &t);
     } else {
-        fprintf(stderr, "[TETRA DMO %s] reserved MAC PDU type\n", kind);
+        dmo_mode_tmo(state, ts, &t);
     }
-    return type;
+    return (int)t.len;
 }
