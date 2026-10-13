@@ -28,7 +28,8 @@ void tetra_publish(dsd_state* state);
 void tetra_confirm_reset(dsd_state* state);
 
 /* Forget the carrier the receiver was on, keeping the TETRA state allocated: its CRC evidence, the partial TM-SDUs, the
- * TDMA clock and the speech in progress (tetra_voice_reset()). The engine calls it at every carrier boundary and
+ * TDMA clock, the speech in progress (tetra_voice_reset()) and the direct mode call on its channel with its DM colour
+ * code and protection (tetra_dmo_forget_carrier()). The engine calls it at every carrier boundary and
  * no-carrier pass, and the trunking state machine when a retune completes. A session without TETRA state is left
  * without one; NULL is ignored. */
 void tetra_forget_carrier(dsd_state* state);

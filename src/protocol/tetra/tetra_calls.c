@@ -1195,6 +1195,8 @@ tetra_calls_forget_carrier(dsd_state* state) {
         DSD_MEMSET(ts->calls.slot_enc, 0, sizeof ts->calls.slot_enc);
         ts->calls.heard = 0;
         ts->calls.heard_known = 0;
+        /* The next carrier's direct mode call is set up by its own DMAC-SYNC (the engine ends the canonical calls). */
+        DSD_MEMSET(&ts->calls.dmo, 0, sizeof ts->calls.dmo);
     }
 }
 

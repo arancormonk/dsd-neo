@@ -4458,11 +4458,14 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
 - The carrier. The receiver's carrier changes when a tune completes, not when it is asked for: then
   `tetra_forget_carrier()` (`tetra.c`) drops the carrier's CRC evidence, the partial TM-SDUs
   (`tetra_mac_forget_fragments()`), the TDMA clock (`tetra_tdma_stop()`), which counts symbols a retune may have
-  dropped, and the speech in progress (`tetra_voice_reset()`). A tune completed inside a burst (a grant in its first
-  block) leaves the rest of that burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops
-  parsing the block and the normal-burst decoder skips the second half, and nothing the burst decoded counts for the
-  new carrier, though the burst's verdict still does. Nothing here frees or replaces the state extension: the MAC
-  holds its `tetra_state_t` pointer across these calls, so every reset clears fields.
+  dropped, the speech in progress (`tetra_voice_reset()`), and the direct mode call on the channel with its DM colour
+  code, seed and protection (`tetra_dmo_forget_carrier()`, `tetra_calls_forget_carrier()`), so the next carrier's normal
+  bursts are not descrambled with them and its calls and speech are not classified by them; the mode itself stays until
+  a synchronisation burst sets it. A tune completed inside a burst (a grant in its first block) leaves the rest of that
+  burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops parsing the block and the
+  normal-burst decoder skips the second half, and nothing the burst decoded counts for the new carrier, though the
+  burst's verdict still does. Nothing here frees or replaces the state extension: the MAC holds its `tetra_state_t`
+  pointer across these calls, so every reset clears fields.
 - Leaving a call (`sm_unfollow()`) ends its canonical call as a teardown and clears its talkgroup-policy route
   (`tetra_calls_unfollowed()`; with NULL options after the engine ended the canonical calls itself). Its call record
   stays until its release or its ageing; the follow gate reads only the state machine, so no stale record gates a

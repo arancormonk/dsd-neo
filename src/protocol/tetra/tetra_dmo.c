@@ -1300,6 +1300,18 @@ tetra_dmo_call_crypt(const dsd_state* state) {
     return (tetra_dmo_crypt_e)ts->dmo_crypt;
 }
 
+void
+tetra_dmo_forget_carrier(dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    ts->dmo_dcc_valid = 0;
+    ts->dmo_dcc_seed = 0U;
+    ts->dmo_since_sync = 0U;
+    dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
+}
+
 /* ---- Logging and terminal lines ------------------------------------------------------------------------------- */
 
 const char*

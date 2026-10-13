@@ -182,8 +182,8 @@ void tetra_calls_notice(dsd_opts* opts, dsd_state* state, int control, uint32_t 
  * last seen. */
 void tetra_calls_tick(dsd_opts* opts, dsd_state* state);
 
-/** @brief The carrier was left: forget what was learnt about its timeslots and which one was heard. Never creates TETRA
- * state. */
+/** @brief The carrier was left: forget what was learnt about its timeslots, which one was heard and the direct mode call
+ * on its channel. Never creates TETRA state. */
 void tetra_calls_forget_carrier(dsd_state* state);
 
 /**

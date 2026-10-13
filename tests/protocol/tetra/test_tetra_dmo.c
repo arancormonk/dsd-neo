@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_calls.h"
 #include "tetra_state.h"
 
 static int g_fail = 0;
@@ -185,6 +186,42 @@ test_real_air_call(void) {
     tetra_dmo_apply_sync(st, &s, &h);
     CHECK(tetra_st(st)->dmo_dcc_valid == 0, "DM-TX CEASED invalidates the colour code");
     CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_UNKNOWN, "DM-TX CEASED leaves the next call unknown");
+    free_state(st);
+}
+
+/* A carrier boundary (a retune, an input switch, the no-carrier pass) forgets the direct mode call of the carrier left:
+ * its DM colour code and seed, its security class and the call on the channel, so normal bursts of the next carrier
+ * are not descrambled with the old colour code and its speech and calls do not take the old call's destination and
+ * classification. The TETRA state stays allocated. */
+static void
+test_carrier_boundary_forgets_call(void) {
+    uint8_t bits[128];
+    tetra_dmo_sync_s_t s;
+    tetra_dmo_sync_h_t h;
+    dsd_state* st = new_state();
+
+    printf("[carrier boundary]\n");
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    from_string(k_sch_s, bits);
+    (void)tetra_dmo_parse_sync_s(bits, &s);
+    from_string(k_sch_h, bits);
+    (void)tetra_dmo_parse_sync_h(bits, 0, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
+    tetra_calls_dmo_pdu(NULL, st, s.enc_state, &h);
+    const tetra_state_t* const ts = tetra_st(st);
+    CHECK(ts->dmo_dcc_valid == 1 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR && ts->calls.dmo.active == 1
+              && ts->calls.dmo.dst == 0x800001u,
+          "the DM-OCCUPIED sets up the call on the channel");
+
+    tetra_forget_carrier(st);
+    CHECK(tetra_st_existing(st) == ts, "the TETRA state stays");
+    CHECK(ts->dmo_dcc_valid == 0 && ts->dmo_dcc_seed == 0U && ts->dmo_since_sync == 0U,
+          "the DM colour code and its seed are forgotten");
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_UNKNOWN, "the security class is unknown again");
+    CHECK(ts->calls.dmo.active == 0 && ts->calls.dmo.dst == 0U && ts->calls.dmo.src == 0U
+              && ts->calls.dmo.addressed == 0 && ts->calls.dmo.group_known == 0,
+          "the call on the channel is forgotten");
+    CHECK(ts->dmo == 1, "the carrier's mode stays until a synchronisation burst says otherwise");
     free_state(st);
 }
 
@@ -906,6 +943,7 @@ int
 main(void) {
     printf("TETRA DMO\n");
     test_real_air_call();
+    test_carrier_boundary_forgets_call();
     test_security_classes();
     test_repeater_presence();
     test_gateway();

@@ -943,5 +943,6 @@ tetra_forget_carrier(dsd_state* state) {
     tetra_mac_forget_fragments(state);
     tetra_tdma_stop(state);
     tetra_voice_reset(state);
+    tetra_dmo_forget_carrier(state);
     tetra_calls_forget_carrier(state);
 }

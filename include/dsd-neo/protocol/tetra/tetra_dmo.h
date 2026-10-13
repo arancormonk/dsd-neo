@@ -263,6 +263,11 @@ void tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_d
 /* How the traffic of the current direct mode call is protected; UNKNOWN outside direct mode. */
 tetra_dmo_crypt_e tetra_dmo_call_crypt(const dsd_state* state);
 
+/* The carrier was left: forget its DM colour code (and its seed) and the protection of its call, so no normal burst of
+ * the next carrier is descrambled with them and its traffic is not classified by them. The mode stays until a
+ * synchronisation burst sets it. Never creates TETRA state. */
+void tetra_dmo_forget_carrier(dsd_state* state);
+
 /* Log a decoded DNB MAC block (SCH/F or STCH, `len` type-1 bits) and hand a DMAC-DATA PDU's call to the call records.
  * `kind` names the logical channel; `opts` may be NULL. Returns the MAC PDU type (0..3) or -1. */
 int tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_opts* opts, dsd_state* state);
