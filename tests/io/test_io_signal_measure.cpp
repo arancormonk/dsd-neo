@@ -452,6 +452,23 @@ test_sustained(dsd_signal_detector* d) {
             assert(report.candidates[i].detected == (clipped.frequencies[i] == 163012500));
         }
     }
+    // A carrier in the first window only, a channel beside a continuous transmitter whose skirt reaches its channel in
+    // both, is not sustained: the neighbour's power is not the carrier's.
+    {
+        const auto beside = grid_request(1536000, 384000, 163450000, 6250, 8000, 163012500 - 8 * 6250, 17);
+        auto iq = samples(beside, beside.frequencies[0], 0, request_samples(beside));
+        add_nfm(iq, beside, 163018750, 0.3, 2500, 700);
+        const double omega = 6.283185307179586 * (163012500.0 - beside.capture.capture_hz + beside.capture.rotation_hz)
+                             / beside.capture.rate_hz;
+        for (size_t i = 0; i < request_samples(beside) / 2; ++i) {
+            iq[2 * i] += (float)(0.075 * std::cos(omega * (double)i));
+            iq[2 * i + 1] += (float)(0.075 * std::sin(omega * (double)i));
+        }
+        const auto report = run(d, beside, iq, 4096);
+        for (uint32_t i = 0; i < beside.count; ++i) {
+            assert(report.candidates[i].detected == (beside.frequencies[i] == 163018750));
+        }
+    }
 }
 
 /* Noise alone at the lowest sensitivity, white or coloured, reports nothing; and the robust local noise reads the

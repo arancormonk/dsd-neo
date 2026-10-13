@@ -1052,10 +1052,53 @@ balanced(const double* power) {
     return power[0] * kSustainedRatio >= power[1] && power[1] * kSustainedRatio >= power[0];
 }
 
+/* Whether analysis bin @p b is another transmitter's: it lies in the segment a transmitter centred outside [@p low,
+   @p high) (FFT bins) was located in, and not among the bins one centred inside occupies. */
+bool
+held_elsewhere(const dsd_signal_detector* d, long long b, double low, double high) {
+    bool elsewhere = false;
+    for (int j = 0; j < d->sources.count; ++j) {
+        const located& s = d->sources.items[j];
+        const bool inside = s.centre >= low && s.centre < high;
+        if (inside && b >= s.first && b <= s.last) {
+            return false;
+        }
+        if (!inside && b >= s.own_first && b <= s.own_last) {
+            elsewhere = true;
+        }
+    }
+    return elsewhere;
+}
+
+/* Adds the power of each window per transform over the bins of the channel [@p low, @p high) (FFT bins) that are not
+   another transmitter's, within 10 dB of the tallest of them, into @p power. Returns whether any bin was left. */
+bool
+channel_power(const dsd_signal_detector* d, const analysis& both, double low, double high, double* power) {
+    const long long first = (long long)std::floor(both.to_coarse(low)),
+                    last = (long long)std::ceil(both.to_coarse(high));
+    double peak = 0;
+    bool left = false;
+    for (long long b = first; b <= last; ++b) {
+        if (!held_elsewhere(d, b, low, high)) {
+            peak = std::max(peak, both.at(b));
+            left = true;
+        }
+    }
+    for (long long b = first; b <= last; ++b) {
+        if (!(both.at(b) * 10 < peak) && !held_elsewhere(d, b, low, high)) {
+            for (int w = 0; w < 2; ++w) {
+                power[w] += window_power(d, both, w, b);
+            }
+        }
+    }
+    return left;
+}
+
 /* Whether a sustained transmitter located in @p both is centred in [@p low, @p high) (FFT bins): one holds its own
    power in both windows (within 10 dB of each other over the bins it occupies), not a neighbour's skirt beside it; or
-   the channel does over the bins it occupies (within 10 dB of its tallest), one transmitter whose modulation dwells on
-   either side of its carrier in turn, which the location split where its centre was weak. */
+   the channel does over its bins that are not another transmitter's (within 10 dB of their tallest): one transmitter
+   whose modulation dwells on either side of its carrier in turn, one dwell of which the location left out where its
+   centre was weak. A transmitter centred elsewhere lends the channel nothing from the segment it was located in. */
 bool
 owns_sustained(const dsd_signal_detector* d, const analysis& both, double low, double high) {
     bool any = false;
@@ -1070,15 +1113,8 @@ owns_sustained(const dsd_signal_detector* d, const analysis& both, double low, d
             any = true;
         }
     }
-    if (!any) {
-        return false;
-    }
-    const long long first = (long long)std::floor(both.to_coarse(low)),
-                    last = (long long)std::ceil(both.to_coarse(high));
-    const located channel{0, first, last, first, last, LLONG_MIN};
     double power[2] = {0, 0};
-    occupied_power(d, both, channel, power);
-    return balanced(power);
+    return any && channel_power(d, both, low, high, power) && balanced(power);
 }
 
 /* Clear raw detections that a transmitter centred on another channel explains: its skirt and the window's leakage
