@@ -143,6 +143,16 @@ if [[ $STRICT -eq 0 ]]; then
   ARGS+=(-i -1)
 fi
 
+# Honor a local PFFFT checkout even when it lives inside the source tree.
+analysis_cache="${DSD_ANALYSIS_BUILD_DIR:-build/dev-debug}/CMakeCache.txt"
+if [[ -f "$analysis_cache" ]]; then
+  pffft_source=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$analysis_cache")
+  if [[ -n "$pffft_source" ]]; then
+    pffft_relative="${pffft_source#"$ROOT_DIR/"}"
+    ARGS+=(-x "$pffft_source/*" -x "$pffft_relative/*" -x "./$pffft_relative/*")
+  fi
+fi
+
 set +e
 lizard "${ARGS[@]}" "${TARGETS[@]}" 2>&1 | tee "$LOG_FILE"
 rc=${PIPESTATUS[0]}

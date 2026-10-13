@@ -479,7 +479,7 @@ Quick examples
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
 - UI: `src/ui/terminal` (ncurses frontend, target `dsd-neo_ui_terminal`), `src/ui/qt` (Qt Quick frontend, target `dsd-neo_ui_qt`, option `DSD_ENABLE_QT_UI`).
 - Android app: `android/` — Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr for USB‑OTG dongles.
-- Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), `src/third_party/pffft` (STATIC target `dsd-neo_pffft`).
+- Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), pinned PFFFT fork via `cmake/Pffft.cmake` (STATIC target `dsd-neo_pffft`).
 
 ## Tooling
 
@@ -538,3 +538,11 @@ Quick examples
   `share/doc/dsd-neo/licenses/`).
 - Project-authored source files carry SPDX identifiers reflecting their license; vendored and embedded upstream-derived
   code retains upstream license/provenance headers, which should be consulted for file-specific details.
+
+### FFT source acquisition
+
+The build downloads a pinned, checksum-verified PFFFT fork and compiles it into
+DSD-neo. For offline packaging, provide
+`-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft`; see
+[dependency management](docs/dependencies.md#pinned-pffft-source) for checksums,
+manual updates, scalar builds and AUR packaging. No PFFFT runtime package is needed.

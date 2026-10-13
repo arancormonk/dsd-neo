@@ -6,7 +6,7 @@ Required license/notice files in every shipped asset:
 - `COPYRIGHT`
 - `THIRD_PARTY.md`
 - `licenses/ezpwd-LGPL-2.1-or-later.txt` (from `src/third_party/ezpwd/lesser.txt`)
-- `licenses/pffft-FFTPACK.txt` (from `src/third_party/pffft/COPYING`)
+- `licenses/pffft-LICENSE.txt` and `licenses/pffft-NOTICES.txt` (from the configured build tree's `pffft-licenses/`, including the pinned revision and backend copyright notices)
 
 Assets that bundle the Qt Quick frontend (`DSD_ENABLE_QT_UI=ON`, today the APK)
 additionally require `licenses/ibm-plex-OFL-1.1.txt` (from

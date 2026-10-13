@@ -64,6 +64,10 @@ OSV_IMAGE="${DSD_OSV_SCANNER_IMAGE:-$PINNED_OSV_IMAGE}"
 ALLOW_NO_PACKAGES="${DSD_OSV_ALLOW_NO_PACKAGES:-1}"
 LOG_FILE=".osv-scanner.local.out"
 
+PFFFT_OSV_DIR=$(mktemp -d /tmp/dsd-osv-pffft.XXXXXX)
+trap 'rm -rf "$PFFFT_OSV_DIR"' EXIT
+python3 tools/pffft_metadata.py --osv "$PFFFT_OSV_DIR/osv-scanner-custom.json"
+
 run_osv() {
   local format="$1"
   local output_file="${2:-}"
@@ -74,13 +78,14 @@ run_osv() {
   if [[ -n "$output_file" ]]; then
     args+=(--output "$output_file")
   fi
-  args+=("${TARGETS[@]}")
+  args+=(--lockfile "osv-scanner:$PFFFT_OSV_DIR/osv-scanner-custom.json" "${TARGETS[@]}")
 
   if command -v osv-scanner > /dev/null 2>&1; then
     osv-scanner "${args[@]}"
   elif command -v docker > /dev/null 2>&1; then
     docker run --rm \
       --volume "$ROOT_DIR:/src" \
+      --volume "$PFFFT_OSV_DIR:$PFFFT_OSV_DIR:ro" \
       --workdir /src \
       "$OSV_IMAGE" \
       "${args[@]}"

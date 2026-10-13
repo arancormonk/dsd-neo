@@ -60,3 +60,11 @@ Run the affected vcpkg build or packaging workflow. Use the same process for `ar
 - `tools/osv_scan.sh` runs OSV-Scanner source scanning for lockfiles, manifests, and vendored C/C++ dependency fingerprints.
 - PR CI runs OSV only when dependency inputs change; scheduled guardrails run a full repository scan.
 - If OSV reports a vulnerability that is not exploitable in DSD-neo, add the narrowest possible `osv-scanner.toml` ignore with a reason and expiry date.
+
+## Embedded FFT acquisition
+
+`PFFFT_SHA` and `PFFFT_ARCHIVE_SHA256` also govern a compiled dependency, not
+only CI. Change them together with `tools/update_pffft.py`; see
+`docs/dependencies.md` for offline and AUR packaging. The mbelib vcpkg overlay
+uses independent `MBELIB_PFFFT_SHA` and `MBELIB_PFFFT_TARBALL_SHA512` pins for
+mbelib's embedded copy. Keep those aligned when updating the mbelib source pin.

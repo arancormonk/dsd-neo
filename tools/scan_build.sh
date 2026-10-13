@@ -188,7 +188,11 @@ set +e
   scan-build "${SCAN_ARGS[@]}" cmake -S . -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    "${CMAKE_ARGS[@]}"
+    "${CMAKE_ARGS[@]}" || exit $?
+  pffft_source_dir=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$BUILD_DIR/CMakeCache.txt")
+  if [[ -n "$pffft_source_dir" ]]; then
+    SCAN_ARGS+=(--exclude "$pffft_source_dir")
+  fi
   echo ""
   echo "Building under scan-build ..."
   scan-build "${SCAN_ARGS[@]}" "${BUILD_CMD[@]}"

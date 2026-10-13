@@ -96,7 +96,7 @@ if [[ ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # Prefer compile_commands from the dev-debug preset; otherwise, use top-level if present.
-PDB_DIR="build/dev-debug"
+PDB_DIR="${DSD_ANALYSIS_BUILD_DIR:-build/dev-debug}"
 PDB_FILE="$PDB_DIR/compile_commands.json"
 if [ ! -f "$PDB_FILE" ]; then
   if [ -f "compile_commands.json" ]; then
@@ -145,6 +145,14 @@ except Exception as exc:
     raise SystemExit(f"Failed to read {pdb_path}: {exc}")
 
 
+# Exclude the resolved dependency, including an override inside the checkout.
+cache = pdb_path.parent / "CMakeCache.txt"
+pffft_source = None
+if cache.exists():
+    for line in cache.read_text().splitlines():
+        if line.startswith("DSD_PFFFT_SOURCE_DIR:INTERNAL="):
+            pffft_source = pathlib.Path(line.split("=", 1)[1]).resolve()
+
 def normalize_file(entry):
     file_field = entry.get("file")
     if not file_field:
@@ -159,6 +167,8 @@ def normalize_file(entry):
     except Exception:
         file_path = file_path.absolute()
 
+    if pffft_source and (file_path == pffft_source or pffft_source in file_path.parents):
+        return None, None
     try:
         rel = file_path.relative_to(root)
     except ValueError:
@@ -257,6 +267,8 @@ def normalize_requested(path_str):
     p = pathlib.Path(path_str)
     if not p.is_absolute():
         p = (root / p).resolve()
+    if pffft_source and (p == pffft_source or pffft_source in p.parents):
+        return None
     try:
         rel = p.relative_to(root)
     except ValueError:

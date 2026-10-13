@@ -1328,6 +1328,8 @@ add_custom_target(
         ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake
 )
 
+include(cmake/Pffft.cmake)
+
 # Install license/notice files with binaries
 install(
     FILES LICENSE COPYRIGHT THIRD_PARTY.md
@@ -1339,9 +1341,10 @@ install(
     RENAME ezpwd-LGPL-2.1-or-later.txt
 )
 install(
-    FILES src/third_party/pffft/COPYING
+    FILES
+        "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
+        "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
-    RENAME pffft-FFTPACK.txt
 )
 if(DSD_HAS_AIRSPY)
     install(

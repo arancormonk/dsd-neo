@@ -92,6 +92,19 @@ fi
 CPPCHECK_BUILD_DIR="${CPPCHECK_BUILD_DIR:-.cppcheck-build}"
 mkdir -p "$CPPCHECK_BUILD_DIR"
 
+PFFFT_BUILD_DIR="${DSD_ANALYSIS_BUILD_DIR:-build/dev-debug}"
+PFFFT_SOURCE_DIR="${DSD_PFFFT_SOURCE_DIR:-}"
+if [[ -z "$PFFFT_SOURCE_DIR" ]]; then
+  if [[ ! -f "$PFFFT_BUILD_DIR/CMakeCache.txt" ]]; then
+    cmake --preset dev-debug -B "$PFFFT_BUILD_DIR"
+  fi
+  PFFFT_SOURCE_DIR=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$PFFFT_BUILD_DIR/CMakeCache.txt")
+fi
+if [[ ! -f "$PFFFT_SOURCE_DIR/include/pffft/pffft.h" ]]; then
+  echo "Configure $PFFFT_BUILD_DIR or set DSD_PFFFT_SOURCE_DIR to the pinned PFFFT source before running cppcheck." >&2
+  exit 1
+fi
+
 # Build cppcheck arguments
 # Note: cppcheck supports multiple --std flags; it applies the appropriate
 # standard based on file extension (.c -> C standard, .cpp -> C++ standard)
@@ -124,7 +137,8 @@ CPPCHECK_ARGS=(
   -I src/ui/terminal/menus
   -I src/ui/qt
   -I src/third_party
-  -I src/third_party/pffft
+  -I "$PFFFT_SOURCE_DIR/include/pffft"
+  "--suppress=*:$PFFFT_SOURCE_DIR/*"
   -j "$JOBS"
   --error-exitcode=1
 )
@@ -161,7 +175,8 @@ if [[ $STRICT -eq 1 ]]; then
     -I src/ui/terminal/menus
     -I src/ui/qt
     -I src/third_party
-    -I src/third_party/pffft
+    -I "$PFFFT_SOURCE_DIR/include/pffft"
+    "--suppress=*:$PFFFT_SOURCE_DIR/*"
     -j "$JOBS"
     --error-exitcode=1
   )

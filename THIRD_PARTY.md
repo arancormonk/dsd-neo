@@ -7,7 +7,7 @@ for file-specific license/provenance details.
 ## Vendored Libraries
 
 - **ezpwd Reed-Solomon** (`src/third_party/ezpwd`, target `dsd-neo_ezpwd`; Hard Consulting Corporation; vendored from https://github.com/arancormonk/ezpwd-reed-solomon) - GPL-3.0-or-later; `rs_base` is LGPL-2.1-or-later (per upstream notice). LGPL text: `src/third_party/ezpwd/lesser.txt` (installed as `share/doc/dsd-neo/licenses/ezpwd-LGPL-2.1-or-later.txt`).
-- **pffft** (`src/third_party/pffft`, target `dsd-neo_pffft`; Julien Pommier, based on FFTPACKv4 by Dr Paul Swarztrauber/NCAR) - BSD-like FFTPACK license; `src/third_party/pffft/COPYING` (installed as `share/doc/dsd-neo/licenses/pffft-FFTPACK.txt`).
+- **PFFFT** (target `dsd-neo_pffft`; Julien Pommier and contributors, based on FFTPACKv4 by Dr Paul Swarztrauber/NCAR) — downloaded from <https://github.com/arancormonk/pffft> at the immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. The BSD-like license and compiled backend notices are installed as `share/doc/dsd-neo/licenses/pffft-LICENSE.txt` and `pffft-NOTICES.txt`. See `docs/dependencies.md` for offline builds and updates.
 - **Tiny AES** (`src/crypto/crypt-aes.c`) - Unlicense/public domain; original upstream https://github.com/kokke/tiny-AES-c.
 - **librtlsdr** (`android/third_party/librtlsdr`; osmocom, https://gitea.osmocom.org/sdr/rtl-sdr) - GPL-2.0-or-later;
   license text `android/third_party/librtlsdr/COPYING`. Trimmed v2.0.3 snapshot (library sources only) built into the
@@ -78,7 +78,7 @@ for file-specific license/provenance details.
     file has no stable URL, so `tools/build_iq_fixtures.py` pins its SHA-256 under `LOCAL_SOURCES`).
 
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
-license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`, plus the
+license texts currently include the ezpwd and pinned PFFFT notices under `share/doc/dsd-neo/licenses/`, plus the
 IBM Plex font notice for builds that bundle the Qt frontend and the librtlsdr/libusb notices for the Android package.
 
 Native Airspy support links libairspy (BSD-3-Clause for `airspy.c`, `airspy.h`, and `airspy_commands.h`; MIT for `filters.h` and `iqconverter_*`), from https://github.com/airspy/airspyone_host. Android library sources, Windows overlay builds, and AppImage builds are pinned to `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`; the upstream notice, prefixed with the copyright lines from the source headers, is retained in `android/third_party/libairspy/LICENSE` and distributed as `licenses/libairspy-LICENSE.txt`.

@@ -204,8 +204,8 @@ trap 'rm -f "$DIFF_RAW"' EXIT
 # pattern below and fails the existence check, so it dropped out of every list. A
 # diff that fails ends the run, because an empty list reads as "nothing changed" and
 # would let every job that consumes it skip its work and pass.
-if ! git diff -z --name-only --diff-filter=ACMR "${BASE_REF}...${HEAD_REF}" > "$DIFF_RAW"; then
-  if ! git diff -z --name-only --diff-filter=ACMR "$BASE_REF" "$HEAD_REF" > "$DIFF_RAW"; then
+if ! git diff -z --name-only --diff-filter=ACMRD "${BASE_REF}...${HEAD_REF}" > "$DIFF_RAW"; then
+  if ! git diff -z --name-only --diff-filter=ACMRD "$BASE_REF" "$HEAD_REF" > "$DIFF_RAW"; then
     echo "ci-changed-files: git diff between ${BASE_REF} and ${HEAD_REF} failed" >&2
     exit 1
   fi
@@ -246,6 +246,11 @@ dependency_scan_targets=()
 
 for p in "${changed_paths[@]}"; do
   case "$p" in
+    .github/dependabot.yml | .github/requirements/* | vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh | tools/ci-dependency-pins.env | cmake/Pffft.cmake | tools/update_pffft.py | tools/update_aur_pffft.py | tools/pffft_metadata.py | CMakeLists.txt)
+      dependency_scan_targets+=("$p")
+      ;;
+  esac
+  case "$p" in
     # Vendored upstream snapshots are excluded from every repository tool. Listed
     # per library rather than as the whole android/third_party subtree, so the build
     # glue that sits beside them (android/third_party/CMakeLists.txt) stays in scope
@@ -281,12 +286,6 @@ for p in "${changed_paths[@]}"; do
   case "$p" in
     .github/workflows/*.yml | .github/workflows/*.yaml | .github/dependabot.yml | .github/zizmor.yml)
       workflow_security_targets+=("$p")
-      ;;
-  esac
-
-  case "$p" in
-    .github/dependabot.yml | .github/requirements/* | vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh)
-      dependency_scan_targets+=("$p")
       ;;
   esac
 

@@ -15506,8 +15506,36 @@ if(DSD_ENABLE_QT_UI)
     endif()
 endif()
 
+# The FFT wrapper is usable without radio hardware or an enabled SDR backend.
+add_executable(dsd-neo_test_io_fft_cache io/test_io_fft_cache.cpp)
+target_include_directories(
+    dsd-neo_test_io_fft_cache
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_io_fft_cache
+    PRIVATE dsd-neo_pffft dsd-neo_warnings
+)
+if(NOT APPLE AND NOT WIN32 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_definitions(
+        dsd-neo_test_io_fft_cache
+        PRIVATE DSD_TEST_FFT_ALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_io_fft_cache
+        PRIVATE "LINKER:--wrap=malloc"
+    )
+endif()
+add_test(NAME IO_FFT_CACHE COMMAND dsd-neo_test_io_fft_cache)
+
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME TOOLS_PFFFT_METADATA
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pffft_metadata.py
+    )
     # Production Android Kotlin on the JVM, one CTest per suite of run_jvm_tests.py. Each compiles Kotlin, which is
     # memory-hungry, so they never run at once.
     add_test(
