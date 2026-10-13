@@ -359,6 +359,36 @@ typedef struct tetra_state {
     /* The speech path: codec library, speech integrity and PCM carry (tetra_voice.c). */
     tetra_voice_t voice;
 
+    /* Downlink frequencies in Hz, 0 while unknown: the SYSINFO main carrier (dl_carrier_hz) and the carrier of the
+     * last traffic-channel assignment (vc_freq_hz). Their blocks below describe them; they sit here for alignment. */
+    long dl_carrier_hz;
+    long vc_freq_hz;
+
+    /* Mobility management (tetra_mm.c), widest alignment first so the block adds no padding. The group identity,
+     * MM status and function-not-supported fields stay flat because tetra_channel_info.c reads them. */
+    tetra_mm_otar_t mm_otar;
+    tetra_mm_ck_change_t mm_ck_change;
+    tetra_mm_enable_disable_t mm_enable_disable;
+    tetra_mm_auth_t mm_auth;
+    tetra_mm_lu_accept_t mm_lu_accept;
+    tetra_mm_lu_proceeding_t mm_lu_proceeding;
+    tetra_mm_group_entry_t mm_group_entry[63];
+    tetra_mm_lu_command_t mm_lu_command;
+    tetra_mm_lu_reject_t mm_lu_reject;
+    uint8_t mm_group_entry_count;
+    uint8_t mm_group_identity_valid;
+    uint8_t mm_group_identity_report;
+    uint8_t mm_group_identity_ack_request;
+    uint8_t mm_group_identity_attach_detach_mode;
+    uint8_t mm_group_ack_result;
+    uint8_t mm_group_ack_valid;
+    uint8_t mm_status_code;
+    uint8_t mm_status_valid;
+    uint8_t mm_fns_pdu_type;
+    uint8_t mm_fns_valid;
+    /* No decoder sets this; tetra_channel_info.c still reads it. */
+    uint8_t mm_addr_type;
+
     /* Diagnostic gates mirrored from the options at every burst (tetra_frame_enter()), so parsers that are not handed
      * the options can still keep per-burst detail behind -Z (payload) and -v (verbose). */
     uint8_t log_payload;
@@ -375,10 +405,10 @@ typedef struct tetra_state {
 
     /* Network identity from the BSCH (EN 300 392-2 table 21.76) or --tetra-net: net_known once MCC, MNC and the 6-bit
      * colour code are set, and lfsr_seed, the scrambling seed they give (tetra_compute_scramb_seed()). */
-    uint8_t net_known;
     uint32_t lfsr_seed;
     uint16_t mcc;
     uint16_t mnc;
+    uint8_t net_known;
     uint8_t colour;
 
     /* Direct mode (EN 300 396-2, EN 300 396-3), set by tetra_dmo_apply_sync().
@@ -426,8 +456,8 @@ typedef struct tetra_state {
      *             identities, which are not subscriber identities.
      * active_ssi: 24-bit identity of that address.
      * enc_mode:   2-bit encryption mode (TETRA_ENC_MODE_* constants). */
-    uint8_t ssi_valid;
     uint32_t active_ssi;
+    uint8_t ssi_valid;
     uint8_t enc_mode;
 
     /* ───────────────────────────────────────────────────────────────────────
@@ -443,12 +473,12 @@ typedef struct tetra_state {
      *                     for point-to-point calls.
      * call_id:      14-bit call identifier from CMCE D-SETUP.
      * ───────────────────────────────────────────────────────────────────────── */
-    uint8_t call_active;
-    uint8_t call_type;
+    uint16_t call_id;
     uint32_t calling_ssi;
     uint32_t gssi;
-    uint16_t call_id;
     uint32_t cmce_call_generation; /* increments after complete call-establishment state */
+    uint8_t call_active;
+    uint8_t call_type;
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA floor-control state — updated by CMCE D-TX-GRANTED / D-TX-CEASED.
@@ -459,32 +489,6 @@ typedef struct tetra_state {
      * ───────────────────────────────────────────────────────────────────────── */
     uint32_t tx_granted_ssi;
     uint8_t tx_granted_valid;
-
-    /* Mobility management (tetra_mm.c), widest alignment first so the block adds no padding. The group identity,
-     * MM status and function-not-supported fields stay flat because tetra_channel_info.c reads them. */
-    tetra_mm_otar_t mm_otar;
-    tetra_mm_ck_change_t mm_ck_change;
-    tetra_mm_enable_disable_t mm_enable_disable;
-    tetra_mm_auth_t mm_auth;
-    tetra_mm_lu_accept_t mm_lu_accept;
-    tetra_mm_lu_proceeding_t mm_lu_proceeding;
-    tetra_mm_group_entry_t mm_group_entry[63];
-    tetra_mm_lu_command_t mm_lu_command;
-    tetra_mm_lu_reject_t mm_lu_reject;
-    uint8_t mm_group_entry_count;
-    uint8_t mm_group_identity_valid;
-    uint8_t mm_group_identity_report;
-    uint8_t mm_group_identity_ack_request;
-    uint8_t mm_group_identity_attach_detach_mode;
-    uint8_t mm_group_ack_result;
-    uint8_t mm_group_ack_valid;
-    uint8_t mm_status_code;
-    uint8_t mm_status_valid;
-    uint8_t mm_fns_pdu_type;
-    uint8_t mm_fns_valid;
-    /* No decoder sets this; tetra_channel_info.c still reads it. */
-    uint8_t mm_addr_type;
-    long dl_carrier_hz;
 
     /* Frequency band and offset of the main carrier from the last SYSINFO with a valid main carrier. A channel
      * allocation without extended carrier numbering uses them (EN 300 392-2 clause 21.5.2). freq_band 0 means
@@ -502,14 +506,13 @@ typedef struct tetra_state {
      * vc_addr:             address of the PDU that made the assignment. A later allocation with timeslot
      *                      assigned 0000 (go to the common control channel) releases the assignment only when it
      *                      is addressed to the same party, by SSI or by an event label assigned to that SSI. */
-    uint8_t vc_assignment_type;
+    tetra_mac_address vc_addr;
     uint16_t vc_carrier;
+    uint8_t vc_assignment_type;
     uint8_t vc_slot;
-    long vc_freq_hz;
     uint8_t vc_assignment_valid;
     uint8_t vc_timeslot_bitmap;
     uint8_t vc_uplink_downlink;
-    tetra_mac_address vc_addr;
     uint8_t vc_addr_event_label_valid;
     uint8_t trunk_state; /* tetra_sm_state_e, mirrored for UI/state snapshots */
 
