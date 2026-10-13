@@ -668,6 +668,50 @@ jobs:
 EOF
 expect_credentials_verdict next_line_flow_service fail
 
+# An escaped key inside a flow mapping is refused like one at the start of a line.
+run_credentials_case escaped_key_in_flow << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: {image: $pinned, "creden\\u0074ials": {username: u, password: p}}
+    steps:
+      - run: true
+EOF
+if [[ $rc -eq 0 ]] || ! grep -qF "workflow (an escaped or explicit" "$WORK/escaped_key_in_flow.out"; then
+  fail "escaped_key_in_flow: an escaped flow key was not refused"
+  cat "$WORK/escaped_key_in_flow.out" >&2
+fi
+
+# A quoted scalar spanning lines is content: a continuation that looks like a field
+# is not one.
+run_credentials_case quoted_name_hides_if << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: "build
+    if: github.event_name == 'push' && true"
+    container:
+      image: $pinned
+      credentials:
+        username: \${{ secrets.DOCKERHUB_USERNAME }}
+        password: \${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict quoted_name_hides_if fail
+
+# Spacing around == and != does not change a comparison.
+run_credentials_case unspaced_exclusion < <(
+  credentialed_job build: "    if: github.event_name!='pull_request'"
+)
+expect_credentials_verdict unspaced_exclusion pass
+run_credentials_case unspaced_push_equality < <(
+  credentialed_job build: "    if: github.event_name=='push'"
+)
+expect_credentials_verdict unspaced_push_equality pass
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:

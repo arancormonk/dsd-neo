@@ -152,24 +152,51 @@ def strip_comment(line):
     return line.rstrip()
 
 
-# A double-quoted key with an escape ("con\u0074ainer") or an explicit "? " key
+# A double-quoted key with an escape, at the start of a line or inside a flow
+# mapping ("con\u0074ainer") or an explicit "? " key
 # could spell any key, so the reader does not try to decode it.
-ODD_KEY = re.compile(r"""^(?:-\s+)*(?:\?(?:\s|$)|"[^"]*\\[^"]*"\s*:)""")
+ODD_KEY = re.compile(r"""(?:^(?:-\s+)*|[{,]\s*)(?:\?(?:\s|$)|"[^"]*\\[^"]*"\s*:)""")
 
 
-def entries(text, odd_keys):
+def closes(text, quote):
+    """True when a quoted scalar's closing quote is in text."""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote == '"' and ch == "\\":
+            i += 2
+            continue
+        if ch == quote:
+            if quote == "'" and text[i + 1 : i + 2] == "'":
+                i += 2
+                continue
+            return True
+        i += 1
+    return False
+
+
+def entries(text, odd_keys, content):
     """(line number, indent, key, value, text) per line; key is None for a non-key line.
 
-    The lines of a block scalar (key: | or >) come back as non-key lines with their
-    raw text: there a '#' is content, not a comment, and nothing is a key."""
+    The lines inside a block scalar (key: | or >) or a quoted scalar spanning lines
+    come back as non-key lines with their raw text, and their numbers go into
+    content: there a '#' is content, not a comment, and nothing is a key."""
     block_indent = None
+    quote_open = None
     for number, raw in enumerate(text.splitlines(), 1):
         expanded = raw.replace("\t", " ")
         if not expanded.strip():
             continue
         indent = len(expanded) - len(expanded.lstrip(" "))
+        if quote_open is not None:
+            content.add(number)
+            yield number, indent, None, expanded.strip(), expanded.strip()
+            if closes(expanded.strip(), quote_open):
+                quote_open = None
+            continue
         if block_indent is not None:
             if indent > block_indent:
+                content.add(number)
                 yield number, indent, None, expanded.strip(), expanded.strip()
                 continue
             block_indent = None
@@ -177,7 +204,7 @@ def entries(text, odd_keys):
         if not line.strip():
             continue
         body = line.strip()
-        if ODD_KEY.match(body):
+        if ODD_KEY.search(body):
             odd_keys.append(number)
         # The column of the key (past any "- " of a list item) bounds the scalar.
         item = re.match(r"^(?:-\s+)*", body).end()
@@ -186,6 +213,9 @@ def entries(text, odd_keys):
             value = (match.group(4) or "").strip()
             if BLOCK_HEADER.match(value):
                 block_indent = indent + item
+        scalar = value if match else body[item:]
+        if scalar[:1] in ("'", '"') and not closes(scalar[1:], scalar[0]):
+            quote_open = scalar[0]
         if match and not item:
             key = next(g for g in match.groups()[:3] if g is not None)
             yield number, indent, key.strip(), value, body
@@ -386,7 +416,8 @@ def top_level_terms(condition, block):
         current += ch
         i += 1
     terms.append(current)
-    return [" ".join(unwrap(t.strip()).split()).lower() for t in terms]
+    terms = [" ".join(unwrap(t.strip()).split()).lower() for t in terms]
+    return [re.sub(r"\s*(==|!=)\s*", r" \1 ", t) for t in terms]
 
 
 def excludes(condition, events, block):
@@ -429,6 +460,12 @@ class Job:
         if self.credentials is None and CREDENTIALS.search(text):
             self.credentials = number
 
+    def continue_condition(self, text):
+        """A further line of the job's condition."""
+        if not self.block and self.condition[0][:1] in ("'", '"'):
+            self.condition_readable = False
+        self.condition.append(text)
+
     def found_credentials(self, number):
         if self.credentials is None:
             self.credentials = number
@@ -452,7 +489,8 @@ class Job:
 for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
     text = workflow.read_text(encoding="utf-8")
     odd_keys = []
-    rows = list(entries(text, odd_keys))
+    content = set()
+    rows = list(entries(text, odd_keys, content))
     if odd_keys:
         print(f"{workflow}:{odd_keys[0]}: workflow (an escaped or explicit (?) key; write keys plainly)")
         continue
@@ -480,6 +518,14 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
     job_indent = None
     job = None
     for number, indent, key, value, body in rows:
+        if number in content:
+            # Scalar content never opens a job or a field.
+            if in_jobs and job is not None:
+                if job.opaque:
+                    job.scan(body, number)
+                elif job.field == "if":
+                    job.continue_condition(body)
+            continue
         if indent == 0 and not body.startswith("-"):
             if job is not None:
                 job.report(workflow, events)
@@ -531,12 +577,7 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
             if key == "<<" and job.unreadable is None:
                 job.unreadable = number
         elif job.field == "if":
-            if job.block:
-                job.condition.append(body)
-            else:
-                if job.condition[0][:1] in ("'", '"'):
-                    job.condition_readable = False
-                job.condition.append(body)
+            job.continue_condition(body)
         # Only a credentials key of the container itself, or of a service, counts:
         # the same word in an env value or a nested mapping is not registry auth.
         if job.field == "container":
