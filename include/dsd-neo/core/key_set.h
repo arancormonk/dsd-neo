@@ -119,7 +119,7 @@ typedef enum {
     DSD_KEY_TYPE_SCRAMBLER = 3,
     DSD_KEY_TYPE_M17_SCRAMBLER = 4,
     DSD_KEY_TYPE_M17_AES = 5,
-    DSD_KEY_TYPE_TETRA_AIR = 6 /**< "mcc,mnc,key": decimal MCC (0-1023) and MNC (0-16383), 20 hex digits */
+    DSD_KEY_TYPE_TETRA_AIR = 6, /**< "mcc,mnc,key": decimal MCC (0-1023) and MNC (0-16383), 20 hex digits */
 } dsd_key_type;
 
 typedef enum { DSD_KEY_APPLY_OVERLAY, DSD_KEY_APPLY_REPLACE } dsd_key_apply_mode;
