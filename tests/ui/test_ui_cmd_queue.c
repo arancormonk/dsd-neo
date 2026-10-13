@@ -17577,7 +17577,6 @@ main(void) {
     rc |= test_config_apply_switches_rtl_receive_family();
     rc |= test_config_apply_refused_analog_profile_changes_nothing();
     rc |= test_decode_mode_set_am_switches_live();
-    rc |= test_decode_mode_set_reaches_tetra();
     rc |= test_decode_mode_set_am_clears_received_tone();
     rc |= test_am_bandwidth_set_applies_live();
     rc |= test_config_apply_am_within_the_analog_family();
@@ -17717,6 +17716,7 @@ main(void) {
     rc |= test_compact_visualizer_toast();
     rc |= test_modulation_and_decode_mode_setters();
     rc |= test_decode_mode_change_clears_received_tone();
+    rc |= test_decode_mode_set_reaches_tetra();
     rc |= test_tone_filter_warns_when_a_command_leaves_it_unheard();
     rc |= test_tone_filter_warns_when_a_channel_map_leaves_it_unheard();
     rc |= test_tone_filter_set_edits_the_configured_policy();
