@@ -150,17 +150,35 @@ def strip_comment(line):
 
 
 def entries(text):
-    """(line number, indent, key, value, text) per line; key is None for a non-key line."""
+    """(line number, indent, key, value, text) per line; key is None for a non-key line.
+
+    The lines of a block scalar (key: | or >) come back as non-key lines with their
+    raw text: there a '#' is content, not a comment, and nothing is a key."""
+    block_indent = None
     for number, raw in enumerate(text.splitlines(), 1):
-        line = strip_comment(raw.replace("\t", " "))
+        expanded = raw.replace("\t", " ")
+        if not expanded.strip():
+            continue
+        indent = len(expanded) - len(expanded.lstrip(" "))
+        if block_indent is not None:
+            if indent > block_indent:
+                yield number, indent, None, expanded.strip(), expanded.strip()
+                continue
+            block_indent = None
+        line = strip_comment(expanded)
         if not line.strip():
             continue
-        indent = len(line) - len(line.lstrip(" "))
         body = line.strip()
-        match = KEY.match(body)
+        # The column of the key (past any "- " of a list item) bounds the scalar.
+        item = re.match(r"^(?:-\s+)*", body).end()
+        match = KEY.match(body[item:])
         if match:
+            value = (match.group(4) or "").strip()
+            if BLOCK_HEADER.match(value):
+                block_indent = indent + item
+        if match and not item:
             key = next(g for g in match.groups()[:3] if g is not None)
-            yield number, indent, key.strip(), (match.group(4) or "").strip(), body
+            yield number, indent, key.strip(), value, body
         else:
             yield number, indent, None, body, body
 
@@ -262,6 +280,8 @@ def trigger_names(rows):
         return None
     value = drop_anchor(on_rows[0][3])
     rest = on_rows[1:]
+    if BLOCK_HEADER.match(value):
+        return None
     if not value and rest and rest[0][4].startswith(FLOW):
         value, rest = rest[0][4], rest[1:]
     if value.startswith(FLOW):
@@ -371,9 +391,9 @@ class Job:
         self.name = name
         self.opaque = bool(inline)
         self.condition = []
-        # A block scalar condition (if: >- or |) is read from the raw lines, where a
-        # '#' is content, not a comment. A quoted condition over several lines is not
-        # read: its comment-like text cannot be told apart, so it never excludes.
+        # A block scalar condition (if: >- or |) is literal: entries() keeps its raw
+        # lines, and no quotes are removed. A quoted condition over several lines is
+        # not read: its comment-like text cannot be told apart, so it never excludes.
         self.block = False
         self.condition_readable = True
         self.field = None
@@ -403,7 +423,6 @@ class Job:
 for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
     text = workflow.read_text(encoding="utf-8")
     rows = list(entries(text))
-    raw_lines = text.splitlines()
     # The reader relies on block style: keys at column 0 for the top level and
     # indentation for everything below. A workflow that is not written that way
     # fails whenever it mentions credentials at all.
@@ -480,7 +499,7 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
                 job.unreadable = number
         elif job.field == "if":
             if job.block:
-                job.condition.append(raw_lines[number - 1].strip())
+                job.condition.append(body)
             else:
                 if job.condition[0][:1] in ("'", '"'):
                     job.condition_readable = False

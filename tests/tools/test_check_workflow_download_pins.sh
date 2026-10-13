@@ -537,6 +537,17 @@ run_credentials_case multiline_quoted_condition < <(
 )
 expect_credentials_verdict multiline_quoted_condition fail
 
+# A block-scalar trigger is not read, so it counts as pull requests, and a line
+# that looks like a comment inside a block-scalar condition is content.
+run_credentials_case block_scalar_trigger < <(
+  CREDENTIALED_ON=$'on: >-\n  pull_request' credentialed_job build:
+)
+expect_credentials_verdict block_scalar_trigger fail
+run_credentials_case block_scalar_hash_line < <(
+  credentialed_job build: "    if: >-" "      \${{ github.event_name != 'pull_request' }}" "      # no PRs"
+)
+expect_credentials_verdict block_scalar_hash_line fail
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:
