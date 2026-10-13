@@ -9,7 +9,14 @@ Item {
     objectName: "signalSearchScreen"
     property var searchModel: null
     property bool sessionActive: false
+    // Main binds this to its failure text (connection, USB access and
+    // configuration failures). Never assigned here: an assignment would replace
+    // that binding, and no later failure would reach this screen, which covers
+    // Home's banner.
     property string failure: ""
+    // This screen's own refusal of a Start or Resume (searchModel.arm()), shown
+    // beside the host's failure until the next attempt or until Back closes it.
+    property string localFailure: ""
     property string sourceType: "usb"
     property string host: ""
     property int port: 1234
@@ -24,10 +31,12 @@ Item {
     signal stop
     signal saveDetection(var hit)
     function requestClose() {
-        if (!sessionActive)
+        if (!sessionActive) {
+            localFailure = "";
             closed();
-        else
+        } else {
             backRequested();
+        }
     }
     function act(action) {
         if (searchModel)
@@ -79,9 +88,10 @@ Item {
             width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
             Text {
+                objectName: "searchMessage"
                 width: parent.width
-                visible: screen.failure.length > 0 || (screen.status.message || "").length > 0 || (searchModel && searchModel.error.length > 0)
-                text: screen.failure || screen.status.message || (searchModel ? searchModel.error : "")
+                visible: text.length > 0
+                text: [screen.localFailure, screen.failure].filter(function (s) { return s.length > 0; }).join("\n") || screen.status.message || (searchModel ? searchModel.error : "")
                 color: Theme.textPrimary
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
@@ -289,18 +299,18 @@ Item {
             onClicked: {
                 if (screen.sessionActive) {
                     if (screen.phase === 6)
-                        screen.failure = searchModel.arm();
+                        screen.localFailure = searchModel.arm();
                     else
                         screen.act(1);
                     return;
                 }
                 var error = searchModel.arm();
                 if (error.length) {
-                    screen.failure = error;
+                    screen.localFailure = error;
                     return;
                 }
                 var ranges = searchModel.ranges.filter(function (r) { return r.enabled; });
-                screen.failure = "";
+                screen.localFailure = "";
                 screen.start(screen.sourceType, screen.host, Number(portField.text), ranges[0].startMHz);
             }
         }

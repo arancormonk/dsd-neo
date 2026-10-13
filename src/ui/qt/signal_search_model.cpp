@@ -511,6 +511,23 @@ confirmedDecodeFlag(const QString& protocol) {
     return flags.value(protocol);
 }
 
+/* A detection's tuner gain as the saved system's gainDb: the whole-dB override a saved session starts with, the -i
+   spec's gain field (session_args_build()). There 0 is the tuner's AGC and a manual gain is 1 to 49 dB, so AGC stays 0
+   and a manual gain is rounded to the nearest whole dB in that range. A manual 0 or 0.9 dB therefore stays manual, at
+   1 dB, rather than becoming AGC, and no fraction is truncated. A detection without a gain leaves the app default. */
+static int
+savedGainDb(const QVariantMap& hit) {
+    if (hit.value(QStringLiteral("gainAuto")).toBool()) {
+        return 0;
+    }
+    bool ok = false;
+    const double db = hit.value(QStringLiteral("gain")).toDouble(&ok);
+    if (!ok || !std::isfinite(db)) {
+        return -1;
+    }
+    return (int)std::lround(std::clamp(db, 1.0, 49.0));
+}
+
 QVariantMap
 SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& source) const {
     QVariantMap result = source;
@@ -542,8 +559,9 @@ SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& sourc
                        ? confirmedDecodeFlag(hit.value(QStringLiteral("protocol")).toString())
                        : (hit.value(QStringLiteral("am")).toBool() ? QStringLiteral("-fM") : QStringLiteral("-fA"));
     result[QStringLiteral("decodeFlag")] = flag;
+    /* An Airspy's gains are its native map's; the RTL tuner gain the detection records does not describe it. */
     result[QStringLiteral("gainDb")] =
-        hit.value(QStringLiteral("gainAuto")).toBool() ? 0 : hit.value(QStringLiteral("gain"));
+        result.value(QStringLiteral("sourceType")).toString() == QLatin1String("airspy") ? -1 : savedGainDb(hit);
     result[QStringLiteral("trunking")] = false;
     if (!hit.value(QStringLiteral("confirmed")).toBool()) {
         result[QStringLiteral("extraArgs")] =

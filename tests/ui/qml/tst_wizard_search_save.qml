@@ -105,6 +105,28 @@ Item {
             compare(saved.biasTee, -1)
         }
 
+        // systemForHit() hands over the detection's gain as the whole-dB
+        // override the saved session starts with: 0 is the tuner's AGC and a
+        // manual gain is at least 1 dB (a manual 0 dB detection arrives as 1).
+        // An Airspy's gains live in its native map, so it carries none (-1),
+        // and the draft shows no override rather than "-1".
+        function test_detection_gain_is_saved_as_handed_over_data() {
+            return [
+                {tag: "usb-agc", source: "usb", gainDb: 0, field: "0"},
+                {tag: "rtltcp-manual-lowest", source: "rtltcp", gainDb: 1, field: "1"},
+                {tag: "usb-manual", source: "usb", gainDb: 34, field: "34"},
+                {tag: "airspy", source: "airspy", gainDb: -1, field: ""}
+            ]
+        }
+
+        function test_detection_gain_is_saved_as_handed_over(data) {
+            var found = detection(data.source, {"gainDb": data.gainDb})
+            tc.wizard.openForFound(found, found.freqMhz, found)
+            compare(tc.wizard.gainText, data.field)
+            var saved = save(found, found.freqMhz, true)
+            compare(saved.gainDb, data.gainDb, "the saved system must start with the detection's gain")
+        }
+
         function test_the_draft_opens_clean() {
             tc.wizard.openForFound(detection("usb", {"ppm": "-3", "biasTee": 1}), "463.552100",
                                    detection("usb", {"ppm": "-3", "biasTee": 1}))

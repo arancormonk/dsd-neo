@@ -247,7 +247,9 @@ Item {
             decodeFlag = detection.decodeFlag || "";
             trunking = false;
             trunkingAnswered = true;
-            gainField.text = String(detection.gainDb);
+            // A whole-dB override (0 is the tuner's AGC); -1 for an Airspy,
+            // whose gains are in its own settings, leaves the field unset.
+            gainField.text = detection.gainDb >= 0 ? String(detection.gainDb) : "";
             bwField.text = String(detection.bandwidthKhz > 0 ? detection.bandwidthKhz : 48);
             // The receiver the detection was made with, not the app defaults
             // reset above: an Airspy's own settings, or an RTL's PPM and its

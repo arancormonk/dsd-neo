@@ -20,6 +20,8 @@ Item {
         property string error: ""
         property int lastAction: -1
         function control(action, session, hit) { lastAction = action; }
+        function arm() { return ""; }
+        function cancelArm() {}
     }
     TestCase {
         name: "MainSessionTools"
@@ -45,6 +47,11 @@ Item {
         function cleanup() {
             app.signalSearchOpen = false;
             findChild(app, "signalSearchScreen").searchModel = null;
+            searchStub.ranges = [];
+            app.awaitingUsbAccess = false;
+            app.pendingStart = null;
+            testContext.setDongleStatus(false, 0, "");
+            testContext.setScanTestUsb(false, false);
             app.importsOpen = false;
             app.diagnosticsOpen = false;
             app.licensesOpen = false;
@@ -93,6 +100,32 @@ Item {
             findChild(screen, "searchStartPause").activate();
             compare(searchStub.lastAction, 1);
             verify(!Ui.Navigation.back(app), "Active search delegates Back to Main's session policy");
+        }
+        // Main binds the search screen's failure to its own failure text. Start
+        // must leave that binding in place, or a failure reported afterwards (a
+        // refused connection, USB access) never reaches the search screen, which
+        // covers Home's banner.
+        function test_signal_search_shows_failures_after_start_data() {
+            return [{tag: "host", usb: false, message: "rtl_tcp: connection refused"},
+                {tag: "usb-access", usb: true, message: "No permission for RTL-SDR"}];
+        }
+        function test_signal_search_shows_failures_after_start(data) {
+            testContext.setLifecyclePhase(0);
+            if (data.usb)
+                testContext.setDongleStatus(false, 4, data.message);
+            var screen = findChild(app, "signalSearchScreen");
+            searchStub.ranges = [{name: "Local UHF", startMHz: "450.000000", endMHz: "460.000000", enabled: true}];
+            screen.searchModel = searchStub;
+            app.signalSearchOpen = true;
+            wait(0);
+            findChild(screen, "searchStartPause").activate();
+            compare(app.awaitingUsbAccess, data.usb);
+            if (!data.usb)
+                testContext.setLifecycleFailure(data.message);
+            var message = findChild(screen, "searchMessage");
+            verify(message !== null);
+            tryCompare(message, "text", data.message);
+            verify(message.visible, "the failure must be shown on the search screen");
         }
         function visibleTitles(item, title) {
             if (!item.visible) return 0;

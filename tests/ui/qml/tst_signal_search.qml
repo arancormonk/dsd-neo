@@ -9,6 +9,8 @@ Item {
     id: root
     width: 411
     height: 891
+    // What Main binds the screen's failure to: the host's failure text.
+    property string hostFailure: ""
     QtObject {
         id: model
         property var ranges: [{name: "Local UHF", startMHz: "450.000000", endMHz: "460.000000", enabled: true,
@@ -23,10 +25,11 @@ Item {
         property var actions: []
         property var lifted: []
         property int arms: 0
+        property string armError: ""
         function control(action, session, hit) { actions = [action, session, hit]; return true; }
         function removeSessionAvoid(frequency) { lifted = lifted.concat(["session:" + frequency]); return true; }
         function removeAvoid(frequency) { lifted = lifted.concat(["permanent:" + frequency]); }
-        function arm() { arms++; return ""; }
+        function arm() { arms++; return armError; }
         function saveRange(row, range) { ranges = [range]; return ""; }
         function defaultRange() { return Object.assign({}, ranges[0]); }
     }
@@ -34,11 +37,16 @@ Item {
         id: loader
         anchors.fill: parent
         source: uiDir + "/SignalSearchScreen.qml"
-        onLoaded: item.searchModel = model
+        onLoaded: {
+            item.searchModel = model;
+            // As Main.qml binds it: failure: mainRoot.failureText.
+            item.failure = Qt.binding(function () { return root.hostFailure; });
+        }
     }
     SignalSpy { id: saved; target: loader.item; signalName: "saveDetection" }
     SignalSpy { id: back; target: loader.item; signalName: "backRequested" }
     SignalSpy { id: closed; target: loader.item; signalName: "closed" }
+    SignalSpy { id: started; target: loader.item; signalName: "start" }
     TestCase {
         name: "SignalSearch"
         when: windowShown
@@ -60,9 +68,12 @@ Item {
                 hit: {id: "42", session: "17", freqMHz: "463.552100", frequency: 463552100, power: -32.1,
                     noise: -63.2, range: "Local UHF", width: 12500, unresolved: true, ended: false,
                     knownLabel: "Warehouse · 463.5500 MHz", confirmed: false, am: false}};
+            model.armError = "";
+            root.hostFailure = "";
             saved.clear();
             back.clear();
             closed.clear();
+            started.clear();
         }
         function test_back_is_delegated_to_session_owner() {
             loader.item.requestClose();
@@ -130,6 +141,58 @@ Item {
             var before = model.arms;
             findChild(loader.item, "searchStartPause").clicked();
             compare(model.arms, before + 1);
+        }
+        // Start and Resume must leave Main's failure binding in place: a refused
+        // connection, USB access or configuration failure the host reports
+        // afterwards has to reach this screen, which covers Home's banner.
+        function test_host_failure_after_start_reaches_the_screen_data() {
+            return [{tag: "start", active: false}, {tag: "resume", active: true}];
+        }
+        function test_host_failure_after_start_reaches_the_screen(data) {
+            loader.item.sessionActive = data.active;
+            if (data.active)
+                model.status = {phase: 6, session: "17"};
+            findChild(loader.item, "searchStartPause").clicked();
+            compare(started.count, data.active ? 0 : 1);
+            root.hostFailure = "rtl_tcp: connection refused";
+            var message = findChild(loader.item, "searchMessage");
+            verify(message.visible, "the host failure must be shown on the search screen");
+            compare(message.text, "rtl_tcp: connection refused");
+            root.hostFailure = "";
+            verify(!message.visible);
+        }
+        // The screen's own refusal shows beside the host's failure; neither
+        // hides the other, and a start that passes clears only the refusal.
+        function test_refusal_and_host_failure_both_show() {
+            loader.item.sessionActive = false;
+            root.hostFailure = "No permission for RTL-SDR";
+            model.armError = "Enable at least one range.";
+            var button = findChild(loader.item, "searchStartPause");
+            button.clicked();
+            compare(started.count, 0);
+            var message = findChild(loader.item, "searchMessage");
+            compare(message.text, "Enable at least one range.\nNo permission for RTL-SDR");
+            root.hostFailure = "Device detached: RTL-SDR";
+            compare(message.text, "Enable at least one range.\nDevice detached: RTL-SDR");
+            model.armError = "";
+            button.clicked();
+            compare(started.count, 1);
+            compare(message.text, "Device detached: RTL-SDR");
+        }
+        // A refused Resume is shown; it belongs to that attempt, so leaving the
+        // screen discards it while the host's failure stays bound.
+        function test_resume_refusal_is_shown_until_the_screen_closes() {
+            model.status = {phase: 6, session: "17"};
+            model.armError = "Check the numeric range settings.";
+            findChild(loader.item, "searchStartPause").clicked();
+            var message = findChild(loader.item, "searchMessage");
+            compare(message.text, "Check the numeric range settings.");
+            loader.item.sessionActive = false;
+            loader.item.requestClose();
+            compare(closed.count, 1);
+            verify(!message.visible, "a refusal must not greet the next visit");
+            root.hostFailure = "No permission for RTL-SDR";
+            compare(message.text, "No permission for RTL-SDR");
         }
         function test_reception_is_visible_before_tune_finishes() {
             model.status = Object.assign({}, model.status, {phase: 2});

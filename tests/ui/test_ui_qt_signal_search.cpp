@@ -7,6 +7,7 @@
 // NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
 
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -16,6 +17,7 @@
 #include <QMetaType>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
 #include <QVariantMap>
@@ -33,6 +35,7 @@
 #include "known_frequency_index.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
+#include "session_args.h"
 #include "signal_search_model.h"
 
 static void
@@ -217,6 +220,38 @@ main(int argc, char** argv) {
     assert(!rtlSystem.contains(QStringLiteral("airspy")));
     rtl[QStringLiteral("biasTee")] = false;
     assert(model.systemForHit(rtl, {}).value(QStringLiteral("biasTee")).toInt() == 0);
+    // The detection's tuner gain becomes the whole-dB gain override a saved session starts with: the -i spec's gain
+    // field, where 0 is the tuner's AGC and a manual gain is 1 to 49 dB. AGC stays AGC, and a manual gain stays manual
+    // at the nearest whole dB in that range, never truncated: a manual 0 or 0.9 dB must not become AGC.
+    assert(rtlSystem.value(QStringLiteral("gainDb")).typeId() == QMetaType::Int);
+    assert(rtlSystem.value(QStringLiteral("gainDb")).toInt() == 12); // published as manual 12.3 dB
+
+    const struct {
+        double db;
+        bool automatic;
+        int saved;
+    } gains[] = {{0.0, true, 0},    {27.9, true, 0},  {0.0, false, 1},   {0.9, false, 1},
+                 {1.4, false, 1},   {1.5, false, 2},  {29.7, false, 30}, {33.8, false, 34},
+                 {49.6, false, 49}, {-1.0, false, 1}, {14.4, false, 14}};
+
+    for (const auto& gain : gains) {
+        rtl[QStringLiteral("gain")] = gain.db;
+        rtl[QStringLiteral("gainAuto")] = gain.automatic;
+        const QVariant savedGain = model.systemForHit(rtl, {}).value(QStringLiteral("gainDb"));
+        assert(savedGain.typeId() == QMetaType::Int && savedGain.toInt() == gain.saved);
+    }
+    // The saved session starts the tuner that way: manual 0 dB starts at manual 1 dB, not on the AGC's 0.
+    rtl[QStringLiteral("gain")] = 0.0;
+    rtl[QStringLiteral("gainAuto")] = false;
+    dsd_qt::SessionArgsError startError = dsd_qt::SessionArgsError::None;
+    const QStringList startArgs = dsd_qt::session_args_build(model.systemForHit(rtl, {}), {}, &startError);
+    assert(startError == dsd_qt::SessionArgsError::None && startArgs.indexOf(QStringLiteral("-i")) >= 0);
+    const QStringList spec = startArgs.value(startArgs.indexOf(QStringLiteral("-i")) + 1).split(QLatin1Char(':'));
+    assert(spec.value(0) == QStringLiteral("rtltcp") && spec.value(4) == QStringLiteral("1"));
+    rtl[QStringLiteral("gainAuto")] = true;
+    const QStringList agcArgs = dsd_qt::session_args_build(model.systemForHit(rtl, {}), {}, &startError);
+    assert(agcArgs.value(agcArgs.indexOf(QStringLiteral("-i")) + 1).split(QLatin1Char(':')).value(4)
+           == QStringLiteral("0"));
     auto airspy = frozen;
     airspy[QStringLiteral("inputSpec")] = QStringLiteral("airspy:463.55M");
     QVariantMap native = airspy.value(QStringLiteral("airspy")).toMap();
@@ -230,6 +265,9 @@ main(int argc, char** argv) {
     assert(airspySystem.value(QStringLiteral("sourceType")) == QStringLiteral("airspy"));
     assert(airspySystem.value(QStringLiteral("airspy")).toMap() == native);
     assert(!airspySystem.contains(QStringLiteral("ppm")) && !airspySystem.contains(QStringLiteral("biasTee")));
+    // An Airspy's gains are its native map's; the RTL tuner gain a detection records does not describe it.
+    assert(airspySystem.value(QStringLiteral("gainDb")).typeId() == QMetaType::Int);
+    assert(airspySystem.value(QStringLiteral("gainDb")).toInt() == -1);
 
     // History is copied and rebuilt only when the store changed it, not on every status revision.
     int historySignals = 0, statusSignals = 0, avoidSignals = 0;
