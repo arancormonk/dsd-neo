@@ -342,6 +342,64 @@ test_frontend_terminal_option_sets_terminal_kind(void) {
     return test_rc;
 }
 
+/* One run of dsd_parse_args() on a fresh session for the TETRA option cases below. */
+static int
+tetra_cli_run(char** argv, int argc, dsd_opts* opts, dsd_state* state) {
+    initOpts(opts);
+    initState(state);
+    int argc_effective = 0;
+    int exit_rc = 0;
+    const int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+    freeState(state);
+    return rc;
+}
+
+/* --tetra-net mcc,mnc,colour and --tetra-uplink set the options; MCC is 10 bits, MNC 14 bits, the colour 6 bits in
+ * decimal or 0x hexadecimal, and anything else is refused rather than masked. */
+static int
+test_tetra_network_options(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    int test_rc = 0;
+    char arg0[] = "dsd-neo";
+    char net[] = "--tetra-net";
+    char good[] = "1023,16383,0x3F";
+    char uplink[] = "--tetra-uplink";
+    char* argv[] = {arg0, net, good, uplink, NULL};
+    if (tetra_cli_run(argv, 4, opts, state) != DSD_PARSE_CONTINUE || !opts->tetra_net_preset
+        || opts->tetra_net_mcc != 1023 || opts->tetra_net_mnc != 16383 || opts->tetra_net_colour != 63
+        || opts->tetra_uplink != 1) {
+        DSD_FPRINTF(stderr, "--tetra-net/--tetra-uplink did not set the options\n");
+        test_rc = 1;
+    }
+    char eq[] = "--tetra-net=86,28,25";
+    char* argv_eq[] = {arg0, eq, NULL};
+    if (tetra_cli_run(argv_eq, 2, opts, state) != DSD_PARSE_CONTINUE || opts->tetra_net_colour != 25
+        || opts->tetra_uplink != 0) {
+        DSD_FPRINTF(stderr, "--tetra-net=... did not set the decimal colour\n");
+        test_rc = 1;
+    }
+    static const char* const bad[] = {"1024,1,1", "1,16384,1", "1,1,64", "1,1,0x40", "-1,1,1",
+                                      "1,1",      "1,1,1,1",   "1,1,",   "a,1,1",    "1,1,017x"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        char value[32];
+        DSD_SNPRINTF(value, sizeof value, "%s", bad[i]);
+        char* argv_bad[] = {arg0, net, value, NULL};
+        if (tetra_cli_run(argv_bad, 3, opts, state) != DSD_PARSE_ERROR) {
+            DSD_FPRINTF(stderr, "--tetra-net %s was accepted\n", bad[i]);
+            test_rc = 1;
+        }
+    }
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 /* Issue #518: the analog monitor defaults to the AGC (-n 0) and the voice band-pass plus the digital high-pass
    (-v 0x9); -n takes 1..100 as a fixed gain and anything under 1 as auto. */
 static int
@@ -9722,6 +9780,7 @@ main(void) {
     rc |= test_folder_options_refuse_paths_that_do_not_fit();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_frontend_terminal_option_sets_terminal_kind();
+    rc |= test_tetra_network_options();
     rc |= test_analog_monitor_defaults_and_gain();
     rc |= test_N_short_option_enables_terminal_frontend();
     rc |= test_frontend_native_alias_selects_equivalent_headless_frontend();

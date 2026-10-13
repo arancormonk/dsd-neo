@@ -193,6 +193,12 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->frame_provoice = 0;
     opts->frame_ysf = 1;
     opts->frame_m17 = 0;
+    opts->frame_tetra = 0;
+    opts->tetra_uplink = 0;
+    opts->tetra_net_preset = 0;
+    opts->tetra_net_mcc = 0;
+    opts->tetra_net_mnc = 0;
+    opts->tetra_net_colour = 0;
     opts->mod_c4fm = 1;
     opts->mod_qpsk = 0;
     opts->mod_gfsk = 0;
