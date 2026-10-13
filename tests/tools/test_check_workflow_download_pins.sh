@@ -712,6 +712,68 @@ run_credentials_case unspaced_push_equality < <(
 )
 expect_credentials_verdict unspaced_push_equality pass
 
+# An escaped quote inside a double-quoted scalar does not end it, so the '#' after
+# it is content and the credentials below are still seen.
+run_credentials_case escaped_quote_in_name << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: "Check 12\" # size"
+    container:
+      image: $pinned
+      credentials:
+        username: u
+        password: p
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict escaped_quote_in_name fail
+
+# A tagged or anchored key could be any key, so the workflow is refused.
+run_credentials_case tagged_container_key < <(
+  credentialed_job build: | sed 's/^    container:/    !!str container:/'
+)
+if [[ $rc -eq 0 ]] || ! grep -qF "workflow (an escaped or explicit" "$WORK/tagged_container_key.out"; then
+  fail "tagged_container_key: a tagged key was not refused"
+  cat "$WORK/tagged_container_key.out" >&2
+fi
+
+# A '*' inside a scalar is not an alias: a glob in a container's or a service's env.
+run_credentials_case globs_in_env << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: $pinned
+      env:
+        NO_PROXY: "localhost, *.example.com"
+        PATTERN: src/*.c
+    services:
+      cache:
+        image: $pinned
+        env: {NO_PROXY: "*.example.com"}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict globs_in_env pass
+
+# A negation in an expression is not a tag: none of these is an odd key.
+run_credentials_case negated_expressions << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' &&
+      !startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - if: \${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: \${{ !cancelled() && 1 || 0 }}}
+EOF
+expect_credentials_verdict negated_expressions pass
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:

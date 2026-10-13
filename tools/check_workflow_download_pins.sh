@@ -132,7 +132,8 @@ import re
 
 KEY = re.compile(r"""^(?:"([^"]*)"|'([^']*)'|([^\s"'#\-{[*&!][^:#]*?))\s*:(?:\s+(.*))?$""")
 CREDENTIALS = re.compile(r"""(?:^|[\s{,])["']?credentials["']?\s*:""")
-ALIAS = re.compile(r"""(?:^|[\s:,{\[])\*[^\s,\]}]+|<<\s*:""")
+QUOTED = re.compile(r"'(?:[^']|'')*'" + r'|"(?:[^"\\]|\\.)*"')
+FLOW_ALIAS = re.compile(r"""[{,\[:]\s*\*|<<\s*:""")
 PR_EVENTS = ("pull_request", "pull_request_target")
 FLOW = ("{", "[")
 BLOCK_HEADER = re.compile(r"^[|>](?:[+-]?[1-9]?|[1-9][+-])(?:\s+|$)")
@@ -141,9 +142,14 @@ BLOCK_HEADER = re.compile(r"^[|>](?:[+-]?[1-9]?|[1-9][+-])(?:\s+|$)")
 def strip_comment(line):
     """Drop a YAML comment: a '#' at the start or after a blank, outside quotes."""
     quote = None
+    escaped = False
     for i, ch in enumerate(line):
         if quote:
-            if ch == quote:
+            if escaped:
+                escaped = False
+            elif quote == '"' and ch == "\\":
+                escaped = True
+            elif ch == quote:
                 quote = None
         elif ch in "'\"":
             quote = ch
@@ -152,10 +158,13 @@ def strip_comment(line):
     return line.rstrip()
 
 
-# A double-quoted key with an escape, at the start of a line or inside a flow
-# mapping ("con\u0074ainer") or an explicit "? " key
+# A tagged or anchored key (!!str jobs:, &a key:), an explicit "? " key, or a
+# double-quoted key with an escape, at the start of a line or inside a flow
+# collection (outside its ${{ }} expressions) ("con\u0074ainer") or an explicit "? " key
 # could spell any key, so the reader does not try to decode it.
-ODD_KEY = re.compile(r"""(?:^(?:-\s+)*|[{,]\s*)(?:\?(?:\s|$)|"[^"]*\\[^"]*"\s*:)""")
+ODD_KEY_LINE = re.compile(r"""^(?:-\s+)*(?:\?(?:\s|$)|[!&]\S+\s+[^\s:,{}\[\]][^:,{}]*:|"[^"]*\\[^"]*"\s*:)""")
+ODD_KEY_FLOW = re.compile(r"""[{,\[]\s*(?:\?(?:\s|$)|[!&]\S+\s+[^\s:,{}\[\]][^:,{}]*:|"[^"]*\\[^"]*"\s*:)""")
+EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 
 
 def closes(text, quote):
@@ -204,8 +213,6 @@ def entries(text, odd_keys, content):
         if not line.strip():
             continue
         body = line.strip()
-        if ODD_KEY.search(body):
-            odd_keys.append(number)
         # The column of the key (past any "- " of a list item) bounds the scalar.
         item = re.match(r"^(?:-\s+)*", body).end()
         match = KEY.match(body[item:])
@@ -214,6 +221,10 @@ def entries(text, odd_keys, content):
             if BLOCK_HEADER.match(value):
                 block_indent = indent + item
         scalar = value if match else body[item:]
+        if ODD_KEY_LINE.match(body) or (
+            scalar.startswith(FLOW) and ODD_KEY_FLOW.search(EXPRESSION.sub("", scalar))
+        ):
+            odd_keys.append(number)
         if scalar[:1] in ("'", '"') and not closes(scalar[1:], scalar[0]):
             quote_open = scalar[0]
         if match and not item:
@@ -243,6 +254,19 @@ def unbalanced(text):
         elif ch in "]}":
             depth -= 1
     return depth != 0
+
+
+def node_alias(text):
+    """True when this node is an alias (*name), or a flow collection holding an
+    alias or a merge key outside its quoted strings. A '*' inside a scalar, such as
+    a glob, is not an alias."""
+    text = re.sub(r"^(?:-\s+)*", "", text.strip())
+    text = re.sub(r"^(?:[&!]\S+\s*)+", "", text)
+    if text.startswith("*"):
+        return True
+    if text.startswith(FLOW):
+        return bool(FLOW_ALIAS.search(QUOTED.sub('""', text)))
+    return False
 
 
 def drop_anchor(value):
@@ -455,7 +479,7 @@ class Job:
             self.scan(inline, number)
 
     def scan(self, text, number):
-        if self.unreadable is None and ALIAS.search(text):
+        if self.unreadable is None and node_alias(text):
             self.unreadable = number
         if self.credentials is None and CREDENTIALS.search(text):
             self.credentials = number
@@ -618,7 +642,7 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
                         # A service's mapping on the next line, in flow style.
                         job.flow_credentials(body, number)
         if job.field in ("container", "services"):
-            if job.unreadable is None and ALIAS.search(text):
+            if job.unreadable is None and (key == "<<" or node_alias(value if key is not None else body)):
                 job.unreadable = number
             if unbalanced(value if key is not None else body) and job.unreadable is None:
                 job.unreadable = number
