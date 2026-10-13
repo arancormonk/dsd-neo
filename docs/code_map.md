@@ -1566,6 +1566,17 @@ suite runs under this compiler.
     default, saved only when explicit; the section is always saved). Tests: `RUNTIME_DECODE_MODE`,
     `RUNTIME_CLI_PARSE`, `RUNTIME_CONFIG_USER`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`,
     `RUNTIME_BOOTSTRAP_INTERACTIVE`.
+    TETRA (`DSDCFG_MODE_TETRA` = 17, `-fT`) follows AM and shares its input rule, with one more input it runs on: a
+    symbol capture (`.bin`, `.raw` or `.sym`), which carries the symbols an I/Q input's CQPSK demodulator recovered
+    (`dsd_decode_mode_runs_on_input()`, `dsd_decode_mode_runs_on_input_spec()`, `DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT`
+    through `dsd_decode_mode_needs_iq_text()`). The CLI stops on `-fT` with a PCM input, a config's `decode = tetra`
+    there keeps the mode with a warning, DECODE_MODE_SET refuses it, and the terminal picker labels it `TETRA (needs an
+    I/Q radio input)`. Its rate rule lives in `include/dsd-neo/runtime/tetra_rate.h` (`src/runtime/tetra_rate.c`):
+    TETRA runs only at a DSP rate that is a multiple of its 18 ksym/s (`dsd_tetra_dsp_rate_runs()`), so `-fT` and a Qt
+    TETRA system without a bandwidth of its own take `DSD_TETRA_DSP_BW_KHZ` (72), and `dsd_tetra_dsp_rate_advice()`
+    words the stream-start warning (`src/io/radio/rtl_sdr_fm.cpp`) and the mode-change toast for a rate that cannot
+    work, with the fix for what sets the rate. Tests: `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`,
+    `UI_MENU_ACTIONS`, `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in

@@ -284,7 +284,10 @@ each on the clean replay; the `_INVERTED` (complex conjugate: every dibit XOR 2 
 `_CFO_AWGN` (300 Hz offset at 14 dB SNR), `_TWO_RAY` (a second path one sample later at -6.9 dB),
 `_CLOCK_100PPM` and `_CLOCK_MINUS_100PPM` (sample-clock error) variants repeat all four, and `_SNR6` (the same offset
 and noise at 6 dB) the three signalling cases. The TCH/FS cases require the speech CRC on at least 90 of the 100
-bursts, and on the clean and inverted replays every burst with no re-encode mismatch. `DECODE_IQ_TETRA_BAD_CRC_REJECT`
+bursts, and on the clean and inverted replays every burst with no re-encode mismatch. `tetra_bsch_synth_72k` carries
+25 of the same sequences at the 72 kHz DSP bandwidth `-fT` runs an RTL-SDR at (4 samples per symbol):
+`DECODE_IQ_TETRA_BSCH_72K` requires 24 BSCH decodes and no rate warning, and `DECODE_IQ_TETRA_TCH_FS_72K` 24 TCH/FS
+bursts with the CRC passing and none failing. `DECODE_IQ_TETRA_BAD_CRC_REJECT`
 and `DECODE_IQ_TETRA_BAD_CRC_CFO_AWGN_REJECT` replay a BSCH with one protected bit flipped: the burst must sync and
 no network identity may be published. These are deterministic regression boundaries, not receiver-sensitivity claims.
 
