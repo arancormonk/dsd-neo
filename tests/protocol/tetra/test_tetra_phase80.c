@@ -97,6 +97,10 @@ test_phase77_mac_resource(void) {
     n += 24; // ssi
     pack_bits(bits, 511, n, 10);
     n += 10; // event_label
+    pack_bits(bits, 0, n, 3);
+    n += 3; // power control, slot granting and channel allocation flags
+    pack_bits(bits, 1, n, 1);
+    n += 1; // fill bit
 
     tetra_mac_parse_schd(bits, n, 0, opt, st);
 
@@ -138,6 +142,8 @@ test_phase77_mac_resource_usage(void) {
     n += 24; // ssi
     pack_bits(bits, 33, n, 6);
     n += 6; // usage_marker
+    pack_bits(bits, 0, n, 3);
+    n += 3; // power control, slot granting and channel allocation flags
 
     tetra_mac_parse_schd(bits, n, 0, opt, st);
 
@@ -219,6 +225,8 @@ test_phase77_access_define(void) {
 
     pack_bits(bits, 1, n, 1);
     n += 1; // common_flag = 1
+    pack_bits(bits, 0, n, 2);
+    n += 2; // access code A
     pack_bits(bits, 0, n, 4);
     n += 4; // immediate
     pack_bits(bits, 0, n, 4);
@@ -231,6 +239,10 @@ test_phase77_access_define(void) {
     n += 4; // ts_ptr
     pack_bits(bits, 0, n, 3);
     n += 3; // min_pdu_pri
+    pack_bits(bits, 0, n, 2);
+    n += 2; // no optional field
+    pack_bits(bits, 4, n, 3);
+    n += 3; // filler bits 100
 
     tetra_mac_parse_schd(bits, n, 0, opt, st);
 

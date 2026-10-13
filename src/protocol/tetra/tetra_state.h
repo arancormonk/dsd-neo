@@ -216,6 +216,29 @@ typedef struct {
     uint8_t address_type; /**< 0 GSSI, 1 GTSI, 2 (V)GSSI, 3 GTSI and (V)GSSI */
 } tetra_mm_group_entry_t;
 
+/** Address element of a downlink MAC-RESOURCE PDU (EN 300 392-2 table 21.55). */
+typedef struct {
+    uint8_t type;         /* address type, TETRA_MAC_ADDR_* */
+    uint8_t esi;          /* 1 when the SSI part is an encrypted short identity (EN 300 392-7 clause 4.2.6) */
+    uint8_t usage_marker; /* 6 bits, address types SSI + usage marker */
+    uint16_t event_label; /* 10 bits, address types with an event label */
+    uint32_t ssi;         /* SSI, USSI or SMI */
+} tetra_mac_address;
+
+/* N.202, the largest TM-SDU (EN 300 392-2 annex B.2). */
+#define TETRA_MAC_TM_SDU_MAX_BITS 2632
+
+/** Reconstruction of one fragmented downlink TM-SDU (EN 300 392-2 clause 23.4.3.1.1). */
+typedef struct {
+    uint8_t active;          /* a MAC-RESOURCE with length indication 111111 started a TM-SDU */
+    uint8_t encrypted;       /* its encryption mode was not 00, so every fragment is ciphertext */
+    uint8_t idle_half_slots; /* half slots of this timeslot since the last fragment, for the N.203 limit */
+    int8_t cc;               /* colour code of the block that started the TM-SDU */
+    tetra_mac_address addr;  /* address of the starting MAC-RESOURCE; MAC-FRAG and MAC-END carry none */
+    uint16_t nbits;          /* TM-SDU bits rebuilt so far */
+    uint8_t bits[TETRA_MAC_TM_SDU_MAX_BITS]; /* one bit per byte */
+} tetra_mac_fragment;
+
 typedef struct tetra_state {
     /* Diagnostic gates mirrored from the options at every burst (tetra_frame_enter()), so parsers that are not handed
      * the options can still keep per-burst detail behind -Z (payload) and -v (verbose). */
@@ -289,13 +312,13 @@ typedef struct tetra_state {
     uint16_t bs_service_det;
     uint16_t subscr_class;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA call tracking — updated by MAC-RESOURCE on each NDB block.
+    /* Address and encryption mode of the last addressed MAC-RESOURCE (or of the MAC-RESOURCE that started the
+     * TM-SDU a MAC-END completed). Null PDUs leave them alone.
      *
-     * ssi_valid:  1 when active_ssi holds a valid SSI.
-     * active_ssi: 24-bit Short Subscriber Identity of the current call.
-     * enc_mode:   2-bit encryption mode (TETRA_ENC_MODE_* constants).
-     * ───────────────────────────────────────────────────────────────────────── */
+     * ssi_valid:  1 when active_ssi holds a clear SSI, USSI or SMI; 0 for event labels and encrypted short
+     *             identities, which are not subscriber identities.
+     * active_ssi: 24-bit identity of that address.
+     * enc_mode:   2-bit encryption mode (TETRA_ENC_MODE_* constants). */
     uint8_t ssi_valid;
     uint32_t active_ssi;
     uint8_t enc_mode;
@@ -359,25 +382,22 @@ typedef struct tetra_state {
     uint8_t mm_addr_type;
     long dl_carrier_hz;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA frequency band params cached from SYSINFO so that a MAC Channel
-     * Allocation IE can resolve an assigned carrier to a DL frequency.
-     *
-     * freq_band:   4-bit band index from last SYSINFO.
-     * freq_offset: 2-bit freq_offset from last SYSINFO.
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* Frequency band and offset of the main carrier from the last SYSINFO with a valid main carrier. A channel
+     * allocation without extended carrier numbering uses them (EN 300 392-2 clause 21.5.2). freq_band 0 means
+     * none is known yet. */
     uint8_t freq_band;
     uint8_t freq_offset;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA assigned-channel state. The authoritative allocation is the
-     * Channel Allocation IE in a downlink MAC-RESOURCE/MAC-END PDU.
+    /* Traffic-channel assignment from the last channel allocation element (EN 300 392-2 table 21.87) of a
+     * MAC-RESOURCE or MAC-END PDU.
      *
-     * vc_assignment_type: compatibility copy of MAC allocation type.
-     * vc_carrier:         12-bit carrier number.
-     * vc_slot:            compatibility copy of the timeslot bitmap.
-     * vc_freq_hz:         Resolved VC downlink frequency in Hz (0=unknown).
-     * ───────────────────────────────────────────────────────────────────────── */
+     * vc_assignment_type:  allocation type.
+     * vc_carrier:          12-bit carrier number.
+     * vc_slot:             timeslot bitmap, copy of vc_timeslot_bitmap kept for the audio diagnostics.
+     * vc_freq_hz:          downlink frequency in Hz, 0 when unknown.
+     * vc_addr:             address of the PDU that made the assignment. A later allocation with timeslot
+     *                      assigned 0000 (go to the common control channel) releases the assignment only when it
+     *                      is addressed to the same party, by SSI or by an event label assigned to that SSI. */
     uint8_t vc_assignment_type;
     uint16_t vc_carrier;
     uint8_t vc_slot;
@@ -385,8 +405,8 @@ typedef struct tetra_state {
     uint8_t vc_assignment_valid;
     uint8_t vc_timeslot_bitmap;
     uint8_t vc_uplink_downlink;
-    uint8_t vc_grant_pending; /* allocation waits for a fragmented CMCE TM-SDU */
-    uint32_t vc_grant_call_generation;
+    tetra_mac_address vc_addr;
+    uint8_t vc_addr_event_label_valid;
     uint8_t trunk_state; /* tetra_sm_state_e, mirrored for UI/state snapshots */
 
     /* ───────────────────────────────────────────────────────────────────────
@@ -427,16 +447,14 @@ typedef struct tetra_state {
     uint8_t sds_concat_complete;
     uint32_t sds_concat_generation;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA SYSINFO extended fields (Phase 20-22):
+    /* SYSINFO fields (EN 300 392-2 table 21.65).
      *
-     * cck_valid:         1 when cck_id contains a valid CCK-ID.
-     * cck_id:            16-bit CCK-ID from SYSINFO (or 0 if hyperframe).
-     * duplex_spacing:    3-bit duplex spacing index from SYSINFO.
-     * num_csch:          2-bit number of SCH channels from SYSINFO.
-     * ms_txpwr_max:      3-bit MS TX power max from SYSINFO.
-     * rxlev_access_min:  4-bit RXLEV access min from SYSINFO.
-     * ───────────────────────────────────────────────────────────────────────── */
+     * cck_valid:         1 when the last SYSINFO carried a CCK identifier or static cipher key version number
+     *                    instead of the hyperframe number; cck_id then holds it.
+     * duplex_spacing:    3-bit duplex spacing.
+     * num_csch:          2-bit number of common secondary control channels on the main carrier.
+     * ms_txpwr_max:      3-bit MS_TXPWR_MAX_CELL.
+     * rxlev_access_min:  4-bit RXLEV_ACCESS_MIN. */
     uint8_t cck_valid;
     uint16_t cck_id;
     uint8_t duplex_spacing;
@@ -444,12 +462,9 @@ typedef struct tetra_state {
     uint8_t ms_txpwr_max;
     uint8_t rxlev_access_min;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA ACCESS-DEFINE cached params (Phase 23):
-     *
-     * access_imm:       4-bit immediate value from last ACCESS-DEFINE.
-     * access_wait_time: 4-bit waiting time from last ACCESS-DEFINE.
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* Last ACCESS-DEFINE (EN 300 392-2 table 21.79): access code (0..3 for A..D), IMM and WT. The remaining fields
+     * are access_num_ra, access_frame_len_f, access_ts_ptr, access_min_pdu_pri and access_common_flag below. */
+    uint8_t access_code;
     uint8_t access_imm;
     uint8_t access_wait_time;
 
@@ -462,33 +477,21 @@ typedef struct tetra_state {
     uint32_t bsch_count;
     uint8_t bsch_colour_changed;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA MAC frame counters (Phase 25):
+    /* Upper MAC counters.
      *
-     * frames_total:    total MAC PDUs processed.
-     * frames_sysinfo:  SYSINFO broadcast PDUs processed.
-     * frames_resource: MAC-RESOURCE PDUs processed.
-     * frames_frag:     MAC-FRAG/END PDUs processed.
-     * ───────────────────────────────────────────────────────────────────────── */
+     * frames_total:       signalling MAC blocks decoded.
+     * frames_sysinfo:     SYSINFO PDUs.
+     * frames_resource:    MAC-RESOURCE PDUs other than Null PDUs.
+     * mac_encrypted_sdus: TM-SDUs (and fragmented TM-SDUs) held back because their encryption mode was not 00. */
     uint32_t frames_total;
     uint32_t frames_sysinfo;
     uint32_t frames_resource;
-    uint32_t frames_frag;
+    uint32_t mac_encrypted_sdus;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA MAC-FRAG/END reassembly tracking (Phase 28 + Phase 69):
-     *
-     * frag_active:  1 while a MAC-FRAG sequence is in progress.
-     * frag_seq:     running fragment sequence counter.
-     * frag_buf:     one-byte-per-bit reassembly buffer (1024 bits max).
-     * frag_nbits:   number of bits currently accumulated in the buffer.
-     * frag_cc:      CC that initiated the current fragment sequence.
-     * ───────────────────────────────────────────────────────────────────────── */
-    uint8_t frag_active;
-    uint8_t frag_seq;
-    uint8_t frag_buf[1024]; /* one byte per bit */
-    uint16_t frag_nbits;
-    int8_t frag_cc;
+    /* Fragmented TM-SDU reconstruction, one context per downlink timeslot (index = TN 1..4; index 0 while the TDMA
+     * timeslot is unknown). A fragment run belongs to the control channel of its timeslot, so fragments of
+     * different timeslots are never joined (EN 300 392-2 clause 23.4.3.1.1). */
+    tetra_mac_fragment mac_frag[5];
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA CMCE D-SETUP supplementary fields (Phase 29):
@@ -850,33 +853,35 @@ typedef struct tetra_state {
     uint8_t sds_report_cause;
     uint8_t sds_report_msg_ref;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * Phase 74: MAC ACCESS-DEFINE extended fields.
-     * access_num_ra:      4-bit number of random access channels.
-     * access_frame_len_f: 1-bit frame length factor.
+    /* ACCESS-DEFINE (EN 300 392-2 table 21.79), continued.
+     * access_num_ra:      4-bit Nu, number of random access transmissions.
+     * access_frame_len_f: 1-bit frame-length factor.
      * access_ts_ptr:      4-bit timeslot pointer.
-     * access_min_pdu_pri: 3-bit minimum PDU priority.
-     * ───────────────────────────────────────────────────────────────────────── */
+     * access_min_pdu_pri: 3-bit minimum PDU priority. */
     uint8_t access_num_ra;
     uint8_t access_frame_len_f;
     uint8_t access_ts_ptr;
     uint8_t access_min_pdu_pri;
 
-    /* --- Phase 77: TETRA MAC dropped variables --- */
+    /* Header of the last addressed MAC-RESOURCE (EN 300 392-2 table 21.55): fill bit indication, position of
+     * grant, random access flag, length indication, address type, event label (10 bits) and usage marker (6 bits). */
     uint8_t mac_fill_bits;
     uint8_t mac_grant_pos;
     uint8_t mac_rand_acc;
     uint8_t mac_len_ind;
     uint8_t mac_addr_type;
-    uint16_t mac_event_label; // 10 bits
-    uint8_t mac_usage_marker; // 6 bits
+    uint16_t mac_event_label;
+    uint8_t mac_usage_marker;
 
+    /* SYSINFO (EN 300 392-2 table 21.65): main carrier number, reverse operation, ACCESS_PARAMETER,
+     * RADIO_DOWNLINK_TIMEOUT, optional field flag and the 20-bit optional field. access_common_flag is the common
+     * or assigned control channel flag of the last ACCESS-DEFINE (table 21.79): 0 common, 1 assigned. */
     uint16_t sysinfo_main_carrier;
     uint8_t sysinfo_rev_op;
     uint8_t sysinfo_acc_param;
     uint8_t sysinfo_radio_dl_tmo;
     uint8_t sysinfo_opt_field_type;
-    uint32_t sysinfo_opt_field_data; // 20 bits
+    uint32_t sysinfo_opt_field_data;
 
     uint8_t access_common_flag;
 

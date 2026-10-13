@@ -116,21 +116,25 @@ test_mac_access_define(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
-    /* MAC-BROADCAST (2) -> ACCESS-DEFINE (1) */
+    /* MAC-BROADCAST (2) -> ACCESS-DEFINE (1), EN 300 392-2 table 21.79 */
     uint8_t mac[50];
     memset(mac, 0, sizeof(mac));
     pack_bits(mac, 2, 0, 2);  /* PDU = BROADCAST */
     pack_bits(mac, 1, 2, 2);  /* BROADCAST type = ACCESS-DEFINE */
-    pack_bits(mac, 1, 4, 1);  /* common */
-    pack_bits(mac, 5, 5, 4);  /* imm = 5 */
-    pack_bits(mac, 2, 9, 4);  /* wait = 2 */
-    pack_bits(mac, 9, 13, 4); /* num_ra = 9 */
-    pack_bits(mac, 1, 17, 1); /* frame_len_f = 1 */
-    pack_bits(mac, 4, 18, 4); /* ts_ptr = 4 */
-    pack_bits(mac, 3, 22, 3); /* min_prio = 3 */
+    pack_bits(mac, 1, 4, 1);  /* assigned control channel */
+    pack_bits(mac, 2, 5, 2);  /* access code C */
+    pack_bits(mac, 5, 7, 4);  /* imm = 5 */
+    pack_bits(mac, 2, 11, 4); /* wait = 2 */
+    pack_bits(mac, 9, 15, 4); /* num_ra = 9 */
+    pack_bits(mac, 1, 19, 1); /* frame_len_f = 1 */
+    pack_bits(mac, 4, 20, 4); /* ts_ptr = 4 */
+    pack_bits(mac, 3, 24, 3); /* min_prio = 3 */
+    pack_bits(mac, 0, 27, 2); /* no optional field */
+    pack_bits(mac, 4, 29, 3); /* filler bits 100 */
 
-    tetra_mac_parse_schd(mac, 25, 0, opt, st);
+    tetra_mac_parse_schd(mac, 32, 0, opt, st);
 
+    CHECK(tetra_st(st)->access_code == 2, "Extracted access code");
     CHECK(tetra_st(st)->access_imm == 5, "Extracted immediate");
     CHECK(tetra_st(st)->access_wait_time == 2, "Extracted wait time");
     CHECK(tetra_st(st)->access_num_ra == 9, "Extracted num_ra");

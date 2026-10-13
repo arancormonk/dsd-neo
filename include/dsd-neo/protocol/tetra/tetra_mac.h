@@ -1,93 +1,79 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/*
- * TETRA MAC PDU parser – SCH-HD (Half-Capacity Downlink Signaling Channel)
- * ETSI EN 300 392-2 §21.4 / §21.5
+/**
+ * @file
+ * @brief TETRA downlink upper MAC and basic-link LLC decoder (EN 300 392-2 clauses 21.2, 21.4 and 23.4).
  *
- * MAC PDU type field (2 bits, MSB-first at bit 0 of the decoded block):
- *   00 (0) – MAC-RESOURCE   : resource grant / channel allocation
- *   01 (1) – MAC-FRAG/END   : fragmented PDU continuation or end
- *   10 (2) – MAC-BROADCAST  : system information (SYSINFO / ACCESS-DEFINE)
- *   11 (3) – MAC-SUPPL      : supplementary (D-BLCK, etc.)
- *
- * MAC-BROADCAST sub-types (2-bit broadcast_type after MAC PDU type):
- *   00 (0) – SYSINFO         : RF + network identity parameters
- *   01 (1) – ACCESS-DEFINE   : random access parameters
- *
- * All fields are big-endian (MSB-first) in the decoded bit array.
+ * Decodes the type-1 bits of one CRC-passed signalling MAC block (SCH/HD, STCH or SCH/F, pi/4-DQPSK). A block may
+ * hold several associated PDUs; each is bounded by its length indication or implicit length (clause 23.4.3.3) and
+ * loses its fill bits (clause 23.4.3.2) before its TM-SDU is used. Fragmented TM-SDUs are rebuilt per downlink
+ * timeslot (clause 23.4.3.1.1). Clear TM-SDUs pass through the LLC (clause 21.2) to the MLE; encrypted ones are
+ * counted and never parsed as plaintext (EN 300 392-7 clause 6.7.1.2).
  */
 #ifndef DSD_NEO_PROTOCOL_TETRA_MAC_H
 #define DSD_NEO_PROTOCOL_TETRA_MAC_H
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* -----------------------------------------------------------------------
- * MAC PDU type constants (2-bit field, ETSI EN 300 392-2 §21.4.1)
- * ----------------------------------------------------------------------- */
+/* MAC PDU type, table 21.38. */
 #define TETRA_MAC_TYPE_RESOURCE    0 /* MAC-RESOURCE */
-#define TETRA_MAC_TYPE_FRAG_END    1 /* MAC-FRAG / MAC-END variants */
-#define TETRA_MAC_TYPE_BROADCAST   2 /* MAC-BROADCAST */
-#define TETRA_MAC_TYPE_SUPPL       3 /* MAC-SUPPLEMENTARY */
+#define TETRA_MAC_TYPE_FRAG_END    1 /* MAC-FRAG or MAC-END */
+#define TETRA_MAC_TYPE_BROADCAST   2 /* TMB-SAP broadcast */
+#define TETRA_MAC_TYPE_SUPPL       3 /* MAC-D-BLCK on a full slot, MAC-U-SIGNAL on STCH */
 
-/* MAC-BROADCAST sub-types (2-bit broadcast_type, ETSI §21.5.1) */
-#define TETRA_MAC_BC_SYSINFO       0 /* SYSINFO (RF + MLE network params)          */
-#define TETRA_MAC_BC_ACCESS_DEF    1 /* ACCESS-DEFINE                               */
-#define TETRA_MAC_BC_RESTORE       2 /* D-RESTORE-ACK / D-RESTORE-FAIL (MLE)       */
-#define TETRA_MAC_BC_NWRK_BCAST    3 /* D-NWRK-BROADCAST / D-NWRK-BCAST-EXT (MLE) */
+/* Broadcast type, table 21.64. */
+#define TETRA_MAC_BC_SYSINFO       0 /* SYSINFO */
+#define TETRA_MAC_BC_ACCESS_DEF    1 /* ACCESS-DEFINE */
+#define TETRA_MAC_BC_SYSINFO_DA    2 /* SYSINFO-DA (direct-access QAM cells) */
+#define TETRA_MAC_BC_RESERVED      3
 
-/* FRAG/END sub-types (1-bit, ETSI §21.4.4.2) */
-#define TETRA_MAC_FRAGE_FRAG       0 /* MAC-FRAG – fragment continuation */
-#define TETRA_MAC_FRAGE_END        1 /* MAC-END  – last fragment */
+/* MAC PDU subtype of MAC PDU type 01, tables 21.57 and 21.59. */
+#define TETRA_MAC_FRAGE_FRAG       0 /* MAC-FRAG: continuation fragment */
+#define TETRA_MAC_FRAGE_END        1 /* MAC-END: last fragment */
 
-/* Address types within MAC-RESOURCE (3-bit addr_type, ETSI Table 21.49) */
-#define TETRA_MAC_ADDR_NULL        0
-#define TETRA_MAC_ADDR_SSI         1 /* Short Subscriber Identity (24 bits) */
-#define TETRA_MAC_ADDR_EVENT_LABEL 2 /* Event Label (10 bits) */
-#define TETRA_MAC_ADDR_USSI        3 /* Unacknowledged SSI (24 bits) */
-#define TETRA_MAC_ADDR_SMI         4 /* Short Management Identity (24 bits) */
-#define TETRA_MAC_ADDR_SSI_EVENT   5 /* SSI + Event Label */
-#define TETRA_MAC_ADDR_SSI_USAGE   6 /* SSI + Usage Marker */
-#define TETRA_MAC_ADDR_SMI_EVENT   7 /* SMI + Event Label */
+/* Address type of MAC-RESOURCE, table 21.55. */
+#define TETRA_MAC_ADDR_NULL        0 /* Null PDU */
+#define TETRA_MAC_ADDR_SSI         1 /* SSI (24 bits) */
+#define TETRA_MAC_ADDR_EVENT_LABEL 2 /* event label (10 bits) */
+#define TETRA_MAC_ADDR_USSI        3 /* USSI, migrating MS un-exchanged address (24 bits) */
+#define TETRA_MAC_ADDR_SMI         4 /* SMI, management address (24 bits) */
+#define TETRA_MAC_ADDR_SSI_EVENT   5 /* SSI + event label assignment (34 bits) */
+#define TETRA_MAC_ADDR_SSI_USAGE   6 /* SSI + usage marker assignment (30 bits) */
+#define TETRA_MAC_ADDR_SMI_EVENT   7 /* SMI + event label assignment (34 bits) */
 
-/* Encryption mode values (2-bit, within MAC-RESOURCE) */
-#define TETRA_ENC_MODE_NONE        0 /* No encryption */
-#define TETRA_ENC_MODE_ON          1 /* Encrypted */
-#define TETRA_ENC_MODE_ON_AUTH     2 /* Encrypted + authenticated */
-#define TETRA_ENC_MODE_RSVD        3 /* Reserved */
+/* Encryption mode of MAC-RESOURCE and MAC-D-BLCK (table 21.55, EN 300 392-7 clause 6.5.1). Any value other than
+ * TETRA_ENC_MODE_NONE means the TM-SDU and the channel allocation element are ciphertext and the SSI part of the
+ * address is an encrypted short identity. */
+#define TETRA_ENC_MODE_NONE        0 /* not encrypted */
+#define TETRA_ENC_MODE_ON          1 /* reserved in EN 300 392-7 class 2 and 3 cells */
+#define TETRA_ENC_MODE_ON_AUTH     2 /* encrypted, SCK-VN or CCK-id even */
+#define TETRA_ENC_MODE_RSVD        3 /* encrypted, SCK-VN or CCK-id odd */
 
-/* -----------------------------------------------------------------------
- * tetra_mac_parse_schd()
+/**
+ * Decode one downlink signalling MAC block.
  *
- * Parse a decoded SCH-HD bit array as a TETRA MAC PDU and print a
- * human-readable summary to stderr.  Recognized PDU types also update
- * the TETRA-specific fields in @state:
+ * @param bits  type-1 bits of the block, one bit per byte, MSB first; the caller has checked the block CRC
+ * @param nbits number of type-1 bits (124 for SCH/HD and STCH, 268 for SCH/F)
+ * @param cc    colour code of the burst, used in log lines and to keep fragments of different cells apart
+ * @param opts  decoder options; may be NULL
+ * @param state decoder state; nothing is decoded without it
  *
- *   MAC-BROADCAST/SYSINFO      → tetra_sysinfo_known, tetra_la,
- *                                 tetra_bs_service_det, tetra_subscr_class
- *   MAC-BROADCAST/NWRK-BCAST   → tetra_nwrk_bcast_known and MLE
- *                                 cell-reselection/load state
- *   MAC-BROADCAST/RESTORE       → log only (D-RESTORE-ACK/RESPONSE)
- *   MAC-RESOURCE               → tetra_ssi_valid, tetra_active_ssi, tetra_enc_mode
- *
- * @bits   – decoded bit array (one byte per bit, value 0 or 1), MSB-first
- * @nbits  – number of valid bits in the array
- * @cc     – Colour Code extracted from the NDB CB field
- * @opts   – dsd_opts (used for opts->payload / opts->errorbars verbosity)
- * @state  – dsd_state to update; may be NULL (state update is then skipped)
- * ----------------------------------------------------------------------- */
-void tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state);
+ * Fragment reconstruction is keyed by the TDMA timeslot of the block (the TETRA state's tn when the TDMA clock is
+ * valid). Blocks received while the decoder follows an uplink are not decoded with the downlink layouts.
+ */
+void tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state);
 
-/* Calculate the 32-bit LLC FCS over a TL-SDU bit array according to
- * EN 300 392-2 Annex C. Bits are supplied and returned MSB-first. */
+/**
+ * The 32-bit LLC frame check sequence of EN 300 392-2 annex C over @p nbits bits (one bit per byte, MSB first):
+ * the first 32 bits complemented, the result multiplied by x^32 and divided by the generator polynomial of
+ * equation C.1, and the remainder complemented. Returns the FCS with its first transmitted bit in bit 31.
+ */
 uint32_t tetra_llc_fcs32(const uint8_t* bits, int nbits);
-
-/* Return a short string for a MAC PDU type code (for logging). */
-const char* tetra_mac_type_name(int pdu_type);
 
 #ifdef __cplusplus
 }

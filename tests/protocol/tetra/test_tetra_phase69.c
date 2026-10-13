@@ -1,319 +1,241 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * TETRA Phase 69 test suite — MAC Fragment Reassembly.
- *
- * Tests:
- *  1. Fill indication does not control fragmentation
- *  2. MAC-RESOURCE length indication 111111 seeds the reassembly buffer
- *  3. MAC-FRAG accumulates additional bits into the buffer
- *  4. MAC-END completes the reassembly and dispatches to MLE
- *  5. After MAC-END the buffer is cleared (frag_active=0, frag_nbits=0)
- *  6. A full RESOURCE→FRAG→END sequence produces a correctly decoded CMCE PDU
+ * TETRA downlink TM-SDU reconstruction (EN 300 392-2 clause 23.4.3.1.1): a MAC-RESOURCE with length indication
+ * 111111 starts the TM-SDU, MAC-FRAG PDUs continue it and the MAC-END completes it, each fragment without its fill
+ * bits. Fragment runs are kept per downlink timeslot. Blocks are built from the ETSI tables in tetra_test_pdu.h.
  */
 
+#include <assert.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "tetra_state.h"
+#include "tetra_test_pdu.h"
 
-static int g_pass = 0;
-static int g_fail = 0;
+static int g_fail;
 
-#define CHECK(cond, msg)                                                                                               \
-    do {                                                                                                               \
-        if (cond) {                                                                                                    \
-            printf("  PASS: %s\n", msg);                                                                               \
-            g_pass++;                                                                                                  \
-        } else {                                                                                                       \
-            printf("  FAIL: %s (line %d)\n", msg, __LINE__);                                                           \
-            g_fail++;                                                                                                  \
-        }                                                                                                              \
-    } while (0)
+static void
+check(int ok, const char* what) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL: %s\n", what);
+        g_fail++;
+    }
+}
 
 static dsd_state*
-alloc_state(void) {
-    return (dsd_state*)calloc(1, sizeof(dsd_state));
-}
-
-static dsd_opts*
-alloc_opts(void) {
-    return (dsd_opts*)calloc(1, sizeof(dsd_opts));
+new_state(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    assert(state != NULL);
+    assert(tetra_st(state) != NULL);
+    return state;
 }
 
 static void
-pack_bits(uint8_t* out, uint32_t val, int offset, int nbits) {
-    for (int i = nbits - 1; i >= 0; i--) {
-        out[offset++] = (uint8_t)((val >> i) & 1u);
+free_state(dsd_state* state) {
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* BL-UDATA (table 21.10) carrying a CMCE D-ALERT (table 14.4): 33 bits. */
+static void
+put_d_alert(ttb_block* sdu, uint32_t call_id) {
+    ttb_put(sdu, 2, 4); /* LLC PDU type 0010: BL-UDATA */
+    ttb_put(sdu, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(sdu, TETRA_CMCE_D_ALERT, 5);
+    ttb_put(sdu, call_id, 14);
+    ttb_put(sdu, 3, 3); /* call time-out, set-up phase */
+    ttb_put(sdu, 1, 1); /* reserved, set to 1 */
+    ttb_put(sdu, 0, 1); /* simplex/duplex selection */
+    ttb_put(sdu, 0, 1); /* call queued */
+    ttb_put(sdu, 0, 1); /* O-bit */
+}
+
+/* SCH/HD block whose only PDU is a first fragment (MAC-RESOURCE with length indication 111111) to @p ssi. */
+static void
+first_fragment(ttb_block* b, uint32_t ssi, const uint8_t* part, int nbits) {
+    *b = (ttb_block){0};
+    const int start = ttb_resource(b, 0, TETRA_MAC_ADDR_SSI, ssi);
+    ttb_set(b, start + 7, 63, 6);
+    ttb_resource_flags(b, 0);
+    ttb_put_bits(b, part, nbits);
+    ttb_finish(b, TTB_SCH_HD_BITS, start + 2);
+}
+
+static void
+continuation(ttb_block* b, const uint8_t* part, int nbits) {
+    *b = (ttb_block){0};
+    const int fill = ttb_frag(b);
+    ttb_put_bits(b, part, nbits);
+    ttb_finish(b, TTB_SCH_HD_BITS, fill);
+}
+
+/* MAC-END with a basic slot granting element (table 21.96) ahead of the last fragment, then a Null PDU. */
+static void
+last_fragment(ttb_block* b, const uint8_t* part, int nbits) {
+    *b = (ttb_block){0};
+    const int start = ttb_end(b);
+    ttb_set(b, start + 11, 1, 1); /* slot granting flag */
+    ttb_put(b, 0x15, 8);          /* basic slot granting element */
+    ttb_put(b, 0, 1);             /* channel allocation flag */
+    ttb_put_bits(b, part, nbits);
+    ttb_close_end(b, start);
+    ttb_finish(b, TTB_SCH_HD_BITS, -1);
+}
+
+static void
+parse(dsd_state* state, dsd_opts* opts, const ttb_block* b, int cc) {
+    tetra_mac_parse_schd(b->bits, b->n, cc, opts, state);
+}
+
+static void
+test_full_fragment_sequence(void) {
+    ttb_block sdu = {0};
+    put_d_alert(&sdu, 5);
+    dsd_state* state = new_state();
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    const tetra_state_t* ts = tetra_st(state);
+    const tetra_mac_fragment* f = &ts->mac_frag[0];
+    ttb_block b;
+
+    first_fragment(&b, 0x001234u, sdu.bits, 10);
+    parse(state, opts, &b, 2);
+    check(f->active && f->nbits == 10 && f->addr.ssi == 0x001234u && !ts->d_alert_valid,
+          "first fragment buffered without its fill bits");
+    continuation(&b, sdu.bits + 10, 8);
+    parse(state, opts, &b, 2);
+    check(f->active && f->nbits == 18 && !ts->d_alert_valid, "MAC-FRAG appended without its fill bits");
+    last_fragment(&b, sdu.bits + 18, sdu.n - 18);
+    parse(state, opts, &b, 2);
+    check(!f->active && f->nbits == 0, "MAC-END closes the TM-SDU");
+    check(ts->d_alert_valid && ts->d_alert_call_id == 5 && ts->call_active,
+          "TM-SDU taken from after the MAC-END header elements");
+    check(ts->ssi_valid && ts->active_ssi == 0x001234u, "rebuilt TM-SDU keeps the first fragment's address");
+    free_state(state);
+    free(opts);
+}
+
+static void
+test_fragment_guards(void) {
+    ttb_block sdu = {0};
+    put_d_alert(&sdu, 7);
+    dsd_state* state = new_state();
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    tetra_state_t* ts = tetra_st(state);
+    tetra_mac_fragment* f = &ts->mac_frag[0];
+    ttb_block b;
+
+    continuation(&b, sdu.bits, 9);
+    parse(state, opts, &b, 1);
+    check(!f->active && f->nbits == 0, "MAC-FRAG without a first fragment is discarded");
+    last_fragment(&b, sdu.bits, sdu.n);
+    parse(state, opts, &b, 1);
+    check(!ts->d_alert_valid, "MAC-END without a first fragment delivers nothing");
+
+    first_fragment(&b, 0x001234u, sdu.bits, 9);
+    parse(state, opts, &b, 1);
+    continuation(&b, sdu.bits + 9, 5);
+    parse(state, opts, &b, 2);
+    check(!f->active && f->nbits == 0, "a fragment from another colour code ends the TM-SDU");
+
+    /* Clause 23.4.3.1.1 i): a new first fragment on the channel drops the partial TM-SDU. */
+    first_fragment(&b, 0x001234u, sdu.bits, 9);
+    parse(state, opts, &b, 1);
+    first_fragment(&b, 0x005678u, sdu.bits, 4);
+    parse(state, opts, &b, 1);
+    check(f->active && f->nbits == 4 && f->addr.ssi == 0x005678u, "a new first fragment replaces the partial one");
+
+    f->nbits = TETRA_MAC_TM_SDU_MAX_BITS - 2;
+    continuation(&b, sdu.bits, 8);
+    parse(state, opts, &b, 1);
+    check(!f->active && f->nbits == 0, "a TM-SDU longer than N.202 is discarded");
+    free_state(state);
+    free(opts);
+}
+
+/* Fragments of runs on different timeslots are never joined. */
+static void
+test_fragments_kept_per_timeslot(void) {
+    ttb_block one = {0};
+    ttb_block two = {0};
+    put_d_alert(&one, 11);
+    put_d_alert(&two, 22);
+    dsd_state* state = new_state();
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    tetra_state_t* ts = tetra_st(state);
+    ts->tdma_valid = 1;
+    ttb_block b;
+
+    ts->tn = 1;
+    first_fragment(&b, 0x000011u, one.bits, 12);
+    parse(state, opts, &b, 0);
+    ts->tn = 2;
+    first_fragment(&b, 0x000022u, two.bits, 12);
+    parse(state, opts, &b, 0);
+    ts->tn = 1;
+    last_fragment(&b, one.bits + 12, one.n - 12);
+    parse(state, opts, &b, 0);
+    check(ts->d_alert_valid && ts->d_alert_call_id == 11 && ts->active_ssi == 0x000011u,
+          "timeslot 1 TM-SDU rebuilt from its own fragments");
+    check(ts->mac_frag[2].active && ts->mac_frag[2].nbits == 12, "timeslot 2 TM-SDU still under way");
+    ts->tn = 2;
+    last_fragment(&b, two.bits + 12, two.n - 12);
+    parse(state, opts, &b, 0);
+    check(ts->d_alert_call_id == 22 && ts->active_ssi == 0x000022u && !ts->mac_frag[2].active,
+          "timeslot 2 TM-SDU rebuilt from its own fragments");
+    free_state(state);
+    free(opts);
+}
+
+/* N.203 (annex B.2): a partial TM-SDU is dropped after 4 slots of its timeslot without a fragment. */
+static void
+test_fragment_timeout(void) {
+    ttb_block sdu = {0};
+    put_d_alert(&sdu, 9);
+    dsd_state* state = new_state();
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    const tetra_state_t* ts = tetra_st(state);
+    ttb_block b;
+    ttb_block other = {0};
+    const int start = ttb_resource(&other, 0, TETRA_MAC_ADDR_SSI, 0x000099u);
+    ttb_resource_flags(&other, 0);
+    ttb_close_resource(&other, start);
+    ttb_finish(&other, TTB_SCH_HD_BITS, -1);
+
+    first_fragment(&b, 0x001234u, sdu.bits, 9);
+    parse(state, opts, &b, 0);
+    for (int half_slot = 0; half_slot < 7; half_slot++) {
+        parse(state, opts, &other, 0);
     }
-}
-
-/* -----------------------------------------------------------------------
- * Build a minimal MAC-RESOURCE PDU (NULL address, variable payload).
- *
- * MAC-RESOURCE layout:
- *   [0-1]   pdu_type = 00
- *   [2]     fill_bits indicator
- *   [3]     grant_pos = 0
- *   [4-5]   enc_mode  = 0
- *   [6]     rand_acc  = 0
- *   [7-12]  length indication (63 starts fragmentation)
- *   [13-15] addr_type = 0 (NULL, 0 address bits)
- *   [16-18] optional-element flags = 0
- *   [19+]   TM-SDU payload bits
- * ----------------------------------------------------------------------- */
-static int
-build_mac_resource(uint8_t* out, int out_size, uint8_t fill_bits, uint8_t len_ind, const uint8_t* payload,
-                   int payload_nbits) {
-    int total = 19 + payload_nbits;
-    if (total > out_size) {
-        return -1;
-    }
-    memset(out, 0, (size_t)total);
-    pack_bits(out, 0u, 0, 2); /* PDU type = MAC-RESOURCE */
-    pack_bits(out, fill_bits, 2, 1);
-    pack_bits(out, 0u, 3, 1); /* grant_pos  */
-    pack_bits(out, 0u, 4, 2); /* enc_mode   */
-    pack_bits(out, 0u, 6, 1); /* rand_acc   */
-    pack_bits(out, len_ind, 7, 6);
-    pack_bits(out, 0u, 13, 3); /* addr_type  = NULL */
-    pack_bits(out, 0u, 16, 1); /* power control flag */
-    pack_bits(out, 0u, 17, 1); /* slot granting flag */
-    pack_bits(out, 0u, 18, 1); /* channel allocation flag */
-    if (payload_nbits > 0) {
-        memcpy(out + 19, payload, (size_t)payload_nbits);
-    }
-    return total;
-}
-
-/* Build MAC-FRAG (subtype=0) or MAC-END (subtype=1) */
-static int
-build_mac_frag_end(uint8_t* out, int out_size, uint8_t subtype, const uint8_t* payload, int payload_nbits) {
-    int total = 3 + payload_nbits;
-    if (total > out_size) {
-        return -1;
-    }
-    memset(out, 0, (size_t)total);
-    pack_bits(out, 1u, 0, 2); /* PDU type = MAC-FRAG/END */
-    pack_bits(out, subtype, 2, 1);
-    if (payload_nbits > 0) {
-        memcpy(out + 3, payload, (size_t)payload_nbits);
-    }
-    return total;
-}
-
-/* =======================================================================
- * Test 1+2: MAC-RESOURCE fill_bits=1 dispatches; fill_bits=0 buffers
- * ======================================================================= */
-static void
-test_resource_fill_bits(void) {
-    printf("[test_resource_fill_bits]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    /*
-     * Build a partial TM-SDU beginning with the three-bit CMCE discriminator.
-     * With fill_bits=1 → dispatch immediately → tetra_frag_active stays 0
-     */
-    uint8_t tmsdu[9];
-    memset(tmsdu, 0, sizeof(tmsdu));
-    pack_bits(tmsdu, TETRA_MLE_PD_CMCE, 0, 3);
-
-    uint8_t pdu[128];
-    int n = build_mac_resource(pdu, sizeof(pdu), 1, 4, tmsdu, 9);
-    tetra_mac_parse_schd(pdu, n, 0, opt, st);
-
-    CHECK(tetra_st(st)->frag_active == 0, "fill_bits=1: no fragment started");
-    CHECK(tetra_st(st)->frag_nbits == 0, "fill_bits=1: buffer stays empty");
-
-    /* fill_bits=0 with an ordinary length still dispatches directly. */
-    dsd_state* st2 = alloc_state();
-    n = build_mac_resource(pdu, sizeof(pdu), 0, 4, tmsdu, 9);
-    tetra_mac_parse_schd(pdu, n, 0, opt, st2);
-
-    CHECK(tetra_st(st2)->frag_active == 0, "fill_bits=0: no fragment started");
-    CHECK(tetra_st(st2)->frag_nbits == 0, "fill_bits=0: buffer stays empty");
-
-    dsd_state* st3 = alloc_state();
-    n = build_mac_resource(pdu, sizeof(pdu), 0, 63, tmsdu, 9);
-    tetra_mac_parse_schd(pdu, n, 0, opt, st3);
-    CHECK(tetra_st(st3)->frag_active == 1, "len_ind=63: fragment started");
-    CHECK(tetra_st(st3)->frag_nbits == 9, "len_ind=63: 9 bits buffered");
-
-    free(st);
-    free(st2);
-    free(st3);
-    free(opt);
-}
-
-/* =======================================================================
- * Test 3: MAC-FRAG appends to buffer
- * ======================================================================= */
-static void
-test_mac_frag_accumulate(void) {
-    printf("[test_mac_frag_accumulate]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    /* Seed with 9 bits via MAC-RESOURCE fill_bits=0 */
-    uint8_t tmsdu[9];
-    memset(tmsdu, 0, sizeof(tmsdu));
-    pack_bits(tmsdu, TETRA_MLE_PD_CMCE, 0, 3);
-
-    uint8_t pdu[128];
-    int n = build_mac_resource(pdu, sizeof(pdu), 0, 63, tmsdu, 9);
-    tetra_mac_parse_schd(pdu, n, 0, opt, st);
-    CHECK(tetra_st(st)->frag_nbits == 9, "after RESOURCE: 9 bits in buffer");
-
-    /* MAC-FRAG with 5 bits */
-    uint8_t frag[5];
-    memset(frag, 0, sizeof(frag));
-    n = build_mac_frag_end(pdu, sizeof(pdu), 0, frag, 5);
-    tetra_mac_parse_schd(pdu, n, 0, opt, st);
-
-    CHECK(tetra_st(st)->frag_active == 1, "after FRAG: still active");
-    CHECK(tetra_st(st)->frag_nbits == 14, "after FRAG: 9+5=14 bits");
-
-    free(st);
-    free(opt);
-}
-
-/* =======================================================================
- * Test 4+5+6: Full RESOURCE → FRAG → END sequence dispatches D-ALERT
- *
- * Full TM-SDU (33 bits):
- *   LLC BL-UDATA(4b=2) + PD=CMCE(3b=2) + CMCE D-ALERT(5b=0)
- *   + call_id(14b=5) + setup timeout(3b) + reserved/duplex/queued(3b)
- *   + O-bit(1b=0)
- *
- * Split:
- *   RESOURCE payload: bits 0-3  (4 bits) — LLC header
- *   FRAG    payload:  bits 4-8  (5 bits) — MLE PD + part of CMCE type
- *   END     payload:  bits 9-32 (24 bits) — remaining D-ALERT fields
- * ======================================================================= */
-static void
-test_full_fragment_sequence(void) {
-    printf("[test_full_fragment_sequence]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    /* Build the 33-bit LLC PDU / TM-SDU. */
-    uint8_t tmsdu[33];
-    memset(tmsdu, 0, sizeof(tmsdu));
-    pack_bits(tmsdu, 2, 0, 4); /* BL-UDATA without FCS */
-    pack_bits(tmsdu, TETRA_MLE_PD_CMCE, 4, 3);
-    pack_bits(tmsdu, 0, 7, 5);
-    pack_bits(tmsdu, 5, 12, 14);
-    pack_bits(tmsdu, 3, 26, 3);
-    pack_bits(tmsdu, 1, 31, 1);
-    pack_bits(tmsdu, 0, 32, 1); /* O-bit */
-
-    uint8_t pdu[128];
-    int n;
-
-    /* ---- MAC-RESOURCE: discriminator, fill_bits=0 ---- */
-    n = build_mac_resource(pdu, sizeof(pdu), 0, 63, tmsdu, 4);
-    tetra_mac_parse_schd(pdu, n, 2, opt, st);
-    CHECK(tetra_st(st)->frag_nbits == 4, "RESOURCE: 4 bits buffered");
-    CHECK(tetra_st(st)->frag_active == 1, "RESOURCE: active=1");
-    CHECK(tetra_st(st)->d_alert_valid == 0, "RESOURCE: D-ALERT not yet dispatched");
-
-    /* ---- MAC-FRAG: next 5 bits ---- */
-    n = build_mac_frag_end(pdu, sizeof(pdu), 0, tmsdu + 4, 5);
-    tetra_mac_parse_schd(pdu, n, 2, opt, st);
-    CHECK(tetra_st(st)->frag_nbits == 9, "FRAG: 9 bits accumulated");
-    CHECK(tetra_st(st)->d_alert_valid == 0, "FRAG: D-ALERT still not dispatched");
-
-    /* ---- MAC-END: final 24 bits ---- */
-    n = build_mac_frag_end(pdu, sizeof(pdu), 1, tmsdu + 9, 24);
-    tetra_mac_parse_schd(pdu, n, 2, opt, st);
-
-    CHECK(tetra_st(st)->frag_active == 0, "END: active cleared");
-    CHECK(tetra_st(st)->frag_nbits == 0, "END: buffer cleared");
-    CHECK(tetra_st(st)->d_alert_valid == 1, "END: D-ALERT decoded after reassembly");
-    CHECK(tetra_st(st)->d_alert_call_id == 5, "END: D-ALERT call_id=5");
-    CHECK(tetra_st(st)->call_active == 1, "END: call_active set by D-ALERT");
-
-    free(st);
-    free(opt);
-}
-
-/* =======================================================================
- * Test: MAC-END without prior RESOURCE (late join) — must not crash
- * ======================================================================= */
-static void
-test_end_without_start(void) {
-    printf("[test_end_without_start]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    /* Send MAC-END with empty buffer — should be harmless */
-    uint8_t pdu[12];
-    uint8_t empty[4] = {0, 0, 0, 0};
-    int n = build_mac_frag_end(pdu, sizeof(pdu), 1, empty, 4);
-    tetra_mac_parse_schd(pdu, n, 0, opt, st); /* must not crash */
-
-    CHECK(tetra_st(st)->frag_active == 0, "END without start: active stays 0");
-    CHECK(tetra_st(st)->frag_nbits == 0, "END without start: buffer stays 0");
-
-    free(st);
-    free(opt);
-}
-
-static void
-test_fragment_context_guards(void) {
-    printf("[test_fragment_context_guards]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-    uint8_t pdu[128];
-    uint8_t payload[40] = {0};
-
-    pack_bits(payload, TETRA_MLE_PD_CMCE, 0, 3);
-    pack_bits(payload, TETRA_CMCE_D_ALERT, 3, 5);
-
-    int n = build_mac_frag_end(pdu, sizeof(pdu), 0, payload, 9);
-    tetra_mac_parse_schd(pdu, n, 1, opt, st);
-    CHECK(tetra_st(st)->frag_active == 0 && tetra_st(st)->frag_nbits == 0,
-          "orphan FRAG cannot create a reassembly context");
-
-    n = build_mac_frag_end(pdu, sizeof(pdu), 1, payload, 34);
-    tetra_mac_parse_schd(pdu, n, 1, opt, st);
-    CHECK(tetra_st(st)->d_alert_valid == 0, "orphan END cannot dispatch a complete-looking TM-SDU");
-
-    n = build_mac_resource(pdu, sizeof(pdu), 0, 63, payload, 9);
-    tetra_mac_parse_schd(pdu, n, 1, opt, st);
-    n = build_mac_frag_end(pdu, sizeof(pdu), 0, payload + 9, 5);
-    tetra_mac_parse_schd(pdu, n, 2, opt, st);
-    CHECK(tetra_st(st)->frag_active == 0 && tetra_st(st)->frag_nbits == 0,
-          "fragment from a different colour code discards the sequence");
-
-    tetra_st(st)->frag_active = 1;
-    tetra_st(st)->frag_cc = 1;
-    tetra_st(st)->frag_nbits = 1020;
-    n = build_mac_frag_end(pdu, sizeof(pdu), 0, payload, 8);
-    tetra_mac_parse_schd(pdu, n, 1, opt, st);
-    CHECK(tetra_st(st)->frag_active == 0 && tetra_st(st)->frag_nbits == 0,
-          "reassembly overflow discards the complete sequence");
-
-    free(st);
-    free(opt);
+    check(ts->mac_frag[0].active, "7 half slots without a fragment keep the TM-SDU");
+    parse(state, opts, &other, 0);
+    check(!ts->mac_frag[0].active, "8 half slots without a fragment drop it");
+    last_fragment(&b, sdu.bits + 9, sdu.n - 9);
+    parse(state, opts, &b, 0);
+    check(!ts->d_alert_valid, "a late MAC-END delivers nothing");
+    free_state(state);
+    free(opts);
 }
 
 int
 main(void) {
-    printf("=== TETRA Phase 69 Test Suite: MAC Fragment Reassembly ===\n\n");
-
-    test_resource_fill_bits();
-    test_mac_frag_accumulate();
     test_full_fragment_sequence();
-    test_end_without_start();
-    test_fragment_context_guards();
-
-    printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
-    return (g_fail == 0) ? 0 : 1;
+    test_fragment_guards();
+    test_fragments_kept_per_timeslot();
+    test_fragment_timeout();
+    if (g_fail != 0) {
+        DSD_FPRINTF(stderr, "%d TETRA fragment reconstruction check(s) FAILED\n", g_fail);
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "TETRA fragment reconstruction tests passed\n");
+    return 0;
 }

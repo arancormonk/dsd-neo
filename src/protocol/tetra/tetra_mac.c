@@ -1,147 +1,177 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/*
- * TETRA MAC PDU parser – SCH-HD (Half-Capacity Downlink Signaling Channel)
- * ETSI EN 300 392-2 §21.4 (Lower MAC) and §21.5 (MAC PDU Formats)
+/**
+ * @file
+ * @brief TETRA downlink upper MAC (EN 300 392-2 clauses 21.4 and 23.4) and basic-link LLC (clauses 21.2 and 22.3).
  *
- * Only MAC-BROADCAST(SYSINFO) and MAC-RESOURCE are decoded in detail.
- * MAC-FRAG/END and MAC-SUPPL log their raw bytes and PDU type.
- *
- * The decoded bit array fed into these functions uses one byte per bit
- * (value 0 or 1), MSB-first ordering, as produced by the Viterbi decoder
- * in tetra.c.
+ * Input is the type-1 bits of one CRC-passed signalling block sent with pi/4-DQPSK modulation: SCH/HD and STCH
+ * (124 bits) or SCH/F (268 bits). The block is split into its associated PDUs (clause 23.4.3.3); every PDU is read
+ * only up to its own length, its fill bits are removed (clause 23.4.3.2) and its TM-SDU goes to the LLC, or into
+ * the fragment context of the block's timeslot (clause 23.4.3.1.1). The LLC passes basic-link TL-SDUs whose FCS
+ * checks to the MLE. TM-SDUs with an encryption mode other than 00 are ciphertext (EN 300 392-7 clause 6.7.1.2) and
+ * are counted, not parsed.
  */
 
-#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_messages.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
-
-#include <dsd-neo/protocol/tetra/tetra_bits.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+
+#include "tetra_log.h"
 #include "tetra_state.h"
 
-/* Phase 81: bits_to_uint unified — see tetra_bits.h */
-#define bits_to_uint tetra_bits_to_uint
+/* Size of the downlink Null PDU. A shorter remainder of a MAC block is fill (clause 23.4.3.3). */
+#define MAC_NULL_PDU_BITS         16
+/* Type-1 bits of a half-slot block (SCH/HD, STCH). */
+#define MAC_HALF_SLOT_BITS        124
+/* Length indication (tables 21.55 and 21.59). With pi/4-DQPSK Y2 = Z2 = 1 octet (table 21.98), so 1 to 58 is the
+ * PDU length in octets and 0 and 59 to 61 are reserved. */
+#define MAC_LI_MAX_OCTETS         58u
+#define MAC_LI_SECOND_HALF_STOLEN 62u
+#define MAC_LI_FRAGMENT_START     63u
+/* N.203 (annex B.2): a partial TM-SDU is dropped after 4 slots of its control channel without a fragment. Counted
+ * in half slots because SCH/HD blocks arrive per half slot. */
+#define MAC_N203_HALF_SLOTS       8u
+/* LLC frame check sequence (clause 21.1.2.3) and its generator polynomial without the x^32 term (equation C.1). */
+#define LLC_FCS_BITS              32
+#define LLC_FCS_POLYNOMIAL        0x04C11DB7u
+/* Hex bytes in the -Z dump of a block; SCH/F has 268 bits. */
+#define MAC_RAW_DUMP_BYTES        34
 
-/* -----------------------------------------------------------------------
- * MAC PDU type name table
- * ----------------------------------------------------------------------- */
+/* One MAC block being decoded. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    tetra_state_t* ts;
+    int cc;
+    int block_bits;           /* type-1 bits of the whole block */
+    int first;                /* the PDU being decoded starts the block */
+    int fragment_seen;        /* the block carried a fragment of its timeslot's TM-SDU */
+    tetra_mac_fragment* frag; /* fragment context of the block's timeslot */
+} mac_block;
 
-const char*
-tetra_mac_type_name(int pdu_type) {
-    switch (pdu_type) {
-        case TETRA_MAC_TYPE_RESOURCE: return "MAC-RESOURCE";
-        case TETRA_MAC_TYPE_FRAG_END: return "MAC-FRAG/END";
-        case TETRA_MAC_TYPE_BROADCAST: return "MAC-BROADCAST";
-        case TETRA_MAC_TYPE_SUPPL: return "MAC-SUPPL";
-        default: return "UNKNOWN";
-    }
-}
+/* Channel allocation element, table 21.87. */
+typedef struct {
+    uint8_t type;       /* allocation type */
+    uint8_t timeslots;  /* timeslot assigned */
+    uint8_t up_down;    /* up/downlink assigned; for an augmented allocation, the augmented value */
+    uint8_t bandwidth;  /* augmented allocations only; 0 is 25 kHz */
+    uint8_t modulation; /* augmented allocations only; 0 is pi/4-DQPSK */
+    uint16_t carrier;
+    long freq_hz; /* downlink frequency, 0 when the band is unknown */
+} mac_allocation;
 
-static const char*
-addr_type_name(int at) {
-    switch (at) {
-        case TETRA_MAC_ADDR_NULL: return "Null";
-        case TETRA_MAC_ADDR_SSI: return "SSI";
-        case TETRA_MAC_ADDR_EVENT_LABEL: return "EventLabel";
-        case TETRA_MAC_ADDR_USSI: return "USSI";
-        case TETRA_MAC_ADDR_SMI: return "SMI";
-        case TETRA_MAC_ADDR_SSI_EVENT: return "SSI+Event";
-        case TETRA_MAC_ADDR_SSI_USAGE: return "SSI+Usage";
-        case TETRA_MAC_ADDR_SMI_EVENT: return "SMI+Event";
-        default: return "?";
-    }
-}
+/* MAC-RESOURCE header, table 21.55, up to the channel allocation flag. */
+typedef struct {
+    uint8_t fill;
+    uint8_t grant_pos;
+    uint8_t enc_mode;
+    uint8_t random_access;
+    uint8_t length_ind;
+    uint8_t alloc_present;
+    tetra_mac_address addr;
+    int pdu_bits; /* PDU length in the block */
+    int body;     /* first bit after the channel allocation flag */
+} mac_resource_header;
 
-/* -----------------------------------------------------------------------
- * Bit-length of address field, by type
- * (ETSI EN 300 392-2 Table 21.49)
- * ----------------------------------------------------------------------- */
+static const char* const k_enc_mode_name[4] = {"none", "reserved", "on(even)", "on(odd)"};
+
+/* 1 for the SSI family (SSI, USSI and their event label or usage marker forms), 2 for the SMI family, 0 for event
+ * labels and the Null PDU. */
 static int
-addr_field_len(int addr_type) {
-    switch (addr_type) {
+address_family(uint8_t type) {
+    switch (type) {
         case TETRA_MAC_ADDR_SSI:
         case TETRA_MAC_ADDR_USSI:
-        case TETRA_MAC_ADDR_SMI: return 24;
-        case TETRA_MAC_ADDR_EVENT_LABEL: return 10;
         case TETRA_MAC_ADDR_SSI_EVENT:
-        case TETRA_MAC_ADDR_SMI_EVENT: return 34; /* 24 + 10 */
-        case TETRA_MAC_ADDR_SSI_USAGE: return 30; /* 24 + 6 */
-        case TETRA_MAC_ADDR_NULL:
+        case TETRA_MAC_ADDR_SSI_USAGE: return 1;
+        case TETRA_MAC_ADDR_SMI:
+        case TETRA_MAC_ADDR_SMI_EVENT: return 2;
         default: return 0;
     }
 }
 
-static void
-clear_fragment_reassembly(dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!ts) {
-        return;
-    }
-    ts->frag_active = 0;
-    ts->frag_seq = 0;
-    ts->frag_nbits = 0;
-    ts->frag_cc = 0;
-    ts->vc_grant_pending = 0;
-    ts->vc_grant_call_generation = 0;
-    memset(ts->frag_buf, 0, sizeof(ts->frag_buf));
-}
-
 static int
-cmce_call_policy_allows(const dsd_opts* opts, const dsd_state* state) {
-    const tetra_state_t* const ts = tetra_st_peek(state);
-    dsd_tg_policy_decision decision;
-    int rc;
-    if (!opts || !state || !ts->call_active || !ts->ssi_valid) {
-        return 1;
-    }
+address_has_event_label(uint8_t type) {
+    return type == TETRA_MAC_ADDR_EVENT_LABEL || type == TETRA_MAC_ADDR_SSI_EVENT || type == TETRA_MAC_ADDR_SMI_EVENT;
+}
 
-    int encrypted = ts->enc_mode != TETRA_ENC_MODE_NONE;
-    int data_call = ts->call_type != 0;
-    if (ts->cmce_com_type == 0) {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, ts->calling_ssi, ts->active_ssi, encrypted, data_call,
-                                                 &decision);
-    } else {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, ts->gssi, ts->calling_ssi, encrypted, data_call, &decision);
+/* Address element of table 21.55: the 24-bit SSI, USSI or SMI first, then the event label or usage marker. */
+static void
+read_address(tetra_bit_reader* r, uint8_t type, uint8_t enc_mode, tetra_mac_address* addr) {
+    *addr = (tetra_mac_address){.type = type};
+    if (address_family(type) != 0) {
+        addr->ssi = tetra_bits_read(r, 24);
     }
-    if (rc != 0) {
-        return 0;
+    if (address_has_event_label(type)) {
+        addr->event_label = (uint16_t)tetra_bits_read(r, 10);
     }
-    if (!decision.tune_allowed && opts->verbose > 0) {
-        fprintf(stderr, "[TETRA CHANNEL-ALLOCATION] target=%u blocked by %s\n", decision.target_id,
-                dsd_tg_policy_block_reason_label(decision.block_reasons));
+    if (type == TETRA_MAC_ADDR_SSI_USAGE) {
+        addr->usage_marker = (uint8_t)tetra_bits_read(r, 6);
     }
-    return decision.tune_allowed;
+    /* Encrypted signalling carries an encrypted short identity in place of the SSI; USSI, SMI, event labels and
+     * usage markers stay clear (EN 300 392-7 clause 4.2.6). */
+    addr->esi = (uint8_t)(enc_mode != TETRA_ENC_MODE_NONE
+                          && (type == TETRA_MAC_ADDR_SSI || type == TETRA_MAC_ADDR_SSI_EVENT
+                              || type == TETRA_MAC_ADDR_SSI_USAGE));
 }
 
 static void
-apply_channel_grant(dsd_opts* opts, dsd_state* state, long vc_hz, uint8_t slots, uint32_t generation_before) {
-    tetra_state_t* const ts = tetra_st(state);
-    int fresh_call = state && ts->cmce_call_generation != generation_before;
-    if (fresh_call && cmce_call_policy_allows(opts, state)) {
-        tetra_sm_on_grant(opts, state, vc_hz, slots);
+format_address(const tetra_mac_address* addr, char* out, size_t cap) {
+    const char* id = "SSI";
+    if (addr->esi) {
+        id = "ESI";
+    } else if (address_family(addr->type) == 2) {
+        id = "SMI";
+    } else if (addr->type == TETRA_MAC_ADDR_USSI) {
+        id = "USSI";
+    }
+    switch (addr->type) {
+        case TETRA_MAC_ADDR_EVENT_LABEL: DSD_SNPRINTF(out, cap, "EventLabel(%u)", (unsigned)addr->event_label); break;
+        case TETRA_MAC_ADDR_SSI_EVENT:
+        case TETRA_MAC_ADDR_SMI_EVENT:
+            DSD_SNPRINTF(out, cap, "%s(%u)+EventLabel(%u)", id, (unsigned)addr->ssi, (unsigned)addr->event_label);
+            break;
+        case TETRA_MAC_ADDR_SSI_USAGE:
+            DSD_SNPRINTF(out, cap, "%s(%u)+UsageMarker(%u)", id, (unsigned)addr->ssi, (unsigned)addr->usage_marker);
+            break;
+        default: DSD_SNPRINTF(out, cap, "%s(%u)", id, (unsigned)addr->ssi); break;
     }
 }
 
-/* A downlink MAC-RESOURCE SSI is the called-party address for the enclosed
- * CMCE setup.  Communication type 0 is point-to-point; the remaining values
- * are point-to-multipoint/acknowledged/broadcast (table 14.54).  Bind the
- * address only after CMCE has published a complete call PDU so truncated
- * payloads cannot create a talkgroup. */
-static void
-sync_cmce_call_target_from_resource(dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !ts->call_active || !ts->ssi_valid) {
-        return;
+/* Fill bit deletion, clause 23.4.3.2: with the fill bit indication set, the last 1 bit of the PDU and the 0 bits
+ * after it are fill. Returns the end of the PDU content, or -1 when no 1 bit follows @p start. */
+static int
+content_end(const uint8_t* bits, int start, int end, uint32_t fill) {
+    if (fill == 0u) {
+        return end;
     }
-    ts->gssi = ts->cmce_com_type == 0 ? 0u : ts->active_ssi;
+    for (int i = end - 1; i >= start; i--) {
+        if ((bits[i] & 1u) != 0u) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Downlink frequency of carrier number @p carrier, or 0 when there is no valid one. Band 0 would place the carrier
+ * below 102.4 MHz, where TETRA has none; SYSINFO sends main carrier 0 and band 0 when the cell has no CA main
+ * carrier (table 21.65 note 3). */
+static long
+carrier_frequency_hz(uint32_t carrier, uint32_t band, uint32_t offset) {
+    if (band == 0u) {
+        return 0L;
+    }
+    const long hz = tetra_carrier_to_dl_hz(carrier, band, offset);
+    return hz > 0L ? hz : 0L;
 }
 
 uint32_t
@@ -149,839 +179,851 @@ tetra_llc_fcs32(const uint8_t* bits, int nbits) {
     if (!bits || nbits < 0) {
         return 0;
     }
+    /* Shifting each message bit into the top of the register while dividing yields M(x) x^32 mod G(x) directly. */
     uint32_t remainder = 0;
     for (int i = 0; i < nbits; i++) {
-        uint32_t input = (uint32_t)(bits[i] & 1u);
+        uint32_t bit = (uint32_t)(bits[i] & 1u);
         if (i < 32) {
-            input ^= 1u; /* Annex C step 1. */
+            bit ^= 1u; /* step 1: complement the first 32 bits */
         }
-        uint32_t feedback = (remainder >> 31) ^ input;
+        const uint32_t feedback = (remainder >> 31) ^ bit;
         remainder <<= 1;
-        if (feedback) {
-            remainder ^= 0x04C11DB7u;
+        if (feedback != 0u) {
+            remainder ^= LLC_FCS_POLYNOMIAL;
         }
     }
-    /* Multiply the complemented message polynomial by x^32. */
-    for (int i = 0; i < 32; i++) {
-        uint32_t feedback = remainder >> 31;
-        remainder <<= 1;
-        if (feedback) {
-            remainder ^= 0x04C11DB7u;
-        }
-    }
-    return ~remainder; /* Annex C step 5. */
+    return ~remainder; /* step 5 */
 }
 
-/* Decode the basic-link LLC header that sits between MAC and MLE. */
-static int
-dispatch_basic_llc_tm_sdu(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
-    if (!bits || nbits < 4) {
-        return 0;
-    }
-    const int pdu_type = (int)bits_to_uint(bits, 0, 4);
-    int header_bits;
-    int fcs_bits = 0;
+/* Basic-link PDUs, tables 21.1 and 21.4 to 21.11. */
+typedef struct {
     const char* name;
-    switch (pdu_type) {
-        case 0:
-            header_bits = 6;
-            name = "BL-ADATA";
-            break;
-        case 1:
-            header_bits = 5;
-            name = "BL-DATA";
-            break;
-        case 2:
-            header_bits = 4;
-            name = "BL-UDATA";
-            break;
-        case 3:
-            header_bits = 5;
-            name = "BL-ACK";
-            break;
-        case 4:
-            header_bits = 6;
-            fcs_bits = 32;
-            name = "BL-ADATA-FCS";
-            break;
-        case 5:
-            header_bits = 5;
-            fcs_bits = 32;
-            name = "BL-DATA-FCS";
-            break;
-        case 6:
-            header_bits = 4;
-            fcs_bits = 32;
-            name = "BL-UDATA-FCS";
-            break;
-        case 7:
-            header_bits = 5;
-            fcs_bits = 32;
-            name = "BL-ACK-FCS";
-            break;
-        default: return 0;
+    uint8_t header_bits;  /* LLC PDU type plus N(R) and N(S) where present */
+    uint8_t fcs;          /* a 32-bit FCS follows the TL-SDU */
+    uint8_t sdu_optional; /* BL-ACK without FCS may carry no TL-SDU */
+} llc_basic_link_pdu;
+
+static const llc_basic_link_pdu k_basic_link[8] = {
+    {"BL-ADATA", 6, 0, 0},     {"BL-DATA", 5, 0, 0},     {"BL-UDATA", 4, 0, 0},     {"BL-ACK", 5, 0, 1},
+    {"BL-ADATA-FCS", 6, 1, 0}, {"BL-DATA-FCS", 5, 1, 0}, {"BL-UDATA-FCS", 4, 1, 0}, {"BL-ACK-FCS", 5, 1, 0},
+};
+
+/* Advanced-link and layer 2 signalling PDUs, LLC PDU types 1000 to 1111 of table 21.1. */
+static const char* const k_llc_other[8] = {
+    "AL-SETUP",     "AL-DATA/AL-FINAL",      "AL-UDATA/AL-UFINAL",     "AL-ACK/AL-RNR",
+    "AL-RECONNECT", "supplementary LLC PDU", "layer 2 signalling PDU", "AL-DISC",
+};
+
+/* Decapsulate an LLC PDU (clause 21.2) and hand a basic-link TL-SDU to the MLE. Advanced-link segments and layer 2
+ * signalling are not TL-SDUs the MLE can use. */
+static void
+llc_deliver(const mac_block* b, const uint8_t* pdu, int nbits) {
+    tetra_bit_reader r = tetra_bits_reader(pdu, nbits, 0);
+    const uint32_t type = tetra_bits_read(&r, 4);
+    if (!tetra_bits_ok(&r)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA LLC] CC=%d  %d-bit TM-SDU has no LLC header\n", b->cc, nbits);
+        return;
     }
-    const int payload_bits = nbits - header_bits - fcs_bits;
-    if (payload_bits < 3) {
-        /* BL-ACK without FCS may acknowledge without carrying a TL-SDU. All
-         * other recognized basic-link forms require layer-3 data. */
-        if (pdu_type != 3) {
-            fprintf(stderr, "[TETRA LLC %s] CC=%d truncated; discarded\n", name, cc);
+    if (type >= 8u) {
+        DSD_FPRINTF(stderr, "[TETRA LLC %s] CC=%d  %d bits; advanced link not decoded\n", k_llc_other[type - 8u], b->cc,
+                    nbits);
+        return;
+    }
+    const llc_basic_link_pdu* bl = &k_basic_link[type];
+    const int fcs_bits = bl->fcs ? LLC_FCS_BITS : 0;
+    const int sdu_bits = nbits - bl->header_bits - fcs_bits;
+    if (sdu_bits <= 0) {
+        if (sdu_bits < 0 || !bl->sdu_optional) {
+            TETRA_LOG_PAYLOAD(b->ts, "[TETRA LLC %s] CC=%d  truncated (%d bits); discarded\n", bl->name, b->cc, nbits);
         }
+        return;
+    }
+    const uint8_t* sdu = pdu + bl->header_bits;
+    if (bl->fcs) {
+        tetra_bit_reader f = tetra_bits_reader(pdu, nbits, bl->header_bits + sdu_bits);
+        const uint32_t received = tetra_bits_read(&f, LLC_FCS_BITS);
+        const uint32_t expected = tetra_llc_fcs32(sdu, sdu_bits);
+        if (received != expected) {
+            TETRA_LOG_PAYLOAD(b->ts, "[TETRA LLC %s] CC=%d  FCS mismatch rx=0x%08X calc=0x%08X; discarded\n", bl->name,
+                              b->cc, (unsigned)received, (unsigned)expected);
+            return;
+        }
+    }
+    TETRA_LOG_PAYLOAD(b->ts, "[TETRA LLC %s] CC=%d  tl_sdu_bits=%d\n", bl->name, b->cc, sdu_bits);
+    tetra_mle_dispatch(sdu, sdu_bits, b->cc, b->opts, b->state);
+}
+
+/* The talkgroup policy decision for the call the CMCE just published. */
+static int
+call_policy_allows(const mac_block* b) {
+    const tetra_state_t* const ts = b->ts;
+    dsd_tg_policy_decision decision;
+    int rc;
+    if (!b->opts || !ts->call_active || !ts->ssi_valid) {
         return 1;
     }
-    if (fcs_bits) {
-        const uint32_t received = bits_to_uint(bits, header_bits + payload_bits, 32);
-        const uint32_t expected = tetra_llc_fcs32(bits + header_bits, payload_bits);
-        if (received != expected) {
-            fprintf(stderr, "[TETRA LLC %s] CC=%d FCS mismatch rx=0x%08X calc=0x%08X; discarded\n", name, cc,
-                    (unsigned)received, (unsigned)expected);
-            return 1;
-        }
+    const int encrypted = ts->enc_mode != TETRA_ENC_MODE_NONE;
+    const int data_call = ts->call_type != 0;
+    if (ts->cmce_com_type == 0) {
+        rc = dsd_tg_policy_evaluate_private_call(b->opts, b->state, ts->calling_ssi, ts->active_ssi, encrypted,
+                                                 data_call, &decision);
+    } else {
+        rc = dsd_tg_policy_evaluate_group_call(b->opts, b->state, ts->gssi, ts->calling_ssi, encrypted, data_call,
+                                               &decision);
     }
-    fprintf(stderr, "[TETRA LLC %s] CC=%d payload_bits=%d\n", name, cc, payload_bits);
-    tetra_mle_dispatch(bits + header_bits, payload_bits, cc, opts, state);
+    if (rc != 0) {
+        return 0;
+    }
+    if (!decision.tune_allowed) {
+        TETRA_LOG_VERBOSE(ts, 1, "[TETRA CHANNEL-ALLOCATION] target=%u blocked by %s\n", decision.target_id,
+                          dsd_tg_policy_block_reason_label(decision.block_reasons));
+    }
+    return decision.tune_allowed;
+}
+
+/* A downlink MAC-RESOURCE SSI is the called party of the CMCE call PDU it carries. Communication type 0 is point to
+ * point; the other values are point to multipoint, acknowledged or broadcast (table 14.54). The address is bound
+ * only after the CMCE published a complete call PDU, so truncated payloads cannot create a talkgroup. */
+static void
+sync_call_target(tetra_state_t* ts) {
+    if (!ts->call_active || !ts->ssi_valid) {
+        return;
+    }
+    ts->gssi = ts->cmce_com_type == 0 ? 0u : ts->active_ssi;
+}
+
+/* An allocation whose PDU also carried a TM-SDU tunes only when that TM-SDU established a call the policy allows. */
+static void
+grant_with_call(const mac_block* b, const mac_allocation* a, uint32_t generation_before) {
+    if (b->ts->cmce_call_generation != generation_before && call_policy_allows(b)) {
+        tetra_sm_on_grant(b->opts, b->state, a->freq_hz, a->timeslots);
+    }
+}
+
+/* Hand a complete clear TM-SDU to the LLC, then act on the downlink allocation that came with it, if any. */
+static void
+deliver_tm_sdu(const mac_block* b, const uint8_t* sdu, int sdu_bits, const mac_allocation* grant,
+               uint32_t generation_before) {
+    if (sdu_bits > 0) {
+        llc_deliver(b, sdu, sdu_bits);
+        sync_call_target(b->ts);
+        if (grant) {
+            grant_with_call(b, grant, generation_before);
+        }
+    } else if (grant) {
+        tetra_sm_on_grant(b->opts, b->state, grant->freq_hz, grant->timeslots);
+    }
+}
+
+/* Augmented part of table 21.87 (up/downlink assigned 00). Returns 0 when the receiver discards the allocation and
+ * the TM-SDU with it: reserved augmented up/downlink value 00 (note 5) or further augmentation (note 15). */
+static int
+read_augmented_allocation(tetra_bit_reader* r, mac_allocation* a) {
+    a->up_down = (uint8_t)tetra_bits_read(r, 2);
+    a->bandwidth = (uint8_t)tetra_bits_read(r, 3);
+    a->modulation = (uint8_t)tetra_bits_read(r, 3);
+    /* Maximum uplink QAM modulation level or reserved, conforming channel status, BS link imbalance, BS transmit
+     * power relative to main carrier. */
+    (void)tetra_bits_skip(r, 3 + 3 + 4 + 5);
+    if (tetra_bits_read(r, 2) == 1u) {
+        (void)tetra_bits_skip(r, 11); /* napping information */
+    }
+    (void)tetra_bits_skip(r, 4); /* reserved */
+    if (tetra_bits_read(r, 1) != 0u) {
+        (void)tetra_bits_skip(r, 16); /* conditional element A */
+    }
+    if (tetra_bits_read(r, 1) != 0u) {
+        (void)tetra_bits_skip(r, 16); /* conditional element B (note 14) */
+    }
+    const uint32_t further = tetra_bits_read(r, 1);
+    return tetra_bits_ok(r) && a->up_down != 0u && further == 0u;
+}
+
+/* Channel allocation element, table 21.87. Without extended carrier numbering the band and offset are those of the
+ * cell's SYSINFO (clause 21.5.2). Returns 1 for a usable allocation; 0 when it runs past the PDU or is discarded. */
+static int
+read_allocation(tetra_bit_reader* r, const tetra_state_t* ts, mac_allocation* a) {
+    static const long k_bandwidth_offset_hz[4] = {0L, 12500L, 37500L, 62500L}; /* (bandwidth / 2) - 12,5 kHz */
+    *a = (mac_allocation){0};
+    a->type = (uint8_t)tetra_bits_read(r, 2);
+    a->timeslots = (uint8_t)tetra_bits_read(r, 4);
+    a->up_down = (uint8_t)tetra_bits_read(r, 2);
+    (void)tetra_bits_skip(r, 2); /* CLCH permission, cell change flag */
+    a->carrier = (uint16_t)tetra_bits_read(r, 12);
+    uint32_t band = ts->freq_band;
+    uint32_t offset = ts->freq_offset;
+    if (tetra_bits_read(r, 1) != 0u) {
+        band = tetra_bits_read(r, 4);
+        offset = tetra_bits_read(r, 2);
+        (void)tetra_bits_skip(r, 4); /* duplex spacing, reverse operation */
+    }
+    if (tetra_bits_read(r, 2) == 0u) {
+        (void)tetra_bits_skip(r, 2); /* frame 18 monitoring pattern */
+    }
+    if (a->up_down == 0u && !read_augmented_allocation(r, a)) {
+        return 0;
+    }
+    if (!tetra_bits_ok(r)) {
+        return 0;
+    }
+    a->freq_hz = carrier_frequency_hz(a->carrier, band, offset);
+    if (a->freq_hz > 0L && a->bandwidth < 4u) {
+        a->freq_hz += k_bandwidth_offset_hz[a->bandwidth];
+    }
     return 1;
 }
 
-/* Parse the mandatory tail of a pi/4-DQPSK MAC-RESOURCE header and its
- * optional basic Channel Allocation IE (EN 300 392-2, tables 21.55/21.87).
- * Returns the first TM-SDU bit, or -1 for a truncated header. */
+/* @p addr is the party that holds the traffic-channel assignment: the same SSI or SMI, or an event label assigned
+ * to it. */
 static int
-parse_resource_optional_elements(const uint8_t* bits, int nbits, int off, int cc, dsd_opts* opts, dsd_state* state,
-                                 long* grant_hz, uint8_t* grant_slots) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (off + 1 > nbits) {
-        return -1;
+is_assignment_holder(const tetra_state_t* ts, const tetra_mac_address* addr) {
+    const int family = address_family(addr->type);
+    if (family != 0 && !addr->esi && family == address_family(ts->vc_addr.type) && addr->ssi == ts->vc_addr.ssi) {
+        return 1;
     }
-    uint32_t power_flag = bits_to_uint(bits, off, 1);
-    off++;
-    if (power_flag) {
-        if (off + 4 > nbits) {
-            return -1;
-        }
-        off += 4;
-    }
-
-    if (off + 1 > nbits) {
-        return -1;
-    }
-    uint32_t slot_grant_flag = bits_to_uint(bits, off, 1);
-    off++;
-    if (slot_grant_flag) {
-        if (off + 8 > nbits) {
-            return -1;
-        }
-        off += 8; /* basic slot granting element for pi/4-DQPSK */
-    }
-
-    if (off + 1 > nbits) {
-        return -1;
-    }
-    uint32_t allocation_flag = bits_to_uint(bits, off, 1);
-    off++;
-    if (!allocation_flag) {
-        return off;
-    }
-
-    /* Fixed part through the extended-carrier-numbering flag. */
-    if (off + 23 > nbits) {
-        return -1;
-    }
-    uint32_t allocation_type = bits_to_uint(bits, off, 2);
-    off += 2;
-    uint32_t timeslots = bits_to_uint(bits, off, 4);
-    off += 4;
-    uint32_t up_down = bits_to_uint(bits, off, 2);
-    off += 2;
-    off += 1; /* CLCH permission */
-    off += 1; /* cell change flag */
-    uint32_t carrier = bits_to_uint(bits, off, 12);
-    off += 12;
-    uint32_t extended = bits_to_uint(bits, off, 1);
-    off += 1;
-
-    uint32_t band = state ? ts->freq_band : 0;
-    uint32_t freq_offset = state ? ts->freq_offset : 0;
-    if (extended) {
-        if (off + 10 > nbits) {
-            return -1;
-        }
-        band = bits_to_uint(bits, off, 4);
-        off += 4;
-        freq_offset = bits_to_uint(bits, off, 2);
-        off += 2;
-        off += 3; /* duplex spacing */
-        off += 1; /* reverse operation */
-    }
-
-    if (off + 2 > nbits) {
-        return -1;
-    }
-    uint32_t monitoring = bits_to_uint(bits, off, 2);
-    off += 2;
-    if (monitoring == 0) {
-        if (off + 2 > nbits) {
-            return -1;
-        }
-        off += 2; /* frame-18 monitoring pattern */
-    }
-
-    uint32_t bandwidth_code = 0;
-    uint32_t modulation = 0; /* pi/4-DQPSK */
-    if (up_down == 0) {
-        if (off + 2 + 3 + 3 + 3 + 3 + 4 + 5 + 2 > nbits) {
-            return -1;
-        }
-        up_down = bits_to_uint(bits, off, 2);
-        off += 2;
-        bandwidth_code = bits_to_uint(bits, off, 3);
-        off += 3;
-        modulation = bits_to_uint(bits, off, 3);
-        off += 3;
-        off += 3; /* maximum QAM level, or reserved for non-QAM */
-        off += 3; /* conforming channel status */
-        off += 4; /* BS link imbalance */
-        off += 5; /* BS transmit power relative to main carrier */
-        uint32_t napping = bits_to_uint(bits, off, 2);
-        off += 2;
-        if (napping == 1) {
-            if (off + 11 > nbits) {
-                return -1;
-            }
-            off += 11;
-        }
-        if (off + 4 + 1 > nbits) {
-            return -1;
-        }
-        off += 4; /* reserved */
-        uint32_t conditional_a = bits_to_uint(bits, off, 1);
-        off++;
-        if (conditional_a) {
-            if (off + 16 > nbits) {
-                return -1;
-            }
-            off += 16;
-        }
-        if (off + 1 > nbits) {
-            return -1;
-        }
-        uint32_t conditional_b = bits_to_uint(bits, off, 1);
-        off++;
-        if (conditional_b) {
-            if (off + 16 > nbits) {
-                return -1;
-            }
-            off += 16;
-        }
-        if (off + 1 > nbits) {
-            return -1;
-        }
-        uint32_t further = bits_to_uint(bits, off, 1);
-        off++;
-        if (further) {
-            /* EN 300 392-2 table 21.87 note 15 requires the receiver to
-             * discard both the allocation and any following TM-SDU. The
-             * extension has no defined length, so continuing would also lose
-             * the payload boundary. */
-            fprintf(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d invalid further augmentation; PDU discarded\n", cc);
-            return -1;
-        }
-    }
-
-    long vc_hz = tetra_carrier_to_dl_hz(carrier, band, freq_offset);
-    if (vc_hz > 0 && bandwidth_code < 4) {
-        static const long wide_center_adjust_hz[4] = {0L, 12500L, 37500L, 62500L};
-        vc_hz += wide_center_adjust_hz[bandwidth_code];
-    }
-    fprintf(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d type=%u slots=0x%X dir=%u carrier=%u freq=%ld bw=%u mod=%u\n", cc,
-            allocation_type, timeslots, up_down, carrier, vc_hz, bandwidth_code, modulation);
-
-    if (ts) {
-        if (!ts->vc_assignment_valid || ts->vc_timeslot_bitmap != (timeslots & 0x0Fu)
-            || (timeslots != 0 && ts->vc_carrier != carrier)) {
-            char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
-            DSD_SNPRINTF(summary, sizeof summary, "Allocation CC=%d carrier=%u slots=0x%X freq=%ld", cc, carrier,
-                         timeslots, vc_hz);
-            tetra_message_push(state, DSD_TETRA_MESSAGE_CONTROL, summary);
-        }
-        ts->vc_assignment_valid = 1;
-        ts->vc_assignment_type = (uint8_t)allocation_type;
-        ts->vc_timeslot_bitmap = (uint8_t)(timeslots & 0x0Fu);
-        ts->vc_slot = (uint8_t)(timeslots & 0x0Fu); /* compatibility */
-        ts->vc_uplink_downlink = (uint8_t)up_down;
-        ts->vc_carrier = (uint16_t)carrier;
-        ts->vc_freq_hz = vc_hz;
-
-        if (timeslots == 0) {
-            /* A zero bitmap explicitly removes the traffic-channel assignment.
-             * Keep assignment_valid set so the audio gate can distinguish this
-             * release from conventional monitoring before any allocation. */
-            ts->vc_carrier = 0;
-            ts->vc_freq_hz = 0;
-            ts->tx_granted_valid = 0;
-            tetra_sm_on_release(opts, state);
-        } else if ((up_down == 1 || up_down == 3) && vc_hz > 0 && modulation == 0) {
-            if (grant_hz) {
-                *grant_hz = vc_hz;
-            }
-            if (grant_slots) {
-                *grant_slots = (uint8_t)timeslots;
-            }
-        }
-    }
-    return off;
+    return address_has_event_label(addr->type) && ts->vc_addr_event_label_valid
+           && addr->event_label == ts->vc_addr.event_label;
 }
 
-/* -----------------------------------------------------------------------
- * Subtype parsers
- * ----------------------------------------------------------------------- */
-
-/*
- * MAC-RESOURCE (ETSI EN 300 392-2 §21.4.3.1)
- *
- *   Bit  0-1  : PDU type  (= 00)
- *   Bit    2  : Fill bits indicator
- *   Bit    3  : Position of grant
- *   Bit  4-5  : Encryption mode
- *   Bit    6  : Random access flag
- *   Bit  7-12 : Length indicator (6 bits)
- *   Bit 13-15 : Address type (3 bits)
- *   Bit 16-.. : Address field (variable, see addr_field_len)
- *   ...
- */
 static void
-parse_mac_resource(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 17) {
-        fprintf(stderr, "[TETRA MAC-RESOURCE] CC=%d  (too short: %d bits)\n", cc, nbits);
-        return;
-    }
-
-    int off = 2; /* skip 2-bit PDU type */
-    long grant_hz = 0;
-    uint8_t grant_slots = 0;
-    uint32_t call_generation_before = state ? ts->cmce_call_generation : 0;
-    uint8_t fill_bits = (uint8_t)bits_to_uint(bits, off, 1);
-    off += 1;
-    uint8_t grant_pos = (uint8_t)bits_to_uint(bits, off, 1);
-    off += 1;
-    uint8_t enc_mode = (uint8_t)bits_to_uint(bits, off, 2);
-    off += 2;
-    uint8_t rand_acc = (uint8_t)bits_to_uint(bits, off, 1);
-    off += 1;
-    uint32_t len_ind = bits_to_uint(bits, off, 6);
-    off += 6;
-
-    if (off + 3 > nbits) {
-        goto short_out;
-    }
-    uint8_t addr_type = (uint8_t)bits_to_uint(bits, off, 3);
-    off += 3;
-
-    int alen = addr_field_len(addr_type);
-    uint32_t ssi = 0, event_label = 0, usage_marker = 0;
-    if (off + alen > nbits) {
-        goto short_out;
-    }
-
-    if (addr_type == TETRA_MAC_ADDR_SSI || addr_type == TETRA_MAC_ADDR_USSI || addr_type == TETRA_MAC_ADDR_SMI) {
-        ssi = bits_to_uint(bits, off, 24);
-    } else if (addr_type == TETRA_MAC_ADDR_EVENT_LABEL) {
-        event_label = bits_to_uint(bits, off, 10);
-    } else if (addr_type == TETRA_MAC_ADDR_SSI_EVENT || addr_type == TETRA_MAC_ADDR_SMI_EVENT) {
-        ssi = bits_to_uint(bits, off, 24);
-        event_label = bits_to_uint(bits, off + 24, 10);
-    } else if (addr_type == TETRA_MAC_ADDR_SSI_USAGE) {
-        ssi = bits_to_uint(bits, off, 24);
-        usage_marker = bits_to_uint(bits, off + 24, 6);
-    }
-    off += alen;
-
-    fprintf(stderr,
-            "[TETRA MAC-RESOURCE] CC=%d  enc=%s  rand_acc=%d"
-            "  len_ind=%u  addr=%s",
-            cc,
-            enc_mode == TETRA_ENC_MODE_NONE      ? "none"
-            : enc_mode == TETRA_ENC_MODE_ON      ? "on"
-            : enc_mode == TETRA_ENC_MODE_ON_AUTH ? "on+auth"
-                                                 : "rsvd",
-            rand_acc, len_ind, addr_type_name(addr_type));
-
-    if (addr_type == TETRA_MAC_ADDR_SSI || addr_type == TETRA_MAC_ADDR_USSI || addr_type == TETRA_MAC_ADDR_SMI) {
-        fprintf(stderr, "(%u)", ssi);
-    } else if (addr_type == TETRA_MAC_ADDR_EVENT_LABEL) {
-        fprintf(stderr, "(%u)", event_label);
-    } else if (addr_type == TETRA_MAC_ADDR_SSI_EVENT || addr_type == TETRA_MAC_ADDR_SMI_EVENT) {
-        fprintf(stderr, "(%u/E%u)", ssi, event_label);
-    } else if (addr_type == TETRA_MAC_ADDR_SSI_USAGE) {
-        fprintf(stderr, "(%u/U%u)", ssi, usage_marker);
-    }
-
-    fprintf(stderr, "  fill=%d  grant_pos=%d\n", fill_bits, grant_pos);
-
-    /* The optional MAC header elements precede the TM-SDU. Older captures and
-     * unit vectors that end exactly after the address are accepted as a
-     * header-only PDU. */
-    if (off < nbits) {
-        int payload_off = parse_resource_optional_elements(bits, nbits, off, cc, (dsd_opts*)(uintptr_t)opts, state,
-                                                           &grant_hz, &grant_slots);
-        if (payload_off < 0) {
-            goto short_out;
-        }
-        off = payload_off;
-    }
-
-    /* --- Update dsd_state --- */
-    if (ts) {
-        ts->enc_mode = enc_mode;
-        if (addr_type == TETRA_MAC_ADDR_SSI || addr_type == TETRA_MAC_ADDR_USSI || addr_type == TETRA_MAC_ADDR_SMI) {
-            ts->active_ssi = ssi;
-            ts->ssi_valid = 1;
-        } else if (addr_type == TETRA_MAC_ADDR_SSI_EVENT || addr_type == TETRA_MAC_ADDR_SSI_USAGE
-                   || addr_type == TETRA_MAC_ADDR_SMI_EVENT) {
-            ts->active_ssi = ssi;
-            ts->ssi_valid = 1;
-        } else {
-            ts->ssi_valid = 0;
-        }
-
-        /* Phase 77: populate dropped MAC variables */
-        ts->mac_fill_bits = fill_bits;
-        ts->mac_grant_pos = grant_pos;
-        ts->mac_rand_acc = rand_acc;
-        ts->mac_len_ind = (uint8_t)(len_ind & 0x3Fu);
-        ts->mac_addr_type = addr_type;
-        ts->mac_event_label = (uint16_t)(event_label & 0x3FFu);
-        ts->mac_usage_marker = (uint8_t)(usage_marker & 0x3Fu);
-    }
-
-    /* ---------------------------------------------------------------
-     * Phase 9: pass the remaining TM-SDU bits (after the MAC header
-     * and address field) to the MLE dispatcher for CMCE / MM decoding.
-     *
-     * Phase 69: if fill_bits==0 (no padding = TM-SDU continues in
-     * following MAC-FRAG/END blocks), save first fragment to the
-     * reassembly buffer instead of dispatching immediately.
-     * --------------------------------------------------------------- */
-    if (ts && off < nbits) {
-        if (len_ind == 63) {
-            /* First fragment: seed the reassembly buffer */
-            int payload_bits = nbits - off;
-            clear_fragment_reassembly(state);
-            if (payload_bits > (int)sizeof(ts->frag_buf)) {
-                fprintf(stderr, "[TETRA MAC-RESOURCE] CC=%d fragment start overflow (%d bits)\n", cc, payload_bits);
-                return;
-            }
-            memcpy(ts->frag_buf, bits + off, (size_t)payload_bits);
-            ts->frag_nbits = (uint16_t)payload_bits;
-            ts->frag_cc = (int8_t)cc;
-            ts->frag_active = 1;
-            if (grant_hz > 0) {
-                ts->vc_grant_pending = 1;
-                ts->vc_grant_call_generation = call_generation_before;
-            }
-            fprintf(stderr, "[TETRA MAC-RESOURCE] CC=%d  fragment start (%d bits buffered)\n", cc, payload_bits);
-        } else if (len_ind != 2) {
-            /* Complete TM-SDU: dispatch directly */
-            int pdu_end = nbits;
-            int llc_expected = 0;
-            if (len_ind >= 3 && len_ind <= 62) {
-                const int indicated_end = (int)len_ind * 8;
-                if (indicated_end >= off && indicated_end <= nbits) {
-                    pdu_end = indicated_end;
-                    llc_expected = 1;
-                }
-            }
-            if (!llc_expected || !dispatch_basic_llc_tm_sdu(bits + off, pdu_end - off, cc, opts, state)) {
-                tetra_mle_dispatch(bits + off, pdu_end - off, cc, opts, state);
-            }
-            sync_cmce_call_target_from_resource(state);
-            if (grant_hz > 0) {
-                apply_channel_grant((dsd_opts*)(uintptr_t)opts, state, grant_hz, grant_slots, call_generation_before);
-            }
-        }
-    }
-    if (grant_hz > 0 && (off >= nbits || len_ind == 2)) {
-        tetra_sm_on_grant((dsd_opts*)(uintptr_t)opts, state, grant_hz, grant_slots);
-    }
-    return;
-
-short_out:
-    fprintf(stderr, "[TETRA MAC-RESOURCE] CC=%d  (truncated at bit %d of %d)\n", cc, off, nbits);
+push_allocation_summary(const mac_block* b, const mac_allocation* a) {
+    char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
+    DSD_SNPRINTF(summary, sizeof summary, "Allocation CC=%d carrier=%u slots=0x%X freq=%ld", b->cc,
+                 (unsigned)a->carrier, (unsigned)a->timeslots, a->freq_hz);
+    tetra_message_push(b->state, DSD_TETRA_MESSAGE_CONTROL, summary);
 }
 
-/*
- * MAC-BROADCAST / SYSINFO (ETSI EN 300 392-2 §21.4.4.1 / §21.5.9)
- *
- *   Bit 0-1   : PDU type       (= 10, BROADCAST)
- *   Bit 2-3   : Broadcast type (= 00, SYSINFO)
- *   Bit 4-15  : Main carrier      (12 bits)
- *   Bit 16-19 : Frequency band    ( 4 bits)
- *   Bit 20-21 : Freq offset       ( 2 bits)
- *   Bit 22-24 : Duplex spacing    ( 3 bits)
- *   Bit    25 : Reverse operation ( 1 bit )
- *   Bit 26-27 : Num SCH           ( 2 bits)
- *   Bit 28-30 : MS TX power max   ( 3 bits)
- *   Bit 31-34 : RXLEV min         ( 4 bits)
- *   Bit 35-38 : Access parameter  ( 4 bits)
- *   Bit 39-42 : Radio DL timeout  ( 4 bits)
- *   Bit    43 : CCK valid/no HF   ( 1 bit )
- *   Bit 44-59 : CCK-ID / Hyperframe number (16 bits)
- *   Bit 60-61 : Option field type ( 2 bits)
- *   Bit 62-81 : Option field data (20 bits)
- *   (+ MLE SYSINFO  Bit 82-..)
- */
+/* Timeslot assigned 0000 sends the addressed party back to the common control channel (table 21.87). It ends the
+ * followed assignment only when it is addressed to that assignment's holder. */
 static void
-parse_mac_sysinfo(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 82) {
-        fprintf(stderr, "[TETRA SYSINFO] CC=%d  (too short: %d bits)\n", cc, nbits);
+release_assignment(const mac_block* b, const mac_allocation* a, const tetra_mac_address* addr) {
+    tetra_state_t* const ts = b->ts;
+    if (!ts->vc_assignment_valid || ts->vc_timeslot_bitmap == 0u || !is_assignment_holder(ts, addr)) {
+        TETRA_LOG_VERBOSE(ts, 1, "[TETRA CHANNEL-ALLOCATION] CC=%d return to control channel for another party\n",
+                          b->cc);
         return;
     }
+    push_allocation_summary(b, a);
+    ts->vc_assignment_type = a->type;
+    ts->vc_uplink_downlink = a->up_down;
+    ts->vc_timeslot_bitmap = 0;
+    ts->vc_slot = 0;
+    ts->vc_carrier = 0;
+    ts->vc_freq_hz = 0;
+    ts->tx_granted_valid = 0;
+    tetra_sm_on_release(b->opts, b->state);
+}
 
-    int off = 4; /* skip PDU type (2) + broadcast type (2) */
-
-    uint32_t main_carrier = bits_to_uint(bits, off, 12);
-    off += 12;
-    uint32_t freq_band = bits_to_uint(bits, off, 4);
-    off += 4;
-    uint32_t freq_offset = bits_to_uint(bits, off, 2);
-    off += 2;
-    uint32_t duplex_spacing = bits_to_uint(bits, off, 3);
-    off += 3;
-    uint32_t rev_op = bits_to_uint(bits, off, 1);
-    off += 1;
-    uint32_t num_csch = bits_to_uint(bits, off, 2);
-    off += 2;
-    uint32_t ms_txpwr = bits_to_uint(bits, off, 3);
-    off += 3;
-    uint32_t rxlev = bits_to_uint(bits, off, 4);
-    off += 4;
-    uint32_t acc_param = bits_to_uint(bits, off, 4);
-    off += 4;
-    uint32_t radio_dl_tmo = bits_to_uint(bits, off, 4);
-    off += 4;
-    uint32_t cck_valid = bits_to_uint(bits, off, 1);
-    off += 1;
-    uint32_t cck_or_hf = bits_to_uint(bits, off, 16);
-    off += 16;
-    uint32_t opt_field_type = bits_to_uint(bits, off, 2);
-    off += 2;
-    uint32_t opt_field_data = bits_to_uint(bits, off, 20);
-    off += 20;
-
-    const char* opt_names[] = {"even-MF", "odd-MF", "access-code", "ext-svc"};
-
-    fprintf(stderr,
-            "[TETRA SYSINFO] CC=%d"
-            "  carrier=%u  band=%u  foff=%u  ds=%u  rev=%u"
-            "  num_csch=%u  pwr=%u  rxlev=%u  acc=%u  dl_tmo=%u"
-            "  %s=%u  opt=%s(0x%05X)\n",
-            cc, main_carrier, freq_band, freq_offset, duplex_spacing, rev_op, num_csch, ms_txpwr, rxlev, acc_param,
-            radio_dl_tmo, cck_valid ? "cck_id" : "hyperframe", cck_or_hf,
-            opt_field_type < 4 ? opt_names[opt_field_type] : "?", opt_field_data);
-
-    /* Phase 11+12: cache DL carrier frequency + band params; arm trunking CC. */
-    if (ts) {
-        if (ts->frames_sysinfo == 1 || ts->sysinfo_main_carrier != main_carrier) {
-            char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
-            DSD_SNPRINTF(summary, sizeof summary, "SYSINFO CC=%d carrier=%u band=%u", cc, main_carrier, freq_band);
-            tetra_message_push(state, DSD_TETRA_MESSAGE_CONTROL, summary);
-        }
-        long dl_hz = tetra_carrier_to_dl_hz(main_carrier, freq_band, freq_offset);
-        if (dl_hz != 0L) {
-            ts->dl_carrier_hz = dl_hz;
-            ts->freq_band = (uint8_t)freq_band;
-            ts->freq_offset = (uint8_t)freq_offset;
-            state->trunk_cc_freq = dl_hz;
-            tetra_sm_on_cc_sync(opts, state);
-        }
-        /* Phase 20-22: cache remaining SYSINFO fields */
-        ts->cck_valid = (uint8_t)(cck_valid & 1u);
-        ts->cck_id = (uint16_t)(cck_or_hf & 0xFFFFu);
-        if (!cck_valid) {
-            ts->hyperframe = (uint16_t)(cck_or_hf & 0xFFFFu);
-            ts->hyperframe_valid = 1;
-        }
-        ts->duplex_spacing = (uint8_t)(duplex_spacing & 0x07u);
-        ts->num_csch = (uint8_t)(num_csch & 0x03u);
-        ts->ms_txpwr_max = (uint8_t)(ms_txpwr & 0x07u);
-        ts->rxlev_access_min = (uint8_t)(rxlev & 0x0Fu);
-        /* Phase 77: SYSINFO dropped vars */
-        ts->sysinfo_main_carrier = (uint16_t)(main_carrier & 0xFFFu);
-        ts->sysinfo_rev_op = (uint8_t)(rev_op & 1u);
-        ts->sysinfo_acc_param = (uint8_t)(acc_param & 0x0Fu);
-        ts->sysinfo_radio_dl_tmo = (uint8_t)(radio_dl_tmo & 0x0Fu);
-        ts->sysinfo_opt_field_type = (uint8_t)(opt_field_type & 0x03u);
-        ts->sysinfo_opt_field_data = (uint32_t)(opt_field_data & 0xFFFFFu);
+/* Record the allocation of a clear PDU addressed to @p addr. Returns 1 when it assigns a pi/4-DQPSK downlink the
+ * trunking state machine can follow. */
+static int
+apply_allocation(const mac_block* b, const mac_allocation* a, const tetra_mac_address* addr) {
+    tetra_state_t* const ts = b->ts;
+    DSD_FPRINTF(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d type=%u slots=0x%X dir=%u carrier=%u freq=%ld bw=%u mod=%u\n",
+                b->cc, (unsigned)a->type, (unsigned)a->timeslots, (unsigned)a->up_down, (unsigned)a->carrier,
+                a->freq_hz, (unsigned)a->bandwidth, (unsigned)a->modulation);
+    if (a->timeslots == 0u) {
+        release_assignment(b, a, addr);
+        return 0;
     }
+    if (!ts->vc_assignment_valid || ts->vc_timeslot_bitmap != a->timeslots || ts->vc_carrier != a->carrier) {
+        push_allocation_summary(b, a);
+    }
+    ts->vc_assignment_valid = 1;
+    ts->vc_assignment_type = a->type;
+    ts->vc_timeslot_bitmap = a->timeslots;
+    ts->vc_slot = a->timeslots;
+    ts->vc_uplink_downlink = a->up_down;
+    ts->vc_carrier = a->carrier;
+    ts->vc_freq_hz = a->freq_hz;
+    ts->vc_addr = *addr;
+    ts->vc_addr_event_label_valid = (uint8_t)address_has_event_label(addr->type);
+    return (a->up_down == 1u || a->up_down == 3u) && a->freq_hz > 0L && a->modulation == 0u;
+}
 
-    /* MLE SYSINFO (§21.6.1): LA (14) + Subscr class (16) + BS service details (12) */
-    if (nbits >= off + 42) {
-        uint32_t la = bits_to_uint(bits, off, 14);
-        off += 14;
-        uint32_t subscr_cls = bits_to_uint(bits, off, 16);
-        off += 16;
-        uint32_t bs_svc_det = bits_to_uint(bits, off, 12);
-        fprintf(stderr,
-                "[TETRA SYSINFO/MLE] LA=%u  subscr_class=0x%04X"
-                "  bs_svc_det=0x%03X\n",
-                la, subscr_cls, bs_svc_det);
-
-        /* --- Update dsd_state --- */
-        if (ts) {
-            ts->la = (uint16_t)la;
-            ts->subscr_class = (uint16_t)subscr_cls;
-            ts->bs_service_det = (uint16_t)bs_svc_det;
-            ts->sysinfo_known = 1;
-        }
+/* Publish the address and encryption mode of an addressed PDU. An event label assignment (address types 101 and
+ * 111) to the holder of the traffic-channel assignment lets later PDUs address that holder by event label. */
+static void
+publish_address(tetra_state_t* ts, const tetra_mac_address* addr, uint8_t enc_mode) {
+    ts->enc_mode = enc_mode;
+    ts->ssi_valid = (uint8_t)(address_family(addr->type) != 0 && !addr->esi);
+    if (ts->ssi_valid) {
+        ts->active_ssi = addr->ssi;
+    }
+    ts->mac_addr_type = addr->type;
+    ts->mac_event_label = addr->event_label;
+    ts->mac_usage_marker = addr->usage_marker;
+    if ((addr->type == TETRA_MAC_ADDR_SSI_EVENT || addr->type == TETRA_MAC_ADDR_SMI_EVENT) && !addr->esi
+        && address_family(addr->type) == address_family(ts->vc_addr.type) && addr->ssi == ts->vc_addr.ssi) {
+        ts->vc_addr.event_label = addr->event_label;
+        ts->vc_addr_event_label_valid = 1;
     }
 }
 
-/*
- * MAC-BROADCAST / ACCESS-DEFINE (ETSI EN 300 392-2 §21.5.10)
- *
- *   Bit 0-1  : PDU type        (= 10, BROADCAST)
- *   Bit 2-3  : Broadcast type  (= 01, ACCESS-DEFINE)
- *   Bit 4    : Common / Dedicated flag
- *   Bit 5-8  : Immediate
- *   Bit 9-12 : Waiting time
- *   Bit 13-16: Number of random access transmissions
- *   Bit 17   : Frame length factor
- *   Bit 18-21: Timeslot pointer
- *   Bit 22-24: Min PDU priority
- * (further optional fields omitted for brevity)
- */
 static void
-parse_mac_access_define(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 25) {
-        fprintf(stderr, "[TETRA ACCESS-DEFINE] CC=%d  (too short: %d bits)\n", cc, nbits);
-        return;
+publish_resource_header(tetra_state_t* ts, const mac_resource_header* h) {
+    ts->mac_fill_bits = h->fill;
+    ts->mac_grant_pos = h->grant_pos;
+    ts->mac_rand_acc = h->random_access;
+    ts->mac_len_ind = h->length_ind;
+    publish_address(ts, &h->addr, h->enc_mode);
+}
+
+static void
+discard_fragment(tetra_mac_fragment* f) {
+    f->active = 0;
+    f->encrypted = 0;
+    f->idle_half_slots = 0;
+    f->nbits = 0;
+}
+
+static int
+fragment_append(tetra_mac_fragment* f, const uint8_t* bits, int nbits) {
+    if (nbits < 0 || nbits > (int)sizeof f->bits - (int)f->nbits) {
+        return 0;
     }
+    if (nbits > 0) {
+        DSD_MEMCPY(f->bits + f->nbits, bits, (size_t)nbits);
+        f->nbits = (uint16_t)(f->nbits + nbits);
+    }
+    return 1;
+}
 
-    int off = 4; /* skip PDU type (2) + broadcast type (2) */
-
-    uint32_t common_flag = bits_to_uint(bits, off, 1);
-    off += 1;
-    uint32_t immediate = bits_to_uint(bits, off, 4);
-    off += 4;
-    uint32_t wait_time = bits_to_uint(bits, off, 4);
-    off += 4;
-    uint32_t num_ra = bits_to_uint(bits, off, 4);
-    off += 4;
-    uint32_t frame_len_f = bits_to_uint(bits, off, 1);
-    off += 1;
-    uint32_t ts_ptr = bits_to_uint(bits, off, 4);
-    off += 4;
-    uint32_t min_pdu_pri = bits_to_uint(bits, off, 3);
-
-    fprintf(stderr,
-            "[TETRA ACCESS-DEFINE] CC=%d  %s"
-            "  imm=%u  wait=%u  num_ra=%u"
-            "  frame_len_f=%u  ts_ptr=%u  min_prio=%u\n",
-            cc, common_flag ? "common" : "dedicated", immediate, wait_time, num_ra, frame_len_f, ts_ptr, min_pdu_pri);
-
-    /* Phase 23: cache ACCESS-DEFINE params to state */
-    if (ts) {
-        ts->access_imm = (uint8_t)(immediate & 0x0Fu);
-        ts->access_wait_time = (uint8_t)(wait_time & 0x0Fu);
-        /* Phase 74: save remaining fields */
-        ts->access_num_ra = (uint8_t)(num_ra & 0x0Fu);
-        ts->access_frame_len_f = (uint8_t)(frame_len_f & 1u);
-        ts->access_ts_ptr = (uint8_t)(ts_ptr & 0x0Fu);
-        ts->access_min_pdu_pri = (uint8_t)(min_pdu_pri & 0x07u);
-        /* Phase 77: store common_flag */
-        ts->access_common_flag = (uint8_t)(common_flag & 1u);
+/* Clause 23.4.3.1.1 b) and i): a MAC-RESOURCE with length indication 111111 starts a TM-SDU on its control channel
+ * and drops any partial one there, whatever its address. The encryption mode applies to every fragment. */
+static void
+start_fragment(mac_block* b, const tetra_mac_address* addr, int encrypted, const uint8_t* sdu, int sdu_bits) {
+    tetra_mac_fragment* const f = b->frag;
+    if (f->active) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  partial TM-SDU of %u bits dropped\n", b->cc,
+                          (unsigned)f->nbits);
+    }
+    discard_fragment(f);
+    f->active = 1;
+    f->encrypted = (uint8_t)encrypted;
+    f->cc = (int8_t)b->cc;
+    f->addr = *addr;
+    b->fragment_seen = 1;
+    if (!fragment_append(f, sdu, sdu_bits)) {
+        discard_fragment(f);
     }
 }
 
-/*
- * MAC-FRAG / MAC-END  (ETSI EN 300 392-2 §21.4.4.3 / §21.4.4.4)
- *
- *   Bit 0-1 : PDU type  (= 01)
- *   Bit   2 : Reservation requirement (MAC-FRAG) / 0 (MAC-END)
- *   Bits 3+  : payload (LLC PDU fragment)
- *
- * Phase 69: accumulate fragments into state->tetra_frag_buf and
- * dispatch on MAC-END.
- */
+/* A MAC-FRAG or MAC-END continues the TM-SDU under way on the block's timeslot, if any, from the same cell. */
+static int
+fragment_continues(mac_block* b, const char* name) {
+    tetra_mac_fragment* const f = b->frag;
+    if (!f->active) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA %s] CC=%d  no first fragment on this timeslot; discarded\n", name, b->cc);
+        return 0;
+    }
+    if (f->cc != (int8_t)b->cc) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA %s] CC=%d  TM-SDU started on CC=%d; discarded\n", name, b->cc, (int)f->cc);
+        discard_fragment(f);
+        return 0;
+    }
+    b->fragment_seen = 1;
+    f->idle_half_slots = 0;
+    return 1;
+}
+
 static void
-parse_mac_frag_end(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 3) {
-        fprintf(stderr, "[TETRA MAC-FRAG/END] CC=%d  (too short)\n", cc);
-        return;
+print_resource(const mac_block* b, const mac_resource_header* h, int sdu_bits) {
+    char addr[64];
+    const char* note = "";
+    format_address(&h->addr, addr, sizeof addr);
+    if (h->enc_mode != TETRA_ENC_MODE_NONE && (sdu_bits > 0 || h->alloc_present)) {
+        note = h->alloc_present ? "  channel allocation and TM-SDU encrypted; not decoded" : "  encrypted; not decoded";
+    } else if (h->length_ind == MAC_LI_FRAGMENT_START) {
+        note = "  first fragment";
     }
-    uint8_t subtype = (uint8_t)bits_to_uint(bits, 2, 1);
-    int payload_off = 3;
-    int payload_bits = (nbits > payload_off) ? nbits - payload_off : 0;
+    DSD_FPRINTF(stderr, "[TETRA MAC-RESOURCE] CC=%d  enc=%s  rand_acc=%u  len_ind=%u  addr=%s  sdu_bits=%d%s\n", b->cc,
+                k_enc_mode_name[h->enc_mode & 3u], (unsigned)h->random_access, (unsigned)h->length_ind, addr, sdu_bits,
+                note);
+}
 
-    fprintf(stderr, "[TETRA MAC-%s] CC=%d  payload_bits=%d\n", subtype ? "END" : "FRAG", cc, payload_bits);
-
-    if (!ts) {
-        return;
+/* PDU length of a MAC-RESOURCE in a block with @p nbits bits left: the indicated length bounded by the block
+ * (clause 23.4.3.3), the whole remainder for 111110 and 111111, or -1 for a reserved value. */
+static int
+resource_pdu_bits(uint32_t length_ind, int nbits) {
+    if (length_ind == MAC_LI_SECOND_HALF_STOLEN || length_ind == MAC_LI_FRAGMENT_START) {
+        return nbits;
     }
-
-    if (!ts->frag_active) {
-        fprintf(stderr, "[TETRA MAC-%s] CC=%d ignored without fragment start\n", subtype ? "END" : "FRAG", cc);
-        return;
+    if (length_ind == 0u || length_ind > MAC_LI_MAX_OCTETS) {
+        return -1;
     }
-    if (ts->frag_cc != (int8_t)cc) {
-        fprintf(stderr, "[TETRA MAC-%s] CC=%d rejected; fragment started on CC=%d\n", subtype ? "END" : "FRAG", cc,
-                (int)ts->frag_cc);
-        clear_fragment_reassembly(state);
-        return;
+    const int indicated = (int)length_ind * 8;
+    return indicated < nbits ? indicated : nbits;
+}
+
+/* Table 21.55 up to the channel allocation flag; pi/4-DQPSK has no immediate napping permission flag and no multiple
+ * slot granting. Every optional element is read inside the PDU length. Returns 0 for a Null PDU or a header that
+ * does not fit: nothing more of the block is decoded then. */
+static int
+read_resource_header(const mac_block* b, const uint8_t* bits, int nbits, mac_resource_header* h) {
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 2);
+    h->fill = (uint8_t)tetra_bits_read(&r, 1);
+    h->grant_pos = (uint8_t)tetra_bits_read(&r, 1);
+    h->enc_mode = (uint8_t)tetra_bits_read(&r, 2);
+    h->random_access = (uint8_t)tetra_bits_read(&r, 1);
+    h->length_ind = (uint8_t)tetra_bits_read(&r, 6);
+    const uint8_t type = (uint8_t)tetra_bits_read(&r, 3);
+    if (!tetra_bits_ok(&r) || type == TETRA_MAC_ADDR_NULL) {
+        /* No PDU follows a Null PDU in its block (clause 23.4.3.3). */
+        return 0;
     }
-
-    int space = (int)sizeof(ts->frag_buf) - (int)ts->frag_nbits;
-    if (payload_bits > space) {
-        fprintf(stderr, "[TETRA MAC-%s] CC=%d reassembly overflow; discarding sequence\n", subtype ? "END" : "FRAG",
-                cc);
-        clear_fragment_reassembly(state);
-        return;
+    h->pdu_bits = resource_pdu_bits(h->length_ind, nbits);
+    if (h->pdu_bits < 0) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  reserved length indication %u\n", b->cc,
+                          (unsigned)h->length_ind);
+        return 0;
     }
+    r = tetra_bits_reader(bits, h->pdu_bits, r.pos);
+    read_address(&r, type, h->enc_mode, &h->addr);
+    if (tetra_bits_read(&r, 1) != 0u) {
+        (void)tetra_bits_skip(&r, 4); /* power control element, table 21.92 */
+    }
+    if (tetra_bits_read(&r, 1) != 0u) {
+        (void)tetra_bits_skip(&r, 8); /* basic slot granting element, table 21.96 */
+    }
+    h->alloc_present = (uint8_t)tetra_bits_read(&r, 1);
+    h->body = r.pos;
+    if (!tetra_bits_ok(&r)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  header longer than the %d-bit PDU\n", b->cc, h->pdu_bits);
+        return 0;
+    }
+    return 1;
+}
 
-    if (!subtype) {
-        /* ----------------------------------------------------------------
-         * MAC-FRAG: continuation fragment — append to reassembly buffer.
-         * ---------------------------------------------------------------- */
-        ts->frag_seq = (uint8_t)((ts->frag_seq + 1u) & 0xFFu);
+/* MAC-RESOURCE whose encryption mode is not 00: everything after the channel allocation flag is ciphertext
+ * (EN 300 392-7 clause 6.7.1.2), so neither the allocation nor the TM-SDU is read. */
+static void
+resource_encrypted(mac_block* b, const mac_resource_header* h, int sdu_bits) {
+    print_resource(b, h, sdu_bits);
+    publish_resource_header(b->ts, h);
+    if (h->length_ind == MAC_LI_FRAGMENT_START) {
+        b->ts->mac_encrypted_sdus++;
+        start_fragment(b, &h->addr, 1, NULL, 0);
+    } else if (sdu_bits > 0 || h->alloc_present) {
+        b->ts->mac_encrypted_sdus++;
+    }
+}
 
-        if (payload_bits > 0) {
-            memcpy(ts->frag_buf + ts->frag_nbits, bits + payload_off, (size_t)payload_bits);
-            ts->frag_nbits = (uint16_t)(ts->frag_nbits + (uint16_t)payload_bits);
+/* MAC-RESOURCE, clause 21.4.3.1. Returns the PDU length, or 0 when nothing more of the block can be decoded. */
+static int
+parse_mac_resource(mac_block* b, const uint8_t* bits, int nbits) {
+    mac_resource_header h = {0};
+    if (!read_resource_header(b, bits, nbits, &h)) {
+        return 0;
+    }
+    b->ts->frames_resource++;
+    tetra_bit_reader r = tetra_bits_reader(bits, h.pdu_bits, h.body);
+    if (h.enc_mode != TETRA_ENC_MODE_NONE) {
+        const int end = content_end(bits, h.body, h.pdu_bits, h.fill);
+        resource_encrypted(b, &h, end > h.body ? end - h.body : 0);
+        return h.pdu_bits;
+    }
+    mac_allocation alloc = {0};
+    if (h.alloc_present && !read_allocation(&r, b->ts, &alloc)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; PDU discarded\n",
+                          b->cc);
+        return h.pdu_bits;
+    }
+    const int end = content_end(bits, r.pos, h.pdu_bits, h.fill);
+    if (end < 0) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  fill bits without a final 1 bit; discarded\n", b->cc);
+        return h.pdu_bits;
+    }
+    print_resource(b, &h, end - r.pos);
+    if (h.length_ind == MAC_LI_FRAGMENT_START) {
+        /* A fragmented TM-SDU carries its channel allocation in the MAC-END (clause 23.4.2.1.1). */
+        if (h.alloc_present) {
+            TETRA_LOG_VERBOSE(b->ts, 1, "[TETRA MAC-RESOURCE] CC=%d  allocation in a first fragment ignored\n", b->cc);
         }
+        publish_resource_header(b->ts, &h);
+        start_fragment(b, &h.addr, 0, bits + r.pos, end - r.pos);
+        return h.pdu_bits;
+    }
+    const uint32_t generation_before = b->ts->cmce_call_generation;
+    const int grant = h.alloc_present && apply_allocation(b, &alloc, &h.addr);
+    publish_resource_header(b->ts, &h);
+    deliver_tm_sdu(b, bits + r.pos, end - r.pos, grant ? &alloc : NULL, generation_before);
+    return h.pdu_bits;
+}
+
+/* MAC-FRAG, table 21.57. It is the last PDU of its block (clause 23.4.2.1.1). */
+static int
+parse_mac_frag(mac_block* b, const uint8_t* bits, int nbits) {
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 3);
+    const uint32_t fill = tetra_bits_read(&r, 1);
+    if (!tetra_bits_ok(&r) || !fragment_continues(b, "MAC-FRAG")) {
+        return 0;
+    }
+    tetra_mac_fragment* const f = b->frag;
+    if (f->encrypted) {
+        return nbits;
+    }
+    const int end = content_end(bits, r.pos, nbits, fill);
+    if (end < 0 || !fragment_append(f, bits + r.pos, end - r.pos)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-FRAG] CC=%d  malformed or oversized fragment; TM-SDU dropped\n", b->cc);
+        discard_fragment(f);
+        return nbits;
+    }
+    TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-FRAG] CC=%d  %d bits, %u rebuilt\n", b->cc, end - r.pos, (unsigned)f->nbits);
+    return nbits;
+}
+
+/* Deliver the rebuilt TM-SDU of the block's timeslot. Its address is that of the MAC-RESOURCE that started it, and
+ * the only allocation that applies is the one in this MAC-END. */
+static void
+complete_fragment(mac_block* b, const mac_allocation* alloc) {
+    tetra_state_t* const ts = b->ts;
+    tetra_mac_fragment* const f = b->frag;
+    const uint32_t generation_before = ts->cmce_call_generation;
+    const int grant = alloc && apply_allocation(b, alloc, &f->addr);
+    publish_address(ts, &f->addr, TETRA_ENC_MODE_NONE);
+    TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  TM-SDU of %u bits rebuilt\n", b->cc, (unsigned)f->nbits);
+    deliver_tm_sdu(b, f->bits, f->nbits, grant ? alloc : NULL, generation_before);
+    discard_fragment(f);
+}
+
+/* The MAC-END after its slot granting and channel allocation flags (table 21.59). */
+static void
+finish_fragment(mac_block* b, const uint8_t* bits, int pdu_bits, int body, uint32_t fill, uint32_t alloc_present) {
+    tetra_mac_fragment* const f = b->frag;
+    if (f->encrypted) {
+        /* The allocation and the last fragment are ciphertext like the rest (EN 300 392-7 clause 6.7.1.2). */
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  encrypted TM-SDU ends\n", b->cc);
+        discard_fragment(f);
+        return;
+    }
+    tetra_bit_reader r = tetra_bits_reader(bits, pdu_bits, body);
+    mac_allocation alloc = {0};
+    if (alloc_present != 0u && !read_allocation(&r, b->ts, &alloc)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; TM-SDU dropped\n",
+                          b->cc);
+        discard_fragment(f);
+        return;
+    }
+    const int end = content_end(bits, r.pos, pdu_bits, fill);
+    if (end < 0 || !fragment_append(f, bits + r.pos, end - r.pos)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  malformed or oversized fragment; TM-SDU dropped\n", b->cc);
+        discard_fragment(f);
+        return;
+    }
+    complete_fragment(b, alloc_present != 0u ? &alloc : NULL);
+}
+
+/* MAC-END, table 21.59 (pi/4-DQPSK: no immediate napping permission flag, basic slot granting only). Returns the PDU
+ * length, or 0 when nothing more of the block can be decoded. */
+static int
+parse_mac_end(mac_block* b, const uint8_t* bits, int nbits) {
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 3);
+    const uint32_t fill = tetra_bits_read(&r, 1);
+    (void)tetra_bits_skip(&r, 1); /* position of grant */
+    const uint32_t length_ind = tetra_bits_read(&r, 6);
+    if (!tetra_bits_ok(&r)) {
+        return 0;
+    }
+    if (length_ind == 0u || length_ind > MAC_LI_MAX_OCTETS) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  reserved length indication %u\n", b->cc, (unsigned)length_ind);
+        return 0;
+    }
+    const int pdu_bits = (int)length_ind * 8 < nbits ? (int)length_ind * 8 : nbits;
+    r = tetra_bits_reader(bits, pdu_bits, r.pos);
+    if (tetra_bits_read(&r, 1) != 0u) {
+        (void)tetra_bits_skip(&r, 8); /* basic slot granting element */
+    }
+    const uint32_t alloc_present = tetra_bits_read(&r, 1);
+    if (!tetra_bits_ok(&r)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  header longer than the %d-bit PDU\n", b->cc, pdu_bits);
+        return 0;
+    }
+    if (fragment_continues(b, "MAC-END")) {
+        finish_fragment(b, bits, pdu_bits, r.pos, fill, alloc_present);
+    }
+    return pdu_bits;
+}
+
+/* SYSINFO fields of table 21.65 for pi/4-DQPSK, then the 42-bit D-MLE-SYSINFO TM-SDU (clause 18.4.2.2). */
+enum {
+    SI_MAIN_CARRIER,
+    SI_BAND,
+    SI_OFFSET,
+    SI_DUPLEX,
+    SI_REVERSE,
+    SI_NUM_SCCH,
+    SI_TXPWR,
+    SI_RXLEV,
+    SI_ACCESS_PARAMETER,
+    SI_DL_TIMEOUT,
+    SI_CCK_FLAG,
+    SI_HF_OR_CCK,
+    SI_OPTION_FLAG,
+    SI_OPTION,
+    SI_LA,
+    SI_SUBSCRIBER_CLASS,
+    SI_BS_SERVICE,
+    SI_FIELDS,
+};
+
+static const uint8_t k_sysinfo_bits[SI_FIELDS] = {12, 4, 2, 3, 1, 2, 3, 4, 4, 4, 1, 16, 2, 20, 14, 16, 12};
+
+/* Cache SYSINFO. The control channel moves to the main carrier only when it is a valid frequency. */
+static void
+apply_sysinfo(const mac_block* b, const uint32_t* v, int mle_present) {
+    tetra_state_t* const ts = b->ts;
+    if (ts->frames_sysinfo == 1u || ts->sysinfo_main_carrier != v[SI_MAIN_CARRIER]) {
+        char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
+        DSD_SNPRINTF(summary, sizeof summary, "SYSINFO CC=%d carrier=%u band=%u", b->cc, (unsigned)v[SI_MAIN_CARRIER],
+                     (unsigned)v[SI_BAND]);
+        tetra_message_push(b->state, DSD_TETRA_MESSAGE_CONTROL, summary);
+    }
+    const long dl_hz = carrier_frequency_hz(v[SI_MAIN_CARRIER], v[SI_BAND], v[SI_OFFSET]);
+    if (dl_hz > 0L) {
+        ts->dl_carrier_hz = dl_hz;
+        ts->freq_band = (uint8_t)v[SI_BAND];
+        ts->freq_offset = (uint8_t)v[SI_OFFSET];
+        b->state->trunk_cc_freq = dl_hz;
+        tetra_sm_on_cc_sync(b->opts, b->state);
     } else {
-        /* ----------------------------------------------------------------
-         * MAC-END: final fragment — append and dispatch whole TM-SDU.
-         * ---------------------------------------------------------------- */
-        if (payload_bits > 0) {
-            memcpy(ts->frag_buf + ts->frag_nbits, bits + payload_off, (size_t)payload_bits);
-            ts->frag_nbits = (uint16_t)(ts->frag_nbits + (uint16_t)payload_bits);
-        }
-
-        uint8_t pending_grant = ts->vc_grant_pending;
-        uint32_t grant_generation = ts->vc_grant_call_generation;
-
-        /* A fragmented TM-SDU still contains the LLC PDU. Decode its basic
-         * link header only after the final fragment has arrived so the FCS
-         * variants can be bounded against the complete payload. */
-        if (ts->frag_nbits >= 9) {
-            fprintf(stderr, "[TETRA MAC-END] CC=%d  dispatching %u reassembled bits\n", cc, ts->frag_nbits);
-            if (!dispatch_basic_llc_tm_sdu((const uint8_t*)ts->frag_buf, (int)ts->frag_nbits, cc, opts, state)) {
-                tetra_mle_dispatch((const uint8_t*)ts->frag_buf, (int)ts->frag_nbits, cc, opts, state);
-            }
-            sync_cmce_call_target_from_resource(state);
-        }
-
-        if (pending_grant && ts->vc_freq_hz > 0 && ts->vc_timeslot_bitmap != 0) {
-            apply_channel_grant((dsd_opts*)(uintptr_t)opts, state, ts->vc_freq_hz, ts->vc_timeslot_bitmap,
-                                grant_generation);
-        }
-
-        /* Clear reassembly state */
-        clear_fragment_reassembly(state);
+        TETRA_LOG_VERBOSE(b->ts, 1, "[TETRA SYSINFO] CC=%d  no valid main carrier; control channel unchanged\n", b->cc);
+    }
+    ts->cck_valid = (uint8_t)v[SI_CCK_FLAG];
+    if (ts->cck_valid) {
+        ts->cck_id = (uint16_t)v[SI_HF_OR_CCK];
+    } else {
+        ts->hyperframe = (uint16_t)v[SI_HF_OR_CCK];
+        ts->hyperframe_valid = 1;
+    }
+    ts->duplex_spacing = (uint8_t)v[SI_DUPLEX];
+    ts->num_csch = (uint8_t)v[SI_NUM_SCCH];
+    ts->ms_txpwr_max = (uint8_t)v[SI_TXPWR];
+    ts->rxlev_access_min = (uint8_t)v[SI_RXLEV];
+    ts->sysinfo_main_carrier = (uint16_t)v[SI_MAIN_CARRIER];
+    ts->sysinfo_rev_op = (uint8_t)v[SI_REVERSE];
+    ts->sysinfo_acc_param = (uint8_t)v[SI_ACCESS_PARAMETER];
+    ts->sysinfo_radio_dl_tmo = (uint8_t)v[SI_DL_TIMEOUT];
+    ts->sysinfo_opt_field_type = (uint8_t)v[SI_OPTION_FLAG];
+    ts->sysinfo_opt_field_data = v[SI_OPTION];
+    if (mle_present) {
+        ts->la = (uint16_t)v[SI_LA];
+        ts->subscr_class = (uint16_t)v[SI_SUBSCRIBER_CLASS];
+        ts->bs_service_det = (uint16_t)v[SI_BS_SERVICE];
+        ts->sysinfo_known = 1;
     }
 }
 
-/*
- * MAC-SUPPL / D-BLCK  (ETSI EN 300 392-2 §21.4.5 / 21.4.5.3)
- *
- *   Bit 0-1 : PDU type  (= 11)
- *   Bit   2 : (reserved / fill-bit indicator)
- *   Bits 3+ : payload
- */
+/* SYSINFO, clause 21.4.4.1. With pi/4-DQPSK it fills the whole 124-bit block. */
 static void
-parse_mac_suppl(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
-    int payload_bits = (nbits > 3) ? nbits - 3 : 0;
-    fprintf(stderr, "[TETRA MAC-SUPPL] CC=%d  payload_bits=%d\n", cc, payload_bits);
-    /* Phase 51: dispatch payload to MLE (same as MAC-RESOURCE TM-SDU) */
-    if (payload_bits >= 9) {
-        tetra_mle_dispatch(bits + 3, payload_bits, cc, opts, state);
+parse_sysinfo(const mac_block* b, tetra_bit_reader* r) {
+    static const char* const k_option_name[4] = {"even-MF", "odd-MF", "access-code", "ext-svc"};
+    uint32_t v[SI_FIELDS] = {0};
+    for (int i = 0; i < SI_LA; i++) {
+        v[i] = tetra_bits_read(r, k_sysinfo_bits[i]);
+    }
+    if (!tetra_bits_ok(r)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA SYSINFO] CC=%d  too short (%d bits)\n", b->cc, r->nbits);
+        return;
+    }
+    const int mle_present = tetra_bits_left(r) >= 42;
+    char mle[64] = "";
+    if (mle_present) {
+        for (int i = SI_LA; i < SI_FIELDS; i++) {
+            v[i] = tetra_bits_read(r, k_sysinfo_bits[i]);
+        }
+        DSD_SNPRINTF(mle, sizeof mle, "  LA=%u  subscr_class=0x%04X  bs_svc_det=0x%03X", (unsigned)v[SI_LA],
+                     (unsigned)v[SI_SUBSCRIBER_CLASS], (unsigned)v[SI_BS_SERVICE]);
+    }
+    DSD_FPRINTF(stderr,
+                "[TETRA SYSINFO] CC=%d  carrier=%u  band=%u  foff=%u  ds=%u  rev=%u  num_csch=%u  pwr=%u  rxlev=%u  "
+                "acc=%u  dl_tmo=%u  %s=%u  opt=%s(0x%05X)%s\n",
+                b->cc, (unsigned)v[SI_MAIN_CARRIER], (unsigned)v[SI_BAND], (unsigned)v[SI_OFFSET],
+                (unsigned)v[SI_DUPLEX], (unsigned)v[SI_REVERSE], (unsigned)v[SI_NUM_SCCH], (unsigned)v[SI_TXPWR],
+                (unsigned)v[SI_RXLEV], (unsigned)v[SI_ACCESS_PARAMETER], (unsigned)v[SI_DL_TIMEOUT],
+                v[SI_CCK_FLAG] != 0u ? "cck_id" : "hyperframe", (unsigned)v[SI_HF_OR_CCK],
+                k_option_name[v[SI_OPTION_FLAG] & 3u], (unsigned)v[SI_OPTION], mle);
+    apply_sysinfo(b, v, mle_present);
+}
+
+/* ACCESS-DEFINE fields of table 21.79 before the optional field. */
+enum {
+    AD_ASSIGNED,
+    AD_ACCESS_CODE,
+    AD_IMM,
+    AD_WT,
+    AD_NU,
+    AD_FRAME_LENGTH_FACTOR,
+    AD_TIMESLOT_POINTER,
+    AD_MIN_PRIORITY,
+    AD_OPTION_FLAG,
+    AD_FIELDS,
+};
+
+static const uint8_t k_access_define_bits[AD_FIELDS] = {1, 2, 4, 4, 4, 1, 4, 3, 2};
+
+/* ACCESS-DEFINE, clause 21.4.4.3. Returns the PDU length (32, 48 or 56 bits), or 0 when it does not fit. */
+static int
+parse_access_define(const mac_block* b, tetra_bit_reader* r) {
+    uint32_t v[AD_FIELDS];
+    for (int i = 0; i < AD_FIELDS; i++) {
+        v[i] = tetra_bits_read(r, k_access_define_bits[i]);
+    }
+    char option[40] = "";
+    if (v[AD_OPTION_FLAG] == 1u) {
+        DSD_SNPRINTF(option, sizeof option, "  subscr_class=0x%04X", (unsigned)tetra_bits_read(r, 16));
+    } else if (v[AD_OPTION_FLAG] == 2u) {
+        DSD_SNPRINTF(option, sizeof option, "  gssi=%u", (unsigned)tetra_bits_read(r, 24));
+    }
+    (void)tetra_bits_skip(r, 3); /* filler bits making the PDU octet bounded */
+    if (!tetra_bits_ok(r)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA ACCESS-DEFINE] CC=%d  truncated\n", b->cc);
+        return 0;
+    }
+    DSD_FPRINTF(stderr,
+                "[TETRA ACCESS-DEFINE] CC=%d  %s  access_code=%c  imm=%u  wait=%u  num_ra=%u  frame_len_f=%u  "
+                "ts_ptr=%u  min_prio=%u%s\n",
+                b->cc, v[AD_ASSIGNED] != 0u ? "assigned" : "common", (char)('A' + (int)v[AD_ACCESS_CODE]),
+                (unsigned)v[AD_IMM], (unsigned)v[AD_WT], (unsigned)v[AD_NU], (unsigned)v[AD_FRAME_LENGTH_FACTOR],
+                (unsigned)v[AD_TIMESLOT_POINTER], (unsigned)v[AD_MIN_PRIORITY], option);
+    tetra_state_t* const ts = b->ts;
+    ts->access_common_flag = (uint8_t)v[AD_ASSIGNED];
+    ts->access_code = (uint8_t)v[AD_ACCESS_CODE];
+    ts->access_imm = (uint8_t)v[AD_IMM];
+    ts->access_wait_time = (uint8_t)v[AD_WT];
+    ts->access_num_ra = (uint8_t)v[AD_NU];
+    ts->access_frame_len_f = (uint8_t)v[AD_FRAME_LENGTH_FACTOR];
+    ts->access_ts_ptr = (uint8_t)v[AD_TIMESLOT_POINTER];
+    ts->access_min_pdu_pri = (uint8_t)v[AD_MIN_PRIORITY];
+    return r->pos;
+}
+
+/* Broadcast PDUs, table 21.64. Returns the PDU length, or 0 when nothing more of the block can be decoded. */
+static int
+parse_broadcast(mac_block* b, const uint8_t* bits, int nbits) {
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 2);
+    const uint32_t type = tetra_bits_read(&r, 2);
+    if (!tetra_bits_ok(&r)) {
+        return 0;
+    }
+    if (type == TETRA_MAC_BC_ACCESS_DEF) {
+        return parse_access_define(b, &r);
+    }
+    if (type == TETRA_MAC_BC_SYSINFO && b->first) {
+        b->ts->frames_sysinfo++;
+        parse_sysinfo(b, &r);
+        return nbits;
+    }
+    /* A SYSINFO behind another PDU is not a pi/4-DQPSK SYSINFO; SYSINFO-DA and the reserved type have no length
+     * this decoder knows. */
+    TETRA_LOG_PAYLOAD(b->ts, "[TETRA BROADCAST] CC=%d  broadcast type %u not decoded\n", b->cc, (unsigned)type);
+    return 0;
+}
+
+/* MAC PDU type 11: MAC-U-SIGNAL on STCH (table 21.80), MAC-D-BLCK on a full slot (table 21.61). */
+static int
+parse_supplementary(mac_block* b, const uint8_t* bits, int nbits) {
+    if (b->block_bits <= MAC_HALF_SLOT_BITS) {
+        /* End-to-end U-plane signalling for the user application, not C-plane signalling. */
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-U-SIGNAL] CC=%d  %d bits of U-plane signalling\n", b->cc, nbits - 3);
+        return nbits;
+    }
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 2);
+    const uint32_t subtype = tetra_bits_read(&r, 1);
+    const uint32_t fill = tetra_bits_read(&r, 1);
+    const uint32_t enc_mode = tetra_bits_read(&r, 2);
+    const uint32_t event_label = tetra_bits_read(&r, 10);
+    (void)tetra_bits_skip(&r, 1); /* immediate napping permission flag */
+    if (tetra_bits_read(&r, 1) != 0u) {
+        (void)tetra_bits_skip(&r, 8); /* basic slot granting element */
+    }
+    const int end = tetra_bits_ok(&r) && subtype == 0u ? content_end(bits, r.pos, nbits, fill) : -1;
+    if (end < 0) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-D-BLCK] CC=%d  reserved subtype or malformed PDU\n", b->cc);
+        return 0;
+    }
+    DSD_FPRINTF(stderr, "[TETRA MAC-D-BLCK] CC=%d  enc=%s  event_label=%u  sdu_bits=%d%s\n", b->cc,
+                k_enc_mode_name[enc_mode & 3u], (unsigned)event_label, end - r.pos,
+                enc_mode != TETRA_ENC_MODE_NONE ? "  encrypted; not decoded" : "");
+    if (enc_mode != TETRA_ENC_MODE_NONE) {
+        b->ts->mac_encrypted_sdus++;
+    } else if (end > r.pos) {
+        llc_deliver(b, bits + r.pos, end - r.pos);
+    }
+    /* The implicit length of a pi/4-DQPSK MAC-D-BLCK is the rest of the block (clause 23.4.2.3). */
+    return nbits;
+}
+
+/* Decode the PDU at the start of @p bits. Returns its length, or 0 when nothing more of the block can be decoded. */
+static int
+parse_pdu(mac_block* b, const uint8_t* bits, int nbits) {
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 0);
+    const uint32_t type = tetra_bits_read(&r, 2);
+    const uint32_t subtype = tetra_bits_read(&r, 1);
+    switch (type) {
+        case TETRA_MAC_TYPE_RESOURCE: return parse_mac_resource(b, bits, nbits);
+        case TETRA_MAC_TYPE_FRAG_END:
+            return subtype == TETRA_MAC_FRAGE_END ? parse_mac_end(b, bits, nbits) : parse_mac_frag(b, bits, nbits);
+        case TETRA_MAC_TYPE_BROADCAST: return parse_broadcast(b, bits, nbits);
+        default: return parse_supplementary(b, bits, nbits);
     }
 }
 
-/* -----------------------------------------------------------------------
- * Public entry point
- * ----------------------------------------------------------------------- */
+/* N.203: drop a partial TM-SDU of this timeslot after 4 slots without a fragment (clause 23.4.3.1.1 iii). */
+static void
+age_fragment(mac_block* b) {
+    tetra_mac_fragment* const f = b->frag;
+    if (!f->active || b->fragment_seen) {
+        return;
+    }
+    f->idle_half_slots = (uint8_t)(f->idle_half_slots + (b->block_bits > MAC_HALF_SLOT_BITS ? 2u : 1u));
+    if (f->idle_half_slots >= MAC_N203_HALF_SLOTS) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC] CC=%d  partial TM-SDU of %u bits timed out\n", b->cc, (unsigned)f->nbits);
+        discard_fragment(f);
+    }
+}
+
+static void
+log_raw_block(const tetra_state_t* ts, const uint8_t* bits, int nbits) {
+    if (!ts->log_payload) {
+        return;
+    }
+    char hex[(3 * MAC_RAW_DUMP_BYTES) + 1] = "";
+    size_t used = 0;
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 0);
+    for (int i = 0; i < MAC_RAW_DUMP_BYTES && tetra_bits_left(&r) > 0; i++) {
+        const int take = tetra_bits_left(&r) < 8 ? tetra_bits_left(&r) : 8;
+        const uint32_t byte = tetra_bits_read(&r, take) << (8 - take);
+        DSD_SNPRINTF(hex + used, sizeof hex - used, " %02X", (unsigned)byte);
+        used += 3;
+    }
+    TETRA_LOG_PAYLOAD(ts, "[TETRA MAC raw] %d bits:%s\n", nbits, hex);
+}
 
 void
-tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
+tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
-    if (!bits || nbits < 2) {
-        fprintf(stderr, "[TETRA SCH-HD] CC=%d  (empty PDU)\n", cc);
+    if (!ts || !bits || nbits < 2) {
         return;
     }
-
-    /* Phase 25: total frame counter */
-    if (ts) {
-        ts->frames_total++;
+    ts->frames_total++;
+    log_raw_block(ts, bits, nbits);
+    if (ts->uplink) {
+        /* Uplink blocks hold MAC-DATA, MAC-U-BLCK and uplink MAC-FRAG/MAC-END PDUs (clause 21.4.2), whose layouts
+         * differ from the downlink ones decoded here. */
+        TETRA_LOG_PAYLOAD(ts, "[TETRA MAC] CC=%d  uplink block of %d bits not decoded\n", cc, nbits);
+        return;
     }
-
-    int pdu_type = (int)bits_to_uint(bits, 0, 2);
-
-    switch (pdu_type) {
-
-        case TETRA_MAC_TYPE_RESOURCE:
-            if (ts) {
-                ts->frames_resource++;
-            }
-            parse_mac_resource(bits, nbits, cc, opts, state);
+    const int tn = ts->tdma_valid && ts->tn >= 1u && ts->tn <= 4u ? (int)ts->tn : 0;
+    mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[tn]};
+    int off = 0;
+    while (nbits - off >= (b.first ? 2 : MAC_NULL_PDU_BITS)) {
+        const int used = parse_pdu(&b, bits + off, nbits - off);
+        if (used <= 0) {
             break;
-
-        case TETRA_MAC_TYPE_FRAG_END:
-            if (ts) {
-                ts->frames_frag++;
-            }
-            parse_mac_frag_end(bits, nbits, cc, opts, state);
-            break;
-
-        case TETRA_MAC_TYPE_BROADCAST:
-            if (nbits < 4) {
-                fprintf(stderr, "[TETRA BROADCAST] CC=%d  (too short)\n", cc);
-                break;
-            }
-            {
-                int bcast_type = (int)bits_to_uint(bits, 2, 2);
-                if (bcast_type == TETRA_MAC_BC_SYSINFO) {
-                    if (ts) {
-                        ts->frames_sysinfo++;
-                    }
-                    parse_mac_sysinfo(bits, nbits, cc, (dsd_opts*)(uintptr_t)opts, state);
-                } else if (bcast_type == TETRA_MAC_BC_ACCESS_DEF) {
-                    parse_mac_access_define(bits, nbits, cc, state);
-                } else if (bcast_type == TETRA_MAC_BC_RESTORE || bcast_type == TETRA_MAC_BC_NWRK_BCAST) {
-                    /* MLE PDU starts immediately after the 4-bit MAC header. */
-                    if (nbits > 4) {
-                        tetra_mle_dispatch(bits + 4, nbits - 4, cc, opts, state);
-                    }
-                } else {
-                    fprintf(stderr, "[TETRA BROADCAST] CC=%d  bcast_type=%d  (unhandled)\n", cc, bcast_type);
-                }
-            }
-            break;
-
-        case TETRA_MAC_TYPE_SUPPL: parse_mac_suppl(bits, nbits, cc, opts, state); break;
-
-        default: fprintf(stderr, "[TETRA SCH-HD] CC=%d  unknown PDU type %d\n", cc, pdu_type); break;
-    }
-
-    /* If full payload dump requested, also hex-dump first 16 decoded bytes. */
-    if (opts && opts->payload) {
-        int nbytes = (nbits + 7) / 8;
-        if (nbytes > 16) {
-            nbytes = 16;
         }
-        fprintf(stderr, "  [TETRA SCH-HD raw] pdu_type=%d  %d bits:", pdu_type, nbits);
-        for (int i = 0; i < nbytes; i++) {
-            uint8_t byte = 0;
-            for (int b = 0; b < 8 && (i * 8 + b) < nbits; b++) {
-                byte = (uint8_t)((byte << 1) | (bits[i * 8 + b] & 1));
-            }
-            fprintf(stderr, " %02X", byte);
-        }
-        fprintf(stderr, "\n");
+        off += used;
+        b.first = 0;
     }
+    age_fragment(&b);
 }
