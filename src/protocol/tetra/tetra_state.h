@@ -193,9 +193,79 @@ typedef struct tetra_state {
     /* The calls the decoder tracks, follows and publishes (tetra_calls.c). */
     tetra_calls_t calls;
 
-    /* Downlink frequency in Hz of the SYSINFO main carrier, 0 while unknown. Its block below describes it; it sits here
-     * for alignment. */
+    /* Fragmented TM-SDU reconstruction (tetra_mac.c), one context per downlink timeslot (index = TN 1..4; index 0 while
+     * the TDMA timeslot is unknown). A fragment run belongs to the control channel of its timeslot, so fragments of
+     * different timeslots are never joined (EN 300 392-2 clause 23.4.3.1.1). */
+    tetra_mac_fragment mac_frag[5];
+
+    /* Concatenated SDS reassembly contexts (EN 300 392-2 clause 29.5.14), allocated on first use and freed with the
+     * TETRA state (tetra_mle.c). */
+    struct tetra_sds_concat_store* sds_concat;
+
+    /* The cell's SYSINFO (EN 300 392-2 table 21.65, tetra_mac.c): the downlink frequency in Hz of its main carrier (0
+     * while unknown) and that carrier's number; the frequency band and offset of the last SYSINFO with a valid main
+     * carrier, which a channel allocation without extended carrier numbering uses (clause 21.5.2; freq_band 0 while
+     * none is known); and the location area of its D-MLE-SYSINFO (clause 18.4.2.2), sysinfo_known once one was
+     * decoded. frames_sysinfo counts SYSINFO PDUs: the publication shows the main carrier once there was one. */
     long dl_carrier_hz;
+    uint32_t frames_sysinfo;
+    uint16_t sysinfo_main_carrier;
+    uint16_t la;
+    uint8_t freq_band;
+    uint8_t freq_offset;
+    uint8_t sysinfo_known;
+
+    /* Network identity from the BSCH (EN 300 392-2 table 21.76) or --tetra-net: net_known once MCC, MNC and the 6-bit
+     * colour code are set, and lfsr_seed, the scrambling seed they give (tetra_compute_scramb_seed()). */
+    uint32_t lfsr_seed;
+    uint16_t mcc;
+    uint16_t mnc;
+    uint8_t net_known;
+    uint8_t colour;
+
+    /* The encryption mode (TETRA_ENC_MODE_*) of the last addressed MAC-RESOURCE, or of the MAC-RESOURCE that started
+     * the TM-SDU a MAC-END completed; Null PDUs leave it alone. It describes the cell's signalling, for display: the
+     * calls keep the encryption mode of their own allocation (tetra_call_t::air_enc). frames_resource counts
+     * MAC-RESOURCE PDUs other than Null PDUs, which tells a clear cell from one nothing was decoded on yet. */
+    uint32_t frames_resource;
+    uint8_t enc_mode;
+
+    /* Bursts and blocks whose CRC failed (decode_errors) and passed (decode_ok); TETRA reads as decoded once one did. */
+    uint32_t decode_errors;
+    uint32_t decode_ok;
+
+    /* TDMA clock (EN 300 392-2 clause 7.3), set by a BSCH and run by tetra_tdma_follow(): while tdma_valid, the slot
+     * that started at symbol count tdma_slot_start is timeslot tn 1..4 of frame fn 1..18 of multiframe mn 1..60. The
+     * hyperframe number is the SYSINFO value from a block whose CCK flag is clear, counted on by the clock at each
+     * MN 60 to MN 1; hyperframe_valid drops with the clock and on a change of cell. */
+    uint32_t tdma_slot_start;
+    uint16_t hyperframe;
+    uint8_t hyperframe_valid;
+    uint8_t tdma_valid;
+    uint8_t tn;
+    uint8_t fn;
+    uint8_t mn;
+
+    /* The KSG number (0..3, EN 300 392-7 table A.73) a D-OTAR SCK or GCK Provide named for a network, for up to four
+     * networks keyed by MCC/MNC (tetra_air.c). The operator air keys live in the key set (dsd_state::tetra_air_keys). */
+    uint16_t air_ksg_mcc[4];
+    uint16_t air_ksg_mnc[4];
+    uint8_t air_ksg_valid[4];
+    uint8_t air_ksg[4];
+
+    /* Direct mode (EN 300 396-2, EN 300 396-3), set by tetra_dmo_apply_sync().
+     * dmo:            1 once a DSB with a DMO system code was decoded: normal bursts have no AACH and use the DM colour
+     *                 code. Cleared by a TMO BSCH.
+     * dmo_dcc_valid:  1 while dmo_dcc_seed holds the DM colour code of the current transmission (clause 8.2.4).
+     * dmo_comm_type:  communication type of the last DSB: 0 direct, 1 DM-REP, 2 DM-GATE, 3 DM-REP/GATE.
+     * dmo_crypt:      tetra_dmo_crypt_e of the current call.
+     * dmo_since_sync: DNBs processed since the last DMAC-SYNC (colour code staleness). */
+    uint32_t dmo_dcc_seed;
+    uint16_t dmo_since_sync;
+    uint8_t dmo;
+    uint8_t dmo_dcc_valid;
+    uint8_t dmo_comm_type;
+    uint8_t dmo_crypt;
 
     /* The status downlink of the last complete D-MM STATUS (EN 300 392-2 table 16.3), for the frontends; mm_status_valid
      * once one was decoded (tetra_mm.c). */
@@ -207,171 +277,11 @@ typedef struct tetra_state {
     uint8_t log_payload;
     uint8_t log_verbose;
 
-    /* uplink: 1 with --tetra-uplink. Normal bursts are then NUBs
-     * (EN 300 392-2 table 9.5): the same training sequence as a downlink NDB,
-     * but block 1 sits directly against it (no AACH). Scrambling stays the
-     * TMO colour code, from a BSCH or from --tetra-net mcc,mnc,colour.
-     * tetra_cb: this sync is a control uplink burst (extended training). */
+    /* 1 with --tetra-uplink: normal bursts are then NUBs (EN 300 392-2 table 9.5), the training sequence of a downlink
+     * NDB with block 1 directly against it (no AACH), scrambled with the TMO colour code from a BSCH or --tetra-net.
+     * uplink_no_net_noted once the uplink logged that it has no colour code to descramble with. */
     uint8_t uplink;
-    /* 1 once the uplink logged that it has no colour code to descramble with. */
     uint8_t uplink_no_net_noted;
-
-    /* Network identity from the BSCH (EN 300 392-2 table 21.76) or --tetra-net: net_known once MCC, MNC and the 6-bit
-     * colour code are set, and lfsr_seed, the scrambling seed they give (tetra_compute_scramb_seed()). */
-    uint32_t lfsr_seed;
-    uint16_t mcc;
-    uint16_t mnc;
-    uint8_t net_known;
-    uint8_t colour;
-
-    /* Direct mode (EN 300 396-2, EN 300 396-3), set by tetra_dmo_apply_sync().
-     * dmo:                1 once a DSB with a DMO system code was decoded: normal bursts have no AACH and use the DM
-     *                     colour code. Cleared by a TMO BSCH.
-     * dmo_dcc_valid:      1 while dmo_dcc_seed holds the DM colour code of the current transmission (clause 8.2.4).
-     * dmo_comm_type:      communication type of the last DSB: 0 direct, 1 DM-REP, 2 DM-GATE, 3 DM-REP/GATE.
-     * dmo_crypt:          tetra_dmo_crypt_e of the current call.
-     * dmo_since_sync:     DNBs processed since the last DMAC-SYNC (colour code staleness). */
-    uint8_t dmo;
-    uint8_t dmo_dcc_valid;
-    uint8_t dmo_comm_type;
-    uint8_t dmo_crypt;
-    uint16_t dmo_since_sync;
-    uint32_t dmo_dcc_seed;
-
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA network parameters — populated by MAC-BROADCAST/SYSINFO (MLE).
-     *
-     * sysinfo_known:    1 once a valid SYSINFO PDU has been decoded.
-     * la:               14-bit Location Area number (last received from
-     *                          either SYSINFO/MLE or D-NWRK-BROADCAST).
-     * bs_service_det:   12-bit BS service details bitmask.
-     * subscr_class:     16-bit subscriber class mask.
-     * ───────────────────────────────────────────────────────────────────────── */
-    uint8_t sysinfo_known;
-    uint16_t la;
-    uint16_t bs_service_det;
-    uint16_t subscr_class;
-
-    /* Address and encryption mode of the last addressed MAC-RESOURCE (or of the MAC-RESOURCE that started the
-     * TM-SDU a MAC-END completed). Null PDUs leave them alone. They describe the cell's signalling, for display: the
-     * calls keep the encryption mode of their own allocation (tetra_call_t::air_enc), and no CMCE element writes them.
-     *
-     * ssi_valid:  1 when active_ssi holds a clear SSI, USSI or SMI; 0 for event labels and encrypted short
-     *             identities, which are not subscriber identities.
-     * active_ssi: 24-bit identity of that address.
-     * enc_mode:   2-bit encryption mode (TETRA_ENC_MODE_* constants). */
-    uint32_t active_ssi;
-    uint8_t ssi_valid;
-    uint8_t enc_mode;
-
-    /* Frequency band and offset of the main carrier from the last SYSINFO with a valid main carrier. A channel
-     * allocation without extended carrier numbering uses them (EN 300 392-2 clause 21.5.2). freq_band 0 means
-     * none is known yet. */
-    uint8_t freq_band;
-    uint8_t freq_offset;
-
-    /* Concatenated SDS reassembly contexts (EN 300 392-2 clause 29.5.14), allocated on first use and freed with the
-     * TETRA state; see tetra_mle.c. */
-    struct tetra_sds_concat_store* sds_concat;
-
-    /* SYSINFO fields (EN 300 392-2 table 21.65).
-     *
-     * cck_valid:         1 when the last SYSINFO carried a CCK identifier or static cipher key version number
-     *                    instead of the hyperframe number; cck_id then holds it.
-     * duplex_spacing:    3-bit duplex spacing.
-     * num_csch:          2-bit number of common secondary control channels on the main carrier.
-     * ms_txpwr_max:      3-bit MS_TXPWR_MAX_CELL.
-     * rxlev_access_min:  4-bit RXLEV_ACCESS_MIN. */
-    uint8_t cck_valid;
-    uint16_t cck_id;
-    uint8_t duplex_spacing;
-    uint8_t num_csch;
-    uint8_t ms_txpwr_max;
-    uint8_t rxlev_access_min;
-
-    /* Last ACCESS-DEFINE (EN 300 392-2 table 21.79): access code (0..3 for A..D), IMM and WT. The remaining fields
-     * are access_num_ra, access_frame_len_f, access_ts_ptr, access_min_pdu_pri and access_common_flag below. */
-    uint8_t access_code;
-    uint8_t access_imm;
-    uint8_t access_wait_time;
-
-    /* Upper MAC counters.
-     *
-     * frames_total:       signalling MAC blocks decoded.
-     * frames_sysinfo:     SYSINFO PDUs.
-     * frames_resource:    MAC-RESOURCE PDUs other than Null PDUs.
-     * mac_encrypted_sdus: TM-SDUs (and fragmented TM-SDUs) held back because their encryption mode was not 00. */
-    uint32_t frames_total;
-    uint32_t frames_sysinfo;
-    uint32_t frames_resource;
-    uint32_t mac_encrypted_sdus;
-
-    /* Fragmented TM-SDU reconstruction, one context per downlink timeslot (index = TN 1..4; index 0 while the TDMA
-     * timeslot is unknown). A fragment run belongs to the control channel of its timeslot, so fragments of
-     * different timeslots are never joined (EN 300 392-2 clause 23.4.3.1.1). */
-    tetra_mac_fragment mac_frag[5];
-
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA decode quality counters (Phase 35):
-     *
-     * decode_errors: cumulative count of frames that failed FEC.
-     * decode_ok:     cumulative count of frames successfully decoded.
-     * ───────────────────────────────────────────────────────────────────────── */
-    uint32_t decode_errors;
-    uint32_t decode_ok;
-
-    /* TDMA clock (EN 300 392-2 clause 7.3), set by a BSCH and run by tetra_tdma_follow(): while tdma_valid, the slot
-     * that started at symbol count tdma_slot_start is timeslot tn 1..4 of frame fn 1..18 of multiframe mn 1..60. */
-    uint8_t tdma_valid;
-    uint8_t tn;
-    uint8_t fn;
-    uint8_t mn;
-    uint32_t tdma_slot_start;
-
-    /* KSG 0..3 remembered from D-OTAR SCK/GCK Provide, keyed by MCC/MNC.
-     * hyperframe is the SYSINFO value from a burst whose CCK flag is clear,
-     * kept apart from cck_id so a later CCK identifier does not erase it, and
-     * counted on by the TDMA clock at each MN 60 to MN 1; hyperframe_valid
-     * drops with the clock and on a change of cell.
-     * The operator air keys live in the key set (dsd_state::tetra_air_keys). */
-    uint8_t air_ksg_valid[4];
-    uint16_t air_ksg_mcc[4];
-    uint16_t air_ksg_mnc[4];
-    uint8_t air_ksg[4];
-    uint8_t hyperframe_valid;
-    uint16_t hyperframe;
-
-    /* ACCESS-DEFINE (EN 300 392-2 table 21.79), continued.
-     * access_num_ra:      4-bit Nu, number of random access transmissions.
-     * access_frame_len_f: 1-bit frame-length factor.
-     * access_ts_ptr:      4-bit timeslot pointer.
-     * access_min_pdu_pri: 3-bit minimum PDU priority. */
-    uint8_t access_num_ra;
-    uint8_t access_frame_len_f;
-    uint8_t access_ts_ptr;
-    uint8_t access_min_pdu_pri;
-
-    /* Header of the last addressed MAC-RESOURCE (EN 300 392-2 table 21.55): fill bit indication, position of
-     * grant, random access flag, length indication, address type, event label (10 bits) and usage marker (6 bits). */
-    uint8_t mac_fill_bits;
-    uint8_t mac_grant_pos;
-    uint8_t mac_rand_acc;
-    uint8_t mac_len_ind;
-    uint8_t mac_addr_type;
-    uint16_t mac_event_label;
-    uint8_t mac_usage_marker;
-
-    /* SYSINFO (EN 300 392-2 table 21.65): main carrier number, reverse operation, ACCESS_PARAMETER,
-     * RADIO_DOWNLINK_TIMEOUT, optional field flag and the 20-bit optional field. access_common_flag is the common
-     * or assigned control channel flag of the last ACCESS-DEFINE (table 21.79): 0 common, 1 assigned. */
-    uint16_t sysinfo_main_carrier;
-    uint8_t sysinfo_rev_op;
-    uint8_t sysinfo_acc_param;
-    uint8_t sysinfo_radio_dl_tmo;
-    uint8_t sysinfo_opt_field_type;
-    uint32_t sysinfo_opt_field_data;
-
-    uint8_t access_common_flag;
 } tetra_state_t;
 
 /** The TETRA state of @p state, created on first use; NULL only when @p state is NULL or memory runs out. */

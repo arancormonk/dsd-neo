@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "tetra_calls.h"
+#include "tetra_mac_pdu.h"
 #include "tetra_state.h"
 
 static int g_pass = 0;
@@ -109,20 +110,17 @@ test_sysinfo_extended_fields(void) {
     pack_bits(bits, 0x1234u, 96, 16);
     pack_bits(bits, 0x567u, 112, 12);
 
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    tetra_mac_parse_schd(bits, NBITS, 0, opt, st);
-
-    CHECK(tetra_st(st)->duplex_spacing == 5, "SYSINFO duplex_spacing=5 cached");
-    CHECK(tetra_st(st)->num_csch == 3, "SYSINFO num_csch=3 cached");
-    CHECK(tetra_st(st)->ms_txpwr_max == 6, "SYSINFO ms_txpwr_max=6 cached");
-    CHECK(tetra_st(st)->rxlev_access_min == 11, "SYSINFO rxlev_access_min=11 cached");
-    CHECK(tetra_st(st)->cck_valid == 1, "SYSINFO cck_valid=1 cached");
-    CHECK(tetra_st(st)->cck_id == 0xABCDu, "SYSINFO cck_id=0xABCD cached");
-
-    free_state(st);
-    free(opt);
+    tetra_mac_broadcast bc;
+    CHECK(tetra_mac_broadcast_decode(bits, NBITS, &bc) && bc.type == TETRA_MAC_BC_SYSINFO, "SYSINFO decodes");
+    CHECK(bc.sysinfo.duplex_spacing == 5, "SYSINFO duplex_spacing=5");
+    CHECK(bc.sysinfo.num_scch == 3, "SYSINFO num_csch=3");
+    CHECK(bc.sysinfo.ms_txpwr_max == 6, "SYSINFO ms_txpwr_max=6");
+    CHECK(bc.sysinfo.rxlev_access_min == 11, "SYSINFO rxlev_access_min=11");
+    CHECK(bc.sysinfo.cck_flag == 1, "SYSINFO cck_valid=1");
+    CHECK(bc.sysinfo.hyperframe_or_cck == 0xABCDu, "SYSINFO cck_id=0xABCD");
+    CHECK(bc.sysinfo.mle_present && bc.sysinfo.la == 500 && bc.sysinfo.subscriber_class == 0x1234u
+              && bc.sysinfo.bs_service == 0x567u,
+          "SYSINFO D-MLE-SYSINFO");
 }
 
 /* ----------------------------------------------------------------------- */
@@ -140,7 +138,6 @@ test_frame_counters(void) {
     dsd_opts* opt = alloc_opts();
 
     tetra_mac_parse_schd(bits, 124, 0, opt, st);
-    CHECK(tetra_st(st)->frames_total == 1, "frame_total incremented after SYSINFO PDU");
     CHECK(tetra_st(st)->frames_sysinfo == 1, "frame_sysinfo incremented");
 
     free_state(st);

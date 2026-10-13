@@ -124,7 +124,7 @@ test_full_fragment_sequence(void) {
     parse(state, opts, &b, 2);
     check(!f->active && f->nbits == 0, "MAC-END closes the TM-SDU");
     check(delivered(state, 5), "TM-SDU taken from after the MAC-END header elements");
-    check(ts->ssi_valid && ts->active_ssi == 0x001234u, "rebuilt TM-SDU keeps the first fragment's address");
+    check(tetra_calls_peek(state, 5)->called_ssi == 0x001234u, "rebuilt TM-SDU keeps the first fragment's address");
     free_state(state);
     free(opts);
 }
@@ -191,13 +191,13 @@ test_fragments_kept_per_timeslot(void) {
     ts->tn = 1;
     last_fragment(&b, one.bits + 12, one.n - 12);
     parse(state, opts, &b, 0);
-    check(delivered(state, 11) && !delivered(state, 22) && ts->active_ssi == 0x000011u,
+    check(delivered(state, 11) && !delivered(state, 22) && tetra_calls_peek(state, 11)->called_ssi == 0x000011u,
           "timeslot 1 TM-SDU rebuilt from its own fragments");
     check(ts->mac_frag[2].active && ts->mac_frag[2].nbits == 12, "timeslot 2 TM-SDU still under way");
     ts->tn = 2;
     last_fragment(&b, two.bits + 12, two.n - 12);
     parse(state, opts, &b, 0);
-    check(delivered(state, 22) && ts->active_ssi == 0x000022u && !ts->mac_frag[2].active,
+    check(delivered(state, 22) && tetra_calls_peek(state, 22)->called_ssi == 0x000022u && !ts->mac_frag[2].active,
           "timeslot 2 TM-SDU rebuilt from its own fragments");
     free_state(state);
     free(opts);

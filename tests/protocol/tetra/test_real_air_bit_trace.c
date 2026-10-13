@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_mac_pdu.h"
 #include "tetra_state.h"
 
 static int
@@ -58,11 +59,14 @@ main(void) {
          && tetra_st(state)->tdma_valid && tetra_st(state)->tn == 4 && tetra_st(state)->fn == 5
          && tetra_st(state)->mn == 58;
 
+    tetra_mac_broadcast bc;
+    DSD_MEMSET(&bc, 0, sizeof bc);
+    ok = ok && tetra_mac_broadcast_decode(sysinfo, sysinfo_len, &bc) && bc.sysinfo.mle_present
+         && bc.sysinfo.bs_service == 0x0D77u;
     if (ok) {
         tetra_mac_parse_schd(sysinfo, sysinfo_len, 0, opts, state);
     }
-    ok = ok && tetra_st(state)->sysinfo_known && tetra_st(state)->dl_carrier_hz == 393712500L
-         && tetra_st(state)->bs_service_det == 0x0D77u;
+    ok = ok && tetra_st(state)->sysinfo_known && tetra_st(state)->dl_carrier_hz == 393712500L;
 
     if (!ok) {
         DSD_FPRINTF(stderr,
@@ -70,7 +74,7 @@ main(void) {
                     "DL=%ld service=0x%04X\n",
                     tetra_st(state)->mcc, tetra_st(state)->mnc, tetra_st(state)->colour, tetra_st(state)->tn,
                     tetra_st(state)->fn, tetra_st(state)->mn, tetra_st(state)->dl_carrier_hz,
-                    tetra_st(state)->bs_service_det);
+                    (unsigned)bc.sysinfo.bs_service);
     }
     dsd_state_ext_free_all(state);
     free(state);

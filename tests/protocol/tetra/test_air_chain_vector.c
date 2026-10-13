@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_mac_pdu.h"
 #include "tetra_state.h"
 
 enum {
@@ -257,15 +258,18 @@ main(void) {
         release(opts, state);
         return fail("SYSINFO CRC mismatch");
     }
+    tetra_mac_broadcast bc;
+    const tetra_mac_sysinfo* const si = &bc.sysinfo;
+    const int sysinfo_fields =
+        tetra_mac_broadcast_decode(sys_decoded, SYSINFO_TYPE1_BITS, &bc) && bc.type == TETRA_MAC_BC_SYSINFO
+        && si->main_carrier == 321 && si->band == 4 && si->offset == 1 && si->duplex_spacing == 5 && si->num_scch == 2
+        && si->ms_txpwr_max == 6 && si->rxlev_access_min == 9 && si->cck_flag == 1 && si->hyperframe_or_cck == 0xBEEFU
+        && si->mle_present && si->la == 777 && si->subscriber_class == 0x1234U && si->bs_service == 0x567U;
     tetra_mac_parse_schd(sys_decoded, SYSINFO_TYPE1_BITS, 1, opts, state);
 
-    const int ok = tetra_st(state)->sysinfo_known == 1 && tetra_st(state)->sysinfo_main_carrier == 321
-                   && tetra_st(state)->freq_band == 4 && tetra_st(state)->freq_offset == 1
-                   && tetra_st(state)->duplex_spacing == 5 && tetra_st(state)->num_csch == 2
-                   && tetra_st(state)->ms_txpwr_max == 6 && tetra_st(state)->rxlev_access_min == 9
-                   && tetra_st(state)->cck_valid == 1 && tetra_st(state)->cck_id == 0xBEEFU
-                   && tetra_st(state)->la == 777 && tetra_st(state)->subscr_class == 0x1234U
-                   && tetra_st(state)->bs_service_det == 0x567U;
+    const int ok = sysinfo_fields && tetra_st(state)->sysinfo_known == 1 && tetra_st(state)->sysinfo_main_carrier == 321
+                   && tetra_st(state)->freq_band == 4 && tetra_st(state)->freq_offset == 1 && tetra_st(state)->la == 777
+                   && !tetra_st(state)->hyperframe_valid;
     release(opts, state);
     return ok ? 0 : fail("decoded SYSINFO fields mismatch");
 }

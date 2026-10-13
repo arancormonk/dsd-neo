@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_mac_pdu.h"
 #include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
@@ -83,8 +84,6 @@ wrap_mle_mm(const uint8_t* mm_body, int mm_nbits, uint8_t* out, int* out_nbits) 
 static void
 test_phase77_mac_resource(void) {
     printf("[test_phase77_mac_resource]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
 
     uint8_t bits[100];
     int n = 0;
@@ -112,24 +111,20 @@ test_phase77_mac_resource(void) {
     pack_bits(bits, 1, n, 1);
     n += 1; // fill bit
 
-    tetra_mac_parse_schd(bits, n, 0, opt, st);
-
-    CHECK(tetra_st(st)->mac_fill_bits == 1, "tetra_mac_fill_bits");
-    CHECK(tetra_st(st)->mac_grant_pos == 0, "tetra_mac_grant_pos");
-    CHECK(tetra_st(st)->mac_rand_acc == 1, "tetra_mac_rand_acc");
-    CHECK(tetra_st(st)->mac_len_ind == 42, "tetra_mac_len_ind");
-    CHECK(tetra_st(st)->mac_addr_type == TETRA_MAC_ADDR_SSI_EVENT, "tetra_mac_addr_type");
-    CHECK(tetra_st(st)->mac_event_label == 511, "tetra_mac_event_label");
-
-    free_state(st);
-    free(opt);
+    tetra_mac_resource h;
+    CHECK(tetra_mac_resource_decode(bits, n, &h), "MAC-RESOURCE header decodes");
+    CHECK(h.fill == 1, "fill bit indication");
+    CHECK(h.grant_pos == 0, "position of grant");
+    CHECK(h.enc_mode == TETRA_ENC_MODE_RESERVED && h.addr.esi, "encryption mode, with an encrypted short identity");
+    CHECK(h.random_access == 1, "random access flag");
+    CHECK(h.length_ind == 42, "length indication");
+    CHECK(h.addr.type == TETRA_MAC_ADDR_SSI_EVENT && h.addr.ssi == 123456, "address type");
+    CHECK(h.addr.event_label == 511, "event label");
 }
 
 static void
 test_phase77_mac_resource_usage(void) {
     printf("[test_phase77_mac_resource_usage]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
 
     uint8_t bits[100];
     int n = 0;
@@ -155,12 +150,10 @@ test_phase77_mac_resource_usage(void) {
     pack_bits(bits, 0, n, 3);
     n += 3; // power control, slot granting and channel allocation flags
 
-    tetra_mac_parse_schd(bits, n, 0, opt, st);
-
-    CHECK(tetra_st(st)->mac_usage_marker == 33, "tetra_mac_usage_marker");
-
-    free_state(st);
-    free(opt);
+    tetra_mac_resource h;
+    CHECK(tetra_mac_resource_decode(bits, n, &h) && h.grant_pos == 1 && h.length_ind == 15,
+          "MAC-RESOURCE header decodes");
+    CHECK(h.addr.type == TETRA_MAC_ADDR_SSI_USAGE && h.addr.ssi == 654321 && h.addr.usage_marker == 33, "usage marker");
 }
 
 static void
@@ -206,14 +199,18 @@ test_phase77_sysinfo(void) {
     pack_bits(bits, 0xABCDE, n, 20);
     n += 20; // opt_field_data
 
-    tetra_mac_parse_schd(bits, n, 0, opt, st);
+    tetra_mac_broadcast bc;
+    CHECK(tetra_mac_broadcast_decode(bits, n, &bc) && bc.type == TETRA_MAC_BC_SYSINFO && !bc.sysinfo.mle_present,
+          "SYSINFO without its D-MLE-SYSINFO decodes");
+    CHECK(bc.sysinfo.main_carrier == 1000, "main carrier");
+    CHECK(bc.sysinfo.reverse == 1, "reverse operation");
+    CHECK(bc.sysinfo.access_parameter == 7, "ACCESS_PARAMETER");
+    CHECK(bc.sysinfo.radio_dl_timeout == 14, "RADIO_DOWNLINK_TIMEOUT");
+    CHECK(bc.sysinfo.option_flag == 2, "optional field flag");
+    CHECK(bc.sysinfo.option == 0xABCDE, "optional field");
 
-    CHECK(tetra_st(st)->sysinfo_main_carrier == 1000, "tetra_sysinfo_main_carrier");
-    CHECK(tetra_st(st)->sysinfo_rev_op == 1, "tetra_sysinfo_rev_op");
-    CHECK(tetra_st(st)->sysinfo_acc_param == 7, "tetra_sysinfo_acc_param");
-    CHECK(tetra_st(st)->sysinfo_radio_dl_tmo == 14, "tetra_sysinfo_radio_dl_tmo");
-    CHECK(tetra_st(st)->sysinfo_opt_field_type == 2, "tetra_sysinfo_opt_field_type");
-    CHECK(tetra_st(st)->sysinfo_opt_field_data == 0xABCDE, "tetra_sysinfo_opt_field_data");
+    tetra_mac_parse_schd(bits, n, 0, opt, st);
+    CHECK(tetra_st(st)->sysinfo_main_carrier == 1000, "the main carrier the frontends show");
 
     free_state(st);
     free(opt);
@@ -222,8 +219,6 @@ test_phase77_sysinfo(void) {
 static void
 test_phase77_access_define(void) {
     printf("[test_phase77_access_define]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
 
     uint8_t bits[100];
     int n = 0;
@@ -254,12 +249,10 @@ test_phase77_access_define(void) {
     pack_bits(bits, 4, n, 3);
     n += 3; // filler bits 100
 
-    tetra_mac_parse_schd(bits, n, 0, opt, st);
-
-    CHECK(tetra_st(st)->access_common_flag == 1, "tetra_access_common_flag");
-
-    free_state(st);
-    free(opt);
+    tetra_mac_broadcast bc;
+    CHECK(tetra_mac_broadcast_decode(bits, n, &bc) && bc.type == TETRA_MAC_BC_ACCESS_DEF
+              && bc.access_define.assigned == 1,
+          "common or assigned control channel flag");
 }
 
 static void

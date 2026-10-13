@@ -22,6 +22,7 @@
 #include <string.h>
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
+#include "tetra_mac_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
 #include "tetra_test_pdu.h"
@@ -193,11 +194,16 @@ test_sysinfo(void) {
     put_sysinfo(&b, 50, 4, 2);
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
+    tetra_mac_broadcast bc;
+    int ok =
+        check(tetra_mac_broadcast_decode(b.bits, b.n, &bc) && bc.type == TETRA_MAC_BC_SYSINFO && bc.sysinfo.mle_present
+                  && bc.sysinfo.la == 987 && bc.sysinfo.subscriber_class == 0xBEEF && bc.sysinfo.bs_service == 0xA5C
+                  && !bc.sysinfo.cck_flag && bc.sysinfo.hyperframe_or_cck == 0x1234,
+              "SYSINFO decodes with its D-MLE-SYSINFO");
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
     const tetra_state_t* ts = tetra_st(state);
-    int ok = check(ts->sysinfo_known && ts->la == 987 && ts->subscr_class == 0xBEEF && ts->bs_service_det == 0xA5C,
-                   "SYSINFO publishes the D-MLE-SYSINFO fields");
-    ok &= check(ts->hyperframe_valid && ts->hyperframe == 0x1234 && !ts->cck_valid, "SYSINFO hyperframe number");
+    ok &= check(ts->sysinfo_known && ts->la == 987, "SYSINFO keeps the location area of its D-MLE-SYSINFO");
+    ok &= check(ts->hyperframe_valid && ts->hyperframe == 0x1234, "SYSINFO hyperframe number");
     ok &= check(state->trunk_cc_freq == 401243750L && ts->dl_carrier_hz == 401243750L && ts->freq_band == 4,
                 "SYSINFO main carrier becomes the control channel");
     free_state(state);
@@ -266,11 +272,19 @@ test_mac_resource_ssi(void) {
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
-    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
+    tetra_mac_resource h;
+    int ok = check(tetra_mac_resource_decode(b.bits, b.n, &h) && h.addr.type == TETRA_MAC_ADDR_SSI
+                       && h.addr.ssi == 0x123456u && !h.addr.esi && h.enc_mode == 0 && h.length_ind == 6 && h.fill == 1
+                       && h.pdu_bits == 48 && !h.alloc_present,
+                   "an addressed header-only MAC-RESOURCE decodes with its SSI");
+    char log[512];
+    tetra_test_mac_logged(b.bits, b.n, 0, opts, state, log, sizeof log);
     const tetra_state_t* ts = tetra_st(state);
-    const int ok = check(ts->ssi_valid && ts->active_ssi == 0x123456u && ts->enc_mode == 0 && ts->frames_resource == 1
-                             && ts->mac_len_ind == 6 && ts->mac_fill_bits == 1,
-                         "an addressed header-only MAC-RESOURCE publishes its SSI");
+    ok &= check(ts->enc_mode == 0 && ts->frames_resource == 1
+                    && strstr(log, "[TETRA MAC-RESOURCE] CC=0  enc=none  rand_acc=0  len_ind=6  addr=SSI(1193046)  "
+                                   "sdu_bits=0\n")
+                           != NULL,
+                "an addressed header-only MAC-RESOURCE is acted on");
     free_state(state);
     free(opts);
     return ok;
@@ -301,13 +315,13 @@ test_null_pdu_leaves_state(void) {
         setup_trunking(opts, state);
         tetra_state_t* ts = tetra_st(state);
         ts->enc_mode = TETRA_ENC_MODE_EVEN;
-        ts->ssi_valid = 1;
-        ts->active_ssi = 777;
+        tetra_mac_resource h;
+        ok &= check(!tetra_mac_resource_decode(b.bits, b.n, &h) && h.addr.type == TETRA_MAC_ADDR_NULL,
+                    "a Null PDU has no header to decode");
         tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
         ok &= check(!has_traffic(state) && tune_calls == 0, "a Null PDU carries no channel allocation");
-        ok &= check(ts->enc_mode == TETRA_ENC_MODE_EVEN && ts->ssi_valid && ts->active_ssi == 777
-                        && ts->frames_resource == 0,
-                    "a Null PDU leaves the address and encryption state");
+        ok &= check(ts->enc_mode == TETRA_ENC_MODE_EVEN && ts->frames_resource == 0,
+                    "a Null PDU leaves the encryption state");
         free_state(state);
         free(opts);
     }
@@ -338,17 +352,29 @@ test_length_indication_separates_pdus(void) {
     const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0x00ABCDu);
     ttb_resource_flags(&b, 0);
     ttb_close_resource(&b, start);
+    const int access_define = b.n;
     put_access_define(&b);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
-    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    const tetra_state_t* ts = tetra_st(state);
-    const int ok = check(ts->ssi_valid && ts->active_ssi == 0x00ABCDu, "first associated PDU decoded")
-                   & check(ts->access_code == 3 && ts->access_imm == 7 && ts->access_wait_time == 5
-                               && ts->access_num_ra == 3 && ts->access_frame_len_f == 1 && ts->access_ts_ptr == 15
-                               && ts->access_min_pdu_pri == 2 && ts->access_common_flag == 0,
-                           "ACCESS-DEFINE after it decoded with its access code");
+    char log[512];
+    tetra_test_mac_logged(b.bits, b.n, 0, opts, state, log, sizeof log);
+    tetra_mac_broadcast bc;
+    const int ok =
+        check(strstr(log, "[TETRA MAC-RESOURCE] CC=0  enc=none  rand_acc=0  len_ind=6  addr=SSI(43981)") != NULL,
+              "first associated PDU decoded")
+        & check(strstr(log,
+                       "[TETRA ACCESS-DEFINE] CC=0  common  access_code=D  imm=7  wait=5  num_ra=3  frame_len_f=1  "
+                       "ts_ptr=15  min_prio=2\n")
+                    != NULL,
+                "ACCESS-DEFINE after it decoded with its access code")
+        & check(tetra_mac_broadcast_decode(b.bits + access_define, b.n - access_define, &bc)
+                    && bc.type == TETRA_MAC_BC_ACCESS_DEF && bc.access_define.access_code == 3
+                    && bc.access_define.imm == 7 && bc.access_define.wait_time == 5 && bc.access_define.num_ra == 3
+                    && bc.access_define.frame_length_factor == 1 && bc.access_define.timeslot_pointer == 15
+                    && bc.access_define.min_priority == 2 && bc.access_define.assigned == 0
+                    && bc.access_define.option_flag == 0 && bc.access_define.nbits == 32,
+                "ACCESS-DEFINE fields");
     free_state(state);
     free(opts);
     return ok;
@@ -370,10 +396,13 @@ test_optional_elements_bounded_by_pdu_length(void) {
     dsd_state* state = new_state();
     dsd_opts* opts = new_opts();
     setup_trunking(opts, state);
+    tetra_mac_resource h;
+    int ok = check(!tetra_mac_resource_decode(b.bits, b.n, &h) && h.pdu_bits == 40,
+                   "a header longer than its length indication does not decode");
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
     const tetra_state_t* ts = tetra_st(state);
-    const int ok = check(!has_traffic(state) && tune_calls == 0 && !ts->ssi_valid,
-                         "a header longer than its length indication is discarded");
+    ok &= check(!has_traffic(state) && tune_calls == 0 && ts->frames_resource == 0,
+                "a header longer than its length indication is discarded");
     free_state(state);
     free(opts);
     return ok;
@@ -519,7 +548,7 @@ test_encrypted_pdus_not_parsed(void) {
     dsd_opts* opts = new_opts();
     setup_trunking(opts, state);
     tetra_state_t* ts = tetra_st(state);
-    ts->active_ssi = 0x111111u;
+    char log[512];
 
     ttb_block b = {0};
     int start = ttb_resource(&b, TETRA_ENC_MODE_EVEN, TETRA_MAC_ADDR_SSI, 0x345678u);
@@ -528,11 +557,14 @@ test_encrypted_pdus_not_parsed(void) {
     ttb_d_setup(&b, 0x0ABCu, TTB_SPEECH_GROUP);
     ttb_close_resource(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
-    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    int ok = check(tetra_calls_peek(state, 0x0ABCu) == NULL && ts->mac_encrypted_sdus == 1,
+    tetra_test_mac_logged(b.bits, b.n, 0, opts, state, log, sizeof log);
+    int ok = check(tetra_calls_peek(state, 0x0ABCu) == NULL && strstr(log, "encrypted; not decoded") != NULL
+                       && strstr(log, "D-SETUP") == NULL,
                    "an encrypted TM-SDU is not handed to the MLE");
-    ok &= check(ts->enc_mode == TETRA_ENC_MODE_EVEN && !ts->ssi_valid && ts->active_ssi == 0x111111u,
-                "an encrypted short identity is not published as an SSI");
+    tetra_mac_resource h;
+    ok &= check(ts->enc_mode == TETRA_ENC_MODE_EVEN && tetra_mac_resource_decode(b.bits, b.n, &h) && h.addr.esi
+                    && strstr(log, "addr=ESI(3430008)") != NULL,
+                "an encrypted short identity is not taken for an SSI");
 
     b = (ttb_block){0};
     start = ttb_resource(&b, TETRA_ENC_MODE_ODD, TETRA_MAC_ADDR_SSI, 0x345678u);
@@ -540,8 +572,10 @@ test_encrypted_pdus_not_parsed(void) {
     ttb_allocation(&b, 4, 1, 50);
     ttb_close_resource(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
-    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    ok &= check(!has_traffic(state) && tune_calls == 0 && ts->mac_encrypted_sdus == 2,
+    tetra_test_mac_logged(b.bits, b.n, 0, opts, state, log, sizeof log);
+    ok &= check(!has_traffic(state) && tune_calls == 0
+                    && strstr(log, "channel allocation and TM-SDU encrypted; not decoded") != NULL
+                    && strstr(log, "CHANNEL-ALLOCATION") == NULL,
                 "an encrypted channel allocation is not applied");
 
     /* The encryption mode of a first fragment applies to every fragment of its TM-SDU. */
@@ -558,8 +592,8 @@ test_encrypted_pdus_not_parsed(void) {
     ttb_d_setup(&b, 0x0ABCu, TTB_SPEECH_GROUP);
     ttb_close_end(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
-    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    ok &= check(tetra_calls_peek(state, 0x0ABCu) == NULL && ts->mac_encrypted_sdus == 3 && !ts->mac_frag[0].active,
+    tetra_test_mac_logged(b.bits, b.n, 0, opts, state, log, sizeof log);
+    ok &= check(tetra_calls_peek(state, 0x0ABCu) == NULL && !ts->mac_frag[0].active && strstr(log, "D-SETUP") == NULL,
                 "the last fragment of an encrypted TM-SDU is not handed to the MLE");
     free_state(state);
     free(opts);
@@ -940,8 +974,7 @@ test_uplink_blocks_not_decoded(void) {
     dsd_opts* opts = new_opts();
     tetra_st(state)->uplink = 1;
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    const int ok = check(!tetra_st(state)->ssi_valid && tetra_st(state)->frames_resource == 0,
-                         "uplink block not decoded with downlink layouts");
+    const int ok = check(tetra_st(state)->frames_resource == 0, "uplink block not decoded with downlink layouts");
     free_state(state);
     free(opts);
     return ok;

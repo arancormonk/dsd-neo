@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tetra_mac_pdu.h"
 #include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
@@ -127,15 +128,25 @@ test_mac_access_define(void) {
     pack_bits(mac, 0, 27, 2); /* no optional field */
     pack_bits(mac, 4, 29, 3); /* filler bits 100 */
 
-    tetra_mac_parse_schd(mac, 32, 0, opt, st);
+    tetra_mac_broadcast bc;
+    CHECK(tetra_mac_broadcast_decode(mac, 32, &bc) && bc.type == TETRA_MAC_BC_ACCESS_DEF
+              && bc.access_define.nbits == 32,
+          "ACCESS-DEFINE decodes");
+    CHECK(bc.access_define.assigned == 1, "Extracted assigned control channel flag");
+    CHECK(bc.access_define.access_code == 2, "Extracted access code");
+    CHECK(bc.access_define.imm == 5, "Extracted immediate");
+    CHECK(bc.access_define.wait_time == 2, "Extracted wait time");
+    CHECK(bc.access_define.num_ra == 9, "Extracted num_ra");
+    CHECK(bc.access_define.frame_length_factor == 1, "Extracted frame_len_f");
+    CHECK(bc.access_define.timeslot_pointer == 4, "Extracted ts_ptr");
+    CHECK(bc.access_define.min_priority == 3, "Extracted min_pdu_pri");
 
-    CHECK(tetra_st(st)->access_code == 2, "Extracted access code");
-    CHECK(tetra_st(st)->access_imm == 5, "Extracted immediate");
-    CHECK(tetra_st(st)->access_wait_time == 2, "Extracted wait time");
-    CHECK(tetra_st(st)->access_num_ra == 9, "Extracted num_ra");
-    CHECK(tetra_st(st)->access_frame_len_f == 1, "Extracted frame_len_f");
-    CHECK(tetra_st(st)->access_ts_ptr == 4, "Extracted ts_ptr");
-    CHECK(tetra_st(st)->access_min_pdu_pri == 3, "Extracted min_pdu_pri");
+    char log[256];
+    tetra_test_mac_logged(mac, 32, 0, opt, st, log, sizeof log);
+    CHECK(strstr(log, "[TETRA ACCESS-DEFINE] CC=0  assigned  access_code=C  imm=5  wait=2  num_ra=9  frame_len_f=1  "
+                      "ts_ptr=4  min_prio=3\n")
+              != NULL,
+          "ACCESS-DEFINE summary line");
 
     free_state(st);
     free(opt);
