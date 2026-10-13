@@ -410,10 +410,11 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     irrecoverable_errors =
         hdu_read_and_fec(opts, state, hex_data, hex_parity, soft_dibits, &status_count, &soft_dibit_index);
     hdu_consume_trailing_dibits_and_status(opts, state);
-    if (state->carrier_seq != carrier_seq) {
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the HDU was read (issue #575). Its words decode before the
            trailing symbols but publish only after them, so a header read whole before the move would label the carrier
-           left's call after the boundary ended it: nothing of it is published, as on a sync loss. */
+           left's call after the boundary ended it: nothing of it is published, as on a sync loss. Nor is a header an
+           input interruption cut, whose rest is erasures the reader stood in. */
         p25_status_accum_classify(state);
         return;
     }

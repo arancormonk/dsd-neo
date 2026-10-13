@@ -697,10 +697,11 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     p25_mpdu_context_init(&ctx);
     const uint32_t carrier_seq = state->carrier_seq;
     p25_mpdu_collect_blocks(opts, state, &ctx);
-    if (state->carrier_seq != carrier_seq) {
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the blocks were read (issue #575). The header is read
            whole before its data blocks but decodes only now, so it would publish the carrier left's packet after the
-           boundary: the MPDU is dropped, as on a sync loss. */
+           boundary: the MPDU is dropped, as on a sync loss. So is one an input interruption cut, whose rest is
+           erasures the reader stood in. */
         p25_status_accum_classify(state);
         return;
     }

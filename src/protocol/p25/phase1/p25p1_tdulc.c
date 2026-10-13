@@ -307,10 +307,11 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     // initialize the next call's crypto classification and must survive TDULC.
     p25_crypto_reset_slot(state, 0);
 
-    if (state->carrier_seq != carrier_seq) {
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the TDULC was read (issue #575). Its link control decodes
            before the trailing symbols but dispatches only after them, so a grant read whole before the move would
-           retune for the carrier left after the boundary: it is dropped, as on a sync loss. */
+           retune for the carrier left after the boundary: it is dropped, as on a sync loss. So is the link control of
+           a TDULC an input interruption cut, whose rest is erasures the reader stood in. */
         DSD_FPRINTF(stderr, "\n");
     } else if (irrecoverable_errors == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);

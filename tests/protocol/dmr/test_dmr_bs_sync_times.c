@@ -45,6 +45,9 @@ static size_t g_dibit_index = 0;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. */
 static size_t g_boundary_at = SIZE_MAX;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; SIZE_MAX for none. */
+static size_t g_interrupt_at = SIZE_MAX;
 static int g_continuous_voice;
 static unsigned int g_open_left_calls;
 static unsigned int g_open_right_calls;
@@ -86,6 +89,7 @@ static void
 reset_spies(void) {
     g_dibit_index = 0;
     g_boundary_at = SIZE_MAX;
+    g_interrupt_at = SIZE_MAX;
     g_continuous_voice = 0;
     g_open_left_calls = 0;
     g_open_right_calls = 0;
@@ -199,6 +203,9 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
     if (g_dibit_index == g_boundary_at && state != NULL) {
         state->carrier_seq++;
+    }
+    if (g_dibit_index == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
     }
     if (g_continuous_voice) {
         if (out_soft != NULL) {
@@ -790,6 +797,69 @@ test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped(void) {
     assert(g_confidence_reset_calls == 1U);
 }
 
+/* A Signal search that leaves the burst (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. The burst is dropped as one the carrier
+   boundary splits is: nothing in it decodes or plays, and the loop ends without reporting a decode error. */
+static void
+test_bs_burst_cut_by_an_input_interruption_is_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.floating_point = 1;
+    opts.pulse_digi_rate_out = 8000;
+    state.currentslot = 0;
+    state.dmr_color_code = 16;
+    load_voice_burst_stream();
+    g_any_voice_open = 1;
+    g_interrupt_at = 100U;
+
+    dmrBS(&opts, &state);
+
+    assert(state.input_interrupted == 1);
+    assert(state.carrier_seq == 0U);
+    assert(g_dibit_index == 144U);
+    assert(g_process_mbe_calls == 0U);
+    assert(g_confidence_voice_burst_calls == 0U);
+    assert(g_cach_calls == 0U);
+    assert(g_late_entry_calls == 0U);
+    assert(g_sm_voice_sync_calls == 0U);
+    assert(g_debug_dump_calls == 0U);
+    assert(g_reset_blocks_calls == 1U);
+    assert(g_refresh_error_calls == 0U);
+    assert(state.dmr_stereo == 0);
+}
+
+/* The same for the burst the frame sync found: its live second half is cut. */
+static void
+test_bs_bootstrap_cut_by_an_input_interruption_is_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.floating_point = 1;
+    opts.pulse_digi_rate_out = 8000;
+    state.currentslot = 1;
+    state.dmr_color_code = 16;
+    state.dmr_payload_p = g_bootstrap_payload + 90U;
+    load_bootstrap_voice_stream(1);
+    g_any_voice_open = 1;
+    g_interrupt_at = 120U;
+
+    dmrBSBootstrap(&opts, &state);
+
+    assert(state.input_interrupted == 1);
+    assert(state.carrier_seq == 0U);
+    assert(g_process_mbe_calls == 0U);
+    assert(g_cach_calls == 0U);
+    assert(g_late_entry_calls == 0U);
+    assert(g_play_ss3_calls == 0U);
+    assert(g_reset_blocks_calls == 1U);
+    assert(g_refresh_error_calls == 0U);
+}
+
 /* Issue #574: the loop's end drops the audio staged for the stereo mixes, and with it each slot's fresh-media mark. The
    slot 1 burst decoded here never reached a mix (the mixes follow slot 2's bursts), and slot 2 still held a mark from
    before the loop: the first mix of the next loop, a skipped burst's with nothing decoded yet, would otherwise stamp
@@ -868,6 +938,8 @@ main(void) {
     test_bs_bootstrap_prefetched_voice_runs_first_frame_path();
     test_bs_burst_split_by_a_carrier_boundary_is_dropped();
     test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped();
+    test_bs_burst_cut_by_an_input_interruption_is_dropped();
+    test_bs_bootstrap_cut_by_an_input_interruption_is_dropped();
     test_bs_loop_end_discards_the_mix_media();
     dsd_decode_clock_use_system();
     printf("DMR BS sync times: OK\n");

@@ -62,9 +62,13 @@ static int g_qr_ok = 1;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. A skip over it counts too. */
 static size_t g_boundary_at = SIZE_MAX;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; SIZE_MAX for none. */
+static size_t g_interrupt_at = SIZE_MAX;
 
 static void
 reset_fixture(void) {
+    g_interrupt_at = SIZE_MAX;
     g_stream_index = 0U;
     g_skip_calls = 0;
     g_skip_total = 0;
@@ -106,6 +110,9 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     if (g_stream_index == g_boundary_at && state != NULL) {
         state->carrier_seq++;
     }
+    if (g_stream_index == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
+    }
     assert(g_stream_index < (sizeof(g_stream) / sizeof(g_stream[0])));
     return g_stream[g_stream_index++] & 3;
 }
@@ -129,6 +136,9 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
     (void)opts;
     if (g_boundary_at >= g_stream_index && g_boundary_at < g_stream_index + (size_t)count && state != NULL) {
         state->carrier_seq++;
+    }
+    if (g_interrupt_at >= g_stream_index && g_interrupt_at < g_stream_index + (size_t)count && state != NULL) {
+        state->input_interrupted = 1;
     }
     g_skip_calls++;
     g_skip_total += count;
@@ -672,6 +682,79 @@ test_ms_data_split_by_a_carrier_boundary_is_dropped(void) {
     assert(state.directmode == 0);
 }
 
+/* A Signal search that leaves the superframe (its visit ended, or a command came), or a live read that gives up on a
+   stalled input, cuts a burst: from the cut every symbol is an erasure getSymbol() stood in. The EMB decodes as soon as
+   it is read, and all-zero bits are a valid QR(16,7,6) codeword, so a cut EMB must not set the colour code; the burst
+   it cut and every burst after it plays nothing. The bursts read whole before the cut stand. */
+static void
+test_ms_voice_superframe_cut_by_an_input_interruption_is_dropped(void) {
+    static const size_t cuts[3] = {70U, 576U + 10U,
+                                   1100U}; /* the first EMB; the third burst; the skip before the last */
+    static const int frames_before[3] = {0, 6, 12};
+    for (size_t c = 0; c < 3U; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        reset_fixture();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        load_voice_stream();
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        state.dmr_color_code = 16;
+        g_interrupt_at = cuts[c];
+
+        dmrMS(&opts, &state);
+
+        assert(state.input_interrupted == 1);
+        assert(state.carrier_seq == 0U);
+        assert(state.dmr_color_code == (frames_before[c] != 0 ? 11 : 16));
+        assert(g_process_mbe_calls == frames_before[c]);
+        assert(g_play_ss3_calls == frames_before[c] / 3);
+        assert(g_data_burst_calls == 0);
+        assert(g_sbrc_calls == 0);
+        assert(state.dmr_stereo == 0);
+        assert(state.dmr_ms_mode == 0);
+    }
+}
+
+/* The burst the frame sync found, and a data burst, whose live halves an input interruption cut: each is dropped as one
+   the carrier boundary splits is. */
+static void
+test_ms_bootstrap_and_data_cut_by_an_input_interruption_are_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    load_voice_stream();
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 1;
+    g_interrupt_at = 30U;
+    dmrMSBootstrap(&opts, &state);
+    assert(state.input_interrupted == 1);
+    assert(state.carrier_seq == 0U);
+    assert(g_process_mbe_calls == 0);
+    assert(g_play_ss3_calls == 0);
+    assert(g_late_entry_calls == 0);
+    assert(g_skip_calls == 0);
+    assert(state.dmr_stereo == 0);
+    assert(state.dmr_ms_mode == 0);
+
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    load_live_half();
+    g_interrupt_at = 20U;
+    dmrMSData(&opts, &state);
+    assert(state.input_interrupted == 1);
+    assert(state.carrier_seq == 0U);
+    assert(g_data_sync_calls == 0);
+    assert(state.dmr_stereo == 0);
+    assert(state.dmr_ms_mode == 0);
+}
+
 int
 main(void) {
     test_ms_data_collects_payload_and_cleans_state();
@@ -684,6 +767,8 @@ main(void) {
     test_ms_voice_superframe_split_by_a_carrier_boundary_is_dropped();
     test_ms_bootstrap_split_by_a_carrier_boundary_is_dropped();
     test_ms_data_split_by_a_carrier_boundary_is_dropped();
+    test_ms_voice_superframe_cut_by_an_input_interruption_is_dropped();
+    test_ms_bootstrap_and_data_cut_by_an_input_interruption_are_dropped();
     DSD_FPRINTF(stdout, "DMR_MS_DATA: OK\n");
     return 0;
 }

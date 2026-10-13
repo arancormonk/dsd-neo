@@ -787,8 +787,9 @@ mbe_out_frame_owner(const dsd_opts* opts, const dsd_state* state, int slot, dsd_
         || (slot == 1 && format == DSD_MBE_OUT_FORMAT_IMBE) || !dsd_mbe_out_enabled(opts, slot)) {
         return 0;
     }
-    /* What was read after the carrier boundary moved the count belongs to no capture of either carrier. */
-    if (state->frame_dispatch_active && state->carrier_seq != state->frame_dispatch_carrier_seq) {
+    /* What was read after the carrier boundary moved the count belongs to no capture of either carrier, nor what was
+       read after an input interruption cut the frame. */
+    if (state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq)) {
         return 0;
     }
     const int protocol = dsd_mbe_out_frame_protocol(state);

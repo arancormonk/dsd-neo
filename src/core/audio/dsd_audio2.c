@@ -671,6 +671,11 @@ dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short
         || opts->pulse_digi_out_channels < 1 || opts->pulse_digi_out_channels > 2) {
         return;
     }
+    /* Voice decoded while an input interruption stands comes from a frame it cut (a Signal search left the frame, or a
+       live read gave up on a stalled input): the rest of that frame is erasures getSymbol() stood in, not speech. */
+    if (state->input_interrupted) {
+        return;
+    }
     for (size_t offset = 0; count - offset >= DSD_VOICE_FRAME_SAMPLES; offset += DSD_VOICE_FRAME_SAMPLES) {
         for (size_t i = 0; i < DSD_VOICE_FRAME_SAMPLES; i++) {
             state->audio_out_temp_buf[i] = (float)pcm[offset + i];

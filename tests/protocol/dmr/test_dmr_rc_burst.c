@@ -208,6 +208,10 @@ test_rc_pdu_rejects_wrong_crc_mask(void) {
 static int g_live_dibits[32];
 static int g_live_count;
 static int g_live_pos;
+/* The live read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there
+   and stands erasures in for every symbol after it; -1 for none. The stub goes on handing out the burst's real dibits,
+   the worst case of erasures that pass the four-bit CRC-7. */
+static int g_interrupt_at = -1;
 
 /* Strong spy for the event emitter: records the notice and keeps the real
  * core implementation (and its audio/history deps) out of the link. */
@@ -251,7 +255,9 @@ reset_notice_spy(void) {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_live_pos == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
+    }
     if (out_soft != NULL) {
         out_soft->reliability = 200U;
     }
@@ -495,6 +501,36 @@ test_handler_bails_out_on_short_history(void) {
     assert(g_live_pos == 0);
 }
 
+/* A Signal search that leaves the burst (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts its live dibits: from the cut every symbol is an erasure getSymbol() stood in, and a CRC-7 over four bits
+   does not keep those out of the event history. A cut burst writes no row, and the burst after it, read whole, does. */
+static void
+test_handler_cut_by_an_input_interruption_emits_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload_buf[64];
+    static const int cuts[2] = {0, 11};
+    for (int c = 0; c < 2; c++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(payload_buf, 0, sizeof(payload_buf));
+        reset_notice_spy();
+        g_interrupt_at = cuts[c];
+
+        drive_rc_burst(&opts, &state, payload_buf, /*cmd*/ 4, /*cc*/ 1, 0x7A);
+        assert(state.input_interrupted == 1);
+        assert(g_live_pos == 12);
+        assert(g_notice_calls == 0U);
+
+        /* The engine loop consumes the interruption, and the next burst decodes. */
+        g_interrupt_at = -1;
+        state.input_interrupted = 0;
+        drive_rc_burst(&opts, &state, payload_buf, /*cmd*/ 4, /*cc*/ 1, 0x7A);
+        assert(g_notice_calls == 1U);
+        dsd_state_ext_free_all(&state);
+    }
+}
+
 int
 main(void) {
     Hamming_16_11_4_init();
@@ -511,6 +547,7 @@ main(void) {
     test_handler_no_event_on_invalid_or_reserved();
     test_notify_dedup_window();
     test_handler_bails_out_on_short_history();
+    test_handler_cut_by_an_input_interruption_emits_nothing();
 
     printf("DMR_RC_BURST: OK\n");
     return 0;

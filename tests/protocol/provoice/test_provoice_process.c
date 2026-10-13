@@ -32,6 +32,9 @@ static int mbe_calls;
 static int play_ms_calls;
 static uint8_t expected_bits[PROVOICE_EXPECTED_TOTAL_DIBITS];
 static dsd_provoice_imbe_frame captured_first_frame;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for that symbol and every one after it; -1 for none. */
+static int interrupt_at = -1;
 
 /* The stub reader hands out a symbol per bit whose value is the reliability the stub helper below reports for it,
  * so each frame cell shows which symbol's confidence it received. */
@@ -58,6 +61,7 @@ reset_counters(void) {
     dibit_calls = 0;
     mbe_calls = 0;
     play_ms_calls = 0;
+    interrupt_at = -1;
     fill_expected_bits();
     DSD_MEMSET(captured_first_frame, 0, sizeof(captured_first_frame));
 }
@@ -65,9 +69,11 @@ reset_counters(void) {
 int
 getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) {
     (void)opts;
-    (void)state;
     assert(dibit_calls < PROVOICE_EXPECTED_TOTAL_DIBITS);
     assert(out_soft_symbol != NULL);
+    if (dibit_calls == interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
+    }
     *out_soft_symbol = (float)expected_reliability(dibit_calls);
     int value = expected_bits[dibit_calls];
     dibit_calls++;
@@ -191,11 +197,48 @@ test_voice_process_confirms_on_the_second_frame(void) {
     assert(state.provoice_confirm_weak_streak == 0);
 }
 
+/* Each IMBE pair plays as soon as it is read. A Signal search that leaves the frame (its visit ended, or a command came),
+   or a live read that gives up on a stalled input, cuts it: getSymbol() stands 0 in for every symbol from there, which
+   against thresholds that do not centre on 0 reads as confident bits. No pair read across or after the cut reaches the
+   vocoder or the speaker; the frame ends there, as when a pair does not load. */
+static void
+test_voice_frame_cut_by_an_input_interruption_plays_nothing_after_the_cut(void) {
+    enum {
+        FIRST_PAIR = PROVOICE_EXPECTED_HEADER_BITS,
+        BF_PREFIX = FIRST_PAIR + DSD_PROVOICE_FRAME_PAIR_DIBITS,
+        SECOND_PAIR = BF_PREFIX + PROVOICE_EXPECTED_BF_PREFIX_BITS,
+        TRAILER = SECOND_PAIR + DSD_PROVOICE_FRAME_PAIR_DIBITS,
+    };
+
+    static const int cuts[6] = {
+        0, 40, FIRST_PAIR + 100, BF_PREFIX + 3, SECOND_PAIR + DSD_PROVOICE_FRAME_PAIR_DIBITS - 1, TRAILER};
+    static const int pairs_played[6] = {0, 0, 0, 1, 1, 2};
+    static const int dibits_read[6] = {BF_PREFIX, BF_PREFIX, BF_PREFIX,
+                                       TRAILER,   TRAILER,   PROVOICE_EXPECTED_TOTAL_DIBITS};
+    for (int c = 0; c < 6; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        reset_counters();
+        interrupt_at = cuts[c];
+
+        (void)processProVoice(&opts, &state);
+
+        assert(state.input_interrupted == 1);
+        assert(mbe_calls == 2 * pairs_played[c]);
+        assert(play_ms_calls == 2 * pairs_played[c]);
+        assert(dibit_calls == dibits_read[c]);
+    }
+}
+
 int
 main(void) {
     test_process_voice_integer_playback();
     test_process_voice_float_playback();
     test_voice_process_confirms_on_the_second_frame();
+    test_voice_frame_cut_by_an_input_interruption_plays_nothing_after_the_cut();
     printf("PROVOICE_PROCESS: OK\n");
     return 0;
 }

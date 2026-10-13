@@ -27,9 +27,12 @@ dsd_two_level_symbol_reliability(const dsd_opts* opts, const dsd_state* state, f
     }
 
     /* A replayed symbol whose stored amplitude was unusable stands in as 0, which is no confidence only when the
-     * thresholds centre on 0. Its bit is an erasure whatever they are. */
-    if ((opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT)
-        && state->symbol_replay_symbol_unusable) {
+     * thresholds centre on 0. Its bit is an erasure whatever they are. So is every symbol read while an input
+     * interruption stands, whatever the input: a Signal search that left the frame, or a live read that gave up on a
+     * stalled input, leaves getSymbol() standing 0 in for the rest of the frame. */
+    if (state->input_interrupted
+        || ((opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT)
+            && state->symbol_replay_symbol_unusable)) {
         return 0U;
     }
 

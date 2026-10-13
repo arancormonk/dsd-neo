@@ -124,7 +124,8 @@ ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, int
     if (process_IMBE(opts, state, status_count) && p25_crypto_audio_permitted(opts, state, 0)) {
         dsd_play_synthesized_voice(opts, state);
     }
-    if (emit_active != 0) {
+    // A frame an input interruption cut is no voice activity either (process_IMBE() dropped it).
+    if (emit_active != 0 && !state->input_interrupted) {
         p25_sm_emit_active(opts, state, 0);
     }
 }
@@ -496,11 +497,12 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     const uint32_t carrier_seq = state->carrier_seq;
     ldu2_collect_voice_symbols(opts, state, &frame);
     ldu2_consume_trailing_status(opts, state);
-    if (state->carrier_seq != carrier_seq) {
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the LDU was read (issue #575). The encryption sync is
            read whole by the seventh voice frame but decodes only now, so it would publish the carrier left's
            algorithm, key and MI after the boundary ended that call: the encryption sync and low-speed data are
-           dropped, as on a sync loss, and the MI is not advanced for a superframe that will not follow. */
+           dropped, as on a sync loss, and the MI is not advanced for a superframe that will not follow. So are those
+           of an LDU an input interruption cut, whose rest is erasures the reader stood in. */
         state->xl_is_hdu = 0;
         DSD_FPRINTF(stderr, "\n");
         return;

@@ -339,10 +339,11 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
     /* The superframe's bursts belong to one carrier (issue #575): the sixth assembles the embedded LC from the four
        before it. When the carrier boundary moves the carrier count while the superframe is collected (a replay read
        adopting a recorded retune), inside a burst or in the other slot's burst skipped before one, the burst read
-       across or after the move is dropped with the rest of the superframe, as on a sync loss. */
+       across or after the move is dropped with the rest of the superframe, as on a sync loss; so is the burst an input
+       interruption cut, and every burst after it, which read only erasures. */
     const uint32_t carrier_seq = state->carrier_seq;
     for (int j = 0; j < 6; j++) {
-        if (state->carrier_seq != carrier_seq) {
+        if (dsd_state_frame_read_lost(state, carrier_seq)) {
             break;
         }
         state->dmrburstL = 16;
@@ -355,10 +356,15 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr, 12, 36, 0);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 48, 18, 0);
         dmr_ms_collect_sync_bits(opts, state, syncdata, vc, internalslot);
+        /* The EMB decodes as soon as it is read, before the check below: one an input interruption cut is erasures,
+           and all-zero bits are a valid QR(16,7,6) codeword, so it would publish colour code 0. */
+        if (state->input_interrupted) {
+            break;
+        }
         uint8_t power = dmr_ms_decode_embedded_color_code(state, syncdata, emb_pdu);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 90, 18, 18);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr3, 108, 36, 0);
-        if (state->carrier_seq != carrier_seq) {
+        if (dsd_state_frame_read_lost(state, carrier_seq)) {
             break;
         }
         dmr_debug_dump_burst(opts, state, state->currentslot, 0x10);
@@ -404,9 +410,9 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     dmr_ms_collect_bootstrap_cach(opts, state, cachdata);
     const uint32_t carrier_seq = state->carrier_seq;
     dmr_ms_decode_bootstrap_voice(opts, state, &frames);
-    if (state->carrier_seq != carrier_seq) {
-        /* The burst's live half came after the carrier boundary (issue #575): it is dropped, as on a sync loss, and
-           the voice cycle does not start on it. */
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        /* The burst's live half came after the carrier boundary (issue #575), or an input interruption cut it: it is
+           dropped, as on a sync loss, and the voice cycle does not start on it. */
         dmr_ms_clear_mode_flags(state);
         return;
     }
@@ -482,8 +488,9 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
 
     /* Process the data, unless the carrier boundary moved the carrier count while the live half was read (issue #575):
        everything decodes only after that read, so a slot type read whole before the move would publish the colour code
-       of the carrier left after the boundary forgot it. The burst is dropped, as on a sync loss. */
-    if (state->carrier_seq == carrier_seq) {
+       of the carrier left after the boundary forgot it. Nor when an input interruption cut the live half, which is
+       erasures the reader stood in. The burst is dropped, as on a sync loss. */
+    if (!dsd_state_frame_read_lost(state, carrier_seq)) {
         state->dmr_stereo = 1;
         state->dmr_ms_mode = 1;
         dmr_data_sync(opts, state);

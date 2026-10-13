@@ -152,7 +152,8 @@ void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
  * gain and saturation once, then shared short staging. MS or SS expands it to the stream's channel count and the
  * common sink writes s16 or normalized f32. The slot 1 switch and output mute still apply; talkgroup policy and FDMA
  * crypto rules do not. Per-call and static WAVs consume the same chained samples; the static WAV follows slot 1.
- * A trailing partial frame is dropped, never read past. Decoder thread only.
+ * A trailing partial frame is dropped, never read past. Nothing plays while an input interruption stands
+ * (dsd_state::input_interrupted): the decoder read the frame across a Signal search's cut. Decoder thread only.
  *
  * @param count Samples in @p pcm.
  */

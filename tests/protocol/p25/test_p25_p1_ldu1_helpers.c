@@ -71,6 +71,9 @@ static int g_imbe_dispatched = 1;
 /* The IMBE frame whose read adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at_imbe = -1;
+/* The IMBE frame a Signal search's yield (or a stalled live read) cuts: getSymbol() records the interruption there and
+   stands erasures in for the rest, so process_IMBE() drops that frame and every one after it; -1 for none. */
+static int g_interrupt_at_imbe = -1;
 static int g_last_status_dibit;
 static uint32_t g_last_policy_id;
 static uint8_t g_last_policy_source;
@@ -184,8 +187,11 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
     if (g_imbe_calls == g_boundary_at_imbe && state != NULL) {
         state->carrier_seq++;
     }
+    if (g_imbe_calls == g_interrupt_at_imbe && state != NULL) {
+        state->input_interrupted = 1;
+    }
     g_imbe_calls++;
-    return g_imbe_dispatched;
+    return (state != NULL && state->input_interrupted) ? 0 : g_imbe_dispatched;
 }
 
 void
@@ -294,6 +300,7 @@ reset_hook_counters(void) {
     g_imbe_calls = 0;
     g_imbe_dispatched = 1;
     g_boundary_at_imbe = -1;
+    g_interrupt_at_imbe = -1;
     g_last_status_dibit = -1;
     g_last_policy_id = 0U;
     g_last_policy_source = 0U;
@@ -809,6 +816,50 @@ test_ldu1_split_by_a_carrier_boundary_publishes_no_link_control(void) {
     return rc;
 }
 
+/* A Signal search that leaves the LDU1 (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts it: getSymbol() stands erasures in for every symbol from there. No voice frame read across or after the
+   cut plays, the first voice frame raises no voice activity (in conventional mode that publishes the call and reports
+   it to the search as P25 evidence) unless it was read whole before the cut, and the link control, which decodes only
+   after the ninth voice frame, is dropped, as on a carrier boundary. */
+static int
+test_ldu1_cut_by_an_input_interruption_plays_and_publishes_nothing_after_the_cut(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    reset_hook_counters();
+    processLDU1(&opts, &state);
+    rc |= expect_int("whole LDU1 plays every voice frame", g_audio_play_calls, 9);
+    rc |= expect_int("whole LDU1 raises voice activity", g_active_calls, 1);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    reset_hook_counters();
+    g_interrupt_at_imbe = 0;
+    processLDU1(&opts, &state);
+    rc |= expect_int("LDU1 cut in its first voice frame still reads the frame", g_imbe_calls, 9);
+    rc |= expect_int("LDU1 cut in its first voice frame plays nothing", g_audio_play_calls, 0);
+    rc |= expect_int("LDU1 cut in its first voice frame raises no voice activity", g_active_calls, 0);
+    rc |= expect_int("LDU1 cut in its first voice frame checks no link control",
+                     (int)(state.p25_p1_voice_fec_ok + state.p25_p1_voice_fec_err), 0);
+    rc |= expect_int("LDU1 cut in its first voice frame publishes no link control", g_lcw_calls, 0);
+    rc |= expect_int("LDU1 cut in its first voice frame refreshes no voice activity", (int)state.last_vc_sync_time, 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    reset_hook_counters();
+    g_interrupt_at_imbe = 4;
+    processLDU1(&opts, &state);
+    rc |= expect_int("LDU1 cut in its fifth voice frame plays the four before it", g_audio_play_calls, 4);
+    rc |= expect_int("LDU1 cut in its fifth voice frame raised activity on its first", g_active_calls, 1);
+    rc |= expect_int("LDU1 cut in its fifth voice frame publishes no link control", g_lcw_calls, 0);
+    rc |= expect_int("LDU1 cut moves no carrier count", (int)state.carrier_seq, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -826,6 +877,7 @@ main(void) {
     rc |= test_ldu1_lsd_correction_respects_encryption();
     rc |= test_ldu1_softid_alias_state();
     rc |= test_ldu1_split_by_a_carrier_boundary_publishes_no_link_control();
+    rc |= test_ldu1_cut_by_an_input_interruption_plays_and_publishes_nothing_after_the_cut();
     dsd_decode_clock_use_system();
     return rc;
 }

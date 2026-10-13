@@ -2988,7 +2988,9 @@ symbol_search_yields(const dsd_opts* opts, dsd_state* state) {
 float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     /* Long protocol readers also leave a search visit at its deadline, or once a read gave up on a stalled input.
-       Completing their bounded frame with unusable symbols lets the engine regain its tick guard safely. */
+       Completing their bounded frame with unusable symbols lets the engine regain its tick guard safely. The recorded
+       interruption marks them on every input: the frame decoders drop the frame it cut (dsd_state_frame_read_lost())
+       and two-level reliability gives them no confidence, so none plays, publishes or counts as evidence. */
     if (symbol_search_yields(opts, state)) {
         state->input_interrupted = 1;
         state->symbol_replay_symbol_unusable = 1;

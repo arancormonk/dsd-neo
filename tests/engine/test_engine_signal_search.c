@@ -470,6 +470,12 @@ main(void) {
     tick(o, s);
     assert(status.hit.frequency_hz == 100012500 && !status.hit.confirmed && s->nac == 0);
     land(o, s);
+    // Evidence a decoder reports while an input interruption stands comes from a frame the interruption cut, whose
+    // rest is erasures getSymbol() stood in: it confirms nothing and names nothing.
+    s->input_interrupted = 1;
+    dsd_signal_search_note_evidence(s, "DMR", 123, 456, "CC 7");
+    assert(!status.hit.confirmed && status.hit.protocol[0] == '\0' && status.hit.target == 0);
+    s->input_interrupted = 0;
     dsd_signal_search_note_evidence(s, "DMR", 123, 456, "CC 7");
     assert(status.hit.confirmed && status.hit.target == 123 && status.phase == DSD_SEARCH_LISTENING);
     s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;

@@ -457,7 +457,9 @@ void
 dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
                                   const char* access) {
     search_coord* c = search_get(state);
-    if (!c || !c->visit || c->status.hit.ended
+    /* Evidence noted while an input interruption stands comes from a frame it cut, whose rest is erasures getSymbol()
+       stood in: the decoders drop such a frame, and this refuses whatever one still reports. */
+    if (!c || !c->visit || c->status.hit.ended || state->input_interrupted
         || (c->status.phase != DSD_SEARCH_IDENTIFYING && c->status.phase != DSD_SEARCH_LISTENING
             && c->status.phase != DSD_SEARCH_HELD)) {
         return;

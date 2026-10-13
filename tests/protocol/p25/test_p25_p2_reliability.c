@@ -442,6 +442,10 @@ static uint8_t g_dibit_feed[700];
 static int g_dibit_feed_active = 0;
 static int g_dibit_feed_pos = 0;
 static int g_dibit_feed_boundary_at = -1;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it, counting none of them; -1 for none. The feed goes on handing out the
+   window's real dibits, the worst case of erasures that pass the bursts' checks. */
+static int g_dibit_feed_interrupt_at = -1;
 
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
@@ -451,9 +455,12 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
         if (g_dibit_feed_pos == g_dibit_feed_boundary_at && state) {
             state->carrier_seq++;
         }
+        if (g_dibit_feed_pos == g_dibit_feed_interrupt_at && state) {
+            state->input_interrupted = 1;
+        }
         dibit = g_dibit_feed[g_dibit_feed_pos++];
-        if (state) {
-            state->symbolcnt++; /* as the symbol reader counts every dibit */
+        if (state && !state->input_interrupted) {
+            state->symbolcnt++; /* as the symbol reader counts every dibit it read */
         }
     }
     if (out_soft) {
@@ -1570,6 +1577,65 @@ test_superframe_split_by_a_carrier_boundary_is_dropped(void) {
 }
 
 /*
+ * A Signal search that leaves the window (its visit ended, or a command came), or a live read that gives up on a
+ * stalled input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. None of its bursts decodes,
+ * whatever their checks say, so it opens no call and proves no seed. The receiver is still on the carrier, so what the
+ * slots gathered over the windows before it stays, and the next whole window decodes once the engine consumed the
+ * interruption.
+ */
+static int
+test_window_cut_by_an_input_interruption_is_dropped(void) {
+    printf("Test 33b: a window an input interruption cuts is dropped... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    static const int cuts[2] = {400, 0};
+    int rc = 0;
+
+    for (int c = 0; c < 2; c++) {
+        g_dibit_feed_interrupt_at = cuts[c];
+        run_fed_superframe(&opts, &state, scrambled_facch, -1);
+        g_dibit_feed_interrupt_at = -1;
+        rc |= expect_int("cut window is interrupted", state.input_interrupted, 1);
+        rc |= expect_int("cut window decodes no FACCH", g_facch_calls, 0);
+        rc |= expect_int("cut window opens no call", g_facch_mac_calls, 0);
+        rc |= expect_int("cut window proves nothing", (int)state.p2_cc_verified, 0);
+        rc |= expect_int("cut window leaves the stereo mark", state.dmr_stereo, 0);
+        rc |= expect_int("cut window moves no carrier count", (int)state.carrier_seq, 0);
+    }
+
+    state.input_interrupted = 0;
+    state.fourv_counter[0] = 2;
+    state.p25p2_playout.slot[0].open = 1U;
+    state.p25p2_playout.slot[0].phase_2v = 2;
+    state.p25_p2_rekey[0].pending = 1U;
+    reset_xcch_stubs();
+    g_dibit_feed_interrupt_at = 100;
+    read_fed_superframe(&opts, &state, -1);
+    g_dibit_feed_interrupt_at = -1;
+    rc |= expect_int("cut window on a live carrier decodes nothing", g_facch_mac_calls, 0);
+    rc |= expect_int("cut window keeps the ESS fragments", state.fourv_counter[0], 2);
+    rc |= expect_int("cut window keeps the voice stream", state.p25p2_playout.slot[0].open, 1);
+    rc |= expect_int("cut window keeps the voice phase", state.p25p2_playout.slot[0].phase_2v, 2);
+    rc |= expect_int("cut window keeps the staged rekey", (int)state.p25_p2_rekey[0].pending, 1);
+
+    state.input_interrupted = 0;
+    state.p25_p2_rekey[0].pending = 0U;
+    reset_xcch_stubs();
+    read_fed_superframe(&opts, &state, -1);
+    rc |= expect_int("next whole window decodes", g_facch_mac_calls, 4);
+
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+/*
  * Issue #575: the first burst descrambled with a proven seed may itself carry the MAC_END_PTT that ends its call. The
  * committed row reads the live NAC only while the call is active, so the slots are rendered as soon as the proof is set,
  * before the burst's MAC PDU is dispatched; otherwise the row of a call ended by the burst that proved its NAC kept none.
@@ -2291,6 +2357,7 @@ main(void) {
     failures += test_lcch_timeout_reevaluated_after_its_mac_pdu();
     failures += test_seed_proof_needs_a_descrambled_burst();
     failures += test_superframe_split_by_a_carrier_boundary_is_dropped();
+    failures += test_window_cut_by_an_input_interruption_is_dropped();
     failures += test_seed_proof_reaches_the_call_its_burst_ends();
     failures += test_window_position_follows_the_symbol_count();
     failures += test_missed_window_fills_in_place();

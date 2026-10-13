@@ -60,6 +60,10 @@ static int g_mac_group[3] = {0};
 static int g_mac_source[3] = {0};
 static int g_status_count = 0;
 static long g_channel_freq = 0;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; -1 for none. The stub goes on handing out the block's real dibits, the
+   worst case of erasures the list decoder fits to a CRC. */
+static int g_interrupt_at = -1;
 
 static void
 append_tsbk_stream_block(const uint8_t dibits[98], int* skipdibit) {
@@ -113,7 +117,9 @@ build_network_status_stream(void) {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_stream_pos == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
+    }
     uint8_t dibit = 0;
     if (g_stream_pos < g_stream_len) {
         dibit = g_stream[g_stream_pos++];
@@ -430,6 +436,29 @@ main(void) {
     rc |= expect_eq_int("net-sts rejected voice preserves tdma cc hint", state.p25_cc_is_tdma, 1);
     rc |= expect_eq_int("net-sts rejected voice skips wacn", (int)state.p2_wacn, 0);
     rc |= expect_eq_int("net-sts rejected voice skips sysid", (int)state.p2_sysid, 0);
+
+    /* A Signal search that leaves the TSDU (its visit ended, or a command came), or a live read that gives up on a
+       stalled input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. Neither the block it cut
+       nor any after it counts or dispatches, whatever its CRC says; the blocks read whole before it stand. */
+    static const int cuts[3] = {150, 100, 0};
+    static const int grants_before[3] = {1, 0, 0};
+    for (int c = 0; c < 3; c++) {
+        build_two_block_stream();
+        reset_decode_counters();
+        g_channel_freq = 0;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        g_interrupt_at = cuts[c];
+
+        processTSBK(&opts, &state);
+
+        rc |= expect_eq_int("cut tsdu is interrupted", state.input_interrupted, 1);
+        rc |= expect_eq_int("cut tsdu dispatches only the blocks before the cut", g_mac_count, grants_before[c]);
+        rc |=
+            expect_eq_int("cut tsdu counts only the blocks before the cut", (int)state.p25_p1_fec_ok, grants_before[c]);
+        rc |= expect_eq_int("cut tsdu counts no fec error", (int)state.p25_p1_fec_err, 0);
+    }
+    g_interrupt_at = -1;
     dsd_decode_clock_use_system();
     return rc;
 }

@@ -67,6 +67,9 @@ static int g_rs_soft_called = 0;
    the carrier count (dsd_engine_carrier_boundary(), issue #575). The words before them come through the scripted
    reader, so this stub's first read is the first trailing symbol. */
 static int g_boundary_in_tail = 0;
+/* Whether a Signal search's yield (or a stalled live read) interrupts the first trailing read: getSymbol() records the
+   interruption there and stands erasures in for every symbol after it. */
+static int g_interrupt_in_tail = 0;
 
 // Alias helpers referenced by LCW path
 void
@@ -173,6 +176,10 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     if (g_boundary_in_tail && state != NULL) {
         state->carrier_seq++;
         g_boundary_in_tail = 0;
+    }
+    if (g_interrupt_in_tail && state != NULL) {
+        state->input_interrupted = 1;
+        g_interrupt_in_tail = 0;
     }
     if (out_soft) {
         out_soft->reliability = 255;
@@ -521,6 +528,19 @@ main(void) {
     processTDULC(&opts, &state);
     rc |= expect_eq_int("split tdulc moved the carrier count", (int)state.carrier_seq, 1);
     rc |= expect_eq_int("split tdulc dispatches no grant", (int)ctx->grant_count, 0);
+
+    /* Case 7: a Signal search's yield, or a live read that gave up on a stalled input, cut the TDULC in its trailing
+       symbols: from the cut every symbol is an erasure getSymbol() stood in. Its link control is dropped as one the
+       carrier boundary splits is. */
+    build_lcw_words(0x44, 0x00, 0x00, 0x3456, 0x100A, 0x0000);
+    g_rs_hard_result = 0;
+    p25_sm_init_ctx(ctx, &opts, &state);
+    g_interrupt_in_tail = 1;
+    processTDULC(&opts, &state);
+    rc |= expect_eq_int("cut tdulc is interrupted", state.input_interrupted, 1);
+    rc |= expect_eq_int("cut tdulc moves no carrier count", (int)state.carrier_seq, 1);
+    rc |= expect_eq_int("cut tdulc dispatches no grant", (int)ctx->grant_count, 0);
+    state.input_interrupted = 0;
 
     dsd_state_ext_free_all(&state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

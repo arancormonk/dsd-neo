@@ -484,11 +484,12 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_read_second_cch(opts, state, &ctx);
 
     dpmr_read_tch_group(opts, state, &ctx, 4);
-    if (state->carrier_seq != carrier_seq) {
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the two frames were read (issue #575). Nothing decodes
            before both are in, so the first frame's CCH and the channel code, read whole before the move, would publish
            the carrier left's call and colour code after the boundary ended that call and forgot the code: the pair is
-           dropped, as on a sync loss, with no CRC to report. */
+           dropped, as on a sync loss, with no CRC to report. So is a pair an input interruption cut, whose rest is
+           erasures the reader stood in. */
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }

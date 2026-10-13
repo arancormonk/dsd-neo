@@ -221,6 +221,11 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state) {
     uint8_t duid = P25P1_DUID_INVALID;
 
     p25p1_read_nid_fields(opts, state, &duid, bch_code, bch_reliab, &parity, &parity_reliab);
+    /* An input interruption cut the NID (a Signal search left the frame): the rest of it is erasures the reader stood
+       in, which the BCH can take for the all-zero codeword (NAC 0, an HDU). Nothing of it decodes. */
+    if (state->input_interrupted) {
+        return P25P1_DUID_INVALID;
+    }
 
     observed_nac = p25p1_observed_nac(state);
     struct p25p1_nid_result decoded = p25p1_nid_decode(bch_code, bch_reliab, observed_nac, parity, parity_reliab);
@@ -414,6 +419,11 @@ dsd_frame_verdict
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     p25_status_accum_reset(state);
     uint8_t duid = p25p1_decode_nid_and_duid(opts, state);
+    /* A NID an input interruption cut decoded nothing: no data unit follows it, and it is no evidence about the
+       demodulator or the profile (processFrame() withholds the verdict). */
+    if (state->input_interrupted) {
+        return DSD_FRAME_VERDICT_WITHHELD;
+    }
     /* A decoded NID is the one place that knows which demodulator actually carried a P25p1
      * frame: the sync pattern is the same on C4FM and CQPSK, so nothing earlier can tell them
      * apart. Recording it here is what lets the trunking retunes and the SPS hunt restore a

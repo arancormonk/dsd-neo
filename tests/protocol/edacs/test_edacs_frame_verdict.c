@@ -33,6 +33,9 @@ static int g_dibit_calls;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at = -1;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; -1 for none. */
+static int g_interrupt_at = -1;
 
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
@@ -46,6 +49,9 @@ __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_an
     }
     if (g_dibit_calls == g_boundary_at && state != NULL) {
         state->carrier_seq++;
+    }
+    if (g_dibit_calls == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
     }
     g_dibit_calls++;
     if (g_bit_pos >= (int)(sizeof(g_frame_bits) / sizeof(g_frame_bits[0]))) {
@@ -175,12 +181,35 @@ test_frame_split_by_a_carrier_boundary_is_dropped(void) {
     assert(edacs(&opts, &state) == 1);
 }
 
+/* A Signal search that leaves the frame (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. The vote could take the copies read
+   before the cut over the erasures standing in for the rest, so the frame is dropped as one the carrier boundary splits
+   is, with no verdict. */
+static void
+test_frame_cut_by_an_input_interruption_is_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const unsigned long long int cw_1 = codeword_for(0x0123456ULL);
+    const unsigned long long int cw_2 = codeword_for(0x0ABCDEFULL);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    build_frame(cw_1, cw_2);
+    g_interrupt_at = 210;
+    assert(edacs(&opts, &state) == 0);
+    g_interrupt_at = -1;
+    assert(state.input_interrupted == 1);
+    assert(state.carrier_seq == 0U);
+    assert(g_dibit_calls == 240);
+}
+
 int
 main(void) {
     test_frame_bch_verdict_reads_the_voted_frames();
     test_tuned_early_out_reports_the_real_verdict();
     test_failed_bch_reports_zero_untuned();
     test_frame_split_by_a_carrier_boundary_is_dropped();
+    test_frame_cut_by_an_input_interruption_is_dropped();
     printf("EDACS_FRAME_VERDICT: OK\n");
     return 0;
 }

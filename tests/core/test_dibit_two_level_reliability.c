@@ -180,6 +180,24 @@ main(void) {
     state->symbol_replay_symbol_unusable = 0;
     rc |= expect_reliability("float symbol file, a real 0", opts, state, 0.0f, 128);
 
+    /* A live read that a Signal search's yield or a stalled input interrupted stands 0 in for the rest of the frame
+     * (getSymbol()). Against thresholds that do not centre on 0 that was a confident bit the soft vocoder would play;
+     * it is an erasure on a live input as on a replayed one, and the live input's own symbols keep their confidence
+     * once the engine consumed the interruption. */
+    set_thresholds(state, 10000.0f, 12000.0f, 14000.0f);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+    state->symbol_replay_symbol_unusable = 1;
+    state->input_interrupted = 1;
+    rc |= expect_reliability("live input, a symbol an interruption stood in", opts, state, 0.0f, 0);
+    set_thresholds(state, -1.0f, 1.0f, 3.0f);
+    rc |= expect_reliability("live input, an interrupted symbol between the thresholds", opts, state, 0.0f, 0);
+    state->input_interrupted = 0;
+    rc |= expect_reliability("live input, a real 0 once the interruption was consumed", opts, state, 0.0f, 128);
+    set_thresholds(state, 10000.0f, 12000.0f, 14000.0f);
+    rc |= expect_reliability("live input, a real 0 off-centre", opts, state, 0.0f, 255);
+    state->symbol_replay_symbol_unusable = 0;
+
     free(opts);
     free(state);
     if (rc == 0) {

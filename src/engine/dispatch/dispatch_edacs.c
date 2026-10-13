@@ -29,7 +29,7 @@ dsd_dispatch_handle_edacs(dsd_opts* opts, dsd_state* state) {
     const int decoded = edacs(opts, state);
     /* A control frame that checked out on this carrier ends the EDACS/ProVoice capture: a false EDACS sync does not cut
        a ProVoice capture short, and another protocol's capture is not EDACS's to close (issue #661). */
-    if (decoded != 0 && state->carrier_seq == carrier_seq) {
+    if (decoded != 0 && !dsd_state_frame_read_lost(state, carrier_seq)) {
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_EDACS_POS);
     }
     return decoded != 0 ? DSD_FRAME_VERDICT_PRODUCTIVE : DSD_FRAME_VERDICT_UNPRODUCTIVE;

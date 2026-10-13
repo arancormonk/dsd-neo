@@ -25,6 +25,8 @@ static int close_protocol_synctype = DSD_SYNC_NONE;
 static int edacs_calls;
 /* edacs() moves the carrier count, as a replay read adopting a recorded retune does (issue #575). */
 static int edacs_moves_carrier = 0;
+/* A Signal search's yield (or a stalled live read) interrupts the input while edacs() reads the frame. */
+static int edacs_interrupts = 0;
 
 static void
 reset_calls(void) {
@@ -32,6 +34,7 @@ reset_calls(void) {
     close_protocol_synctype = DSD_SYNC_NONE;
     edacs_calls = 0;
     edacs_moves_carrier = 0;
+    edacs_interrupts = 0;
 }
 
 void
@@ -60,6 +63,9 @@ edacs(dsd_opts* opts, dsd_state* state) {
     edacs_calls++;
     if (edacs_moves_carrier) {
         state->carrier_seq++;
+    }
+    if (edacs_interrupts) {
+        state->input_interrupted = 1;
     }
     return edacs_decoded;
 }
@@ -132,6 +138,14 @@ test_edacs_dispatch_keeps_capture_on_rejected_frame(void) {
 
     edacs_moves_carrier = 1;
     assert(dsd_dispatch_handle_edacs(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    assert(close_calls == 0);
+    assert(opts.mbe_out_f == stdout);
+
+    /* Nor does a frame an input interruption cut (a Signal search's yield, or a stalled live read), whatever the
+       decoder made of the erasures standing in for its rest. */
+    edacs_moves_carrier = 0;
+    edacs_interrupts = 1;
+    (void)dsd_dispatch_handle_edacs(&opts, &state);
     assert(close_calls == 0);
     assert(opts.mbe_out_f == stdout);
 }

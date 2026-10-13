@@ -57,6 +57,10 @@ static size_t g_dibit_stream_pos;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. */
 static size_t g_boundary_at = SIZE_MAX;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; SIZE_MAX for none. The stub goes on handing out the frame's real
+   dibits, the worst case of erasures that pass the FICH's Golay and CRC. */
+static size_t g_interrupt_at = SIZE_MAX;
 static int g_mbe_call_count;
 static int g_process_mbe_call_count;
 static int g_process_mbe_synctype[5];
@@ -97,6 +101,9 @@ __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_an
            (carrier_boundary_forget_evidence()). */
         state->carrier_seq++;
         state->ysf_fich_confirmed = 0;
+    }
+    if (g_dibit_stream_pos == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
     }
     if (g_dibit_stream_pos >= g_dibit_stream_len) {
         return 0;
@@ -978,6 +985,96 @@ test_process_ysf_vd_type1_split_by_a_carrier_boundary_publishes_nothing(void) {
     assert(call.source_text[0] == '\0');
 }
 
+static int g_ysf_search_evidence;
+
+static void
+count_ysf_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
+                          const char* access) {
+    (void)state;
+    (void)target;
+    (void)source;
+    (void)access;
+    assert(strcmp(protocol, "YSF") == 0);
+    g_ysf_search_evidence++;
+}
+
+/* A Signal search that leaves the frame (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. A cut FICH decodes nothing, so it
+   reports no YSF evidence to the search and observes no call on the fallback dt/fi, and nothing of the payload plays.
+   A cut later in the frame leaves the FICH, read whole before it, as it was, and drops the payload. */
+static void
+test_process_ysf_frame_cut_by_an_input_interruption_publishes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_YSF_POS;
+    g_ysf_search_evidence = 0;
+    dsd_signal_search_evidence_set(count_ysf_search_evidence);
+    make_fich_bits_for_vd_type1(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input("VD1DST0001VD1SRC0002", 20U, dch, 176U, 9U, 0);
+
+    /* A whole frame confirms the transmission and plays; its call then ends. */
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    assert(processYSF(&opts, &state) == 1);
+    assert(g_process_mbe_call_count == 5);
+    const int whole_frame_evidence = g_ysf_search_evidence;
+    assert(whole_frame_evidence > 0);
+    assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+
+    static const size_t cuts[2] = {50U, 100U + (4U * 72U) + 36U + 10U}; /* inside the FICH; in the last voice channel */
+    static const int fich_evidence[2] = {0, 1};
+    for (size_t c = 0; c < 2U; c++) {
+        state.input_interrupted = 0;
+        g_dibit_stream_len = 0U;
+        g_dibit_stream_pos = 0U;
+        g_process_mbe_call_count = 0;
+        g_ysf_search_evidence = 0;
+        append_dibits_to_stream(fich_input, 100U);
+        append_vd_type1_blocks(dch, 1U);
+        g_interrupt_at = cuts[c];
+
+        (void)processYSF(&opts, &state);
+        g_interrupt_at = SIZE_MAX;
+
+        assert(state.input_interrupted == 1);
+        assert(state.carrier_seq == 0U);
+        assert(g_process_mbe_call_count == 0);
+        assert(g_ysf_search_evidence == fich_evidence[c]);
+        if (c == 0U) {
+            const dsd_call_snapshot call = get_test_ysf_call(&state);
+            assert(call.phase != DSD_CALL_PHASE_ACTIVE);
+        }
+    }
+    /* A carrier boundary inside the FICH (issue #575) drops the frame the same way, its evidence too. */
+    state.input_interrupted = 0;
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    g_ysf_search_evidence = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    g_boundary_at = 50U;
+    (void)processYSF(&opts, &state);
+    g_boundary_at = SIZE_MAX;
+    assert(state.carrier_seq == 1U);
+    assert(g_process_mbe_call_count == 0);
+    assert(g_ysf_search_evidence == 0);
+    dsd_signal_search_evidence_set(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_process_ysf_bad_fich_fallback_reopens_ysf_epoch(void) {
     static dsd_opts opts;
@@ -1768,6 +1865,7 @@ main(void) {
     test_process_ysf_full_rate_data_routes_fich_and_dch_state();
     test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state();
     test_process_ysf_vd_type1_split_by_a_carrier_boundary_publishes_nothing();
+    test_process_ysf_frame_cut_by_an_input_interruption_publishes_nothing();
     test_process_ysf_bad_fich_fallback_reopens_ysf_epoch();
     test_process_ysf_fich_verdict_is_sticky_per_transmission();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();

@@ -67,10 +67,11 @@ dmr_data_sync_init_ctx(dmr_data_sync_ctx* ctx, dsd_opts* opts, dsd_state* state)
     ctx->carrier_seq = state->carrier_seq;
 }
 
-/* Whether the carrier boundary moved the carrier count since the burst began (issue #575). */
+/* Whether the carrier boundary moved the carrier count since the burst began (issue #575), or an input interruption
+   cut the burst (dsd_state_frame_read_lost()). */
 static int
 dmr_data_carrier_left(const dmr_data_sync_ctx* ctx) {
-    return ctx->state->carrier_seq != ctx->carrier_seq;
+    return dsd_state_frame_read_lost(ctx->state, ctx->carrier_seq);
 }
 
 static int
@@ -232,6 +233,14 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
         ctx->SlotType[(i * 2) + 10] = (unsigned char)(1 & (dibit >> 1));
         ctx->SlotType[(i * 2) + 11] = (unsigned char)(1 & dibit);
     }
+    /* An input interruption cut the slot type (a Signal search left the burst): its live half is erasures the reader
+       stood in, so nothing of it decodes, neither the colour code nor the confidence and search evidence it would
+       feed. dmr_data_sync() reads on and drops the burst at its carrier check, which the interruption fails too; a cut
+       burst is no FEC error, so the slot type does not report one. */
+    if (ctx->state->input_interrupted) {
+        ctx->SlotTypeOk = 1;
+        return 1;
+    }
 
     if (!Golay_20_8_decode(ctx->SlotType)) {
         ctx->SlotTypeOk = 0;
@@ -341,8 +350,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
             if (dmr_data_carrier_left(&ctx)) {
                 /* The carrier boundary moved while the burst's live half was read (issue #575): the CACH read before
                    it may complete a short LC of the carrier left, which would decode after the boundary ended that
-                   carrier's calls. Nothing in the burst dispatches, and what earlier bursts gathered goes, as on a
-                   sync loss; a carrier left is not a burst FEC error. */
+                   carrier's calls. Or an input interruption cut the live half, which is erasures the reader stood in.
+                   Nothing in the burst dispatches, and what earlier bursts gathered goes, as on a sync loss; neither
+                   is a burst FEC error. */
                 dmr_reset_blocks(opts, state);
             } else {
                 if (opts->dmr_debug_burst != 0) {

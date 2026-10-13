@@ -491,10 +491,10 @@ typedef struct {
 /* Whether the carrier boundary moved the carrier count since the frame began (issue #575): a replay read adopting a
    recorded retune. A payload decodes only once read, so a data channel or voice channel read whole before the move
    would decode after the boundary ended the carrier left's call: from there nothing of the frame decodes or publishes,
-   as on a sync loss. */
+   as on a sync loss. Nor once an input interruption cut the frame, whose rest is erasures the reader stood in. */
 static bool
 ysf_carrier_left(const dsd_state* state, const ysf_fich_info* info) {
-    return state->carrier_seq != info->carrier_seq;
+    return dsd_state_frame_read_lost(state, info->carrier_seq) != 0;
 }
 
 // V/D2 decodes straight through mbelib, so its frames never reach the vocoder's
@@ -553,6 +553,13 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* l
 
     for (int i = 0; i < 100; i++) {
         fichrawdibits[i] = get_dibit_and_analog_signal(opts, state, NULL);
+    }
+    /* A carrier boundary split the FICH (issue #575), or an input interruption cut it (a Signal search left the
+       frame): the rest of it belongs to another carrier or is erasures the reader stood in, so it decodes nothing, not
+       even the transmission's evidence, and processYSF() drops the frame. */
+    if (dsd_state_frame_read_lost(state, info->carrier_seq)) {
+        info->err = -1;
+        return;
     }
 
     info->err = ysf_conv_fich(fichrawdibits, info->fich_decode, &info->v_error);
@@ -980,6 +987,12 @@ processYSF(dsd_opts* opts, dsd_state* state) {
 
     info.carrier_seq = state->carrier_seq;
     ysf_parse_fich(opts, state, &info, &last_dt, &last_fi);
+    if (dsd_state_frame_read_lost(state, info.carrier_seq)) {
+        /* The FICH was split or cut: no call observation on the fallback dt/fi, and no payload laid out on them. The
+           frame is dropped, as on a sync loss. */
+        DSD_FPRINTF(stderr, "\n");
+        return 0;
+    }
     ysf_print_fich_summary(opts, &info);
     if (info.err == 0 && !ysf_carrier_left(state, &info)) {
         /* Confirmed as soon as the FICH verifies, so this frame's own voice is captured (issue #661); the verdict

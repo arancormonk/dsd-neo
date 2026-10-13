@@ -57,10 +57,11 @@ typedef struct {
 
 /* Whether the carrier boundary moved the carrier count since the superframe began (issue #575): a replay read adopting
    a recorded retune. What was read before the move belongs to the carrier left, so from there nothing decodes or
-   publishes, as on a sync loss. */
+   publishes, as on a sync loss. Nor once an input interruption cut the superframe, whose rest is erasures the reader
+   stood in. */
 static int
 x2tdma_carrier_left(const x2tdma_voice_ctx* ctx, const dsd_state* state) {
-    return state->carrier_seq != ctx->carrier_seq;
+    return dsd_state_frame_read_lost(state, ctx->carrier_seq);
 }
 
 static void
