@@ -1251,26 +1251,31 @@ def tetra_sysinfo_dibits():
 
 
 def tetra_channel_allocation_dibits():
-    """SCH-HD carrying a basic pi/4-DQPSK MAC-RESOURCE allocation."""
+    """SCH-HD carrying a pi/4-DQPSK MAC-RESOURCE (EN 300 392-2 table 21.55) to a group SSI
+    with a basic channel allocation (table 21.87), then a Null PDU and fill bits (clause 23.4.2)."""
     info = [0] * 124
     pack_field(info, 0, 0, 2)       # MAC-RESOURCE
     pack_field(info, 1, 2, 1)       # fill bits present
     pack_field(info, 0, 3, 1)       # grant on current channel
     pack_field(info, 0, 4, 2)       # clear header/TM-SDU
     pack_field(info, 0, 6, 1)       # random access undefined
-    pack_field(info, 2, 7, 6)       # header-only/null PDU
-    pack_field(info, 0, 13, 3)      # null address
-    pack_field(info, 0, 16, 1)      # no power control
-    pack_field(info, 0, 17, 1)      # no slot grant
-    pack_field(info, 1, 18, 1)      # channel allocation present
-    pack_field(info, 0, 19, 2)      # replace current channel
-    pack_field(info, 4, 21, 4)      # assigned timeslot bitmap
-    pack_field(info, 1, 25, 2)      # downlink only
-    pack_field(info, 0, 27, 1)      # no CLCH permission
-    pack_field(info, 0, 28, 1)      # no cell change
-    pack_field(info, 400, 29, 12)   # assigned carrier
-    pack_field(info, 0, 41, 1)      # inherit SYSINFO band/offset
-    pack_field(info, 1, 42, 2)      # one monitoring pattern
+    pack_field(info, 9, 7, 6)       # PDU length 9 octets: 68 bits and 4 fill bits
+    pack_field(info, 1, 13, 3)      # SSI address
+    pack_field(info, 1234, 16, 24)  # group SSI
+    pack_field(info, 0, 40, 1)      # no power control
+    pack_field(info, 0, 41, 1)      # no slot grant
+    pack_field(info, 1, 42, 1)      # channel allocation present
+    pack_field(info, 0, 43, 2)      # replace current channel
+    pack_field(info, 4, 45, 4)      # assigned timeslot bitmap
+    pack_field(info, 1, 49, 2)      # downlink only
+    pack_field(info, 0, 51, 1)      # no CLCH permission
+    pack_field(info, 0, 52, 1)      # no cell change
+    pack_field(info, 400, 53, 12)   # assigned carrier
+    pack_field(info, 0, 65, 1)      # inherit SYSINFO band/offset
+    pack_field(info, 1, 66, 2)      # one monitoring pattern
+    pack_field(info, 1, 68, 1)      # fill bits 1000
+    pack_field(info, 2, 79, 6)      # Null PDU at bit 72: 2 octets, address type 000
+    pack_field(info, 1, 88, 1)      # fill bits after the Null PDU
     seed = (((17 | (4242 << 6) | (460 << 20)) << 2) | 3) & 0xFFFFFFFF
     return tetra_control_block_dibits(info, 101, seed, 216)
 
