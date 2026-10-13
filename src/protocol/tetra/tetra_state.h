@@ -186,6 +186,7 @@ typedef struct {
     uint8_t active;          /* a MAC-RESOURCE with length indication 111111 started a TM-SDU */
     uint8_t encrypted;       /* its encryption mode was not 00, so every fragment is ciphertext */
     uint8_t idle_half_slots; /* half slots of this timeslot since the last fragment, for the N.203 limit */
+    uint32_t slot_start;     /* tdma_slot_start of the last block of this timeslot: the slots the clock counted since */
     int8_t cc;               /* colour code of the block that started the TM-SDU */
     tetra_mac_address addr;  /* address of the starting MAC-RESOURCE; MAC-FRAG and MAC-END carry none */
     uint16_t nbits;          /* TM-SDU bits rebuilt so far */

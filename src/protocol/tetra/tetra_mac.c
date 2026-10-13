@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
+#include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -891,6 +892,39 @@ parse_pdu(mac_block* b, const uint8_t* bits, int nbits) {
     }
 }
 
+static void
+expire_if_idle(const tetra_state_t* ts, tetra_mac_fragment* f, int cc) {
+    if (f->idle_half_slots >= MAC_N203_HALF_SLOTS) {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA MAC] CC=%d  partial TM-SDU of %u bits timed out\n", cc, (unsigned)f->nbits);
+        discard_fragment(f);
+    }
+}
+
+/* N.203 counts the slots of the TM-SDU's control channel, decoded or not: before a block of timeslot TN is parsed, the
+ * slots of that timeslot the TDMA clock counted since its last block, and that went by undecoded, count as slots
+ * without a fragment, so a continuation arriving after them cannot revive an expired TM-SDU. While the clock is stopped
+ * there is no timeslot, and only decoded blocks count. */
+static void
+catch_up_fragment(const tetra_state_t* ts, tetra_mac_fragment* f, int cc) {
+    if (fragment_timeslot(ts) == 0) {
+        return;
+    }
+    const uint32_t symbols = ts->tdma_slot_start - f->slot_start; /* both wrap with dsd_state::symbolcnt */
+    f->slot_start = ts->tdma_slot_start;
+    if (!f->active || symbols > UINT32_MAX / 2u) {
+        return;
+    }
+    /* The timeslot comes round once every TDMA frame of four slots (EN 300 392-2 clause 7.3). */
+    const uint32_t frames = (symbols + TETRA_TDMA_SLOT_SYMBOLS / 2u) / (4u * TETRA_TDMA_SLOT_SYMBOLS);
+    if (frames <= 1u) {
+        return;
+    }
+    /* Two half slots for each slot of the timeslot between the last block and this one. */
+    const uint32_t idle = (uint32_t)f->idle_half_slots + (2u * (frames - 1u));
+    f->idle_half_slots = (uint8_t)(idle < MAC_N203_HALF_SLOTS ? idle : MAC_N203_HALF_SLOTS);
+    expire_if_idle(ts, f, cc);
+}
+
 /* N.203: drop a partial TM-SDU of this timeslot after 4 slots without a fragment (clause 23.4.3.1.1 iii). */
 static void
 age_fragment(mac_block* b) {
@@ -899,10 +933,7 @@ age_fragment(mac_block* b) {
         return;
     }
     f->idle_half_slots = (uint8_t)(f->idle_half_slots + (b->block_bits > MAC_HALF_SLOT_BITS ? 2u : 1u));
-    if (f->idle_half_slots >= MAC_N203_HALF_SLOTS) {
-        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC] CC=%d  partial TM-SDU of %u bits timed out\n", b->cc, (unsigned)f->nbits);
-        discard_fragment(f);
-    }
+    expire_if_idle(b->ts, f, b->cc);
 }
 
 static void
@@ -961,6 +992,7 @@ tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd
         return;
     }
     mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[fragment_timeslot(ts)]};
+    catch_up_fragment(ts, b.frag, cc);
     int off = 0;
     while (nbits - off >= (b.first ? 2 : MAC_NULL_PDU_BITS)) {
         const int used = parse_pdu(&b, bits + off, nbits - off);

@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <stdint.h>
@@ -236,12 +237,62 @@ test_fragment_timeout(void) {
     free(opts);
 }
 
+/* Put the TDMA clock on timeslot @p tn of the slot that started @p slots slots after the first one. */
+static void
+clock_at(tetra_state_t* ts, uint8_t tn, uint32_t slots) {
+    ts->tdma_valid = 1;
+    ts->tn = tn;
+    ts->tdma_slot_start = 1000U + slots * TETRA_TDMA_SLOT_SYMBOLS;
+}
+
+/* N.203 counts the slots of the TM-SDU's control channel the TDMA clock counted, decoded or not: a fragment run on
+ * timeslot 1 whose next four timeslot 1 slots went undecoded, while the other timeslots kept decoding, is over when a
+ * MAC-END arrives at the fifth; after three missed slots the fourth still continues it. */
+static void
+test_fragment_timeout_counts_missed_slots(void) {
+    for (uint32_t missed = 3; missed <= 4; missed++) {
+        ttb_block sdu = {0};
+        put_d_setup(&sdu, 13);
+        dsd_state* state = new_state();
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        assert(opts != NULL);
+        tetra_state_t* ts = tetra_st(state);
+        ttb_block b;
+        ttb_block other = {0};
+        const int start = ttb_resource(&other, 0, TETRA_MAC_ADDR_SSI, 0x000099u);
+        ttb_resource_flags(&other, 0);
+        ttb_close_resource(&other, start);
+        ttb_finish(&other, TTB_SCH_HD_BITS, -1);
+
+        clock_at(ts, 1, 0);
+        first_fragment(&b, 0x001234u, sdu.bits, 9);
+        parse(state, opts, &b, 0);
+        for (uint32_t frame = 0; frame <= missed; frame++) {
+            for (uint8_t tn = 2; tn <= 4; tn++) {
+                clock_at(ts, tn, (4U * frame) + tn - 1U);
+                parse(state, opts, &other, 0);
+            }
+        }
+        check(ts->mac_frag[1].active, "the other timeslots do not age timeslot 1's TM-SDU");
+        clock_at(ts, 1, 4U * (missed + 1U));
+        last_fragment(&b, sdu.bits + 9, sdu.n - 9);
+        parse(state, opts, &b, 0);
+        check(!ts->mac_frag[1].active, "the MAC-END closes timeslot 1's context either way");
+        check(delivered(state, 13) == (missed < 4), missed < 4
+                                                        ? "after three missed slots the MAC-END completes the TM-SDU"
+                                                        : "after four missed slots the late MAC-END delivers nothing");
+        free_state(state);
+        free(opts);
+    }
+}
+
 int
 main(void) {
     test_full_fragment_sequence();
     test_fragment_guards();
     test_fragments_kept_per_timeslot();
     test_fragment_timeout();
+    test_fragment_timeout_counts_missed_slots();
     if (g_fail != 0) {
         DSD_FPRINTF(stderr, "%d TETRA fragment reconstruction check(s) FAILED\n", g_fail);
         return 1;
