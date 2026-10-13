@@ -43,8 +43,17 @@ _Static_assert(DSD_SYNC_IS_TRUNKABLE(DSD_SYNC_TETRA_NDB_POS) && DSD_SYNC_IS_TRUN
                "TETRA syncs are trunkable");
 _Static_assert(DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_NDB_NEG) && DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_SB_NEG),
                "negative TETRA syncs are inverted");
-_Static_assert(!DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_NDB_POS) && !DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_SB_POS),
+_Static_assert(DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_NDB_POS) == 0 && DSD_SYNC_IS_INVERTED(DSD_SYNC_TETRA_SB_POS) == 0,
                "positive TETRA syncs are not inverted");
+/* The normal and synchronisation burst syncs of both polarities are four distinct TETRA synctypes. */
+_Static_assert(DSD_SYNC_IS_TETRA(DSD_SYNC_TETRA_NDB_POS) && DSD_SYNC_IS_TETRA(DSD_SYNC_TETRA_NDB_NEG)
+                   && DSD_SYNC_IS_TETRA(DSD_SYNC_TETRA_SB_POS) && DSD_SYNC_IS_TETRA(DSD_SYNC_TETRA_SB_NEG),
+               "every TETRA sync is a TETRA synctype");
+_Static_assert(DSD_SYNC_IS_TETRA(0) == 0 && DSD_SYNC_IS_TETRA(5) == 0, "other synctypes are not TETRA");
+_Static_assert(DSD_SYNC_TETRA_SB_POS != DSD_SYNC_TETRA_NDB_POS && DSD_SYNC_TETRA_SB_NEG != DSD_SYNC_TETRA_NDB_NEG
+                   && DSD_SYNC_TETRA_SB_POS != DSD_SYNC_TETRA_SB_NEG
+                   && DSD_SYNC_TETRA_NDB_POS != DSD_SYNC_TETRA_NDB_NEG,
+               "the four TETRA syncs are distinct");
 
 enum {
     BSCH_DIBITS = 60,

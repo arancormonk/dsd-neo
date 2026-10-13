@@ -1,26 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * TETRA Phase 61 test suite.
- *
- * Covers functionality introduced in Phases 54-60:
- *
- * Phase 54 — Floor-control event flags
- *   1. D-TX-CONTINUE / INTERRUPT / WAIT / TIMED-OUT
- *
- * Phase 55 — MLE cell-reselection parsers
- *   2. MLE D-RESTORE-ACK / D-RESTORE-FAIL
- *
- * Phase 57 — CMCE D-INFO
- *   7. D-INFO call_id
- *
- * Phase 58 — SDS Unicode text
- *   8. bpc=16 UCS-2 → UTF-8 decode
- *
- * Phase 59 — MLE network-broadcast extensions
- *   9. D-NWRK-BCAST-EXT channel and irregular-channel lists
- *  10. Extended-PDU D-NWRK-BROADCAST REMOVE CA/DA/serving-cell records
- *  11. Extended-PDU D-NWRK-BROADCAST-DA complete table 18.3 snapshot
- *
+ * Downlink MLE protocol PDUs (EN 300 392-2 clause 18) through tetra_mle_decode(): D-RESTORE-ACK with its D-CALL
+ * RESTORE, D-RESTORE-FAIL, and the network broadcasts D-NWRK-BROADCAST (annex E.2.2), its EXTENSION, DA and REMOVE
+ * forms; then what the MLE routes by protocol discriminator besides CMCE (table 18.87): an MM PDU to the MM decoder,
+ * and the SN-PDU header (clause 28.4.4, tetra_sndcp_decode()). A PDU that does not fit, or claims an element that shall
+ * not be used, decodes incomplete.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -28,13 +12,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
+#include <dsd-neo/protocol/tetra/tetra_mm.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "tetra_mle_pdu.h"
-#include "tetra_state.h"
 #include "tetra_test_log.h"
 
 static int g_pass = 0;
@@ -51,6 +35,7 @@ static int g_fail = 0;
         }                                                                                                              \
     } while (0)
 
+/* Write @p nbits bits of @p val, MSB first, at @p offset. */
 static void
 pack_bits(uint8_t* out, uint32_t val, int offset, int nbits) {
     for (int i = nbits - 1; i >= 0; i--) {
@@ -63,6 +48,7 @@ alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
 }
 
+/* Frees the TETRA state extension with the decoder state. */
 static void
 free_state(dsd_state* st) {
     dsd_state_ext_free_all(st);
@@ -74,64 +60,22 @@ alloc_opts(void) {
     return (dsd_opts*)calloc(1, sizeof(dsd_opts));
 }
 
+/* A PDU behind protocol discriminator @p pd (EN 300 392-2 table 18.87): the TM-SDU the MLE routes. */
 static void
-wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_nbits) {
-    DSD_MEMSET(out, 0, (size_t)(3 + cmce_nbits));
-    pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
-    DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
-    *out_nbits = 3 + cmce_nbits;
+wrap_mle_pd(const uint8_t* body, int body_nbits, uint32_t pd, uint8_t* out, int* out_nbits) {
+    DSD_MEMSET(out, 0, (size_t)(3 + body_nbits));
+    pack_bits(out, pd, 0, 3);
+    DSD_MEMCPY(out + 3, body, (size_t)body_nbits);
+    *out_nbits = 3 + body_nbits;
 }
 
-/* =======================================================================
- * Phase 54: Floor control
- * ======================================================================= */
 static void
-test_floor_control_events(void) {
-    printf("[test_floor_control_events]\n");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-    uint8_t pdu[9 + 32];
-    char log[256];
-    int n;
-
-    /* D-TX-CONTINUE: call=0x1234, continue=1, request=1. */
-    uint8_t cmce[32];
-    DSD_MEMSET(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, TETRA_CMCE_D_TX_CONTINUE, 0, 5);
-    pack_bits(cmce, 0x1234, 5, 14);
-    pack_bits(cmce, 1, 19, 1);
-    pack_bits(cmce, 1, 20, 1);
-    pack_bits(cmce, 0, 21, 1); /* O-bit */
-    wrap_mle_cmce(cmce, 22, pdu, &n);
-    tetra_test_mle_logged(pdu, n, 0, opt, st, log, sizeof log);
-    CHECK(strstr(log, "[TETRA CMCE D-TX-CONTINUE] CC=0 call=4660 request=1 notif=0 continue=1") != NULL,
-          "D-TX-CONTINUE call id, continue value and request permission decoded");
-
-    /* D-TX-INTERRUPT uses the same mandatory grant fields as D-TX-GRANTED. */
-    DSD_MEMSET(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, TETRA_CMCE_D_TX_INTERRUPT, 0, 5);
-    pack_bits(cmce, 0x22, 5, 14);
-    pack_bits(cmce, 3, 19, 2);
-    pack_bits(cmce, 1, 21, 1);
-    pack_bits(cmce, 1, 22, 1);
-    pack_bits(cmce, 0, 24, 1); /* O-bit */
-    wrap_mle_cmce(cmce, 25, pdu, &n);
-    tetra_test_mle_logged(pdu, n, 0, opt, st, log, sizeof log);
-    CHECK(strstr(log, "[TETRA CMCE D-TX-INTERRUPT] CC=0 call=34 request=1 notif=0 continue=0 grant=3 enc=1") != NULL,
-          "D-TX-INTERRUPT grant and encryption control decoded");
-
-    /* D-TX-WAIT: call id plus request permission. */
-    DSD_MEMSET(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, TETRA_CMCE_D_TX_WAIT, 0, 5);
-    pack_bits(cmce, 0x321, 5, 14);
-    pack_bits(cmce, 0, 19, 1);
-    pack_bits(cmce, 0, 20, 1); /* O-bit */
-    wrap_mle_cmce(cmce, 21, pdu, &n);
-    tetra_test_mle_logged(pdu, n, 0, opt, st, log, sizeof log);
-    CHECK(strstr(log, "[TETRA CMCE D-TX-WAIT] CC=0 call=801 request=0") != NULL, "D-TX-WAIT call id decoded");
-
-    free_state(st);
-    free(opt);
+wrap_mle_mm(const uint8_t* mm_body, int mm_nbits, uint8_t* out, int* out_nbits) {
+    int total = 3 + mm_nbits;
+    DSD_MEMSET(out, 0, (size_t)total);
+    pack_bits(out, TETRA_MLE_PD_MM, 0, 3);
+    DSD_MEMCPY(out + 3, mm_body, (size_t)mm_nbits);
+    *out_nbits = total;
 }
 
 static void
@@ -158,15 +102,169 @@ test_mle_restore(void) {
     free(opt);
 }
 
-/* =======================================================================
- * Phase 57: CMCE D-INFO
- * ======================================================================= */
-/* =======================================================================
- * Phase 58: SDS Unicode text
- * ======================================================================= */
-/* =======================================================================
- * Phase 59: NWRK-BCAST-EXT
- * ======================================================================= */
+static void
+test_mle_restore_fields(void) {
+    printf("[test_mle_restore_fields]\n");
+    dsd_state* st = alloc_state();
+    dsd_opts* opt = alloc_opts();
+
+    /* D-RESTORE-ACK carrying CMCE D-CALL-RESTORE (table 18.8). */
+    uint8_t mle_ack[31];
+    DSD_MEMSET(mle_ack, 0, sizeof(mle_ack));
+    pack_bits(mle_ack, TETRA_MLE_PD_MLE, 0, 3);
+    pack_bits(mle_ack, TETRA_MLE_D_RESTORE_ACK, 3, 3);
+    pack_bits(mle_ack, 0, 6, 1); /* mandatory MLE O-bit */
+    pack_bits(mle_ack, TETRA_CMCE_D_CALL_RESTORE, 7, 5);
+    pack_bits(mle_ack, 777, 12, 14);
+    pack_bits(mle_ack, 2, 26, 2);
+    pack_bits(mle_ack, 1, 28, 1);
+    pack_bits(mle_ack, 1, 29, 1);
+    pack_bits(mle_ack, 0, 30, 1); /* CMCE O-bit */
+    tetra_mle_pdu pdu;
+    CHECK(tetra_mle_decode(mle_ack, 31, &pdu) && pdu.restore_ack.call.call_id == 777 && pdu.restore_ack.call.grant == 2
+              && pdu.restore_ack.call.permission == 1 && pdu.restore_ack.call.reset == 1,
+          "D-RESTORE-ACK decodes its D-CALL RESTORE");
+    char log[256];
+    tetra_test_mle_logged(mle_ack, 31, 0, opt, st, log, sizeof log);
+    CHECK(strstr(log, "[TETRA CMCE D-CALL-RESTORE] CC=0 call=777 grant=2 request=1 reset=1") != NULL,
+          "D-RESTORE-ACK CMCE SDU parsed");
+
+    uint8_t mle_res[9];
+    DSD_MEMSET(mle_res, 0, sizeof(mle_res));
+    pack_bits(mle_res, TETRA_MLE_PD_MLE, 0, 3);
+    pack_bits(mle_res, TETRA_MLE_D_RESTORE_FAIL, 3, 3);
+    pack_bits(mle_res, 1, 6, 2);
+    pack_bits(mle_res, 0, 8, 1);
+    CHECK(tetra_mle_decode(mle_res, 9, &pdu) && pdu.fail_cause == 1, "D-RESTORE-FAIL cause extracted");
+
+    free_state(st);
+    free(opt);
+}
+
+static void
+test_nwrk_broadcast_annex_e16_to_e18(void) {
+    printf("[test_nwrk_broadcast_annex_e16_to_e18]\n");
+    tetra_mle_pdu mle;
+    uint8_t pdu[200];
+    int n = 0;
+
+    /* ETSI EN 300 392-2 V3.8.1, Annex E.2.2 table E.16. */
+    pack_bits(pdu, TETRA_MLE_PD_MLE, n, 3);
+    n += 3;
+    pack_bits(pdu, TETRA_MLE_D_NWRK_BROADCAST, n, 3);
+    n += 3;
+    pack_bits(pdu, 0x4321, n, 16);
+    n += 16;
+    pack_bits(pdu, 2, n, 2);
+    n += 2;
+    pack_bits(pdu, 0, n, 1);
+    n += 1;
+
+    CHECK(tetra_mle_decode(pdu, n, &mle) && mle.nwrk_broadcast.reselect == 0x4321, "cell re-select parameters");
+    CHECK(mle.nwrk_broadcast.load == 2, "cell load");
+    CHECK(mle.nwrk_broadcast.neighbor_count_valid == 0, "Annex E.16 has no neighbour count");
+
+    /* Annex E.17 explicitly carries the zero value meaning no neighbour-cell
+     * information is available. */
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    n = 0;
+    pack_bits(pdu, TETRA_MLE_PD_MLE, n, 3);
+    n += 3;
+    pack_bits(pdu, TETRA_MLE_D_NWRK_BROADCAST, n, 3);
+    n += 3;
+    pack_bits(pdu, 0x1111, n, 16);
+    n += 16;
+    pack_bits(pdu, 1, n, 2);
+    n += 2;
+    pack_bits(pdu, 1, n, 1);
+    n += 1; /* O-bit */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* no network time */
+    pack_bits(pdu, 1, n, 1);
+    n += 1; /* neighbour count present */
+    pack_bits(pdu, 0, n, 3);
+    n += 3;
+    CHECK(tetra_mle_decode(pdu, n, &mle) && mle.nwrk_broadcast.neighbor_count_valid == 1
+              && mle.nwrk_broadcast.neighbor_count == 0,
+          "Annex E.17 no-neighbour indication accepted");
+
+    /* Annex E.18: two CA neighbours.  The first has no optional fields; the
+     * second carries only its Location Area from the ten standardized P-bits. */
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    n = 0;
+    pack_bits(pdu, TETRA_MLE_PD_MLE, n, 3);
+    n += 3;
+    pack_bits(pdu, TETRA_MLE_D_NWRK_BROADCAST, n, 3);
+    n += 3;
+    pack_bits(pdu, 0x2222, n, 16);
+    n += 16;
+    pack_bits(pdu, 3, n, 2);
+    n += 2;
+    pack_bits(pdu, 1, n, 1);
+    n += 1; /* O-bit */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* no network time */
+    pack_bits(pdu, 1, n, 1);
+    n += 1; /* neighbour count present */
+    pack_bits(pdu, 2, n, 3);
+    n += 3;
+    pack_bits(pdu, 1, n, 5);
+    n += 5;
+    pack_bits(pdu, 2, n, 2);
+    n += 2;
+    pack_bits(pdu, 1, n, 1);
+    n += 1;
+    pack_bits(pdu, 1, n, 2);
+    n += 2;
+    pack_bits(pdu, 1000, n, 12);
+    n += 12;
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* first neighbour O-bit */
+    pack_bits(pdu, 2, n, 5);
+    n += 5;
+    pack_bits(pdu, 1, n, 2);
+    n += 2;
+    pack_bits(pdu, 0, n, 1);
+    n += 1;
+    pack_bits(pdu, 2, n, 2);
+    n += 2;
+    pack_bits(pdu, 2000, n, 12);
+    n += 12;
+    pack_bits(pdu, 1, n, 1);
+    n += 1; /* second neighbour O-bit */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* carrier extension */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* MCC */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* MNC */
+    pack_bits(pdu, 1, n, 1);
+    n += 1; /* LA */
+    pack_bits(pdu, 0x2345, n, 14);
+    n += 14;
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* maximum TX power */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* minimum RX access */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* subscriber class */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* BS service details */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* timeshare/security */
+    pack_bits(pdu, 0, n, 1);
+    n += 1; /* TDMA frame offset */
+    CHECK(tetra_mle_decode(pdu, n, &mle) && mle.nwrk_broadcast.neighbor_count_valid == 1
+              && mle.nwrk_broadcast.neighbor_count == 2,
+          "Annex E.18 two-neighbour collection accepted");
+    CHECK(mle.nwrk_broadcast.neighbor[0].cell_id == 1 && mle.nwrk_broadcast.neighbor[0].main_carrier == 1000
+              && mle.nwrk_broadcast.neighbor[1].cell_id == 2 && mle.nwrk_broadcast.neighbor[1].main_carrier == 2000,
+          "Annex E.18 mandatory neighbour fields decoded");
+
+    /* Without the final Type 2 P-bit the broadcast is incomplete. */
+    CHECK(!tetra_mle_decode(pdu, n - 1, &mle), "truncated Annex E.18 is incomplete");
+}
+
 static void
 test_nwrk_ext(void) {
     printf("[test_nwrk_ext]\n");
@@ -566,24 +664,84 @@ test_nwrk_broadcast_da(void) {
           "O=0 decodes a DA broadcast with no optional elements");
 }
 
+static void
+test_mm_group_identity_through_mle(void) {
+    printf("[test_mm_group_identity_through_mle]\n");
+    dsd_state* st = alloc_state();
+    dsd_opts* opt = alloc_opts();
+
+    uint8_t mm[100];
+    int n = 0;
+
+    pack_bits(mm, TETRA_MM_D_ATTACH_DETACH_GROUP, n, 4);
+    n += 4;
+    pack_bits(mm, 1, n, 1);
+    n += 1; // group identity report
+    pack_bits(mm, 1, n, 1);
+    n += 1; // acknowledgement request
+    pack_bits(mm, 1, n, 1);
+    n += 1; // attach/detach mode
+    pack_bits(mm, 0, n, 1);
+    n += 1; // no optional elements
+
+    uint8_t pdu[200];
+    int out_n;
+    wrap_mle_mm(mm, n, pdu, &out_n);
+    char log[256];
+    tetra_test_mle_logged(pdu, out_n, 0, opt, st, log, sizeof log);
+
+    CHECK(strstr(log, "[TETRA MM D-GROUP-IDENTITY] CC=0 report=1 ack_request=1 detach_all=1 groups=0") != NULL,
+          "group identity report, acknowledgement request and attach/detach mode reach the MM decoder");
+
+    free_state(st);
+    free(opt);
+}
+
+static void
+test_sndcp_header(void) {
+    printf("[test_sndcp_header]\n");
+    /* SN-UNITDATA (table 28.43): SN PDU type 4, NSAPI 5, then PCOMP/DCOMP. */
+    uint8_t sndcp[16];
+    DSD_MEMSET(sndcp, 0, sizeof(sndcp));
+    pack_bits(sndcp, 4, 0, 4); /* SN PDU type = SN-UNITDATA */
+    pack_bits(sndcp, 5, 4, 4); /* NSAPI = 5 */
+
+    /* Prefix the SNDCP PDU with the standard 3-bit SNDCP PD. */
+    uint8_t mle[64];
+    int mle_nbits;
+    wrap_mle_pd(sndcp, 16, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
+    tetra_sndcp_pdu pdu;
+    CHECK(tetra_sndcp_decode(mle, mle_nbits, &pdu) == 1, "SNDCP header decodes");
+    CHECK(pdu.nsapi == 5, "SNDCP NSAPI = 5");
+    CHECK(pdu.pdu_type == 4, "SNDCP PDU type = SN-UNITDATA");
+    CHECK(pdu.nbits == 16, "SNDCP nbits = 16");
+
+    /* SN-END OF DATA (table 28.34) carries no NSAPI. */
+    DSD_MEMSET(sndcp, 0, sizeof(sndcp));
+    pack_bits(sndcp, 8, 0, 4);
+    pack_bits(sndcp, 1, 4, 1); /* immediate service change */
+    wrap_mle_pd(sndcp, 5, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
+    CHECK(tetra_sndcp_decode(mle, mle_nbits, &pdu) && pdu.pdu_type == 8 && pdu.nsapi == 0,
+          "SN-END OF DATA has no NSAPI");
+
+    /* Test short SNDCP: an SN-ACTIVATE PDP CONTEXT ACCEPT cut before its NSAPI */
+    uint8_t sndcp_short[4];
+    DSD_MEMSET(sndcp_short, 0, sizeof(sndcp_short));
+    wrap_mle_pd(sndcp_short, 4, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
+    CHECK(!tetra_sndcp_decode(mle, mle_nbits, &pdu), "SNDCP short: rejected");
+}
+
 int
 main(void) {
-    printf("=== TETRA Phase 61 Test Suite ===\n\n");
-    test_floor_control_events();
-    puts("");
-    puts("");
     test_mle_restore();
-    puts("");
-    puts("");
-    puts("");
-    puts("");
+    test_mle_restore_fields();
+    test_nwrk_broadcast_annex_e16_to_e18();
     test_nwrk_ext();
-    puts("");
     test_nwrk_remove();
-    puts("");
     test_nwrk_broadcast_da();
-    puts("");
+    test_mm_group_identity_through_mle();
+    test_sndcp_header();
 
-    printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
-    return (g_fail == 0) ? 0 : 1;
+    printf("\n%d passed, %d failed\n", g_pass, g_fail);
+    return g_fail == 0 ? 0 : 1;
 }

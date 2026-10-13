@@ -11099,34 +11099,27 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_edacs_grant_policy PRIVATE dsd-neo_core)
 add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 
-# TETRA protocol coverage.  These sources previously lived under
-# tests/protocol/tetra without being registered in CTest, so regressions in
-# the MAC/MLE/MM, FEC, vocoder gating, and trunking paths were invisible to
-# the normal ALL_BUILD + CTest workflow.
+# TETRA protocol tests: test_<name>.c builds dsd-neo_test_tetra_<name> and runs as TETRA_<NAME> (a leading "tetra_"
+# dropped from the CTest name).
 set(_dsd_tetra_test_sources
     acelp_reference
     tetra_bits
     air_chain_vector
     d_tx_granted_chan
     depuncture_regression
+    mac_fragments
+    mac_pdus
     mac_state
     mle_cmce
+    mle_pdus
+    cmce_pdus
+    sds_pdus
     mm_dispatch
     rcpc_map
     real_air_bit_trace
     sds_reference_mac
+    tdma_clock
     tetra_fmt_helpers
-    tetra_integration
-    tetra_phase42
-    tetra_phase47
-    tetra_phase52
-    tetra_phase61
-    tetra_phase69
-    tetra_phase70
-    tetra_phase76
-    tetra_phase80
-    tetra_phase85
-    tetra_phase86
     tetra_speech_reorder
     tetra_dmo
     tetra_air

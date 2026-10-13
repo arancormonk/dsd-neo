@@ -1,23 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * TETRA Phase 47 test suite.
- *
- * Covers functionality introduced in Phases 43-46:
- *
- * TDMA clock (EN 300 392-2 clauses 7.3 and 7.4): the BSCH sets TN, FN and MN as sent (all 1-based on air), normal
+ * The TDMA clock (EN 300 392-2 clauses 7.3 and 7.4): the BSCH sets TN, FN and MN as sent (all 1-based on air), normal
  * downlink bursts run the clock by the slots counted since, wrapping FN 18 to 1 and MN 60 to 1 and counting
  * hyperframes, and the initial value of EN 300 392-7 clause 6.3.2.1 never reads 0 across those wraps.
- *
- * Phase 45 — D-TX-GRANTED updates UI fields:
- *  12.  tetra_sds_msg_ref and tetra_sds_last_cc zero-initialise correctly
- *  13.  D-TX-GRANTED with SSI sets lastsrc to granted SSI
- *  14.  D-TX-GRANTED with SSI sets active_channel[0] to "TETRA TG:... SRC:...  (TX-GRANTED)"
- *  15.  D-TX-GRANTED with SSI sets last_active_time != 0
- *
- * Phase 46 — SDS message reference tracking:
- *  16.  D-SDS-DATA stores msg_ref in tetra_sds_msg_ref
- *  17.  D-SDS-DATA stores CC in tetra_sds_last_cc
- *  18.  Two SDS PDUs with different msg_ref values update sds_msg_ref correctly
  */
 
 #include <dsd-neo/core/opts.h>
@@ -27,17 +12,12 @@
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
-#include <dsd-neo/protocol/tetra/tetra_mac.h>
-#include <dsd-neo/protocol/tetra/tetra_mle.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "tetra_calls.h"
-#include "tetra_mle_pdu.h"
 #include "tetra_state.h"
-#include "tetra_test_log.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -53,6 +33,7 @@ static int g_fail = 0;
         }                                                                                                              \
     } while (0)
 
+/* Write @p nbits bits of @p val, MSB first, at @p offset. */
 static void
 pack_bits(uint8_t* out, uint32_t val, int offset, int nbits) {
     for (int i = nbits - 1; i >= 0; i--) {
@@ -63,6 +44,13 @@ pack_bits(uint8_t* out, uint32_t val, int offset, int nbits) {
 static dsd_state*
 alloc_state(void) {
     return (dsd_state*)calloc(1, sizeof(dsd_state));
+}
+
+/* Frees the TETRA state extension with the decoder state. */
+static void
+free_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    free(st);
 }
 
 static dsd_opts*
@@ -81,33 +69,6 @@ bsch_build(uint8_t* bits, uint8_t colour, uint8_t tn_air, uint8_t fn, uint8_t mn
     pack_bits(bits, mn, 17, 6);
     pack_bits(bits, mcc, 31, 10);
     pack_bits(bits, mnc, 41, 14);
-}
-
-/* -----------------------------------------------------------------------
- * MLE / CMCE helper — wrap a raw CMCE PDU in an CMCE protocol-discriminator envelope.
- * ----------------------------------------------------------------------- */
-static void
-wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_nbits) {
-    DSD_MEMSET(out, 0, (size_t)(3 + cmce_nbits));
-    pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
-    DSD_MEMCPY(out + 3, cmce_body, (size_t)cmce_nbits);
-    *out_nbits = 3 + cmce_nbits;
-}
-
-/* -----------------------------------------------------------------------
- * Helper: build an MM protocol-discriminator wrapper.
- *   mle_type=24, pd=5 (MM), then mm_body
- * ----------------------------------------------------------------------- */
-/* =======================================================================
- * TDMA clock
- * ======================================================================= */
-
-static void
-free_state(dsd_state* st) {
-    if (st) {
-        dsd_state_ext_free_all(st);
-    }
-    free(st);
 }
 
 /* Parse a BSCH for network 234/30 colour 0x15 as the decoder does, with the synchronization burst read through block 2
@@ -312,217 +273,8 @@ test_bsch_keeps_hyperframe(void) {
     free_state(st);
 }
 
-/* =======================================================================
- * Phase 45: D-TX-GRANTED updates UI fields
- * ======================================================================= */
-
-/*
- * Build a D-TX-GRANTED CMCE PDU with granted SSI present.
- *
- * CMCE D-TX-GRANTED layout (PDU type=11): mandatory call and floor-control
- * fields, O-bit, notification P-bit, transmitting-party P-bit/TPTI/SSI, and
- * the terminating M-bit. Total: 54 bits.
- */
-static void
-build_d_tx_granted(uint8_t* cmce, uint32_t granted_ssi) {
-    DSD_MEMSET(cmce, 0, 54);
-    pack_bits(cmce, 11u, 0, 5);           /* D-TX-GRANTED */
-    pack_bits(cmce, 1u, 5, 14);           /* call identifier */
-    pack_bits(cmce, 3u, 19, 2);           /* granted to another */
-    pack_bits(cmce, 1u, 21, 1);           /* request permission */
-    pack_bits(cmce, 0u, 22, 1);           /* encryption */
-    pack_bits(cmce, 0u, 23, 1);           /* reserved */
-    pack_bits(cmce, 1u, 24, 1);           /* O-bit */
-    pack_bits(cmce, 0u, 25, 1);           /* notification absent */
-    pack_bits(cmce, 1u, 26, 1);           /* TPTI present */
-    pack_bits(cmce, 1u, 27, 2);           /* TPTI = SSI */
-    pack_bits(cmce, granted_ssi, 29, 24); /* SSI */
-    pack_bits(cmce, 0u, 53, 1);           /* terminating M-bit */
-}
-
-/* Call 1 to group @p gssi: a D-SETUP (table 14.15) in the MAC context of a MAC-RESOURCE addressed to the group. */
-static void
-setup_call(dsd_state* st, dsd_opts* opt, uint32_t gssi) {
-    uint8_t cmce[41];
-    DSD_MEMSET(cmce, 0, sizeof cmce);
-    pack_bits(cmce, TETRA_CMCE_D_SETUP, 0, 5);
-    pack_bits(cmce, 1u, 5, 14);    /* call identifier */
-    pack_bits(cmce, 0x04u, 25, 8); /* basic service: clear speech, point to multipoint */
-    uint8_t mle[3 + 41];
-    int mle_nbits;
-    wrap_mle_cmce(cmce, 41, mle, &mle_nbits);
-    tetra_mac_sdu sdu;
-    DSD_MEMSET(&sdu, 0, sizeof sdu);
-    sdu.addr.type = TETRA_MAC_ADDR_SSI;
-    sdu.addr.ssi = gssi;
-    sdu.has_addr = 1;
-    tetra_mle_dispatch_sdu(mle, mle_nbits, 0, &sdu, opt, st);
-}
-
-static void
-test_tx_granted_identity_set(void) {
-    printf("[test_tx_granted_identity_set]\n");
-
-    uint8_t cmce[54];
-    build_d_tx_granted(cmce, 88888u);
-
-    uint8_t mle[9 + 54];
-    int mle_nbits;
-    wrap_mle_cmce(cmce, 54, mle, &mle_nbits);
-
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    setup_call(st, opt, 44444u);
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-
-    const tetra_call_t* const c = tetra_calls_peek(st, 1);
-    CHECK(c && c->talker_ssi == 88888u, "TX-GRANTED: talker = 88888");
-    CHECK(c && c->phase == TETRA_CALL_TX_GRANTED, "TX-GRANTED: transmission granted");
-    CHECK(c && c->called_ssi == 44444u, "TX-GRANTED: the called group is retained");
-
-    free_state(st);
-    free(opt);
-}
-
-static void
-test_tx_granted_without_channel_assignment(void) {
-    printf("[test_tx_granted_without_channel_assignment]\n");
-
-    uint8_t cmce[54];
-    build_d_tx_granted(cmce, 12345u);
-
-    uint8_t mle[3 + 54];
-    int mle_nbits;
-    wrap_mle_cmce(cmce, 54, mle, &mle_nbits);
-
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-    setup_call(st, opt, 44444u);
-    tetra_calls_find(st, 1)->alloc.freq_hz = 390000000L;
-
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-
-    const tetra_call_t* const c = tetra_calls_peek(st, 1);
-    CHECK(c && c->talker_ssi == 12345u, "TX-GRANTED: granted SSI is retained");
-    CHECK(c && c->alloc.freq_hz == 390000000L, "TX-GRANTED: absent channel IE does not overwrite the call's channel");
-
-    free_state(st);
-    free(opt);
-}
-
-static void
-test_tx_granted_floor_state(void) {
-    printf("[test_tx_granted_floor_state]\n");
-
-    uint8_t cmce[54];
-    build_d_tx_granted(cmce, 111u);
-
-    uint8_t mle[3 + 54];
-    int mle_nbits;
-    wrap_mle_cmce(cmce, 54, mle, &mle_nbits);
-
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-
-    setup_call(st, opt, 44444u);
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-
-    CHECK(tetra_calls_peek(st, 1)->phase == TETRA_CALL_TX_GRANTED, "TX-GRANTED: floor grant marked valid");
-
-    free_state(st);
-    free(opt);
-}
-
-/* =======================================================================
- * Phase 46: SDS message reference tracking
- * ======================================================================= */
-
-/*
- * Build a minimal D-SDS-DATA CMCE PDU with an explicit msg_ref.
- *
- *   [0-4]   pdu_type = 23
- * The helper builds table 14.13 D-SDS-DATA with CPTI=1 and SDTI=0, including
- * the mandatory Annex E O-bit after the 16-bit user data.
- */
-static void
-build_d_sds_data(uint8_t* cmce, uint32_t src_ssi, uint8_t sdti) {
-    DSD_MEMSET(cmce, 0, 61);
-    pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
-    pack_bits(cmce, 1, 5, 2); /* CPTI: SSI */
-    pack_bits(cmce, src_ssi, 7, 24);
-    pack_bits(cmce, sdti, 31, 2);
-    if (sdti == 0) {
-        pack_bits(cmce, 0xCAFE, 33, 16);
-    }
-    if (sdti == 0) {
-        pack_bits(cmce, 0, 49, 1); /* O-bit */
-    }
-}
-
-/* A D-SDS-DATA decodes with its own calling party and data type, and its summary line names the colour code it came
- * with. */
-static void
-test_sds_msg_ref_stored(void) {
-    printf("[test_sds_sdti_and_cc_stored]\n");
-    uint8_t cmce[61];
-    build_d_sds_data(cmce, 22222u, 0u);
-    uint8_t mle[70];
-    int n;
-    wrap_mle_cmce(cmce, 50, mle, &n);
-    tetra_sds_pdu pdu;
-    CHECK(tetra_sds_decode(mle, n, &pdu) && pdu.data.sdti == 0 && pdu.data.calling.ssi == 22222u
-              && pdu.data.short_data == 0xCAFE,
-          "SDS SDTI = 0");
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-    char log[256];
-    tetra_test_mle_logged(mle, n, 3, opt, st, log, sizeof log);
-    CHECK(strstr(log, "[TETRA CMCE D-SDS-DATA] CC=3 src_SSI=22222 CPTI=1 SDTI=0 data_bits=16") != NULL,
-          "SDS summary line with CC = 3");
-    free_state(st);
-    free(opt);
-}
-
-static void
-test_sds_last_cc_stored(void) {
-    printf("[test_sds_last_cc_stored]\n");
-    uint8_t cmce[61];
-    build_d_sds_data(cmce, 33333u, 0u);
-    uint8_t mle[70];
-    int n;
-    wrap_mle_cmce(cmce, 50, mle, &n);
-    dsd_state* st = alloc_state();
-    dsd_opts* opt = alloc_opts();
-    char log[256];
-    tetra_test_mle_logged(mle, n, 11, opt, st, log, sizeof log);
-    CHECK(strstr(log, "[TETRA CMCE D-SDS-DATA] CC=11 src_SSI=33333") != NULL, "SDS summary line with CC = 11");
-    free_state(st);
-    free(opt);
-}
-
-static void
-test_sds_msg_ref_overwrite(void) {
-    printf("[test_sds_source_overwrite]\n");
-    uint8_t cmce[61], mle[70];
-    int n;
-    tetra_sds_pdu pdu;
-    build_d_sds_data(cmce, 10001u, 0u);
-    wrap_mle_cmce(cmce, 50, mle, &n);
-    CHECK(tetra_sds_decode(mle, n, &pdu) && pdu.data.calling.ssi == 10001u, "first SDS source");
-    build_d_sds_data(cmce, 10002u, 0u);
-    wrap_mle_cmce(cmce, 50, mle, &n);
-    CHECK(tetra_sds_decode(mle, n, &pdu) && pdu.data.calling.ssi == 10002u, "second SDS source");
-}
-
-/* =======================================================================
- * main
- * ======================================================================= */
 int
 main(void) {
-    printf("=== TETRA Phase 47 Test Suite ===\n\n");
-
-    printf("--- TDMA clock ---\n");
     test_bsch_sets_clock();
     test_bsch_reserved_numbers();
     test_ndb_follows_slots();
@@ -531,18 +283,6 @@ main(void) {
     test_clock_stops();
     test_bsch_keeps_hyperframe();
 
-    /* Phase 45 */
-    printf("\n--- Phase 45: D-TX-GRANTED UI fields ---\n");
-    test_tx_granted_identity_set();
-    test_tx_granted_without_channel_assignment();
-    test_tx_granted_floor_state();
-
-    /* Phase 46 */
-    printf("\n--- Phase 46: SDS message reference tracking ---\n");
-    test_sds_msg_ref_stored();
-    test_sds_last_cc_stored();
-    test_sds_msg_ref_overwrite();
-
-    printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
-    return (g_fail == 0) ? 0 : 1;
+    printf("\n%d passed, %d failed\n", g_pass, g_fail);
+    return g_fail == 0 ? 0 : 1;
 }

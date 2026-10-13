@@ -4,7 +4,8 @@
  * encoded with the rate-1/4 mother code of EN 300 392-2 8.2.3.1.1, punctured
  * with tetra_rcpc_puncture_by_id(), restored with
  * tetra_rcpc_depuncture_by_id() and decoded with tetra_viterbi_decode_soft().
- * With noise-free costs every information bit must come back.
+ * With noise-free costs every information bit must come back. Hard decisions
+ * enter the decoder as confident costs (tetra_hard_bits_to_soft()).
  */
 
 #include <assert.h>
@@ -100,6 +101,23 @@ round_trip(int punct_id, int type2_len, int type3_len, uint32_t seed) {
     return 0;
 }
 
+/* Hard decisions given to the Viterbi decoder as confident soft costs (tetra_hard_bits_to_soft()): a 0 costs nothing,
+ * a 1 costs 0xFFFF, and only the low bit of an unpacked value counts. */
+static int
+hard_bits_keep_their_evidence(void) {
+    static const uint8_t bits[] = {0, 1, 1, 0, 3, 2};
+    uint16_t costs[6] = {0};
+    tetra_hard_bits_to_soft(bits, costs, 6);
+    static const uint16_t k_expected[6] = {0x0000u, 0xFFFFu, 0xFFFFu, 0x0000u, 0xFFFFu, 0x0000u};
+    for (int i = 0; i < 6; i++) {
+        if (costs[i] != k_expected[i]) {
+            DSD_FPRINTF(stderr, "hard bit %d: cost 0x%04X, expected 0x%04X\n", i, costs[i], k_expected[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int
 main(void) {
     static const struct {
@@ -114,7 +132,7 @@ main(void) {
         {TETRA_RCPC_PUNCT_148_432, 148, 432}, /* TCH/2.4 */
     };
 
-    int rc = 0;
+    int rc = hard_bits_keep_their_evidence();
     for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
         for (uint32_t seed = 1; seed <= 3; seed++) {
             rc |= round_trip(k_cases[i].punct_id, k_cases[i].type2_len, k_cases[i].type3_len, seed * 0x9E3779B9U);
