@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2147,6 +2148,364 @@ test_function_not_supported_extract_and_o_bit(void) {
     return ok;
 }
 
+/* -------------------------------------------------------------------------
+ * Regression tests for the bit-reader rewrite.
+ * ------------------------------------------------------------------------- */
+
+/* Appends fields MSB first to a one-bit-per-byte buffer. */
+typedef struct {
+    uint8_t* bits;
+    int pos;
+} bit_writer;
+
+static void
+put(bit_writer* w, uint32_t value, int width) {
+    pack_bits(w->bits, value, w->pos, width);
+    w->pos += width;
+}
+
+/* A CMCE TM-SDU: protocol discriminator, then the PDU type. */
+static bit_writer
+cmce_writer(uint8_t* bits, size_t size, uint32_t pdu_type) {
+    bit_writer w = {bits, 0};
+    DSD_MEMSET(bits, 0, size);
+    put(&w, TETRA_MLE_PD_CMCE, 3);
+    put(&w, pdu_type, 5);
+    return w;
+}
+
+/* A D-SDS-DATA from @p ssi (CPTI 1) with short data type identifier 3; the caller writes @p data_bits of user data. */
+static bit_writer
+sds_writer(uint8_t* bits, size_t size, uint32_t ssi, int data_bits) {
+    bit_writer w = cmce_writer(bits, size, TETRA_CMCE_D_SDS_DATA);
+    put(&w, 1, 2);
+    put(&w, ssi, 24);
+    put(&w, 3, 2);
+    put(&w, (uint32_t)data_bits, 11);
+    return w;
+}
+
+/* Continuation bytes after a UTF-8 lead byte; -1 for a byte that cannot start a character. */
+static int
+utf8_extra_bytes(unsigned char lead) {
+    if (lead < 0x80) {
+        return 0;
+    }
+    if ((lead & 0xE0) == 0xC0) {
+        return 1;
+    }
+    if ((lead & 0xF0) == 0xE0) {
+        return 2;
+    }
+    return (lead & 0xF8) == 0xF0 ? 3 : -1;
+}
+
+/* 1 when @p text is well-formed UTF-8 that holds no C0 or C1 control. */
+static int
+text_is_safe_utf8(const char* text) {
+    const unsigned char* p = (const unsigned char*)text;
+    while (*p != 0) {
+        const int extra = utf8_extra_bytes(*p);
+        if (extra < 0 || *p < 0x20 || *p == 0x7F || (*p == 0xC2 && p[1] >= 0x80 && p[1] <= 0x9F)) {
+            return 0;
+        }
+        for (int i = 1; i <= extra; i++) {
+            if ((p[i] & 0xC0) != 0x80) {
+                return 0;
+            }
+        }
+        p += 1 + extra;
+    }
+    return 1;
+}
+
+/* Table 14.16: the notification indicator is a 6-bit type-2 element. A D-TX CEASED carrying one (most significant bit
+ * set) and a type-3 element after it must parse, so the reader has to step over the notification. */
+static int
+test_d_tx_ceased_notification_tail(void) {
+    uint8_t bits[64];
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    bit_writer w = cmce_writer(bits, sizeof bits, TETRA_CMCE_D_TX_CEASED);
+    put(&w, 42, 14);
+    put(&w, 1, 1);  /* transmission request permission */
+    put(&w, 1, 1);  /* O-bit */
+    put(&w, 1, 1);  /* notification indicator present */
+    put(&w, 33, 6); /* 100001 */
+    put(&w, 1, 1);  /* M-bit: a type-3 element follows */
+    put(&w, 3, 4);  /* element identifier */
+    put(&w, 4, 11); /* length */
+    put(&w, 9, 4);
+    put(&w, 0, 1); /* last M-bit */
+    tetra_st(state)->call_active = 1;
+    tetra_st(state)->call_id = 42;
+    tetra_st(state)->tx_granted_valid = 1;
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    int ok = !tetra_st(state)->tx_granted_valid && tetra_st(state)->tx_ceased_tx_perm == 1;
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* A D-TX GRANTED that ends at its O-bit (set) is truncated: the buffer is exactly the PDU, so a read past it would be
+ * caught by the address sanitizer, and nothing may be published. */
+static int
+test_tx_granted_ending_at_o_bit(void) {
+    enum { NBITS = 3 + 25 };
+
+    uint8_t* bits = (uint8_t*)calloc(NBITS, 1);
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    if (!bits || !state || !opts) {
+        free(bits);
+        free(state);
+        free(opts);
+        return 0;
+    }
+    bit_writer w = {bits, 0};
+    put(&w, TETRA_MLE_PD_CMCE, 3);
+    put(&w, TETRA_CMCE_D_TX_GRANTED, 5);
+    put(&w, 7, 14);
+    put(&w, 0, 2);
+    put(&w, 0, 3);
+    put(&w, 1, 1); /* O-bit set, P-bits missing */
+    tetra_st(state)->tx_granted_ssi = 0x112233u;
+    tetra_mle_dispatch(bits, NBITS, 0, opts, state);
+    int ok = !tetra_st(state)->tx_granted_valid && tetra_st(state)->tx_granted_ssi == 0x112233u;
+    free(bits);
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* The SDS sender belongs to the SDS text: a D-STATUS or an unfinished concatenation part from someone else must not
+ * re-attribute the last text. */
+static int
+test_sds_sender_stays_with_text(void) {
+    uint8_t bits[160];
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+
+    bit_writer w = sds_writer(bits, sizeof bits, 1001, 32);
+    put(&w, 2, 8); /* simple text messaging */
+    put(&w, 1, 8); /* reserved bit, Latin-1 */
+    put(&w, 'H', 8);
+    put(&w, 'I', 8);
+    put(&w, 0, 1); /* O-bit */
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    int ok = tetra_st(state)->sds_src == 1001 && strcmp(tetra_st(state)->sds_text, "HI") == 0;
+
+    w = cmce_writer(bits, sizeof bits, TETRA_CMCE_D_STATUS);
+    put(&w, 1, 2);
+    put(&w, 2002, 24);
+    put(&w, 0x1234, 16);
+    put(&w, 0, 1);
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    ok = ok && tetra_st(state)->sds_status_src == 2002 && tetra_st(state)->sds_status == 0x1234
+         && tetra_st(state)->sds_src == 1001 && strcmp(tetra_st(state)->sds_text, "HI") == 0;
+
+    w = sds_writer(bits, sizeof bits, 3003, 8 + 24 + 8);
+    put(&w, 12, 8); /* concatenated SDS without SDS-TL */
+    put(&w, 0, 3);
+    put(&w, 0, 1);
+    put(&w, 5, 4); /* reference */
+    put(&w, 2, 8); /* parts */
+    put(&w, 2, 8); /* this is part 2 */
+    put(&w, 'X', 8);
+    put(&w, 0, 1);
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    ok = ok && tetra_st(state)->sds_concat_valid && !tetra_st(state)->sds_concat_complete
+         && tetra_st(state)->sds_src == 1001 && strcmp(tetra_st(state)->sds_text, "HI") == 0;
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* C0 and C1 controls in SDS text (U+009B is CSI to a UTF-8 terminal) become spaces in every text coding scheme, and
+ * the message list gets the same safe text. */
+static int
+test_sds_control_characters(void) {
+    uint8_t bits[200];
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    static const uint16_t k_units[] = {'A', 0x009B, 'B', 0x001B, 'C', 0x0085, 'D'};
+
+    bit_writer w = sds_writer(bits, sizeof bits, 7, 16 + 7 * 16);
+    put(&w, 2, 8);
+    put(&w, 26, 8); /* UCS-2/UTF-16BE */
+    for (size_t i = 0; i < sizeof k_units / sizeof k_units[0]; i++) {
+        put(&w, k_units[i], 16);
+    }
+    put(&w, 0, 1);
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    int ok = strcmp(tetra_st(state)->sds_text, "A B C D") == 0;
+    const dsd_tetra_message* last =
+        &state->tetra_messages[(state->tetra_message_sequence - 1u) % DSD_TETRA_MESSAGE_CAPACITY];
+    ok = ok && strcmp(last->text, "SDS from 7: A B C D") == 0;
+
+    w = sds_writer(bits, sizeof bits, 7, 16 + 6 * 8);
+    put(&w, 2, 8);
+    put(&w, 1, 8); /* Latin-1 */
+    put(&w, 'E', 8);
+    put(&w, 0x9B, 8);
+    put(&w, 0x1B, 8);
+    put(&w, 0x0A, 8);
+    put(&w, 0xE9, 8);
+    put(&w, 'F', 8);
+    put(&w, 0, 1);
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    ok = ok
+         && strcmp(tetra_st(state)->sds_text, "E   \xc3\xa9"
+                                              "F")
+                == 0
+         && text_is_safe_utf8(tetra_st(state)->sds_text);
+
+    /* GSM 7-bit "A", LF, "B" packed into three octets (table 29.34): 0x41, 0x85, 0x10. */
+    w = sds_writer(bits, sizeof bits, 7, 16 + 24);
+    put(&w, 2, 8);
+    put(&w, 0, 8); /* GSM 7-bit */
+    put(&w, 0x41, 8);
+    put(&w, 0x85, 8);
+    put(&w, 0x10, 8);
+    put(&w, 0, 1);
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    ok = ok && strcmp(tetra_st(state)->sds_text, "A B") == 0;
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* A lone low surrogate, and a high surrogate at the end of the text, show as U+FFFD instead of dropping the SDS. */
+static int
+test_sds_unpaired_surrogates(void) {
+    uint8_t bits[160];
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    bit_writer w = sds_writer(bits, sizeof bits, 9, 16 + 3 * 16);
+    put(&w, 2, 8);
+    put(&w, 26, 8);
+    put(&w, 0xDC00, 16);
+    put(&w, 'A', 16);
+    put(&w, 0xD83D, 16);
+    put(&w, 0, 1);
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    int ok = tetra_st(state)->sds_src == 9 && tetra_st(state)->sds_text_unicode
+             && strcmp(tetra_st(state)->sds_text, "\xef\xbf\xbd"
+                                                  "A\xef\xbf\xbd")
+                    == 0;
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* The message list entry is cut at a character boundary, never inside a UTF-8 sequence: with a 7-digit SSI the
+ * 18-byte prefix leaves an odd number of bytes for two-byte characters. */
+static int
+test_sds_message_summary_utf8_boundary(void) {
+    uint8_t bits[2048];
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    bit_writer w = sds_writer(bits, sizeof bits, 1234567, 16 + 150 * 8);
+    put(&w, 2, 8);
+    put(&w, 1, 8);
+    for (int i = 0; i < 150; i++) {
+        put(&w, 0xE9, 8); /* two UTF-8 bytes each */
+    }
+    put(&w, 0, 1);
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+    const dsd_tetra_message* last =
+        &state->tetra_messages[(state->tetra_message_sequence - 1u) % DSD_TETRA_MESSAGE_CAPACITY];
+    int ok = tetra_st(state)->sds_text_len == 254 && text_is_safe_utf8(tetra_st(state)->sds_text)
+             && strncmp(last->text, "SDS from 1234567: \xc3\xa9", 20) == 0 && text_is_safe_utf8(last->text)
+             && strlen(last->text) == 18 + 124;
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+static void
+dispatch_concat_part(dsd_state* state, const dsd_opts* opts, uint8_t sequence, uint8_t octet) {
+    uint8_t bits[160];
+    const int data_bits = 8 + 24 + (sequence == 1 ? 8 + 8 : 0) + 8;
+    bit_writer w = sds_writer(bits, sizeof bits, 55, data_bits);
+    put(&w, 12, 8);
+    put(&w, 0, 3);
+    put(&w, 0, 1);
+    put(&w, 3, 4); /* reference */
+    put(&w, 2, 8); /* parts */
+    put(&w, sequence, 8);
+    if (sequence == 1) {
+        put(&w, 2, 8); /* payload PID: simple text */
+        put(&w, 1, 8); /* reserved bit, Latin-1 */
+    }
+    put(&w, octet, 8);
+    put(&w, 0, 1);
+    tetra_mle_dispatch(bits, w.pos, 1, opts, state);
+}
+
+/* Reassembly lives in each session's TETRA state: parts given to one session never complete a message in another, and
+ * resetting the TETRA state drops what was collected. */
+static int
+test_sds_concat_is_per_session(void) {
+    dsd_state* a = alloc_state();
+    dsd_state* b = alloc_state();
+    dsd_opts* opts = alloc_opts();
+
+    dispatch_concat_part(a, opts, 1, 'O');
+    dispatch_concat_part(b, opts, 2, 'K');
+    int ok =
+        tetra_st(b)->sds_concat_valid && !tetra_st(b)->sds_concat_complete && tetra_st(b)->sds_concat_received == 1;
+    dispatch_concat_part(a, opts, 2, 'K');
+    ok = ok && tetra_st(a)->sds_concat_complete && strcmp(tetra_st(a)->sds_text, "OK") == 0;
+
+    dispatch_concat_part(a, opts, 1, 'N');
+    tetra_state_reset(a);
+    dispatch_concat_part(a, opts, 2, 'O');
+    ok = ok && !tetra_st(a)->sds_concat_complete && tetra_st(a)->sds_concat_received == 1;
+
+    free_state(a);
+    free_state(b);
+    free(opts);
+    return ok;
+}
+
+/* A message whose parts stop arriving for 300 s on the decode clock is dropped. */
+static int
+test_sds_concat_timeout(void) {
+    const uint64_t second_ns = 1000000000ULL;
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    dsd_decode_clock_use_test(1000 * second_ns);
+    dispatch_concat_part(state, opts, 1, 'O');
+    dsd_decode_clock_test_set_ns(1301 * second_ns);
+    dispatch_concat_part(state, opts, 2, 'K');
+    int ok = !tetra_st(state)->sds_concat_complete && tetra_st(state)->sds_concat_received == 1;
+    dispatch_concat_part(state, opts, 1, 'O');
+    ok = ok && tetra_st(state)->sds_concat_complete && strcmp(tetra_st(state)->sds_text, "OK") == 0;
+    dsd_decode_clock_use_system();
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* A concatenation part too short for its table 29.60 control fields is malformed and publishes nothing. */
+static int
+test_sds_truncated_concat_control(void) {
+    uint8_t bits[96];
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    bit_writer w = sds_writer(bits, sizeof bits, 77, 16);
+    put(&w, 12, 8);
+    put(&w, 0, 8);
+    put(&w, 0, 1);
+    tetra_mle_dispatch(bits, w.pos, 6, opts, state);
+    int ok = tetra_st(state)->sds_last_cc == 0 && tetra_st(state)->sds_src == 0 && !tetra_st(state)->sds_concat_valid
+             && state->tetra_message_sequence == 0;
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
 int
 main(void) {
     int passed = 0, total = 0;
@@ -2191,6 +2550,15 @@ main(void) {
     RUN(test_d_setup_truncated_optional_rejected);
     RUN(test_floor_control_truncated_optionals_rejected);
     RUN(test_release_is_scoped_to_active_call);
+    RUN(test_d_tx_ceased_notification_tail);
+    RUN(test_tx_granted_ending_at_o_bit);
+    RUN(test_sds_sender_stays_with_text);
+    RUN(test_sds_control_characters);
+    RUN(test_sds_unpaired_surrogates);
+    RUN(test_sds_message_summary_utf8_boundary);
+    RUN(test_sds_concat_is_per_session);
+    RUN(test_sds_concat_timeout);
+    RUN(test_sds_truncated_concat_control);
 #undef RUN
 
     DSD_FPRINTF(stderr, "\n%d / %d passed\n", passed, total);
