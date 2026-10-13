@@ -432,15 +432,15 @@ test_sustained(dsd_signal_detector* d) {
     assert(detected(d, slow, {{163012500, 0.3, 2500, 50, 0}}) == std::vector<uint32_t>{163012500});
     const auto slower = grid_request(1536000, 384000, 163450000, 6250, 16000, 162987500, 9);
     assert(detected(d, slower, {{163012500, 0.3, 5000, 45, 0}}) == std::vector<uint32_t>{163012500});
-    // Clipped, the slow tone dwells on one side of the carrier per window, and the location splits the two dwells
-    // apart where the centre is weak: the channel still holds the transmitter's power in both windows.
+    // A clipped slow tone dwells on one side of its carrier at a time. Measured where each window spans a change of
+    // side (a quarter cycle on), it holds its power in both windows and is sustained.
     {
         const auto clipped = grid_request(1536000, 384000, 163450000, 2500, 8000, 163012500 - 8 * 2500, 17);
         auto iq = samples(clipped, clipped.frequencies[0], 0, request_samples(clipped));
         double phase = 0;
         for (size_t i = 0; i < iq.size() / 2; ++i) {
             const double t = (double)i / clipped.capture.rate_hz;
-            const double deviation = 1000.0 * std::max(-0.7, std::min(0.7, 2.0 * std::sin(6.283185307179586 * 45 * t)));
+            const double deviation = 1000.0 * std::max(-0.7, std::min(0.7, 2.0 * std::cos(6.283185307179586 * 45 * t)));
             phase += 6.283185307179586
                      * (163012500.0 - clipped.capture.capture_hz + clipped.capture.rotation_hz + deviation)
                      / clipped.capture.rate_hz;
@@ -450,6 +450,26 @@ test_sustained(dsd_signal_detector* d) {
         const auto report = run(d, clipped, iq, 4096);
         for (uint32_t i = 0; i < clipped.count; ++i) {
             assert(report.candidates[i].detected == (clipped.frequencies[i] == 163012500));
+        }
+    }
+    // Measured where the windows fall on its two dwells, the same transmitter matches, window for window, two carriers
+    // 700 Hz either side of 163.0125 MHz that each fill one window: neither holds its power in both windows, so
+    // nothing is sustained. A later measurement at another phase finds the transmitter.
+    {
+        const auto pair = grid_request(1536000, 384000, 163450000, 2500, 8000, 163012500 - 8 * 2500, 17);
+        const size_t half = request_samples(pair) / 2;
+        auto iq = samples(pair, pair.frequencies[0], 0, 2 * half);
+        for (size_t i = 0; i < 2 * half; ++i) {
+            const double offset = i < half ? 700.0 : -700.0;
+            const double omega = 6.283185307179586
+                                 * (163012500.0 + offset - pair.capture.capture_hz + pair.capture.rotation_hz)
+                                 / pair.capture.rate_hz;
+            iq[2 * i] += (float)(0.3 * std::cos(omega * (double)i));
+            iq[2 * i + 1] += (float)(0.3 * std::sin(omega * (double)i));
+        }
+        const auto report = run(d, pair, iq, 4096);
+        for (uint32_t i = 0; i < pair.count; ++i) {
+            assert(!report.candidates[i].detected);
         }
     }
     // A carrier in the first window only, a channel beside a continuous transmitter whose skirt reaches its channel in
