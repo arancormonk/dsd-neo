@@ -7,7 +7,7 @@
  * Item 1: D-INFO IE expansion (call_timeout, notification)
  * Item 2: D-TX-* stub expansion (call_id, notification parsed)
  * Item 3: channel_info consumption++ (30+ state fields displayed)
- * Item 4: SNDCP (PD=8) minimal parser
+ * Item 4: SNDCP minimal parser
  */
 
 #include <dsd-neo/core/opts.h>
@@ -256,7 +256,8 @@ test_channel_info_expanded(void) {
 }
 
 /* ====================================================================
- * Item 4: SNDCP (PD=8) parser
+ * Item 4: SNDCP parser (EN 300 392-2 clause 28.4.4): the SN PDU type comes
+ * first (table 28.121); the NSAPI follows only in the PDU types that carry one.
  * ==================================================================== */
 static void
 test_sndcp_parser(void) {
@@ -264,14 +265,11 @@ test_sndcp_parser(void) {
     dsd_state* st = alloc_state();
     dsd_opts* opt = alloc_opts();
 
-    /* Build SNDCP PDU:
-     *   bits 0-3: NSAPI = 5 (0101)
-     *   bits 4-7: PDU type = 3 (0011)
-     *   bits 8+:  filler */
+    /* SN-UNITDATA (table 28.43): SN PDU type 4, NSAPI 5, then PCOMP/DCOMP. */
     uint8_t sndcp[16];
     memset(sndcp, 0, sizeof(sndcp));
-    pack_bits(sndcp, 5, 0, 4); /* NSAPI = 5 */
-    pack_bits(sndcp, 3, 4, 4); /* PDU type = 3 */
+    pack_bits(sndcp, 4, 0, 4); /* SN PDU type = SN-UNITDATA */
+    pack_bits(sndcp, 5, 4, 4); /* NSAPI = 5 */
 
     /* Prefix the SNDCP PDU with the standard 3-bit SNDCP PD. */
     uint8_t mle[64];
@@ -281,11 +279,19 @@ test_sndcp_parser(void) {
 
     CHECK(tetra_st(st)->sndcp_valid == 1, "SNDCP valid flag set");
     CHECK(tetra_st(st)->sndcp_nsapi == 5, "SNDCP NSAPI = 5");
-    CHECK(tetra_st(st)->sndcp_pdu_type == 3, "SNDCP PDU type = 3");
+    CHECK(tetra_st(st)->sndcp_pdu_type == 4, "SNDCP PDU type = SN-UNITDATA");
     CHECK(tetra_st(st)->sndcp_nbits == 16, "SNDCP nbits = 16");
 
-    /* Test short SNDCP (< 8 bits) */
-    memset(st, 0, sizeof(*st));
+    /* SN-END OF DATA (table 28.34) carries no NSAPI. */
+    memset(sndcp, 0, sizeof(sndcp));
+    pack_bits(sndcp, 8, 0, 4);
+    pack_bits(sndcp, 1, 4, 1); /* immediate service change */
+    wrap_mle_pd(sndcp, 5, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
+    tetra_mle_dispatch(mle, mle_nbits, 3, opt, st);
+    CHECK(tetra_st(st)->sndcp_pdu_type == 8 && tetra_st(st)->sndcp_nsapi == 0, "SN-END OF DATA has no NSAPI");
+
+    /* Test short SNDCP: an SN-ACTIVATE PDP CONTEXT ACCEPT cut before its NSAPI */
+    tetra_state_reset(st);
     uint8_t sndcp_short[4];
     memset(sndcp_short, 0, sizeof(sndcp_short));
     wrap_mle_pd(sndcp_short, 4, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);

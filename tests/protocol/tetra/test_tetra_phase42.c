@@ -22,6 +22,7 @@
  *  11.  tetra_sb1_dibuf and tetra_sb1_valid zero-initialize correctly
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>

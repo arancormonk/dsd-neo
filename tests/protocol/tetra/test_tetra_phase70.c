@@ -17,13 +17,14 @@
  *   5. call_id and d_connect_ack_valid set
  *
  * Phase 67 — CMCE D-TX-CEASED permission bits
- *   6. tx_perm and cipher_info extracted; tx_granted_valid cleared
+ *   6. tx_perm extracted; tx_granted_valid cleared
  *
  * Phase 68 — MLE D-RESTORE-ACK SDU / D-RESTORE-FAIL cause
  *   7. restore_ack_la extracted when nbits >= 19
  *   8. restore_response_result extracted
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
@@ -120,7 +121,6 @@ test_d_tx_ceased(void) {
     tetra_mle_dispatch(pdu, n, 0, opt, st);
 
     CHECK(tetra_st(st)->tx_ceased_tx_perm == 1, "D-TX-CEASED request permission extracted");
-    CHECK(tetra_st(st)->tx_ceased_cipher_info == 0, "D-TX-CEASED has no cipher-info field");
     CHECK(tetra_st(st)->tx_granted_valid == 0, "D-TX-CEASED clears grant");
 
     free(st);

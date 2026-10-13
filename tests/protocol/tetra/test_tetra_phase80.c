@@ -408,8 +408,8 @@ test_phase78_mle_nwrk_broadcast(void) {
     tetra_mle_dispatch(pdu, n, 0, opt, st);
     CHECK(tetra_st(st)->mle_ca_neighbor_count_valid == 1 && tetra_st(st)->mle_ca_neighbor_count == 2,
           "Annex E.18 two-neighbour collection accepted");
-    CHECK(tetra_st(st)->mle_ca_neighbor_cell_id[0] == 1 && tetra_st(st)->mle_ca_neighbor_main_carrier[0] == 1000
-              && tetra_st(st)->mle_ca_neighbor_cell_id[1] == 2 && tetra_st(st)->mle_ca_neighbor_main_carrier[1] == 2000,
+    CHECK(tetra_st(st)->mle_ca_neighbor[0].cell_id == 1 && tetra_st(st)->mle_ca_neighbor[0].main_carrier == 1000
+              && tetra_st(st)->mle_ca_neighbor[1].cell_id == 2 && tetra_st(st)->mle_ca_neighbor[1].main_carrier == 2000,
           "Annex E.18 mandatory neighbour fields retained");
 
     /* Remove the final Type 2 P-bit after changing the mandatory value.  No

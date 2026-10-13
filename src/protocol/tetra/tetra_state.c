@@ -13,6 +13,7 @@
 static void
 tetra_state_free(void* ptr) {
     if (ptr) {
+        free(((tetra_state_t*)ptr)->sds_concat);
         DSD_SECURE_ZERO(ptr, sizeof(tetra_state_t));
         free(ptr);
     }

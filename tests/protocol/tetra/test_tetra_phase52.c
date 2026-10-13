@@ -21,6 +21,7 @@
  *  16.  tetra_sds_short_valid zero after calloc
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 

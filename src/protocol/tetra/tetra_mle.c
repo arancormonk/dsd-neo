@@ -1,2962 +1,2041 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/*
- * TETRA MLE PDU dispatcher and CMCE call-control decoder.
- * ETSI EN 300 392-2 §21.6 (D-MLE) and Chapter 14 (CMCE).
+/**
+ * @file
+ * @brief TETRA MLE routing and the downlink CMCE, SDS and SNDCP decoders (EN 300 392-2 clauses 14, 18, 28 and 29).
  *
- * Phase 9: decode the TM-SDU carried by MAC-RESOURCE to extract CMCE
- * call-setup / release events and update dsd_state accordingly.
+ * Every parser reads its PDU through a tetra_bit_reader into a local snapshot and publishes the snapshot to the TETRA
+ * state only when every declared element fitted, so a truncated or malformed PDU leaves the last good state in place.
+ * CMCE PDUs follow the Annex E.1.1 encoding (type-1 elements, an O-bit, one P-bit per type-2 element, then an M-bit
+ * chain of length-delimited type-3/4 elements); MLE PDUs follow Annex E.2.1 (no type-3/4 elements).
  */
 
-#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/utf16.h>
+#include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_messages.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 
-#include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
+
+#include "tetra_log.h"
 #include "tetra_state.h"
 
-/* Phase 81: bits_to_uint unified — see tetra_bits.h */
-#define mle_bits_to_uint                 tetra_bits_to_uint
+/* What every parser needs besides its bit reader. */
+typedef struct {
+    const dsd_opts* opts;
+    dsd_state* state;
+    tetra_state_t* ts;
+    int cc;
+    int nbits; /* bits in the whole TM-SDU, for the truncation notes */
+} mle_ctx;
 
-#define TETRA_SDS_CONCAT_CONTEXTS        4
-#define TETRA_SDS_CONCAT_PARTS           255
-#define TETRA_SDS_CONCAT_PART_BITS       2047
-#define TETRA_SDS_CONCAT_PART_BYTES      ((TETRA_SDS_CONCAT_PART_BITS + 7) / 8)
-#define TETRA_SDS_CONCAT_TIMEOUT_SECONDS 300
+/* Mark the reader failed: a malformed element is handled like a truncated one, so nothing is published. */
+static void
+bits_reject(tetra_bit_reader* r) {
+    r->failed = 1;
+}
+
+/* Annex E.1.1 / E.2.1: type-2 elements in table order, each preceded by its P-bit. values[i] receives element i (0
+ * when absent); bit i of the result is set when it was present. */
+static unsigned
+read_type2_elements(tetra_bit_reader* r, const uint8_t* widths, unsigned count, uint32_t* values) {
+    unsigned present = 0;
+    for (unsigned i = 0; i < count; i++) {
+        values[i] = 0;
+        if (tetra_bits_present(r)) {
+            values[i] = tetra_bits_read(r, widths[i]);
+            present |= 1u << i;
+        }
+    }
+    return present;
+}
+
+/* 1 when bit @p index of a read_type2_elements() result is set. */
+static uint8_t
+type2_present(unsigned present, unsigned index) {
+    return (uint8_t)((present >> index) & 1u);
+}
+
+/* Reserved type-2 elements the present edition says shall not be used: their P-bits must be clear. */
+static void
+require_absent_type2(tetra_bit_reader* r, int count) {
+    for (int i = 0; i < count; i++) {
+        if (tetra_bits_present(r)) {
+            bits_reject(r);
+        }
+    }
+}
+
+/* CMCE (clause 14). */
+
+/* A calling or transmitting party (tables 14.43 to 14.45): type 1 carries an SSI, type 2 an SSI and its 24-bit
+ * extension (MCC and MNC); types 0 and 3 are reserved and carry neither. */
+typedef struct {
+    uint32_t ssi;
+    uint32_t extension;
+    uint8_t type;
+    uint8_t type_valid;
+    uint8_t ssi_valid;
+    uint8_t extension_valid;
+} cmce_party;
+
+static void
+cmce_read_party_address(tetra_bit_reader* r, cmce_party* party) {
+    if (party->type == 1 || party->type == 2) {
+        party->ssi = tetra_bits_read(r, 24);
+        party->ssi_valid = 1;
+    }
+    if (party->type == 2) {
+        party->extension = tetra_bits_read(r, 24);
+        party->extension_valid = 1;
+    }
+}
+
+/* The type-2 calling/transmitting party type identifier with its conditional address. */
+static void
+cmce_read_party_type2(tetra_bit_reader* r, cmce_party* party) {
+    if (tetra_bits_present(r)) {
+        party->type = (uint8_t)tetra_bits_read(r, 2);
+        party->type_valid = 1;
+        cmce_read_party_address(r, party);
+    }
+}
+
+/* Notes a PDU that did not fit or broke its encoding rules; nothing of it is published. */
+static int
+cmce_reject(const mle_ctx* ctx, const char* name) {
+    TETRA_LOG_PAYLOAD(ctx->ts, "[TETRA CMCE %s] CC=%d (truncated or malformed: %d bits)\n", name, ctx->cc, ctx->nbits);
+    return 0;
+}
+
+/* Basic service information (table 14.35): circuit mode type, encryption flag, communication type, and slots per
+ * frame or speech service. */
+static void
+cmce_apply_basic_service(tetra_state_t* ts, uint8_t basic) {
+    ts->call_type = (uint8_t)(basic >> 5);
+    ts->enc_mode = (uint8_t)((basic >> 4) & 1u);
+    ts->cmce_com_type = (uint8_t)((basic >> 2) & 3u);
+    ts->call_slots = (uint8_t)(basic & 3u);
+}
+
+static int
+cmce_matches_active_call(const tetra_state_t* ts, uint32_t call_id) {
+    return !ts->call_active || ts->call_id == call_id;
+}
+
+/* D-SETUP, table 14.15. */
 
 typedef struct {
+    cmce_party calling;
+    uint32_t temporary_address;
+    uint16_t call_id;
+    uint8_t timeout;
+    uint8_t basic;
+    uint8_t grant;
+    uint8_t permission;
+    uint8_t priority;
+    uint8_t notification;
+    uint8_t notification_valid;
+    uint8_t temporary_address_valid;
+} cmce_setup;
+
+static void
+cmce_read_setup(tetra_bit_reader* r, cmce_setup* s) {
+    /* Type-2: notification indicator, temporary address; the calling party follows. */
+    static const uint8_t k_type2[] = {6, 24};
+    uint32_t values[2];
+    s->call_id = (uint16_t)tetra_bits_read(r, 14);
+    s->timeout = (uint8_t)tetra_bits_read(r, 4);
+    (void)tetra_bits_skip(r, 2); /* hook method selection, simplex/duplex selection */
+    s->basic = (uint8_t)tetra_bits_read(r, 8);
+    s->grant = (uint8_t)tetra_bits_read(r, 2);
+    s->permission = (uint8_t)tetra_bits_read(r, 1);
+    s->priority = (uint8_t)tetra_bits_read(r, 4);
+    if (!tetra_bits_present(r)) {
+        return;
+    }
+    const unsigned present = read_type2_elements(r, k_type2, 2, values);
+    s->notification = (uint8_t)values[0];
+    s->notification_valid = type2_present(present, 0);
+    s->temporary_address = values[1];
+    s->temporary_address_valid = type2_present(present, 1);
+    cmce_read_party_type2(r, &s->calling);
+    (void)tetra_bits_skip_type34(r);
+}
+
+static int
+parse_cmce_d_setup(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_state_t* const ts = ctx->ts;
+    cmce_setup s;
+    DSD_MEMSET(&s, 0, sizeof s);
+    cmce_read_setup(r, &s);
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-SETUP");
+    }
+    DSD_FPRINTF(stderr,
+                "[TETRA CMCE D-SETUP] CC=%d call=%u timeout=%u circuit=%u enc=%u com=%u service=%u grant=%u "
+                "request=%u priority=%u",
+                ctx->cc, s.call_id, s.timeout, (unsigned)(s.basic >> 5), (unsigned)((s.basic >> 4) & 1u),
+                (unsigned)((s.basic >> 2) & 3u), (unsigned)(s.basic & 3u), s.grant, s.permission, s.priority);
+    if (s.calling.ssi_valid) {
+        DSD_FPRINTF(stderr, " calling_SSI=%u", s.calling.ssi);
+    }
+    DSD_FPRINTF(stderr, "\n");
+
+    ts->call_active = 1;
+    ts->call_id = s.call_id;
+    ts->call_timeout = s.timeout;
+    cmce_apply_basic_service(ts, s.basic);
+    ts->cmce_notif = s.notification;
+    ts->cmce_setup_basic_service = s.basic;
+    ts->cmce_setup_priority = s.priority;
+    ts->cmce_setup_notification_valid = s.notification_valid;
+    ts->cmce_setup_temporary_address = s.temporary_address;
+    ts->cmce_setup_temporary_address_valid = s.temporary_address_valid;
+    ts->cmce_setup_calling_type = s.calling.type;
+    ts->cmce_setup_calling_type_valid = s.calling.type_valid;
+    ts->cmce_setup_calling_extension = s.calling.extension;
+    ts->cmce_setup_calling_extension_valid = s.calling.extension_valid;
+    ts->calling_ssi = s.calling.ssi_valid ? s.calling.ssi : 0;
+    ts->cmce_call_generation++;
+    return 1;
+}
+
+/* D-RELEASE and D-DISCONNECT, tables 14.12 and 14.9. */
+
+/* Forget the floor-control state of a call that has ended. */
+static void
+cmce_clear_floor(tetra_state_t* ts) {
+    ts->tx_granted_valid = 0;
+    ts->tx_granted_ssi = 0;
+    ts->cmce_tx_granted_notification_valid = 0;
+    ts->cmce_tx_granted_party_type_valid = 0;
+    ts->cmce_tx_granted_party_extension_valid = 0;
+    ts->tx_continue = 0;
+    ts->tx_interrupted = 0;
+    ts->tx_wait = 0;
+    ts->tx_event_notification_valid = 0;
+    ts->tx_event_party_type_valid = 0;
+    ts->tx_event_party_ssi_valid = 0;
+    ts->tx_event_party_extension_valid = 0;
+}
+
+static int
+parse_cmce_release(tetra_bit_reader* r, const mle_ctx* ctx, int is_disconnect) {
+    static const uint8_t k_type2[] = {6}; /* notification indicator */
+    tetra_state_t* const ts = ctx->ts;
+    const char* const name = is_disconnect ? "D-DISCONNECT" : "D-RELEASE";
+    uint32_t notification = 0;
+    unsigned present = 0;
+    const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
+    const uint8_t cause = (uint8_t)tetra_bits_read(r, 5);
+    if (tetra_bits_present(r)) {
+        present = read_type2_elements(r, k_type2, 1, &notification);
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, name);
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE %s] CC=%d call=%u cause=%u\n", name, ctx->cc, call_id, cause);
+    if (ts->call_active && ts->call_id != call_id) {
+        TETRA_LOG_VERBOSE(ts, 1, "[TETRA CMCE %s] CC=%d call=%u ignored; active call=%u\n", name, ctx->cc, call_id,
+                          ts->call_id);
+        return 1;
+    }
+    ts->call_active = 0;
+    cmce_clear_floor(ts);
+    ts->call_id = call_id;
+    ts->cmce_release_cause = cause;
+    ts->cmce_release_notification = (uint8_t)notification;
+    ts->cmce_release_notification_valid = type2_present(present, 0);
+    ts->cmce_release_was_disconnect = (uint8_t)(is_disconnect ? 1 : 0);
+    /* The trunking state machine retunes and records it in the options; the MAC hands the MLE read-only options. */
+    tetra_sm_on_release((dsd_opts*)ctx->opts, ctx->state);
+    return 1;
+}
+
+static int
+parse_cmce_d_release(tetra_bit_reader* r, const mle_ctx* ctx) {
+    return parse_cmce_release(r, ctx, 0);
+}
+
+static int
+parse_cmce_d_disconnect(tetra_bit_reader* r, const mle_ctx* ctx) {
+    return parse_cmce_release(r, ctx, 1);
+}
+
+/* D-CONNECT, table 14.7. */
+
+typedef struct {
+    uint32_t optional[4]; /* call priority, basic service information, temporary address, notification indicator */
+    unsigned present;
+    uint16_t call_id;
+    uint8_t timeout;
+    uint8_t hook;
+    uint8_t duplex;
+    uint8_t grant;
+    uint8_t permission;
+    uint8_t ownership;
+} cmce_connect;
+
+static int
+parse_cmce_d_connect(tetra_bit_reader* r, const mle_ctx* ctx) {
+    static const uint8_t k_type2[] = {4, 8, 24, 6};
+    tetra_state_t* const ts = ctx->ts;
+    cmce_connect c;
+    DSD_MEMSET(&c, 0, sizeof c);
+    c.call_id = (uint16_t)tetra_bits_read(r, 14);
+    c.timeout = (uint8_t)tetra_bits_read(r, 4);
+    c.hook = (uint8_t)tetra_bits_read(r, 1);
+    c.duplex = (uint8_t)tetra_bits_read(r, 1);
+    c.grant = (uint8_t)tetra_bits_read(r, 2);
+    c.permission = (uint8_t)tetra_bits_read(r, 1);
+    c.ownership = (uint8_t)tetra_bits_read(r, 1);
+    if (tetra_bits_present(r)) {
+        c.present = read_type2_elements(r, k_type2, 4, c.optional);
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-CONNECT");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-CONNECT] CC=%d call=%u timeout=%u grant=%u request=%u\n", ctx->cc, c.call_id,
+                c.timeout, c.grant, c.permission);
+
+    const uint8_t basic = (uint8_t)c.optional[1];
+    const uint8_t basic_valid = type2_present(c.present, 1);
+    ts->call_active = 1;
+    ts->call_id = c.call_id;
+    ts->call_timeout = c.timeout;
+    ts->connect_valid = 1;
+    ts->connect_call_type = basic_valid ? (uint8_t)(basic >> 5) : 0;
+    ts->connect_enc_mode = basic_valid ? (uint8_t)((basic >> 4) & 1u) : 0;
+    ts->cmce_connect_hook = c.hook;
+    ts->cmce_connect_duplex = c.duplex;
+    ts->cmce_connect_tx_grant = c.grant;
+    ts->cmce_connect_tx_permission = c.permission;
+    ts->cmce_connect_ownership = c.ownership;
+    ts->cmce_connect_priority = (uint8_t)c.optional[0];
+    ts->cmce_connect_priority_valid = type2_present(c.present, 0);
+    ts->cmce_connect_basic_service = basic;
+    ts->cmce_connect_basic_service_valid = basic_valid;
+    ts->cmce_connect_temporary_address = c.optional[2];
+    ts->cmce_connect_temporary_address_valid = type2_present(c.present, 2);
+    ts->cmce_connect_notification = (uint8_t)c.optional[3];
+    ts->cmce_connect_notification_valid = type2_present(c.present, 3);
+    if (basic_valid) {
+        cmce_apply_basic_service(ts, basic);
+    }
+    ts->cmce_call_generation++;
+    return 1;
+}
+
+/* D-CONNECT ACKNOWLEDGE, table 14.8. */
+
+static int
+parse_cmce_d_connect_ack(tetra_bit_reader* r, const mle_ctx* ctx) {
+    static const uint8_t k_type2[] = {6}; /* notification indicator */
+    tetra_state_t* const ts = ctx->ts;
+    uint32_t notification = 0;
+    unsigned present = 0;
+    const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
+    const uint8_t timeout = (uint8_t)tetra_bits_read(r, 4);
+    const uint8_t grant = (uint8_t)tetra_bits_read(r, 2);
+    const uint8_t permission = (uint8_t)tetra_bits_read(r, 1);
+    if (tetra_bits_present(r)) {
+        present = read_type2_elements(r, k_type2, 1, &notification);
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-CONNECT-ACK");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-CONNECT-ACK] CC=%d call=%u timeout=%u grant=%u\n", ctx->cc, call_id, timeout,
+                grant);
+    ts->call_active = 1;
+    ts->call_id = call_id;
+    ts->call_timeout = timeout;
+    ts->d_connect_ack_call_id = call_id;
+    ts->d_connect_ack_tx_grant = grant;
+    ts->d_connect_ack_tx_permission = permission;
+    ts->d_connect_ack_notification = (uint8_t)notification;
+    ts->d_connect_ack_notification_valid = type2_present(present, 0);
+    ts->d_connect_ack_valid = 1;
+    ts->cmce_call_generation++;
+    return 1;
+}
+
+/* D-ALERT and D-CALL PROCEEDING, tables 14.4 and 14.5. */
+
+static int
+parse_cmce_d_alert(tetra_bit_reader* r, const mle_ctx* ctx) {
+    static const uint8_t k_type2[] = {8, 6}; /* basic service information, notification indicator */
+    tetra_state_t* const ts = ctx->ts;
+    uint32_t values[2] = {0, 0};
+    unsigned present = 0;
+    const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
+    const uint8_t timeout = (uint8_t)tetra_bits_read(r, 3);
+    (void)tetra_bits_skip(r, 2); /* reserved (set to 1), simplex/duplex selection */
+    const uint8_t queued = (uint8_t)tetra_bits_read(r, 1);
+    if (tetra_bits_present(r)) {
+        present = read_type2_elements(r, k_type2, 2, values);
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-ALERT");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-ALERT] CC=%d call=%u setup_timeout=%u queued=%u\n", ctx->cc, call_id, timeout,
+                queued);
+    ts->call_active = 1;
+    ts->call_id = call_id;
+    ts->d_alert_call_id = call_id;
+    ts->d_alert_timeout = timeout;
+    ts->d_alert_queued = queued;
+    ts->d_alert_basic_service = (uint8_t)values[0];
+    ts->d_alert_notification = (uint8_t)values[1];
+    ts->d_alert_valid = 1;
+    if (type2_present(present, 0)) {
+        cmce_apply_basic_service(ts, (uint8_t)values[0]);
+    }
+    ts->cmce_call_generation++;
+    return 1;
+}
+
+static int
+parse_cmce_d_call_proceeding(tetra_bit_reader* r, const mle_ctx* ctx) {
+    static const uint8_t k_type2[] = {8, 3, 6}; /* basic service information, call status, notification indicator */
+    tetra_state_t* const ts = ctx->ts;
+    uint32_t values[3] = {0, 0, 0};
+    unsigned present = 0;
+    const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
+    const uint8_t timeout = (uint8_t)tetra_bits_read(r, 3);
+    const uint8_t hook = (uint8_t)tetra_bits_read(r, 1);
+    (void)tetra_bits_skip(r, 1); /* simplex/duplex selection */
+    if (tetra_bits_present(r)) {
+        present = read_type2_elements(r, k_type2, 3, values);
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-CALL-PROCEEDING");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-CALL-PROCEEDING] CC=%d call=%u setup_timeout=%u\n", ctx->cc, call_id, timeout);
+    ts->call_active = 1;
+    ts->call_id = call_id;
+    ts->d_call_proc_call_id = call_id;
+    ts->d_call_proc_timeout = timeout;
+    ts->d_call_proc_hook = hook;
+    ts->d_call_proc_basic_service = (uint8_t)values[0];
+    ts->d_call_proc_status = (uint8_t)values[1];
+    ts->d_call_proc_notification = (uint8_t)values[2];
+    ts->d_call_proc_valid = 1;
+    if (type2_present(present, 0)) {
+        cmce_apply_basic_service(ts, (uint8_t)values[0]);
+    }
+    ts->cmce_call_generation++;
+    return 1;
+}
+
+/* D-STATUS, table 14.14. */
+
+static int
+parse_cmce_d_status(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_state_t* const ts = ctx->ts;
+    cmce_party calling;
+    DSD_MEMSET(&calling, 0, sizeof calling);
+    calling.type = (uint8_t)tetra_bits_read(r, 2);
+    cmce_read_party_address(r, &calling);
+    const uint16_t status = (uint16_t)tetra_bits_read(r, 16);
+    if (tetra_bits_present(r)) { /* no type-2 elements: type-3 elements follow at once */
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-STATUS");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-STATUS] CC=%d src_SSI=%u status=0x%04X\n", ctx->cc, calling.ssi, status);
+    ts->sds_status_src = calling.ssi;
+    ts->sds_status = status;
+    /* Table 29.13: a pre-coded status starting 011111 is an SDS-TL SDS-SHORT REPORT. */
+    if ((status >> 10) == 0x1fu) {
+        ts->sds_short_report_result = (uint8_t)((status >> 8) & 3u);
+        ts->sds_short_report_msg_ref = (uint8_t)status;
+        ts->sds_short_report_valid = 1;
+    }
+    return 1;
+}
+
+/* Floor control: D-TX GRANTED, D-TX INTERRUPT, D-TX CONTINUE, D-TX WAIT and D-TX CEASED, tables 14.16-14.20. */
+
+typedef struct {
+    cmce_party party; /* transmitting party (D-TX GRANTED and D-TX INTERRUPT) */
+    uint16_t call_id;
+    uint8_t grant;          /* transmission grant (D-TX GRANTED and D-TX INTERRUPT) */
+    uint8_t permission;     /* transmission request permission */
+    uint8_t encryption;     /* encryption control (D-TX GRANTED and D-TX INTERRUPT) */
+    uint8_t reserved;       /* reserved, set to 0 (D-TX GRANTED and D-TX INTERRUPT) */
+    uint8_t continue_value; /* continue (D-TX CONTINUE) */
+    uint8_t notification;
+    uint8_t notification_valid;
+} cmce_floor;
+
+/* The type-1 elements D-TX GRANTED and D-TX INTERRUPT share after the call identifier. */
+static void
+cmce_read_grant_fields(tetra_bit_reader* r, cmce_floor* f) {
+    f->grant = (uint8_t)tetra_bits_read(r, 2);
+    f->permission = (uint8_t)tetra_bits_read(r, 1);
+    f->encryption = (uint8_t)tetra_bits_read(r, 1);
+    f->reserved = (uint8_t)tetra_bits_read(r, 1);
+}
+
+/* The optional part: the notification indicator, the transmitting party when @p with_party, then type-3/4. */
+static void
+cmce_read_floor_optional(tetra_bit_reader* r, cmce_floor* f, int with_party) {
+    static const uint8_t k_type2[] = {6}; /* notification indicator */
+    uint32_t notification = 0;
+    if (!tetra_bits_present(r)) {
+        return;
+    }
+    f->notification_valid = (uint8_t)read_type2_elements(r, k_type2, 1, &notification);
+    f->notification = (uint8_t)notification;
+    if (with_party) {
+        cmce_read_party_type2(r, &f->party);
+    }
+    (void)tetra_bits_skip_type34(r);
+}
+
+static int
+cmce_floor_ignored(const mle_ctx* ctx, const char* name, uint32_t call_id) {
+    TETRA_LOG_VERBOSE(ctx->ts, 1, "[TETRA CMCE %s] CC=%d call=%u ignored; active call=%u\n", name, ctx->cc, call_id,
+                      ctx->ts->call_id);
+    return 1;
+}
+
+static int
+parse_cmce_d_tx_granted(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_state_t* const ts = ctx->ts;
+    cmce_floor f;
+    DSD_MEMSET(&f, 0, sizeof f);
+    f.call_id = (uint16_t)tetra_bits_read(r, 14);
+    cmce_read_grant_fields(r, &f);
+    cmce_read_floor_optional(r, &f, 1);
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-TX-GRANTED");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-TX-GRANTED] CC=%d call=%u grant=%u request=%u enc=%u", ctx->cc, f.call_id,
+                f.grant, f.permission, f.encryption);
+    if (f.party.ssi_valid) {
+        DSD_FPRINTF(stderr, " granted_SSI=%u", f.party.ssi);
+    }
+    if (f.reserved) {
+        DSD_FPRINTF(stderr, " reserved=%u", f.reserved);
+    }
+    DSD_FPRINTF(stderr, "\n");
+    if (!cmce_matches_active_call(ts, f.call_id)) {
+        return cmce_floor_ignored(ctx, "D-TX-GRANTED", f.call_id);
+    }
+    /* Table 14.80 transmission grant: 0 (granted) and 3 (granted to another user) switch the receive U-plane on. */
+    ts->tx_granted_valid = (uint8_t)(f.grant == 0 || f.grant == 3);
+    ts->enc_mode = f.encryption;
+    ts->cmce_tx_granted_perm = f.permission;
+    ts->cmce_tx_granted_reserv = f.reserved;
+    ts->cmce_tx_granted_notification = f.notification;
+    ts->cmce_tx_granted_notification_valid = f.notification_valid;
+    ts->cmce_tx_granted_party_type = f.party.type;
+    ts->cmce_tx_granted_party_type_valid = f.party.type_valid;
+    ts->tx_granted_ssi = f.party.ssi_valid ? f.party.ssi : 0;
+    ts->cmce_tx_granted_party_extension = f.party.extension;
+    ts->cmce_tx_granted_party_extension_valid = f.party.extension_valid;
+    return 1;
+}
+
+static int
+parse_cmce_d_tx_ceased(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_state_t* const ts = ctx->ts;
+    cmce_floor f;
+    DSD_MEMSET(&f, 0, sizeof f);
+    f.call_id = (uint16_t)tetra_bits_read(r, 14);
+    f.permission = (uint8_t)tetra_bits_read(r, 1);
+    cmce_read_floor_optional(r, &f, 0);
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-TX-CEASED");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-TX-CEASED] CC=%d call=%u request=%u", ctx->cc, f.call_id, f.permission);
+    if (f.notification_valid) {
+        DSD_FPRINTF(stderr, " notification=%u", f.notification);
+    }
+    DSD_FPRINTF(stderr, " (floor released)\n");
+    if (!cmce_matches_active_call(ts, f.call_id)) {
+        return cmce_floor_ignored(ctx, "D-TX-CEASED", f.call_id);
+    }
+    /* The floor is released; the assigned traffic channel stays. */
+    ts->tx_ceased_tx_perm = f.permission;
+    ts->tx_granted_valid = 0;
+    return 1;
+}
+
+/* D-TX CONTINUE (table 14.17), D-TX INTERRUPT (table 14.19) and D-TX WAIT (table 14.20). */
+static int
+parse_cmce_tx_event(tetra_bit_reader* r, const mle_ctx* ctx, uint32_t pdu_type, const char* name) {
+    tetra_state_t* const ts = ctx->ts;
+    cmce_floor f;
+    DSD_MEMSET(&f, 0, sizeof f);
+    f.call_id = (uint16_t)tetra_bits_read(r, 14);
+    if (pdu_type == TETRA_CMCE_D_TX_INTERRUPT) {
+        cmce_read_grant_fields(r, &f);
+    } else {
+        if (pdu_type == TETRA_CMCE_D_TX_CONTINUE) {
+            f.continue_value = (uint8_t)tetra_bits_read(r, 1);
+        }
+        f.permission = (uint8_t)tetra_bits_read(r, 1);
+    }
+    cmce_read_floor_optional(r, &f, pdu_type == TETRA_CMCE_D_TX_INTERRUPT);
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, name);
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE %s] CC=%d call=%u request=%u notif=%u continue=%u grant=%u enc=%u\n", name,
+                ctx->cc, f.call_id, f.permission, f.notification, f.continue_value, f.grant, f.encryption);
+    if (!cmce_matches_active_call(ts, f.call_id)) {
+        return cmce_floor_ignored(ctx, name, f.call_id);
+    }
+    ts->tx_event_call_id = f.call_id;
+    ts->tx_event_notification = f.notification;
+    ts->tx_event_continue = f.continue_value;
+    ts->tx_event_grant = f.grant;
+    ts->tx_event_encryption = f.encryption;
+    ts->tx_event_notification_valid = f.notification_valid;
+    ts->tx_event_party_type = f.party.type;
+    ts->tx_event_party_type_valid = f.party.type_valid;
+    ts->tx_event_party_ssi = f.party.ssi;
+    ts->tx_event_party_ssi_valid = f.party.ssi_valid;
+    ts->tx_event_party_extension = f.party.extension;
+    ts->tx_event_party_extension_valid = f.party.extension_valid;
+    ts->tx_continue = (uint8_t)(ts->tx_continue | (pdu_type == TETRA_CMCE_D_TX_CONTINUE));
+    ts->tx_interrupted = (uint8_t)(ts->tx_interrupted | (pdu_type == TETRA_CMCE_D_TX_INTERRUPT));
+    ts->tx_wait = (uint8_t)(ts->tx_wait | (pdu_type == TETRA_CMCE_D_TX_WAIT));
+    return 1;
+}
+
+static int
+parse_cmce_d_tx_continue(tetra_bit_reader* r, const mle_ctx* ctx) {
+    return parse_cmce_tx_event(r, ctx, TETRA_CMCE_D_TX_CONTINUE, "D-TX-CONTINUE");
+}
+
+static int
+parse_cmce_d_tx_interrupt(tetra_bit_reader* r, const mle_ctx* ctx) {
+    return parse_cmce_tx_event(r, ctx, TETRA_CMCE_D_TX_INTERRUPT, "D-TX-INTERRUPT");
+}
+
+static int
+parse_cmce_d_tx_wait(tetra_bit_reader* r, const mle_ctx* ctx) {
+    return parse_cmce_tx_event(r, ctx, TETRA_CMCE_D_TX_WAIT, "D-TX-WAIT");
+}
+
+/* D-INFO, table 14.11. */
+
+enum {
+    DINFO_NEW_CALL_ID,
+    DINFO_TIMEOUT,
+    DINFO_SETUP_TIMEOUT,
+    DINFO_OWNERSHIP,
+    DINFO_MODIFY,
+    DINFO_STATUS,
+    DINFO_TEMPORARY_ADDRESS,
+    DINFO_NOTIFICATION,
+    DINFO_POLL_PERCENTAGE,
+    DINFO_POLL_NUMBER,
+    DINFO_TYPE2_COUNT,
+};
+
+static void
+publish_d_info_optional(tetra_state_t* ts, const uint32_t* v, unsigned present) {
+    ts->d_info_new_call_id = (uint16_t)v[DINFO_NEW_CALL_ID];
+    ts->d_info_new_call_id_valid = type2_present(present, DINFO_NEW_CALL_ID);
+    ts->d_info_timeout = (uint8_t)v[DINFO_TIMEOUT];
+    ts->d_info_timeout_valid = type2_present(present, DINFO_TIMEOUT);
+    ts->d_info_setup_timeout = (uint8_t)v[DINFO_SETUP_TIMEOUT];
+    ts->d_info_setup_timeout_valid = type2_present(present, DINFO_SETUP_TIMEOUT);
+    ts->d_info_ownership = (uint8_t)v[DINFO_OWNERSHIP];
+    ts->d_info_ownership_valid = type2_present(present, DINFO_OWNERSHIP);
+    ts->d_info_modify = (uint16_t)v[DINFO_MODIFY];
+    ts->d_info_modify_valid = type2_present(present, DINFO_MODIFY);
+    ts->d_info_status = (uint8_t)v[DINFO_STATUS];
+    ts->d_info_status_valid = type2_present(present, DINFO_STATUS);
+    ts->d_info_temporary_address = v[DINFO_TEMPORARY_ADDRESS];
+    ts->d_info_temporary_address_valid = type2_present(present, DINFO_TEMPORARY_ADDRESS);
+    ts->d_info_notification_indicator = (uint8_t)v[DINFO_NOTIFICATION];
+    ts->d_info_notification_indicator_valid = type2_present(present, DINFO_NOTIFICATION);
+    ts->d_info_poll_percentage = (uint8_t)v[DINFO_POLL_PERCENTAGE];
+    ts->d_info_poll_percentage_valid = type2_present(present, DINFO_POLL_PERCENTAGE);
+    ts->d_info_poll_number = (uint8_t)v[DINFO_POLL_NUMBER];
+    ts->d_info_poll_number_valid = type2_present(present, DINFO_POLL_NUMBER);
+}
+
+static int
+parse_cmce_d_info(tetra_bit_reader* r, const mle_ctx* ctx) {
+    static const uint8_t k_type2[DINFO_TYPE2_COUNT] = {14, 4, 3, 1, 9, 3, 24, 6, 6, 6};
+    tetra_state_t* const ts = ctx->ts;
+    uint32_t values[DINFO_TYPE2_COUNT] = {0};
+    unsigned present = 0;
+    const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
+    const uint8_t reset = (uint8_t)tetra_bits_read(r, 1);
+    const uint8_t poll = (uint8_t)tetra_bits_read(r, 1);
+    if (tetra_bits_present(r)) {
+        present = read_type2_elements(r, k_type2, DINFO_TYPE2_COUNT, values);
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-INFO");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-INFO] CC=%d call=%u reset=%u poll=%u\n", ctx->cc, call_id, reset, poll);
+    ts->d_info_call_id = call_id;
+    ts->d_info_call_timeout = reset;
+    ts->d_info_poll_request = poll;
+    publish_d_info_optional(ts, values, present);
+    if (type2_present(present, DINFO_NEW_CALL_ID)) {
+        ts->call_id = (uint16_t)values[DINFO_NEW_CALL_ID];
+    }
+    if (type2_present(present, DINFO_TIMEOUT)) {
+        ts->call_timeout = (uint8_t)values[DINFO_TIMEOUT];
+    }
+    ts->d_info_valid = 1;
+    return 1;
+}
+
+/* D-CALL RESTORE, table 14.6. */
+
+enum {
+    RESTORE_NEW_CALL_ID,
+    RESTORE_TIMEOUT,
+    RESTORE_STATUS,
+    RESTORE_MODIFY,
+    RESTORE_NOTIFICATION,
+    RESTORE_TYPE2_COUNT,
+};
+
+static int
+parse_cmce_d_call_restore(tetra_bit_reader* r, const mle_ctx* ctx) {
+    static const uint8_t k_type2[RESTORE_TYPE2_COUNT] = {14, 4, 3, 9, 6};
+    tetra_state_t* const ts = ctx->ts;
+    uint32_t v[RESTORE_TYPE2_COUNT] = {0};
+    unsigned present = 0;
+    const uint16_t call_id = (uint16_t)tetra_bits_read(r, 14);
+    const uint8_t grant = (uint8_t)tetra_bits_read(r, 2);
+    const uint8_t permission = (uint8_t)tetra_bits_read(r, 1);
+    const uint8_t reset = (uint8_t)tetra_bits_read(r, 1);
+    if (tetra_bits_present(r)) {
+        present = read_type2_elements(r, k_type2, RESTORE_TYPE2_COUNT, v);
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-CALL-RESTORE");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-CALL-RESTORE] CC=%d call=%u grant=%u request=%u reset=%u\n", ctx->cc, call_id,
+                grant, permission, reset);
+    ts->call_active = 1;
+    ts->call_id = type2_present(present, RESTORE_NEW_CALL_ID) ? (uint16_t)v[RESTORE_NEW_CALL_ID] : call_id;
+    ts->call_restore_id = call_id;
+    ts->call_restore_grant = grant;
+    ts->call_restore_reset = reset;
+    ts->call_restore_new_id = (uint16_t)v[RESTORE_NEW_CALL_ID];
+    ts->call_restore_new_id_valid = type2_present(present, RESTORE_NEW_CALL_ID);
+    ts->call_restore_timeout = (uint8_t)v[RESTORE_TIMEOUT];
+    ts->call_restore_timeout_valid = type2_present(present, RESTORE_TIMEOUT);
+    ts->call_restore_status = (uint8_t)v[RESTORE_STATUS];
+    ts->call_restore_status_valid = type2_present(present, RESTORE_STATUS);
+    ts->call_restore_modify = (uint16_t)v[RESTORE_MODIFY];
+    ts->call_restore_modify_valid = type2_present(present, RESTORE_MODIFY);
+    ts->call_restore_notification = (uint8_t)v[RESTORE_NOTIFICATION];
+    ts->call_restore_notification_valid = type2_present(present, RESTORE_NOTIFICATION);
+    ts->call_restore_valid = 1;
+    ts->cmce_call_generation++;
+    return 1;
+}
+
+/* CMCE FUNCTION NOT SUPPORTED, table 14.33. */
+
+static int
+parse_cmce_function_not_supported(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_state_t* const ts = ctx->ts;
+    uint16_t call_id = 0;
+    uint8_t extract_bits = 0;
+    const uint8_t rejected = (uint8_t)tetra_bits_read(r, 5);
+    const uint8_t call_id_present = (uint8_t)tetra_bits_read(r, 1);
+    if (call_id_present) {
+        call_id = (uint16_t)tetra_bits_read(r, 14);
+    }
+    const uint8_t pointer = (uint8_t)tetra_bits_read(r, 8);
+    if (pointer != 0) { /* a non-zero pointer brings the length and bits of the received PDU extract */
+        extract_bits = (uint8_t)tetra_bits_read(r, 8);
+        (void)tetra_bits_skip(r, extract_bits);
+    }
+    if (tetra_bits_present(r)) {
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "FUNCTION-NOT-SUPPORTED");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE FUNCTION-NOT-SUPPORTED] CC=%d rejected=%u call=%u pointer=%u extract=%u\n",
+                ctx->cc, rejected, call_id, pointer, extract_bits);
+    ts->cmce_fns_rejected_pdu = rejected;
+    ts->cmce_fns_call_id_present = call_id_present;
+    ts->cmce_fns_call_id = call_id;
+    ts->cmce_fns_pointer = pointer;
+    ts->cmce_fns_extract_bits = extract_bits;
+    ts->cmce_fns_valid = 1;
+    return 1;
+}
+
+/* D-FACILITY, table 14.10 and Annex E.1.2 tables E.2 to E.4. */
+
+/* A four-bit count of independently encoded SS-PDUs, each an 11-bit length and that many bits, then the O-bit and its
+ * type-3/4 chain. The SS type is the first six bits of an SS-PDU. */
+static int
+parse_cmce_d_facility(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_state_t* const ts = ctx->ts;
+    uint32_t first_ss_type = 0;
+    const uint32_t count = tetra_bits_read(r, 4);
+    for (uint32_t i = 0; i < count && tetra_bits_ok(r); i++) {
+        const uint32_t length = tetra_bits_read(r, 11);
+        if (i == 0 && length >= 6) {
+            tetra_bit_reader ss = *r;
+            first_ss_type = tetra_bits_read(&ss, 6);
+        }
+        (void)tetra_bits_skip(r, (int)length);
+    }
+    if (tetra_bits_present(r)) {
+        (void)tetra_bits_skip_type34(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-FACILITY");
+    }
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-FACILITY] CC=%d ss_pdus=%u first_ss_type=%u\n", ctx->cc, count, first_ss_type);
+    ts->facility_type = (uint8_t)first_ss_type;
+    ts->facility_valid = 1;
+    return 1;
+}
+
+/* SDS (clauses 14.7.1.10 and 29). */
+
+#define SDS_PID_SIMPLE_TEXT           2u
+#define SDS_PID_SIMPLE_IMMEDIATE_TEXT 9u
+#define SDS_PID_CONCAT                12u
+#define SDS_PID_TEXT                  130u
+#define SDS_PID_IMMEDIATE_TEXT        137u
+#define SDS_PID_CONCAT_TL             140u
+
+/* SDS-TL message types, table 29.20. */
+enum { SDS_TL_TRANSFER = 0, SDS_TL_REPORT = 1, SDS_TL_ACK = 2, SDS_TL_NONE = 0xff };
+
+/* Table 29.21: protocol identifiers 128 to 254 use the SDS-TL data transfer service (255 is the extension value). */
+static int
+sds_pid_uses_tl(uint32_t pid) {
+    return pid >= 128u && pid < 255u;
+}
+
+static int
+sds_pid_is_simple_text(uint32_t pid) {
+    return pid == SDS_PID_SIMPLE_TEXT || pid == SDS_PID_SIMPLE_IMMEDIATE_TEXT;
+}
+
+static int
+sds_pid_is_tl_text(uint32_t pid) {
+    return pid == SDS_PID_TEXT || pid == SDS_PID_IMMEDIATE_TEXT;
+}
+
+/* Decoded text: UTF-8, at most 255 bytes plus the terminator, never cut inside a character. */
+typedef struct {
+    char text[256];
+    uint16_t len;
+    uint8_t unicode;
+    uint8_t full;
+} sds_text;
+
+/* Append one Unicode scalar value. C0 and C1 controls become a space: radio text must not reach a terminal as an
+ * escape sequence (a UTF-8 U+009B is CSI), and table 29.39's LF and CR read as word breaks. The first character that
+ * does not fit ends the text. */
+static void
+sds_text_append(sds_text* t, uint32_t scalar) {
+    char utf8[DSD_UTF8_MAX_BYTES + 1];
+    if (t->full) {
+        return;
+    }
+    if (dsd_unicode_scalar_is_control(scalar)) {
+        scalar = ' ';
+    }
+    const size_t n = dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8);
+    if ((size_t)t->len + n >= sizeof t->text) {
+        t->full = 1;
+        return;
+    }
+    DSD_MEMCPY(t->text + t->len, utf8, n);
+    t->len = (uint16_t)(t->len + n);
+    t->text[t->len] = '\0';
+}
+
+/* Table 29.39, the GSM 7-bit default alphabet, as Unicode. Index 27 is the escape to the extension table. */
+static const uint16_t k_gsm7_alphabet[128] = {
+    0x0040, 0x00A3, 0x0024, 0x00A5, 0x00E8, 0x00E9, 0x00F9, 0x00EC, 0x00F2, 0x00C7, 0x000A, 0x00D8, 0x00F8,
+    0x000D, 0x00C5, 0x00E5, 0x0394, 0x005F, 0x03A6, 0x0393, 0x039B, 0x03A9, 0x03A0, 0x03A8, 0x03A3, 0x0398,
+    0x039E, 0x0020, 0x00C6, 0x00E6, 0x00DF, 0x00C9, 0x0020, 0x0021, 0x0022, 0x0023, 0x00A4, 0x0025, 0x0026,
+    0x0027, 0x0028, 0x0029, 0x002A, 0x002B, 0x002C, 0x002D, 0x002E, 0x002F, 0x0030, 0x0031, 0x0032, 0x0033,
+    0x0034, 0x0035, 0x0036, 0x0037, 0x0038, 0x0039, 0x003A, 0x003B, 0x003C, 0x003D, 0x003E, 0x003F, 0x00A1,
+    0x0041, 0x0042, 0x0043, 0x0044, 0x0045, 0x0046, 0x0047, 0x0048, 0x0049, 0x004A, 0x004B, 0x004C, 0x004D,
+    0x004E, 0x004F, 0x0050, 0x0051, 0x0052, 0x0053, 0x0054, 0x0055, 0x0056, 0x0057, 0x0058, 0x0059, 0x005A,
+    0x00C4, 0x00D6, 0x00D1, 0x00DC, 0x00A7, 0x00BF, 0x0061, 0x0062, 0x0063, 0x0064, 0x0065, 0x0066, 0x0067,
+    0x0068, 0x0069, 0x006A, 0x006B, 0x006C, 0x006D, 0x006E, 0x006F, 0x0070, 0x0071, 0x0072, 0x0073, 0x0074,
+    0x0075, 0x0076, 0x0077, 0x0078, 0x0079, 0x007A, 0x00E4, 0x00F6, 0x00F1, 0x00FC, 0x00E0,
+};
+
+#define GSM7_ESCAPE 27u
+
+/* The GSM 7-bit extension table (ETSI TS 100 900, which table 29.39 adopts); a code without an extension character
+ * shows its default-alphabet character. */
+static uint32_t
+gsm7_extension(unsigned code) {
+    static const uint8_t k_codes[] = {10, 20, 40, 41, 47, 60, 61, 62, 64, 101};
+    static const uint16_t k_chars[] = {0x000C, '^', '{', '}', '\\', '[', '~', ']', '|', 0x20AC};
+    for (size_t i = 0; i < sizeof k_codes; i++) {
+        if (k_codes[i] == code) {
+            return k_chars[i];
+        }
+    }
+    return k_gsm7_alphabet[code & 0x7fu];
+}
+
+/* Clause 29.5.4.2: septets are packed into octets least significant bit first (tables 29.31 to 29.34) and the octets
+ * sent most significant bit first; the spare bits of the last octet are padding. A trailing escape without its
+ * extension character shows as U+FFFD. */
+static int
+sds_decode_gsm7(tetra_bit_reader* r, sds_text* t) {
+    uint32_t acc = 0;
+    unsigned acc_bits = 0;
+    int escaped = 0;
+    if (tetra_bits_left(r) % 8 != 0) {
+        return 0;
+    }
+    while (tetra_bits_left(r) > 0 && !t->full) {
+        acc |= tetra_bits_read(r, 8) << acc_bits;
+        acc_bits += 8;
+        while (acc_bits >= 7) {
+            const unsigned septet = acc & 0x7fu;
+            acc >>= 7;
+            acc_bits -= 7;
+            if (!escaped && septet == GSM7_ESCAPE) {
+                escaped = 1;
+                continue;
+            }
+            sds_text_append(t, escaped ? gsm7_extension(septet) : k_gsm7_alphabet[septet]);
+            escaped = 0;
+        }
+    }
+    if (escaped) {
+        sds_text_append(t, DSD_UNICODE_REPLACEMENT);
+    }
+    return 1;
+}
+
+/* ISO/IEC 8859-1 octets are the Unicode scalar values 0 to 255. */
+static int
+sds_decode_latin1(tetra_bit_reader* r, sds_text* t) {
+    if (tetra_bits_left(r) % 8 != 0) {
+        return 0;
+    }
+    while (tetra_bits_left(r) > 0 && !t->full) {
+        sds_text_append(t, tetra_bits_read(r, 8));
+    }
+    return 1;
+}
+
+/* UCS-2 with the UTF-16BE extension (clause 29.5.4.1). Surrogate pairs combine; an unpaired half shows as U+FFFD. */
+static int
+sds_decode_utf16(tetra_bit_reader* r, sds_text* t) {
+    dsd_utf16_decoder decoder;
+    uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
+    if (tetra_bits_left(r) % 16 != 0) {
+        return 0;
+    }
+    t->unicode = 1;
+    dsd_utf16_decoder_reset(&decoder);
+    while (tetra_bits_left(r) > 0 && !t->full) {
+        const uint16_t unit = (uint16_t)tetra_bits_read(r, 16);
+        const size_t n = dsd_utf16_decoder_push(&decoder, unit, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
+        for (size_t i = 0; i < n; i++) {
+            sds_text_append(t, scalars[i]);
+        }
+    }
+    if (dsd_utf16_decoder_finish(&decoder, scalars, 1U) > 0U) {
+        sds_text_append(t, scalars[0]);
+    }
+    return 1;
+}
+
+/* Text coding schemes, table 29.29. */
+#define SDS_CODING_GSM7   0u
+#define SDS_CODING_LATIN1 1u
+#define SDS_CODING_UTF16  26u
+
+/* A simple text messaging PDU body (table 29.27) or a text message transfer SDU (table 29.28): the time stamp used
+ * flag (reserved for simple text) and the text coding scheme, the time stamp when used and allowed, then the text.
+ * Text in a coding scheme without a decoder here is left empty. 0 when the PDU is malformed. */
+static int
+sds_decode_text(tetra_bit_reader* r, int timestamp_allowed, sds_text* t) {
+    const uint32_t timestamp_used = tetra_bits_read(r, 1);
+    const uint32_t coding = tetra_bits_read(r, 7);
+    if (timestamp_allowed && timestamp_used) {
+        (void)tetra_bits_skip(r, 24); /* time stamp, table 29.40 */
+    }
+    if (!tetra_bits_ok(r)) {
+        return 0;
+    }
+    switch (coding) {
+        case SDS_CODING_GSM7: return sds_decode_gsm7(r, t);
+        case SDS_CODING_LATIN1: return sds_decode_latin1(r, t);
+        case SDS_CODING_UTF16: return sds_decode_utf16(r, t);
+        default: return 1;
+    }
+}
+
+/* The fixed part of a D-SDS-DATA (table 14.13): calling party, short data type identifier and user data. */
+typedef struct {
+    cmce_party calling;
+    int data_pos;  /* user data start, in the PDU's bits */
+    int data_bits; /* user data length */
+    uint8_t sdti;
+} sds_pdu;
+
+/* SDS-TL header (tables 29.11, 29.12 and 29.14) with its storage/forward control fields. */
+typedef struct {
+    uint32_t forward_ssi;
+    uint32_t forward_extension;
+    char forward_external[25];
+    uint8_t message_type; /* SDS_TL_* */
+    uint8_t status;       /* delivery status (REPORT and ACK) */
+    uint8_t reference;    /* message reference */
+    uint8_t storage_forward;
+    uint8_t validity_period;
+    uint8_t forward_type;
+    uint8_t forward_valid;
+    uint8_t forward_sna;
+} sds_tl_header;
+
+/* Concatenation part status (table 29.60), and the reassembled message once complete. */
+typedef struct {
+    uint8_t* assembled;
+    int assembled_bits;
+    uint16_t reference;
+    uint8_t total;
+    uint8_t sequence;
+    uint8_t received;
+    uint8_t assembled_pid;
+    uint8_t present;  /* the D-SDS-DATA carried a concatenation part */
+    uint8_t complete; /* this part completed the message */
+    uint8_t duplicate;
+} sds_concat_status;
+
+typedef struct {
+    sds_text text;
+    sds_tl_header tl;
+    sds_concat_status concat;
+    uint16_t short_data; /* user defined data-1 */
+} sds_message;
+
+enum { SDS_DECODE_BAD, SDS_DECODE_OK };
+
+/* Concatenated SDS reassembly, clause 29.5.14. */
+
+#define SDS_CONCAT_CONTEXTS   4
+#define SDS_CONCAT_PARTS      255
+#define SDS_CONCAT_PART_BITS  2047
+#define SDS_CONCAT_PART_BYTES ((SDS_CONCAT_PART_BITS + 7) / 8)
+#define SDS_CONCAT_TIMEOUT_MS 300000u
+
+/* One message being reassembled; the parts are stored packed, MSB first. */
+typedef struct {
+    uint64_t updated_ms; /* decode-clock time of the last accepted part */
+    uint32_t src_ssi;
+    uint16_t part_bits[SDS_CONCAT_PARTS];
+    uint16_t reference;
     uint8_t valid;
-    uint8_t with_transport;
+    uint8_t with_transport; /* PID 140 (SDS-TL) rather than PID 12 */
     uint8_t total;
     uint8_t received_count;
     uint8_t payload_pid_known;
     uint8_t payload_pid;
-    uint16_t reference;
-    uint32_t src_ssi;
-    time_t updated;
-    uint16_t part_bits[TETRA_SDS_CONCAT_PARTS];
-    uint8_t received[(TETRA_SDS_CONCAT_PARTS + 7) / 8];
-    uint8_t data[TETRA_SDS_CONCAT_PARTS][TETRA_SDS_CONCAT_PART_BYTES];
-} tetra_sds_concat_ctx_t;
+    uint8_t received[(SDS_CONCAT_PARTS + 7) / 8];
+    uint8_t data[SDS_CONCAT_PARTS][SDS_CONCAT_PART_BYTES];
+} sds_concat_ctx;
 
-static tetra_sds_concat_ctx_t g_sds_concat[TETRA_SDS_CONCAT_CONTEXTS];
+struct tetra_sds_concat_store {
+    sds_concat_ctx ctx[SDS_CONCAT_CONTEXTS];
+};
+
+/* One concatenation part as received. */
+typedef struct {
+    tetra_bit_reader data; /* the part's user data */
+    uint32_t src_ssi;
+    int payload_pid; /* -1 except in part 1 */
+    uint16_t reference;
+    uint8_t with_transport;
+    uint8_t total;
+    uint8_t sequence;
+} sds_concat_part;
+
+enum { SDS_CONCAT_REJECTED = -1, SDS_CONCAT_PENDING = 0, SDS_CONCAT_COMPLETE = 1, SDS_CONCAT_DUPLICATE = 2 };
 
 void
 tetra_sds_concat_reset(void) {
-    memset(g_sds_concat, 0, sizeof(g_sds_concat));
+    /* Reassembly is per session in the TETRA state; see tetra_mle.h. */
+}
+
+static struct tetra_sds_concat_store*
+sds_concat_store(tetra_state_t* ts) {
+    if (!ts->sds_concat) {
+        ts->sds_concat = (struct tetra_sds_concat_store*)calloc(1, sizeof(*ts->sds_concat));
+    }
+    return ts->sds_concat;
 }
 
 static int
-sds_concat_received(const tetra_sds_concat_ctx_t* ctx, unsigned index) {
-    return (ctx->received[index >> 3] >> (index & 7u)) & 1u;
+sds_concat_has_part(const sds_concat_ctx* c, unsigned index) {
+    return (c->received[index >> 3] >> (index & 7u)) & 1u;
 }
 
 static void
-sds_concat_set_received(tetra_sds_concat_ctx_t* ctx, unsigned index) {
-    ctx->received[index >> 3] |= (uint8_t)(1u << (index & 7u));
+sds_concat_clear(sds_concat_ctx* c) {
+    DSD_MEMSET(c, 0, sizeof(*c));
 }
 
-/* Return 1 for complete, 0 for accepted/incomplete, 2 for an identical
- * duplicate, and -1 for malformed/conflicting input or allocation failure. */
-static int
-sds_concat_submit(uint32_t src_ssi, uint16_t reference, uint8_t with_transport, uint8_t total, uint8_t sequence,
-                  int payload_pid, const uint8_t* part, int part_bits, uint8_t** assembled, int* assembled_bits,
-                  uint8_t* assembled_pid, uint8_t* received_count) {
-    time_t now = dsd_decode_time();
-    tetra_sds_concat_ctx_t* ctx = NULL;
-    tetra_sds_concat_ctx_t* free_ctx = NULL;
-    tetra_sds_concat_ctx_t* oldest = &g_sds_concat[0];
-
-    *assembled = NULL;
-    *assembled_bits = 0;
-    if (total < 2 || sequence == 0 || sequence > total || part_bits < 0 || part_bits > TETRA_SDS_CONCAT_PART_BITS
-        || (sequence == 1 && payload_pid < 0)) {
-        return -1;
-    }
-
-    for (unsigned i = 0; i < TETRA_SDS_CONCAT_CONTEXTS; i++) {
-        tetra_sds_concat_ctx_t* candidate = &g_sds_concat[i];
-        if (candidate->valid && now != (time_t)-1 && candidate->updated != (time_t)-1
-            && now - candidate->updated > TETRA_SDS_CONCAT_TIMEOUT_SECONDS) {
-            memset(candidate, 0, sizeof(*candidate));
+/* The context collecting @p part's message: the matching one, else a free one, else the stalest. Contexts idle for
+ * longer than SDS_CONCAT_TIMEOUT_MS are dropped on the way. */
+static sds_concat_ctx*
+sds_concat_find(struct tetra_sds_concat_store* store, const sds_concat_part* part, uint64_t now_ms) {
+    sds_concat_ctx* free_ctx = NULL;
+    sds_concat_ctx* oldest = &store->ctx[0];
+    for (unsigned i = 0; i < SDS_CONCAT_CONTEXTS; i++) {
+        sds_concat_ctx* c = &store->ctx[i];
+        if (c->valid && now_ms - c->updated_ms > SDS_CONCAT_TIMEOUT_MS) {
+            sds_concat_clear(c);
         }
-        if (!candidate->valid && !free_ctx) {
-            free_ctx = candidate;
+        if (c->valid && c->src_ssi == part->src_ssi && c->reference == part->reference
+            && c->with_transport == part->with_transport) {
+            return c;
         }
-        if (candidate->valid && candidate->updated < oldest->updated) {
-            oldest = candidate;
+        if (!c->valid && !free_ctx) {
+            free_ctx = c;
         }
-        if (candidate->valid && candidate->src_ssi == src_ssi && candidate->reference == reference
-            && candidate->with_transport == with_transport) {
-            ctx = candidate;
-            break;
+        if (c->valid && c->updated_ms < oldest->updated_ms) {
+            oldest = c;
         }
     }
-    if (ctx && ctx->total != total) {
-        memset(ctx, 0, sizeof(*ctx));
-        return -1;
-    }
-    if (!ctx) {
-        ctx = free_ctx ? free_ctx : oldest;
-        memset(ctx, 0, sizeof(*ctx));
-        ctx->valid = 1;
-        ctx->src_ssi = src_ssi;
-        ctx->reference = reference;
-        ctx->with_transport = with_transport;
-        ctx->total = total;
-    }
-    ctx->updated = now;
+    sds_concat_ctx* c = free_ctx ? free_ctx : oldest;
+    sds_concat_clear(c);
+    c->valid = 1;
+    c->src_ssi = part->src_ssi;
+    c->reference = part->reference;
+    c->with_transport = part->with_transport;
+    c->total = part->total;
+    return c;
+}
 
-    unsigned index = (unsigned)sequence - 1u;
-    unsigned bytes = ((unsigned)part_bits + 7u) / 8u;
-    uint8_t packed[TETRA_SDS_CONCAT_PART_BYTES] = {0};
-    for (int i = 0; i < part_bits; i++) {
-        packed[(unsigned)i >> 3] |= (uint8_t)((part[i] & 1u) << (7u - ((unsigned)i & 7u)));
-    }
-
-    if (sds_concat_received(ctx, index)) {
-        if (ctx->part_bits[index] != (uint16_t)part_bits || memcmp(ctx->data[index], packed, bytes) != 0) {
-            memset(ctx, 0, sizeof(*ctx));
-            return -1;
-        }
-        *received_count = ctx->received_count;
-        return 2;
-    }
-    memcpy(ctx->data[index], packed, bytes);
-    ctx->part_bits[index] = (uint16_t)part_bits;
-    sds_concat_set_received(ctx, index);
-    ctx->received_count++;
-    if (sequence == 1) {
-        ctx->payload_pid = (uint8_t)payload_pid;
-        ctx->payload_pid_known = 1;
-    }
-    *received_count = ctx->received_count;
-    if (ctx->received_count != ctx->total || !ctx->payload_pid_known) {
-        return 0;
-    }
-
+/* Unpack the complete message into one bit per byte, parts in sequence order. NULL when out of memory. */
+static uint8_t*
+sds_concat_assemble(const sds_concat_ctx* c, int* nbits) {
     unsigned total_bits = 0;
-    for (unsigned i = 0; i < ctx->total; i++) {
-        if (!sds_concat_received(ctx, i)) {
-            return 0;
-        }
-        total_bits += ctx->part_bits[i];
+    for (unsigned i = 0; i < c->total; i++) {
+        total_bits += c->part_bits[i];
     }
-    uint8_t* result = total_bits ? (uint8_t*)malloc(total_bits) : (uint8_t*)malloc(1);
-    if (!result) {
-        memset(ctx, 0, sizeof(*ctx));
-        return -1;
+    uint8_t* out = (uint8_t*)malloc(total_bits > 0 ? total_bits : 1u);
+    if (!out) {
+        return NULL;
     }
-    unsigned out = 0;
-    for (unsigned i = 0; i < ctx->total; i++) {
-        for (unsigned bit = 0; bit < ctx->part_bits[i]; bit++) {
-            result[out++] = (uint8_t)((ctx->data[i][bit >> 3] >> (7u - (bit & 7u))) & 1u);
+    unsigned pos = 0;
+    for (unsigned i = 0; i < c->total; i++) {
+        for (unsigned bit = 0; bit < c->part_bits[i] && pos < total_bits; bit++) {
+            out[pos++] = (uint8_t)((c->data[i][bit >> 3] >> (7u - (bit & 7u))) & 1u);
         }
     }
-    *assembled = result;
-    *assembled_bits = (int)total_bits;
-    *assembled_pid = ctx->payload_pid;
-    memset(ctx, 0, sizeof(*ctx));
-    return 1;
+    *nbits = (int)pos;
+    return out;
 }
 
+/* Store one part. An identical repeat is a duplicate; a different part under the same sequence number, or a changed
+ * part count, discards the whole message. */
 static int
-cmce_matches_active_call(const dsd_state* state, uint32_t call_id) {
-    const tetra_state_t* const ts = tetra_st_peek(state);
-    return !state || !ts->call_active || ts->call_id == call_id;
+sds_concat_store_part(sds_concat_ctx* c, const sds_concat_part* part) {
+    uint8_t packed[SDS_CONCAT_PART_BYTES];
+    tetra_bit_reader data = part->data;
+    const int part_bits = tetra_bits_left(&data);
+    const unsigned index = part->sequence - 1u;
+    DSD_MEMSET(packed, 0, sizeof packed);
+    for (int i = 0; i < part_bits; i++) {
+        packed[i >> 3] = (uint8_t)(packed[i >> 3] | (tetra_bits_read(&data, 1) << (7 - (i & 7))));
+    }
+    if (c->total != part->total) {
+        sds_concat_clear(c);
+        return SDS_CONCAT_REJECTED;
+    }
+    if (sds_concat_has_part(c, index)) {
+        if (c->part_bits[index] != (uint16_t)part_bits || memcmp(c->data[index], packed, sizeof packed) != 0) {
+            sds_concat_clear(c);
+            return SDS_CONCAT_REJECTED;
+        }
+        return SDS_CONCAT_DUPLICATE;
+    }
+    DSD_MEMCPY(c->data[index], packed, sizeof packed);
+    c->part_bits[index] = (uint16_t)part_bits;
+    c->received[index >> 3] = (uint8_t)(c->received[index >> 3] | (1u << (index & 7u)));
+    c->received_count++;
+    if (part->sequence == 1) {
+        c->payload_pid = (uint8_t)part->payload_pid;
+        c->payload_pid_known = 1;
+    }
+    return SDS_CONCAT_PENDING;
 }
 
-/* Annex E.1.1: after all type-2 P-bits, an M-bit terminates the PDU or
- * introduces a length-delimited type-3/4 element. Unknown elements are safe
- * to skip because their 11-bit length covers the complete following value. */
+/* Add one part to the reassembly in @p ts and report the message state in @p status. */
 static int
-cmce_skip_type34(const uint8_t* bits, int nbits, int* off) {
-    if (!bits || !off || *off >= nbits) {
-        return 0;
+sds_concat_submit(tetra_state_t* ts, const sds_concat_part* part, sds_concat_status* status) {
+    struct tetra_sds_concat_store* store = sds_concat_store(ts);
+    if (!store || part->total < 2 || part->sequence == 0 || part->sequence > part->total
+        || tetra_bits_left(&part->data) > SDS_CONCAT_PART_BITS) {
+        return SDS_CONCAT_REJECTED;
     }
-    for (;;) {
-        uint32_t more = mle_bits_to_uint(bits, *off, 1);
-        (*off)++;
-        if (!more) {
-            return 1;
-        }
-        if (*off + 15 > nbits) {
-            return 0;
-        }
-        *off += 4; /* type-3/4 element identifier */
-        uint32_t length = mle_bits_to_uint(bits, *off, 11);
-        *off += 11;
-        if (length == 0 || length > (uint32_t)(nbits - *off)) {
-            return 0;
-        }
-        *off += (int)length;
-        if (*off >= nbits) {
-            return 0;
-        }
+    const uint64_t now_ms = dsd_decode_now_mono_ms();
+    sds_concat_ctx* c = sds_concat_find(store, part, now_ms);
+    c->updated_ms = now_ms;
+    const int result = sds_concat_store_part(c, part);
+    status->received = c->received_count;
+    if (result != SDS_CONCAT_PENDING || c->received_count != c->total || !c->payload_pid_known) {
+        return result;
     }
+    status->assembled = sds_concat_assemble(c, &status->assembled_bits);
+    status->assembled_pid = c->payload_pid;
+    sds_concat_clear(c);
+    return status->assembled ? SDS_CONCAT_COMPLETE : SDS_CONCAT_REJECTED;
 }
 
-/* -----------------------------------------------------------------------
- * CMCE D-SETUP, ETSI EN 300 392-2 table 14.15.
- * Mandatory part: type(5), call id(14), timeout(4), hook(1), duplex(1),
- * basic service(8), transmission grant(2), request permission(1), priority(4).
- * ----------------------------------------------------------------------- */
+/* SDS-TL, clause 29.4. */
+
+/* External subscriber number digits (table 14.59), as a string; an odd count is followed by a zero dummy digit. */
 static void
-parse_cmce_d_setup(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 41) {
-        fprintf(stderr, "[TETRA CMCE D-SETUP] CC=%d (too short: %d bits)\n", cc, nbits);
+sds_read_external_number(tetra_bit_reader* r, char* out, size_t out_size) {
+    static const char k_digits[] = "0123456789*#+";
+    const uint32_t digits = tetra_bits_read(r, 8);
+    if (digits == 0 || digits > 24 || digits >= out_size) {
+        bits_reject(r);
         return;
     }
-    int off = 5;
-    uint16_t call_id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint8_t timeout = (uint8_t)mle_bits_to_uint(bits, off, 4);
-    off += 4;
-    uint8_t hook = (uint8_t)mle_bits_to_uint(bits, off, 1);
-    off++;
-    uint8_t duplex = (uint8_t)mle_bits_to_uint(bits, off, 1);
-    off++;
-    uint8_t basic = (uint8_t)mle_bits_to_uint(bits, off, 8);
-    off += 8;
-    uint8_t grant = (uint8_t)mle_bits_to_uint(bits, off, 2);
-    off += 2;
-    uint8_t request = (uint8_t)mle_bits_to_uint(bits, off, 1);
-    off++;
-    uint8_t priority = (uint8_t)mle_bits_to_uint(bits, off, 4);
-    off += 4;
-    uint8_t circuit = (uint8_t)(basic >> 5);
-    uint8_t encrypted = (uint8_t)((basic >> 4) & 1u);
-    uint8_t communication = (uint8_t)((basic >> 2) & 3u);
-    uint8_t service = (uint8_t)(basic & 3u);
-    uint8_t notification = 0, notification_valid = 0, cpti = 0, cpti_valid = 0;
-    uint32_t temporary_address = 0, calling_ssi = 0, calling_extension = 0;
-    uint8_t temporary_address_valid = 0, calling_ssi_valid = 0, calling_extension_valid = 0;
-
-    /* Annex E.1.1 O-bit, followed by the table-ordered type-2 fields. */
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail) {
-        if (off >= nbits) {
-            goto truncated;
-        }
-        uint8_t present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 6 > nbits) {
-                goto truncated;
-            }
-            notification = (uint8_t)mle_bits_to_uint(bits, off, 6);
-            off += 6;
-            notification_valid = 1;
-        }
-    }
-    if (optional_tail) {
-        if (off >= nbits) {
-            goto truncated;
-        }
-        uint8_t present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 24 > nbits) {
-                goto truncated;
-            }
-            temporary_address = mle_bits_to_uint(bits, off, 24);
-            off += 24;
-            temporary_address_valid = 1;
-        }
-    }
-    if (optional_tail) {
-        if (off >= nbits) {
-            goto truncated;
-        }
-        uint8_t present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 2 > nbits) {
-                goto truncated;
-            }
-            cpti = (uint8_t)mle_bits_to_uint(bits, off, 2);
-            off += 2;
-            cpti_valid = 1;
-            if (cpti == 1 || cpti == 2) {
-                if (off + 24 > nbits) {
-                    goto truncated;
-                }
-                calling_ssi = mle_bits_to_uint(bits, off, 24);
-                off += 24;
-                calling_ssi_valid = 1;
-            }
-            if (cpti == 2) {
-                if (off + 24 > nbits) {
-                    goto truncated;
-                }
-                calling_extension = mle_bits_to_uint(bits, off, 24);
-                off += 24;
-                calling_extension_valid = 1;
-            }
-        }
-    }
-
-    if (optional_tail && !cmce_skip_type34(bits, nbits, &off)) {
-        goto truncated;
-    }
-
-    fprintf(stderr,
-            "[TETRA CMCE D-SETUP] CC=%d call=%u timeout=%u circuit=%u enc=%u com=%u service=%u grant=%u request=%u "
-            "priority=%u",
-            cc, (unsigned)call_id, timeout, circuit, encrypted, communication, service, grant, request, priority);
-    if (calling_ssi) {
-        fprintf(stderr, " calling_SSI=%u", calling_ssi);
-    }
-    fprintf(stderr, "\n");
-    if (ts) {
-        ts->call_active = 1;
-        ts->call_id = call_id;
-        ts->call_timeout = timeout;
-        ts->call_type = circuit; /* compatibility: now the standardized circuit-mode type */
-        ts->call_slots = service;
-        ts->cmce_duplex = duplex;
-        ts->cmce_notif = notification;
-        ts->cmce_com_type = communication;
-        ts->cmce_called_type = cpti; /* compatibility field contains calling-party type */
-        ts->cmce_setup_hook = hook;
-        ts->cmce_setup_basic_service = basic;
-        ts->cmce_setup_tx_grant = grant;
-        ts->cmce_setup_tx_permission = request;
-        ts->cmce_setup_priority = priority;
-        ts->cmce_setup_notification_valid = notification_valid;
-        ts->cmce_setup_temporary_address = temporary_address;
-        ts->cmce_setup_temporary_address_valid = temporary_address_valid;
-        ts->cmce_setup_calling_type_valid = cpti_valid;
-        ts->cmce_setup_calling_extension = calling_extension;
-        ts->cmce_setup_calling_extension_valid = calling_extension_valid;
-        ts->enc_mode = encrypted;
-        ts->calling_ssi = calling_ssi_valid ? calling_ssi : 0;
-        ts->cmce_call_generation++;
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA CMCE D-SETUP] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
-}
-
-/* -----------------------------------------------------------------------
- * CMCE D-RELEASE / D-DISCONNECT, tables 14.12 and 14.9.
- * Mandatory part: type(5), call identifier(14), disconnect cause(5).
- * ----------------------------------------------------------------------- */
-static void
-parse_cmce_d_release(const uint8_t* bits, int nbits, int cc, int is_disconnect, dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 25) {
-        fprintf(stderr, "[TETRA CMCE %s] CC=%d (too short: %d bits)\n", is_disconnect ? "D-DISCONNECT" : "D-RELEASE",
-                cc, nbits);
-        return;
-    }
-    uint16_t call_id = (uint16_t)mle_bits_to_uint(bits, 5, 14);
-    uint8_t cause = (uint8_t)mle_bits_to_uint(bits, 19, 5);
-    uint8_t notification = 0, notification_valid = 0;
-    int off = 24;
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail) {
-        if (off >= nbits) {
-            goto truncated;
-        }
-        uint8_t present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 6 > nbits) {
-                goto truncated;
-            }
-            notification = (uint8_t)mle_bits_to_uint(bits, off, 6);
-            off += 6;
-            notification_valid = 1;
-        }
-        if (!cmce_skip_type34(bits, nbits, &off)) {
-            goto truncated;
-        }
-    }
-    fprintf(stderr, "[TETRA CMCE %s] CC=%d call=%u cause=%u\n", is_disconnect ? "D-DISCONNECT" : "D-RELEASE", cc,
-            (unsigned)call_id, cause);
-    if (ts) {
-        if (ts->call_active && ts->call_id != call_id) {
-            fprintf(stderr, "[TETRA CMCE %s] CC=%d call=%u ignored; active call=%u\n",
-                    is_disconnect ? "D-DISCONNECT" : "D-RELEASE", cc, (unsigned)call_id, (unsigned)ts->call_id);
+    for (uint32_t i = 0; i < digits; i++) {
+        const uint32_t value = tetra_bits_read(r, 4);
+        if (value > 12) {
+            bits_reject(r);
             return;
         }
-        ts->call_active = 0;
-        ts->tx_granted_valid = 0;
-        ts->tx_granted_ssi = 0;
-        ts->cmce_tx_granted_notification_valid = 0;
-        ts->cmce_tx_granted_party_type_valid = 0;
-        ts->cmce_tx_granted_party_extension_valid = 0;
-        ts->tx_continue = 0;
-        ts->tx_interrupted = 0;
-        ts->tx_wait = 0;
-        ts->tx_event_notification_valid = 0;
-        ts->tx_event_party_type_valid = 0;
-        ts->tx_event_party_ssi_valid = 0;
-        ts->tx_event_party_extension_valid = 0;
-        ts->call_id = call_id;
-        ts->cmce_release_cause_type = 0;
-        ts->cmce_release_cause = cause;
-        ts->cmce_release_notification = notification;
-        ts->cmce_release_notification_valid = notification_valid;
-        ts->cmce_release_was_disconnect = (uint8_t)(is_disconnect ? 1 : 0);
-        tetra_sm_on_release(opts, state);
+        out[i] = k_digits[value];
     }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA CMCE %s] CC=%d (truncated optional IE: %d bits)\n",
-            is_disconnect ? "D-DISCONNECT" : "D-RELEASE", cc, nbits);
+    out[digits] = '\0';
+    if ((digits & 1u) != 0 && tetra_bits_read(r, 4) != 0) {
+        bits_reject(r);
+    }
 }
 
-/* -----------------------------------------------------------------------
- * CMCE D-CONNECT, ETSI EN 300 392-2 table 14.7.
- * ----------------------------------------------------------------------- */
+/* Storage/forward control information (tables 29.12 and 29.14): validity period, forward address type (table 29.18)
+ * and the address it selects. */
 static void
-parse_cmce_d_connect(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 30) {
-        fprintf(stderr, "[TETRA CMCE D-CONNECT] CC=%d (too short: %d bits)\n", cc, nbits);
+sds_read_forward_address(tetra_bit_reader* r, sds_tl_header* h) {
+    h->validity_period = (uint8_t)tetra_bits_read(r, 5);
+    h->forward_type = (uint8_t)tetra_bits_read(r, 3);
+    switch (h->forward_type) {
+        case 0: h->forward_sna = (uint8_t)tetra_bits_read(r, 8); break;
+        case 1: h->forward_ssi = tetra_bits_read(r, 24); break;
+        case 2:
+            h->forward_ssi = tetra_bits_read(r, 24);
+            h->forward_extension = tetra_bits_read(r, 24);
+            break;
+        case 3: sds_read_external_number(r, h->forward_external, sizeof h->forward_external); break;
+        case 7: break; /* no forward address present */
+        default: bits_reject(r); break;
+    }
+    h->forward_valid = (uint8_t)tetra_bits_ok(r);
+}
+
+/* The SDS-TL header after the protocol identifier: SDS-TRANSFER, SDS-REPORT or SDS-ACK. Message types 3 to 15 are
+ * reserved or application-defined and carry no header the decoder knows. */
+static void
+sds_read_tl_header(tetra_bit_reader* r, sds_tl_header* h) {
+    const uint32_t type = tetra_bits_read(r, 4);
+    if (type > SDS_TL_ACK) {
         return;
     }
-    int off = 5;
-    uint16_t id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint8_t timeout = (uint8_t)mle_bits_to_uint(bits, off, 4);
-    off += 4;
-    uint8_t hook = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t duplex = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t grant = (uint8_t)mle_bits_to_uint(bits, off, 2);
-    off += 2;
-    uint8_t permission = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t ownership = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t priority = 0, basic = 0, notification = 0;
-    uint32_t temporary_address = 0;
-    uint8_t priority_valid = 0, basic_valid = 0, temporary_address_valid = 0, notification_valid = 0;
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail) {
-#define CONNECT_TYPE2(width, value, valid)                                                                             \
-    do {                                                                                                               \
-        uint8_t present;                                                                                               \
-        if (off >= nbits)                                                                                              \
-            goto truncated;                                                                                            \
-        present = (uint8_t)mle_bits_to_uint(bits, off++, 1);                                                           \
-        if (present) {                                                                                                 \
-            if (off + (width) > nbits)                                                                                 \
-                goto truncated;                                                                                        \
-            (value) = mle_bits_to_uint(bits, off, (width));                                                            \
-            off += (width);                                                                                            \
-            (valid) = 1;                                                                                               \
-        }                                                                                                              \
-    } while (0)
-        CONNECT_TYPE2(4, priority, priority_valid);
-        CONNECT_TYPE2(8, basic, basic_valid);
-        CONNECT_TYPE2(24, temporary_address, temporary_address_valid);
-        CONNECT_TYPE2(6, notification, notification_valid);
-#undef CONNECT_TYPE2
-        if (!cmce_skip_type34(bits, nbits, &off)) {
-            goto truncated;
-        }
-    }
-    fprintf(stderr, "[TETRA CMCE D-CONNECT] CC=%d call=%u timeout=%u grant=%u request=%u\n", cc, (unsigned)id, timeout,
-            grant, permission);
-    if (ts) {
-        ts->call_active = 1;
-        ts->call_id = id;
-        ts->call_timeout = timeout;
-        ts->connect_valid = 1;
-        ts->connect_call_type = basic_valid ? (uint8_t)(basic >> 5) : 0;
-        ts->connect_enc_mode = basic_valid ? (uint8_t)((basic >> 4) & 1u) : 0;
-        ts->cmce_connect_hook = hook;
-        ts->cmce_connect_duplex = duplex;
-        ts->cmce_connect_tx_grant = grant;
-        ts->cmce_connect_tx_permission = permission;
-        ts->cmce_connect_ownership = ownership;
-        ts->cmce_connect_priority = priority;
-        ts->cmce_connect_priority_valid = priority_valid;
-        ts->cmce_connect_basic_service = basic;
-        ts->cmce_connect_basic_service_valid = basic_valid;
-        ts->cmce_connect_temporary_address = temporary_address;
-        ts->cmce_connect_temporary_address_valid = temporary_address_valid;
-        ts->cmce_connect_notification = notification;
-        ts->cmce_connect_notification_valid = notification_valid;
-        if (basic_valid) {
-            ts->call_type = (uint8_t)(basic >> 5);
-            ts->enc_mode = (uint8_t)((basic >> 4) & 1u);
-            ts->cmce_com_type = (uint8_t)((basic >> 2) & 3u);
-            ts->call_slots = (uint8_t)(basic & 3u);
-        }
-        ts->cmce_call_generation++;
-    }
-    return;
-truncated:
-    fprintf(stderr, "[TETRA CMCE D-CONNECT] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
-}
-
-/* -----------------------------------------------------------------------
- * CMCE D-TX-GRANTED (PDU type 11)  — ETSI EN 300 392-2 §14.7.1.15
- *
- * Mandatory bits (Table 14.18): PDU type (5), call identifier (14),
- * transmission grant (2), request permission (1), encryption control (1),
- * and reserved (1). Optional type-2 elements follow with presence flags.
- * ----------------------------------------------------------------------- */
-static void
-parse_cmce_d_tx_granted(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 25) {
-        fprintf(stderr, "[TETRA CMCE D-TX-GRANTED] CC=%d (too short: %d bits)\n", cc, nbits);
+    h->message_type = (uint8_t)type;
+    if (type == SDS_TL_ACK) {
+        (void)tetra_bits_skip(r, 4); /* reserved */
+        h->status = (uint8_t)tetra_bits_read(r, 8);
+        h->reference = (uint8_t)tetra_bits_read(r, 8);
         return;
     }
-
-    int off = 5;
-    uint32_t call_id = mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint32_t tx_grant = mle_bits_to_uint(bits, off, 2);
-    off += 2;
-    uint32_t tx_perm = mle_bits_to_uint(bits, off, 1);
-    off += 1;
-    uint32_t enc_mode = mle_bits_to_uint(bits, off, 1);
-    off += 1;
-    uint32_t reserved = mle_bits_to_uint(bits, off, 1);
-    off += 1;
-
-    uint32_t notification = 0, granted_ssi = 0, party_extension = 0;
-    uint8_t notification_valid = 0, party_type = 0, party_type_valid = 0;
-    uint8_t got_ssi = 0, party_extension_valid = 0;
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off, 1);
-    off += 1;
-
-    /* Notification indicator (optional type 2). */
-    if (optional_tail) {
-        uint32_t present = mle_bits_to_uint(bits, off, 1);
-        off += 1;
-        if (present) {
-            if (off + 6 > nbits) {
-                goto truncated;
-            }
-            notification = mle_bits_to_uint(bits, off, 6);
-            off += 6;
-            notification_valid = 1;
-        }
+    /* TRANSFER: delivery report request, service selection; REPORT: acknowledgement required, reserved. */
+    (void)tetra_bits_skip(r, 3);
+    h->storage_forward = (uint8_t)tetra_bits_read(r, 1);
+    if (type == SDS_TL_REPORT) {
+        h->status = (uint8_t)tetra_bits_read(r, 8);
     }
-    /* Transmitting party type identifier and its conditional SSI. */
-    if (optional_tail) {
-        if (off >= nbits) {
-            goto truncated;
-        }
-        uint32_t present = mle_bits_to_uint(bits, off, 1);
-        off += 1;
-        if (present) {
-            if (off + 2 > nbits) {
-                goto truncated;
-            }
-            party_type = (uint8_t)mle_bits_to_uint(bits, off, 2);
-            off += 2;
-            party_type_valid = 1;
-            if (party_type == 1 || party_type == 2) {
-                if (off + 24 > nbits) {
-                    goto truncated;
-                }
-                granted_ssi = mle_bits_to_uint(bits, off, 24);
-                off += 24;
-                got_ssi = 1;
-            }
-            if (party_type == 2) {
-                if (off + 24 > nbits) {
-                    goto truncated;
-                }
-                party_extension = mle_bits_to_uint(bits, off, 24);
-                off += 24;
-                party_extension_valid = 1;
-            }
-        }
-        if (!cmce_skip_type34(bits, nbits, &off)) {
-            goto truncated;
-        }
+    h->reference = (uint8_t)tetra_bits_read(r, 8);
+    if (h->storage_forward) {
+        sds_read_forward_address(r, h);
     }
-
-    fprintf(stderr, "[TETRA CMCE D-TX-GRANTED] CC=%d  call=%u  grant=%u  request=%u  enc=%u", cc, call_id, tx_grant,
-            tx_perm, enc_mode);
-    if (got_ssi) {
-        fprintf(stderr, "  granted_SSI=%u", granted_ssi);
-    }
-    if (reserved) {
-        fprintf(stderr, "  reserved=%u", reserved);
-    }
-    fprintf(stderr, "\n");
-
-    if (ts) {
-        if (!cmce_matches_active_call(state, call_id)) {
-            fprintf(stderr, "[TETRA CMCE D-TX-GRANTED] CC=%d call=%u ignored; active call=%u\n", cc, call_id,
-                    (unsigned)ts->call_id);
-            return;
-        }
-        /* Values 0 and 3 switch on the receive U-plane; 1 and 2 do not. */
-        ts->tx_granted_valid = (uint8_t)(tx_grant == 0 || tx_grant == 3);
-        ts->enc_mode = (uint8_t)(enc_mode & 0x01u);
-
-        /* Phase 78: CMCE D-TX-GRANTED dropped variables */
-        ts->cmce_tx_granted_perm = (uint8_t)(tx_perm & 1u);
-        ts->cmce_tx_granted_reserv = (uint8_t)(reserved & 1u);
-        ts->cmce_tx_granted_notification = (uint8_t)notification;
-        ts->cmce_tx_granted_notification_valid = notification_valid;
-        ts->cmce_tx_granted_party_type = party_type;
-        ts->cmce_tx_granted_party_type_valid = party_type_valid;
-        ts->tx_granted_ssi = got_ssi ? granted_ssi : 0;
-        ts->cmce_tx_granted_party_extension = party_extension;
-        ts->cmce_tx_granted_party_extension_valid = party_extension_valid;
-    }
-
-    (void)opts; /* channel allocation and tuning are MAC-layer responsibilities */
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA CMCE D-TX-GRANTED] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
-    (void)opts;
 }
 
-/* -----------------------------------------------------------------------
- * CMCE D-TX-CEASED (PDU type 9) — ETSI EN 300 392-2 §14.7.1.13.
- * Mandatory fields are PDU type (5), call identifier (14), and transmission
- * request permission (1). Notification indicator is the first optional IE.
- * ----------------------------------------------------------------------- */
+/* Concatenation control (table 29.60) and, in part 1, the PID of the user payload. */
 static void
-parse_cmce_d_tx_ceased(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 21) {
-        fprintf(stderr, "[TETRA CMCE D-TX-CEASED] CC=%d (too short: %d bits)\n", cc, nbits);
+sds_read_concat_control(tetra_bit_reader* r, sds_concat_part* part) {
+    if (tetra_bits_read(r, 3) != 0) { /* concatenation control PDU type: only transfer is defined (table 29.61) */
+        bits_reject(r);
         return;
     }
-    int off = 5;
-    uint16_t call_id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint8_t tx_perm = (uint8_t)mle_bits_to_uint(bits, off, 1);
-    off += 1;
-    uint8_t notification = 0;
-    uint8_t got_notification = 0;
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off, 1);
-    off += 1;
-    if (optional_tail) {
-        uint8_t present = (uint8_t)mle_bits_to_uint(bits, off, 1);
-        off += 1;
-        if (present) {
-            if (off + 6 > nbits) {
-                fprintf(stderr, "[TETRA CMCE D-TX-CEASED] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
-                return;
-            }
-            notification = (uint8_t)mle_bits_to_uint(bits, off, 6);
-            got_notification = 1;
-        }
-        if (!cmce_skip_type34(bits, nbits, &off)) {
-            fprintf(stderr, "[TETRA CMCE D-TX-CEASED] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
-            return;
+    const uint32_t extended = tetra_bits_read(r, 1);
+    const uint32_t extension = extended ? tetra_bits_read(r, 8) : 0;
+    part->reference = (uint16_t)((extension << 4) | tetra_bits_read(r, 4));
+    part->total = (uint8_t)tetra_bits_read(r, 8);
+    part->sequence = (uint8_t)tetra_bits_read(r, 8);
+    part->payload_pid = -1;
+    if (part->sequence == 1) {
+        part->payload_pid = (int)tetra_bits_read(r, 8);
+        if (part->payload_pid == (int)SDS_PID_CONCAT || part->payload_pid == (int)SDS_PID_CONCAT_TL) {
+            bits_reject(r);
         }
     }
-    fprintf(stderr, "[TETRA CMCE D-TX-CEASED] CC=%d  call=%u  request=%u", cc, (unsigned)call_id, (unsigned)tx_perm);
-    if (got_notification) {
-        fprintf(stderr, "  notification=%u", (unsigned)notification);
-    }
-    fprintf(stderr, "  (floor released)\n");
-    if (ts) {
-        if (!cmce_matches_active_call(state, call_id)) {
-            fprintf(stderr, "[TETRA CMCE D-TX-CEASED] CC=%d call=%u ignored; active call=%u\n", cc, (unsigned)call_id,
-                    (unsigned)ts->call_id);
-            return;
-        }
-        ts->tx_ceased_tx_perm = tx_perm;
-        ts->tx_ceased_cipher_info = 0; /* retained ABI field; no such IE in Table 14.16 */
-        ts->tx_granted_valid = 0;
-    }
-    /* Floor release does not release the assigned traffic channel. */
-    (void)opts;
 }
 
-/* Decode one table 18.64 CA neighbour.  The fixed fields are retained for
- * cell-selection/tracking consumers.  Optional fields are currently skipped,
- * but their complete standardized P-bit/value layout is still required. */
+/* Decode the text of a message whose user data PID is @p pid; @p r is at the text message SDU. */
 static int
-parse_mle_ca_neighbor(const uint8_t* bits, int nbits, int* off, uint8_t* cell_id, uint8_t* reselect_types,
-                      uint8_t* synchronized, uint8_t* load, uint16_t* main_carrier) {
-    static const uint8_t optional_widths[10] = {10, 10, 14, 14, 3, 4, 16, 12, 5, 6};
-    if (!bits || !off || *off + 23 > nbits) {
-        return 0;
+sds_decode_message_text(tetra_bit_reader* r, uint32_t pid, sds_text* t) {
+    if (sds_pid_is_simple_text(pid)) {
+        return sds_decode_text(r, 0, t);
     }
-
-    *cell_id = (uint8_t)mle_bits_to_uint(bits, *off, 5);
-    *off += 5;
-    *reselect_types = (uint8_t)mle_bits_to_uint(bits, *off, 2);
-    *off += 2;
-    *synchronized = bits[(*off)++] & 1u;
-    *load = (uint8_t)mle_bits_to_uint(bits, *off, 2);
-    *off += 2;
-    *main_carrier = (uint16_t)mle_bits_to_uint(bits, *off, 12);
-    *off += 12;
-
-    uint8_t optional = bits[(*off)++] & 1u;
-    if (optional) {
-        for (unsigned i = 0; i < sizeof(optional_widths); i++) {
-            if (*off >= nbits) {
-                return 0;
-            }
-            uint8_t present = bits[(*off)++] & 1u;
-            if (present) {
-                if (*off + optional_widths[i] > nbits) {
-                    return 0;
-                }
-                *off += optional_widths[i];
-            }
-        }
+    if (sds_pid_is_tl_text(pid)) {
+        return sds_decode_text(r, 1, t);
     }
     return 1;
 }
 
-/* D-NWRK-BROADCAST, table 18.2. @bits starts at its 3-bit PDU type. */
-static void
-parse_mle_d_nwrk_broadcast(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 22) { /* type + reselect parameters + load + O-bit */
-        fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
-    }
-
-    uint32_t reselect = mle_bits_to_uint(bits, 3, 16);
-    uint32_t load = mle_bits_to_uint(bits, 19, 2);
-    int off = 21;
-    uint64_t network_time = 0;
-    uint8_t network_time_valid = 0;
-    uint8_t neighbor_count = 0;
-    uint8_t neighbor_count_valid = 0;
-    uint8_t cell_id[7] = {0};
-    uint8_t reselect_types[7] = {0};
-    uint8_t synchronized[7] = {0};
-    uint8_t neighbor_load[7] = {0};
-    uint16_t main_carrier[7] = {0};
-
-    uint8_t optional = bits[off++] & 1u;
-    if (optional) {
-        if (off >= nbits) {
-            goto truncated;
-        }
-        uint8_t present = bits[off++] & 1u;
-        if (present) {
-            if (off + 48 > nbits) {
-                goto truncated;
-            }
-            network_time = ((uint64_t)mle_bits_to_uint(bits, off, 16) << 32) | mle_bits_to_uint(bits, off + 16, 32);
-            off += 48;
-            network_time_valid = 1;
-        }
-        if (off >= nbits) {
-            goto truncated;
-        }
-        present = bits[off++] & 1u;
-        if (present) {
-            if (off + 3 > nbits) {
-                goto truncated;
-            }
-            neighbor_count = (uint8_t)mle_bits_to_uint(bits, off, 3);
-            off += 3;
-            neighbor_count_valid = 1;
-            for (uint8_t i = 0; i < neighbor_count; i++) {
-                if (!parse_mle_ca_neighbor(bits, nbits, &off, &cell_id[i], &reselect_types[i], &synchronized[i],
-                                           &neighbor_load[i], &main_carrier[i])) {
-                    goto truncated;
-                }
-            }
-        }
-    }
-
-    fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST] CC=%d reselect=0x%04X load=%u\n", cc, reselect, load);
-
-    if (ts) {
-        ts->nwrk_bcast_known = 1;
-        ts->mle_cell_reselect_params = (uint16_t)reselect;
-        ts->mle_cell_load = (uint8_t)load;
-        ts->mle_network_time = network_time;
-        ts->mle_network_time_valid = network_time_valid;
-        ts->mle_ca_neighbor_count = neighbor_count;
-        ts->mle_ca_neighbor_count_valid = neighbor_count_valid;
-        memcpy(ts->mle_ca_neighbor_cell_id, cell_id, sizeof(cell_id));
-        memcpy(ts->mle_ca_neighbor_reselect_types, reselect_types, sizeof(reselect_types));
-        memcpy(ts->mle_ca_neighbor_synchronized, synchronized, sizeof(synchronized));
-        memcpy(ts->mle_ca_neighbor_load, neighbor_load, sizeof(neighbor_load));
-        memcpy(ts->mle_ca_neighbor_main_carrier, main_carrier, sizeof(main_carrier));
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST] CC=%d (truncated optional data: %d bits)\n", cc, nbits);
-}
-
-/* Table 18.41: a channel class is its four-bit identifier, 18-bit channel
- * characteristics, and five-bit BS power relative to the main carrier. */
+/* A concatenation part (tables 29.62 and 29.63): add it to the reassembly and, when it completes the message, decode
+ * the message text. */
 static int
-parse_mle_channel_class(const uint8_t* bits, int nbits, int* off, uint8_t* id, uint32_t* characteristics,
-                        uint8_t* bs_power) {
-    if (!bits || !off || *off + 27 > nbits) {
-        return 0;
+sds_decode_concat(const mle_ctx* ctx, const sds_pdu* pdu, uint32_t pid, tetra_bit_reader* ud, sds_message* msg) {
+    sds_concat_part part;
+    DSD_MEMSET(&part, 0, sizeof part);
+    if (pid == SDS_PID_CONCAT_TL && msg->tl.message_type != SDS_TL_TRANSFER) {
+        return SDS_DECODE_BAD;
     }
-    *id = (uint8_t)mle_bits_to_uint(bits, *off, 4);
-    *off += 4;
-    *characteristics = mle_bits_to_uint(bits, *off, 18);
-    *off += 18;
-    *bs_power = (uint8_t)mle_bits_to_uint(bits, *off, 5);
-    *off += 5;
-    return 1;
+    sds_read_concat_control(ud, &part);
+    if (!tetra_bits_ok(ud)) {
+        return SDS_DECODE_BAD;
+    }
+    part.data = *ud;
+    part.src_ssi = pdu->calling.ssi;
+    part.with_transport = (uint8_t)(pid == SDS_PID_CONCAT_TL);
+    msg->concat.present = 1;
+    msg->concat.reference = part.reference;
+    msg->concat.total = part.total;
+    msg->concat.sequence = part.sequence;
+    const int result = sds_concat_submit(ctx->ts, &part, &msg->concat);
+    if (result == SDS_CONCAT_REJECTED) {
+        return SDS_DECODE_BAD;
+    }
+    msg->concat.duplicate = (uint8_t)(result == SDS_CONCAT_DUPLICATE);
+    msg->concat.complete = (uint8_t)(result == SDS_CONCAT_COMPLETE);
+    if (!msg->concat.complete) {
+        return SDS_DECODE_OK;
+    }
+    tetra_bit_reader assembled = tetra_bits_reader(msg->concat.assembled, msg->concat.assembled_bits, 0);
+    return sds_decode_message_text(&assembled, msg->concat.assembled_pid, &msg->text) ? SDS_DECODE_OK : SDS_DECODE_BAD;
 }
 
-/* Table 18.96: the ten-bit carrier extension is conditional on its flag. */
+/* User defined data-4 (short data type identifier 3): the protocol identifier (table 29.21), the SDS-TL header for the
+ * PIDs that use it, then text or a concatenation part. */
 static int
-parse_mle_irregular_channel(const uint8_t* bits, int nbits, int* off, uint8_t* channel_id, uint32_t* characteristics,
-                            uint16_t* carrier, uint16_t* extension, uint8_t* extension_valid) {
-    if (!bits || !off || *off + 36 > nbits) {
-        return 0;
+sds_decode_user_data(const mle_ctx* ctx, const sds_pdu* pdu, tetra_bit_reader* ud, sds_message* msg) {
+    if (tetra_bits_left(ud) < 8) {
+        return SDS_DECODE_OK; /* too short to name a protocol: kept as bare user data */
     }
-    *channel_id = (uint8_t)mle_bits_to_uint(bits, *off, 5);
-    *off += 5;
-    *characteristics = mle_bits_to_uint(bits, *off, 18);
-    *off += 18;
-    *carrier = (uint16_t)mle_bits_to_uint(bits, *off, 12);
-    *off += 12;
-    *extension_valid = bits[(*off)++] & 1u;
-    *extension = 0;
-    if (*extension_valid) {
-        if (*off + 10 > nbits) {
-            return 0;
-        }
-        *extension = (uint16_t)mle_bits_to_uint(bits, *off, 10);
-        *off += 10;
+    const uint32_t pid = tetra_bits_read(ud, 8);
+    if (sds_pid_uses_tl(pid)) {
+        sds_read_tl_header(ud, &msg->tl);
     }
-    return 1;
+    if (!tetra_bits_ok(ud)) {
+        return SDS_DECODE_BAD;
+    }
+    if (pid == SDS_PID_CONCAT || pid == SDS_PID_CONCAT_TL) {
+        return sds_decode_concat(ctx, pdu, pid, ud, msg);
+    }
+    if (sds_pid_is_tl_text(pid) && msg->tl.message_type != SDS_TL_TRANSFER) {
+        return SDS_DECODE_OK; /* only SDS-TRANSFER carries the text message transfer SDU */
+    }
+    return sds_decode_message_text(ud, pid, &msg->text) ? SDS_DECODE_OK : SDS_DECODE_BAD;
 }
 
-/* D-NWRK-BROADCAST EXTENSION, table 18.4.  Decode into a temporary state so
- * a truncated list or optional header cannot partially replace the last valid
- * network snapshot. */
-typedef struct {
-    uint8_t nwrk_bcast_ext_known;
-    uint8_t mle_ext_serving_classes_present;
-    uint8_t mle_ext_serving_class_count;
-    uint8_t mle_ext_serving_class_id[15];
-    uint32_t mle_ext_serving_class_characteristics[15];
-    uint8_t mle_ext_serving_class_bs_power[15];
-    uint8_t mle_ext_neighbor_classes_present;
-    uint8_t mle_ext_neighbor_class_count;
-    uint8_t mle_ext_neighbor_class_cell_id[31];
-    uint8_t mle_ext_neighbor_class_id[31];
-    uint32_t mle_ext_neighbor_class_characteristics[31];
-    uint8_t mle_ext_neighbor_class_bs_power[31];
-    uint8_t mle_ext_serving_irregular_present;
-    uint8_t mle_ext_serving_irregular_count;
-    uint8_t mle_ext_serving_irregular_channel_id[31];
-    uint32_t mle_ext_serving_irregular_characteristics[31];
-    uint16_t mle_ext_serving_irregular_carrier[31];
-    uint16_t mle_ext_serving_irregular_carrier_extension[31];
-    uint8_t mle_ext_serving_irregular_extension_valid[31];
-    uint8_t mle_ext_neighbor_irregular_present;
-    uint8_t mle_ext_neighbor_irregular_count;
-    uint8_t mle_ext_neighbor_irregular_cell_id[63];
-    uint8_t mle_ext_neighbor_irregular_channel_id[63];
-    uint32_t mle_ext_neighbor_irregular_characteristics[63];
-    uint16_t mle_ext_neighbor_irregular_carrier[63];
-    uint16_t mle_ext_neighbor_irregular_carrier_extension[63];
-    uint8_t mle_ext_neighbor_irregular_extension_valid[63];
-} tetra_mle_nwrk_bcast_ext_snapshot;
-
+/* The D-SDS-DATA fields of table 14.13 up to the end of the PDU. */
 static void
-parse_mle_d_nwrk_broadcast_ext(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    tetra_mle_nwrk_bcast_ext_snapshot decoded;
-    int off = 3;
-
-    if (nbits < 4) {
-        goto truncated;
+sds_read_pdu(tetra_bit_reader* r, sds_pdu* pdu) {
+    static const int k_fixed_bits[3] = {16, 32, 64}; /* user defined data-1 to -3 */
+    pdu->calling.type = (uint8_t)tetra_bits_read(r, 2);
+    cmce_read_party_address(r, &pdu->calling);
+    pdu->sdti = (uint8_t)tetra_bits_read(r, 2);
+    pdu->data_bits = pdu->sdti < 3 ? k_fixed_bits[pdu->sdti] : (int)tetra_bits_read(r, 11);
+    pdu->data_pos = r->pos;
+    (void)tetra_bits_skip(r, pdu->data_bits);
+    if (tetra_bits_present(r)) { /* no type-2 elements: type-3 elements follow at once */
+        (void)tetra_bits_skip_type34(r);
     }
-    memset(&decoded, 0, sizeof(decoded));
-    decoded.nwrk_bcast_ext_known = 1;
-
-    if (!(bits[off++] & 1u)) {
-        goto commit;
-    }
-
-    /* Number of channel classes for the serving cell + repeated table 18.41. */
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 4 > nbits) {
-            goto truncated;
-        }
-        decoded.mle_ext_serving_classes_present = 1;
-        decoded.mle_ext_serving_class_count = (uint8_t)mle_bits_to_uint(bits, off, 4);
-        off += 4;
-        for (uint8_t i = 0; i < decoded.mle_ext_serving_class_count; i++) {
-            if (!parse_mle_channel_class(bits, nbits, &off, &decoded.mle_ext_serving_class_id[i],
-                                         &decoded.mle_ext_serving_class_characteristics[i],
-                                         &decoded.mle_ext_serving_class_bs_power[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    /* CA neighbour cell identifier + channel class, table 18.62. */
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 5 > nbits) {
-            goto truncated;
-        }
-        decoded.mle_ext_neighbor_classes_present = 1;
-        decoded.mle_ext_neighbor_class_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
-        off += 5;
-        for (uint8_t i = 0; i < decoded.mle_ext_neighbor_class_count; i++) {
-            if (off + 5 > nbits) {
-                goto truncated;
-            }
-            decoded.mle_ext_neighbor_class_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 5);
-            off += 5;
-            if (!parse_mle_channel_class(bits, nbits, &off, &decoded.mle_ext_neighbor_class_id[i],
-                                         &decoded.mle_ext_neighbor_class_characteristics[i],
-                                         &decoded.mle_ext_neighbor_class_bs_power[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    /* Irregular channel details for the serving cell, table 18.96. */
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 5 > nbits) {
-            goto truncated;
-        }
-        decoded.mle_ext_serving_irregular_present = 1;
-        decoded.mle_ext_serving_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
-        off += 5;
-        for (uint8_t i = 0; i < decoded.mle_ext_serving_irregular_count; i++) {
-            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded.mle_ext_serving_irregular_channel_id[i],
-                                             &decoded.mle_ext_serving_irregular_characteristics[i],
-                                             &decoded.mle_ext_serving_irregular_carrier[i],
-                                             &decoded.mle_ext_serving_irregular_carrier_extension[i],
-                                             &decoded.mle_ext_serving_irregular_extension_valid[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    /* CA neighbour cell identifier + irregular detail, table 18.66. */
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 6 > nbits) {
-            goto truncated;
-        }
-        decoded.mle_ext_neighbor_irregular_present = 1;
-        decoded.mle_ext_neighbor_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 6);
-        off += 6;
-        for (uint8_t i = 0; i < decoded.mle_ext_neighbor_irregular_count; i++) {
-            if (off + 5 > nbits) {
-                goto truncated;
-            }
-            decoded.mle_ext_neighbor_irregular_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 5);
-            off += 5;
-            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded.mle_ext_neighbor_irregular_channel_id[i],
-                                             &decoded.mle_ext_neighbor_irregular_characteristics[i],
-                                             &decoded.mle_ext_neighbor_irregular_carrier[i],
-                                             &decoded.mle_ext_neighbor_irregular_carrier_extension[i],
-                                             &decoded.mle_ext_neighbor_irregular_extension_valid[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    /* The two reserved Type-2 elements shall not be used (table 18.4). */
-    if (off + 2 > nbits || (bits[off] & 1u) || (bits[off + 1] & 1u)) {
-        goto truncated;
-    }
-    off += 2;
-
-commit:
-    fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST-EXT] CC=%d classes=%u/%u irregular=%u/%u\n", cc,
-            decoded.mle_ext_serving_class_count, decoded.mle_ext_neighbor_class_count,
-            decoded.mle_ext_serving_irregular_count, decoded.mle_ext_neighbor_irregular_count);
-    if (ts) {
-#define COPY_EXT_FIELD(name) ts->name = decoded.name
-        COPY_EXT_FIELD(nwrk_bcast_ext_known);
-        COPY_EXT_FIELD(mle_ext_serving_classes_present);
-        COPY_EXT_FIELD(mle_ext_serving_class_count);
-        COPY_EXT_FIELD(mle_ext_neighbor_classes_present);
-        COPY_EXT_FIELD(mle_ext_neighbor_class_count);
-        COPY_EXT_FIELD(mle_ext_serving_irregular_present);
-        COPY_EXT_FIELD(mle_ext_serving_irregular_count);
-        COPY_EXT_FIELD(mle_ext_neighbor_irregular_present);
-        COPY_EXT_FIELD(mle_ext_neighbor_irregular_count);
-#undef COPY_EXT_FIELD
-#define COPY_EXT_ARRAY(name) memcpy(ts->name, decoded.name, sizeof(ts->name))
-        COPY_EXT_ARRAY(mle_ext_serving_class_id);
-        COPY_EXT_ARRAY(mle_ext_serving_class_characteristics);
-        COPY_EXT_ARRAY(mle_ext_serving_class_bs_power);
-        COPY_EXT_ARRAY(mle_ext_neighbor_class_cell_id);
-        COPY_EXT_ARRAY(mle_ext_neighbor_class_id);
-        COPY_EXT_ARRAY(mle_ext_neighbor_class_characteristics);
-        COPY_EXT_ARRAY(mle_ext_neighbor_class_bs_power);
-        COPY_EXT_ARRAY(mle_ext_serving_irregular_channel_id);
-        COPY_EXT_ARRAY(mle_ext_serving_irregular_characteristics);
-        COPY_EXT_ARRAY(mle_ext_serving_irregular_carrier);
-        COPY_EXT_ARRAY(mle_ext_serving_irregular_carrier_extension);
-        COPY_EXT_ARRAY(mle_ext_serving_irregular_extension_valid);
-        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_cell_id);
-        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_channel_id);
-        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_characteristics);
-        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_carrier);
-        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_carrier_extension);
-        COPY_EXT_ARRAY(mle_ext_neighbor_irregular_extension_valid);
-#undef COPY_EXT_ARRAY
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST-EXT] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
-}
-
-/* Table 18.65 DA neighbour information.  The first eleven optional fields
- * are retained and the three reserved fields are required to be absent. */
-static int
-parse_mle_da_neighbor(const uint8_t* bits, int nbits, int* off, tetra_state_t* decoded, uint8_t index) {
-    static const uint8_t widths[11] = {10, 10, 14, 14, 8, 3, 4, 16, 7, 3, 6};
-    if (!bits || !off || !decoded || index >= 7 || *off + 21 > nbits) {
-        return 0;
-    }
-
-    decoded->mle_da_neighbor_cell_id[index] = (uint8_t)mle_bits_to_uint(bits, *off, 8);
-    *off += 8;
-    decoded->mle_da_neighbor_reselect_types[index] = (uint8_t)mle_bits_to_uint(bits, *off, 8);
-    *off += 8;
-    decoded->mle_da_neighbor_synchronized[index] = bits[(*off)++] & 1u;
-    decoded->mle_da_neighbor_wide_area[index] = bits[(*off)++] & 1u;
-    decoded->mle_da_neighbor_ci_path[index] = (uint8_t)mle_bits_to_uint(bits, *off, 2);
-    *off += 2;
-    decoded->mle_da_neighbor_load_known[index] = bits[(*off)++] & 1u;
-    if (decoded->mle_da_neighbor_load_known[index]) {
-        if (*off + 3 > nbits) {
-            return 0;
-        }
-        decoded->mle_da_neighbor_load[index] = (uint8_t)mle_bits_to_uint(bits, *off, 3);
-        *off += 3;
-    }
-    if (*off + 18 > nbits) {
-        return 0;
-    }
-    decoded->mle_da_neighbor_main_carrier[index] = (uint16_t)mle_bits_to_uint(bits, *off, 12);
-    *off += 12;
-    decoded->mle_da_neighbor_modulation[index] = (uint8_t)mle_bits_to_uint(bits, *off, 3);
-    *off += 3;
-    decoded->mle_da_neighbor_bandwidth[index] = (uint8_t)mle_bits_to_uint(bits, *off, 3);
-    *off += 3;
-
-    if (*off >= nbits) {
-        return 0;
-    }
-    if (bits[(*off)++] & 1u) {
-        for (unsigned i = 0; i < 11; i++) {
-            uint32_t value;
-            if (*off >= nbits) {
-                return 0;
-            }
-            if (!(bits[(*off)++] & 1u)) {
-                continue;
-            }
-            if (*off + widths[i] > nbits) {
-                return 0;
-            }
-            value = mle_bits_to_uint(bits, *off, widths[i]);
-            *off += widths[i];
-            decoded->mle_da_neighbor_optional_mask[index] |= (uint16_t)(1u << i);
-            switch (i) {
-                case 0: decoded->mle_da_neighbor_carrier_extension[index] = (uint16_t)value; break;
-                case 1: decoded->mle_da_neighbor_mcc[index] = (uint16_t)value; break;
-                case 2: decoded->mle_da_neighbor_mnc[index] = (uint16_t)value; break;
-                case 3: decoded->mle_da_neighbor_la[index] = (uint16_t)value; break;
-                case 4: decoded->mle_da_neighbor_local_cell_id[index] = (uint8_t)value; break;
-                case 5: decoded->mle_da_neighbor_max_tx_power[index] = (uint8_t)value; break;
-                case 6: decoded->mle_da_neighbor_min_rx_level[index] = (uint8_t)value; break;
-                case 7: decoded->mle_da_neighbor_subscriber_class[index] = (uint16_t)value; break;
-                case 8: decoded->mle_da_neighbor_bs_service_details[index] = (uint8_t)value; break;
-                case 9: decoded->mle_da_neighbor_security[index] = (uint8_t)value; break;
-                case 10: decoded->mle_da_neighbor_frame_offset[index] = (uint8_t)value; break;
-            }
-        }
-        if (*off + 3 > nbits || bits[*off] || bits[*off + 1] || bits[*off + 2]) {
-            return 0;
-        }
-        *off += 3;
-    }
-    return 1;
-}
-
-/* Extended-PDU D-NWRK-BROADCAST-DA, table 18.3. */
-static void
-parse_mle_d_nwrk_broadcast_da(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    tetra_state_t* decoded = (tetra_state_t*)calloc(1, sizeof(*decoded));
-    int off = 10; /* base type, extension, mandatory three reserved zero bits */
-    if (!decoded) {
-        return;
-    }
-    decoded->mle_da_broadcast_known = 1;
-    if (nbits < 11 || mle_bits_to_uint(bits, 7, 3) != 0) {
-        goto truncated;
-    }
-    if (!(bits[off++] & 1u)) {
-        goto commit;
-    }
-
-    /* Reserved 14-bit Type-2 field. */
-    if (off >= nbits || bits[off++]) {
-        goto truncated;
-    }
-
-#define DA_OUTER_VALUE(width, present_field, value_field)                                                              \
-    do {                                                                                                               \
-        if (off >= nbits)                                                                                              \
-            goto truncated;                                                                                            \
-        if (bits[off++] & 1u) {                                                                                        \
-            if (off + (width) > nbits)                                                                                 \
-                goto truncated;                                                                                        \
-            decoded->present_field = 1;                                                                                \
-            decoded->value_field = mle_bits_to_uint(bits, off, (width));                                               \
-            off += (width);                                                                                            \
-        }                                                                                                              \
-    } while (0)
-    DA_OUTER_VALUE(8, mle_da_cell_id_valid, mle_da_cell_id);
-    DA_OUTER_VALUE(16, mle_da_reselect_valid, mle_da_reselect);
-    DA_OUTER_VALUE(3, mle_da_load_valid, mle_da_load);
-#undef DA_OUTER_VALUE
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 48 > nbits) {
-            goto truncated;
-        }
-        decoded->mle_da_network_time =
-            ((uint64_t)mle_bits_to_uint(bits, off, 16) << 32) | mle_bits_to_uint(bits, off + 16, 32);
-        decoded->mle_da_network_time_valid = 1;
-        off += 48;
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        decoded->mle_da_local_ca_valid = 1;
-        if (!parse_mle_ca_neighbor(bits, nbits, &off, &decoded->mle_da_local_ca_cell_id,
-                                   &decoded->mle_da_local_ca_reselect_types, &decoded->mle_da_local_ca_synchronized,
-                                   &decoded->mle_da_local_ca_load, &decoded->mle_da_local_ca_main_carrier)) {
-            goto truncated;
-        }
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 3 > nbits) {
-            goto truncated;
-        }
-        decoded->mle_da_neighbor_list_present = 1;
-        decoded->mle_da_neighbor_count = (uint8_t)mle_bits_to_uint(bits, off, 3);
-        off += 3;
-        for (uint8_t i = 0; i < decoded->mle_da_neighbor_count; i++) {
-            if (!parse_mle_da_neighbor(bits, nbits, &off, decoded, i)) {
-                goto truncated;
-            }
-        }
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 4 > nbits) {
-            goto truncated;
-        }
-        decoded->mle_da_serving_classes_present = 1;
-        decoded->mle_da_serving_class_count = (uint8_t)mle_bits_to_uint(bits, off, 4);
-        off += 4;
-        for (uint8_t i = 0; i < decoded->mle_da_serving_class_count; i++) {
-            if (!parse_mle_channel_class(bits, nbits, &off, &decoded->mle_da_serving_class_id[i],
-                                         &decoded->mle_da_serving_class_characteristics[i],
-                                         &decoded->mle_da_serving_class_bs_power[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 5 > nbits) {
-            goto truncated;
-        }
-        decoded->mle_da_neighbor_classes_present = 1;
-        decoded->mle_da_neighbor_class_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
-        off += 5;
-        for (uint8_t i = 0; i < decoded->mle_da_neighbor_class_count; i++) {
-            if (off + 8 > nbits) {
-                goto truncated;
-            }
-            decoded->mle_da_neighbor_class_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 8);
-            off += 8;
-            if (!parse_mle_channel_class(bits, nbits, &off, &decoded->mle_da_neighbor_class_id[i],
-                                         &decoded->mle_da_neighbor_class_characteristics[i],
-                                         &decoded->mle_da_neighbor_class_bs_power[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 5 > nbits) {
-            goto truncated;
-        }
-        decoded->mle_da_serving_irregular_present = 1;
-        decoded->mle_da_serving_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
-        off += 5;
-        for (uint8_t i = 0; i < decoded->mle_da_serving_irregular_count; i++) {
-            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded->mle_da_serving_irregular_channel_id[i],
-                                             &decoded->mle_da_serving_irregular_characteristics[i],
-                                             &decoded->mle_da_serving_irregular_carrier[i],
-                                             &decoded->mle_da_serving_irregular_extension[i],
-                                             &decoded->mle_da_serving_irregular_extension_valid[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 6 > nbits) {
-            goto truncated;
-        }
-        decoded->mle_da_neighbor_irregular_present = 1;
-        decoded->mle_da_neighbor_irregular_count = (uint8_t)mle_bits_to_uint(bits, off, 6);
-        off += 6;
-        for (uint8_t i = 0; i < decoded->mle_da_neighbor_irregular_count; i++) {
-            if (off + 8 > nbits) {
-                goto truncated;
-            }
-            decoded->mle_da_neighbor_irregular_cell_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 8);
-            off += 8;
-            if (!parse_mle_irregular_channel(bits, nbits, &off, &decoded->mle_da_neighbor_irregular_channel_id[i],
-                                             &decoded->mle_da_neighbor_irregular_characteristics[i],
-                                             &decoded->mle_da_neighbor_irregular_carrier[i],
-                                             &decoded->mle_da_neighbor_irregular_extension[i],
-                                             &decoded->mle_da_neighbor_irregular_extension_valid[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    /* Two final reserved Type-2 fields. */
-    if (off + 2 > nbits || bits[off] || bits[off + 1]) {
-        goto truncated;
-    }
-    off += 2;
-
-commit:
-    fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST-DA] CC=%d neighbours=%u classes=%u/%u irregular=%u/%u\n", cc,
-            decoded->mle_da_neighbor_count, decoded->mle_da_serving_class_count, decoded->mle_da_neighbor_class_count,
-            decoded->mle_da_serving_irregular_count, decoded->mle_da_neighbor_irregular_count);
-    if (ts) {
-#define COPY_DA_SCALAR(name) ts->name = decoded->name
-        COPY_DA_SCALAR(mle_da_broadcast_known);
-        COPY_DA_SCALAR(mle_da_cell_id_valid);
-        COPY_DA_SCALAR(mle_da_cell_id);
-        COPY_DA_SCALAR(mle_da_reselect_valid);
-        COPY_DA_SCALAR(mle_da_reselect);
-        COPY_DA_SCALAR(mle_da_load_valid);
-        COPY_DA_SCALAR(mle_da_load);
-        COPY_DA_SCALAR(mle_da_network_time_valid);
-        COPY_DA_SCALAR(mle_da_network_time);
-        COPY_DA_SCALAR(mle_da_local_ca_valid);
-        COPY_DA_SCALAR(mle_da_local_ca_cell_id);
-        COPY_DA_SCALAR(mle_da_local_ca_reselect_types);
-        COPY_DA_SCALAR(mle_da_local_ca_synchronized);
-        COPY_DA_SCALAR(mle_da_local_ca_load);
-        COPY_DA_SCALAR(mle_da_local_ca_main_carrier);
-        COPY_DA_SCALAR(mle_da_neighbor_list_present);
-        COPY_DA_SCALAR(mle_da_neighbor_count);
-        COPY_DA_SCALAR(mle_da_serving_classes_present);
-        COPY_DA_SCALAR(mle_da_serving_class_count);
-        COPY_DA_SCALAR(mle_da_neighbor_classes_present);
-        COPY_DA_SCALAR(mle_da_neighbor_class_count);
-        COPY_DA_SCALAR(mle_da_serving_irregular_present);
-        COPY_DA_SCALAR(mle_da_serving_irregular_count);
-        COPY_DA_SCALAR(mle_da_neighbor_irregular_present);
-        COPY_DA_SCALAR(mle_da_neighbor_irregular_count);
-#undef COPY_DA_SCALAR
-#define COPY_DA_ARRAY(name) memcpy(ts->name, decoded->name, sizeof(ts->name))
-        COPY_DA_ARRAY(mle_da_neighbor_cell_id);
-        COPY_DA_ARRAY(mle_da_neighbor_reselect_types);
-        COPY_DA_ARRAY(mle_da_neighbor_synchronized);
-        COPY_DA_ARRAY(mle_da_neighbor_wide_area);
-        COPY_DA_ARRAY(mle_da_neighbor_ci_path);
-        COPY_DA_ARRAY(mle_da_neighbor_load_known);
-        COPY_DA_ARRAY(mle_da_neighbor_load);
-        COPY_DA_ARRAY(mle_da_neighbor_main_carrier);
-        COPY_DA_ARRAY(mle_da_neighbor_modulation);
-        COPY_DA_ARRAY(mle_da_neighbor_bandwidth);
-        COPY_DA_ARRAY(mle_da_neighbor_optional_mask);
-        COPY_DA_ARRAY(mle_da_neighbor_carrier_extension);
-        COPY_DA_ARRAY(mle_da_neighbor_mcc);
-        COPY_DA_ARRAY(mle_da_neighbor_mnc);
-        COPY_DA_ARRAY(mle_da_neighbor_la);
-        COPY_DA_ARRAY(mle_da_neighbor_local_cell_id);
-        COPY_DA_ARRAY(mle_da_neighbor_max_tx_power);
-        COPY_DA_ARRAY(mle_da_neighbor_min_rx_level);
-        COPY_DA_ARRAY(mle_da_neighbor_subscriber_class);
-        COPY_DA_ARRAY(mle_da_neighbor_bs_service_details);
-        COPY_DA_ARRAY(mle_da_neighbor_security);
-        COPY_DA_ARRAY(mle_da_neighbor_frame_offset);
-        COPY_DA_ARRAY(mle_da_serving_class_id);
-        COPY_DA_ARRAY(mle_da_serving_class_characteristics);
-        COPY_DA_ARRAY(mle_da_serving_class_bs_power);
-        COPY_DA_ARRAY(mle_da_neighbor_class_cell_id);
-        COPY_DA_ARRAY(mle_da_neighbor_class_id);
-        COPY_DA_ARRAY(mle_da_neighbor_class_characteristics);
-        COPY_DA_ARRAY(mle_da_neighbor_class_bs_power);
-        COPY_DA_ARRAY(mle_da_serving_irregular_channel_id);
-        COPY_DA_ARRAY(mle_da_serving_irregular_characteristics);
-        COPY_DA_ARRAY(mle_da_serving_irregular_carrier);
-        COPY_DA_ARRAY(mle_da_serving_irregular_extension);
-        COPY_DA_ARRAY(mle_da_serving_irregular_extension_valid);
-        COPY_DA_ARRAY(mle_da_neighbor_irregular_cell_id);
-        COPY_DA_ARRAY(mle_da_neighbor_irregular_channel_id);
-        COPY_DA_ARRAY(mle_da_neighbor_irregular_characteristics);
-        COPY_DA_ARRAY(mle_da_neighbor_irregular_carrier);
-        COPY_DA_ARRAY(mle_da_neighbor_irregular_extension);
-        COPY_DA_ARRAY(mle_da_neighbor_irregular_extension_valid);
-#undef COPY_DA_ARRAY
-    }
-    free(decoded);
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST-DA] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
-    free(decoded);
-}
-
-typedef struct {
-    uint8_t cell_id;
-    uint8_t remove_cell;
-    uint8_t class_count;
-    uint8_t class_id[15];
-    uint8_t channel_count;
-    uint8_t channel_id[31];
-} tetra_mle_cell_removal;
-
-/* Tables 18.90/18.91.  The cell-id width distinguishes CA from DA records. */
-static int
-parse_mle_cell_removal(const uint8_t* bits, int nbits, int* off, int cell_id_bits, tetra_mle_cell_removal* out) {
-    if (!bits || !off || !out || *off + cell_id_bits + 1 > nbits) {
-        return 0;
-    }
-    memset(out, 0, sizeof(*out));
-    out->cell_id = (uint8_t)mle_bits_to_uint(bits, *off, cell_id_bits);
-    *off += cell_id_bits;
-    out->remove_cell = bits[(*off)++] & 1u;
-    if (out->remove_cell) {
-        return 1;
-    }
-
-    if (*off + 4 > nbits) {
-        return 0;
-    }
-    out->class_count = (uint8_t)mle_bits_to_uint(bits, *off, 4);
-    *off += 4;
-    for (uint8_t i = 0; i < out->class_count; i++) {
-        if (*off + 4 > nbits) {
-            return 0;
-        }
-        out->class_id[i] = (uint8_t)mle_bits_to_uint(bits, *off, 4);
-        *off += 4;
-    }
-    if (*off + 5 > nbits) {
-        return 0;
-    }
-    out->channel_count = (uint8_t)mle_bits_to_uint(bits, *off, 5);
-    *off += 5;
-    for (uint8_t i = 0; i < out->channel_count; i++) {
-        if (*off + 5 > nbits) {
-            return 0;
-        }
-        out->channel_id[i] = (uint8_t)mle_bits_to_uint(bits, *off, 5);
-        *off += 5;
-    }
-    return 1;
-}
-
-/* D-NWRK-BROADCAST REMOVE, table 18.5. @bits starts at the base PDU type. */
-static void
-parse_mle_d_nwrk_broadcast_remove(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    tetra_mle_cell_removal ca[31] = {{0}};
-    tetra_mle_cell_removal da[255] = {{0}};
-    uint8_t ca_present = 0, ca_count = 0;
-    uint8_t da_present = 0, da_count = 0;
-    uint8_t serving_present = 0, serving_class_count = 0;
-    uint8_t serving_class_id[15] = {0};
-    uint8_t serving_channel_count = 0, serving_channel_id[31] = {0};
-    int off = 7; /* base type + type extension */
-
-    if (nbits < 8) {
-        goto truncated;
-    }
-    if (!(bits[off++] & 1u)) {
-        goto commit;
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 5 > nbits) {
-            goto truncated;
-        }
-        ca_present = 1;
-        ca_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
-        off += 5;
-        for (uint8_t i = 0; i < ca_count; i++) {
-            if (!parse_mle_cell_removal(bits, nbits, &off, 5, &ca[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        if (off + 8 > nbits) {
-            goto truncated;
-        }
-        da_present = 1;
-        da_count = (uint8_t)mle_bits_to_uint(bits, off, 8);
-        off += 8;
-        for (unsigned i = 0; i < da_count; i++) {
-            if (!parse_mle_cell_removal(bits, nbits, &off, 8, &da[i])) {
-                goto truncated;
-            }
-        }
-    }
-
-    if (off >= nbits) {
-        goto truncated;
-    }
-    if (bits[off++] & 1u) {
-        serving_present = 1;
-        if (off + 4 > nbits) {
-            goto truncated;
-        }
-        serving_class_count = (uint8_t)mle_bits_to_uint(bits, off, 4);
-        off += 4;
-        for (uint8_t i = 0; i < serving_class_count; i++) {
-            if (off + 4 > nbits) {
-                goto truncated;
-            }
-            serving_class_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 4);
-            off += 4;
-        }
-        if (off + 5 > nbits) {
-            goto truncated;
-        }
-        serving_channel_count = (uint8_t)mle_bits_to_uint(bits, off, 5);
-        off += 5;
-        for (uint8_t i = 0; i < serving_channel_count; i++) {
-            if (off + 5 > nbits) {
-                goto truncated;
-            }
-            serving_channel_id[i] = (uint8_t)mle_bits_to_uint(bits, off, 5);
-            off += 5;
-        }
-    }
-
-    /* Four remaining Type-2 entries are reserved and shall not be used. */
-    if (off + 4 > nbits || bits[off] || bits[off + 1] || bits[off + 2] || bits[off + 3]) {
-        goto truncated;
-    }
-    off += 4;
-
-commit:
-    fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST-REMOVE] CC=%d CA=%u DA=%u serving=%u\n", cc, ca_count, da_count,
-            serving_present);
-    if (ts) {
-        ts->mle_remove_known = 1;
-        ts->mle_remove_ca_present = ca_present;
-        ts->mle_remove_ca_count = ca_count;
-        ts->mle_remove_da_present = da_present;
-        ts->mle_remove_da_count = da_count;
-        ts->mle_remove_serving_present = serving_present;
-        ts->mle_remove_serving_class_count = serving_class_count;
-        ts->mle_remove_serving_channel_count = serving_channel_count;
-        memset(ts->mle_remove_ca_cell_id, 0, sizeof(ts->mle_remove_ca_cell_id));
-        memset(ts->mle_remove_ca_remove_cell, 0, sizeof(ts->mle_remove_ca_remove_cell));
-        memset(ts->mle_remove_ca_class_count, 0, sizeof(ts->mle_remove_ca_class_count));
-        memset(ts->mle_remove_ca_class_id, 0, sizeof(ts->mle_remove_ca_class_id));
-        memset(ts->mle_remove_ca_channel_count, 0, sizeof(ts->mle_remove_ca_channel_count));
-        memset(ts->mle_remove_ca_channel_id, 0, sizeof(ts->mle_remove_ca_channel_id));
-        memset(ts->mle_remove_da_cell_id, 0, sizeof(ts->mle_remove_da_cell_id));
-        memset(ts->mle_remove_da_remove_cell, 0, sizeof(ts->mle_remove_da_remove_cell));
-        memset(ts->mle_remove_da_class_count, 0, sizeof(ts->mle_remove_da_class_count));
-        memset(ts->mle_remove_da_class_id, 0, sizeof(ts->mle_remove_da_class_id));
-        memset(ts->mle_remove_da_channel_count, 0, sizeof(ts->mle_remove_da_channel_count));
-        memset(ts->mle_remove_da_channel_id, 0, sizeof(ts->mle_remove_da_channel_id));
-        memset(ts->mle_remove_serving_class_id, 0, sizeof(ts->mle_remove_serving_class_id));
-        memset(ts->mle_remove_serving_channel_id, 0, sizeof(ts->mle_remove_serving_channel_id));
-        for (uint8_t i = 0; i < ca_count; i++) {
-            ts->mle_remove_ca_cell_id[i] = ca[i].cell_id;
-            ts->mle_remove_ca_remove_cell[i] = ca[i].remove_cell;
-            ts->mle_remove_ca_class_count[i] = ca[i].class_count;
-            memcpy(ts->mle_remove_ca_class_id[i], ca[i].class_id, sizeof(ca[i].class_id));
-            ts->mle_remove_ca_channel_count[i] = ca[i].channel_count;
-            memcpy(ts->mle_remove_ca_channel_id[i], ca[i].channel_id, sizeof(ca[i].channel_id));
-        }
-        for (unsigned i = 0; i < da_count; i++) {
-            ts->mle_remove_da_cell_id[i] = da[i].cell_id;
-            ts->mle_remove_da_remove_cell[i] = da[i].remove_cell;
-            ts->mle_remove_da_class_count[i] = da[i].class_count;
-            memcpy(ts->mle_remove_da_class_id[i], da[i].class_id, sizeof(da[i].class_id));
-            ts->mle_remove_da_channel_count[i] = da[i].channel_count;
-            memcpy(ts->mle_remove_da_channel_id[i], da[i].channel_id, sizeof(da[i].channel_id));
-        }
-        memcpy(ts->mle_remove_serving_class_id, serving_class_id, sizeof(serving_class_id));
-        memcpy(ts->mle_remove_serving_channel_id, serving_channel_id, sizeof(serving_channel_id));
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA MLE D-NWRK-BROADCAST-REMOVE] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
-}
-
-/* -----------------------------------------------------------------------
- * CMCE D-ALERT and D-CALL-PROCEEDING, tables 14.4 and 14.5.
- * ----------------------------------------------------------------------- */
-static void
-parse_cmce_d_alert(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 26) {
-        fprintf(stderr, "[TETRA CMCE D-ALERT] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
-    }
-    int off = 5;
-    uint16_t id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint8_t timeout = (uint8_t)mle_bits_to_uint(bits, off, 3);
-    off += 3;
-    uint8_t reserved = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t duplex = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t queued = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t basic = 0, notification = 0, basic_valid = 0;
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail) {
-        uint8_t present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 8 > nbits) {
-                goto truncated;
-            }
-            basic = (uint8_t)mle_bits_to_uint(bits, off, 8);
-            off += 8;
-            basic_valid = 1;
-        }
-        if (off >= nbits) {
-            goto truncated;
-        }
-        present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 6 > nbits) {
-                goto truncated;
-            }
-            notification = (uint8_t)mle_bits_to_uint(bits, off, 6);
-            off += 6;
-        }
-        if (!cmce_skip_type34(bits, nbits, &off)) {
-            goto truncated;
-        }
-    }
-    fprintf(stderr, "[TETRA CMCE D-ALERT] CC=%d call=%u setup_timeout=%u queued=%u\n", cc, (unsigned)id, timeout,
-            queued);
-    if (ts) {
-        ts->call_active = 1;
-        ts->call_id = id;
-        ts->d_alert_call_id = id;
-        ts->d_alert_timeout = timeout;
-        ts->d_alert_reserved = reserved;
-        ts->d_alert_duplex = duplex;
-        ts->d_alert_queued = queued;
-        ts->d_alert_basic_service = basic;
-        ts->d_alert_notification = notification;
-        ts->d_alert_valid = 1;
-        if (basic_valid) {
-            ts->call_type = (uint8_t)(basic >> 5);
-            ts->enc_mode = (uint8_t)((basic >> 4) & 1u);
-            ts->cmce_com_type = (uint8_t)((basic >> 2) & 3u);
-            ts->call_slots = (uint8_t)(basic & 3u);
-        }
-        ts->cmce_call_generation++;
-    }
-    return;
-truncated:
-    fprintf(stderr, "[TETRA CMCE D-ALERT] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
 }
 
 static void
-parse_cmce_d_call_proceeding(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 25) {
-        fprintf(stderr, "[TETRA CMCE D-CALL-PROCEEDING] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
+sds_publish_concat(const mle_ctx* ctx, const sds_pdu* pdu, const sds_concat_status* concat) {
+    tetra_state_t* const ts = ctx->ts;
+    DSD_FPRINTF(stderr, "[TETRA SDS CONCAT] CC=%d src_SSI=%u ref=%u part=%u/%u received=%u%s\n", ctx->cc,
+                pdu->calling.ssi, concat->reference, concat->sequence, concat->total, concat->received,
+                concat->complete ? " complete" : (concat->duplicate ? " duplicate" : ""));
+    ts->sds_concat_ref = concat->reference;
+    ts->sds_concat_total = concat->total;
+    ts->sds_concat_received = concat->received;
+    ts->sds_concat_valid = 1;
+    ts->sds_concat_duplicate = concat->duplicate;
+    ts->sds_concat_complete = concat->complete;
+    ts->sds_last_cc = (int8_t)ctx->cc;
+    if (concat->complete) {
+        ts->sds_concat_generation++;
     }
-    int off = 5;
-    uint16_t id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint8_t timeout = (uint8_t)mle_bits_to_uint(bits, off, 3);
-    off += 3;
-    uint8_t hook = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t duplex = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t basic = 0, status = 0, notification = 0, basic_valid = 0;
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail) {
-        uint8_t present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 8 > nbits) {
-                goto truncated;
-            }
-            basic = (uint8_t)mle_bits_to_uint(bits, off, 8);
-            off += 8;
-            basic_valid = 1;
-        }
-        if (off >= nbits) {
-            goto truncated;
-        }
-        present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 3 > nbits) {
-                goto truncated;
-            }
-            status = (uint8_t)mle_bits_to_uint(bits, off, 3);
-            off += 3;
-        }
-        if (off >= nbits) {
-            goto truncated;
-        }
-        present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 6 > nbits) {
-                goto truncated;
-            }
-            notification = (uint8_t)mle_bits_to_uint(bits, off, 6);
-            off += 6;
-        }
-        if (!cmce_skip_type34(bits, nbits, &off)) {
-            goto truncated;
-        }
-    }
-    fprintf(stderr, "[TETRA CMCE D-CALL-PROCEEDING] CC=%d call=%u setup_timeout=%u\n", cc, (unsigned)id, timeout);
-    if (ts) {
-        ts->call_active = 1;
-        ts->call_id = id;
-        ts->d_call_proc_call_id = id;
-        ts->d_call_proc_timeout = timeout;
-        ts->d_call_proc_hook = hook;
-        ts->d_call_proc_duplex = duplex;
-        ts->d_call_proc_basic_service = basic;
-        ts->d_call_proc_status = status;
-        ts->d_call_proc_notification = notification;
-        ts->d_call_proc_valid = 1;
-        if (basic_valid) {
-            ts->call_type = (uint8_t)(basic >> 5);
-            ts->enc_mode = (uint8_t)((basic >> 4) & 1u);
-            ts->cmce_com_type = (uint8_t)((basic >> 2) & 3u);
-            ts->call_slots = (uint8_t)(basic & 3u);
-        }
-        ts->cmce_call_generation++;
-    }
-    return;
-truncated:
-    fprintf(stderr, "[TETRA CMCE D-CALL-PROCEEDING] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
 }
 
-/* -----------------------------------------------------------------------
- * CMCE D-STATUS, ETSI EN 300 392-2 table 14.14.
- * ----------------------------------------------------------------------- */
 static void
-parse_cmce_d_status(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    int off = 5;
-    uint32_t src_ssi = 0;
-    uint8_t cpti;
-    if (nbits < 23) {
-        fprintf(stderr, "[TETRA CMCE D-STATUS] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
-    }
-    cpti = (uint8_t)mle_bits_to_uint(bits, off, 2);
-    off += 2;
-    if (cpti == 1 || cpti == 2) {
-        if (off + 24 > nbits) {
-            return;
-        }
-        src_ssi = mle_bits_to_uint(bits, off, 24);
-        off += 24;
-    }
-    if (cpti == 2) {
-        if (off + 24 > nbits) {
-            return;
-        }
-        off += 24;
-    }
-    if (off + 17 > nbits) {
-        return;
-    }
-    uint16_t status = (uint16_t)mle_bits_to_uint(bits, off, 16);
-    off += 16;
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail && !cmce_skip_type34(bits, nbits, &off)) {
-        return;
-    }
-    fprintf(stderr, "[TETRA CMCE D-STATUS] CC=%d src_SSI=%u status=0x%04X\n", cc, src_ssi, status);
-    if (ts) {
-        ts->sds_src = src_ssi;
-        ts->sds_status = status;
-        ts->sds_status_log[ts->sds_status_log_head & 3u] = status;
-        ts->sds_status_log_head = (uint8_t)((ts->sds_status_log_head + 1u) & 3u);
-        /* EN 300 392-2 V3.8.1 table 29.13: SDS-SHORT REPORT is
-         * carried in pre-coded status, with the six-bit prefix 011111. */
-        if ((status >> 10) == 0x1fu) {
-            ts->sds_short_report_result = (uint8_t)((status >> 8) & 3u);
-            ts->sds_short_report_msg_ref = (uint8_t)status;
-            ts->sds_short_report_valid = 1;
-        }
+sds_publish_tl(tetra_state_t* ts, const sds_tl_header* tl) {
+    ts->sds_storage_forward = tl->storage_forward;
+    ts->sds_validity_period = tl->validity_period;
+    ts->sds_forward_type = tl->forward_type;
+    ts->sds_forward_valid = tl->forward_valid;
+    ts->sds_forward_sna = tl->forward_sna;
+    ts->sds_forward_ssi = tl->forward_ssi;
+    ts->sds_forward_extension = tl->forward_extension;
+    DSD_MEMCPY(ts->sds_forward_external, tl->forward_external, sizeof ts->sds_forward_external);
+    if (tl->message_type == SDS_TL_TRANSFER) {
+        ts->sds_msg_ref = tl->reference;
+    } else if (tl->message_type == SDS_TL_ACK) {
+        ts->sds_ack_delivery_status = tl->status;
+        ts->sds_ack_msg_ref = tl->reference;
+        ts->sds_msg_ref = tl->reference;
+        ts->sds_ack_valid = 1;
+    } else if (tl->message_type == SDS_TL_REPORT) {
+        ts->sds_report_cause = tl->status;
+        ts->sds_report_delivery_ok = (uint8_t)(tl->status < 32); /* table 29.16: 000xxxxx is success */
+        ts->sds_report_msg_ref = tl->reference;
+        ts->sds_msg_ref = tl->reference;
+        ts->sds_report_valid = 1;
     }
 }
 
-/* -----------------------------------------------------------------------
- * CMCE D-CONNECT ACKNOWLEDGE, table 14.8.
- * ----------------------------------------------------------------------- */
+/* "SDS from <ssi>: <text>" for the message list, the text cut at a character boundary to fit. */
 static void
-parse_cmce_d_connect_ack(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 27) {
-        fprintf(stderr, "[TETRA CMCE D-CONNECT-ACK] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
-    }
-    int off = 5;
-    uint16_t id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint8_t timeout = (uint8_t)mle_bits_to_uint(bits, off, 4);
-    off += 4;
-    uint8_t grant = (uint8_t)mle_bits_to_uint(bits, off, 2);
-    off += 2;
-    uint8_t permission = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t notification = 0, notification_valid = 0;
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail) {
-        uint8_t present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 6 > nbits) {
-                goto truncated;
-            }
-            notification = (uint8_t)mle_bits_to_uint(bits, off, 6);
-            off += 6;
-            notification_valid = 1;
-        }
-        if (!cmce_skip_type34(bits, nbits, &off)) {
-            goto truncated;
-        }
-    }
-    fprintf(stderr, "[TETRA CMCE D-CONNECT-ACK] CC=%d call=%u timeout=%u grant=%u\n", cc, (unsigned)id, timeout, grant);
-    if (ts) {
-        ts->call_active = 1;
-        ts->call_id = id;
-        ts->call_timeout = timeout;
-        ts->d_connect_ack_call_id = id;
-        ts->d_connect_ack_tx_grant = grant;
-        ts->d_connect_ack_tx_permission = permission;
-        ts->d_connect_ack_notification = notification;
-        ts->d_connect_ack_notification_valid = notification_valid;
-        ts->d_connect_ack_valid = 1;
-        ts->cmce_call_generation++;
-    }
-    return;
-truncated:
-    fprintf(stderr, "[TETRA CMCE D-CONNECT-ACK] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
-}
-
-/* -----------------------------------------------------------------------
- * CMCE floor-control messages from Tables 14.17, 14.19 and 14.20.
- * ----------------------------------------------------------------------- */
-static void
-parse_cmce_d_tx_event(const uint8_t* bits, int nbits, int cc, uint32_t pdu_type, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    const char* name;
-    switch (pdu_type) {
-        case TETRA_CMCE_D_TX_CONTINUE: name = "D-TX-CONTINUE"; break;
-        case TETRA_CMCE_D_TX_INTERRUPT: name = "D-TX-INTERRUPT"; break;
-        case TETRA_CMCE_D_TX_WAIT: name = "D-TX-WAIT"; break;
-        default: name = "D-TX-?"; break;
-    }
-
-    int mandatory = pdu_type == TETRA_CMCE_D_TX_CONTINUE ? 22 : pdu_type == TETRA_CMCE_D_TX_INTERRUPT ? 25 : 21;
-    if (nbits < mandatory) {
-        fprintf(stderr, "[TETRA CMCE %s] CC=%d (too short: %d bits)\n", name, cc, nbits);
-        return;
-    }
-
-    int off = 5;
-    uint32_t call_id = mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint32_t continue_value = 0;
-    uint32_t grant = 0;
-    uint32_t encryption = 0;
-    if (pdu_type == TETRA_CMCE_D_TX_CONTINUE) {
-        continue_value = mle_bits_to_uint(bits, off, 1);
-        off += 1;
-    } else if (pdu_type == TETRA_CMCE_D_TX_INTERRUPT) {
-        grant = mle_bits_to_uint(bits, off, 2);
-        off += 2;
-    }
-    uint32_t request_perm = mle_bits_to_uint(bits, off, 1);
-    off += 1;
-    if (pdu_type == TETRA_CMCE_D_TX_INTERRUPT) {
-        encryption = mle_bits_to_uint(bits, off, 1);
-        off += 1;
-        off += 1; /* reserved */
-    }
-
-    uint32_t notification = 0, party_ssi = 0, party_extension = 0;
-    uint8_t notification_valid = 0, party_type = 0, party_type_valid = 0;
-    uint8_t party_ssi_valid = 0, party_extension_valid = 0;
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off, 1);
-    off += 1;
-    if (optional_tail) {
-        uint32_t present = mle_bits_to_uint(bits, off, 1);
-        off += 1;
-        if (present) {
-            if (off + 6 > nbits) {
-                goto truncated;
-            }
-            notification = mle_bits_to_uint(bits, off, 6);
-            off += 6;
-            notification_valid = 1;
-        }
-    }
-
-    /* Table 14.19 adds transmitting-party identity after notification. */
-    if (pdu_type == TETRA_CMCE_D_TX_INTERRUPT && optional_tail) {
-        if (off >= nbits) {
-            goto truncated;
-        }
-        uint32_t present = mle_bits_to_uint(bits, off, 1);
-        off += 1;
-        if (present) {
-            if (off + 2 > nbits) {
-                goto truncated;
-            }
-            party_type = (uint8_t)mle_bits_to_uint(bits, off, 2);
-            off += 2;
-            party_type_valid = 1;
-            if (party_type == 1 || party_type == 2) {
-                if (off + 24 > nbits) {
-                    goto truncated;
-                }
-                party_ssi = mle_bits_to_uint(bits, off, 24);
-                off += 24;
-                party_ssi_valid = 1;
-            }
-            if (party_type == 2) {
-                if (off + 24 > nbits) {
-                    goto truncated;
-                }
-                party_extension = mle_bits_to_uint(bits, off, 24);
-                off += 24;
-                party_extension_valid = 1;
-            }
-        }
-    }
-    if (optional_tail && !cmce_skip_type34(bits, nbits, &off)) {
-        goto truncated;
-    }
-
-    fprintf(stderr, "[TETRA CMCE %s] CC=%d  call=%u  request=%u  notif=%u", name, cc, call_id, request_perm,
-            notification);
-    if (pdu_type == TETRA_CMCE_D_TX_CONTINUE) {
-        fprintf(stderr, "  continue=%u", continue_value);
-    }
-    if (pdu_type == TETRA_CMCE_D_TX_INTERRUPT) {
-        fprintf(stderr, "  grant=%u  enc=%u", grant, encryption);
-    }
-    fprintf(stderr, "\n");
-
-    if (ts) {
-        if (!cmce_matches_active_call(state, call_id)) {
-            fprintf(stderr, "[TETRA CMCE %s] CC=%d call=%u ignored; active call=%u\n", name, cc, call_id,
-                    (unsigned)ts->call_id);
-            return;
-        }
-        ts->tx_event_call_id = (uint16_t)call_id;
-        ts->tx_event_notification = (uint8_t)notification;
-        ts->tx_event_request_perm = (uint8_t)request_perm;
-        ts->tx_event_continue = (uint8_t)continue_value;
-        ts->tx_event_grant = (uint8_t)grant;
-        ts->tx_event_encryption = (uint8_t)encryption;
-        ts->tx_event_notification_valid = notification_valid;
-        ts->tx_event_party_type = party_type;
-        ts->tx_event_party_type_valid = party_type_valid;
-        ts->tx_event_party_ssi = party_ssi;
-        ts->tx_event_party_ssi_valid = party_ssi_valid;
-        ts->tx_event_party_extension = party_extension;
-        ts->tx_event_party_extension_valid = party_extension_valid;
-
-        switch (pdu_type) {
-            case TETRA_CMCE_D_TX_CONTINUE: ts->tx_continue = 1; break;
-            case TETRA_CMCE_D_TX_INTERRUPT: ts->tx_interrupted = 1; break;
-            case TETRA_CMCE_D_TX_WAIT: ts->tx_wait = 1; break;
-            default: break;
-        }
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA CMCE %s] CC=%d (truncated optional IE: %d bits)\n", name, cc, nbits);
-}
-
-/* -----------------------------------------------------------------------
- * CMCE D-INFO, ETSI EN 300 392-2 table 14.11.
- * ----------------------------------------------------------------------- */
-static void
-parse_cmce_d_info(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 22) {
-        fprintf(stderr, "[TETRA CMCE D-INFO] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
-    }
-    int off = 5;
-    uint16_t id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint8_t reset = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t poll = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint16_t new_id = 0, modify = 0;
-    uint32_t temporary_address = 0;
-    uint8_t timeout = 0, setup_timeout = 0, ownership = 0, status = 0, notification = 0, poll_percentage = 0,
-            poll_number = 0;
-    uint8_t new_id_valid = 0, timeout_valid = 0, setup_timeout_valid = 0, ownership_valid = 0, modify_valid = 0;
-    uint8_t status_valid = 0, temporary_address_valid = 0, notification_valid = 0;
-    uint8_t poll_percentage_valid = 0, poll_number_valid = 0;
-
-#define DINFO_TYPE2(width, value, valid)                                                                               \
-    do {                                                                                                               \
-        uint8_t present;                                                                                               \
-        if (off >= nbits)                                                                                              \
-            goto truncated;                                                                                            \
-        present = (uint8_t)mle_bits_to_uint(bits, off++, 1);                                                           \
-        if (present) {                                                                                                 \
-            if (off + (width) > nbits)                                                                                 \
-                goto truncated;                                                                                        \
-            (value) = mle_bits_to_uint(bits, off, (width));                                                            \
-            off += (width);                                                                                            \
-            (valid) = 1;                                                                                               \
-        }                                                                                                              \
-    } while (0)
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail) {
-        DINFO_TYPE2(14, new_id, new_id_valid);
-        DINFO_TYPE2(4, timeout, timeout_valid);
-        DINFO_TYPE2(3, setup_timeout, setup_timeout_valid);
-        DINFO_TYPE2(1, ownership, ownership_valid);
-        DINFO_TYPE2(9, modify, modify_valid);
-        DINFO_TYPE2(3, status, status_valid);
-        DINFO_TYPE2(24, temporary_address, temporary_address_valid);
-        DINFO_TYPE2(6, notification, notification_valid);
-        DINFO_TYPE2(6, poll_percentage, poll_percentage_valid);
-        DINFO_TYPE2(6, poll_number, poll_number_valid);
-        if (!cmce_skip_type34(bits, nbits, &off)) {
-            goto truncated;
-        }
-    }
-#undef DINFO_TYPE2
-    fprintf(stderr, "[TETRA CMCE D-INFO] CC=%d call=%u reset=%u poll=%u\n", cc, (unsigned)id, reset, poll);
-    if (ts) {
-        ts->d_info_call_id = id;
-        ts->d_info_call_timeout = reset;
-        ts->d_info_notification = poll;
-        ts->d_info_new_call_id = new_id;
-        ts->d_info_new_call_id_valid = new_id_valid;
-        ts->d_info_timeout = timeout;
-        ts->d_info_timeout_valid = timeout_valid;
-        ts->d_info_setup_timeout = setup_timeout;
-        ts->d_info_setup_timeout_valid = setup_timeout_valid;
-        ts->d_info_ownership = ownership;
-        ts->d_info_ownership_valid = ownership_valid;
-        ts->d_info_modify = modify;
-        ts->d_info_modify_valid = modify_valid;
-        ts->d_info_status = status;
-        ts->d_info_status_valid = status_valid;
-        ts->d_info_temporary_address = temporary_address;
-        ts->d_info_temporary_address_valid = temporary_address_valid;
-        ts->d_info_notification_indicator = notification;
-        ts->d_info_notification_indicator_valid = notification_valid;
-        ts->d_info_poll_percentage = poll_percentage;
-        ts->d_info_poll_percentage_valid = poll_percentage_valid;
-        ts->d_info_poll_number = poll_number;
-        ts->d_info_poll_number_valid = poll_number_valid;
-        if (new_id_valid) {
-            ts->call_id = new_id;
-        }
-        if (timeout_valid) {
-            ts->call_timeout = timeout;
-        }
-        ts->d_info_valid = 1;
-    }
-    return;
-truncated:
-    fprintf(stderr, "[TETRA CMCE D-INFO] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
-}
-
-/* -----------------------------------------------------------------------
- * CMCE D-CALL-RESTORE, ETSI EN 300 392-2 table 14.6.
- * ----------------------------------------------------------------------- */
-static int
-parse_cmce_d_call_restore(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 24) {
-        fprintf(stderr, "[TETRA CMCE D-CALL-RESTORE] CC=%d (too short: %d bits)\n", cc, nbits);
-        return 0;
-    }
-    int off = 5;
-    uint16_t id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-    off += 14;
-    uint8_t grant = (uint8_t)mle_bits_to_uint(bits, off, 2);
-    off += 2;
-    uint8_t permission = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint8_t reset = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint16_t new_id = 0, modify = 0;
-    uint8_t timeout = 0, status = 0, notification = 0;
-    uint8_t new_id_valid = 0, timeout_valid = 0, status_valid = 0, modify_valid = 0, notification_valid = 0;
-
-    /* Table 14.6 type-2 optionals occur in this exact order. If a tail is
-     * present, all remaining presence flags must be available before publish. */
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail) {
-        if (off >= nbits) {
-            goto truncated;
-        }
-        uint8_t present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 14 > nbits) {
-                goto truncated;
-            }
-            new_id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-            off += 14;
-            new_id_valid = 1;
-        }
-        if (off >= nbits) {
-            goto truncated;
-        }
-        present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 4 > nbits) {
-                goto truncated;
-            }
-            timeout = (uint8_t)mle_bits_to_uint(bits, off, 4);
-            off += 4;
-            timeout_valid = 1;
-        }
-        if (off >= nbits) {
-            goto truncated;
-        }
-        present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 3 > nbits) {
-                goto truncated;
-            }
-            status = (uint8_t)mle_bits_to_uint(bits, off, 3);
-            off += 3;
-            status_valid = 1;
-        }
-        if (off >= nbits) {
-            goto truncated;
-        }
-        present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 9 > nbits) {
-                goto truncated;
-            }
-            modify = (uint16_t)mle_bits_to_uint(bits, off, 9);
-            off += 9;
-            modify_valid = 1;
-        }
-        if (off >= nbits) {
-            goto truncated;
-        }
-        present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-        if (present) {
-            if (off + 6 > nbits) {
-                goto truncated;
-            }
-            notification = (uint8_t)mle_bits_to_uint(bits, off, 6);
-            off += 6;
-            notification_valid = 1;
-        }
-        if (!cmce_skip_type34(bits, nbits, &off)) {
-            goto truncated;
-        }
-    }
-    fprintf(stderr, "[TETRA CMCE D-CALL-RESTORE] CC=%d call=%u grant=%u request=%u reset=%u\n", cc, (unsigned)id, grant,
-            permission, reset);
-    if (ts) {
-        ts->call_active = 1;
-        ts->call_id = new_id_valid ? new_id : id;
-        ts->call_restore_id = id;
-        ts->call_restore_grant = grant;
-        ts->call_restore_permission = permission;
-        ts->call_restore_reset = reset;
-        ts->call_restore_new_id = new_id;
-        ts->call_restore_new_id_valid = new_id_valid;
-        ts->call_restore_timeout = timeout;
-        ts->call_restore_timeout_valid = timeout_valid;
-        ts->call_restore_status = status;
-        ts->call_restore_status_valid = status_valid;
-        ts->call_restore_modify = modify;
-        ts->call_restore_modify_valid = modify_valid;
-        ts->call_restore_notification = notification;
-        ts->call_restore_notification_valid = notification_valid;
-        ts->call_restore_valid = 1;
-        ts->cmce_call_generation++;
-    }
-    return 1;
-truncated:
-    fprintf(stderr, "[TETRA CMCE D-CALL-RESTORE] CC=%d (truncated optional IE: %d bits)\n", cc, nbits);
-    return 0;
-}
-
-/* CMCE FUNCTION NOT SUPPORTED, table 14.33. */
-static void
-parse_cmce_function_not_supported(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 20) {
-        fprintf(stderr, "[TETRA CMCE FUNCTION-NOT-SUPPORTED] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
-    }
-    int off = 5;
-    uint8_t rejected = (uint8_t)mle_bits_to_uint(bits, off, 5);
-    off += 5;
-    uint8_t id_present = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    uint16_t id = 0;
-    if (id_present) {
-        if (off + 14 + 8 > nbits) {
-            return;
-        }
-        id = (uint16_t)mle_bits_to_uint(bits, off, 14);
-        off += 14;
-    }
-    if (off + 8 > nbits) {
-        return;
-    }
-    uint8_t pointer = (uint8_t)mle_bits_to_uint(bits, off, 8);
-    off += 8;
-    uint8_t extract_len = 0;
-    if (pointer) {
-        if (off + 8 > nbits) {
-            return;
-        }
-        extract_len = (uint8_t)mle_bits_to_uint(bits, off, 8);
-        off += 8;
-        if (off + extract_len > nbits) {
-            return;
-        }
-        off += extract_len;
-    }
-    if (off >= nbits) {
-        return;
-    }
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail && !cmce_skip_type34(bits, nbits, &off)) {
-        return;
-    }
-    fprintf(stderr, "[TETRA CMCE FUNCTION-NOT-SUPPORTED] CC=%d rejected=%u call=%u pointer=%u extract=%u\n", cc,
-            rejected, (unsigned)id, pointer, extract_len);
-    if (ts) {
-        ts->cmce_fns_rejected_pdu = rejected;
-        ts->cmce_fns_call_id_present = id_present;
-        ts->cmce_fns_call_id = id;
-        ts->cmce_fns_pointer = pointer;
-        ts->cmce_fns_extract_bits = extract_len;
-        ts->cmce_fns_valid = 1;
-    }
-}
-
-static int
-decode_sds_text_payload(const uint8_t* bits, int payload_bits, int text_offset, int timestamp_allowed,
-                        char decoded_text[256], unsigned* decoded_length, uint8_t* decoded_unicode) {
-    if (payload_bits < text_offset + 8) {
-        return 0;
-    }
-    unsigned timestamp = mle_bits_to_uint(bits, text_offset, 1);
-    unsigned coding = mle_bits_to_uint(bits, text_offset + 1, 7);
-    text_offset += 8;
-    if (timestamp_allowed && timestamp) {
-        text_offset += 24;
-    }
-    if (payload_bits < text_offset) {
-        return 0;
-    }
-
-    if (coding == 0) {
-        static const uint16_t alphabet[128] = {
-            64,  163, 36,  165, 232, 233, 249, 236, 242, 199, 10,  216, 248, 13,  197, 229, 916, 95,  934,
-            915, 923, 937, 928, 936, 931, 920, 926, 32,  198, 230, 223, 201, 32,  33,  34,  35,  164, 37,
-            38,  39,  40,  41,  42,  43,  44,  45,  46,  47,  48,  49,  50,  51,  52,  53,  54,  55,  56,
-            57,  58,  59,  60,  61,  62,  63,  161, 65,  66,  67,  68,  69,  70,  71,  72,  73,  74,  75,
-            76,  77,  78,  79,  80,  81,  82,  83,  84,  85,  86,  87,  88,  89,  90,  196, 214, 209, 220,
-            167, 191, 97,  98,  99,  100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113,
-            114, 115, 116, 117, 118, 119, 120, 121, 122, 228, 246, 241, 252, 224};
-        int available = payload_bits - text_offset;
-        if (available % 8) {
-            return 0;
-        }
-        int escaped = 0, full = 0;
-        for (int pos = 0; pos + 7 <= available; pos += 7) {
-            unsigned value = 0;
-            for (int b = 0; b < 7; b++) {
-                int packed = pos + b;
-                int index = text_offset + (packed / 8) * 8 + 7 - packed % 8;
-                value |= (unsigned)(bits[index] & 1u) << b;
-            }
-            if (!escaped && value == 27) {
-                escaped = 1;
-                continue;
-            }
-            unsigned ch = alphabet[value];
-            if (escaped) {
-                switch (value) {
-                    case 10: ch = 12; break;
-                    case 20: ch = '^'; break;
-                    case 40: ch = '{'; break;
-                    case 41: ch = '}'; break;
-                    case 47: ch = 92; break;
-                    case 60: ch = '['; break;
-                    case 61: ch = '~'; break;
-                    case 62: ch = ']'; break;
-                    case 64: ch = '|'; break;
-                    case 101: ch = 0x20ac; break;
-                    default: break;
-                }
-                escaped = 0;
-            }
-            unsigned count = ch < 128 ? 1 : ch < 2048 ? 2 : 3;
-            if (*decoded_length + count >= 256) {
-                full = 1;
-            }
-            if (full) {
-                continue;
-            }
-            if (count == 1) {
-                decoded_text[(*decoded_length)++] = (char)ch;
-            } else {
-                unsigned shift = (count - 1) * 6;
-                decoded_text[(*decoded_length)++] = (char)((count == 2 ? 0xc0 : 0xe0) | (ch >> shift));
-                while (shift) {
-                    shift -= 6;
-                    decoded_text[(*decoded_length)++] = (char)(0x80 | ((ch >> shift) & 63));
-                }
-            }
-        }
-        if (escaped) {
-            return 0;
-        }
-    } else if (coding == 26) {
-        if ((payload_bits - text_offset) % 16) {
-            return 0;
-        }
-        *decoded_unicode = 1;
-        int full = 0;
-        for (int i = text_offset; i < payload_bits; i += 16) {
-            uint32_t ch = mle_bits_to_uint(bits, i, 16);
-            if (ch >= 0xd800 && ch <= 0xdbff) {
-                if (i + 32 > payload_bits) {
-                    return 0;
-                }
-                uint32_t low = mle_bits_to_uint(bits, i + 16, 16);
-                if (low < 0xdc00 || low > 0xdfff) {
-                    return 0;
-                }
-                ch = 0x10000 + ((ch - 0xd800) << 10) + low - 0xdc00;
-                i += 16;
-            } else if (ch >= 0xdc00 && ch <= 0xdfff) {
-                return 0;
-            }
-            unsigned count = ch < 128 ? 1 : ch < 2048 ? 2 : ch < 65536 ? 3 : 4;
-            if (*decoded_length + count >= 256) {
-                full = 1;
-            }
-            if (full) {
-                continue;
-            }
-            if (count == 1) {
-                decoded_text[(*decoded_length)++] = (char)(ch ? ch : ' ');
-            } else {
-                unsigned shift = (count - 1) * 6;
-                decoded_text[(*decoded_length)++] = (char)((count == 2   ? 0xc0
-                                                            : count == 3 ? 0xe0
-                                                                         : 0xf0)
-                                                           | (ch >> shift));
-                while (shift) {
-                    shift -= 6;
-                    decoded_text[(*decoded_length)++] = (char)(0x80 | ((ch >> shift) & 63));
-                }
-            }
-        }
-    } else if (coding == 1) {
-        if ((payload_bits - text_offset) % 8) {
-            return 0;
-        }
-        for (int i = text_offset; i < payload_bits; i += 8) {
-            unsigned ch = mle_bits_to_uint(bits, i, 8);
-            unsigned count = ch < 128 ? 1 : 2;
-            if (*decoded_length + count >= 256) {
-                break;
-            }
-            if (ch >= 128) {
-                decoded_text[(*decoded_length)++] = (char)(0xc0u | (ch >> 6));
-            }
-            decoded_text[(*decoded_length)++] = (char)(ch >= 128 ? (0x80u | (ch & 63u)) : (ch ? ch : ' '));
-        }
-    }
-    return 1;
-}
-
-/* -----------------------------------------------------------------------
- * CMCE D-SDS-DATA (PDU type 15), ETSI EN 300 392-2 table 14.13.
- *
- * SDS-ACK, SDS-REPORT and SDS-TRANSFER are SDS-TL PDUs carried inside the
- * SDTI=3 user data.  They are not separate CMCE PDU types.
- * ----------------------------------------------------------------------- */
-static void
-parse_cmce_d_sds_data(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    int off = 5;
-    uint32_t src_ssi = 0;
-    uint32_t cpti;
-    uint32_t sdti;
-    int payload_bits;
-    uint8_t* assembled = NULL;
-
-    if (nbits < off + 2) {
-        fprintf(stderr, "[TETRA CMCE D-SDS-DATA] CC=%d (too short: %d bits)\n", cc, nbits);
-        return;
-    }
-
-    cpti = mle_bits_to_uint(bits, off, 2);
-    off += 2;
-    if (cpti == 1 || cpti == 2) {
-        if (off + 24 > nbits) {
-            goto truncated;
-        }
-        src_ssi = mle_bits_to_uint(bits, off, 24);
-        off += 24;
-    }
-    if (cpti == 2) {
-        if (off + 24 > nbits) {
-            goto truncated;
-        }
-        off += 24;
-    }
-    if (off + 2 > nbits) {
-        goto truncated;
-    }
-
-    sdti = mle_bits_to_uint(bits, off, 2);
-    off += 2;
-    if (sdti < 3) {
-        static const int fixed_lengths[3] = {16, 32, 64};
-        payload_bits = fixed_lengths[sdti];
-    } else {
-        if (off + 11 > nbits) {
-            goto truncated;
-        }
-        payload_bits = (int)mle_bits_to_uint(bits, off, 11);
-        off += 11;
-    }
-    if (off + payload_bits > nbits) {
-        goto truncated;
-    }
-    int tail_off = off + payload_bits;
-    if (tail_off >= nbits) {
-        goto truncated;
-    }
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, tail_off++, 1);
-    if (optional_tail && !cmce_skip_type34(bits, nbits, &tail_off)) {
-        goto truncated;
-    }
-
-    /* SDS-ACK: table 29.11. Only transport PIDs (128..254) use
-     * this header; PID 255 is an extension, not a transport PID. */
-    int sds_ack = 0, sds_report = 0, sds_transfer = 0;
-    int text_offset = -1;
-    char decoded_text[256] = {0};
-    unsigned decoded_length = 0;
-    uint8_t decoded_unicode = 0;
-    uint8_t ack_status = 0, ack_ref = 0;
-    uint8_t storage_forward = 0, validity_period = 0;
-    uint8_t forward_type = 0, forward_valid = 0, forward_sna = 0;
-    uint32_t forward_ssi = 0, forward_extension = 0;
-    char forward_external[25] = {0};
-    const uint8_t* text_bits = bits + off;
-    int text_payload_bits = payload_bits;
-    int text_timestamp_allowed = 0;
-    int transport_header = 0;
-    int concat_message = 0;
-    if (sdti == 3 && payload_bits >= 8) {
-        uint32_t pid = mle_bits_to_uint(bits, off, 8);
-        if ((pid == 2 || pid == 9 || (pid >= 128 && pid < 255)) && payload_bits < 12) {
-            goto truncated;
-        }
-        if (payload_bits < 12) {
-            goto publish_sds;
-        }
-        uint32_t type = mle_bits_to_uint(bits, off + 8, 4);
-        if (pid == 2 || pid == 9) {
-            text_offset = 8;
-        }
-        if (pid >= 128 && pid < 255 && type <= 2) {
-            int header = type == 0 ? 24 : 32;
-            transport_header = header;
-            if (payload_bits < header) {
-                goto truncated;
-            }
-            if (type != 0) {
-                ack_status = (uint8_t)mle_bits_to_uint(bits, off + 16, 8);
-            }
-            ack_ref = (uint8_t)mle_bits_to_uint(bits, off + header - 8, 8);
-            /* Tables 29.12/29.14: REPORT/TRANSFER storage/forward fields.
-             * Validate the whole conditional address before publishing. */
-            if (type != 2 && mle_bits_to_uint(bits, off + 15, 1)) {
-                if (payload_bits < header + 8) {
-                    goto truncated;
-                }
-                storage_forward = 1;
-                validity_period = (uint8_t)mle_bits_to_uint(bits, off + header, 5);
-                unsigned address = mle_bits_to_uint(bits, off + header + 5, 3);
-                int required = header + 8;
-                switch (address) {
-                    case 0:
-                        if (payload_bits < required + 8) {
-                            goto truncated;
-                        }
-                        forward_sna = (uint8_t)mle_bits_to_uint(bits, off + required, 8);
-                        required += 8;
-                        break;
-                    case 1:
-                        if (payload_bits < required + 24) {
-                            goto truncated;
-                        }
-                        forward_ssi = mle_bits_to_uint(bits, off + required, 24);
-                        required += 24;
-                        break;
-                    case 2:
-                        if (payload_bits < required + 48) {
-                            goto truncated;
-                        }
-                        forward_ssi = mle_bits_to_uint(bits, off + required, 24);
-                        forward_extension = mle_bits_to_uint(bits, off + required + 24, 24);
-                        required += 48;
-                        break;
-                    case 3: {
-                        if (payload_bits < header + 16) {
-                            goto truncated;
-                        }
-                        unsigned digits = mle_bits_to_uint(bits, off + header + 8, 8);
-                        if (digits == 0 || digits > 24) {
-                            goto truncated;
-                        }
-                        required = header + 16 + (int)((digits + 1u) & ~1u) * 4;
-                        if (payload_bits < required) {
-                            goto truncated;
-                        }
-                        static const char digit_chars[] = "0123456789*#+";
-                        for (unsigned digit = 0; digit < digits; digit++) {
-                            unsigned value = mle_bits_to_uint(bits, off + header + 16 + (int)digit * 4, 4);
-                            if (value > 12) {
-                                goto truncated;
-                            }
-                            forward_external[digit] = digit_chars[value];
-                        }
-                        if ((digits & 1u) != 0u
-                            && mle_bits_to_uint(bits, off + header + 16 + (int)digits * 4, 4) != 0) {
-                            goto truncated;
-                        }
-                        break;
-                    }
-                    case 7: break;
-                    default: goto truncated; /* Reserved address layout. */
-                }
-                if (payload_bits < required) {
-                    goto truncated;
-                }
-                forward_type = (uint8_t)address;
-                forward_valid = 1;
-                header = required;
-                transport_header = header;
-            }
-            sds_ack = type == 2;
-            sds_report = type == 1;
-            sds_transfer = type == 0;
-            if (sds_transfer && (pid == 130 || pid == 137)) {
-                text_offset = header;
-                text_timestamp_allowed = 1;
-            }
-        }
-
-        if (pid == 12 || pid == 140) {
-            concat_message = 1;
-            int concat_off = pid == 12 ? 8 : transport_header;
-            if (pid == 140 && !sds_transfer) {
-                goto truncated;
-            }
-            if (concat_off <= 0 || payload_bits < concat_off + 24) {
-                goto truncated;
-            }
-            if (mle_bits_to_uint(bits, off + concat_off, 3) != 0) {
-                goto truncated;
-            }
-            concat_off += 3;
-            unsigned extended = mle_bits_to_uint(bits, off + concat_off, 1);
-            concat_off++;
-            unsigned ref_extension = 0;
-            if (extended) {
-                if (payload_bits < concat_off + 8 + 20) {
-                    goto truncated;
-                }
-                ref_extension = mle_bits_to_uint(bits, off + concat_off, 8);
-                concat_off += 8;
-            }
-            uint16_t reference = (uint16_t)((ref_extension << 4) | mle_bits_to_uint(bits, off + concat_off, 4));
-            concat_off += 4;
-            uint8_t total = (uint8_t)mle_bits_to_uint(bits, off + concat_off, 8);
-            concat_off += 8;
-            uint8_t sequence = (uint8_t)mle_bits_to_uint(bits, off + concat_off, 8);
-            concat_off += 8;
-            int logical_pid = -1;
-            if (sequence == 1) {
-                if (payload_bits < concat_off + 8) {
-                    goto truncated;
-                }
-                logical_pid = (int)mle_bits_to_uint(bits, off + concat_off, 8);
-                concat_off += 8;
-                if (logical_pid == 12 || logical_pid == 140) {
-                    goto truncated;
-                }
-            }
-            if (payload_bits < concat_off) {
-                goto truncated;
-            }
-            int assembled_bits = 0;
-            uint8_t assembled_pid = 0, received = 0;
-            int result = sds_concat_submit(src_ssi, reference, (uint8_t)(pid == 140), total, sequence, logical_pid,
-                                           bits + off + concat_off, payload_bits - concat_off, &assembled,
-                                           &assembled_bits, &assembled_pid, &received);
-            if (result < 0) {
-                goto truncated;
-            }
-            if (ts) {
-                ts->sds_concat_ref = reference;
-                ts->sds_concat_total = total;
-                ts->sds_concat_received = received;
-                ts->sds_concat_sequence = sequence;
-                ts->sds_concat_valid = 1;
-                ts->sds_concat_duplicate = (uint8_t)(result == 2);
-                ts->sds_concat_complete = (uint8_t)(result == 1);
-                ts->sds_src = src_ssi;
-                ts->sds_last_cc = (int8_t)cc;
-                if (result == 1) {
-                    ts->sds_concat_generation++;
-                }
-            }
-            fprintf(stderr, "[TETRA SDS CONCAT] CC=%d src_SSI=%u ref=%u part=%u/%u received=%u%s\n", cc, src_ssi,
-                    reference, sequence, total, received,
-                    result == 1   ? " complete"
-                    : result == 2 ? " duplicate"
-                                  : "");
-            if (result != 1) {
-                return;
-            }
-            text_bits = assembled;
-            text_payload_bits = assembled_bits;
-            text_offset =
-                (assembled_pid == 2 || assembled_pid == 9 || assembled_pid == 130 || assembled_pid == 137) ? 0 : -1;
-            text_timestamp_allowed = assembled_pid == 130 || assembled_pid == 137;
-        }
-    }
-
-    if (text_offset >= 0) {
-        if (!decode_sds_text_payload(text_bits, text_payload_bits, text_offset, text_timestamp_allowed, decoded_text,
-                                     &decoded_length, &decoded_unicode)) {
-            goto truncated;
-        }
-    }
-
-publish_sds:
-    fprintf(stderr, "[TETRA CMCE D-SDS-DATA] CC=%d src_SSI=%u CPTI=%u SDTI=%u data_bits=%d\n", cc, src_ssi, cpti, sdti,
-            payload_bits);
-    if (ts) {
-        /* Commit only after the complete declared payload is available. */
-        ts->sds_text_len = 0;
-        ts->sds_text[0] = '\0';
-        ts->sds_text_unicode = decoded_unicode;
-        memcpy(ts->sds_text, decoded_text, sizeof(decoded_text));
-        ts->sds_text_len = (uint16_t)decoded_length;
-        ts->sds_short_valid = 0;
-        ts->sds_src = src_ssi;
-        ts->cmce_sds_data_type = (uint8_t)sdti;
-        ts->sds_last_cc = (int8_t)cc;
-        if (!concat_message) {
-            ts->sds_concat_valid = 0;
-            ts->sds_concat_duplicate = 0;
-            ts->sds_concat_complete = 0;
-        }
-        ts->sds_storage_forward = storage_forward;
-        ts->sds_validity_period = validity_period;
-        ts->sds_forward_type = forward_type;
-        ts->sds_forward_valid = forward_valid;
-        ts->sds_forward_sna = forward_sna;
-        ts->sds_forward_ssi = forward_ssi;
-        ts->sds_forward_extension = forward_extension;
-        memcpy(ts->sds_forward_external, forward_external, sizeof(ts->sds_forward_external));
-        if (sds_transfer) {
-            ts->sds_msg_ref = ack_ref;
-        }
-        if (sds_ack) {
-            ts->sds_ack_delivery_status = ack_status;
-            ts->sds_ack_msg_ref = ack_ref;
-            ts->sds_msg_ref = ack_ref;
-            ts->sds_ack_valid = 1;
-        }
-        if (sds_report) {
-            ts->sds_report_cause = ack_status;
-            ts->sds_report_delivery_ok = ack_status < 32;
-            ts->sds_report_msg_ref = ack_ref;
-            ts->sds_msg_ref = ack_ref;
-            ts->sds_report_valid = 1;
-        }
-        if (sdti == 0) {
-            ts->sds_short_data = (uint16_t)mle_bits_to_uint(bits, off, 16);
-            ts->sds_short_src = src_ssi;
-            ts->sds_short_valid = 1;
-        }
-        char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
-        if (decoded_length != 0) {
-            DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: %s", src_ssi, decoded_text);
-        } else {
-            DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: %d bits", src_ssi, payload_bits);
-        }
+sds_push_message(dsd_state* state, uint32_t src_ssi, const sds_text* t, int data_bits) {
+    char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
+    if (t->len == 0) {
+        DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: %d bits", src_ssi, data_bits);
         tetra_message_push(state, DSD_TETRA_MESSAGE_SDS, summary);
-    }
-    free(assembled);
-    return;
-
-truncated:
-    free(assembled);
-    fprintf(stderr, "[TETRA CMCE D-SDS-DATA] CC=%d src_SSI=%u (truncated: %d bits)\n", cc, src_ssi, nbits);
-}
-
-/* CMCE D-FACILITY, ETSI EN 300 392-2 table 14.10 and annex E.1.2.
- * After the PDU type, a four-bit count introduces independently encoded
- * SS-PDUs. Each has an 11-bit length followed by that many content bits; the
- * collection ends with the outer D-FACILITY O-bit and, when set, its
- * length-delimited type-3/4 chain. */
-static void
-parse_cmce_d_facility(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    int off = 5;
-    uint32_t count;
-    uint32_t first_ss_type = 0;
-
-    if (nbits < off + 4) {
-        goto truncated;
-    }
-    count = mle_bits_to_uint(bits, off, 4);
-    off += 4;
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t length;
-        if (off + 11 > nbits) {
-            goto truncated;
-        }
-        length = mle_bits_to_uint(bits, off, 11);
-        off += 11;
-        if (length > (uint32_t)(nbits - off)) {
-            goto truncated;
-        }
-        if (i == 0 && length >= 6) {
-            first_ss_type = mle_bits_to_uint(bits, off, 6);
-        }
-        off += (int)length;
-    }
-    if (off + 1 > nbits) {
-        goto truncated;
-    }
-    uint8_t optional_tail = (uint8_t)mle_bits_to_uint(bits, off++, 1);
-    if (optional_tail && !cmce_skip_type34(bits, nbits, &off)) {
-        goto truncated;
-    }
-
-    fprintf(stderr, "[TETRA CMCE D-FACILITY] CC=%d ss_pdus=%u first_ss_type=%u\n", cc, count, first_ss_type);
-    if (ts) {
-        ts->facility_type = (uint8_t)first_ss_type;
-        ts->facility_valid = 1;
-    }
-    return;
-
-truncated:
-    fprintf(stderr, "[TETRA CMCE D-FACILITY] CC=%d (truncated: %d bits)\n", cc, nbits);
-}
-
-/* -----------------------------------------------------------------------
- * CMCE PDU dispatcher  (bits = CMCE PDU starting at bit 0)
- * ----------------------------------------------------------------------- */
-static void
-tetra_cmce_parse(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 5) {
-        fprintf(stderr, "[TETRA CMCE] CC=%d (too short: %d bits)\n", cc, nbits);
         return;
     }
-
-    uint32_t pdu_type = mle_bits_to_uint(bits, 0, 5);
-    const uint32_t call_generation = state ? ts->cmce_call_generation : 0;
-    const uint8_t call_active = state ? ts->call_active : 0;
-
-    switch (pdu_type) {
-
-        case TETRA_CMCE_D_ALERT: parse_cmce_d_alert(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_D_CALL_PROCEEDING: parse_cmce_d_call_proceeding(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_D_SETUP: parse_cmce_d_setup(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_D_STATUS: parse_cmce_d_status(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_D_RELEASE: parse_cmce_d_release(bits, nbits, cc, 0, (dsd_opts*)(uintptr_t)opts, state); break;
-
-        case TETRA_CMCE_D_DISCONNECT:
-            parse_cmce_d_release(bits, nbits, cc, 1, (dsd_opts*)(uintptr_t)opts, state);
-            break;
-
-        case TETRA_CMCE_D_CONNECT: parse_cmce_d_connect(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_D_CONNECT_ACK: parse_cmce_d_connect_ack(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_D_TX_GRANTED:
-            parse_cmce_d_tx_granted(bits, nbits, cc, (dsd_opts*)(uintptr_t)opts, state);
-            break;
-
-        case TETRA_CMCE_D_TX_CEASED: parse_cmce_d_tx_ceased(bits, nbits, cc, (dsd_opts*)(uintptr_t)opts, state); break;
-
-        case TETRA_CMCE_D_TX_CONTINUE:  /* fall-through */
-        case TETRA_CMCE_D_TX_INTERRUPT: /* fall-through */
-        case TETRA_CMCE_D_TX_WAIT: parse_cmce_d_tx_event(bits, nbits, cc, pdu_type, state); break;
-
-        case TETRA_CMCE_D_INFO: parse_cmce_d_info(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_D_CALL_RESTORE: parse_cmce_d_call_restore(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_FUNCTION_NOT_SUPPORTED: parse_cmce_function_not_supported(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_D_FACILITY: parse_cmce_d_facility(bits, nbits, cc, state); break;
-
-        case TETRA_CMCE_D_SDS_DATA: parse_cmce_d_sds_data(bits, nbits, cc, state); break;
-
-        default:
-            if (opts && opts->errorbars) {
-                fprintf(stderr, "[TETRA CMCE] CC=%d  pdu_type=%u  (%d bits)\n", cc, pdu_type, nbits);
-            }
-            break;
+    const int prefix = DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: ", src_ssi);
+    size_t room = prefix > 0 && (size_t)prefix < sizeof summary ? sizeof summary - 1 - (size_t)prefix : 0;
+    size_t n = t->len < room ? t->len : room;
+    while (n > 0 && n < t->len && ((unsigned char)t->text[n] & 0xC0u) == 0x80u) {
+        n--; /* back off a UTF-8 continuation byte */
     }
-    if (ts && (ts->cmce_call_generation != call_generation || ts->call_active != call_active)) {
+    DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: %.*s", src_ssi, (int)n, t->text);
+    tetra_message_push(state, DSD_TETRA_MESSAGE_SDS, summary);
+}
+
+static void
+sds_publish(const mle_ctx* ctx, const sds_pdu* pdu, const sds_message* msg) {
+    tetra_state_t* const ts = ctx->ts;
+    DSD_FPRINTF(stderr, "[TETRA CMCE D-SDS-DATA] CC=%d src_SSI=%u CPTI=%u SDTI=%u data_bits=%d\n", ctx->cc,
+                pdu->calling.ssi, pdu->calling.type, pdu->sdti, pdu->data_bits);
+    /* The sender and the text are replaced together. */
+    ts->sds_src = pdu->calling.ssi;
+    DSD_MEMCPY(ts->sds_text, msg->text.text, sizeof ts->sds_text);
+    ts->sds_text_len = msg->text.len;
+    ts->sds_text_unicode = msg->text.unicode;
+    ts->cmce_sds_data_type = pdu->sdti;
+    ts->sds_last_cc = (int8_t)ctx->cc;
+    if (!msg->concat.present) {
+        ts->sds_concat_valid = 0;
+        ts->sds_concat_duplicate = 0;
+        ts->sds_concat_complete = 0;
+    }
+    sds_publish_tl(ts, &msg->tl);
+    ts->sds_short_valid = (uint8_t)(pdu->sdti == 0);
+    if (pdu->sdti == 0) {
+        ts->sds_short_data = msg->short_data;
+        ts->sds_short_src = pdu->calling.ssi;
+    }
+    sds_push_message(ctx->state, pdu->calling.ssi, &msg->text, pdu->data_bits);
+}
+
+/* D-SDS-DATA, table 14.13. */
+
+static int
+parse_cmce_d_sds_data(tetra_bit_reader* r, const mle_ctx* ctx) {
+    sds_pdu pdu;
+    sds_message msg;
+    DSD_MEMSET(&pdu, 0, sizeof pdu);
+    DSD_MEMSET(&msg, 0, sizeof msg);
+    msg.tl.message_type = SDS_TL_NONE;
+    sds_read_pdu(r, &pdu);
+    if (!tetra_bits_ok(r)) {
+        return cmce_reject(ctx, "D-SDS-DATA");
+    }
+    tetra_bit_reader ud = tetra_bits_reader(r->bits, pdu.data_pos + pdu.data_bits, pdu.data_pos);
+    int rc = SDS_DECODE_OK;
+    if (pdu.sdti == 0) {
+        msg.short_data = (uint16_t)tetra_bits_read(&ud, 16);
+    } else if (pdu.sdti == 3) {
+        rc = sds_decode_user_data(ctx, &pdu, &ud, &msg);
+    }
+    if (rc == SDS_DECODE_OK && msg.concat.present) {
+        sds_publish_concat(ctx, &pdu, &msg.concat);
+    }
+    if (rc == SDS_DECODE_OK && (!msg.concat.present || msg.concat.complete)) {
+        sds_publish(ctx, &pdu, &msg);
+    }
+    free(msg.concat.assembled);
+    return rc == SDS_DECODE_OK ? 1 : cmce_reject(ctx, "D-SDS-DATA");
+}
+
+/* CMCE PDU dispatch, table 14.66. */
+
+typedef int (*cmce_parser)(tetra_bit_reader* r, const mle_ctx* ctx);
+
+static const cmce_parser k_cmce_parsers[32] = {
+    [TETRA_CMCE_D_ALERT] = parse_cmce_d_alert,
+    [TETRA_CMCE_D_CALL_PROCEEDING] = parse_cmce_d_call_proceeding,
+    [TETRA_CMCE_D_CONNECT] = parse_cmce_d_connect,
+    [TETRA_CMCE_D_CONNECT_ACK] = parse_cmce_d_connect_ack,
+    [TETRA_CMCE_D_DISCONNECT] = parse_cmce_d_disconnect,
+    [TETRA_CMCE_D_INFO] = parse_cmce_d_info,
+    [TETRA_CMCE_D_RELEASE] = parse_cmce_d_release,
+    [TETRA_CMCE_D_SETUP] = parse_cmce_d_setup,
+    [TETRA_CMCE_D_STATUS] = parse_cmce_d_status,
+    [TETRA_CMCE_D_TX_CEASED] = parse_cmce_d_tx_ceased,
+    [TETRA_CMCE_D_TX_CONTINUE] = parse_cmce_d_tx_continue,
+    [TETRA_CMCE_D_TX_GRANTED] = parse_cmce_d_tx_granted,
+    [TETRA_CMCE_D_TX_WAIT] = parse_cmce_d_tx_wait,
+    [TETRA_CMCE_D_TX_INTERRUPT] = parse_cmce_d_tx_interrupt,
+    [TETRA_CMCE_D_CALL_RESTORE] = parse_cmce_d_call_restore,
+    [TETRA_CMCE_D_SDS_DATA] = parse_cmce_d_sds_data,
+    [TETRA_CMCE_D_FACILITY] = parse_cmce_d_facility,
+    [TETRA_CMCE_FUNCTION_NOT_SUPPORTED] = parse_cmce_function_not_supported,
+};
+
+static void
+parse_cmce(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_state_t* const ts = ctx->ts;
+    const uint32_t pdu_type = tetra_bits_read(r, 5);
+    if (!tetra_bits_ok(r)) {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA CMCE] CC=%d (too short: %d bits)\n", ctx->cc, ctx->nbits);
+        return;
+    }
+    const cmce_parser parser = k_cmce_parsers[pdu_type & 31u];
+    if (!parser) {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA CMCE] CC=%d pdu_type=%u (%d bits)\n", ctx->cc, pdu_type, ctx->nbits);
+        return;
+    }
+    const uint32_t call_generation = ts->cmce_call_generation;
+    const uint8_t call_active = ts->call_active;
+    (void)parser(r, ctx);
+    if (ts->cmce_call_generation != call_generation || ts->call_active != call_active) {
         char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
         DSD_SNPRINTF(summary, sizeof summary, "Call %s CC=%d ID=%u SSI=%u enc=%u", ts->call_active ? "active" : "ended",
-                     cc, ts->call_id, ts->active_ssi, ts->enc_mode);
-        tetra_message_push(state, DSD_TETRA_MESSAGE_CALL, summary);
+                     ctx->cc, ts->call_id, ts->active_ssi, ts->enc_mode);
+        tetra_message_push(ctx->state, DSD_TETRA_MESSAGE_CALL, summary);
     }
 }
 
-/* MLE cell-reselection response PDUs, tables 18.6-18.9 and Annex E.19-E.24.
- * Each PDU has the mandatory O-bit required by Annex E encoding.  These four
- * messages define no Type 2 fields, so an asserted O-bit is malformed. */
-static void
-parse_mle_d_new_cell(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 6 || (bits[5] & 1u)) {
-        fprintf(stderr, "[TETRA MLE D-NEW-CELL] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
-        return;
-    }
-    uint8_t command = (uint8_t)mle_bits_to_uint(bits, 3, 2);
-    if (ts) {
-        ts->mle_new_cell_channel_command = command;
-        ts->mle_new_cell_valid = 1;
-    }
-    if (nbits > 6) {
-        tetra_mm_dispatch(bits + 6, nbits - 6, cc, opts, state);
-    }
+/* SNDCP (clause 28.4.4). */
+
+/* SN PDU types (table 28.121) whose second element is the NSAPI: ACTIVATE PDP CONTEXT ACCEPT, ACTIVATE PDP CONTEXT
+ * REJECT, UNITDATA, DATA, DATA TRANSMIT REQUEST, DATA TRANSMIT RESPONSE and PAGE REQUEST. */
+static int
+sndcp_type_has_nsapi(uint32_t type) {
+    static const uint16_t k_mask = (1u << 0) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 7) | (1u << 10);
+    return (k_mask >> type) & 1u;
 }
 
 static void
-parse_mle_d_prepare_fail(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 6 || (bits[5] & 1u)) {
-        fprintf(stderr, "[TETRA MLE D-PREPARE-FAIL] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
+parse_sndcp(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_state_t* const ts = ctx->ts;
+    const int nbits = tetra_bits_left(r);
+    const uint32_t type = tetra_bits_read(r, 4);
+    const uint32_t nsapi = sndcp_type_has_nsapi(type) ? tetra_bits_read(r, 4) : 0;
+    if (!tetra_bits_ok(r)) {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA SNDCP] CC=%d (too short: %d bits)\n", ctx->cc, nbits);
         return;
     }
-    uint8_t cause = (uint8_t)mle_bits_to_uint(bits, 3, 2);
-    if (ts) {
-        ts->mle_prepare_fail_cause = cause;
-        ts->mle_prepare_fail_valid = 1;
+    ts->sndcp_pdu_type = (uint8_t)type;
+    ts->sndcp_nsapi = (uint8_t)nsapi;
+    ts->sndcp_nbits = (uint16_t)nbits;
+    ts->sndcp_valid = 1;
+}
+
+/* MLE protocol PDUs (clause 18.4.1.4). */
+
+static void
+mle_reject(const mle_ctx* ctx, const char* name) {
+    TETRA_LOG_PAYLOAD(ctx->ts, "[TETRA MLE %s] CC=%d (truncated or malformed: %d bits)\n", name, ctx->cc, ctx->nbits);
+}
+
+/* The SDU after an MLE PDU's fields is an MM PDU without its protocol discriminator (tables 18.6 and 18.7). */
+static void
+mle_dispatch_mm_sdu(const tetra_bit_reader* r, const mle_ctx* ctx) {
+    if (tetra_bits_left(r) > 0) {
+        tetra_mm_dispatch(r->bits + r->pos, tetra_bits_left(r), ctx->cc, ctx->opts, ctx->state);
     }
-    if (nbits > 6) {
-        tetra_mm_dispatch(bits + 6, nbits - 6, cc, opts, state);
+}
+
+/* D-NEW-CELL (table 18.6): channel command valid. No type-2 elements are defined, so the O-bit must be clear. */
+static void
+parse_mle_d_new_cell(tetra_bit_reader* r, const mle_ctx* ctx) {
+    const uint8_t command = (uint8_t)tetra_bits_read(r, 2);
+    require_absent_type2(r, 1);
+    if (!tetra_bits_ok(r)) {
+        mle_reject(ctx, "D-NEW-CELL");
+        return;
+    }
+    ctx->ts->mle_new_cell_channel_command = command;
+    ctx->ts->mle_new_cell_valid = 1;
+    mle_dispatch_mm_sdu(r, ctx);
+}
+
+/* D-PREPARE-FAIL (table 18.7): fail cause, the clear O-bit, an optional MM SDU. */
+static void
+parse_mle_d_prepare_fail(tetra_bit_reader* r, const mle_ctx* ctx) {
+    const uint8_t cause = (uint8_t)tetra_bits_read(r, 2);
+    require_absent_type2(r, 1);
+    if (!tetra_bits_ok(r)) {
+        mle_reject(ctx, "D-PREPARE-FAIL");
+        return;
+    }
+    ctx->ts->mle_prepare_fail_cause = cause;
+    ctx->ts->mle_prepare_fail_valid = 1;
+    mle_dispatch_mm_sdu(r, ctx);
+}
+
+/* D-RESTORE-ACK (table 18.8): the clear O-bit and a CMCE D-CALL RESTORE SDU (Annex E table E.23). */
+static void
+parse_mle_d_restore_ack(tetra_bit_reader* r, const mle_ctx* ctx) {
+    require_absent_type2(r, 1);
+    if (tetra_bits_read(r, 5) != TETRA_CMCE_D_CALL_RESTORE) {
+        bits_reject(r);
+    }
+    if (!tetra_bits_ok(r)) {
+        mle_reject(ctx, "D-RESTORE-ACK");
+        return;
+    }
+    if (parse_cmce_d_call_restore(r, ctx)) {
+        ctx->ts->restore_ack = 1;
+    }
+}
+
+/* D-RESTORE-FAIL (table 18.9): fail cause and the clear O-bit. */
+static void
+parse_mle_d_restore_fail(tetra_bit_reader* r, const mle_ctx* ctx) {
+    const uint8_t cause = (uint8_t)tetra_bits_read(r, 2);
+    require_absent_type2(r, 1);
+    if (!tetra_bits_ok(r)) {
+        mle_reject(ctx, "D-RESTORE-FAIL");
+        return;
+    }
+    ctx->ts->mle_restore_fail_cause = cause;
+    ctx->ts->mle_restore_fail_valid = 1;
+}
+
+/* D-CHANNEL RESPONSE (table 18.10). Its two type-2 elements shall not be included, so the O-bit must be clear. */
+static void
+parse_mle_d_channel_response(tetra_bit_reader* r, const mle_ctx* ctx) {
+    const uint8_t type = (uint8_t)tetra_bits_read(r, 1);
+    const uint8_t reason = (uint8_t)tetra_bits_read(r, 3);
+    const uint8_t retry_delay = (uint8_t)tetra_bits_read(r, 4);
+    require_absent_type2(r, 1);
+    if (!tetra_bits_ok(r)) {
+        mle_reject(ctx, "D-CHANNEL-RESPONSE");
+        return;
+    }
+    ctx->ts->mle_channel_response_type = type;
+    ctx->ts->mle_channel_response_reason = reason;
+    ctx->ts->mle_channel_response_retry_delay = retry_delay;
+    ctx->ts->mle_channel_response_valid = 1;
+}
+
+/* Network broadcast elements, clause 18.5. */
+
+/* Neighbour cell information for CA (table 18.64): five type-1 elements, then ten type-2 elements of which only their
+ * presence is checked. */
+static void
+mle_read_ca_neighbor(tetra_bit_reader* r, tetra_mle_ca_neighbor* n) {
+    static const uint8_t k_type2[10] = {10, 10, 14, 14, 3, 4, 16, 12, 5, 6};
+    n->cell_id = (uint8_t)tetra_bits_read(r, 5);
+    n->reselect_types = (uint8_t)tetra_bits_read(r, 2);
+    (void)tetra_bits_skip(r, 3); /* neighbour cell synchronized, cell load CA */
+    n->main_carrier = (uint16_t)tetra_bits_read(r, 12);
+    if (tetra_bits_present(r)) {
+        uint32_t values[10];
+        (void)read_type2_elements(r, k_type2, 10, values);
+    }
+}
+
+/* Neighbour cell information for DA (table 18.65); its three trailing reserved type-2 elements shall not be used. */
+static void
+mle_read_da_neighbor(tetra_bit_reader* r, tetra_mle_da_neighbor* n) {
+    static const uint8_t k_type2[11] = {10, 10, 14, 14, 8, 3, 4, 16, 7, 3, 6};
+    n->cell_id = (uint8_t)tetra_bits_read(r, 8);
+    (void)tetra_bits_skip(r, 12); /* reselection types DA, synchronized, wide-area cell, C/I path measurements */
+    n->load_known = (uint8_t)tetra_bits_read(r, 1);
+    if (n->load_known) {
+        n->load = (uint8_t)tetra_bits_read(r, 3);
+    }
+    n->main_carrier = (uint16_t)tetra_bits_read(r, 12);
+    (void)tetra_bits_skip(r, 6); /* main control channel modulation mode, bandwidth */
+    if (tetra_bits_present(r)) {
+        uint32_t values[11];
+        n->optional_mask = (uint16_t)read_type2_elements(r, k_type2, 11, values);
+        n->carrier_extension = (uint16_t)values[0];
+        n->la = (uint16_t)values[3];
+        require_absent_type2(r, 3);
     }
 }
 
 static void
-parse_mle_d_restore_ack(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    /* O-bit followed by the mandatory CMCE D-CALL-RESTORE SDU. */
-    if (nbits < 28 || (bits[3] & 1u) || mle_bits_to_uint(bits, 4, 5) != TETRA_CMCE_D_CALL_RESTORE) {
-        fprintf(stderr, "[TETRA MLE D-RESTORE-ACK] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
-        return;
-    }
-    if (parse_cmce_d_call_restore(bits + 4, nbits - 4, cc, state) && state) {
-        ts->restore_ack = 1;
+mle_read_channel_class(tetra_bit_reader* r, tetra_mle_channel_class* c) {
+    c->id = (uint8_t)tetra_bits_read(r, 4);
+    c->characteristics = tetra_bits_read(r, 18);
+    c->bs_power = (uint8_t)tetra_bits_read(r, 5);
+}
+
+static void
+mle_read_irregular_channel(tetra_bit_reader* r, tetra_mle_irregular_channel* c) {
+    c->channel_id = (uint8_t)tetra_bits_read(r, 5);
+    (void)tetra_bits_skip(r, 18); /* channel characteristics */
+    c->carrier = (uint16_t)tetra_bits_read(r, 12);
+    c->extension_valid = (uint8_t)tetra_bits_read(r, 1);
+    c->carrier_extension = c->extension_valid ? (uint16_t)tetra_bits_read(r, 10) : 0;
+}
+
+static void
+mle_read_serving_classes(tetra_bit_reader* r, tetra_mle_channel_lists* l) {
+    l->serving_classes_present = 1;
+    l->serving_class_count = (uint8_t)tetra_bits_read(r, 4);
+    for (uint8_t i = 0; i < l->serving_class_count; i++) {
+        mle_read_channel_class(r, &l->serving_class[i]);
     }
 }
 
 static void
-parse_mle_d_restore_fail(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 6 || (bits[5] & 1u)) {
-        fprintf(stderr, "[TETRA MLE D-RESTORE-FAIL] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
-        return;
-    }
-    if (ts) {
-        ts->mle_restore_fail_cause = (uint8_t)mle_bits_to_uint(bits, 3, 2);
-        ts->mle_restore_fail_valid = 1;
+mle_read_neighbor_classes(tetra_bit_reader* r, int cell_id_bits, tetra_mle_channel_lists* l) {
+    l->neighbor_classes_present = 1;
+    l->neighbor_class_count = (uint8_t)tetra_bits_read(r, 5);
+    for (uint8_t i = 0; i < l->neighbor_class_count; i++) {
+        l->neighbor_class[i].cell_id = (uint8_t)tetra_bits_read(r, cell_id_bits);
+        mle_read_channel_class(r, &l->neighbor_class[i].channel_class);
     }
 }
 
-/* D-CHANNEL RESPONSE, table 18.10.  Its two Type 2 fields are reserved and
- * explicitly forbidden by the current specification, so a conforming PDU has
- * O=0 after the three mandatory values. */
 static void
-parse_mle_d_channel_response(const uint8_t* bits, int nbits, int cc, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (nbits < 12 || (bits[11] & 1u)) {
-        fprintf(stderr, "[TETRA MLE D-CHANNEL-RESPONSE] CC=%d (invalid/truncated: %d bits)\n", cc, nbits);
-        return;
-    }
-    if (ts) {
-        ts->mle_channel_response_type = bits[3] & 1u;
-        ts->mle_channel_response_reason = (uint8_t)mle_bits_to_uint(bits, 4, 3);
-        ts->mle_channel_response_retry_delay = (uint8_t)mle_bits_to_uint(bits, 7, 4);
-        ts->mle_channel_response_valid = 1;
+mle_read_serving_irregular(tetra_bit_reader* r, tetra_mle_channel_lists* l) {
+    l->serving_irregular_present = 1;
+    l->serving_irregular_count = (uint8_t)tetra_bits_read(r, 5);
+    for (uint8_t i = 0; i < l->serving_irregular_count; i++) {
+        mle_read_irregular_channel(r, &l->serving_irregular[i]);
     }
 }
 
-/* -----------------------------------------------------------------------
- * Public entry point: tetra_mle_dispatch()
- * ----------------------------------------------------------------------- */
+static void
+mle_read_neighbor_irregular(tetra_bit_reader* r, int cell_id_bits, tetra_mle_channel_lists* l) {
+    l->neighbor_irregular_present = 1;
+    l->neighbor_irregular_count = (uint8_t)tetra_bits_read(r, 6);
+    for (uint8_t i = 0; i < l->neighbor_irregular_count; i++) {
+        l->neighbor_irregular[i].cell_id = (uint8_t)tetra_bits_read(r, cell_id_bits);
+        mle_read_irregular_channel(r, &l->neighbor_irregular[i].channel);
+    }
+}
+
+/* The four channel list type-2 elements of tables 18.3 and 18.4; neighbour cells are identified by a cell identifier
+ * CA (5 bits) or DA (8 bits). */
+static void
+mle_read_channel_lists(tetra_bit_reader* r, int cell_id_bits, tetra_mle_channel_lists* l) {
+    if (tetra_bits_present(r)) {
+        mle_read_serving_classes(r, l);
+    }
+    if (tetra_bits_present(r)) {
+        mle_read_neighbor_classes(r, cell_id_bits, l);
+    }
+    if (tetra_bits_present(r)) {
+        mle_read_serving_irregular(r, l);
+    }
+    if (tetra_bits_present(r)) {
+        mle_read_neighbor_irregular(r, cell_id_bits, l);
+    }
+}
+
+static void
+mle_read_channel_removal(tetra_bit_reader* r, tetra_mle_channel_removal* c) {
+    c->class_count = (uint8_t)tetra_bits_read(r, 4);
+    for (uint8_t i = 0; i < c->class_count; i++) {
+        c->class_id[i] = (uint8_t)tetra_bits_read(r, 4);
+    }
+    c->channel_count = (uint8_t)tetra_bits_read(r, 5);
+    for (uint8_t i = 0; i < c->channel_count; i++) {
+        c->channel_id[i] = (uint8_t)tetra_bits_read(r, 5);
+    }
+}
+
+static void
+mle_read_cell_removal(tetra_bit_reader* r, int cell_id_bits, tetra_mle_cell_removal* c) {
+    c->cell_id = (uint8_t)tetra_bits_read(r, cell_id_bits);
+    c->remove_cell = (uint8_t)tetra_bits_read(r, 1);
+    if (!c->remove_cell) {
+        mle_read_channel_removal(r, &c->channels);
+    }
+}
+
+/* D-NWRK-BROADCAST, table 18.2. */
+
+typedef struct {
+    uint64_t network_time;
+    tetra_mle_ca_neighbor neighbor[7];
+    uint16_t reselect;
+    uint8_t load;
+    uint8_t network_time_valid;
+    uint8_t neighbor_count;
+    uint8_t neighbor_count_valid;
+} mle_nwrk_broadcast;
+
+static void
+parse_mle_d_nwrk_broadcast(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_state_t* const ts = ctx->ts;
+    mle_nwrk_broadcast b;
+    DSD_MEMSET(&b, 0, sizeof b);
+    b.reselect = (uint16_t)tetra_bits_read(r, 16);
+    b.load = (uint8_t)tetra_bits_read(r, 2);
+    if (tetra_bits_present(r)) {
+        if (tetra_bits_present(r)) {
+            b.network_time = tetra_bits_read64(r, 48);
+            b.network_time_valid = 1;
+        }
+        if (tetra_bits_present(r)) {
+            b.neighbor_count_valid = 1;
+            b.neighbor_count = (uint8_t)tetra_bits_read(r, 3);
+            for (uint8_t i = 0; i < b.neighbor_count; i++) {
+                mle_read_ca_neighbor(r, &b.neighbor[i]);
+            }
+        }
+    }
+    if (!tetra_bits_ok(r)) {
+        mle_reject(ctx, "D-NWRK-BROADCAST");
+        return;
+    }
+    DSD_FPRINTF(stderr, "[TETRA MLE D-NWRK-BROADCAST] CC=%d reselect=0x%04X load=%u neighbours=%u\n", ctx->cc,
+                b.reselect, b.load, b.neighbor_count);
+    ts->nwrk_bcast_known = 1;
+    ts->mle_cell_reselect_params = b.reselect;
+    ts->mle_cell_load = b.load;
+    ts->mle_ca_neighbor_count = b.neighbor_count;
+    ts->mle_ca_neighbor_count_valid = b.neighbor_count_valid;
+    DSD_MEMCPY(ts->mle_ca_neighbor, b.neighbor, sizeof ts->mle_ca_neighbor);
+}
+
+/* D-NWRK-BROADCAST EXTENSION, table 18.4. */
+
+static void
+parse_mle_d_nwrk_broadcast_ext(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_mle_channel_lists lists;
+    DSD_MEMSET(&lists, 0, sizeof lists);
+    if (tetra_bits_present(r)) {
+        mle_read_channel_lists(r, 5, &lists);
+        require_absent_type2(r, 2); /* two reserved elements that shall not be used */
+    }
+    if (!tetra_bits_ok(r)) {
+        mle_reject(ctx, "D-NWRK-BROADCAST-EXT");
+        return;
+    }
+    DSD_FPRINTF(stderr, "[TETRA MLE D-NWRK-BROADCAST-EXT] CC=%d classes=%u/%u irregular=%u/%u\n", ctx->cc,
+                lists.serving_class_count, lists.neighbor_class_count, lists.serving_irregular_count,
+                lists.neighbor_irregular_count);
+    ctx->ts->mle_ext = lists;
+    ctx->ts->nwrk_bcast_ext_known = 1;
+}
+
+/* D-NWRK-BROADCAST-DA, table 18.3. */
+
+static void
+mle_read_da_neighbors(tetra_bit_reader* r, tetra_mle_da_broadcast* b) {
+    b->neighbor_list_present = 1;
+    b->neighbor_count = (uint8_t)tetra_bits_read(r, 3);
+    for (uint8_t i = 0; i < b->neighbor_count; i++) {
+        mle_read_da_neighbor(r, &b->neighbor[i]);
+    }
+}
+
+/* The type-2 elements after the O-bit: a reserved one that shall not be used, cell identifier, re-select parameters,
+ * cell load, network time, the local CA cell, DA neighbours, the four channel lists, and two more reserved ones. */
+static void
+mle_read_da_optional(tetra_bit_reader* r, tetra_mle_da_broadcast* b) {
+    static const uint8_t k_type2[3] = {8, 16, 3}; /* cell identifier DA, cell re-select parameters, cell load DA */
+    uint32_t values[3];
+    require_absent_type2(r, 1);
+    const unsigned present = read_type2_elements(r, k_type2, 3, values);
+    b->cell_id = (uint8_t)values[0];
+    b->cell_id_valid = type2_present(present, 0);
+    b->reselect = (uint16_t)values[1];
+    b->reselect_valid = type2_present(present, 1);
+    b->load = (uint8_t)values[2];
+    b->load_valid = type2_present(present, 2);
+    if (tetra_bits_present(r)) {
+        b->network_time = tetra_bits_read64(r, 48);
+        b->network_time_valid = 1;
+    }
+    if (tetra_bits_present(r)) {
+        b->local_ca_valid = 1;
+        mle_read_ca_neighbor(r, &b->local_ca);
+    }
+    if (tetra_bits_present(r)) {
+        mle_read_da_neighbors(r, b);
+    }
+    mle_read_channel_lists(r, 8, &b->lists);
+    require_absent_type2(r, 2);
+}
+
+static void
+parse_mle_d_nwrk_broadcast_da(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_mle_da_broadcast b;
+    DSD_MEMSET(&b, 0, sizeof b);
+    if (tetra_bits_read(r, 3) != 0) { /* reserved, set to 000 */
+        bits_reject(r);
+    }
+    if (tetra_bits_present(r)) {
+        mle_read_da_optional(r, &b);
+    }
+    if (!tetra_bits_ok(r)) {
+        mle_reject(ctx, "D-NWRK-BROADCAST-DA");
+        return;
+    }
+    DSD_FPRINTF(stderr, "[TETRA MLE D-NWRK-BROADCAST-DA] CC=%d neighbours=%u classes=%u/%u irregular=%u/%u\n", ctx->cc,
+                b.neighbor_count, b.lists.serving_class_count, b.lists.neighbor_class_count,
+                b.lists.serving_irregular_count, b.lists.neighbor_irregular_count);
+    b.known = 1;
+    ctx->ts->mle_da = b;
+}
+
+/* D-NWRK-BROADCAST REMOVE, table 18.5. */
+
+static void
+mle_read_removal_optional(tetra_bit_reader* r, tetra_mle_broadcast_removal* b) {
+    if (tetra_bits_present(r)) {
+        b->ca_present = 1;
+        b->ca_count = (uint8_t)tetra_bits_read(r, 5);
+        for (uint8_t i = 0; i < b->ca_count; i++) {
+            mle_read_cell_removal(r, 5, &b->ca[i]);
+        }
+    }
+    if (tetra_bits_present(r)) {
+        b->da_present = 1;
+        b->da_count = (uint8_t)tetra_bits_read(r, 8);
+        for (unsigned i = 0; i < b->da_count; i++) {
+            mle_read_cell_removal(r, 8, &b->da[i]);
+        }
+    }
+    if (tetra_bits_present(r)) {
+        b->serving_present = 1;
+        mle_read_channel_removal(r, &b->serving);
+    }
+    require_absent_type2(r, 4); /* four reserved elements that shall not be used */
+}
+
+static void
+parse_mle_d_nwrk_broadcast_remove(tetra_bit_reader* r, const mle_ctx* ctx) {
+    tetra_mle_broadcast_removal b;
+    DSD_MEMSET(&b, 0, sizeof b);
+    if (tetra_bits_present(r)) {
+        mle_read_removal_optional(r, &b);
+    }
+    if (!tetra_bits_ok(r)) {
+        mle_reject(ctx, "D-NWRK-BROADCAST-REMOVE");
+        return;
+    }
+    DSD_FPRINTF(stderr, "[TETRA MLE D-NWRK-BROADCAST-REMOVE] CC=%d CA=%u DA=%u serving=%u\n", ctx->cc, b.ca_count,
+                b.da_count, b.serving_present);
+    b.known = 1;
+    ctx->ts->mle_remove = b;
+}
+
+/* MLE PDU dispatch, tables 18.85 and 18.86. */
+
+typedef void (*mle_parser)(tetra_bit_reader* r, const mle_ctx* ctx);
+
+static void
+parse_mle_extended(tetra_bit_reader* r, const mle_ctx* ctx) {
+    const uint32_t extension = tetra_bits_read(r, 4);
+    if (!tetra_bits_ok(r)) {
+        return;
+    }
+    if (extension == TETRA_MLE_D_NWRK_BROADCAST_DA) {
+        parse_mle_d_nwrk_broadcast_da(r, ctx);
+    } else if (extension == TETRA_MLE_D_NWRK_BCAST_REMOVE) {
+        parse_mle_d_nwrk_broadcast_remove(r, ctx);
+    }
+}
+
+static void
+parse_mle(tetra_bit_reader* r, const mle_ctx* ctx) {
+    static const mle_parser k_parsers[8] = {
+        [TETRA_MLE_D_NEW_CELL] = parse_mle_d_new_cell,
+        [TETRA_MLE_D_PREPARE_FAIL] = parse_mle_d_prepare_fail,
+        [TETRA_MLE_D_NWRK_BROADCAST] = parse_mle_d_nwrk_broadcast,
+        [TETRA_MLE_D_NWRK_BCAST_EXT] = parse_mle_d_nwrk_broadcast_ext,
+        [TETRA_MLE_D_RESTORE_ACK] = parse_mle_d_restore_ack,
+        [TETRA_MLE_D_RESTORE_FAIL] = parse_mle_d_restore_fail,
+        [TETRA_MLE_D_CHANNEL_RESPONSE] = parse_mle_d_channel_response,
+        [TETRA_MLE_EXTENDED_PDU] = parse_mle_extended,
+    };
+    const uint32_t type = tetra_bits_read(r, 3);
+    if (tetra_bits_ok(r)) {
+        k_parsers[type & 7u](r, ctx);
+    }
+}
+
+/* Entry point. */
+
 void
 tetra_mle_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
-    if (!bits || nbits < 3) {
+    if (!bits || !ts) {
         return;
     }
-
-    /* EN 300 392-2 table 18.87: every TM-SDU begins with this 3-bit
-     * discriminator. MLE protocol PDUs then add the table 18.85 3-bit type;
-     * all other protocol bodies start immediately at bit 3. */
-    uint32_t protocol = mle_bits_to_uint(bits, 0, 3);
-    if (protocol == TETRA_MLE_PD_CMCE) {
-        tetra_cmce_parse(bits + 3, nbits - 3, cc, opts, state);
+    const mle_ctx ctx = {opts, state, ts, cc, nbits};
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 0);
+    const uint32_t protocol = tetra_bits_read(&r, 3); /* protocol discriminator, table 18.87 */
+    if (!tetra_bits_ok(&r)) {
         return;
     }
-    if (protocol == TETRA_MLE_PD_MM) {
-        tetra_mm_dispatch(bits + 3, nbits - 3, cc, opts, state);
-        return;
+    switch (protocol) {
+        case TETRA_MLE_PD_MM: tetra_mm_dispatch(bits + 3, nbits - 3, cc, opts, state); break;
+        case TETRA_MLE_PD_CMCE: parse_cmce(&r, &ctx); break;
+        case TETRA_MLE_PD_SNDCP: parse_sndcp(&r, &ctx); break;
+        case TETRA_MLE_PD_MLE: parse_mle(&r, &ctx); break;
+        default:
+            TETRA_LOG_PAYLOAD(ts, "[TETRA MLE] CC=%d protocol_discriminator=%u (%d bits)\n", cc, protocol, nbits);
+            break;
     }
-    if (protocol == TETRA_MLE_PD_SNDCP) {
-        const uint8_t* sn = bits + 3;
-        int sn_nbits = nbits - 3;
-        if (sn_nbits >= 8) {
-            uint32_t nsapi = mle_bits_to_uint(sn, 0, 4);
-            uint32_t sn_type = mle_bits_to_uint(sn, 4, 4);
-            if (ts) {
-                ts->sndcp_nsapi = (uint8_t)nsapi;
-                ts->sndcp_pdu_type = (uint8_t)sn_type;
-                ts->sndcp_nbits = (uint16_t)sn_nbits;
-                ts->sndcp_valid = 1;
-            }
-        }
-        return;
-    }
-    if (protocol == TETRA_MLE_PD_MLE) {
-        if (nbits < 6) {
-            return;
-        }
-        const uint8_t* pdu = bits + 3;
-        int pdu_nbits = nbits - 3;
-        uint32_t type = mle_bits_to_uint(pdu, 0, 3);
-        if (type == TETRA_MLE_D_NEW_CELL) {
-            parse_mle_d_new_cell(pdu, pdu_nbits, cc, opts, state);
-        } else if (type == TETRA_MLE_D_PREPARE_FAIL) {
-            parse_mle_d_prepare_fail(pdu, pdu_nbits, cc, opts, state);
-        } else if (type == TETRA_MLE_D_NWRK_BROADCAST) {
-            parse_mle_d_nwrk_broadcast(pdu, pdu_nbits, cc, state);
-        } else if (type == TETRA_MLE_D_NWRK_BCAST_EXT) {
-            parse_mle_d_nwrk_broadcast_ext(pdu, pdu_nbits, cc, state);
-        } else if (type == TETRA_MLE_D_RESTORE_ACK) {
-            parse_mle_d_restore_ack(pdu, pdu_nbits, cc, state);
-        } else if (type == TETRA_MLE_D_RESTORE_FAIL) {
-            parse_mle_d_restore_fail(pdu, pdu_nbits, cc, state);
-        } else if (type == TETRA_MLE_D_CHANNEL_RESPONSE) {
-            parse_mle_d_channel_response(pdu, pdu_nbits, cc, state);
-        } else if (type == TETRA_MLE_EXTENDED_PDU && pdu_nbits >= 7) {
-            uint32_t extension = mle_bits_to_uint(pdu, 3, 4);
-            if (extension == TETRA_MLE_D_NWRK_BROADCAST_DA) {
-                parse_mle_d_nwrk_broadcast_da(pdu, pdu_nbits, cc, state);
-            } else if (extension == TETRA_MLE_D_NWRK_BCAST_REMOVE) {
-                parse_mle_d_nwrk_broadcast_remove(pdu, pdu_nbits, cc, state);
-            }
-        }
-        return;
-    }
-
-    if (opts && opts->errorbars) {
-        fprintf(stderr, "[TETRA MLE] CC=%d protocol_discriminator=%u (%d bits)\n", cc, protocol, nbits);
-    }
-    return;
 }

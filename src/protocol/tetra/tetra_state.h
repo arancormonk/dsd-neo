@@ -239,6 +239,120 @@ typedef struct {
     uint8_t bits[TETRA_MAC_TM_SDU_MAX_BITS]; /* one bit per byte */
 } tetra_mac_fragment;
 
+/* MLE network broadcast elements, EN 300 392-2 clause 18.5. Each type keeps the fields something reads. */
+
+/** Neighbour cell information for CA (table 18.64). */
+typedef struct {
+    uint16_t main_carrier;  /**< main carrier number */
+    uint8_t cell_id;        /**< cell identifier CA */
+    uint8_t reselect_types; /**< cell reselection types supported */
+} tetra_mle_ca_neighbor;
+
+/** Channel class (table 18.41). */
+typedef struct {
+    uint32_t characteristics; /**< channel characteristics, table 18.40 */
+    uint8_t id;               /**< channel class identifier, table 18.42 */
+    uint8_t bs_power;         /**< BS transmit power relative to the main carrier */
+} tetra_mle_channel_class;
+
+/** Neighbour cell channel class for CA or DA (tables 18.62 and 18.63). */
+typedef struct {
+    tetra_mle_channel_class channel_class;
+    uint8_t cell_id;
+} tetra_mle_neighbor_channel_class;
+
+/** Irregular channel detail (table 18.96). */
+typedef struct {
+    uint16_t carrier;           /**< carrier number */
+    uint16_t carrier_extension; /**< carrier number extension, when extension_valid */
+    uint8_t channel_id;
+    uint8_t extension_valid;
+} tetra_mle_irregular_channel;
+
+/** Neighbour cell irregular channel detail for CA or DA (tables 18.66 and 18.67). */
+typedef struct {
+    tetra_mle_irregular_channel channel;
+    uint8_t cell_id;
+} tetra_mle_neighbor_irregular_channel;
+
+/**
+ * The channel-class and irregular-channel lists that D-NWRK-BROADCAST EXTENSION (table 18.4) and
+ * D-NWRK-BROADCAST-DA (table 18.3) both carry. Each count is the decoded list size; its present flag tells an
+ * advertised empty list from an omitted one. The array sizes are the largest counts the count widths can carry.
+ */
+typedef struct {
+    tetra_mle_channel_class serving_class[15];
+    tetra_mle_neighbor_channel_class neighbor_class[31];
+    tetra_mle_irregular_channel serving_irregular[31];
+    tetra_mle_neighbor_irregular_channel neighbor_irregular[63];
+    uint8_t serving_classes_present;
+    uint8_t serving_class_count;
+    uint8_t neighbor_classes_present;
+    uint8_t neighbor_class_count;
+    uint8_t serving_irregular_present;
+    uint8_t serving_irregular_count;
+    uint8_t neighbor_irregular_present;
+    uint8_t neighbor_irregular_count;
+} tetra_mle_channel_lists;
+
+/** Neighbour cell information for DA (table 18.65). */
+typedef struct {
+    uint16_t main_carrier;      /**< main carrier number */
+    uint16_t optional_mask;     /**< bit i set: the i-th type-2 element of table 18.65 was present */
+    uint16_t carrier_extension; /**< main carrier number extension (type-2 element 0) */
+    uint16_t la;                /**< location area (type-2 element 3) */
+    uint8_t cell_id;            /**< cell identifier DA */
+    uint8_t load_known;         /**< cell load known; load is valid when set */
+    uint8_t load;               /**< cell load DA */
+} tetra_mle_da_neighbor;
+
+/** D-NWRK-BROADCAST-DA (table 18.3). Each *_valid / *_present flag reports its type-2 element. */
+typedef struct {
+    uint64_t network_time; /**< TETRA network time, table 18.100 */
+    tetra_mle_channel_lists lists;
+    tetra_mle_da_neighbor neighbor[7];
+    tetra_mle_ca_neighbor local_ca; /**< neighbour cell information for the local CA cell */
+    uint16_t reselect;              /**< cell re-select parameters */
+    uint8_t known;                  /**< 1 once a complete PDU was decoded */
+    uint8_t cell_id_valid;
+    uint8_t cell_id; /**< cell identifier DA */
+    uint8_t reselect_valid;
+    uint8_t load_valid;
+    uint8_t load; /**< cell load DA */
+    uint8_t network_time_valid;
+    uint8_t local_ca_valid;
+    uint8_t neighbor_list_present;
+    uint8_t neighbor_count;
+} tetra_mle_da_broadcast;
+
+/** Channel classes and channels to remove (tables 18.90 to 18.92). */
+typedef struct {
+    uint8_t class_count;
+    uint8_t class_id[15];
+    uint8_t channel_count;
+    uint8_t channel_id[31];
+} tetra_mle_channel_removal;
+
+/** Removal data for a CA or DA cell (tables 18.90 and 18.91); remove_cell=1 removes the cell and carries no lists. */
+typedef struct {
+    tetra_mle_channel_removal channels;
+    uint8_t cell_id;
+    uint8_t remove_cell;
+} tetra_mle_cell_removal;
+
+/** D-NWRK-BROADCAST REMOVE (table 18.5). */
+typedef struct {
+    tetra_mle_cell_removal ca[31];
+    tetra_mle_cell_removal da[255];
+    tetra_mle_channel_removal serving; /**< removal data for the serving cell (table 18.92) */
+    uint8_t known;                     /**< 1 once a complete PDU was decoded */
+    uint8_t ca_present;
+    uint8_t ca_count;
+    uint8_t da_present;
+    uint8_t da_count;
+    uint8_t serving_present;
+} tetra_mle_broadcast_removal;
+
 typedef struct tetra_state {
     /* Diagnostic gates mirrored from the options at every burst (tetra_frame_enter()), so parsers that are not handed
      * the options can still keep per-burst detail behind -Z (payload) and -v (verbose). */
@@ -299,8 +413,8 @@ typedef struct tetra_state {
      * TETRA network parameters — populated by MAC-BROADCAST/SYSINFO (MLE).
      *
      * sysinfo_known:    1 once a valid SYSINFO PDU has been decoded.
-     * nwrk_bcast_known: 1 once a D-NWRK-BROADCAST (MLE type 0) PDU
-     *                          has been received via MAC-BROADCAST bcast_type 3.
+     * nwrk_bcast_known: 1 once a complete D-NWRK-BROADCAST (EN 300 392-2
+     *                          table 18.2) has been decoded.
      * la:               14-bit Location Area number (last received from
      *                          either SYSINFO/MLE or D-NWRK-BROADCAST).
      * bs_service_det:   12-bit BS service details bitmask.
@@ -353,8 +467,8 @@ typedef struct tetra_state {
      * tx_granted_ssi:   24-bit SSI of the currently-speaking party
      *                          (from the D-TX-GRANTED optional IE).
      * ───────────────────────────────────────────────────────────────────────── */
-    uint8_t tx_granted_valid;
     uint32_t tx_granted_ssi;
+    uint8_t tx_granted_valid;
 
     /* Mobility management (tetra_mm.c), widest alignment first so the block adds no padding. The group identity,
      * MM status and function-not-supported fields stay flat because tetra_channel_info.c reads them. */
@@ -409,43 +523,38 @@ typedef struct tetra_state {
     uint8_t vc_addr_event_label_valid;
     uint8_t trunk_state; /* tetra_sm_state_e, mirrored for UI/state snapshots */
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA SDS (Short Data Service) state — updated by CMCE D-STATUS.
+    /* SDS, EN 300 392-2 clauses 14.7.1.10/14.7.1.11 and 29, published by tetra_mle.c.
      *
-     * sds_status: 16-bit pre-coded status value from CMCE D-STATUS.
-     *                   0 means no status has been received yet.
-     * sds_src:    24-bit SSI of the sending party (from the optional
-     *                   Calling Party IE in D-STATUS), or 0 if not present.
-     * sds_text:   NUL-terminated UTF-8 SDS message text (Phase 19).
-     * sds_text_len: byte length of sds_text (excluding NUL).
-     * sds_status_log: ring buffer of last 4 pre-coded status values.
-     * sds_status_log_head: next-write position in the ring buffer.
-     * tetra_sds_forward_*: validated SDS-TL storage/forward address. Types are
-     *                     0=SNA, 1=SSI, 2=TSI, 3=external, 7=no address.
-     * ───────────────────────────────────────────────────────────────────────── */
-    uint16_t sds_status;
+     * sds_status / sds_status_src: the last D-STATUS pre-coded status and its calling party SSI (0 when the PDU named
+     *   none); 0 status means none received yet.
+     * sds_src / sds_text / sds_text_len: the last complete D-SDS-DATA, written together so the sender always belongs
+     *   to the text. The text is UTF-8 with C0/C1 controls replaced by spaces, at most 255 bytes, never cut inside a
+     *   character.
+     * sds_forward_*: the SDS-TL storage/forward address (tables 29.12 and 29.14); type 0 SNA, 1 SSI, 2 TSI,
+     *   3 external number, 7 none.
+     * sds_concat_*: the last accepted concatenation part (clause 29.5.14); sds_concat_generation counts completed
+     *   messages. sds_concat holds the reassembly contexts and is freed with the TETRA state. */
     uint32_t sds_src;
-    char sds_text[256];
+    uint32_t sds_status_src;
+    uint32_t sds_forward_ssi;
+    uint32_t sds_forward_extension;
+    uint32_t sds_concat_generation;
+    struct tetra_sds_concat_store* sds_concat; /* reassembly contexts, allocated on first use; see tetra_mle.c */
+    uint16_t sds_status;
     uint16_t sds_text_len;
-    uint16_t sds_status_log[4];
-    uint8_t sds_status_log_head;
+    uint16_t sds_concat_ref;
+    char sds_text[256];
+    char sds_forward_external[25];
     uint8_t sds_storage_forward;
     uint8_t sds_validity_period;
     uint8_t sds_forward_type;
     uint8_t sds_forward_valid;
     uint8_t sds_forward_sna;
-    uint32_t sds_forward_ssi;
-    uint32_t sds_forward_extension;
-    char sds_forward_external[25];
-    /* Last accepted concatenated SDS fragment/reassembly status. */
-    uint16_t sds_concat_ref;
     uint8_t sds_concat_total;
     uint8_t sds_concat_received;
-    uint8_t sds_concat_sequence;
     uint8_t sds_concat_valid;
     uint8_t sds_concat_duplicate;
     uint8_t sds_concat_complete;
-    uint32_t sds_concat_generation;
 
     /* SYSINFO fields (EN 300 392-2 table 21.65).
      *
@@ -493,12 +602,8 @@ typedef struct tetra_state {
      * different timeslots are never joined (EN 300 392-2 clause 23.4.3.1.1). */
     tetra_mac_fragment mac_frag[5];
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA CMCE D-SETUP supplementary fields (Phase 29):
-     *
-     * call_timeout: 4-bit call timeout from D-SETUP.
-     * call_slots:   2-bit speech-service or slots-per-frame subfield.
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* call_timeout: call time-out (table 14.50) from D-SETUP, D-CONNECT, D-CONNECT ACKNOWLEDGE or D-INFO.
+     * call_slots: speech service or slots per frame, the last two bits of the basic service information (table 14.35). */
     uint8_t call_timeout;
     uint8_t call_slots;
 
@@ -524,67 +629,51 @@ typedef struct tetra_state {
     uint8_t fn;
     uint8_t mn;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA CMCE D-SDS-DATA tracking fields (Phase 46):
-     *
-     * sds_msg_ref:  8-bit message reference from the last decoded SDS-TL header.
-     * sds_last_cc:  Control channel number of the last SDS PDU received
-     *                     (-1 = not yet received).
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* sds_msg_ref: message reference (table 29.19) of the last SDS-TL TRANSFER, REPORT or ACK.
+     * sds_last_cc: colour code the last accepted D-SDS-DATA arrived with. */
     uint8_t sds_msg_ref;
     int8_t sds_last_cc;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA CMCE D-CONNECT parsed fields (Phase 49):
-     *
-     * connect_enc_mode:  encryption flag from the optional Basic Service IE.
-     * connect_call_type: circuit-mode service from the optional Basic Service IE.
-     * Both remain zero when that optional IE is absent.
-     * connect_valid:     1 once a D-CONNECT has been fully parsed.
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* D-CONNECT (table 14.7): the encryption flag and circuit mode type of its optional basic service information
+     * (both 0 when absent), and connect_valid once a complete D-CONNECT was decoded. */
     uint8_t connect_enc_mode;
     uint8_t connect_call_type;
     uint8_t connect_valid;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA CMCE D-SDS-DATA SDTI=0 fields (Phase 50):
-     *
-     * sds_short_data:   16-bit pre-defined short data status.
-     * sds_short_src:    24-bit calling party SSI.
-     * sds_short_valid:  1 when populated.
-     * ───────────────────────────────────────────────────────────────────────── */
-    uint16_t sds_short_data;
+    /* D-SDS-DATA with short data type identifier 0: user defined data-1 (16 bits) and its calling party SSI;
+     * sds_short_valid is cleared by any other D-SDS-DATA. */
     uint32_t sds_short_src;
+    uint16_t sds_short_data;
     uint8_t sds_short_valid;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA CMCE floor-control event flags (Phase 54):
-     *
-     * Each flag is set to 1 when the corresponding PDU is received.
-     * tx_continue:   D-TX-CONTINUE  (type 10) — speaker may continue.
-     * tx_interrupted: D-TX-INTERRUPT (type 13) — speaker interrupted.
-     * tx_wait:       D-TX-WAIT      (type 12) — MS must wait.
-     * tx_timed_out: legacy ABI field; no downlink PDU has this type.
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* Floor-control events (tables 14.17, 14.19 and 14.20): tx_continue, tx_interrupted and tx_wait latch when
+     * D-TX CONTINUE, D-TX INTERRUPT or D-TX WAIT arrives for the active call and clear on release; tx_event_* hold
+     * the last such PDU's fields. tx_timed_out has no downlink PDU and stays 0. */
+    uint32_t tx_event_party_ssi;
+    uint32_t tx_event_party_extension;
+    uint16_t tx_event_call_id;
     uint8_t tx_continue;
     uint8_t tx_interrupted;
     uint8_t tx_wait;
     uint8_t tx_timed_out;
-    uint16_t tx_event_call_id;
     uint8_t tx_event_notification;
-    uint8_t tx_event_request_perm;
     uint8_t tx_event_continue;
     uint8_t tx_event_grant;
     uint8_t tx_event_encryption;
     uint8_t tx_event_notification_valid;
     uint8_t tx_event_party_type;
     uint8_t tx_event_party_type_valid;
-    uint32_t tx_event_party_ssi;
     uint8_t tx_event_party_ssi_valid;
-    uint32_t tx_event_party_extension;
     uint8_t tx_event_party_extension_valid;
 
-    /* TETRA MLE cell-reselection and restore state. */
+    /* MLE cell reselection and restoration (tables 18.6 to 18.10) and D-NWRK-BROADCAST (table 18.2). restore_ack is
+     * set by a D-RESTORE-ACK whose D-CALL RESTORE decoded; mle_ca_neighbor_count_valid reports that the PDU carried
+     * the number of CA neighbour cells. */
+    tetra_mle_ca_neighbor mle_ca_neighbor[7];
+    uint16_t mle_cell_reselect_params;
+    uint8_t mle_cell_load;
+    uint8_t mle_ca_neighbor_count;
+    uint8_t mle_ca_neighbor_count_valid;
     uint8_t restore_ack;
     uint8_t mle_new_cell_channel_command;
     uint8_t mle_new_cell_valid;
@@ -594,32 +683,18 @@ typedef struct tetra_state {
     uint8_t mle_channel_response_reason;
     uint8_t mle_channel_response_retry_delay;
     uint8_t mle_channel_response_valid;
-    uint16_t mle_cell_reselect_params;
-    uint8_t mle_cell_load;
-    uint64_t mle_network_time;
-    uint8_t mle_network_time_valid;
-    uint8_t mle_ca_neighbor_count;
-    uint8_t mle_ca_neighbor_count_valid;
-    uint8_t mle_ca_neighbor_cell_id[7];
-    uint8_t mle_ca_neighbor_reselect_types[7];
-    uint8_t mle_ca_neighbor_synchronized[7];
-    uint8_t mle_ca_neighbor_load[7];
-    uint16_t mle_ca_neighbor_main_carrier[7];
     uint8_t mle_restore_fail_cause;
     uint8_t mle_restore_fail_valid;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA CMCE D-INFO parsed fields (Phase 57):
-     *
-     * d_info_call_id:      14-bit call identifier.
-     * d_info_call_timeout: reset-call-timeout flag.
-     * d_info_notification: legacy name for the poll-request flag.
-     * d_info_valid:         1 once a D-INFO has been decoded.
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* D-INFO (table 14.11): d_info_call_timeout is the reset call time-out timer flag, d_info_poll_request the poll
+     * request flag; each *_valid flag reports its type-2 element. d_info_valid is set once a complete D-INFO was
+     * decoded. */
+    uint32_t d_info_temporary_address;
     uint16_t d_info_call_id;
-    uint8_t d_info_call_timeout;
-    uint8_t d_info_notification;
     uint16_t d_info_new_call_id;
+    uint16_t d_info_modify;
+    uint8_t d_info_call_timeout;
+    uint8_t d_info_poll_request;
     uint8_t d_info_new_call_id_valid;
     uint8_t d_info_timeout;
     uint8_t d_info_timeout_valid;
@@ -627,11 +702,9 @@ typedef struct tetra_state {
     uint8_t d_info_setup_timeout_valid;
     uint8_t d_info_ownership;
     uint8_t d_info_ownership_valid;
-    uint16_t d_info_modify;
     uint8_t d_info_modify_valid;
     uint8_t d_info_status;
     uint8_t d_info_status_valid;
-    uint32_t d_info_temporary_address;
     uint8_t d_info_temporary_address_valid;
     uint8_t d_info_notification_indicator;
     uint8_t d_info_notification_indicator_valid;
@@ -641,137 +714,15 @@ typedef struct tetra_state {
     uint8_t d_info_poll_number_valid;
     uint8_t d_info_valid;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * TETRA SDS-DATA Unicode flag (Phase 58):
-     *
-     * sds_text_unicode: 1 when the last decoded SDS text used Unicode
-     *                          encoding (bpc=10 or bpc=16).
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* 1 when the last SDS text used the UCS-2/UTF-16BE text coding scheme (table 29.29 value 26). */
     uint8_t sds_text_unicode;
 
-    /* TETRA MLE D-NWRK-BROADCAST EXTENSION, EN 300 392-2 table 18.4.
-     * Counts are the decoded list sizes; the matching present flag distinguishes
-     * an explicitly advertised empty list from an omitted list. */
+    /* D-NWRK-BROADCAST EXTENSION (table 18.4), D-NWRK-BROADCAST REMOVE (table 18.5) and D-NWRK-BROADCAST-DA
+     * (table 18.3), each replaced whole by the next complete PDU of its kind. */
+    tetra_mle_channel_lists mle_ext;
+    tetra_mle_da_broadcast mle_da;
+    tetra_mle_broadcast_removal mle_remove;
     uint8_t nwrk_bcast_ext_known;
-    uint8_t mle_ext_serving_classes_present;
-    uint8_t mle_ext_serving_class_count;
-    uint8_t mle_ext_serving_class_id[15];
-    uint32_t mle_ext_serving_class_characteristics[15];
-    uint8_t mle_ext_serving_class_bs_power[15];
-    uint8_t mle_ext_neighbor_classes_present;
-    uint8_t mle_ext_neighbor_class_count;
-    uint8_t mle_ext_neighbor_class_cell_id[31];
-    uint8_t mle_ext_neighbor_class_id[31];
-    uint32_t mle_ext_neighbor_class_characteristics[31];
-    uint8_t mle_ext_neighbor_class_bs_power[31];
-    uint8_t mle_ext_serving_irregular_present;
-    uint8_t mle_ext_serving_irregular_count;
-    uint8_t mle_ext_serving_irregular_channel_id[31];
-    uint32_t mle_ext_serving_irregular_characteristics[31];
-    uint16_t mle_ext_serving_irregular_carrier[31];
-    uint16_t mle_ext_serving_irregular_carrier_extension[31];
-    uint8_t mle_ext_serving_irregular_extension_valid[31];
-    uint8_t mle_ext_neighbor_irregular_present;
-    uint8_t mle_ext_neighbor_irregular_count;
-    uint8_t mle_ext_neighbor_irregular_cell_id[63];
-    uint8_t mle_ext_neighbor_irregular_channel_id[63];
-    uint32_t mle_ext_neighbor_irregular_characteristics[63];
-    uint16_t mle_ext_neighbor_irregular_carrier[63];
-    uint16_t mle_ext_neighbor_irregular_carrier_extension[63];
-    uint8_t mle_ext_neighbor_irregular_extension_valid[63];
-
-    /* TETRA MLE D-NWRK-BROADCAST REMOVE, table 18.5.  Each row retains
-     * the full bounded list of class/channel identifiers from its removal
-     * data element. remove_cell=1 means those lists are absent. */
-    uint8_t mle_remove_known;
-    uint8_t mle_remove_ca_present;
-    uint8_t mle_remove_ca_count;
-    uint8_t mle_remove_ca_cell_id[31];
-    uint8_t mle_remove_ca_remove_cell[31];
-    uint8_t mle_remove_ca_class_count[31];
-    uint8_t mle_remove_ca_class_id[31][15];
-    uint8_t mle_remove_ca_channel_count[31];
-    uint8_t mle_remove_ca_channel_id[31][31];
-    uint8_t mle_remove_da_present;
-    uint8_t mle_remove_da_count;
-    uint8_t mle_remove_da_cell_id[255];
-    uint8_t mle_remove_da_remove_cell[255];
-    uint8_t mle_remove_da_class_count[255];
-    uint8_t mle_remove_da_class_id[255][15];
-    uint8_t mle_remove_da_channel_count[255];
-    uint8_t mle_remove_da_channel_id[255][31];
-    uint8_t mle_remove_serving_present;
-    uint8_t mle_remove_serving_class_count;
-    uint8_t mle_remove_serving_class_id[15];
-    uint8_t mle_remove_serving_channel_count;
-    uint8_t mle_remove_serving_channel_id[31];
-
-    /* Extended-PDU D-NWRK-BROADCAST-DA, table 18.3. */
-    uint8_t mle_da_broadcast_known;
-    uint8_t mle_da_cell_id_valid;
-    uint8_t mle_da_cell_id;
-    uint8_t mle_da_reselect_valid;
-    uint16_t mle_da_reselect;
-    uint8_t mle_da_load_valid;
-    uint8_t mle_da_load;
-    uint8_t mle_da_network_time_valid;
-    uint64_t mle_da_network_time;
-    uint8_t mle_da_local_ca_valid;
-    uint8_t mle_da_local_ca_cell_id;
-    uint8_t mle_da_local_ca_reselect_types;
-    uint8_t mle_da_local_ca_synchronized;
-    uint8_t mle_da_local_ca_load;
-    uint16_t mle_da_local_ca_main_carrier;
-    uint8_t mle_da_neighbor_list_present;
-    uint8_t mle_da_neighbor_count;
-    uint8_t mle_da_neighbor_cell_id[7];
-    uint8_t mle_da_neighbor_reselect_types[7];
-    uint8_t mle_da_neighbor_synchronized[7];
-    uint8_t mle_da_neighbor_wide_area[7];
-    uint8_t mle_da_neighbor_ci_path[7];
-    uint8_t mle_da_neighbor_load_known[7];
-    uint8_t mle_da_neighbor_load[7];
-    uint16_t mle_da_neighbor_main_carrier[7];
-    uint8_t mle_da_neighbor_modulation[7];
-    uint8_t mle_da_neighbor_bandwidth[7];
-    uint16_t mle_da_neighbor_optional_mask[7];
-    uint16_t mle_da_neighbor_carrier_extension[7];
-    uint16_t mle_da_neighbor_mcc[7];
-    uint16_t mle_da_neighbor_mnc[7];
-    uint16_t mle_da_neighbor_la[7];
-    uint8_t mle_da_neighbor_local_cell_id[7];
-    uint8_t mle_da_neighbor_max_tx_power[7];
-    uint8_t mle_da_neighbor_min_rx_level[7];
-    uint16_t mle_da_neighbor_subscriber_class[7];
-    uint8_t mle_da_neighbor_bs_service_details[7];
-    uint8_t mle_da_neighbor_security[7];
-    uint8_t mle_da_neighbor_frame_offset[7];
-    uint8_t mle_da_serving_classes_present;
-    uint8_t mle_da_serving_class_count;
-    uint8_t mle_da_serving_class_id[15];
-    uint32_t mle_da_serving_class_characteristics[15];
-    uint8_t mle_da_serving_class_bs_power[15];
-    uint8_t mle_da_neighbor_classes_present;
-    uint8_t mle_da_neighbor_class_count;
-    uint8_t mle_da_neighbor_class_cell_id[31];
-    uint8_t mle_da_neighbor_class_id[31];
-    uint32_t mle_da_neighbor_class_characteristics[31];
-    uint8_t mle_da_neighbor_class_bs_power[31];
-    uint8_t mle_da_serving_irregular_present;
-    uint8_t mle_da_serving_irregular_count;
-    uint8_t mle_da_serving_irregular_channel_id[31];
-    uint32_t mle_da_serving_irregular_characteristics[31];
-    uint16_t mle_da_serving_irregular_carrier[31];
-    uint16_t mle_da_serving_irregular_extension[31];
-    uint8_t mle_da_serving_irregular_extension_valid[31];
-    uint8_t mle_da_neighbor_irregular_present;
-    uint8_t mle_da_neighbor_irregular_count;
-    uint8_t mle_da_neighbor_irregular_cell_id[63];
-    uint8_t mle_da_neighbor_irregular_channel_id[63];
-    uint32_t mle_da_neighbor_irregular_characteristics[63];
-    uint16_t mle_da_neighbor_irregular_carrier[63];
-    uint16_t mle_da_neighbor_irregular_extension[63];
-    uint8_t mle_da_neighbor_irregular_extension_valid[63];
 
     /* KSG 0..3 remembered from D-OTAR SCK/GCK Provide, keyed by MCC/MNC.
      * hyperframe is the SYSINFO value from a burst whose CCK flag is clear,
@@ -784,70 +735,54 @@ typedef struct tetra_state {
     uint8_t hyperframe_valid;
     uint16_t hyperframe;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * Phase 64: CMCE D-ALERT call_id.
-     * Phase 65: CMCE D-CALL-PROCEEDING call_id.
-     * Phase 66: CMCE D-CONNECT-ACK call_id.
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* D-ALERT (table 14.4), D-CALL PROCEEDING (table 14.5), D-CONNECT ACKNOWLEDGE (table 14.8), D-CALL RESTORE
+     * (table 14.6) and CMCE FUNCTION NOT SUPPORTED (table 14.33), each replaced by the next complete PDU of its
+     * kind. A *_basic_service, *_status or *_notification field is 0 when its type-2 element was absent. */
     uint16_t d_alert_call_id;
-    uint8_t d_alert_valid;
     uint16_t d_call_proc_call_id;
-    uint8_t d_call_proc_valid;
     uint16_t d_connect_ack_call_id;
-    uint8_t d_connect_ack_valid;
+    uint16_t call_restore_id;
+    uint16_t call_restore_new_id;
+    uint16_t call_restore_modify;
+    uint16_t cmce_fns_call_id;
+    uint8_t d_alert_valid;
     uint8_t d_alert_timeout;
-    uint8_t d_alert_reserved;
-    uint8_t d_alert_duplex;
     uint8_t d_alert_queued;
     uint8_t d_alert_basic_service;
     uint8_t d_alert_notification;
+    uint8_t d_call_proc_valid;
     uint8_t d_call_proc_timeout;
     uint8_t d_call_proc_hook;
-    uint8_t d_call_proc_duplex;
     uint8_t d_call_proc_basic_service;
     uint8_t d_call_proc_status;
     uint8_t d_call_proc_notification;
+    uint8_t d_connect_ack_valid;
     uint8_t d_connect_ack_tx_grant;
     uint8_t d_connect_ack_tx_permission;
     uint8_t d_connect_ack_notification;
     uint8_t d_connect_ack_notification_valid;
-    uint16_t call_restore_id;
     uint8_t call_restore_grant;
-    uint8_t call_restore_permission;
     uint8_t call_restore_reset;
-    uint16_t call_restore_new_id;
     uint8_t call_restore_new_id_valid;
     uint8_t call_restore_timeout;
     uint8_t call_restore_timeout_valid;
     uint8_t call_restore_status;
     uint8_t call_restore_status_valid;
-    uint16_t call_restore_modify;
     uint8_t call_restore_modify_valid;
     uint8_t call_restore_notification;
     uint8_t call_restore_notification_valid;
     uint8_t call_restore_valid;
     uint8_t cmce_fns_rejected_pdu;
     uint8_t cmce_fns_call_id_present;
-    uint16_t cmce_fns_call_id;
     uint8_t cmce_fns_pointer;
     uint8_t cmce_fns_extract_bits;
     uint8_t cmce_fns_valid;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * CMCE D-TX-CEASED parsed state.
-     * tx_ceased_tx_perm: Transmission request permission bit.
-     * tx_ceased_cipher_info: legacy ABI field; always zero because
-     *                              Table 14.16 contains no cipher-info IE.
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* D-TX CEASED (table 14.16): its transmission request permission. */
     uint8_t tx_ceased_tx_perm;
-    uint8_t tx_ceased_cipher_info;
 
-    /* ───────────────────────────────────────────────────────────────────────
-     * SDS-TL SDS-REPORT carried inside D-SDS-DATA, SDTI=3.
-     * sds_report_valid:       1 after an SDS-REPORT is received.
-     * sds_report_delivery_ok: 1=delivered, 0=failure.
-     * sds_report_cause:       Full 8-bit delivery status.
-     * ───────────────────────────────────────────────────────────────────────── */
+    /* SDS-TL SDS-REPORT (table 29.12) in a D-SDS-DATA: the delivery status (table 29.16), delivery_ok when the status
+     * is in the success range, and the message reference. */
     uint8_t sds_report_valid;
     uint8_t sds_report_delivery_ok;
     uint8_t sds_report_cause;
@@ -885,21 +820,23 @@ typedef struct tetra_state {
 
     uint8_t access_common_flag;
 
-    /* --- Phase 78: TETRA CMCE/MLE dropped variables --- */
-    uint8_t cmce_duplex;
+    /* D-SETUP (table 14.15), D-CONNECT (table 14.7), D-RELEASE / D-DISCONNECT (tables 14.12 and 14.9) and
+     * D-TX GRANTED (table 14.18). cmce_notif is the D-SETUP notification indicator, cmce_com_type the communication
+     * type of the last basic service information, cmce_setup_calling_type the D-SETUP calling party type identifier
+     * (table 14.43). Each *_valid flag reports its type-2 element. cmce_release_cause_type is not set by any PDU.
+     * cmce_sds_data_type is the short data type identifier of the last D-SDS-DATA. */
+    uint32_t cmce_setup_temporary_address;
+    uint32_t cmce_setup_calling_extension;
+    uint32_t cmce_connect_temporary_address;
+    uint32_t cmce_tx_granted_party_extension;
     uint8_t cmce_notif;
     uint8_t cmce_com_type;
-    uint8_t cmce_called_type;
-    uint8_t cmce_setup_hook;
+    uint8_t cmce_setup_calling_type;
     uint8_t cmce_setup_basic_service;
-    uint8_t cmce_setup_tx_grant;
-    uint8_t cmce_setup_tx_permission;
     uint8_t cmce_setup_priority;
     uint8_t cmce_setup_notification_valid;
-    uint32_t cmce_setup_temporary_address;
     uint8_t cmce_setup_temporary_address_valid;
     uint8_t cmce_setup_calling_type_valid;
-    uint32_t cmce_setup_calling_extension;
     uint8_t cmce_setup_calling_extension_valid;
     uint8_t cmce_connect_hook;
     uint8_t cmce_connect_duplex;
@@ -910,45 +847,41 @@ typedef struct tetra_state {
     uint8_t cmce_connect_priority_valid;
     uint8_t cmce_connect_basic_service;
     uint8_t cmce_connect_basic_service_valid;
-    uint32_t cmce_connect_temporary_address;
     uint8_t cmce_connect_temporary_address_valid;
     uint8_t cmce_connect_notification;
     uint8_t cmce_connect_notification_valid;
-
     uint8_t cmce_release_cause_type;
     uint8_t cmce_release_cause;
     uint8_t cmce_release_notification;
     uint8_t cmce_release_notification_valid;
     uint8_t cmce_release_was_disconnect;
-
     uint8_t cmce_tx_granted_perm;
     uint8_t cmce_tx_granted_reserv;
     uint8_t cmce_tx_granted_notification;
     uint8_t cmce_tx_granted_notification_valid;
     uint8_t cmce_tx_granted_party_type;
     uint8_t cmce_tx_granted_party_type_valid;
-    uint32_t cmce_tx_granted_party_extension;
     uint8_t cmce_tx_granted_party_extension_valid;
-
     uint8_t cmce_sds_data_type;
 
-    /* --- Phase 82-83: additional CMCE PDU fields --- */
+    /* D-FACILITY (table 14.10): the SS type of its first SS-PDU. SDS-TL SDS-ACK (table 29.11) and SDS-SHORT REPORT
+     * (table 29.13, carried as a D-STATUS pre-coded status): delivery status or short report type, and the message
+     * reference. */
     uint8_t facility_valid;
     uint8_t facility_type;
-
     uint8_t sds_ack_valid;
     uint8_t sds_ack_msg_ref;
     uint8_t sds_ack_delivery_status;
-
     uint8_t sds_short_report_valid;
     uint8_t sds_short_report_result;
     uint8_t sds_short_report_msg_ref;
 
-    /* --- Phase 86: SNDCP (PD=8) parsed fields --- */
+    /* The last SN-PDU (EN 300 392-2 clause 28.4.4): its SN PDU type (table 28.121), its NSAPI (0, a reserved value,
+     * for PDU types that carry none) and its length in bits. */
+    uint16_t sndcp_nbits;
     uint8_t sndcp_valid;
     uint8_t sndcp_nsapi;
     uint8_t sndcp_pdu_type;
-    uint16_t sndcp_nbits;
 } tetra_state_t;
 
 /** The TETRA state of @p state, created on first use; NULL only when @p state is NULL or memory runs out. */
