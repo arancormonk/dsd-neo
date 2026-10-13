@@ -4375,6 +4375,24 @@ Private per-protocol modules worth knowing about:
 
 ### TETRA
 
+#### Signalling decoders
+
+Each downlink signalling PDU family has a pure decoder that reads one PDU into a struct the caller provides and
+returns 1 only when the whole PDU, optional elements included, was there and well formed; it keeps nothing and acts on
+nothing. All are module-private: `tetra_mac_resource_decode()` and `tetra_mac_broadcast_decode()` (the MAC-RESOURCE
+header with its address, SYSINFO with its D-MLE-SYSINFO, ACCESS-DEFINE; `src/protocol/tetra/tetra_mac_pdu.h`),
+`tetra_mle_decode()` (the MLE protocol PDUs, the D-CALL RESTORE of a D-RESTORE-ACK included), `tetra_sds_decode()`
+(D-STATUS and D-SDS-DATA: the SDS-TL header, the text, a concatenation part's control fields but not its reassembly)
+and `tetra_sndcp_decode()` (the SN-PDU header; all three in `tetra_mle_pdu.h`), and `tetra_mm_decode()` (the MM PDUs
+of EN 300 392-2 clause 16 and EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd()`,
+`tetra_mle_dispatch()`, `tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the
+summary line, the call event, the notice, the SDS reassembly, the KSG an SCK or GCK Provide names. Of signalling,
+`tetra_state_t` keeps only what the decoder reads back: the cell's main carrier, band, offset and location area, the
+hyperframe number, the encryption mode of the last addressed MAC-RESOURCE, the reassembly contexts and the D-MM STATUS
+the frontends show. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
+`TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases), `TETRA_MAC_STATE`,
+`TETRA_MAC_FRAGMENTS`, `TETRA_TDMA_CLOCK`.
+
 #### Trunking
 
 `src/protocol/tetra/tetra_trunk_sm.c` behind `include/dsd-neo/protocol/tetra/tetra_trunk_sm.h` follows at most one
