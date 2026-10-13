@@ -12,7 +12,7 @@
 
 /* Keep this order in sync with dsd_state::sps_hunt_idx. */
 static const frame_sync_sps_profile k_frame_sync_sps_profiles[DSD_FRAME_SYNC_SPS_PROFILE_COUNT] = {
-    {4800, 4}, {2400, 4}, {9600, 2}, {6000, 4}, {4800, 2},
+    {4800, 4}, {2400, 4}, {9600, 2}, {6000, 4}, {4800, 2}, {18000, 4},
 };
 
 const frame_sync_sps_profile*

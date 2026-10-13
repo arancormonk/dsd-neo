@@ -49,11 +49,8 @@ dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode) {
 
     switch (mode) {
         case DSDCFG_MODE_TETRA:
-            /* TETRA owns a dedicated 18 ksym/s timing path rather than taking
-               part in the multi-protocol SPS hunt. COUNT is therefore the
-               intentional no-hunt-profile sentinel. */
             profile.symbol_rate_hz = 18000;
-            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
             break;
         case DSDCFG_MODE_P25P2:
             profile.symbol_rate_hz = 6000;

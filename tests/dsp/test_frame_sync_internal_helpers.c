@@ -208,10 +208,10 @@ test_sps_hunt_skips_disabled_protocol_rates(void) {
     static dsd_opts opts;
     static dsd_state state;
 
-    static const int expected_rates[] = {4800, 2400, 9600, 6000, 4800};
-    static const int expected_levels[] = {4, 4, 2, 4, 2};
-    assert(dsd_frame_sync_test_sps_hunt_profile_count() == 5);
-    for (int i = 0; i < 5; i++) {
+    static const int expected_rates[] = {4800, 2400, 9600, 6000, 4800, 18000};
+    static const int expected_levels[] = {4, 4, 2, 4, 2, 4};
+    assert(dsd_frame_sync_test_sps_hunt_profile_count() == 6);
+    for (int i = 0; i < 6; i++) {
         assert(dsd_frame_sync_test_sps_hunt_profile_rate(i) == expected_rates[i]);
         assert(dsd_frame_sync_test_sps_hunt_profile_levels(i) == expected_levels[i]);
     }
@@ -244,6 +244,17 @@ test_sps_hunt_skips_disabled_protocol_rates(void) {
     reset(&opts, &state);
     state.sps_hunt_idx = 2;
     assert(frame_sync_sps_hunt_next_index(&opts, &state) == 2);
+
+    /* TETRA's 18 ksym/s profile is the only candidate under -fT, so the hunt stays on it, and it is never a candidate
+     * for any other protocol. */
+    reset(&opts, &state);
+    opts.frame_tetra = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+    reset(&opts, &state);
+    opts.frame_p25p2 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
 }
 
 static void
@@ -2044,19 +2055,21 @@ test_decode_mode_profiles_agree_with_the_sps_hunt_table(void) {
     const dsd_decode_mode_profile tetra = dsd_decode_mode_profile_for(DSDCFG_MODE_TETRA);
     assert(tetra.symbol_rate_hz == 18000);
     assert(tetra.levels == 4);
-    assert(tetra.sps_profile_index == DSD_FRAME_SYNC_SPS_PROFILE_COUNT);
+    assert(tetra.sps_profile_index == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
     assert(dsd_rtl_channel_profile_for(NULL, tetra.symbol_rate_hz, tetra.levels, 1)
            == DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE);
 
     /* AUTO's whole promise is that the hunt may visit every profile, and a config file selects
      * the same AUTO the command line does. The profile argument decides audio layout, never the
-     * decoder set, so every candidate must be reachable from the config path too. */
+     * decoder set, so every candidate must be reachable from the config path too. TETRA is the
+     * exception: it runs on its own 72 kHz baseband, so only -fT selects its profile. */
     for (int profile_index = 0; profile_index < dsd_frame_sync_test_sps_hunt_profile_count(); profile_index++) {
         static dsd_opts opts;
         static dsd_state state;
         reset(&opts, &state);
         assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CONFIG, &opts, &state) == 0);
-        assert(dsd_frame_sync_test_sps_hunt_profile_has_candidate(&opts, profile_index) == 1);
+        const int want = profile_index == DSD_FRAME_SYNC_SPS_PROFILE_18000_4 ? 0 : 1;
+        assert(dsd_frame_sync_test_sps_hunt_profile_has_candidate(&opts, profile_index) == want);
     }
 }
 

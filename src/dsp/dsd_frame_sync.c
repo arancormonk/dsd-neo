@@ -78,7 +78,7 @@ frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
         return 0;
     }
     return (opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
-            || opts->frame_m17 == 1 || opts->frame_tetra == 1);
+            || opts->frame_m17 == 1);
 }
 
 static int frame_sync_current_demod_rate(const dsd_opts* opts, const dsd_state* state);
@@ -2115,10 +2115,9 @@ frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
 
 static int
 frame_sync_select_t_max(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->frame_tetra == 1) {
-        return 19;
-    }
     switch (state->sps_hunt_idx) {
+        /* The TETRA synchronisation burst's 19-dibit training sequence is the longest TETRA sync word. */
+        case DSD_FRAME_SYNC_SPS_PROFILE_18000_4: return 19;
         case DSD_FRAME_SYNC_SPS_PROFILE_2400_4: return 12;
         case DSD_FRAME_SYNC_SPS_PROFILE_6000_4:
             if (state->rf_mod == 1 && opts->frame_p25p2 == 1) {
@@ -2375,7 +2374,8 @@ frame_sync_apply_mod_switch(const dsd_opts* opts, dsd_state* state, int do_switc
 
 void
 frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt) {
-    if (opts->frame_tetra == 1) {
+    /* TETRA is pi/4-DQPSK only: there is no other modulation to vote for. */
+    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4) {
         state->rf_mod = 1;
         return;
     }
@@ -2472,7 +2472,7 @@ frame_sync_debug_symbol_stats(float symbol) {
 
 static int
 frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->frame_tetra == 1 && state->rf_mod == 1) {
+    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4 && state->rf_mod == 1) {
         return 1;
     }
 #ifdef USE_RADIO
@@ -3250,6 +3250,7 @@ frame_sync_sps_profile_has_candidate(const dsd_opts* opts, int profile_index) {
         case DSD_FRAME_SYNC_SPS_PROFILE_9600_2: return opts->frame_provoice == 1;
         case DSD_FRAME_SYNC_SPS_PROFILE_6000_4: return opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1;
         case DSD_FRAME_SYNC_SPS_PROFILE_4800_2: return opts->frame_dstar == 1;
+        case DSD_FRAME_SYNC_SPS_PROFILE_18000_4: return opts->frame_tetra == 1;
         default: return 0;
     }
 }
@@ -3353,8 +3354,9 @@ frame_sync_apply_sps_profile_timing(const dsd_opts* opts, dsd_state* state, cons
 static int
 frame_sync_sps_profile_normalized_modulation(const dsd_opts* opts, const dsd_state* state,
                                              const frame_sync_sps_profile* profile, int profile_index) {
-    const int requested = (profile_index == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1
-                           && state->p25_p1_validated_rf_mod == 1)
+    const int requested = ((profile_index == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1
+                            && state->p25_p1_validated_rf_mod == 1)
+                           || profile_index == DSD_FRAME_SYNC_SPS_PROFILE_18000_4)
                               ? 1
                               : 0;
     return dsd_frame_sync_profile_modulation(profile->levels, requested);
@@ -3478,14 +3480,6 @@ frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    if (opts->frame_tetra == 1) {
-        const int demod_rate = frame_sync_current_demod_rate(opts, state);
-        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 18000, demod_rate);
-        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-        state->rf_mod = 1;
-        return;
-    }
-
     const int timing_profile = frame_sync_sps_profile_matching_timing(opts, state);
     if (timing_profile >= 0 && timing_profile != state->sps_hunt_idx) {
         /* Presets may select both timing and modulation before frame sync starts. */
@@ -3710,13 +3704,6 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
 
 int
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
-    if (opts->frame_tetra == 1) {
-        const int demod_rate = frame_sync_current_demod_rate(opts, state);
-        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 18000, demod_rate);
-        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-        state->rf_mod = 1;
-        return 0;
-    }
     if (state->sps_hunt_counter < frame_sync_sps_hunt_dwell_symbols(opts, state)) {
         return 0;
     }

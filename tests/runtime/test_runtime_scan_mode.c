@@ -1747,12 +1747,14 @@ main(void) {
     assert(dsd_scan_mode_parse("NXDN", &parsed) == -1);
     assert(dsd_scan_mode_parse("analog", &parsed) == -1);
     assert(dsd_scan_mode_parse("p25p1", &parsed) == -1);
-    /* AUTO may be captured on any hunt profile. Leaving a typed row must
-     * publish the restored clock and slicer levels, not AUTO's starting preset. */
+    /* AUTO may be captured on any of its hunt profiles (every one but TETRA's 18 ksym/s profile, which only -fT
+     * selects). Leaving a typed row must publish the restored clock and slicer levels, not AUTO's starting preset. */
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
     const int profile_rates[] = {4800, 2400, 9600, 6000, 4800};
     const int profile_levels[] = {4, 4, 2, 4, 2};
-    for (int i = 0; i < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; i++) {
+    _Static_assert(sizeof profile_rates / sizeof profile_rates[0] == DSD_FRAME_SYNC_SPS_PROFILE_18000_4,
+                   "every hunt profile before TETRA's is an AUTO profile");
+    for (int i = 0; i < DSD_FRAME_SYNC_SPS_PROFILE_18000_4; i++) {
         s->sps_hunt_idx = i;
         s->samplesPerSymbol = 48000 / profile_rates[i];
         s->symbolCenter = dsd_opts_symbol_center(s->samplesPerSymbol);

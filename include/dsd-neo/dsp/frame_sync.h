@@ -26,7 +26,8 @@ typedef enum {
     DSD_FRAME_SYNC_SPS_PROFILE_9600_2 = 2,
     DSD_FRAME_SYNC_SPS_PROFILE_6000_4 = 3,
     DSD_FRAME_SYNC_SPS_PROFILE_4800_2 = 4,
-    DSD_FRAME_SYNC_SPS_PROFILE_COUNT = 5,
+    DSD_FRAME_SYNC_SPS_PROFILE_18000_4 = 5, /**< TETRA pi/4-DQPSK; a candidate only when TETRA is the decode mode */
+    DSD_FRAME_SYNC_SPS_PROFILE_COUNT = 6,
 } dsd_frame_sync_sps_profile_index;
 
 /**
