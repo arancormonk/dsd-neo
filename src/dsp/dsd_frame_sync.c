@@ -1024,8 +1024,6 @@ frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
 
-    tetra_uplink_configure(state);
-
     if (frame_sync_match_window_ready(ctx, 119)) {
         const char* sync = ctx->synctest119 + 108;
         int phase_rot = 0;

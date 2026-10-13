@@ -607,7 +607,6 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
 void
 processTetraFrame(dsd_opts* opts, dsd_state* state) {
     soft_symbol_frame_begin(state);
-    tetra_uplink_configure(state);
     if (state->tetra_cb) {
         state->tetra_cb = 0;
         tetra_uplink_process_cb(opts, state);

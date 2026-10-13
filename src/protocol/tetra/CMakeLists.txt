@@ -16,7 +16,6 @@ target_sources(
         tetra_mm.c
         tetra_tch_slot_gate.c
         tetra_trunk_sm.c
-        tetra_uplink.c
 )
 
 target_include_directories(

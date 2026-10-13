@@ -12,9 +12,6 @@ extern "C" {
 void processTetraFrame(dsd_opts* opts, dsd_state* state);
 void processTetraSBFrame(dsd_opts* opts, dsd_state* state);
 
-/* Read TETRA_UPLINK and TETRA_NET once. Safe to call from the sync matcher. */
-void tetra_uplink_configure(dsd_state* state);
-
 /* Advance a BSCH-synchronised TDMA timestamp to the next normal burst. */
 static inline void
 tetra_tdma_advance_ndb(dsd_state* state) {

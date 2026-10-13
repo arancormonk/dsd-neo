@@ -2055,10 +2055,10 @@ struct dsd_state {
      * mapping; 1..3 correct a Costas phase that still correlates the training
      * word but not against the unrotated pattern. */
     uint8_t tetra_phase_rot;
-    /* tetra_uplink: 1 when TETRA_UPLINK is set. Normal bursts are then NUBs
+    /* tetra_uplink: 1 with --tetra-uplink. Normal bursts are then NUBs
      * (EN 300 392-2 table 9.5): the same training sequence as a downlink NDB,
      * but block 1 sits directly against it (no AACH). Scrambling stays the
-     * TMO colour code, from a BSCH or from TETRA_NET=mcc,mnc,colour.
+     * TMO colour code, from a BSCH or from --tetra-net mcc,mnc,colour.
      * tetra_cb: this sync is a control uplink burst (extended training). */
     uint8_t tetra_uplink;
     uint8_t tetra_cb;
