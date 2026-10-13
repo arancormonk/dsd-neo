@@ -15,7 +15,8 @@ extern "C" {
 int dsd_app_signal_search_start(const dsd_signal_search_config* config);
 int dsd_app_signal_search_control(const dsd_signal_search_control* control);
 /** Open once per app host, before starting decoder sessions. Parent directory must exist.
- * The worker writes an append journal, compacts atomically, and keeps memory on failures. */
+ * The worker writes an append journal, compacts atomically, and keeps memory on failures. A failed history or avoid
+ * write stays reported and is retried by later writes, flush and close until that file's own write succeeds. */
 int dsd_app_signal_search_store_open(const char* path);
 void dsd_app_signal_search_store_close(void);
 void dsd_app_signal_search_store_flush(void);

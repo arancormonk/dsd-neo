@@ -247,7 +247,10 @@ struct Store {
     std::vector<Hit> history, pending;
     std::vector<uint32_t> avoids, session_avoids;
     dsd_signal_search_status status{};
-    bool stop = false, dirty_avoids = false, busy = false, compact = true, failed = false;
+    bool stop = false, dirty_avoids = false, busy = false, compact = true;
+    /* A file whose write failed stays owed until its own write succeeds; every worker pass retries it. `retry` wakes
+       the worker for one more attempt (flush, close) without looping on storage that keeps failing. */
+    bool history_failed = false, avoids_failed = false, retry = false;
     size_t records = 0;
     /* Bumped on every change a frontend shows: history rows (upserts, trims, reloads) and either avoid list. */
     uint64_t history_revision = 1, avoids_revision = 1;
@@ -260,6 +263,9 @@ struct Store {
         {
             std::lock_guard<std::mutex> lock(mutex);
             stop = true;
+            if (history_failed || avoids_failed) {
+                retry = true;
+            }
             wake.notify_all();
         }
         if (worker.joinable()) {
@@ -376,56 +382,64 @@ struct Store {
         return ok;
     }
 
+    /* Saving one file settles nothing about the other: the error clears only once neither is owed. A failed history
+       write leaves `compact` set, so its retry rewrites every retained record once instead of appending again. */
     void
-    record_write_result(bool ok, bool replace, size_t all_size, size_t batch_size) {
-        if (!ok) {
-            error = "Signal search history or avoids could not be saved; retained in memory";
-            compact = true;
-            failed = true;
-        } else {
-            if (failed) {
-                error.clear();
-            }
-            failed = false;
-            if (batch_size != 0) {
-                compact = false;
-                records = replace ? all_size : records + batch_size;
+    record_write_result(bool write_history, bool history_ok, bool write_avoids, bool avoids_ok, size_t saved_records) {
+        const bool owed = history_failed || avoids_failed;
+        if (write_history) {
+            history_failed = !history_ok;
+            compact = !history_ok;
+            if (history_ok) {
+                records = saved_records;
             }
         }
+        if (write_avoids) {
+            avoids_failed = !avoids_ok;
+        }
+        if (history_failed || avoids_failed) {
+            error = "Signal search history or avoids could not be saved; retained in memory";
+        } else if (owed) {
+            error.clear();
+        }
+    }
+
+    /* One worker pass, entered and left holding @p lock: takes the pending detections and every file still owed,
+       writes them unlocked, and records how each write went. */
+    void
+    write_pass(std::unique_lock<std::mutex>& lock) {
+        std::vector<Hit> batch;
+        batch.swap(pending);
+        auto all = history;
+        auto avoid_copy = avoids;
+        const bool write_history = !batch.empty() || history_failed;
+        const bool write_avoids = dirty_avoids || avoids_failed;
+        dirty_avoids = false;
+        retry = false;
+        bool replace = compact || records + batch.size() > 4000;
+        busy = true;
+        lock.unlock();
+        bool history_ok = true;
+        if (write_history) {
+            history_ok = replace ? compact_history(all) : append_history(path, batch);
+        }
+        const bool avoids_ok = !write_avoids || save_avoids(avoid_copy);
+        lock.lock();
+        record_write_result(write_history, history_ok, write_avoids, avoids_ok,
+                            replace ? all.size() : records + batch.size());
+        busy = false;
+        flushed.notify_all();
     }
 
     void
     run() {
         std::unique_lock<std::mutex> lock(mutex);
         for (;;) {
-            wake.wait(lock, [&] { return stop || !pending.empty() || dirty_avoids; });
-            if (stop && pending.empty() && !dirty_avoids) {
+            wake.wait(lock, [&] { return stop || retry || !pending.empty() || dirty_avoids; });
+            if (stop && !retry && pending.empty() && !dirty_avoids) {
                 break;
             }
-            std::vector<Hit> batch;
-            batch.swap(pending);
-            auto all = history;
-            auto avoid_copy = avoids;
-            bool write_avoids = dirty_avoids || failed;
-            dirty_avoids = false;
-            bool replace = compact || records + batch.size() > 4000;
-            busy = true;
-            lock.unlock();
-            bool ok = true;
-            if (!batch.empty()) {
-                if (replace) {
-                    ok = compact_history(all);
-                } else {
-                    ok = append_history(path, batch);
-                }
-            }
-            if (write_avoids && !save_avoids(avoid_copy)) {
-                ok = false;
-            }
-            lock.lock();
-            record_write_result(ok, replace, all.size(), batch.size());
-            busy = false;
-            flushed.notify_all();
+            write_pass(lock);
         }
         flushed.notify_all();
     }
@@ -460,7 +474,9 @@ dsd_app_signal_search_store_open(const char* path) {
     store.avoid_path = store.path + ".avoids.json";
     store.stop = false;
     store.compact = true;
-    store.failed = false;
+    store.history_failed = false;
+    store.avoids_failed = false;
+    store.retry = false;
     store.error.clear();
     store.pending.clear();
     store.session_avoids.clear();
@@ -481,12 +497,12 @@ dsd_app_signal_search_store_flush(void) {
     if (!store.worker.joinable()) {
         return;
     }
-    if (store.failed) {
-        store.pending = store.history;
-        store.dirty_avoids = true;
+    if (store.history_failed || store.avoids_failed) {
+        store.retry = true;
     }
     store.wake.notify_all();
-    store.flushed.wait(lock, [] { return store.pending.empty() && !store.dirty_avoids && !store.busy; });
+    store.flushed.wait(lock,
+                       [] { return !store.retry && store.pending.empty() && !store.dirty_avoids && !store.busy; });
 }
 
 extern "C" void

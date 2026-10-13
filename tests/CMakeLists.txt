@@ -16166,6 +16166,21 @@ add_test(
     COMMAND dsd-neo_test_app_signal_search_provenance
 )
 
+# The native store keeps a failed history or avoid write owed until that file saves.
+add_executable(
+    dsd-neo_test_app_signal_search_store
+    ui/test_app_signal_search_store.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/signal_search_store.cpp
+)
+target_link_libraries(
+    dsd-neo_test_app_signal_search_store
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(
+    NAME APP_SIGNAL_SEARCH_STORE
+    COMMAND dsd-neo_test_app_signal_search_store
+)
+
 # Signal discovery works on capture-rate samples, independently of any UI FFT.
 if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_signal_measure io/test_io_signal_measure.cpp)
