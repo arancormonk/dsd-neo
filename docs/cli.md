@@ -148,10 +148,9 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
   Already-redirected stderr is preserved; `--frontend none -Z` leaves console payload output visible.
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - Under `-fT` the terminal frontend (`-N`) shows the TETRA working mode, network, call following,
-  control and traffic channels, MM status and codec health in Call Info, as the Qt/Android monitor does,
-  and under them the latest decoded TETRA call, SYSINFO, channel-allocation and SDS summaries (up to four
-  of the last 16, when space permits; radio text is shown without control characters). Per-frame
-  diagnostics remain on stderr and can be captured with `2> tetra.log`.
+  control and traffic channels, MM status and codec health in Call Info, as the Qt/Android monitor does.
+  TETRA calls, short data and status messages go to the call and event history like every protocol's.
+  Per-frame diagnostics remain on stderr and can be captured with `2> tetra.log`.
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
 - `-O` List PulseAudio input sources and output sinks
 - The terminal input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
@@ -473,8 +472,11 @@ Notes
   next good burst. The interface, and building a library from the ETSI reference code, are in `tools/tetra/README.md`.
   With `-T` the decoder follows a call's traffic channel off a TETRA control channel, once a block whose CRC passed
   has been decoded on the carrier it is on, and returns `-t` seconds after the call's speech ends, or 4 seconds after
-  the tune when no speech follows. TETRA is not a `--trunk-scan` target type. Air-encrypted speech decrypts with
-  `--tetra-key` (see Keys & Privacy).
+  the tune when no speech follows. It follows a call whose D-SETUP named its called party, as the group list, `-I`,
+  priority and preemption rows and the tune controls decide; while it follows one, only that call's timeslots play,
+  once its signalling has been decoded on the traffic carrier (direct mode speech always plays). Without `-T` one
+  timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target
+  type. Air-encrypted speech decrypts with `--tetra-key` (see Keys & Privacy).
 
 Notes
 
@@ -1563,7 +1565,7 @@ is delayed.
 - CSV formats and examples: `docs/csv-formats.md` and `examples/`
 - Use group list as allow/whitelist: `-W`
 - Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout`
-  enable key-aware encryption lockout (P25, DMR, NXDN), `--enc-follow` follow encrypted grants without lockout
+  enable key-aware encryption lockout (P25, DMR, NXDN, TETRA), `--enc-follow` follow encrypted grants without lockout
   (default)
   - With `--enc-lockout`, otherwise allowed P25 voice grants whose encryption is set or not yet known are tuned briefly
     as silent classification probes. Voice is not decoded, played, recorded, or streamed during classification.
@@ -1579,6 +1581,10 @@ is delayed.
     erased, so toggling back to `--enc-lockout` does not owe a fresh probe per target.
   - A locked P25 supergroup stays locked for the whole patch: its member talkgroups are not locked themselves, but
     they do not readmit the supergroup's grants.
+  - TETRA needs no probe: the D-SETUP and D-TX GRANTED say whether a call is end-to-end encrypted, and the MAC header
+    whether it is air interface encrypted. A voice call the listener cannot decrypt (end-to-end encryption, or air
+    encryption without a usable `--tetra-key`) is locked out instead of followed, and a followed call that turns out
+    so is left.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode), the FM passband the peer is asked for wherever it
