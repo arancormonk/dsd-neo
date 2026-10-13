@@ -456,12 +456,11 @@ test_phase79_mm_attach_detach(void) {
     uint8_t pdu[200];
     int out_n;
     wrap_mle_mm(mm, n, pdu, &out_n);
-    tetra_mle_dispatch(pdu, out_n, 0, opt, st);
+    char log[256];
+    tetra_test_mle_logged(pdu, out_n, 0, opt, st, log, sizeof log);
 
-    CHECK(tetra_st(st)->mm_group_identity_valid == 1, "tetra_mm_group_identity_valid");
-    CHECK(tetra_st(st)->mm_group_identity_report == 1, "tetra_mm_group_identity_report");
-    CHECK(tetra_st(st)->mm_group_identity_ack_request == 1, "tetra_mm_group_identity_ack_request");
-    CHECK(tetra_st(st)->mm_group_identity_attach_detach_mode == 1, "tetra_mm_group_identity_attach_detach_mode");
+    CHECK(strstr(log, "[TETRA MM D-GROUP-IDENTITY] CC=0 report=1 ack_request=1 detach_all=1 groups=0") != NULL,
+          "group identity report, acknowledgement request and attach/detach mode reach the MM decoder");
 
     free_state(st);
     free(opt);

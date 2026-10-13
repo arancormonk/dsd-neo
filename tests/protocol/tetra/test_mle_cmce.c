@@ -766,9 +766,10 @@ test_annex_e19_e24_mle_responses(void) {
     off += 3;
     pack_bits(bits, 0, off, 1);
     off++;
-    tetra_mle_dispatch(bits, off, 2, opts, state);
-    ok = ok && tetra_st(state)->mle_new_cell_channel_command == 1 && tetra_st(state)->mm_lu_accept.valid
-         && tetra_st(state)->mm_lu_accept.type == 5;
+    char log[512];
+    tetra_test_mle_logged(bits, off, 2, opts, state, log, sizeof log);
+    ok = ok && tetra_st(state)->mle_new_cell_channel_command == 1
+         && strstr(log, "[TETRA MM D-LU-ACCEPT] CC=2 type=5") != NULL;
 
     /* E.21: D-PREPARE-FAIL without an MM SDU. */
     DSD_MEMSET(bits, 0, sizeof bits);
@@ -805,9 +806,9 @@ test_annex_e19_e24_mle_responses(void) {
     off++;
     pack_bits(bits, 0, off, 1);
     off++;
-    tetra_mle_dispatch(bits, off, 3, opts, state);
-    ok = ok && tetra_st(state)->mle_prepare_fail_cause == 1 && tetra_st(state)->mm_lu_reject.valid
-         && tetra_st(state)->mm_lu_reject.type == 2 && tetra_st(state)->mm_lu_reject.cause == 17;
+    tetra_test_mle_logged(bits, off, 3, opts, state, log, sizeof log);
+    ok = ok && tetra_st(state)->mle_prepare_fail_cause == 1
+         && strstr(log, "[TETRA MM D-LU-REJECT] CC=3 type=2 cause=17 cipher=0") != NULL;
 
     /* E.23: D-RESTORE-ACK carrying CMCE D-CALL-RESTORE. */
     DSD_MEMSET(bits, 0, sizeof bits);
@@ -830,7 +831,6 @@ test_annex_e19_e24_mle_responses(void) {
     off++;
     pack_bits(bits, 0, off, 1);
     off++; /* CMCE O-bit */
-    char log[512];
     tetra_test_mle_logged(bits, off, 4, opts, state, log, sizeof log);
     ok = ok && tetra_st(state)->restore_ack
          && strstr(log, "[TETRA CMCE D-CALL-RESTORE] CC=4 call=9029 grant=2 request=1 reset=1") != NULL;

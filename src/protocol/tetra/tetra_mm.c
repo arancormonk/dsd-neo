@@ -3,9 +3,9 @@
  * TETRA Mobility Management (MM) downlink PDU decoder: EN 300 392-2 clause 16, and the authentication, OTAR, cipher
  * key change and enable/disable PDUs of EN 300 392-7 annex A that share the MM protocol discriminator.
  *
- * Every parser reads its PDU through a bounded bit reader into a local snapshot, including the O-bit, P-bits and the
- * M-bit chain of EN 300 392-2 annex E.1.1, and replaces the published snapshot only when the whole PDU was there. A
- * truncated or malformed PDU leaves the previous snapshot in place.
+ * tetra_mm_decode() reads a PDU through a bounded bit reader into a tetra_mm_pdu, including the O-bit, P-bits and the
+ * M-bit chain of EN 300 392-2 annex E.1.1. tetra_mm_dispatch() decodes through it and prints, notes or remembers what
+ * the PDU carries only when the whole PDU was there: a truncated or malformed PDU acts on nothing.
  */
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include "tetra_calls.h"
 #include "tetra_log.h"
+#include "tetra_mm_pdu.h"
 #include "tetra_state.h"
 
 /* EN 300 392-2 clause 21.4.4.1: downlink main carrier frequency = base frequency + main carrier x 25 kHz + offset.
@@ -34,14 +35,14 @@ tetra_carrier_to_dl_hz(uint32_t main_carrier, uint32_t freq_band, uint32_t freq_
     return (long)freq_band * 100000000L + (long)main_carrier * 25000L + offset_hz[freq_offset];
 }
 
-/* One MM PDU being decoded: the reader starts after the 4-bit PDU type. */
+/* What acting on a complete MM PDU needs. */
 typedef struct {
-    tetra_bit_reader r;
     dsd_opts* opts; /* may be NULL */
     dsd_state* state;
     tetra_state_t* ts;
     int cc;
-} mm_pdu;
+    int nbits; /* bits in the PDU, for the truncation notes */
+} mm_ctx;
 
 static uint8_t
 mm_u8(tetra_bit_reader* r, int width) {
@@ -74,8 +75,8 @@ mm_read_address(tetra_bit_reader* r, tetra_mm_address_t* address) {
 }
 
 static void
-mm_log_invalid(const mm_pdu* pdu, const char* name) {
-    TETRA_LOG_PAYLOAD(pdu->ts, "[TETRA MM %s] CC=%d (invalid/truncated: %d bits)\n", name, pdu->cc, pdu->r.nbits);
+mm_log_invalid(const mm_ctx* ctx, const char* name) {
+    TETRA_LOG_PAYLOAD(ctx->ts, "[TETRA MM %s] CC=%d (invalid/truncated: %d bits)\n", name, ctx->cc, ctx->nbits);
 }
 
 /* The optional part of a PDU (EN 300 392-2 annex E.1.1): the O-bit; when it is set, a P-bit and, if that is set, a
@@ -158,25 +159,25 @@ mm_auth_reject(tetra_bit_reader* r, tetra_mm_auth_t* a) {
     return a->reject_reason == 0 && mm_read_type34_tail(r);
 }
 
-static void
-mm_parse_authentication(mm_pdu* pdu) {
+static int
+mm_decode_authentication(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
     typedef int (*reader)(tetra_bit_reader*, tetra_mm_auth_t*);
     static const reader readers[4] = {mm_auth_demand, mm_auth_response, mm_auth_result, mm_auth_reject};
+    tetra_mm_auth_t* const a = &pdu->auth;
+    a->subtype = mm_u8(r, 2);
+    return readers[a->subtype](r, a);
+}
+
+static void
+mm_report_authentication(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     static const char* const names[4] = {"DEMAND", "RESPONSE", "RESULT", "REJECT"}; /* table A.40 */
-    tetra_mm_auth_t a = {0};
-    a.subtype = mm_u8(&pdu->r, 2);
-    if (!readers[a.subtype](&pdu->r, &a) || !tetra_bits_ok(&pdu->r)) {
-        mm_log_invalid(pdu, "D-AUTHENTICATION");
-        return;
-    }
+    const tetra_mm_auth_t* const a = &pdu->auth;
     const char* outcome = "";
-    if (a.subtype == 2) {
-        outcome = a.result ? " successful" : " failed"; /* Table A.39. */
+    if (a->subtype == 2) {
+        outcome = a->result ? " successful" : " failed"; /* Table A.39. */
     }
-    DSD_FPRINTF(stderr, "[TETRA MM D-AUTHENTICATION] CC=%d %s%s%s\n", pdu->cc, names[a.subtype], outcome,
-                a.mutual ? " mutual" : "");
-    a.valid = 1;
-    pdu->ts->mm_auth = a;
+    DSD_FPRINTF(stderr, "[TETRA MM D-AUTHENTICATION] CC=%d %s%s%s\n", ctx->cc, names[a->subtype & 3u], outcome,
+                a->mutual ? " mutual" : "");
 }
 
 /* EN 300 392-7 annex A.2 to A.5: D-OTAR. */
@@ -590,42 +591,38 @@ mm_otar_detail(const tetra_mm_otar_t* o, char* out, size_t cap) {
 /* SCK and GCK Provide name the algorithm (table A.73) for the network in their address extension, or for the
  * serving network when they carry none (tables A.12 and A.16, address extension notes). */
 static void
-mm_otar_remember_ksg(const mm_pdu* pdu, const tetra_mm_otar_t* o) {
+mm_otar_remember_ksg(const mm_ctx* ctx, const tetra_mm_otar_t* o) {
     if (o->subtype != 2u && o->subtype != 4u) {
         return;
     }
     if (o->address.valid) {
-        (void)tetra_air_ksg_remember(pdu->state, o->address.mcc, o->address.mnc, o->ksg);
-    } else if (pdu->ts->net_known) {
-        (void)tetra_air_ksg_remember(pdu->state, pdu->ts->mcc, pdu->ts->mnc, o->ksg);
+        (void)tetra_air_ksg_remember(ctx->state, o->address.mcc, o->address.mnc, o->ksg);
+    } else if (ctx->ts->net_known) {
+        (void)tetra_air_ksg_remember(ctx->state, ctx->ts->mcc, ctx->ts->mnc, o->ksg);
     }
 }
 
+/* 1 when the D-OTAR sub-type has a downlink layout this decoder reads. */
+static int
+mm_otar_subtype_decoded(uint8_t subtype) {
+    return k_otar_subtypes[subtype & 15u].parse != NULL;
+}
+
+static int
+mm_decode_otar(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
+    tetra_mm_otar_t* const o = &pdu->otar;
+    o->subtype = mm_u8(r, 4);
+    const mm_otar_subtype* const sub = &k_otar_subtypes[o->subtype];
+    return tetra_bits_ok(r) && sub->parse && sub->parse(r, o);
+}
+
 static void
-mm_parse_otar(mm_pdu* pdu) {
-    tetra_mm_otar_t o;
-    DSD_MEMSET(&o, 0, sizeof o);
-    o.subtype = mm_u8(&pdu->r, 4);
-    const mm_otar_subtype* const sub = &k_otar_subtypes[o.subtype];
-    if (!tetra_bits_ok(&pdu->r)) {
-        mm_log_invalid(pdu, "D-OTAR");
-        return;
-    }
-    if (!sub->parse) {
-        TETRA_LOG_PAYLOAD(pdu->ts, "[TETRA MM D-OTAR] CC=%d %s sub-type %u not decoded\n", pdu->cc, sub->name,
-                          (unsigned)o.subtype);
-        return;
-    }
-    if (!sub->parse(&pdu->r, &o) || !tetra_bits_ok(&pdu->r)) {
-        mm_log_invalid(pdu, "D-OTAR");
-        return;
-    }
+mm_report_otar(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    const tetra_mm_otar_t* const o = &pdu->otar;
     char detail[48];
-    mm_otar_detail(&o, detail, sizeof detail);
-    DSD_FPRINTF(stderr, "[TETRA MM D-OTAR] CC=%d %s%s\n", pdu->cc, sub->name, detail);
-    o.valid = 1;
-    pdu->ts->mm_otar = o;
-    mm_otar_remember_ksg(pdu, &o);
+    mm_otar_detail(o, detail, sizeof detail);
+    DSD_FPRINTF(stderr, "[TETRA MM D-OTAR] CC=%d %s%s\n", ctx->cc, k_otar_subtypes[o->subtype & 15u].name, detail);
+    mm_otar_remember_ksg(ctx, o);
 }
 
 /* EN 300 392-7 table A.26: D-CK CHANGE DEMAND. */
@@ -659,31 +656,30 @@ mm_read_change_target(tetra_bit_reader* r, tetra_mm_ck_change_t* c) {
 }
 
 /* Table A.26 has no optional element, so the PDU ends with the O-bit (EN 300 392-2 annex E.1.1 note 4). */
+static int
+mm_decode_ck_change(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
+    tetra_mm_ck_change_t* const c = &pdu->ck_change;
+    c->ack = mm_u8(r, 1);
+    c->security_class = mm_u8(r, 2);
+    c->key_type = mm_u8(r, 3);
+    const int ok = mm_read_change_target(r, c);
+    mm_read_time(r, &c->time);
+    return ok && mm_read_type34_tail(r);
+}
+
 static void
-mm_parse_ck_change(mm_pdu* pdu) {
+mm_report_ck_change(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     static const char* const targets[6] = {"SCK", "CCK", "GCK", "CCK and GCK", "all GCKs", "no cipher key"};
     static const char* const times[4] = {"at absolute IV", "at network time", "from next multiframe", "already in use"};
-    tetra_bit_reader* const r = &pdu->r;
-    tetra_mm_ck_change_t c;
-    DSD_MEMSET(&c, 0, sizeof c);
-    c.ack = mm_u8(r, 1);
-    c.security_class = mm_u8(r, 2);
-    c.key_type = mm_u8(r, 3);
-    int ok = mm_read_change_target(r, &c);
-    mm_read_time(r, &c.time);
-    if (!ok || !mm_read_type34_tail(r)) {
-        mm_log_invalid(pdu, "D-CK-CHANGE");
-        return;
-    }
-    const char* const target = targets[c.key_type];
+    const tetra_mm_ck_change_t* const c = &pdu->ck_change;
     char transition[32] = "";
-    if (c.security_class != 0) {
+    if (c->security_class != 0) {
         /* Table A.45: values 1 to 3 move the cell to that security class. */
-        DSD_SNPRINTF(transition, sizeof transition, " to security class %u", (unsigned)c.security_class);
+        DSD_SNPRINTF(transition, sizeof transition, " to security class %u", (unsigned)c->security_class);
     }
-    DSD_FPRINTF(stderr, "[TETRA MM D-CK-CHANGE] CC=%d %s %s%s\n", pdu->cc, target, times[c.time.type], transition);
-    c.valid = 1;
-    pdu->ts->mm_ck_change = c;
+    const char* const target = targets[c->key_type % 6u];
+    DSD_FPRINTF(stderr, "[TETRA MM D-CK-CHANGE] CC=%d %s %s%s\n", ctx->cc, target, times[c->time.type & 3u],
+                transition);
 }
 
 /* EN 300 392-7 tables A.31 and A.32: D-DISABLE and D-ENABLE. These change whether the addressed MS gives service, so
@@ -692,7 +688,7 @@ mm_parse_ck_change(mm_pdu* pdu) {
 /* Enabling or disabling a terminal or a subscription is worth a line in the event history (tetra_calls_notice()): the
  * SSI and TEI it names, whether it is an intent or the confirmation, and a permanent disable. */
 static void
-mm_notice_enable_disable(const mm_pdu* pdu, const tetra_mm_enable_disable_t* e, const char* name) {
+mm_notice_enable_disable(const mm_ctx* ctx, const tetra_mm_enable_disable_t* e, const char* name) {
     char notice[128];
     int n = DSD_SNPRINTF(notice, sizeof notice, "%s %s;", name, e->intent ? "CONFIRM" : "INTENT");
     if (n > 0 && (size_t)n < sizeof notice && e->subscription) {
@@ -704,7 +700,7 @@ mm_notice_enable_disable(const mm_pdu* pdu, const tetra_mm_enable_disable_t* e, 
     if (n > 0 && (size_t)n < sizeof notice && e->permanent) {
         DSD_SNPRINTF(notice + n, sizeof notice - (size_t)n, " Permanent;");
     }
-    tetra_calls_notice(pdu->opts, pdu->state, 1, 0U, e->subscription ? e->ssi : 0U, notice, NULL);
+    tetra_calls_notice(ctx->opts, ctx->state, 1, 0U, e->subscription ? e->ssi : 0U, notice, NULL);
 }
 
 static int
@@ -734,63 +730,53 @@ mm_read_enable_disable(tetra_bit_reader* r, tetra_mm_enable_disable_t* e) {
     return tetra_bits_skip_type34(r);
 }
 
-static void
-mm_parse_enable_disable(mm_pdu* pdu, uint8_t is_enable) {
-    const char* const name = is_enable ? "D-ENABLE" : "D-DISABLE";
-    tetra_mm_enable_disable_t e;
-    DSD_MEMSET(&e, 0, sizeof e);
-    e.is_enable = is_enable;
-    if (!mm_read_enable_disable(&pdu->r, &e)) {
-        mm_log_invalid(pdu, name);
-        return;
-    }
-    DSD_FPRINTF(stderr, "[TETRA MM %s] CC=%d intent=%u equipment=%u subscription=%u%s\n", name, pdu->cc,
-                (unsigned)e.intent, (unsigned)e.equipment, (unsigned)e.subscription, e.permanent ? " permanent" : "");
-    e.valid = 1;
-    pdu->ts->mm_enable_disable = e;
-    mm_notice_enable_disable(pdu, &e, name);
+static int
+mm_decode_enable_disable(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
+    pdu->enable_disable.is_enable = (uint8_t)(pdu->type == TETRA_MM_D_ENABLE);
+    return mm_read_enable_disable(r, &pdu->enable_disable);
 }
 
 static void
-mm_parse_disable(mm_pdu* pdu) {
-    mm_parse_enable_disable(pdu, 0);
-}
-
-static void
-mm_parse_enable(mm_pdu* pdu) {
-    mm_parse_enable_disable(pdu, 1);
+mm_report_enable_disable(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    const tetra_mm_enable_disable_t* const e = &pdu->enable_disable;
+    const char* const name = e->is_enable ? "D-ENABLE" : "D-DISABLE";
+    DSD_FPRINTF(stderr, "[TETRA MM %s] CC=%d intent=%u equipment=%u subscription=%u%s\n", name, ctx->cc,
+                (unsigned)e->intent, (unsigned)e->equipment, (unsigned)e->subscription,
+                e->permanent ? " permanent" : "");
+    mm_notice_enable_disable(ctx, e, name);
 }
 
 /* EN 300 392-2 clause 16.9.2: location update and group identity PDUs. */
 
 /* Table 16.11 D-LOCATION UPDATE ACCEPT: the location update accept type, then the type 2 SSI, address extension,
  * subscriber class, energy saving information and SCCH information; every type 3/4 element is skipped. */
-static void
-mm_parse_lu_accept(mm_pdu* pdu) {
+static int
+mm_decode_lu_accept(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
     static const uint8_t width[5] = {24, 24, 16, 14, 6};
     uint32_t value[5] = {0};
     uint8_t present[5] = {0};
-    tetra_mm_lu_accept_t a;
-    DSD_MEMSET(&a, 0, sizeof a);
-    a.type = mm_u8(&pdu->r, 3);
-    if (!mm_read_optional(&pdu->r, width, 5, value, present)) {
-        mm_log_invalid(pdu, "D-LU-ACCEPT");
-        return;
+    tetra_mm_lu_accept_t* const a = &pdu->lu_accept;
+    a->type = mm_u8(r, 3);
+    if (!mm_read_optional(r, width, 5, value, present)) {
+        return 0;
     }
-    a.ssi = value[0];
-    a.ssi_valid = present[0];
+    a->ssi = value[0];
+    a->ssi_valid = present[0];
     if (present[1]) {
-        mm_address_from(value[1], &a.address);
+        mm_address_from(value[1], &a->address);
     }
-    a.subscriber_class = (uint16_t)value[2];
-    a.subscriber_class_valid = present[2];
-    a.energy_saving = (uint16_t)value[3];
-    a.energy_saving_valid = present[3];
-    a.scch = (uint8_t)value[4];
-    a.scch_valid = present[4];
-    DSD_FPRINTF(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d type=%u\n", pdu->cc, (unsigned)a.type);
-    a.valid = 1;
-    pdu->ts->mm_lu_accept = a;
+    a->subscriber_class = (uint16_t)value[2];
+    a->subscriber_class_valid = present[2];
+    a->energy_saving = (uint16_t)value[3];
+    a->energy_saving_valid = present[3];
+    a->scch = (uint8_t)value[4];
+    a->scch_valid = present[4];
+    return 1;
+}
+
+static void
+mm_report_lu_accept(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-ACCEPT] CC=%d type=%u\n", ctx->cc, (unsigned)pdu->lu_accept.type);
 }
 
 /* Cipher control and the ciphering parameters it announces (EN 300 392-2 tables 16.12 and 16.13). */
@@ -803,61 +789,52 @@ mm_read_cipher(tetra_bit_reader* r, uint8_t* control, uint16_t* params) {
 }
 
 /* Table 16.12 D-LOCATION UPDATE COMMAND. */
+static int
+mm_decode_lu_command(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
+    tetra_mm_lu_command_t* const c = &pdu->lu_command;
+    c->group_report = mm_u8(r, 1);
+    mm_read_cipher(r, &c->cipher_control, &c->cipher_params);
+    return mm_read_address_tail(r, &c->address);
+}
+
 static void
-mm_parse_lu_command(mm_pdu* pdu) {
-    tetra_mm_lu_command_t c;
-    DSD_MEMSET(&c, 0, sizeof c);
-    c.group_report = mm_u8(&pdu->r, 1);
-    mm_read_cipher(&pdu->r, &c.cipher_control, &c.cipher_params);
-    if (!mm_read_address_tail(&pdu->r, &c.address)) {
-        mm_log_invalid(pdu, "D-LU-COMMAND");
-        return;
-    }
-    DSD_FPRINTF(stderr, "[TETRA MM D-LU-COMMAND] CC=%d group_report=%u cipher=%u\n", pdu->cc, (unsigned)c.group_report,
-                (unsigned)c.cipher_control);
-    c.valid = 1;
-    pdu->ts->mm_lu_command = c;
+mm_report_lu_command(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-COMMAND] CC=%d group_report=%u cipher=%u\n", ctx->cc,
+                (unsigned)pdu->lu_command.group_report, (unsigned)pdu->lu_command.cipher_control);
 }
 
 /* Table 16.13 D-LOCATION UPDATE REJECT. */
+static int
+mm_decode_lu_reject(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
+    tetra_mm_lu_reject_t* const rej = &pdu->lu_reject;
+    rej->type = mm_u8(r, 3);
+    rej->cause = mm_u8(r, 5);
+    mm_read_cipher(r, &rej->cipher_control, &rej->cipher_params);
+    return mm_read_address_tail(r, &rej->address);
+}
+
 static void
-mm_parse_lu_reject(mm_pdu* pdu) {
-    tetra_mm_lu_reject_t rej;
-    DSD_MEMSET(&rej, 0, sizeof rej);
-    rej.type = mm_u8(&pdu->r, 3);
-    rej.cause = mm_u8(&pdu->r, 5);
-    mm_read_cipher(&pdu->r, &rej.cipher_control, &rej.cipher_params);
-    if (!mm_read_address_tail(&pdu->r, &rej.address)) {
-        mm_log_invalid(pdu, "D-LU-REJECT");
-        return;
-    }
-    DSD_FPRINTF(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u\n", pdu->cc, (unsigned)rej.type,
-                (unsigned)rej.cause, (unsigned)rej.cipher_control);
-    rej.valid = 1;
-    pdu->ts->mm_lu_reject = rej;
+mm_report_lu_reject(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    const tetra_mm_lu_reject_t* const rej = &pdu->lu_reject;
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u\n", ctx->cc, (unsigned)rej->type,
+                (unsigned)rej->cause, (unsigned)rej->cipher_control);
 }
 
 /* Table 16.14 D-LOCATION UPDATE PROCEEDING: the (V)ASSI and the MNI are both type 1 elements. */
-static void
-mm_parse_lu_proceeding(mm_pdu* pdu) {
-    tetra_mm_lu_proceeding_t p;
-    DSD_MEMSET(&p, 0, sizeof p);
-    p.ssi = tetra_bits_read(&pdu->r, 24);
-    mm_read_address(&pdu->r, &p.address);
-    if (!mm_read_type34_tail(&pdu->r)) {
-        mm_log_invalid(pdu, "D-LU-PROCEEDING");
-        return;
-    }
-    DSD_FPRINTF(stderr, "[TETRA MM D-LU-PROCEEDING] CC=%d SSI=%u MCC=%u MNC=%u\n", pdu->cc, (unsigned)p.ssi,
-                (unsigned)p.address.mcc, (unsigned)p.address.mnc);
-    p.valid = 1;
-    pdu->ts->mm_lu_proceeding = p;
+static int
+mm_decode_lu_proceeding(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
+    tetra_mm_lu_proceeding_t* const p = &pdu->lu_proceeding;
+    p->ssi = tetra_bits_read(r, 24);
+    mm_read_address(r, &p->address);
+    return mm_read_type34_tail(r);
 }
 
-typedef struct {
-    tetra_mm_group_entry_t entry[63];
-    uint8_t count;
-} mm_group_entries;
+static void
+mm_report_lu_proceeding(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    const tetra_mm_lu_proceeding_t* const p = &pdu->lu_proceeding;
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-PROCEEDING] CC=%d SSI=%u MCC=%u MNC=%u\n", ctx->cc, (unsigned)p->ssi,
+                (unsigned)p->address.mcc, (unsigned)p->address.mnc);
+}
 
 /* One group identity of table 16.54: attachment (lifetime and class of usage) or detachment (reason), then the
  * address type and the GSSI, address extension and (V)GSSI it selects. */
@@ -885,14 +862,14 @@ mm_read_group_entry(tetra_bit_reader* r, tetra_mm_group_entry_t* e) {
 /* Type 4 group identity downlink element: a 6-bit number of repeated elements (1 to 63; annex E.1.1 reserves 0),
  * then that many group identities, filling exactly @p length bits. */
 static int
-mm_read_group_downlink(const tetra_bit_reader* r, int length, mm_group_entries* entries) {
+mm_read_group_downlink(const tetra_bit_reader* r, int length, tetra_mm_group_identity_t* g) {
     tetra_bit_reader element = tetra_bits_reader(r->bits, r->pos + length, r->pos);
     const uint8_t count = mm_u8(&element, 6);
-    if (count == 0 || (unsigned)entries->count + count > 63u) {
+    if (count == 0 || (unsigned)g->count + count > 63u) {
         return 0;
     }
     for (uint8_t i = 0; i < count; i++) {
-        mm_read_group_entry(&element, &entries->entry[entries->count++]);
+        mm_read_group_entry(&element, &g->entry[g->count++]);
     }
     return tetra_bits_ok(&element) && tetra_bits_left(&element) == 0;
 }
@@ -900,14 +877,14 @@ mm_read_group_downlink(const tetra_bit_reader* r, int length, mm_group_entries* 
 /* The M-bit chain of D-ATTACH/DETACH GROUP IDENTITY (table 16.1): group identity downlink elements (identifier 7,
  * table 16.95) are decoded, the other type 3/4 elements skipped. */
 static int
-mm_read_group_identity_chain(tetra_bit_reader* r, mm_group_entries* entries) {
+mm_read_group_identity_chain(tetra_bit_reader* r, tetra_mm_group_identity_t* g) {
     while (tetra_bits_read(r, 1) != 0) {
         const uint32_t identifier = tetra_bits_read(r, 4);
         const int length = (int)tetra_bits_read(r, 11);
         if (!tetra_bits_ok(r) || length == 0 || length > tetra_bits_left(r)) {
             return 0;
         }
-        if (identifier == 7u && !mm_read_group_downlink(r, length, entries)) {
+        if (identifier == 7u && !mm_read_group_downlink(r, length, g)) {
             return 0;
         }
         (void)tetra_bits_skip(r, length);
@@ -916,44 +893,36 @@ mm_read_group_identity_chain(tetra_bit_reader* r, mm_group_entries* entries) {
 }
 
 /* Table 16.1 D-ATTACH/DETACH GROUP IDENTITY. */
-static void
-mm_parse_group_identity(mm_pdu* pdu) {
-    tetra_bit_reader* const r = &pdu->r;
-    mm_group_entries entries;
-    DSD_MEMSET(&entries, 0, sizeof entries);
-    const uint8_t report = mm_u8(r, 1);
-    const uint8_t ack_request = mm_u8(r, 1);
-    const uint8_t mode = mm_u8(r, 1);
+static int
+mm_decode_group_identity(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
+    tetra_mm_group_identity_t* const g = &pdu->group_identity;
+    g->report = mm_u8(r, 1);
+    g->ack_request = mm_u8(r, 1);
+    g->detach_all = mm_u8(r, 1);
     const int optional = tetra_bits_present(r);
-    if (!tetra_bits_ok(r) || (optional && !mm_read_group_identity_chain(r, &entries))) {
-        mm_log_invalid(pdu, "D-GROUP-IDENTITY");
-        return;
-    }
-    DSD_FPRINTF(stderr, "[TETRA MM D-GROUP-IDENTITY] CC=%d report=%u ack_request=%u detach_all=%u groups=%u\n", pdu->cc,
-                (unsigned)report, (unsigned)ack_request, (unsigned)mode, (unsigned)entries.count);
-    tetra_state_t* const ts = pdu->ts;
-    ts->mm_group_identity_report = report;
-    ts->mm_group_identity_ack_request = ack_request;
-    ts->mm_group_identity_attach_detach_mode = mode;
-    ts->mm_group_entry_count = entries.count;
-    DSD_MEMCPY(ts->mm_group_entry, entries.entry, sizeof ts->mm_group_entry);
-    ts->mm_group_identity_valid = 1;
+    return tetra_bits_ok(r) && (!optional || mm_read_group_identity_chain(r, g));
+}
+
+static void
+mm_report_group_identity(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    const tetra_mm_group_identity_t* const g = &pdu->group_identity;
+    DSD_FPRINTF(stderr, "[TETRA MM D-GROUP-IDENTITY] CC=%d report=%u ack_request=%u detach_all=%u groups=%u\n", ctx->cc,
+                (unsigned)g->report, (unsigned)g->ack_request, (unsigned)g->detach_all, (unsigned)g->count);
 }
 
 /* Table 16.2 D-ATTACH/DETACH GROUP IDENTITY ACKNOWLEDGEMENT: accept/reject (table 16.44), a reserved bit, and type
  * 3/4 elements that are skipped. */
+static int
+mm_decode_group_ack(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
+    pdu->group_ack.rejected = mm_u8(r, 1);
+    (void)tetra_bits_skip(r, 1);
+    return mm_read_type34_tail(r);
+}
+
 static void
-mm_parse_group_ack(mm_pdu* pdu) {
-    const uint8_t rejected = mm_u8(&pdu->r, 1);
-    (void)tetra_bits_skip(&pdu->r, 1);
-    if (!mm_read_type34_tail(&pdu->r)) {
-        mm_log_invalid(pdu, "D-GROUP-ACK");
-        return;
-    }
-    DSD_FPRINTF(stderr, "[TETRA MM D-GROUP-ACK] CC=%d %s\n", pdu->cc,
-                rejected ? "at least one rejected" : "all accepted");
-    pdu->ts->mm_group_ack_result = rejected;
-    pdu->ts->mm_group_ack_valid = 1;
+mm_report_group_ack(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    DSD_FPRINTF(stderr, "[TETRA MM D-GROUP-ACK] CC=%d %s\n", ctx->cc,
+                pdu->group_ack.rejected ? "at least one rejected" : "all accepted");
 }
 
 /* Status downlink dependent information (tables 16.4 to 16.10): the type 1 bits after the status downlink, then the
@@ -977,10 +946,10 @@ static const mm_status_layout k_status_layouts[] = {
 
 /* Table 16.3 D-MM STATUS. The sub-PDUs of tables 16.4 to 16.10 are checked for completeness; DMO gateway (16 to 31,
  * EN 300 396-5), network specific (32 to 47) and reserved values have no layout here, so only the status counts. */
-static void
-mm_parse_status(mm_pdu* pdu) {
-    tetra_bit_reader* const r = &pdu->r;
+static int
+mm_decode_status(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
     const uint8_t status = mm_u8(r, 6);
+    pdu->status.status = status;
     int ok = tetra_bits_ok(r);
     for (size_t i = 0; ok && i < sizeof k_status_layouts / sizeof k_status_layouts[0]; i++) {
         const mm_status_layout* const layout = &k_status_layouts[i];
@@ -991,64 +960,87 @@ mm_parse_status(mm_pdu* pdu) {
             ok = mm_read_optional(r, layout->type2_width, layout->type2_count, value, present);
         }
     }
-    if (!ok) {
-        mm_log_invalid(pdu, "D-MM-STATUS");
-        return;
-    }
-    DSD_FPRINTF(stderr, "[TETRA MM D-MM-STATUS] CC=%d status=%u (%s)\n", pdu->cc, (unsigned)status,
-                tetra_mm_status_name(status));
-    pdu->ts->mm_status_code = status;
-    pdu->ts->mm_status_valid = 1;
+    return ok;
+}
+
+/* The status the frontends show (tetra_publish()). */
+static void
+mm_report_status(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    DSD_FPRINTF(stderr, "[TETRA MM D-MM-STATUS] CC=%d status=%u (%s)\n", ctx->cc, (unsigned)pdu->status.status,
+                tetra_mm_status_name(pdu->status.status));
+    ctx->ts->mm_status_code = pdu->status.status;
+    ctx->ts->mm_status_valid = 1;
 }
 
 /* Table 16.27 MM PDU/FUNCTION NOT SUPPORTED: the not-supported PDU type and the O-bit. The type 2 sub-PDU type that
  * may follow has a length that depends on the rejected PDU, so nothing after the O-bit is read. */
-static void
-mm_parse_function_not_supported(mm_pdu* pdu) {
-    const uint8_t type = mm_u8(&pdu->r, 4);
-    if (!tetra_bits_skip(&pdu->r, 1)) {
-        mm_log_invalid(pdu, "FUNCTION-NOT-SUPPORTED");
-        return;
-    }
-    DSD_FPRINTF(stderr, "[TETRA MM FUNCTION-NOT-SUPPORTED] CC=%d pdu_type=%u\n", pdu->cc, (unsigned)type);
-    pdu->ts->mm_fns_pdu_type = type;
-    pdu->ts->mm_fns_valid = 1;
+static int
+mm_decode_function_not_supported(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
+    pdu->fns.pdu_type = mm_u8(r, 4);
+    return tetra_bits_skip(r, 1);
 }
 
-/* EN 300 392-2 table 16.75 downlink PDU types; 8, 13 and 14 are reserved. */
-static void (*const k_mm_parsers[16])(mm_pdu*) = {
-    mm_parse_otar,                   /* 0 D-OTAR */
-    mm_parse_authentication,         /* 1 D-AUTHENTICATION */
-    mm_parse_ck_change,              /* 2 D-CK CHANGE DEMAND */
-    mm_parse_disable,                /* 3 D-DISABLE */
-    mm_parse_enable,                 /* 4 D-ENABLE */
-    mm_parse_lu_accept,              /* 5 D-LOCATION UPDATE ACCEPT */
-    mm_parse_lu_command,             /* 6 D-LOCATION UPDATE COMMAND */
-    mm_parse_lu_reject,              /* 7 D-LOCATION UPDATE REJECT */
-    NULL,                            /* 8 reserved */
-    mm_parse_lu_proceeding,          /* 9 D-LOCATION UPDATE PROCEEDING */
-    mm_parse_group_identity,         /* 10 D-ATTACH/DETACH GROUP IDENTITY */
-    mm_parse_group_ack,              /* 11 D-ATTACH/DETACH GROUP IDENTITY ACKNOWLEDGEMENT */
-    mm_parse_status,                 /* 12 D-MM STATUS */
-    NULL,                            /* 13 reserved */
-    NULL,                            /* 14 reserved */
-    mm_parse_function_not_supported, /* 15 MM PDU/FUNCTION NOT SUPPORTED */
+static void
+mm_report_function_not_supported(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
+    DSD_FPRINTF(stderr, "[TETRA MM FUNCTION-NOT-SUPPORTED] CC=%d pdu_type=%u\n", ctx->cc, (unsigned)pdu->fns.pdu_type);
+}
+
+/* How each downlink PDU type of EN 300 392-2 table 16.75 is decoded and acted on; 8, 13 and 14 are reserved. */
+typedef struct {
+    const char* name; /* in the summary line and the truncation note */
+    int (*decode)(tetra_bit_reader* r, tetra_mm_pdu* pdu);
+    void (*report)(const mm_ctx* ctx, const tetra_mm_pdu* pdu);
+} mm_kind;
+
+static const mm_kind k_mm_kinds[16] = {
+    {"D-OTAR", mm_decode_otar, mm_report_otar},
+    {"D-AUTHENTICATION", mm_decode_authentication, mm_report_authentication},
+    {"D-CK-CHANGE", mm_decode_ck_change, mm_report_ck_change},
+    {"D-DISABLE", mm_decode_enable_disable, mm_report_enable_disable},
+    {"D-ENABLE", mm_decode_enable_disable, mm_report_enable_disable},
+    {"D-LU-ACCEPT", mm_decode_lu_accept, mm_report_lu_accept},
+    {"D-LU-COMMAND", mm_decode_lu_command, mm_report_lu_command},
+    {"D-LU-REJECT", mm_decode_lu_reject, mm_report_lu_reject},
+    {NULL, NULL, NULL},
+    {"D-LU-PROCEEDING", mm_decode_lu_proceeding, mm_report_lu_proceeding},
+    {"D-GROUP-IDENTITY", mm_decode_group_identity, mm_report_group_identity},
+    {"D-GROUP-ACK", mm_decode_group_ack, mm_report_group_ack},
+    {"D-MM-STATUS", mm_decode_status, mm_report_status},
+    {NULL, NULL, NULL},
+    {NULL, NULL, NULL},
+    {"FUNCTION-NOT-SUPPORTED", mm_decode_function_not_supported, mm_report_function_not_supported},
 };
+
+int
+tetra_mm_decode(const uint8_t* bits, int nbits, tetra_mm_pdu* out) {
+    if (!out) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof *out);
+    tetra_bit_reader r = tetra_bits_reader(bits, nbits, 0);
+    out->type = mm_u8(&r, 4);
+    const mm_kind* const kind = &k_mm_kinds[out->type & 15u];
+    return tetra_bits_ok(&r) && kind->decode && kind->decode(&r, out) && tetra_bits_ok(&r);
+}
 
 void
 tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !bits) {
+    if (!ts || !bits || nbits < 4) {
         return;
     }
-    mm_pdu pdu = {tetra_bits_reader(bits, nbits, 0), opts, state, ts, cc};
-    const uint8_t type = mm_u8(&pdu.r, 4);
-    if (!tetra_bits_ok(&pdu.r)) {
-        return;
-    }
-    if (k_mm_parsers[type]) {
-        k_mm_parsers[type](&pdu);
+    tetra_mm_pdu pdu;
+    const int complete = tetra_mm_decode(bits, nbits, &pdu);
+    const mm_kind* const kind = &k_mm_kinds[pdu.type & 15u];
+    const mm_ctx ctx = {opts, state, ts, cc, nbits};
+    if (!kind->decode) {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA MM] CC=%d reserved PDU type %u (%d bits)\n", cc, (unsigned)pdu.type, nbits);
+    } else if (complete) {
+        kind->report(&ctx, &pdu);
+    } else if (pdu.type == TETRA_MM_D_OTAR && nbits >= 8 && !mm_otar_subtype_decoded(pdu.otar.subtype)) {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA MM D-OTAR] CC=%d %s sub-type %u not decoded\n", cc,
+                          k_otar_subtypes[pdu.otar.subtype & 15u].name, (unsigned)pdu.otar.subtype);
     } else {
-        TETRA_LOG_PAYLOAD(ts, "[TETRA MM] CC=%d reserved PDU type %u (%d bits)\n", cc, (unsigned)type, nbits);
+        mm_log_invalid(&ctx, kind->name);
     }
 }
