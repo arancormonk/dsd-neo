@@ -1015,108 +1015,125 @@ dsd_frame_sync_test_capture_tetra_soft(const dsd_state* state, float* dst, int p
 }
 #endif
 
+/* The part of a TETRA lock every burst kind shares, before its blocks are captured. */
+static void
+frame_sync_tetra_begin(frame_sync_match_ctx* ctx, int phase_rot) {
+    frame_sync_set_basic_lock(ctx);
+    DSD_SNPRINTF(ctx->state->ftype, sizeof(ctx->state->ftype), "TETRA");
+    /* phase_rot undoes a Costas 90 degree step before the payload is sliced. */
+    ctx->state->tetra_sync.phase_rot = (uint8_t)(phase_rot & 3);
+}
+
+/* The rest of a TETRA lock: the sync line, the sync type dispatch reads and the slicer's warm start on the
+ * @p training_dibits of the training sequence. */
 static int
-frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
-    const dsd_opts* opts = ctx->opts;
+frame_sync_tetra_finish(frame_sync_match_ctx* ctx, const char* label, int synctype, int training_dibits) {
+    if (ctx->opts->errorbars == 1) {
+        printFrameSync(ctx->opts, ctx->state, label, ctx->synctest_pos + 1, ctx->modulation);
+    }
+    ctx->state->lastsynctype = synctype;
+    dsd_sync_warm_start_thresholds_outer_only(ctx->opts, ctx->state, training_dibits);
+    return synctype;
+}
+
+/* Block 1 of a normal or control burst: @p count dibits, hard and soft, the newest @p age symbols old. */
+static void
+frame_sync_tetra_capture_block1(frame_sync_match_ctx* ctx, int count, int age) {
     dsd_state* state = ctx->state;
-    if (opts->frame_tetra != 1) {
+    if (frame_sync_capture_tetra_dibits_aged(ctx->history, state->tetra_sync.b1_dibuf, count, age)) {
+        state->tetra_sync.b1_soft_valid =
+            (uint8_t)frame_sync_capture_tetra_soft_aged(state, state->tetra_sync.b1_soft, count, age);
+        state->tetra_sync.b1_valid = 1;
+    } else {
+        state->tetra_sync.b1_soft_valid = 0;
+        state->tetra_sync.b1_valid = 0;
+    }
+}
+
+/* Normal burst: the 11-dibit training sequence NTS1, or NTS2, which is NTS1 inverted. */
+static int
+frame_sync_try_tetra_ndb(frame_sync_match_ctx* ctx) {
+    if (!frame_sync_match_window_ready(ctx, 119)) {
         return DSD_SYNC_NONE;
     }
-
-    if (frame_sync_match_window_ready(ctx, 119)) {
-        const char* sync = ctx->synctest119 + 108;
-        int phase_rot = 0;
-        int inverted = 0;
-        if (tetra_training_derotation(sync, TETRA_NDB_NTS_SYNC, INV_TETRA_NDB_NTS_SYNC, 11, &phase_rot, &inverted)) {
-            frame_sync_set_basic_lock(ctx);
-            DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "TETRA");
-            /* NTS2 aliases inverted NTS1. Keep the polarity learned from the
-             * synchronisation burst and only record which training matched.
-             * phase_rot undoes a Costas 90° step before the payload is sliced. */
-            state->tetra_sync.phase_rot = (uint8_t)(phase_rot & 3);
-            state->tetra_sync.nts2 = (uint8_t)(inverted ^ (state->tetra_sync.polarity ? 1 : 0));
-            state->tetra_sync.cb = 0;
-            /* Training occupies ages 0..10. TMO downlink: AACH half 1 is ages
-             * 11..17 and block 1 is the 108 dibits at ages 18..125. DMO and the
-             * TMO normal uplink burst have no AACH, so block 1 sits right
-             * behind the training: ages 11..118. */
-            const int b1_age = state->tetra_sync.block1_follows_training ? 11 : 18;
-            if (frame_sync_capture_tetra_dibits_aged(ctx->history, state->tetra_sync.b1_dibuf, 108, b1_age)) {
-                state->tetra_sync.b1_soft_valid =
-                    (uint8_t)frame_sync_capture_tetra_soft_aged(state, state->tetra_sync.b1_soft, 108, b1_age);
-                state->tetra_sync.b1_valid = 1;
-            } else {
-                state->tetra_sync.b1_soft_valid = 0;
-                state->tetra_sync.b1_valid = 0;
-            }
-            if (opts->errorbars == 1) {
-                printFrameSync(opts, state, inverted ? "-TETRA NDB" : "+TETRA NDB", ctx->synctest_pos + 1,
-                               ctx->modulation);
-            }
-            state->lastsynctype = inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 11);
-            return state->lastsynctype;
-        }
+    int phase_rot = 0;
+    int inverted = 0;
+    if (!tetra_training_derotation(ctx->synctest119 + 108, TETRA_NDB_NTS_SYNC, INV_TETRA_NDB_NTS_SYNC, 11, &phase_rot,
+                                   &inverted)) {
+        return DSD_SYNC_NONE;
     }
+    dsd_state* state = ctx->state;
+    frame_sync_tetra_begin(ctx, phase_rot);
+    /* NTS2 aliases inverted NTS1: keep the polarity the synchronisation burst set and only record which training
+     * matched. */
+    state->tetra_sync.nts2 = (uint8_t)(inverted ^ (state->tetra_sync.polarity ? 1 : 0));
+    state->tetra_sync.cb = 0;
+    /* Training occupies ages 0..10. TMO downlink: AACH half 1 is ages 11..17 and block 1 is the 108 dibits at ages
+     * 18..125. DMO and the TMO normal uplink burst have no AACH, so block 1 sits right behind the training: ages
+     * 11..118. */
+    frame_sync_tetra_capture_block1(ctx, 108, state->tetra_sync.block1_follows_training ? 11 : 18);
+    return frame_sync_tetra_finish(ctx, inverted ? "-TETRA NDB" : "+TETRA NDB",
+                                   inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS, 11);
+}
 
-    if (frame_sync_match_window_ready(ctx, 79)) {
-        const char* sync = ctx->synctest79 + 60;
-        int phase_rot = 0;
-        int inverted = 0;
-        if (tetra_training_derotation(sync, TETRA_SB_SSB_SYNC, INV_TETRA_SB_SSB_SYNC, 19, &phase_rot, &inverted)) {
-            frame_sync_set_basic_lock(ctx);
-            DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "TETRA");
-            state->tetra_sync.phase_rot = (uint8_t)(phase_rot & 3);
-            state->tetra_sync.polarity = (uint8_t)inverted;
-            state->tetra_sync.cb = 0;
-            frame_sync_capture_tetra_dibits(ctx->synctest79, state->tetra_sync.sb1_dibuf, 60);
-            state->tetra_sync.sb1_soft_valid =
-                (uint8_t)frame_sync_capture_tetra_soft(state, state->tetra_sync.sb1_soft, 60, 19);
-            state->tetra_sync.sb1_valid = 1;
-            if (opts->errorbars == 1) {
-                printFrameSync(opts, state, inverted ? "-TETRA SB" : "+TETRA SB", ctx->synctest_pos + 1,
-                               ctx->modulation);
-            }
-            state->lastsynctype = inverted ? DSD_SYNC_TETRA_SB_NEG : DSD_SYNC_TETRA_SB_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 19);
-            return state->lastsynctype;
-        }
+/* Synchronisation burst: the 19-dibit training sequence, which also sets the polarity. */
+static int
+frame_sync_try_tetra_sb(frame_sync_match_ctx* ctx) {
+    if (!frame_sync_match_window_ready(ctx, 79)) {
+        return DSD_SYNC_NONE;
     }
-
-    /* Control uplink burst. Only searched in uplink mode: a 15-dibit word is
-     * short enough that running it against a downlink carrier is not worth the
-     * false locks, and a downlink session never sets --tetra-uplink. */
-    if (opts->tetra_uplink && frame_sync_match_window_ready(ctx, 79)) {
-        const char* sync = ctx->synctest79 + 64;
-        int phase_rot = 0;
-        int inverted = 0;
-        if (tetra_training_derotation(sync, TETRA_CB_SYNC, INV_TETRA_CB_SYNC, 15, &phase_rot, &inverted)) {
-            frame_sync_set_basic_lock(ctx);
-            DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "TETRA");
-            state->tetra_sync.phase_rot = (uint8_t)(phase_rot & 3);
-            state->tetra_sync.cb = 1;
-            /* Training occupies ages 0..14; the 42 data dibits are ages 15..56. */
-            if (frame_sync_capture_tetra_dibits_aged(ctx->history, state->tetra_sync.b1_dibuf, 42, 15)) {
-                state->tetra_sync.b1_soft_valid =
-                    (uint8_t)frame_sync_capture_tetra_soft_aged(state, state->tetra_sync.b1_soft, 42, 15);
-                state->tetra_sync.b1_valid = 1;
-            } else {
-                state->tetra_sync.b1_soft_valid = 0;
-                state->tetra_sync.b1_valid = 0;
-            }
-            if (opts->errorbars == 1) {
-                printFrameSync(opts, state, inverted ? "-TETRA CB" : "+TETRA CB", ctx->synctest_pos + 1,
-                               ctx->modulation);
-            }
-            /* Reuse the NDB sync id so dispatch reaches processTetraFrame,
-             * which branches on tetra_cb. No separate vocoder type. */
-            state->lastsynctype = inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 15);
-            return state->lastsynctype;
-        }
+    int phase_rot = 0;
+    int inverted = 0;
+    if (!tetra_training_derotation(ctx->synctest79 + 60, TETRA_SB_SSB_SYNC, INV_TETRA_SB_SSB_SYNC, 19, &phase_rot,
+                                   &inverted)) {
+        return DSD_SYNC_NONE;
     }
+    dsd_state* state = ctx->state;
+    frame_sync_tetra_begin(ctx, phase_rot);
+    state->tetra_sync.polarity = (uint8_t)inverted;
+    state->tetra_sync.cb = 0;
+    frame_sync_capture_tetra_dibits(ctx->synctest79, state->tetra_sync.sb1_dibuf, 60);
+    state->tetra_sync.sb1_soft_valid =
+        (uint8_t)frame_sync_capture_tetra_soft(state, state->tetra_sync.sb1_soft, 60, 19);
+    state->tetra_sync.sb1_valid = 1;
+    return frame_sync_tetra_finish(ctx, inverted ? "-TETRA SB" : "+TETRA SB",
+                                   inverted ? DSD_SYNC_TETRA_SB_NEG : DSD_SYNC_TETRA_SB_POS, 19);
+}
 
-    return DSD_SYNC_NONE;
+/* Control uplink burst. Only searched in uplink mode: a 15-dibit word is short enough that running it against a
+ * downlink carrier is not worth the false locks, and a downlink session never sets --tetra-uplink. */
+static int
+frame_sync_try_tetra_cb(frame_sync_match_ctx* ctx) {
+    if (!ctx->opts->tetra_uplink || !frame_sync_match_window_ready(ctx, 79)) {
+        return DSD_SYNC_NONE;
+    }
+    int phase_rot = 0;
+    int inverted = 0;
+    if (!tetra_training_derotation(ctx->synctest79 + 64, TETRA_CB_SYNC, INV_TETRA_CB_SYNC, 15, &phase_rot, &inverted)) {
+        return DSD_SYNC_NONE;
+    }
+    frame_sync_tetra_begin(ctx, phase_rot);
+    ctx->state->tetra_sync.cb = 1;
+    /* Training occupies ages 0..14; the 42 data dibits are ages 15..56. */
+    frame_sync_tetra_capture_block1(ctx, 42, 15);
+    /* The NDB sync type takes it to processTetraFrame(), which branches on tetra_sync.cb. */
+    return frame_sync_tetra_finish(ctx, inverted ? "-TETRA CB" : "+TETRA CB",
+                                   inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS, 15);
+}
+
+static int
+frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
+    if (ctx->opts->frame_tetra != 1) {
+        return DSD_SYNC_NONE;
+    }
+    int synctype = frame_sync_try_tetra_ndb(ctx);
+    if (synctype == DSD_SYNC_NONE) {
+        synctype = frame_sync_try_tetra_sb(ctx);
+    }
+    if (synctype == DSD_SYNC_NONE) {
+        synctype = frame_sync_try_tetra_cb(ctx);
+    }
+    return synctype;
 }
 
 /**
