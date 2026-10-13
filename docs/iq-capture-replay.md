@@ -268,10 +268,10 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   channel keeps the opening centre, as before, so replay decoding is unchanged.
 - Event timelines currently require a constant sample rate through the capture. Metadata with event sample-rate changes is
   rejected until segment-rate replay is supported.
-- Replay converts `cu8`, and `cf32` captured as the driver delivered it (`capture_stage: "post_driver_cf32_pre_ring"`).
-  `--iq-replay` refuses any other capture when it opens it, naming the sample format and stage, and `dsd-neo` exits with
-  status 1: a `cs16` sidecar, or a `cf32` one stamped with another stage. `--iq-info` still describes such a capture and
-  reports `Replay compatible: no`.
+- Replay converts `cu8`, `cf32` captured as the driver delivered it (`capture_stage: "post_driver_cf32_pre_ring"`),
+  and little-endian `cs16` stamped `post_mute_pre_widen`. `--iq-replay` refuses any other capture when it opens it,
+  naming the sample format and stage, and `dsd-neo` exits with status 1: a `cf32` or `cs16` sidecar stamped with
+  another stage. `--iq-info` still describes such a capture and reports `Replay compatible: no`.
 - Direct `-i iqreplay:...` is intentionally rejected; use `--iq-replay <path>`.
 - Replay currently feeds the RTL radio path and reuses existing demod processing/state handling.
 - `base_decimation` is capped at 1024 (10 half-band passes); metadata requesting more is rejected.

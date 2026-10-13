@@ -801,13 +801,23 @@ validate_replay_semantics(const dsd_iq_replay_config* cfg, char* err_buf, size_t
 }
 
 /* The sample format and capture stage pairs a replay can convert to the demodulator's float input, as the replay
- * reader's converters do (replay_convert_block_to_f32() in rtl_device.cpp): cu8 at either capture stage, and cf32 only
- * as the driver delivered it, before the input ring. A cs16 capture parses, and --iq-info describes it, but nothing
- * converts it. */
+ * reader's converters do (replay_convert_block_to_f32() in rtl_device.cpp): cu8 at either capture stage, cf32 only
+ * as the driver delivered it, before the input ring, and little-endian cs16 only at the cu8 stage, where it stands in
+ * for a widened cu8 capture. */
 static int
 validate_replay_convertible(const dsd_iq_replay_config* cfg, char* err_buf, size_t err_buf_size) {
     if (cfg->format == DSD_IQ_FORMAT_CU8) {
         return DSD_IQ_OK;
+    }
+    if (cfg->format == DSD_IQ_FORMAT_CS16) {
+        if (strcmp(cfg->capture_stage, "post_mute_pre_widen") == 0) {
+            return DSD_IQ_OK;
+        }
+        set_error(err_buf, err_buf_size,
+                  "replay cannot convert sample_format 'cs16' at capture_stage '%s' (cs16 replays only from "
+                  "'post_mute_pre_widen')",
+                  cfg->capture_stage);
+        return DSD_IQ_ERR_UNSUPPORTED_FMT;
     }
     if (cfg->format == DSD_IQ_FORMAT_CF32) {
         if (strcmp(cfg->capture_stage, "post_driver_cf32_pre_ring") == 0) {
@@ -819,7 +829,7 @@ validate_replay_convertible(const dsd_iq_replay_config* cfg, char* err_buf, size
                   cfg->capture_stage);
         return DSD_IQ_ERR_UNSUPPORTED_FMT;
     }
-    set_error(err_buf, err_buf_size, "replay cannot convert sample_format '%s' (replay accepts cu8 and cf32)",
+    set_error(err_buf, err_buf_size, "replay cannot convert sample_format '%s' (replay accepts cu8, cf32 and cs16)",
               dsd_iq_sample_format_name(cfg->format));
     return DSD_IQ_ERR_UNSUPPORTED_FMT;
 }
