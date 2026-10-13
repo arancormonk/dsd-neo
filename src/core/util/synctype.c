@@ -17,7 +17,7 @@
 /**
  * @brief Base synctype string table.
  *
- * This table covers indices 0-44. Extended M17 types (76-77, 86-87, 98-99)
+ * This table covers indices 0-44. Extended M17 types (76-77, 86-87, 98-101)
  * are handled separately in dsd_synctype_to_string().
  */
 static const char* const SyncTypeStrings[] = {

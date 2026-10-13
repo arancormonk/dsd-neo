@@ -327,9 +327,6 @@ struct dsd_opts {
     int use_hpf;
     int use_pbf;
     int use_hpf_d;
-    int uvquality;
-    int p25_p2_soft_erasure;
-    int p25_p1_soft_voice;
     int floating_point;
     float input_upsample_buf[6];
     dsd_frontend_common_display_opts frontend_display;

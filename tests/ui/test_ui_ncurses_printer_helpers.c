@@ -209,16 +209,6 @@ wattr_off(WINDOW* win, attr_t attrs, void* opts) { // NOLINT(misc-use-internal-l
     return 0;
 }
 
-int
-attron(chtype attrs) { // NOLINT(misc-use-internal-linkage)
-    return wattr_on(stdscr, (attr_t)attrs, NULL);
-}
-
-int
-attroff(chtype attrs) { // NOLINT(misc-use-internal-linkage)
-    return wattr_off(stdscr, (attr_t)attrs, NULL);
-}
-
 static int
 werase(WINDOW* win) { // NOLINT(misc-use-internal-linkage)
     (void)win;
