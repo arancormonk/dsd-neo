@@ -10,20 +10,16 @@
 
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
-#include <dsd-neo/protocol/tetra/tetra_mac.h>
-#include <dsd-neo/protocol/tetra/tetra_messages.h>
 
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 #include "dsd-neo/core/state_fwd.h"
 #include "tetra_calls.h"
@@ -1342,58 +1338,7 @@ tetra_dmo_msg_name(int msg_type) {
     return msg_type >= 0 ? DMO_NAME(k_names, (uint32_t)msg_type) : "reserved";
 }
 
-static int
-dmo_ui_category(int msg_type) {
-    switch (msg_type) {
-        case TETRA_DMO_MSG_SDS_OCCUPIED:
-        case TETRA_DMO_MSG_SDS_UDATA:
-        case TETRA_DMO_MSG_SDS_DATA:
-        case TETRA_DMO_MSG_SDS_ACK: return DSD_TETRA_MESSAGE_SDS;
-        case TETRA_DMO_MSG_TIMING_REQ:
-        case TETRA_DMO_MSG_TIMING_ACK: return DSD_TETRA_MESSAGE_CONTROL;
-        default: return DSD_TETRA_MESSAGE_CALL;
-    }
-}
-
-static void
-dmo_ui_push(dsd_state* state, int category, const char* text) {
-    if (!state || !text || text[0] == '\0') {
-        return;
-    }
-    if (state->tetra_message_sequence > 0u) {
-        const dsd_tetra_message* last =
-            &state->tetra_messages[(state->tetra_message_sequence - 1u) % DSD_TETRA_MESSAGE_CAPACITY];
-        if (strcmp(last->text, text) == 0) {
-            return;
-        }
-    }
-    tetra_message_push(state, (dsd_tetra_message_category)category, text);
-}
-
-void
-tetra_dmo_publish(dsd_state* state, int msg_type, uint32_t src, uint32_t dst, const char* desc) {
-    char line[DSD_TETRA_MESSAGE_TEXT_SIZE];
-    if (desc && desc[0] != '\0') {
-        DSD_SNPRINTF(line, sizeof line, "DMO %s src=%u dst=%u | %s", tetra_dmo_msg_name(msg_type), (unsigned)src,
-                     (unsigned)dst, desc);
-    } else {
-        DSD_SNPRINTF(line, sizeof line, "DMO %s src=%u dst=%u", tetra_dmo_msg_name(msg_type), (unsigned)src,
-                     (unsigned)dst);
-    }
-    dmo_ui_push(state, dmo_ui_category(msg_type), line);
-}
-
-void
-tetra_dmo_publish_presence(dsd_state* state, const char* desc) {
-    char line[DSD_TETRA_MESSAGE_TEXT_SIZE];
-    if (!desc || desc[0] == '\0') {
-        return;
-    }
-    DSD_SNPRINTF(line, sizeof line, "DMO presence | %s", desc);
-    dmo_ui_push(state, DSD_TETRA_MESSAGE_CONTROL, line);
-}
-
-/* Security class name for logs and the mode line. */
+/* Security class name for the logs. */
 static const char*
 dmo_security_name(uint32_t enc) {
     static const char* const k_names[] = {"DM-1", "DM-2-C", "DM-2-A", "DM-2-B"};
@@ -1420,7 +1365,6 @@ dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_opts* opts, dsd
         return;
     }
     (void)tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc));
-    tetra_dmo_publish(state, h.msg_type, h.src, h.dst, desc);
     tetra_calls_dmo_pdu(opts, state, -1, &h);
     if (h.dst_encrypted) {
         DSD_SNPRINTF(dst, sizeof dst, "encrypted");
@@ -1451,49 +1395,4 @@ tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_opts* 
         default: TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] reserved MAC PDU type\n", chan); break;
     }
     return (int)type;
-}
-
-static void
-dmo_mode_dmo(const tetra_state_t* ts, dmo_text* t) {
-    static const char* const k_comm[] = {"DMO direct", "DMO repeater", "DMO gateway", "DMO repeater+gateway"};
-    static const char* const k_channel[] = {"ch A", "ch A freq-eff", "ch B"};
-    dmo_put(t, "%s  %s", DMO_NAME(k_comm, ts->dmo_comm_type), DMO_NAME(k_channel, ts->dmo_ab_usage));
-    switch (ts->dmo_crypt) {
-        case TETRA_DMO_CRYPT_CLEAR: dmo_put(t, "  clear"); break;
-        case TETRA_DMO_CRYPT_AIR: dmo_put(t, "  %s encrypted", dmo_security_name(ts->dmo_security_class)); break;
-        case TETRA_DMO_CRYPT_E2E: dmo_put(t, "  end-to-end encrypted"); break;
-        default: break;
-    }
-    if (ts->dmo_frame != 0u) {
-        dmo_put(t, "  slot %u frame %u", (unsigned)ts->dmo_slot, (unsigned)ts->dmo_frame);
-    }
-}
-
-static void
-dmo_mode_tmo(const dsd_state* state, const tetra_state_t* ts, dmo_text* t) {
-    dmo_put(t, "TMO %s%s", ts->uplink ? "uplink" : "downlink", (ts->uplink && state->tetra_sync.cb) ? " control" : "");
-    if (!ts->net_known) {
-        return;
-    }
-    dmo_put(t, "  MCC=%u MNC=%u CC=0x%02x", (unsigned)ts->mcc, (unsigned)ts->mnc, (unsigned)ts->colour);
-    if (tetra_enc_mode_encrypted(ts->enc_mode)) {
-        const char* ksg = tetra_air_ksg_name(tetra_air_ksg_lookup(state, ts->mcc, ts->mnc));
-        dmo_put(t, "  encrypted%s%s", ksg ? " " : "", ksg ? ksg : "");
-    }
-}
-
-int
-tetra_dmo_format_mode(const dsd_state* state, char* buf, int buf_len) {
-    const tetra_state_t* const ts = tetra_st_peek(state);
-    if (!ts || !buf || buf_len <= 0) {
-        return 0;
-    }
-    dmo_text t = {buf, (size_t)buf_len, 0u};
-    buf[0] = '\0';
-    if (ts->dmo) {
-        dmo_mode_dmo(ts, &t);
-    } else {
-        dmo_mode_tmo(state, ts, &t);
-    }
-    return (int)t.len;
 }

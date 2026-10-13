@@ -37,23 +37,7 @@
 /* Buffer size for a human-readable channel label. Sized to hold a trunk-scan
  * target id (dsd_trunk_scan_target.id[64]) unchanged; a channel-map CSV name is
  * truncated to 63 characters plus the terminator. */
-#define DSD_CHANNEL_LABEL_SIZE      64
-
-/* Recent decoded TETRA messages for the terminal UI. The decoder owns writes;
- * the UI reads the published state snapshot, never the live decoder state. */
-#define DSD_TETRA_MESSAGE_CAPACITY  16
-#define DSD_TETRA_MESSAGE_TEXT_SIZE 144
-
-typedef enum {
-    DSD_TETRA_MESSAGE_CALL = 1,
-    DSD_TETRA_MESSAGE_CONTROL = 2,
-    DSD_TETRA_MESSAGE_SDS = 3,
-} dsd_tetra_message_category;
-
-typedef struct {
-    uint8_t category;
-    char text[DSD_TETRA_MESSAGE_TEXT_SIZE];
-} dsd_tetra_message;
+#define DSD_CHANNEL_LABEL_SIZE 64
 
 /* The TETRA burst capture the frame sync hands to the TETRA decoder (dsd_state::tetra_sync). */
 typedef struct {
@@ -2081,9 +2065,6 @@ struct dsd_state {
      * frame sync and read by the TETRA decoder for the same burst. Decoder-thread private; never published.
      * The rest of the TETRA decoder state lives in its state extension (src/protocol/tetra/tetra_state.h). */
     dsd_tetra_sync_capture tetra_sync;
-
-    uint32_t tetra_message_sequence;
-    dsd_tetra_message tetra_messages[DSD_TETRA_MESSAGE_CAPACITY];
 
     /* 1 from initState() until an engine run starts on this state, which clears it (dsd_engine_run_with_lifecycle()).
      * A state an earlier run used keeps that run's decode-domain stamps, which no rebase reaches, so a run moves the

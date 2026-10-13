@@ -11,11 +11,9 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
-#include <dsd-neo/protocol/tetra/tetra_messages.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -1429,25 +1427,6 @@ sds_publish_tl(tetra_state_t* ts, const sds_tl_header* tl) {
     }
 }
 
-/* "SDS from <ssi>: <text>" for the message list, the text cut at a character boundary to fit. */
-static void
-sds_push_message(dsd_state* state, uint32_t src_ssi, const sds_text* t, int data_bits) {
-    char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
-    if (t->len == 0) {
-        DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: %d bits", src_ssi, data_bits);
-        tetra_message_push(state, DSD_TETRA_MESSAGE_SDS, summary);
-        return;
-    }
-    const int prefix = DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: ", src_ssi);
-    size_t room = prefix > 0 && (size_t)prefix < sizeof summary ? sizeof summary - 1 - (size_t)prefix : 0;
-    size_t n = t->len < room ? t->len : room;
-    while (n > 0 && n < t->len && ((unsigned char)t->text[n] & 0xC0u) == 0x80u) {
-        n--; /* back off a UTF-8 continuation byte */
-    }
-    DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: %.*s", src_ssi, (int)n, t->text);
-    tetra_message_push(state, DSD_TETRA_MESSAGE_SDS, summary);
-}
-
 /* A data notice for the event history (tetra_calls_notice()): who sent the message to whom, its text as the notice's
  * message, or what it held when it had no text. */
 static void
@@ -1490,7 +1469,6 @@ sds_publish(const mle_ctx* ctx, const sds_pdu* pdu, const sds_message* msg) {
         ts->sds_short_data = msg->short_data;
         ts->sds_short_src = pdu->calling.ssi;
     }
-    sds_push_message(ctx->state, pdu->calling.ssi, &msg->text, pdu->data_bits);
     sds_notice(ctx, pdu, msg);
 }
 

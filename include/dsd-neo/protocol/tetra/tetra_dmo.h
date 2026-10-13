@@ -267,15 +267,6 @@ tetra_dmo_crypt_e tetra_dmo_call_crypt(const dsd_state* state);
  * `kind` names the logical channel; `opts` may be NULL. Returns the MAC PDU type (0..3) or -1. */
 int tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_opts* opts, dsd_state* state);
 
-/* Queue one line for the -N terminal. A repeat of the previous line is dropped so a call that retransmits the same
- * DMAC-SYNC does not fill the display. */
-void tetra_dmo_publish(dsd_state* state, int msg_type, uint32_t src, uint32_t dst, const char* desc);
-void tetra_dmo_publish_presence(dsd_state* state, const char* desc);
-
-/* Working mode for the -N terminal: "TMO downlink", "TMO uplink", or "DMO direct|repeater|gateway" with channel and
- * protection. Returns the length written, at most buf_len - 1. */
-int tetra_dmo_format_mode(const dsd_state* state, char* buf, int buf_len);
-
 #ifdef __cplusplus
 }
 #endif

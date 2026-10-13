@@ -3486,25 +3486,6 @@ ui_format_tetra_lines(const dsd_opts* opts, const dsd_state* state, ui_tetra_lin
     return lines->count;
 }
 
-/* The decoder's recent messages under the TETRA rows, newest first, while there is room above the screen's last rows.
-   The view makes radio text safe to print (no control characters, cut on a character boundary at the line's width).
-   Per-frame diagnostics stay on stderr; rendering them here would flood the screen. */
-static void
-ui_render_tetra_messages(const dsd_state* state) {
-    const int width = getmaxx(stdscr) - 3;
-    if (state->tetra_message_sequence == 0U || width < 8 || getcury(stdscr) >= getmaxy(stdscr) - 3) {
-        return;
-    }
-    printw("| TETRA messages\n");
-    char text[DSD_APP_TETRA_MESSAGE_SIZE];
-    for (unsigned back = 0U; back < 4U && getcury(stdscr) < getmaxy(stdscr) - 3; ++back) {
-        if (dsd_app_tetra_message(state, back, ui_tetra_view_flags(), (size_t)width, text, sizeof text) != 1) {
-            break;
-        }
-        printw("| %s\n", text);
-    }
-}
-
 static void
 ui_render_call_info_tetra(const dsd_opts* opts, const dsd_state* state) {
     ui_tetra_lines lines;
@@ -3518,7 +3499,6 @@ ui_render_call_info_tetra(const dsd_opts* opts, const dsd_state* state) {
         ui_restore_call_info_color(state);
         printw("\n");
     }
-    ui_render_tetra_messages(state);
 }
 
 /* The received sub-audible tone or code (issues #522, #523) without its newline: the shared

@@ -576,7 +576,6 @@ tetra_dmo_log_sync(dsd_opts* opts, const tetra_state_t* ts, const tetra_dmo_sync
     if (h_ok && h->has_addrs) {
         char desc[160];
         (void)tetra_dmo_describe_elems(h, desc, (int)sizeof(desc));
-        tetra_dmo_publish(state, h->msg_type, h->src, h->dst, desc);
         DSD_SNPRINTF(line + n, sizeof(line) - (size_t)n, " | %s src=%u dst=%u MNI=%u/%u cd=%u%s%s%s",
                      tetra_dmo_msg_name(h->msg_type), h->src, h->dst, (h->mni >> 14) & 0x3FFu, h->mni & 0x3FFFu,
                      h->frame_countdown, ts->dmo_dcc_valid ? " dcc=ok" : "", desc[0] ? " | " : "", desc);
@@ -594,7 +593,6 @@ tetra_dmo_presence(dsd_state* state, tetra_dmo_sync_s_t* s, const uint8_t* sch_s
         char desc[120];
         tetra_dmo_apply_sync(state, s, NULL);
         (void)tetra_dmo_describe_presence(&pres, desc, (int)sizeof(desc));
-        tetra_dmo_publish_presence(state, desc);
         DSD_FPRINTF(stderr, "[TETRA DMO PRES] sys=%u slot=%u frame=%u | %s\n", s->system_code, s->slot, s->frame, desc);
     } else {
         tetra_st(state)->dmo = 1;

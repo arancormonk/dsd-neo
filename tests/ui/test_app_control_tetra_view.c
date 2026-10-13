@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * The TETRA rows every frontend shows (app_control/tetra_view.h), read from a snapshot of the decoder's publication,
- * and the decoder's recent messages made safe for a terminal.
+ * The TETRA rows every frontend shows (app_control/tetra_view.h), read from a snapshot of the decoder's publication.
  */
 
 #include <assert.h>
@@ -37,14 +36,6 @@ fixture_close(fixture* f) {
     dsd_state_ext_free_all(f->state);
     free(f->state);
     free(f->opts);
-}
-
-static void
-push_message(dsd_state* state, const char* text) {
-    dsd_tetra_message* const item = &state->tetra_messages[state->tetra_message_sequence % DSD_TETRA_MESSAGE_CAPACITY];
-    item->category = DSD_TETRA_MESSAGE_SDS;
-    DSD_SNPRINTF(item->text, sizeof item->text, "%s", text);
-    state->tetra_message_sequence++;
 }
 
 /* Hidden without arguments, outside the TETRA preset, and until a block has decoded (mode NONE). */
@@ -261,68 +252,6 @@ test_publication_reset(void) {
     dsd_tetra_publication_reset(NULL);
 }
 
-/* Newest first; nothing past what the ring holds; controls (C0 and C1) become spaces, invalid UTF-8 U+FFFD, and the
-   cut is on a character boundary. */
-static void
-test_messages(void) {
-    fixture f = fixture_open();
-    char out[DSD_APP_TETRA_MESSAGE_SIZE];
-    assert(dsd_app_tetra_message(NULL, 0U, 0U, 0U, out, sizeof out) == -1);
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, NULL, sizeof out) == -1);
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, out, 0U) == -1);
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, out, sizeof out) == 0 && out[0] == '\0');
-
-    push_message(f.state, "first");
-    push_message(f.state, "a\tb\nc\x1B[2J\x7F"
-                          "d\xC2\x85"
-                          "e\xC2\x9F"
-                          "f\xC2\xA0g");
-    assert(dsd_app_tetra_message(f.state, 1U, 0U, 0U, out, sizeof out) == 1 && strcmp(out, "first") == 0);
-    assert(dsd_app_tetra_message(f.state, 2U, 0U, 0U, out, sizeof out) == 0);
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, out, sizeof out) == 1);
-    assert(strcmp(out, "a b c [2J d e f\xC2\xA0g") == 0); /* U+00A0 is not a control */
-
-    /* Invalid sequences: a stray continuation byte, an overlong '/', a surrogate, a value past U+10FFFF, a cut-short
-       sequence and a lead byte that starts nothing. Each bad byte reads as one U+FFFD. */
-    push_message(f.state, "\x80|\xC0\xAF|\xED\xA0\x80|\xF4\x90\x80\x80|\xE2\x82|\xFE");
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, out, sizeof out) == 1);
-    assert(strcmp(out, "\xEF\xBF\xBD|\xEF\xBF\xBD\xEF\xBF\xBD|\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD|"
-                       "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD|\xEF\xBF\xBD\xEF\xBF\xBD|\xEF\xBF\xBD")
-           == 0);
-    assert(dsd_app_tetra_message(f.state, 0U, DSD_APP_TETRA_ASCII, 0U, out, sizeof out) == 1);
-    assert(strcmp(out, "?|??|???|????|??|?") == 0);
-
-    /* Valid multi-byte text is kept whole, and a cut never splits it: by columns, or where the buffer ends. */
-    push_message(f.state, "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x93\xA1!");
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, out, sizeof out) == 1);
-    assert(strcmp(out, "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x93\xA1!") == 0);
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 4U, out, sizeof out) == 1 && strcmp(out, "caf\xC3\xA9") == 0);
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, out, 5U) == 1 && strcmp(out, "caf") == 0);
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, out, 9U) == 1 && strcmp(out, "caf\xC3\xA9 ") == 0);
-    assert(dsd_app_tetra_message(f.state, 0U, DSD_APP_TETRA_ASCII, 0U, out, sizeof out) == 1);
-    assert(strcmp(out, "caf? ? ?!") == 0);
-
-    /* The ring wraps: only its capacity is held, the oldest overwritten. */
-    for (unsigned i = 0; i < DSD_TETRA_MESSAGE_CAPACITY; i++) {
-        char text[16];
-        DSD_SNPRINTF(text, sizeof text, "m%u", i);
-        push_message(f.state, text);
-    }
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, out, sizeof out) == 1);
-    assert(strcmp(out, "m15") == 0);
-    assert(dsd_app_tetra_message(f.state, DSD_TETRA_MESSAGE_CAPACITY - 1U, 0U, 0U, out, sizeof out) == 1);
-    assert(strcmp(out, "m0") == 0);
-    assert(dsd_app_tetra_message(f.state, DSD_TETRA_MESSAGE_CAPACITY, 0U, 0U, out, sizeof out) == 0);
-
-    /* A slot that lost its terminator is read only as far as the slot goes. */
-    dsd_tetra_message* const last =
-        &f.state->tetra_messages[(f.state->tetra_message_sequence - 1U) % DSD_TETRA_MESSAGE_CAPACITY];
-    DSD_MEMSET(last->text, 'x', sizeof last->text);
-    assert(dsd_app_tetra_message(f.state, 0U, 0U, 0U, out, sizeof out) == 1);
-    assert(strlen(out) == sizeof last->text);
-    fixture_close(&f);
-}
-
 int
 main(void) {
     test_visibility();
@@ -331,6 +260,5 @@ main(void) {
     test_channels();
     test_mm_status_and_codec();
     test_publication_reset();
-    test_messages();
     return 0;
 }

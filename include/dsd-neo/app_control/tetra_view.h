@@ -6,8 +6,8 @@
  *
  * The TETRA decoder publishes what the frontends show in dsd_state::tetra_pub (core/tetra_publication.h). This view
  * turns a snapshot of it into the rows every surface shows -- the terminal's Call Info lines and the Qt/Android
- * monitor -- so they cannot drift on when the rows appear or how a value is spelled. It also reads the decoder's
- * recent-message ring for the terminal, made safe to print: radio text arrives there as it was sent.
+ * monitor -- so they cannot drift on when the rows appear or how a value is spelled. Calls, short data and status
+ * messages reach the frontends as canonical calls and event history notices, like every protocol's.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_TETRA_VIEW_H_
@@ -15,7 +15,6 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -25,14 +24,9 @@ extern "C" {
 /** @brief Room for any one text this view writes, terminator included. */
 enum { DSD_APP_TETRA_TEXT_SIZE = 80 };
 
-/** @brief Room for one recent message as dsd_app_tetra_message() writes it, terminator included: the ring's text, of
- * which every byte that is not valid UTF-8 can become a three-byte U+FFFD. */
-enum { DSD_APP_TETRA_MESSAGE_SIZE = 432 };
-
-/** @brief Flags for dsd_app_tetra_view() and dsd_app_tetra_message(). */
+/** @brief Flags for dsd_app_tetra_view(). */
 enum {
-    /** Write ASCII only, for a terminal without UTF-8: " - " between the parts of a row instead of " · ", and '?' for
-        every character of radio text outside ASCII. */
+    /** Write ASCII only, for a terminal without UTF-8: " - " between the parts of a row instead of " · ". */
     DSD_APP_TETRA_ASCII = 1u,
 };
 
@@ -79,21 +73,6 @@ typedef struct {
  * @return 1 when the rows should be shown, 0 when not, and -1 for a NULL @p opts, @p state or @p out.
  */
 int dsd_app_tetra_view(const dsd_opts* opts, const dsd_state* state, unsigned flags, dsd_app_tetra* out);
-
-/**
- * @brief Write one of the decoder's recent messages, safe to print on a terminal.
- *
- * @p back counts from the newest message (0). The text is read as UTF-8: a byte that does not start or continue a
- * valid sequence becomes U+FFFD, and every C0 or C1 control (core/utf16.h dsd_unicode_scalar_is_control()), a
- * newline or an escape included, becomes a space, so no off-air text reaches the terminal as a control sequence. It
- * is cut at a character boundary after @p max_columns characters (0 = no limit) or where @p out is full. With
- * DSD_APP_TETRA_ASCII, every character outside ASCII becomes '?'.
- *
- * @return 1 when a message was written, 0 when the ring holds no such message (@p out is then ""), -1 for a NULL
- *         @p state or @p out or a zero @p out_size.
- */
-int dsd_app_tetra_message(const dsd_state* state, unsigned back, unsigned flags, size_t max_columns, char* out,
-                          size_t out_size);
 
 #ifdef __cplusplus
 }

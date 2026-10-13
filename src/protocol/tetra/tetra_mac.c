@@ -17,7 +17,6 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
-#include <dsd-neo/protocol/tetra/tetra_messages.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <stdint.h>
@@ -664,12 +663,6 @@ static const uint8_t k_sysinfo_bits[SI_FIELDS] = {12, 4, 2, 3, 1, 2, 3, 4, 4, 4,
 static void
 apply_sysinfo(const mac_block* b, const uint32_t* v, int mle_present) {
     tetra_state_t* const ts = b->ts;
-    if (ts->frames_sysinfo == 1u || ts->sysinfo_main_carrier != v[SI_MAIN_CARRIER]) {
-        char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
-        DSD_SNPRINTF(summary, sizeof summary, "SYSINFO CC=%d carrier=%u band=%u", b->cc, (unsigned)v[SI_MAIN_CARRIER],
-                     (unsigned)v[SI_BAND]);
-        tetra_message_push(b->state, DSD_TETRA_MESSAGE_CONTROL, summary);
-    }
     const long dl_hz = carrier_frequency_hz(v[SI_MAIN_CARRIER], v[SI_BAND], v[SI_OFFSET]);
     if (dl_hz > 0L) {
         ts->dl_carrier_hz = dl_hz;

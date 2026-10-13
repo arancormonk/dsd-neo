@@ -2341,8 +2341,7 @@ test_sds_sender_stays_with_text(void) {
     return ok;
 }
 
-/* C0 and C1 controls in SDS text (U+009B is CSI to a UTF-8 terminal) become spaces in every text coding scheme, and
- * the message list gets the same safe text. */
+/* C0 and C1 controls in SDS text (U+009B is CSI to a UTF-8 terminal) become spaces in every text coding scheme. */
 static int
 test_sds_control_characters(void) {
     uint8_t bits[200];
@@ -2359,9 +2358,6 @@ test_sds_control_characters(void) {
     put(&w, 0, 1);
     tetra_mle_dispatch(bits, w.pos, 1, opts, state);
     int ok = strcmp(tetra_st(state)->sds_text, "A B C D") == 0;
-    const dsd_tetra_message* last =
-        &state->tetra_messages[(state->tetra_message_sequence - 1u) % DSD_TETRA_MESSAGE_CAPACITY];
-    ok = ok && strcmp(last->text, "SDS from 7: A B C D") == 0;
 
     w = sds_writer(bits, sizeof bits, 7, 16 + 6 * 8);
     put(&w, 2, 8);
@@ -2418,10 +2414,9 @@ test_sds_unpaired_surrogates(void) {
     return ok;
 }
 
-/* The message list entry is cut at a character boundary, never inside a UTF-8 sequence: with a 7-digit SSI the
- * 18-byte prefix leaves an odd number of bytes for two-byte characters. */
+/* Long Latin-1 text is cut at a character boundary, never inside a UTF-8 sequence. */
 static int
-test_sds_message_summary_utf8_boundary(void) {
+test_sds_long_text_utf8_boundary(void) {
     uint8_t bits[2048];
     dsd_state* state = alloc_state();
     dsd_opts* opts = alloc_opts();
@@ -2433,11 +2428,8 @@ test_sds_message_summary_utf8_boundary(void) {
     }
     put(&w, 0, 1);
     tetra_mle_dispatch(bits, w.pos, 1, opts, state);
-    const dsd_tetra_message* last =
-        &state->tetra_messages[(state->tetra_message_sequence - 1u) % DSD_TETRA_MESSAGE_CAPACITY];
     int ok = tetra_st(state)->sds_text_len == 254 && text_is_safe_utf8(tetra_st(state)->sds_text)
-             && strncmp(last->text, "SDS from 1234567: \xc3\xa9", 20) == 0 && text_is_safe_utf8(last->text)
-             && strlen(last->text) == 18 + 124;
+             && strncmp(tetra_st(state)->sds_text, "\xc3\xa9\xc3\xa9", 4) == 0;
     free_state(state);
     free(opts);
     return ok;
@@ -2519,8 +2511,7 @@ test_sds_truncated_concat_control(void) {
     put(&w, 0, 8);
     put(&w, 0, 1);
     tetra_mle_dispatch(bits, w.pos, 6, opts, state);
-    int ok = tetra_st(state)->sds_last_cc == 0 && tetra_st(state)->sds_src == 0 && !tetra_st(state)->sds_concat_valid
-             && state->tetra_message_sequence == 0;
+    int ok = tetra_st(state)->sds_last_cc == 0 && tetra_st(state)->sds_src == 0 && !tetra_st(state)->sds_concat_valid;
     free_state(state);
     free(opts);
     return ok;
@@ -2575,7 +2566,7 @@ main(void) {
     RUN(test_sds_sender_stays_with_text);
     RUN(test_sds_control_characters);
     RUN(test_sds_unpaired_surrogates);
-    RUN(test_sds_message_summary_utf8_boundary);
+    RUN(test_sds_long_text_utf8_boundary);
     RUN(test_sds_concat_is_per_session);
     RUN(test_sds_concat_timeout);
     RUN(test_sds_truncated_concat_control);

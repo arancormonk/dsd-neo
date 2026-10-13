@@ -3327,15 +3327,6 @@ tetra_publish_control_channel(dsd_state* state) {
     pub->cc_freq_hz = 392012500U;
 }
 
-/* Append one message to the decoder's ring as the decoder would, its text as it arrived off the air. */
-static void
-tetra_ring_push(dsd_state* state, const char* text) {
-    dsd_tetra_message* const item = &state->tetra_messages[state->tetra_message_sequence % DSD_TETRA_MESSAGE_CAPACITY];
-    item->category = DSD_TETRA_MESSAGE_SDS;
-    DSD_SNPRINTF(item->text, sizeof item->text, "%s", text);
-    state->tetra_message_sequence++;
-}
-
 /* The TETRA rows come from the shared view, from the snapshot alone: no protocol call, no environment. They show only
    while the TETRA preset runs and the publication holds a working mode, and a terminal without UTF-8 gets ASCII. */
 static void
@@ -3376,7 +3367,6 @@ test_tetra_rows_follow_the_view(void) {
     reset_printw_capture();
     ui_render_call_info_tetra(opts, state);
     assert_capture_starts_with("| TETRA: TMO downlink - clear\n| Network: ");
-    assert(strstr(g_printw_capture, "TETRA messages") == NULL); /* an empty ring prints no heading */
 
     state->tetra_pub.mode = DSD_TETRA_MODE_NONE; /* reset: nothing decoded yet */
     assert(ui_format_tetra_lines(opts, state, &lines) == 0);
@@ -3390,49 +3380,9 @@ test_tetra_rows_follow_the_view(void) {
     free(opts);
 }
 
-/* Radio text in the ring reaches the terminal without its control characters (C0 and C1 alike: U+009B is CSI to a
-   UTF-8 terminal), cut on a character boundary at the line's width, and as ASCII without UTF-8. Every message shows:
-   there is no category filter. */
-static void
-test_tetra_messages_are_printable(void) {
-    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
-    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
-    assert(opts != NULL && state != NULL);
-    opts->frame_tetra = 1;
-    tetra_publish_control_channel(state);
-    tetra_ring_push(state, "SYSINFO carrier=321");
-    tetra_ring_push(state, "SDS \x1B[31mred\xC2\x9B"
-                           "2J caf\xC3\xA9 \xFF!");
-
-    g_unicode_stub = 1;
-    reset_printw_capture();
-    ui_render_call_info_tetra(opts, state);
-    assert_capture_contains("| TETRA messages\n| SDS  [31mred 2J caf\xC3\xA9 \xEF\xBF\xBD!\n| SYSINFO carrier=321\n");
-    assert(strchr(g_printw_capture, 0x1B) == NULL);
-    assert(strstr(g_printw_capture, "\xC2\x9B") == NULL);
-
-    g_unicode_stub = 0;
-    reset_printw_capture();
-    ui_render_call_info_tetra(opts, state);
-    assert_capture_contains("| SDS  [31mred 2J caf? ?!\n");
-
-    /* Narrow: the cut lands after a whole character, never inside the two bytes of the e-acute. */
-    g_unicode_stub = 1;
-    g_stub_max_x = 3 + 20;
-    reset_printw_capture();
-    ui_render_call_info_tetra(opts, state);
-    assert_capture_contains("| SDS  [31mred 2J caf\xC3\xA9\n");
-    g_stub_max_x = 80;
-
-    dsd_state_ext_free_all(state);
-    free(state);
-    free(opts);
-}
-
 int
 main(void) {
     test_tetra_rows_follow_the_view();
-    test_tetra_messages_are_printable();
     test_voice_average_units();
     test_source_alias_rendering();
     test_input_source_helpers();

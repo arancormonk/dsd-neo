@@ -162,15 +162,6 @@ assert_cc_candidates(const dsd_state* snap) {
     assert(cc->used == 3U);
 }
 
-/* Append one message to the TETRA decoder's ring as the decoder would. */
-static void
-tetra_ring_push(dsd_state* state, dsd_tetra_message_category category, const char* text) {
-    dsd_tetra_message* const item = &state->tetra_messages[state->tetra_message_sequence % DSD_TETRA_MESSAGE_CAPACITY];
-    item->category = (uint8_t)category;
-    DSD_SNPRINTF(item->text, sizeof item->text, "%s", text);
-    state->tetra_message_sequence++;
-}
-
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -275,7 +266,6 @@ main(void) {
     mark_history(&history[1]);
 
     dsd_app_snapshot_test_reset_event_history_copy_counts();
-    tetra_ring_push(state, DSD_TETRA_MESSAGE_SDS, "first SDS");
     /* The TETRA publication reaches the frontends with the snapshot, not with the live state. */
     state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
     state->tetra_pub.net_known = 1U;
@@ -283,7 +273,6 @@ main(void) {
     state->tetra_pub.traffic_slots = 0x0AU;
     state->tetra_pub.codec_frames = 18U;
     dsd_app_telemetry_publish_snapshot(state);
-    tetra_ring_push(state, DSD_TETRA_MESSAGE_CALL, "later call");
     state->tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
     state->tetra_pub.mcc = 1U;
     state->tetra_pub.codec_frames = 99U;
@@ -305,8 +294,6 @@ main(void) {
     assert(dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0);
 
     const dsd_state* snap = dsd_app_get_latest_snapshot();
-    assert(snap->tetra_message_sequence == 1);
-    assert(strcmp(snap->tetra_messages[0].text, "first SDS") == 0);
     assert(snap->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK && snap->tetra_pub.net_known == 1U);
     assert(snap->tetra_pub.mcc == 262U && snap->tetra_pub.traffic_slots == 0x0AU
            && snap->tetra_pub.codec_frames == 18U);
@@ -333,7 +320,7 @@ main(void) {
     // Repeated publications with unchanged revisions do not copy either history slot.
     dsd_app_snapshot_test_reset_event_history_copy_counts();
     dsd_app_telemetry_publish_snapshot(state);
-    assert(dsd_app_get_latest_snapshot()->tetra_message_sequence == 2);
+    assert(dsd_app_get_latest_snapshot()->tetra_pub.mode == DSD_TETRA_MODE_DMO_DIRECT);
     assert_slot_tail(dsd_app_get_latest_snapshot(), 123U, 456U);
     assert_history_copy_counts(0U, 0U, 0U, 0U);
 

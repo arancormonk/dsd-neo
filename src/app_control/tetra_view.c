@@ -9,13 +9,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/tetra_publication.h>
-#include <dsd-neo/core/utf16.h>
 #include <stddef.h>
 #include <stdint.h>
-
-/* The ring holds DSD_TETRA_MESSAGE_TEXT_SIZE - 1 bytes of text; each can become a three-byte U+FFFD. */
-_Static_assert((int)DSD_APP_TETRA_MESSAGE_SIZE >= 3 * ((int)DSD_TETRA_MESSAGE_TEXT_SIZE - 1) + 1,
-               "a recent message fits dsd_app_tetra_message()'s buffer whatever it holds");
 
 /* What goes between the parts of a row: a middle dot (U+00B7), as the Qt monitor joins its readings, or a hyphen on a
    terminal without UTF-8. */
@@ -216,86 +211,5 @@ dsd_app_tetra_view(const dsd_opts* opts, const dsd_state* state, unsigned flags,
     tetra_view_fill_channels(out, opts, pub, flags);
     tetra_view_fill_mm_status(out, pub, flags);
     tetra_view_fill_codec(out, pub, flags);
-    return 1;
-}
-
-/* One UTF-8 sequence at @p s, of which @p avail bytes may be read: its scalar value and length, or U+FFFD and 1 for a
-   byte that does not start a valid sequence (a stray continuation byte, an overlong form, a surrogate, a value past
-   U+10FFFF, or a sequence cut short by the end of the text). */
-static size_t
-tetra_view_utf8_next(const unsigned char* s, size_t avail, uint32_t* scalar) {
-    static const uint32_t min_value[5] = {0U, 0U, 0x80U, 0x800U, 0x10000U};
-    const unsigned char lead = s[0];
-    size_t len = 4U;
-    if (lead < 0x80U) {
-        *scalar = lead;
-        return 1U;
-    }
-    if ((lead & 0xE0U) == 0xC0U) {
-        len = 2U;
-    } else if ((lead & 0xF0U) == 0xE0U) {
-        len = 3U;
-    } else if ((lead & 0xF8U) != 0xF0U) {
-        len = 0U;
-    }
-    *scalar = DSD_UNICODE_REPLACEMENT;
-    if (len == 0U || len > avail) {
-        return 1U;
-    }
-    uint32_t value = lead & (0x7FU >> len);
-    for (size_t i = 1U; i < len; ++i) {
-        if ((s[i] & 0xC0U) != 0x80U) {
-            return 1U;
-        }
-        value = (value << 6) | (uint32_t)(s[i] & 0x3FU);
-    }
-    if (value < min_value[len] || value > 0x10FFFFU || (value >= 0xD800U && value <= 0xDFFFU)) {
-        return 1U;
-    }
-    *scalar = value;
-    return len;
-}
-
-/* Copy @p in (at most @p in_size bytes, up to its terminator) to @p out as printable text: controls become a space,
-   invalid UTF-8 U+FFFD, and with DSD_APP_TETRA_ASCII everything outside ASCII '?'. Cut at a character boundary. */
-static void
-tetra_view_printable(const char* in, size_t in_size, unsigned flags, size_t max_columns, char* out, size_t out_size) {
-    size_t used = 0U;
-    size_t columns = 0U;
-    size_t i = 0U;
-    while (i < in_size && in[i] != '\0' && (max_columns == 0U || columns < max_columns)) {
-        uint32_t scalar = 0U;
-        i += tetra_view_utf8_next((const unsigned char*)in + i, in_size - i, &scalar);
-        if (dsd_unicode_scalar_is_control(scalar)) {
-            scalar = ' ';
-        } else if ((flags & DSD_APP_TETRA_ASCII) != 0U && scalar >= 0x80U) {
-            scalar = '?';
-        }
-        char utf8[DSD_UTF8_MAX_BYTES + 1];
-        const size_t n = dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8);
-        if (n == 0U || used + n >= out_size) {
-            break;
-        }
-        DSD_MEMCPY(out + used, utf8, n);
-        used += n;
-        columns++;
-    }
-    out[used] = '\0';
-}
-
-int
-dsd_app_tetra_message(const dsd_state* state, unsigned back, unsigned flags, size_t max_columns, char* out,
-                      size_t out_size) {
-    if (!state || !out || out_size == 0U) {
-        return -1;
-    }
-    out[0] = '\0';
-    const uint32_t sequence = state->tetra_message_sequence;
-    const uint32_t held = sequence < DSD_TETRA_MESSAGE_CAPACITY ? sequence : DSD_TETRA_MESSAGE_CAPACITY;
-    if (back >= held) {
-        return 0;
-    }
-    const dsd_tetra_message* const item = &state->tetra_messages[(sequence - 1U - back) % DSD_TETRA_MESSAGE_CAPACITY];
-    tetra_view_printable(item->text, sizeof item->text, flags, max_columns, out, out_size);
     return 1;
 }

@@ -11110,7 +11110,6 @@ set(_dsd_tetra_test_sources
     d_tx_granted_chan
     depuncture_regression
     mac_state
-    messages
     mle_cmce
     mm_dispatch
     rcpc_map
@@ -11178,8 +11177,7 @@ unset(_dsd_tetra_test)
 unset(_dsd_tetra_test_name)
 unset(_dsd_tetra_test_sources)
 
-# The TETRA rows every frontend shows, read from a snapshot of the decoder's publication, and the decoder's recent
-# messages made safe for the terminal.
+# The TETRA rows every frontend shows, read from a snapshot of the decoder's publication.
 add_executable(
     dsd-neo_test_app_control_tetra_view
     ui/test_app_control_tetra_view.c

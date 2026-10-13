@@ -199,11 +199,6 @@ test_sysinfo(void) {
     ok &= check(ts->hyperframe_valid && ts->hyperframe == 0x1234 && !ts->cck_valid, "SYSINFO hyperframe number");
     ok &= check(state->trunk_cc_freq == 401243750L && ts->dl_carrier_hz == 401243750L && ts->freq_band == 4,
                 "SYSINFO main carrier becomes the control channel");
-    ok &= check(state->tetra_message_sequence == 1 && state->tetra_messages[0].category == DSD_TETRA_MESSAGE_CONTROL
-                    && strstr(state->tetra_messages[0].text, "SYSINFO") != NULL,
-                "SYSINFO terminal summary");
-    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-    ok &= check(state->tetra_message_sequence == 1, "a repeated SYSINFO adds no summary");
     free_state(state);
     free(opts);
     return ok;

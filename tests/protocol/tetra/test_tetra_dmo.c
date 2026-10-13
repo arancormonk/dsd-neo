@@ -7,6 +7,8 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
@@ -307,7 +309,6 @@ test_repeater_presence(void) {
     tetra_dmo_sync_s_t s;
     tetra_dmo_pres_t pres;
     char desc[128];
-    char mode[96];
     dsd_state* st = new_state();
 
     printf("[DM-REP presence signal]\n");
@@ -323,8 +324,9 @@ test_repeater_presence(void) {
     tetra_dmo_apply_sync(st, &s, NULL);
     CHECK(tetra_st(st)->dmo_ab_usage == 0 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR,
           "presence signal does not set channel B-style usage or encryption");
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "DMO repeater  ch A") != NULL
-              && strstr(mode, "encrypted") == NULL,
+    tetra_st(st)->decode_ok = 1;
+    tetra_publish(st);
+    CHECK(st->tetra_pub.mode == DSD_TETRA_MODE_DMO_REPEATER && st->tetra_pub.air_encryption == DSD_TETRA_AIR_ENC_CLEAR,
           "working mode after a presence signal");
     CHECK(tetra_st(st)->dmo_dcc_valid == 1 && tetra_st(st)->dmo_dcc_seed == 0xE4000193u,
           "presence signal does not replace the call colour code");
@@ -765,13 +767,6 @@ test_short_data(void) {
     CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) > 0 && strstr(desc, "status=0x1234") != NULL
               && strstr(desc, "ext=*123") != NULL && strstr(desc, "fcs=0xa1b2c3d4") != NULL,
           "DM-SDS summary");
-    st->tetra_message_sequence = 0;
-    tetra_dmo_publish(st, h.msg_type, h.src, h.dst, desc);
-    tetra_dmo_publish(st, h.msg_type, h.src, h.dst, desc);
-    CHECK(st->tetra_message_sequence == 1 && st->tetra_messages[0].category == DSD_TETRA_MESSAGE_SDS
-              && strstr(st->tetra_messages[0].text, "status=0x1234") != NULL
-              && strstr(st->tetra_messages[0].text, "ext=*123") != NULL,
-          "DM-SDS is queued once for the terminal");
     tetra_dmo_apply_sync(st, &s, &h);
     CHECK(tetra_st(st)->dmo_dcc_valid == 1 && tetra_st(st)->dmo_dcc_seed == 0xE4000193u,
           "unfragmented DM-SDS UDATA keeps the colour code");
@@ -905,64 +900,12 @@ test_dmac_data(void) {
 }
 
 static void
-test_names_and_mode(void) {
-    char mode[96];
-    dsd_state* st = new_state();
-
-    printf("[names and working mode]\n");
+test_message_names(void) {
+    printf("[message names]\n");
     CHECK(strcmp(tetra_dmo_msg_name(TETRA_DMO_MSG_GATEWAY), "GATEWAY-SPECIFIC") == 0, "gateway message name");
     CHECK(strcmp(tetra_dmo_msg_name(4), "reserved") == 0 && strcmp(tetra_dmo_msg_name(30), "proprietary") == 0
               && strcmp(tetra_dmo_msg_name(-1), "reserved") == 0 && strcmp(tetra_dmo_msg_name(99), "reserved") == 0,
           "reserved and proprietary message names");
-
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strcmp(mode, "TMO downlink") == 0,
-          "default working mode is TMO downlink");
-    tetra_st(st)->net_known = 1;
-    tetra_st(st)->mcc = 86;
-    tetra_st(st)->mnc = 28;
-    tetra_st(st)->colour = 0x19;
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "TMO downlink") != NULL
-              && strstr(mode, "MCC=86") != NULL && strstr(mode, "CC=0x19") != NULL,
-          "TMO downlink names the network");
-    tetra_air_ksg_remember(st, 86, 28, 1);
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "TEA") == NULL
-              && strstr(mode, "encrypted") == NULL,
-          "a known KSG is not shown while the call is clear");
-    tetra_st(st)->enc_mode = TETRA_ENC_MODE_EVEN;
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "encrypted TEA2") != NULL,
-          "encrypted trunked call names the network KSG");
-    tetra_st(st)->mnc = 29;
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "encrypted") != NULL
-              && strstr(mode, "TEA") == NULL,
-          "encrypted trunked call without a KSG stays unnamed");
-    tetra_st(st)->enc_mode = 0;
-    tetra_st(st)->uplink = 1;
-    st->tetra_sync.cb = 1;
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "TMO uplink control") != NULL,
-          "TMO uplink control working mode");
-    CHECK(tetra_dmo_format_mode(st, mode, 6) == 5 && strcmp(mode, "TMO u") == 0, "working mode is truncated safely");
-    CHECK(tetra_dmo_format_mode(st, mode, 1) == 0 && mode[0] == '\0', "one-byte buffer holds an empty line");
-    CHECK(tetra_dmo_format_mode(st, NULL, 10) == 0 && tetra_dmo_format_mode(NULL, mode, 10) == 0,
-          "no buffer, no state");
-
-    tetra_st(st)->dmo = 1;
-    tetra_st(st)->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
-    tetra_st(st)->dmo_slot = 1;
-    tetra_st(st)->dmo_frame = 3;
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "DMO direct  ch A  clear") != NULL
-              && strstr(mode, "slot 1 frame 3") != NULL && strstr(mode, "TEA") == NULL,
-          "DMO direct working mode");
-    tetra_st(st)->dmo_comm_type = 2;
-    tetra_st(st)->dmo_ab_usage = 2;
-    tetra_st(st)->dmo_crypt = TETRA_DMO_CRYPT_AIR;
-    tetra_st(st)->dmo_security_class = TETRA_DMO_AIE_DM2C;
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "DMO gateway  ch B") != NULL
-              && strstr(mode, "DM-2-C encrypted") != NULL,
-          "DMO gateway working mode");
-    tetra_st(st)->dmo_crypt = TETRA_DMO_CRYPT_E2E;
-    CHECK(tetra_dmo_format_mode(st, mode, (int)sizeof(mode)) > 0 && strstr(mode, "end-to-end encrypted") != NULL,
-          "DMO end-to-end encrypted working mode");
-    free_state(st);
 }
 
 int
@@ -976,7 +919,7 @@ main(void) {
     test_gateway_messages();
     test_short_data();
     test_dmac_data();
-    test_names_and_mode();
+    test_message_names();
     printf("%s\n", g_fail ? "FAILED" : "ALL TESTS PASSED");
     return g_fail ? 1 : 0;
 }
