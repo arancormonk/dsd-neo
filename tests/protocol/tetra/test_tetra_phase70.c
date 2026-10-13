@@ -74,16 +74,6 @@ wrap_mle_cmce(const uint8_t* cmce_body, int cmce_nbits, uint8_t* out, int* out_n
     *out_nbits = total;
 }
 
-/* Wrap an MM body in 3-bit MM protocol discriminator */
-static void
-wrap_mle_mm(const uint8_t* mm_body, int mm_nbits, uint8_t* out, int* out_nbits) {
-    int total = 3 + mm_nbits;
-    memset(out, 0, (size_t)total);
-    pack_bits(out, TETRA_MLE_PD_MM, 0, 3);
-    memcpy(out + 3, mm_body, (size_t)mm_nbits);
-    *out_nbits = total;
-}
-
 /* =======================================================================
  * Phase 62: tetra_sds_text_len is uint16_t
  * ======================================================================= */

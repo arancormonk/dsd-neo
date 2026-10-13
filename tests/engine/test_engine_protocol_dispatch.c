@@ -189,11 +189,11 @@ dsd_dispatch_matches_tetra(int synctype) {
     return DSD_SYNC_IS_TETRA(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_tetra(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_TETRA);
+    return record_handler(TEST_HANDLER_TETRA);
 }
 
 int

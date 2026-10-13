@@ -41,6 +41,9 @@ dsd_frame_verdict dsd_dispatch_handle_p25p2(dsd_opts* opts, dsd_state* state);
 int dsd_dispatch_matches_dpmr(int synctype);
 dsd_frame_verdict dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state);
 
+int dsd_dispatch_matches_tetra(int synctype);
+dsd_frame_verdict dsd_dispatch_handle_tetra(dsd_opts* opts, dsd_state* state);
+
 int dsd_dispatch_matches_p25p1(int synctype);
 dsd_frame_verdict dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
 

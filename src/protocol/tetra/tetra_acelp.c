@@ -11,6 +11,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/tetra/tetra_acelp.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <sndfile.h>
 #include <stdio.h>
@@ -296,7 +297,7 @@ voc_send_recv(const uint8_t* bits, int nbits, int16_t* pcm, int nsamples) {
     int pcm_bytes = nsamples * (int)sizeof(int16_t);
     DWORD got = 0;
     uint8_t* p = (uint8_t*)pcm;
-    ULONGLONG deadline = GetTickCount64() + TETRA_VOCODER_READ_TIMEOUT_MS;
+    const uint64_t deadline = dsd_realtime_mono_ms() + TETRA_VOCODER_READ_TIMEOUT_MS;
     while ((int)got < pcm_bytes) {
         DWORD available = 0;
         if (!PeekNamedPipe(s_voc.h_read, NULL, 0, NULL, &available, NULL)) {
@@ -306,7 +307,7 @@ voc_send_recv(const uint8_t* bits, int nbits, int16_t* pcm, int nsamples) {
             if (WaitForSingleObject(s_voc.h_proc, 0) == WAIT_OBJECT_0) {
                 break;
             }
-            if (GetTickCount64() >= deadline) {
+            if (dsd_realtime_mono_ms() >= deadline) {
                 s_voc_last_timeout = 1;
                 break;
             }
@@ -434,15 +435,6 @@ voc_open(const char* cmd) {
     return 1;
 }
 
-static int64_t
-voc_monotonic_ms(void) {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        return 0;
-    }
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
 static int
 voc_send_recv(const uint8_t* bits, int nbits, int16_t* pcm, int nsamples) {
     s_voc_last_timeout = 0;
@@ -452,11 +444,11 @@ voc_send_recv(const uint8_t* bits, int nbits, int16_t* pcm, int nsamples) {
     int pcm_bytes = nsamples * (int)sizeof(int16_t);
     int total = 0;
     uint8_t* p = (uint8_t*)pcm;
-    int64_t deadline = voc_monotonic_ms() + TETRA_VOCODER_READ_TIMEOUT_MS;
+    int64_t deadline = (int64_t)dsd_realtime_mono_ms() + TETRA_VOCODER_READ_TIMEOUT_MS;
     while (total < pcm_bytes) {
         struct pollfd ready = {s_voc.fd_read, POLLIN, 0};
         int poll_rc;
-        int64_t remaining = deadline - voc_monotonic_ms();
+        int64_t remaining = deadline - (int64_t)dsd_realtime_mono_ms();
         if (remaining <= 0) {
             s_voc_last_timeout = 1;
             break;
@@ -720,7 +712,7 @@ tetra_acelp_process_impl(const uint8_t* type2_bits, int type2_len, int block_idx
      * PCM remains untouched. */
     if (opts->audio_out_type == 0 && opts->audio_out_stream && opts->slot1_on == 1
         && opts->pulse_digi_rate_out == 8000) {
-        const double now = dsd_time_now_monotonic_s();
+        const double now = dsd_realtime_mono_s();
         if (last_live_audio_stream != opts->audio_out_stream || last_live_audio_time <= 0.0
             || now - last_live_audio_time > 0.25) {
             const int16_t prefill[640] = {0}; /* 80 ms at 8 kHz */

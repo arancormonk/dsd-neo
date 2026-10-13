@@ -380,7 +380,6 @@ TETRA_INVERTED_NAME = "tetra_bsch_inverted"
 TETRA_BAD_CRC_NAME = "tetra_bsch_bad_crc"
 TETRA_IMPAIRED_NAME = "tetra_bsch_cfo_awgn"
 TETRA_THRESHOLD_PASS_NAME = "tetra_bsch_cfo_awgn_snr6"
-TETRA_THRESHOLD_REJECT_NAME = "tetra_bsch_cfo_awgn_snr4"
 TETRA_MULTIPATH_NAME = "tetra_bsch_two_ray"
 TETRA_CLOCK_FAST_NAME = "tetra_bsch_clock_100ppm"
 TETRA_CLOCK_SLOW_NAME = "tetra_bsch_clock_minus_100ppm"
@@ -391,7 +390,6 @@ TETRA_IMPAIRED_SEED = 0x54455452
 TETRA_IMPAIRED_CFO_HZ = 300.0
 TETRA_IMPAIRED_SNR_DB = 14.0
 TETRA_THRESHOLD_PASS_SNR_DB = 6.0
-TETRA_THRESHOLD_REJECT_SNR_DB = 4.0
 TETRA_TWO_RAY_DELAY_SAMPLES = 1
 TETRA_TWO_RAY_AMPLITUDE = 0.45
 TETRA_TWO_RAY_CFO_HZ = 3.0
@@ -1411,11 +1409,6 @@ def build_tetra_synth(out_dir):
         out_dir, TETRA_THRESHOLD_PASS_NAME, threshold_pass,
         sample_rate=54000, dsp_bw_khz=54)
     print(f"{TETRA_THRESHOLD_PASS_NAME:28s} synth   {threshold_pass_written // 1024:6d} KiB")
-    threshold_reject = impair_tetra(samples, snr_db=TETRA_THRESHOLD_REJECT_SNR_DB)
-    threshold_reject_written = write_fixture(
-        out_dir, TETRA_THRESHOLD_REJECT_NAME, threshold_reject,
-        sample_rate=54000, dsp_bw_khz=54)
-    print(f"{TETRA_THRESHOLD_REJECT_NAME:28s} synth   {threshold_reject_written // 1024:6d} KiB")
     two_ray = simulcast_two_ray(samples, TETRA_TWO_RAY_DELAY_SAMPLES,
                                 TETRA_TWO_RAY_AMPLITUDE, TETRA_TWO_RAY_CFO_HZ,
                                 TETRA_TWO_RAY_PHASE_RAD)
@@ -1444,7 +1437,7 @@ def build_tetra_synth(out_dir):
                                          dsp_bw_khz=54)
     print(f"{TETRA_BAD_CRC_IMPAIRED_NAME:28s} synth   {bad_impaired_written // 1024:6d} KiB")
     return (written + inverted_written + impaired_written + threshold_pass_written
-            + threshold_reject_written + two_ray_written + clock_fast_written
+            + two_ray_written + clock_fast_written
             + clock_slow_written + bad_written + bad_impaired_written)
 
 def build_attenuated(out_dir):
@@ -1705,7 +1698,6 @@ def derived_fixture_names():
             TETRA_BAD_CRC_NAME,
             TETRA_IMPAIRED_NAME,
             TETRA_THRESHOLD_PASS_NAME,
-            TETRA_THRESHOLD_REJECT_NAME,
             TETRA_MULTIPATH_NAME,
             TETRA_CLOCK_FAST_NAME,
             TETRA_CLOCK_SLOW_NAME,

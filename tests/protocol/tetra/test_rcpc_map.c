@@ -7,12 +7,7 @@
 /* Include public header to access puncturer accessor and mapping prototype */
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 
-/* We'll compile the implementation unit alongside this test via CMake by also
- * adding src/protocol/tetra/tetra_fec.c to the target sources. This keeps the
- * test self-contained and avoids adding new public headers.
- */
-
-int
+static int
 check_expected(int punct_id, const int* expected, int len) {
     for (int j = 1; j <= len; j++) {
         int got = tetra_rcpc_map_j_to_k(punct_id, (uint32_t)j);
@@ -27,10 +22,8 @@ check_expected(int punct_id, const int* expected, int len) {
 
 int
 main(void) {
-    /* Expected mapping snapshots derived from diagnostic runs. These verify
-     * the period-based lookup and offset=1 semantics for the puncturer.
-     * We check the first 64 j->k values for a couple of puncturer ids.
-     */
+    /* k = 8 * ((i - 1) div t) + P(i - t * ((i - 1) div t)) from EN 300 392-2 8.2.3.1.3, with
+     * i = j + (j - 1) div 65 for the 292/432 puncturer and i = j for 148/432. */
     const int exp_p2_first64[64] = {1,   2,   5,   9,   10,  13,  17,  18,  21,  25,  26,  29,  33,  34,  37,  41,
                                     42,  45,  49,  50,  53,  57,  58,  61,  65,  66,  69,  73,  74,  77,  81,  82,
                                     85,  89,  90,  93,  97,  98,  101, 105, 106, 109, 113, 114, 117, 121, 122, 125,
@@ -335,17 +328,4 @@ done_checks:
     }
 
     return rc;
-}
-
-/* Provide a minimal viterbi_decode stub to satisfy linkage when testing the
- * tetra_fec compilation unit together with this test. The implementation
- * returns 0 and fills the output buffer with a deterministic pattern.
- */
-uint32_t
-viterbi_decode(uint8_t* out_bytes, const uint16_t* in_costs, uint16_t len) {
-    (void)in_costs;
-    for (uint16_t i = 0; i < len && i < 256; i++) {
-        out_bytes[i] = (uint8_t)(0x55 + (i & 0xFF));
-    }
-    return 0;
 }

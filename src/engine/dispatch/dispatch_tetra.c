@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/*
- * TETRA protocol dispatch integration
- */
-#include <dsd-neo/core/opts.h>
+
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "protocol_dispatch_impl.h"
 
 int
 dsd_dispatch_matches_tetra(int synctype) {

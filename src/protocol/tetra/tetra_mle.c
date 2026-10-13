@@ -13,6 +13,7 @@
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <stdint.h>
@@ -68,7 +69,7 @@ static int
 sds_concat_submit(uint32_t src_ssi, uint16_t reference, uint8_t with_transport, uint8_t total, uint8_t sequence,
                   int payload_pid, const uint8_t* part, int part_bits, uint8_t** assembled, int* assembled_bits,
                   uint8_t* assembled_pid, uint8_t* received_count) {
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     tetra_sds_concat_ctx_t* ctx = NULL;
     tetra_sds_concat_ctx_t* free_ctx = NULL;
     tetra_sds_concat_ctx_t* oldest = &g_sds_concat[0];

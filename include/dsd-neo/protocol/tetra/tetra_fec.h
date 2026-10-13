@@ -13,7 +13,7 @@
 #define TETRA_RCPC_PUNCT_72_162  5
 #define TETRA_RCPC_PUNCT_38_80   6
 
-// Placeholder for TETRA FEC, deinterleave, and descramble routines
+/* Block deinterleaving and descrambling (EN 300 392-2 8.2.4, 8.2.5). */
 void tetra_block_deinterleave(uint8_t* in, uint8_t* out, int len, int a);
 void tetra_descramble(uint8_t* in, int len, uint32_t lfsr_init);
 /* Descramble soft-costs: inverts soft cost polarity where scrambler bit == 1
@@ -32,21 +32,10 @@ uint16_t tetra_crc16_ccitt_bits(const uint8_t* bits, int len);
  * Returns seed=3 when all inputs are zero (BSCH / all-zero network identity).
  */
 uint32_t tetra_compute_scramb_seed(uint16_t mcc, uint16_t mnc, uint8_t colour);
-void tetra_viterbi_decode(uint8_t* in, uint8_t* out, int len);
 /* Soft-cost depuncture + Viterbi helper: depunc array length is depunc_len (coded symbols),
  * out_bits receives unpacked bits (caller must allocate sufficient space).
  */
 int tetra_viterbi_decode_soft(const uint16_t* depunc, int depunc_len, uint8_t* out_bits, int out_bits_len);
-
-/* RCPC depuncture helper: expand soft costs according to a puncture pattern.
- * - `punct` is an array of 0/1 values repeating over the coded stream.
- * - `p_len` is its length.
- * - `in_costs` contains soft costs for the information bits (len = info_bits_len).
- * - `out_costs` must be preallocated for `out_len` coded-symbols.
- * Returns number of coded symbols written, or -1 on error.
- */
-int tetra_rcpc_depuncture_soft(const uint16_t* in_costs, int info_bits_len, const uint8_t* punct, int p_len,
-                               uint16_t* out_costs, int out_len);
 
 /* Depuncture by known puncturer id (matches internal osmo-tetra puncturer enums).
  * Returns number of coded symbols written or -1 on error.
@@ -74,7 +63,6 @@ int tetra_rcpc_map_j_to_k(int punct_id, uint32_t j);
  * interleaver; real TETRA interleaver parameters should be applied by caller.
  */
 void tetra_block_interleave(const uint8_t* in_bits, uint8_t* out_bits, int len, int rows, int cols);
-void tetra_block_deinterleave_bits(const uint8_t* in_bits, uint8_t* out_bits, int len, int rows, int cols);
 void tetra_block_deinterleave_soft(const uint16_t* in_costs, uint16_t* out_costs, int len, int rows, int cols);
 
 /* TCH/FS speech deinterleaver from EN 300 395-2: transpose the received
@@ -101,10 +89,5 @@ int tetra_sch_hu_decode(const uint16_t* type4, uint8_t* out_bits);
  * disagreements out of 51-less 165 coded bits (-1 on error).
  * Returns 137 or -1. */
 int tetra_speech_half_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int* crc_ok, int* mismatches);
-
-/* Helper: select interleaver dimensions for a given puncturer/frame length.
- * Returns 0 on success, -1 on unknown mapping.
- */
-int tetra_get_interleaver_dims(int punct_id, int bits_len, int* out_rows, int* out_cols);
 
 #endif // DSD_NEO_PROTOCOL_TETRA_FEC_H

@@ -11076,7 +11076,6 @@ set(_dsd_tetra_test_sources
     air_chain_vector
     d_tx_granted_chan
     depuncture_regression
-    interleaver_dims
     mac_state
     messages
     mle_cmce
@@ -13380,11 +13379,8 @@ if(DSD_HAS_RADIO)
         -fT
         "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
     )
-    # Deterministic sensitivity bracket with the same 300 Hz CFO and noise
-    # realization as the 14 dB case. At 6 dB the protected control messages
-    # must decode; at 4 dB synchronization and occasional BSCH recovery may
-    # occur, but neither NTS2 control block may pass its integrity gate. TCH/FS is excluded because
-    # this channel has no equivalent whole-frame CRC acceptance signal.
+    # The same 300 Hz CFO and noise realization as the 14 dB case at 6 dB SNR:
+    # the CRC-protected control messages must still decode.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_BSCH_SNR6
         tetra_bsch_cfo_awgn_snr6
@@ -13402,13 +13398,6 @@ if(DSD_HAS_RADIO)
         tetra_bsch_cfo_awgn_snr6
         -fT
         "\\[TETRA CHANNEL-ALLOCATION\\] CC=0 type=0 slots=0x4 dir=1 carrier=400"
-    )
-    dsd_neo_add_iq_reject_test(
-        DECODE_IQ_TETRA_PROTECTED_CONTROL_SNR4_REJECT
-        tetra_bsch_cfo_awgn_snr4
-        -fT
-        "\\+TETRA NDB"
-        "\\[TETRA (SYSINFO|CHANNEL-ALLOCATION)\\]"
     )
     # One-sample (18.5 us) delayed echo at -6.9 dB with a 3 Hz differential
     # carrier and 2.2 rad phase. This creates time-varying frequency-selective

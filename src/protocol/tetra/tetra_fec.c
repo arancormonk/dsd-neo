@@ -15,9 +15,6 @@
  * table below uses the same ordering as those macros.
  */
 
-/* Minimal no-puncture fallback pattern used by generic depuncturer when none supplied */
-static const uint8_t punct_1_2_arr[] = {1};
-
 struct puncturer {
     int type;
     const uint8_t* P;
@@ -179,25 +176,6 @@ tetra_rcpc_puncture_by_id(int punct_id, const uint8_t* mother, int mother_len, u
     return written;
 }
 
-/* Debug: print puncturer parameters and P array */
-void
-tetra_rcpc_print_puncturer(int punct_id) {
-    if (punct_id < 0 || punct_id >= (int)(sizeof(tetra_puncts) / sizeof(tetra_puncts[0]))) {
-        fprintf(stderr, "[TETRA] puncturer id %d out of range\n", punct_id);
-        return;
-    }
-    const struct puncturer* p = tetra_puncts[punct_id];
-    fprintf(stderr, "[TETRA] puncturer id=%d t=%u period=%u P=[", punct_id, p->t, p->period);
-    /* print first few entries of P for brevity */
-    for (int i = 0; i < 16 && p->P[i] != 0 && i < 64; i++) {
-        if (i) {
-            fprintf(stderr, ",");
-        }
-        fprintf(stderr, "%u", p->P[i]);
-    }
-    fprintf(stderr, "]\n");
-}
-
 int
 tetra_rcpc_get_puncturer_params(int punct_id, const uint8_t** outP, int* out_t, int* out_period) {
     if (punct_id < 0 || punct_id >= (int)(sizeof(tetra_puncts) / sizeof(tetra_puncts[0]))) {
@@ -321,13 +299,6 @@ tetra_compute_scramb_seed(uint16_t mcc, uint16_t mnc, uint8_t colour) {
     return (s << 2) | 3u; /* 3 = SCRAMB_INIT per §8.2.5.2 */
 }
 
-void
-tetra_viterbi_decode(uint8_t* in, uint8_t* out, int len) {
-    // Placeholder: just copy input to output
-    memcpy(out, in, len);
-    fprintf(stderr, "[TETRA] viterbi_decode called (len=%d)\n", len);
-}
-
 int
 tetra_viterbi_decode_soft(const uint16_t* depunc, int depunc_len, uint8_t* out_bits, int out_bits_len) {
     if (!depunc || !out_bits) {
@@ -427,46 +398,6 @@ tetra_sch_hu_decode(const uint16_t* type4, uint8_t* out_bits) {
     return 1;
 }
 
-int
-tetra_rcpc_depuncture_soft(const uint16_t* in_costs, int info_bits_len, const uint8_t* punct, int p_len,
-                           uint16_t* out_costs, int out_len) {
-    if (!in_costs || !out_costs) {
-        return -1;
-    }
-    if (!punct || p_len <= 0) {
-        /* fallback to no-puncture */
-        punct = punct_1_2_arr;
-        p_len = 1;
-    }
-
-    int in_pos = 0;
-    int out_pos = 0;
-
-    /* Walk the puncture pattern repeating until we consume the requested output length.
-     * If punct[i % p_len] == 1 then a coded symbol is present for this information bit;
-     * otherwise it's punctured and we insert a neutral cost (0x7FFF).
-     * This generic depuncturer maps each info bit to punctured coded symbols in sequence.
-     */
-    while (out_pos < out_len && in_pos < info_bits_len) {
-        for (int pi = 0; pi < p_len && out_pos < out_len; pi++) {
-            if (punct[pi]) {
-                /* use the next info soft cost */
-                out_costs[out_pos++] = in_costs[in_pos++];
-            } else {
-                /* punctured: insert neutral / uncertain cost */
-                out_costs[out_pos++] = 0x7FFF;
-            }
-        }
-    }
-
-    /* If we exhausted info bits but still need to fill output, pad with neutral costs */
-    while (out_pos < out_len) {
-        out_costs[out_pos++] = 0x7FFF;
-    }
-
-    return out_pos;
-}
-
 void
 tetra_block_interleave(const uint8_t* in_bits, uint8_t* out_bits, int len, int rows, int cols) {
     if (!in_bits || !out_bits || rows <= 0 || len <= 0) {
@@ -482,22 +413,6 @@ tetra_block_interleave(const uint8_t* in_bits, uint8_t* out_bits, int len, int r
     for (uint32_t i = 1; i <= K; i++) {
         uint32_t k = 1u + (A * i % K);
         out_bits[k - 1] = in_bits[i - 1];
-    }
-}
-
-void
-tetra_block_deinterleave_bits(const uint8_t* in_bits, uint8_t* out_bits, int len, int rows, int cols) {
-    if (!in_bits || !out_bits || rows <= 0 || len <= 0) {
-        return;
-    }
-    /* ETSI deinterleave: out[i-1] = in[π(i)-1] where π(i) = 1 + (a*i % K).
-     * `rows` is the interleaver parameter a; `cols` unused. */
-    const uint32_t K = (uint32_t)len;
-    const uint32_t A = (uint32_t)rows;
-    (void)cols;
-    for (uint32_t i = 1; i <= K; i++) {
-        uint32_t k = 1u + (A * i % K);
-        out_bits[i - 1] = in_bits[k - 1];
     }
 }
 
@@ -770,47 +685,4 @@ tetra_speech_half_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int* 
         *mismatches = bad;
     }
     return C0 + C1 + 30;
-}
-
-int
-tetra_get_interleaver_dims(int punct_id, int bits_len, int* out_rows, int* out_cols) {
-    if (!out_rows || !out_cols) {
-        return -1;
-    }
-
-    /* Static interleaver dimensions table (authoritative values).
-     * Only known canonical block lengths are accepted — do not fall back
-     * to a heuristic. Unknown lengths return -1 so callers can decide.
-     * Source: osmo-tetra `tetra_blk_param` mapping (ported entries).
-     */
-    struct inter_tab {
-        int bits;
-        int rows;
-    } table[] = {
-        {30, 1},    /* BBK (no interleave) - represent as rows=1 (identity) */
-        {80, 11},   /* BSCH-ish small block (conservative) */
-        {120, 11},  /* SB1 */
-        {162, 11},  /* speech class-ish (conservative) */
-        {168, 13},  /* SCH/HU */
-        {216, 101}, /* SB2 / NDB */
-        {432, 103}, /* SCH/F and some TCH modes */
-    };
-
-    const int n = sizeof(table) / sizeof(table[0]);
-    int found = 0;
-    for (int i = 0; i < n; i++) {
-        if (table[i].bits == bits_len) {
-            *out_rows = table[i].rows;
-            found = 1;
-            break;
-        }
-    }
-    if (!found) {
-        return -1;
-    }
-    if (*out_rows <= 0) {
-        return -1;
-    }
-    *out_cols = (bits_len + *out_rows - 1) / *out_rows;
-    return 0;
 }
