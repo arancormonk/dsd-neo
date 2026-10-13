@@ -114,30 +114,78 @@ Implementation is divided into four reviewable parts:
 The detector integrates Hann-windowed linear FFT power with window-energy
 normalization. It requires two complete measurements of at least 10 ms each,
 accumulated by sample count across arbitrary input blocks, and at least eight FFT
-bins across the smaller channel width/spacing. Local noise uses sidebands outside
-the channel and guard region. Clipping and capture discontinuities invalidate the
-measurement. Allocations, FFT size, candidates and total channels are bounded;
-unsupported plans report an error.
+bins across the smaller channel width/spacing; each channel must pass its threshold
+in both. Local noise comes from sidebands 1.5 to 3 channel widths out on either
+side, in four blocks each: the mean of the blocks within 6 dB of the third lowest,
+so transmitters in up to five of the eight blocks do not raise it. Clipping and
+capture discontinuities invalidate the measurement. Allocations, FFT size,
+candidates and total channels are bounded; unsupported plans report an error.
 
-A strong transmitter's skirt and the window's leakage reach the neighbouring
-channels' windows, particularly with the default 16 kHz width on a 12.5 kHz grid,
-and would pass their thresholds on their own. Each raw detection therefore looks
-for a stronger transmitter within two channel widths in the spectrum itself (not
-only among the requested channels, so a transmitter past a range or span boundary
-counts), ignoring energy within half a step of its own grid position. A transmitter
-belongs to the channel nearest its centre. A candidate next to a stronger
-transmitter is kept only with independent energy. Walking from that transmitter
-through the candidate's window, the power must rise again inside the window after
-the skirt has fallen at least 6 dB; the rise threshold (at least 4.5 dB) grows with
-the statistical spread of the averaged spectrum. Rises within the transmitter's own
-channel width are its own sidebands and never count. Alternatively, where its other
-side is a clean skirt, the window must exceed that side mirrored about its centre
-by 10 dB. A genuinely separate weaker transmitter on the next channel is still
-reported, including one beside a strong transmitter that has another neighbour on
-its far side. A transmitter that is off-grid, or wide enough to span several grid
-channels, is reported once. A much weaker neighbour hidden under a strong
-transmitter's skirt (for example 25 dB or more below noise-like voice FM) is not
-reported until that transmitter ends.
+A strong transmitter's skirt and the window's leakage reach neighbouring channels'
+windows, particularly with the default 16 kHz width on a 12.5 kHz grid or on any
+grid finer than the width, and would pass their thresholds on their own. So a
+transmitter belongs to the grid channel nearest its centre: half a step either side
+of the channel's exact position on the range's rational grid, so neighbouring
+channels share one boundary however the grid frequencies were rounded. This is
+decided once per measurement, on both windows' power together, so a transmitter is
+assigned the same way for the whole measurement. It must also hold its own power in
+each window (within 10 dB of the other over the bins it occupies), so energy one
+window only owes to another transmitter is not sustained.
+
+Transmitters are located in the spectrum itself, not only among the requested
+channels, so one past a range or span boundary counts. Each channel's window climbs
+to the transmitter dominating it. That transmitter's segment of spectrum runs out
+from its peak to the valley before another transmitter: a dip clearly below the
+peak (by the rise threshold below) followed by an equally clear rise, measured on an
+envelope that bridges the gaps between an FM transmitter's sideband lines for tones
+up to 3 kHz. Across such a valley the segment beyond is taken in when one
+transmitter explains the pair better than two (the plateau between a wide FM
+transmitter's horns, whose halves are each lopsided), provided the valley stays
+within 20 dB of the lower side and the two peaks are within two channel widths. The
+centre is the point about which most of the segment's power overlaps its own
+mirror image: an internal notch overlaps its mirror notch, a short-term lopsided
+spectrum still has a symmetric extent, and a neighbour in the segment overlaps
+only the far skirt. A centre with less than 1% of the peak power splits the segment
+when two transmitters, each symmetric about its own centre, explain it at least as
+well as one (two carriers the envelope bridged), while a carrier its FM modulation
+weakens keeps the transmitter whole. With 250 Hz or similarly fine steps the
+analysis aggregates bins and refines centres on the FFT bins.
+
+Beside each such transmitter, a separate one is found in two ways. Walking out
+from it, the envelope must rise again after the skirt has fallen at least 6 dB, by
+a threshold (at least 4.5 dB) that grows with the statistical spread of the averaged
+spectrum, and climb above the last ridge before the valley (the transmitter's own
+outer sideband lines decay one after another). Or, where its other side is a clean
+skirt and its spectrum mostly overlaps its mirror image, the energy beside it stands
+10 dB above that side mirrored about its centre and peaks away from the
+transmitter's own edge. Rises within the transmitter's own channel width are its
+own spectrum and never count. Each separate transmitter is located once, at the
+centre of what remains of it after the mirror (or the valley's level), and reported
+by the channel that owns that centre.
+
+These rules come from measured cases, not a guarantee of detection or uniqueness.
+The regressions and sweeps below report every transmitter once at its nearest
+channel, including off-grid, wide and noise-like FM, tone FM with carrier nulls,
+horns and wide sidebands, CW, AM and 4FSK, on 2.5 to 25 kHz grids, rotation-free
+rates and 250 Hz grids, and they report neighbours down to 20 dB below beside each
+other. Known limits:
+
+- Two transmitters whose spectra merge within the FFT resolution can count as one,
+  at the channel of their combined centre (for example a neighbour 3 dB down,
+  12.5 kHz beside 5 kHz deviation, at 1.2 to 1.5 kHz bins without rotation).
+- A weak neighbour hidden under a strong transmitter's skirt or splatter (for
+  example 26 dB or more below noise-like voice FM, or 20 dB below a heavily
+  modulated AM transmitter) is not reported until that transmitter ends.
+- A transmitter whose centre lies outside every channel's window (a window narrower
+  than the step, far off-grid) is reported at most once, at the nearest channel its
+  sidebands reach, or not at all.
+- Within a few hundred hertz of an ownership boundary a short-term lopsided spectrum
+  can move a transmitter to the neighbouring channel.
+- A window that only climbs toward a transmitter more than six reaches (twelve
+  channel widths) away is that transmitter's skirt and is not reported.
+- On a strongly coloured noise floor with 25 kHz widths, local noise can read about
+  1 dB below a plain mean; noise alone produced no detections at 3 dB sensitivity in
+  the sweeps below.
 
 The coverage planner conservatively uses one usable side of hardware DC per
 capture, leaving noise sidebands and edge guards. It explicitly accounts for
@@ -159,8 +207,23 @@ The detector tests cover calibrated power, noise, carriers, modulated signals,
 bursts, off-grid signals, nearby transmitters, adjacent-channel leakage from a
 single strong NFM transmitter (narrow, wide, off-grid, at a range boundary and on a
 6.25 kHz grid), weaker separate neighbours (including two either side of a strong
-transmitter), clipping,
-gain/rate/drop boundaries, DC, rotation, edges and fragmented input. Coordinator
+transmitter), clipping (more than 1% of samples at full scale in either component
+fails the measurement, fewer does not), non-finite samples mid-frame,
+gain/rate/drop boundaries, DC, rotation, edges and fragmented input. They also
+cover a neighbour 6 dB down beside 5 kHz deviation on both sides at four bin
+alignments; single transmitters on 5 and 6.25 kHz grids at five FFT resolutions
+and alignments (tone FM with carrier nulls, horns and wide sidebands, noise-like
+FM); an off-grid carrier and low-frame noise-like FM near ownership boundaries;
+offset sweeps across boundaries on 5, 6.25 and 12.5 kHz grids and a rational
+25000/3 grid, with no gaps or duplicates; a 250 Hz grid of 512 channels; windows
+that wrap FFT bin 0, rotation-free capture and channels at the DC and edge guards;
+transmitters 25 and 37.5 kHz apart (local noise), equal ones 5 and 10 kHz apart on
+fine grids, a weak neighbour on an ownership boundary, transmitters present in only
+one window each, and noise alone at 3 dB sensitivity. The shared tap is tested for
+reports delivered only to their own request, cancels and capture changes, with a
+feeding thread racing requests, polls and cancels. A coordinator regression runs
+the real detector and tap on synthetic capture I/Q over three passes at six capture
+alignments and checks that only the transmitter's channel is ever visited. Coordinator
 tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,
@@ -170,9 +233,10 @@ writes/retry, recreation, fractional steps, ambiguous matches, nested channel ma
 immutable saves, phone text scaling and navigation ownership. They also check that
 status-only refreshes leave history untouched (it is copied only when its store
 revision moves), session avoids, the aggregate 100,000-channel check before a start
-is submitted, and that a start the engine rejects owns nothing and is retired when
-the decoder session ends, so a recreated frontend never restores the search screen
-over a later ordinary session.
+is submitted, and that a start the engine rejects with no search left owns nothing
+and is retired when the decoder session ends, so a recreated frontend never restores
+the search screen over a later ordinary session. A rejected restart of a paused
+search keeps that search's phase, session and ownership; only its message changes.
 The app-control provenance regression also checks that a later false sync or
 unvalidated code change cannot enrich an already confirmed detection during a
 periodic refresh, and that a new detection starts without the preceding details.

@@ -1613,9 +1613,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     the versioned private journal, bounded upserts and atomic compaction/avoids. The
     worker survives QML teardown; it never reads live decoder state. History and avoid
     revisions let frontends copy history only when it changed. The control actions mirror
-    the session's own avoid list (cleared when it stops). A rejected start publishes an
-    unowned error, and `dsd_app_frontend_runtime_stop()` retires any status left behind
-    (`dsd_app_signal_search_session_ended()`).
+    the session's own avoid list (cleared when it stops). A rejected start with no
+    coordinator left publishes an unowned error, and `dsd_app_frontend_runtime_stop()`
+    retires any status left behind (`dsd_app_signal_search_session_ended()`). A rejected
+    restart of a paused coordinator keeps that coordinator's phase, session and
+    ownership; only the published message changes.
   - Frontend metrics and raw telemetry snapshots used by the terminal renderer
   - Command queue dispatch and menu service helpers. Decoder-owner runtime start/stop opens/closes admission under
     the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
@@ -3120,15 +3122,21 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 - Path: `src/io`, `include/dsd-neo/io`
 - Signal discovery (`radio/signal_measure.cpp`, `io/signal_measure.h`) uses an independent
   PFFFT/Hann cache at the capture-rate I/Q boundary. Linear channel power and neighboring
-  noise are energy-normalized over two sample-count windows. Session/request IDs and
+  noise are energy-normalized over two sample-count windows (local noise: the mean of the
+  sideband blocks within 6 dB of the third lowest of eight). Session/request IDs and
   applied generation accompany every report; gain, rate, drops, tuning and input changes
-  invalidate partial and ready reports. Leakage rejection: a raw detection looks in the
-  spectrum (not just the requested channels) for a stronger transmitter within two channel
-  widths, outside half a step of its own grid position, and keeps the detection only if its
-  window rises again after that transmitter's skirt has fallen (outside the transmitter's
-  own width; frame-adaptive threshold of at least 4.5 dB) or, where the transmitter's far
-  side is a clean skirt, exceeds that side mirrored about its -10 dB centre by 10 dB.
-  Search bypass preserves capture/control health
+  invalidate partial and ready reports. Leakage rejection runs once per request on both
+  windows' power: transmitters are located in the spectrum (not just the requested
+  channels), each from the anchor its channels' windows climb to, centred where its
+  segment best overlaps its own mirror image, with segments cut and merged at valleys and
+  weak centres by comparing one source with two; transmitters beside each are found by a
+  valley rise above the last skirt ridge or 10 dB above the mirrored far side, and located
+  once. A channel keeps a raw detection only for a transmitter centred within its half-open
+  interval on the range's rational grid that holds its own power in both windows (within
+  10 dB). `docs/signal-search.md` lists the measured limits. The tap's `feed_mutex`
+  serialises the detector (feeding and analysis, request, cancel); `tap_mutex` guards only
+  the published capture, readiness and report, so polls never wait for analysis; locks
+  are taken feed first. Search bypass preserves capture/control health
   while skipping demodulation, protocol/audio work and display FFTs. Decoder-dependent
   gain/PPM supervision is suspended during discovery. `rtl_stream_tune_async()` and
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
