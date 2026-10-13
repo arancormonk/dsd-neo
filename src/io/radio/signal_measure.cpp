@@ -25,6 +25,7 @@ struct located {
     double centre;
     long long first, last;
     long long own_first, own_last;
+    long long anchor; /* the analysis bin it was located from, or LLONG_MIN for a hump */
 };
 
 /* Every transmitter located in one spectrum: primaries strongest first, then the separate ones beside them. */
@@ -32,20 +33,30 @@ struct source_list {
     located items[2 * DSD_SEARCH_MAX_CANDIDATES];
     int count;
 
-    /* Whether @p s was already located: either one's centre lies within the other's channel width. */
-    bool
-    known(const located& s, int decimation) const {
+    /* The item @p s was already located as, or -1: either one's centre lies within the other's channel width. The
+       item at @p beside_index, when given, is the source @p s was found beside, which it is separate from by
+       construction. */
+    int
+    find(const located& s, int decimation, int beside_index = -1) const {
         /* Decimations are powers of two, so scaling by the reciprocal is exact. */
         const double scale = 1.0 / decimation, s_coarse = s.centre * scale;
         for (int i = 0; i < count; ++i) {
+            if (i == beside_index) {
+                continue;
+            }
             const located& t = items[i];
             const double t_coarse = t.centre * scale;
             if ((s_coarse >= (double)t.first && s_coarse <= (double)t.last + 1)
                 || (t_coarse >= (double)s.first && t_coarse <= (double)s.last + 1)) {
-                return true;
+                return i;
             }
         }
-        return false;
+        return -1;
+    }
+
+    bool
+    known(const located& s, int decimation, int beside_index = -1) const {
+        return find(s, decimation, beside_index) >= 0;
     }
 
     void
@@ -147,8 +158,10 @@ constexpr double kMirrorRiseRatio = 10.0;
 constexpr double kMirrorSymmetry = 0.5;
 constexpr double kWeakCentreRatio = 0.01;
 constexpr double kTwoSourceMargin = 0.06;
-/* A transmitter is sustained when each window holds at least a tenth of the other's power over the bins it occupies. */
+/* A transmitter is sustained when each window holds at least a tenth of the other's power over the bins it occupies,
+   spread over them alike: the windows' shares of it overlap by at least a quarter. */
 constexpr double kSustainedRatio = 10.0;
+constexpr double kSustainedOverlap = 0.25;
 /* Leakage analysis aggregates bins until a channel's half width spans at most this many (a power of two apart). */
 constexpr long long kAnalysisHalfBins = 32;
 /* How far the envelopes reach either side. Within a source's segment, an FM transmitter's sideband line spacing for the
@@ -325,10 +338,10 @@ segment_of(const analysis& a, long long peak, long long* first, long long* last,
 
 /* The tallest bin of the segment around @p peak, reached by climbing and then moving to each segment's tallest in
    turn, so every channel that sees a source locates it from the same bin; kFarSource once that leads further than
-   kClimbReaches from where it started. Each move is to a taller bin, so the moves end. */
+   @p reaches from where it started. Each move is to a taller bin, so the moves end. */
 long long
-anchor_of(const analysis& a, long long peak) {
-    const long long origin = peak, limit = kClimbReaches * a.reach;
+anchor_of(const analysis& a, long long peak, long long reaches = kClimbReaches) {
+    const long long origin = peak, limit = reaches * a.reach;
     while (a.at(peak + 1) > a.at(peak) || a.at(peak - 1) > a.at(peak)) {
         peak += a.at(peak + 1) > a.at(peak - 1) ? 1 : -1;
         if (std::llabs(peak - origin) > limit) {
@@ -512,31 +525,35 @@ centre_or_split(const analysis& a, long long anchor, long long* first, long long
     return symmetric_centre(*first, *last, 2 * *first, 2 * *last, coarse, whole);
 }
 
-/* The centre near @p fine_centre (FFT bins) of the source over analysis bins @p first..@p last, refined on the FFT bins
-   of its body: within an analysis bin, from the tallest FFT bin out to 40 dB below it. */
+/* The centre within an analysis bin of @p fine_centre (FFT bins) of the source over analysis bins @p first..@p last,
+   refined on the FFT bins of its body: every bin within its own width that is within 40 dB of the tallest there, the
+   gaps between a modulated transmitter's spectral lines counting as empty, so all of its lines take part. */
 double
 refine_on_fft_bins(const analysis& a, long long first, long long last, double fine_centre) {
-    const long long limit_first = first * a.decimation, limit_last = last * a.decimation + a.decimation - 1;
-    const long long around = std::llround(fine_centre);
-    long long tallest = std::max(limit_first, std::min(limit_last, around));
-    for (long long b = std::max(limit_first, around - a.decimation); b <= std::min(limit_last, around + a.decimation);
-         ++b) {
-        if (a.fine_three(b) > a.fine_three(tallest)) {
-            tallest = b;
-        }
+    const double coarse_centre = a.to_coarse(fine_centre);
+    const long long limit_first = std::max(first, (long long)std::floor(coarse_centre - (double)a.half)) * a.decimation;
+    const long long limit_last =
+        std::min(last, (long long)std::ceil(coarse_centre + (double)a.half)) * a.decimation + a.decimation - 1;
+    double tallest = 0;
+    for (long long b = limit_first; b <= limit_last; ++b) {
+        tallest = std::max(tallest, a.fine_three(b));
     }
-    const double floor_level = a.fine_three(tallest) * 1e-4;
-    long long fine_first = tallest, fine_last = tallest;
-    while (fine_first > limit_first && a.fine_three(fine_first - 1) >= floor_level) {
-        --fine_first;
+    const double floor_level = tallest * 1e-4;
+    long long fine_first = limit_first, fine_last = limit_last;
+    while (fine_first < fine_last && a.fine_three(fine_first) < floor_level) {
+        ++fine_first;
     }
-    while (fine_last < limit_last && a.fine_three(fine_last + 1) >= floor_level) {
-        ++fine_last;
+    while (fine_last > fine_first && a.fine_three(fine_last) < floor_level) {
+        --fine_last;
     }
     const long long twice = std::llround(2 * fine_centre);
     return symmetric_centre(
         fine_first, fine_last, twice - 2LL * a.decimation, twice + 2LL * a.decimation,
-        [&](long long b) { return a.fine_three(b); }, nullptr);
+        [&](long long b) {
+            const double value = a.fine_three(b);
+            return value >= floor_level ? value : 0.0;
+        },
+        nullptr);
 }
 
 /* The source anchored at @p anchor, with its symmetry: centred at the most symmetric point of its segment, which takes
@@ -553,8 +570,12 @@ locate_source(const analysis& a, long long anchor, double* symmetry) {
     const double fine_centre =
         a.decimation > 1 ? refine_on_fft_bins(a, first, last, a.to_fine(centre)) : a.to_fine(centre);
     const double coarse_centre = a.to_coarse(fine_centre);
-    return located{fine_centre, std::max(first, (long long)std::floor(coarse_centre - a.half)),
-                   std::min(last, (long long)std::ceil(coarse_centre + a.half)), first, last};
+    return located{fine_centre,
+                   std::max(first, (long long)std::floor(coarse_centre - a.half)),
+                   std::min(last, (long long)std::ceil(coarse_centre + a.half)),
+                   first,
+                   last,
+                   anchor};
 }
 
 /* The power-weighted centre in FFT bins of @p weight over analysis bins @p first..@p last. */
@@ -574,9 +595,12 @@ fine_centroid(const analysis& a, long long first, long long last, W weight) {
    the source a separate transmitter makes the envelope rise clearly above the lowest point after the skirt has fallen
    6 dB. A weak transmitter sitting on the skirt may never clear that valley; when the source's other side is a clean
    skirt and its spectrum mostly overlaps its mirror image, a transmitter beside it also stands 10 dB above that side
-   mirrored about the source. Rises within the source's own channel width are its own spectrum (an FM transmitter's
-   sidebands) and never count. Each separate transmitter is located once, however it was found: the centre of what
-   remains of its hump once the source's mirror image (or, without a clean mirror, the valley's level) is taken away. */
+   mirrored about the source. Within the source's own channel width a rise is usually its own spectrum (an FM
+   transmitter's sidebands); it counts there only when the source mostly overlaps its mirror image, the rise stands
+   10 dB above its own mirror image (sideband lines come in mirrored pairs) and its valley falls 20 dB below its top
+   (a lopsided edge of the source's own modulation leaves the valley filled). Each separate transmitter is located
+   once, however it was found: the centre of what remains of its hump once the source's mirror image (or, without a
+   clean mirror, the valley's level) is taken away. */
 struct beside {
     const analysis& a;
     const located& source;
@@ -584,7 +608,9 @@ struct beside {
     double centre; /* the source's, in analysis bins */
     long long start;
     int side;
+    int source_index; /* the source's in @p sources */
     bool mirror;
+    bool symmetric; /* the source mostly overlaps its mirror image */
 
     bool
     outside(long long k) const {
@@ -623,28 +649,53 @@ struct beside {
         return true;
     }
 
-    /* The hump around bin @p k beyond @p inner on this side: what remains above the mirror, or above @p floor_level
-       without one, falling away from its top on both sides down to a tenth of it. */
-    located
-    hump(long long k, double floor_level, long long inner) const {
-        auto inside = [&](long long j) { return outside(j) && (j - inner) * side > 0 && std::llabs(j - k) <= a.reach; };
-        long long top = k;
-        while (inside(top + side) && remainder(top + side, floor_level) > remainder(top, floor_level)) {
-            top += side;
+    /* Whether bin @p j may belong to a hump rising at @p k beyond @p inner on this side: outside the source's own
+       width, or within it too when @p within. */
+    bool
+    in_hump(long long j, long long k, long long inner, bool within) const {
+        return (within || outside(j)) && (j - inner) * side > 0 && std::llabs(j - k) <= a.reach;
+    }
+
+    /* Out from @p k, through the ripples of a modulated transmitter's lines, until what remains falls to a tenth of
+       its tallest or rises clearly again from a clear valley (another transmitter): the tallest bin into @p top, the
+       last bin reached into @p end. */
+    void
+    hump_span(long long k, double floor_level, long long inner, bool within, long long* top, long long* end) const {
+        *top = *end = k;
+        double low = remainder(k, floor_level);
+        for (long long j = k + side; in_hump(j, k, inner, within); j += side) {
+            const double r = remainder(j, floor_level), tallest = remainder(*top, floor_level);
+            if (r * 10 <= tallest || (low * a.rise <= tallest && r >= a.rise * low)) {
+                break;
+            }
+            if (r > tallest) {
+                *top = j;
+                low = r;
+            } else {
+                low = std::min(low, r);
+            }
+            *end = j;
         }
-        while (inside(top - side) && remainder(top - side, floor_level) > remainder(top, floor_level)) {
+    }
+
+    /* The hump rising at bin @p k beyond @p inner on this side: what remains above the mirror, or above @p floor_level
+       without one, over its span out from where it rose and back toward the valley as far as it stays above a tenth
+       of its tallest. Within the source's own width too when @p within. */
+    located
+    hump(long long k, double floor_level, long long inner, bool within = false) const {
+        auto inside = [&](long long j) { return in_hump(j, k, inner, within); };
+        auto rest = [&](long long j) { return remainder(j, floor_level); };
+        long long top = k, end = k;
+        hump_span(k, floor_level, inner, within, &top, &end);
+        while (inside(top - side) && rest(top - side) > rest(top)) {
             top -= side;
         }
-        const double level = remainder(top, floor_level) / 10;
-        auto falls = [&](long long next, long long from) {
-            return inside(next) && remainder(next, floor_level) > level
-                   && remainder(next, floor_level) <= remainder(from, floor_level) && std::llabs(next - top) <= a.reach;
-        };
+        const double level = rest(top) / 10;
         long long lo = top, hi = top;
-        while (falls(lo - 1, lo)) {
+        while (inside(lo - 1) && rest(lo - 1) > level && (lo - 1 - end) * side <= 0) {
             --lo;
         }
-        while (falls(hi + 1, hi)) {
+        while (inside(hi + 1) && rest(hi + 1) > level && (hi + 1 - end) * side <= 0) {
             ++hi;
         }
         const double fine_floor = floor_level / (3.0 * a.decimation);
@@ -653,32 +704,73 @@ struct beside {
             return std::max(0.0,
                             a.fine_three(b) - (mirror ? a.fine_three(std::llround(twice - (double)b)) : fine_floor));
         });
-        return located{at, lo, hi, lo, hi};
+        return located{at, lo, hi, lo, hi, LLONG_MIN};
     }
 
-    /* Records @p s unless already located; returns how far out it reaches. */
+    /* The separate transmitter rising at @p k beyond @p inner: located as a source of its own when the tallest bin of
+       its own segment lies within a reach beyond the valley, so all of it is centred, not only the part that rose
+       first; otherwise (its segment runs back into this source's) the hump of what remains above the mirror or
+       @p floor_level. */
+    located
+    separate(long long k, double floor_level, long long inner) const {
+        const long long anchor = anchor_of(a, k, 1);
+        if (anchor != kFarSource && (anchor - inner) * side > 0) {
+            /* Located from the same bin, a source already located would be located again exactly as it was. */
+            const located* same = nullptr;
+            for (int i = 0; i < sources->count && !same; ++i) {
+                if (sources->items[i].anchor == anchor) {
+                    same = &sources->items[i];
+                }
+            }
+            double symmetry = 0;
+            const located s = same ? *same : locate_source(a, anchor, &symmetry);
+            if ((a.to_coarse(s.centre) - (double)inner) * side > 0 && outside(std::llround(a.to_coarse(s.centre)))) {
+                return s;
+            }
+        }
+        return hump(k, floor_level, inner);
+    }
+
+    /* Records @p s unless already located (by another source than this one when it lies @p within this one's
+       width); returns how far out it reaches. */
     long long
-    record(const located& s) {
-        if (!sources->known(s, a.decimation)) {
+    record(const located& s, bool within = false) {
+        if (!sources->known(s, a.decimation, within ? source_index : -1)) {
             sources->add(s);
         }
         return std::llabs((side > 0 ? s.last : s.first) - start);
     }
 
-    /* The valley rise. It must also climb above the ridge just before its valley: the source's outer sideband lines
-       decay one after another, a transmitter beside it stands above the last of them. */
+    /* The separate transmitter rising at @p k within the source's own width from a valley of @p valley at
+       @p valley_at, if it is one: recorded, returning how far out it reaches; otherwise -1. */
+    long long
+    within_rise(long long k, double valley, long long valley_at) {
+        if (!symmetric || !(a.near_env(k) >= kMirrorRiseRatio * mirrored(k))) {
+            return -1;
+        }
+        const located h = hump(k, valley, valley_at, true);
+        double top = 0;
+        for (long long j = h.first; j <= h.last; ++j) {
+            top = std::max(top, a.near_env(j));
+        }
+        return valley <= kWeakCentreRatio * top ? record(h, true) : -1;
+    }
+
+    /* The valley rise. It must also climb above the ridge just before its valley and every ridge it has passed since:
+       the source's outer sideband lines decay one after another, a transmitter beside it stands above the last of
+       them. */
     void
     valley_rises() {
-        double peak = 0, valley = 0, ridge = 0, ridge_before = 0;
+        double peak = 0, valley = 0, ridge = 0, ridge_before = 0, passed = 0, previous = 0;
         long long valley_at = start;
-        bool fallen = false;
+        bool fallen = false, own_rise = false;
         for (long long i = 0; i <= a.reach; ++i) {
             const long long k = start + side * i;
             const double e = a.near_env(k);
             if (!fallen) {
                 peak = std::max(peak, e);
                 fallen = e * kSkirtFallRatio <= peak;
-                valley = ridge = ridge_before = e;
+                valley = ridge = ridge_before = passed = previous = e;
                 valley_at = k;
                 continue;
             }
@@ -687,20 +779,35 @@ struct beside {
                 valley = e;
                 valley_at = k;
                 ridge_before = ridge;
-                ridge = e;
+                ridge = passed = e;
+            } else if (e < previous) {
+                /* Falling again: the bin before was on or past a ridge this climb must clear. */
+                passed = std::max(passed, previous);
             }
-            if (outside(k) && e >= a.rise * valley && e > ridge_before) {
-                /* Past this hump, the next must fall away from it first. */
-                i = std::max(i, record(hump(k, valley, valley_at)));
-                fallen = false;
-                peak = a.near_env(start + side * i);
+            previous = e;
+            /* A rise that began within the source's width and is not a separate transmitter stays the source's own
+               spectrum (its sideband line's envelope reaching past that width) until it falls back. */
+            own_rise = own_rise && e >= a.rise * valley && e > ridge_before && e > passed;
+            if (own_rise || !(e >= a.rise * valley && e > ridge_before && e > passed)) {
+                continue;
             }
+            const long long reached =
+                outside(k) ? record(separate(k, valley, valley_at)) : within_rise(k, valley, valley_at);
+            if (reached < 0) {
+                own_rise = true;
+                continue;
+            }
+            /* Past this hump, the next must fall away from it first. */
+            i = std::max(i, reached);
+            fallen = false;
+            peak = a.near_env(start + side * i);
         }
     }
 
     /* What the mirror does not explain, where at least half the power is that remainder: it must peak inside that
        region (a skirt merely taller than its mirror, or mirrored about a slightly wrong centre, leaves more and more
-       toward the source's own edge). */
+       toward the source's own edge). Only up to the first transmitter other than the source: beyond it, what the
+       source's mirror does not explain is that transmitter's own skirt, and the valley rises find any other. */
     void
     mirror_excess() {
         for (long long i = a.half + 1; i <= a.reach; ++i) {
@@ -719,19 +826,31 @@ struct beside {
                 --top;
             }
             if (remainder(top + 1, 0) <= remainder(top, 0) && remainder(top - 1, 0) <= remainder(top, 0)) {
-                i = std::max(i, record(hump(top, 0, start)));
+                const located h = separate(top, 0, start);
+                const int match = sources->find(h, a.decimation);
+                if (match == source_index) {
+                    /* The source's own edge. */
+                    i = std::max(i, std::llabs((side > 0 ? h.last : h.first) - start));
+                    continue;
+                }
+                if (match < 0) {
+                    sources->add(h);
+                }
+                return;
             }
         }
     }
 };
 
-/* The separate transmitters on either side of @p source (with @p symmetry), into @p sources. */
+/* The separate transmitters on either side of @p source (with @p symmetry, item @p source_index of @p sources), into
+   @p sources. */
 void
-add_neighbours(const analysis& a, const located& source, double symmetry, source_list* sources) {
+add_neighbours(const analysis& a, const located& source, double symmetry, int source_index, source_list* sources) {
     const double centre = a.to_coarse(source.centre);
     for (int side = -1; side <= 1; side += 2) {
-        beside search{a, source, sources, centre, std::llround(centre), side, false};
-        search.mirror = symmetry >= kMirrorSymmetry && search.clean_far_side();
+        beside search{
+            a, source, sources, centre, std::llround(centre), side, source_index, false, symmetry >= kMirrorSymmetry};
+        search.mirror = search.symmetric && search.clean_far_side();
         search.valley_rises();
         if (search.mirror) {
             search.mirror_excess();
@@ -761,8 +880,9 @@ channel_bounds(const dsd_signal_measure_request& r, double fine_bin_hz, uint32_t
 
 /* Builds the analysis of @p first (plus @p second) power over @p frames transforms into the detector's scratch, over
    the spectrum around the channels @p seeds marks. Every walk stays within this of its channel: its window, an anchor
-   kClimbReaches away, a segment a reach from that, and from the source's centre a reach out, a reach of climb and a
-   reach of hump (or their mirror images). */
+   kClimbReaches away, a segment and its lobes a few reaches about that, and from the source's centre a reach out, then
+   a reach of climb and a reach of hump (or their mirror images), or a separate transmitter's anchor a reach on with
+   its own segment and lobes about it. */
 analysis
 build_analysis(dsd_signal_detector* d, const double* first, const double* second, unsigned frames, const bool* seeds) {
     const auto& request = d->request;
@@ -794,7 +914,7 @@ build_analysis(dsd_signal_detector* d, const double* first, const double* second
             hi = std::max(hi, position);
         }
     }
-    const long long margin = a.half + (kClimbReaches + 5) * a.reach + 2;
+    const long long margin = a.half + (kClimbReaches + 9) * a.reach + 2;
     if (lo > hi || hi - lo + 1 + 2 * (margin + spread + 1) >= a.n) {
         lo = 0;
         hi = a.n - 1;
@@ -873,31 +993,57 @@ locate_sources(dsd_signal_detector* d, const analysis& a, const bool* seeds) {
             symmetries[primary_count++] = symmetry;
         }
     }
+    /* The primaries are the list's first items, in order. */
     for (int i = 0; i < primary_count; ++i) {
-        add_neighbours(a, primaries[i], symmetries[i], sources);
+        add_neighbours(a, primaries[i], symmetries[i], i, sources);
     }
 }
 
-/* Whether a transmitter located in @p both holds its own power in both windows: within 10 dB of each other over the
-   bins it occupies (within 10 dB of its peak), not a neighbour's skirt beside it. */
+/* The power of window @p w (0 the first, 1 the second) per transform over analysis bin @p b. */
+double
+window_power(const dsd_signal_detector* d, const analysis& both, int w, long long b) {
+    const double* power = w ? d->power : d->first_power;
+    double sum = 0;
+    for (long long f = b * both.decimation; f < (b + 1) * both.decimation; ++f) {
+        sum += power[wrap_index(f, d->n)];
+    }
+    return sum / (w ? d->frames : d->first_frames);
+}
+
+/* Whether a transmitter located in @p both holds its own power in both windows, over the bins it occupies (within
+   10 dB of its peak): within 10 dB of each other, not a neighbour's skirt beside it; and spread over those bins alike,
+   the windows' three-bin sums overlapping by at least a quarter once each is scaled to its total, not two transmitters
+   that each fill one window and pool into one between them. */
 bool
 sustained(const dsd_signal_detector* d, const analysis& both, const located& s) {
-    double peak = 0, first = 0, second = 0;
+    double peak = 0;
     for (long long b = s.first; b <= s.last; ++b) {
         peak = std::max(peak, both.at(b));
     }
+    auto occupied = [&](long long b) { return !(both.at(b) * 10 < peak); };
+    auto three = [&](int w, long long b) {
+        return window_power(d, both, w, b - 1) + window_power(d, both, w, b) + window_power(d, both, w, b + 1);
+    };
+    double power[2] = {0, 0}, spread[2] = {0, 0};
     for (long long b = s.first; b <= s.last; ++b) {
-        if (both.at(b) * 10 < peak) {
-            continue;
-        }
-        for (long long f = b * both.decimation; f < (b + 1) * both.decimation; ++f) {
-            first += d->first_power[wrap_index(f, d->n)];
-            second += d->power[wrap_index(f, d->n)];
+        if (occupied(b)) {
+            for (int w = 0; w < 2; ++w) {
+                power[w] += window_power(d, both, w, b);
+                spread[w] += three(w, b);
+            }
         }
     }
-    first /= d->first_frames;
-    second /= d->frames;
-    return first * kSustainedRatio >= second && second * kSustainedRatio >= first;
+    if (!(power[0] * kSustainedRatio >= power[1] && power[1] * kSustainedRatio >= power[0] && spread[0] > 0
+          && spread[1] > 0)) {
+        return false;
+    }
+    double overlap = 0;
+    for (long long b = s.first; b <= s.last; ++b) {
+        if (occupied(b)) {
+            overlap += std::min(three(0, b) / spread[0], three(1, b) / spread[1]);
+        }
+    }
+    return overlap >= kSustainedOverlap;
 }
 
 /* Whether a sustained transmitter located in @p both is centred in [@p low, @p high). */
@@ -943,8 +1089,9 @@ reject_leakage(dsd_signal_detector* d, const bool* second_raw) {
 
 /* The mean power per FFT bin of a channel's noise sidebands, from 1.5 to 3 widths either side of @p position (FFT bins,
    rotation applied) in four blocks a side, over prefix sums @p bins: the mean of the blocks within 6 dB of the third
-   lowest, so transmitters in up to five of the eight blocks do not raise it, and noise alone (a sloping floor too) is
-   measured over all of them. Negative when a side has too few bins. */
+   lowest. A block a transmitter raises more than that is left out (up to five of the eight); one it raises less still
+   counts, so with up to five raised blocks the mean reads at most about 4.6 dB high. Noise alone (a sloping floor too)
+   is measured over all of them. Negative when a side has too few bins. */
 template <typename S>
 double
 sideband_noise(const S& bins, double position, double width_bins) {

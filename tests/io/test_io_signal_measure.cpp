@@ -268,6 +268,37 @@ test_ownership(dsd_signal_detector* d) {
             assert(found[i] == (uint32_t)comb[i].frequency);
         }
         assert(detected(d, g, {{middle, 0.3, 5000, 1000, 0}}) == std::vector<uint32_t>{(uint32_t)middle});
+        // Refined on the FFT bins, a tone FM transmitter whose first sidebands outweigh its carrier is centred on its
+        // carrier, not on one of those sidebands three channels away.
+        assert(detected(d, g, {{163064000, 0.3, 1500, 700, 0}}) == std::vector<uint32_t>{163064000});
+    }
+    // A transmitter's own sideband lines, decaying one after another, are not neighbours: not where its first
+    // sideband's envelope reaches past its own width (250 Hz grid, 8 kHz windows), nor at a weak outer line beyond a
+    // stronger one (5 kHz grid, 25 kHz windows).
+    {
+        dsd_signal_measure_request g{};
+        dsd_signal_search_range_default(&g.range);
+        g.range.start_hz = 163000000;
+        g.range.end_hz = 165000000;
+        g.range.step_num = 250;
+        g.range.bandwidth_hz = 8000;
+        g.range.sensitivity_db = 3;
+        g.session_id = 3;
+        g.request_id = 4;
+        g.capture.rate_hz = 1536000;
+        g.capture.rotation_hz = g.capture.capture_offset_hz = 384000;
+        g.capture.generation = 1;
+        dsd_signal_search_span span{};
+        assert(dsd_signal_search_plan(&g.range, 0, g.capture.rate_hz, g.capture.capture_offset_hz, &span) == 1);
+        g.count = span.count;
+        g.capture.capture_hz = (uint32_t)(span.tune_hz + g.capture.capture_offset_hz);
+        for (uint32_t i = 0; i < g.count; ++i) {
+            g.frequencies[i] = span.frequencies[i];
+        }
+        assert(
+            (detected(d, g, {{163030103, 0.0669, 2930, 2948.5, 0}}) == std::vector<uint32_t>{nearest(g, 163030103)}));
+        const auto wide = grid_request(1536000, 384000, 163450000, 5000, 25000, 162992500, 9);
+        assert(detected(d, wide, {{163013200, 0.3, 5000, 3000, 0}}) == std::vector<uint32_t>{163012500});
     }
     // A transmitter whose window wraps FFT bin 0 (just above the capture less the ingest rotation), one below the
     // capture without rotation, and channels just inside the DC and edge guards.
@@ -309,6 +340,10 @@ test_neighbours(dsd_signal_detector* d) {
     const auto finer = grid_request(1536000, 384000, 163450000, 2500, 16000, 162997500, 13);
     assert((detected(d, finer, {{163010000, 0.3, 0, 1000, 0}, {163015000, 0.3, 0, 1000, 0}})
             == std::vector<uint32_t>{163010000, 163015000}));
+    // A carrier 6 dB down 5 kHz beside a stronger one, within its 20 kHz window: unmirrored, beyond a deep valley.
+    const auto close = grid_request(1536000, 384000, 163450000, 2500, 20000, 163002500, 13);
+    assert((detected(d, close, {{163012500, 0.3, 0, 1000, 0}, {163017500, 0.15, 0, 1000, 0}})
+            == std::vector<uint32_t>{163012500, 163017500}));
     // A weak neighbour exactly on the boundary between two 5 kHz channels belongs to one of them.
     assert(detected(d, fine, {{163012500, 0.3, 2500, 1000, 0}, {163025000, 0.03, 2500, 700, 0}}).size() == 2);
     // Two weaker transmitters either side of a strong one on a fine grid, 10 kHz out.
@@ -323,19 +358,31 @@ test_neighbours(dsd_signal_detector* d) {
     assert(found.empty() || found == std::vector<uint32_t>{163012500});
 }
 
-/* Sustained energy: each window must find the transmitter itself, not another one's skirt that only one window has. */
+/* Sustained energy: each window must find the transmitter itself, not another one's skirt that only one window has,
+   nor two transmitters, one in each window, whose spectra overlap enough to pool into one between them. */
 static void
 test_sustained(dsd_signal_detector* d) {
-    const auto g = grid_request(1536000, 384000, 163450000, 12500, 16000, 162962500, 9);
-    const size_t half = request_samples(g) / 2;
-    auto first = samples(g, g.frequencies[0], 0, 2 * half), second = first;
-    add_nfm(first, g, 163012500, 0.3, 2500, 1000);
-    add_nfm(second, g, 163025000, 0.3, 2500, 1000);
-    std::vector<float> iq(first.begin(), first.begin() + (std::ptrdiff_t)(2 * half));
-    iq.insert(iq.end(), second.begin() + (std::ptrdiff_t)(2 * half), second.end());
-    const auto report = run(d, g, iq, 4096);
-    for (uint32_t i = 0; i < g.count; ++i) {
-        assert(!report.candidates[i].detected);
+    struct alternation {
+        uint32_t step, first;
+        transmitter one, two;
+    };
+
+    const alternation cases[] = {
+        {12500, 162962500, {163012500, 0.3, 2500, 1000, 0}, {163025000, 0.3, 2500, 1000, 0}},
+        {5000, 162992500, {163012500, 0.3, 5000, 1000, 0}, {163022500, 0.3, 2500, 700, 0}},
+    };
+    for (const alternation& c : cases) {
+        const auto g = grid_request(1536000, 384000, 163450000, c.step, 16000, c.first, 9);
+        const size_t half = request_samples(g) / 2;
+        auto first = samples(g, g.frequencies[0], 0, 2 * half), second = first;
+        add_nfm(first, g, c.one.frequency, c.one.amplitude, c.one.deviation, c.one.tone);
+        add_nfm(second, g, c.two.frequency, c.two.amplitude, c.two.deviation, c.two.tone);
+        std::vector<float> iq(first.begin(), first.begin() + (std::ptrdiff_t)(2 * half));
+        iq.insert(iq.end(), second.begin() + (std::ptrdiff_t)(2 * half), second.end());
+        const auto report = run(d, g, iq, 4096);
+        for (uint32_t i = 0; i < g.count; ++i) {
+            assert(!report.candidates[i].detected);
+        }
     }
 }
 
