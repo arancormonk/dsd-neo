@@ -527,13 +527,35 @@ setup_reuses_id(const tetra_call_t* c, const tetra_call_event* ev, int has_calle
            || ((c->basic_service ^ ev->basic_service) & kind_bits) != 0u;
 }
 
+/* @p c ended with its release unheard: a D-SETUP gave its identifier to another call. Its canonical call ends, its
+ * record goes, and the state machine lets go of it as its release would have made it (call_release()). Returns 1 when
+ * the state machine still follows the identifier -- the return to the control channel was refused, deferred or waits
+ * for a tune in flight -- so the new call must not be taken for the followed one. */
+static int
+call_retire_reused(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c) {
+    const uint16_t id = c->call_id;
+    if (ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == id) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    calls_free(c);
+    if (followed_id(state) != (int)id) {
+        return 0;
+    }
+    if (opts) {
+        tetra_sm_on_release(opts, state, id);
+    }
+    return followed_id(state) == (int)id;
+}
+
+/* The record a D-SETUP describes. @p held_over is set when it reuses the identifier of the followed call the state
+ * machine could not let go of (call_retire_reused()). */
 static tetra_call_t*
-call_setup(const dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev,
-           const tetra_mac_sdu* sdu) {
+call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev,
+           const tetra_mac_sdu* sdu, int* held_over) {
     uint32_t called = 0;
     const int has_called = sdu_ssi(sdu, &called);
-    if (c && setup_reuses_id(c, ev, has_called, called) && followed_id(state) != (int)c->call_id) {
-        calls_free(c);
+    if (c && setup_reuses_id(c, ev, has_called, called)) {
+        *held_over = call_retire_reused(opts, state, ts, c);
         c = NULL;
     }
     if (!c) {
@@ -748,8 +770,9 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
         return;
     }
     tetra_call_t* c = calls_find(ts, (uint16_t)(ev->call_id & 0x3FFFu));
+    int held_over = 0;
     if (ev->kind == TETRA_CALL_EV_SETUP) {
-        c = call_setup(state, ts, c, ev, sdu);
+        c = call_setup(opts, state, ts, c, ev, sdu, &held_over);
     }
     /* An allocation that came with a PDU of a call belongs to that call alone, tracked or not. */
     const int alloc = sdu && sdu->has_alloc && !sdu->alloc_taken;
@@ -777,7 +800,7 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     }
     call_after_pdu(opts, state, ts, c);
     if (alloc) {
-        call_attach(opts, state, ts, c, &sdu->alloc, 1);
+        call_attach(opts, state, ts, c, &sdu->alloc, !held_over);
     }
 }
 

@@ -47,6 +47,7 @@
 static int g_tunes;
 static int g_returns;
 static long g_tuned_hz;
+static dsd_trunk_tune_result g_return_result;
 
 static dsd_trunk_tune_result
 tune_hook(dsd_opts* opts, dsd_state* state, long freq, int ted_sps, uint64_t request_id) {
@@ -63,6 +64,9 @@ static dsd_trunk_tune_result
 return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)request_id;
     g_returns++;
+    if (g_return_result != DSD_TRUNK_TUNE_RESULT_OK) {
+        return g_return_result;
+    }
     opts->trunk_is_tuned = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     return DSD_TRUNK_TUNE_RESULT_OK;
@@ -91,6 +95,7 @@ session_open(void) {
     g_tunes = 0;
     g_returns = 0;
     g_tuned_hz = 0;
+    g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
     session s;
     s.opts = (dsd_opts*)calloc(1U, sizeof(*s.opts));
     s.state = (dsd_state*)calloc(1U, sizeof(*s.state));
@@ -332,6 +337,41 @@ test_followed_call_renamed(void) {
     assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && canonical(s.state).epoch == epoch);
     send_call_pdu(&s, 0x100u, TETRA_CMCE_D_RELEASE, 0x0E, 5);
     assert(g_returns == 1 && followed_call(s.state) == -1);
+    session_close(&s);
+}
+
+/* A D-SETUP that reuses the followed call's identifier for another talkgroup is another call: the followed one, whose
+ * release went unheard, ends and is let go of, and the new one is judged by the talkgroup policy like any other call
+ * -- one of a blocked talkgroup is not followed, one of an allowed talkgroup is. */
+static void
+test_setup_reusing_followed_id(void) {
+    session s = session_open();
+    session_history(&s);
+    dsd_tg_policy_entry row;
+    assert(dsd_tg_policy_make_exact_entry(0x200u, "B", "blocked", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    assert(dsd_tg_policy_upsert_exact(s.state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && g_tunes == 1);
+    const uint64_t first = canonical(s.state).epoch;
+
+    send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 130);
+    assert(g_tunes == 1 && g_tuned_hz == CARRIER_HZ(120) && g_returns == 1 && followed_call(s.state) == -1);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    assert(c && c->called_ssi == 0x200u && c->alloc.carrier == 130);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.epoch == first && call.phase == DSD_CALL_PHASE_ENDED && call.ota_target_id == 0x100u);
+
+    send_setup(&s, 0x300u, 0x0A, TTB_SPEECH_GROUP, 2, 140);
+    assert(g_tunes == 2 && g_tuned_hz == CARRIER_HZ(140) && followed_call(s.state) == 0x0A);
+    call = canonical(s.state);
+    assert(call.epoch != first && call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0x300u);
+
+    /* A return the backend refuses keeps the receiver on the old call's channel, and the new call's allocation is
+     * still not followed as if it were the old call's. */
+    g_return_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 150);
+    assert(g_returns == 2 && g_tunes == 2 && g_tuned_hz == CARRIER_HZ(140));
+    assert(tetra_calls_peek(s.state, 0x0A)->called_ssi == 0x200u);
     session_close(&s);
 }
 
@@ -784,6 +824,7 @@ main(void) {
     test_priority_preemption();
     test_followed_call_turns_encrypted();
     test_followed_call_renamed();
+    test_setup_reusing_followed_id();
     test_table_eviction_and_ageing();
     test_followed_call_publishes();
     test_encrypted_and_unfollowed_calls();

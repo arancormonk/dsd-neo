@@ -4498,19 +4498,22 @@ belongs to. The MCCH signals the calls of every carrier and timeslot of a cell, 
 single "current call".
 
 - Records. Up to `TETRA_CALLS_MAX` (8) `tetra_call_t` in `tetra_state_t::calls`, keyed by the 14-bit call identifier
-  every call PDU of EN 300 392-2 clause 14.7.1 carries. The MLE turns each CRC-passed call PDU into a
-  `tetra_call_event` (`tetra_calls_on_event()`): D-SETUP is the only PDU that makes a record (its MAC address is the
-  called party, its calling party and basic service the rest); every other PDU updates the record it names and nothing
-  when there is none, and D-RELEASE / D-DISCONNECT free it. A D-SETUP naming another called party or kind of call
-  under a known identifier is a new call reusing the identifier of one whose release went unheard. D-INFO and
-  D-CALL RESTORE may rename a call: the followed one is re-granted under its new identifier and stays one canonical
-  call. D-TX GRANTED / D-TX INTERRUPT give the transmitting party (or the addressed one when granted) and their
-  encryption control the end-to-end flag; D-TX CEASED ends the transmission. A full table evicts the least recently
-  heard record that is not followed; `tetra_calls_tick()` (from `tetra_sm_tick()`) drops records nothing named for
-  `TETRA_CALL_IDLE_S` (30 s) on the decode clock. The followed record never ages: the state machine's hangtime ends
-  it. A record's air encryption is the encryption mode of the MAC-RESOURCE that allocated its channel, learnt from
-  the clear address when that allocation is ciphertext (EN 300 392-7 clause 6.5.1); end-to-end encryption never
-  overwrites it, and the cell-wide `enc_mode` is for display only.
+  every call PDU of EN 300 392-2 clause 14.7.1 carries. The MLE turns each CRC-passed call PDU into a `tetra_call_event`
+  (`tetra_calls_on_event()`): D-SETUP is the only PDU that makes a record (its MAC address is the called party, its
+  calling party and basic service the rest); every other PDU updates the record it names and nothing when there is none,
+  and D-RELEASE / D-DISCONNECT free it. A D-SETUP naming another called party or kind of call under a known identifier
+  is a new call reusing the identifier of one whose release went unheard: the old call's canonical call ends, its record
+  goes and, when it was the followed call, the state machine lets go of it as the release would have made it, so the new
+  call meets the talkgroup policy like any other (`call_retire_reused()`; while a refused or deferred return keeps the
+  receiver there, the new call's allocation is not followed). D-INFO and D-CALL RESTORE may rename a call: the followed
+  one is re-granted under its new identifier and stays one canonical call. D-TX GRANTED / D-TX INTERRUPT give the
+  transmitting party (or the addressed one when granted) and their encryption control the end-to-end flag; D-TX CEASED
+  ends the transmission. A full table evicts the least recently heard record that is not followed; `tetra_calls_tick()`
+  (from `tetra_sm_tick()`) drops records nothing named for `TETRA_CALL_IDLE_S` (30 s) on the decode clock. The followed
+  record never ages: the state machine's hangtime ends it. A record's air encryption is the encryption mode of the
+  MAC-RESOURCE that allocated its channel, learnt from the clear address when that allocation is ciphertext
+  (EN 300 392-7 clause 6.5.1); end-to-end encryption never overwrites it, and the cell-wide `enc_mode` is for display
+  only.
 - Allocations. The MAC hands the MLE a `tetra_mac_sdu` with the PDU's address and channel allocation. A call PDU in
   the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
   (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label a PDU
@@ -4554,8 +4557,8 @@ single "current call".
   control notices, once the carrier is proven (`tetra_calls_notice()`); direct mode short data becomes a data notice,
   a repeat within 10 s not again. Cell reselection is not noted: it concerns one MS at a time.
 
-Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, ageing, canonical calls and
-notices in trunked and direct mode, speech publication, the receiving carrier), `TETRA_VOICE_GATE`,
+Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, identifier reuse, ageing,
+canonical calls and notices in trunked and direct mode, speech publication, the receiving carrier), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, the
 derived key stream), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
 
