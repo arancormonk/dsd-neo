@@ -48,7 +48,10 @@ if(NOT "${_all}" MATCHES "${EXPECTED}")
 endif()
 if(DEFINED MIN_MATCHES AND NOT "${MIN_MATCHES}" STREQUAL "")
     if(NOT "${MIN_MATCHES}" MATCHES "^[1-9][0-9]*$")
-        message(FATAL_ERROR "iq_decode_check: MIN_MATCHES must be a positive integer")
+        message(
+            FATAL_ERROR
+            "iq_decode_check: MIN_MATCHES must be a positive integer"
+        )
     endif()
     string(REGEX MATCHALL "${EXPECTED}" _expected_matches "${_all}")
     list(LENGTH _expected_matches _expected_match_count)
