@@ -436,7 +436,8 @@ test_phase79_mm_attach_detach(void) {
     wrap_mle_mm(mm, n, pdu, &out_n);
     tetra_mle_dispatch(pdu, out_n, 0, opt, st);
 
-    CHECK(tetra_st(st)->mm_addr_type == 1, "tetra_mm_addr_type");
+    /* The acknowledgement request is not an address type; it must not reach the channel-info address field. */
+    CHECK(tetra_st(st)->mm_addr_type == 0, "acknowledgement request does not set tetra_mm_addr_type");
     CHECK(tetra_st(st)->mm_group_identity_valid == 1, "tetra_mm_group_identity_valid");
     CHECK(tetra_st(st)->mm_group_identity_report == 1, "tetra_mm_group_identity_report");
     CHECK(tetra_st(st)->mm_group_identity_ack_request == 1, "tetra_mm_group_identity_ack_request");

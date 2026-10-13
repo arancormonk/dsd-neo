@@ -340,6 +340,8 @@ test_standard_mm_pdus(void) {
     pack_bits(bits, 0, TETRA_MM_FUNCTION_NOT_SUPPORTED, 4);
     pack_bits(bits, 4, TETRA_MM_D_ENABLE, 4);
     tetra_mm_dispatch(bits, 8, 1, opts, state);
+    CHECK(tetra_st(state)->mm_fns_valid == 0, "function-not-supported without its O-bit stays invalid");
+    tetra_mm_dispatch(bits, 9, 1, opts, state); /* table 16.27 with the O-bit clear */
     CHECK(tetra_st(state)->mm_fns_valid == 1 && tetra_st(state)->mm_fns_pdu_type == TETRA_MM_D_ENABLE,
           "function-not-supported rejected type");
 
@@ -390,10 +392,10 @@ test_security_golden_pdus(void) {
           "golden table A.4 authentication result offsets");
 
     /* Table A.26: acknowledgement, transition to class 3, combined CCK/GCK,
-     * CCK-id BEEF, GCK-VN 1234, and IV 2/17/42/CDEF (73 bits). */
+     * CCK-id BEEF, GCK-VN 1234, IV 2/17/42/CDEF, and the O-bit (74 bits). */
     DSD_MEMSET(bits, 0, sizeof(bits));
-    unpack_hex_bits("2EEFBBC48D0A3566F780", bits, 73);
-    tetra_mm_dispatch(bits, 73, 9, opts, state);
+    unpack_hex_bits("2EEFBBC48D0A3566F780", bits, 74);
+    tetra_mm_dispatch(bits, 74, 9, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.valid && tetra_st(state)->mm_ck_change.ack == 1
               && tetra_st(state)->mm_ck_change.security_class == 3 && tetra_st(state)->mm_ck_change.key_type == 3
               && tetra_st(state)->mm_ck_change.cck_id == 0xBEEF && tetra_st(state)->mm_ck_change.gck_vn == 0x1234,
@@ -528,10 +530,12 @@ test_authentication_pdus(void) {
     pack_bits(bits, 4, 3, 2);
     pack_bits(bits, 6, 0, 3);
     tetra_mm_dispatch(bits, 9, 5, opts, state);
+    CHECK(tetra_st(state)->mm_auth.subtype == 2, "rejection without its O-bit preserves prior snapshot");
+    tetra_mm_dispatch(bits, 10, 5, opts, state); /* O-bit clear (EN 300 392-2 annex E.1.1 note 4) */
     CHECK(tetra_st(state)->mm_auth.subtype == 3 && tetra_st(state)->mm_auth.reject_reason == 0,
           "authentication-not-supported rejection retained");
     pack_bits(bits, 6, 5, 3); /* reserved reason */
-    tetra_mm_dispatch(bits, 9, 5, opts, state);
+    tetra_mm_dispatch(bits, 10, 5, opts, state);
     CHECK(tetra_st(state)->mm_auth.subtype == 3 && tetra_st(state)->mm_auth.reject_reason == 0,
           "reserved rejection reason preserves prior snapshot");
 
@@ -1179,9 +1183,12 @@ test_otar_key_associate(void) {
 
     tetra_mm_dispatch(bits, off - 1, 3, opts, state);
     CHECK(tetra_st(state)->mm_otar.group_gssi[2] == 0x100003, "truncated key-associate tail preserves snapshot");
+    /* Table A.24 makes the explicit response a type 1 element that only an acknowledgement request gives meaning
+     * (note 3), so a demand without the request is still a demand. */
     pack_bits(bits, 8, 0, 1);
     tetra_mm_dispatch(bits, off, 3, opts, state);
-    CHECK(tetra_st(state)->mm_otar.ack, "explicit response without acknowledgement preserves snapshot");
+    CHECK(tetra_st(state)->mm_otar.valid && !tetra_st(state)->mm_otar.ack && tetra_st(state)->mm_otar.explicit_response,
+          "explicit response without acknowledgement is a valid key-associate demand");
     pack_bits(bits, 8, 1, 1);
     pack_bits(bits, 27, 34, 6);
     tetra_mm_dispatch(bits, off, 3, opts, state);
@@ -1547,7 +1554,9 @@ test_otar_key_status_demand(void) {
     pack_bits(bits, 29, 7, 4);
     pack_bits(bits, 8, 0, 1);
     tetra_mm_dispatch(bits, off, 2, opts, state);
-    CHECK(tetra_st(state)->mm_otar.ack, "key-status explicit response without acknowledgement is invalid");
+    CHECK(tetra_st(state)->mm_otar.valid && tetra_st(state)->mm_otar.key_status_type == 1
+              && !tetra_st(state)->mm_otar.ack && tetra_st(state)->mm_otar.explicit_response,
+          "key-status explicit response without acknowledgement is a valid demand (table A.27h note 1)");
 
     /* Individual SCK and GCK identifiers use their complete encoded ranges. */
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -1670,7 +1679,8 @@ test_otar_dm_sck_activate(void) {
     off += 10;
     pack_bits(bits, off, 4242, 14);
     off += 14;
-    CHECK(off == 93, "table A.27d subset absolute-IV demand is 93 bits");
+    off++; /* O-bit: no optional element (EN 300 392-2 annex E.1.1 note 4) */
+    CHECK(off == 94, "table A.27d subset absolute-IV demand is 94 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
     CHECK(tetra_st(state)->mm_otar.valid && tetra_st(state)->mm_otar.subtype == 13
               && tetra_st(state)->mm_otar.dm_sck_ack && tetra_st(state)->mm_otar.dm_sck.count == 0,
@@ -1687,8 +1697,13 @@ test_otar_dm_sck_activate(void) {
               && tetra_st(state)->mm_otar.address.mnc == 4242,
           "mandatory DMO network MNI retained");
 
-    tetra_mm_dispatch(bits, off - 1, 3, opts, state);
+    tetra_mm_dispatch(bits, off - 2, 3, opts, state);
     CHECK(tetra_st(state)->mm_otar.dm_sck_time.hyperframe == 0x2468, "truncated mandatory DMO MNI preserves snapshot");
+    pack_bits(bits, 53, 0x1111, 16);
+    tetra_mm_dispatch(bits, off - 1, 3, opts, state);
+    CHECK(tetra_st(state)->mm_otar.dm_sck_time.hyperframe == 0x2468,
+          "DM-SCK demand without its O-bit preserves snapshot");
+    pack_bits(bits, 53, 0x2468, 16);
     pack_bits(bits, 17, 6, 5);
     tetra_mm_dispatch(bits, off, 3, opts, state);
     CHECK(tetra_st(state)->mm_otar.dm_sck.subset == 5, "out-of-group DM-SCK subset preserves snapshot");
@@ -1726,7 +1741,8 @@ test_otar_dm_sck_activate(void) {
     off += 10;
     pack_bits(bits, off, 100, 14);
     off += 14;
-    CHECK(off == 129, "table A.27d two-SCK network-time demand is 129 bits");
+    off++; /* O-bit */
+    CHECK(off == 130, "table A.27d two-SCK network-time demand is 130 bits");
     tetra_mm_dispatch(bits, off, 3, opts, state);
     CHECK(tetra_st(state)->mm_otar.dm_sck.count == 2 && tetra_st(state)->mm_otar.dm_sck.number[0] == 3
               && tetra_st(state)->mm_otar.dm_sck.version[0] == 0x1234 && tetra_st(state)->mm_otar.dm_sck.number[1] == 31
@@ -1761,7 +1777,8 @@ test_otar_dm_sck_activate(void) {
         off += 10;
         pack_bits(bits, off, 2, 14);
         off += 14;
-        CHECK(off == 60, "table A.27d implicit-time demand is 60 bits");
+        off++; /* O-bit */
+        CHECK(off == 61, "table A.27d implicit-time demand is 61 bits");
         tetra_mm_dispatch(bits, off, 3, opts, state);
         CHECK(tetra_st(state)->mm_otar.dm_sck_time.type == time_type
                   && tetra_st(state)->mm_otar.dm_sck_time.network_time == 0,
@@ -1803,7 +1820,8 @@ test_ck_change_demand(void) {
     off += 16;
     pack_bits(bits, off, 2, 2);
     off += 2; /* immediate */
-    CHECK(off == 59, "table A.26 two-SCK body is 59 bits");
+    off++;    /* O-bit: no optional element (EN 300 392-2 annex E.1.1 note 4) */
+    CHECK(off == 60, "table A.26 two-SCK body is 60 bits");
     tetra_mm_dispatch(bits, off, 4, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.valid && tetra_st(state)->mm_ck_change.ack,
           "SCK change becomes valid and retains acknowledgement");
@@ -1816,11 +1834,13 @@ test_ck_change_demand(void) {
           "both repeated SCK descriptors retained");
     CHECK(tetra_st(state)->mm_ck_change.time.type == 2, "immediate SCK activation retained");
 
-    /* The final bit of Time Type is mandatory; truncation is atomic. */
+    /* The final bit of Time Type and the O-bit are mandatory; truncation is atomic. */
     pack_bits(bits, 15, 7, 5);
-    tetra_mm_dispatch(bits, off - 1, 4, opts, state);
+    tetra_mm_dispatch(bits, off - 2, 4, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.sck.number[0] == 3 && tetra_st(state)->mm_ck_change.time.type == 2,
           "truncated SCK demand preserves prior snapshot");
+    tetra_mm_dispatch(bits, off - 1, 4, opts, state);
+    CHECK(tetra_st(state)->mm_ck_change.sck.number[0] == 3, "SCK demand without its O-bit preserves prior snapshot");
 
     /* Zero SCK count selects a DMO subset and carries its common version. */
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -1845,6 +1865,7 @@ test_ck_change_demand(void) {
     off += 16;
     pack_bits(bits, off, 3, 2);
     off += 2; /* currently in use */
+    off++;    /* O-bit */
     tetra_mm_dispatch(bits, off, 4, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.sck_use == 1 && tetra_st(state)->mm_ck_change.sck.count == 0
               && tetra_st(state)->mm_ck_change.sck.grouping == 9 && tetra_st(state)->mm_ck_change.sck.subset == 17
@@ -1878,7 +1899,8 @@ test_ck_change_demand(void) {
     off += 16;
     pack_bits(bits, off, 0x56789ABC, 32);
     off += 32;
-    CHECK(off == 128, "table A.26 two-GCK network-time body is 128 bits");
+    off++; /* O-bit */
+    CHECK(off == 129, "table A.26 two-GCK network-time body is 129 bits");
     tetra_mm_dispatch(bits, off, 4, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.key_type == 2 && tetra_st(state)->mm_ck_change.gck_count == 2,
           "GCK change and repeat count retained");
@@ -1915,6 +1937,7 @@ test_ck_change_demand(void) {
     off += 6;
     pack_bits(bits, off, 0x2468, 16);
     off += 16;
+    off++; /* O-bit */
     tetra_mm_dispatch(bits, off, 4, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.key_type == 3 && tetra_st(state)->mm_ck_change.cck_id == 0xCAFE
               && tetra_st(state)->mm_ck_change.gck_vn == 0x1357,
@@ -1937,7 +1960,7 @@ test_ck_change_demand(void) {
     pack_bits(bits, 10, 0, 1); /* TMO */
     pack_bits(bits, 11, 0, 4); /* invalid subset count */
     pack_bits(bits, 15, 2, 2);
-    tetra_mm_dispatch(bits, 17, 4, opts, state);
+    tetra_mm_dispatch(bits, 18, 4, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.cck_id == saved_cck, "TMO zero-SCK count preserves prior snapshot");
 
     /* Remaining table A.71 key types have their own conditional widths. */
@@ -1955,6 +1978,7 @@ test_ck_change_demand(void) {
     off += 16;
     pack_bits(bits, off, 3, 2);
     off += 2;
+    off++; /* O-bit */
     tetra_mm_dispatch(bits, off, 4, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.key_type == 1 && tetra_st(state)->mm_ck_change.cck_id == 0x9876,
           "individual CCK change retained");
@@ -1975,6 +1999,7 @@ test_ck_change_demand(void) {
     off += 16;
     pack_bits(bits, off, 2, 2);
     off += 2;
+    off++; /* O-bit */
     tetra_mm_dispatch(bits, off, 4, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.key_type == 4 && tetra_st(state)->mm_ck_change.gck_vn == 0x7777,
           "all-GCK version change retained");
@@ -1991,6 +2016,7 @@ test_ck_change_demand(void) {
     off += 3; /* no cipher key */
     pack_bits(bits, off, 3, 2);
     off += 2;
+    off++; /* O-bit */
     tetra_mm_dispatch(bits, off, 4, opts, state);
     CHECK(tetra_st(state)->mm_ck_change.key_type == 5 && tetra_st(state)->mm_ck_change.security_class == 1
               && tetra_st(state)->mm_ck_change.time.type == 3,
@@ -2264,6 +2290,169 @@ test_annex_e9_group_identity_downlink(void) {
     free(opts);
 }
 
+/* Table A.100 gives SCK select number 33 to "SCKN dissociated"; only 34 to 63 are reserved. */
+static void
+test_otar_key_associate_dissociation(void) {
+    uint8_t bits[96] = {0};
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    int off = 0;
+
+    pack_bits(bits, off, TETRA_MM_D_OTAR, 4);
+    off += 4;
+    pack_bits(bits, off, 6, 4);
+    off += 4; /* KEY ASSOCIATE demand */
+    off += 2; /* no acknowledgement, no explicit response */
+    off += 16;
+    off += 1; /* SCK association */
+    pack_bits(bits, off, 33, 6);
+    off += 6; /* SCKN dissociated */
+    off += 4; /* grouping 0 */
+    pack_bits(bits, off, 1, 5);
+    off += 5;
+    pack_bits(bits, off, 0x100001, 24);
+    off += 24;
+    off++; /* O-bit */
+    CHECK(off == 67, "table A.24 single-group dissociation is 67 bits");
+    tetra_mm_dispatch(bits, off, 3, opts, state);
+    CHECK(tetra_st(state)->mm_otar.valid && tetra_st(state)->mm_otar.subtype == 6
+              && tetra_st(state)->mm_otar.sck_select == 33 && tetra_st(state)->mm_otar.group_gssi[0] == 0x100001,
+          "SCK dissociation demand accepted");
+
+    pack_bits(bits, 27, 34, 6);
+    pack_bits(bits, 42, 0x100002, 24);
+    tetra_mm_dispatch(bits, off, 3, opts, state);
+    CHECK(tetra_st(state)->mm_otar.sck_select == 33 && tetra_st(state)->mm_otar.group_gssi[0] == 0x100001,
+          "reserved SCK select 34 preserves snapshot");
+
+    free_state(state);
+    free(opts);
+}
+
+/* Table A.26 with table A.100b note 1: a DMO subset number cannot exceed the subsets of its grouping. */
+static void
+test_ck_change_subset_range(void) {
+    uint8_t bits[64] = {0};
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    int off = 0;
+
+    pack_bits(bits, off, TETRA_MM_D_CK_CHANGE_DEMAND, 4);
+    off += 4;
+    off += 1; /* no acknowledgement */
+    off += 2; /* no security class change */
+    off += 3; /* SCK */
+    pack_bits(bits, off, 1, 1);
+    off++;    /* DMO */
+    off += 4; /* subset */
+    off += 4; /* grouping 0: one subset of 30 keys */
+    pack_bits(bits, off, 1, 5);
+    off += 5;
+    pack_bits(bits, off, 0x4321, 16);
+    off += 16;
+    pack_bits(bits, off, 2, 2);
+    off += 2; /* immediate */
+    off++;    /* O-bit */
+    CHECK(off == 43, "table A.26 DMO subset body is 43 bits");
+    tetra_mm_dispatch(bits, off, 4, opts, state);
+    CHECK(tetra_st(state)->mm_ck_change.valid && tetra_st(state)->mm_ck_change.sck.subset == 1
+              && tetra_st(state)->mm_ck_change.sck.subset_vn == 0x4321,
+          "subset 1 of grouping 0 accepted");
+
+    pack_bits(bits, 19, 2, 5);
+    pack_bits(bits, 24, 0x1111, 16);
+    tetra_mm_dispatch(bits, off, 4, opts, state);
+    CHECK(tetra_st(state)->mm_ck_change.sck.subset == 1 && tetra_st(state)->mm_ck_change.sck.subset_vn == 0x4321,
+          "subset 2 of a one-subset grouping preserves snapshot");
+    pack_bits(bits, 15, 10, 4);
+    pack_bits(bits, 19, 1, 5);
+    tetra_mm_dispatch(bits, off, 4, opts, state);
+    CHECK(tetra_st(state)->mm_ck_change.sck.subset_vn == 0x4321, "grouping 10 is not a demand grouping");
+
+    free_state(state);
+    free(opts);
+}
+
+/* EN 300 392-2 annex E.1.1 reserves zero repeated elements in a type 4 element. */
+static void
+test_group_downlink_empty_element(void) {
+    uint8_t bits[64] = {0};
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    int off = 0;
+
+    pack_bits(bits, off, TETRA_MM_D_ATTACH_DETACH_GROUP, 4);
+    off += 4;
+    off += 3; /* report, acknowledgement request, mode */
+    pack_bits(bits, off, 1, 1);
+    off++; /* O-bit */
+    pack_bits(bits, off, 1, 1);
+    off++; /* M-bit */
+    pack_bits(bits, off, 7, 4);
+    off += 4; /* group identity downlink */
+    pack_bits(bits, off, 6, 11);
+    off += 11;
+    off += 6; /* zero repeated elements */
+    off++;    /* terminal M-bit */
+    CHECK(off == 31, "empty group identity downlink body is 31 bits");
+    tetra_mm_dispatch(bits, off, 7, opts, state);
+    CHECK(!tetra_st(state)->mm_group_identity_valid, "group identity downlink with no elements is rejected");
+
+    free_state(state);
+    free(opts);
+}
+
+/* EN 300 392-2 tables 16.4 to 16.10: a D-MM STATUS sub-PDU is published only when it is complete. */
+static void
+test_mm_status_sub_pdus(void) {
+    uint8_t bits[64] = {0};
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+
+    /* Table 16.4: energy saving information, then the O-bit. */
+    pack_bits(bits, 0, TETRA_MM_D_MM_STATUS, 4);
+    pack_bits(bits, 4, 1, 6);
+    pack_bits(bits, 10, 0x1ABC, 14);
+    tetra_mm_dispatch(bits, 24, 1, opts, state);
+    CHECK(!tetra_st(state)->mm_status_valid, "energy saving request without its O-bit stays invalid");
+    tetra_mm_dispatch(bits, 16, 1, opts, state);
+    CHECK(!tetra_st(state)->mm_status_valid, "energy saving request cut inside its information stays invalid");
+    tetra_mm_dispatch(bits, 25, 1, opts, state);
+    CHECK(tetra_st(state)->mm_status_valid && tetra_st(state)->mm_status_code == 1,
+          "complete energy saving request published");
+
+    /* Table 16.7: reserved octet, then the energy saving and SCCH type 2 elements. */
+    DSD_MEMSET(bits, 0, sizeof bits);
+    int off = 0;
+    pack_bits(bits, off, TETRA_MM_D_MM_STATUS, 4);
+    off += 4;
+    pack_bits(bits, off, 4, 6);
+    off += 6;
+    off += 8; /* reserved */
+    pack_bits(bits, off, 1, 1);
+    off++; /* O-bit */
+    pack_bits(bits, off, 1, 1);
+    off++; /* energy saving information present */
+    pack_bits(bits, off, 0x0123, 14);
+    off += 14;
+    off++; /* no SCCH information */
+    off++; /* terminal M-bit */
+    CHECK(off == 36, "table 16.7 body with energy saving information is 36 bits");
+    tetra_mm_dispatch(bits, off - 3, 1, opts, state);
+    CHECK(tetra_st(state)->mm_status_code == 1,
+          "terminating dual watch response cut inside a type 2 value stays invalid");
+    tetra_mm_dispatch(bits, off, 1, opts, state);
+    CHECK(tetra_st(state)->mm_status_code == 4, "complete terminating dual watch response published");
+
+    /* Table 16.92 ranges outside the sub-PDUs decoded here. */
+    CHECK(strcmp(tetra_mm_status_name(20), "DMO gateway") == 0, "status 16 to 31 is a DMO gateway function");
+    CHECK(strcmp(tetra_mm_status_name(45), "network specific") == 0, "status 32 to 47 is network specific");
+    CHECK(strcmp(tetra_mm_status_name(50), "reserved") == 0, "status 48 to 63 is reserved");
+
+    free_state(state);
+    free(opts);
+}
+
 /* Table 16.11: the 14-bit energy saving information type 2 element. */
 static void
 test_lu_accept_energy_saving(void) {
@@ -2313,6 +2502,10 @@ main(void) {
     test_ck_change_demand();
     test_annex_e11_lu_accept_type4_chain();
     test_annex_e9_group_identity_downlink();
+    test_otar_key_associate_dissociation();
+    test_ck_change_subset_range();
+    test_group_downlink_empty_element();
+    test_mm_status_sub_pdus();
     test_lu_accept_energy_saving();
 
     if (g_failures != 0) {

@@ -355,7 +355,8 @@ typedef struct tetra_state {
     uint8_t mm_status_valid;
     uint8_t mm_fns_pdu_type;
     uint8_t mm_fns_valid;
-    uint8_t mm_addr_type; /* Read by tetra_channel_info.c. */
+    /* No decoder sets this; tetra_channel_info.c still reads it. */
+    uint8_t mm_addr_type;
     long dl_carrier_hz;
 
     /* ───────────────────────────────────────────────────────────────────────

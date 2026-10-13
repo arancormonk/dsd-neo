@@ -67,6 +67,12 @@ void tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, const dsd_opts* o
 /** ETSI label of a 6-bit status downlink value (EN 300 392-2 table 16.92). */
 static inline const char*
 tetra_mm_status_name(uint8_t code) {
+    if (code >= 16u && code <= 31u) {
+        return "DMO gateway"; /* EN 300 396-5 annex B. */
+    }
+    if (code >= 32u && code <= 47u) {
+        return "network specific";
+    }
     switch (code) {
         case 1: return "change energy saving request";
         case 2: return "change energy saving response";

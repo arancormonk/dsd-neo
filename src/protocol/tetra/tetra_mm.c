@@ -148,11 +148,12 @@ mm_auth_result(tetra_bit_reader* r, tetra_mm_auth_t* a) {
     return mm_read_type34_tail(r);
 }
 
-/* Table A.2 REJECT: the reject reason, of which table A.38 defines only 0 (authentication not supported). */
+/* Table A.2 REJECT: the reject reason, of which table A.38 defines only 0 (authentication not supported), then the
+ * O-bit that a PDU without optional elements still carries (EN 300 392-2 annex E.1.1 note 4). */
 static int
 mm_auth_reject(tetra_bit_reader* r, tetra_mm_auth_t* a) {
     a->reject_reason = mm_u8(r, 3);
-    return a->reject_reason == 0;
+    return a->reject_reason == 0 && mm_read_type34_tail(r);
 }
 
 static void
@@ -396,13 +397,11 @@ mm_read_group_list(tetra_bit_reader* r, tetra_mm_otar_t* o) {
     return !o->group_is_range || o->group_gssi[1] > o->group_gssi[0];
 }
 
-/* Table A.24 KEY ASSOCIATE demand. */
+/* Table A.24 KEY ASSOCIATE demand. The explicit response is a type 1 element here, meaningful only with an
+ * acknowledgement request (note 3). */
 static int
 mm_otar_key_associate(tetra_bit_reader* r, tetra_mm_otar_t* o) {
     mm_read_response_request(r, o);
-    if (!o->ack && o->explicit_response) {
-        return 0;
-    }
     o->key_association_type = mm_u8(r, 1);
     if (o->key_association_type) {
         /* Table A.64: GCKN 0 to 65535, or 65536 for no GCKN; higher values are reserved. */
@@ -411,10 +410,10 @@ mm_otar_key_associate(tetra_bit_reader* r, tetra_mm_otar_t* o) {
             return 0;
         }
     } else {
-        /* Table A.100 SCK select number; table A.100a groupings 0 to 9. */
+        /* Table A.100: SCKN, 32 for no SCKN and 33 for dissociation; table A.100a groupings 0 to 9. */
         o->sck_select = mm_u8(r, 6);
         o->sck_subset_grouping = mm_u8(r, 4);
-        if (o->sck_select > 32u || o->sck_subset_grouping > 9u) {
+        if (o->sck_select > 33u || o->sck_subset_grouping > 9u) {
             return 0;
         }
     }
@@ -471,13 +470,11 @@ mm_otar_key_delete(tetra_bit_reader* r, tetra_mm_otar_t* o) {
     return mm_read_address_tail(r, &o->address);
 }
 
-/* Table A.27h KEY STATUS demand, by key status type (table A.71b). */
+/* Table A.27h KEY STATUS demand, by key status type (table A.71b). The explicit response is a type 1 element here,
+ * meaningful only with an acknowledgement request (note 1). */
 static int
 mm_otar_key_status(tetra_bit_reader* r, tetra_mm_otar_t* o) {
     mm_read_response_request(r, o);
-    if (!o->ack && o->explicit_response) {
-        return 0;
-    }
     o->key_status_type = mm_u8(r, 3);
     switch (o->key_status_type) {
         case 0: /* Individual SCK. */ o->key_status_sck_number = mm_u8(r, 5); break;
@@ -512,7 +509,7 @@ mm_read_sck_set(tetra_bit_reader* r, tetra_mm_sck_set_t* set, int subset_allowed
         set->grouping = mm_u8(r, 4);
         set->subset = mm_u8(r, 5);
         set->subset_vn = mm_u16(r, 16);
-        return subset_allowed;
+        return subset_allowed && mm_sck_subset_defined(set->grouping, set->subset);
     }
     for (uint8_t i = 0; i < set->count; i++) {
         set->number[i] = mm_u8(r, 5);
@@ -535,17 +532,17 @@ mm_read_time(tetra_bit_reader* r, tetra_mm_time_t* t) {
     }
 }
 
-/* Table A.27d DM-SCK ACTIVATE DEMAND. The MNI of the DMO network is a mandatory type 1 element. */
+/* Table A.27d DM-SCK ACTIVATE DEMAND. The MNI of the DMO network is a mandatory type 1 element; the O-bit follows
+ * it (EN 300 392-2 annex E.1.1 note 4). */
 static int
 mm_otar_dm_sck_activate(tetra_bit_reader* r, tetra_mm_otar_t* o) {
     o->dm_sck_ack = mm_u8(r, 1);
-    if (!mm_read_sck_set(r, &o->dm_sck, 1)
-        || (o->dm_sck.count == 0 && !mm_sck_subset_defined(o->dm_sck.grouping, o->dm_sck.subset))) {
+    if (!mm_read_sck_set(r, &o->dm_sck, 1)) {
         return 0;
     }
     mm_read_time(r, &o->dm_sck_time);
     mm_read_address(r, &o->address);
-    return tetra_bits_ok(r);
+    return mm_read_type34_tail(r);
 }
 
 typedef struct {
@@ -659,6 +656,7 @@ mm_read_change_target(tetra_bit_reader* r, tetra_mm_ck_change_t* c) {
     }
 }
 
+/* Table A.26 has no optional element, so the PDU ends with the O-bit (EN 300 392-2 annex E.1.1 note 4). */
 static void
 mm_parse_ck_change(mm_pdu* pdu) {
     static const char* const targets[6] = {"SCK", "CCK", "GCK", "CCK and GCK", "all GCKs", "no cipher key"};
@@ -671,7 +669,7 @@ mm_parse_ck_change(mm_pdu* pdu) {
     c.key_type = mm_u8(r, 3);
     int ok = mm_read_change_target(r, &c);
     mm_read_time(r, &c.time);
-    if (!ok || !tetra_bits_ok(r)) {
+    if (!ok || !mm_read_type34_tail(r)) {
         mm_log_invalid(pdu, "D-CK-CHANGE");
         return;
     }
@@ -863,13 +861,13 @@ mm_read_group_entry(tetra_bit_reader* r, tetra_mm_group_entry_t* e) {
     }
 }
 
-/* Type 4 group identity downlink element: a 6-bit number of repeated elements, then that many group identities,
- * filling exactly @p length bits. */
+/* Type 4 group identity downlink element: a 6-bit number of repeated elements (1 to 63; annex E.1.1 reserves 0),
+ * then that many group identities, filling exactly @p length bits. */
 static int
 mm_read_group_downlink(const tetra_bit_reader* r, int length, mm_group_entries* entries) {
     tetra_bit_reader element = tetra_bits_reader(r->bits, r->pos + length, r->pos);
     const uint8_t count = mm_u8(&element, 6);
-    if ((unsigned)entries->count + count > 63u) {
+    if (count == 0 || (unsigned)entries->count + count > 63u) {
         return 0;
     }
     for (uint8_t i = 0; i < count; i++) {
@@ -918,7 +916,6 @@ mm_parse_group_identity(mm_pdu* pdu) {
     ts->mm_group_identity_attach_detach_mode = mode;
     ts->mm_group_entry_count = entries.count;
     DSD_MEMCPY(ts->mm_group_entry, entries.entry, sizeof ts->mm_group_entry);
-    ts->mm_addr_type = ack_request; /* Shown by tetra_channel_info.c. */
     ts->mm_group_identity_valid = 1;
 }
 
@@ -938,11 +935,42 @@ mm_parse_group_ack(mm_pdu* pdu) {
     pdu->ts->mm_group_ack_valid = 1;
 }
 
-/* Table 16.3 D-MM STATUS: the 6-bit status downlink. */
+/* Status downlink dependent information (tables 16.4 to 16.10): the type 1 bits after the status downlink, then the
+ * widths of the type 2 elements; each sub-PDU ends with an optional proprietary element. */
+typedef struct {
+    uint8_t status;
+    uint8_t type1_bits;
+    uint8_t type2_count;
+    uint8_t type2_width[2];
+} mm_status_layout;
+
+static const mm_status_layout k_status_layouts[] = {
+    {1, 14, 0, {0, 0}}, /* Change of energy saving mode request: energy saving information. */
+    {2, 14, 0, {0, 0}}, /* Change of energy saving mode response. */
+    {3, 25, 1, {6, 0}}, /* Dual watch mode response: energy saving, result, reserved; SCCH information. */
+    {4, 8, 2, {14, 6}}, /* Terminating dual watch mode response: reserved; energy saving and SCCH information. */
+    {5, 25, 1, {6, 0}}, /* Change of dual watch mode request: energy saving, reason, reserved; SCCH information. */
+    {7, 0, 0, {0, 0}},  /* MS frequency bands request. */
+    {8, 8, 0, {0, 0}},  /* Distance reporting request: timer and validity. */
+};
+
+/* Table 16.3 D-MM STATUS. The sub-PDUs of tables 16.4 to 16.10 are checked for completeness; DMO gateway (16 to 31,
+ * EN 300 396-5), network specific (32 to 47) and reserved values have no layout here, so only the status counts. */
 static void
 mm_parse_status(mm_pdu* pdu) {
-    const uint8_t status = mm_u8(&pdu->r, 6);
-    if (!tetra_bits_ok(&pdu->r)) {
+    tetra_bit_reader* const r = &pdu->r;
+    const uint8_t status = mm_u8(r, 6);
+    int ok = tetra_bits_ok(r);
+    for (size_t i = 0; ok && i < sizeof k_status_layouts / sizeof k_status_layouts[0]; i++) {
+        const mm_status_layout* const layout = &k_status_layouts[i];
+        if (layout->status == status) {
+            uint32_t value[2] = {0};
+            uint8_t present[2] = {0};
+            (void)tetra_bits_skip(r, layout->type1_bits);
+            ok = mm_read_optional(r, layout->type2_width, layout->type2_count, value, present);
+        }
+    }
+    if (!ok) {
         mm_log_invalid(pdu, "D-MM-STATUS");
         return;
     }
@@ -952,11 +980,12 @@ mm_parse_status(mm_pdu* pdu) {
     pdu->ts->mm_status_valid = 1;
 }
 
-/* Table 16.27 MM PDU/FUNCTION NOT SUPPORTED: the not-supported PDU type. */
+/* Table 16.27 MM PDU/FUNCTION NOT SUPPORTED: the not-supported PDU type and the O-bit. The type 2 sub-PDU type that
+ * may follow has a length that depends on the rejected PDU, so nothing after the O-bit is read. */
 static void
 mm_parse_function_not_supported(mm_pdu* pdu) {
     const uint8_t type = mm_u8(&pdu->r, 4);
-    if (!tetra_bits_ok(&pdu->r)) {
+    if (!tetra_bits_skip(&pdu->r, 1)) {
         mm_log_invalid(pdu, "FUNCTION-NOT-SUPPORTED");
         return;
     }
