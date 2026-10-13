@@ -25,13 +25,6 @@ for file-specific license/provenance details.
   Compiled into the Qt Quick frontend's resource bundle, so it is redistributed by any build with `DSD_ENABLE_QT_UI=ON`
   — today that is the Android app.
 
-## Dependency Build Overlays
-
-- **mpg123 vcpkg overlay** (`vcpkg-ports/mpg123`; mpg123 project) -
-  LGPL-2.1-or-later. The recipe follows the Microsoft vcpkg 1.33.7 port and
-  pins the upstream SourceForge archive by SHA-512. The project-local patch only
-  supplies `sys/types.h` to CMake's `off_t` size probe for Visual Studio 2026.
-
 ## Embedded Provenance-Bearing Code
 
 - **EDACS-FME / EDACS helpers** (`src/protocol/edacs/edacs-fme.c`) - source comments credit EDACS-FM, sp5wwp/ledacs,

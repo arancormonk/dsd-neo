@@ -11081,7 +11081,6 @@ set(_dsd_tetra_test_sources
     messages
     mle_cmce
     mm_dispatch
-    osmo_shim
     rcpc_map
     real_air_bit_trace
     sds_reference_mac
@@ -11121,19 +11120,6 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         "${_dsd_tetra_target}"
         PRIVATE dsd-neo_proto_tetra dsd-neo_fec
     )
-    if(_dsd_tetra_test STREQUAL "depuncture_regression")
-        target_sources(
-            "${_dsd_tetra_target}"
-            PRIVATE
-                ${PROJECT_SOURCE_DIR}/src/protocol/tetra/osmo_sources/osmo_viterbi_shim.c
-                ${PROJECT_SOURCE_DIR}/src/protocol/tetra/osmo_sources/osmo_shim_map.c
-        )
-    elseif(_dsd_tetra_test STREQUAL "osmo_shim")
-        target_sources(
-            "${_dsd_tetra_target}"
-            PRIVATE ${PROJECT_SOURCE_DIR}/src/protocol/tetra/osmo_sources/osmo_shim_map.c
-        )
-    endif()
     string(REGEX REPLACE "^tetra_" "" _dsd_tetra_test_name "${_dsd_tetra_test}")
     string(TOUPPER "${_dsd_tetra_test_name}" _dsd_tetra_test_name)
     add_test(
@@ -11161,31 +11147,6 @@ unset(_dsd_tetra_test_sources)
 # deterministic silence stub. Keep the protocol suite usable when Python is
 # intentionally absent from a minimal target environment.
 find_package(Python3 COMPONENTS Interpreter QUIET)
-if(Python3_Interpreter_FOUND)
-    add_test(
-        NAME TETRA_FIELD_CAPTURE_VERIFIER
-        COMMAND
-            "${Python3_EXECUTABLE}"
-            "${PROJECT_SOURCE_DIR}/tests/tools/test_verify_tetra_field_capture.py"
-    )
-    set_tests_properties(
-        TETRA_FIELD_CAPTURE_VERIFIER
-        PROPERTIES LABELS "tetra;tools" TIMEOUT 30
-    )
-
-    add_test(
-        NAME TETRA_IQ_FIXTURE_REPRODUCIBILITY
-        COMMAND
-            "${Python3_EXECUTABLE}"
-            "${PROJECT_SOURCE_DIR}/tools/tetra/verify_iq_fixtures.py"
-            --generator "${PROJECT_SOURCE_DIR}/tools/build_iq_fixtures.py"
-            --fixtures "${PROJECT_SOURCE_DIR}/tests/fixtures/iq"
-    )
-    set_tests_properties(
-        TETRA_IQ_FIXTURE_REPRODUCIBILITY
-        PROPERTIES LABELS "tetra;iq-fixture" TIMEOUT 120
-    )
-endif()
 if(Python3_Interpreter_FOUND)
     add_executable(
         dsd-neo_test_tetra_acelp_pipeline

@@ -152,10 +152,7 @@ extern "C" {
     ((s) == DSD_SYNC_DMR_MS_VOICE || (s) == DSD_SYNC_DMR_MS_DATA || (s) == DSD_SYNC_DMR_RC_DATA)
 
 /** Check if synctype is any DMR */
-#define DSD_SYNC_IS_DMR(s)         (DSD_SYNC_IS_DMR_BS(s) || DSD_SYNC_IS_DMR_MS(s))
-
-/** Check if synctype is D-STAR voice (excludes header frames) */
-#define DSD_SYNC_IS_DSTAR_VOICE(s) ((s) == DSD_SYNC_DSTAR_VOICE_POS || (s) == DSD_SYNC_DSTAR_VOICE_NEG)
+#define DSD_SYNC_IS_DMR(s) (DSD_SYNC_IS_DMR_BS(s) || DSD_SYNC_IS_DMR_MS(s))
 
 /** Check if synctype is D-STAR (voice or header) */
 #define DSD_SYNC_IS_DSTAR(s)                                                                                           \

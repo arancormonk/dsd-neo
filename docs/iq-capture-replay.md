@@ -236,13 +236,6 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 
 ## Operational Limits
 
-For a TETRA hardware trunk-tracking acceptance capture, run
-`tools/tetra/verify_field_capture.py`. Its strict mode combines the v2 retune
-timeline and zero-drop checks with a provenance document and ordered realtime
-replay evidence for control-channel acquisition, allocation, traffic-channel
-decode, and control-channel reacquisition. See `tools/tetra/README.md` for the
-command and generated evidence report.
-
 - `--iq-capture` and `--iq-replay` are mutually exclusive in one invocation.
 - Single-segment v1 captures continue to replay unchanged.
 - CU8 metadata with `combine_rotate_enabled: false` selects the two-pass byte rotation and bias-128 widening so captures
