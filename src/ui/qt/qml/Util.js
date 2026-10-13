@@ -68,6 +68,10 @@ var DECODE_MODES = [
         hint: "M17 — open-source ham digital voice."
     },
     {
+        label: "TETRA", short: "TETRA", flag: "-fT", trunked: true,
+        hint: "TETRA — pi/4-DQPSK trunked voice and control channels."
+    },
+    {
         // -fA is the analog monitor. On a radio it receives narrowband FM through
         // the NFM channel filter, whose width the Radio sheet sets (issue #525).
         label: "NFM — analog FM", short: "NFM", flag: "-fA",

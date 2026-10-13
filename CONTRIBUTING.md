@@ -51,6 +51,11 @@ pull request explains why an exception is appropriate.
   radio keys, and machine-specific configuration are not committed.
 - Vendored third-party code stays under `src/third_party/`, keeps upstream
   license notices, and is documented in dependency records.
+- Do not add ETSI EN 300 395-2 ACELP sources, objects, patches of those
+  sources, or a downloader for them. TETRA speech audio is an external process
+  selected by `TETRA_VOCODER_CMD`. The top-level CMake build does not compile
+  it. Build `tools/tetra/acelp_adapter/` locally with your own
+  `-DETSI_TETRA_C_CODE` path. See `tools/tetra/README.md`.
 - Workflow, dependency, packaging, release, parser, decoder, crypto, radio IO,
   and security changes receive extra review.
 - Static-analysis suppressions are narrow and explain why the local exception is

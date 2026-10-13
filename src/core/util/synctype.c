@@ -17,7 +17,7 @@
 /**
  * @brief Base synctype string table.
  *
- * This table covers indices 0-43. Extended M17 types (76-77, 86-87, 98-101)
+ * This table covers indices 0-44. Extended M17 types (76-77, 86-87, 98-99)
  * are handled separately in dsd_synctype_to_string().
  */
 static const char* const SyncTypeStrings[] = {
@@ -62,9 +62,10 @@ static const char* const SyncTypeStrings[] = {
     "EDACS/PV",     /* 38: -EDACS */
     "ANALOG",       /* 39: Generic analog */
     "DIGITAL",      /* 40: Generic digital */
-    NULL,           /* 41: unused */
-    NULL,           /* 42: unused */
-    NULL,           /* 43: unused */
+    "TETRA",        /* 41: +TETRA NDB (non-inverted) */
+    "TETRA",        /* 42: -TETRA NDB (inverted) */
+    "TETRA",        /* 43: +TETRA SB (non-inverted) */
+    "TETRA",        /* 44: -TETRA SB (inverted) */
 };
 
 #define SYNCTYPE_TABLE_SIZE (sizeof(SyncTypeStrings) / sizeof(SyncTypeStrings[0]))

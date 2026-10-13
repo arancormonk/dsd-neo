@@ -596,6 +596,7 @@ fi
 
 run mkdir -p "$BUILD_DIR"
 build_mbelib_neo
+run_for_prefix "$DEPS_PREFIX" bash "$ROOT_DIR/tools/install_tetra_crypto_deps.sh" "$DEPS_PREFIX"
 if [ "$build_codec2_from_source" -eq 1 ]; then
   build_codec2
 fi

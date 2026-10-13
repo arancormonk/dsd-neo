@@ -21,7 +21,7 @@
 
 static int
 is_valid_rtl_bw_khz(int bw) {
-    return (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48);
+    return (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48 || bw == 72);
 }
 
 static int
@@ -401,7 +401,7 @@ dsd_rtl_spec_bw_khz_or_default(const char* token) {
     if (!token || rtl_spec_parse_int(token, &bw) != 0) {
         return 48;
     }
-    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48) {
+    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48 || bw == 72) {
         return bw;
     }
     return 48;

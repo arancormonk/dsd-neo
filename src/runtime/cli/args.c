@@ -31,6 +31,8 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/tetra/tetra_air.h>
+#include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -1119,6 +1121,79 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--iq-loop") == 0) {                                                                       \
             iq_loop_cli = 1;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--tetra-uplink") == 0) {                                                                  \
+            state->tetra_uplink = 1;                                                                                   \
+            LOG_INFO("NOTICE: TETRA uplink bursts enabled\n");                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--tetra-net") == 0 || strncmp(argv[i], "--tetra-net=", 12) == 0) {                        \
+            const char* net = (argv[i][11] == '=') ? argv[i] + 12 : NULL;                                              \
+            unsigned mcc = 0;                                                                                          \
+            unsigned mnc = 0;                                                                                          \
+            int colour = 0;                                                                                            \
+            if (net == NULL) {                                                                                         \
+                if (i + 1 >= argc) {                                                                                   \
+                    LOG_ERROR("--tetra-net requires mcc,mnc,colour\n");                                                \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                net = DSD_PARSE_ARGS_NEXT_ARG();                                                                       \
+            }                                                                                                          \
+            if (!state->tetra_net_known) {                                                                             \
+                if (sscanf(net, "%u,%u,%i", &mcc, &mnc, &colour) != 3) {                                               \
+                    LOG_ERROR("--tetra-net requires mcc,mnc,colour (for example 86,28,0x19)\n");                       \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                state->tetra_mcc = (uint16_t)(mcc & 0x3FFu);                                                           \
+                state->tetra_mnc = (uint16_t)(mnc & 0x3FFFu);                                                          \
+                state->tetra_colour = (uint8_t)(colour & 0x3Fu);                                                       \
+                state->tetra_lfsr_seed =                                                                               \
+                    tetra_compute_scramb_seed(state->tetra_mcc, state->tetra_mnc, state->tetra_colour);                \
+                state->tetra_net_known = 1;                                                                            \
+                LOG_INFO("NOTICE: TETRA network MCC=%u MNC=%u colour=%u\n", mcc & 0x3FFu, mnc & 0x3FFFu,               \
+                         (unsigned)(colour & 0x3F));                                                                   \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--tetra-key") == 0 || strncmp(argv[i], "--tetra-key=", 12) == 0) {                        \
+            const char* spec = (argv[i][11] == '=') ? argv[i] + 12 : NULL;                                             \
+            unsigned key_mcc = 0;                                                                                      \
+            unsigned key_mnc = 0;                                                                                      \
+            char hex[21];                                                                                              \
+            uint8_t key[10];                                                                                           \
+            int hex_ok = 1;                                                                                            \
+            if (spec == NULL) {                                                                                        \
+                if (i + 1 >= argc) {                                                                                   \
+                    LOG_ERROR("--tetra-key requires mcc,mnc,20 hex digits\n");                                         \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                spec = DSD_PARSE_ARGS_NEXT_ARG();                                                                      \
+            }                                                                                                          \
+            hex[0] = '\0';                                                                                             \
+            if (sscanf(spec, "%u,%u,%20s", &key_mcc, &key_mnc, hex) != 3 || strlen(hex) != 20) {                       \
+                LOG_ERROR("--tetra-key requires mcc,mnc,20 hex digits\n");                                             \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            for (int hi = 0; hi < 10; hi++) {                                                                          \
+                unsigned byte = 0;                                                                                     \
+                if (sscanf(hex + (hi * 2), "%2x", &byte) != 1) {                                                       \
+                    hex_ok = 0;                                                                                        \
+                    break;                                                                                             \
+                }                                                                                                      \
+                key[hi] = (uint8_t)byte;                                                                               \
+            }                                                                                                          \
+            if (!hex_ok) {                                                                                             \
+                LOG_ERROR("--tetra-key requires mcc,mnc,20 hex digits\n");                                             \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            tetra_air_key_set(state, (uint16_t)(key_mcc & 0x3FFu), (uint16_t)(key_mnc & 0x3FFFu), key);                \
+            LOG_INFO("NOTICE: TETRA air key loaded for MCC=%u MNC=%u\n", key_mcc & 0x3FFu, key_mnc & 0x3FFFu);         \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--iq-info") == 0) {                                                                       \

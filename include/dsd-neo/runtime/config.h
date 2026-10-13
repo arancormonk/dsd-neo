@@ -534,7 +534,8 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_MODE_TDMA,
     DSDCFG_MODE_ANALOG,
     DSDCFG_MODE_DMR_MONO,
-    DSDCFG_MODE_AM /* 16: the analog monitor with the AM envelope detector (IQ radio inputs only; issue #524) */
+    DSDCFG_MODE_AM,   /* 16: the analog monitor with the AM envelope detector (IQ radio inputs only; issue #524) */
+    DSDCFG_MODE_TETRA /* 17: TETRA (pi/4-DQPSK, 18 ksym/s) */
 } dsdneoUserDecodeMode;
 
 typedef enum DSD_ATTR_PACKED {

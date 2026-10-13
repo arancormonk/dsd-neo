@@ -152,7 +152,10 @@ extern "C" {
     ((s) == DSD_SYNC_DMR_MS_VOICE || (s) == DSD_SYNC_DMR_MS_DATA || (s) == DSD_SYNC_DMR_RC_DATA)
 
 /** Check if synctype is any DMR */
-#define DSD_SYNC_IS_DMR(s) (DSD_SYNC_IS_DMR_BS(s) || DSD_SYNC_IS_DMR_MS(s))
+#define DSD_SYNC_IS_DMR(s)         (DSD_SYNC_IS_DMR_BS(s) || DSD_SYNC_IS_DMR_MS(s))
+
+/** Check if synctype is D-STAR voice (excludes header frames) */
+#define DSD_SYNC_IS_DSTAR_VOICE(s) ((s) == DSD_SYNC_DSTAR_VOICE_POS || (s) == DSD_SYNC_DSTAR_VOICE_NEG)
 
 /** Check if synctype is D-STAR (voice or header) */
 #define DSD_SYNC_IS_DSTAR(s)                                                                                           \
@@ -183,6 +186,19 @@ extern "C" {
 
 /** Check if synctype is EDACS/ProVoice */
 #define DSD_SYNC_IS_EDACS(s)      (DSD_SYNC_IS_PROVOICE(s) || DSD_SYNC_IS_EDACS_ONLY(s))
+
+/* ============================================================================
+ * TETRA
+ * ============================================================================ */
+#define DSD_SYNC_TETRA_NDB_POS    41 /**< +TETRA Normal Downlink Burst (non-inverted) */
+#define DSD_SYNC_TETRA_NDB_NEG    42 /**< -TETRA Normal Downlink Burst (inverted) */
+#define DSD_SYNC_TETRA_SB_POS     43 /**< +TETRA Synchronisation Burst (non-inverted) */
+#define DSD_SYNC_TETRA_SB_NEG     44 /**< -TETRA Synchronisation Burst (inverted) */
+
+/** Check if synctype is TETRA */
+#define DSD_SYNC_IS_TETRA(s)                                                                                           \
+    ((s) == DSD_SYNC_TETRA_NDB_POS || (s) == DSD_SYNC_TETRA_NDB_NEG || (s) == DSD_SYNC_TETRA_SB_POS                    \
+     || (s) == DSD_SYNC_TETRA_SB_NEG)
 
 /**
  * Check if synctype belongs to a protocol the trunking layer can follow.

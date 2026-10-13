@@ -23,7 +23,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if !DSD_PLATFORM_WIN_NATIVE
+#if DSD_PLATFORM_WIN_NATIVE
+#include <direct.h>
+#else
 #include <unistd.h>
 #endif
 #include "dsd-neo/core/opts_fwd.h"

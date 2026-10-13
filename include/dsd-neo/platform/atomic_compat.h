@@ -40,6 +40,11 @@ atomic_store(atomic_int* obj, int desired) {
     (void)InterlockedExchange((volatile LONG*)obj, (LONG)desired);
 }
 
+static inline void
+atomic_init(atomic_int* obj, int desired) {
+    atomic_store(obj, desired);
+}
+
 static inline int
 atomic_exchange(atomic_int* obj, int desired) {
     return (int)InterlockedExchange((volatile LONG*)obj, (LONG)desired);

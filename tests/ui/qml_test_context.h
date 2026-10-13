@@ -53,6 +53,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QUrl>
 #include <QVariantMap>
 #include <QXmlStreamReader>
 #include <QtQuickTest>
@@ -2250,7 +2251,11 @@ class Setup : public QObject {
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
 
         QQmlContext* ctx = engine->rootContext();
-        ctx->setContextProperty(QStringLiteral("uiDir"), QStringLiteral(DSD_QML_UI_DIR));
+        /* Loader.source is a URL. A raw drive-qualified Windows path is parsed
+         * as an unknown "e:" network scheme, so publish an explicit file URL;
+         * Linux paths retain the same local-file semantics. */
+        ctx->setContextProperty(QStringLiteral("uiDir"),
+                                QUrl::fromLocalFile(QStringLiteral(DSD_QML_UI_DIR)).toString());
         ctx->setContextProperty(QStringLiteral("callHistory"), store);
         ctx->setContextProperty(QStringLiteral("historyView"), historyView);
         ctx->setContextProperty(QStringLiteral("monitorView"), monitorView);
@@ -2537,6 +2542,17 @@ class Setup : public QObject {
         metrics[QStringLiteral("nfmBandwidthUnsetHz")] = 16000;
         metrics[QStringLiteral("amBandwidthUnsetHz")] = 6000;
         metrics[QStringLiteral("ppm")] = 0;
+        // TETRA network identity and the current control/traffic allocations.
+        // Hidden at rest until the decoder has accepted network information.
+        metrics[QStringLiteral("tetraNetworkKnown")] = false;
+        metrics[QStringLiteral("tetraNetworkText")] = QString();
+        metrics[QStringLiteral("tetraTrunkStateText")] = QString();
+        metrics[QStringLiteral("tetraControlChannelText")] = QString();
+        metrics[QStringLiteral("tetraTrafficChannelText")] = QString();
+        metrics[QStringLiteral("tetraMmStatusKnown")] = false;
+        metrics[QStringLiteral("tetraMmStatusText")] = QString();
+        metrics[QStringLiteral("tetraVocoderStatusKnown")] = false;
+        metrics[QStringLiteral("tetraVocoderStatusText")] = QString();
         m_metrics = metrics;
         m_engine = engine;
         m_metric_readings = new ReadingMap(engine);

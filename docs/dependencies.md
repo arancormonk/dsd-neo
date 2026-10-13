@@ -12,6 +12,9 @@ Required dependencies are:
 - CMake 3.20 or newer
 - OpenSSL 3.x libcrypto
 - `mbe-neo` 2.3+ CMake package from mbelib-neo
+- `tetracrypto` and `tetraetee` CMake packages. On Windows and Android they
+  come from the vcpkg overlay ports. Other builds install the same ports with
+  `tools/install_tetra_crypto_deps.sh`.
 - libsndfile
 - curses backend: ncursesw/PDCurses. macOS ships no `libncursesw` — its unified
   `libncurses` carries the wide entry points behind `_XOPEN_SOURCE_EXTENDED` —
@@ -58,6 +61,11 @@ Registry-managed vcpkg dependencies are pinned by the manifest
 manifest). The baseline, overlay ports, and triplets are the source of truth
 for exact registry versions; system-package builds enforce the OpenSSL
 requirement through `find_package(OpenSSL 3.0 REQUIRED)`.
+
+The `vcpkg-ports/mpg123` overlay follows the upstream vcpkg 1.33.7 recipe and
+pins its SourceForge archive by SHA-512. Its local CMake patch includes
+`sys/types.h` while probing `off_t`; this is required when configuring with
+Visual Studio 2026, where the unqualified probe cannot declare the type.
 
 ## Packaging Dependencies
 

@@ -18,7 +18,12 @@ target_sources(
         dmr_mi.c
         md2ii.c
         nxdn_keystream.c
+        tetra_tea.c
+        tetra_etee.c
 )
+
+find_package(tetracrypto CONFIG REQUIRED)
+find_package(tetraetee CONFIG REQUIRED)
 
 target_include_directories(
     dsd-neo_crypto
@@ -26,6 +31,10 @@ target_include_directories(
     PRIVATE ${_PUBLIC_INCLUDES}
 )
 
+target_link_libraries(
+    dsd-neo_crypto
+    PUBLIC tetracrypto::tetracrypto tetraetee::tetraetee
+)
 target_link_libraries(dsd-neo_crypto PRIVATE dsd-neo_warnings OpenSSL::Crypto)
 
 install(

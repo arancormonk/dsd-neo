@@ -6,7 +6,8 @@
 # alone ignores the exit code, which would let a crash occurring after the
 # first payload match pass silently.
 #
-# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED; optional NOT_EXPECTED.
+# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED; optional NOT_EXPECTED
+# and MIN_MATCHES (minimum number of non-overlapping EXPECTED matches).
 foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "iq_decode_check: missing -D${_var}")
@@ -44,6 +45,19 @@ if(NOT "${_all}" MATCHES "${EXPECTED}")
         FATAL_ERROR
         "iq_decode_check: expected payload /${EXPECTED}/ not found in output\n${_all}"
     )
+endif()
+if(DEFINED MIN_MATCHES AND NOT "${MIN_MATCHES}" STREQUAL "")
+    if(NOT "${MIN_MATCHES}" MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR "iq_decode_check: MIN_MATCHES must be a positive integer")
+    endif()
+    string(REGEX MATCHALL "${EXPECTED}" _expected_matches "${_all}")
+    list(LENGTH _expected_matches _expected_match_count)
+    if(_expected_match_count LESS MIN_MATCHES)
+        message(
+            FATAL_ERROR
+            "iq_decode_check: payload /${EXPECTED}/ matched ${_expected_match_count} times, expected at least ${MIN_MATCHES}\n${_all}"
+        )
+    endif()
 endif()
 
 # Optional -DNOT_EXPECTED: a regex that must be absent. Reject cases pair it with an

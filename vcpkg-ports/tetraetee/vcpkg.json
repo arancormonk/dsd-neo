@@ -1,0 +1,18 @@
+{
+  "name": "tetraetee",
+  "version-string": "2025.08.29",
+  "description": "TETRA end-to-end encryption primitives (TCCA/SFPG E-functions)",
+  "homepage": "https://github.com/MidnightBlueLabs/TETRA_etee",
+  "license": "Apache-2.0",
+  "dependencies": [
+    "openssl",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

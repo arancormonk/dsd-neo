@@ -346,6 +346,7 @@ jobs:
               }
 
               build_openssl "$openssl_sha"
+              bash /work/tools/install_tetra_crypto_deps.sh "$DEPS"
               build_dep https://github.com/arancormonk/mbelib-neo "$mbe_sha" libmbe-neo mbe_sha ""
               build_dep https://github.com/arancormonk/codec2 "$codec2_sha" codec2 codec2_sha ""
               build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr rtlsdr_sha "-DDETACH_KERNEL_DRIVER=ON"

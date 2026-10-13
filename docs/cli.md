@@ -147,6 +147,11 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
   to protect the screen, and warns before opening the UI if payload logging is enabled without a redirect.
   Already-redirected stderr is preserved; `--frontend none -Z` leaves console payload output visible.
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
+- The terminal frontend (`-N`) keeps the latest 16 decoded TETRA call, SYSINFO,
+  channel-allocation and SDS summaries, showing up to four rows when space permits.
+  Set `DSD_TETRA_UI_FILTER=call`, `control`, `sds`, or `none` before starting to filter the list;
+  the default shows all three categories. Per-frame diagnostics remain on stderr and can be
+  captured with `2> tetra.log`.
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
 - `-O` List PulseAudio input sources and output sinks
 - The terminal input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
@@ -1640,10 +1645,10 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48, 72), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
   is one whole word: `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no` (any case). A value or trailing option it cannot
   read is ignored with a warning and leaves the bias tee as it was; the startup `RTL #N:` line ends in `BIAS=on` when
-  it is on.
+  it is on. TETRA should use 72 kHz, which gives an integer 4 samples/symbol at 18 ksym/s.
 - A `sql` value that is neither a number, `auto[+N]` nor `noise[+N]` leaves the squelch as it was rather than switching
   it off. A
   disabled squelch is reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP

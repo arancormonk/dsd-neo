@@ -148,6 +148,7 @@ jobs:
           if [ -f "$pc1" ] || [ -f "$pc2" ]; then
             if [ -f "$mf" ] && grep -q "^mbe_sha=$want_sha$" "$mf"; then
               echo "Using cached mbelib-neo in $DEPS_PREFIX"
+              bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX" -DCMAKE_OSX_ARCHITECTURES=arm64
               exit 0
             fi
             echo "Cached mbelib-neo does not match desired SHA; rebuilding"
@@ -159,6 +160,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
+          bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX" -DCMAKE_OSX_ARCHITECTURES=arm64
 
       - name: Ensure codec2 (cached fallback if not found)
         shell: bash
@@ -413,6 +415,7 @@ jobs:
           if [ -f "$pc1" ] || [ -f "$pc2" ]; then
             if [ -f "$mf" ] && grep -q "^mbe_sha=$want_sha$" "$mf"; then
               echo "Using cached mbelib-neo in $DEPS_PREFIX"
+              bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX" -DCMAKE_OSX_ARCHITECTURES=arm64
               exit 0
             fi
             echo "Cached mbelib-neo does not match desired SHA; rebuilding"
@@ -424,6 +427,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
+          bash tools/install_tetra_crypto_deps.sh "$DEPS_PREFIX" -DCMAKE_OSX_ARCHITECTURES=arm64
 
       - name: Ensure codec2 (cached fallback if not found)
         shell: bash

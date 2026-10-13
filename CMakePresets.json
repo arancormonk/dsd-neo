@@ -151,7 +151,7 @@
       "inherits": "warnings-as-errors",
       "displayName": "Windows MSVC Debug",
       "description": "Windows Debug build with MSVC via vcpkg",
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "binaryDir": "${sourceDir}/build/win-msvc-debug",
       "condition": {
         "type": "equals",
@@ -174,7 +174,7 @@
       "inherits": "warnings-as-errors",
       "displayName": "Windows MSVC Release",
       "description": "Windows Release build with MSVC via vcpkg",
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "binaryDir": "${sourceDir}/build/win-msvc-release",
       "condition": {
         "type": "equals",

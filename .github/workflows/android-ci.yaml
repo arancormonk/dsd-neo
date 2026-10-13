@@ -202,6 +202,7 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
+          bash tools/install_tetra_crypto_deps.sh "$HOME/.local"
 
       # Qt is installed with aqtinstall rather than a Qt-installing action: every
       # action used here must be hash-pinned, transitively, and the available

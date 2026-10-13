@@ -38,6 +38,8 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_sync.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -68,7 +70,7 @@
 #endif
 
 enum {
-    FRAME_SYNC_HISTORY_CAPACITY = 48,
+    FRAME_SYNC_HISTORY_CAPACITY = 128,
 };
 
 static int
@@ -77,7 +79,7 @@ frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
         return 0;
     }
     return (opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
-            || opts->frame_m17 == 1);
+            || opts->frame_m17 == 1 || opts->frame_tetra == 1);
 }
 
 static int frame_sync_current_demod_rate(const dsd_opts* opts, const dsd_state* state);
@@ -330,7 +332,11 @@ enum {
     FRAME_SYNC_WINDOW_24 = 1u << 5,
     FRAME_SYNC_WINDOW_32 = 1u << 6,
     FRAME_SYNC_WINDOW_48 = 1u << 7,
+    FRAME_SYNC_WINDOW_79 = 1u << 8,
+    FRAME_SYNC_WINDOW_119 = 1u << 9,
 };
+
+typedef struct frame_sync_runtime_ctx frame_sync_runtime_ctx;
 
 typedef struct {
     dsd_opts* opts;
@@ -350,6 +356,9 @@ typedef struct {
     char* synctest20;
     char* synctest32;
     char* synctest48;
+    char* synctest79;
+    char* synctest119;
+    frame_sync_runtime_ctx* history;
 } frame_sync_match_ctx;
 
 static unsigned int
@@ -363,6 +372,8 @@ frame_sync_window_flag(int length) {
         case 24: return FRAME_SYNC_WINDOW_24;
         case 32: return FRAME_SYNC_WINDOW_32;
         case 48: return FRAME_SYNC_WINDOW_48;
+        case 79: return FRAME_SYNC_WINDOW_79;
+        case 119: return FRAME_SYNC_WINDOW_119;
         default: return 0;
     }
 }
@@ -947,6 +958,164 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
         state->lastsynctype = DSD_SYNC_DPMR_FS2_NEG;
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 12);
         return DSD_SYNC_DPMR_FS2_NEG;
+    }
+
+    return DSD_SYNC_NONE;
+}
+
+static void
+frame_sync_capture_tetra_dibits(const char* src, uint8_t* dst, int count) {
+    for (int i = 0; i < count; i++) {
+        dst[i] = (uint8_t)((src[i] - '0') & 0x3);
+    }
+}
+
+/* Capture the analog decisions which correspond to the payload prefix of a
+ * sync window. The newest history entry is the last sync symbol, so the first
+ * payload symbol is (window_len - 1) entries back. */
+/* Block 1 ends 7 dibits before the normal training sequence. Those 7 dibits
+ * are AACH half 1, not speech. newest_age is the age of the newest dibit to
+ * keep (0 = most recently consumed symbol). Defined below, once the sync
+ * history struct is complete. */
+static int frame_sync_capture_tetra_dibits_aged(const frame_sync_runtime_ctx* rt, uint8_t* dst, int count,
+                                                int newest_age);
+
+static int
+frame_sync_capture_tetra_soft_aged(const dsd_state* state, float* dst, int count, int newest_age) {
+    int oldest_age;
+    if (!state || !dst || count <= 0 || newest_age < 0 || state->symbol_history == NULL) {
+        return 0;
+    }
+    oldest_age = newest_age + count - 1;
+    if (dsd_symbol_history_count(state) <= oldest_age) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        dst[i] = dsd_symbol_history_get_back(state, oldest_age - i);
+    }
+    return 1;
+}
+
+static int
+frame_sync_capture_tetra_soft(const dsd_state* state, float* dst, int payload_len, int sync_len) {
+    int window_len = payload_len + sync_len;
+    if (!state || !dst || payload_len <= 0 || sync_len <= 0 || state->symbol_history == NULL
+        || dsd_symbol_history_count(state) < window_len) {
+        return 0;
+    }
+    for (int i = 0; i < payload_len; i++) {
+        dst[i] = dsd_symbol_history_get_back(state, window_len - 1 - i);
+    }
+    return 1;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_capture_tetra_soft(const dsd_state* state, float* dst, int payload_len, int sync_len) {
+    return frame_sync_capture_tetra_soft(state, dst, payload_len, sync_len);
+}
+#endif
+
+static int
+frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    if (opts->frame_tetra != 1) {
+        return DSD_SYNC_NONE;
+    }
+
+    tetra_uplink_configure(state);
+
+    if (frame_sync_match_window_ready(ctx, 119)) {
+        const char* sync = ctx->synctest119 + 108;
+        int phase_rot = 0;
+        int inverted = 0;
+        if (tetra_training_derotation(sync, TETRA_NDB_NTS_SYNC, INV_TETRA_NDB_NTS_SYNC, 11, &phase_rot, &inverted)) {
+            frame_sync_set_basic_lock(ctx);
+            DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "TETRA");
+            /* NTS2 aliases inverted NTS1. Keep the polarity learned from the
+             * synchronisation burst and only record which training matched.
+             * phase_rot undoes a Costas 90° step before the payload is sliced. */
+            state->tetra_phase_rot = (uint8_t)(phase_rot & 3);
+            state->tetra_nts2 = (uint8_t)(inverted ^ (state->tetra_polarity ? 1 : 0));
+            state->tetra_cb = 0;
+            /* Training occupies ages 0..10. TMO downlink: AACH half 1 is ages
+             * 11..17 and block 1 is the 108 dibits at ages 18..125. DMO and the
+             * TMO normal uplink burst have no AACH, so block 1 sits right
+             * behind the training: ages 11..118. */
+            const int b1_age = (state->tetra_dmo || state->tetra_uplink) ? 11 : 18;
+            if (frame_sync_capture_tetra_dibits_aged(ctx->history, state->tetra_b1_dibuf, 108, b1_age)) {
+                state->tetra_b1_soft_valid =
+                    (uint8_t)frame_sync_capture_tetra_soft_aged(state, state->tetra_b1_soft, 108, b1_age);
+                state->tetra_b1_valid = 1;
+            } else {
+                state->tetra_b1_soft_valid = 0;
+                state->tetra_b1_valid = 0;
+            }
+            if (opts->errorbars == 1) {
+                printFrameSync(opts, state, inverted ? "-TETRA NDB" : "+TETRA NDB", ctx->synctest_pos + 1,
+                               ctx->modulation);
+            }
+            state->lastsynctype = inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS;
+            dsd_sync_warm_start_thresholds_outer_only(opts, state, 11);
+            return state->lastsynctype;
+        }
+    }
+
+    if (frame_sync_match_window_ready(ctx, 79)) {
+        const char* sync = ctx->synctest79 + 60;
+        int phase_rot = 0;
+        int inverted = 0;
+        if (tetra_training_derotation(sync, TETRA_SB_SSB_SYNC, INV_TETRA_SB_SSB_SYNC, 19, &phase_rot, &inverted)) {
+            frame_sync_set_basic_lock(ctx);
+            DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "TETRA");
+            state->tetra_phase_rot = (uint8_t)(phase_rot & 3);
+            state->tetra_polarity = (uint8_t)inverted;
+            state->tetra_cb = 0;
+            frame_sync_capture_tetra_dibits(ctx->synctest79, state->tetra_sb1_dibuf, 60);
+            state->tetra_sb1_soft_valid = (uint8_t)frame_sync_capture_tetra_soft(state, state->tetra_sb1_soft, 60, 19);
+            state->tetra_sb1_valid = 1;
+            if (opts->errorbars == 1) {
+                printFrameSync(opts, state, inverted ? "-TETRA SB" : "+TETRA SB", ctx->synctest_pos + 1,
+                               ctx->modulation);
+            }
+            state->lastsynctype = inverted ? DSD_SYNC_TETRA_SB_NEG : DSD_SYNC_TETRA_SB_POS;
+            dsd_sync_warm_start_thresholds_outer_only(opts, state, 19);
+            return state->lastsynctype;
+        }
+    }
+
+    /* Control uplink burst. Only searched in uplink mode: a 15-dibit word is
+     * short enough that running it against a downlink carrier is not worth the
+     * false locks, and a downlink session never sets tetra_uplink. */
+    if (state->tetra_uplink && frame_sync_match_window_ready(ctx, 79)) {
+        const char* sync = ctx->synctest79 + 64;
+        int phase_rot = 0;
+        int inverted = 0;
+        if (tetra_training_derotation(sync, TETRA_CB_SYNC, INV_TETRA_CB_SYNC, 15, &phase_rot, &inverted)) {
+            frame_sync_set_basic_lock(ctx);
+            DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "TETRA");
+            state->tetra_phase_rot = (uint8_t)(phase_rot & 3);
+            state->tetra_cb = 1;
+            /* Training occupies ages 0..14; the 42 data dibits are ages 15..56. */
+            if (frame_sync_capture_tetra_dibits_aged(ctx->history, state->tetra_b1_dibuf, 42, 15)) {
+                state->tetra_b1_soft_valid =
+                    (uint8_t)frame_sync_capture_tetra_soft_aged(state, state->tetra_b1_soft, 42, 15);
+                state->tetra_b1_valid = 1;
+            } else {
+                state->tetra_b1_soft_valid = 0;
+                state->tetra_b1_valid = 0;
+            }
+            if (opts->errorbars == 1) {
+                printFrameSync(opts, state, inverted ? "-TETRA CB" : "+TETRA CB", ctx->synctest_pos + 1,
+                               ctx->modulation);
+            }
+            /* Reuse the NDB sync id so dispatch reaches processTetraFrame,
+             * which branches on tetra_cb. No separate vocoder type. */
+            state->lastsynctype = inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS;
+            dsd_sync_warm_start_thresholds_outer_only(opts, state, 15);
+            return state->lastsynctype;
+        }
     }
 
     return DSD_SYNC_NONE;
@@ -1864,6 +2033,11 @@ frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
         return sync_type;
     }
 
+    sync_type = frame_sync_try_tetra(ctx);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
+    }
+
     sync_type = frame_sync_try_dmr(ctx);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
@@ -1943,6 +2117,9 @@ frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
 
 static int
 frame_sync_select_t_max(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->frame_tetra == 1) {
+        return 19;
+    }
     switch (state->sps_hunt_idx) {
         case DSD_FRAME_SYNC_SPS_PROFILE_2400_4: return 12;
         case DSD_FRAME_SYNC_SPS_PROFILE_6000_4:
@@ -2200,6 +2377,10 @@ frame_sync_apply_mod_switch(const dsd_opts* opts, dsd_state* state, int do_switc
 
 void
 frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt) {
+    if (opts->frame_tetra == 1) {
+        state->rf_mod = 1;
+        return;
+    }
     if (*lastt < t_max) {
         (*lastt)++;
     }
@@ -2293,6 +2474,9 @@ frame_sync_debug_symbol_stats(float symbol) {
 
 static int
 frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->frame_tetra == 1 && state->rf_mod == 1) {
+        return 1;
+    }
 #ifdef USE_RADIO
     if (state->rf_mod == 1 && opts->audio_in_type == AUDIO_IN_RTL
         && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
@@ -2455,7 +2639,7 @@ frame_sync_process_dibit_and_payload(dsd_opts* opts, dsd_state* state, float sym
     return dibit;
 }
 
-typedef struct {
+typedef struct frame_sync_runtime_ctx {
     int t;
     int dibit;
     int synctest_pos;
@@ -2475,6 +2659,8 @@ typedef struct {
     char synctest32[33];
     char synctest20[21];
     char synctest48[49];
+    char synctest79[80];
+    char synctest119[120];
     char synctest8[9];
     char synctest16[17];
     char modulation[8];
@@ -2497,9 +2683,32 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->synctest32[32] = 0;
     rt->synctest20[20] = 0;
     rt->synctest48[48] = 0;
+    rt->synctest79[79] = 0;
+    rt->synctest119[119] = 0;
     rt->synctest8[8] = 0;
     rt->synctest16[16] = 0;
     rt->modulation[7] = 0;
+}
+
+static int
+frame_sync_capture_tetra_dibits_aged(const frame_sync_runtime_ctx* rt, uint8_t* dst, int count, int newest_age) {
+    int oldest_age;
+    if (!rt || !dst || count <= 0 || newest_age < 0) {
+        return 0;
+    }
+    oldest_age = newest_age + count - 1;
+    if (rt->history_count <= oldest_age) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        int age = oldest_age - i;
+        int idx = rt->history_head - 1 - age;
+        while (idx < 0) {
+            idx += FRAME_SYNC_HISTORY_CAPACITY;
+        }
+        dst[i] = (uint8_t)((rt->symbol_history[idx] - '0') & 0x3);
+    }
+    return 1;
 }
 
 static void
@@ -2556,6 +2765,12 @@ frame_sync_materialize_ready_windows(frame_sync_runtime_ctx* rt) {
     }
     if (frame_sync_history_materialize(rt, 48, rt->synctest48, sizeof(rt->synctest48))) {
         rt->ready_windows |= FRAME_SYNC_WINDOW_48;
+    }
+    if (frame_sync_history_materialize(rt, 79, rt->synctest79, sizeof(rt->synctest79))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_79;
+    }
+    if (frame_sync_history_materialize(rt, 119, rt->synctest119, sizeof(rt->synctest119))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_119;
     }
 }
 
@@ -2922,6 +3137,9 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
         .synctest20 = rt->synctest20,
         .synctest32 = rt->synctest32,
         .synctest48 = rt->synctest48,
+        .synctest79 = rt->synctest79,
+        .synctest119 = rt->synctest119,
+        .history = rt,
     };
     return frame_sync_try_protocol_matches(&match_ctx);
 }
@@ -2973,6 +3191,8 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
         .synctest20 = rt.synctest20,
         .synctest32 = rt.synctest32,
         .synctest48 = rt.synctest48,
+        .synctest79 = rt.synctest79,
+        .synctest119 = rt.synctest119,
     };
     return frame_sync_try_protocol_matches(&match_ctx);
 }
@@ -3254,6 +3474,13 @@ frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
+    if (opts->frame_tetra == 1) {
+        const int demod_rate = frame_sync_current_demod_rate(opts, state);
+        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 18000, demod_rate);
+        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+        state->rf_mod = 1;
+        return;
+    }
 
     const int timing_profile = frame_sync_sps_profile_matching_timing(opts, state);
     if (timing_profile >= 0 && timing_profile != state->sps_hunt_idx) {
@@ -3479,6 +3706,13 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
 
 int
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
+    if (opts->frame_tetra == 1) {
+        const int demod_rate = frame_sync_current_demod_rate(opts, state);
+        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 18000, demod_rate);
+        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+        state->rf_mod = 1;
+        return 0;
+    }
     if (state->sps_hunt_counter < frame_sync_sps_hunt_dwell_symbols(opts, state)) {
         return 0;
     }

@@ -40,8 +40,12 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/tetra/tetra_acelp.h>
+#include <dsd-neo/protocol/tetra/tetra_mm.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/squelch.h>
 
@@ -51,6 +55,33 @@
 namespace dsd_qt {
 
 namespace {
+
+QString
+formatTetraVocoderStatusText(const dsd_state* state) {
+    const char* label = "Unknown";
+    switch ((tetra_vocoder_status_e)state->tetra_vocoder_status) {
+        case TETRA_VOCODER_STATUS_READY: label = "Ready"; break;
+        case TETRA_VOCODER_STATUS_COMMAND_MISSING: label = "Command missing"; break;
+        case TETRA_VOCODER_STATUS_START_FAILED: label = "Start failed"; break;
+        case TETRA_VOCODER_STATUS_TIMEOUT: label = "Timed out"; break;
+        case TETRA_VOCODER_STATUS_SHORT_OUTPUT: label = "Short output"; break;
+        case TETRA_VOCODER_STATUS_UNKNOWN: break;
+    }
+    return QStringLiteral("%1 · %2 frames · %3 errors")
+        .arg(QString::fromLatin1(label))
+        .arg(state->tetra_vocoder_frames)
+        .arg(state->tetra_vocoder_errors);
+}
+
+QString
+formatTetraTrunkStateText(const dsd_state* state) {
+    switch ((tetra_sm_state_e)state->tetra_trunk_state) {
+        case TETRA_SM_ON_CC: return QStringLiteral("Control");
+        case TETRA_SM_TUNED: return QStringLiteral("Traffic");
+        case TETRA_SM_IDLE: return QStringLiteral("Idle");
+    }
+    return QStringLiteral("Unknown");
+}
 
 /**
  * @brief How long a lock keeps reading as locked after the last synced frame.
@@ -828,6 +859,48 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.squelch_db = squelch_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
     next.squelch_off = squelch_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
     next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
+    next.tetra_network_known = snapshot->tetra_net_known != 0;
+    if (next.tetra_network_known) {
+        next.tetra_trunk_state_text = formatTetraTrunkStateText(snapshot);
+        next.tetra_network_text = QStringLiteral("MCC %1 · MNC %2 · CC %3")
+                                      .arg(snapshot->tetra_mcc)
+                                      .arg(snapshot->tetra_mnc)
+                                      .arg(snapshot->tetra_colour);
+        if (snapshot->tetra_sysinfo_main_carrier != 0U) {
+            next.tetra_control_channel_text = QStringLiteral("Carrier %1").arg(snapshot->tetra_sysinfo_main_carrier);
+        }
+        if (snapshot->tetra_vc_assignment_valid != 0U) {
+            QStringList slots;
+            for (unsigned slot = 0; slot < 4U; ++slot) {
+                if ((snapshot->tetra_vc_timeslot_bitmap & (1U << slot)) != 0U) {
+                    slots.append(QString::number(slot + 1U));
+                }
+            }
+            const QString allocation = QStringLiteral("Carrier %1 · TS %2")
+                                           .arg(snapshot->tetra_vc_carrier)
+                                           .arg(slots.isEmpty() ? QStringLiteral("—") : slots.join(QLatin1Char(',')));
+            next.tetra_traffic_channel_text =
+                snapshot->tetra_vc_freq_hz > 0
+                    ? QStringLiteral("%1 MHz · %2")
+                          .arg(static_cast<double>(snapshot->tetra_vc_freq_hz) / 1.0e6, 0, 'f', 4)
+                          .arg(allocation)
+                    : allocation;
+        }
+    } else {
+        next.tetra_network_text.clear();
+        next.tetra_trunk_state_text.clear();
+        next.tetra_control_channel_text.clear();
+        next.tetra_traffic_channel_text.clear();
+    }
+    next.tetra_mm_status_known = snapshot->tetra_mm_status_valid != 0U;
+    next.tetra_mm_status_text =
+        next.tetra_mm_status_known ? QStringLiteral("%1 · %2")
+                                         .arg(snapshot->tetra_mm_status_code)
+                                         .arg(QString::fromLatin1(tetra_mm_status_name(snapshot->tetra_mm_status_code)))
+                                   : QString();
+    next.tetra_vocoder_status_known = snapshot->tetra_vocoder_status != TETRA_VOCODER_STATUS_UNKNOWN;
+    next.tetra_vocoder_status_text =
+        next.tetra_vocoder_status_known ? formatTetraVocoderStatusText(snapshot) : QString();
     fillSquelchOverride(next, opts_snapshot, snapshot);
     fillScanRow(next, opts_snapshot, snapshot);
 }
@@ -957,218 +1030,190 @@ MetricsModel::fillSlotCalls(View& next, const dsd_state* snapshot, double now_m)
         started[slot] = next.slot_call[slot].started_m;
     }
     next.lead_slot = dsd_app_lead_slot(line_states, started, DSD_CALL_STATE_SLOT_COUNT);
-}
 
-void
-MetricsModel::fillQualityView(View& next, const dsd_state* snapshot) {
-    dsd_app_p25_quality_from_state(snapshot, &next.quality);
-    // Filled by refresh() before this call: the quality row must headline the same slot as the hero.
-    next.voice_errs = next.quality.p1_voice;
-    if (next.lead_slot >= 0) {
-        if (!next.voice_errs.valid) {
-            next.voice_errs = next.quality.p2_voice[next.lead_slot];
+    void MetricsModel::fillQualityView(View & next, const dsd_state* snapshot) {
+        dsd_app_p25_quality_from_state(snapshot, &next.quality);
+        // Filled by refresh() before this call: the quality row must headline the same slot as the hero.
+        next.voice_errs = next.quality.p1_voice;
+        if (next.lead_slot >= 0) {
+            if (!next.voice_errs.valid) {
+                next.voice_errs = next.quality.p2_voice[next.lead_slot];
+            }
+            next.last_frame = next.quality.last_frame[next.lead_slot];
+        } else {
+            // Late-entry media may precede any decoded identity. The facade already
+            // limits these readings to active non-P25 media; keep the first valid
+            // slot until the call view can supply its usual identity-based lead.
+            const auto& frames = next.quality.last_frame;
+            const auto* frame = std::find_if(std::begin(frames), std::end(frames),
+                                             [](const dsd_app_frame_errs& item) { return item.valid != 0; });
+            if (frame != std::end(frames)) {
+                next.last_frame = *frame;
+            }
         }
-        next.last_frame = next.quality.last_frame[next.lead_slot];
-    } else {
-        // Late-entry media may precede any decoded identity. The facade already
-        // limits these readings to active non-P25 media; keep the first valid
-        // slot until the call view can supply its usual identity-based lead.
-        const auto& frames = next.quality.last_frame;
-        const auto* frame = std::find_if(std::begin(frames), std::end(frames),
-                                         [](const dsd_app_frame_errs& item) { return item.valid != 0; });
-        if (frame != std::end(frames)) {
-            next.last_frame = *frame;
+    }
+
+    QVariantMap MetricsModel::airspyView(const dsd_opts* opts_snapshot) {
+        QVariantMap native;
+        if (opts_snapshot && opts_snapshot->audio_in_type == AUDIO_IN_RTL
+            && dsd_opts_audio_in_dev_is_airspy_spec(opts_snapshot->audio_in_dev)) {
+            const auto& c = opts_snapshot->airspy;
+            const char* modes[] = {"sensitivity", "linearity", "manual"};
+            native.insert(QStringLiteral("gain_mode"),
+                          QString::fromLatin1(modes[std::max(0, std::min(2, c.gain_mode))]));
+            native.insert(QStringLiteral("serial"), QString::fromLatin1(c.serial));
+            native.insert(QStringLiteral("sample_rate"), c.sample_rate);
+            native.insert(QStringLiteral("sensitivity_gain"), c.sensitivity_gain);
+            native.insert(QStringLiteral("linearity_gain"), c.linearity_gain);
+            native.insert(QStringLiteral("lna_gain"), c.lna_gain);
+            native.insert(QStringLiteral("mixer_gain"), c.mixer_gain);
+            native.insert(QStringLiteral("vga_gain"), c.vga_gain);
+            native.insert(QStringLiteral("lna_agc"), c.lna_agc);
+            native.insert(QStringLiteral("mixer_agc"), c.mixer_agc);
+            native.insert(QStringLiteral("bias_tee"), c.bias_tee);
+            QVariantList rates;
+            for (uint32_t i = 0; i < opts_snapshot->airspy_info.rate_count && i < DSD_AIRSPY_MAX_RATES; ++i) {
+                rates.append(opts_snapshot->airspy_info.rates[i]);
+            }
+            native.insert(QStringLiteral("rates"), rates);
+            native.insert(QStringLiteral("actual_rate"), opts_snapshot->airspy_info.sample_rate);
+            native.insert(QStringLiteral("actual_serial"), QString::fromLatin1(opts_snapshot->airspy_info.serial));
         }
+        return native;
     }
-}
 
-QVariantMap
-MetricsModel::airspyView(const dsd_opts* opts_snapshot) {
-    QVariantMap native;
-    if (opts_snapshot && opts_snapshot->audio_in_type == AUDIO_IN_RTL
-        && dsd_opts_audio_in_dev_is_airspy_spec(opts_snapshot->audio_in_dev)) {
-        const auto& c = opts_snapshot->airspy;
-        const char* modes[] = {"sensitivity", "linearity", "manual"};
-        native.insert(QStringLiteral("gain_mode"), QString::fromLatin1(modes[std::max(0, std::min(2, c.gain_mode))]));
-        native.insert(QStringLiteral("serial"), QString::fromLatin1(c.serial));
-        native.insert(QStringLiteral("sample_rate"), c.sample_rate);
-        native.insert(QStringLiteral("sensitivity_gain"), c.sensitivity_gain);
-        native.insert(QStringLiteral("linearity_gain"), c.linearity_gain);
-        native.insert(QStringLiteral("lna_gain"), c.lna_gain);
-        native.insert(QStringLiteral("mixer_gain"), c.mixer_gain);
-        native.insert(QStringLiteral("vga_gain"), c.vga_gain);
-        native.insert(QStringLiteral("lna_agc"), c.lna_agc);
-        native.insert(QStringLiteral("mixer_agc"), c.mixer_agc);
-        native.insert(QStringLiteral("bias_tee"), c.bias_tee);
-        QVariantList rates;
-        for (uint32_t i = 0; i < opts_snapshot->airspy_info.rate_count && i < DSD_AIRSPY_MAX_RATES; ++i) {
-            rates.append(opts_snapshot->airspy_info.rates[i]);
+    QString MetricsModel::tunerGainText(const dsd_frontend_metrics& metrics) {
+        if (metrics.tuner_gain_is_auto != 0) {
+            return QStringLiteral("auto");
         }
-        native.insert(QStringLiteral("rates"), rates);
-        native.insert(QStringLiteral("actual_rate"), opts_snapshot->airspy_info.sample_rate);
-        native.insert(QStringLiteral("actual_serial"), QString::fromLatin1(opts_snapshot->airspy_info.serial));
+        if (metrics.tuner_gain_valid != 0) {
+            return QStringLiteral("%1 dB").arg(metrics.tuner_gain_tenth_db / 10.0, 0, 'f', 1);
+        }
+        return QStringLiteral("—");
     }
-    return native;
-}
 
-/* The source vocabulary is session_args' append_input_args(): "usb" builds an rtl spec, "airspy" an airspy spec,
-   "rtltcp" an rtltcp spec. The rtl_tcp server is the one the engine parsed from that spec. */
-QVariantMap
-MetricsModel::radioSourceView(const dsd_opts* opts_snapshot) {
-    QVariantMap source;
-    if (dsd_opts_input_is_radio(opts_snapshot) == 0) {
-        return source;
-    }
-    const char* dev = opts_snapshot->audio_in_dev;
-    if (dsd_opts_audio_in_dev_is_airspy_spec(dev) != 0) {
-        source.insert(QStringLiteral("sourceType"), QStringLiteral("airspy"));
-    } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev) != 0) {
-        source.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
-        source.insert(QStringLiteral("host"), QString::fromUtf8(opts_snapshot->rtltcp_hostname));
-        source.insert(QStringLiteral("port"), opts_snapshot->rtltcp_portno);
-    } else if (dsd_opts_audio_in_dev_is_rtl_spec(dev) != 0) {
-        source.insert(QStringLiteral("sourceType"), QStringLiteral("usb"));
-    }
-    return source;
-}
-
-QString
-MetricsModel::tunerGainText(const dsd_frontend_metrics& metrics) {
-    if (metrics.tuner_gain_is_auto != 0) {
-        return QStringLiteral("auto");
-    }
-    if (metrics.tuner_gain_valid != 0) {
-        return QStringLiteral("%1 dB").arg(metrics.tuner_gain_tenth_db / 10.0, 0, 'f', 1);
-    }
-    return QStringLiteral("—");
-}
-
-void
-MetricsModel::fillUiMessage(View& next, const dsd_state* snapshot) {
-    /* The engine's command acknowledgement, shown until its own expiry stamp. The
+    void MetricsModel::fillUiMessage(View & next, const dsd_state* snapshot) {
+        /* The engine's command acknowledgement, shown until its own expiry stamp. The
      * timer takes an expired message down without waiting for another publish —
      * an idle engine may not raise the redraw flag again for minutes. */
-    const qint64 message_remaining_s = static_cast<qint64>(snapshot->ui_msg_expire) - realtimeSecsSinceEpoch();
-    if (snapshot->ui_msg[0] != '\0' && message_remaining_s > 0) {
-        next.ui_message = QString::fromUtf8(snapshot->ui_msg);
-        m_messageTimer.start(static_cast<int>(qMin<qint64>(message_remaining_s, 30) * 1000) + 100);
+        const qint64 message_remaining_s = static_cast<qint64>(snapshot->ui_msg_expire) - realtimeSecsSinceEpoch();
+        if (snapshot->ui_msg[0] != '\0' && message_remaining_s > 0) {
+            next.ui_message = QString::fromUtf8(snapshot->ui_msg);
+            m_messageTimer.start(static_cast<int>(qMin<qint64>(message_remaining_s, 30) * 1000) + 100);
+        }
     }
-}
 
-void
-MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
-    dsd_frontend_metrics metrics;
-    /* A missing snapshot is the real "nothing to show" case, and it has to be tested
+    void MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+        dsd_frontend_metrics metrics;
+        /* A missing snapshot is the real "nothing to show" case, and it has to be tested
      * for here: the fetch fills defaults for a NULL snapshot rather than failing, so
      * its result alone never distinguishes no data from a healthy decoder reporting
      * zeros. Keeping the last readings would render either as a live one — a locked
      * carrier and a plausible SNR for something that is not reporting. 0 is success
      * below, negative is failure; it is not a count. */
-    if (opts_snapshot == nullptr || snapshot == nullptr
-        || dsd_app_frontend_get_metrics_for_snapshot(opts_snapshot, snapshot, &metrics, DSD_FRONTEND_SNR_FALLBACK_ALL)
-               != 0) {
-        clear();
-        return;
-    }
+        if (opts_snapshot == nullptr || snapshot == nullptr
+            || dsd_app_frontend_get_metrics_for_snapshot(opts_snapshot, snapshot, &metrics,
+                                                         DSD_FRONTEND_SNR_FALLBACK_ALL)
+                   != 0) {
+            clear();
+            return;
+        }
 
-    /* Built whole, then published in one step, so a frame that reads identically to
+        /* Built whole, then published in one step, so a frame that reads identically to
      * the last one costs no binding re-evaluation. See MetricsModel::View. */
-    View next;
-    next.airspy = airspyView(opts_snapshot);
-    next.radio_source = radioSourceView(opts_snapshot);
+        View next;
+        next.airspy = airspyView(opts_snapshot);
 
-    // Published atomically with the scan flags. Until this first valid snapshot,
-    // a cleared model cannot prove that a new session is not scanning.
-    next.options_known = true;
+        // Published atomically with the scan flags. Until this first valid snapshot,
+        // a cleared model cannot prove that a new session is not scanning.
+        next.options_known = true;
 
-    /* Drives whether the tuner-facing rows are shown at all. Taken from the options
+        /* Drives whether the tuner-facing rows are shown at all. Taken from the options
      * the running session was configured with, which is the same authority the
      * metrics fetch above uses to decide whether any of them mean anything. */
-    next.radio_input = dsd_opts_input_is_radio(opts_snapshot) != 0;
-    /* Audio input (Pulse, a file, stdin, TCP, UDP) takes a squelch too: a level, or the noise squelch it learns from
+        next.radio_input = dsd_opts_input_is_radio(opts_snapshot) != 0;
+        /* Audio input (Pulse, a file, stdin, TCP, UDP) takes a squelch too: a level, or the noise squelch it learns from
      * the input itself (issue #628). */
-    next.squelch_audio_input = dsd_squelch_input_kind(opts_snapshot) == DSD_SQUELCH_INPUT_AUDIO;
+        next.squelch_audio_input = dsd_squelch_input_kind(opts_snapshot) == DSD_SQUELCH_INPUT_AUDIO;
 
-    next.carrier_lock = metrics.carrier_lock != 0;
-    next.cfo_hz = metrics.cfo_hz;
-    next.stream_active = metrics.stream_active != 0;
-    /* Where the front end is pointed, and whether something other than the user
+        next.carrier_lock = metrics.carrier_lock != 0;
+        next.cfo_hz = metrics.cfo_hz;
+        next.stream_active = metrics.stream_active != 0;
+        /* Where the front end is pointed, and whether something other than the user
      * is pointing it. Both come from the same options snapshot as radio_input,
      * so a frame never mixes a center from one generation with a gate from
      * another. Scanner mode counts alongside trunking: it owns the tuner too,
      * stepping the channel map once the hangtime expires. The centre follows an
      * I/Q replay's recorded retunes (issue #575), and reads 0 off a radio input,
      * as radio_input does (dsd_opts_tuned_freq_hz()). */
-    next.center_freq_hz = static_cast<double>(dsd_opts_tuned_freq_hz(opts_snapshot));
-    next.channel_bandwidth_hz = next.radio_input ? metrics.channel_bandwidth_hz : 0;
-    fillAnalogChannel(next, opts_snapshot, snapshot, metrics);
-    next.trunking_enabled = opts_snapshot->trunk_enable != 0;
-    next.scanner_mode = opts_snapshot->scanner_mode != 0;
-    /* Trunk scan counts as a third owner even though it has no reading of its own:
+        next.center_freq_hz = static_cast<double>(dsd_opts_tuned_freq_hz(opts_snapshot));
+        next.channel_bandwidth_hz = next.radio_input ? metrics.channel_bandwidth_hz : 0;
+        fillAnalogChannel(next, opts_snapshot, snapshot, metrics);
+        next.trunking_enabled = opts_snapshot->trunk_enable != 0;
+        next.scanner_mode = opts_snapshot->scanner_mode != 0;
+        /* Trunk scan counts as a third owner even though it has no reading of its own:
      * it steps targets from the engine loop and a release cannot clear it, so an
      * affordance gated only on the other two offers a tune the scan then undoes. */
-    next.tuner_controlled = next.trunking_enabled || next.scanner_mode || (opts_snapshot->trunk_scan_enabled != 0);
-    /* An I/Q replay refuses every tune and the tuner release (issue #575): the predicate app-control refuses on, read
+        next.tuner_controlled = next.trunking_enabled || next.scanner_mode || (opts_snapshot->trunk_scan_enabled != 0);
+        /* An I/Q replay refuses every tune and the tuner release (issue #575): the predicate app-control refuses on, read
      * from the same snapshot as radio_input, so a view never offers a tune the command queue then turns down. */
-    next.replay_input = dsd_opts_input_is_iq_replay(opts_snapshot) != 0;
+        next.replay_input = dsd_opts_input_is_iq_replay(opts_snapshot) != 0;
 
-    /* Sync is held for a moment after the last synced frame rather than sampled;
+        /* Sync is held for a moment after the last synced frame rather than sampled;
      * the hold decays on its own rather than being cleared on a retune. See
      * fillDecoderView(), which documents why a one-shot reset was a race. The hold
      * smooths what this poll sees, so it runs on real time: it has to decay while a
      * stalled input leaves the decode clock where it stopped. */
-    fillDecoderView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
+        fillDecoderView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
 
-    /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on
+        /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on
      * a GFSK stream. Nothing reads at all on an input with no demodulator behind it
      * (UDP, TCP, a file) -- rtl_tcp does have one, since it is an RTL input like any
      * other. Publishing the estimator's no-reading sentinel would put "-100.0 dB" on
      * screen as though it were a measurement. */
-    const dsd_frontend_snr_readout snr = dsd_app_frontend_snr_for_mod(&metrics, snapshot->rf_mod);
-    next.snr_valid = snr.valid != 0;
-    next.snr_db = next.snr_valid ? snr.snr_db : 0.0;
+        const dsd_frontend_snr_readout snr = dsd_app_frontend_snr_for_mod(&metrics, snapshot->rf_mod);
+        next.snr_valid = snr.valid != 0;
+        next.snr_db = next.snr_valid ? snr.snr_db : 0.0;
 
-    next.tuner_gain_text = tunerGainText(metrics);
+        next.tuner_gain_text = tunerGainText(metrics);
 
-    /* Decode time: the call lines and the scan countdown age stamps the decoder took
+        /* Decode time: the call lines and the scan countdown age stamps the decoder took
      * from the decode clock. */
-    const double now_m = dsd_decode_now_mono_s();
-    fillSlotCalls(next, snapshot, now_m);
-    fillQualityView(next, snapshot);
-    fillSiteView(next, snapshot);
+        const double now_m = dsd_decode_now_mono_s();
+        fillSlotCalls(next, snapshot, now_m);
+        fillQualityView(next, snapshot);
+        fillSiteView(next, snapshot);
 
-    /* Engine truth for the monitor's toggle buttons. The engine owns both states
+        /* Engine truth for the monitor's toggle buttons. The engine owns both states
      * — commands only enqueue a request — and on Android the service outlives the
      * Activity, so a relaunched UI must read where they actually stand rather than
      * assume a fresh session's defaults. */
-    fillListeningControlView(next, opts_snapshot, snapshot);
-    fillScanControlView(next, opts_snapshot, snapshot);
-    /* The same decode reading the call lines were aged against, not a second clock
+        fillListeningControlView(next, opts_snapshot, snapshot);
+        fillScanControlView(next, opts_snapshot, snapshot);
+        /* The same decode reading the call lines were aged against, not a second clock
      * read: one frame has to describe one instant, or the countdown and the call
      * durations beside it would come from moments either side of the poll. The
      * received tone is aged against its input-pause deadline, which the tap stamps
      * in real time. */
-    fillScanTimingView(next, opts_snapshot, snapshot, now_m);
-    fillRxToneView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
+        fillScanTimingView(next, opts_snapshot, snapshot, now_m);
+        fillRxToneView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
 
-    fillUiMessage(next, snapshot);
+        fillUiMessage(next, snapshot);
 
-    publish(next);
-    notifyDecodeNow();
-}
-
-qlonglong
-MetricsModel::decodeNowMs() const {
-    return static_cast<qlonglong>(std::floor(dsd_decode_now_realtime_s() * 1000.0));
-}
-
-void
-MetricsModel::notifyDecodeNow() {
-    const qlonglong now_s = decodeNowMs() / 1000;
-    if (now_s != m_decode_now_notified_s) {
-        m_decode_now_notified_s = now_s;
-        Q_EMIT decodeNowMsChanged();
+        publish(next);
+        notifyDecodeNow();
     }
-}
+
+    qlonglong MetricsModel::decodeNowMs() const {
+        return static_cast<qlonglong>(std::floor(dsd_decode_now_realtime_s() * 1000.0));
+    }
+
+    void MetricsModel::notifyDecodeNow() {
+        const qlonglong now_s = decodeNowMs() / 1000;
+        if (now_s != m_decode_now_notified_s) {
+            m_decode_now_notified_s = now_s;
+            Q_EMIT decodeNowMsChanged();
+        }
+    }
 
 } // namespace dsd_qt

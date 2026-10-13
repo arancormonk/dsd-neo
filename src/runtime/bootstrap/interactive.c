@@ -238,7 +238,9 @@ interactive_configure_input_source(dsd_opts* opts, dsd_state* state, int* src) {
    (dsd_decode_mode_input_spec_is_iq()) applied to the input it has just configured: of its sources only RTL-SDR and
    rtl_tcp do (an RTL-SDR choice on a build without RTL-SDR support falls back to PulseAudio); PulseAudio, files and
    network audio arrive demodulated. */
-#define INTERACTIVE_MODE_AM 15
+#define INTERACTIVE_MODE_AM    15
+/* The wizard's last entry. */
+#define INTERACTIVE_MODE_TETRA 16
 
 static int
 interactive_prompt_decode_mode(void) {
@@ -258,7 +260,8 @@ interactive_prompt_decode_mode(void) {
     DSD_FPRINTF(stderr, " 13) P25 + DMR (TDMA)\n");
     DSD_FPRINTF(stderr, " 14) Analog monitor (passive)\n");
     DSD_FPRINTF(stderr, " 15) AM receiver (IQ inputs)\n");
-    return prompt_int("Selection", 1, 1, INTERACTIVE_MODE_AM);
+    DSD_FPRINTF(stderr, " 16) TETRA (pi/4-DQPSK, 18 kHz)\n");
+    return prompt_int("Selection", 1, 1, INTERACTIVE_MODE_TETRA);
 }
 
 /* Why AM cannot run on the source the wizard configured, written to @p err; 0 when it can. Beyond the I/Q, its channel
@@ -292,17 +295,17 @@ interactive_choose_decode_mode(const dsd_opts* opts) {
 
 /* The wizard's menu numbers, in menu order (0 is not an entry). A table, so a new entry adds a row. */
 static const dsdneoUserDecodeMode k_interactive_menu_modes[] = {
-    DSDCFG_MODE_UNSET, DSDCFG_MODE_AUTO,   DSDCFG_MODE_P25P1,    DSDCFG_MODE_P25P2,
-    DSDCFG_MODE_DMR,   DSDCFG_MODE_NXDN48, DSDCFG_MODE_NXDN96,   DSDCFG_MODE_X2TDMA,
-    DSDCFG_MODE_YSF,   DSDCFG_MODE_DSTAR,  DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,
-    DSDCFG_MODE_M17,   DSDCFG_MODE_TDMA,   DSDCFG_MODE_ANALOG,   DSDCFG_MODE_AM,
+    DSDCFG_MODE_UNSET,    DSDCFG_MODE_AUTO,   DSDCFG_MODE_P25P1,  DSDCFG_MODE_P25P2, DSDCFG_MODE_DMR,
+    DSDCFG_MODE_NXDN48,   DSDCFG_MODE_NXDN96, DSDCFG_MODE_X2TDMA, DSDCFG_MODE_YSF,   DSDCFG_MODE_DSTAR,
+    DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,   DSDCFG_MODE_M17,    DSDCFG_MODE_TDMA,  DSDCFG_MODE_ANALOG,
+    DSDCFG_MODE_AM,       DSDCFG_MODE_TETRA,
 };
-_Static_assert(sizeof k_interactive_menu_modes / sizeof k_interactive_menu_modes[0] == INTERACTIVE_MODE_AM + 1,
+_Static_assert(sizeof k_interactive_menu_modes / sizeof k_interactive_menu_modes[0] == INTERACTIVE_MODE_TETRA + 1,
                "every wizard entry maps to a decode mode");
 
 static dsdneoUserDecodeMode
 interactive_mode_to_decode_mode(int mode) {
-    if (mode < 1 || mode > INTERACTIVE_MODE_AM) {
+    if (mode < 1 || mode > INTERACTIVE_MODE_TETRA) {
         return DSDCFG_MODE_UNSET;
     }
     return k_interactive_menu_modes[mode];
