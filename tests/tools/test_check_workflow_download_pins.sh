@@ -632,6 +632,42 @@ jobs:
 EOF
 expect_credentials_verdict flow_service_with_credentials fail
 
+# A flow mapping on the line after its key is the same mapping.
+run_credentials_case next_line_flow_container << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      {image: $pinned, credentials: {username: u, password: p}}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict next_line_flow_container fail
+run_credentials_case next_line_flow_services << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      {cache: {image: $pinned, credentials: {username: u, password: p}}}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict next_line_flow_services fail
+run_credentials_case next_line_flow_service << EOF
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      cache:
+        {image: $pinned, credentials: {username: u, password: p}}
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict next_line_flow_service fail
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:

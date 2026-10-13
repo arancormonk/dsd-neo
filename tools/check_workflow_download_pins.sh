@@ -546,8 +546,12 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
             else:
                 if job.container_keys is None:
                     job.container_keys = indent
-                if indent == job.container_keys and key == "credentials":
-                    job.found_credentials(number)
+                if indent == job.container_keys:
+                    if key == "credentials":
+                        job.found_credentials(number)
+                    elif key is None:
+                        # The container's mapping on the next line, in flow style.
+                        job.flow_credentials(body, number)
         elif job.field == "services":
             if indent == job.field_indent:
                 job.service_indent = job.service_keys = None
@@ -559,11 +563,19 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
                     job.service_indent = indent
                 if indent == job.service_indent:
                     job.service_keys = None
-                    job.flow_credentials(value, number)
+                    if key is None:
+                        # The services and their settings on the next line: any
+                        # mention counts.
+                        job.scan(body, number)
+                    else:
+                        job.flow_credentials(value, number)
                 elif job.service_keys is None or indent == job.service_keys:
                     job.service_keys = indent
                     if key == "credentials":
                         job.found_credentials(number)
+                    elif key is None:
+                        # A service's mapping on the next line, in flow style.
+                        job.flow_credentials(body, number)
         if job.field in ("container", "services"):
             if job.unreadable is None and ALIAS.search(text):
                 job.unreadable = number
