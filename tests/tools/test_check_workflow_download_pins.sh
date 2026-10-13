@@ -290,6 +290,45 @@ run_credentials_case pull_request_target_trigger < <(
 )
 expect_credentials_verdict pull_request_target_trigger fail
 
+# Credentials count in any YAML form, and a trigger list need not be indented.
+run_credentials_case flow_style_container < <(
+  credentialed_job build: | sed '/^      image:/,/^        password:/d' |
+    sed "s|^    container:|    container: {image: $pinned, credentials: {username: u, password: p}}|"
+)
+expect_credentials_verdict flow_style_container fail
+run_credentials_case indentless_trigger_list < <(
+  credentialed_job build: | sed 's/^on: .*/on:\n- push\n- pull_request/'
+)
+expect_credentials_verdict indentless_trigger_list fail
+
+# The exclusion has to name the pull-request events the workflow receives:
+# pull_request_target needs its own, a reusable workflow takes its caller's event,
+# and an equality with a non-PR event excludes them all.
+run_credentials_case target_excluded_as_pull_request < <(
+  credentialed_job build: "    if: github.event_name != 'pull_request'" |
+    sed 's/^on: .*/on: [pull_request_target]/'
+)
+expect_credentials_verdict target_excluded_as_pull_request fail
+run_credentials_case target_excluded < <(
+  credentialed_job build: "    if: github.event_name != 'pull_request_target'" |
+    sed 's/^on: .*/on: [pull_request_target]/'
+)
+expect_credentials_verdict target_excluded pass
+run_credentials_case both_events_one_excluded < <(
+  credentialed_job build: "    if: github.event_name != 'pull_request'" |
+    sed 's/^on: .*/on: [pull_request, pull_request_target]/'
+)
+expect_credentials_verdict both_events_one_excluded fail
+run_credentials_case reusable_workflow < <(
+  credentialed_job build: "    if: github.event_name != 'pull_request'" |
+    sed 's/^on: .*/on: [workflow_call]/'
+)
+expect_credentials_verdict reusable_workflow fail
+run_credentials_case push_only_condition < <(
+  credentialed_job build: "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'"
+)
+expect_credentials_verdict push_only_condition pass
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:

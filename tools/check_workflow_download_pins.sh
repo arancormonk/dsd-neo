@@ -104,12 +104,13 @@ report_violation "Inline archlinux:base-devel image differs from ARCHLINUX_BASE_
 # A job container or service that pulls with `credentials:` cannot start where the
 # secrets behind them are empty: GitHub rejects an empty username or password before
 # the job runs. Dependabot and fork PRs get no Docker Hub secrets, so after #665 every
-# Dependabot PR failed the two Arch jobs at "Set up job". In a workflow that runs on
-# pull requests, such a job must keep itself off them: `github.event_name !=
-# 'pull_request'` has to be one of the &&-joined terms at the top of its job-level
-# condition, so no other branch of the expression can let a pull request through. A
-# job that has to run there pulls in a step (tools/ci_arch_toolchain.sh) after an
-# optional login.
+# Dependabot PR failed the two Arch jobs at "Set up job". Such a job must keep itself
+# off every pull-request event its workflow receives (pull_request,
+# pull_request_target, and both for a reusable workflow, which takes its caller's
+# event): each `github.event_name != '<event>'`, or a `github.event_name ==` another
+# event, has to be one of the &&-joined terms at the top of its job-level condition,
+# so no other branch of the expression lets a pull request through. A job that has to
+# run there pulls in a step (tools/ci_arch_toolchain.sh) after an optional login.
 if ! command -v python3 > /dev/null 2>&1; then
   echo "python3 is required for workflow download pin guardrail checks." >&2
   exit 2
@@ -119,8 +120,8 @@ pr_job_credentials=$(
 import pathlib
 import re
 
-KEY = re.compile(r"""^(?:"([^"]*)"|'([^']*)'|([^\s"'#][^:#]*?))\s*:(?:\s+(.*))?$""")
-EXCLUSION = "github.event_name != 'pull_request'"
+KEY = re.compile(r"""^(?:"([^"]*)"|'([^']*)'|([^\s"'#\-{[][^:#]*?))\s*:(?:\s+(.*))?$""")
+PR_EVENTS = ("pull_request", "pull_request_target")
 
 
 def strip_comment(line):
@@ -138,18 +139,19 @@ def strip_comment(line):
 
 
 def entries(text):
-    """(line number, indent, key, value) for each mapping-key line; None key otherwise."""
+    """(line number, indent, key, value, text) per line; key is None for a non-key line."""
     for number, raw in enumerate(text.splitlines(), 1):
         line = strip_comment(raw.replace("\t", " "))
         if not line.strip():
             continue
         indent = len(line) - len(line.lstrip(" "))
-        match = KEY.match(line.strip())
+        body = line.strip()
+        match = KEY.match(body)
         if match:
             key = next(g for g in match.groups()[:3] if g is not None)
-            yield number, indent, key.strip(), (match.group(4) or "").strip()
+            yield number, indent, key.strip(), (match.group(4) or "").strip(), body
         else:
-            yield number, indent, None, line.strip()
+            yield number, indent, None, body, body
 
 
 def unwrap(expr):
@@ -172,7 +174,8 @@ def unwrap(expr):
     return expr
 
 
-def excludes_pull_requests(condition):
+def top_level_terms(condition):
+    """The &&-joined terms at the top of a condition, or None when it has a top-level ||."""
     expr = re.sub(r"^[|>][+-]?\s*", "", condition.strip())
     if len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in "'\"":
         expr = expr[1:-1].replace("''", "'") if expr[0] == "'" else expr[1:-1]
@@ -196,7 +199,7 @@ def excludes_pull_requests(condition):
         elif ch == ")":
             depth -= 1
         elif depth == 0 and expr.startswith("||", i):
-            return False
+            return None
         elif depth == 0 and expr.startswith("&&", i):
             terms.append(current)
             current = ""
@@ -205,41 +208,54 @@ def excludes_pull_requests(condition):
         current += ch
         i += 1
     terms.append(current)
-    return any(" ".join(unwrap(t.strip()).split()) == EXCLUSION for t in terms)
+    return [" ".join(unwrap(t.strip()).split()) for t in terms]
+
+
+def excludes(condition, events):
+    terms = top_level_terms(condition)
+    if terms is None:
+        return False
+    for term in terms:
+        match = re.fullmatch(r"github\.event_name == '([^']*)'", term)
+        if match and match.group(1) not in PR_EVENTS:
+            return True
+    return all(f"github.event_name != '{event}'" in terms for event in events)
 
 
 for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
     rows = list(entries(workflow.read_text(encoding="utf-8")))
-    on_text = []
-    section = None
-    for _, indent, key, value in rows:
-        if indent == 0:
-            section = key
-            if key in ("on", "true"):
-                on_text.append(value)
-            continue
-        if section in ("on", "true"):
-            on_text.append(f"{key or ''} {value}")
-    if not re.search(r"\bpull_request(_target)?\b", " ".join(on_text)):
+
+    def sections():
+        """(section, row) for each row; an indentless list item stays in its section."""
+        section = None
+        for row in rows:
+            _, indent, key, value, body = row
+            if indent == 0 and not body.startswith("-"):
+                section = key
+            yield section, row
+
+    on_text = " ".join(body for section, (_, _, _, _, body) in sections() if section in ("on", "true"))
+    events = {e for e in PR_EVENTS if re.search(rf"\b{e}\b", on_text)}
+    if re.search(r"\bworkflow_call\b", on_text):
+        events.update(PR_EVENTS)
+    if not events:
         continue
 
-    section = None
     job_indent = field_indent = None
-    job = job_line = None
+    job = None
     field = None
     condition = []
     credentials_line = None
 
     def finish():
-        if job is not None and credentials_line is not None and not excludes_pull_requests(" ".join(condition)):
+        if job is not None and credentials_line is not None and not excludes(" ".join(condition), events):
             print(f"{workflow}:{credentials_line}: job {job}")
 
-    for number, indent, key, value in rows:
-        if indent == 0:
-            finish()
-            section, job = key, None
-            continue
-        if section != "jobs":
+    for section, (number, indent, key, value, body) in sections():
+        if section != "jobs" or indent == 0:
+            if indent == 0 and not body.startswith("-"):
+                finish()
+                job = None
             continue
         if job_indent is None:
             job_indent = indent
@@ -251,14 +267,16 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
             continue
         if field_indent is None:
             field_indent = indent
+        text = body
         if indent == field_indent:
             field = key
+            text = value
             if key == "if":
                 condition = [value]
-            continue
-        if field == "if":
-            condition.append(value if key is None else f"{key}: {value}")
-        elif field in ("container", "services") and key == "credentials" and credentials_line is None:
+        elif field == "if":
+            condition.append(body)
+        # Any credentials key under a container or the services, block or flow style.
+        if field in ("container", "services") and credentials_line is None and re.search(r"\bcredentials\s*:", text):
             credentials_line = number
     finish()
 PY
