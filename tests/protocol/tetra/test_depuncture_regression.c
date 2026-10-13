@@ -8,6 +8,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -66,7 +67,7 @@ round_trip(int punct_id, int type2_len, int type3_len, uint32_t seed) {
     mother_encode(info, type2_len, mother);
 
     if (tetra_rcpc_puncture_by_id(punct_id, mother, mother_len, type3, type3_len) != type3_len) {
-        fprintf(stderr, "punct %d: puncture did not write %d bits\n", punct_id, type3_len);
+        DSD_FPRINTF(stderr, "punct %d: puncture did not write %d bits\n", punct_id, type3_len);
         return 1;
     }
     for (int i = 0; i < type3_len; i++) {
@@ -76,22 +77,23 @@ round_trip(int punct_id, int type2_len, int type3_len, uint32_t seed) {
         restored[i] = NEUTRAL_COST;
     }
     if (tetra_rcpc_depuncture_by_id(punct_id, type3_costs, type3_len, restored, mother_len) < 0) {
-        fprintf(stderr, "punct %d: depuncture failed\n", punct_id);
+        DSD_FPRINTF(stderr, "punct %d: depuncture failed\n", punct_id);
         return 1;
     }
     for (int i = 0; i < mother_len; i++) {
         if (restored[i] != NEUTRAL_COST && restored[i] != (mother[i] ? 0xFFFFU : 0x0000U)) {
-            fprintf(stderr, "punct %d: mother bit %d restored to the wrong value\n", punct_id, i);
+            DSD_FPRINTF(stderr, "punct %d: mother bit %d restored to the wrong value\n", punct_id, i);
             return 1;
         }
     }
     if (tetra_viterbi_decode_soft(restored, mother_len, decoded, type2_len) < 0) {
-        fprintf(stderr, "punct %d: Viterbi refused %d costs\n", punct_id, mother_len);
+        DSD_FPRINTF(stderr, "punct %d: Viterbi refused %d costs\n", punct_id, mother_len);
         return 1;
     }
     for (int i = 0; i < type2_len; i++) {
         if (decoded[i] != info[i]) {
-            fprintf(stderr, "punct %d seed %u: bit %d decoded %u, sent %u\n", punct_id, seed, i, decoded[i], info[i]);
+            DSD_FPRINTF(stderr, "punct %d seed %u: bit %d decoded %u, sent %u\n", punct_id, seed, i, decoded[i],
+                        info[i]);
             return 1;
         }
     }

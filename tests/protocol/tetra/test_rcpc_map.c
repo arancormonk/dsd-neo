@@ -1,19 +1,91 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include <assert.h>
+/*
+ * RCPC puncturing schemes against their definitions: every type-3 bit j of every scheme carries mother-code bit
+ * k = Period * ((i - 1) div t) + P(i - t * ((i - 1) div t)) (EN 300 392-2 clause 8.2.3.1.2, EN 300 395-2 clause
+ * 5.4.3.2), with the P coefficients, t, Period and i(j) written out here from EN 300 392-2 clauses 8.2.3.1.3 to
+ * 8.2.3.1.6 and EN 300 395-2 clauses 5.5.2.1, 5.5.2.2 and 5.6.2.1. Within one block no mother bit is sent twice, and
+ * tetra_rcpc_puncture_by_id() and tetra_rcpc_depuncture_by_id() follow the same map.
+ */
+
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 
-/* Include public header to access puncturer accessor and mapping prototype */
-#include <dsd-neo/protocol/tetra/tetra_fec.h>
+typedef struct {
+    int id;
+    const char* name;
+    int t;
+    int period;
+    uint8_t p[17];
+    int skip;  /* i = j + (j - 1) div skip; 0 for i = j */
+    int coded; /* type-3 bits in one block */
+    int mother;
+} scheme;
+
+static const scheme k_schemes[] = {
+    {TETRA_RCPC_PUNCT_2_3, "rate 2/3", 3, 8, {1, 2, 5}, 0, 432, 1152},
+    {TETRA_RCPC_PUNCT_1_3, "rate 1/3", 6, 8, {1, 2, 3, 5, 6, 7}, 0, 432, 576},
+    {TETRA_RCPC_PUNCT_292_432, "rate 292/432", 3, 8, {1, 2, 5}, 65, 432, 1168},
+    {TETRA_RCPC_PUNCT_148_432, "rate 148/432", 6, 8, {1, 2, 3, 5, 6, 7}, 35, 432, 592},
+    {TETRA_RCPC_PUNCT_SPEECH_8_12, "speech rate 8/12", 3, 6, {1, 2, 4}, 0, 168, 336},
+    {TETRA_RCPC_PUNCT_SPEECH_8_18, "speech rate 8/18", 9, 12, {1, 2, 3, 4, 5, 7, 8, 10, 11}, 0, 162, 216},
+    {TETRA_RCPC_PUNCT_SPEECH_8_17,
+     "speech rate 8/17",
+     17,
+     24,
+     {1, 2, 3, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17, 19, 20, 22, 23},
+     0,
+     81,
+     114},
+};
 
 static int
-check_expected(int punct_id, const int* expected, int len) {
-    for (int j = 1; j <= len; j++) {
-        int got = tetra_rcpc_map_j_to_k(punct_id, (uint32_t)j);
-        if (got != expected[j - 1]) {
-            fprintf(stderr, "[TETRA TEST] punct_id=%d j=%d: got k=%d expected k=%d\n", punct_id, j, got,
-                    expected[j - 1]);
+expected_k(const scheme* s, int j) {
+    const int i = s->skip ? j + ((j - 1) / s->skip) : j;
+    const int block = (i - 1) / s->t;
+    return (s->period * block) + s->p[(i - 1) - (s->t * block)];
+}
+
+static int
+check_scheme(const scheme* s) {
+    static uint8_t seen[1200];
+    static uint8_t mother[1200];
+    static uint8_t coded[432];
+    static uint16_t costs[432];
+    static uint16_t restored[1200];
+    DSD_MEMSET(seen, 0, sizeof(seen));
+    for (int j = 1; j <= s->coded; j++) {
+        const int k = expected_k(s, j);
+        const int got = tetra_rcpc_map_j_to_k(s->id, (uint32_t)j);
+        if (got != k || k < 1 || k > s->mother || seen[k - 1]) {
+            DSD_FPRINTF(stderr, "%s: j=%d maps to k=%d, expected %d within %d, once\n", s->name, j, got, k, s->mother);
+            return 1;
+        }
+        seen[k - 1] = 1;
+    }
+    for (int k = 0; k < s->mother; k++) {
+        mother[k] = (uint8_t)((k * 5 + 3) % 7 < 3);
+    }
+    if (tetra_rcpc_puncture_by_id(s->id, mother, s->mother, coded, s->coded) != s->coded) {
+        DSD_FPRINTF(stderr, "%s: puncture failed\n", s->name);
+        return 1;
+    }
+    for (int j = 1; j <= s->coded; j++) {
+        if (coded[j - 1] != mother[expected_k(s, j) - 1]) {
+            DSD_FPRINTF(stderr, "%s: punctured bit %d is not mother bit %d\n", s->name, j, expected_k(s, j));
+            return 1;
+        }
+        costs[j - 1] = coded[j - 1] ? 0xFFFFu : 0x0000u;
+    }
+    if (tetra_rcpc_depuncture_by_id(s->id, costs, s->coded, restored, s->mother) != s->mother) {
+        DSD_FPRINTF(stderr, "%s: depuncture failed\n", s->name);
+        return 1;
+    }
+    for (int k = 0; k < s->mother; k++) {
+        const uint16_t want = seen[k] ? (mother[k] ? 0xFFFFu : 0x0000u) : TETRA_SOFT_NEUTRAL;
+        if (restored[k] != want) {
+            DSD_FPRINTF(stderr, "%s: mother bit %d restored as 0x%04x\n", s->name, k + 1, restored[k]);
             return 1;
         }
     }
@@ -22,310 +94,15 @@ check_expected(int punct_id, const int* expected, int len) {
 
 int
 main(void) {
-    /* k = 8 * ((i - 1) div t) + P(i - t * ((i - 1) div t)) from EN 300 392-2 8.2.3.1.3, with
-     * i = j + (j - 1) div 65 for the 292/432 puncturer and i = j for 148/432. */
-    const int exp_p2_first64[64] = {1,   2,   5,   9,   10,  13,  17,  18,  21,  25,  26,  29,  33,  34,  37,  41,
-                                    42,  45,  49,  50,  53,  57,  58,  61,  65,  66,  69,  73,  74,  77,  81,  82,
-                                    85,  89,  90,  93,  97,  98,  101, 105, 106, 109, 113, 114, 117, 121, 122, 125,
-                                    129, 130, 133, 137, 138, 141, 145, 146, 149, 153, 154, 157, 161, 162};
-
-    const int exp_p3_first64[64] = {1,  2,  3,  5,  6,  7,  9,  10, 11, 13, 14, 15, 17, 18, 19, 21,
-                                    22, 23, 25, 26, 27, 29, 30, 31, 33, 34, 35, 37, 38, 39, 41, 42,
-                                    43, 45, 46, 49, 50, 51, 53, 54, 55, 57, 58, 59, 61, 62, 63, 65,
-                                    66, 67, 69, 70, 71, 73, 74, 75, 77, 78, 79, 81, 82, 83, 85, 86};
-
     int rc = 0;
-    /* quick sanity print of array endpoints */
-    /* validate up to 60 for punct_id 2 to avoid boundary artifacts in the
-     * embedded snapshot; punct_id 3 validated for 64 entries.
-     */
-    /* previous snapshot checks (keep for regression) */
-    rc |= check_expected(2, exp_p2_first64, 60);
-    rc |= check_expected(3, exp_p3_first64, 64);
-
-    /* Extended checks: validate all puncturer ids (0..6) for j=1..256
-     * Ensure mapping returns a positive k within a reasonable bound.
-     */
-    for (int pid = 0; pid <= 6; pid++) {
-        for (uint32_t j = 1; j <= 256; j++) {
-            int k = tetra_rcpc_map_j_to_k(pid, j);
-            if (k <= 0 || k > 4096) {
-                fprintf(stderr, "[TETRA TEST] punct_id=%d j=%u -> invalid k=%d\n", pid, j, k);
-                rc = 1;
-                goto done_checks;
-            }
-        }
+    for (size_t i = 0; i < sizeof(k_schemes) / sizeof(k_schemes[0]); i++) {
+        rc |= check_scheme(&k_schemes[i]);
     }
-
-    /* Dynamically compute expected mapped counts by scanning j for coded_bits=432,
-     * then re-scan to verify the mapping is stable (idempotent). This avoids
-     * hardcoding values from prior diagnostic runs.
-     */
-    const int coded_bits = 432;
-    for (int pid = 0; pid <= 6 && rc == 0; pid++) {
-        int* seen = (int*)calloc(coded_bits + 1, sizeof(int));
-        if (!seen) {
-            fprintf(stderr, "[TETRA TEST] calloc failed\n");
-            rc = 1;
-            break;
-        }
-        int unique = 0;
-        int stagnant = 0;
-        int last_unique = 0;
-        for (uint32_t j = 1; j <= 5000; j++) {
-            int k = tetra_rcpc_map_j_to_k(pid, j);
-            if (k >= 1 && k <= coded_bits) {
-                if (!seen[k]) {
-                    seen[k] = 1;
-                    unique++;
-                }
-            }
-            if (unique == last_unique) {
-                stagnant++;
-            } else {
-                stagnant = 0;
-                last_unique = unique;
-            }
-            if (stagnant > 512) {
-                break; /* no new k in a while -> likely done */
-            }
-        }
-        free(seen);
-
-        /* second pass: recompute and compare */
-        int* seen2 = (int*)calloc(coded_bits + 1, sizeof(int));
-        if (!seen2) {
-            fprintf(stderr, "[TETRA TEST] calloc failed(2)\n");
-            rc = 1;
-            break;
-        }
-        int unique2 = 0;
-        stagnant = 0;
-        last_unique = 0;
-        for (uint32_t j = 1; j <= 5000; j++) {
-            int k = tetra_rcpc_map_j_to_k(pid, j);
-            if (k >= 1 && k <= coded_bits) {
-                if (!seen2[k]) {
-                    seen2[k] = 1;
-                    unique2++;
-                }
-            }
-            if (unique2 == last_unique) {
-                stagnant++;
-            } else {
-                stagnant = 0;
-                last_unique = unique2;
-            }
-            if (stagnant > 512) {
-                break;
-            }
-        }
-
-        if (unique != unique2) {
-            fprintf(stderr, "[TETRA TEST] punct_id=%d: unstable mapped_count first=%d second=%d\n", pid, unique,
-                    unique2);
-            rc = 1;
-        } else {
-            fprintf(stderr, "[TETRA TEST] punct_id=%d mapped_count=%d (stable)\n", pid, unique);
-        }
-
-        free(seen2);
+    if (tetra_rcpc_map_j_to_k(7, 1) != -1 || tetra_rcpc_map_j_to_k(-1, 1) != -1
+        || tetra_rcpc_map_j_to_k(TETRA_RCPC_PUNCT_2_3, 0) != -1) {
+        DSD_FPRINTF(stderr, "an unknown scheme or bit 0 must map to -1\n");
+        rc = 1;
     }
-
-    /* Explicit G1..G4 periodicity assertions: using known puncturer parameters
-     * from the implementation (period, t). These assert that the set of k
-     * residues modulo period has cardinality t and that for each residue the
-     * observed k positions form an arithmetic progression with step == period.
-     */
-    const int expected_periods[7] = {8, 8, 8, 8, 6, 12, 24};
-    const int expected_t[7] = {3, 6, 3, 6, 3, 9, 17};
-
-    for (int pid = 0; pid <= 6 && rc == 0; pid++) {
-        int period = expected_periods[pid];
-        int tval = expected_t[pid];
-        int* seen = (int*)calloc(coded_bits + 1, sizeof(int));
-        if (!seen) {
-            rc = 1;
-            break;
-        }
-        /* collect unique ks */
-        int unique = 0;
-        int stagnant = 0, last_unique = 0;
-        for (uint32_t j = 1; j <= 5000; j++) {
-            int k = tetra_rcpc_map_j_to_k(pid, j);
-            if (k >= 1 && k <= coded_bits) {
-                if (!seen[k]) {
-                    seen[k] = 1;
-                    unique++;
-                }
-            }
-            if (unique == last_unique) {
-                stagnant++;
-            } else {
-                stagnant = 0;
-                last_unique = unique;
-            }
-            if (stagnant > 512) {
-                break;
-            }
-        }
-
-        /* count residues */
-        int* res_count = (int*)calloc(period, sizeof(int));
-        if (!res_count) {
-            free(seen);
-            rc = 1;
-            break;
-        }
-        for (int k = 1; k <= coded_bits; k++) {
-            if (seen[k]) {
-                res_count[k % period]++;
-            }
-        }
-        int distinct_res = 0;
-        for (int r = 0; r < period; r++) {
-            if (res_count[r] > 0) {
-                distinct_res++;
-            }
-        }
-        if (distinct_res != tval) {
-            fprintf(stderr, "[TETRA TEST] punct_id=%d: residues distinct=%d expected_t=%d\n", pid, distinct_res, tval);
-            rc = 1;
-            free(seen);
-            free(res_count);
-            break;
-        }
-
-        /* For each residue, verify progression by period */
-        for (int r = 0; r < period && rc == 0; r++) {
-            if (res_count[r] == 0) {
-                continue;
-            }
-            int cnt = res_count[r];
-            int* vals = (int*)malloc(sizeof(int) * cnt);
-            if (!vals) {
-                rc = 1;
-                break;
-            }
-            int idx = 0;
-            for (int k = 1; k <= coded_bits; k++) {
-                if (seen[k] && (k % period) == r) {
-                    vals[idx++] = k;
-                }
-            }
-            /* check arithmetic progression */
-            for (int i = 1; i < idx; i++) {
-                int diff = vals[i] - vals[i - 1];
-                if (diff <= 0 || (diff % period) != 0) {
-                    fprintf(
-                        stderr,
-                        "[TETRA TEST] punct_id=%d residue=%d progression non-periodic: %d -> %d (diff=%d, period=%d)\n",
-                        pid, r, vals[i - 1], vals[i], diff, period);
-                    rc = 1;
-                    break;
-                }
-            }
-            free(vals);
-        }
-
-        free(seen);
-        free(res_count);
-    }
-
-    /* Explicit P-table equality check: ensure that the set of residues modulo
-     * `period` observed in the mapped ks equals the set of P entries (P[1..t]).
-     */
-    for (int pid = 0; pid <= 6 && rc == 0; pid++) {
-        const uint8_t* P = NULL;
-        int tval = 0;
-        int period = 0;
-        if (tetra_rcpc_get_puncturer_params(pid, &P, &tval, &period) != 0) {
-            fprintf(stderr, "[TETRA TEST] cannot get params for pid=%d\n", pid);
-            rc = 1;
-            break;
-        }
-        int* seen = (int*)calloc(coded_bits + 1, sizeof(int));
-        if (!seen) {
-            rc = 1;
-            break;
-        }
-        int unique = 0;
-        int stagnant = 0;
-        int last_unique = 0;
-        for (uint32_t j = 1; j <= 5000; j++) {
-            int k = tetra_rcpc_map_j_to_k(pid, j);
-            if (k >= 1 && k <= coded_bits) {
-                if (!seen[k]) {
-                    seen[k] = 1;
-                    unique++;
-                }
-            }
-            if (unique == last_unique) {
-                stagnant++;
-            } else {
-                stagnant = 0;
-                last_unique = unique;
-            }
-            if (stagnant > 512) {
-                break;
-            }
-        }
-
-        /* build observed residues set */
-        int* obs = (int*)calloc(period, sizeof(int));
-        if (!obs) {
-            free(seen);
-            rc = 1;
-            break;
-        }
-        for (int k = 1; k <= coded_bits; k++) {
-            if (seen[k]) {
-                obs[k % period] = 1;
-            }
-        }
-
-        /* build expected residues set from P[1..tval] (preserve 1-based layout used in code)
-         * Note: P may have a leading zero sentinel at P[0]. We index P[1]..P[tval]
-         */
-        int* exp = (int*)calloc(period, sizeof(int));
-        if (!exp) {
-            free(seen);
-            free(obs);
-            rc = 1;
-            break;
-        }
-        for (int pi = 1; pi <= tval; pi++) {
-            int pv = P[pi] % period;
-            exp[pv] = 1;
-        }
-
-        /* compare sets */
-        for (int r = 0; r < period; r++) {
-            if (obs[r] != exp[r]) {
-                fprintf(stderr, "[TETRA TEST] punct_id=%d residue_set_mismatch at r=%d obs=%d exp=%d\n", pid, r, obs[r],
-                        exp[r]);
-                rc = 1;
-                break;
-            }
-        }
-
-        free(seen);
-        free(obs);
-        free(exp);
-    }
-
-done_checks:
-    if (rc == 0) {
-        fprintf(stderr, "[TETRA TEST] tetra_rcpc_map_j_to_k snapshots OK (extended)\n");
-    } else {
-        fprintf(stderr, "[TETRA TEST] FAILED (extended)\n");
-    }
-
-    if (rc == 0) {
-        printf("[TETRA TEST] tetra_rcpc_map_j_to_k snapshots OK\n");
-    } else {
-        printf("[TETRA TEST] FAILED\n");
-    }
-
+    puts(rc ? "FAILED test_rcpc_map" : "PASS test_rcpc_map");
     return rc;
 }

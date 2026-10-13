@@ -864,6 +864,21 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
     return eq ? 1 : 2;
 }
 
+/* --tetra-codec <file>: the TETRA speech codec library, loaded when the first TETRA speech frame needs it, so a
+   missing or unsuitable library is reported then. The path keeps the user's ~ expansion and nothing else. */
+static int
+cli_set_tetra_codec(const char* spec, dsd_opts* opts) {
+    if (!spec || spec[0] == '\0') {
+        return -1;
+    }
+    char expanded[sizeof opts->tetra_codec_path];
+    if (dsd_path_expand_user(spec, expanded, sizeof expanded) != 0 || expanded[0] == '\0') {
+        return -1;
+    }
+    DSD_SNPRINTF(opts->tetra_codec_path, sizeof opts->tetra_codec_path, "%s", expanded);
+    return 0;
+}
+
 /* --tetra-net mcc,mnc,colour: the TETRA network identity scrambling starts from until a BSCH supplies one (an uplink
    or a late-joined session never sees the BSCH). MCC is 10 bits, MNC 14 bits and the colour code 6 bits (EN 300 392-2
    clause 8.2.5.2); the colour takes decimal or 0x hexadecimal. */
@@ -1177,6 +1192,24 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             if (cli_parse_tetra_net(net, opts) != 0) {                                                                 \
                 LOG_ERROR("--tetra-net requires mcc,mnc,colour: MCC 0-1023, MNC 0-16383, colour 0-63 (decimal or "     \
                           "0x hex)\n");                                                                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--tetra-codec") == 0 || strncmp(argv[i], "--tetra-codec=", 14) == 0) {                    \
+            const char* codec = argv[i][13] == '=' ? argv[i] + 14 : NULL;                                              \
+            if (codec == NULL) {                                                                                       \
+                if (i + 1 >= argc) {                                                                                   \
+                    LOG_ERROR("--tetra-codec requires the path of a TETRA speech codec library\n");                    \
+                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
+                    return DSD_PARSE_ERROR;                                                                            \
+                }                                                                                                      \
+                codec = DSD_PARSE_ARGS_NEXT_ARG();                                                                     \
+            }                                                                                                          \
+            if (cli_set_tetra_codec(codec, opts) != 0) {                                                               \
+                LOG_ERROR("--tetra-codec requires the path of a TETRA speech codec library (at most %zu bytes)\n",     \
+                          sizeof opts->tetra_codec_path - 1U);                                                         \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \

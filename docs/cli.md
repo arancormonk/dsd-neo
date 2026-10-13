@@ -464,6 +464,13 @@ Notes
   - Custom AFS bit splits: `-fh344`, `-fH434`
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
 - dPMR: `-fm`
+- TETRA: `-fT`. Speech plays only through a TETRA speech codec library the user supplies:
+  `--tetra-codec <file>` names its shared library (`.so`, `.dylib` or `.dll`), opened by that path, relative to the
+  working directory when it is not absolute. dsd-neo loads it when the first TETRA speech frame needs decoding and
+  refuses, with one error, a library of another interface version or one missing a function; decoding carries on
+  without audio. Without `--tetra-codec` TETRA decodes as usual and plays no speech. A speech burst plays once its
+  CRC has passed; later bursts whose CRC fails are concealed by the codec, and a run of them ends the speech until the
+  next good burst. The interface, and building a library from the ETSI reference code, are in `tools/tetra/README.md`.
 
 Notes
 

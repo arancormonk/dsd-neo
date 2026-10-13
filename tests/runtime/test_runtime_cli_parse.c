@@ -9688,6 +9688,68 @@ test_tg_lockout_persistence_flags(void) {
     return rc;
 }
 
+/* --tetra-codec names the TETRA speech codec library, in both spellings and alongside -fT; it is only recorded here
+   (the decoder loads it when speech needs it). A missing value, an empty one or one too long for the path refuses. */
+static int
+test_tetra_codec_option_records_the_library(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    int rc = opts->tetra_codec_path[0] != '\0';
+    char name[] = "dsd-neo";
+    char mode[] = "-fT";
+    char option[] = "--tetra-codec";
+    char path[] = "codecs/libtetra-codec.so";
+    char joined[] = "--tetra-codec=other/tetra-codec.dll";
+    char* separate[] = {name, mode, option, path, NULL};
+    int effective = 0;
+    int exit_rc = -1;
+    int parsed = dsd_parse_args(4, separate, opts, state, &effective, &exit_rc);
+    rc |= parsed != DSD_PARSE_CONTINUE || strcmp(opts->tetra_codec_path, "codecs/libtetra-codec.so") != 0
+          || opts->frame_tetra != 1;
+    char* attached[] = {name, joined, NULL};
+    parsed = dsd_parse_args(2, attached, opts, state, &effective, &exit_rc);
+    rc |= parsed != DSD_PARSE_CONTINUE || strcmp(opts->tetra_codec_path, "other/tetra-codec.dll") != 0;
+
+    char empty[] = "--tetra-codec=";
+    char* refused_empty[] = {name, empty, NULL};
+    char* refused_missing[] = {name, option, NULL};
+    char err[512];
+    exit_rc = 0;
+    parsed = parse_args_capture_stderr(2, refused_empty, opts, state, &effective, &exit_rc, err, sizeof err);
+    rc |= parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, "--tetra-codec") == NULL;
+    exit_rc = 0;
+    parsed = parse_args_capture_stderr(2, refused_missing, opts, state, &effective, &exit_rc, err, sizeof err);
+    rc |= parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, "--tetra-codec") == NULL;
+
+    char* long_path = (char*)malloc(sizeof opts->tetra_codec_path + 1U);
+    if (long_path) {
+        DSD_MEMSET(long_path, 'a', sizeof opts->tetra_codec_path);
+        long_path[sizeof opts->tetra_codec_path] = '\0';
+        char* refused_long[] = {name, option, long_path, NULL};
+        exit_rc = 0;
+        parsed = parse_args_capture_stderr(3, refused_long, opts, state, &effective, &exit_rc, err, sizeof err);
+        rc |= parsed != DSD_PARSE_ERROR || exit_rc != 1;
+        free(long_path);
+    } else {
+        rc = 1;
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "--tetra-codec parsing failed (path now '%s')\n", opts->tetra_codec_path);
+    }
+    close_parse_outputs(opts);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* Issue #658: the stream encoder's digital output plays its decoded 8 kHz Codec2 monitor, so -fZ opens it at 8 kHz, mono;
    -8's 48 kHz baseband goes to the raw stream. The BERT and packet encoders decode no voice and keep 48 kHz. */
 static int
@@ -9947,6 +10009,7 @@ main(void) {
     rc |= test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open();
     rc |= test_F_relaxes_crc_and_notice_omits_nxdn();
     rc |= test_tg_lockout_persistence_flags();
+    rc |= test_tetra_codec_option_records_the_library();
     return rc;
 }
 

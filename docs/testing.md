@@ -1359,19 +1359,24 @@ Known gaps and caveats:
   capture drops, and out-of-order decode milestones. The checker itself still
   requires a real v2 capture, provenance document, and realtime replay log
   before it reports an external bundle as accepted.
-  `TETRA_ACELP_PIPELINE` additionally launches the persistent Python vocoder
-  stub, exchanges both
-  137-bit codec frames, and verifies that 480 PCM samples reach a WAV sink.
-  `TETRA_ACELP_SHORT_OUTPUT` makes the subprocess return only 80 of the required
-  240 samples and verifies that the decoder resets it without routing a partial
-  frame. `TETRA_ACELP_TIMEOUT` holds the subprocess output open without returning
-  PCM and verifies that the decoder leaves the blocking read within two seconds;
-  Windows additionally terminates the complete shell/codec process tree. All
-  three cases run through the Windows and POSIX subprocess implementations.
+  The speech path runs against a test codec library (`tests/protocol/tetra/tetra_test_codec.c`), built as a
+  shared library and loaded through `--tetra-codec` as a user's would be; its samples say which decode made them and
+  whether it was a bad frame. `TETRA_VOICE_PIPELINE` reads them back from the raw output: speech starts at a
+  CRC-passed burst, bad frames after it are concealed until a run of four ends it, a stolen half slot's frame is
+  concealed ahead of its speech frame, 240-sample frames leave the output whole 160-sample blocks with the rest
+  carried, a carrier-boundary reset drops the carry and restarts the codec, an air-encrypted call is decrypted with
+  key stream bits 0 to 273 for a full slot and 216 to 352 for half-slot speech (EN 300 392-7 table 6.4), and the
+  channel, timeslot, encryption, talkgroup and record gates hold back what they should. `TETRA_VOICE_CODEC` covers
+  the libraries dsd-neo cannot use (none named, no file, another interface version, a missing function, no decoder,
+  failing decodes): one log line each, no audio, and the speech still counts as reception. `PLATFORM_DYNLIB` runs
+  the loader underneath over the same libraries. `TETRA_SPEECH_CHANNEL` decodes full- and half-slot bursts from an
+  encoder written straight from EN 300 395-2 clause 5, CRC included, and `TETRA_RCPC_MAP` checks every puncturing
+  scheme against its clause.
   `TETRA_ACELP_REFERENCE` decodes the GPL-3.0 telive “Hello Tetra” hardware-test
   sample through the speech 24x18 deinterleaver and class-specific RCPC path.
   It compares all 8,220 bits in the resulting 60 ACELP frames with output from
-  the ETSI reference decoder. The adjacent 8 kHz mono PCM16 WAV contains the
+  the ETSI reference decoder, whose bad-frame flag is clear for every frame, so
+  every burst's class-2 CRC must pass as well. The adjacent 8 kHz mono PCM16 WAV contains the
   independently decoded 14,400-sample reference; source commits, package
   hashes, licenses, and artifact hashes are recorded in its `PROVENANCE.md`.
   `TETRA_REAL_AIR_BIT_TRACE` anchors BSCH and SYSINFO parsing to a public
@@ -1888,7 +1893,7 @@ channel rate: EDACS converts what it reads to 48 kHz (issue #633). For the encod
 | Case | What it pins |
 | --- | --- |
 | `M17_STATE_DISPATCH` output-format case | Both payloads (two 160-sample codec frames at 3200, one 320-sample frame at 1600) play as two 160-frame blocks in each format: s16 or f32, mono or stereo, on UDP and, through the `dsd_audio_write` wrap (GNU and Clang off Apple), on a local stream. The wrap copies frames x channels samples as a backend reads them, so under ASan a short buffer is a report; on a two-channel stream both channels carry the decoded frame at full level. Every f32 sample equals the chained s16 sample / 32768, and the device receives those same s16 samples under `-y`. `-g 3` triples the samples `-g 1` passes through in both formats. The existing UDP, mute and stamp cases now count 1600's two blocks and stage into initialised output buffers. |
-| `CORE_AUDIO2_HELPERS` decoded-PCM case | `dsd_audio_play_decoded_pcm16()` against gates stubbed to mute: a forced talkgroup mute, a blocked record policy and a stale NXDN cipher with no key never mute a settled frame in any format, channel count or sink; a stale X2 slot cannot select slot 2 for M17; a 330-sample buffer runs the slot 0 chain and short staging exactly twice; the slot 1 switch and the mute still apply; the static WAV records what slot 1 plays in both formats and the per-call WAV every frame; a state with no output history plays nothing; the public mixers keep the policy verdict. |
+| `CORE_AUDIO2_HELPERS` decoded-PCM case | `dsd_audio_play_decoded_pcm16()` against gates stubbed to mute: a forced talkgroup mute, a blocked record policy and a stale NXDN cipher with no key never mute a settled frame in any format, channel count or sink; a stale X2 slot cannot select slot 2 for M17; a 330-sample buffer runs the slot 0 chain and short staging exactly twice; the slot 1 switch and the mute still apply; the static WAV records what slot 1 plays in both formats and the per-call WAV every frame; a state with no output history plays nothing; the public mixers keep the policy verdict; `dsd_audio_play_decoded_pcm16_record()` with record 0 still plays but writes neither WAV. |
 | `RUNTIME_CLI_PARSE` encoder-rate cases | `-fZ` opens the digital output at 8 kHz mono; `-fB` and `-fP` keep 48 kHz. Explicit `-8` survives every supported manual selector in either argument order, including after an analog preset. |
 | `M17_STATE_DISPATCH` IP bounds cases | Every truncated stream/control prefix uses an exact-sized allocation and leaves state untouched; a valid MPKT shorter than a stream frame reads only its own header. A sender-shaped 52-byte text-metadata packet retains its final nonzero application byte, with only the two CRC bytes excluded from the payload. ASan checks those bounds. |
 | `DECODE_IQ_M17_VOICE_OUTPUT` (Codec2 builds) | The M17 fixture on stdout: `-fz` whole s16 frames, `-fz -y` twice its bytes, `-fa` twice, `-fa -y` four times; `-g 1` and `-g 50` differ. |

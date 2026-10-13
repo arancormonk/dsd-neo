@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/**
+ * @file
+ * @brief The speech path's part of the TETRA decoder state (tetra_state_t::voice).
+ *
+ * Lives and dies with the TETRA state: tetra_voice_release() runs when the state is dropped, and the engine's
+ * carrier-boundary reset (tetra_voice_reset()) forgets the speech in progress. Decoder-thread private.
+ */
+#ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
+#define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
+
+#include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/protocol/tetra/tetra_codec_abi.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct tetra_voice {
+    /* The codec library (--tetra-codec), loaded at the first speech frame that would play; its functions; the
+       decoder instance, made again after a reset. */
+    struct dsd_dynlib* lib;
+    dsd_tetra_codec_create_fn create;
+    dsd_tetra_codec_decode_fn decode;
+    dsd_tetra_codec_destroy_fn destroy;
+    void* codec;
+
+    /* Frames the codec decoded, of them concealed bad frames, and frames it failed on. */
+    uint32_t frames;
+    uint32_t concealed;
+    uint32_t codec_errors;
+
+    /* Decoded PCM not played yet: the output takes whole DSD_VOICE_FRAME_SAMPLES frames, a speech frame is 240. */
+    uint16_t carry_len;
+    short carry[DSD_VOICE_FRAME_SAMPLES];
+
+    uint8_t codec_status;       /* tetra_codec_status */
+    uint8_t last_decode_failed; /* the codec failed on the last frame it was given */
+    /* Speech integrity: 1 once a CRC-passed burst started the speech; the bad frames since the last good one. */
+    uint8_t confirmed;
+    uint8_t bad_run;
+} tetra_voice_t;
+
+/** Unload the codec and clear @p voice; the TETRA state's cleanup calls it. */
+void tetra_voice_release(tetra_voice_t* voice);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_ */

@@ -4,7 +4,6 @@ target_sources(
     dsd-neo_proto_tetra
     PRIVATE
         tetra.c
-        tetra_acelp.c
         tetra_air.c
         tetra_bsch.c
         tetra_dmo.c
@@ -13,8 +12,9 @@ target_sources(
         tetra_mle.c
         tetra_mm.c
         tetra_state.c
-        tetra_tch_slot_gate.c
         tetra_trunk_sm.c
+        tetra_voice.c
+        tetra_voice_gate.c
 )
 
 target_include_directories(

@@ -11095,15 +11095,15 @@ set(_dsd_tetra_test_sources
     tetra_phase80
     tetra_phase85
     tetra_phase86
-    tetra_phase87
+    tetra_speech_reorder
     tetra_dmo
     tetra_air
-    tetra_speech_half
+    tetra_speech_channel
     tetra_sch_hu
     tetra_sm_hangtime
-    tetra_tch_slot_gate
     tetra_trunk_sm
     tetra_publication
+    tetra_voice_gate
 )
 
 foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
@@ -11191,87 +11191,109 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 
-# Exercise the actual persistent vocoder subprocess and WAV routing with the
-# deterministic silence stub. Keep the protocol suite usable when Python is
-# intentionally absent from a minimal target environment.
-find_package(Python3 COMPONENTS Interpreter QUIET)
-if(Python3_Interpreter_FOUND)
-    add_executable(
-        dsd-neo_test_tetra_acelp_pipeline
-        protocol/tetra/test_tetra_acelp_pipeline.c
+# A stand-in for the TETRA speech codec library (--tetra-codec), built as a shared library the way a user's codec is:
+# the voice tests load it through the platform loader and read the PCM it makes off the digital voice output. Each
+# sample says which decode made it. The variants break the codec interface the ways a wrong library would.
+set(_dsd_tetra_codec_variants
+    good
+    wrong_abi
+    missing_symbol
+    no_create
+    fail_decode
+)
+set(_dsd_tetra_codec_definitions)
+foreach(_dsd_tetra_codec_variant IN LISTS _dsd_tetra_codec_variants)
+    set(_dsd_tetra_codec_target
+        "dsd-neo_test_tetra_codec_${_dsd_tetra_codec_variant}"
+    )
+    string(TOUPPER "${_dsd_tetra_codec_variant}" _dsd_tetra_codec_macro)
+    add_library(
+        "${_dsd_tetra_codec_target}"
+        SHARED
+        protocol/tetra/tetra_test_codec.c
     )
     target_include_directories(
-        dsd-neo_test_tetra_acelp_pipeline
+        "${_dsd_tetra_codec_target}"
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(
+        "${_dsd_tetra_codec_target}"
+        PRIVATE "TETRA_TEST_CODEC_${_dsd_tetra_codec_macro}=1"
+    )
+    target_link_libraries("${_dsd_tetra_codec_target}" PRIVATE dsd-neo_warnings)
+    list(
+        APPEND _dsd_tetra_codec_definitions
+        "TETRA_TEST_CODEC_${_dsd_tetra_codec_macro}=\"$<TARGET_FILE:${_dsd_tetra_codec_target}>\""
+    )
+endforeach()
+
+foreach(_dsd_tetra_voice_test IN ITEMS voice_pipeline voice_codec)
+    set(_dsd_tetra_target "dsd-neo_test_tetra_${_dsd_tetra_voice_test}")
+    add_executable(
+        "${_dsd_tetra_target}"
+        "protocol/tetra/test_tetra_${_dsd_tetra_voice_test}.c"
+    )
+    target_include_directories(
+        "${_dsd_tetra_target}"
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/protocol/tetra
     )
+    target_compile_definitions(
+        "${_dsd_tetra_target}"
+        PRIVATE ${_dsd_tetra_codec_definitions}
+    )
+    # initState() and the audio output reach the codecs and sinks ${LIBS} carries.
     target_link_libraries(
-        dsd-neo_test_tetra_acelp_pipeline
-        PRIVATE dsd-neo_proto_tetra dsd-neo_fec
+        "${_dsd_tetra_target}"
+        PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support ${LIBS}
     )
+    foreach(_dsd_tetra_codec_variant IN LISTS _dsd_tetra_codec_variants)
+        add_dependencies(
+            "${_dsd_tetra_target}"
+            "dsd-neo_test_tetra_codec_${_dsd_tetra_codec_variant}"
+        )
+    endforeach()
+    string(TOUPPER "${_dsd_tetra_voice_test}" _dsd_tetra_test_name)
     add_test(
-        NAME TETRA_ACELP_PIPELINE
-        COMMAND dsd-neo_test_tetra_acelp_pipeline
+        NAME "TETRA_${_dsd_tetra_test_name}"
+        COMMAND "${_dsd_tetra_target}"
     )
     set_tests_properties(
-        TETRA_ACELP_PIPELINE
-        PROPERTIES
-            LABELS "protocol;tetra;audio"
-            ENVIRONMENT
-                "TETRA_VOCODER_CMD=${Python3_EXECUTABLE} \"${PROJECT_SOURCE_DIR}/tools/tetra/vocoder_stub.py\""
+        "TETRA_${_dsd_tetra_test_name}"
+        PROPERTIES LABELS "protocol;tetra;audio"
     )
+endforeach()
 
-    add_executable(
-        dsd-neo_test_tetra_acelp_short_output
-        protocol/tetra/test_tetra_acelp_short_output.c
-    )
-    target_include_directories(
-        dsd-neo_test_tetra_acelp_short_output
-        PRIVATE
-            ${PROJECT_SOURCE_DIR}/include
-            ${PROJECT_SOURCE_DIR}/src/protocol/tetra
-    )
-    target_link_libraries(
-        dsd-neo_test_tetra_acelp_short_output
-        PRIVATE dsd-neo_proto_tetra dsd-neo_fec
-    )
-    add_test(
-        NAME TETRA_ACELP_SHORT_OUTPUT
-        COMMAND dsd-neo_test_tetra_acelp_short_output
-    )
-    set_tests_properties(
-        TETRA_ACELP_SHORT_OUTPUT
-        PROPERTIES
-            LABELS "protocol;tetra;audio"
-            ENVIRONMENT
-                "TETRA_VOCODER_CMD=${Python3_EXECUTABLE} \"${PROJECT_SOURCE_DIR}/tools/tetra/vocoder_stub.py\" --short-output"
-    )
-
-    add_test(
-        NAME TETRA_ACELP_TIMEOUT
-        COMMAND dsd-neo_test_tetra_acelp_short_output
-    )
-    set_tests_properties(
-        TETRA_ACELP_TIMEOUT
-        PROPERTIES
-            LABELS "protocol;tetra;audio"
-            TIMEOUT 8
-            ENVIRONMENT
-                "TETRA_VOCODER_CMD=${Python3_EXECUTABLE} \"${PROJECT_SOURCE_DIR}/tools/tetra/vocoder_stub.py\" --hang"
-    )
-
-    add_test(
-        NAME TETRA_ACELP_MISSING_COMMAND
-        COMMAND dsd-neo_test_tetra_acelp_short_output
-    )
-    set_tests_properties(
-        TETRA_ACELP_MISSING_COMMAND
-        PROPERTIES
-            LABELS "protocol;tetra;audio"
-            ENVIRONMENT "TETRA_VOCODER_CMD="
-    )
-endif()
+# The run-time library loader the codec goes through (src/platform/dynlib_*.c), over the same test libraries.
+add_executable(dsd-neo_test_platform_dynlib platform/test_platform_dynlib.c)
+target_include_directories(
+    dsd-neo_test_platform_dynlib
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_platform_dynlib
+    PRIVATE ${_dsd_tetra_codec_definitions}
+)
+target_link_libraries(
+    dsd-neo_test_platform_dynlib
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
+add_dependencies(
+    dsd-neo_test_platform_dynlib
+    dsd-neo_test_tetra_codec_good
+    dsd-neo_test_tetra_codec_missing_symbol
+)
+add_test(NAME PLATFORM_DYNLIB COMMAND dsd-neo_test_platform_dynlib)
+set_tests_properties(PLATFORM_DYNLIB PROPERTIES LABELS "platform;tetra")
+unset(_dsd_tetra_codec_definitions)
+unset(_dsd_tetra_codec_macro)
+unset(_dsd_tetra_codec_target)
+unset(_dsd_tetra_codec_variant)
+unset(_dsd_tetra_codec_variants)
+unset(_dsd_tetra_target)
+unset(_dsd_tetra_test_name)
+unset(_dsd_tetra_voice_test)
 
 # This matrix drives eot_cc(); it must not call real skipDibit from the unit-test fixture.
 # The local-output wrap counts the analog blocks EDACS writes there (issue #574).
@@ -13343,7 +13365,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS
         tetra_bsch_synth
-        -fT
+        "-fT -Z"
         "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
     )
     # Apache-2.0 real-air SCBS capture from GopherTrunk, deterministically
@@ -13403,7 +13425,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_INVERTED
         tetra_bsch_inverted
-        -fT
+        "-fT -Z"
         "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
     )
     # Deterministic 300 Hz carrier error plus 14 dB complex-AWGN SNR. These
@@ -13430,7 +13452,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_CFO_AWGN
         tetra_bsch_cfo_awgn
-        -fT
+        "-fT -Z"
         "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
     )
     # The same 300 Hz CFO and noise realization as the 14 dB case at 6 dB SNR:
@@ -13477,7 +13499,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_TWO_RAY
         tetra_bsch_two_ray
-        -fT
+        "-fT -Z"
         "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
     )
     # A +100 ppm transmitter/receiver sample-clock mismatch accumulates timing
@@ -13503,7 +13525,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_CLOCK_100PPM
         tetra_bsch_clock_100ppm
-        -fT
+        "-fT -Z"
         "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
     )
     # Repeat in the opposite direction; a slow source lengthens the waveform
@@ -13529,7 +13551,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_CLOCK_MINUS_100PPM
         tetra_bsch_clock_minus_100ppm
-        -fT
+        "-fT -Z"
         "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
     )
     dsd_neo_add_iq_reject_test(

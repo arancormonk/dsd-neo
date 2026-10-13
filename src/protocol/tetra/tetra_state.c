@@ -9,11 +9,12 @@
 #include <dsd-neo/core/tetra_publication.h>
 #include <stdlib.h>
 
-/* The state holds operator air keys, so it is wiped before it is freed. */
+/* The state holds operator air keys, so it is wiped before it is freed; the codec library it loaded goes first. */
 static void
 tetra_state_free(void* ptr) {
     if (ptr) {
         free(((tetra_state_t*)ptr)->sds_concat);
+        tetra_voice_release(&((tetra_state_t*)ptr)->voice);
         DSD_SECURE_ZERO(ptr, sizeof(tetra_state_t));
         free(ptr);
     }

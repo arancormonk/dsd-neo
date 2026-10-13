@@ -544,7 +544,7 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - Path: `src/platform`, `include/dsd-neo/platform`
 - Target: `dsd-neo_platform`
 - Responsibilities: cross-platform primitives (audio backend, sockets, threading, timing, filesystem/curses
-  compatibility)
+  compatibility, run-time library loading)
   - Directory listing: `dsd_dir_list()` in `include/dsd-neo/platform/file_compat.h`, implemented once per
     platform in `file_compat_posix.c` and `file_compat_win32.c`
   - Private file opens: `dsd_fopen_private()` creates a written file owner-only; `dsd_fopen_private_ex()` also says
@@ -608,6 +608,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
     so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
     timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
+  - Run-time libraries: `dsd_dynlib_open()`/`dsd_dynlib_symbol()`/`dsd_dynlib_close()` in
+    `include/dsd-neo/platform/dynlib.h` load a user-supplied shared library (the TETRA speech codec,
+    `--tetra-codec`): `dlopen(RTLD_NOW | RTLD_LOCAL)` in `dynlib_posix.c` (linked with `${CMAKE_DL_LIBS}`),
+    `LoadLibraryExW()` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` in `dynlib_win32.c`
+    on the full path (UTF-8, else the ANSI code page). A bare file name means the working directory, never the loader's
+    search path; only these two files include `<dlfcn.h>` for it. Test: `PLATFORM_DYNLIB`
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
     `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
     object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
@@ -1016,8 +1022,11 @@ suite runs under this compiler.
   agree. Public mixer callers retain their protocol and policy verdicts. A trailing partial frame is dropped, and
   a state without the output history `initState()` allocates plays nothing. The M17 stream encoder (`-fZ`) opens the
   decoded monitor at 8 kHz; explicit `-8` selects its separate 48 kHz baseband monitor whether before or after the
-  mode selector. Leaving an analog preset clears monitoring it enabled implicitly. Tests: `CORE_AUDIO2_HELPERS`,
-  `M17_STATE_DISPATCH`, `RUNTIME_CLI_PARSE`, `DECODE_IQ_M17_VOICE_OUTPUT`.
+  mode selector. Leaving an analog preset clears monitoring it enabled implicitly. A decoder under talkgroup policy
+  that settles the record policy too (TETRA speech, `dsd_audio_record_policy_gate_slot()`) calls
+  `dsd_audio_play_decoded_pcm16_record()`: with `record` 0 its frames play but neither WAV takes them. Tests:
+  `CORE_AUDIO2_HELPERS`, `M17_STATE_DISPATCH`, `RUNTIME_CLI_PARSE`, `DECODE_IQ_M17_VOICE_OUTPUT`,
+  `TETRA_VOICE_PIPELINE`.
 - Invariant (P25 Phase 2 voice playout, `<dsd-neo/core/p25p2_playout.h>`, `src/core/audio/p25p2_playout.c`, issue
   #651): both output formats play P25 Phase 2 voice through one staging and one mixer. The frame decoder queues each
   frame its decode gate admits on the slot's queue right after the vocoder (`dsd_p25p2_playout_stage()`): the slot's

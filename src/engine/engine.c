@@ -70,8 +70,8 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
-#include <dsd-neo/protocol/tetra/tetra_acelp.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
@@ -1927,7 +1927,7 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
             dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, request_id);
         }
         if (tetra_sm_get_state() == TETRA_SM_TUNED || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
-            tetra_vocoder_close();
+            tetra_voice_reset(state);
             tetra_sm_on_external_cc_return(state);
         }
         (void)dsd_recent_activity_clear_all(state);
@@ -2560,6 +2560,8 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     no_carrier_close_mbe_outputs_if_needed(opts, state);
     // Nor does the digital voice high-pass's memory (issue #653).
     dsd_voice_hpf_reset(state, -1);
+    // Nor TETRA speech: the codec's decoder state, the speech's integrity and its unplayed samples.
+    tetra_voice_reset(state);
 }
 
 void

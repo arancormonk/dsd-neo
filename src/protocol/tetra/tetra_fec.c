@@ -1,263 +1,168 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include <dsd-neo/fec/viterbi.h>
+/*
+ * TETRA channel coding.
+ *
+ * Signalling channels (EN 300 392-2 clause 8.2): a 16-state rate-1/4 mother code punctured to the channel's rate,
+ * block interleaving and scrambling. Speech (EN 300 395-2 clauses 5 and 6): class 0 sent uncoded, classes 1 and 2
+ * through a 16-state rate-1/3 mother code punctured per class, the class-2 bits protected by a CRC.
+ */
+
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <stddef.h>
+#include <stdint.h>
 
-/* Minimal port of osmo-tetra puncturer tables and mapping functions
- * to implement exact RCPC depuncture ordering.
- * The arrays below are derived from osmo-tetra's `tetra_conv_enc.c`.
- */
+/* ---------------------------------------------------------------------------------------------------------------
+ * RCPC puncturing (EN 300 392-2 clause 8.2.3.1.2, EN 300 395-2 clause 5.4.3.2): type-3 bit j carries mother bit
+ *   k = Period * ((i - 1) div t) + P(i - t * ((i - 1) div t)),
+ * where i = j except for the two 432-bit traffic schemes, which skip one position every 65 or 35.
+ * ------------------------------------------------------------------------------------------------------------- */
 
-/* Puncturer enums are declared in the header as macros to allow callers to
- * select puncturer ids without duplicating symbols. The detailed puncturer
- * table below uses the same ordering as those macros.
- */
+typedef enum { PUNCT_I_EQUALS_J = 0, PUNCT_I_SKIP_65, PUNCT_I_SKIP_35 } tetra_punct_i;
 
-struct puncturer {
-    int type;
-    const uint8_t* P;
+typedef struct {
+    const uint8_t* P; /* P(1)..P(t) */
     uint8_t t;
     uint8_t period;
-    uint32_t (*i_func)(uint32_t j);
+    uint8_t i_rule;
+} tetra_puncturer;
+
+static const uint8_t k_p_2_3[] = {1, 2, 5};
+static const uint8_t k_p_1_3[] = {1, 2, 3, 5, 6, 7};
+static const uint8_t k_p_8_12[] = {1, 2, 4};
+static const uint8_t k_p_8_18[] = {1, 2, 3, 4, 5, 7, 8, 10, 11};
+static const uint8_t k_p_8_17[] = {1, 2, 3, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17, 19, 20, 22, 23};
+
+/* Indexed by TETRA_RCPC_PUNCT_*. */
+static const tetra_puncturer k_puncturers[] = {
+    {k_p_2_3, 3, 8, PUNCT_I_EQUALS_J},    {k_p_1_3, 6, 8, PUNCT_I_EQUALS_J},  {k_p_2_3, 3, 8, PUNCT_I_SKIP_65},
+    {k_p_1_3, 6, 8, PUNCT_I_SKIP_35},     {k_p_8_12, 3, 6, PUNCT_I_EQUALS_J}, {k_p_8_18, 9, 12, PUNCT_I_EQUALS_J},
+    {k_p_8_17, 17, 24, PUNCT_I_EQUALS_J},
 };
 
-static uint32_t
-i_func_equals(uint32_t j) {
-    return j;
+static const tetra_puncturer*
+tetra_puncturer_of(int punct_id) {
+    if (punct_id < 0 || punct_id >= (int)(sizeof(k_puncturers) / sizeof(k_puncturers[0]))) {
+        return NULL;
+    }
+    return &k_puncturers[punct_id];
 }
 
+/* Mother-code position (one-based) of type-3 bit @p j (one-based); 0 when there is none. */
 static uint32_t
-i_func_292(uint32_t j) {
-    return (j + ((j - 1) / 65));
+tetra_puncturer_k(const tetra_puncturer* p, uint32_t j) {
+    if (j == 0) {
+        return 0;
+    }
+    uint32_t i = j;
+    if (p->i_rule == PUNCT_I_SKIP_65) {
+        i = j + ((j - 1U) / 65U);
+    } else if (p->i_rule == PUNCT_I_SKIP_35) {
+        i = j + ((j - 1U) / 35U);
+    }
+    const uint32_t block = (i - 1U) / p->t;
+    return (p->period * block) + p->P[(i - 1U) - (p->t * block)];
 }
 
-static uint32_t
-i_func_148(uint32_t j) {
-    return (j + ((j - 1) / 35));
+int
+tetra_rcpc_map_j_to_k(int punct_id, uint32_t j) {
+    const tetra_puncturer* p = tetra_puncturer_of(punct_id);
+    if (!p || j == 0 || j > 0xFFFFFFu) {
+        return -1;
+    }
+    return (int)tetra_puncturer_k(p, j);
 }
 
-/* Puncturer tables from osmo-tetra */
-static const uint8_t P_rate2_3[] = {0, 1, 2, 5};
-static const uint8_t P_rate1_3[] = {0, 1, 2, 3, 5, 6, 7};
-static const uint8_t P_rate8_12[] = {0, 1, 2, 4};
-static const uint8_t P_rate8_18[] = {0, 1, 2, 3, 4, 5, 7, 8, 10, 11};
-static const uint8_t P_rate8_17[] = {0, 1, 2, 3, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17, 19, 20, 22, 23};
-
-static const struct puncturer punct_2_3 = {
-    .type = TETRA_RCPC_PUNCT_2_3, .P = P_rate2_3, .t = 3, .period = 8, .i_func = &i_func_equals};
-static const struct puncturer punct_1_3 = {
-    .type = TETRA_RCPC_PUNCT_1_3, .P = P_rate1_3, .t = 6, .period = 8, .i_func = &i_func_equals};
-static const struct puncturer punct_292_432 = {
-    .type = TETRA_RCPC_PUNCT_292_432, .P = P_rate2_3, .t = 3, .period = 8, .i_func = &i_func_292};
-static const struct puncturer punct_148_432 = {
-    .type = TETRA_RCPC_PUNCT_148_432, .P = P_rate1_3, .t = 6, .period = 8, .i_func = &i_func_148};
-static const struct puncturer punct_112_168 = {
-    .type = TETRA_RCPC_PUNCT_112_168, .P = P_rate8_12, .t = 3, .period = 6, .i_func = &i_func_equals};
-static const struct puncturer punct_72_162 = {
-    .type = TETRA_RCPC_PUNCT_72_162, .P = P_rate8_18, .t = 9, .period = 12, .i_func = &i_func_equals};
-static const struct puncturer punct_38_80 = {
-    .type = TETRA_RCPC_PUNCT_38_80, .P = P_rate8_17, .t = 17, .period = 24, .i_func = &i_func_equals};
-
-static const struct puncturer* tetra_puncts[] = {&punct_2_3,     &punct_1_3,    &punct_292_432, &punct_148_432,
-                                                 &punct_112_168, &punct_72_162, &punct_38_80};
-
-/* Depuncture by puncturer id using soft costs. Mirrors tetra_rcpc_depunct logic. */
 int
 tetra_rcpc_depuncture_by_id(int punct_id, const uint16_t* in_costs, int in_len, uint16_t* out_costs, int out_len) {
-    if (punct_id < 0 || punct_id >= (int)(sizeof(tetra_puncts) / sizeof(tetra_puncts[0]))) {
+    const tetra_puncturer* p = tetra_puncturer_of(punct_id);
+    if (!p || !in_costs || !out_costs || in_len < 0 || out_len < 0) {
         return -1;
     }
-    if (!in_costs || !out_costs) {
-        return -1;
+    for (int k = 0; k < out_len; k++) {
+        out_costs[k] = TETRA_SOFT_NEUTRAL;
     }
-    const struct puncturer* punct = tetra_puncts[punct_id];
-    const uint8_t* P = punct->P;
-    uint8_t t = punct->t;
-    uint8_t period = punct->period;
-    uint32_t (*i_func)(uint32_t) = punct->i_func;
-
-    /* initialize out with neutral costs */
-    for (int i = 0; i < out_len; i++) {
-        out_costs[i] = 0x7FFF;
-    }
-
-    /* map input coded symbols (in_costs) into mother-code positions per puncturer */
-    for (uint32_t j = 1; j <= (uint32_t)in_len; j++) {
-        uint32_t i = i_func(j);
-        if (i == 0) {
-            continue;
-        }
-        uint32_t block = (i - 1) / (uint32_t)t;
-        uint32_t pos_in_block = (i - 1) % (uint32_t)t; /* 0-based */
-        uint32_t p_index = pos_in_block + 1;           /* preserve 1-based P layout used historically */
-        uint32_t pval = (uint32_t)P[p_index];
-        uint32_t k = (uint32_t)period * block + pval;
-        if (k >= 1 && (int)(k - 1) < out_len) {
-            out_costs[k - 1] = in_costs[j - 1];
+    for (int j = 1; j <= in_len; j++) {
+        const uint32_t k = tetra_puncturer_k(p, (uint32_t)j);
+        if (k >= 1U && k <= (uint32_t)out_len) {
+            out_costs[k - 1U] = in_costs[j - 1];
         }
     }
-
     return out_len;
 }
 
-/* Return the mother-code position k for given puncturer id and j index (1-based),
- * or -1 on error. This mirrors the mapping used in puncture/depuncture.
- */
-int
-tetra_rcpc_map_j_to_k(int punct_id, uint32_t j) {
-    if (punct_id < 0 || punct_id >= (int)(sizeof(tetra_puncts) / sizeof(tetra_puncts[0]))) {
-        return -1;
-    }
-    const struct puncturer* punct = tetra_puncts[punct_id];
-    const uint8_t* P = punct->P;
-    uint8_t t = punct->t;
-    uint8_t period = punct->period;
-    uint32_t (*i_func)(uint32_t) = punct->i_func;
-
-    /* Use a period-based lookup to compute k.
-     * The original formula uses 1-based indexing into P; preserve that
-     * semantics here but express it as a clear periodic lookup:
-     *  - i = i_func(j)
-     *  - block = (i-1) / t
-     *  - pos_in_block = (i-1) % t  (0-based)
-     *  - P is addressed as P[pos_in_block + 1] to match existing layout
-     *  - k = period * block + P[pos_in_block + 1]
-     */
-    uint32_t i = i_func(j);
-    if (i == 0) {
-        return -1;
-    }
-    uint32_t block = (i - 1) / (uint32_t)t;
-    uint32_t pos_in_block = (i - 1) % (uint32_t)t; /* 0-based */
-    uint32_t p_index = pos_in_block + 1;           /* preserve existing 1-based P layout */
-    uint32_t pval = (uint32_t)P[p_index];
-    uint32_t k = (uint32_t)period * block + pval;
-    return (int)k;
-}
-
-/* Puncture mother-code by puncturer id (forward mapping). Writes up to out_len
- * type-3 symbols into out. Returns number written or -1 on error.
- */
 int
 tetra_rcpc_puncture_by_id(int punct_id, const uint8_t* mother, int mother_len, uint8_t* out, int out_len) {
-    if (punct_id < 0 || punct_id >= (int)(sizeof(tetra_puncts) / sizeof(tetra_puncts[0]))) {
+    const tetra_puncturer* p = tetra_puncturer_of(punct_id);
+    if (!p || !mother || !out || mother_len < 0 || out_len < 0) {
         return -1;
     }
-    if (!mother || !out) {
-        return -1;
+    for (int j = 1; j <= out_len; j++) {
+        const uint32_t k = tetra_puncturer_k(p, (uint32_t)j);
+        out[j - 1] = (k >= 1U && k <= (uint32_t)mother_len) ? mother[k - 1U] : 0xFFu;
     }
-    const struct puncturer* punct = tetra_puncts[punct_id];
-    const uint8_t* P = punct->P;
-    uint8_t t = punct->t;
-    uint8_t period = punct->period;
-    uint32_t (*i_func)(uint32_t) = punct->i_func;
-
-    int written = 0;
-    for (uint32_t j = 1; written < out_len; j++) {
-        uint32_t i = i_func(j);
-        if (i == 0) {
-            out[written++] = 0xff;
-            continue;
-        }
-        uint32_t block = (i - 1) / (uint32_t)t;
-        uint32_t pos_in_block = (i - 1) % (uint32_t)t;
-        uint32_t p_index = pos_in_block + 1;
-        uint32_t pval = (uint32_t)P[p_index];
-        uint32_t k = (uint32_t)period * block + pval;
-        if (k >= 1 && (int)(k - 1) < mother_len) {
-            out[written++] = mother[k - 1];
-        } else {
-            out[written++] = 0xff;
-        }
-    }
-
-    return written;
+    return out_len;
 }
 
-int
-tetra_rcpc_get_puncturer_params(int punct_id, const uint8_t** outP, int* out_t, int* out_period) {
-    if (punct_id < 0 || punct_id >= (int)(sizeof(tetra_puncts) / sizeof(tetra_puncts[0]))) {
-        return -1;
+/* ---------------------------------------------------------------------------------------------------------------
+ * Interleaving and scrambling (EN 300 392-2 clauses 8.2.4 and 8.2.5).
+ * ------------------------------------------------------------------------------------------------------------- */
+
+void
+tetra_block_interleave(const uint8_t* in_bits, uint8_t* out_bits, int len, int a) {
+    if (!in_bits || !out_bits || len <= 0 || a <= 0) {
+        return;
     }
-    const struct puncturer* p = tetra_puncts[punct_id];
-    if (outP) {
-        *outP = p->P;
+    const uint32_t K = (uint32_t)len;
+    for (uint32_t i = 1; i <= K; i++) {
+        out_bits[(((uint32_t)a * i) % K)] = in_bits[i - 1U];
     }
-    if (out_t) {
-        *out_t = (int)p->t;
-    }
-    if (out_period) {
-        *out_period = (int)p->period;
-    }
-    return 0;
 }
 
 void
-tetra_block_deinterleave(uint8_t* in, uint8_t* out, int len, int a) {
-    if (!in || !out || len <= 0 || a <= 0) {
+tetra_block_deinterleave_soft(const uint16_t* in_costs, uint16_t* out_costs, int len, int a) {
+    if (!in_costs || !out_costs || len <= 0 || a <= 0) {
         return;
     }
-    /* ETSI EN 300 392-2 §8.2.4.1 block deinterleave:
-     * π(i) = 1 + (a*i % K) ;  out[i-1] = in[π(i)-1]  for i = 1..K
-     * gcd(a, K) must equal 1 for a valid permutation.
-     */
     const uint32_t K = (uint32_t)len;
-    const uint32_t A = (uint32_t)a;
     for (uint32_t i = 1; i <= K; i++) {
-        uint32_t k = 1u + (A * i % K);
-        out[i - 1] = in[k - 1];
+        out_costs[i - 1U] = in_costs[(((uint32_t)a * i) % K)];
     }
 }
 
-/* TETRA scrambling PN generator — 32-bit right-shifting Fibonacci LFSR.
- * Polynomial: x^32+x^26+x^23+x^22+x^16+x^12+x^11+x^10+x^8+x^7+x^5+x^4+x^2+x+1
- * (ETSI EN 300 392-2 §8.2.5 / osmo-tetra tetra_scramb.c)
- *
- * Tap macro: ST(x,y) = (x) >> (32-y), so ST(x,32) = x (bit 0 from LSB).
- * The feedback bit (= output PN bit) is XOR of 14 tap positions, then
- * injected at the MSB after a right-shift of the register.
- *
- * Seed formula (§8.2.5.2):
- *   seed = ((colour & 0x3f) | ((mnc & 0x3fff) << 6) | ((mcc & 0x3ff) << 20)) << 2) | 3
- * When MCC=MNC=colour=0: seed = 3.  This is the BSCH scrambling seed.
- */
+void
+tetra_speech_deinterleave_soft(const uint16_t* in_costs, uint16_t* out_costs) {
+    if (!in_costs || !out_costs) {
+        return;
+    }
+    /* C4(i * 24 + j) = C3(j * 18 + i): the received bits are the (24, 18) matrix transposed. */
+    for (int column = 0; column < 18; column++) {
+        for (int line = 0; line < 24; line++) {
+            out_costs[(line * 18) + column] = in_costs[(column * 24) + line];
+        }
+    }
+}
+
+/* One step of the scrambling sequence generator of EN 300 392-2 clause 8.2.5.1: the register holds p(k-32)..p(k-1)
+   with p(k-1) in bit 31; the output p(k) is the sum of the 14 tapped terms of equation 8.42. */
 static uint8_t
 tetra_lfsr32_next(uint32_t* lfsr) {
-    uint32_t s = *lfsr;
-    /* taps at bit positions 0,6,9,10,16,20,21,22,24,25,27,28,30,31 (0=LSB) */
-    uint32_t bit = ((s >> 0) ^ (s >> 6) ^ (s >> 9) ^ (s >> 10) ^ (s >> 16) ^ (s >> 20) ^ (s >> 21) ^ (s >> 22)
-                    ^ (s >> 24) ^ (s >> 25) ^ (s >> 27) ^ (s >> 28) ^ (s >> 30) ^ (s >> 31))
-                   & 1u;
+    const uint32_t s = *lfsr;
+    const uint32_t bit = ((s >> 0) ^ (s >> 6) ^ (s >> 9) ^ (s >> 10) ^ (s >> 16) ^ (s >> 20) ^ (s >> 21) ^ (s >> 22)
+                          ^ (s >> 24) ^ (s >> 25) ^ (s >> 27) ^ (s >> 28) ^ (s >> 30) ^ (s >> 31))
+                         & 1u;
     *lfsr = (s >> 1) | (bit << 31);
     return (uint8_t)bit;
 }
 
 void
-tetra_descramble(uint8_t* in, int len, uint32_t lfsr_init) {
-    if (!in || len <= 0) {
-        return;
-    }
-    uint32_t state = lfsr_init ? lfsr_init : 3u; /* seed=0 is illegal; default to BSCH seed */
-    for (int i = 0; i < len; i++) {
-        in[i] ^= tetra_lfsr32_next(&state);
-    }
-}
-
-/* Descramble soft-costs: invert polarity where PN bit == 1.
- * Neutral cost 0x7FFF stays neutral (completely uncertain ↔ no information).
- * All other values are bitwise-complemented: v → (0xFFFF ^ v).
- */
-void
 tetra_descramble_soft(uint16_t* costs, int len, uint32_t lfsr_init) {
     if (!costs || len <= 0) {
         return;
     }
-    uint32_t state = lfsr_init ? lfsr_init : 3u;
+    uint32_t state = lfsr_init ? lfsr_init : 3u; /* an all-zero register never leaves zero */
     for (int i = 0; i < len; i++) {
-        uint8_t pn = tetra_lfsr32_next(&state);
-        if (pn && costs[i] != 0x7FFFu) {
+        if (tetra_lfsr32_next(&state) && costs[i] != TETRA_SOFT_NEUTRAL) {
             costs[i] = (uint16_t)(0xFFFFu ^ (uint32_t)costs[i]);
         }
     }
@@ -286,163 +191,35 @@ tetra_crc16_ccitt_bits(const uint8_t* bits, int len) {
     return crc;
 }
 
-/* Compute the TETRA scrambling seed from network identity parameters.
- * Formula from ETSI EN 300 392-2 §8.2.5.2 and osmo-tetra tetra_scramb.c:
- *   seed = ((colour & 0x3f) | ((mnc & 0x3fff) << 6) | ((mcc & 0x3ff) << 20)) << 2) | 3
- * The constant 3 (SCRAMB_INIT) represents the pre-fill value p(-31)=1, p(-30)=1.
- *
- * Special case: mcc=0, mnc=0, colour=0 → seed = 3 (BSCH scrambling seed).
- */
 uint32_t
 tetra_compute_scramb_seed(uint16_t mcc, uint16_t mnc, uint8_t colour) {
-    uint32_t s = (uint32_t)(colour & 0x3fu) | ((uint32_t)(mnc & 0x3fffu) << 6) | ((uint32_t)(mcc & 0x3ffu) << 20);
-    return (s << 2) | 3u; /* 3 = SCRAMB_INIT per §8.2.5.2 */
+    /* e(1)..e(30) = MCC || MNC || colour code, preceded by p(-31) = p(-30) = 1. */
+    const uint32_t s = (uint32_t)(colour & 0x3fu) | ((uint32_t)(mnc & 0x3fffu) << 6) | ((uint32_t)(mcc & 0x3ffu) << 20);
+    return (s << 2) | 3u;
 }
 
-int
-tetra_viterbi_decode_soft(const uint16_t* depunc, int depunc_len, uint8_t* out_bits, int out_bits_len) {
-    if (!depunc || !out_bits) {
-        return -1;
-    }
-    if (depunc_len <= 0 || (depunc_len & 3) != 0) {
-        return -1;
-    }
-    const int symbols = depunc_len / 4;
-    if (symbols > 512 || out_bits_len < symbols) {
-        return -1;
-    }
+/* ---------------------------------------------------------------------------------------------------------------
+ * Viterbi decoding of the 16-state convolutional codes.
+ *
+ * The register holds the four previous inputs. A code's taps select, out of (input << 4 | register), the terms of
+ * each generator polynomial; `shift_up` says how the register takes the new input.
+ * ------------------------------------------------------------------------------------------------------------- */
 
-    /* 16-state, constraint-length-5 TETRA rate-1/4 mother code. State bits
-     * [0..3] are D,D2,D3,D4, matching tetra_conv_enc.c. */
-    uint64_t prev_metric[16], next_metric[16];
-    uint8_t predecessor[512][16];
-    uint8_t decision[512][16];
-    const uint64_t inf = UINT64_MAX / 4u;
-    for (int state = 0; state < 16; state++) {
-        prev_metric[state] = state == 0 ? 0 : inf;
-    }
+enum { TETRA_VITERBI_MAX_BITS = 512, TETRA_VITERBI_STATES = 16 };
 
-    for (int pos = 0; pos < symbols; pos++) {
-        for (int state = 0; state < 16; state++) {
-            next_metric[state] = inf;
-        }
-        for (int state = 0; state < 16; state++) {
-            if (prev_metric[state] == inf) {
-                continue;
-            }
-            const int d1 = (state >> 0) & 1;
-            const int d2 = (state >> 1) & 1;
-            const int d3 = (state >> 2) & 1;
-            const int d4 = (state >> 3) & 1;
-            for (int bit = 0; bit <= 1; bit++) {
-                const int expected[4] = {bit ^ d1 ^ d4, bit ^ d2 ^ d3 ^ d4, bit ^ d1 ^ d2 ^ d4, bit ^ d1 ^ d3 ^ d4};
-                uint64_t branch = 0;
-                for (int lane = 0; lane < 4; lane++) {
-                    const uint16_t target = expected[lane] ? 0xFFFFu : 0x0000u;
-                    const uint16_t got = depunc[pos * 4 + lane];
-                    branch += target > got ? target - got : got - target;
-                }
-                const int next = ((state << 1) & 0xEu) | bit;
-                const uint64_t metric = prev_metric[state] + branch;
-                if (metric < next_metric[next]) {
-                    next_metric[next] = metric;
-                    predecessor[pos][next] = (uint8_t)state;
-                    decision[pos][next] = (uint8_t)bit;
-                }
-            }
-        }
-        memcpy(prev_metric, next_metric, sizeof(prev_metric));
-    }
+typedef struct {
+    int lanes;       /* coded bits per input bit */
+    uint8_t taps[4]; /* generator polynomial terms */
+    int shift_up;    /* 1: next = (register << 1 | input) & 15 (D1 in bit 0); 0: next = input << 3 | register >> 1 */
+} tetra_conv_code;
 
-    /* Signalling encoders append four zero tail bits, so state zero is the
-     * normative endpoint. Falling back to the best state keeps the helper
-     * useful for legacy unterminated diagnostic vectors. */
-    int state = 0;
-    if (prev_metric[state] == inf) {
-        for (int candidate = 1; candidate < 16; candidate++) {
-            if (prev_metric[candidate] < prev_metric[state]) {
-                state = candidate;
-            }
-        }
-    }
-    for (int pos = symbols - 1; pos >= 0; pos--) {
-        out_bits[pos] = decision[pos][state];
-        state = predecessor[pos][state];
-    }
-    return symbols;
-}
+/* EN 300 392-2 clause 8.2.3.1.1, register bit 0 = D: G1 = 1 + D + D^4, G2 = 1 + D^2 + D^3 + D^4,
+   G3 = 1 + D + D^2 + D^4, G4 = 1 + D + D^3 + D^4. */
+static const tetra_conv_code k_signalling_code = {4, {0x19, 0x1E, 0x1B, 0x1D}, 1};
 
-int
-tetra_sch_hu_decode(const uint16_t* type4, uint8_t* out_bits) {
-    enum { K = 168, TYPE2 = 112, TYPE1 = 92, A = 13 };
-
-    uint16_t deint[K];
-    uint16_t depunc[TYPE2 * 4];
-    uint8_t decoded[TYPE2];
-    if (!type4 || !out_bits) {
-        return 0;
-    }
-
-    tetra_block_deinterleave_soft(type4, deint, K, A, 0);
-    if (tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, deint, K, depunc, TYPE2 * 4) < 0) {
-        return 0;
-    }
-    memset(decoded, 0, sizeof(decoded));
-    if (tetra_viterbi_decode_soft(depunc, TYPE2 * 4, decoded, TYPE2) < TYPE2) {
-        return 0;
-    }
-    if (tetra_crc16_ccitt_bits(decoded, TYPE1 + 16) != 0x1D0Fu) {
-        return 0;
-    }
-    memcpy(out_bits, decoded, TYPE1);
-    return 1;
-}
-
-void
-tetra_block_interleave(const uint8_t* in_bits, uint8_t* out_bits, int len, int rows, int cols) {
-    if (!in_bits || !out_bits || rows <= 0 || len <= 0) {
-        return;
-    }
-    /* ETSI EN 300 392-2 §8.2.4.1 block interleave:
-     * π(i) = 1 + (a*i % K) ;  out[π(i)-1] = in[i-1]  for i = 1..K
-     * `rows` is the interleaver parameter a; `cols` is unused (kept for ABI compat).
-     */
-    const uint32_t K = (uint32_t)len;
-    const uint32_t A = (uint32_t)rows;
-    (void)cols;
-    for (uint32_t i = 1; i <= K; i++) {
-        uint32_t k = 1u + (A * i % K);
-        out_bits[k - 1] = in_bits[i - 1];
-    }
-}
-
-void
-tetra_block_deinterleave_soft(const uint16_t* in_costs, uint16_t* out_costs, int len, int rows, int cols) {
-    if (!in_costs || !out_costs || rows <= 0 || len <= 0) {
-        return;
-    }
-    /* ETSI deinterleave for soft costs: out[i-1] = in[π(i)-1] where π(i) = 1 + (a*i % K).
-     * `rows` is the interleaver parameter a; `cols` unused. */
-    const uint32_t K = (uint32_t)len;
-    const uint32_t A = (uint32_t)rows;
-    (void)cols;
-    for (uint32_t i = 1; i <= K; i++) {
-        uint32_t k = 1u + (A * i % K);
-        out_costs[i - 1] = in_costs[k - 1];
-    }
-}
-
-void
-tetra_speech_deinterleave_soft(const uint16_t* in_costs, uint16_t* out_costs) {
-    if (!in_costs || !out_costs) {
-        return;
-    }
-    for (int column = 0; column < 18; column++) {
-        for (int line = 0; line < 24; line++) {
-            out_costs[line * 18 + column] = in_costs[column * 24 + line];
-        }
-    }
-}
+/* EN 300 395-2 clause 5.4.3.1, register bit 3 = D: G1 = 1 + D + D^2 + D^3 + D^4, G2 = 1 + D + D^3 + D^4,
+   G3 = 1 + D^2 + D^4. */
+static const tetra_conv_code k_speech_code = {3, {0x1F, 0x1B, 0x15, 0x00}, 0};
 
 static uint8_t
 parity5(uint8_t value) {
@@ -452,133 +229,252 @@ parity5(uint8_t value) {
     return value & 1u;
 }
 
-int
-tetra_speech_channel_decode_q(const uint16_t* deinterleaved, uint8_t* out_bits, int out_len, int* mismatches) {
-    if (mismatches) {
-        *mismatches = -1;
-    }
-    if (!deinterleaved || !out_bits || out_len < 274) {
-        return -1;
-    }
-    for (int i = 0; i < 102; i++) {
-        out_bits[i] = deinterleaved[i] > 0x7fffu;
-    }
+static int
+conv_next_state(const tetra_conv_code* code, int state, int bit) {
+    return code->shift_up ? (((state << 1) & 0xE) | bit) : ((bit << 3) | (state >> 1));
+}
 
-    static const uint8_t a1[3][8] = {{1, 1, 1, 1, 1, 1, 1, 1}, {1, 0, 1, 0, 1, 0, 1, 0}, {0, 0, 0, 0, 0, 0, 0, 0}};
-    static const uint8_t a2[3][8] = {{1, 1, 1, 1, 1, 1, 1, 1}, {1, 1, 1, 1, 1, 1, 1, 1}, {1, 0, 0, 0, 1, 0, 0, 0}};
-    uint16_t symbols[184][3];
-    int input = 102;
-    for (int pos = 0; pos < 184; pos++) {
-        const uint8_t (*pattern)[8] = pos < 112 ? a1 : a2;
-        const int phase = pos < 112 ? pos : pos - 112;
-        for (int lane = 0; lane < 3; lane++) {
-            symbols[pos][lane] = pattern[lane][phase & 7] ? deinterleaved[input++] : 0x7fffu;
-        }
-    }
-    if (input != 432) {
-        return -1;
-    }
+static int
+conv_input_of(const tetra_conv_code* code, int next_state) {
+    return code->shift_up ? (next_state & 1) : (next_state >> 3);
+}
 
-    uint64_t prev[16], next[16];
-    uint8_t predecessor[184][16], decision[184][16];
+static uint64_t
+conv_branch_cost(const tetra_conv_code* code, int state, int bit, const uint16_t* costs) {
+    const uint8_t involved = (uint8_t)((bit << 4) | state);
+    uint64_t branch = 0;
+    for (int lane = 0; lane < code->lanes; lane++) {
+        const uint16_t target = parity5((uint8_t)(involved & code->taps[lane])) ? 0xFFFFu : 0x0000u;
+        const uint16_t got = costs[lane];
+        branch += target > got ? (uint64_t)(target - got) : (uint64_t)(got - target);
+    }
+    return branch;
+}
+
+/* One add-compare-select step over the trellis; @p pred records each state's surviving predecessor. */
+static void
+conv_acs_step(const tetra_conv_code* code, const uint64_t* prev, uint64_t* next, const uint16_t* costs, uint8_t* pred) {
     const uint64_t inf = UINT64_MAX / 4u;
-    for (int state = 0; state < 16; state++) {
-        prev[state] = state == 0 ? 0 : inf;
+    for (int state = 0; state < TETRA_VITERBI_STATES; state++) {
+        next[state] = inf;
     }
-    for (int pos = 0; pos < 184; pos++) {
-        for (int state = 0; state < 16; state++) {
-            next[state] = inf;
+    for (int state = 0; state < TETRA_VITERBI_STATES; state++) {
+        if (prev[state] == inf) {
+            continue;
         }
-        for (int state = 0; state < 16; state++) {
-            if (prev[state] == inf) {
-                continue;
-            }
-            for (int bit = 0; bit <= 1; bit++) {
-                const uint8_t involved = (uint8_t)((bit << 4) | state);
-                const uint8_t expected[3] = {parity5(involved & 0x1fu), parity5(involved & 0x1bu),
-                                             parity5(involved & 0x15u)};
-                uint64_t branch = 0;
-                for (int lane = 0; lane < 3; lane++) {
-                    const uint16_t target = expected[lane] ? 0xffffu : 0u;
-                    const uint16_t got = symbols[pos][lane];
-                    branch += target > got ? target - got : got - target;
-                }
-                const int next_state = (bit << 3) | (state >> 1);
-                const uint64_t metric = prev[state] + branch;
-                if (metric < next[next_state]) {
-                    next[next_state] = metric;
-                    predecessor[pos][next_state] = (uint8_t)state;
-                    decision[pos][next_state] = (uint8_t)bit;
-                }
+        for (int bit = 0; bit <= 1; bit++) {
+            const int to = conv_next_state(code, state, bit);
+            const uint64_t metric = prev[state] + conv_branch_cost(code, state, bit, costs);
+            if (metric < next[to]) {
+                next[to] = metric;
+                pred[to] = (uint8_t)state;
             }
         }
-        memcpy(prev, next, sizeof(prev));
     }
+}
 
-    uint8_t decoded[184];
+/* Decode @p nbits input bits from @p costs (code->lanes per bit). The encoders end on four zero tail bits, so the
+   path ending in state 0 is the answer; the best state stands in only when state 0 is unreachable. */
+static void
+conv_viterbi(const tetra_conv_code* code, const uint16_t* costs, int nbits, uint8_t* out_bits) {
+    const uint64_t inf = UINT64_MAX / 4u;
+    uint64_t metric[2][TETRA_VITERBI_STATES];
+    uint8_t pred[TETRA_VITERBI_MAX_BITS][TETRA_VITERBI_STATES];
+    for (int state = 0; state < TETRA_VITERBI_STATES; state++) {
+        metric[0][state] = state == 0 ? 0 : inf;
+    }
+    DSD_MEMSET(pred, 0, sizeof(pred[0]) * (size_t)nbits);
+    for (int pos = 0; pos < nbits; pos++) {
+        conv_acs_step(code, metric[pos & 1], metric[(pos + 1) & 1], costs + ((size_t)pos * (size_t)code->lanes),
+                      pred[pos]);
+    }
+    const uint64_t* last = metric[nbits & 1];
     int state = 0;
-    for (int pos = 183; pos >= 0; pos--) {
-        decoded[pos] = decision[pos][state];
-        state = predecessor[pos][state];
-    }
-    memcpy(out_bits + 102, decoded, 172);
-
-    /* Re-encode the decoded class-1/2 bits and count how many received
-     * (unpunctured) channel bits disagree. A real speech burst decoded with the
-     * right scrambler leaves a handful; wrong-seed or noise bursts leave about
-     * 12% of the 330 bits (random input never drops below ~35). */
-    if (mismatches) {
-        int bad = 0;
-        int enc_state = 0;
-        input = 102;
-        for (int pos = 0; pos < 184; pos++) {
-            const uint8_t involved = (uint8_t)((decoded[pos] << 4) | enc_state);
-            const uint8_t expected[3] = {parity5(involved & 0x1fu), parity5(involved & 0x1bu),
-                                         parity5(involved & 0x15u)};
-            const uint8_t (*pattern)[8] = pos < 112 ? a1 : a2;
-            const int phase = pos < 112 ? pos : pos - 112;
-            for (int lane = 0; lane < 3; lane++) {
-                if (!pattern[lane][phase & 7]) {
-                    continue;
-                }
-                const int got = deinterleaved[input++] > 0x7fffu;
-                if (got != expected[lane]) {
-                    bad++;
-                }
+    if (last[0] == inf) {
+        for (int candidate = 1; candidate < TETRA_VITERBI_STATES; candidate++) {
+            if (last[candidate] < last[state]) {
+                state = candidate;
             }
-            enc_state = (decoded[pos] << 3) | (enc_state >> 1);
         }
-        *mismatches = bad;
     }
-    return 274;
+    for (int pos = nbits - 1; pos >= 0; pos--) {
+        out_bits[pos] = (uint8_t)conv_input_of(code, state);
+        state = pred[pos][state];
+    }
+}
+
+/* The coded bits of @p nbits input bits: code->lanes per input bit. */
+static void
+conv_encode(const tetra_conv_code* code, const uint8_t* bits, int nbits, uint8_t* coded) {
+    int state = 0;
+    for (int pos = 0; pos < nbits; pos++) {
+        const int bit = bits[pos] & 1;
+        const uint8_t involved = (uint8_t)((bit << 4) | state);
+        for (int lane = 0; lane < code->lanes; lane++) {
+            coded[((size_t)pos * (size_t)code->lanes) + (size_t)lane] = parity5((uint8_t)(involved & code->taps[lane]));
+        }
+        state = conv_next_state(code, state, bit);
+    }
 }
 
 int
-tetra_speech_channel_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int out_len) {
-    return tetra_speech_channel_decode_q(deinterleaved, out_bits, out_len, NULL);
+tetra_viterbi_decode_soft(const uint16_t* depunc, int depunc_len, uint8_t* out_bits, int out_bits_len) {
+    if (!depunc || !out_bits || depunc_len <= 0 || (depunc_len & 3) != 0) {
+        return -1;
+    }
+    const int nbits = depunc_len / 4;
+    if (nbits > TETRA_VITERBI_MAX_BITS || out_bits_len < nbits) {
+        return -1;
+    }
+    conv_viterbi(&k_signalling_code, depunc, nbits, out_bits);
+    return nbits;
 }
 
-/* Half-slot speech CRC: G(X) = 1 + X + X^4 over the 30 class-2 bits
- * (EN 300 395-2 5.6.1). Returns the 4-bit remainder, b1 = X^0. The bit order
- * (last class-2 bit fed first, parity b1 = lowest degree) was verified on the
- * 7-bit full-slot CRC of 195 real DMO speech bursts (194 matched). */
+int
+tetra_sch_hu_decode(const uint16_t* type4, uint8_t* out_bits) {
+    /* 92 MAC bits + 16 CRC + 4 tail, rate 2/3 to 168 bits, interleaved with a = 13. */
+    enum { K = 168, TYPE2 = 112, TYPE1 = 92, A = 13 };
+
+    uint16_t deint[K];
+    uint16_t depunc[TYPE2 * 4];
+    uint8_t decoded[TYPE2];
+    if (!type4 || !out_bits) {
+        return 0;
+    }
+    tetra_block_deinterleave_soft(type4, deint, K, A);
+    if (tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, deint, K, depunc, TYPE2 * 4) < 0
+        || tetra_viterbi_decode_soft(depunc, TYPE2 * 4, decoded, TYPE2) < TYPE2
+        || tetra_crc16_ccitt_bits(decoded, TYPE1 + 16) != TETRA_CRC16_OK) {
+        return 0;
+    }
+    DSD_MEMCPY(out_bits, decoded, TYPE1);
+    return 1;
+}
+
+/* ---------------------------------------------------------------------------------------------------------------
+ * Speech channel decoding (EN 300 395-2 clauses 5 and 6).
+ *
+ * Type-2 bits are class 0 (uncoded), class 1, class 2, the class-2 parity bits and four zero tail bits. Classes 1
+ * and 2 run through one rate-1/3 trellis, whose puncturing changes with the first class-2 bit and restarts there.
+ * ------------------------------------------------------------------------------------------------------------- */
+
+typedef struct {
+    int coded;        /* type-3 bits */
+    int class0;       /* uncoded type-2 bits */
+    int class1;       /* type-2 bits coded at rate 8/12 */
+    int class2;       /* class-2 bits */
+    int parity;       /* CRC bits after class 2 */
+    int class2_punct; /* puncturing scheme of class 2, its parity and the tail */
+} tetra_speech_layout;
+
+enum { TETRA_SPEECH_TAIL = 4, TETRA_SPEECH_MAX_CODED_INPUT = 112 + 60 + 8 + TETRA_SPEECH_TAIL };
+
+/* Clause 5.5: 2 x 51 + 2 x 56 + 2 x 30 + 8 + 4 = 286 type-2 bits, 432 type-3 bits. */
+static const tetra_speech_layout k_speech_full = {432, 102, 112, 60, 8, TETRA_RCPC_PUNCT_SPEECH_8_18};
+/* Clause 5.6: 51 + 56 + 30 + 4 + 4 = 145 type-2 bits, 216 type-3 bits. */
+static const tetra_speech_layout k_speech_half = {216, 51, 56, 30, 4, TETRA_RCPC_PUNCT_SPEECH_8_17};
+
+static int
+speech_coded_inputs(const tetra_speech_layout* lay) {
+    return lay->class1 + lay->class2 + lay->parity + TETRA_SPEECH_TAIL;
+}
+
+static int
+speech_class1_coded(const tetra_speech_layout* lay) {
+    return (lay->class1 * 3) / 2; /* rate 8/12 */
+}
+
+/* Coded type-3 bits that disagree with a re-encode of the decoded class 1 and 2 bits. */
+static int
+speech_mismatches(const tetra_speech_layout* lay, const uint16_t* deint, const uint8_t* inputs) {
+    uint8_t mother[TETRA_SPEECH_MAX_CODED_INPUT * 3];
+    uint8_t coded[432];
+    const int c1_mother = lay->class1 * 3;
+    const int c1_coded = speech_class1_coded(lay);
+    const int c2_mother = (speech_coded_inputs(lay) - lay->class1) * 3;
+    const int c2_coded = lay->coded - lay->class0 - c1_coded;
+
+    conv_encode(&k_speech_code, inputs, speech_coded_inputs(lay), mother);
+    (void)tetra_rcpc_puncture_by_id(TETRA_RCPC_PUNCT_SPEECH_8_12, mother, c1_mother, coded, c1_coded);
+    (void)tetra_rcpc_puncture_by_id(lay->class2_punct, mother + c1_mother, c2_mother, coded + c1_coded, c2_coded);
+    int bad = 0;
+    for (int i = 0; i < c1_coded + c2_coded; i++) {
+        const uint8_t got = deint[lay->class0 + i] > TETRA_SOFT_NEUTRAL ? 1u : 0u;
+        if (got != coded[i]) {
+            bad++;
+        }
+    }
+    return bad;
+}
+
+/* The CRC of EN 300 395-2 equations 43 to 45: F(X) = X^degree I(X) mod G(X), with I(X) = C(1) + C(2) X + ... and
+   @p low the terms of G(X) below X^degree. Bit i of the result is f(i), sent as parity bit b(i + 1). */
 static uint8_t
-tetra_half_crc4(const uint8_t* bits, int len) {
+speech_crc(const uint8_t* bits, int len, int degree, uint8_t low) {
+    const uint8_t top = (uint8_t)(1u << (degree - 1));
+    const uint8_t mask = (uint8_t)((1u << degree) - 1u);
     uint8_t reg = 0;
     for (int i = len - 1; i >= 0; i--) {
-        const uint8_t fb = (uint8_t)(((reg >> 3) & 1u) ^ (bits[i] & 1u));
-        reg = (uint8_t)((reg << 1) & 0xFu);
-        if (fb) {
-            reg ^= 0x3u;
+        const int feedback = ((reg & top) != 0) != ((bits[i] & 1u) != 0);
+        reg = (uint8_t)((reg << 1) & mask);
+        if (feedback) {
+            reg ^= low;
         }
     }
     return reg;
 }
 
-int
-tetra_speech_half_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int* crc_ok, int* mismatches) {
-    enum { C0 = 51, C1 = 56, C2 = 38, N = C1 + C2 };
+static int
+speech_parity_matches(const uint8_t* sent, int count, uint8_t computed) {
+    for (int i = 0; i < count; i++) {
+        if ((sent[i] & 1u) != ((computed >> i) & 1u)) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
+/* Clause 5.5.1: seven CRC bits from G(X) = 1 + X^3 + X^7, then b8, the sum of the class-2 and CRC bits. */
+static int
+speech_full_crc_ok(const uint8_t* class2) {
+    if (!speech_parity_matches(class2 + 60, 7, speech_crc(class2, 60, 7, 0x09u))) {
+        return 0;
+    }
+    uint8_t sum = 0;
+    for (int i = 0; i < 67; i++) {
+        sum ^= (uint8_t)(class2[i] & 1u);
+    }
+    return sum == (class2[67] & 1u);
+}
+
+/* Clause 5.6.1: four CRC bits from G(X) = 1 + X + X^4. */
+static int
+speech_half_crc_ok(const uint8_t* class2) {
+    return speech_parity_matches(class2 + 30, 4, speech_crc(class2, 30, 4, 0x03u));
+}
+
+/* Decode one speech block into @p type2 (class 0, then the trellis inputs). */
+static void
+speech_decode(const tetra_speech_layout* lay, const uint16_t* deint, uint8_t* type2) {
+    uint16_t mother[TETRA_SPEECH_MAX_CODED_INPUT * 3];
+    const int c1_mother = lay->class1 * 3;
+    const int c1_coded = speech_class1_coded(lay);
+    const int c2_mother = (speech_coded_inputs(lay) - lay->class1) * 3;
+    const int c2_coded = lay->coded - lay->class0 - c1_coded;
+
+    for (int i = 0; i < lay->class0; i++) {
+        type2[i] = deint[i] > TETRA_SOFT_NEUTRAL ? 1u : 0u;
+    }
+    (void)tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_SPEECH_8_12, deint + lay->class0, c1_coded, mother, c1_mother);
+    (void)tetra_rcpc_depuncture_by_id(lay->class2_punct, deint + lay->class0 + c1_coded, c2_coded, mother + c1_mother,
+                                      c2_mother);
+    conv_viterbi(&k_speech_code, mother, speech_coded_inputs(lay), type2 + lay->class0);
+}
+
+int
+tetra_speech_full_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int* crc_ok, int* mismatches) {
+    uint8_t type2[102 + TETRA_SPEECH_MAX_CODED_INPUT];
+    const tetra_speech_layout* lay = &k_speech_full;
     if (crc_ok) {
         *crc_ok = 0;
     }
@@ -588,101 +484,37 @@ tetra_speech_half_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int* 
     if (!deinterleaved || !out_bits) {
         return -1;
     }
-
-    for (int i = 0; i < C0; i++) {
-        out_bits[i] = deinterleaved[i] > 0x7fffu;
+    speech_decode(lay, deinterleaved, type2);
+    if (crc_ok) {
+        *crc_ok = speech_full_crc_ok(type2 + lay->class0 + lay->class1);
     }
-
-    /* Class 1: rate 2/3 (same pattern as the full slot). Class 2: rate 8/17,
-     * P = 1,2,3,4,5,7,8,10,11,13,14,16,17,19,20,22,23 of every 24 mother bits,
-     * i.e. all three lanes on the first bit of each 8 and two lanes otherwise. */
-    static const uint8_t a1[3][8] = {{1, 1, 1, 1, 1, 1, 1, 1}, {1, 0, 1, 0, 1, 0, 1, 0}, {0, 0, 0, 0, 0, 0, 0, 0}};
-    static const uint8_t a2[3][8] = {{1, 1, 1, 1, 1, 1, 1, 1}, {1, 1, 1, 1, 1, 1, 1, 1}, {1, 0, 0, 0, 0, 0, 0, 0}};
-
-    uint16_t symbols[N][3];
-    int input = C0;
-    for (int pos = 0; pos < N; pos++) {
-        const uint8_t (*pattern)[8] = pos < C1 ? a1 : a2;
-        const int phase = pos < C1 ? pos : pos - C1;
-        for (int lane = 0; lane < 3; lane++) {
-            symbols[pos][lane] = pattern[lane][phase & 7] ? deinterleaved[input++] : 0x7fffu;
-        }
+    if (mismatches) {
+        *mismatches = speech_mismatches(lay, deinterleaved, type2 + lay->class0);
     }
-    if (input != 216) {
+    DSD_MEMCPY(out_bits, type2, TETRA_SPEECH_FULL_BITS);
+    return TETRA_SPEECH_FULL_BITS;
+}
+
+int
+tetra_speech_half_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int* crc_ok, int* mismatches) {
+    uint8_t type2[51 + TETRA_SPEECH_MAX_CODED_INPUT];
+    const tetra_speech_layout* lay = &k_speech_half;
+    if (crc_ok) {
+        *crc_ok = 0;
+    }
+    if (mismatches) {
+        *mismatches = -1;
+    }
+    if (!deinterleaved || !out_bits) {
         return -1;
     }
-
-    uint64_t prev[16], next[16];
-    uint8_t predecessor[N][16], decision[N][16];
-    const uint64_t inf = UINT64_MAX / 4u;
-    for (int state = 0; state < 16; state++) {
-        prev[state] = state == 0 ? 0 : inf;
-    }
-    for (int pos = 0; pos < N; pos++) {
-        for (int state = 0; state < 16; state++) {
-            next[state] = inf;
-        }
-        for (int state = 0; state < 16; state++) {
-            if (prev[state] == inf) {
-                continue;
-            }
-            for (int bit = 0; bit <= 1; bit++) {
-                const uint8_t involved = (uint8_t)((bit << 4) | state);
-                const uint8_t expected[3] = {parity5(involved & 0x1fu), parity5(involved & 0x1bu),
-                                             parity5(involved & 0x15u)};
-                uint64_t branch = 0;
-                for (int lane = 0; lane < 3; lane++) {
-                    const uint16_t target = expected[lane] ? 0xffffu : 0u;
-                    const uint16_t got = symbols[pos][lane];
-                    branch += target > got ? target - got : got - target;
-                }
-                const int next_state = (bit << 3) | (state >> 1);
-                const uint64_t metric = prev[state] + branch;
-                if (metric < next[next_state]) {
-                    next[next_state] = metric;
-                    predecessor[pos][next_state] = (uint8_t)state;
-                    decision[pos][next_state] = (uint8_t)bit;
-                }
-            }
-        }
-        memcpy(prev, next, sizeof(prev));
-    }
-
-    uint8_t decoded[N];
-    int state = 0; /* the four class-2 tail bits are zero */
-    for (int pos = N - 1; pos >= 0; pos--) {
-        decoded[pos] = decision[pos][state];
-        state = predecessor[pos][state];
-    }
-    memcpy(out_bits + C0, decoded, C1 + 30);
-
+    speech_decode(lay, deinterleaved, type2);
     if (crc_ok) {
-        const uint8_t r = tetra_half_crc4(decoded + C1, 30);
-        const uint8_t* p = decoded + C1 + 30; /* b1..b4 */
-        const uint8_t got = (uint8_t)(p[0] | (p[1] << 1) | (p[2] << 2) | (p[3] << 3));
-        *crc_ok = r == got;
+        *crc_ok = speech_half_crc_ok(type2 + lay->class0 + lay->class1);
     }
-
     if (mismatches) {
-        int bad = 0, enc_state = 0;
-        input = C0;
-        for (int pos = 0; pos < N; pos++) {
-            const uint8_t involved = (uint8_t)((decoded[pos] << 4) | enc_state);
-            const uint8_t expected[3] = {parity5(involved & 0x1fu), parity5(involved & 0x1bu),
-                                         parity5(involved & 0x15u)};
-            const uint8_t (*pattern)[8] = pos < C1 ? a1 : a2;
-            const int phase = pos < C1 ? pos : pos - C1;
-            for (int lane = 0; lane < 3; lane++) {
-                if (!pattern[lane][phase & 7]) {
-                    continue;
-                }
-                if ((deinterleaved[input++] > 0x7fffu) != expected[lane]) {
-                    bad++;
-                }
-            }
-            enc_state = (decoded[pos] << 3) | (enc_state >> 1);
-        }
-        *mismatches = bad;
+        *mismatches = speech_mismatches(lay, deinterleaved, type2 + lay->class0);
     }
-    return C0 + C1 + 30;
+    DSD_MEMCPY(out_bits, type2, TETRA_SPEECH_HALF_BITS);
+    return TETRA_SPEECH_HALF_BITS;
 }

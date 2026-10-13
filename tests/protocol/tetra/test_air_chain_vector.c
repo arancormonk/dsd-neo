@@ -4,7 +4,11 @@
  * itself.  The vector represents the transmit sequence convolutional encode,
  * RCPC puncture, block interleave, then scramble. */
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
@@ -40,10 +44,45 @@ static const char sysinfo_type5_text[] = "10000001101000100001110000110110001010
 static const char real_bnch_dibits[] = "3010010010212222332100333330103131330313323331131332011332013201"
                                        "12011103013102212002313230110333100200111110";
 
+_Static_assert(sizeof(type5_text) == CODED_BITS + 1, "the BSCH vector is 120 bits");
+_Static_assert(sizeof(sysinfo_type5_text) == SYSINFO_CODED_BITS + 1, "the SYSINFO vector is 216 bits");
+_Static_assert(sizeof(real_bnch_dibits) == (SYSINFO_CODED_BITS / 2) + 1, "the BNCH vector is 108 dibits");
+
 static int
 fail(const char* message) {
-    fprintf(stderr, "TETRA air-chain vector: %s\n", message);
+    DSD_FPRINTF(stderr, "TETRA air-chain vector: %s\n", message);
     return 1;
+}
+
+static void
+release(dsd_opts* opts, dsd_state* state) {
+    if (state) {
+        dsd_state_ext_free_all(state);
+    }
+    free(state);
+    free(opts);
+}
+
+/* Descrambling and deinterleaving of hard bits, through the soft-cost functions the receiver uses. */
+static void
+descramble_bits(uint8_t* bits, int len, uint32_t seed) {
+    uint16_t costs[256];
+    tetra_hard_bits_to_soft(bits, costs, len);
+    tetra_descramble_soft(costs, len, seed);
+    for (int i = 0; i < len; i++) {
+        bits[i] = costs[i] == 0xFFFFu ? 1u : 0u;
+    }
+}
+
+static void
+deinterleave_bits(const uint8_t* in, uint8_t* out, int len, int a) {
+    uint16_t costs[256];
+    uint16_t deint[256];
+    tetra_hard_bits_to_soft(in, costs, len);
+    tetra_block_deinterleave_soft(costs, deint, len, a);
+    for (int i = 0; i < len; i++) {
+        out[i] = deint[i] == 0xFFFFu ? 1u : 0u;
+    }
 }
 
 /* Direct form of EN 300 392-2 section 8.2.5 equations 8.41/8.42.  This
@@ -76,7 +115,7 @@ check_scrambler_recurrence(uint16_t mcc, uint16_t mnc, uint8_t colour) {
         history[idx] = pn;
     }
 
-    tetra_descramble(actual, PN_BITS, tetra_compute_scramb_seed(mcc, mnc, colour));
+    descramble_bits(actual, PN_BITS, tetra_compute_scramb_seed(mcc, mnc, colour));
     return memcmp(actual, history + 32, PN_BITS) == 0;
 }
 
@@ -100,21 +139,18 @@ main(void) {
     uint16_t real_costs[SYSINFO_CODED_BITS];
     uint16_t real_mother[SYSINFO_MOTHER_BITS];
     uint8_t real_decoded[SYSINFO_TYPE2_BITS];
-    if (strlen(real_bnch_dibits) != SYSINFO_CODED_BITS / 2) {
-        return fail("invalid real BNCH literal length");
-    }
     for (int i = 0; i < SYSINFO_CODED_BITS / 2; ++i) {
         if (real_bnch_dibits[i] < '0' || real_bnch_dibits[i] > '3') {
             return fail("invalid real BNCH dibit");
         }
         uint8_t dibit = (uint8_t)(real_bnch_dibits[i] - '0');
         uint8_t first = (dibit >> 1) & 1u;
-        real_type5[i * 2] = first;
-        real_type5[i * 2 + 1] = first ^ (dibit & 1u);
+        real_type5[(size_t)i * 2U] = first;
+        real_type5[((size_t)i * 2U) + 1U] = first ^ (dibit & 1u);
     }
-    memcpy(real_type4, real_type5, sizeof(real_type4));
-    tetra_descramble(real_type4, SYSINFO_CODED_BITS, tetra_compute_scramb_seed(250, 13, 13));
-    tetra_block_deinterleave(real_type4, real_type3, SYSINFO_CODED_BITS, 101);
+    DSD_MEMCPY(real_type4, real_type5, sizeof(real_type4));
+    descramble_bits(real_type4, SYSINFO_CODED_BITS, tetra_compute_scramb_seed(250, 13, 13));
+    deinterleave_bits(real_type4, real_type3, SYSINFO_CODED_BITS, 101);
     tetra_hard_bits_to_soft(real_type3, real_costs, SYSINFO_CODED_BITS);
     if (tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, real_costs, SYSINFO_CODED_BITS, real_mother,
                                     SYSINFO_MOTHER_BITS)
@@ -128,10 +164,6 @@ main(void) {
     if (tetra_crc16_ccitt_bits(real_decoded, SYSINFO_TYPE1_BITS + 16) != 0x1D0FU) {
         return fail("real BNCH CRC mismatch");
     }
-
-    if (strlen(type5_text) != CODED_BITS) {
-        return fail("invalid literal length");
-    }
     for (int i = 0; i < CODED_BITS; ++i) {
         if (type5_text[i] != '0' && type5_text[i] != '1') {
             return fail("invalid literal bit");
@@ -140,9 +172,9 @@ main(void) {
     }
 
     /* Receive chain reverses the air-interface transmit operations. */
-    memcpy(type4, type5, sizeof(type4));
-    tetra_descramble(type4, CODED_BITS, 3U);
-    tetra_block_deinterleave(type4, type3, CODED_BITS, 11);
+    DSD_MEMCPY(type4, type5, sizeof(type4));
+    descramble_bits(type4, CODED_BITS, 3U);
+    deinterleave_bits(type4, type3, CODED_BITS, 11);
     tetra_hard_bits_to_soft(type3, costs, CODED_BITS);
     if (tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, costs, CODED_BITS, mother, MOTHER_BITS) < 0) {
         return fail("depuncture failed");
@@ -161,9 +193,9 @@ main(void) {
     uint16_t legacy_costs[CODED_BITS];
     uint16_t legacy_mother[MOTHER_BITS];
     uint8_t legacy_decoded[TYPE2_BITS];
-    memcpy(legacy_type4, type5, sizeof(legacy_type4));
-    tetra_block_deinterleave(legacy_type4, legacy_type3, CODED_BITS, 11);
-    tetra_descramble(legacy_type3, CODED_BITS, 3U);
+    DSD_MEMCPY(legacy_type4, type5, sizeof(legacy_type4));
+    deinterleave_bits(legacy_type4, legacy_type3, CODED_BITS, 11);
+    descramble_bits(legacy_type3, CODED_BITS, 3U);
     tetra_hard_bits_to_soft(legacy_type3, legacy_costs, CODED_BITS);
     if (tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, legacy_costs, CODED_BITS, legacy_mother, MOTHER_BITS) < 0) {
         return fail("legacy-order depuncture failed");
@@ -178,20 +210,17 @@ main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
-        free(opts);
-        free(state);
+        release(opts, state);
         return fail("allocation failed");
     }
     if (!tetra_bsch_parse(decoded, TYPE1_BITS, opts, state)) {
-        free(opts);
-        free(state);
+        release(opts, state);
         return fail("BSCH parse failed");
     }
     if (tetra_st(state)->mcc != 460 || tetra_st(state)->mnc != 4242 || tetra_st(state)->colour != 17
         || tetra_st(state)->tn != 3 || tetra_st(state)->fn != 9 || tetra_st(state)->mn != 37
         || tetra_st(state)->lfsr_seed != 0x73109247U) {
-        free(opts);
-        free(state);
+        release(opts, state);
         return fail("decoded BSCH fields mismatch");
     }
 
@@ -201,40 +230,31 @@ main(void) {
     uint16_t sys_costs[SYSINFO_CODED_BITS];
     uint16_t sys_mother[SYSINFO_MOTHER_BITS];
     uint8_t sys_decoded[SYSINFO_TYPE2_BITS];
-    if (strlen(sysinfo_type5_text) != SYSINFO_CODED_BITS) {
-        free(opts);
-        free(state);
-        return fail("invalid SYSINFO literal length");
-    }
     for (int i = 0; i < SYSINFO_CODED_BITS; ++i) {
         if (sysinfo_type5_text[i] != '0' && sysinfo_type5_text[i] != '1') {
-            free(opts);
-            free(state);
+            release(opts, state);
             return fail("invalid SYSINFO literal bit");
         }
         sys_type5[i] = (uint8_t)(sysinfo_type5_text[i] - '0');
     }
 
-    memcpy(sys_type4, sys_type5, sizeof(sys_type4));
-    tetra_descramble(sys_type4, SYSINFO_CODED_BITS, tetra_st(state)->lfsr_seed);
-    tetra_block_deinterleave(sys_type4, sys_type3, SYSINFO_CODED_BITS, 101);
+    DSD_MEMCPY(sys_type4, sys_type5, sizeof(sys_type4));
+    descramble_bits(sys_type4, SYSINFO_CODED_BITS, tetra_st(state)->lfsr_seed);
+    deinterleave_bits(sys_type4, sys_type3, SYSINFO_CODED_BITS, 101);
     tetra_hard_bits_to_soft(sys_type3, sys_costs, SYSINFO_CODED_BITS);
     if (tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, sys_costs, SYSINFO_CODED_BITS, sys_mother,
                                     SYSINFO_MOTHER_BITS)
         < 0) {
-        free(opts);
-        free(state);
+        release(opts, state);
         return fail("SYSINFO depuncture failed");
     }
     if (tetra_viterbi_decode_soft(sys_mother, SYSINFO_MOTHER_BITS, sys_decoded, SYSINFO_TYPE2_BITS)
         != SYSINFO_TYPE2_BITS) {
-        free(opts);
-        free(state);
+        release(opts, state);
         return fail("SYSINFO Viterbi length mismatch");
     }
     if (tetra_crc16_ccitt_bits(sys_decoded, SYSINFO_TYPE1_BITS + 16) != 0x1D0FU) {
-        free(opts);
-        free(state);
+        release(opts, state);
         return fail("SYSINFO CRC mismatch");
     }
     tetra_mac_parse_schd(sys_decoded, SYSINFO_TYPE1_BITS, 1, opts, state);
@@ -246,7 +266,6 @@ main(void) {
                    && tetra_st(state)->cck_valid == 1 && tetra_st(state)->cck_id == 0xBEEFU
                    && tetra_st(state)->la == 777 && tetra_st(state)->subscr_class == 0x1234U
                    && tetra_st(state)->bs_service_det == 0x567U;
-    free(opts);
-    free(state);
+    release(opts, state);
     return ok ? 0 : fail("decoded SYSINFO fields mismatch");
 }

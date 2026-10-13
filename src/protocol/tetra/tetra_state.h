@@ -12,6 +12,8 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
+#include "tetra_voice_state.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -354,6 +356,9 @@ typedef struct {
 } tetra_mle_broadcast_removal;
 
 typedef struct tetra_state {
+    /* The speech path: codec library, speech integrity and PCM carry (tetra_voice.c). */
+    tetra_voice_t voice;
+
     /* Diagnostic gates mirrored from the options at every burst (tetra_frame_enter()), so parsers that are not handed
      * the options can still keep per-burst detail behind -Z (payload) and -v (verbose). */
     uint8_t log_payload;
@@ -365,6 +370,8 @@ typedef struct tetra_state {
      * TMO colour code, from a BSCH or from --tetra-net mcc,mnc,colour.
      * tetra_cb: this sync is a control uplink burst (extended training). */
     uint8_t uplink;
+    /* 1 once the uplink logged that it has no colour code to descramble with. */
+    uint8_t uplink_no_net_noted;
 
     /* Network identity from the BSCH (EN 300 392-2 table 21.76) or --tetra-net: net_known once MCC, MNC and the 6-bit
      * colour code are set, and lfsr_seed, the scrambling seed they give (tetra_compute_scramb_seed()). */
@@ -442,9 +449,6 @@ typedef struct tetra_state {
     uint32_t gssi;
     uint16_t call_id;
     uint32_t cmce_call_generation; /* increments after complete call-establishment state */
-    uint8_t vocoder_status;        /* tetra_vocoder_status_e */
-    uint32_t vocoder_frames;
-    uint32_t vocoder_errors;
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA floor-control state — updated by CMCE D-TX-GRANTED / D-TX-CEASED.

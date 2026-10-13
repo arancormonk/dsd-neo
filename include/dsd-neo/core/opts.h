@@ -277,6 +277,7 @@ struct dsd_opts {
     uint16_t tetra_net_mcc;
     uint16_t tetra_net_mnc;
     uint8_t tetra_net_colour;
+    char tetra_codec_path[1024]; /**< --tetra-codec: the TETRA speech codec library; empty for none (no TETRA audio). */
     int call_alert;
 
     // rigctl / sockets / streaming

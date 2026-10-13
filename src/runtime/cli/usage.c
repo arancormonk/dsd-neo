@@ -297,6 +297,8 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fE           Decode only EDACS EA/ProVoice with ESK 0xA0\n");
     printf("  -fm           Decode only dPMR\n");
     printf("  -fT           Decode only TETRA NDB (pi/4-DQPSK, 18 kHz channel)\n");
+    printf("      --tetra-codec <file>  TETRA speech codec library to play TETRA speech with (see\n");
+    printf("                            tools/tetra/README.md); without one TETRA speech is not played\n");
     printf("  -l            Disable DMR, dPMR, NXDN, M17 input filtering\n");
     printf("  -xx           Expect non-inverted X2-TDMA signal\n");
     printf("  -xr           Expect inverted DMR signal\n");

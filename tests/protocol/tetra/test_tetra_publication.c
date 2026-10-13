@@ -10,11 +10,11 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
-#include <dsd-neo/protocol/tetra/tetra_acelp.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <stdlib.h>
 #include "tetra_state.h"
 
@@ -68,9 +68,9 @@ test_trunked_downlink(void) {
     ts->dl_carrier_hz = 392012500L;
     ts->mm_status_valid = 1U;
     ts->mm_status_code = 7U;
-    ts->vocoder_status = (uint8_t)TETRA_VOCODER_STATUS_READY;
-    ts->vocoder_frames = 18U;
-    ts->vocoder_errors = 2U;
+    ts->voice.codec_status = (uint8_t)TETRA_CODEC_STATUS_READY;
+    ts->voice.frames = 18U;
+    ts->voice.codec_errors = 2U;
     tetra_publish(state);
     const dsd_tetra_publication* const pub = &state->tetra_pub;
     assert(pub->mode == DSD_TETRA_MODE_TMO_DOWNLINK);
@@ -105,29 +105,34 @@ test_trunked_downlink(void) {
     state_close(state);
 }
 
-/* The codec statuses the decoder reports, each on the publication's. */
+/* The codec statuses the decoder reports, each on the publication's, with the frame and error counts. */
 static void
 test_codec_status(void) {
     static const struct {
-        tetra_vocoder_status_e decoder;
+        tetra_codec_status decoder;
+        uint8_t last_decode_failed;
         uint8_t published;
     } map[] = {
-        {TETRA_VOCODER_STATUS_UNKNOWN, DSD_TETRA_CODEC_UNKNOWN},
-        {TETRA_VOCODER_STATUS_READY, DSD_TETRA_CODEC_READY},
-        {TETRA_VOCODER_STATUS_COMMAND_MISSING, DSD_TETRA_CODEC_MISSING},
-        {TETRA_VOCODER_STATUS_START_FAILED, DSD_TETRA_CODEC_LOAD_FAILED},
-        {TETRA_VOCODER_STATUS_TIMEOUT, DSD_TETRA_CODEC_DECODE_ERRORS},
-        {TETRA_VOCODER_STATUS_SHORT_OUTPUT, DSD_TETRA_CODEC_DECODE_ERRORS},
+        {TETRA_CODEC_STATUS_UNLOADED, 0U, DSD_TETRA_CODEC_UNKNOWN},
+        {TETRA_CODEC_STATUS_READY, 0U, DSD_TETRA_CODEC_READY},
+        {TETRA_CODEC_STATUS_READY, 1U, DSD_TETRA_CODEC_DECODE_ERRORS},
+        {TETRA_CODEC_STATUS_NONE, 0U, DSD_TETRA_CODEC_MISSING},
+        {TETRA_CODEC_STATUS_FAILED, 0U, DSD_TETRA_CODEC_LOAD_FAILED},
     };
 
     dsd_state* state = state_open();
     tetra_state_t* const ts = tetra_st(state);
     assert(ts != NULL);
     for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
-        ts->vocoder_status = (uint8_t)map[i].decoder;
+        ts->voice.codec_status = (uint8_t)map[i].decoder;
+        ts->voice.last_decode_failed = map[i].last_decode_failed;
         tetra_publish(state);
         assert(state->tetra_pub.codec_status == map[i].published);
     }
+    ts->voice.frames = 18U;
+    ts->voice.codec_errors = 2U;
+    tetra_publish(state);
+    assert(state->tetra_pub.codec_frames == 18U && state->tetra_pub.codec_errors == 2U);
     state_close(state);
 }
 
