@@ -12,7 +12,8 @@ extern "C" {
 #endif
 typedef void (*dsd_signal_search_evidence_fn)(const dsd_state*, const char*, uint32_t, uint32_t, const char*);
 typedef int (*dsd_signal_search_active_fn)(const dsd_state*);
-/** Decoder-thread query used to bound live reads during a search session. */
+/** Decoder-thread query: during a search session the symbol readers take a failed (bounded) live read as an
+ * interruption, not the end of the stream. */
 void dsd_signal_search_active_set(dsd_signal_search_active_fn fn);
 int dsd_signal_search_is_running(const dsd_state* state);
 /** Install at engine startup; protocol code reports only CRC/FEC-confirmed observations. */

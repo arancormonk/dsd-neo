@@ -1541,6 +1541,36 @@ test_familyless_retune_supersede_count(void) {
     return failed;
 }
 
+static int
+expect_waited(const char* label, uint64_t waited_ms, uint64_t min_ms, uint64_t max_ms) {
+    if (waited_ms < min_ms || waited_ms >= max_ms) {
+        DSD_FPRINTF(stderr, "FAIL: %s waited %llu ms, want [%llu, %llu)\n", label, (unsigned long long)waited_ms,
+                    (unsigned long long)min_ms, (unsigned long long)max_ms);
+        return 1;
+    }
+    return 0;
+}
+
+/* A Signal search visit bounds the decoder's radio read: an output that delivers nothing for 100 ms fails the read,
+ * which the symbol readers take as an interruption, so a stalled input (an RTL-TCP stall, say) cannot hold the decoder
+ * past the visit's deadlines and commands. The orchestrator reads with no decoder state, so the bound follows the
+ * search's ownership of the tuner. Outside a search the read waits for the producer as it always has. */
+static int
+test_search_live_read_bound(void) {
+    int got = 0;
+    uint64_t waited_ms = 0U;
+    int failed =
+        expect_int_eq("search read hook", rtl_stream_test_search_live_read_bound(7U, 3000, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a search's read gives up on a silent producer", got, -1);
+    failed |= expect_waited("a search's read", waited_ms, 100U, 2000U);
+
+    failed |= expect_int_eq("read hook outside a search",
+                            rtl_stream_test_search_live_read_bound(0U, 300, &got, &waited_ms), 0);
+    failed |= expect_int_eq("outside a search the read waits for the producer", got, 1);
+    failed |= expect_waited("a read outside a search", waited_ms, 250U, 60000U);
+    return failed;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -2478,6 +2508,7 @@ main(void) {
     failed |= test_external_backend_landing_filter_state();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
+    failed |= test_search_live_read_bound();
 
     return failed ? 1 : 0;
 }

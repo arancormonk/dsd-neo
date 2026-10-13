@@ -57,7 +57,6 @@
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
@@ -8484,8 +8483,9 @@ rtl_stream_read_live_available(struct controller_state* s, struct output_state* 
 }
 
 static int
-rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count, const dsd_state* state) {
-    const uint64_t started = dsd_realtime_mono_ms();
+rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count) {
+    int empty = 0;
+    uint64_t empty_since_ms = 0U;
     for (;;) {
         if (!output.buffer || dsd_exitflag_load()
             || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
@@ -8499,9 +8499,18 @@ rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count, const dsd
         }
 
         /* An empty producer must not trap the decoder inside a search visit. The decoder
-           treats this bounded read as an interruption and services deadlines and commands. */
-        if (dsd_signal_search_is_running(state) && dsd_realtime_mono_ms() - started >= 100) {
-            return -1;
+           treats this bounded read as an interruption and services deadlines and commands.
+           The orchestrator reads with no decoder state, so the bound follows the search's
+           ownership of the tuner; it is timed from the first empty poll, so a read that
+           finds samples reads no clock. */
+        if (rtl_signal_search_owner() != 0U) {
+            const uint64_t now_ms = dsd_realtime_mono_ms();
+            if (!empty) {
+                empty = 1;
+                empty_since_ms = now_ms;
+            } else if (now_ms - empty_since_ms >= 100U) {
+                return -1;
+            }
         }
 
         if (gated) {
@@ -8532,7 +8541,7 @@ rtl_stream_read_live(float* out, uint8_t* flags, size_t count, dsd_opts* opts, c
 
     int perf_on = rtl_perf_enabled();
     uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
-    int got = rtl_stream_read_live_samples(out, flags, count, state);
+    int got = rtl_stream_read_live_samples(out, flags, count);
     if (got <= 0) {
         return -1;
     }
@@ -13982,6 +13991,80 @@ rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_race_
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return (rc == 0 && switcher_started) ? 0 : -3;
+}
+
+namespace {
+/* A producer that delivers nothing for delay_ms, then one sample (noting it in fed), unless the read has given up by
+   then. */
+struct SearchReadFeeder {
+    int delay_ms = 0;
+    std::atomic<int> read_done{0};
+    std::atomic<int> fed{0};
+};
+} // namespace
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    search_read_feeder(void* arg) {
+    SearchReadFeeder* feeder = static_cast<SearchReadFeeder*>(arg);
+    for (int waited_ms = 0; waited_ms < feeder->delay_ms && !feeder->read_done.load(std::memory_order_acquire);
+         waited_ms++) {
+        dsd_sleep_ms(1);
+    }
+    if (!feeder->read_done.load(std::memory_order_acquire)) {
+        dsd_mutex_lock(&output.ready_m);
+        output.head.store(1U);
+        feeder->fed.store(1, std::memory_order_release);
+        dsd_cond_signal(&output.ready);
+        dsd_mutex_unlock(&output.ready_m);
+    }
+    DSD_THREAD_RETURN;
+}
+
+extern "C" int
+rtl_stream_test_search_live_read_bound(uint64_t search_owner, int feed_after_ms, int* out_got,
+                                       uint64_t* out_waited_ms) {
+    if (!out_got || !out_waited_ms || feed_after_ms <= 0) {
+        return -1;
+    }
+    *out_got = 0;
+    *out_waited_ms = 0U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    ring_clear(&output);
+    /* No stream to stop the read: only the producer or the search's bound ends it. */
+    RtlSdrInternals* const saved_stream = g_stream;
+    g_stream = NULL;
+    const uint64_t saved_owner = rtl_signal_search_owner();
+    rtl_signal_search_set_owner(search_owner);
+
+    SearchReadFeeder feeder;
+    feeder.delay_ms = feed_after_ms;
+    dsd_thread_t thread{};
+    const int started = dsd_thread_create(&thread, search_read_feeder, &feeder) == 0 ? 1 : 0;
+    if (started) {
+        float sample = 0.0f;
+        const uint64_t read_started_ms = dsd_realtime_mono_ms();
+        *out_got = rtl_stream_read_live_samples(&sample, NULL, 1U);
+        *out_waited_ms = dsd_realtime_mono_ms() - read_started_ms;
+        feeder.read_done.store(1, std::memory_order_release);
+        (void)dsd_thread_join(thread);
+    }
+
+    rtl_signal_search_set_owner(saved_owner);
+    g_stream = saved_stream;
+    ring_clear(&output);
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    if (!started) {
+        return -3;
+    }
+    /* A read can only take the sample the producer delivered. */
+    return *out_got > 0 && !feeder.fed.load(std::memory_order_acquire) ? -4 : 0;
 }
 
 static int
