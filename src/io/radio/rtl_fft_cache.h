@@ -58,7 +58,7 @@ class FftSetupCache {
      */
     bool
     forward(int n, float* inout) {
-        PFFFT_Setup* setup = get(n);
+        const PFFFT_Setup* setup = get(n);
         if (setup == nullptr || inout == nullptr) {
             return false;
         }
