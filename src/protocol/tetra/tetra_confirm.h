@@ -25,6 +25,7 @@
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_CONFIRM_H_
 
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -59,6 +60,13 @@ void tetra_confirm_forget_followed_call(dsd_state* state);
 
 /** 1 when CRC-passed signalling of the followed call was decoded on this carrier since it became the followed call. */
 int tetra_confirm_followed_call_proven(const dsd_state* state);
+
+/** Which carrier the evidence is about: a count tetra_confirm_reset() advances. */
+uint32_t tetra_confirm_carrier_epoch(const dsd_state* state);
+
+/** A tune that failed puts the followed call back: its proof @p proven, read at @p epoch, returns with it unless the
+ * carrier was reset since, which dropped the proof with the carrier. */
+void tetra_confirm_restore_followed_call(dsd_state* state, uint32_t epoch, int proven);
 
 #ifdef __cplusplus
 }

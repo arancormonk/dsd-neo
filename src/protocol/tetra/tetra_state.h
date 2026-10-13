@@ -33,12 +33,15 @@ typedef struct {
     int trunk_is_tuned;
 } tetra_sm_tune_snapshot;
 
-/* Everything a tune puts back when it fails: the shared tuning state and the state machine's own. */
+/* Everything a tune puts back when it fails: the shared tuning state, the state machine's own, and the followed call's
+ * proof on the carrier (tetra_confirm_t::followed_call), which only the carrier it was read on keeps (confirm_epoch). */
 typedef struct {
     tetra_sm_tune_snapshot tuning;
     tetra_sm_grant followed;
     double t_tune_m;
     double t_voice_m;
+    uint32_t confirm_epoch;
+    uint8_t followed_proven;
     uint8_t state;
 } tetra_sm_rollback;
 
@@ -64,6 +67,7 @@ void tetra_sm_disown_pending(tetra_sm_t* sm);
  * carrier boundary, no-carrier pass and trunking retune (tetra_confirm_reset()). */
 typedef struct {
     uint32_t signalling_blocks; /* CRC-passed BSCH and MAC blocks decoded on this carrier */
+    uint32_t carrier_epoch;     /* counts the resets: evidence read at one epoch belongs to no other carrier */
     uint8_t followed_call;      /* CRC-passed signalling of the followed call was decoded on this carrier */
     uint8_t burst_open;         /* a burst is being decoded (tetra_confirm_burst_begin() to _end()) */
     uint8_t burst_stale;        /* the carrier was reset while the burst was open: its blocks are the last carrier's */

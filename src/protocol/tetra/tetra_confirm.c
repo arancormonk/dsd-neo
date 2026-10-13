@@ -34,6 +34,7 @@ tetra_confirm_reset(dsd_state* state) {
     }
     tetra_confirm_t* const c = &ts->confirm;
     c->signalling_blocks = 0;
+    c->carrier_epoch++;
     c->followed_call = 0;
     c->burst_stale = c->burst_open;
 }
@@ -115,4 +116,18 @@ int
 tetra_confirm_followed_call_proven(const dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
     return ts && ts->confirm.followed_call != 0;
+}
+
+uint32_t
+tetra_confirm_carrier_epoch(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return ts ? ts->confirm.carrier_epoch : 0U;
+}
+
+void
+tetra_confirm_restore_followed_call(dsd_state* state, uint32_t epoch, int proven) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (ts && ts->confirm.carrier_epoch == epoch) {
+        ts->confirm.followed_call = (uint8_t)(proven != 0);
+    }
 }

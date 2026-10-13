@@ -4446,15 +4446,15 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   state (`opts->trunk_is_tuned` cleared: a tuner hand-back, the stale-follow cleanup), and drops ON_CC to IDLE once
   trunking is off.
 - Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
-  (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state). Every entry point and the
-  tick settle it first: a completion commits, a failure -- or a request still unanswered after
+  (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
+  proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`).
+  Every entry point and the tick settle it first: a completion commits, a failure -- or a request still unanswered after
   `TETRA_SM_TUNE_TIMEOUT_S`, which is published as a timeout so a late completion cannot revive it -- restores the
-  rollback first and completes the request after, so the frame gate opens onto restored state
-  (`trunk_tuning_hooks.h`). `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own
-  cleanup (a decode-mode change drops the extension) let go of a request they find (`tetra_sm_disown_pending()`): one
-  that failed is retired as rolled back, and one the backend has not answered stays the backend's, so the frame gate
-  waits for it and its completion still publishes the tuner boundary (the mode-exit contract of
-  `dsd_trunk_tuning_retire_failed_requests()`).
+  rollback first and completes the request after, so the frame gate opens onto restored state (`trunk_tuning_hooks.h`).
+  `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own cleanup (a decode-mode change
+  drops the extension) let go of a request they find (`tetra_sm_disown_pending()`): one that failed is retired as rolled
+  back, and one the backend has not answered stays the backend's, so the frame gate waits for it and its completion
+  still publishes the tuner boundary (the mode-exit contract of `dsd_trunk_tuning_retire_failed_requests()`).
 - The carrier. The receiver's carrier changes when a tune completes, not when it is asked for: then
   `tetra_forget_carrier()` (`tetra.c`) drops the carrier's CRC evidence, the partial TM-SDUs
   (`tetra_mac_forget_fragments()`), the TDMA clock (`tetra_tdma_stop()`), which counts symbols a retune may have

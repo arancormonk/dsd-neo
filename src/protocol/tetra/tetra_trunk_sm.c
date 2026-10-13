@@ -86,6 +86,8 @@ sm_capture(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts
     r.followed = ts->sm.followed;
     r.t_tune_m = ts->sm.t_tune_m;
     r.t_voice_m = ts->sm.t_voice_m;
+    r.confirm_epoch = tetra_confirm_carrier_epoch(state);
+    r.followed_proven = (uint8_t)tetra_confirm_followed_call_proven(state);
     r.state = ts->sm.state;
     return r;
 }
@@ -104,6 +106,8 @@ sm_restore(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_r
     ts->sm.followed = r->followed;
     ts->sm.t_tune_m = r->t_tune_m;
     ts->sm.t_voice_m = r->t_voice_m;
+    /* The receiver never left the carrier: what proved the call there still does, unless the carrier was reset. */
+    tetra_confirm_restore_followed_call(state, r->confirm_epoch, r->followed_proven);
     sm_set_state(state, ts, (tetra_sm_state_e)r->state, "tune failed; put back");
 }
 

@@ -420,6 +420,50 @@ test_pending_grant_fails(void) {
     session_close(&s);
 }
 
+/* A tune away from a proven followed call that fails leaves the receiver on that call's carrier, so the call's proof
+ * comes back with it: its speech keeps playing and keeps its hangtime running. A carrier reset while the tune was in
+ * flight dropped that proof, and the rollback does not bring it back. */
+static void
+test_failed_tune_restores_followed_proof(void) {
+    for (int reset_between = 0; reset_between < 2; reset_between++) {
+        reset_backend();
+        session s = session_open();
+        const tetra_sm_grant a = grant_of(VC_HZ, 0x4U, 0x123U);
+        assert(tetra_sm_on_grant(s.opts, s.state, &a) == 1);
+        tetra_confirm_note_signalling(s.state);
+        tetra_confirm_note_followed_call(s.state);
+        assert(tetra_confirm_followed_call_proven(s.state));
+
+        g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        const tetra_sm_grant b = grant_of(VC2_HZ, 0x8U, 0x124U);
+        assert(tetra_sm_on_grant(s.opts, s.state, &b) == 1);
+        assert(followed_call(s.state) == 0x124 && !tetra_confirm_followed_call_proven(s.state));
+        if (reset_between) {
+            tetra_confirm_reset(s.state);
+            tetra_confirm_note_signalling(s.state);
+        }
+        dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        tetra_sm_tick(s.opts, s.state);
+        assert(followed_call(s.state) == 0x123 && dsd_trunk_tuning_pending_request() == 0U);
+        assert(tetra_confirm_followed_call_proven(s.state) == !reset_between);
+        session_close(&s);
+    }
+
+    /* A return in flight keeps the proof until it completes; one that fails after a carrier reset finds none. */
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant a = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &a) == 1);
+    tetra_confirm_note_followed_call(s.state);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    tetra_sm_on_release(s.opts, s.state, 0x123U);
+    tetra_confirm_reset(s.state);
+    dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_sm_tick(s.opts, s.state);
+    assert(followed_call(s.state) == 0x123 && !tetra_confirm_followed_call_proven(s.state));
+    session_close(&s);
+}
+
 /* A backend that never answers fails the tune after TETRA_SM_TUNE_TIMEOUT_S. */
 static void
 test_pending_grant_times_out(void) {
@@ -663,6 +707,7 @@ main(void) {
     test_same_carrier_grants();
     test_pending_grant_completes();
     test_pending_grant_fails();
+    test_failed_tune_restores_followed_proof();
     test_pending_grant_times_out();
     test_pending_return();
     test_external_return();
