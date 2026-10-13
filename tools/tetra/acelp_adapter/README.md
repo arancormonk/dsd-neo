@@ -1,44 +1,52 @@
-# Standalone TETRA ACELP adapter
+# TETRA speech codec library from the ETSI reference code
 
-This program connects a locally obtained ETSI EN 300 395-2 speech decoder to
-dsd-neo's `TETRA_VOCODER_CMD` pipe protocol. ETSI sources are **not** included
-in this repository. Obtain the `en_30039502v010301p0.zip` archive from ETSI
-and extract its `C-CODE` sources separately; osmo-tetra provides a patch set.
-The original uppercase `C-CODE` files compile with MSVC in this adapter. On
-platforms where `long` is 64 bits, apply osmo-tetra's 64-bit and symbol patches
-first, then use matching source filename case in `CMakeLists.txt`.
+This directory builds a TETRA speech codec library for dsd-neo's `--tetra-codec` option from a locally obtained
+copy of the ETSI EN 300 395-2 reference C code. The ETSI sources are **not** part of this repository and the dsd-neo
+build never compiles them: this is a separate CMake project you point at your own copy. Do not commit the ETSI
+archive, its `C-CODE` tree or a library built from it; `tools/tetra/etsi/` and `tools/tetra/acelp_adapter/C-CODE/`
+are ignored by git for local copies.
 
-The repository provides a local preparation helper under
-`third_party/tetra_acelp/`. Put `en_30039502v010301p0.zip` there and run:
+`tetra_codec_etsi.c` implements the four functions of the codec interface in
+`include/dsd-neo/protocol/tetra/tetra_codec_abi.h` over the reference source decoder: each 137-bit speech frame
+dsd-neo passes, with its bad-frame flag, becomes the decoder's serial input, and its 240 samples at 8 kHz come back.
+A frame whose CRC failed is concealed by the decoder, as the standard describes. The reference decoder keeps its state
+in file-scope variables, so the library serves one decoder at a time, which is how dsd-neo uses it.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File third_party\tetra_acelp\prepare.ps1
+## Getting the sources
+
+Download `en_30039502v010301p0.zip` (EN 300 395-2 V1.3.1) from ETSI and extract its `C-CODE` directory. The code
+predates 64-bit platforms and takes `long` to be 32 bits wide. On 64-bit Linux and macOS, where `long` is 64 bits, its
+32-bit fixed-point type and the `long` variables and casts that stand for it have to become `int` before building, or
+the decoder no longer computes what the standard specifies. 64-bit Windows keeps `long` at 32 bits and needs no
+change. The project accepts the file names in the archive's upper case or in lower case; if your compiler cannot find
+a header one of the sources includes, the `#include` line and the file name differ in case and one of them needs
+renaming.
+
+## Building
+
+Linux and macOS:
+
+```sh
+cmake -S tools/tetra/acelp_adapter -B build/tetra-codec -DETSI_TETRA_C_CODE=/path/to/C-CODE -DCMAKE_BUILD_TYPE=Release
+cmake --build build/tetra-codec
+dsd-neo -fT --tetra-codec build/tetra-codec/libtetra-codec.so -i rtl:0:392.5M:0:0:72   # .dylib on macOS
 ```
 
-Build on Windows with an MSVC developer environment:
+Windows, from a Visual Studio developer prompt (PowerShell):
 
 ```powershell
-cmake -S tools/tetra/acelp_adapter -B build/tetra-acelp-adapter `
-  -DETSI_TETRA_C_CODE="$PWD/third_party/tetra_acelp/reference/C-CODE"
-cmake --build build/tetra-acelp-adapter --config Release
-$env:TETRA_VOCODER_CMD = '"E:\Git\dsd-neo\build\tetra-acelp-adapter\Release\tetra-acelp-adapter.exe"'
-# Start dsd-neo from this PowerShell session.
+cmake -S tools/tetra/acelp_adapter -B build/tetra-codec -DETSI_TETRA_C_CODE="C:\path\to\C-CODE"
+cmake --build build/tetra-codec --config Release
+dsd-neo -fT --tetra-codec build\tetra-codec\Release\tetra-codec.dll -i rtl:0:392.5M:0:0:72
 ```
 
-When the CB colour code is known from a strong recurring TCH stream, set
-`TETRA_TCH_CC_FILTER` to `0`, `1`, `2`, or `3` before starting dsd-neo. This
-keeps other colour-code bursts out of the stateful speech decoder. It does not
-replace voice-channel assignment or repair missing radio frames.
+The library must match dsd-neo's architecture (a 64-bit dsd-neo loads only a 64-bit library). dsd-neo loads it the
+first time TETRA speech needs decoding and logs one line when it does. A library it cannot use is refused with one
+error naming the reason, and TETRA decoding carries on without audio.
 
-The adapter reads 137 bytes per frame (each byte 0 or 1), prepends a valid-frame
-indicator for the ETSI decoder, and writes 240 signed 16-bit little-endian PCM
-samples per frame at 8 kHz. It preserves decoder state across frames. It cannot
-recover encrypted voice or mark bad frames because the current dsd-neo pipe
-protocol carries neither keys nor a bad-frame indicator.
+## Checking the build
 
-For a local comparison, configure with `-DBUILD_REFERENCE_SDECODER=ON` and
-compare identical frames against `tetra-reference-sdecoder`. A 12-frame pipe
-comparison on MSVC produced byte-identical PCM. This checks adaptation, not
-codec conformance or correctness of live-air bit order. Validate with ETSI
-conformance vectors before claiming speech correctness. Do not publish the ETSI
-source or a derivative binary without reviewing its applicable rights.
+Configure with `-DBUILD_REFERENCE_SDECODER=ON` to also build the ETSI file decoder, `tetra-reference-sdecoder`, and
+compare its PCM with what the library produces for the same frames. That checks the adaptation, not the codec's
+conformance: validate against the ETSI conformance vectors before relying on the speech. Review the ETSI terms before
+sharing a library built from the reference code.
