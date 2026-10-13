@@ -72,17 +72,17 @@ test_mode_line(void) {
     dsd_app_tetra view;
 
     static const struct {
-        uint8_t mode;
         const char* text;
+        uint8_t mode;
         uint8_t trunked;
     } modes[] = {
-        {DSD_TETRA_MODE_TMO_DOWNLINK, "TMO downlink", 1U},
-        {DSD_TETRA_MODE_TMO_UPLINK, "TMO uplink", 1U},
-        {DSD_TETRA_MODE_TMO_CONTROL_UPLINK, "TMO control uplink", 1U},
-        {DSD_TETRA_MODE_DMO_DIRECT, "DMO direct", 0U},
-        {DSD_TETRA_MODE_DMO_REPEATER, "DMO via repeater", 0U},
-        {DSD_TETRA_MODE_DMO_GATEWAY, "DMO via gateway", 0U},
-        {DSD_TETRA_MODE_DMO_REPEATER_GATEWAY, "DMO via repeater/gateway", 0U},
+        {"TMO downlink", DSD_TETRA_MODE_TMO_DOWNLINK, 1U},
+        {"TMO uplink", DSD_TETRA_MODE_TMO_UPLINK, 1U},
+        {"TMO control uplink", DSD_TETRA_MODE_TMO_CONTROL_UPLINK, 1U},
+        {"DMO direct", DSD_TETRA_MODE_DMO_DIRECT, 0U},
+        {"DMO via repeater", DSD_TETRA_MODE_DMO_REPEATER, 0U},
+        {"DMO via gateway", DSD_TETRA_MODE_DMO_GATEWAY, 0U},
+        {"DMO via repeater/gateway", DSD_TETRA_MODE_DMO_REPEATER_GATEWAY, 0U},
     };
 
     for (size_t i = 0; i < sizeof modes / sizeof modes[0]; i++) {

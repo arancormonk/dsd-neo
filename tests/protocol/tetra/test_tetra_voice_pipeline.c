@@ -192,7 +192,11 @@ test_clean_stream_plays_every_frame(void) {
     tetra_voice_full_slot(f.opts, f.state, b2, 1);
 
     const played_frame want[] = {
-        {1, 0, s1}, {2, 0, s1 + DSD_TETRA_CODEC_FRAME_BITS}, {3, 0, s2}, {4, 0, s2 + DSD_TETRA_CODEC_FRAME_BITS}};
+        {1, 0, s1},
+        {2, 0, s1 + DSD_TETRA_CODEC_FRAME_BITS},
+        {3, 0, s2},
+        {4, 0, s2 + DSD_TETRA_CODEC_FRAME_BITS},
+    };
     expect_output(&f, 0, want, 4, 4 * FRAME, "clean stream");
     uint64_t stamp = 0;
     dsd_audio_activity_read(&stamp, NULL);
@@ -228,8 +232,9 @@ test_integrity_starts_conceals_and_ends_speech(void) {
     expect(voice_of(&f)->confirmed == 0, "integrity: a run of bad frames ends the speech");
     tetra_voice_full_slot(f.opts, f.state, bits, 1); /* 7, 8: a good burst starts it again */
 
-    const played_frame want[] = {{1, 0, a},    {2, 0, b},    {3, 1, NULL}, {4, 1, NULL},
-                                 {5, 1, NULL}, {6, 1, NULL}, {7, 0, a},    {8, 0, b}};
+    const played_frame want[] = {
+        {1, 0, a}, {2, 0, b}, {3, 1, NULL}, {4, 1, NULL}, {5, 1, NULL}, {6, 1, NULL}, {7, 0, a}, {8, 0, b},
+    };
     expect_output(&f, 0, want, 8, 8 * FRAME, "integrity");
     expect(voice_of(&f)->concealed == 4, "integrity: four frames concealed");
     fixture_close(&f);
@@ -255,11 +260,13 @@ test_half_slot_and_carry(void) {
     /* Now the stolen frame is concealed ahead of the speech frame. */
     tetra_voice_half_slot(f.opts, f.state, half, 1);
     tetra_voice_full_slot(f.opts, f.state, full, 1);
-    const played_frame want[] = {{1, 0, half_frame},
-                                 {2, 1, NULL},
-                                 {3, 0, half_frame},
-                                 {4, 0, full_frames},
-                                 {5, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS}};
+    const played_frame want[] = {
+        {1, 0, half_frame},
+        {2, 1, NULL},
+        {3, 0, half_frame},
+        {4, 0, full_frames},
+        {5, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+    };
     /* 5 frames are 1200 samples: 1120 played, 80 waiting. */
     expect_output(&f, 0, want, 5, 1120, "half slot");
 
@@ -451,7 +458,11 @@ test_air_key_stream_positions(void) {
     tetra_voice_full_slot(f.opts, f.state, full, 1);
     tetra_voice_half_slot(f.opts, f.state, half, 1);
     const played_frame want[] = {
-        {1, 0, full_frames}, {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS}, {3, 1, NULL}, {4, 0, half_frame}};
+        {1, 0, full_frames},
+        {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+        {3, 1, NULL},
+        {4, 0, half_frame},
+    };
     expect_output(&f, 0, want, 4, 4 * FRAME, "key stream positions");
     fixture_close(&f);
 }

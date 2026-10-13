@@ -135,8 +135,14 @@ main(void) {
         {"no codec", NULL, "no codec library is loaded", 1, 0, TETRA_CODEC_STATUS_NONE},
         {"no such file", "dsd_neo_no_such_tetra_codec_library", "refused", 1, 0, TETRA_CODEC_STATUS_FAILED},
         {"wrong version", TETRA_TEST_CODEC_WRONG_ABI, "codec interface version 2", 1, 0, TETRA_CODEC_STATUS_FAILED},
-        {"missing function", TETRA_TEST_CODEC_MISSING_SYMBOL, DSD_TETRA_CODEC_SYM_DESTROY, 1, 0,
-         TETRA_CODEC_STATUS_FAILED},
+        {
+            "missing function",
+            TETRA_TEST_CODEC_MISSING_SYMBOL,
+            DSD_TETRA_CODEC_SYM_DESTROY,
+            1,
+            0,
+            TETRA_CODEC_STATUS_FAILED,
+        },
         {"no decoder", TETRA_TEST_CODEC_NO_CREATE, "could not create a decoder", 1, 0, TETRA_CODEC_STATUS_FAILED},
         {"failing decodes", TETRA_TEST_CODEC_FAIL_DECODE, "failed to decode", 2, 6, TETRA_CODEC_STATUS_READY},
     };

@@ -771,7 +771,11 @@ tetra_frame_enter(const dsd_opts* opts, dsd_state* state) {
     }
     ts->uplink = (uint8_t)(opts->tetra_uplink != 0);
     ts->log_payload = (uint8_t)(opts->payload == 1);
-    ts->log_verbose = (uint8_t)(opts->verbose > 0 ? (opts->verbose > 255 ? 255 : opts->verbose) : 0);
+    int verbose = opts->verbose > 0 ? opts->verbose : 0;
+    if (verbose > 255) {
+        verbose = 255;
+    }
+    ts->log_verbose = (uint8_t)verbose;
     if (opts->tetra_net_preset && !ts->net_known) {
         ts->mcc = opts->tetra_net_mcc;
         ts->mnc = opts->tetra_net_mnc;
@@ -787,8 +791,12 @@ tetra_frame_enter(const dsd_opts* opts, dsd_state* state) {
 static uint8_t
 tetra_pub_mode(const dsd_state* state, const tetra_state_t* ts) {
     if (ts->dmo) {
-        static const uint8_t dmo_modes[4] = {DSD_TETRA_MODE_DMO_DIRECT, DSD_TETRA_MODE_DMO_REPEATER,
-                                             DSD_TETRA_MODE_DMO_GATEWAY, DSD_TETRA_MODE_DMO_REPEATER_GATEWAY};
+        static const uint8_t dmo_modes[4] = {
+            DSD_TETRA_MODE_DMO_DIRECT,
+            DSD_TETRA_MODE_DMO_REPEATER,
+            DSD_TETRA_MODE_DMO_GATEWAY,
+            DSD_TETRA_MODE_DMO_REPEATER_GATEWAY,
+        };
         return dmo_modes[ts->dmo_comm_type & 3u];
     }
     if (ts->uplink) {

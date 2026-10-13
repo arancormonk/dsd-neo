@@ -142,12 +142,24 @@ test_codec_status(void) {
  * encryption leaves the air interface clear), and no KSG. */
 static void
 test_direct_mode_and_uplink(void) {
-    static const uint8_t dmo_modes[4] = {DSD_TETRA_MODE_DMO_DIRECT, DSD_TETRA_MODE_DMO_REPEATER,
-                                         DSD_TETRA_MODE_DMO_GATEWAY, DSD_TETRA_MODE_DMO_REPEATER_GATEWAY};
-    static const uint8_t crypts[4] = {TETRA_DMO_CRYPT_UNKNOWN, TETRA_DMO_CRYPT_CLEAR, TETRA_DMO_CRYPT_AIR,
-                                      TETRA_DMO_CRYPT_E2E};
-    static const uint8_t air_encryption[4] = {DSD_TETRA_AIR_ENC_UNKNOWN, DSD_TETRA_AIR_ENC_CLEAR,
-                                              DSD_TETRA_AIR_ENC_ENCRYPTED, DSD_TETRA_AIR_ENC_CLEAR};
+    static const uint8_t dmo_modes[4] = {
+        DSD_TETRA_MODE_DMO_DIRECT,
+        DSD_TETRA_MODE_DMO_REPEATER,
+        DSD_TETRA_MODE_DMO_GATEWAY,
+        DSD_TETRA_MODE_DMO_REPEATER_GATEWAY,
+    };
+    static const uint8_t crypts[4] = {
+        TETRA_DMO_CRYPT_UNKNOWN,
+        TETRA_DMO_CRYPT_CLEAR,
+        TETRA_DMO_CRYPT_AIR,
+        TETRA_DMO_CRYPT_E2E,
+    };
+    static const uint8_t air_encryption[4] = {
+        DSD_TETRA_AIR_ENC_UNKNOWN,
+        DSD_TETRA_AIR_ENC_CLEAR,
+        DSD_TETRA_AIR_ENC_ENCRYPTED,
+        DSD_TETRA_AIR_ENC_CLEAR,
+    };
     dsd_state* state = state_open();
     tetra_state_t* const ts = tetra_st(state);
     assert(ts != NULL);

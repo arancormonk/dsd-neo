@@ -30,8 +30,8 @@
 extern "C" {
 #endif
 
-/** Forget everything proved about the carrier on air. Declared in tetra.h as well, for the engine. */
-void tetra_confirm_reset(dsd_state* state);
+/* tetra_confirm_reset(), which forgets everything proved about the carrier on air, is declared in
+ * <dsd-neo/protocol/tetra/tetra.h> for the engine. */
 
 /** Start a burst's accounting; call before decoding any of its blocks. */
 void tetra_confirm_burst_begin(dsd_state* state);

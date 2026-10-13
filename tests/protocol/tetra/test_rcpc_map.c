@@ -30,14 +30,16 @@ static const scheme k_schemes[] = {
     {TETRA_RCPC_PUNCT_148_432, "rate 148/432", 6, 8, {1, 2, 3, 5, 6, 7}, 35, 432, 592},
     {TETRA_RCPC_PUNCT_SPEECH_8_12, "speech rate 8/12", 3, 6, {1, 2, 4}, 0, 168, 336},
     {TETRA_RCPC_PUNCT_SPEECH_8_18, "speech rate 8/18", 9, 12, {1, 2, 3, 4, 5, 7, 8, 10, 11}, 0, 162, 216},
-    {TETRA_RCPC_PUNCT_SPEECH_8_17,
-     "speech rate 8/17",
-     17,
-     24,
-     {1, 2, 3, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17, 19, 20, 22, 23},
-     0,
-     81,
-     114},
+    {
+        TETRA_RCPC_PUNCT_SPEECH_8_17,
+        "speech rate 8/17",
+        17,
+        24,
+        {1, 2, 3, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17, 19, 20, 22, 23},
+        0,
+        81,
+        114,
+    },
 };
 
 static int
@@ -83,7 +85,10 @@ check_scheme(const scheme* s) {
         return 1;
     }
     for (int k = 0; k < s->mother; k++) {
-        const uint16_t want = seen[k] ? (mother[k] ? 0xFFFFu : 0x0000u) : TETRA_SOFT_NEUTRAL;
+        uint16_t want = TETRA_SOFT_NEUTRAL;
+        if (seen[k]) {
+            want = mother[k] ? 0xFFFFu : 0x0000u;
+        }
         if (restored[k] != want) {
             DSD_FPRINTF(stderr, "%s: mother bit %d restored as 0x%04x\n", s->name, k + 1, restored[k]);
             return 1;
