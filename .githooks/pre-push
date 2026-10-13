@@ -45,6 +45,18 @@ trap 'rm -f "$push_paths_file"' EXIT
 
 head_sha=$(git rev-parse -q --verify HEAD 2> /dev/null || true)
 
+# A change to a pinned or vendored dependency runs the per-TU analyzers over the
+# whole tree (see tools/ci_changed_files.sh), a deletion included.
+analysis_full_scan=0
+is_dependency_input() {
+  case "$1" in
+    tools/ci-dependency-pins.env | cmake/Pffft.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 changed_paths=()
 head_changed_paths=()
 while read -r local_ref local_sha _remote_ref remote_sha; do
@@ -77,15 +89,29 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
   if [[ -n "$head_sha" && "$local_sha" == "$head_sha" ]]; then
     head_changed_paths+=("${diff_files[@]}")
   fi
+
+  # Deletions are listed apart: every other check needs paths that exist.
+  if ! tools/push_changed_files.sh "$remote_name" "$local_ref" "$local_sha" "$remote_sha" D > "$push_paths_file" 2> /dev/null; then
+    echo "pre-push: could not list the files ${local_ref} deletes; not pushing unchecked." >&2
+    exit 1
+  fi
+  mapfile -d '' -t deleted_files < "$push_paths_file"
+  for p in "${deleted_files[@]}"; do
+    if is_dependency_input "$p"; then
+      analysis_full_scan=1
+    fi
+  done
 done
 # The check runner sets its own EXIT trap, so remove the list now.
 rm -f "$push_paths_file"
 
-if [[ ${#changed_paths[@]} -eq 0 ]]; then
+if [[ ${#changed_paths[@]} -eq 0 && $analysis_full_scan -eq 0 ]]; then
   exit 0
 fi
 
-mapfile -t changed_paths < <(printf '%s\n' "${changed_paths[@]}" | sort -u)
+if [[ ${#changed_paths[@]} -gt 0 ]]; then
+  mapfile -t changed_paths < <(printf '%s\n' "${changed_paths[@]}" | sort -u)
+fi
 if [[ ${#head_changed_paths[@]} -gt 0 ]]; then
   mapfile -t head_changed_paths < <(printf '%s\n' "${head_changed_paths[@]}" | sort -u)
 fi
@@ -101,7 +127,6 @@ format_files=()
 cmake_format_files=()
 semgrep_targets=()
 semgrep_full_scan=0
-analysis_full_scan=0
 shell_lint_targets=()
 workflow_lint_targets=()
 workflow_security_targets=()
@@ -109,14 +134,10 @@ dependency_scan_targets=()
 missing_worktree_paths=()
 skipped_missing_paths=()
 for p in "${changed_paths[@]}"; do
-  # A change to a pinned or vendored dependency runs the per-TU analyzers over the
-  # whole tree (see tools/ci_changed_files.sh). Matched before the vendored
-  # snapshots are dropped below.
-  case "$p" in
-    tools/ci-dependency-pins.env | cmake/Pffft.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
-      analysis_full_scan=1
-      ;;
-  esac
+  # Matched before the vendored snapshots are dropped below.
+  if is_dependency_input "$p"; then
+    analysis_full_scan=1
+  fi
 
   # Vendored upstream snapshots are never formatted or analyzed: they are carried
   # as-is so they can be diffed against upstream and re-synced. The build glue
@@ -607,10 +628,19 @@ echo "pre-push: jobs=${JOBS} (clang-tidy=${jobs_tidy} cppcheck=${jobs_cppcheck}"
 # database to analyze against, and letting the lanes start would have three of
 # them configure the same build directory at the same time, so they are skipped:
 # the recorded failure is the verdict.
+#
+# A full-tree run follows a dependency change, so it always reconfigures: that
+# refetches a changed pin (PFFFT) into build/dev-debug, whose compile database the
+# per-TU analyzers and whose cache tools/cppcheck.sh read. An existing tree would
+# otherwise be analyzed against the old dependency and pass.
 compile_db_ready=1
-if [[ $tu_count -gt 0 && ! -f build/dev-debug/compile_commands.json && ! -f compile_commands.json ]]; then
+configure_label="CMake configure (dev-debug compile database)"
+if [[ $analysis_full_scan -eq 1 ]]; then
+  configure_label="CMake configure (dev-debug; refetch the pinned dependencies)"
+fi
+if [[ $tu_count -gt 0 ]] && [[ $analysis_full_scan -eq 1 || (! -f build/dev-debug/compile_commands.json && ! -f compile_commands.json) ]]; then
   if command -v cmake > /dev/null 2>&1; then
-    run_check "CMake configure (dev-debug compile database)" cmake --preset dev-debug
+    run_check "$configure_label" cmake --preset dev-debug
     if [[ "$RUNNER_LAST_RC" -ne 0 ]]; then
       compile_db_ready=0
       echo "pre-push: skipping the per-TU analyzers (no compile database)." >&2
@@ -624,7 +654,11 @@ if [[ $tu_count -gt 0 && $compile_db_ready -eq 0 ]]; then
   # Naming the tool is not the same as naming what went unanalyzed: "cmake is
   # missing" reads like a nuisance, where the fact is that ${tu_count} changed
   # translation units are about to be pushed with no per-TU analysis at all.
-  runner_note_skipped "clang-tidy, IWYU and GCC -fanalyzer over ${tu_count} changed translation unit(s): no compile database"
+  if [[ $analysis_full_scan -eq 1 ]]; then
+    runner_note_skipped "cppcheck, clang-tidy, IWYU and GCC -fanalyzer over the whole tree: the dev-debug configure that refetches the changed dependency failed"
+  else
+    runner_note_skipped "clang-tidy, IWYU and GCC -fanalyzer over ${tu_count} changed translation unit(s): no compile database"
+  fi
 fi
 
 runner_spawn guardrails lane_guardrails
@@ -635,7 +669,8 @@ if [[ $tu_count -gt 0 && $compile_db_ready -eq 1 ]]; then
   runner_spawn iwyu lane_iwyu
   runner_spawn fanalyzer lane_fanalyzer
 fi
-if [[ $cppcheck_count -gt 0 ]]; then
+# A full-tree cppcheck reads the PFFFT the configure above refetched.
+if [[ $cppcheck_count -gt 0 ]] && [[ $analysis_full_scan -eq 0 || $compile_db_ready -eq 1 ]]; then
   runner_spawn cppcheck lane_cppcheck
 fi
 runner_wait_all

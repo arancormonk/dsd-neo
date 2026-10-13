@@ -7,9 +7,10 @@
 # warning for a ref that is not checked out, or reported as local deletions for
 # the one that is. The hook must refuse the push and say why. It must also leave
 # nothing behind in the temporary directory. A change to a pinned or vendored
-# dependency must run the per-TU analyzers over the whole tree. This runs the hook,
-# with tools/push_changed_files.sh, in a throwaway repository; every case ends
-# before the hook loads its check runner.
+# dependency, a deletion included, must run the per-TU analyzers over the whole
+# tree, and reconfigure first so a changed pin is refetched. This runs the hook,
+# with tools/push_changed_files.sh, in a throwaway repository; every case but the
+# last two ends before the hook loads its check runner.
 set -euo pipefail
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
@@ -80,3 +81,58 @@ for path in tools/ci-dependency-pins.env cmake/Pffft.cmake src/third_party/ezpwd
   grep -q 'analysis_full=1' "$WORK/out" || fail "$path did not ask for the full tree: $(cat "$WORK/out")"
   echo "PASS a change to $path analyzes the whole tree"
 done
+
+# A push that only deletes a dependency file asks for the full tree as well, where
+# the per-ref path list (additions and changes) is empty.
+git checkout -q -f --detach "$base"
+mkdir -p src/third_party/ezpwd
+printf 'vendored\n' > src/third_party/ezpwd/rs
+git add -A
+git commit -q -m 'vendored file'
+vendored=$(git rev-parse HEAD)
+git rm -q src/third_party/ezpwd/rs
+git commit -q -m 'drop vendored file'
+run_hook "$(git rev-parse HEAD)" "$vendored" || true
+grep -q 'analysis_full=1' "$WORK/out" || fail "deleting a vendored file did not ask for the full tree: $(cat "$WORK/out")"
+echo "PASS deleting a vendored file analyzes the whole tree"
+
+# A full-tree run reconfigures dev-debug even where a compile database exists, so a
+# changed pin (PFFFT) is refetched before the analyzers read it; a scoped run keeps
+# the existing database. These two cases run the hook to the end with its check
+# runner and a stub cmake that records its calls; the checks it starts have no
+# scripts here and fail, which is not what is being tested.
+mkdir -p tools/lib "$WORK/bin"
+cp "$ROOT_DIR/tools/lib/check_runner.sh" tools/lib/
+cat > "$WORK/bin/cmake" << 'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CMAKE_CALLS"
+STUB
+chmod +x "$WORK/bin/cmake"
+# run_full_hook LOCAL_SHA REMOTE_SHA: the hook in serial mode with the stub cmake;
+# its calls go to $WORK/cmake.calls.
+run_full_hook() {
+  rm -f "$WORK/cmake.calls"
+  : > "$WORK/cmake.calls"
+  printf 'refs/heads/topic %s refs/heads/topic %s\n' "$1" "$2" |
+    PATH="$WORK/bin:$PATH" CMAKE_CALLS="$WORK/cmake.calls" DSD_HOOK_SERIAL=1 TMPDIR="$hook_tmp" \
+      bash .githooks/pre-push origin > "$WORK/out" 2>&1 || true
+}
+git checkout -q -f --detach "$base"
+mkdir -p build/dev-debug
+printf '[]\n' > build/dev-debug/compile_commands.json
+printf 'PFFFT_SHA=changed\n' > pins.env
+mkdir -p tools
+mv pins.env tools/ci-dependency-pins.env
+git add tools/ci-dependency-pins.env
+git commit -q -m 'pin change'
+run_full_hook "$(git rev-parse HEAD)" "$base"
+grep -qx -- '--preset dev-debug' "$WORK/cmake.calls" ||
+  fail "a full-tree run kept a stale compile database: $(cat "$WORK/cmake.calls") $(cat "$WORK/out")"
+echo "PASS a full-tree run reconfigures dev-debug over an existing compile database"
+git checkout -q -f --detach "$base"
+printf 'int scoped;\n' > base.c
+git commit -q -am 'scoped change'
+run_full_hook "$(git rev-parse HEAD)" "$base"
+[[ ! -s "$WORK/cmake.calls" ]] || fail "a scoped run reconfigured: $(cat "$WORK/cmake.calls")"
+grep -q 'analysis_full=0' "$WORK/out" || fail "the scoped run did not reach its checks: $(cat "$WORK/out")"
+echo "PASS a scoped run keeps the existing compile database"
