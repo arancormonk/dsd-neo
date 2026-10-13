@@ -22,6 +22,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
@@ -749,6 +750,104 @@ test_ysf_conv_dch2_decodes_valid_source_and_rejects_crc_error(void) {
     assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == -2);
     call = get_test_ysf_call(&state);
     assert(strcmp(call.source_text, "DCH2SRC789") == 0);
+}
+
+/* What the signal search's confirmation can read when the evidence hook fires: the app-control observer copies the
+ * active call's callsigns inside the hook, from state, and only on that confirmation. The last report a frame makes is
+ * the freshest view the search keeps. */
+static struct {
+    int calls;
+    int call_active;
+    char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+} g_search_evidence;
+
+static void
+capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
+                        const char* access) {
+    (void)target;
+    (void)source;
+    (void)access;
+    assert(protocol != NULL && strcmp(protocol, "YSF") == 0);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    g_search_evidence.calls++;
+    const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                       && call.protocol == state->synctype;
+    g_search_evidence.call_active = active;
+    DSD_SNPRINTF(g_search_evidence.source_text, sizeof(g_search_evidence.source_text), "%s",
+                 active ? call.source_text : "");
+    DSD_SNPRINTF(g_search_evidence.target_text, sizeof(g_search_evidence.target_text), "%s",
+                 active ? call.target_text : "");
+}
+
+/* A V/D2 DCH whose CRC passes reports to the search after its callsign is on the call, so the last DCH of a
+ * transmission still names the station; a damaged one reports nothing. */
+static void
+test_ysf_conv_dch2_search_evidence_follows_the_callsign(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t input[100];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&g_search_evidence, 0, sizeof(g_search_evidence));
+    state.synctype = DSD_SYNC_YSF_POS;
+    begin_test_ysf_call(&state);
+    dsd_signal_search_evidence_set(capture_search_evidence);
+
+    encode_dch_payload_to_input("DCH2BAD789", 10U, input, 96U, 5U, 1);
+    assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == -2);
+    assert(g_search_evidence.calls == 0);
+
+    encode_dch_payload_to_input("DCH2SRC789", 10U, input, 96U, 5U, 0);
+    assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == 0);
+    dsd_signal_search_evidence_set(NULL);
+
+    assert(g_search_evidence.calls == 1);
+    assert(g_search_evidence.call_active == 1);
+    assert(strcmp(g_search_evidence.source_text, "DCH2SRC789") == 0);
+    dsd_state_ext_free_all(&state);
+}
+
+/* A header frame's FICH reports before the frame opens its call, and the callsigns arrive in its CRC-checked DCH: each
+ * DCH reports to the search once its callsigns are on the call, so a header followed by nothing decodable still
+ * names the stations. */
+static void
+test_process_ysf_header_search_evidence_follows_the_callsigns(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch0[180];
+    uint8_t dch1[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&g_search_evidence, 0, sizeof(g_search_evidence));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    g_dibit_stream_len = 0;
+    g_dibit_stream_pos = 0;
+    state.synctype = DSD_SYNC_YSF_POS;
+
+    make_fich_bits_for_full_rate_data(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input("SRCHDST001SRCHSRC002", 20U, dch0, 176U, 9U, 0);
+    encode_dch_payload_to_input("SRCHUPL003SRCHDNL004", 20U, dch1, 176U, 9U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    append_interleaved_full_rate_dch_blocks(dch0, dch1);
+
+    dsd_signal_search_evidence_set(capture_search_evidence);
+    processYSF(&opts, &state);
+    dsd_signal_search_evidence_set(NULL);
+
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    assert(g_search_evidence.calls >= 1);
+    assert(g_search_evidence.call_active == 1);
+    assert(strcmp(g_search_evidence.target_text, "SRCHDST001") == 0);
+    assert(strcmp(g_search_evidence.source_text, "SRCHSRC002") == 0);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -1664,6 +1763,8 @@ main(void) {
     test_ysf_type2_ambe_majority_and_tail_bits();
     test_ysf_conv_dch_decodes_valid_csd1_and_rejects_crc_error();
     test_ysf_conv_dch2_decodes_valid_source_and_rejects_crc_error();
+    test_ysf_conv_dch2_search_evidence_follows_the_callsign();
+    test_process_ysf_header_search_evidence_follows_the_callsigns();
     test_process_ysf_full_rate_data_routes_fich_and_dch_state();
     test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state();
     test_process_ysf_vd_type1_split_by_a_carrier_boundary_publishes_nothing();

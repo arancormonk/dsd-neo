@@ -17,6 +17,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -906,6 +907,108 @@ test_facch2_udch_crc_state_update(void) {
     return rc;
 }
 
+/* What the signal search's confirmation can read when the evidence hook fires: the app-control observer copies the
+ * carrier's RAN inside the hook, from state, and only on that confirmation. */
+static struct {
+    int calls;
+    int access_valid;
+    uint16_t ran;
+} g_search_evidence;
+
+/* Reports naming anything but NXDN, across every case below. */
+static int g_search_other_protocol;
+
+static void
+capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
+                        const char* access) {
+    (void)target;
+    (void)source;
+    (void)access;
+    uint8_t kind = 0U;
+    uint16_t value = 0U;
+    g_search_evidence.calls++;
+    g_search_other_protocol |= protocol == NULL || strcmp(protocol, "NXDN") != 0;
+    g_search_evidence.access_valid = dsd_access_code_current(state, DSD_SYNC_NXDN_POS, 0U, 0U, &kind, &value) != 0
+                                     && kind == (uint8_t)DSD_ACCESS_CODE_RAN;
+    g_search_evidence.ran = value;
+}
+
+static void
+reset_search_evidence(dsd_state* state) {
+    DSD_MEMSET(&g_search_evidence, 0, sizeof(g_search_evidence));
+    state->nxdn_last_ran = (unsigned int)-1;
+}
+
+/* The channel whose CRC confirms a transmission also carries its RAN. The signal search hears the confirmation once the
+ * frame has published that RAN, so one confirming frame followed by silence still names it; a frame that proved
+ * nothing tells the search nothing. */
+static int
+test_confirming_frame_reports_its_ran_to_search(void) {
+    static const uint8_t facch2_m_data[26] = {0};
+    static const uint8_t cac_m_data[22] = {0};
+    static const uint8_t sacch_m_data[5] = {0};
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t facch2[208];
+    uint8_t cac[176];
+    uint8_t sacch[32];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    g_search_other_protocol = 0;
+    dsd_signal_search_evidence_set(capture_search_evidence);
+
+    /* FACCH2/UDCH: a 15-bit CRC confirms on its own. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_search_evidence(&state);
+    make_facch2_trellis(facch2, 1U, 0x2AU, 0x10U);
+    nxdn_confirm_begin_frame(&state);
+    nxdn_handle_facch2_udch(&opts, &state, facch2, facch2_m_data, 0x456U, 0x457U, 1U);
+    nxdn_confirm_end_frame(&state);
+    rc |= expect_int("search-facch2-bad-crc-reports-nothing", g_search_evidence.calls, 0);
+    nxdn_confirm_begin_frame(&state);
+    nxdn_handle_facch2_udch(&opts, &state, facch2, facch2_m_data, 0x456U, 0x456U, 1U);
+    nxdn_confirm_end_frame(&state);
+    rc |= expect_int("search-facch2-one-confirmation", g_search_evidence.calls, 1);
+    rc |= expect_int("search-facch2-sees-the-ran", g_search_evidence.access_valid, 1);
+    rc |= expect_int("search-facch2-ran", g_search_evidence.ran, 0x2A);
+
+    /* CAC: a 16-bit CRC confirms on its own. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_search_evidence(&state);
+    DSD_MEMSET(cac, 0, sizeof(cac));
+    write_bits_msb(cac, 2U, 6U, 0x2DU);
+    write_bits_msb(cac, 10U, 6U, 0x10U);
+    nxdn_confirm_begin_frame(&state);
+    nxdn_handle_cac(&opts, &state, cac, cac_m_data, 0U);
+    nxdn_confirm_end_frame(&state);
+    rc |= expect_int("search-cac-one-confirmation", g_search_evidence.calls, 1);
+    rc |= expect_int("search-cac-sees-the-ran", g_search_evidence.access_valid, 1);
+    rc |= expect_int("search-cac-ran", g_search_evidence.ran, 0x2D);
+
+    /* SACCH: a 6-bit CRC confirms only on the second frame running, which is also the frame that publishes the RAN. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_search_evidence(&state);
+    state.nxdn_sacch_non_superframe = 1;
+    make_sacch_trellis(sacch, 3U, 0x15U);
+    write_bits_msb(sacch, 10U, 6U, 0x10U);
+    nxdn_confirm_begin_frame(&state);
+    nxdn_handle_sacch(&opts, &state, sacch, sacch_m_data, 0x2AU, 0x2AU);
+    nxdn_confirm_end_frame(&state);
+    rc |= expect_int("search-sacch-first-frame-reports-nothing", g_search_evidence.calls, 0);
+    nxdn_confirm_begin_frame(&state);
+    nxdn_handle_sacch(&opts, &state, sacch, sacch_m_data, 0x2AU, 0x2AU);
+    nxdn_confirm_end_frame(&state);
+    rc |= expect_int("search-sacch-one-confirmation", g_search_evidence.calls, 1);
+    rc |= expect_int("search-sacch-sees-the-ran", g_search_evidence.access_valid, 1);
+    rc |= expect_int("search-sacch-ran", g_search_evidence.ran, 0x15);
+
+    dsd_signal_search_evidence_set(NULL);
+    rc |= expect_int("search-reports-name-nxdn", g_search_other_protocol, 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_facch3_udch2_crc_state_update(void) {
     struct nxdn_facch3_udch2_message message;
@@ -1016,6 +1119,7 @@ main(void) {
     rc |= test_pich_tch_dcr_csm_alias_state();
     rc |= test_facch1_crc_gates_element_decode();
     rc |= test_facch2_udch_crc_state_update();
+    rc |= test_confirming_frame_reports_its_ran_to_search();
     rc |= test_facch3_udch2_crc_state_update();
     rc |= test_facch3_udch2_split_block_storage_and_crc_gate();
 

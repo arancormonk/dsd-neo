@@ -494,7 +494,8 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     }
 
     /* Evidence is noted before anything is published, so the frame that completes a weak
-     * streak still publishes itself rather than waiting for the next one. */
+     * streak still publishes itself rather than waiting for the next one. A signal search hears
+     * the confirmation at dpmr_confirm_end_frame(), after the publication. */
     dpmr_confirm_begin_frame(state);
     dpmr_decode_cch_frames(state, &ctx);
     dpmr_note_cch_evidence(state, &ctx);

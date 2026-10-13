@@ -1301,13 +1301,15 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
     const uint16_t crc_cmp = m17_crc16(lsf_packed, 28);
     const int crc_err = (crc_cmp != crc_ext);
 
-    if (crc_err == 0) {
-        /* A CRC-16 over the link setup is proof the preamble that led here was real (#399). */
-        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
-    }
-
     if (crc_err == 0 || opts->aggressive_framesync == 0) {
         M17decodeLSF(opts, state, crc_err == 0);
+    }
+
+    if (crc_err == 0) {
+        /* A CRC-16 over the link setup is proof the preamble that led here was real (#399). Noted once the LSF's
+         * call is published: a signal search reads the callsigns and CAN from that call when it hears the
+         * confirmation, and this LSF may be the only one the transmission delivers. */
+        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
     }
 
     if (opts->payload == 1) {

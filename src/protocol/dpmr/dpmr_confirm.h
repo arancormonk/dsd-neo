@@ -70,7 +70,13 @@ void dpmr_confirm_begin_frame(dsd_state* state);
  */
 void dpmr_confirm_note_evidence(dsd_state* state, dpmr_evidence evidence);
 
-/** @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak. */
+/**
+ * @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak.
+ *
+ * A frame whose own evidence confirmed the transmission is reported to a signal search here,
+ * once, after the frame has published what its confirmation unlocked: the search reads the
+ * call and colour code from state when it hears it.
+ */
 void dpmr_confirm_end_frame(dsd_state* state);
 
 /** @brief Whether the current transmission has proved itself. */

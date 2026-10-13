@@ -9,6 +9,7 @@
 #include "fixtures/m17_reference_vectors.h"
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
@@ -28,6 +29,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #endif
@@ -2383,6 +2385,90 @@ test_lsf_crc_confirms_the_transmission(void) {
     return err;
 }
 
+/* What the signal search's confirmation can read when the evidence hook fires. The app-control observer copies the
+ * active call's identity and access code inside the hook, from state, and only on that confirmation. */
+static struct {
+    int calls;
+    char protocol[16];
+    int call_active;
+    int call_protocol_matches;
+    char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    int access_valid;
+    uint8_t access_kind;
+    uint16_t access_value;
+} g_search_evidence;
+
+static void
+capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
+                        const char* access) {
+    (void)target;
+    (void)source;
+    (void)access;
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    g_search_evidence.calls++;
+    DSD_SNPRINTF(g_search_evidence.protocol, sizeof(g_search_evidence.protocol), "%s", protocol ? protocol : "");
+    const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    g_search_evidence.call_active = active;
+    g_search_evidence.call_protocol_matches = active && call.protocol == state->synctype;
+    DSD_SNPRINTF(g_search_evidence.source_text, sizeof(g_search_evidence.source_text), "%s",
+                 active ? call.source_text : "");
+    DSD_SNPRINTF(g_search_evidence.target_text, sizeof(g_search_evidence.target_text), "%s",
+                 active ? call.target_text : "");
+    g_search_evidence.access_valid = dsd_access_code_current(
+        state, state->synctype, active ? call.service_options : 0U, active ? call.has_service_metadata : 0U,
+        &g_search_evidence.access_kind, &g_search_evidence.access_value);
+}
+
+/* The first CRC-valid LSF is enough for its callsigns and CAN to reach a signal search: the search's confirmation is
+ * reported once the LSF's call is published, not before it, and a damaged LSF reports nothing. */
+static int
+test_lsf_search_evidence_follows_the_published_call(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(&g_search_evidence, 0, sizeof(g_search_evidence));
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    dsd_signal_search_evidence_set(capture_search_evidence);
+
+    int err = 0;
+    opts->aggressive_framesync = 1;
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("strict bad LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
+    opts->aggressive_framesync = 0;
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("relaxed bad LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
+    err |= expect_int("a failing LSF CRC reports nothing to search", g_search_evidence.calls, 0);
+
+    opts->aggressive_framesync = 1;
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("valid LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc), 0);
+    err |= expect_int("a valid LSF confirms to search once", g_search_evidence.calls, 1);
+    err |= expect_int("search evidence names M17", strcmp(g_search_evidence.protocol, "M17"), 0);
+    err |= expect_int("the LSF's call is published before search hears", g_search_evidence.call_active, 1);
+    err |= expect_int("the published call is this frame's protocol", g_search_evidence.call_protocol_matches, 1);
+    err |= expect_int("search sees the LSF source", strcmp(g_search_evidence.source_text, M17_REF_LSF_SRC_CSD), 0);
+    err |= expect_int("search sees the LSF destination", strcmp(g_search_evidence.target_text, M17_REF_LSF_DST_CSD), 0);
+    err |= expect_int("search sees the LSF CAN", g_search_evidence.access_valid, 1);
+    err |= expect_u8("search CAN kind", g_search_evidence.access_kind, (uint8_t)DSD_ACCESS_CODE_CAN);
+    err |= expect_int("search CAN value", g_search_evidence.access_value, 7);
+
+    dsd_signal_search_evidence_set(NULL);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
 static int
 test_unconfirmed_stream_publishes_no_call(void) {
     dsd_opts* opts = &g_opts;
@@ -3956,6 +4042,7 @@ main(void) {
     err |= test_clear_signed_payload_updates_digest_and_dispatches();
     err |= test_stream_voice_replaces_foreign_active_call();
     err |= test_lsf_crc_confirms_the_transmission();
+    err |= test_lsf_search_evidence_follows_the_published_call();
     err |= test_unconfirmed_stream_publishes_no_call();
     err |= test_stream_voice_chain_covers_the_whole_frame();
     err |= test_stream_voice_chain_onepoles_run_at_8k();

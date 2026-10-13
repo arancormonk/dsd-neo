@@ -14,6 +14,8 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -38,6 +40,19 @@ run_frame(dsd_state* state, int evidence) {
         nxdn_confirm_note_evidence(state, (nxdn_evidence)evidence);
     }
     nxdn_confirm_end_frame(state);
+}
+
+static int g_search_reports;
+
+static void
+count_search_report(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
+                    const char* access) {
+    (void)state;
+    (void)protocol;
+    (void)target;
+    (void)source;
+    (void)access;
+    g_search_reports++;
 }
 
 /** @brief One frame as run_frame(), answering what the SPS hunt reads back from it. */
@@ -119,6 +134,30 @@ main(void) {
     nxdn_confirm_reset(state);
     expect("one strong frame proves the profile", run_frame_proved(state, NXDN_EVIDENCE_STRONG), 1);
     expect("the frame after it proves nothing", run_frame_proved(state, 0), 0);
+
+    /* A signal search hears a frame's confirmation when the frame closes, after the channels that confirmed it have
+     * published what they decoded (the RAN, a call), and once per frame however many CRCs passed in it. */
+    dsd_signal_search_evidence_set(count_search_report);
+    nxdn_confirm_reset(state);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
+    expect("a strong CRC is not reported to search mid-frame", g_search_reports, 0);
+    expect("a strong CRC still confirms at once", nxdn_confirm_is_confirmed(state), 1);
+    nxdn_confirm_end_frame(state);
+    expect("the confirming frame reports once, at its end", g_search_reports, 1);
+    run_frame(state, 0);
+    expect("a frame that proved nothing reports nothing", g_search_reports, 1);
+    run_frame(state, NXDN_EVIDENCE_WEAK);
+    expect("a lone weak frame reports nothing", g_search_reports, 1);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+    expect("the frame completing a weak streak is not reported mid-frame", g_search_reports, 1);
+    nxdn_confirm_end_frame(state);
+    expect("the frame completing a weak streak reports at its end", g_search_reports, 2);
+    run_frame(state, NXDN_EVIDENCE_WEAK);
+    expect("a frame continuing the streak reports", g_search_reports, 3);
+    dsd_signal_search_evidence_set(NULL);
 
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     nxdn_confirm_reset(NULL);

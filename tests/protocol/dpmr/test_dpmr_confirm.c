@@ -14,6 +14,8 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -38,6 +40,19 @@ run_frame(dsd_state* state, int evidence) {
         dpmr_confirm_note_evidence(state, (dpmr_evidence)evidence);
     }
     dpmr_confirm_end_frame(state);
+}
+
+static int g_search_reports;
+
+static void
+count_search_report(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
+                    const char* access) {
+    (void)state;
+    (void)protocol;
+    (void)target;
+    (void)source;
+    (void)access;
+    g_search_reports++;
 }
 
 int
@@ -99,6 +114,27 @@ main(void) {
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
     dpmr_confirm_end_frame(state);
     expect("strong evidence overrides a pending streak", dpmr_confirm_is_confirmed(state), 1);
+
+    /* A signal search hears a frame's confirmation when the frame closes, after the frame has published the identity,
+     * service and colour code its confirmation unlocked, and once per frame. */
+    dsd_signal_search_evidence_set(count_search_report);
+    dpmr_confirm_reset(state);
+    dpmr_confirm_begin_frame(state);
+    dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
+    expect("a strong CCH is not reported to search mid-frame", g_search_reports, 0);
+    expect("a strong CCH still confirms at once", dpmr_confirm_is_confirmed(state), 1);
+    dpmr_confirm_end_frame(state);
+    expect("the confirming frame reports once, at its end", g_search_reports, 1);
+    run_frame(state, 0);
+    expect("a frame that proved nothing reports nothing", g_search_reports, 1);
+    run_frame(state, DPMR_EVIDENCE_WEAK);
+    expect("a lone weak frame reports nothing", g_search_reports, 1);
+    dpmr_confirm_begin_frame(state);
+    dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_WEAK);
+    expect("the frame completing a weak streak is not reported mid-frame", g_search_reports, 1);
+    dpmr_confirm_end_frame(state);
+    expect("the frame completing a weak streak reports at its end", g_search_reports, 2);
+    dsd_signal_search_evidence_set(NULL);
 
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     dpmr_confirm_reset(NULL);

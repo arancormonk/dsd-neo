@@ -39,7 +39,6 @@ nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence) {
         state->nxdn_confirm_frame_evidence = (uint8_t)NXDN_EVIDENCE_STRONG;
         state->nxdn_confirm_weak_streak = 0;
         state->nxdn_confirmed = 1;
-        dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
         return;
     }
     if (evidence != NXDN_EVIDENCE_WEAK || state->nxdn_confirm_frame_evidence != 0) {
@@ -52,7 +51,6 @@ nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence) {
     }
     if (state->nxdn_confirm_weak_streak >= NXDN_CONFIRM_WEAK_OBSERVES) {
         state->nxdn_confirmed = 1;
-        dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
     }
 }
 
@@ -63,6 +61,14 @@ nxdn_confirm_end_frame(dsd_state* state) {
     }
     if (state->nxdn_confirm_frame_evidence == 0) {
         state->nxdn_confirm_weak_streak = 0;
+        return;
+    }
+    /* The frame's own CRCs confirmed the transmission: a strong one, or the short one that completes or continues a weak
+     * streak. A signal search hears that only now, once the frame's channels have published the RAN and call their
+     * confirmation unlocked, since it reads them from state when it hears it. */
+    if (state->nxdn_confirm_frame_evidence == (uint8_t)NXDN_EVIDENCE_STRONG
+        || state->nxdn_confirm_weak_streak >= NXDN_CONFIRM_WEAK_OBSERVES) {
+        dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
     }
 }
 

@@ -182,9 +182,6 @@ dstar_sd_print_header_flags(uint8_t flags) {
 static void
 dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
     if (ctx->crc_cmp == ctx->crc_ext) {
-        /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
-         * real, on its own (#421). */
-        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
         DSD_FPRINTF(stderr, " RPT 2: %s", ctx->str1);
         DSD_FPRINTF(stderr, " RPT 1: %s", ctx->str2);
         DSD_FPRINTF(stderr, " DST: %s", ctx->str3);
@@ -203,6 +200,10 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
             DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", ctx->str1);
             (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
         }
+        /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
+         * real, on its own (#421). Noted once the header's callsigns are on the call: a signal
+         * search reads them from it when it hears the confirmation. */
+        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
         return;
     }
     DSD_FPRINTF(stderr, " SLOW DATA - HEADER FORMAT (CRC ERR)");
