@@ -45,6 +45,7 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -3034,6 +3035,13 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                     case 'm': LOG_INFO("NOTICE: Decoding only dPMR frames.\n"); break;                                 \
                     case 'z':                                                                                          \
                         LOG_INFO("NOTICE: Decoding only M17 frames (polarity auto-detected from preamble).\n");        \
+                        break;                                                                                         \
+                    case 'T':                                                                                          \
+                        /* As -fe takes 24 kHz: TETRA runs only at a multiple of 18 kHz. A bandwidth field in      \
+                           the -i spec, applied when the input opens, still names another. */                          \
+                        opts->rtl_dsp_bw_khz = DSD_TETRA_DSP_BW_KHZ;                                                   \
+                        LOG_INFO("NOTICE: Decoding only TETRA frames at a %d kHz DSP bandwidth.\n",                    \
+                                 DSD_TETRA_DSP_BW_KHZ);                                                                \
                         break;                                                                                         \
                     default: break;                                                                                    \
                 }                                                                                                      \

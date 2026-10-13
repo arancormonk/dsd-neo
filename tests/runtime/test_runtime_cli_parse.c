@@ -6428,10 +6428,13 @@ test_f_tetra_needs_iq_or_symbols(void) {
         if (am_cli_parse(args, 0, &run) != 0) {
             return 1;
         }
+        /* -fT takes the 72 kHz DSP bandwidth TETRA runs at, as -fe takes 24; a spec's bandwidth field applies later,
+           when the input opens. An Airspy runs no 72 kHz and keeps 48 (its spec is read here). */
+        const int want_bw = strcmp(runs[i], "airspy") == 0 ? 48 : 72;
         if (run.rc != DSD_PARSE_CONTINUE || run.opts->frame_tetra != 1
-            || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_TETRA) {
-            DSD_FPRINTF(stderr, "-fT -i %s: rc=%d frame_tetra=%d\n%s\n", runs[i], run.rc, run.opts->frame_tetra,
-                        run.err);
+            || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_TETRA || run.opts->rtl_dsp_bw_khz != want_bw) {
+            DSD_FPRINTF(stderr, "-fT -i %s: rc=%d frame_tetra=%d bw=%d\n%s\n", runs[i], run.rc, run.opts->frame_tetra,
+                        run.opts->rtl_dsp_bw_khz, run.err);
             test_rc = 1;
         }
         am_cli_free(&run);

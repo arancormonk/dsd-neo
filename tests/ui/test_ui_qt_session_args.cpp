@@ -264,6 +264,18 @@ test_am_system(void) {
     error = SessionArgsError::None;
     expect("a TETRA system builds on a USB dongle",
            !session_args_build(tetra, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+    /* With no bandwidth of its own a TETRA system takes 72 kHz, the rate -fT takes: TETRA runs only at a multiple of
+       18 kHz, and the app-wide default is 48. Its own bandwidth still wins. */
+    expect("a TETRA system without its own bandwidth runs at 72 kHz",
+           input_spec(session_args_build(tetra, SessionArgPrefs(), &error)).contains(QStringLiteral(":72:")));
+    QVariantMap tetraOwnBw = tetra;
+    tetraOwnBw.insert(QStringLiteral("bandwidthKhz"), 48);
+    expect("a TETRA system's own bandwidth wins",
+           input_spec(session_args_build(tetraOwnBw, SessionArgPrefs(), &error)).contains(QStringLiteral(":48:")));
+    QVariantMap dmrDefault = usb_system();
+    dmrDefault.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fs"));
+    expect("other modes keep the app-wide default bandwidth",
+           input_spec(session_args_build(dmrDefault, SessionArgPrefs(), &error)).contains(QStringLiteral(":48:")));
     for (const char* source : {"tcp", "udp", "file"}) {
         QVariantMap pcm = tetra;
         pcm.insert(QStringLiteral("sourceType"), QString::fromLatin1(source));

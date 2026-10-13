@@ -306,8 +306,8 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fe           Decode only EDACS EA/ProVoice\n");
     printf("  -fE           Decode only EDACS EA/ProVoice with ESK 0xA0\n");
     printf("  -fm           Decode only dPMR\n");
-    printf("  -fT           Decode only TETRA (pi/4-DQPSK at 18 ksym/s): needs an I/Q radio input whose DSP\n");
-    printf("                rate is a multiple of 18 kHz (rtl:...:72), or a symbol capture\n");
+    printf("  -fT           Decode only TETRA (pi/4-DQPSK at 18 ksym/s) at a 72 kHz DSP bandwidth: needs an I/Q\n");
+    printf("                radio input whose DSP rate is a multiple of 18 kHz, or a symbol capture\n");
     printf("      --tetra-codec <file>  TETRA speech codec library to play TETRA speech with (see\n");
     printf("                            tools/tetra/README.md); without one TETRA speech is not played\n");
     printf("      --tetra-key <mcc,mnc,hex>  TETRA air interface cipher key (SCK or CCK, 20 hex digits) of one\n");

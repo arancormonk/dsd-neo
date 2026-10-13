@@ -464,8 +464,9 @@ Notes
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
 - dPMR: `-fm`
 - TETRA: `-fT`. TETRA's pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, so
-  it decodes only at a DSP rate that is a multiple of 18 kHz: give an RTL-SDR or rtl_tcp input the 72 kHz DSP bandwidth
-  (`-i rtl:dev:freq:gain:ppm:72`, 4 samples per symbol); at the 48 kHz default nothing decodes. A stream that opens
+  it decodes only at a DSP rate that is a multiple of 18 kHz. `-fT` therefore sets the DSP bandwidth to 72 kHz
+  (4 samples per symbol), as `-fe` sets 24 kHz; a bandwidth field in the `-i` spec still names another, and a Qt
+  TETRA system without its own bandwidth uses 72 kHz too. A stream that opens
   TETRA at another rate warns once, with the fix for its input (`TETRA needs a DSP rate that is a multiple of 18 kHz,
   not 48 kHz: set the DSP bandwidth to 72 kHz (-i rtl:dev:freq:gain:ppm:72)`): a SoapySDR device runs 72 kHz only
   where it delivers 1.152 MS/s, no Airspy sample rate halves to a multiple of 18 kHz, and an I/Q replay keeps its

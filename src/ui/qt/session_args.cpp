@@ -26,6 +26,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 
 #include "app_prefs.h"
 
@@ -601,11 +602,17 @@ is_radio_source(const QString& source) {
     return source == QLatin1String("usb") || source == QLatin1String("airspy") || source == QLatin1String("rtltcp");
 }
 
-/* The DSP bandwidth, in kHz, a system's radio spec carries: its own override, or the app-wide default. */
+/* The DSP bandwidth, in kHz, a system's radio spec carries: its own override, else 72 kHz for TETRA, which runs only
+   at a multiple of 18 kHz (as -fT takes it on the command line), else the app-wide default. */
 static int
 session_args_bandwidth_khz(const QVariantMap& system, const SessionArgPrefs& prefs) {
     const int bwOverride = system.value(QStringLiteral("bandwidthKhz"), -1).toInt();
-    return bwOverride > 0 ? bwOverride : prefs.bandwidthKhz;
+    if (bwOverride > 0) {
+        return bwOverride;
+    }
+    return decode_flag_names(system.value(QStringLiteral("decodeFlag")).toString(), QStringLiteral("-fT"))
+               ? DSD_TETRA_DSP_BW_KHZ
+               : prefs.bandwidthKhz;
 }
 
 /* What the source allows. A radio source needs a frequency it can tune. Issue #524: -fM demodulates AM from the radio's

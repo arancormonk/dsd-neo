@@ -25,6 +25,9 @@ extern "C" {
 
 /** @brief TETRA's symbol rate in Hz. */
 #define DSD_TETRA_SYMBOL_RATE_HZ        18000
+/** @brief The DSP bandwidth in kHz TETRA takes when nothing else names one (-fT, a Qt TETRA system): 4 samples per
+ *  symbol. */
+#define DSD_TETRA_DSP_BW_KHZ            72
 /** @brief Buffer size that holds every dsd_tetra_dsp_rate_advice() text untruncated. */
 #define DSD_TETRA_RATE_ADVICE_MAX       224
 /** @brief Buffer size that holds every brief dsd_tetra_dsp_rate_advice() text, which a toast leaves room for. */
