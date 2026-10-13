@@ -1195,12 +1195,7 @@ jobs:
           name: ${{ needs.build-apk.outputs.art_name }}.spdx.json
           path: dist
 
-      - name: Normalize downloaded SBOM filename
-        shell: bash
-        run: |
-          set -euo pipefail
-          mv -f "dist/${ART_NAME}.spdx.json" "${APK_PATH}.spdx.json"
-
+      # upload-artifact preserves the SBOM basename, including the package extension.
       - name: Verify downloaded release files
         shell: bash
         run: |

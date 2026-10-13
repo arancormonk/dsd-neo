@@ -15536,6 +15536,12 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pffft_metadata.py
     )
+    add_test(
+        NAME TOOLS_RELEASE_SBOM_FILENAMES
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_release_sbom_filenames.py
+    )
     # Production Android Kotlin on the JVM, one CTest per suite of run_jvm_tests.py. Each compiles Kotlin, which is
     # memory-hungry, so they never run at once.
     add_test(
