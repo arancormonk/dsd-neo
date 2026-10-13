@@ -9,7 +9,7 @@
 # name with non-ASCII bytes, quotes or tabs kept that file out of every check.
 # This builds a throwaway repository whose history gives each way of finding the
 # comparison a different answer, and checks each one, the raw names, a remote
-# named like an option, and that a failing diff fails.
+# named like an option, a diff filter, and that a failing diff fails.
 set -euo pipefail
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
@@ -94,6 +94,25 @@ git update-ref -d refs/remotes/origin/near
 git update-ref -d refs/remotes/origin/far
 expect_paths "no remote branches: compared with the empty tree" origin "$zeros" \
   src/keep.c src/x.c src/y.c src/z.c
+
+# A diff filter replaces ACMR: the hook asks for D to see the dependencies a push
+# deletes, which the default list leaves out.
+git checkout -q --detach "$head"
+git rm -q src/keep.c
+git commit -q -m deletion
+deleted_head=$(git rev-parse HEAD)
+bash "$SCRIPT" origin refs/heads/topic "$deleted_head" "$head" D > "$WORK/paths" 2> "$WORK/err" ||
+  fail "diff filter D: exit $?: $(cat "$WORK/err")"
+mapfile -d '' -t got < "$WORK/paths"
+[[ "${got[*]}" == "src/keep.c" ]] || fail "diff filter D: got ${got[*]}"
+bash "$SCRIPT" origin refs/heads/topic "$deleted_head" "$head" > "$WORK/paths" 2> "$WORK/err" ||
+  fail "default filter: exit $?: $(cat "$WORK/err")"
+[[ ! -s "$WORK/paths" ]] || fail "the default filter listed a deletion: $(tr '\0' ' ' < "$WORK/paths")"
+if bash "$SCRIPT" origin refs/heads/topic "$deleted_head" "$head" 'D --output=x' > "$WORK/paths" 2> "$WORK/err"; then
+  fail "a diff filter that is not git's letters was accepted"
+fi
+grep -q 'invalid diff filter' "$WORK/err" || fail "bad filter not reported: $(cat "$WORK/err")"
+echo "PASS a diff filter replaces ACMR, and only git's filter letters are accepted"
 
 git config diff.context notanumber
 if bash "$SCRIPT" origin refs/heads/topic "$head" "$c1" > "$WORK/paths" 2> "$WORK/err"; then

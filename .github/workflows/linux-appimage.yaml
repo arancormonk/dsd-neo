@@ -45,10 +45,24 @@ jobs:
         env:
           RELEASE_TAG_CREATED: ${{ github.event.created }}
         run: tools/ci_validate_release_tag.sh
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+
       - name: Login to Docker Hub (optional)
-        # Only run on trusted contexts (not forked PRs), otherwise the
-        # `secrets` context is unavailable and would error.
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        # The QEMU and Ubuntu images below are pulled inside steps.
+        if: steps.dockerhub.outputs.available == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         continue-on-error: true
         env:
