@@ -895,11 +895,11 @@ test_dmac_data(void) {
     w.bits[1] = 1; /* DMAC-FRAG/END */
     CHECK(tetra_dmo_parse_data(w.bits, 124, 0, &h) == 0, "DMAC-FRAG is not DMAC-DATA");
 
-    CHECK(tetra_dmo_log_dnb_pdu(w.bits, 124, "STCH-1", st) == 1, "DMAC-FRAG/END type from the DNB logger");
+    CHECK(tetra_dmo_log_dnb_pdu(w.bits, 124, "STCH-1", NULL, st) == 1, "DMAC-FRAG/END type from the DNB logger");
     w.bits[0] = 1;
-    CHECK(tetra_dmo_log_dnb_pdu(w.bits, 124, "STCH-1", st) == 3, "DMAC-U-SIGNAL type from the DNB logger");
-    CHECK(tetra_dmo_log_dnb_pdu(w.bits, 3, "STCH-1", st) == -1, "a block too short for a MAC header");
-    CHECK(tetra_dmo_log_dnb_pdu(NULL, 124, "STCH-1", st) == -1, "no block");
+    CHECK(tetra_dmo_log_dnb_pdu(w.bits, 124, "STCH-1", NULL, st) == 3, "DMAC-U-SIGNAL type from the DNB logger");
+    CHECK(tetra_dmo_log_dnb_pdu(w.bits, 3, "STCH-1", NULL, st) == -1, "a block too short for a MAC header");
+    CHECK(tetra_dmo_log_dnb_pdu(NULL, 124, "STCH-1", NULL, st) == -1, "no block");
     free_state(st);
 }
 

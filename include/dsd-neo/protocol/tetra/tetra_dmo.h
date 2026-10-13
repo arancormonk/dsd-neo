@@ -18,6 +18,7 @@
 #ifndef DSD_NEO_PROTOCOL_TETRA_DMO_H
 #define DSD_NEO_PROTOCOL_TETRA_DMO_H
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
@@ -262,9 +263,9 @@ void tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_d
 /* How the traffic of the current direct mode call is protected; UNKNOWN outside direct mode. */
 tetra_dmo_crypt_e tetra_dmo_call_crypt(const dsd_state* state);
 
-/* Log a decoded DNB MAC block (SCH/F or STCH, `len` type-1 bits). `kind` names the logical channel. Returns the MAC PDU
- * type (0..3) or -1. */
-int tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_state* state);
+/* Log a decoded DNB MAC block (SCH/F or STCH, `len` type-1 bits) and hand a DMAC-DATA PDU's call to the call records.
+ * `kind` names the logical channel; `opts` may be NULL. Returns the MAC PDU type (0..3) or -1. */
+int tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_opts* opts, dsd_state* state);
 
 /* Queue one line for the -N terminal. A repeat of the previous line is dropped so a call that retransmits the same
  * DMAC-SYNC does not fill the display. */

@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "dsd-neo/core/state_fwd.h"
+#include "tetra_calls.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
 
@@ -1399,9 +1400,11 @@ dmo_security_name(uint32_t enc) {
     return DMO_NAME(k_names, enc);
 }
 
-/* One decoded DMAC-DATA PDU: a signalling summary by default, the MAC header detail with -Z. */
+/* One decoded DMAC-DATA PDU: a signalling summary by default, the MAC header detail with -Z; the call it describes goes
+ * to the call records (tetra_calls_dmo_pdu()). */
 static void
-dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_state* state, const tetra_state_t* ts) {
+dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_opts* opts, dsd_state* state,
+             const tetra_state_t* ts) {
     tetra_dmo_sync_h_t h;
     char desc[160];
     char dst[16];
@@ -1418,6 +1421,7 @@ dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_state* state, c
     }
     (void)tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc));
     tetra_dmo_publish(state, h.msg_type, h.src, h.dst, desc);
+    tetra_calls_dmo_pdu(opts, state, -1, &h);
     if (h.dst_encrypted) {
         DSD_SNPRINTF(dst, sizeof dst, "encrypted");
     } else {
@@ -1429,7 +1433,7 @@ dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_state* state, c
 }
 
 int
-tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_state* state) {
+tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_opts* opts, dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
     const char* chan = kind ? kind : "DNB";
     tetra_bit_reader r = tetra_bits_reader(bits, len, 0);
@@ -1441,7 +1445,7 @@ tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_state*
         return -1;
     }
     switch (type) {
-        case 0u: dmo_log_data(bits, len, chan, state, ts); break;
+        case 0u: dmo_log_data(bits, len, chan, opts, state, ts); break;
         case 1u: TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] DMAC-%s fill=%u\n", chan, flag2 ? "END" : "FRAG", flag3); break;
         case 3u: TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] DMAC-U-SIGNAL stolen2=%u\n", chan, flag2); break;
         default: TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] reserved MAC PDU type\n", chan); break;

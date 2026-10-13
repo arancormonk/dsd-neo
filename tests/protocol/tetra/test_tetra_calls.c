@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
@@ -509,6 +510,113 @@ test_sds_and_status_notices(void) {
     session_close(&s);
 }
 
+/* A real direct mode DSB (EN 300 396-3 table 21 SCH/S, table 22 SCH/H): DM-OCCUPIED of a clear group speech call,
+ * source 100, destination 0x800001 (the vector of TETRA_DMO). */
+static const char* k_dmo_sch_s = "110100000000000001100000000000000000000000000000000000000000";
+static const char* k_dmo_sch_h =
+    "00000000001000001000000000000000000000010000000000000000000110010010111100010010010011100"
+    "10110101110000000000000000"
+    "001000100";
+
+static void
+bits_of(const char* text, uint8_t* bits) {
+    for (size_t i = 0; text[i] != '\0'; i++) {
+        bits[i] = (uint8_t)(text[i] == '1');
+    }
+}
+
+/* The DSB as the decoder takes it: SCH/S, SCH/H settled to the security class @p enc_state, then the call records. */
+static void
+dmo_dsb(session* s, uint8_t enc_state) {
+    uint8_t bits[128];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_s, bits);
+    tetra_dmo_sync_s_t sync_s;
+    (void)tetra_dmo_parse_sync_s(bits, &sync_s);
+    sync_s.enc_state = enc_state;
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_h, bits);
+    tetra_dmo_sync_h_t sync_h;
+    (void)tetra_dmo_parse_sync_h(bits, 0, &sync_h);
+    tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
+    tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
+}
+
+/* A DMAC-DATA of the channel with message type @p msg_type from @p src to @p dst. */
+static void
+dmo_data(session* s, uint8_t msg_type, uint32_t src, uint32_t dst, uint64_t sds_value) {
+    tetra_dmo_sync_h_t h;
+    DSD_MEMSET(&h, 0, sizeof h);
+    h.has_addrs = 1;
+    h.md_ok = 1;
+    h.msg_type = msg_type;
+    h.src = src;
+    h.dst = dst;
+    h.sds_value = sds_value;
+    h.e[TETRA_DMO_E_SDTI] = 4; /* pre-coded status */
+    tetra_calls_dmo_pdu(s->opts, s->state, -1, &h);
+}
+
+/* A direct mode call publishes from its DM-OCCUPIED with what the security class leaves clear, trunking on or off, and
+ * ends at DM-TX CEASED or when nothing of it is heard for TETRA_CALL_DMO_IDLE_S. */
+static void
+test_direct_mode_calls(void) {
+    session s = session_open();
+    session_history(&s);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_TETRA(call.protocol));
+    assert(call.kind == DSD_CALL_KIND_GROUP_VOICE && call.ota_target_id == 0x800001u && call.ota_source_id == 100u);
+    assert(call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    tetra_publish(s.state);
+    dsd_event_sync_slot(s.opts, s.state, 0U);
+    const Event_History* row = &s.state->event_history_s[0].Event_History_Items[0];
+    assert(strcmp(row->sysid_string, "TETRA_DMO") == 0
+           && strstr(row->event_string, "TETRA DMO TGT: 08388609; SRC: 00000100;"));
+
+    dmo_data(&s, TETRA_DMO_MSG_TX_CEASED, 100u, 0x800001u, 0);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_TERMINATOR);
+
+    /* DM-2-B hides the destination and the DM-SDU (its call type). */
+    dmo_dsb(&s, TETRA_DMO_AIE_DM2B);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0u && call.ota_source_id == 100u);
+    assert(call.kind == DSD_CALL_KIND_VOICE && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    at_seconds(1000.0 + TETRA_CALL_DMO_IDLE_S + 0.5);
+    tetra_calls_tick(s.opts, s.state);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_SYNC_LOSS);
+
+    /* DM-2-C hides the addresses and the message type: an encrypted call of no one known. Past the reacquisition
+     * window, so it is not taken for the call that faded. */
+    at_seconds(1000.0 + TETRA_CALL_DMO_IDLE_S + 0.5 + 2.0 * DSD_CALL_REACQUIRE_GAP_S);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM2C);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0u && call.ota_source_id == 0u
+           && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    session_close(&s);
+}
+
+/* Direct mode short data becomes a data notice; the repeats a DMAC-SYNC sends are noted once. */
+static void
+test_direct_mode_short_data(void) {
+    session s = session_open();
+    session_history(&s);
+    const uint64_t pushes = s.state->event_history_s[0].push_seq;
+    dmo_data(&s, TETRA_DMO_MSG_SDS_DATA, 200u, 300u, 0x1234u);
+    const Event_History* committed = &s.state->event_history_s[0].Event_History_Items[1];
+    assert(committed->category == DSD_EVENT_CATEGORY_DATA && committed->source_id == 200u
+           && committed->target_id == 300u && strstr(committed->event_string, "DMO SDS SRC: 200; TGT: 300;") != NULL);
+    const uint64_t after_one = s.state->event_history_s[0].push_seq;
+    assert(after_one > pushes);
+    dmo_data(&s, TETRA_DMO_MSG_SDS_DATA, 200u, 300u, 0x1234u);
+    assert(s.state->event_history_s[0].push_seq == after_one);
+    dmo_data(&s, TETRA_DMO_MSG_SDS_DATA, 200u, 300u, 0x1235u);
+    assert(s.state->event_history_s[0].push_seq > after_one);
+    session_close(&s);
+}
+
 int
 main(void) {
     test_pdus_act_on_their_own_call();
@@ -521,6 +629,8 @@ main(void) {
     test_followed_call_publishes();
     test_encrypted_and_unfollowed_calls();
     test_sds_and_status_notices();
+    test_direct_mode_calls();
+    test_direct_mode_short_data();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");
     return 0;
 }

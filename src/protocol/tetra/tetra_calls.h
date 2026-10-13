@@ -30,6 +30,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <stdint.h>
 
 #include "tetra_state.h"
@@ -168,6 +169,23 @@ void tetra_calls_forget_carrier(dsd_state* state);
  * allocated call's. @return 1 and @p out when there is one.
  */
 int tetra_calls_traffic(const dsd_state* state, tetra_chan_alloc* out);
+
+/** Seconds without a PDU or speech of the direct mode call after which it counts as over, for a carrier that stays up
+ * after the call (a DM-REP's presence signal) when its DM-TX CEASED went unheard: about three multiframes (1,02 s
+ * each) of a transmission's speech and signalling. */
+#define TETRA_CALL_DMO_IDLE_S 3.0
+
+/**
+ * @brief A CRC-passed DMAC-SYNC (@p sync_enc_state: its SCH/S air interface encryption state) or DMAC-DATA
+ * (@p sync_enc_state -1) of the direct mode channel, read and settled to its security class (tetra_dmo.h).
+ *
+ * DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED and DM-GSETUP describe the call on the channel, which publishes
+ * on canonical slot 0 with what the security class leaves in the clear (DM-2-B hides the destination); DM-TX CEASED,
+ * DM-RELEASE, DM-DISCONNECT and DM-GRELEASE end it as terminators. A DM-2-C burst, whose addresses and message type
+ * are encrypted, publishes an encrypted call without identities. DM-SDS DATA and DM-SDS UDATA become data notices, a
+ * repeat of the last within a few seconds not again. @p opts may be NULL.
+ */
+void tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h);
 
 /**
  * @brief Decode one downlink TM-SDU whose MAC context is @p sdu (tetra_mle_dispatch() without one). The MAC's entry

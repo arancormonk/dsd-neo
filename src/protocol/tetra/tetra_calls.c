@@ -16,6 +16,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
+#include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -301,6 +302,21 @@ calls_end_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint16_t cal
     if (ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == call_id) {
         calls_end_published(opts, state, ts, DSD_CALL_END_TERMINATOR);
     }
+}
+
+/* A data or control notice of TETRA traffic in the event history, @p text (may be NULL) its message. */
+static void
+calls_emit_notice(dsd_opts* opts, dsd_state* state, int control, uint32_t src, uint32_t dst, const char* notice,
+                  const char* text) {
+    if (!opts || !state || !notice) {
+        return;
+    }
+    const dsd_call_observation o = dsd_call_observation_data(calls_protocol(state), 0U, src, dst);
+    if (text && text[0] != '\0') {
+        dsd_event_stage_text(state, 0U, text);
+    }
+    (void)dsd_event_emit_data_notice_classified(opts, state, 0U, &o,
+                                                control ? DSD_EVENT_CATEGORY_CONTROL : DSD_EVENT_CATEGORY_DATA, notice);
 }
 
 /* ---- Following ------------------------------------------------------------------------------------------------- */
@@ -731,6 +747,180 @@ tetra_calls_on_addressed(dsd_state* state, const tetra_mac_address* addr, uint8_
     }
 }
 
+/* ---- Direct mode (EN 300 396-3) ------------------------------------------------------------------------------- */
+
+enum { DMO_PDU_OTHER = 0, DMO_PDU_CALL, DMO_PDU_END, DMO_PDU_SDS };
+
+/* What a DM-MAC message does to the call on the channel (EN 300 396-3 clause 9.3.19, EN 300 396-5 clause 14.6.1). A
+ * gateway message counts only once its subtype's elements were read. */
+static int
+dmo_pdu_kind(const tetra_dmo_sync_h_t* h) {
+    switch (h->msg_type) {
+        case TETRA_DMO_MSG_SETUP:
+        case TETRA_DMO_MSG_SETUP_PRES:
+        case TETRA_DMO_MSG_CONNECT_ACK:
+        case TETRA_DMO_MSG_OCCUPIED: return DMO_PDU_CALL;
+        case TETRA_DMO_MSG_TX_CEASED:
+        case TETRA_DMO_MSG_RELEASE:
+        case TETRA_DMO_MSG_DISCONNECT: return DMO_PDU_END;
+        case TETRA_DMO_MSG_SDS_UDATA:
+        case TETRA_DMO_MSG_SDS_DATA: return DMO_PDU_SDS;
+        case TETRA_DMO_MSG_GATEWAY:
+            if (!h->md_ok) {
+                return DMO_PDU_OTHER;
+            }
+            if (h->e[TETRA_DMO_E_GW_SUBTYPE] == TETRA_DMO_GW_SETUP) {
+                return DMO_PDU_CALL;
+            }
+            return h->e[TETRA_DMO_E_GW_SUBTYPE] == TETRA_DMO_GW_RELEASE ? DMO_PDU_END : DMO_PDU_OTHER;
+        default: return DMO_PDU_OTHER;
+    }
+}
+
+static dsd_call_kind
+dmo_call_kind(const tetra_dmo_call_t* d) {
+    if (d->circuit_known && d->circuit_mode >= 1u && d->circuit_mode <= 7u) {
+        return DSD_CALL_KIND_DATA;
+    }
+    if (!d->group_known) {
+        return DSD_CALL_KIND_VOICE;
+    }
+    return d->group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
+}
+
+/* The call's protection from the DMAC-SYNC that set it up (tetra_dmo_call_crypt()): there is no direct mode decryption
+ * here, so anything encrypted is encrypted for the listener. */
+static dsd_call_crypto_state
+dmo_crypto_state(const dsd_state* state) {
+    switch (tetra_dmo_call_crypt(state)) {
+        case TETRA_DMO_CRYPT_CLEAR: return DSD_CALL_CRYPTO_CLEAR;
+        case TETRA_DMO_CRYPT_AIR:
+        case TETRA_DMO_CRYPT_E2E: return DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+        case TETRA_DMO_CRYPT_UNKNOWN:
+        default: return DSD_CALL_CRYPTO_UNKNOWN;
+    }
+}
+
+static void
+dmo_publish(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    const tetra_dmo_call_t* const d = &ts->calls.dmo;
+    if (ts->calls.published != TETRA_PUB_DMO) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    dsd_call_observation o;
+    DSD_MEMSET(&o, 0, sizeof o);
+    o.protocol = calls_protocol(state);
+    o.kind = dmo_call_kind(d);
+    o.ota_target_id = d->dst;
+    o.policy_target_id = d->dst;
+    o.ota_source_id = d->src;
+    (void)dsd_call_state_observe(state, &o, DSD_CALL_BOUNDARY_CONTINUE);
+    const dsd_call_crypto_state crypto = dmo_crypto_state(state);
+    if (crypto != DSD_CALL_CRYPTO_UNKNOWN) {
+        dsd_call_crypto_update update;
+        DSD_MEMSET(&update, 0, sizeof update);
+        update.classification = crypto;
+        update.audio_permitted = (uint8_t)(crypto == DSD_CALL_CRYPTO_CLEAR);
+        (void)dsd_call_state_update_crypto(state, 0U, &update);
+    }
+    ts->calls.published = TETRA_PUB_DMO;
+    if (opts) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+}
+
+/* Forget who the call on the channel was; the short data notice memory stays. */
+static void
+dmo_call_forget(tetra_dmo_call_t* d) {
+    d->src = 0u;
+    d->dst = 0u;
+    d->active = 0;
+    d->addressed = 0;
+    d->group = 0;
+    d->group_known = 0;
+    d->circuit_mode = 0;
+    d->circuit_known = 0;
+}
+
+/* The call a DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED or DM-GSETUP describes: its source and destination
+ * (the destination hidden by DM-2-B), its circuit mode type from the message dependent elements and its call type from
+ * the DM-SDU, each when the security class left it clear. */
+static void
+dmo_call_from(tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
+    if (!d->active || d->src != h->src || (!h->dst_encrypted && d->dst != h->dst)) {
+        dmo_call_forget(d);
+    }
+    d->active = 1;
+    d->addressed = 1;
+    d->src = h->src;
+    d->dst = h->dst_encrypted ? 0u : h->dst;
+    if (h->md_ok) {
+        d->circuit_mode = (uint8_t)h->e[TETRA_DMO_E_CIRCUIT_MODE];
+        d->circuit_known = 1;
+    }
+    if (h->md_ok && h->sdu_state == TETRA_DMO_SDU_CLEAR) {
+        d->group = (uint8_t)(h->e[TETRA_DMO_E_CALL_TYPE] != 0u);
+        d->group_known = 1;
+    }
+}
+
+/* Short data of the channel as a data notice (EN 300 396-3 clause 9.7); the DMAC-SYNC repeats it, so a repeat of the
+ * last within 10 s is not noted again. */
+static void
+dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
+    tetra_dmo_call_t* const d = &ts->calls.dmo;
+    const double now_m = dsd_decode_now_mono_s();
+    const uint32_t dst = h->dst_encrypted ? 0u : h->dst;
+    if (d->sds_type == h->msg_type && d->sds_src == h->src && d->sds_dst == dst && d->sds_value == h->sds_value
+        && now_m - d->sds_m < 10.0) {
+        return;
+    }
+    d->sds_type = h->msg_type;
+    d->sds_src = h->src;
+    d->sds_dst = dst;
+    d->sds_value = h->sds_value;
+    d->sds_m = now_m;
+    char desc[160];
+    char notice[224];
+    (void)tetra_dmo_describe_elems(h, desc, (int)sizeof desc);
+    DSD_SNPRINTF(notice, sizeof notice, "DMO SDS SRC: %u; TGT: %u; %s", (unsigned)h->src, (unsigned)dst, desc);
+    calls_emit_notice(opts, state, 0, h->src, dst, notice, NULL);
+}
+
+void
+tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h) {
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts || !h) {
+        return;
+    }
+    tetra_dmo_call_t* const d = &ts->calls.dmo;
+    if (!h->has_addrs) {
+        /* DM-2-C encrypts the addresses and the message type too: an encrypted transmission, of no one known. */
+        if (sync_enc_state == TETRA_DMO_AIE_DM2C) {
+            dmo_call_forget(d);
+            d->active = 1;
+            d->seen_m = dsd_decode_now_mono_s();
+            dmo_publish(opts, state, ts);
+        }
+        return;
+    }
+    switch (dmo_pdu_kind(h)) {
+        case DMO_PDU_CALL:
+            dmo_call_from(d, h);
+            d->seen_m = dsd_decode_now_mono_s();
+            dmo_publish(opts, state, ts);
+            break;
+        case DMO_PDU_END:
+            d->active = 0;
+            if (ts->calls.published == TETRA_PUB_DMO) {
+                calls_end_published(opts, state, ts, DSD_CALL_END_TERMINATOR);
+            }
+            break;
+        case DMO_PDU_SDS: dmo_sds_notice(opts, state, ts, h); break;
+        default: break;
+    }
+}
+
 /* ---- Housekeeping ---------------------------------------------------------------------------------------------- */
 
 void
@@ -754,25 +944,24 @@ tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu) {
 void
 tetra_calls_notice(dsd_opts* opts, dsd_state* state, int control, uint32_t src, uint32_t dst, const char* notice,
                    const char* text) {
-    if (!opts || !state || !notice || !tetra_confirm_carrier_proven(state)) {
-        return;
+    if (state && tetra_confirm_carrier_proven(state)) {
+        calls_emit_notice(opts, state, control, src, dst, notice, text);
     }
-    const dsd_call_observation o = dsd_call_observation_data(calls_protocol(state), 0U, src, dst);
-    if (text && text[0] != '\0') {
-        dsd_event_stage_text(state, 0U, text);
-    }
-    (void)dsd_event_emit_data_notice_classified(opts, state, 0U, &o,
-                                                control ? DSD_EVENT_CATEGORY_CONTROL : DSD_EVENT_CATEGORY_DATA, notice);
 }
 
 void
 tetra_calls_tick(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
-    (void)opts;
     if (!ts) {
         return;
     }
     const double now_m = dsd_decode_now_mono_s();
+    if (ts->calls.dmo.active && now_m - ts->calls.dmo.seen_m >= TETRA_CALL_DMO_IDLE_S) {
+        ts->calls.dmo.active = 0;
+        if (ts->calls.published == TETRA_PUB_DMO) {
+            calls_end_published(opts, state, ts, DSD_CALL_END_SYNC_LOSS);
+        }
+    }
     const int followed = followed_id(state);
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
         tetra_call_t* const c = &ts->calls.call[i];

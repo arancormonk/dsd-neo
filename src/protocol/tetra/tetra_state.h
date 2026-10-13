@@ -127,15 +127,20 @@ enum {
 
 /** The direct mode call on the channel, from its DMAC-SYNC and DMAC-DATA PDUs (EN 300 396-3 clause 9). */
 typedef struct {
-    double seen_m;     /**< decode clock: the last PDU of the call */
-    uint32_t src;      /**< source address (talker) */
-    uint32_t dst;      /**< destination address; 0 when DM-2-B hides it */
-    uint8_t active;    /**< a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED set it up and no end has come since */
-    uint8_t addressed; /**< the addresses were clear (no DM-2-C) */
-    uint8_t group;     /**< call type element: 1 group call, 0 individual call (group_known) */
-    uint8_t group_known;
+    double seen_m;        /**< decode clock: the last PDU or speech of the call */
+    double sds_m;         /**< decode clock: when the last short data notice went out */
+    uint64_t sds_value;   /**< that notice's user data or status, with sds_src, sds_dst and sds_type */
+    uint32_t src;         /**< source address (talker) */
+    uint32_t dst;         /**< destination address; 0 when DM-2-B hides it */
+    uint32_t sds_src;     /**< source of the last short data notice */
+    uint32_t sds_dst;     /**< destination of the last short data notice */
+    uint8_t active;       /**< a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED set it up and no end has come since */
+    uint8_t addressed;    /**< the addresses were clear (no DM-2-C) */
+    uint8_t group;        /**< call type element: 1 group call, 0 individual call (group_known) */
+    uint8_t group_known;  /**< the DM-SDU with the call type was clear */
     uint8_t circuit_mode; /**< circuit mode type (0 speech); circuit_known */
     uint8_t circuit_known;
+    uint8_t sds_type; /**< message type of the last short data notice; 0 for none */
 } tetra_dmo_call_t;
 
 /** Calls (tetra_calls.c): the trunked mode call table, the direct mode call and what the decoder publishes. */

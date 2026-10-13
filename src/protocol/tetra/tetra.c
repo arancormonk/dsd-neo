@@ -264,7 +264,7 @@ static void
 tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* decoded, int len,
                     const char* kind) {
     if (ctx->direct) {
-        (void)tetra_dmo_log_dnb_pdu(decoded, len, kind, state);
+        (void)tetra_dmo_log_dnb_pdu(decoded, len, kind, opts, state);
         tetra_confirm_note_block(state);
         return;
     }
@@ -554,10 +554,14 @@ tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
  * Synchronisation bursts: the trunked BSCH and the direct-mode DSB.
  * ------------------------------------------------------------------------------------------------------------- */
 
-/* A DSB's SCH/H (EN 300 396-3 clause 9.1): its DMAC-SYNC message and addresses on one line. */
+/* A DSB's SCH/H (EN 300 396-3 clause 9.1): its DMAC-SYNC message and addresses on one line, and the call it describes
+ * to the call records (tetra_calls_dmo_pdu()). */
 static void
-tetra_dmo_log_sync(const tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h, int h_ok,
-                   dsd_state* state) {
+tetra_dmo_log_sync(dsd_opts* opts, const tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h,
+                   int h_ok, dsd_state* state) {
+    if (h_ok) {
+        tetra_calls_dmo_pdu(opts, state, s->enc_state, h);
+    }
     char line[384];
     int n = DSD_SNPRINTF(line, sizeof(line), "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u",
                          s->system_code, s->comm_type, s->ab_usage, s->slot, s->frame, s->enc_state);
@@ -636,7 +640,7 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
             (void)tetra_dmo_parse_sync_h(sch_h, s.comm_type, &h);
         }
         tetra_dmo_apply_sync(state, &s, h_ok ? &h : NULL);
-        tetra_dmo_log_sync(ts, &s, &h, h_ok, state);
+        tetra_dmo_log_sync(opts, ts, &s, &h, h_ok, state);
     }
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");
