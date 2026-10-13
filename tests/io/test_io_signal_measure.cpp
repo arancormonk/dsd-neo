@@ -30,6 +30,20 @@ samples(const dsd_signal_measure_request& r, double frequency, double amplitude,
     return iq;
 }
 
+/* Add an NFM transmitter: carrier @p frequency, @p deviation Hz peak with a @p tone Hz sine. */
+static void
+add_nfm(std::vector<float>& iq, const dsd_signal_measure_request& r, double frequency, double amplitude,
+        double deviation, double tone) {
+    double phase = 0;
+    for (size_t i = 0; i < iq.size() / 2; ++i) {
+        const double offset = frequency - r.capture.capture_hz + r.capture.rotation_hz
+                              + deviation * std::sin(6.283185307179586 * tone * i / r.capture.rate_hz);
+        phase += 6.283185307179586 * offset / r.capture.rate_hz;
+        iq[2 * i] += (float)(amplitude * std::cos(phase));
+        iq[2 * i + 1] += (float)(amplitude * std::sin(phase));
+    }
+}
+
 static dsd_signal_measure_report
 run(dsd_signal_detector* d, const dsd_signal_measure_request& r, const std::vector<float>& iq, size_t block) {
     assert(dsd_signal_detector_begin(d, &r) == 0);
@@ -103,6 +117,74 @@ main() {
     auto both = run(d, r, adjacent, 991);
     assert(both.candidates[0].detected && both.candidates[1].detected);
     assert(both.candidates[1].power_dbfs > both.candidates[0].power_dbfs);
+    // One strong NFM transmitter on the default 12.5 kHz grid with 16 kHz windows: its skirt and the window's leakage
+    // pass the neighbours' thresholds on their own, but they are its energy, not transmitters of their own. A genuinely
+    // separate, much weaker neighbour is still reported, and so is an off-grid transmitter's own channel.
+    {
+        dsd_signal_measure_request grid = r;
+        dsd_signal_search_range_default(&grid.range);
+        grid.capture.capture_hz = 163450000;
+        grid.capture.rotation_hz = 384000;
+        grid.capture.rate_hz = 1536000;
+        grid.count = 5;
+        for (uint32_t i = 0; i < grid.count; ++i) {
+            grid.frequencies[i] = 162987500 + 12500 * i; // 163.0125 MHz is index 2
+        }
+        auto quiet = samples(grid, grid.frequencies[0], 0, 40000);
+        auto single = quiet;
+        add_nfm(single, grid, 163012500, 0.3, 2500, 1000);
+        auto alone = run(d, grid, single, 4096);
+        assert(alone.candidates[2].detected);
+        assert(alone.candidates[1].power_dbfs - alone.candidates[1].noise_dbfs > 30); // the skirt is there ...
+        assert(!alone.candidates[1].detected && !alone.candidates[3].detected);       // ... and is not a detection
+        auto wide = quiet;
+        add_nfm(wide, grid, 163012500, 0.3, 5000, 1000);
+        auto wide_report = run(d, grid, wide, 4096);
+        assert(wide_report.candidates[2].detected && !wide_report.candidates[1].detected
+               && !wide_report.candidates[3].detected);
+        auto off_grid_nfm = quiet;
+        add_nfm(off_grid_nfm, grid, 163014600, 0.3, 2500, 1000);
+        auto off = run(d, grid, off_grid_nfm, 4096);
+        assert(off.candidates[2].detected && !off.candidates[1].detected && !off.candidates[3].detected);
+        for (double weaker : {0.1, 0.01, 0.003}) {
+            auto pair = single;
+            add_nfm(pair, grid, 163000000, weaker, 2500, 700);
+            auto both_nfm = run(d, grid, pair, 4096);
+            assert(both_nfm.candidates[2].detected && both_nfm.candidates[1].detected);
+            assert(!both_nfm.candidates[3].detected);
+        }
+        // A wide (5 kHz deviation) transmitter off-grid toward the next channel is still one detection, at its
+        // nearest channel: neither the window's truncation of it nor its own sideband structure is a neighbour.
+        auto wide_off_grid = quiet;
+        add_nfm(wide_off_grid, grid, 163015500, 0.3, 5000, 300);
+        auto straddle = run(d, grid, wide_off_grid, 4096);
+        assert(straddle.candidates[2].detected && !straddle.candidates[1].detected && !straddle.candidates[3].detected);
+        // The stronger transmitter need not be a requested channel: at a range or span boundary only its neighbour
+        // is measured, and that neighbour's window still holds nothing but its skirt.
+        dsd_signal_measure_request edge = grid;
+        edge.count = 1;
+        edge.frequencies[0] = 163000000;
+        assert(!run(d, edge, single, 4096).candidates[0].detected);
+        // On a 6.25 kHz grid a 12.5 kHz transmitter fills its neighbours' windows; it is reported once.
+        dsd_signal_measure_request dense = grid;
+        dense.range.step_num = 6250;
+        dense.range.bandwidth_hz = 12500;
+        for (uint32_t i = 0; i < dense.count; ++i) {
+            dense.frequencies[i] = 163000000 + 6250 * i; // 163.0125 MHz is index 2
+        }
+        auto dense_report = run(d, dense, single, 4096);
+        assert(dense_report.candidates[2].detected);
+        assert(!dense_report.candidates[1].detected && !dense_report.candidates[3].detected);
+        // Two weaker transmitters either side of a strong one, each a separate signal: the strong transmitter's
+        // mirrored side is the other weak one, which must not make either look like leakage.
+        dsd_signal_measure_request wide_windows = grid;
+        wide_windows.range.bandwidth_hz = 20000;
+        auto three = single;
+        add_nfm(three, wide_windows, 163000000, 0.03, 2500, 700);
+        add_nfm(three, wide_windows, 163025000, 0.03, 2500, 900);
+        auto trio = run(d, wide_windows, three, 4096);
+        assert(trio.candidates[1].detected && trio.candidates[2].detected && trio.candidates[3].detected);
+    }
     auto clipping = samples(r, r.frequencies[0], 1.2, 30000);
     dsd_signal_measure_report invalid{};
     assert(dsd_signal_detector_begin(d, &r) == 0);
