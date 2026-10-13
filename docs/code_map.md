@@ -3158,7 +3158,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   other transmitter) or, within its width, an unmirrored rise beyond a 20 dB valley, and
   located once (as a source of their own where their segment allows). A channel keeps a
   raw detection only for a transmitter centred within its half-open interval on the
-  range's rational grid that holds its own power in both windows (within 10 dB).
+  range's rational grid that holds its own power in both windows (within 10 dB), or whose
+  channel does over the bins it occupies.
   `docs/signal-search.md` lists the measured limits. The tap's `feed_mutex`
   serialises the detector (feeding and analysis, request, cancel); `tap_mutex` guards only
   the published capture, readiness and report, so polls never wait for analysis; locks
@@ -4100,7 +4101,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   Nothing after the drop confirms or publishes for that frame: YSF does not set its FICH verdict from the carrier left's
   FICH, and `processFrame()` reports any frame whose handler saw the count move as `DSD_FRAME_VERDICT_UNPRODUCTIVE`,
   whatever the handler made of it, so the SPS hunt is not told a dropped frame proved anything. A unit whose own symbols
-  straddle the move is mixed, and its FEC or CRC decides, as for any noise. Guarded:
+  straddle the move is mixed, and its FEC or CRC decides, as for any noise, unless the unit is a whole frame guarded
+  below. Guarded:
   - P25 Phase 2 `processP2()`: the four-burst buffer (`p2_dibit_buffer()`); a boundary between buffers drops the slots'
     ESS fragments, voice streams and staged rekey (`p25p2_frame_forget_carrier()`).
   - P25 Phase 1: `processLDU1()` (link control, read by the seventh voice frame), `processLDU2()` (encryption sync),
@@ -4114,11 +4116,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     frame), X2-TDMA `processX2TDMAvoice()` (the six-slot signalling published as the call's encryption), YSF
     `processYSF()` (the V/D type 1 voice and data channels, the full-rate data channels), and the EDACS control frame
     `edacs()` (two of three voted copies can be read before the move).
+  - Frames that are one unit, interleaved or convolutionally coded over their whole length and decoded once read
+    whole: a boundary late in one leaves it mostly the carrier left's, which the FEC corrects into that carrier's
+    content after the boundary ended its call. The D-STAR header (`processDSTAR_HD()`; the superframe behind it is not
+    read), the YSF FICH (no evidence, and no call observed on the fallback type; `processYSF()` drops the frame), and
+    every M17 frame read over the air: the LSF (`processM17LSF()`), the stream frame with its LICH chunk
+    (`processM17STR()`: no frame number, chunk, voice, evidence or terminator), the packet frame (`processM17PKT()`:
+    no chunk, and no packet ended, decoded or confirmed) and the BERT frame (`processM17BRT()`).
 
   Not guarded, each because no unit is whole before its frame's last read: the P25 Phase 1 TSBK (each block decodes as
-  read), M17 (each frame is interleaved over its whole length and decodes as read; the LSF and a packet complete in the
-  frame that straddles), ProVoice (the two IMBE frames of a pair are interleaved together), the X2-TDMA data burst (read
-  from the frame sync's buffer), the D-STAR header (decoded as soon as read) and EDACS analog voice.
+  read), ProVoice (the two IMBE frames of a pair are interleaved together), the X2-TDMA data burst (read from the frame
+  sync's buffer) and EDACS analog voice.
 
   An input interruption drops the same units: each guard is `dsd_state_frame_read_lost()`, true when the count moved or
   `dsd_state::input_interrupted` is set. A Signal search sets the flag inside a frame when it leaves it (a deadline,
@@ -4128,8 +4136,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   Reed-Solomon codes can take for their all-zero codeword, so units the count leaves unguarded check the flag too,
   keeping the boundary's behaviour as it was: the P25 Phase 1 NID (the dispatcher decodes nothing and withholds the
   verdict), each TSBK block, each IMBE frame (`process_IMBE()` hands nothing to the vocoder, and the LDUs raise no voice
-  activity on it), the ProVoice IMBE pairs, the D-STAR header, the DMR RC burst, the DMR data burst's slot type and the
-  MS EMB (decoded as soon as read), and the YSF FICH (no evidence, and no call observed on the fallback type). A P25
+  activity on it), the ProVoice IMBE pairs, the DMR RC burst, and the DMR data burst's slot type and the MS EMB
+  (decoded as soon as read). Descrambled, stood-in M17 symbols can still clear every Golay block of a LICH and
+  Viterbi-decode to a stream frame number with its end flag set, which would end the call as a terminator does; the
+  M17 frame guards above drop such a frame. A P25
   Phase 2 window an interruption cuts is dropped without `p25p2_frame_forget_carrier()`: the receiver is still on the
   carrier, so the slots keep what they gathered and the playout keeps its frames. Behind the guards, `processFrame()`
   withholds a cut frame's SPS-hunt verdict (`DSD_FRAME_VERDICT_WITHHELD`: the cut was the engine's), the MBE capture
@@ -4186,7 +4196,7 @@ Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEP
 `ENGINE_INPUT_BOUNDARY`, `UI_MENU_SERVICES`; the decoders' carrier-count guards: `P25_P2_RELIABILITY`, `P25_P1_LDU1_HELPERS`,
 `P25_P1_LDU2_HELPERS`, `P25_P1_HDU_HELPERS`, `P25_P1_TDULC`, `P25_P1_MDPU_HELPERS`, `DMR_BS_SYNC_TIMES`,
 `DMR_DATA_SYNC`, `DMR_MS_DATA`, `NXDN_FRAME_ROUTING`, `DPMR_VOICE_BRIDGE`, `DSTAR_PROCESS`, `X2TDMA_VOICE_HELPERS`,
-`YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`, `ENGINE_PROTOCOL_DISPATCH` (a split frame's verdict).
+`YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`, `M17_FRAME_CUT`, `ENGINE_PROTOCOL_DISPATCH` (a split frame's verdict).
 
 Key public headers (selection):
 
@@ -4319,6 +4329,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   session behind Home; a start pending from Home keeps waiting. A refused `arm()` leaves
   nothing armed (`tst_main_session_tools.qml`, `tst_signal_search.qml`,
   `UI_QT_METRICS_MODEL`, `UI_QT_SIGNAL_SEARCH`).
+  The armed start goes in when the decoder's command admission takes it, not merely on
+  Running: Android's engine thread raises `g_running` a moment before its
+  `dsd_app_frontend_runtime_start()` opens admission, and a session winding down closes
+  admission before Running drops. A refused submission queues nothing, so the model keeps the
+  arm and submits it again on `DecoderHost::sessionInitialized()` (which follows the
+  admission edge, and can arrive while the host still reads Starting) and on each 250 ms
+  tick while Running; an accepted one ends the arm, so the search starts once. An arm
+  belongs to one session, the one up when it was made (a paused search's Resume) or else
+  the next to come up (a USB grant can hold that start while the host stays Idle), and
+  that session's Stopping, Failed or return to Idle ends it, so it never starts a search
+  in a later, ordinary session (`UI_QT_SIGNAL_SEARCH`).
   Main binds the screen's `failure` to its own failure text, and the screen never assigns
   it: an assignment would drop the binding, and a connection, USB-access or configuration
   failure after Start or Resume would never reach the screen that covers Home's banner.

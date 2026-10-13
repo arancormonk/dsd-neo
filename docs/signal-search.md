@@ -169,7 +169,9 @@ assigned the same way for the whole measurement. It must also hold its own power
 each window (within 10 dB of the other over the bins it occupies), so energy one
 window only owes to another transmitter is not sustained. A transmitter whose
 modulation differs between the windows (a slow tone half a cycle apart) is still
-sustained.
+sustained, and where clipping makes it dwell on one side of its carrier per window
+and the location splits those dwells apart, its channel holds its power in both
+windows over the bins the channel occupies (within 10 dB of its tallest).
 
 Transmitters are located in the spectrum itself, not only among the requested
 channels, so one past a range or span boundary counts. Each channel's window climbs
@@ -241,6 +243,10 @@ other. Known limits:
 - A transmitter whose modulation is lopsided has no symmetric extent about its
   carrier; it is centred where its spectrum is most symmetric, which on 250 Hz
   grids can be a channel or more from its carrier.
+- A transmitter whose outer modulation lines grow again after a dip (clipped tone FM)
+  can have such a line, beyond its channel width, reported as a neighbour: its pair on
+  the other side mirrors it as exactly as a weaker transmitter on either side of a
+  strong one mirrors the other, and those are reported.
 - A transmitter wider than the channel width whose slow modulation puts each window
   on a different side of it can be reported a channel from where it sits.
 - A weaker transmitter beside a stronger one is located from what rises out of the
@@ -311,7 +317,7 @@ a search owns the tuner, and that the FSK, monitor and CQPSK symbol readers alik
 take that as an interruption rather than the end of the session, then read the
 rest of the frame as erasures without waiting again. Cut-frame regressions feed every
 digital decoder (D-STAR, ProVoice, P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF, X2-TDMA,
-EDACS) a frame interrupted part-way and check that nothing read across the cut
+EDACS, M17) a frame interrupted part-way and check that nothing read across the cut
 plays, publishes, captures or reports evidence.
 Persistence and Qt tests cover bounded history, duplicate suppression, failed
 writes/retry (history and avoids each stay owed until their own write succeeds,
@@ -328,11 +334,17 @@ the search screen over a later ordinary session. A rejected restart of a paused
 search keeps that search's phase, session and ownership; only its message changes.
 Leaving the search (its Back, the system Back) or a Start it refuses abandons a
 start still waiting for USB permission, so the grant starts no session, while a
-start Home left waiting survives; Stop and a refused arm leave nothing armed. A screen
-reopened over a running search after recreation takes its receiver (USB, Airspy or
-rtl_tcp server) from the session's options snapshot, whether that snapshot arrives
-before or after the screen, offers that receiver's gain controls in a paused range
-edit, and keeps it through Stop and a restart.
+start Home left waiting survives; Stop and an arm the screen refuses (missing or
+invalid ranges) leave nothing armed. A start the decoder's command queue turned away
+because the host reported Running before the decoder took commands (Android raises it
+just ahead of opening command admission) stays armed and goes in once, when
+initialization is reported or at a later status tick, whichever comes first; a session
+that stops, fails or ends before then takes the arm with it, so the next ordinary
+session starts no search. A screen reopened over a running search after recreation
+takes its receiver (USB, Airspy or rtl_tcp server) from the session's options
+snapshot, whether that snapshot arrives before or after the screen, offers that
+receiver's gain controls in a paused range edit, and keeps it through Stop and a
+restart.
 The app-control provenance regression also checks that a later false sync or
 unvalidated code change cannot enrich an already confirmed detection during a
 periodic refresh, and that a new detection starts without the preceding details.
