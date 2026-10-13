@@ -929,6 +929,38 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
     output->rate = target;
 }
 
+/* The symbol rate and level count the timing SPS is derived for. */
+static void
+rtl_demod_ted_symbol_profile(const struct demod_state* demod, const dsd_opts* opts, int preserve_active_profile,
+                             int* out_rate, int* out_levels) {
+    int sym_rate;
+    if (preserve_active_profile) {
+        /* Retunes keep whatever the SPS hunt, the trunking engine, or the operator last published
+         * through rtl_stream_set_symbol_profile(); only the timing SPS follows the new rate. The
+         * option flags cannot answer this: with more than one rate class enabled they always say
+         * 4800/4, which would drag a run parked on 2400/4 (NXDN48, dPMR) or 9600/2 (ProVoice) off
+         * its profile on every hop. Fall back to the option-derived default only when no profile
+         * has been established yet. */
+        sym_rate = demod->symbol_rate_hz > 0 ? demod->symbol_rate_hz : opts_symbol_rate_hz(opts);
+        *out_rate = sym_rate;
+        *out_levels = (demod->symbol_levels == 2 || demod->symbol_levels == 4)
+                          ? demod->symbol_levels
+                          : opts_symbol_levels_for_rate(opts, sym_rate);
+        return;
+    }
+    /* When only P25P2/X2-TDMA is enabled (without P25P1), use 6000 sym/s.
+     * When mod_qpsk is set for P25P1 CQPSK/LSM, use 4800 sym/s.
+     * When both P25P1 and P25P2 are enabled (trunking mode), default to
+     * P25P1 rate (4800) since CC is typically encountered first; the trunk
+     * state machine will override via ted_sps_override when tuning to P25P2 VC. */
+    sym_rate = opts_symbol_rate_hz(opts);
+    if (opts && !opts_tetra_only(opts) && opts->mod_qpsk == 1 && sym_rate != 6000) {
+        sym_rate = 4800;
+    }
+    *out_rate = sym_rate;
+    *out_levels = opts_symbol_levels_for_rate(opts, sym_rate);
+}
+
 /**
  * @brief Refresh timing SPS after capture/output rate changes.
  *
@@ -952,29 +984,7 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     int Fs_cx = rtl_demod_resolve_complex_rate(demod, output);
     int sym_rate;
     int sym_levels;
-    if (preserve_active_profile) {
-        /* Retunes keep whatever the SPS hunt, the trunking engine, or the operator last published
-         * through rtl_stream_set_symbol_profile(); only the timing SPS follows the new rate. The
-         * option flags cannot answer this: with more than one rate class enabled they always say
-         * 4800/4, which would drag a run parked on 2400/4 (NXDN48, dPMR) or 9600/2 (ProVoice) off
-         * its profile on every hop. Fall back to the option-derived default only when no profile
-         * has been established yet. */
-        sym_rate = demod->symbol_rate_hz > 0 ? demod->symbol_rate_hz : opts_symbol_rate_hz(opts);
-        sym_levels = (demod->symbol_levels == 2 || demod->symbol_levels == 4)
-                         ? demod->symbol_levels
-                         : opts_symbol_levels_for_rate(opts, sym_rate);
-    } else {
-        /* When only P25P2/X2-TDMA is enabled (without P25P1), use 6000 sym/s.
-         * When mod_qpsk is set for P25P1 CQPSK/LSM, use 4800 sym/s.
-         * When both P25P1 and P25P2 are enabled (trunking mode), default to
-         * P25P1 rate (4800) since CC is typically encountered first; the trunk
-         * state machine will override via ted_sps_override when tuning to P25P2 VC. */
-        sym_rate = opts_symbol_rate_hz(opts);
-        if (opts && !opts_tetra_only(opts) && opts->mod_qpsk == 1 && sym_rate != 6000) {
-            sym_rate = 4800;
-        }
-        sym_levels = opts_symbol_levels_for_rate(opts, sym_rate);
-    }
+    rtl_demod_ted_symbol_profile(demod, opts, preserve_active_profile, &sym_rate, &sym_levels);
     if (Fs_cx < (sym_rate * 2)) {
         LOG_WARN("WARNING: CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx,
                  sym_rate);
