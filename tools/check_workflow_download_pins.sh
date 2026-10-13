@@ -165,7 +165,13 @@ def entries(text):
 
 
 def unbalanced(text):
-    """True when a flow collection opened on this line does not close on it."""
+    """True when this value is a flow collection ({...} or [...]) that does not
+    close on the line it opens. Braces inside a plain scalar, such as an
+    expression's ${{ }}, are not a flow collection."""
+    text = re.sub(r"^(?:-\s+)*", "", text.strip())
+    text = re.sub(r"^(?:[&!]\S+\s*)+", "", text)
+    if not text.startswith(FLOW):
+        return False
     depth = 0
     quote = None
     for ch in text:
@@ -251,7 +257,7 @@ def trigger_names(rows):
         if in_on:
             on_rows.append(row)
     # A flow collection spread over lines is not read: it counts as unreadable.
-    if not on_rows or any(unbalanced(r[4]) for r in on_rows):
+    if not on_rows or any(unbalanced(r[3] if r[2] is not None else r[4]) for r in on_rows):
         return None
     value = drop_anchor(on_rows[0][3])
     rest = on_rows[1:]
@@ -308,7 +314,11 @@ def top_level_terms(condition):
     if len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in "'\"":
         expr = expr[1:-1].replace("''", "'") if expr[0] == "'" else expr[1:-1]
     expr = expr.strip()
-    if expr.startswith("${{") and expr.endswith("}}"):
+    if "${{" in expr:
+        # Only one expression around the whole condition evaluates as a condition:
+        # GitHub reads text around or between ${{ }} as a string, always true.
+        if not (expr.startswith("${{") and expr.endswith("}}") and expr.count("${{") == 1):
+            return None
         expr = expr[3:-2].strip()
     expr = unwrap(expr)
     terms = []
@@ -428,7 +438,7 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
                 job_indent = -1
             else:
                 job = Job(key, drop_anchor(value), number)
-            if unbalanced(body) and job.unreadable is None:
+            if unbalanced(value if key is not None else body) and job.unreadable is None:
                 job.unreadable = number
             continue
         if job is None:
@@ -447,7 +457,7 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
         if indent == job.field_indent:
             job.field = key
             text = value
-            if unbalanced(body) and job.unreadable is None:
+            if unbalanced(value if key is not None else body) and job.unreadable is None:
                 job.unreadable = number
             if key == "if":
                 job.condition = [value]
@@ -457,7 +467,7 @@ for workflow in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
             job.condition.append(body)
         if job.field in ("container", "services"):
             job.scan(text, number)
-            if unbalanced(text) and job.unreadable is None:
+            if unbalanced(value if key is not None else body) and job.unreadable is None:
                 job.unreadable = number
     if job is not None:
         job.report(workflow, events)

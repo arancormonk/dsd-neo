@@ -483,6 +483,34 @@ jobs:
 EOF
 expect_credentials_verdict multiline_flow_services fail
 
+# An expression's ${{ }} braces are a plain scalar, not a flow collection, so an
+# expression continued on the next line is read as one condition.
+run_credentials_case multiline_expression_without_credentials << EOF
+on: [pull_request]
+jobs:
+  build:
+    if: \${{ github.event_name != 'pull_request' &&
+      github.repository != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+EOF
+expect_credentials_verdict multiline_expression_without_credentials pass
+run_credentials_case multiline_expression_with_credentials < <(
+  credentialed_job build: "    if: \${{ github.event_name != 'pull_request' &&" "      github.repository != '' }}"
+)
+expect_credentials_verdict multiline_expression_with_credentials pass
+
+# Text around or between ${{ }} makes the condition a string, which is always true.
+run_credentials_case partly_interpolated_condition < <(
+  credentialed_job build: "    if: \${{ always() }} && github.event_name != 'pull_request'"
+)
+expect_credentials_verdict partly_interpolated_condition fail
+run_credentials_case two_interpolations < <(
+  credentialed_job build: "    if: \${{ always() }} && \${{ github.event_name != 'pull_request' }}"
+)
+expect_credentials_verdict two_interpolations fail
+
 run_credentials_case push_only_workflow << EOF
 on:
   push:
