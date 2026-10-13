@@ -69,6 +69,16 @@ extern "C" {
 void tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state);
 
 /**
+ * A downlink block of the current timeslot failed its SCH CRC: the MAC drops the partial TM-SDU it was rebuilding on
+ * that timeslot's control channel (EN 300 392-2 clause 23.4.3.1.1 ii). Applied only while the TDMA clock places the
+ * block; without it the N.203 limit still ends the TM-SDU. Uplink blocks are ignored.
+ */
+void tetra_mac_block_failed(dsd_state* state);
+
+/** Drop every partial TM-SDU: the carrier they were being rebuilt on was left. Never creates TETRA state. */
+void tetra_mac_forget_fragments(dsd_state* state);
+
+/**
  * The 32-bit LLC frame check sequence of EN 300 392-2 annex C over @p nbits bits (one bit per byte, MSB first):
  * the first 32 bits complemented, the result multiplied by x^32 and divided by the generator polynomial of
  * equation C.1, and the remainder complemented. Returns the FCS with its first transmitted bit in bit 31.

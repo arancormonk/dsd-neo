@@ -22,7 +22,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/tetra_training.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
@@ -40,8 +39,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "tetra_confirm.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
+#include "tetra_voice_state.h"
 
 enum {
     /* One block of a normal burst. */
@@ -88,13 +89,23 @@ enum {
 /* Direct-mode bursts since the last DSB after which the call's colour code is no longer trusted. */
 #define TETRA_DMO_DCC_STALE_BURSTS 200u
 
+/* The trunked-mode scrambling seed of every block but the BSCH (EN 300 392-2 clause 8.2.5.2): the extended colour code
+   of the network, from a BSCH or --tetra-net, else all zero. */
 static uint32_t
-tetra_lfsr_seed_for(const dsd_state* state, int cc) {
+tetra_lfsr_seed_for(const dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (ts->net_known) {
         return ts->lfsr_seed;
     }
-    return tetra_compute_scramb_seed(0u, 0u, (uint8_t)(cc & 0x3u));
+    return tetra_compute_scramb_seed(0u, 0u, 0u);
+}
+
+/* The colour code the burst was descrambled with, which the MAC keeps fragments of different cells apart by: the
+   network's once known, else 0. */
+static int
+tetra_burst_colour(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return ts->net_known ? (int)(ts->colour & 0x3Fu) : 0;
 }
 
 /* Expand @p count dibits into 2 * @p count soft costs after undoing the slicer phase step and the polarity the frame
@@ -168,12 +179,13 @@ tetra_schf_decode_bits(const uint16_t* type4, uint8_t* decoded) {
 }
 
 /* Full-slot speech (EN 300 395-2 clause 5.5) in the 432 descrambled bits of an NTS1 burst that is not SCH/F. A frame
-   is good when its CRC passed and it re-encodes like speech; a bad one reaches the codec as a bad frame. */
-static void
+   is good when its CRC passed and it re-encodes like speech; a bad one reaches the codec as a bad frame. Returns 1 for
+   a good frame. */
+static int
 tetra_decode_tch_fs(const uint16_t* type4, int cc, const dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts) {
-        return;
+        return 0;
     }
     uint16_t deint[SCHF_BITS];
     uint8_t bits[TETRA_SPEECH_FULL_BITS];
@@ -182,7 +194,7 @@ tetra_decode_tch_fs(const uint16_t* type4, int cc, const dsd_opts* opts, dsd_sta
 
     tetra_speech_deinterleave_soft(type4, deint);
     if (tetra_speech_full_decode(deint, bits, &crc_ok, &mismatches) != TETRA_SPEECH_FULL_BITS) {
-        return;
+        return 0;
     }
     const int good = crc_ok && mismatches <= TETRA_TCH_MAX_MISMATCH;
     if (good) {
@@ -193,15 +205,17 @@ tetra_decode_tch_fs(const uint16_t* type4, int cc, const dsd_opts* opts, dsd_sta
     TETRA_LOG_PAYLOAD(ts, "[TETRA TCH/FS] CC=%d  dec_bits=%d  crc=%s  mismatches=%d\n", cc, TETRA_SPEECH_FULL_BITS,
                       crc_ok ? "ok" : "bad", mismatches);
     tetra_voice_full_slot(opts, state, bits, good);
+    return good;
 }
 
 /* Half-slot speech (EN 300 395-2 clause 5.6) in the second half of an NTS2 burst whose SCH/HD CRC failed. The 4-bit
-   CRC alone passes one random block in 16, so the re-encode check carries more weight here. */
-static void
+   CRC alone passes one random block in 16, so the re-encode check carries more weight here. Returns 1 for a good
+   frame. */
+static int
 tetra_decode_tch_half(const uint16_t* soft_block, const dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts) {
-        return;
+        return 0;
     }
     uint16_t deint[NB_BLOCK_BITS];
     uint8_t bits[TETRA_SPEECH_HALF_BITS];
@@ -210,7 +224,7 @@ tetra_decode_tch_half(const uint16_t* soft_block, const dsd_opts* opts, dsd_stat
 
     tetra_block_deinterleave_soft(soft_block, deint, NB_BLOCK_BITS, HD_A);
     if (tetra_speech_half_decode(deint, bits, &crc_ok, &mismatches) != TETRA_SPEECH_HALF_BITS) {
-        return;
+        return 0;
     }
     const int good = crc_ok && mismatches <= TETRA_HALF_MAX_MISMATCH;
     if (good) {
@@ -221,6 +235,7 @@ tetra_decode_tch_half(const uint16_t* soft_block, const dsd_opts* opts, dsd_stat
     }
     TETRA_LOG_PAYLOAD(ts, "[TETRA TCH/H] crc=%s  mismatches=%d\n", crc_ok ? "ok" : "bad", mismatches);
     tetra_voice_half_slot(opts, state, bits, good);
+    return good;
 }
 
 /* ---------------------------------------------------------------------------------------------------------------
@@ -228,8 +243,8 @@ tetra_decode_tch_half(const uint16_t* soft_block, const dsd_opts* opts, dsd_stat
  * ------------------------------------------------------------------------------------------------------------- */
 
 typedef struct {
-    uint32_t seed;      /* the colour code the burst is scrambled with */
-    int cc;             /* burst colour code the MAC logs */
+    uint32_t seed;      /* the extended colour code the burst is scrambled with */
+    int cc;             /* its colour code, which the MAC keeps fragments of different cells apart by */
     int direct;         /* direct mode: signalling goes to the DMAC logger */
     const char* prefix; /* "", "DNB " or "NUB ": the burst kind shown in the frame subtype */
 } tetra_nb_ctx;
@@ -241,14 +256,31 @@ tetra_nb_subtype(dsd_state* state, const tetra_nb_ctx* ctx, const char* what) {
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", text);
 }
 
-/* A CRC-passed signalling block: the MAC in trunked mode, the DMAC logger in direct mode. */
+/* A CRC-passed signalling block: the MAC in trunked mode, the DMAC logger in direct mode. It counts as evidence about
+   the carrier once it has been acted on, so a grant it carries is judged by the blocks before it. Only a trunked
+   downlink MAC block proves a control channel; the others prove the burst. */
 static void
 tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* decoded, int len,
                     const char* kind) {
     if (ctx->direct) {
         (void)tetra_dmo_log_dnb_pdu(decoded, len, kind, state);
+        tetra_confirm_note_block(state);
+        return;
+    }
+    tetra_mac_parse_schd(decoded, len, ctx->cc, opts, state);
+    if (tetra_st_peek(state)->uplink) {
+        tetra_confirm_note_block(state);
     } else {
-        tetra_mac_parse_schd(decoded, len, ctx->cc, opts, state);
+        tetra_confirm_note_signalling(state);
+    }
+}
+
+/* A block that failed its signalling CRC. In trunked mode it may be an SCH block of its timeslot's control channel, so
+   the MAC drops the partial TM-SDU it was rebuilding there (EN 300 392-2 clause 23.4.3.1.1 ii). */
+static void
+tetra_nb_block_failed(dsd_state* state, const tetra_nb_ctx* ctx) {
+    if (!ctx->direct) {
+        tetra_mac_block_failed(state);
     }
 }
 
@@ -263,6 +295,7 @@ tetra_nb_half(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, uint16_
     /* Each half-slot restarts the scrambling sequence. */
     tetra_descramble_soft(soft, NB_BLOCK_BITS, ctx->seed);
     if (!tetra_hd_decode_bits(soft, decoded)) {
+        tetra_nb_block_failed(state, ctx);
         return 0;
     }
     ts->decode_ok++;
@@ -270,7 +303,8 @@ tetra_nb_half(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, uint16_
     return 1;
 }
 
-/* NTS2: two half-slot channels. The second half that is not signalling may be speech after a stolen first half. */
+/* NTS2: two half-slot channels. The second half that is not signalling may be speech after a stolen first half. A
+   first half that moved the receiver (a grant) leaves the second half to the carrier that was left. */
 static void
 tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* b2_dibits,
               const float* b2_soft) {
@@ -284,10 +318,13 @@ tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
         if (!tetra_nb_half(opts, state, ctx, block, "STCH-1")) {
             ts->decode_errors++;
         }
+        if (!tetra_confirm_burst_current(state)) {
+            return;
+        }
     }
     tetra_expand_dibits(state, b2_dibits, b2_soft, NB_BLOCK_DIBITS, block);
-    if (!tetra_nb_half(opts, state, ctx, block, "STCH-2")) {
-        tetra_decode_tch_half(block, opts, state);
+    if (!tetra_nb_half(opts, state, ctx, block, "STCH-2") && tetra_decode_tch_half(block, opts, state)) {
+        tetra_confirm_note_block(state);
     }
 }
 
@@ -306,7 +343,10 @@ tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     tetra_expand_dibits(state, b2_dibits, b2_soft, NB_BLOCK_DIBITS, type4 + NB_BLOCK_BITS);
     tetra_descramble_soft(type4, SCHF_BITS, ctx->seed);
     if (!tetra_schf_decode_bits(type4, decoded)) {
-        tetra_decode_tch_fs(type4, ctx->cc, opts, state);
+        tetra_nb_block_failed(state, ctx);
+        if (tetra_decode_tch_fs(type4, ctx->cc, opts, state)) {
+            tetra_confirm_note_block(state);
+        }
         return;
     }
     ts->decode_ok++;
@@ -402,7 +442,7 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
     float b2_soft[NB_BLOCK_DIBITS];
     tetra_read_dibits(opts, state, b2_dibits, b2_soft, NB_BLOCK_DIBITS);
 
-    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state, 0), 0, 0, "NUB "};
+    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "NUB "};
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA UL");
     tetra_nb_subtype(state, &ctx, state->tetra_sync.nts2 ? "NTS2" : "NTS1");
     TETRA_LOG_PAYLOAD(ts, " [TETRA NUB  NTS%d  pol=%d rot=%d]", state->tetra_sync.nts2 ? 2 : 1,
@@ -444,6 +484,7 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
         return;
     }
     ts->decode_ok++;
+    tetra_confirm_note_block(state);
     /* MAC-ACCESS (EN 300 392-2 clause 21.4.2.1): PDU type 0, fill bit, encryption mode, address type and address. */
     tetra_bit_reader r = tetra_bits_reader(mac, SCHHU_TYPE1, 0);
     if (tetra_bits_read(&r, 1) != 0) {
@@ -469,8 +510,8 @@ tetra_tdma_advance_ndb(dsd_state* state) {
 }
 
 /* A normal burst: control uplink, normal uplink, direct mode, or the trunked downlink NDB. Block 1 was captured by the
-   frame sync; the downlink reads AACH half 2 and block 2 here. The AACH is not decoded, so the burst colour code is
-   0 and the network's colour code (from the BSCH) scrambles. */
+   frame sync; the downlink reads AACH half 2 and block 2 here. The AACH is not decoded; the blocks are descrambled with
+   the network's extended colour code (from the BSCH or --tetra-net), whose colour code the MAC is told. */
 static void
 tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
     const tetra_state_t* const ts = tetra_st(state);
@@ -498,7 +539,7 @@ tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
     skipDibit(opts, state, NDB_AACH2_DIBITS);
     tetra_read_dibits(opts, state, b2_dibits, b2_soft, NB_BLOCK_DIBITS);
 
-    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state, 0), 0, 0, ""};
+    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, ""};
     tetra_nb_subtype(state, &ctx, state->tetra_sync.nts2 ? "NTS2" : "NTS1");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");
     TETRA_LOG_PAYLOAD(ts, " [TETRA NDB  NTS%d  pol=%d rot=%d]", state->tetra_sync.nts2 ? 2 : 1,
@@ -583,6 +624,7 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     const int h_ok = tetra_hd_decode_bits(b2_costs, sch_h);
     if (h_ok) {
         ts->decode_ok++;
+        tetra_confirm_note_block(state);
     } else {
         ts->decode_errors++;
     }
@@ -600,12 +642,6 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA DMO");
     tetra_burst_done(opts, state);
-}
-
-static void
-tetra_sb_skip_tail(dsd_opts* opts, dsd_state* state) {
-    skipDibit(opts, state, SB_BB_DIBITS);
-    skipDibit(opts, state, SB_BKN2_DIBITS);
 }
 
 /* The captured BSCH (or direct-mode SCH/S) block to SB_TYPE2 bits in @p decoded: descramble, deinterleave with
@@ -654,11 +690,61 @@ tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
     }
     state->tetra_sync.sb1_soft_valid = 0;
     ts->decode_ok++;
+    tetra_confirm_note_block(state);
     tetra_sb_log_bits(state, ts, pre);
     tetra_dmo_process_dsb(opts, state, pre);
     return 1;
 }
 
+/* The BSCH of a trunked synchronisation burst, read once the rest of the burst has been: 1 when its CRC passed. A DMO
+   system code that only the soft decision decoded is a DSB whose SCH/H went by unread; timing and mode come from its
+   SCH/S. */
+static int
+tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    uint8_t decoded[SB_TYPE2];
+    const int crc_ok = tetra_sb_decode_block(state, 1, decoded);
+    state->tetra_sync.sb1_soft_valid = 0;
+    tetra_sb_log_bits(state, ts, decoded);
+    if (!crc_ok) {
+        ts->decode_errors++;
+        return 0;
+    }
+    ts->decode_ok++;
+    if (tetra_dmo_system_code_is_dmo(decoded)) {
+        tetra_dmo_sync_s_t s;
+        (void)tetra_dmo_parse_sync_s(decoded, &s);
+        tetra_dmo_apply_sync(state, &s, NULL);
+        tetra_confirm_note_block(state);
+        DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u | SCH/H skipped\n",
+                    s.system_code, s.comm_type, s.ab_usage, s.slot, s.frame, s.enc_state);
+        return 1;
+    }
+    ts->dmo = 0;
+    (void)tetra_bsch_parse(decoded, SB_TYPE1, opts, state);
+    tetra_confirm_note_signalling(state);
+    return 1;
+}
+
+/* Block 2 of a trunked synchronisation burst: the BNCH (EN 300 392-2 clause 9.5.2) or an SCH/HD, coded like an SCH/HD
+   (clause 8.3.1.4.1) and scrambled with the network's extended colour code (clause 8.2.5.2), which the BSCH in block 1
+   may just have set. Without a network identity there is nothing to descramble it with. */
+static void
+tetra_sb_block2(dsd_opts* opts, dsd_state* state, const uint8_t* dibits, const float* soft) {
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts || !ts->net_known || ts->dmo) {
+        return;
+    }
+    uint16_t block[NB_BLOCK_BITS];
+    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, ""};
+    tetra_expand_dibits(state, dibits, soft, SB_BKN2_DIBITS, block);
+    if (!tetra_nb_half(opts, state, &ctx, block, "BNCH")) {
+        ts->decode_errors++;
+    }
+}
+
+/* A synchronisation burst (EN 300 392-2 clause 9.4.4.2.6): the BSCH block before the training sequence, which the frame
+   sync captured, then the broadcast block (the AACH, not decoded) and block 2. Block 2 is read before the BSCH is
+   parsed, so tetra_bsch_parse() sees the symbol count of the burst's end it expects. */
 static void
 tetra_process_sb(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
@@ -666,9 +752,11 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
         return;
     }
     soft_symbol_frame_begin(state);
-
+    uint8_t b2_dibits[SB_BKN2_DIBITS];
+    float b2_soft[SB_BKN2_DIBITS];
     if (!state->tetra_sync.sb1_valid) {
-        tetra_sb_skip_tail(opts, state);
+        skipDibit(opts, state, SB_BB_DIBITS);
+        skipDibit(opts, state, SB_BKN2_DIBITS);
         TETRA_LOG_PAYLOAD(ts, "[TETRA SB] no BSCH block captured\n");
         state->tetra_sync.sb1_soft_valid = 0;
         tetra_sm_tick(opts, state);
@@ -678,29 +766,10 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
     if (tetra_sb_try_dmo(opts, state)) {
         return;
     }
-
-    tetra_sb_skip_tail(opts, state);
-    uint8_t decoded[SB_TYPE2];
-    const int crc_ok = tetra_sb_decode_block(state, 1, decoded);
-    state->tetra_sync.sb1_soft_valid = 0;
-    tetra_sb_log_bits(state, ts, decoded);
-    if (crc_ok) {
-        ts->decode_ok++;
-    } else {
-        ts->decode_errors++;
-    }
-
-    if (crc_ok && tetra_dmo_system_code_is_dmo(decoded)) {
-        /* Only the soft decision passed, after this DSB's SCH/H went by unread: timing and mode come from SCH/S. */
-        tetra_dmo_sync_s_t s;
-        (void)tetra_dmo_parse_sync_s(decoded, &s);
-        tetra_dmo_apply_sync(state, &s, NULL);
-        DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u | SCH/H skipped\n",
-                    s.system_code, s.comm_type, s.ab_usage, s.slot, s.frame, s.enc_state);
-    } else if (crc_ok) {
-        ts->dmo = 0;
-        (void)tetra_bsch_parse(decoded, SB_TYPE1, opts, state);
-    }
+    skipDibit(opts, state, SB_BB_DIBITS);
+    tetra_read_dibits(opts, state, b2_dibits, b2_soft, SB_BKN2_DIBITS);
+    (void)tetra_sb_bsch(opts, state, ts);
+    tetra_sb_block2(opts, state, b2_dibits, b2_soft);
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "BSCH");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");
@@ -829,29 +898,45 @@ tetra_publish(dsd_state* state) {
 }
 
 /* Tell the frame sync where block 1 of the next normal burst sits: right against the training sequence in direct
- * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show. */
-static void
+ * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show. Returns 1 when the
+ * burst decoded a block whose CRC passed. */
+static int
 tetra_frame_leave(dsd_state* state, const tetra_state_t* ts) {
     state->tetra_sync.block1_follows_training = (uint8_t)((ts->dmo || ts->uplink) ? 1 : 0);
     tetra_publish(state);
+    return tetra_confirm_burst_end(state);
 }
 
-void
+int
 processTetraFrame(dsd_opts* opts, dsd_state* state) {
     const tetra_state_t* const ts = tetra_frame_enter(opts, state);
     if (!ts) {
-        return;
+        return 0;
     }
+    tetra_confirm_burst_begin(state);
     tetra_process_ndb(opts, state);
-    tetra_frame_leave(state, ts);
+    return tetra_frame_leave(state, ts);
 }
 
-void
+int
 processTetraSBFrame(dsd_opts* opts, dsd_state* state) {
     const tetra_state_t* const ts = tetra_frame_enter(opts, state);
     if (!ts) {
+        return 0;
+    }
+    tetra_confirm_burst_begin(state);
+    tetra_process_sb(opts, state);
+    return tetra_frame_leave(state, ts);
+}
+
+void
+tetra_forget_carrier(dsd_state* state) {
+    /* A session that never decoded TETRA has nothing to forget, and gets no TETRA state for it. */
+    if (!tetra_st_existing(state)) {
         return;
     }
-    tetra_process_sb(opts, state);
-    tetra_frame_leave(state, ts);
+    tetra_confirm_reset(state);
+    tetra_mac_forget_fragments(state);
+    tetra_tdma_stop(state);
+    tetra_voice_reset(state);
 }

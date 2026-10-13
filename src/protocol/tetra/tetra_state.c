@@ -40,6 +40,11 @@ tetra_st(dsd_state* state) {
     return ts;
 }
 
+tetra_state_t*
+tetra_st_existing(dsd_state* state) {
+    return (state && dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA)) ? tetra_st(state) : NULL;
+}
+
 const tetra_state_t*
 tetra_st_peek(const dsd_state* state) {
     /* What a session with no TETRA state reads: every field at its zero default. */

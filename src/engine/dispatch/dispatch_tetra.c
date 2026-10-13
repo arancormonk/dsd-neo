@@ -13,12 +13,18 @@ dsd_dispatch_matches_tetra(int synctype) {
     return DSD_SYNC_IS_TETRA(synctype);
 }
 
+/*
+ * One TETRA burst and its verdict. A training sequence is weak enough for receiver noise to match, so a burst proves
+ * its profile only when it decoded a block whose CRC passed (a signalling block, or a speech frame that also re-encodes
+ * like speech); a burst that decoded none consumed symbols and validated nothing.
+ */
 dsd_frame_verdict
 dsd_dispatch_handle_tetra(dsd_opts* opts, dsd_state* state) {
+    int proven = 0;
     if (state->lastsynctype == DSD_SYNC_TETRA_SB_POS || state->lastsynctype == DSD_SYNC_TETRA_SB_NEG) {
-        processTetraSBFrame(opts, state);
+        proven = processTetraSBFrame(opts, state);
     } else {
-        processTetraFrame(opts, state);
+        proven = processTetraFrame(opts, state);
     }
-    return DSD_FRAME_VERDICT_PRODUCTIVE;
+    return proven ? DSD_FRAME_VERDICT_PROFILE_PROVEN : DSD_FRAME_VERDICT_UNPRODUCTIVE;
 }

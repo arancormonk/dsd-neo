@@ -70,6 +70,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/airspy_config.h>
@@ -2034,6 +2035,9 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     /* Same rule for ProVoice: a frame proves nothing on its own, so the streak that does
      * cannot span the dead channel that brought us here (issue #421). */
     provoice_confirm_reset(state);
+    /* And for TETRA: the CRC evidence for the carrier, the partial TM-SDUs, the TDMA clock (which counts symbols the
+     * dead channel did not send) and the speech in progress. */
+    tetra_forget_carrier(state);
     /* And for what a decoded P25p1 NID vouches for: the benefit of the doubt it lends the
      * failures around it is evidence about a live transmission, so it cannot outlast the
      * carrier that produced it (issue #400). p25_p1_validated_rf_mod is deliberately not
@@ -2484,6 +2488,7 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     dstar_confirm_reset(state);
     m17_confirm_reset(state);
     provoice_confirm_reset(state);
+    tetra_confirm_reset(state);
     state->ysf_fich_confirmed = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
@@ -2560,8 +2565,9 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     no_carrier_close_mbe_outputs_if_needed(opts, state);
     // Nor does the digital voice high-pass's memory (issue #653).
     dsd_voice_hpf_reset(state, -1);
-    // Nor TETRA speech: the codec's decoder state, the speech's integrity and its unplayed samples.
-    tetra_voice_reset(state);
+    // Nor TETRA decoding: its partial TM-SDUs, its TDMA clock and its speech in progress (the codec's decoder state, the
+    // speech's integrity and its unplayed samples).
+    tetra_forget_carrier(state);
 }
 
 void

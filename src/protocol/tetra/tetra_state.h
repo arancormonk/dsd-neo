@@ -18,6 +18,17 @@
 extern "C" {
 #endif
 
+/* CRC evidence about the carrier on air and the burst being decoded (tetra_confirm.c). A training sequence alone is
+ * weak enough for noise to match; a block whose CRC-16 passed (EN 300 392-2 clause 8.2.3.3) is not. Cleared at every
+ * carrier boundary, no-carrier pass and trunking retune (tetra_confirm_reset()). */
+typedef struct {
+    uint32_t signalling_blocks; /* CRC-passed BSCH and MAC blocks decoded on this carrier */
+    uint8_t followed_call;      /* CRC-passed signalling of the followed call was decoded on this carrier */
+    uint8_t burst_open;         /* a burst is being decoded (tetra_confirm_burst_begin() to _end()) */
+    uint8_t burst_stale;        /* the carrier was reset while the burst was open: its blocks are the last carrier's */
+    uint8_t burst_proven;       /* the open (or last) burst decoded a block whose CRC passed */
+} tetra_confirm_t;
+
 /* Mobility management snapshots (EN 300 392-2 clause 16, EN 300 392-7 annex A). tetra_mm.c decodes a whole PDU
  * before it replaces the snapshot of its kind, so each one holds the last complete PDU. Sealed keys are kept as
  * received; a passive monitor never unwraps them. */
@@ -358,6 +369,9 @@ typedef struct {
 typedef struct tetra_state {
     /* The speech path: codec library, speech integrity and PCM carry (tetra_voice.c). */
     tetra_voice_t voice;
+
+    /* The CRC evidence trunking and the speech path rely on (tetra_confirm.c). */
+    tetra_confirm_t confirm;
 
     /* Downlink frequencies in Hz, 0 while unknown: the SYSINFO main carrier (dl_carrier_hz) and the carrier of the
      * last traffic-channel assignment (vc_freq_hz). Their blocks below describe them; they sit here for alignment. */
@@ -871,7 +885,11 @@ tetra_state_t* tetra_st(dsd_state* state);
 /** The TETRA state of @p state without creating it: a zeroed default when it has none; NULL only for a NULL @p state. */
 const tetra_state_t* tetra_st_peek(const dsd_state* state);
 
-/** Drop the TETRA state of @p state; the next tetra_st() starts from zero. */
+/** The TETRA state of @p state if it has one, without creating it; NULL otherwise. */
+tetra_state_t* tetra_st_existing(dsd_state* state);
+
+/** Drop the TETRA state of @p state; the next tetra_st() starts from zero. Never from inside a TETRA decode, state
+ * machine or trunk-tuning call: their callers hold the pointer. */
 void tetra_state_reset(dsd_state* state);
 
 #ifdef __cplusplus

@@ -11265,6 +11265,27 @@ foreach(_dsd_tetra_voice_test IN ITEMS voice_pipeline voice_codec)
     )
 endforeach()
 
+# Whole bursts through the dispatch handler, their symbols read from a symbol file: the verdict, the synchronisation
+# burst's block 2, the CRC failures the MAC is told about and the colour code it is given.
+add_executable(
+    dsd-neo_test_tetra_burst_verdict
+    protocol/tetra/test_tetra_burst_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_tetra.c
+)
+target_include_directories(
+    dsd-neo_test_tetra_burst_verdict
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+)
+target_link_libraries(
+    dsd-neo_test_tetra_burst_verdict
+    PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support ${LIBS}
+)
+add_test(NAME TETRA_BURST_VERDICT COMMAND dsd-neo_test_tetra_burst_verdict)
+set_tests_properties(TETRA_BURST_VERDICT PROPERTIES LABELS "protocol;tetra")
+
 # The run-time library loader the codec goes through (src/platform/dynlib_*.c), over the same test libraries.
 add_executable(dsd-neo_test_platform_dynlib platform/test_platform_dynlib.c)
 target_include_directories(
@@ -13348,25 +13369,25 @@ if(DSD_HAS_RADIO)
         -fT
         "\\[TETRA BSCH\\] MCC=460 MNC=4242"
     )
-    # These synthetic AACH symbols are zero placeholders. The receiver has no
-    # AACH colour decoder yet, so MAC logs use burst colour 0 for these frames.
+    # The MAC lines name the colour code the blocks were descrambled with: the
+    # network's, which this fixture's BSCH sets to 17 (0x11).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_SYSINFO
         tetra_bsch_synth
         -fT
-        "\\[TETRA SYSINFO\\] CC=0  carrier=321"
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_CHANNEL_ALLOCATION
         tetra_bsch_synth
         -fT
-        "\\[TETRA CHANNEL-ALLOCATION\\] CC=0 type=0 slots=0x4 dir=1 carrier=400"
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS
         tetra_bsch_synth
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
     )
     # Apache-2.0 real-air SCBS capture from GopherTrunk, deterministically
     # resampled from its preserved 50 kHz source to 54 kHz (3 samples/symbol).
@@ -13414,19 +13435,19 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_SYSINFO_INVERTED
         tetra_bsch_inverted
         -fT
-        "\\[TETRA SYSINFO\\] CC=0  carrier=321"
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_CHANNEL_ALLOCATION_INVERTED
         tetra_bsch_inverted
         -fT
-        "\\[TETRA CHANNEL-ALLOCATION\\] CC=0 type=0 slots=0x4 dir=1 carrier=400"
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_INVERTED
         tetra_bsch_inverted
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
     )
     # Deterministic 300 Hz carrier error plus 14 dB complex-AWGN SNR. These
     # assertions prove acquisition and protected control decoding through the
@@ -13441,19 +13462,19 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_SYSINFO_CFO_AWGN
         tetra_bsch_cfo_awgn
         -fT
-        "\\[TETRA SYSINFO\\] CC=0  carrier=321"
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_CHANNEL_ALLOCATION_CFO_AWGN
         tetra_bsch_cfo_awgn
         -fT
-        "\\[TETRA CHANNEL-ALLOCATION\\] CC=0 type=0 slots=0x4 dir=1 carrier=400"
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_CFO_AWGN
         tetra_bsch_cfo_awgn
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
     )
     # The same 300 Hz CFO and noise realization as the 14 dB case at 6 dB SNR:
     # the CRC-protected control messages must still decode.
@@ -13467,13 +13488,13 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_SYSINFO_SNR6
         tetra_bsch_cfo_awgn_snr6
         -fT
-        "\\[TETRA SYSINFO\\] CC=0  carrier=321"
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_CHANNEL_ALLOCATION_SNR6
         tetra_bsch_cfo_awgn_snr6
         -fT
-        "\\[TETRA CHANNEL-ALLOCATION\\] CC=0 type=0 slots=0x4 dir=1 carrier=400"
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
     )
     # One-sample (18.5 us) delayed echo at -6.9 dB with a 3 Hz differential
     # carrier and 2.2 rad phase. This creates time-varying frequency-selective
@@ -13488,19 +13509,19 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_SYSINFO_TWO_RAY
         tetra_bsch_two_ray
         -fT
-        "\\[TETRA SYSINFO\\] CC=0  carrier=321"
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_CHANNEL_ALLOCATION_TWO_RAY
         tetra_bsch_two_ray
         -fT
-        "\\[TETRA CHANNEL-ALLOCATION\\] CC=0 type=0 slots=0x4 dir=1 carrier=400"
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_TWO_RAY
         tetra_bsch_two_ray
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
     )
     # A +100 ppm transmitter/receiver sample-clock mismatch accumulates timing
     # drift across the repeated bursts and exercises continuous timing recovery.
@@ -13514,19 +13535,19 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_SYSINFO_CLOCK_100PPM
         tetra_bsch_clock_100ppm
         -fT
-        "\\[TETRA SYSINFO\\] CC=0  carrier=321"
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_CHANNEL_ALLOCATION_CLOCK_100PPM
         tetra_bsch_clock_100ppm
         -fT
-        "\\[TETRA CHANNEL-ALLOCATION\\] CC=0 type=0 slots=0x4 dir=1 carrier=400"
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_CLOCK_100PPM
         tetra_bsch_clock_100ppm
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
     )
     # Repeat in the opposite direction; a slow source lengthens the waveform
     # and makes the timing loop walk across symbol boundaries in reverse.
@@ -13540,19 +13561,19 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_SYSINFO_CLOCK_MINUS_100PPM
         tetra_bsch_clock_minus_100ppm
         -fT
-        "\\[TETRA SYSINFO\\] CC=0  carrier=321"
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_CHANNEL_ALLOCATION_CLOCK_MINUS_100PPM
         tetra_bsch_clock_minus_100ppm
         -fT
-        "\\[TETRA CHANNEL-ALLOCATION\\] CC=0 type=0 slots=0x4 dir=1 carrier=400"
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_TCH_FS_CLOCK_MINUS_100PPM
         tetra_bsch_clock_minus_100ppm
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274"
     )
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_TETRA_BAD_CRC_REJECT

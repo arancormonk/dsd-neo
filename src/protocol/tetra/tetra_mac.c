@@ -1000,6 +1000,37 @@ log_raw_block(const tetra_state_t* ts, const uint8_t* bits, int nbits) {
     TETRA_LOG_PAYLOAD(ts, "[TETRA MAC raw] %d bits:%s\n", nbits, hex);
 }
 
+/* The fragment context of the block being decoded: its TDMA timeslot 1..4, or 0 while the clock is not running. */
+static int
+fragment_timeslot(const tetra_state_t* ts) {
+    return ts->tdma_valid && ts->tn >= 1u && ts->tn <= 4u ? (int)ts->tn : 0;
+}
+
+void
+tetra_mac_block_failed(dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || ts->uplink || fragment_timeslot(ts) == 0) {
+        return;
+    }
+    tetra_mac_fragment* const f = &ts->mac_frag[fragment_timeslot(ts)];
+    if (f->active) {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA MAC] partial TM-SDU of %u bits dropped: a block of its channel failed its CRC\n",
+                          (unsigned)f->nbits);
+        discard_fragment(f);
+    }
+}
+
+void
+tetra_mac_forget_fragments(dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    for (size_t i = 0; i < sizeof ts->mac_frag / sizeof ts->mac_frag[0]; i++) {
+        discard_fragment(&ts->mac_frag[i]);
+    }
+}
+
 void
 tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
@@ -1014,8 +1045,7 @@ tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd
         TETRA_LOG_PAYLOAD(ts, "[TETRA MAC] CC=%d  uplink block of %d bits not decoded\n", cc, nbits);
         return;
     }
-    const int tn = ts->tdma_valid && ts->tn >= 1u && ts->tn <= 4u ? (int)ts->tn : 0;
-    mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[tn]};
+    mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[fragment_timeslot(ts)]};
     int off = 0;
     while (nbits - off >= (b.first ? 2 : MAC_NULL_PDU_BITS)) {
         const int used = parse_pdu(&b, bits + off, nbits - off);
