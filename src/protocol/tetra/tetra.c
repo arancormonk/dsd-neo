@@ -183,7 +183,7 @@ tetra_schf_decode_bits(const uint16_t* type4, uint8_t* decoded) {
    is good when its CRC passed and it re-encodes like speech; a bad one reaches the codec as a bad frame. Returns 1 for
    a good frame. */
 static int
-tetra_decode_tch_fs(const uint16_t* type4, int cc, const dsd_opts* opts, dsd_state* state) {
+tetra_decode_tch_fs(const uint16_t* type4, int cc, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts) {
         return 0;
@@ -213,7 +213,7 @@ tetra_decode_tch_fs(const uint16_t* type4, int cc, const dsd_opts* opts, dsd_sta
    CRC alone passes one random block in 16, so the re-encode check carries more weight here. Returns 1 for a good
    frame. */
 static int
-tetra_decode_tch_half(const uint16_t* soft_block, const dsd_opts* opts, dsd_state* state) {
+tetra_decode_tch_half(const uint16_t* soft_block, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts) {
         return 0;

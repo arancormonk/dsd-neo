@@ -45,11 +45,12 @@ uint32_t tetra_air_build_iv(uint8_t tn, uint8_t fn, uint8_t mn, uint16_t hn, uin
  * and an operator key is loaded for it. */
 int tetra_air_key_usable(const dsd_state* state);
 
-/* XOR speech bits with the key stream when this is trunked mode, the call is encrypted, the network KSG is TEA1..TEA3,
- * an operator key is loaded, and the hyperframe and TDMA clock are known. The uplink carries no BSCH, so its clock is
- * never set and uplink speech stays as received. ks_bit_offset is the first key stream bit for this speech fragment
- * (TETRA_AIR_KSS_*). Returns 1 when the bits were decrypted, 0 when they are unchanged. */
-int tetra_air_decrypt_voice(const dsd_state* state, uint8_t* bits, int nbits, int ks_bit_offset);
+/* XOR the speech bits of a call whose air interface encryption mode is enc_mode (TETRA_ENC_MODE_*, from the
+ * MAC-RESOURCE PDUs of the call) with the key stream when this is trunked mode, enc_mode is an encrypted one, the
+ * network KSG is TEA1..TEA3, an operator key is loaded, and the hyperframe and TDMA clock are known. The uplink carries
+ * no BSCH, so its clock is never set and uplink speech stays as received. ks_bit_offset is the first key stream bit for
+ * this speech fragment (TETRA_AIR_KSS_*). Returns 1 when the bits were decrypted, 0 when they are unchanged. */
+int tetra_air_decrypt_voice(const dsd_state* state, uint8_t enc_mode, uint8_t* bits, int nbits, int ks_bit_offset);
 
 #ifdef __cplusplus
 }

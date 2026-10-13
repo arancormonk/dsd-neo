@@ -8,8 +8,9 @@
  * through --tetra-codec as a user's would be; its samples say which decode made them and whether it was a bad frame,
  * and the test reads them back from the raw output (-o -, here a temp file) to check what played, in what order:
  * speech starts at a CRC-passed burst, bad frames after it are concealed until a run of them ends it, a stolen half
- * slot keeps the frame timing, 240-sample frames leave the output whole 160-sample blocks, and the channel, timeslot,
- * encryption, talkgroup and record gates hold back what they should.
+ * slot keeps the frame timing, 240-sample frames leave the output whole 160-sample blocks, and the follow, encryption,
+ * talkgroup and record gates hold back what they should: trunking on, only the followed call's proven timeslots play
+ * (direct mode is not trunked and always plays), and each burst is judged by the call it belongs to.
  */
 
 #include <dsd-neo/core/audio_activity.h>
@@ -38,6 +39,7 @@
 
 #include "test_support.h"
 #include "tetra_calls.h"
+#include "tetra_confirm.h"
 #include "tetra_state.h"
 #include "tetra_test_codec.h"
 #include "tetra_voice_state.h"
@@ -282,36 +284,49 @@ played_by_burst(fixture* f) {
     return fixture_output(f, out, MAX_OUT) - before;
 }
 
-/* The trunking state machine follows a group call to @p gssi on the timeslots of @p timeslots. */
+/* Trunking follows a group call to @p gssi on the timeslots of @p timeslots, its tune settled and its signalling
+   decoded on the carrier. */
 static void
 follow_group(fixture* f, uint32_t gssi, uint8_t timeslots) {
     tetra_call_event setup = {.call_id = 9, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
     tetra_calls_on_event(NULL, f->state, &setup, NULL);
     tetra_calls_find(f->state, 9)->called_ssi = gssi;
     tetra_state_t* ts = tetra_st(f->state);
+    f->opts->trunk_enable = 1;
     ts->sm.state = (uint8_t)TETRA_SM_TUNED;
     ts->sm.followed.call_id = 9;
     ts->sm.followed.timeslots = timeslots;
+    tetra_confirm_note_followed_call(f->state);
 }
 
 static void
-test_channel_and_slot_gates(void) {
+test_follow_gate(void) {
     fixture f;
-    expect(fixture_open(&f) == 0, "gates: fixture");
-    f.opts->trunk_enable = 1;
-    f.opts->trunk_is_tuned = 0;
-    expect(played_by_burst(&f) == 0, "gates: nothing plays on the control channel");
-    expect(f.state->last_vc_sync_time == 0, "gates: control-channel bursts are not speech reception");
-    f.opts->trunk_is_tuned = 1;
-    expect(played_by_burst(&f) == 2 * FRAME, "gates: the traffic channel plays");
-
+    expect(fixture_open(&f) == 0, "follow: fixture");
     tetra_state_t* ts = tetra_st(f.state);
+    f.opts->trunk_enable = 1;
+    ts->sm.state = (uint8_t)TETRA_SM_ON_CC;
+    f.opts->trunk_is_tuned = 1; /* the state machine, not the shared flag, says what is followed */
+    expect(played_by_burst(&f) == 0, "follow: nothing plays on the control channel");
+    expect(f.state->last_vc_sync_time == 0, "follow: control-channel bursts are not speech reception");
+
     follow_group(&f, 1, 8); /* TN1 */
+    ts->confirm.followed_call = 0;
     ts->tdma_valid = 1;
-    ts->tn = 2;
-    expect(played_by_burst(&f) == 0, "gates: another timeslot does not play");
     ts->tn = 1;
-    expect(played_by_burst(&f) == 2 * FRAME, "gates: the allocated timeslot plays");
+    expect(played_by_burst(&f) == 0, "follow: not before the call's signalling proved it on the carrier");
+    tetra_confirm_note_followed_call(f.state);
+    ts->tn = 2;
+    expect(played_by_burst(&f) == 0, "follow: another timeslot does not play");
+    ts->tn = 1;
+    expect(played_by_burst(&f) == 2 * FRAME, "follow: the followed timeslot plays");
+    expect(ts->sm.t_voice_m > 0.0, "follow: its speech keeps the state machine on the call");
+
+    /* A direct mode channel has no trunked call to follow: its speech plays with trunking on. */
+    ts->sm.state = (uint8_t)TETRA_SM_IDLE;
+    ts->dmo = 1;
+    ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+    expect(played_by_burst(&f) == 2 * FRAME, "follow: direct mode plays while trunking is enabled");
     fixture_close(&f);
 }
 
@@ -322,7 +337,7 @@ static const uint8_t k_air_key[10] = {0x1F, 0x2E, 0x3D, 0x4C, 0x5B, 0x6A, 0x79, 
 static void
 air_encrypted_call(fixture* f, int key_loaded) {
     tetra_state_t* ts = tetra_st(f->state);
-    ts->enc_mode = TETRA_ENC_MODE_ODD;
+    ts->calls.slot_enc[0] = 1u + TETRA_ENC_MODE_ODD; /* the carrier's addressed signalling is encrypted */
     ts->net_known = 1;
     ts->mcc = 262;
     ts->mnc = 1001;
@@ -357,9 +372,22 @@ test_encryption_gate(void) {
 
     f.opts->reverse_mute = 1;
     expect(played_by_burst(&f) == 2 * FRAME, "crypto: reverse mute plays encrypted speech");
-    ts->enc_mode = TETRA_ENC_MODE_NONE;
-    expect(played_by_burst(&f) == 0, "crypto: reverse mute mutes clear speech");
+    ts->calls.slot_enc[1] = 1u + TETRA_ENC_MODE_NONE;
+    expect(played_by_burst(&f) == 0, "crypto: reverse mute mutes speech its timeslot's signalling says is clear");
     f.opts->reverse_mute = 0;
+
+    /* The followed call's own encryption decides, not the carrier's: end-to-end encryption is never decrypted. */
+    follow_group(&f, 1234, 0x08);
+    expect(played_by_burst(&f) == 2 * FRAME, "crypto: a clear followed call plays on an encrypted carrier");
+    tetra_calls_find(f.state, 9)->e2ee = 1;
+    expect(played_by_burst(&f) == 0, "crypto: an end-to-end encrypted call is muted");
+    f.opts->dmr_mute_encL = 0;
+    expect(played_by_burst(&f) == 2 * FRAME, "crypto: unless the encrypted-audio mute is off");
+    f.opts->dmr_mute_encL = 1;
+    tetra_calls_find(f.state, 9)->e2ee = 0;
+    tetra_calls_find(f.state, 9)->air_enc = TETRA_ENC_MODE_EVEN;
+    expect(played_by_burst(&f) == 2 * FRAME, "crypto: an air encrypted call the key decrypts plays");
+    f.opts->trunk_enable = 0;
 
     /* Direct mode has no key stream: an encrypted direct-mode call is undecryptable, whatever key is loaded. */
     ts->dmo = 1;
@@ -422,6 +450,20 @@ test_talkgroup_gate(void) {
     expect(played_by_burst(&f) == 0, "talkgroup: an avoided group is muted");
     tetra_calls_find(f.state, 9)->called_ssi = 1235;
     expect(played_by_burst(&f) == 2 * FRAME, "talkgroup: another group plays");
+
+    /* Direct mode is judged by the destination of its call. */
+    tetra_state_t* ts = tetra_st(f.state);
+    ts->sm.state = (uint8_t)TETRA_SM_IDLE;
+    ts->dmo = 1;
+    ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+    ts->calls.dmo.active = 1;
+    ts->calls.dmo.group_known = 1;
+    ts->calls.dmo.group = 1;
+    ts->calls.dmo.src = 100;
+    ts->calls.dmo.dst = 1234;
+    expect(played_by_burst(&f) == 0, "talkgroup: a direct mode call to an avoided group is muted");
+    ts->calls.dmo.dst = 1236;
+    expect(played_by_burst(&f) == 2 * FRAME, "talkgroup: a direct mode call to another group plays");
     fixture_close(&f);
 }
 
@@ -484,7 +526,7 @@ main(void) {
     test_clean_stream_plays_every_frame();
     test_integrity_starts_conceals_and_ends_speech();
     test_half_slot_and_carry();
-    test_channel_and_slot_gates();
+    test_follow_gate();
     test_encryption_gate();
     test_air_key_stream_positions();
     test_talkgroup_gate();

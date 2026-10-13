@@ -36,13 +36,11 @@ ks_eq(int alg, uint32_t iv, const uint8_t key[10], const uint8_t expect[10]) {
     return memcmp(out, expect, 10) == 0;
 }
 
-/* An encrypted call on network 86/28 with KSG TEA1, an all-zero operator key, and the clock at TN 1, FN 1, MN 1 of
- * hyperframe 0. */
+/* Network 86/28 with KSG TEA1, an all-zero operator key, and the clock at TN 1, FN 1, MN 1 of hyperframe 0. */
 static dsd_state*
 new_encrypted_state(void) {
     dsd_state* st = (dsd_state*)calloc(1, sizeof(dsd_state));
     tetra_state_t* ts = tetra_st(st);
-    ts->enc_mode = TETRA_ENC_MODE_EVEN;
     ts->net_known = 1;
     ts->mcc = 86;
     ts->mnc = 28;
@@ -102,11 +100,11 @@ test_vectors(void) {
 static void
 test_preconditions(void) {
     uint8_t bits[8];
+    uint8_t mode = TETRA_ENC_MODE_EVEN;
     dsd_state* st = (dsd_state*)calloc(1, sizeof(dsd_state));
 
     printf("[when speech is decrypted]\n");
     DSD_MEMSET(bits, 1, sizeof(bits));
-    tetra_st(st)->enc_mode = TETRA_ENC_MODE_EVEN;
     tetra_st(st)->net_known = 1;
     tetra_st(st)->mcc = 86;
     tetra_st(st)->mnc = 28;
@@ -115,38 +113,38 @@ test_preconditions(void) {
     tetra_st(st)->tn = 1;
     tetra_st(st)->fn = 1;
     tetra_st(st)->mn = 1;
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0, "encrypted voice without a KSG is unchanged");
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 0, "encrypted voice without a KSG is unchanged");
     tetra_air_ksg_remember(st, 86, 28, 3);
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0, "TEA4 is named but not decrypted");
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 0, "TEA4 is named but not decrypted");
     tetra_air_ksg_remember(st, 86, 28, 0);
     CHECK(tetra_air_ksg_lookup(st, 86, 28) == 0 && tetra_air_ksg_lookup(st, 86, 29) == -1,
           "a KSG is remembered per network");
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0, "TEA1 without an operator key is unchanged");
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 0, "TEA1 without an operator key is unchanged");
     CHECK(dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,00000000000000000000", DSD_KEY_APPLY_OVERLAY)
               == DSD_KEY_DIRECT_OK,
           "an operator key loads for network 86/28");
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 1, "TEA1 with a key decrypts trunked voice");
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 1, "TEA1 with a key decrypts trunked voice");
 
     tetra_st(st)->dmo = 1;
     DSD_MEMSET(bits, 1, sizeof(bits));
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0 && bits[0] == 1, "direct mode is not decrypted here");
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 0 && bits[0] == 1, "direct mode is not decrypted here");
     tetra_st(st)->dmo = 0;
     tetra_st(st)->tdma_valid = 0;
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0 && bits[0] == 1, "no TDMA clock, no IV");
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 0 && bits[0] == 1, "no TDMA clock, no IV");
     tetra_st(st)->tdma_valid = 1;
     tetra_st(st)->hyperframe_valid = 0;
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0 && bits[0] == 1, "no hyperframe number, no IV");
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 0 && bits[0] == 1, "no hyperframe number, no IV");
     tetra_st(st)->hyperframe_valid = 1;
     tetra_st(st)->fn = 0;
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0 && bits[0] == 1, "a reserved frame number is no IV");
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 0 && bits[0] == 1, "a reserved frame number is no IV");
     tetra_st(st)->fn = 1;
-    tetra_st(st)->enc_mode = TETRA_ENC_MODE_ODD;
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 1, "the odd key version is encrypted too");
-    tetra_st(st)->enc_mode = TETRA_ENC_MODE_RESERVED;
+    mode = TETRA_ENC_MODE_ODD;
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 1, "the odd key version is encrypted too");
+    mode = TETRA_ENC_MODE_RESERVED;
     DSD_MEMSET(bits, 1, sizeof(bits));
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0 && bits[0] == 1, "the reserved mode is not decrypted");
-    tetra_st(st)->enc_mode = TETRA_ENC_MODE_NONE;
-    CHECK(tetra_air_decrypt_voice(st, bits, 8, 0) == 0 && bits[0] == 1, "clear call is unchanged");
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 0 && bits[0] == 1, "the reserved mode is not decrypted");
+    mode = TETRA_ENC_MODE_NONE;
+    CHECK(tetra_air_decrypt_voice(st, mode, bits, 8, 0) == 0 && bits[0] == 1, "clear speech is unchanged");
     free_state(st);
 }
 
@@ -165,7 +163,8 @@ test_kss_allocation(void) {
     DSD_MEMSET(ks, 0, sizeof(ks));
     tetra_tea_keystream(0, zero_key, iv, ks, (int)sizeof(ks));
     DSD_MEMSET(bits, 0, sizeof(bits));
-    CHECK(tetra_air_decrypt_voice(st, bits, 137, TETRA_AIR_KSS_TCH_S_HALF) == 1, "half-slot speech decrypts");
+    CHECK(tetra_air_decrypt_voice(st, TETRA_ENC_MODE_EVEN, bits, 137, TETRA_AIR_KSS_TCH_S_HALF) == 1,
+          "half-slot speech decrypts");
     for (int i = 0; i < 137; i++) {
         const int bit = TETRA_AIR_KSS_TCH_S_HALF + i;
         same = same && bits[i] == ((ks[bit / 8] >> (7 - (bit % 8))) & 1u);
@@ -173,11 +172,13 @@ test_kss_allocation(void) {
     CHECK(same, "half-slot speech takes KSS(216..352)");
 
     DSD_MEMSET(bits, 0, sizeof(bits));
-    CHECK(tetra_air_decrypt_voice(st, bits, 137, TETRA_AIR_KSS_TCH_S) == 1 && bits[0] == ((ks[0] >> 7) & 1u),
+    CHECK(tetra_air_decrypt_voice(st, TETRA_ENC_MODE_EVEN, bits, 137, TETRA_AIR_KSS_TCH_S) == 1
+              && bits[0] == ((ks[0] >> 7) & 1u),
           "full-slot speech starts at KSS(0)");
-    CHECK(tetra_air_decrypt_voice(st, bits, 137, 296) == 0, "a fragment past KSS(431) is refused");
-    CHECK(tetra_air_decrypt_voice(st, bits, 137, -1) == 0 && tetra_air_decrypt_voice(st, NULL, 137, 0) == 0
-              && tetra_air_decrypt_voice(NULL, bits, 137, 0) == 0,
+    CHECK(tetra_air_decrypt_voice(st, TETRA_ENC_MODE_EVEN, bits, 137, 296) == 0, "a fragment past KSS(431) is refused");
+    CHECK(tetra_air_decrypt_voice(st, TETRA_ENC_MODE_EVEN, bits, 137, -1) == 0
+              && tetra_air_decrypt_voice(st, TETRA_ENC_MODE_EVEN, NULL, 137, 0) == 0
+              && tetra_air_decrypt_voice(NULL, TETRA_ENC_MODE_EVEN, bits, 137, 0) == 0,
           "bad arguments are refused");
     free_state(st);
 }

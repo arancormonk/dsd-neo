@@ -101,10 +101,11 @@ tetra_air_key_usable(const dsd_state* state) {
     return ksg >= 0 && ksg <= 2 && tetra_air_key_lookup(state, ts->mcc, ts->mnc) != NULL;
 }
 
-/* The key, algorithm and initial value for the current slot, or NULL when this speech is not decrypted here. */
+/* The key, algorithm and initial value for the current slot, or NULL when speech encrypted under @p enc_mode is not
+   decrypted here. */
 static const uint8_t*
-tetra_air_slot_key(const dsd_state* state, const tetra_state_t* ts, int* ksg, uint32_t* iv) {
-    if (ts->dmo || !tetra_enc_mode_encrypted(ts->enc_mode)) {
+tetra_air_slot_key(const dsd_state* state, const tetra_state_t* ts, uint8_t enc_mode, int* ksg, uint32_t* iv) {
+    if (ts->dmo || !tetra_enc_mode_encrypted(enc_mode)) {
         return NULL;
     }
     if (!ts->net_known || !ts->hyperframe_valid || !ts->tdma_valid) {
@@ -121,7 +122,7 @@ tetra_air_slot_key(const dsd_state* state, const tetra_state_t* ts, int* ksg, ui
 }
 
 int
-tetra_air_decrypt_voice(const dsd_state* state, uint8_t* bits, int nbits, int ks_bit_offset) {
+tetra_air_decrypt_voice(const dsd_state* state, uint8_t enc_mode, uint8_t* bits, int nbits, int ks_bit_offset) {
     const tetra_state_t* const ts = tetra_st_peek(state);
     uint8_t ks[(TETRA_AIR_KSS_MAX_BITS + 7) / 8];
     int ksg = -1;
@@ -129,7 +130,7 @@ tetra_air_decrypt_voice(const dsd_state* state, uint8_t* bits, int nbits, int ks
     if (!ts || !bits || nbits <= 0 || ks_bit_offset < 0 || ks_bit_offset + nbits > TETRA_AIR_KSS_MAX_BITS) {
         return 0;
     }
-    const uint8_t* const key = tetra_air_slot_key(state, ts, &ksg, &iv);
+    const uint8_t* const key = tetra_air_slot_key(state, ts, enc_mode, &ksg, &iv);
     if (!key) {
         return 0;
     }

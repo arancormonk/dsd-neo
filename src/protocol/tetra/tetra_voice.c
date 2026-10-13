@@ -15,12 +15,13 @@
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_codec_abi.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
-#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/log.h>
 #include <stddef.h>
 #include <stdint.h>
 
+#include "tetra_calls.h"
 #include "tetra_state.h"
 #include "tetra_voice_gate.h"
 #include "tetra_voice_state.h"
@@ -188,14 +189,16 @@ typedef struct {
     int record;  /* the record policy lets the recordings take it */
 } voice_route;
 
+/* The talkgroup policy judges the call the speech belongs to: its canonical call, published before the policy is
+   asked, gives a private call its two parties. */
 static voice_route
-voice_route_for(const dsd_opts* opts, const dsd_state* state, int keystream_applied) {
+voice_route_for(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp, int keystream_applied) {
     voice_route route = {0, 0};
-    if (!dsd_voice_crypto_class_audible(opts, 0, tetra_voice_crypto_class(state, keystream_applied))) {
+    if (!dsd_voice_crypto_class_audible(opts, 0, tetra_voice_crypto_class(sp, keystream_applied))) {
         return route;
     }
     int muted = 0;
-    (void)dsd_audio_group_gate_mono(opts, state, tetra_voice_talkgroup(state), 0, &muted);
+    (void)dsd_audio_group_gate_mono(opts, state, (unsigned long)sp->target, 0, &muted);
     if (muted) {
         return route;
     }
@@ -266,67 +269,77 @@ voice_frame_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const
     voice_play(opts, state, v, pcm, route->record);
 }
 
-/* The frames of one burst through the gates: @p bad[i] for frame i of @p frames. The talkgroup and record policy are
-   asked once per burst, and only for a burst with a frame to play. */
+/* The frames of one burst of @p sp's call: @p bad[i] for frame i of @p frames. Speech whose CRC passed reaches the call
+   first (tetra_calls_on_speech()); the talkgroup and record policy are asked once per burst, and only for a burst with
+   a frame to play. */
 static void
-voice_burst(const dsd_opts* opts, dsd_state* state, const uint8_t* frames, const int* bad, int nframes,
-            int keystream_applied) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !tetra_voice_channel_gate_passes(opts) || !tetra_voice_slot_gate_passes(state)) {
+voice_burst(dsd_opts* opts, dsd_state* state, const tetra_speech* sp, const uint8_t* frames, const int* bad,
+            int nframes, int keystream_applied) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
         return;
     }
-    voice_route route = {0, 0};
-    int routed = 0;
     int good = 0;
     for (int i = 0; i < nframes; i++) {
         good |= !bad[i];
+    }
+    if (good) {
+        tetra_calls_on_speech(opts, state, sp);
+    }
+    voice_route route = {0, 0};
+    int routed = 0;
+    for (int i = 0; i < nframes; i++) {
         if (!voice_frame_admitted(&ts->voice, bad[i])) {
             continue;
         }
         if (!routed) {
-            route = voice_route_for(opts, state, keystream_applied);
+            route = voice_route_for(opts, state, sp, keystream_applied);
             routed = 1;
         }
         voice_frame_play(opts, state, &ts->voice, frames + ((size_t)i * DSD_TETRA_CODEC_FRAME_BITS), bad[i], &route);
     }
-    if (good) {
-        /* Speech whose CRC passed is reception activity, whatever the codec or the gates made of it; on the followed
-           timeslot it also keeps the trunking state machine on the traffic channel. */
-        tetra_sm_note_voice(state, ts->tn);
-    }
+}
+
+/* Undo the air interface encryption of an air-encrypted trunked call's speech; 1 when a key stream applied. */
+static int
+voice_decrypt(const dsd_state* state, const tetra_speech* sp, uint8_t* bits, int nbits, int kss) {
+    return !sp->sealed && sp->air_enc != TETRA_ENC_MODE_NONE
+           && tetra_air_decrypt_voice(state, sp->air_enc, bits, nbits, kss);
 }
 
 void
-tetra_voice_full_slot(const dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good) {
+tetra_voice_full_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good) {
     uint8_t clear[TETRA_SPEECH_FULL_BITS];
     uint8_t frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
-    if (!state || !type1) {
+    tetra_speech sp;
+    if (!state || !type1 || !tetra_st(state) || !tetra_voice_gate(opts, state, &sp)) {
         return;
     }
     DSD_MEMCPY(clear, type1, sizeof(clear));
-    const int keystream = tetra_air_decrypt_voice(state, clear, TETRA_SPEECH_FULL_BITS, TETRA_AIR_KSS_TCH_S);
+    const int keystream = voice_decrypt(state, &sp, clear, TETRA_SPEECH_FULL_BITS, TETRA_AIR_KSS_TCH_S);
     tetra_voice_reorder_full(clear, frames);
     DSD_SECURE_ZERO(clear, sizeof(clear));
     const int bad[2] = {!good, !good};
-    voice_burst(opts, state, frames, bad, 2, keystream);
+    voice_burst(opts, state, &sp, frames, bad, 2, keystream);
     DSD_SECURE_ZERO(frames, sizeof(frames));
 }
 
 void
-tetra_voice_half_slot(const dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good) {
+tetra_voice_half_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good) {
     uint8_t clear[TETRA_SPEECH_HALF_BITS];
     uint8_t frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
-    if (!state || !type1) {
+    tetra_speech sp;
+    if (!state || !type1 || !tetra_st(state) || !tetra_voice_gate(opts, state, &sp)) {
         return;
     }
     DSD_MEMCPY(clear, type1, sizeof(clear));
-    const int keystream = tetra_air_decrypt_voice(state, clear, TETRA_SPEECH_HALF_BITS, TETRA_AIR_KSS_TCH_S_HALF);
+    const int keystream = voice_decrypt(state, &sp, clear, TETRA_SPEECH_HALF_BITS, TETRA_AIR_KSS_TCH_S_HALF);
     /* Frame A of the slot was stolen (EN 300 395-2 clause 5.2): the codec conceals it, frame B is the speech. */
     DSD_MEMSET(frames, 0, DSD_TETRA_CODEC_FRAME_BITS);
     tetra_voice_reorder_half(clear, frames + DSD_TETRA_CODEC_FRAME_BITS);
     DSD_SECURE_ZERO(clear, sizeof(clear));
     const int bad[2] = {1, !good};
-    voice_burst(opts, state, frames, bad, 2, keystream);
+    voice_burst(opts, state, &sp, frames, bad, 2, keystream);
     DSD_SECURE_ZERO(frames, sizeof(frames));
 }
 

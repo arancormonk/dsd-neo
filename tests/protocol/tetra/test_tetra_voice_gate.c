@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * The gates a TETRA speech frame passes: the followed traffic channel, the allocated timeslot (by the tracked TDMA
- * timeslot, TN1 in bit 3 of the allocation's bitmap), the encryption class and the talkgroup.
+ * The gates a TETRA speech burst passes (tetra_voice_gate.h): trunking on, the followed call's timeslots (by the tracked
+ * TDMA timeslot, TN1 in bit 3 of the allocation's bitmap) on its settled carrier once its signalling proved it there;
+ * not trunking, one heard timeslot at a time; direct mode always. Then the call each burst belongs to, and its
+ * encryption class. Runs on the decode clock's TEST source.
  */
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
@@ -12,14 +14,18 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
-#include <dsd-neo/protocol/tetra/tetra_voice.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "tetra_calls.h"
+#include "tetra_confirm.h"
 #include "tetra_state.h"
 #include "tetra_voice_gate.h"
+
+#define SECOND_NS 1000000000ULL
 
 static int g_fail = 0;
 
@@ -32,103 +38,249 @@ expect(int ok, const char* what) {
 }
 
 static void
-test_channel_gate(dsd_opts* opts) {
-    expect(tetra_voice_channel_gate_passes(opts), "conventional monitoring passes speech");
-    opts->trunk_enable = 1;
-    expect(!tetra_voice_channel_gate_passes(opts), "the trunking control channel does not");
-    opts->trunk_is_tuned = 1;
-    expect(tetra_voice_channel_gate_passes(opts), "the acquired traffic channel does");
-    expect(tetra_voice_channel_gate_passes(NULL), "no options pass");
+clock_at(double seconds) {
+    dsd_decode_clock_test_set_ns((uint64_t)(seconds * (double)SECOND_NS));
 }
 
-/* The trunking state machine follows call @p call_id on the timeslots of @p timeslots. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+} fixture;
+
 static void
-follow(dsd_state* st, uint16_t call_id, uint8_t timeslots) {
-    tetra_state_t* ts = tetra_st(st);
+fixture_open(fixture* f) {
+    f->opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    f->state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!f->opts || !f->state || !tetra_st(f->state)) {
+        DSD_FPRINTF(stderr, "out of memory\n");
+        exit(1);
+    }
+    clock_at(1000.0);
+}
+
+static void
+fixture_close(fixture* f) {
+    dsd_state_ext_free_all(f->state);
+    free(f->state);
+    free(f->opts);
+}
+
+/* A record of call @p call_id: a D-SETUP of a group call (table 14.35 communication type 01) to @p gssi, on timeslots
+ * @p timeslots of the carrier at @p freq_hz. */
+static void
+group_call(fixture* f, uint16_t call_id, uint32_t gssi, long freq_hz, uint8_t timeslots) {
+    tetra_call_event setup = {.call_id = call_id, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
+    tetra_calls_on_event(NULL, f->state, &setup, NULL);
+    tetra_call_t* c = tetra_calls_find(f->state, call_id);
+    c->called_ssi = gssi;
+    c->alloc.freq_hz = freq_hz;
+    c->alloc.timeslots = timeslots;
+    c->alloc.up_down = 3;
+    c->alloc_m = dsd_decode_now_mono_s();
+}
+
+/* The trunking state machine follows call @p call_id on @p timeslots, its tune settled. */
+static void
+follow(fixture* f, uint16_t call_id, uint8_t timeslots) {
+    tetra_state_t* ts = tetra_st(f->state);
+    f->opts->trunk_enable = 1;
     ts->sm.state = (uint8_t)TETRA_SM_TUNED;
+    ts->sm.pending_request_id = 0;
     ts->sm.followed.call_id = call_id;
     ts->sm.followed.timeslots = timeslots;
 }
 
 static void
-test_slot_gate(dsd_state* st) {
-    tetra_state_t* ts = tetra_st(st);
-    expect(tetra_voice_slot_gate_passes(st), "no followed call passes every timeslot");
-    ts->tdma_valid = 0;
-    follow(st, 1, 4);
-    expect(tetra_voice_slot_gate_passes(st), "a followed call without TDMA timing passes");
+at_timeslot(fixture* f, uint8_t tn) {
+    tetra_state_t* ts = tetra_st(f->state);
     ts->tdma_valid = 1;
+    ts->tn = tn;
+}
+
+static void
+test_trunked_gate(void) {
+    fixture f;
+    fixture_open(&f);
+    tetra_state_t* ts = tetra_st(f.state);
+    tetra_speech sp;
+    group_call(&f, 9, 0x123456u, 392012500L, 0x08);
+    at_timeslot(&f, 1);
+
+    f.opts->trunk_enable = 1;
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: nothing is heard before the state machine follows");
+    ts->sm.state = (uint8_t)TETRA_SM_ON_CC;
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: nothing is heard on the control channel");
+
+    follow(&f, 9, 0x08);
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: nothing before signalling proved the call here");
+    tetra_confirm_note_followed_call(f.state);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.followed && sp.kind == TETRA_SPEECH_CALL && sp.call_id == 9
+               && sp.target == 0x123456u && sp.tn == 1,
+           "trunked: the proven followed call is heard, judged by its GSSI");
+    ts->sm.pending_request_id = 7;
+    expect(!tetra_voice_gate(f.opts, f.state, &sp) && sp.kind == 0 && sp.target == 0u,
+           "trunked: nothing while a retune is in flight, and nothing is described");
+    ts->sm.pending_request_id = 0;
+
     for (unsigned tn = 1; tn <= 4; ++tn) {
-        ts->tn = (uint8_t)tn;
+        at_timeslot(&f, (uint8_t)tn);
         for (unsigned assigned = 1; assigned <= 4; ++assigned) {
             ts->sm.followed.timeslots = (uint8_t)(1u << (4u - assigned));
             char label[64];
-            DSD_SNPRINTF(label, sizeof(label), "TN%u under an allocation of TN%u", tn, assigned);
-            expect(tetra_voice_slot_gate_passes(st) == (tn == assigned), label);
+            DSD_SNPRINTF(label, sizeof(label), "trunked: TN%u under an allocation of TN%u", tn, assigned);
+            expect(tetra_voice_gate(f.opts, f.state, &sp) == (tn == assigned), label);
         }
     }
+    ts->tdma_valid = 0;
+    ts->sm.followed.timeslots = 0x01;
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 0, "trunked: a timeslot the clock cannot place is heard");
     ts->sm.followed.timeslots = 0;
-    expect(!tetra_voice_slot_gate_passes(st), "a followed call with no timeslot passes none");
-    ts->sm.state = (uint8_t)TETRA_SM_IDLE;
-    expect(tetra_voice_slot_gate_passes(NULL), "no state passes");
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: a followed call with no timeslot is not heard");
+
+    /* A followed call no record names is heard without a talkgroup. */
+    ts->sm.followed.timeslots = 0x08;
+    ts->sm.followed.call_id = 77;
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.followed && sp.kind == TETRA_SPEECH_ANON && sp.target == 0u,
+           "trunked: followed speech without a record is anonymous");
+    expect(!tetra_voice_gate(f.opts, NULL, &sp) && !tetra_voice_gate(f.opts, f.state, NULL), "trunked: no state");
+    fixture_close(&f);
 }
 
+/* Direct mode speech plays while trunking is enabled: there is no trunked call to follow on a direct mode channel. */
 static void
-test_crypto_class(dsd_state* st) {
-    tetra_state_t* ts = tetra_st(st);
-    ts->enc_mode = TETRA_ENC_MODE_NONE;
-    expect(tetra_voice_crypto_class(st, 0) == DSD_VOICE_CRYPTO_CLEAR, "not encrypted is clear");
-    expect(tetra_voice_crypto_class(st, 1) == DSD_VOICE_CRYPTO_CLEAR, "a stray keystream does not make it encrypted");
-    for (uint8_t mode = TETRA_ENC_MODE_RESERVED; mode <= TETRA_ENC_MODE_ODD; mode++) {
-        ts->enc_mode = mode;
-        expect(tetra_voice_crypto_class(st, 1) == DSD_VOICE_CRYPTO_DECRYPTABLE, "encrypted and decrypted");
-        expect(tetra_voice_crypto_class(st, 0) == DSD_VOICE_CRYPTO_UNDECRYPTABLE, "encrypted, no keystream");
-    }
+test_direct_mode(void) {
+    fixture f;
+    fixture_open(&f);
+    tetra_state_t* ts = tetra_st(f.state);
+    tetra_speech sp;
+    f.opts->trunk_enable = 1;
     ts->dmo = 1;
     ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
-    expect(tetra_voice_crypto_class(st, 0) == DSD_VOICE_CRYPTO_CLEAR, "clear direct mode, whatever trunked mode said");
+    at_timeslot(&f, 1);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.kind == TETRA_SPEECH_DMO && !sp.followed && sp.target == 0u
+               && !sp.sealed,
+           "direct: heard with trunking on, no call yet");
+    ts->calls.dmo.active = 1;
+    ts->calls.dmo.dst = 0x800001u;
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.target == 0x800001u,
+           "direct: judged by the destination of the call on the channel");
+    ts->calls.dmo.active = 0;
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.target == 0u, "direct: an ended call is no destination");
     ts->dmo_crypt = TETRA_DMO_CRYPT_AIR;
-    expect(tetra_voice_crypto_class(st, 1) == DSD_VOICE_CRYPTO_UNDECRYPTABLE,
-           "direct mode air encryption is undecryptable");
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.sealed, "direct: air encryption is sealed");
     ts->dmo_crypt = TETRA_DMO_CRYPT_E2E;
-    expect(tetra_voice_crypto_class(st, 1) == DSD_VOICE_CRYPTO_UNDECRYPTABLE,
-           "direct mode end-to-end encryption is undecryptable");
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.sealed, "direct: end-to-end encryption is sealed");
     ts->dmo_crypt = TETRA_DMO_CRYPT_UNKNOWN;
-    expect(tetra_voice_crypto_class(st, 0) == DSD_VOICE_CRYPTO_UNDECRYPTABLE,
-           "direct mode speech before its security class is known is not taken as clear");
-    expect(tetra_voice_crypto_class(NULL, 0) == DSD_VOICE_CRYPTO_CLEAR, "no state is clear");
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.sealed, "direct: an unknown security class is sealed");
+    fixture_close(&f);
+}
+
+/* Not trunking, the first timeslot with speech is heard until its speech stops for TETRA_CALL_SPEECH_END_S. */
+static void
+test_heard_timeslot(void) {
+    fixture f;
+    fixture_open(&f);
+    tetra_speech sp;
+    at_timeslot(&f, 2);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && !sp.followed && sp.tn == 2, "heard: any timeslot to start with");
+    tetra_calls_on_speech(f.opts, f.state, &sp);
+    at_timeslot(&f, 3);
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "heard: another timeslot waits while TN2 speaks");
+    clock_at(1000.0 + TETRA_CALL_SPEECH_END_S - 0.1);
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "heard: and waits until the speech has stopped long enough");
+    at_timeslot(&f, 2);
+    expect(tetra_voice_gate(f.opts, f.state, &sp), "heard: TN2 goes on");
+    clock_at(1000.0 + TETRA_CALL_SPEECH_END_S);
+    at_timeslot(&f, 3);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 3, "heard: once TN2 stopped, TN3 is heard");
+    tetra_calls_on_speech(f.opts, f.state, &sp);
+    at_timeslot(&f, 2);
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "heard: and holds the receiver in turn");
+    tetra_calls_forget_carrier(f.state);
+    expect(tetra_voice_gate(f.opts, f.state, &sp), "heard: a new carrier hears any timeslot");
+    tetra_st(f.state)->tdma_valid = 0;
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 0, "heard: speech the clock cannot place is heard");
+    fixture_close(&f);
+}
+
+/* Heard speech belongs to the record whose traffic channel is its timeslot of the tuned frequency, else to none. */
+static void
+test_heard_call(void) {
+    fixture f;
+    fixture_open(&f);
+    tetra_state_t* ts = tetra_st(f.state);
+    tetra_speech sp;
+    group_call(&f, 9, 0x123456u, 392012500L, 0x04); /* TN2 */
+    group_call(&f, 10, 0x222222u, 392037500L, 0x04);
+    at_timeslot(&f, 2);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.kind == TETRA_SPEECH_ANON,
+           "heard call: no tuned frequency, no record");
+    f.opts->audio_in_type = AUDIO_IN_RTL;
+    f.opts->rtlsdr_center_freq = 392012500U;
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.kind == TETRA_SPEECH_CALL && sp.call_id == 9
+               && sp.target == 0x123456u,
+           "heard call: the record on the tuned carrier's timeslot");
+    f.opts->rtlsdr_center_freq = 392037500U;
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.call_id == 10, "heard call: each carrier its own record");
+    at_timeslot(&f, 3);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.kind == TETRA_SPEECH_ANON,
+           "heard call: another timeslot is not the call's");
+
+    /* The call's own evidence decides its air encryption; speech of no record takes its timeslot's, else the
+       carrier's. */
+    at_timeslot(&f, 2);
+    tetra_calls_find(f.state, 10)->air_enc = TETRA_ENC_MODE_EVEN;
+    tetra_calls_find(f.state, 10)->e2ee = 1;
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.air_enc == TETRA_ENC_MODE_EVEN && sp.sealed,
+           "heard call: the record's air and end-to-end encryption");
+    at_timeslot(&f, 3);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.air_enc == TETRA_ENC_MODE_NONE && !sp.sealed,
+           "heard call: no evidence is clear");
+    tetra_mac_address addr;
+    DSD_MEMSET(&addr, 0, sizeof(addr));
+    addr.type = TETRA_MAC_ADDR_SSI;
+    addr.ssi = 0x777777u;
+    tetra_calls_on_addressed(f.state, &addr, TETRA_ENC_MODE_ODD, 0, 2);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.air_enc == TETRA_ENC_MODE_ODD,
+           "heard call: the carrier's evidence when the timeslot had none");
+    tetra_calls_on_addressed(f.state, &addr, TETRA_ENC_MODE_NONE, 0, 3);
+    tetra_calls_on_addressed(f.state, &addr, TETRA_ENC_MODE_EVEN, 0, 1);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.air_enc == TETRA_ENC_MODE_NONE,
+           "heard call: the timeslot's own evidence first");
+    tetra_calls_forget_carrier(f.state);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.air_enc == TETRA_ENC_MODE_NONE && ts->calls.slot_enc[0] == 0u,
+           "heard call: a new carrier has no evidence");
+    fixture_close(&f);
 }
 
 static void
-test_talkgroup(dsd_state* st) {
-    tetra_state_t* ts = tetra_st(st);
-    ts->dmo = 0;
-    tetra_call_event setup = {.call_id = 9, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
-    tetra_calls_on_event(NULL, st, &setup, NULL);
-    tetra_calls_find(st, 9)->called_ssi = 0x123456u;
-    follow(st, 9, 8);
-    expect(tetra_voice_talkgroup(st) == 0x123456ul, "trunked speech is judged by the followed call's GSSI");
-    ts->dmo = 1;
-    expect(tetra_voice_talkgroup(st) == 0ul, "direct mode has no group address yet");
-    expect(tetra_voice_talkgroup(NULL) == 0ul, "no state has none");
+test_crypto_class(void) {
+    tetra_speech sp;
+    DSD_MEMSET(&sp, 0, sizeof(sp));
+    expect(tetra_voice_crypto_class(&sp, 0) == DSD_VOICE_CRYPTO_CLEAR, "crypto: not encrypted is clear");
+    expect(tetra_voice_crypto_class(&sp, 1) == DSD_VOICE_CRYPTO_CLEAR, "crypto: a stray key stream changes nothing");
+    for (uint8_t mode = TETRA_ENC_MODE_RESERVED; mode <= TETRA_ENC_MODE_ODD; mode++) {
+        sp.air_enc = mode;
+        expect(tetra_voice_crypto_class(&sp, 1) == DSD_VOICE_CRYPTO_DECRYPTABLE, "crypto: air encrypted, decrypted");
+        expect(tetra_voice_crypto_class(&sp, 0) == DSD_VOICE_CRYPTO_UNDECRYPTABLE, "crypto: air encrypted, no key");
+    }
+    sp.air_enc = TETRA_ENC_MODE_NONE;
+    sp.sealed = 1;
+    expect(tetra_voice_crypto_class(&sp, 0) == DSD_VOICE_CRYPTO_UNDECRYPTABLE, "crypto: end-to-end is undecryptable");
+    sp.air_enc = TETRA_ENC_MODE_EVEN;
+    expect(tetra_voice_crypto_class(&sp, 1) == DSD_VOICE_CRYPTO_UNDECRYPTABLE,
+           "crypto: an air key stream does not undo end-to-end encryption");
+    expect(tetra_voice_crypto_class(NULL, 0) == DSD_VOICE_CRYPTO_CLEAR, "crypto: no speech is clear");
 }
 
 int
 main(void) {
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
-    if (!opts || !st) {
-        free(opts);
-        free(st);
-        return 1;
-    }
-    test_channel_gate(opts);
-    test_slot_gate(st);
-    test_crypto_class(st);
-    test_talkgroup(st);
-    dsd_state_ext_free_all(st);
-    free(st);
-    free(opts);
+    dsd_decode_clock_use_test(SECOND_NS * 1000ULL);
+    test_trunked_gate();
+    test_direct_mode();
+    test_heard_timeslot();
+    test_heard_call();
+    test_crypto_class();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

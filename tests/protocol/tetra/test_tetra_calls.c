@@ -2,9 +2,10 @@
 /*
  * TETRA call records (tetra_calls.h): each CMCE PDU acts on the call its call identifier names, channel allocations
  * attach to the call they came with or to the call of the party they address, and the call to follow is chosen by the
- * talkgroup policy (hold, priority and preemption) and the encryption lockout. Blocks are built field by field from the
- * ETSI tables (tetra_test_pdu.h) and decoded by the real MAC; the tuning backend is a pair of stand-in hooks; time is
- * the decode clock's TEST source.
+ * talkgroup policy (hold, priority and preemption) and the encryption lockout; the followed call, the heard call and
+ * the direct mode call publish as canonical calls, from their signalling and their speech. Blocks are built field by
+ * field from the ETSI tables (tetra_test_pdu.h) and decoded by the real MAC; speech goes through the real voice path
+ * without a codec; the tuning backend is a pair of stand-in hooks; time is the decode clock's TEST source.
  */
 
 #include <assert.h>
@@ -20,10 +21,12 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
+#include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -321,9 +324,12 @@ test_followed_call_renamed(void) {
     ttb_put(&cmce, 0x0E, 14);
     ttb_put(&cmce, 0, 9); /* the nine other type-2 elements absent */
     ttb_put(&cmce, 0, 1); /* M-bit */
+    const uint64_t epoch = canonical(s.state).epoch;
     send_block(&s, 0x100u, &cmce, 0, 0);
     assert(tetra_calls_peek(s.state, 0x0A) == NULL && tetra_calls_peek(s.state, 0x0E) != NULL);
     assert(followed_call(s.state) == 0x0E && g_returns == 0);
+    /* The call goes on under its new identifier: one canonical call. */
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && canonical(s.state).epoch == epoch);
     send_call_pdu(&s, 0x100u, TETRA_CMCE_D_RELEASE, 0x0E, 5);
     assert(g_returns == 1 && followed_call(s.state) == -1);
     session_close(&s);
@@ -617,6 +623,124 @@ test_direct_mode_short_data(void) {
     session_close(&s);
 }
 
+/* One good full-slot speech burst on timeslot @p tn, through the voice path (no codec is loaded). */
+static void
+speech(session* s, uint8_t tn) {
+    uint8_t bits[TETRA_SPEECH_FULL_BITS];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    tetra_state_t* const ts = tetra_st(s->state);
+    ts->tdma_valid = 1;
+    ts->tn = tn;
+    tetra_voice_full_slot(s->opts, s->state, bits, 1);
+}
+
+/* Speech of the followed call, once its signalling proved it on its carrier, marks its canonical call's media and keeps
+ * the state machine on it; speech that trails its D-TX CEASED opens nothing; and a followed call whose speech the
+ * listener cannot decrypt is locked out and left while encrypted calls are not followed. */
+static void
+test_followed_call_speech(void) {
+    session s = session_open();
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120); /* TN2 of carrier 120 */
+    assert(followed_call(s.state) == 0x0A && canonical(s.state).media_active == 0U);
+    tetra_confirm_forget_followed_call(s.state); /* as the retune to carrier 120 left it */
+    speech(&s, 2);
+    assert(canonical(s.state).media_active == 0U && tetra_st(s.state)->sm.t_voice_m <= 0.0);
+
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    speech(&s, 3);
+    assert(canonical(s.state).media_active == 0U && tetra_st(s.state)->sm.t_voice_m <= 0.0);
+    speech(&s, 2);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.media_active == 1U && call.ota_source_id == 0x4444u);
+    assert(tetra_st(s.state)->sm.t_voice_m > 0.0);
+
+    send_call_pdu(&s, 0x100u, TETRA_CMCE_D_TX_CEASED, 0x0A, 1);
+    const uint64_t ended = canonical(s.state).epoch;
+    speech(&s, 2);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.epoch == ended);
+
+    send_tx_granted(&s, 0x100u, 0x0A, 0x5555u);
+    s.opts->trunk_tune_enc_calls = 0;
+    tetra_calls_find(s.state, 0x0A)->air_enc = TETRA_ENC_MODE_EVEN; /* no key for the network */
+    speech(&s, 2);
+    assert(followed_call(s.state) == -1 && g_returns == 1);
+    assert(dsd_enc_lockout_entry_active(s.state, 0x100u, 1) == 1);
+    session_close(&s);
+}
+
+/* Not trunking, the heard speech's call publishes: the record whose traffic channel is its timeslot of the tuned
+ * carrier, updated by the call's signalling and ended when its speech stops; else an anonymous call, only on a carrier a
+ * CRC-16 block proved. */
+static void
+test_heard_call_speech(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100); /* TN2 of the carrier being received */
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_IDLE);
+    speech(&s, 2);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0x300u && call.channel == 100U
+           && call.media_active == 1U);
+    const uint64_t epoch = call.epoch;
+    send_tx_granted(&s, 0x300u, 0x0C, 0x4444u);
+    call = canonical(s.state);
+    assert(call.epoch == epoch && call.ota_source_id == 0x4444u);
+
+    /* D-TX CEASED ends the transmission; the speech that trails it opens nothing, the next grant opens the next. */
+    send_call_pdu(&s, 0x300u, TETRA_CMCE_D_TX_CEASED, 0x0C, 1);
+    speech(&s, 2);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_TERMINATOR && call.epoch == epoch);
+    send_tx_granted(&s, 0x300u, 0x0C, 0x5555u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != epoch && call.ota_source_id == 0x5555u);
+
+    at_seconds(1000.0 + TETRA_CALL_SPEECH_END_S);
+    tetra_calls_tick(s.opts, s.state);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_SYNC_LOSS);
+    send_tx_granted(&s, 0x300u, 0x0C, 0x6666u);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+
+    at_seconds(1000.0 + TETRA_CALL_SPEECH_END_S + 2.0 * DSD_CALL_REACQUIRE_GAP_S);
+    speech(&s, 3);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == DSD_CALL_KIND_VOICE && call.ota_target_id == 0u
+           && call.media_active == 1U && call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    at_seconds(1000.0 + 2.0 * TETRA_CALL_SPEECH_END_S + 2.0 * DSD_CALL_REACQUIRE_GAP_S);
+    tetra_calls_tick(s.opts, s.state);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+
+    at_seconds(1000.0 + 2.0 * TETRA_CALL_SPEECH_END_S + 4.0 * DSD_CALL_REACQUIRE_GAP_S);
+    tetra_confirm_reset(s.state);
+    speech(&s, 3);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+    session_close(&s);
+}
+
+/* Speech of the direct mode call keeps it from ending idle; with trunking on, it is heard all the same. */
+static void
+test_direct_mode_speech(void) {
+    session s = session_open();
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    const uint64_t epoch = canonical(s.state).epoch;
+    at_seconds(1000.0 + TETRA_CALL_DMO_IDLE_S - 0.5);
+    speech(&s, 1);
+    assert(canonical(s.state).media_active == 1U);
+    at_seconds(1000.0 + TETRA_CALL_DMO_IDLE_S + 0.5);
+    tetra_calls_tick(s.opts, s.state);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch);
+    at_seconds(1000.0 + 2.0 * TETRA_CALL_DMO_IDLE_S);
+    tetra_calls_tick(s.opts, s.state);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+    session_close(&s);
+}
+
 int
 main(void) {
     test_pdus_act_on_their_own_call();
@@ -631,6 +755,9 @@ main(void) {
     test_sds_and_status_notices();
     test_direct_mode_calls();
     test_direct_mode_short_data();
+    test_followed_call_speech();
+    test_heard_call_speech();
+    test_direct_mode_speech();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");
     return 0;
 }

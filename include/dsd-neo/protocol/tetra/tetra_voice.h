@@ -47,13 +47,17 @@ void tetra_voice_reorder_half(const uint8_t* type1, uint8_t* frame);
 /**
  * @brief The two speech frames of a full-slot traffic burst.
  *
- * An air-encrypted call is decrypted here with key stream bits TETRA_AIR_KSS_TCH_S on (tetra_air_decrypt_voice());
- * whether a key stream applied decides the frames' encryption class.
+ * Only speech the voice gates let through is decoded: trunking on, the followed call's on its timeslots once its
+ * signalling proved it on the carrier; not trunking, the timeslot being heard; direct mode always. The speech's call
+ * decides its talkgroup and encryption: an air-encrypted call is decrypted here with key stream bits
+ * TETRA_AIR_KSS_TCH_S on (tetra_air_decrypt_voice()), and whether a key stream applied decides the frames' encryption
+ * class. Speech whose CRC passed publishes its call and marks its media before it plays.
  *
+ * @param opts  Options; may be NULL.
  * @param type1 The 274 type-1 bits as received (tetra_speech_full_decode()).
  * @param good  1 when the class-2 CRC passed and the burst was resolved as traffic, else 0.
  */
-void tetra_voice_full_slot(const dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good);
+void tetra_voice_full_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good);
 
 /**
  * @brief The speech frame in the second half of a burst whose first half was stolen for signalling (EN 300 395-2
@@ -62,22 +66,13 @@ void tetra_voice_full_slot(const dsd_opts* opts, dsd_state* state, const uint8_t
  *
  * @param type1 The 137 type-1 bits as received (tetra_speech_half_decode()).
  */
-void tetra_voice_half_slot(const dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good);
+void tetra_voice_half_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good);
 
 /**
  * @brief Forget the speech in progress: the codec's decoder state, the stream's integrity and the PCM not yet played.
  * The codec library stays loaded. The engine calls this at carrier boundaries.
  */
 void tetra_voice_reset(dsd_state* state);
-
-/** @brief 1 unless trunking follows a call and the receiver is still on the control channel. */
-int tetra_voice_channel_gate_passes(const dsd_opts* opts);
-
-/**
- * @brief 1 when the burst's timeslot belongs to the followed call: always before a channel allocation and the TDMA
- * timing are both known, then only the allocated timeslots (none once an allocation released them).
- */
-int tetra_voice_slot_gate_passes(const dsd_state* state);
 
 #ifdef __cplusplus
 }

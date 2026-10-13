@@ -4,11 +4,11 @@
  * @brief TETRA calls: the CMCE calls the downlink signals, which one the decoder follows, and the canonical call it
  * publishes.
  *
- * The MCCH signals the calls of every carrier and timeslot of a cell (EN 300 392-2 clause 9.5.1), several at once, so
- * every call is a record keyed by the 14-bit call identifier that each call PDU of clause 14.7.1 carries: a PDU updates
- * the record it names and no other, and a release ends the record it names. The traffic channel a call is given comes
- * in a channel allocation element (clause 21.5.2, table 21.87) of the MAC PDU that carried the call's CMCE PDU, or of
- * a PDU addressed to one of the call's parties; it attaches to that call only.
+ * The MCCH (timeslot 1 of the main carrier, EN 300 392-2 clause 9.4.2.1) signals the calls of every carrier and timeslot
+ * of a cell, several at once, so every call is a record keyed by the 14-bit call identifier that each call PDU of
+ * clause 14.7.1 carries: a PDU updates the record it names and no other, and a release ends the record it names. The
+ * traffic channel a call is given comes in a channel allocation element (clause 21.5.2, table 21.87) of the MAC PDU
+ * that carried the call's CMCE PDU, or of a PDU addressed to one of the call's parties; it attaches to that call only.
  *
  * Following (trunking on): an allocation that came with a CMCE PDU of a call whose D-SETUP named its called party is
  * judged by the talkgroup policy and the encryption lockout, and the trunking state machine (tetra_trunk_sm.h) is
@@ -18,7 +18,10 @@
  * signalling once a block before it proved the carrier (tetra_confirm), with its called party as the target, its
  * transmitting party as the source, its traffic channel, its basic service as the service options and its crypto
  * class. D-TX CEASED and a release end it as over-the-air terminators; the state machine leaving it ends it as a
- * teardown. Decoded short data, status messages and MM enable/disable become data and control notices.
+ * teardown. Not trunking, the call whose speech is heard publishes the same way, from its speech and then its
+ * signalling, and ends TETRA_CALL_SPEECH_END_S after its speech stops; speech no call record names publishes as an
+ * anonymous call on a proven carrier. Decoded speech marks the call's media. Decoded short data, status messages and
+ * MM enable/disable become data and control notices.
  *
  * Direct mode (EN 300 396-3) carries one call on its channel, described by the DMAC-SYNC and DMAC-DATA PDUs of the
  * master; it is kept apart from the trunked mode table.
@@ -47,6 +50,13 @@ extern "C" {
 /** Seconds without speech after which the heard call (not trunking) counts as over: longer than the frame 18 gap of a
  * speech timeslot, short enough that the next transmission on another timeslot is heard. */
 #define TETRA_CALL_SPEECH_END_S 1.0
+
+/** The bit of timeslot @p tn (1..4) in a channel allocation's timeslot bitmap, which is sent TN1 first (EN 300 392-2
+ * table 21.87); 0 for any other @p tn. */
+static inline uint8_t
+tetra_slot_bit(uint8_t tn) {
+    return (tn >= 1u && tn <= 4u) ? (uint8_t)(1u << (4u - tn)) : 0u;
+}
 
 /**
  * What the MAC knows of a TM-SDU it hands the MLE (EN 300 392-2 clause 21.4.3.1): the address of the PDU that carried
@@ -158,10 +168,13 @@ uint32_t tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu);
 void tetra_calls_notice(dsd_opts* opts, dsd_state* state, int control, uint32_t src, uint32_t dst, const char* notice,
                         const char* text);
 
-/** @brief Drop the records no PDU or speech named for TETRA_CALL_IDLE_S (the followed call excepted). */
+/** @brief Drop the records no PDU or speech named for TETRA_CALL_IDLE_S (the followed call excepted), and end the heard
+ * call TETRA_CALL_SPEECH_END_S after its speech stopped and the direct mode call TETRA_CALL_DMO_IDLE_S after it was
+ * last seen. */
 void tetra_calls_tick(dsd_opts* opts, dsd_state* state);
 
-/** @brief The carrier was left: forget what was learnt about its timeslots. Never creates TETRA state. */
+/** @brief The carrier was left: forget what was learnt about its timeslots and which one was heard. Never creates TETRA
+ * state. */
 void tetra_calls_forget_carrier(dsd_state* state);
 
 /**
@@ -186,6 +199,44 @@ int tetra_calls_traffic(const dsd_state* state, tetra_chan_alloc* out);
  * repeat of the last within a few seconds not again. @p opts may be NULL.
  */
 void tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h);
+
+/** Which call a speech burst belongs to (tetra_speech::kind). */
+enum {
+    TETRA_SPEECH_ANON = 0, /**< trunked mode speech no call record names */
+    TETRA_SPEECH_CALL,     /**< the CMCE call tetra_speech::call_id */
+    TETRA_SPEECH_DMO,      /**< the direct mode call on the channel */
+};
+
+/** A speech burst the voice gates let through (tetra_voice_gate.h), and the call it belongs to. */
+typedef struct {
+    uint32_t target;  /**< the address the talkgroup policy judges it by: the call's called party, 0 when unknown */
+    uint16_t call_id; /**< the call, for TETRA_SPEECH_CALL */
+    uint8_t kind;     /**< TETRA_SPEECH_* */
+    uint8_t tn;       /**< its timeslot, 0 when the TDMA clock does not place it */
+    uint8_t followed; /**< speech of the call the trunking state machine follows */
+    uint8_t air_enc;  /**< encryption mode (TETRA_ENC_MODE_*) of the call's air interface, trunked mode */
+    uint8_t
+        sealed; /**< encrypted where no key stream here applies: end-to-end, or a direct mode call not known clear */
+} tetra_speech;
+
+/**
+ * @brief The call record whose traffic channel is timeslot @p tn of the frequency the receiver is tuned to
+ * (dsd_opts_tuned_freq_hz()), the most recently allocated of several; NULL when there is no timeslot, no tuned
+ * frequency or no such record.
+ */
+const tetra_call_t* tetra_calls_on_timeslot(const dsd_opts* opts, const dsd_state* state, uint8_t tn);
+
+/**
+ * @brief Speech of @p sp's call whose CRC passed, before it plays.
+ *
+ * Not trunking, it makes its timeslot the heard one. Its call is seen (it does not age) and publishes on canonical slot
+ * 0 unless it already does: the followed call or a call record (not after its D-TX CEASED), the direct mode call while
+ * a DM-SETUP or DM-OCCUPIED set one up, else an anonymous call once the carrier is proven. The published call's media
+ * turns active. A followed call that turned out undecryptable while encrypted calls are not followed is locked out and
+ * left. Speech of the followed call keeps the trunking state machine on it (tetra_sm_note_voice()); other speech marks
+ * reception. @p opts may be NULL.
+ */
+void tetra_calls_on_speech(dsd_opts* opts, dsd_state* state, const tetra_speech* sp);
 
 /**
  * @brief Decode one downlink TM-SDU whose MAC context is @p sdu (tetra_mle_dispatch() without one). The MAC's entry
