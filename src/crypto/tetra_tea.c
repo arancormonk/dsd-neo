@@ -13,6 +13,18 @@
 #include <tea2.h>
 #include <tea3.h>
 
+/* TEA1's 32-bit key register, built as TETRA_crypto's tea1_init_key_register() builds it but in an unsigned register:
+ * upstream shifts a signed int32_t left past its range, which C leaves undefined. Two's complement gives the same bits,
+ * and the register's top byte is masked to 8 bits either way, so the key stream is unchanged. */
+static uint32_t
+tetra_tea1_key_register(const uint8_t* key) {
+    uint32_t reg = 0;
+    for (int i = 0; i < 10; i++) {
+        reg = (reg << 8) | g_abTea1Sbox[((reg >> 24) ^ key[i] ^ reg) & 0xFFu];
+    }
+    return reg;
+}
+
 void
 tetra_tea_keystream(int alg, const uint8_t key[10], uint32_t iv, uint8_t* out, int nbytes) {
     uint8_t key_copy[10];
@@ -22,7 +34,9 @@ tetra_tea_keystream(int alg, const uint8_t key[10], uint32_t iv, uint8_t* out, i
     /* TEA2 and TEA3 take a non-const key pointer; hand them a scratch copy. */
     DSD_MEMCPY(key_copy, key, sizeof(key_copy));
     if (alg == 0) {
-        tea1(iv, key_copy, (uint32_t)nbytes, out);
+        uint32_t key_register = tetra_tea1_key_register(key_copy);
+        tea1_inner(tea1_expand_iv(iv), key_register, (uint32_t)nbytes, out);
+        DSD_SECURE_ZERO(&key_register, sizeof(key_register));
     } else if (alg == 1) {
         tea2(iv, key_copy, (uint32_t)nbytes, out);
     } else if (alg == 2) {
