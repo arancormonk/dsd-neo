@@ -5,8 +5,9 @@
  *
  * TMO air interface encryption (EN 300 392-7 clause 6) runs a TEA key stream generator from an initial value built of
  * the slot, frame, multiframe and hyperframe numbers. The algorithm (KSG number) comes from D-OTAR SCK/GCK Provide;
- * the 80-bit key is loaded by the operator into dsd_state::tetra_air_keys and used as the encryption cipher key as
- * loaded. Sealed OTAR keys are never unwrapped.
+ * the 80-bit cipher key (SCK or CCK) is loaded by the operator into dsd_state::tetra_air_keys per network, and the
+ * generator takes the encryption cipher key TB5 derives from it with the carrier number, location area and colour
+ * code of the carrier being received (clause 6.3.2.2). Sealed OTAR keys are never unwrapped.
  *
  * Direct mode air interface encryption (EN 300 396-6) is a different scheme: its key stream generator is named in the
  * DMAC-SYNC and starts from the time variant parameter there, not from the TMO frame numbering, with a static cipher
@@ -16,6 +17,7 @@
 #ifndef DSD_NEO_PROTOCOL_TETRA_AIR_H
 #define DSD_NEO_PROTOCOL_TETRA_AIR_H
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
@@ -41,16 +43,18 @@ const char* tetra_air_ksg_name(int ksg);
  * bits of the hyperframe number hn are used; dir is 0 downlink, 1 uplink. Returns 0 when a field is out of range. */
 uint32_t tetra_air_build_iv(uint8_t tn, uint8_t fn, uint8_t mn, uint16_t hn, uint8_t dir);
 
-/* 1 when trunked mode speech of this network could be decrypted: the network identity is known, its KSG is TEA1..TEA3
- * and an operator key is loaded for it. */
+/* 1 when trunked mode speech of this network could be decrypted: the network identity and its location area are known,
+ * its KSG is TEA1..TEA3 and a cipher key is loaded for it. */
 int tetra_air_key_usable(const dsd_state* state);
 
 /* XOR the speech bits of a call whose air interface encryption mode is enc_mode (TETRA_ENC_MODE_*, from the
  * MAC-RESOURCE PDUs of the call) with the key stream when this is trunked mode, enc_mode is an encrypted one, the
- * network KSG is TEA1..TEA3, an operator key is loaded, and the hyperframe and TDMA clock are known. The uplink carries
+ * network KSG is TEA1..TEA3, a cipher key is loaded, the carrier number (opts may be NULL; see tetra_calls_carrier()),
+ * location area and colour code TB5 needs are known, and the hyperframe and TDMA clock are known. The uplink carries
  * no BSCH, so its clock is never set and uplink speech stays as received. ks_bit_offset is the first key stream bit for
  * this speech fragment (TETRA_AIR_KSS_*). Returns 1 when the bits were decrypted, 0 when they are unchanged. */
-int tetra_air_decrypt_voice(const dsd_state* state, uint8_t enc_mode, uint8_t* bits, int nbits, int ks_bit_offset);
+int tetra_air_decrypt_voice(const dsd_opts* opts, const dsd_state* state, uint8_t enc_mode, uint8_t* bits, int nbits,
+                            int ks_bit_offset);
 
 #ifdef __cplusplus
 }

@@ -332,8 +332,14 @@ test_follow_gate(void) {
 
 static const uint8_t k_air_key[10] = {0x1F, 0x2E, 0x3D, 0x4C, 0x5B, 0x6A, 0x79, 0x88, 0x97, 0xA6};
 
-/* An air-encrypted trunked call on network 262/1001 with TEA1, its clock at TN1 FN3 MN7 of hyperframe 5; the operator
-   key is loaded when @p key_loaded. */
+/* Carrier 321 of band 3 with offset +6,25 kHz (EN 300 392-2 clause 21.4.4.1), in location area 77 with colour code 9. */
+#define AIR_CARRIER    321u
+#define AIR_CARRIER_HZ 308031250u
+#define AIR_LA         77u
+#define AIR_COLOUR     9u
+
+/* An air-encrypted trunked call on network 262/1001 with TEA1 on the carrier the receiver is tuned to, its clock at TN1
+   FN3 MN7 of hyperframe 5; the operator's cipher key is loaded when @p key_loaded. */
 static void
 air_encrypted_call(fixture* f, int key_loaded) {
     tetra_state_t* ts = tetra_st(f->state);
@@ -341,6 +347,13 @@ air_encrypted_call(fixture* f, int key_loaded) {
     ts->net_known = 1;
     ts->mcc = 262;
     ts->mnc = 1001;
+    ts->colour = AIR_COLOUR;
+    ts->sysinfo_known = 1;
+    ts->la = AIR_LA;
+    ts->freq_band = 3;
+    ts->freq_offset = 1;
+    f->opts->audio_in_type = AUDIO_IN_RTL;
+    f->opts->rtlsdr_center_freq = AIR_CARRIER_HZ;
     ts->hyperframe_valid = 1;
     ts->hyperframe = 5;
     ts->tdma_valid = 1;
@@ -401,13 +414,15 @@ test_encryption_gate(void) {
 }
 
 /* @p count bits of @p plain XORed with the TEA1 key stream from bit @p kss on (EN 300 392-7 table 6.4), for the
-   call air_encrypted_call() sets up. */
+   call air_encrypted_call() sets up: the key stream of the cipher key's ECK for its carrier (TB5, clause 6.3.2.2). */
 static void
 expected_clear(const fixture* f, const uint8_t* plain, int count, int kss, uint8_t* out) {
     const tetra_state_t* ts = tetra_st(f->state);
     uint8_t ks[64];
+    uint8_t eck[10];
     const uint32_t iv = tetra_air_build_iv(ts->tn, ts->fn, ts->mn, ts->hyperframe, 0);
-    tetra_tea_keystream(0, k_air_key, iv, ks, (kss + count + 7) / 8);
+    tetra_tea_derive_eck(AIR_CARRIER, AIR_LA, AIR_COLOUR, k_air_key, eck);
+    tetra_tea_keystream(0, eck, iv, ks, (kss + count + 7) / 8);
     for (int i = 0; i < count; i++) {
         const int bit = kss + i;
         out[i] = (uint8_t)((plain[i] ^ (ks[bit / 8] >> (7 - (bit % 8)))) & 1u);

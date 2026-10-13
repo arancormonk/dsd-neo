@@ -7,6 +7,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/tetra_tea.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <tea1.h>
@@ -43,6 +44,40 @@ tetra_tea_keystream(int alg, const uint8_t key[10], uint32_t iv, uint8_t* out, i
         tea3(iv, key_copy, (uint32_t)nbytes, out);
     }
     DSD_SECURE_ZERO(key_copy, sizeof(key_copy));
+}
+
+/* Append the low @p bits bits of @p value to @p mask at bit @p *pos, most significant first. */
+static void
+tetra_tb5_put(uint8_t* mask, int* pos, uint32_t value, int bits) {
+    for (int i = bits - 1; i >= 0; i--) {
+        if (((value >> i) & 1u) != 0u) {
+            mask[*pos / 8] = (uint8_t)(mask[*pos / 8] | (0x80u >> (*pos % 8)));
+        }
+        (*pos)++;
+    }
+}
+
+/* EN 300 392-7 names TB5's inputs and output but leaves its definition to the TETRA algorithm specifications. As
+ * TETRA_crypto implements it, the ECK is the cipher key XORed with an 80-bit mask of the location area (14 bits)
+ * followed by the carrier number (12 bits) and colour code (6 bits) three times and the carrier number once more,
+ * most significant bit first. */
+void
+tetra_tea_derive_eck(uint16_t cn, uint16_t la, uint8_t cc, const uint8_t* ck, uint8_t* eck) {
+    uint8_t mask[10];
+    int pos = 0;
+    if (!ck || !eck) {
+        return;
+    }
+    DSD_MEMSET(mask, 0, sizeof(mask));
+    tetra_tb5_put(mask, &pos, la & 0x3FFFu, 14);
+    for (int i = 0; i < 3; i++) {
+        tetra_tb5_put(mask, &pos, cn & 0x0FFFu, 12);
+        tetra_tb5_put(mask, &pos, cc & 0x3Fu, 6);
+    }
+    tetra_tb5_put(mask, &pos, cn & 0x0FFFu, 12);
+    for (size_t i = 0; i < sizeof(mask); i++) {
+        eck[i] = (uint8_t)(ck[i] ^ mask[i]);
+    }
 }
 
 uint32_t

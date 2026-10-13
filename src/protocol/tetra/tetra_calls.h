@@ -141,6 +141,15 @@ void tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* 
 void tetra_calls_on_addressed(dsd_state* state, const tetra_mac_address* addr, uint8_t enc_mode, int alloc_present,
                               uint8_t tn);
 
+/**
+ * @brief The number of the carrier being received, for TB5 (EN 300 392-7 clause 6.3.2.2): the followed call's
+ * carrier on its traffic channel, the SYSINFO main carrier on the control channel, else the carrier whose downlink
+ * frequency (EN 300 392-2 clause 21.4.4.1, with the SYSINFO band and offset) is exactly the tuned frequency
+ * (dsd_opts_tuned_freq_hz()). @return 1 and @p carrier when it is known; 0 in direct mode, while a retune is in flight
+ * and when no carrier matches.
+ */
+int tetra_calls_carrier(const dsd_opts* opts, const dsd_state* state, uint16_t* carrier);
+
 /** @brief The record of call @p call_id, or NULL. */
 tetra_call_t* tetra_calls_find(dsd_state* state, uint16_t call_id);
 

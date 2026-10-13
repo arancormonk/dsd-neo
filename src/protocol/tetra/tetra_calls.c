@@ -19,6 +19,7 @@
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
@@ -181,6 +182,34 @@ const tetra_call_t*
 tetra_calls_followed(const dsd_state* state) {
     const int id = followed_id(state);
     return id >= 0 ? tetra_calls_peek(state, (uint16_t)id) : NULL;
+}
+
+/* The carrier whose downlink frequency under the SYSINFO band and offset is exactly @p freq_hz. */
+static int
+carrier_of_frequency(const tetra_state_t* ts, long freq_hz, uint16_t* carrier) {
+    const long first = tetra_carrier_to_dl_hz(0u, ts->freq_band, ts->freq_offset);
+    if (first <= 0L || freq_hz < first || (freq_hz - first) % 25000L != 0L || (freq_hz - first) / 25000L > 4095L) {
+        return 0;
+    }
+    *carrier = (uint16_t)((freq_hz - first) / 25000L);
+    return 1;
+}
+
+int
+tetra_calls_carrier(const dsd_opts* opts, const dsd_state* state, uint16_t* carrier) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || !carrier || ts->dmo || ts->sm.pending_request_id != 0U) {
+        return 0;
+    }
+    tetra_sm_grant g;
+    if (tetra_sm_followed(state, &g)) {
+        *carrier = g.carrier;
+        return 1;
+    }
+    if (ts->sm.state == (uint8_t)TETRA_SM_ON_CC) {
+        return carrier_of_frequency(ts, ts->dl_carrier_hz, carrier);
+    }
+    return carrier_of_frequency(ts, (long)dsd_opts_tuned_freq_hz(opts), carrier);
 }
 
 /* Air interface encryption a key stream here undoes: an encrypted mode, not the reserved one, under a usable key. */

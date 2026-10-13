@@ -741,6 +741,41 @@ test_direct_mode_speech(void) {
     session_close(&s);
 }
 
+/* The carrier being received, for TB5: the followed call's, the main carrier on the control channel, else the one the
+ * receiver is tuned to exactly; none between carriers, in direct mode or off any carrier. */
+static void
+test_receiving_carrier(void) {
+    session s = session_open();
+    tetra_state_t* const ts = tetra_st(s.state);
+    uint16_t cn = 0;
+    ts->dl_carrier_hz = CARRIER_HZ(100);
+    assert(tetra_calls_carrier(s.opts, s.state, &cn) == 1 && cn == 100);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(tetra_calls_carrier(s.opts, s.state, &cn) == 1 && cn == 120);
+    ts->sm.pending_request_id = 9;
+    assert(tetra_calls_carrier(s.opts, s.state, &cn) == 0);
+    ts->sm.pending_request_id = 0;
+
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
+    assert(tetra_calls_carrier(s.opts, s.state, &cn) == 0);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(130);
+    assert(tetra_calls_carrier(s.opts, s.state, &cn) == 1 && cn == 130);
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(130) + 6250U;
+    assert(tetra_calls_carrier(s.opts, s.state, &cn) == 0);
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(130);
+    ts->freq_band = 0;
+    assert(tetra_calls_carrier(s.opts, s.state, &cn) == 0);
+    ts->freq_band = 4;
+    ts->dmo = 1;
+    assert(tetra_calls_carrier(s.opts, s.state, &cn) == 0);
+    ts->dmo = 0;
+    assert(tetra_calls_carrier(s.opts, s.state, NULL) == 0 && tetra_calls_carrier(s.opts, NULL, &cn) == 0);
+    session_close(&s);
+}
+
 int
 main(void) {
     test_pdus_act_on_their_own_call();
@@ -758,6 +793,7 @@ main(void) {
     test_followed_call_speech();
     test_heard_call_speech();
     test_direct_mode_speech();
+    test_receiving_carrier();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");
     return 0;
 }

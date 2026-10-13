@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * TETRA TEA wrapper over the pinned TETRA_crypto generators: the EN 300 392-7
- * clause 6.3.2.1 IV packing the wrapper implements itself, and the keystream
- * entry point's dispatch and argument handling. Keystream vectors are the
- * published TEA1/2/3 cases from Midnight Blue's Apache-2.0 tests.
+ * clause 6.3.2.1 IV packing and the TB5 cipher key derivation the wrapper
+ * implements itself, and the keystream entry point's dispatch and argument
+ * handling. Keystream and TB5 vectors are the published cases from Midnight
+ * Blue's Apache-2.0 tests.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -112,10 +113,63 @@ test_keystream(void) {
           "the generator writes exactly the requested bytes");
 }
 
+/* TB5 (EN 300 392-7 clause 6.3.2.2): the four cases of TETRA_crypto's tests (Apache-2.0). */
+static void
+test_tb5(void) {
+    static const struct {
+        uint16_t cn;
+        uint16_t la;
+        uint8_t cc;
+        uint8_t ck[10];
+        uint8_t eck[10];
+    } k_cases[] = {
+        {0x02BC,
+         0x1DCC,
+         0x05,
+         {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xAA, 0xBB},
+         {0x76, 0x13, 0xEA, 0x62, 0xA2, 0x6A, 0x87, 0x1F, 0xF8, 0x07}},
+        {0x0DE8,
+         0x3AF0,
+         0x16,
+         {0xBD, 0xF8, 0xE8, 0xD4, 0x7C, 0xA2, 0xED, 0xAE, 0x0C, 0xFB},
+         {0x56, 0x3B, 0x92, 0xC2, 0xA2, 0x27, 0x5A, 0x0F, 0x61, 0x13}},
+        {0x0DF7,
+         0x29E2,
+         0x22,
+         {0x8A, 0x41, 0xC5, 0x61, 0x75, 0xBF, 0xBE, 0x35, 0x68, 0x91},
+         {0x2D, 0xCA, 0xB8, 0x83, 0xAA, 0xC7, 0x09, 0xEB, 0x45, 0x66}},
+        {0x0757,
+         0x082E,
+         0x3F,
+         {0xBA, 0x3E, 0x06, 0x96, 0xE8, 0x3D, 0x16, 0x60, 0x89, 0x89},
+         {0x9A, 0x87, 0xD3, 0x69, 0x9D, 0x42, 0xCB, 0x3F, 0x7E, 0xDE}},
+    };
+
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        uint8_t eck[10];
+        DSD_MEMSET(eck, 0, sizeof(eck));
+        tetra_tea_derive_eck(k_cases[i].cn, k_cases[i].la, k_cases[i].cc, k_cases[i].ck, eck);
+        char label[48];
+        DSD_SNPRINTF(label, sizeof(label), "TB5 vector %u", (unsigned)(i + 1U));
+        check(memcmp(eck, k_cases[i].eck, sizeof(eck)) == 0, label);
+    }
+    /* Only the element widths reach the mask: the bits above them are ignored. */
+    uint8_t wide[10];
+    uint8_t eck[10];
+    tetra_tea_derive_eck(0x02BC, 0x1DCC, 0x05, k_cases[0].ck, eck);
+    tetra_tea_derive_eck(0xF2BC, 0xDDCC, 0xC5, k_cases[0].ck, wide);
+    check(memcmp(eck, wide, sizeof(eck)) == 0, "TB5 takes 12, 14 and 6 bits of CN, LA and CC");
+    DSD_MEMCPY(wide, eck, sizeof(wide));
+    tetra_tea_derive_eck(1, 1, 1, NULL, wide);
+    tetra_tea_derive_eck(1, 1, 1, k_cases[0].ck, NULL);
+    check(memcmp(eck, wide, sizeof(eck)) == 0, "TB5 without a key or an output does nothing");
+}
+
 int
 main(void) {
     test_iv_packing();
     test_keystream();
+    test_tb5();
     if (g_fail != 0) {
         DSD_FPRINTF(stderr, "%d TETRA crypto check(s) failed\n", g_fail);
         return 1;

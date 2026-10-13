@@ -24,7 +24,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
   `--api-token-file <path>` (one line of 1..255 bytes; a file that cannot be read is an error). See
   [docs/api.md](api.md).
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
-- Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `--dmr-tg-key-csv <file>`, `--dmr-force-algid <hex>`, `--show-keys`, `-4`, `-0`, `-3`
+- Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `--dmr-tg-key-csv <file>`, `--dmr-force-algid <hex>`, `--tetra-key mcc,mnc,<hex>`, `--show-keys`, `-4`, `-0`, `-3`
 - Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`, `--rdio-mode off|dirwatch|api|both`
 
 ## Quick Start
@@ -473,7 +473,8 @@ Notes
   next good burst. The interface, and building a library from the ETSI reference code, are in `tools/tetra/README.md`.
   With `-T` the decoder follows a call's traffic channel off a TETRA control channel, once a block whose CRC passed
   has been decoded on the carrier it is on, and returns `-t` seconds after the call's speech ends, or 4 seconds after
-  the tune when no speech follows. TETRA is not a `--trunk-scan` target type.
+  the tune when no speech follows. TETRA is not a `--trunk-scan` target type. Air-encrypted speech decrypts with
+  `--tetra-key` (see Keys & Privacy).
 
 Notes
 
@@ -1819,6 +1820,16 @@ Out-of-range decimal keys are rejected without changing the installed key.
 - Baofeng AP PC5 key override (hex): `--dmr-baofeng-pc5 <hex>` (32 or 64 hex chars)
 - Connect Systems EE72 key override (hex): `--dmr-csi-ee72 <hex>` (18 hex chars)
 - Vertex ALG `0x07` key->keystream map CSV: `--dmr-vertex-ks-csv <file>` (`key_hex,bits:hex[:offset[:step]]`)
+- TETRA air interface cipher key: `--tetra-key mcc,mnc,<20 hex digits>` loads the 80-bit cipher key of one network:
+  the SCK of a security class 2 cell or the CCK of a class 3 cell, never a derived encryption cipher key (ECK).
+  Keys for at most four networks are held; another key for the same network replaces it. It decrypts trunked mode
+  speech of calls whose MAC signalling is air encrypted, once the network's algorithm (TEA1, TEA2 or TEA3) has been
+  decoded from its key management signalling; end-to-end encryption and direct mode encryption are never decrypted.
+  The key stream generator takes the ECK that TB5 derives from the cipher key with the carrier number, location area
+  and colour code of the carrier being received (EN 300 392-7 clause 6.3.2.2): the followed call's carrier while
+  trunking (`-T`), the main carrier on the control channel, otherwise the carrier whose downlink frequency is exactly
+  the tuned frequency of an RTL-SDR or I/Q replay input. Until the carrier number, a SYSINFO's location area and a
+  BSCH's colour code are known, nothing is decrypted.
 - Kenwood 15‑bit scrambler (decimal): `-9 <dec>`
 - Anytone 16‑bit BP (hex): `-A <hex>`
 - Generic keystream (length:hexbytes, optional frame align): `-S <bits:hex[:offset[:step]]>` (e.g., `-S 49:123456789ABC80`, `-S 168:<hex>:0:49`)

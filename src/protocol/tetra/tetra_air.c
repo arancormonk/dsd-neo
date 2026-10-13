@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * TETRA trunked mode air interface decryption of speech with an operator key, EN 300 392-7 clause 6.
+ * TETRA trunked mode air interface decryption of speech with an operator's cipher key, EN 300 392-7 clause 6.
  */
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/tetra_tea.h>
@@ -14,6 +15,7 @@
 #include <stdint.h>
 
 #include "dsd-neo/core/state_fwd.h"
+#include "tetra_calls.h"
 #include "tetra_state.h"
 
 #define TETRA_AIR_SLOTS        4
@@ -93,7 +95,7 @@ tetra_air_key_lookup(const dsd_state* state, uint16_t mcc, uint16_t mnc) {
 int
 tetra_air_key_usable(const dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (!ts || ts->dmo || !ts->net_known) {
+    if (!ts || ts->dmo || !ts->net_known || !ts->sysinfo_known) {
         return 0;
     }
     /* TEA4 is named in the KSG number but its key stream generator is not available. */
@@ -101,14 +103,14 @@ tetra_air_key_usable(const dsd_state* state) {
     return ksg >= 0 && ksg <= 2 && tetra_air_key_lookup(state, ts->mcc, ts->mnc) != NULL;
 }
 
-/* The key, algorithm and initial value for the current slot, or NULL when speech encrypted under @p enc_mode is not
-   decrypted here. */
+/* The cipher key, algorithm and initial value for the current slot, or NULL when speech encrypted under @p enc_mode is
+   not decrypted here. */
 static const uint8_t*
 tetra_air_slot_key(const dsd_state* state, const tetra_state_t* ts, uint8_t enc_mode, int* ksg, uint32_t* iv) {
     if (ts->dmo || !tetra_enc_mode_encrypted(enc_mode)) {
         return NULL;
     }
-    if (!ts->net_known || !ts->hyperframe_valid || !ts->tdma_valid) {
+    if (!ts->net_known || !ts->sysinfo_known || !ts->hyperframe_valid || !ts->tdma_valid) {
         return NULL;
     }
     /* TEA4 is named in the KSG number but its key stream generator is not available. */
@@ -122,21 +124,27 @@ tetra_air_slot_key(const dsd_state* state, const tetra_state_t* ts, uint8_t enc_
 }
 
 int
-tetra_air_decrypt_voice(const dsd_state* state, uint8_t enc_mode, uint8_t* bits, int nbits, int ks_bit_offset) {
+tetra_air_decrypt_voice(const dsd_opts* opts, const dsd_state* state, uint8_t enc_mode, uint8_t* bits, int nbits,
+                        int ks_bit_offset) {
     const tetra_state_t* const ts = tetra_st_peek(state);
     uint8_t ks[(TETRA_AIR_KSS_MAX_BITS + 7) / 8];
+    uint8_t eck[10];
     int ksg = -1;
     uint32_t iv = 0;
+    uint16_t cn = 0;
     if (!ts || !bits || nbits <= 0 || ks_bit_offset < 0 || ks_bit_offset + nbits > TETRA_AIR_KSS_MAX_BITS) {
         return 0;
     }
-    const uint8_t* const key = tetra_air_slot_key(state, ts, enc_mode, &ksg, &iv);
-    if (!key) {
+    const uint8_t* const ck = tetra_air_slot_key(state, ts, enc_mode, &ksg, &iv);
+    if (!ck || !tetra_calls_carrier(opts, state, &cn)) {
         return 0;
     }
+    /* The generator never takes the cipher key itself: TB5 binds it to this carrier, location area and colour code. */
+    tetra_tea_derive_eck(cn, ts->la, (uint8_t)(ts->colour & 0x3Fu), ck, eck);
     const int ks_bytes = (ks_bit_offset + nbits + 7) / 8;
     DSD_MEMSET(ks, 0, sizeof(ks));
-    tetra_tea_keystream(ksg, key, iv, ks, ks_bytes);
+    tetra_tea_keystream(ksg, eck, iv, ks, ks_bytes);
+    DSD_SECURE_ZERO(eck, sizeof(eck));
     for (int i = 0; i < nbits; i++) {
         const int bit = ks_bit_offset + i;
         const uint8_t kb = (uint8_t)((ks[bit / 8] >> (7 - (bit % 8))) & 1u);

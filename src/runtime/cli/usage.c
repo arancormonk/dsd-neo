@@ -299,6 +299,8 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fT           Decode only TETRA NDB (pi/4-DQPSK, 18 kHz channel)\n");
     printf("      --tetra-codec <file>  TETRA speech codec library to play TETRA speech with (see\n");
     printf("                            tools/tetra/README.md); without one TETRA speech is not played\n");
+    printf("      --tetra-key <mcc,mnc,hex>  TETRA air interface cipher key (SCK or CCK, 20 hex digits) of one\n");
+    printf("                            network; air-encrypted trunked speech decrypts with it\n");
     printf("  -l            Disable DMR, dPMR, NXDN, M17 input filtering\n");
     printf("  -xx           Expect non-inverted X2-TDMA signal\n");
     printf("  -xr           Expect inverted DMR signal\n");

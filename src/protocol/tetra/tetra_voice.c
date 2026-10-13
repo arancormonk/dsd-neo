@@ -302,9 +302,9 @@ voice_burst(dsd_opts* opts, dsd_state* state, const tetra_speech* sp, const uint
 
 /* Undo the air interface encryption of an air-encrypted trunked call's speech; 1 when a key stream applied. */
 static int
-voice_decrypt(const dsd_state* state, const tetra_speech* sp, uint8_t* bits, int nbits, int kss) {
+voice_decrypt(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp, uint8_t* bits, int nbits, int kss) {
     return !sp->sealed && sp->air_enc != TETRA_ENC_MODE_NONE
-           && tetra_air_decrypt_voice(state, sp->air_enc, bits, nbits, kss);
+           && tetra_air_decrypt_voice(opts, state, sp->air_enc, bits, nbits, kss);
 }
 
 void
@@ -316,7 +316,7 @@ tetra_voice_full_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, in
         return;
     }
     DSD_MEMCPY(clear, type1, sizeof(clear));
-    const int keystream = voice_decrypt(state, &sp, clear, TETRA_SPEECH_FULL_BITS, TETRA_AIR_KSS_TCH_S);
+    const int keystream = voice_decrypt(opts, state, &sp, clear, TETRA_SPEECH_FULL_BITS, TETRA_AIR_KSS_TCH_S);
     tetra_voice_reorder_full(clear, frames);
     DSD_SECURE_ZERO(clear, sizeof(clear));
     const int bad[2] = {!good, !good};
@@ -333,7 +333,7 @@ tetra_voice_half_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, in
         return;
     }
     DSD_MEMCPY(clear, type1, sizeof(clear));
-    const int keystream = voice_decrypt(state, &sp, clear, TETRA_SPEECH_HALF_BITS, TETRA_AIR_KSS_TCH_S_HALF);
+    const int keystream = voice_decrypt(opts, state, &sp, clear, TETRA_SPEECH_HALF_BITS, TETRA_AIR_KSS_TCH_S_HALF);
     /* Frame A of the slot was stolen (EN 300 395-2 clause 5.2): the codec conceals it, frame B is the speech. */
     DSD_MEMSET(frames, 0, DSD_TETRA_CODEC_FRAME_BITS);
     tetra_voice_reorder_half(clear, frames + DSD_TETRA_CODEC_FRAME_BITS);
