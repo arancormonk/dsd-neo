@@ -1470,6 +1470,72 @@ test_heard_call_speech(void) {
     session_close(&s);
 }
 
+/* Not trunking, the heard call's identifier goes with its record, as the followed call's does: once the heard call is
+ * released, a D-SETUP gave its identifier to another call or a full table evicted it, the call given the identifier is
+ * not the heard call until its own speech is heard, so its signalling publishes nothing (its channel may be another
+ * carrier's), and its speech on the heard timeslot publishes it. A record that leaves the table ends its canonical
+ * call, which nothing names from there. */
+static void
+test_heard_call_identifier_let_go(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100); /* TN2 of the carrier being received */
+    speech(&s, 2);
+    assert(publishes_call_to(s.state, 0x300u));
+    send_call_pdu(&s, 0x300u, TETRA_CMCE_D_RELEASE, 0x0C, 5);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+    at_seconds(1000.0 + 2.0 * DSD_CALL_REACQUIRE_GAP_S);
+    send_setup(&s, 0x700u, 0x0C, TTB_SPEECH_GROUP, 2, 130);
+    send_tx_granted(&s, 0x700u, 0x0C, 0x4444u);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+    session_close(&s);
+
+    /* The heard call's identifier taken by a D-SETUP for another group on the same timeslot, its release unheard. */
+    s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    speech(&s, 2);
+    const uint64_t epoch = canonical(s.state).epoch;
+    at_seconds(1000.0 + 2.0 * DSD_CALL_REACQUIRE_GAP_S);
+    send_setup(&s, 0x700u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    send_tx_granted(&s, 0x700u, 0x0C, 0x4444u);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.epoch == epoch && call.phase == DSD_CALL_PHASE_ENDED && call.ota_target_id == 0x300u);
+    speech(&s, 2);
+    call = canonical(s.state);
+    assert(call.epoch != epoch && call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0x700u
+           && call.ota_source_id == 0x4444u);
+    session_close(&s);
+
+    /* The heard call evicted from a full table while its speech is heard, its release unheard: its canonical call ends
+     * with its record, and a call later given its identifier is not the heard call either. */
+    s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    speech(&s, 2);
+    const uint64_t heard = canonical(s.state).epoch;
+    at_seconds(1000.0 + 2.0 * DSD_CALL_REACQUIRE_GAP_S);
+    for (uint16_t id = 0x20; id < 0x20 + TETRA_CALLS_MAX; id++) {
+        send_setup(&s, 0x400u + id, id, TTB_SPEECH_GROUP, 2, 130);
+    }
+    call = canonical(s.state);
+    assert(tetra_calls_peek(s.state, 0x0C) == NULL && call.epoch == heard && call.phase == DSD_CALL_PHASE_ENDED);
+    send_setup(&s, 0x700u, 0x0C, TTB_SPEECH_GROUP, 2, 130);
+    send_tx_granted(&s, 0x700u, 0x0C, 0x4444u);
+    call = canonical(s.state);
+    assert(call.epoch == heard && call.phase == DSD_CALL_PHASE_ENDED);
+    session_close(&s);
+}
+
 /* Speech of the direct mode call keeps it from ending idle; with trunking on, it is heard all the same. */
 static void
 test_direct_mode_speech(void) {
@@ -1555,6 +1621,7 @@ main(void) {
     test_location_area_change_drops_calls();
     test_followed_call_speech();
     test_heard_call_speech();
+    test_heard_call_identifier_let_go();
     test_direct_mode_speech();
     test_receiving_carrier();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");

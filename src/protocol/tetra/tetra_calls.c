@@ -103,14 +103,31 @@ calls_free(tetra_call_t* c) {
     DSD_MEMSET(c, 0, sizeof(*c));
 }
 
-/* @p c leaves the table, however it goes (a release, its identifier given to another call, ageing, eviction). Its
- * identifier names no call from here, so the state machine stops taking it for the followed call's, in what a tune in
- * flight would put back too (tetra_sm_retire_call()): a later call given the identifier is judged as a call of its own,
- * never through the followed call's grant path. */
+/* Not trunking, the heard speech's call is the call @p call_id names no more: its record went. Speech goes on being
+ * heard on the timeslot, and belongs to the record that holds the timeslot now. */
 static void
-calls_drop(dsd_state* state, tetra_call_t* c) {
+calls_forget_heard_call(tetra_state_t* ts, uint16_t call_id) {
+    if (ts->calls.heard_known && ts->calls.heard_call_id == call_id) {
+        ts->calls.heard_known = 0;
+        ts->calls.heard_call_id = 0U;
+    }
+}
+
+static void calls_end_published(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, dsd_call_end_reason reason);
+
+/* @p c leaves the table, however it goes (a release, its identifier given to another call, ageing, eviction). Its
+ * canonical call ends, as nothing names it from here, and so does its identifier: the state machine stops taking it
+ * for the followed call's, in what a tune in flight would put back too (tetra_sm_retire_call()), and the heard speech
+ * for its. A later call given the identifier is judged as a call of its own, never through the followed call's grant
+ * path, and is heard only from its own speech. */
+static void
+calls_drop(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c) {
     if (c->phase != TETRA_CALL_FREE) {
+        if (ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == c->call_id) {
+            calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+        }
         tetra_sm_retire_call(state, c->call_id);
+        calls_forget_heard_call(ts, c->call_id);
     }
     calls_free(c);
 }
@@ -125,7 +142,7 @@ followed_id(const dsd_state* state) {
 
 /* A new record for @p call_id: a free entry, else the one heard from least recently that is not followed. */
 static tetra_call_t*
-calls_new(dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
+calls_new(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
     const int followed = followed_id(state);
     tetra_call_t* victim = NULL;
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
@@ -141,7 +158,7 @@ calls_new(dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
     if (!victim) {
         return NULL;
     }
-    calls_drop(state, victim);
+    calls_drop(opts, state, ts, victim);
     victim->call_id = call_id;
     victim->phase = TETRA_CALL_SETUP;
     victim->calling_net = TETRA_CALL_NET_UNKNOWN;
@@ -614,6 +631,7 @@ call_end(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, d
         tetra_sm_on_release(opts, state, id);
     }
     tetra_sm_retire_call(state, id);
+    calls_forget_heard_call(ts, id);
 }
 
 /* The record a D-SETUP describes. */
@@ -629,7 +647,7 @@ call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
         c = NULL;
     }
     if (!c) {
-        c = calls_new(state, ts, ev->call_id);
+        c = calls_new(opts, state, ts, ev->call_id);
         if (!c) {
             return NULL;
         }
@@ -1273,7 +1291,7 @@ tetra_calls_tick(dsd_opts* opts, dsd_state* state) {
         if (c->phase != TETRA_CALL_FREE && (int)c->call_id != followed && now_m - c->seen_m >= TETRA_CALL_IDLE_S) {
             TETRA_LOG_VERBOSE(ts, 2, "[TETRA CALL] call=%u not heard from for %.0f s; dropped\n", (unsigned)c->call_id,
                               TETRA_CALL_IDLE_S);
-            calls_drop(state, c);
+            calls_drop(opts, state, ts, c);
         }
     }
 }
@@ -1300,7 +1318,7 @@ tetra_calls_forget_calls(dsd_opts* opts, dsd_state* state) {
         calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
     }
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
-        calls_drop(state, &ts->calls.call[i]);
+        calls_drop(opts, state, ts, &ts->calls.call[i]);
     }
     ts->calls.heard = 0;
     ts->calls.heard_known = 0;

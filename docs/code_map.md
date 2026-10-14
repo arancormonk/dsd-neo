@@ -4617,8 +4617,10 @@ single "current call".
   either side is no change. Both end a call the same way (`call_end()`): its canonical call ends, its record goes and,
   when it was the followed call, the state machine lets go of it (`tetra_sm_on_release()`), so a new call under the
   identifier meets the talkgroup policy like any other and is named by its own parties, never the old call's talker.
-  Every record that leaves the table, a release, an identifier taken, ageing or eviction, lets go of its identifier
-  (`calls_drop()`): while the state machine cannot let go (the return refused or
+  Every record that leaves the table, a release, an identifier taken, ageing or eviction, ends its canonical call and
+  lets go of its identifier (`calls_drop()`), the heard speech's included (`calls_forget_heard_call()`: not trunking, a
+  call given the identifier is the heard call only once its own speech is heard): while the state machine cannot let
+  go (the return refused or
   deferred, a tune in flight, or a return in flight that would put the call back if it failed) it follows the channel
   but no call record (`tetra_sm_retire_call()`, the rollback included): `tetra_sm_followed_call_id()` reports none, the
   followed call's proof goes, and no PDU, rename, allocation or speech of a call given the identifier counts as the
@@ -4709,7 +4711,7 @@ single "current call".
 
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, the followed call's in the
 first block on its carrier included, identifier reuse, another calling party or its network included, a released,
-renamed-over or aged followed identifier, ageing,
+renamed-over or aged followed identifier, a released, reused or evicted heard identifier, ageing,
 canonical calls and notices in trunked and direct mode, direct mode short data whose FCS fails and what repeats it,
 an individual call's two parties, speech publication, the receiving carrier), `TETRA_DMO` (the DM-SDU's FCS and
 digest), `TETRA_VOICE_GATE`,
