@@ -464,25 +464,46 @@ test_failed_tune_restores_followed_proof(void) {
     session_close(&s);
 }
 
-/* A backend that never answers fails the tune after TETRA_SM_TUNE_TIMEOUT_S. */
+/* A tune the backend has not answered stays the backend's however long it takes: the state machine invents no result,
+ * the frame gate stays closed, and the backend's completion is the tuner boundary, which the state machine then commits
+ * (trunk_tuning_hooks.h). The same holds for a return in flight. */
 static void
-test_pending_grant_times_out(void) {
+test_slow_backend_keeps_the_gate(void) {
     reset_backend();
     session s = session_open();
     g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
     assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
     const uint64_t request = g_request;
-    at_seconds(1000.0 + TETRA_SM_TUNE_TIMEOUT_S - 0.1);
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    at_seconds(1060.0);
     tetra_sm_tick(s.opts, s.state);
-    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && dsd_trunk_tuning_pending_request() == request);
-    at_seconds(1000.0 + TETRA_SM_TUNE_TIMEOUT_S);
-    tetra_sm_tick(s.opts, s.state);
-    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && dsd_trunk_tuning_pending_request() == 0U);
-    /* A completion arriving afterwards cannot revive it. */
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x123);
+    assert(dsd_trunk_tuning_pending_request() == request);
+    assert(dsd_trunk_tuning_request_status(request, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(!dsd_trunk_tuning_frame_is_dispatchable(generation, 1));
+    /* The receiver has not left the control channel yet: its evidence stands until the tune completes. */
+    assert(tetra_confirm_carrier_proven(s.state));
+
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_trunk_tuning_generation() == generation + 1U && dsd_trunk_tuning_pending_request() == 0U);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x123);
+    assert(s.opts->trunk_is_tuned == 1 && !tetra_confirm_carrier_proven(s.state));
+    assert(dsd_trunk_tuning_frame_is_dispatchable(generation + 1U, 1));
+
+    g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    tetra_sm_on_release(s.opts, s.state, 0x123U);
+    const uint64_t back = g_request;
+    assert(back != request && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    at_seconds(1120.0);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    assert(dsd_trunk_tuning_pending_request() == back && !dsd_trunk_tuning_frame_is_dispatchable(generation + 1U, 1));
+    dsd_trunk_tuning_request_publish(back, DSD_TRUNK_TUNE_RESULT_OK);
     tetra_sm_tick(s.opts, s.state);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
+    assert(dsd_trunk_tuning_generation() == generation + 2U && dsd_trunk_tuning_pending_request() == 0U);
     session_close(&s);
 }
 
@@ -708,7 +729,7 @@ main(void) {
     test_pending_grant_completes();
     test_pending_grant_fails();
     test_failed_tune_restores_followed_proof();
-    test_pending_grant_times_out();
+    test_slow_backend_keeps_the_gate();
     test_pending_return();
     test_external_return();
     test_abandon_carrier();

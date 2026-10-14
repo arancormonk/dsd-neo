@@ -46,8 +46,6 @@ typedef struct {
 /** Seconds without decoded speech on the followed timeslots after which the speech counts as ended and the hangtime
  * (opts->trunk_hangtime) starts: longer than the frame 18 gap of a speech timeslot (two frames, 113 ms). */
 #define TETRA_SM_SPEECH_GAP_S    0.25
-/** Seconds a tune the backend reported in flight may take before it counts as failed. */
-#define TETRA_SM_TUNE_TIMEOUT_S  5.0
 
 /**
  * @brief Start the session's state machine over: IDLE, no followed call, no tune in flight.
@@ -99,10 +97,11 @@ void tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id);
 void tetra_sm_note_voice(dsd_state* state, uint8_t tn);
 
 /**
- * @brief Time-driven transitions: settle the tune in flight, then while TUNED end the followed call when trunking was
- * turned off (return to the control channel), when another owner released the shared tuning state (no tune), on the
- * grant timeout or after the hangtime that follows the last speech. ON_CC drops to IDLE once trunking is off. The
- * session's call records age on the same tick (tetra_calls_tick()), trunking or not.
+ * @brief Time-driven transitions: settle the tune in flight once the backend answered it (until then nothing else
+ * happens: the request stays the backend's and is never timed out here), then while TUNED end the followed call when
+ * trunking was turned off (return to the control channel), when another owner released the shared tuning state (no
+ * tune), on the grant timeout or after the hangtime that follows the last speech. ON_CC drops to IDLE once trunking is
+ * off. The session's call records age on the same tick (tetra_calls_tick()), trunking or not.
  */
 void tetra_sm_tick(dsd_opts* opts, dsd_state* state);
 

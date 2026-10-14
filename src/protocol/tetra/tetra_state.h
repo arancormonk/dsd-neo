@@ -51,7 +51,6 @@ typedef struct {
     tetra_sm_grant followed;        /* the call followed while TUNED */
     double t_tune_m;  /* the followed tune completed, or the grant was taken on the same carrier; 0 in flight */
     double t_voice_m; /* last speech on a followed timeslot since then; 0 for none */
-    double pending_deadline_m;   /* the tune in flight counts as failed past this */
     uint64_t pending_request_id; /* the correlated trunk-tuning request in flight; 0 for none */
     uint8_t state;               /* tetra_sm_state_e */
     uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel */

@@ -4468,9 +4468,10 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
 - Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
   (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
   proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`).
-  Every entry point and the tick settle it first: a completion commits, a failure -- or a request still unanswered after
-  `TETRA_SM_TUNE_TIMEOUT_S`, which is published as a timeout so a late completion cannot revive it -- restores the
-  rollback first and completes the request after, so the frame gate opens onto restored state (`trunk_tuning_hooks.h`).
+  Until the backend answers, the request is the backend's, however long that takes: nothing times it out locally (as
+  with P25's tunes), so the frame gate stays closed and the backend's completion is the tuner boundary. Every entry
+  point and the tick settle it first once it is answered: a completion commits, a failure restores the rollback first
+  and completes the request after, so the frame gate opens onto restored state (`trunk_tuning_hooks.h`).
   `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own cleanup (a decode-mode change
   drops the extension) let go of a request they find (`tetra_sm_disown_pending()`): one that failed is retired as rolled
   back, and one the backend has not answered stays the backend's, so the frame gate waits for it and its completion

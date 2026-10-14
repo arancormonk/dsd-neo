@@ -3,9 +3,10 @@
  * TETRA trunking state machine (tetra_trunk_sm.h): one followed traffic channel per session.
  *
  * All of it lives in tetra_state_t::sm. Tunes go through the runtime trunk-tuning hooks. A request the backend reports
- * in flight (PENDING) is settled by the next entry point or tick: a completed one commits, a failed one -- or one still
- * unanswered after TETRA_SM_TUNE_TIMEOUT_S -- puts the state machine and the shared tuning state back first and then
- * completes the request, so the frame gate it holds opens on restored state (trunk_tuning_hooks.h).
+ * in flight (PENDING) is the backend's until it answers, however long that takes: the frame gate stays closed and the
+ * state machine waits. The next entry point or tick after the answer settles it: a completed one commits, a failed one
+ * puts the state machine and the shared tuning state back first and then completes the request, so the frame gate it
+ * holds opens on restored state (trunk_tuning_hooks.h).
  *
  * The receiver's carrier changes only when a tune completes: then the carrier's evidence, partial TM-SDUs, TDMA clock
  * and speech in progress are forgotten (tetra_forget_carrier()). The pointer to the TETRA state the MAC holds while it
@@ -182,7 +183,6 @@ sm_stage_pending(tetra_state_t* ts, uint8_t kind, uint64_t request_id, const tet
     ts->sm.pending_prev = *prev;
     ts->sm.pending_request_id = request_id;
     ts->sm.pending_kind = kind;
-    ts->sm.pending_deadline_m = dsd_decode_now_mono_s() + TETRA_SM_TUNE_TIMEOUT_S;
 }
 
 /* The receiver reached the followed traffic channel at @p completed_m (0: now). */
@@ -210,7 +210,9 @@ sm_return_completed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     }
 }
 
-/* Settle the tune in flight. Returns 1 when none is in flight any more. */
+/* Settle the tune in flight. Returns 1 when none is in flight any more. A request the backend has not answered is left
+ * pending: completing it here would open the frame gate while the hardware may still move, and the backend's later
+ * completion would then publish no tuner boundary (trunk_tuning_hooks.h). */
 static int
 sm_settle_pending(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     const uint64_t request_id = ts->sm.pending_request_id;
@@ -218,14 +220,9 @@ sm_settle_pending(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         return 1;
     }
     double completed_m = 0.0;
-    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, &completed_m);
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, &completed_m);
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        if (dsd_decode_now_mono_s() < ts->sm.pending_deadline_m) {
-            return 0;
-        }
-        /* A backend that never answers fails the tune; a late completion cannot revive it. */
-        dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_TIMEOUT);
-        result = dsd_trunk_tuning_request_status(request_id, &completed_m);
+        return 0;
     }
     const uint8_t kind = ts->sm.pending_kind;
     ts->sm.pending_request_id = 0U;
