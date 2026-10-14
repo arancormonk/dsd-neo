@@ -4445,7 +4445,12 @@ carrier's polarity (`tetra_sync.polarity`) comes from a synchronisation burst's 
 and on the uplink from a control burst: its extended training sequence is no other training sequence inverted, so its
 synctype's sign is its polarity, its SCH/HU is decoded with it, and once that CRC passed the decoder makes it the
 carrier's (`tetra_uplink_process_cb()`); one that fails changes nothing, since a normal-polarity NTS2 burst can match
-the inverted extended training sequence. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`.
+the inverted extended training sequence. The frame-sync slicer cuts TETRA's symbols at fixed thresholds of the CQPSK
+symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`), where the RTL front end and a soft symbol capture give them;
+a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads it as it is
+(`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled by 10000
+into the PCM sample domain; scaled, both inner levels would slice as outer ones. Tests: `FRAME_SYNC_INTERNAL_HELPERS`,
+`TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`, `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`.
 
 #### Signalling decoders
 

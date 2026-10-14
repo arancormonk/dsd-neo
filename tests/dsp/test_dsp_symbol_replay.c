@@ -508,6 +508,42 @@ test_float_symbol_replay_scales_values(void) {
     opts.symbolfile = NULL;
 }
 
+/* A TETRA session reads a float symbol file's symbols as they are: the file holds the symbols an I/Q input's CQPSK
+ * demodulator recovered (outer levels +-3, inner +-1), and TETRA's frame-sync slicer cuts them at the fixed thresholds
+ * 0 and +-2 of that domain, as it cuts the RTL front end's symbols and a soft capture's. Scaled by 10000 like the other
+ * modes' symbols, both inner levels sliced as outer ones and no training sequence matched. */
+static void
+test_float_symbol_replay_keeps_tetra_symbols(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_symbol_replay_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_SYMBOL_FLT;
+    opts.frame_tetra = 1;
+    state.rf_mod = 1;
+    opts.symbolfile = tmpfile();
+    assert(opts.symbolfile != NULL);
+    const float levels[] = {1.0f, 3.0f, -1.0f, -3.0f, 0.75f};
+    assert(fwrite(levels, sizeof(levels[0]), sizeof(levels) / sizeof(levels[0]), opts.symbolfile)
+           == sizeof(levels) / sizeof(levels[0]));
+    rewind(opts.symbolfile);
+    g_cleanup_calls = 0;
+    exitflag = 0;
+
+    for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
+        float symbol = getSymbol(&opts, &state, 0);
+        if (fabsf(symbol - levels[i]) > 0.0001f) {
+            DSD_FPRINTF(stderr, "FAIL: TETRA float symbol %zu read as %f, stored %f\n", i, (double)symbol,
+                        (double)levels[i]);
+            assert(0);
+        }
+    }
+    assert(state.symbolcnt == 5);
+    assert(g_cleanup_calls == 0);
+
+    fclose(opts.symbolfile);
+    opts.symbolfile = NULL;
+}
+
 static void
 test_float_symbol_replay_eof_sets_exitflag(void) {
     static dsd_opts opts;
@@ -5145,6 +5181,7 @@ main(void) {
     test_unsupported_soft_headers_are_rejected();
     test_soft_header_without_record_cleans_up_at_eof();
     test_float_symbol_replay_scales_values();
+    test_float_symbol_replay_keeps_tetra_symbols();
     test_float_symbol_replay_eof_sets_exitflag();
     test_soft_symbol_replay_bounds_stored_symbols();
     test_float_symbol_replay_bounds_stored_symbols();

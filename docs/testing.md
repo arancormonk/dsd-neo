@@ -289,7 +289,12 @@ bursts, and on the clean and inverted replays every burst with no re-encode mism
 `DECODE_IQ_TETRA_BSCH_72K` requires 24 BSCH decodes and no rate warning, and `DECODE_IQ_TETRA_TCH_FS_72K` 24 TCH/FS
 bursts with the CRC passing and none failing. `DECODE_IQ_TETRA_BAD_CRC_REJECT`
 and `DECODE_IQ_TETRA_BAD_CRC_CFO_AWGN_REJECT` replay a BSCH with one protected bit flipped: the burst must sync and
-no network identity may be published. These are deterministic regression boundaries, not receiver-sensitivity claims.
+no network identity may be published. `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY` (`tests/iq_float_symbol_replay_check.cmake`)
+captures the clean replay's symbols (`-c`), writes them as a float symbol file (`dsd-neo_test_symbol_capture_to_float`)
+and replays that with `-i symbols.raw`: it must decode as many BSCHs as the I/Q replay, at least 90 of the 100 (all of
+them here), which a float symbol file scaled into the PCM sample domain loses (TETRA's frame-sync slicer has fixed
+thresholds in the symbol domain). These are deterministic
+regression boundaries, not receiver-sensitivity claims.
 
 `provoice` is the sigidwiki ProVoice clip, one 3.5 s transmission (issue #588). Unlike the other audio sources it was
 recorded from a receiver's de-emphasized audio rather than from its discriminator: its 9600 baud clock line is there,

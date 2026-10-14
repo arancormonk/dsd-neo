@@ -13659,6 +13659,38 @@ if(DSD_HAS_RADIO)
         "\\+TETRA SB"
         "\\[TETRA BSCH\\]"
     )
+    # A float symbol file (.raw) of the symbols the I/Q replay recovered: tests/iq_float_symbol_replay_check.cmake
+    # captures them (-c), writes them as floats (dsd-neo_test_symbol_capture_to_float) and replays that (-i), which must
+    # decode as many BSCHs as the I/Q replay does, at least 90 of the fixture's 100: TETRA's frame-sync slicer cuts a
+    # float symbol file's symbols at the thresholds of the CQPSK domain they hold, as it cuts the RTL front end's.
+    add_executable(
+        dsd-neo_test_symbol_capture_to_float
+        dsp/symbol_capture_to_float.c
+    )
+    target_include_directories(
+        dsd-neo_test_symbol_capture_to_float
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_symbol_capture_to_float
+        PRIVATE dsd-neo_platform
+    )
+    add_test(
+        NAME DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DCONVERT_BIN=$<TARGET_FILE:dsd-neo_test_symbol_capture_to_float>"
+            "-DMODE=-fT"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_bsch_synth.iq.json"
+            "-DEXPECTED=\\[TETRA BSCH\\] MCC=460 MNC=4242"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/float_symbol_replay/DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY"
+            "-DMIN_MATCHES=90" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_float_symbol_replay_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY
+        PROPERTIES LABELS "iq-decode" TIMEOUT 240
+    )
     # The off-air dpmr capture, which carries no recoverable CCH: its Hamming syndromes
     # sit at the random rate and its 4FSK eye is closed, so the Src=1601621 this case
     # used to assert was dpmr_ids_are_strong()'s Hamming fallback firing on
