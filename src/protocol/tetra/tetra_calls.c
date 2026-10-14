@@ -1137,6 +1137,24 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
     calls_emit_notice(opts, state, 0, h->src, dst, notice, NULL);
 }
 
+/* The direct mode call canonical slot 0 shows ends when the channel's traffic is another transmission's now
+ * (tetra_state_t::dmo_tx_seq): a transmission keeps its source and security class (EN 300 396-3 clauses 8.2.4,
+ * 8.5.3), so what describes another is another call, which an identity the two calls do not both know could not tell
+ * apart. 1 when the call on the channel is the transmission in progress's. */
+static int
+dmo_call_of_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    tetra_dmo_call_t* const d = &ts->calls.dmo;
+    if (d->tx_seq == ts->dmo_tx_seq) {
+        return 1;
+    }
+    if (ts->calls.published == TETRA_PUB_DMO) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    dmo_call_forget(d);
+    d->tx_seq = ts->dmo_tx_seq;
+    return 0;
+}
+
 void
 tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h) {
     tetra_state_t* const ts = tetra_st(state);
@@ -1147,6 +1165,7 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
     if (!h->has_addrs) {
         /* DM-2-C encrypts the addresses and the message type too: an encrypted transmission, of no one known. */
         if (sync_enc_state == TETRA_DMO_AIE_DM2C) {
+            (void)dmo_call_of_transmission(opts, state, ts);
             dmo_call_forget(d);
             d->active = 1;
             d->seen_m = dsd_decode_now_mono_s();
@@ -1156,6 +1175,7 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
     }
     switch (dmo_pdu_kind(h)) {
         case DMO_PDU_CALL:
+            (void)dmo_call_of_transmission(opts, state, ts);
             dmo_call_from(d, h);
             d->seen_m = dsd_decode_now_mono_s();
             dmo_publish(opts, state, ts);
@@ -1173,8 +1193,8 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
 
 void
 tetra_calls_dmo_protection(dsd_opts* opts, dsd_state* state) {
-    const tetra_state_t* const ts = tetra_st_existing(state);
-    if (ts && calls_carrying(state, ts, TETRA_PUB_DMO, 0U)) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (ts && calls_carrying(state, ts, TETRA_PUB_DMO, 0U) && dmo_call_of_transmission(opts, state, ts)) {
         calls_reclassify(opts, state, dmo_crypto_state(state));
     }
 }

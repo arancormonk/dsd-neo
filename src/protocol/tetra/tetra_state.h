@@ -164,6 +164,7 @@ typedef struct {
     tetra_dmo_sds_key sds; /**< the message of the last short data notice; type 0 for none */
     uint32_t src;          /**< source address (talker) */
     uint32_t dst;          /**< destination address; 0 when DM-2-B hides it */
+    uint32_t tx_seq;       /**< the transmission it is a call of (tetra_state_t::dmo_tx_seq) */
     uint8_t active;        /**< a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED set it up and no end has come since */
     uint8_t addressed;     /**< the addresses were clear (no DM-2-C) */
     uint8_t group;         /**< call type element: 1 group call, 0 individual call (group_known) */

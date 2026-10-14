@@ -4734,8 +4734,10 @@ single "current call".
   as terminators, the state machine leaving it as a teardown, the heard speech stopping as a sync loss. Direct mode
   (`tetra_calls_dmo_pdu()`, EN 300 396-3) publishes the call on the channel from DM-SETUP, DM-SETUP PRES, DM-CONNECT
   ACK, DM-OCCUPIED and DM-GSETUP with what its security class leaves clear (DM-2-B hides the destination, DM-2-C every
-  identity), ends it at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT and DM-GRELEASE, and after `TETRA_CALL_DMO_IDLE_S`
-  without a PDU or speech of it. The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
+  identity), ends it at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT and DM-GRELEASE, after `TETRA_CALL_DMO_IDLE_S`
+  without a PDU or speech of it, and when the channel's traffic is another transmission's (`dmo_tx_seq`,
+  `dmo_call_of_transmission()`): a transmission keeps its source and class, so one of another class is another call
+  even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way). The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
   `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
   family.
 - Direct mode protection (`tetra_dmo.c`, `tetra_state_t::dmo_crypt`, `tetra_dmo_call_crypt()`) is that of the traffic

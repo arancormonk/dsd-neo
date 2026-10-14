@@ -1088,6 +1088,32 @@ test_direct_mode_calls(void) {
     session_close(&s);
 }
 
+/* A direct mode transmission keeps its source and security class (EN 300 396-3 clauses 8.2.4, 8.5.3), so one of
+ * another class is another call even when neither call names the other's parties: a clear call after an encrypted DM-2-C
+ * one whose end went unheard, and a DM-2-C call after a clear one, each open a canonical call of their own instead of
+ * taking the last one's epoch, parties or crypto class. */
+static void
+test_direct_mode_transmissions_apart(void) {
+    session s = session_open();
+    session_history(&s);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM2C);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    const uint64_t encrypted = call.epoch;
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != encrypted && call.ota_source_id == 100u
+           && call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    const uint64_t clear = call.epoch;
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    assert(canonical(s.state).epoch == clear);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM2C);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != clear && call.ota_source_id == 0u
+           && call.ota_target_id == 0u && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    session_close(&s);
+}
+
 /* A direct mode call nothing of which was heard for TETRA_CALL_DMO_IDLE_S is over, and so is its transmission: its
  * colour code and protection go with it (EN 300 396-3 clauses 8.2.4, 8.5.3), so speech of a next transmission whose
  * DMAC-SYNC went unread is not taken for clear by the last call's protection. */
@@ -1872,6 +1898,7 @@ main(void) {
     test_sds_and_status_notices();
     test_direct_mode_calls();
     test_direct_mode_idle_ends_the_transmission();
+    test_direct_mode_transmissions_apart();
     test_direct_mode_short_data();
     test_direct_mode_short_data_fcs();
     test_direct_mode_short_data_repeats();
