@@ -42,6 +42,7 @@ typedef struct {
     double t_voice_m;
     uint32_t confirm_epoch;
     uint8_t followed_proven;
+    uint8_t followed_retired;
     uint8_t state;
 } tetra_sm_rollback;
 
@@ -54,6 +55,8 @@ typedef struct {
     uint64_t pending_request_id; /* the correlated trunk-tuning request in flight; 0 for none */
     uint8_t state;               /* tetra_sm_state_e */
     uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel */
+    uint8_t followed_retired;    /* the followed call's identifier names another call now (tetra_sm_retire_call());
+                                    read while TUNED, cleared by every new follow */
 } tetra_sm_t;
 
 /* Let go of the tune @p sm has in flight (tetra_trunk_sm.c): starting over, a hand-over to the engine, the TETRA state

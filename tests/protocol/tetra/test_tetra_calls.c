@@ -318,23 +318,29 @@ test_followed_call_turns_encrypted(void) {
     session_close(&s);
 }
 
-/* D-INFO (table 14.11) gives the followed call a new identifier: it is followed under that one, which releases it. */
+/* D-INFO (table 14.11) of call @p call_id giving it the identifier @p new_id. */
+static void
+send_info_rename(session* s, uint32_t ssi, uint16_t call_id, uint16_t new_id) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_INFO, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, 0, 2); /* reset call time-out timer, poll request */
+    ttb_put(&cmce, 1, 1); /* O-bit */
+    ttb_put(&cmce, 1, 1); /* new call identifier present */
+    ttb_put(&cmce, new_id, 14);
+    ttb_put(&cmce, 0, 9); /* the nine other type-2 elements absent */
+    ttb_put(&cmce, 0, 1); /* M-bit */
+    send_block(s, ssi, &cmce, 0, 0);
+}
+
+/* D-INFO gives the followed call a new identifier: it is followed under that one, which releases it. */
 static void
 test_followed_call_renamed(void) {
     session s = session_open();
     send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
-    ttb_block cmce = {0};
-    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
-    ttb_put(&cmce, TETRA_CMCE_D_INFO, 5);
-    ttb_put(&cmce, 0x0A, 14);
-    ttb_put(&cmce, 0, 2); /* reset call time-out timer, poll request */
-    ttb_put(&cmce, 1, 1); /* O-bit */
-    ttb_put(&cmce, 1, 1); /* new call identifier present */
-    ttb_put(&cmce, 0x0E, 14);
-    ttb_put(&cmce, 0, 9); /* the nine other type-2 elements absent */
-    ttb_put(&cmce, 0, 1); /* M-bit */
     const uint64_t epoch = canonical(s.state).epoch;
-    send_block(&s, 0x100u, &cmce, 0, 0);
+    send_info_rename(&s, 0x100u, 0x0A, 0x0E);
     assert(tetra_calls_peek(s.state, 0x0A) == NULL && tetra_calls_peek(s.state, 0x0E) != NULL);
     assert(followed_call(s.state) == 0x0E && g_returns == 0);
     /* The call goes on under its new identifier: one canonical call. */
@@ -369,13 +375,90 @@ test_setup_reusing_followed_id(void) {
     assert(g_tunes == 2 && g_tuned_hz == CARRIER_HZ(140) && followed_call(s.state) == 0x0A);
     call = canonical(s.state);
     assert(call.epoch != first && call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0x300u);
+    session_close(&s);
+}
 
-    /* A return the backend refuses keeps the receiver on the old call's channel, and the new call's allocation is
-     * still not followed as if it were the old call's. */
+/* 1 while canonical slot 0 carries an active call to @p target. */
+static int
+publishes_call_to(const dsd_state* state, uint32_t target) {
+    const dsd_call_snapshot call = canonical(state);
+    return call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == target;
+}
+
+/* The receiver cannot leave a followed call whose identifier a D-SETUP gave to a call of a blocked talkgroup: the
+ * return is deferred, or a return in flight fails and puts the call back. Until following ends the two calls stay
+ * apart: nothing of the new call -- the D-SETUP itself, a repeat of it, its D-CONNECT, a later allocation -- counts
+ * as the followed call's, so none proves or publishes it and none tunes to the blocked talkgroup; and once the grant
+ * timeout gave up following, the new call is judged like any other and is still not followed. */
+static void
+test_reused_id_while_following_held(void) {
+    for (int in_flight = 0; in_flight < 2; in_flight++) {
+        session s = session_open();
+        session_history(&s);
+        dsd_tg_policy_entry row;
+        assert(dsd_tg_policy_make_exact_entry(0x200u, "B", "blocked", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+        assert(dsd_tg_policy_upsert_exact(s.state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        send_call_pdu(&s, 0x100u, TETRA_CMCE_D_CONNECT, 0x0A, 4 + 1 + 1 + 2 + 1 + 1);
+        assert(followed_call(s.state) == 0x0A && g_tunes == 1 && tetra_confirm_followed_call_proven(s.state));
+
+        g_return_result = in_flight ? DSD_TRUNK_TUNE_RESULT_PENDING : DSD_TRUNK_TUNE_RESULT_DEFERRED;
+        send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 150);
+        assert(g_returns == 1 && g_tunes == 1);
+        if (in_flight) {
+            const uint64_t request = dsd_trunk_tuning_pending_request();
+            assert(request != 0U && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+            dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+            tetra_sm_tick(s.opts, s.state);
+        }
+        /* The receiver stays on the old call's channel and follows no call record. */
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x0A);
+        assert(tetra_calls_followed(s.state) == NULL && !tetra_confirm_followed_call_proven(s.state));
+        assert(tetra_calls_peek(s.state, 0x0A)->called_ssi == 0x200u && !publishes_call_to(s.state, 0x200u));
+
+        send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 150);
+        send_call_pdu(&s, 0x200u, TETRA_CMCE_D_CONNECT, 0x0A, 4 + 1 + 1 + 2 + 1 + 1);
+        send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 2, 160);
+        assert(g_tunes == 1 && g_tuned_hz == CARRIER_HZ(120) && followed_call(s.state) == 0x0A);
+        assert(!tetra_confirm_followed_call_proven(s.state) && !publishes_call_to(s.state, 0x200u));
+
+        /* The grant timeout retries the return; one in flight that fails puts the channel back still without a call
+         * record. */
+        g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        at_seconds(1000.0 + TETRA_SM_GRANT_TIMEOUT_S);
+        tetra_sm_tick(s.opts, s.state);
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && dsd_trunk_tuning_pending_request() != 0U);
+        g_return_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+        dsd_trunk_tuning_request_publish(dsd_trunk_tuning_pending_request(), DSD_TRUNK_TUNE_RESULT_FAILED);
+        tetra_sm_tick(s.opts, s.state);
+        assert(followed_call(s.state) == 0x0A && tetra_calls_followed(s.state) == NULL);
+        send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 170);
+        assert(g_tunes == 1 && !tetra_confirm_followed_call_proven(s.state) && !publishes_call_to(s.state, 0x200u));
+        /* Renaming the new call does not hand it the followed channel. */
+        send_info_rename(&s, 0x200u, 0x0A, 0x0E);
+        assert(followed_call(s.state) == 0x0A && tetra_calls_peek(s.state, 0x0E) != NULL);
+        assert(tetra_calls_followed(s.state) == NULL && !tetra_confirm_followed_call_proven(s.state));
+
+        g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+        tetra_sm_tick(s.opts, s.state);
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+        send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 150);
+        assert(g_tunes == 1 && followed_call(s.state) == -1 && !publishes_call_to(s.state, 0x200u));
+        session_close(&s);
+    }
+
+    /* A call of the held talkgroup that took the identifier, allocated the channel the receiver is on, is a new call
+     * the state machine follows there, not the old call's grant. */
+    session s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
     g_return_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
-    send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 150);
-    assert(g_returns == 2 && g_tunes == 2 && g_tuned_hz == CARRIER_HZ(140));
-    assert(tetra_calls_peek(s.state, 0x0A)->called_ssi == 0x200u);
+    send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    assert(tetra_calls_followed(s.state) == NULL && followed_call(s.state) == 0x0A);
+    s.state->tg_hold = 0x200u;
+    send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(g_tunes == 1 && tetra_calls_followed(s.state) == tetra_calls_peek(s.state, 0x0A));
+    assert(tetra_confirm_followed_call_proven(s.state) && publishes_call_to(s.state, 0x200u));
     session_close(&s);
 }
 
@@ -871,6 +954,7 @@ main(void) {
     test_followed_call_turns_encrypted();
     test_followed_call_renamed();
     test_setup_reusing_followed_id();
+    test_reused_id_while_following_held();
     test_table_eviction_and_ageing();
     test_followed_call_publishes();
     test_encrypted_and_unfollowed_calls();

@@ -89,6 +89,7 @@ sm_capture(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts
     r.t_voice_m = ts->sm.t_voice_m;
     r.confirm_epoch = tetra_confirm_carrier_epoch(state);
     r.followed_proven = (uint8_t)tetra_confirm_followed_call_proven(state);
+    r.followed_retired = ts->sm.followed_retired;
     r.state = ts->sm.state;
     return r;
 }
@@ -105,6 +106,7 @@ sm_restore(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_r
     state->p25_last_vc_tune_time = r->tuning.p25_last_vc_tune_time;
     state->p25_last_vc_tune_time_m = r->tuning.p25_last_vc_tune_time_m;
     ts->sm.followed = r->followed;
+    ts->sm.followed_retired = r->followed_retired;
     ts->sm.t_tune_m = r->t_tune_m;
     ts->sm.t_voice_m = r->t_voice_m;
     /* The receiver never left the carrier: what proved the call there still does, unless the carrier was reset. */
@@ -146,6 +148,7 @@ sm_follow(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
     ts->sm.followed.timeslots &= 0x0Fu;
     ts->sm.followed.carrier &= 0x0FFFu;
     ts->sm.followed.call_id &= 0x3FFFu;
+    ts->sm.followed_retired = 0;
     ts->sm.t_tune_m = 0.0;
     ts->sm.t_voice_m = 0.0;
     tetra_confirm_forget_followed_call(state);
@@ -283,10 +286,13 @@ sm_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const char* reas
     return 1;
 }
 
-/* Calls are the same when the allocations match and no call identifier says otherwise. */
+/* Calls are the same when the allocations match and no call identifier says otherwise. A retired followed call is
+ * no call record's: no grant is its (tetra_sm_retire_call()). */
 static int
-sm_same_call(const tetra_sm_grant* followed, const tetra_sm_grant* grant) {
-    return followed->freq_hz == grant->freq_hz && followed->timeslots == (grant->timeslots & 0x0Fu)
+sm_same_call(const tetra_sm_t* sm, const tetra_sm_grant* grant) {
+    const tetra_sm_grant* const followed = &sm->followed;
+    return !sm->followed_retired && followed->freq_hz == grant->freq_hz
+           && followed->timeslots == (grant->timeslots & 0x0Fu)
            && (followed->call_id == 0U || grant->call_id == 0U || followed->call_id == (grant->call_id & 0x3FFFu));
 }
 
@@ -295,7 +301,7 @@ sm_same_call(const tetra_sm_grant* followed, const tetra_sm_grant* grant) {
 static int
 sm_follow_here(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
     const int was_tuned = ts->sm.state == (uint8_t)TETRA_SM_TUNED;
-    if (was_tuned && sm_same_call(&ts->sm.followed, grant)) {
+    if (was_tuned && sm_same_call(&ts->sm, grant)) {
         if (ts->sm.followed.call_id == 0U) {
             ts->sm.followed.call_id = (uint16_t)(grant->call_id & 0x3FFFu);
         }
@@ -565,4 +571,39 @@ tetra_sm_followed(const dsd_state* state, tetra_sm_grant* out) {
         *out = ts->sm.followed;
     }
     return 1;
+}
+
+int
+tetra_sm_followed_call_id(const dsd_state* state, uint16_t* call_id) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.followed_retired) {
+        return 0;
+    }
+    if (call_id) {
+        *call_id = ts->sm.followed.call_id;
+    }
+    return 1;
+}
+
+void
+tetra_sm_retire_call(dsd_state* state, uint16_t call_id) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    const uint16_t id = (uint16_t)(call_id & 0x3FFFu);
+    if (ts->sm.state == (uint8_t)TETRA_SM_TUNED && !ts->sm.followed_retired && ts->sm.followed.call_id == id) {
+        ts->sm.followed_retired = 1;
+        tetra_confirm_forget_followed_call(state);
+        if (sm_narrates(ts, 1)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] call %u now names another call; following its channel, no call\n",
+                        (unsigned)id);
+        }
+    }
+    /* What a failing tune in flight puts back is retired too: the call it would bring back no longer exists. */
+    tetra_sm_rollback* const prev = &ts->sm.pending_prev;
+    if (ts->sm.pending_request_id != 0U && prev->state == (uint8_t)TETRA_SM_TUNED && prev->followed.call_id == id) {
+        prev->followed_retired = 1;
+        prev->followed_proven = 0;
+    }
 }

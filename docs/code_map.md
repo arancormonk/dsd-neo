@@ -4528,16 +4528,20 @@ single "current call".
   and D-RELEASE / D-DISCONNECT free it. A D-SETUP naming another called party or kind of call under a known identifier
   is a new call reusing the identifier of one whose release went unheard: the old call's canonical call ends, its record
   goes and, when it was the followed call, the state machine lets go of it as the release would have made it, so the new
-  call meets the talkgroup policy like any other (`call_retire_reused()`; while a refused or deferred return keeps the
-  receiver there, the new call's allocation is not followed). D-INFO and D-CALL RESTORE may rename a call: the followed
-  one is re-granted under its new identifier and stays one canonical call. D-TX GRANTED / D-TX INTERRUPT give the
-  transmitting party (or the addressed one when granted) and their encryption control the end-to-end flag; D-TX CEASED
-  ends the transmission. A full table evicts the least recently heard record that is not followed; `tetra_calls_tick()`
-  (from `tetra_sm_tick()`) drops records nothing named for `TETRA_CALL_IDLE_S` (30 s) on the decode clock. The followed
-  record never ages: the state machine's hangtime ends it. A record's air encryption is the encryption mode of the
-  MAC-RESOURCE that allocated its channel, learnt from the clear address when that allocation is ciphertext
-  (EN 300 392-7 clause 6.5.1); end-to-end encryption never overwrites it, and the cell-wide `enc_mode` is for display
-  only.
+  call meets the talkgroup policy like any other (`call_retire_reused()`). While the state machine cannot let go (the
+  return refused or deferred, a tune in flight, or a return in flight that would put the call back if it failed) it
+  follows the channel but no call record (`tetra_sm_retire_call()`, kept in the rollback): `tetra_sm_followed_call_id()`
+  reports none, the followed call's proof goes, and no PDU, rename, allocation or speech of the new call counts as the
+  followed call's or takes the followed call's grant path, until the grant timeout or hangtime gives up following or a
+  grant the policy allows follows the new call as a call of its own. D-INFO and D-CALL RESTORE may rename a call: the
+  followed one is re-granted under its new identifier and stays one canonical call. D-TX GRANTED / D-TX INTERRUPT give
+  the transmitting party (or the addressed one when granted) and their encryption control the end-to-end flag; D-TX
+  CEASED ends the transmission. A full table evicts the least recently heard record that is not followed;
+  `tetra_calls_tick()` (from `tetra_sm_tick()`) drops records nothing named for `TETRA_CALL_IDLE_S` (30 s) on the decode
+  clock. The followed record never ages: the state machine's hangtime ends it. A record's air encryption is the
+  encryption mode of the MAC-RESOURCE that allocated its channel, learnt from the clear address when that allocation is
+  ciphertext (EN 300 392-7 clause 6.5.1); end-to-end encryption never overwrites it, and the cell-wide `enc_mode` is for
+  display only.
 - Allocations. The MAC hands the MLE a `tetra_mac_sdu` with the PDU's address and channel allocation. A call PDU in
   the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
   (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label a PDU

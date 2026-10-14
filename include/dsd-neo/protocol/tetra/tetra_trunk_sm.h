@@ -122,8 +122,25 @@ void tetra_sm_abandon_carrier(dsd_opts* opts, dsd_state* state);
 /** @brief The session's state; IDLE for a NULL @p state or a session without TETRA state. */
 tetra_sm_state_e tetra_sm_get_state(const dsd_state* state);
 
-/** @brief 1 and the followed grant in @p out (when not NULL) while TUNED; 0 otherwise. */
+/** @brief 1 and the followed grant in @p out (when not NULL) while TUNED; 0 otherwise. The grant is the channel the
+ * receiver follows, retired or not (tetra_sm_retire_call()). */
 int tetra_sm_followed(const dsd_state* state, tetra_sm_grant* out);
+
+/**
+ * @brief The call record the followed channel belongs to: 1 and its call identifier in @p call_id (when not NULL)
+ * while TUNED on a call that was not retired (tetra_sm_retire_call()); 0 otherwise.
+ */
+int tetra_sm_followed_call_id(const dsd_state* state, uint16_t* call_id);
+
+/**
+ * @brief Call @p call_id's identifier was given to another call while its release went unheard (a D-SETUP reused it),
+ * and the state machine still follows it, or puts it back if a return in flight fails: the return was refused,
+ * deferred or is pending. From here it follows the channel but no call record (tetra_sm_followed_call_id() reports
+ * none) and the followed call's proof on the carrier is gone, so nothing of the call that took the identifier counts
+ * as the followed call's and no grant of it is taken for the followed call. Following ends as it would have: the grant
+ * timeout or the hangtime retries the return; a grant the call records hand over is followed as a new call.
+ */
+void tetra_sm_retire_call(dsd_state* state, uint16_t call_id);
 
 #ifdef __cplusplus
 }
