@@ -792,7 +792,7 @@ Item {
                         if (typeof knownFrequencies === "undefined")
                             return "";
                         var revision = knownFrequencies.revision;
-                        return knownFrequencies.lookup(metrics.centerFreqHz, 12500).map(function (m) { return m.name; }).join(" / ");
+                        return knownFrequencies.tunedNames(metrics.centerFreqHz, metrics.channelBandwidthHz).join(" / ");
                     }
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)

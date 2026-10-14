@@ -89,6 +89,9 @@ KnownFrequencyIndex::KnownFrequencyIndex(SavedSystemsModel* systems, ScanListsMo
 
 void
 KnownFrequencyIndex::add(const QVariantMap& s, const QString& label) {
+    /* A saved system's mode is its decode flag, as the session builder and the rest of the app read it
+       (decode_flag_names_am() in session_args.cpp); a decoder chosen only through its extra arguments is not read. A
+       scan-list entry names its protocol. */
     double width =
         s.value(QStringLiteral("channelBandwidthHz"),
                 knownWidth(s.value(QStringLiteral("decodeFlag"), s.value(QStringLiteral("protocol"))).toString(),
@@ -140,27 +143,73 @@ csvColumns(const QStringList& fields) {
 }
 } // namespace
 
-/* A channel's width from its mode and options; @p inherited when it names no mode and no bandwidth. */
+/* The channel width @p mode names: a decode flag, compared exactly since its case is significant (-fm is dPMR, -fM is
+   AM), or a channel-map mode, scan target type or protocol name, compared without case. NXDN48, dPMR and D-STAR run the
+   receiver's 6.25 kHz channel; any other mode a 12.5 kHz one. */
+static bool
+amMode(const QString& mode) {
+    static const QSet<QString> amNames{QStringLiteral("am"), QStringLiteral("am-conventional")};
+    return mode == QStringLiteral("-fM") || amNames.contains(mode.toLower());
+}
+
 static double
-knownWidth(const QString& mode, const QString& options, double inherited) {
-    double width = mode.isEmpty() ? inherited : 12500;
-    if (mode == QStringLiteral("am") || mode == QStringLiteral("am-conventional") || mode == QStringLiteral("-fM")) {
-        width = 6000;
-    } else if (mode.startsWith(QLatin1String("nxdn48")) || mode == QStringLiteral("-fi")) {
-        width = 6250;
+modeWidth(const QString& mode) {
+    static const QSet<QString> narrowFlags{QStringLiteral("-fi"), QStringLiteral("-fm"), QStringLiteral("-fd")};
+    static const QSet<QString> narrowNames{QStringLiteral("dpmr"), QStringLiteral("dstar"), QStringLiteral("d-star")};
+    const QString name = mode.toLower();
+    if (amMode(mode)) {
+        return 6000;
     }
+    if (narrowFlags.contains(mode) || narrowNames.contains(name) || name.startsWith(QLatin1String("nxdn48"))) {
+        return 6250;
+    }
+    return 12500;
+}
+
+/* The width option of @p mode's analog kind: an AM channel's --am-bandwidth-hz, an NFM channel's --nfm-bandwidth-hz;
+   empty for a digital mode, whose channel neither sets. */
+static QString
+widthOption(const QString& mode) {
+    static const QSet<QString> nfmNames{QStringLiteral("nfm"), QStringLiteral("nfm-conventional")};
+    if (mode == QStringLiteral("-fA") || nfmNames.contains(mode.toLower())) {
+        return QStringLiteral("--nfm-bandwidth-hz");
+    }
+    return amMode(mode) ? QStringLiteral("--am-bandwidth-hz") : QString();
+}
+
+/* The width @p option sets in @p options, as "--option value" or "--option=value" (the last one counts), else
+   @p width. */
+static double
+optionWidth(const QString& options, const QString& option, double width) {
     const auto args = QProcess::splitCommand(options);
-    for (qsizetype i = 0; i + 1 < args.size(); ++i) {
-        if (args[i] != QStringLiteral("--nfm-bandwidth-hz") && args[i] != QStringLiteral("--am-bandwidth-hz")) {
+    const QString prefix = option + QLatin1Char('=');
+    for (qsizetype i = 0; i < args.size(); ++i) {
+        QString value;
+        if (args[i] == option && i + 1 < args.size()) {
+            value = args[i + 1];
+        } else if (args[i].startsWith(prefix)) {
+            value = args[i].mid(prefix.size());
+        } else {
             continue;
         }
         bool ok = false;
-        double hz = args[i + 1].toDouble(&ok);
+        const double hz = value.toDouble(&ok);
         if (ok && std::isfinite(hz) && hz >= 5000 && hz <= 25000) {
             width = hz;
         }
     }
     return width;
+}
+
+/* A channel's width from its mode and options; @p inherited when it names no mode. Only the width option of the
+   channel's own analog kind applies: an NFM system that also carries an AM width keeps its NFM channels' width. */
+static double
+knownWidth(const QString& mode, const QString& options, double inherited) {
+    if (mode.isEmpty()) {
+        return inherited;
+    }
+    const QString option = widthOption(mode);
+    return option.isEmpty() ? modeWidth(mode) : optionWidth(options, option, modeWidth(mode));
 }
 
 void
@@ -273,5 +322,15 @@ KnownFrequencyIndex::lookup(double frequency, double width) const {
         }
     }
     return result;
+}
+
+QStringList
+KnownFrequencyIndex::tunedNames(double frequency, double channelWidth) const {
+    QStringList names;
+    for (const QVariant& match :
+         lookup(frequency, std::isfinite(channelWidth) && channelWidth > 0 ? channelWidth : 12500)) {
+        names.append(match.toMap().value(QStringLiteral("name")).toString());
+    }
+    return names;
 }
 } // namespace dsd_qt

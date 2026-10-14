@@ -27,6 +27,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <cassert>
 #include <cmath>
 #include <dsd-neo/app_control/frontend_runtime.h>
@@ -497,6 +498,74 @@ main(int argc, char** argv) {
                         {QStringLiteral("chanCsvPath"), narrowChannels}}));
     assert(index.lookup(465002000, 12500).size() == 1);
     assert(index.lookup(465005000, 12500).isEmpty());
+
+    // dPMR and D-STAR run 6.25 kHz channels like NXDN48: saved by their decode flags (case-significant: -fm is dPMR,
+    // -fM is AM), or named by a channel map's mode column.
+    const struct {
+        const char* flag;
+        const char* freq;
+        double hz;
+    } narrow[] = {{"-fm", "466.000000", 466000000}, {"-fd", "467.000000", 467000000}};
+
+    for (const auto& n : narrow) {
+        assert(systems.add({{QStringLiteral("name"), QString::fromLatin1(n.flag)},
+                            {QStringLiteral("decodeFlag"), QString::fromLatin1(n.flag)},
+                            {QStringLiteral("freqMhz"), QString::fromLatin1(n.freq)}}));
+        assert(index.lookup(n.hz + 2000, 12500).size() == 1);
+        assert(index.lookup(n.hz + 5000, 12500).isEmpty());
+    }
+    const QString narrowModes = temp.filePath(QStringLiteral("narrow-modes.csv"));
+    f = dsd_fopen_private(narrowModes.toUtf8().constData(), "wb");
+    assert(f);
+    const char modesCsv[] = "Channel,Frequency,mode\n1,471000000,dpmr\n2,472000000,dstar\n";
+    assert(fwrite(modesCsv, 1, sizeof(modesCsv) - 1, f) == sizeof(modesCsv) - 1);
+    fclose(f);
+    assert(systems.add(
+        {{QStringLiteral("name"), QStringLiteral("Mixed map")}, {QStringLiteral("chanCsvPath"), narrowModes}}));
+    for (double hz : {471000000.0, 472000000.0}) {
+        assert(index.lookup(hz + 2000, 12500).size() == 1);
+        assert(index.lookup(hz + 5000, 12500).isEmpty());
+    }
+
+    // An analog system's mode-less map rows take the width its options set for its own kind: an NFM (-fA) system's
+    // rows ignore its AM width, and the --name=value form the CLI takes counts like --name value.
+    const struct {
+        const char* name;
+        const char* flag;
+        const char* extra;
+        const char* csv;
+        double hz;
+    } analogMaps[] = {
+        {"Mixed NFM", "-fA", "-Y --nfm-bandwidth-hz 12500 --am-bandwidth-hz 6000", "analog-nfm.csv", 151000000},
+        {"Wide AM", "-fM", "-Y --am-bandwidth-hz=12000", "analog-am.csv", 119300000}};
+
+    for (const auto& a : analogMaps) {
+        const QString path = temp.filePath(QString::fromLatin1(a.csv));
+        f = dsd_fopen_private(path.toUtf8().constData(), "wb");
+        assert(f);
+        const QByteArray rows = QByteArray("Channel,Frequency\n1,") + QByteArray::number((qlonglong)a.hz) + "\n";
+        assert(fwrite(rows.constData(), 1, (size_t)rows.size(), f) == (size_t)rows.size());
+        fclose(f);
+        assert(systems.add({{QStringLiteral("name"), QString::fromLatin1(a.name)},
+                            {QStringLiteral("decodeFlag"), QString::fromLatin1(a.flag)},
+                            {QStringLiteral("extraArgs"), QString::fromLatin1(a.extra)},
+                            {QStringLiteral("chanCsvPath"), path}}));
+        assert(index.lookup(a.hz + 5000, 12500).size() == 1);
+    }
+
+    // A saved system's mode is its decode flag, as the rest of the app reads it: a decoder chosen only through its extra
+    // arguments is not read, so such a system is labeled as its decode flag's 12.5 kHz channel (a documented limit).
+    assert(systems.add({{QStringLiteral("name"), QStringLiteral("Extra-args AM")},
+                        {QStringLiteral("decodeFlag"), QString()},
+                        {QStringLiteral("extraArgs"), QStringLiteral("-fM --am-bandwidth-hz 6000")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("120.300000")}}));
+    assert(index.lookup(120305000, 12500).size() == 1);
+    // The live views name the tuned channel at the width the receiver filters, or 12.5 kHz when it publishes none: a
+    // 6 kHz AM channel 5 kHz from a saved 12.5 kHz frequency is not that system.
+    assert(index.tunedNames(463555100, 0) == QStringList{QStringLiteral("Exact")});
+    assert(index.tunedNames(463555100, 12500) == QStringList{QStringLiteral("Exact")});
+    assert(index.tunedNames(463557100, 6000).isEmpty());
+    assert(index.tunedNames(463557100, 12500) == QStringList{QStringLiteral("Exact")});
     // Cached lookup keeps working without any rendering-time file reads.
     QFile::remove(channels);
     assert(index.lookup(464000500, 12500).size() == 2);

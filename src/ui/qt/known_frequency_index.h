@@ -10,6 +10,7 @@
 #include <QMap>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -25,6 +26,9 @@ class KnownFrequencyIndex : public QObject {
   public:
     explicit KnownFrequencyIndex(SavedSystemsModel* systems, ScanListsModel* lists, QObject* parent = nullptr);
     Q_INVOKABLE QVariantList lookup(double frequency, double width = 12500) const;
+    /** Names saved for the channel tuned at @p frequency, filtered @p channelWidth wide (MetricsModel's
+        channelBandwidthHz); 0, when the input publishes no width, takes a 12.5 kHz channel. */
+    Q_INVOKABLE QStringList tunedNames(double frequency, double channelWidth) const;
     void rebuild();
 
     qulonglong

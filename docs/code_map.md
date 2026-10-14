@@ -4374,7 +4374,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   applicable channel width/spacing, and ties remain ambiguous. A channel-map row that names
   no mode or bandwidth of its own takes the width/spacing of the saved system or target row
   that references the map, so an NXDN48 system's plain `Channel,Frequency` map keeps its
-  6.25 kHz channels (`UI_QT_SIGNAL_SEARCH`). Saving uses an immutable
+  6.25 kHz channels (`UI_QT_SIGNAL_SEARCH`). NXDN48, dPMR and D-STAR are the 6.25 kHz modes,
+  as the receiver's channel filter has them; decode flags compare exactly (`-fm` is dPMR,
+  `-fM` AM) and mode or type names without case. Only the width option of the channel's own
+  analog kind applies (`--am-bandwidth-hz` for AM, `--nfm-bandwidth-hz` for NFM, either as
+  `--name value` or `--name=value`), so an NFM system that also sets an AM width keeps its
+  NFM channels' width, and its mode-less map rows inherit that. A saved system's mode is its decode
+  flag, as the session builder and the rest of the app read it (`decode_flag_names_am()`); a
+  decoder chosen only through its extra arguments is not read, a documented limit, so such a
+  system is labeled as its decode flag's channel. A scan-list entry's mode is its protocol. The Monitor and Spectrum labels name the
+  tuned channel through `tunedNames()`, at the width the receiver filters
+  (`MetricsModel::channelBandwidthHz`, 12.5 kHz when the input publishes none). Saving uses an immutable
   hit snapshot, including its original source settings and unresolved identity.
   `SignalSearchModel::systemForHit()` shapes the captured receiver settings as saved-system
   fields, each source only its own: an Airspy's native `airspy` map, or an RTL's `ppm`
