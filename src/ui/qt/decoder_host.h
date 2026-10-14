@@ -383,10 +383,11 @@ class DecoderHost : public QObject {
     /**
      * @brief Materialize a picked document into durable app storage.
      *
-     * Unlike importContentUri(), which serves a one-shot open (its Android copy
-     * lands in the evictable cache), this copy must outlive the session: saved
-     * systems keep the returned path. Collisions on @p fileName are unique-ified,
-     * never overwritten — two different documents may share a display name.
+     * Unlike importContentUri(), which serves a one-shot open, this copy must
+     * outlive the session: saved systems keep the returned path. (The Android
+     * host makes the same durable copy for both.) Collisions on @p fileName are
+     * unique-ified, never overwritten — two different documents may share a
+     * display name.
      *
      * @param reference   Platform file reference from the picker (file:// URL or
      *                    Android SAF content URI).

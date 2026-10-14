@@ -169,23 +169,20 @@ keyboard, scroll their contents, and reveal the focused field.
 
 The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
 a regular file, `O_NOFOLLOW`), so SAF content URIs are always materialized into a
-copy first. There are two copy paths, with different lifetimes:
-
-- `AppSupport.copyContentUriToCache` → `cacheDir`, for one-shot opens (the
-  wizard's audio/capture "File" source). Android may evict it.
-- `AppSupport.importDocumentToFiles` → `files/imports/`, for the CSV library
-  (channel maps, talkgroup lists, key files, P25 band plans, source ID lists). These must survive restarts —
-  saved systems reference the path, and the engine appends learned talkgroup
-  rows to the group list in place. Display-name collisions are unique-ified
-  (`chan.csv` → `chan (2).csv`); updates stage a temp file and rename over the
-  target so a half-copied CSV is never observable.
+copy first. `AppSupport.importDocumentToFiles` makes that copy in `files/imports/`,
+both for the wizard's audio/capture "File" source and for the CSV library (channel
+maps, talkgroup lists, key files, P25 band plans, source ID lists). These copies must
+survive restarts — saved systems reference the path, and the engine appends learned
+talkgroup rows to the group list in place — so none of them goes to the evictable
+cache. Display-name collisions are unique-ified (`chan.csv` → `chan (2).csv`); updates
+stage a temp file and rename over the target so a half-copied CSV is never observable.
 
 Embedded `single_key_dec`/`single_key_hex` values in a channel map travel with that copied file and therefore work on
 Android. The companion selection flow copies referenced files into a private bundle
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
 
-Both are reached through `DecoderHost` virtuals (`importContentUri` /
+Both uses are reached through `DecoderHost` virtuals (`importContentUri` /
 `importDocument`); the desktop default of `importDocument` implements the same
 semantics under `QStandardPaths::AppDataLocation`, which is what
 `UI_QT_IMPORTED_FILES` tests on the host. The library itself (one JSON-persisted

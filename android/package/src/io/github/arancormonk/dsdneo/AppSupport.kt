@@ -154,32 +154,6 @@ object AppSupport {
         return if (basename.isEmpty() || basename == "." || basename == "..") "import.bin" else basename
     }
 
-    /**
-     * Copy a SAF content URI into cacheDir and return the real path.
-     *
-     * The C core opens real filesystem paths, so a content URI has to be materialized
-     * before it can be handed to the engine.
-     *
-     * @return absolute path, or an empty string on failure.
-     */
-    @JvmStatic
-    fun copyContentUriToCache(context: Context, uriText: String, fileName: String): String {
-        return try {
-            val uri = Uri.parse(uriText)
-            val target = File(context.cacheDir, displayNameFor(context, uri, fileName))
-            context.contentResolver.openInputStream(uri).use { input ->
-                if (input == null) {
-                    return ""
-                }
-                target.outputStream().use { output -> input.copyTo(output) }
-            }
-            target.absolutePath
-        } catch (e: Exception) {
-            Log.e(TAG, "failed to copy $uriText", e)
-            ""
-        }
-    }
-
     /** chan.csv, chan (2).csv, chan (3).csv … first name not already taken. */
     private fun uniqueTarget(dir: File, name: String): File? {
         var target = File(dir, name)
@@ -201,10 +175,11 @@ object AppSupport {
     /**
      * Copy a SAF content URI into filesDir/imports and return the real path.
      *
-     * Unlike copyContentUriToCache, this copy must outlive the session: saved
-     * systems reference the returned path across restarts, and the engine
-     * appends learned talkgroup rows to a group list in place, neither of which
-     * survives cache eviction. Name collisions are unique-ified rather than
+     * The C core opens real filesystem paths, so a content URI has to be
+     * materialized before it can be handed to the engine. The copy must outlive
+     * the session: saved systems reference the returned path across restarts,
+     * and the engine appends learned talkgroup rows to a group list in place,
+     * neither of which survives cache eviction. Name collisions are unique-ified rather than
      * overwritten — two different documents may share a display name. A
      * non-empty replacePath that resolves inside the imports directory is
      * updated atomically instead (staging file + rename), so a half-copied CSV
