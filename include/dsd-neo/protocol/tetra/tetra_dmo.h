@@ -282,6 +282,12 @@ tetra_dmo_crypt_e tetra_dmo_call_crypt(const dsd_state* state);
  * synchronisation burst sets it. Never creates TETRA state. */
 void tetra_dmo_forget_carrier(dsd_state* state);
 
+/* A trunked mode burst proved the carrier: a BSCH of a trunked system code or a control uplink burst's SCH/HU passed
+ * its CRC. Direct mode ends: its normal bursts are trunked ones from here (EN 300 392-2 clause 9.4.4), and its DM colour
+ * code, protection and call, with the call's canonical call, go with it. Nothing when the carrier was not in direct
+ * mode; @p opts may be NULL. Never creates TETRA state. */
+void tetra_dmo_leave(dsd_opts* opts, dsd_state* state);
+
 /* Log a decoded DNB MAC block (SCH/F or STCH, `len` type-1 bits) and hand a DMAC-DATA PDU's call to the call records.
  * `kind` names the logical channel; `opts` may be NULL. Returns the MAC PDU type (0..3) or -1. */
 int tetra_dmo_log_dnb_pdu(const uint8_t* bits, int len, const char* kind, dsd_opts* opts, dsd_state* state);

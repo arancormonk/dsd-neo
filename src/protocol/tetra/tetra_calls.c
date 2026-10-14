@@ -1120,6 +1120,18 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
     }
 }
 
+void
+tetra_calls_dmo_forget(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    if (ts->calls.published == TETRA_PUB_DMO) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    DSD_MEMSET(&ts->calls.dmo, 0, sizeof ts->calls.dmo);
+}
+
 /* ---- Speech ---------------------------------------------------------------------------------------------------- */
 
 const tetra_call_t*

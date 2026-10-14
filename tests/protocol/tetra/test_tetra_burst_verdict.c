@@ -13,6 +13,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
+#include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -34,6 +36,7 @@
 
 #include "protocol_dispatch_impl.h"
 #include "test_support.h"
+#include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
 #include "tetra_test_pdu.h"
@@ -429,6 +432,95 @@ test_control_burst_publishes_its_mode(void) {
     session_close(&s);
 }
 
+/* The SCH/S and SCH/H of a direct mode synchronisation burst (EN 300 396-3 tables 21 and 22): DMAC-SYNC, direct,
+ * DM-1, carrying DM-OCCUPIED from source 100 to 0x800001 under MNI 753/2361 (the vector of TETRA_DMO). */
+static const char k_dmo_sch_s[] = "110100000000000001100000000000000000000000000000000000000000";
+static const char k_dmo_sch_h[] =
+    "00000000001000001000000000000000000000010000000000000000000110010010111100010010010011100"
+    "10110101110000000000000000"
+    "001000100";
+
+/* The direct mode call a DSB with k_dmo_sch_s and k_dmo_sch_h sets up: the mode, its DM colour code and
+ * protection, and the call on the channel, published. */
+static void
+enter_direct_mode(session* s) {
+    uint8_t bits[TTB_SCH_HD_BITS] = {0};
+    for (size_t i = 0; k_dmo_sch_s[i] != '\0'; i++) {
+        bits[i] = (uint8_t)(k_dmo_sch_s[i] - '0');
+    }
+    tetra_dmo_sync_s_t sync_s;
+    assert(tetra_dmo_parse_sync_s(bits, &sync_s) == 1);
+    for (size_t i = 0; k_dmo_sch_h[i] != '\0'; i++) {
+        bits[i] = (uint8_t)(k_dmo_sch_h[i] - '0');
+    }
+    tetra_dmo_sync_h_t sync_h;
+    (void)tetra_dmo_parse_sync_h(bits, 0, &sync_h);
+    tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
+    tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
+    const tetra_state_t* ts = tetra_st_existing(s->state);
+    assert(ts->dmo && ts->dmo_dcc_valid && tetra_dmo_call_crypt(s->state) == TETRA_DMO_CRYPT_CLEAR);
+    assert(ts->calls.dmo.active && ts->calls.published == TETRA_PUB_DMO);
+}
+
+/* A normal uplink burst (--tetra-uplink) with two half-slot blocks, block 1 right against its training sequence as the
+ * frame sync captured it, block 2 read after it (EN 300 392-2 clause 9.4.4.2.4). */
+static dsd_frame_verdict
+uplink_nts2_burst(session* s, const uint8_t* block1, const uint8_t* block2) {
+    feed(s, block2, BLOCK_DIBITS);
+    DSD_MEMCPY(s->state->tetra_sync.b1_dibuf, block1, BLOCK_DIBITS);
+    s->state->tetra_sync.b1_valid = 1;
+    s->state->tetra_sync.b1_soft_valid = 0;
+    s->state->tetra_sync.nts2 = 1;
+    s->state->tetra_sync.cb = 0;
+    s->state->tetra_sync.b2_lead_count = 0;
+    s->state->tetra_sync.phase_rot = 0;
+    s->state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    s->state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    return dsd_dispatch_handle_tetra(s->opts, s->state);
+}
+
+/* The uplink has no BSCH to end direct mode: a control uplink burst whose SCH/HU passed its CRC proves the carrier a
+ * trunked mode uplink, so direct mode, which a DSB set before, ends with its DM colour code, protection and call, and
+ * the normal bursts after it are NUBs again, decoded with the network's colour code. Before it a NUB is taken for a
+ * DNB and does not decode. */
+static void
+test_control_burst_leaves_direct_mode(void) {
+    session s = session_open();
+    s.opts->tetra_uplink = 1;
+    s.opts->tetra_net_preset = 1;
+    s.opts->tetra_net_mcc = 460;
+    s.opts->tetra_net_mnc = 4242;
+    s.opts->tetra_net_colour = 17;
+    const uint32_t seed = tetra_compute_scramb_seed(460, 4242, 17);
+    const uint8_t mac[SCH_HU_BITS] = {0};
+    uint8_t coded[2 * CB_HALF_DIBITS];
+    encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, coded);
+    ttb_block b = {0};
+    ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+    uint8_t block2[BLOCK_DIBITS];
+    encode_sch_hd(b.bits, seed, block2);
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+
+    /* A first control burst gives the session its network identity, then a DSB puts it in direct mode. */
+    dsd_frame_verdict verdict = control_burst(&s, coded, 0);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    enter_direct_mode(&s);
+    verdict = uplink_nts2_burst(&s, zeros, block2);
+    assert(verdict == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+
+    verdict = control_burst(&s, coded, 0);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(!ts->dmo && !ts->dmo_dcc_valid && ts->dmo_dcc_seed == 0U && ts->dmo_crypt == TETRA_DMO_CRYPT_UNKNOWN);
+    assert(!ts->calls.dmo.active && ts->calls.dmo.src == 0U && ts->calls.published == TETRA_PUB_NONE);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase != DSD_CALL_PHASE_ACTIVE);
+    verdict = uplink_nts2_burst(&s, zeros, block2);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_pub.mode == DSD_TETRA_MODE_TMO_UPLINK);
+    session_close(&s);
+}
+
 /* A channel allocation in the first half of a normal burst moves the receiver: the second half was sent on the carrier
  * left, so it is not decoded, and nothing in it counts for the traffic carrier. */
 static void
@@ -518,6 +610,7 @@ main(void) {
     test_failed_bsch_runs_the_clock();
     test_control_burst_tells_the_polarity();
     test_control_burst_publishes_its_mode();
+    test_control_burst_leaves_direct_mode();
     test_retune_leaves_the_rest_of_the_burst();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;

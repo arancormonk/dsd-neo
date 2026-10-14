@@ -1357,16 +1357,34 @@ tetra_dmo_call_crypt(const dsd_state* state) {
     return (tetra_dmo_crypt_e)ts->dmo_crypt;
 }
 
+/* What the direct mode channel's transmissions left: the DM colour code, its seed and age, and the protection. */
+static void
+dmo_forget_channel(tetra_state_t* ts) {
+    ts->dmo_dcc_valid = 0;
+    ts->dmo_dcc_seed = 0U;
+    ts->dmo_since_sync = 0U;
+    dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
+}
+
 void
 tetra_dmo_forget_carrier(dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (!ts) {
         return;
     }
-    ts->dmo_dcc_valid = 0;
-    ts->dmo_dcc_seed = 0U;
-    ts->dmo_since_sync = 0U;
-    dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
+    dmo_forget_channel(ts);
+}
+
+void
+tetra_dmo_leave(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || !ts->dmo) {
+        return;
+    }
+    ts->dmo = 0;
+    ts->dmo_comm_type = 0;
+    dmo_forget_channel(ts);
+    tetra_calls_dmo_forget(opts, state);
 }
 
 /* ---- Logging and terminal lines ------------------------------------------------------------------------------- */

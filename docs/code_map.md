@@ -4448,7 +4448,10 @@ carrier's polarity (`tetra_sync.polarity`) comes from a synchronisation burst's 
 and on the uplink from a control burst: its extended training sequence is no other training sequence inverted, so its
 synctype's sign is its polarity, its SCH/HU is decoded with it, and once that CRC passed the decoder makes it the
 carrier's (`tetra_uplink_process_cb()`); one that fails changes nothing, since a normal-polarity NTS2 burst can match
-the inverted extended training sequence. The frame-sync slicer cuts TETRA's symbols at fixed thresholds of the CQPSK
+the inverted extended training sequence. That SCH/HU also proves a trunked mode uplink, which no BSCH comes to say there:
+like a BSCH of a trunked system code on the downlink, it ends direct mode (`tetra_dmo_leave()`: the mode, the DM colour
+code, its protection and the direct mode call with its canonical call), so the normal bursts after it are NUBs again
+and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA's symbols at fixed thresholds of the CQPSK
 symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`), where the RTL front end and a soft symbol capture give them;
 a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads it as it is
 (`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled by 10000

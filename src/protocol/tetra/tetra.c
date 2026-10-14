@@ -476,7 +476,9 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
    gave as the sign of its synctype, is the burst's: the block is decoded with it, and once its CRC passed it is the
    carrier's for the normal bursts after it, whose NTS1 and NTS2 cannot tell it (and the uplink has no synchronisation
    burst to). A block that fails keeps the carrier's polarity: a normal-polarity NTS2 burst can match the inverted
-   extended training sequence. */
+   extended training sequence. An SCH/HU whose CRC passed also proves a trunked mode uplink, which no BSCH comes to
+   say: direct mode, which a DSB set before, ends (tetra_dmo_leave()), so the normal bursts after it are decoded as
+   NUBs again and not with a DM colour code. */
 static void
 tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
@@ -507,6 +509,7 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     state->tetra_sync.polarity = (uint8_t)inverted;
     ts->decode_ok++;
     tetra_confirm_note_block(state);
+    tetra_dmo_leave(opts, state);
     /* MAC-ACCESS (EN 300 392-2 clause 21.4.2.1): PDU type 0, fill bit, encryption mode, address type and address. */
     tetra_bit_reader r = tetra_bits_reader(mac, SCHHU_TYPE1, 0);
     if (tetra_bits_read(&r, 1) != 0) {
@@ -742,7 +745,7 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
                     s.system_code, s.comm_type, s.ab_usage, s.slot, s.frame, s.enc_state);
         return 1;
     }
-    ts->dmo = 0;
+    tetra_dmo_leave(opts, state);
     (void)tetra_bsch_parse(decoded, SB_TYPE1, opts, state);
     tetra_confirm_note_signalling(state);
     return 1;
