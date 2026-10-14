@@ -69,7 +69,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 49);
+    assert(owner >= 42 && owner <= 51);
     if (defer) {
         --defer;
         return 1;
@@ -488,6 +488,30 @@ test_error_is_a_carrier_boundary(dsd_opts* o, dsd_state* s, dsd_signal_search_co
     live = 1;
 }
 
+/* The Auto baseline decodes DMR whatever preset the session started from: a mono preset such as -f1 turns both DMR
+   dispatch flags off, and with both off no direct-mode voice frame is read, so a voice-only DMR detection could never
+   be confirmed. A session that chose mono DMR keeps it; Stop gives the session its own flags back. */
+static void
+test_auto_baseline_dispatches_dmr(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    o->rtlsdr_center_freq = 100000000;
+    for (int mono = 0; mono <= 1; ++mono) {
+        o->dmr_stereo = 0;
+        o->dmr_mono = mono;
+        config->session_id = 50 + (uint64_t)mono;
+        assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+        assert(o->frame_dmr && o->dmr_mono == mono && o->dmr_stereo == !mono);
+        tick(o, s);
+        act(o, s, DSD_SEARCH_ACTION_STOP);
+        land(o, s); // the span tune the start queued
+        land(o, s); // the restore tune
+        assert(status.phase == DSD_SEARCH_STOPPED && o->dmr_stereo == 0 && o->dmr_mono == mono);
+    }
+    o->dmr_mono = 0;
+    o->dmr_stereo = 1;
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -645,6 +669,7 @@ main(void) {
     test_stop_restore_is_a_carrier_boundary(o, s, &config);
     test_pause_is_a_carrier_boundary(o, s, &config);
     test_error_is_a_carrier_boundary(o, s, &config);
+    test_auto_baseline_dispatches_dmr(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

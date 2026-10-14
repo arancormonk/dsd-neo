@@ -423,8 +423,14 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     (void)rtl_stream_get_gain(&c->saved_gain, &c->saved_gain_auto);
     c->saved_autogain = rtl_stream_get_tuner_autogain();
     c->saved_airspy = opts->airspy;
-    /* Explicit Auto is the session baseline; ranges constrain it to existing receive classes. */
+    /* Explicit Auto is the session baseline; ranges constrain it to existing receive classes. The CONFIG profile leaves
+       the DMR dispatch flags as the session had them, and a mono preset (-f1) turns both off, which reads no direct-mode
+       voice frame: Auto then takes the dual-slot dispatch every other Auto path selects. The saved settings restore the
+       session's own flags. */
     (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
+    if (!opts->dmr_stereo && !opts->dmr_mono) {
+        opts->dmr_stereo = 1;
+    }
     if (dsd_scan_mode_begin(opts, state) || dsd_engine_scan_own(state, 1, c, free)) {
         dsd_scan_mode_leave(opts, state);
         dsd_scan_settings_restore(&c->saved, opts, state);

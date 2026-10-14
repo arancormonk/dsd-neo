@@ -51,6 +51,10 @@ Generated (do not edit/commit):
     the decoder thread. Its private owner shares the stable trunk-scan extension slot
     through `scan_owner.h`; extension IDs are unchanged. Search excludes other tuner
     owners, suppresses visited frequencies per pass and retains native session avoids.
+    Its decoder baseline is the CONFIG-profile Auto preset, which leaves the DMR dispatch
+    flags as the session had them; when a mono preset (`-f1`) has turned both off, the
+    baseline takes dual-slot dispatch (`dmr_stereo`), since with both off no direct-mode
+    voice frame is read, and Stop restores the session's own flags (`ENGINE_SIGNAL_SEARCH`).
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
     digital transmission keeps the decoder in its synced-frame loop. A stalled input
