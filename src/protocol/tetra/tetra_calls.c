@@ -1345,6 +1345,14 @@ tetra_calls_on_speech(dsd_opts* opts, dsd_state* state, const tetra_speech* sp) 
 /* ---- Housekeeping ---------------------------------------------------------------------------------------------- */
 
 void
+tetra_calls_followed_moved(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (ts) {
+        calls_sync_published(opts, state, ts, tetra_calls_followed(state));
+    }
+}
+
+void
 tetra_calls_unfollowed(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (!ts) {

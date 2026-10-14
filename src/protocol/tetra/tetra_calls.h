@@ -174,6 +174,13 @@ uint32_t tetra_calls_target(const tetra_call_t* c);
 const tetra_call_t* tetra_calls_followed(const dsd_state* state);
 
 /**
+ * @brief The receiver reached the followed channel (tetra_trunk_sm.c): when the followed call is the canonical call,
+ * which a reallocation of it moved to another carrier, the canonical call takes the channel it is followed on now.
+ * Never creates TETRA state.
+ */
+void tetra_calls_followed_moved(dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief The trunking state machine stopped following a call (tetra_trunk_sm.c): its canonical call ends as a
  * teardown and its talkgroup-policy route is cleared. @p opts may be NULL when the engine ended and committed the
  * canonical calls itself. Never creates TETRA state.

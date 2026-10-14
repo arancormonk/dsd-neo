@@ -187,13 +187,15 @@ sm_stage_pending(tetra_state_t* ts, uint8_t kind, uint64_t request_id, const tet
     ts->sm.pending_kind = kind;
 }
 
-/* The receiver reached the followed traffic channel at @p completed_m (0: now). */
+/* The receiver reached the followed traffic channel at @p completed_m (0: now). A followed call its own reallocation
+ * moved stays the canonical call, on the channel it is followed on now. */
 static void
 sm_grant_tune_completed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, double completed_m) {
     opts->trunk_is_tuned = 1;
     ts->sm.t_tune_m = completed_m > 0.0 ? completed_m : dsd_decode_now_mono_s();
     sm_stamp_tuned(state, ts->sm.t_tune_m);
     tetra_forget_carrier(state);
+    tetra_calls_followed_moved(opts, state);
     if (sm_narrates(ts, 1)) {
         DSD_FPRINTF(stderr, "[TETRA SM] on traffic channel %ld Hz (carrier %u, timeslots 0x%X, call %u)\n",
                     ts->sm.followed.freq_hz, (unsigned)ts->sm.followed.carrier, (unsigned)ts->sm.followed.timeslots,
