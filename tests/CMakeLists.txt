@@ -3954,6 +3954,37 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_imported_files_model
     )
 
+    # The configuration backup archive (issue #580): stores built by the real
+    # models, sealed, opened, and validated as untrusted input on restore; plus
+    # DecoderHost's base document copies. It links the whole UI library, so the
+    # deferred engine link below applies to it as to the import-model tests.
+    add_executable(
+        dsd-neo_test_ui_qt_backup_archive
+        ui/test_ui_qt_backup_archive.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_backup_archive
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_backup_archive
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_backup_archive
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_NEO_TEST_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_backup_archive
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_BACKUP_ARCHIVE
+        COMMAND dsd-neo_test_ui_qt_backup_archive
+    )
+
     # The RadioReference model, driven end to end with the captured API
     # responses through an injected transport: no network, no UI. dsd-neo_runtime
     # is mandatory because it carries the dsd_rr_* objects and the curl/expat
@@ -6850,6 +6881,7 @@ foreach(
     _qt_import_target
     dsd-neo_test_ui_qt_imported_files_model
     dsd-neo_test_ui_qt_radio_reference_model
+    dsd-neo_test_ui_qt_backup_archive
 )
     if(TARGET ${_qt_import_target})
         target_link_libraries(

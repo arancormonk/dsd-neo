@@ -73,8 +73,54 @@ class DecoderHost : public QObject {
     };
     Q_ENUM(LocalDeviceFailureKind)
 
+    /** @brief copyDocumentToFile() results. */
+    enum DocumentCopy { DocumentCopied = 0, DocumentTooLarge = 1, DocumentFailed = 2 };
+
     explicit DecoderHost(QObject* parent = nullptr);
     ~DecoderHost() override;
+
+    /*
+     * Backup primitives (#580). Unlike the rest of this interface they are thread-agnostic: they touch no QObject
+     * state, so a worker thread may call them. A transfer is not cancellable once it starts.
+     */
+
+    /**
+     * @brief Close the app so a staged restore applies on the next launch.
+     * @return true when the platform is closing the app; the base host cannot and answers false.
+     */
+    virtual bool
+    quitApp() {
+        return false;
+    }
+
+    /**
+     * @brief Whether a decoder engine outside this UI's view is starting or running.
+     *
+     * Asked right before a restore commits and before the startup apply changes anything. The base host owns no
+     * out-of-process engine and answers false.
+     */
+    virtual bool
+    engineBusy() const {
+        return false;
+    }
+
+    /**
+     * @brief Copy a picked document to @p destPath (written private, through QSaveFile).
+     *
+     * The base host takes a file:// URL or a plain absolute path. A source larger than @p maxBytes gives
+     * DocumentTooLarge; any failure leaves no file at @p destPath. The destination's directory must exist.
+     *
+     * @return A DocumentCopy value.
+     */
+    virtual int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const;
+
+    /**
+     * @brief Copy @p sourcePath into the document @p reference chose.
+     *
+     * The base host takes a file:// URL or a plain absolute path and writes it private, through QSaveFile, so a
+     * failure leaves no partial document.
+     */
+    virtual bool copyFileToDocument(const QString& sourcePath, const QString& reference) const;
 
     virtual bool
     usesPlatformFontScaling() const {

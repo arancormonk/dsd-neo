@@ -317,6 +317,7 @@ jobs:
             dsd-neo_test_ui_qt_scan_list_roundtrip \
             dsd-neo_test_engine_trunk_scan_scan_list \
             dsd-neo_test_ui_qt_imported_files_model \
+            dsd-neo_test_ui_qt_backup_archive \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
             dsd-neo_test_ui_qt_auto_start_policy \

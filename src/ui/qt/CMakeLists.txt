@@ -23,6 +23,7 @@ target_sources(
     dsd-neo_ui_qt
     PRIVATE
         app_prefs.cpp
+        backup_archive.cpp
         call_history_filter.cpp
         call_history_model.cpp
         command_bridge.cpp
@@ -208,7 +209,7 @@ target_link_libraries(
         Qt6::Quick
         Qt6::QuickControls2
         Qt6::QuickDialogs2
-    PRIVATE dsd-neo_app_control dsd-neo_core dsd-neo_runtime
+    PRIVATE dsd-neo_app_control dsd-neo_core dsd-neo_crypto dsd-neo_runtime
 )
 
 set_target_properties(dsd-neo_ui_qt PROPERTIES AUTOMOC ON)
