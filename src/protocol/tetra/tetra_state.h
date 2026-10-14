@@ -288,8 +288,8 @@ typedef struct tetra_state {
     uint8_t air_ksg_valid[4];
     uint8_t air_ksg[4];
 
-    /* Direct mode (EN 300 396-2, EN 300 396-3), set by tetra_dmo_apply_sync(); all but dmo and dmo_comm_type are the
-     * carrier's, forgotten with it (tetra_dmo_forget_carrier()).
+    /* Direct mode (EN 300 396-2, EN 300 396-3), set by tetra_dmo_apply_sync(); all of it is the carrier's, forgotten with
+     * it (tetra_dmo_forget_carrier()).
      * dmo:            1 once a DSB with a DMO system code was decoded: normal bursts have no AACH and use the DM colour
      *                 code. Cleared, with all the rest, by a CRC-passed trunked burst: a BSCH of a trunked system code,
      *                 or on the uplink an SCH/HU (tetra_dmo_leave()).

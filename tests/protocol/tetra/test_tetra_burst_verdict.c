@@ -23,6 +23,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
@@ -526,6 +527,38 @@ test_control_burst_leaves_direct_mode(void) {
     session_close(&s);
 }
 
+/* Direct mode is the carrier's: a carrier boundary leaves it, and the next carrier is trunked until its own DSB says
+ * otherwise. An uplink session, whose carriers have no BSCH, decodes the next carrier's NUBs at once; a downlink one
+ * the next carrier's NDBs, with the network's colour code. */
+static void
+test_carrier_boundary_leaves_direct_mode(void) {
+    for (int uplink = 0; uplink < 2; uplink++) {
+        session s = session_open();
+        uint8_t bsch[BSCH_DIBITS];
+        uint8_t sysinfo[BLOCK_DIBITS];
+        dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+        dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+        dsd_frame_verdict verdict = sync_burst(&s, bsch, sysinfo);
+        assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        const uint32_t seed = tetra_st_existing(s.state)->lfsr_seed;
+        s.opts->tetra_uplink = uplink;
+        ttb_block b = {0};
+        ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+        uint8_t block2[BLOCK_DIBITS];
+        encode_sch_hd(b.bits, seed, block2);
+        const uint8_t zeros[BLOCK_DIBITS] = {0};
+
+        enter_direct_mode(&s);
+        tetra_forget_carrier(s.state);
+        verdict = uplink ? uplink_nts2_burst(&s, zeros, block2) : nts2_burst(&s, zeros, block2);
+        assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        assert(s.state->tetra_pub.mode == (uplink ? DSD_TETRA_MODE_TMO_UPLINK : DSD_TETRA_MODE_TMO_DOWNLINK));
+        const tetra_state_t* ts = tetra_st_existing(s.state);
+        assert(!ts->dmo && !ts->dmo_dcc_valid);
+        session_close(&s);
+    }
+}
+
 /* A direct mode synchronisation burst (EN 300 396-2 clause 9.4.3.3) as the frame sync locks it: SCH/S, captured before
  * the training sequence like a BSCH, and SCH/H right after it, then 15 dibits, all scrambled with the all-zero colour
  * code (EN 300 396-3 clause 8.2.4). @p sch_h is the 124 type-1 bits of SCH/H, or NULL for a block that fails its
@@ -697,6 +730,7 @@ main(void) {
     test_control_burst_tells_the_polarity();
     test_control_burst_publishes_its_mode();
     test_control_burst_leaves_direct_mode();
+    test_carrier_boundary_leaves_direct_mode();
     test_dmo_unread_sync_seals_the_traffic();
     test_retune_leaves_the_rest_of_the_burst();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");

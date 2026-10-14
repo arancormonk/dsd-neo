@@ -193,7 +193,8 @@ test_real_air_call(void) {
 /* A carrier boundary (a retune, an input switch, the no-carrier pass) forgets the direct mode call of the carrier left:
  * its DM colour code and seed, its security class and the call on the channel, so normal bursts of the next carrier
  * are not descrambled with the old colour code and its speech and calls do not take the old call's destination and
- * classification. The TETRA state stays allocated. */
+ * classification, and direct mode itself, which the next carrier's own DSB sets again. The TETRA state stays
+ * allocated. */
 static void
 test_carrier_boundary_forgets_call(void) {
     uint8_t bits[128];
@@ -222,7 +223,7 @@ test_carrier_boundary_forgets_call(void) {
     CHECK(ts->calls.dmo.active == 0 && ts->calls.dmo.dst == 0U && ts->calls.dmo.src == 0U
               && ts->calls.dmo.addressed == 0 && ts->calls.dmo.group_known == 0,
           "the call on the channel is forgotten");
-    CHECK(ts->dmo == 1, "the carrier's mode stays until a synchronisation burst says otherwise");
+    CHECK(ts->dmo == 0 && ts->dmo_comm_type == 0, "the next carrier is trunked until its own DSB says otherwise");
     free_state(st);
 }
 

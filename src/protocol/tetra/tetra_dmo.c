@@ -1386,12 +1386,17 @@ dmo_forget_channel(tetra_state_t* ts) {
     dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
 }
 
+/* Direct mode is the carrier's: the next carrier is trunked until its own DSB says otherwise. Keeping the mode would
+ * gain nothing, since without its colour code no DNB of the next carrier decodes before that DSB, and would keep an
+ * uplink session, whose carriers have no BSCH to end it, from decoding its NUBs. */
 void
 tetra_dmo_forget_carrier(dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (!ts) {
         return;
     }
+    ts->dmo = 0;
+    ts->dmo_comm_type = 0;
     dmo_forget_channel(ts);
 }
 

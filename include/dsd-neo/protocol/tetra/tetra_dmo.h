@@ -280,8 +280,8 @@ void tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_d
 tetra_dmo_crypt_e tetra_dmo_call_crypt(const dsd_state* state);
 
 /* The carrier was left: forget its DM colour code (and its seed) and the protection of its call, so no normal burst of
- * the next carrier is descrambled with them and its traffic is not classified by them. The mode stays until a
- * synchronisation burst sets it. Never creates TETRA state. */
+ * the next carrier is descrambled with them and its traffic is not classified by them, and direct mode itself: the next
+ * carrier is trunked until its own DSB says otherwise. Never creates TETRA state. */
 void tetra_dmo_forget_carrier(dsd_state* state);
 
 /* The direct mode channel's traffic transmission is over: a DM-TX CEASED, DM-RELEASE or DM-DISCONNECT on its STCH, or
