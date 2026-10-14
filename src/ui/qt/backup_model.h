@@ -229,7 +229,12 @@ class BackupModel : public QObject {
     };
 
     Job beginJob(JobKind kind, const QString& id, const QString& path);
+    /** Mark the current prepare or inspect job dropped, without announcing it; false when there is none. */
+    bool dropJob();
+    /** Clear the current job and announce idle. */
     void endJob();
+    /** busyChanged and restoreAllowed, once the job's outcome is in place. */
+    void announceIdle();
     /** Whether @p job's result must be dropped because it is no longer the current job; its files go then. */
     bool takeDropped(const Job& job);
     static void removeJobFiles(const Job& job);

@@ -22,6 +22,7 @@
 #include <QStringList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <atomic>
 
 namespace dsd_qt {
 
@@ -121,6 +122,16 @@ class DecoderHost : public QObject {
      * failure leaves no partial document.
      */
     virtual bool copyFileToDocument(const QString& sourcePath, const QString& reference) const;
+
+    /**
+     * @brief Stop every document copy in progress and refuse new ones, for the rest of the process.
+     *
+     * Only teardown calls it (BackupModel's destructor), so that a copy a slow document provider holds cannot keep
+     * the UI thread waiting while the app closes. Sticky: no document copy succeeds afterwards. A copy it stops fails
+     * (DocumentFailed, or false) and leaves no destination file. The base host raises a flag its copies check before
+     * every chunk; a host that runs transfers of its own stops them too and calls this base.
+     */
+    virtual void abortDocumentTransfers();
 
     virtual bool
     usesPlatformFontScaling() const {
@@ -466,6 +477,16 @@ class DecoderHost : public QObject {
     void statusTextChanged();
     void sessionStateChanged();
     void localDeviceChanged();
+
+  protected:
+    /** Whether abortDocumentTransfers() was called; document copies check it before every chunk. */
+    bool
+    documentTransfersAborted() const {
+        return m_documentTransfersAborted.load();
+    }
+
+  private:
+    std::atomic<bool> m_documentTransfersAborted{false};
 };
 
 } // namespace dsd_qt

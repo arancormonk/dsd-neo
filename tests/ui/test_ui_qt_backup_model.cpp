@@ -9,8 +9,9 @@
  * session and engine guards, quitting once, a host that cannot quit (restorePending), discarding with both failure
  * meanings, every error a restore reports, busy refusals, cancelled exports and inspections (on the worker and after
  * it finished) confined to their own files, the startup outcome from the apply and from the result file, the sweep at
- * construction, and that the passphrase is written nowhere. Registered only when the Qt frontend is enabled
- * (DSD_ENABLE_QT_UI). */
+ * construction, that the passphrase is written nowhere, that idle is announced only once a job's outcome is in place,
+ * and that teardown stops a document copy instead of waiting for it. The log lines the libraries print are captured
+ * and checked, so a clean run prints only "OK". Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
 #include <QChar>
@@ -41,6 +42,7 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <dsd-neo/app_control/signal_search.h>
@@ -51,12 +53,15 @@
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <mutex>
 #include <qflags.h>
+#include <qsystemdetection.h>
 #include <qtenvironmentvariables.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <thread>
 #include <utility>
 #include <vector>
 #include "../test_support/qt_test_paths.h"
+#include "../test_support/test_support.h"
 #include "app_prefs.h"
 #include "backup_apply.h"
 #include "backup_model.h"
@@ -74,6 +79,15 @@ namespace {
 using dsd_qt::BackupModel;
 using dsd_qt::backup::ApplyOutcome;
 using dsd_qt::backup::ApplyResult;
+
+/* Under a sanitizer stderr stays as it is: a report must reach it even when it ends the process. */
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define BACKUP_MODEL_TEST_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define BACKUP_MODEL_TEST_SANITIZED 1
+#endif
+#endif
 
 constexpr char kPass[] = "correct horse battery";
 constexpr char kRootMarker[] = "dsd-neo-backup-model-";
@@ -150,11 +164,34 @@ class FakeHost : public dsd_qt::DecoderHost {
     copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const override {
         {
             std::unique_lock<std::mutex> lock(m_mutex);
+            const int generation = m_aborts;
             ++m_arrived;
             m_changed.notify_all();
-            m_changed.wait(lock, [this]() { return m_open; });
+            m_changed.wait(lock, [this, generation]() { return m_open || m_aborts != generation; });
+            if (m_aborts != generation) {
+                return DocumentFailed;
+            }
         }
         return DecoderHost::copyDocumentToFile(reference, destPath, maxBytes);
+    }
+
+    /**
+     * Fails the copies held at the gate now. Not the base: one FakeHost serves every test, and the base host's abort
+     * lasts for the process (the base host's own abort is tested on hosts of its own).
+     */
+    void
+    abortDocumentTransfers() override {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            ++m_aborts;
+        }
+        m_changed.notify_all();
+    }
+
+    int
+    aborts() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_aborts;
     }
 
     void
@@ -187,6 +224,7 @@ class FakeHost : public dsd_qt::DecoderHost {
     mutable std::condition_variable m_changed;
     bool m_open = true;
     mutable int m_arrived = 0;
+    int m_aborts = 0;
 };
 
 /** A host with the base quitApp(), which cannot close the app. */
@@ -256,6 +294,59 @@ settle(BackupModel& model) {
     expect("the worker finishes its jobs", model.waitForJobs(60000));
     QCoreApplication::sendPostedEvents();
     QCoreApplication::processEvents();
+}
+
+#ifndef BACKUP_MODEL_TEST_SANITIZED
+/** "Backup restore applied at start" lines seen, one per apply. */
+int g_appliedLines = 0;
+
+/** Whether @p line is one the libraries print while this test runs: a key file loaded, a restore applied. */
+bool
+expected_log_line(const QByteArray& line) {
+    static const QRegularExpression loaded(
+        QStringLiteral("^NOTICE: Loaded \\d+ of \\d+ entries \\(hex file\\) from '.*'\\.$"));
+    if (line == "Backup restore applied at start") {
+        ++g_appliedLines;
+        return true;
+    }
+    return loaded.match(QString::fromUtf8(line)).hasMatch();
+}
+#endif
+
+/**
+ * Run @p body with stderr captured. The log lines it expects are dropped; this test's own lines (FAIL, note) are
+ * printed afterwards, and any other line is printed and fails the test.
+ */
+void
+quietly(const std::function<void()>& body) {
+#ifdef BACKUP_MODEL_TEST_SANITIZED
+    body();
+#else
+    dsd_test_capture_stderr capture;
+    if (dsd_test_capture_stderr_begin(&capture, "backup_model_log") != 0) {
+        expect("stderr is captured", false);
+        body();
+        return;
+    }
+    body();
+    (void)dsd_test_capture_stderr_end(&capture);
+    const QString path = QString::fromUtf8(capture.path);
+    QFile file(path);
+    const QByteArray text = file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    file.close();
+    QFile::remove(path);
+    for (const QByteArray& line : text.split('\n')) {
+        if (line.isEmpty() || expected_log_line(line)) {
+            continue;
+        }
+        if (line.startsWith("FAIL: ") || line.startsWith("note: ")) {
+            DSD_FPRINTF(stderr, "%s\n", line.constData());
+        } else {
+            DSD_FPRINTF(stderr, "FAIL: unexpected output: %s\n", line.constData());
+            g_failures++;
+        }
+    }
+#endif
 }
 
 dsd_backup_kdf_params
@@ -1028,6 +1119,199 @@ test_teardown_with_undelivered_inspections(FakeHost& host, const QString& docume
            staging_dirs().isEmpty() && !dsd_qt::backup::pending_exists());
 }
 
+/** A backup sealed under a passphrase shorter than today's minimum still opens with it. */
+void
+test_short_real_passphrase(FakeHost& host, const QString& scratch) {
+    auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
+    int status = -100;
+    const QByteArray sealed = dsd_qt::backup::backup_seal(built.archive, "short7", fast_kdf(), &status);
+    DSD_SECURE_ZERO(built.archive.data(), static_cast<size_t>(built.archive.size()));
+    const QString document = scratch + "/short.dsdbak";
+    expect("seal under a short passphrase", status == DSD_BACKUP_OK && write_file(document, sealed));
+    BackupModel model(&host, {});
+    Results results(model);
+    const QVariantMap wrong = inspect(model, results, document, "short8");
+    expect("another short passphrase is wrong", wrong.value("error") == "WrongPassphrase");
+    const QVariantMap opened = inspect(model, results, document, "short7");
+    expect("the backup's own short passphrase opens it", opened.value("ok").toBool());
+    expect("clean up", model.discardRestore().value("ok").toBool());
+}
+
+/** Whoever reacts to busy turning false sees the job's outcome already in place. */
+void
+test_idle_after_outcome(FakeHost& host, const QString& document, const QString& scratch) {
+    BackupModel model(&host, {});
+    model.setKdfParams(fast_kdf());
+    Results results(model);
+
+    // What was in place each time busy turned false: the card's result and whether a restore is pending.
+    struct Idle {
+        QVariantMap lastResult;
+        bool pending = false;
+    };
+
+    QList<Idle> idles;
+    bool saveOnIdle = false;
+    QObject::connect(&model, &BackupModel::busyChanged, [&]() {
+        if (model.busy()) {
+            return;
+        }
+        idles.append({model.lastResult(), dsd_qt::backup::pending_exists()});
+        if (saveOnIdle) {
+            // A flow that opens the save picker as soon as busy drops can save straight away.
+            saveOnIdle = false;
+            model.saveExport(QUrl::fromLocalFile(scratch + "/idle.dsdbak").toString());
+        }
+    });
+
+    const QVariantMap inspected = inspect(model, results, document);
+    expect("an inspection is staged", inspected.value("ok").toBool());
+    expect("one idle, with the inspection's restore pending and on the card",
+           idles.size() == 1 && idles.value(0).pending && idles.value(0).lastResult.value("action") == "inspectRestore"
+               && idles.value(0).lastResult.value("ok").toBool());
+
+    idles.clear();
+    saveOnIdle = true;
+    model.prepareExport(kPass);
+    expect("an export prepared and saved from the idle handler",
+           pump_until([&]() { return results.finished.size() == 1; }) && results.finished.value(0).value("ok").toBool()
+               && results.prepared.size() == 1 && results.prepared.value(0).value("ok").toBool());
+    expect("one idle per step, the save's showing it on the card",
+           idles.size() == 2 && idles.value(1).lastResult.value("action") == "saveExport"
+               && idles.value(1).lastResult.value("ok").toBool());
+    expect("the saved export is in its document", read_file(scratch + "/idle.dsdbak").startsWith("DSDNEOBK"));
+
+    host.closeGate();
+    model.inspectRestore(document, kPass);
+    expect("an inspection holds at the copy", host.waitArrived(1));
+    idles.clear();
+    const QVariantMap discarded = model.discardRestore();
+    expect("discarding cancels it and removes the pending restore", discarded.value("ok").toBool());
+    expect("one idle, with the pending restore already gone", idles.size() == 1 && !idles.value(0).pending);
+    host.openGate();
+    settle(model);
+}
+
+/** The model's teardown stops a copy a document provider holds instead of waiting for it. */
+void
+test_teardown_stops_a_held_copy(FakeHost& host, const QString& document) {
+    const int before = host.aborts();
+    {
+        BackupModel idle(&host, {});
+        (void)idle;
+    }
+    expect("an idle model's teardown leaves the host's copies alone", host.aborts() == before);
+    host.closeGate();
+    const int aborts = host.aborts();
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool ended = false;
+    std::thread safety;
+    QElapsedTimer timer;
+    {
+        BackupModel model(&host, {});
+        model.inspectRestore(document, kPass);
+        expect("the inspection holds inside the copy", host.waitArrived(1));
+        // Opens the gate after a while, so a teardown that waits for the copy still ends this test.
+        safety = std::thread([&]() {
+            std::unique_lock<std::mutex> lock(mutex);
+            if (!changed.wait_for(lock, std::chrono::seconds(5), [&]() { return ended; })) {
+                host.openGate();
+            }
+        });
+        timer.start();
+    }
+    const qint64 elapsed = timer.elapsed();
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        ended = true;
+    }
+    changed.notify_all();
+    safety.join();
+    host.openGate();
+    expect("the model asks the host to stop its copies", host.aborts() == aborts + 1);
+    expect(QStringLiteral("teardown does not wait for the held copy (%1 ms)").arg(elapsed), elapsed < 2000);
+    expect("an aborted inspection leaves nothing",
+           staging_dirs().isEmpty() && cache_entries().isEmpty() && !dsd_qt::backup::pending_exists());
+}
+
+#ifdef Q_OS_LINUX
+/** How far the process has read into the open file @p path (its descriptor's offset), or -1 when it is not open. */
+qint64
+open_file_offset(const QString& path) {
+    const QStringList fds = QDir(QStringLiteral("/proc/self/fd")).entryList(QDir::AllEntries | QDir::System);
+    for (const QString& fd : fds) {
+        if (QFileInfo(QStringLiteral("/proc/self/fd/") + fd).symLinkTarget() != path) {
+            continue;
+        }
+        const QByteArray info = read_file(QStringLiteral("/proc/self/fdinfo/") + fd);
+        for (const QByteArray& line : info.split('\n')) {
+            if (line.startsWith("pos:")) {
+                return line.mid(4).trimmed().toLongLong();
+            }
+        }
+    }
+    return -1;
+}
+
+/** Run @p copy on a thread, abort @p host once it has read 1 MiB of @p source, and check what is left. */
+void
+abort_mid_stream(const QString& what, StayingHost& host, const QString& source, const QString& destination,
+                 const std::function<bool()>& copy) {
+    std::atomic<int> copied{-1};
+    std::thread worker([&]() { copied.store(copy() ? 1 : 0); });
+    QElapsedTimer timer;
+    timer.start();
+    qint64 offset = -1;
+    while (copied.load() < 0 && (offset = open_file_offset(source)) < (1 << 20) && timer.elapsed() < 30000) {}
+    const bool midStream = copied.load() < 0 && offset >= (1 << 20);
+    host.abortDocumentTransfers();
+    worker.join();
+    expect(what + ": aborted while copying", midStream);
+    expect(what + ": the copy fails", copied.load() == 0);
+    expect(what + ": no destination is left",
+           !QFileInfo::exists(destination)
+               && QDir(QFileInfo(destination).path())
+                      .entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
+                      .isEmpty());
+}
+#endif
+
+/** The base host's abort stops a copy in the middle, leaves nothing behind, and lasts. */
+void
+test_base_host_abort(const QString& scratch) {
+#ifdef Q_OS_LINUX
+    const QString source = QFileInfo(scratch).canonicalFilePath() + "/big.bin";
+    {
+        QFile file(source);
+        expect("write a large sparse source", file.open(QIODevice::WriteOnly) && file.resize(2LL << 30));
+    }
+    QDir().mkpath(scratch + "/out1");
+    QDir().mkpath(scratch + "/out2");
+    StayingHost toDocument;
+    const QString document = scratch + "/out1/backup.dsdbak";
+    abort_mid_stream("copy into a document", toDocument, source, document,
+                     [&]() { return toDocument.copyFileToDocument(source, document); });
+    StayingHost fromDocument;
+    const QString copy = scratch + "/out2/copy.in";
+    abort_mid_stream("copy from a document", fromDocument, source, copy, [&]() {
+        return fromDocument.copyDocumentToFile(source, copy, 4LL << 30) == dsd_qt::DecoderHost::DocumentCopied;
+    });
+    expect("write a small source", write_file(scratch + "/small.bin", "small"));
+    expect("an aborted host copies nothing afterwards",
+           !toDocument.copyFileToDocument(scratch + "/small.bin", scratch + "/out1/later")
+               && fromDocument.copyDocumentToFile(scratch + "/small.bin", scratch + "/out2/later", 1024)
+                      == dsd_qt::DecoderHost::DocumentFailed
+               && !QFileInfo::exists(scratch + "/out1/later") && !QFileInfo::exists(scratch + "/out2/later"));
+    StayingHost fresh;
+    expect("another host still copies", fresh.copyFileToDocument(scratch + "/small.bin", scratch + "/out1/fresh")
+                                            && read_file(scratch + "/out1/fresh") == "small");
+    QFile::remove(source);
+#else
+    (void)scratch;
+#endif
+}
+
 void
 write_result_file(const QString& outcome, const QString& reason, int systems) {
     const QJsonObject file{{"outcome", outcome}, {"reason", reason}, {"summary", QJsonObject{{"systems", systems}}}};
@@ -1167,31 +1451,41 @@ main(int argc, char** argv) {
         QTemporaryDir scratch;
         const QString full = scratch.filePath("full.dsdbak");
         const QString older = scratch.filePath("older.dsdbak");
-        build_configuration(host);
-        const Captured before = capture(host);
-        test_export(host, full);
-        {
+        Captured before;
+        quietly([&]() {
+            build_configuration(host);
+            before = capture(host);
+        });
+        quietly([&]() { test_export(host, full); });
+        quietly([&]() {
             dsd_qt::SavedSystemsModel systems;
             systems.remove(1);
             expect("drop a system", systems.rowCount() == 1);
-        }
-        expect("export the older configuration",
-               export_to(host, older).value("summary").toMap().value("systems").toInt() == 1);
-        test_round_trip(host, full, before);
-        test_session_guards(host, full);
-        test_staying_host(full);
-        test_discard_failures(full);
-        test_errors(host, full, scratch.path());
-        test_busy_refusals(host, full);
-        test_cancelled_export(host, full);
-        test_cancelled_inspect(host, older, full);
-        test_teardown_with_undelivered_inspections(host, full);
-        test_startup_outcome(host, full);
-        test_sweep(host);
-        test_small_things(host);
+            expect("export the older configuration",
+                   export_to(host, older).value("summary").toMap().value("systems").toInt() == 1);
+        });
+        quietly([&]() { test_round_trip(host, full, before); });
+        quietly([&]() { test_session_guards(host, full); });
+        quietly([&]() { test_staying_host(full); });
+        quietly([&]() { test_discard_failures(full); });
+        quietly([&]() { test_errors(host, full, scratch.path()); });
+        quietly([&]() { test_short_real_passphrase(host, scratch.path()); });
+        quietly([&]() { test_busy_refusals(host, full); });
+        quietly([&]() { test_cancelled_export(host, full); });
+        quietly([&]() { test_cancelled_inspect(host, older, full); });
+        quietly([&]() { test_teardown_with_undelivered_inspections(host, full); });
+        quietly([&]() { test_idle_after_outcome(host, full, scratch.path()); });
+        quietly([&]() { test_teardown_stops_a_held_copy(host, full); });
+        quietly([&]() { test_base_host_abort(scratch.path()); });
+        quietly([&]() { test_startup_outcome(host, full); });
+        quietly([&]() { test_sweep(host); });
+        quietly([&]() { test_small_things(host); });
         test_passphrase_written_nowhere(scratch.path());
     }
     dsd_app_signal_search_store_close();
+#ifndef BACKUP_MODEL_TEST_SANITIZED
+    expect("the one apply logs once", g_appliedLines == 1);
+#endif
 
     remove_tree(dataDir);
     if (g_failures != 0) {

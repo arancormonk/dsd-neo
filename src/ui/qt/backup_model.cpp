@@ -40,7 +40,6 @@
 #include <mutex>
 #include <qflags.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <utility>
 #include "decoder_host.h"
 #include "json_store.h"
@@ -289,14 +288,13 @@ class Inspection {
         if (cancelled()) {
             return QString();
         }
+        // Every passphrase is tried, whatever its length: a backup is sealed under whatever minimum its export
+        // enforced, which may not be today's.
         int status = DSD_BACKUP_OK;
-        if (backup::backup_passphrase_ok(m_work.passphrase->text())) {
-            m_archive = backup::backup_open(sealed, m_work.passphrase->text(), &status);
-        } else {
-            // No backup is sealed under a passphrase this short, so only the header is worth checking.
-            status = dsd_backup_parse_header(reinterpret_cast<const uint8_t*>(sealed.constData()),
-                                             static_cast<size_t>(sealed.size()), nullptr, nullptr);
-            status = status == DSD_BACKUP_OK ? DSD_BACKUP_ERR_AUTH : status;
+        m_archive = backup::backup_open(sealed, m_work.passphrase->text(), &status);
+        // The envelope refuses an empty passphrase as an argument error; no backup can be sealed under one.
+        if (status == DSD_BACKUP_ERR_ARGS && m_work.passphrase->text().isEmpty()) {
+            status = DSD_BACKUP_ERR_AUTH;
         }
         m_work.passphrase->wipe();
         return status == DSD_BACKUP_OK ? QString() : error_name(backup::backup_error_from_seal_status(status));
@@ -352,6 +350,11 @@ BackupModel::BackupModel(DecoderHost* host, const backup::ApplyResult& startup, 
 }
 
 BackupModel::~BackupModel() {
+    // Every job still on the worker is the current one or a dropped one. A document copy cannot be cancelled, and a
+    // slow document provider must not hold the UI thread while the app closes, so the host stops its copies first.
+    if (m_host != nullptr && (m_job.kind != JobKind::None || !m_dropped.isEmpty())) {
+        m_host->abortDocumentTransfers();
+    }
     if (m_job.kind != JobKind::None && m_job.kind != JobKind::Save) {
         m_job.cancel->store(true);
         m_dropped.append(m_job);
@@ -435,11 +438,13 @@ BackupModel::saveExport(const QString& reference) {
 
 void
 BackupModel::discardExport() {
-    if (m_job.kind == JobKind::Prepare) {
-        cancel();
+    if (m_job.kind == JobKind::Save) {
+        return;
     }
-    if (m_job.kind != JobKind::Save) {
-        dropExportFile();
+    const bool dropped = m_job.kind == JobKind::Prepare && dropJob();
+    dropExportFile();
+    if (dropped) {
+        announceIdle();
     }
 }
 
@@ -506,9 +511,9 @@ BackupModel::commitRestore() {
 
 QVariantMap
 BackupModel::discardRestore() {
-    if (m_job.kind == JobKind::Inspect) {
-        cancel(); // it would stage a pending restore again
-    }
+    // A running inspection would stage a pending restore again. It is dropped now, and idle is announced once the
+    // discard has settled.
+    const bool dropped = m_job.kind == JobKind::Inspect && dropJob();
     const bool removed = backup::discard_pending();
     // A false answer means one of two things, and only the marker tells which.
     const bool discarded = removed || !backup::pending_committed();
@@ -518,6 +523,9 @@ BackupModel::discardRestore() {
             acknowledgeStartupOutcome();
         }
     }
+    if (dropped) {
+        announceIdle();
+    }
     return {{QStringLiteral("ok"), removed},
             {QStringLiteral("discarded"), discarded},
             {QStringLiteral("error"), removed ? QString() : error_name(BackupError::Io)}};
@@ -525,12 +533,9 @@ BackupModel::discardRestore() {
 
 void
 BackupModel::cancel() {
-    if (m_job.kind == JobKind::None || m_job.kind == JobKind::Save) {
-        return;
+    if (dropJob()) {
+        announceIdle();
     }
-    m_job.cancel->store(true);
-    m_dropped.append(m_job);
-    endJob();
 }
 
 void
@@ -627,9 +632,25 @@ BackupModel::beginJob(JobKind kind, const QString& id, const QString& path) {
     return m_job;
 }
 
+bool
+BackupModel::dropJob() {
+    if (m_job.kind == JobKind::None || m_job.kind == JobKind::Save) {
+        return false;
+    }
+    m_job.cancel->store(true);
+    m_dropped.append(m_job);
+    m_job = Job();
+    return true;
+}
+
 void
 BackupModel::endJob() {
     m_job = Job();
+    announceIdle();
+}
+
+void
+BackupModel::announceIdle() {
     Q_EMIT busyChanged();
     updateRestoreAllowed();
 }
@@ -719,18 +740,23 @@ BackupModel::setStartupOutcome(const QVariantMap& outcome) {
     }
 }
 
+/*
+ * The handlers below settle every piece of state a job changes before announcing idle, and report last. Whoever
+ * reacts to busy turning false (a picker opening, the Settings card) already sees the outcome.
+ */
+
 void
 BackupModel::onExportBuilt(const Job& job, const QVariantMap& result) {
     if (takeDropped(job)) {
         return; // cancelled: its file is gone
     }
-    endJob();
     if (result.value(QStringLiteral("ok")).toBool()) {
         m_export = PreparedExport{job.path, result.value(QStringLiteral("summary")).toMap()};
     } else {
         QFile::remove(job.path);
         setLastResult(QStringLiteral("prepareExport"), result);
     }
+    endJob();
     Q_EMIT exportPrepared(result);
 }
 
@@ -739,9 +765,9 @@ BackupModel::onExportSaved(const Job& job, const QVariantMap& result) {
     if (job.id != m_job.id) {
         return; // a save is never dropped; this cannot happen
     }
-    endJob();
     m_export = PreparedExport();
     setLastResult(QStringLiteral("saveExport"), result);
+    endJob();
     Q_EMIT exportFinished(result);
 }
 
@@ -750,13 +776,13 @@ BackupModel::onInspected(const Job& job, const QVariantMap& result) {
     if (takeDropped(job)) {
         return; // cancelled: only its own staging directory was removed
     }
-    endJob();
     QVariantMap report = result;
     if (report.value(QStringLiteral("ok")).toBool() && !backup::promote_staging(job.path)) {
         backup::discard_staging(job.path);
         report = result_map(backup::pending_committed() ? QLatin1String(kRestorePending) : error_name(BackupError::Io));
     }
     setLastResult(QStringLiteral("inspectRestore"), report);
+    endJob();
     Q_EMIT inspectFinished(report);
 }
 

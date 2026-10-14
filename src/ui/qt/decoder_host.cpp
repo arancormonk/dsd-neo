@@ -87,13 +87,18 @@ replace_destination(const QDir& dir, const QString& replacePath) {
  * at its end before a byte has been read. The cap is counted on what was read for
  * the same reason, not taken from the source's reported size.
  *
+ * @param abort Optional; checked before every chunk. Once raised the copy fails.
  * @return A DecoderHost::DocumentCopy value; any failure cancels @p out.
  */
 int
-copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes) {
+copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes, const std::atomic<bool>* abort = nullptr) {
     QByteArray chunk(1 << 16, Qt::Uninitialized);
     qint64 total = 0;
     for (;;) {
+        if (abort != nullptr && abort->load()) {
+            out.cancelWriting();
+            return DecoderHost::DocumentFailed;
+        }
         const qint64 n = source.read(chunk.data(), chunk.size());
         if (n < 0) {
             out.cancelWriting();
@@ -171,7 +176,7 @@ DecoderHost::copyDocumentToFile(const QString& reference, const QString& destPat
     if (!open_private(out)) {
         return DocumentFailed;
     }
-    const int copied = copy_stream_capped(source, out, maxBytes);
+    const int copied = copy_stream_capped(source, out, maxBytes, &m_documentTransfersAborted);
     if (copied != DocumentCopied) {
         return copied;
     }
@@ -186,7 +191,13 @@ DecoderHost::copyFileToDocument(const QString& sourcePath, const QString& refere
         return false;
     }
     QSaveFile out(path);
-    return open_private(out) && copy_stream(source, out) && out.commit();
+    return open_private(out) && copy_stream_capped(source, out, -1, &m_documentTransfersAborted) == DocumentCopied
+           && out.commit();
+}
+
+void
+DecoderHost::abortDocumentTransfers() {
+    m_documentTransfersAborted.store(true);
 }
 
 QVariantMap
