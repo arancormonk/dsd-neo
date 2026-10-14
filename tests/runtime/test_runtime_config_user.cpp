@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
@@ -28,6 +29,7 @@
 #include <math.h>
 #include <memory>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -485,6 +487,40 @@ test_apply_file_input_rescales_symbol_timing(void) {
         rc |= 1;
     }
 
+    return rc;
+}
+
+/* A [mode] without a decode key runs no preset, so a file input at another rate rescales the session's own symbol
+   timing (here 8 samples a symbol at 48 kHz, P25 Phase 2's) rather than a preset's. */
+static int
+test_apply_file_input_without_decode_keeps_session_timing(void) {
+    dsdneoUserConfig cfg = {};
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_UNSET;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_FILE;
+    cfg.file_sample_rate = 44100;
+    DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", "/tmp/input.wav");
+    cfg.file_path[sizeof cfg.file_path - 1] = '\0';
+
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    opts.wav_decimator = 48000;
+    opts.wav_sample_rate = 48000;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    int rc = 0;
+    if (dsd_opts_effective_input_rate(&opts) != 44100 || state.samplesPerSymbol != 7) {
+        DSD_FPRINTF(stderr, "FAIL: a [mode] without a decode key retimed the session: rate=%d sps=%d center=%d\n",
+                    dsd_opts_effective_input_rate(&opts), state.samplesPerSymbol, state.symbolCenter);
+        rc |= 1;
+    }
     return rc;
 }
 
@@ -3032,6 +3068,57 @@ test_tetra_mode_roundtrip(void) {
     return rc;
 }
 
+static int g_tetra_ext_cleanups = 0;
+
+static void
+count_tetra_ext_cleanup(void* ptr) {
+    g_tetra_ext_cleanups++;
+    free(ptr);
+}
+
+/*
+ * A [mode] without a decode key (a demod setting alone) applies no preset, so a TETRA session that applies it keeps its
+ * TETRA decoder: the flag, the decoder's state extension and what it published.
+ */
+static int
+test_mode_without_decode_keeps_tetra(void) {
+    int rc = 0;
+    static dsdneoUserConfig cfg;
+    if (load_am_config_text("[mode]\ndemod = \"qpsk\"\n", &cfg) != 0 || !cfg.has_mode
+        || cfg.decode_mode != DSDCFG_MODE_UNSET) {
+        DSD_FPRINTF(stderr, "FAIL: a [mode] with a demod alone did not load as an unset decode mode (mode %d)\n",
+                    (int)cfg.decode_mode);
+        return 1;
+    }
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: TETRA preset failed\n");
+        return 1;
+    }
+    int* ext = static_cast<int*>(calloc(1U, sizeof(int)));
+    if (!ext || dsd_state_ext_set(&state, DSD_STATE_EXT_PROTO_TETRA, ext, count_tetra_ext_cleanup) != 0) {
+        free(ext);
+        return 1;
+    }
+    g_tetra_ext_cleanups = 0;
+    state.tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    state.tetra_pub.generation = 3U;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.frame_tetra != 1 || dsd_state_ext_get(&state, DSD_STATE_EXT_PROTO_TETRA) != ext
+        || g_tetra_ext_cleanups != 0 || state.tetra_pub.mode != DSD_TETRA_MODE_TMO_DOWNLINK
+        || state.tetra_pub.generation != 3U || dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_TETRA) {
+        DSD_FPRINTF(stderr, "FAIL: a [mode] without a decode key left TETRA: frame_tetra %d, cleanups %d\n",
+                    opts.frame_tetra, g_tetra_ext_cleanups);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /*
  * Issue #527: [analog] tone_filter and tone_list ride INI -> cfg -> opts -> snapshot -> render. The mode is written
  * when it is on, the list whenever there is one (off keeps it), and both load back. A refused list, or a list policy
@@ -4572,6 +4659,7 @@ main(void) {
     rc |= test_imports_dir_follows_config_dir();
     rc |= test_rtl_bw_khz_72_round_trip();
     rc |= test_apply_file_input_rescales_symbol_timing();
+    rc |= test_apply_file_input_without_decode_keeps_session_timing();
     rc |= test_decode_mode_and_load_guards();
     rc |= test_persisted_v1_load_boundary();
     rc |= test_integer_overflow_is_rejected_consistently();
@@ -4619,6 +4707,7 @@ main(void) {
     rc |= test_radio_input_spec();
     rc |= test_am_mode_and_bandwidth_roundtrip();
     rc |= test_tetra_mode_roundtrip();
+    rc |= test_mode_without_decode_keeps_tetra();
     rc |= test_tone_policy_roundtrip();
     rc |= test_tone_policy_edit_roundtrip();
     rc |= test_tg_lockout_persistence_roundtrip();

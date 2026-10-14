@@ -3574,7 +3574,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     if (cli_decode_timing_seen && dsd_opts_source_uses_effective_input_rate(opts)) {
         int timing_rate_hz = dsd_opts_effective_input_rate(opts);
         if (cli_decode_timing_source == CLI_TIMING_SOURCE_PRESET && timing_rate_hz != 48000) {
-            dsd_apply_decode_mode_symbol_timing(cli_decode_timing_mode, timing_rate_hz, state);
+            (void)dsd_apply_decode_mode_symbol_timing(cli_decode_timing_mode, timing_rate_hz, state);
         } else if (cli_decode_timing_source == CLI_TIMING_SOURCE_MANUAL && cli_manual_timing_sps > 0) {
             state->samplesPerSymbol = cli_manual_timing_sps;
             state->symbolCenter = cli_manual_timing_center;

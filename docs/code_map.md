@@ -1552,7 +1552,13 @@ suite runs under this compiler.
     left by 11) and `RUNTIME_ANALOG_TONES` pins the published reference words, the golden alias table for all 104 codes
     and the two spellings of every signal.
   - Decode presets (`include/dsd-neo/runtime/decode_mode.h`, `src/runtime/decode_mode.c`): the `-f` selector map is
-    a table (`k_cli_presets`), and AM (`DSDCFG_MODE_AM` = 16, `-fM`, issue #524) is the last preset: the analog monitor
+    a table (`k_cli_presets`), and so are the presets (`k_decode_mode_presets`): `dsd_apply_decode_mode_preset()` looks
+    the mode up before it changes anything, so a mode no preset implements (`DSDCFG_MODE_UNSET`, which a config's
+    `[mode]` without a `decode` key and DECODE_MODE_SET 0 pass) changes nothing, a TETRA session's decoder and state
+    included. `dsd_apply_decode_mode_symbol_timing()` refuses such a mode the same way (it has no preset timing), and
+    the config paths that call it for a file input (`apply_file_input_symbol_timing()` in `config_user.cpp`,
+    `cfg_file_runtime_apply_*()` in `app_command_queue.c`) then rescale or keep the session's own timing
+    (`RUNTIME_DECODE_MODE`, `RUNTIME_CONFIG_USER`, `APP_COMMAND_QUEUE`). AM (`DSDCFG_MODE_AM` = 16, `-fM`, issue #524) is the last preset: the analog monitor
     with `analog_demod` AM, read back as AM by `dsd_infer_decode_mode_preset()`. AM needs an I/Q radio input, one rule
     for two phases: before the engine opens the input, `dsd_decode_mode_input_spec_is_iq()` reads the spec (an rtl,
     rtltcp, soapy, airspy or iqreplay one, or the RTL input type `--iq-replay` sets while the options are parsed) for

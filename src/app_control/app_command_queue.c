@@ -3580,8 +3580,9 @@ cfg_file_runtime_apply_wav_input(dsd_opts* opts, dsd_state* state, const dsdneoU
         (raw_sample_rate > 0 && active_sample_rate != raw_sample_rate) ? raw_sample_rate : 0;
 
     int active_effective_input_rate = dsd_opts_effective_input_rate(opts);
-    if (cfg->has_mode) {
-        dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, active_effective_input_rate, state);
+    /* A [mode] without a decode key ran no preset (DSDCFG_MODE_UNSET): the session's own timing is rescaled. */
+    if (cfg->has_mode
+        && dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, active_effective_input_rate, state) == 0) {
         dsd_audio_rescale_symbol_timing(state, active_effective_input_rate, active_effective_input_rate);
         return;
     }
@@ -3599,8 +3600,7 @@ cfg_file_runtime_apply_live_input(const dsd_opts* opts, dsd_state* state, const 
         old_runtime_input_rate = 48000;
     }
 
-    if (cfg->has_mode) {
-        dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, old_runtime_input_rate, state);
+    if (cfg->has_mode && dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, old_runtime_input_rate, state) == 0) {
         return;
     }
     restore_symbol_timing_snapshot(state, old_samples_per_symbol, old_symbol_center, old_jitter);

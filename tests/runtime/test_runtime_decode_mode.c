@@ -432,12 +432,18 @@ test_symbol_timing_and_inference(void) {
         {1u << 7, DSDCFG_MODE_DPMR},   {1u << 10, DSDCFG_MODE_M17},
     };
 
-    dsd_apply_decode_mode_symbol_timing(DSDCFG_MODE_DMR, 96000, NULL);
+    if (dsd_apply_decode_mode_symbol_timing(DSDCFG_MODE_DMR, 96000, NULL) != -1) {
+        DSD_FPRINTF(stderr, "symbol timing without a state should be refused\n");
+        return 1;
+    }
 
     for (size_t i = 0; i < sizeof timing_cases / sizeof timing_cases[0]; i++) {
         static dsd_state state;
         DSD_MEMSET(&state, 0, sizeof state);
-        dsd_apply_decode_mode_symbol_timing(timing_cases[i].mode, 96000, &state);
+        if (dsd_apply_decode_mode_symbol_timing(timing_cases[i].mode, 96000, &state) != 0) {
+            DSD_FPRINTF(stderr, "timing mode %d refused\n", (int)timing_cases[i].mode);
+            return 1;
+        }
         if (state.samplesPerSymbol != timing_cases[i].expected_sps
             || state.symbolCenter != timing_cases[i].expected_center || state.jitter != -1) {
             DSD_FPRINTF(stderr, "timing mode %d mismatch sps=%d center=%d jitter=%d\n", (int)timing_cases[i].mode,
@@ -451,6 +457,16 @@ test_symbol_timing_and_inference(void) {
     dsd_apply_decode_mode_symbol_timing(DSDCFG_MODE_DMR, 48000, &state);
     if (state.samplesPerSymbol != 10 || state.symbolCenter != 4) {
         DSD_FPRINTF(stderr, "48000 timing should keep base DMR timing\n");
+        return 1;
+    }
+    /* No preset ran for DSDCFG_MODE_UNSET (a [mode] without a decode key), so it has no preset timing: the session's
+       own stays. */
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    if (dsd_apply_decode_mode_symbol_timing(DSDCFG_MODE_UNSET, 96000, &state) != -1 || state.samplesPerSymbol != 8
+        || state.symbolCenter != 3) {
+        DSD_FPRINTF(stderr, "an unset mode should leave the symbol timing alone: sps=%d center=%d\n",
+                    state.samplesPerSymbol, state.symbolCenter);
         return 1;
     }
 
@@ -1027,11 +1043,65 @@ test_leaving_tetra_clears_its_publication(void) {
     return rc;
 }
 
+static int g_tetra_ext_cleanups;
+
+static void
+count_tetra_ext_cleanup(void* ptr) {
+    g_tetra_ext_cleanups++;
+    free(ptr);
+}
+
+/* A mode no preset implements (UNSET, which a config's [mode] without a decode key passes) is refused before anything
+   changes: a TETRA session keeps its decoder flag, its state extension, the burst the frame sync captured for it and
+   its publication. */
+static int
+test_refused_mode_keeps_tetra(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    int* ext = (int*)calloc(1U, sizeof(int));
+    int rc = 0;
+    if (!opts || !state || !ext) {
+        free(ext);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0
+        || dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, ext, count_tetra_ext_cleanup) != 0) {
+        DSD_FPRINTF(stderr, "TETRA session setup failed\n");
+        free(ext);
+        dsd_state_ext_free_all(state);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    g_tetra_ext_cleanups = 0;
+    state->tetra_sync.polarity = 1;
+    state->tetra_pub.generation = 4U;
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_UNSET, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state) != -1) {
+        DSD_FPRINTF(stderr, "an unset mode should be refused\n");
+        rc = 1;
+    }
+    if (opts->frame_tetra != 1 || dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) != ext
+        || g_tetra_ext_cleanups != 0 || state->tetra_sync.polarity != 1
+        || state->tetra_pub.mode != DSD_TETRA_MODE_TMO_DOWNLINK || state->tetra_pub.generation != 4U) {
+        DSD_FPRINTF(stderr, "a refused mode changed the TETRA session: frame_tetra %d cleanups %d\n", opts->frame_tetra,
+                    g_tetra_ext_cleanups);
+        rc = 1;
+    }
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_display_names();
     rc |= test_leaving_tetra_clears_its_publication();
+    rc |= test_refused_mode_keeps_tetra();
     rc |= test_auto_profile_differences();
     rc |= test_p25p2_prefers_qpsk();
     rc |= test_dmr_prefers_gfsk();

@@ -1810,9 +1810,8 @@ apply_file_input_symbol_timing(const dsdneoUserConfig* cfg, const dsd_opts* opts
     }
 
     int effective_input_rate = dsd_opts_effective_input_rate(opts);
-    if (cfg->has_mode) {
-        dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, effective_input_rate, state);
-    } else {
+    /* A [mode] without a decode key ran no preset (DSDCFG_MODE_UNSET): the session's own timing is rescaled. */
+    if (!cfg->has_mode || dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, effective_input_rate, state) != 0) {
         dsd_state_rescale_symbol_timing(state, old_effective_input_rate, effective_input_rate);
     }
 }

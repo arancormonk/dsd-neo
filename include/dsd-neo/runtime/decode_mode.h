@@ -67,12 +67,16 @@ int dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfi
  * Starts from the preset's canonical 48 kHz timing and rescales it to the
  * provided effective PCM rate. This is used when a mode preset is combined
  * with non-48 kHz file/socket input so the slicer starts with the correct SPS.
+ * A mode no preset implements (DSDCFG_MODE_UNSET, which a config's [mode]
+ * without a decode key carries) ran no preset, so it has no preset timing
+ * either: the state is left as it is, and the caller keeps the session's own.
  *
  * @param mode Decode mode preset.
  * @param effective_input_rate_hz Effective PCM rate after any staged upsample.
  * @param state Decoder state receiving `samplesPerSymbol` and `symbolCenter`.
+ * @return 0 when the timing was rebuilt; -1, changing nothing, for a NULL @p state or a mode no preset implements.
  */
-void dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_input_rate_hz, dsd_state* state);
+int dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_input_rate_hz, dsd_state* state);
 
 /**
  * @brief The symbol profile a decode mode runs on.

@@ -2495,6 +2495,16 @@ test_decode_mode_set_reaches_tetra(void) {
     rc |= expect_int("past tetra keeps tetra", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
     rc |= expect_int("past tetra keeps the publication", state.tetra_pub.mode, DSD_TETRA_MODE_TMO_DOWNLINK);
 
+    /* No mode at all (DSDCFG_MODE_UNSET, 0) is refused the same way, the TETRA decoder left running. */
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("unset mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_UNSET),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("unset mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("unset mode refused", strstr(state.ui_msg, "Decode mode not available") != NULL, 1);
+    rc |= expect_int("unset mode keeps the tetra decoder", opts.frame_tetra, 1);
+    rc |= expect_int("unset mode keeps the publication", state.tetra_pub.mode, DSD_TETRA_MODE_TMO_DOWNLINK);
+
     rc |= expect_int("dmr mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -3450,6 +3460,59 @@ test_failed_config_reopen_stages_no_file_rate(void) {
     (void)remove("voice.wav");
     (void)remove("voice.pcm");
     rc |= expect_int("staged rate temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
+    return rc;
+}
+
+/* A runtime config with a [mode] but no decode key (DSDCFG_MODE_UNSET) runs no preset, so applying it to a file session
+   keeps the session's own symbol timing (here 8 samples a symbol) rather than a preset's, through the configured rate
+   (48 kHz) and back to the 44.1 kHz the file's header plays it at. */
+static int
+test_config_without_decode_keeps_file_timing(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_config_unset_timing") != 0) {
+        return expect_true("unset timing temp directory", 0);
+    }
+    rc |= write_pcm16_wav("voice.wav", 44100U, 8U);
+    init_test_context(&opts, &state);
+    (void)post_string(DSD_APP_CMD_INPUT_WAV_SET, "voice.wav");
+    rc |= expect_int("unset timing: wav drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("unset timing: the wav plays at its header rate", dsd_opts_effective_input_rate(&opts), 44100);
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_UNSET;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_FILE;
+    cfg.file_sample_rate = 48000;
+    DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", "voice.wav");
+    rc |= expect_true("unset timing: config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("unset timing: config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("unset timing: the wav plays on", opts.audio_in_dev, "voice.wav");
+    rc |= expect_int("unset timing: at its header rate", dsd_opts_effective_input_rate(&opts), 44100);
+    rc |= expect_int("unset timing: the session's timing stays", state.samplesPerSymbol, 8);
+
+    closeAudioInDevice(&opts);
+    freeState(&state);
+
+    /* A live input session staging the config's file for a later open keeps its timing the same way. */
+    init_test_context(&opts, &state);
+    const int live_input = opts.audio_in_type;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    cfg.file_sample_rate = 44100;
+    rc |= expect_true("unset timing: live config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("unset timing: live config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("unset timing: the live input stays", opts.audio_in_type, live_input);
+    rc |= expect_int("unset timing: the live session's timing stays", state.samplesPerSymbol, 8);
+    freeState(&state);
+    (void)remove("voice.wav");
+    rc |= expect_int("unset timing temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
     return rc;
 }
 
@@ -17933,6 +17996,7 @@ main(void) {
     rc |= test_config_apply_input_change_clears_received_tone();
     rc |= test_config_apply_mode_change_clears_received_tone();
     rc |= test_failed_config_reopen_stages_no_file_rate();
+    rc |= test_config_without_decode_keeps_file_timing();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_config_apply_pulse_device_is_a_new_stream();
     rc |= test_tcp_connect_clears_received_tone();

@@ -111,6 +111,10 @@ dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int levels
     return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
 }
 
+/* The decode presets (k_decode_mode_presets, below the functions they apply). */
+typedef struct decode_mode_preset decode_mode_preset;
+static const decode_mode_preset* decode_mode_preset_find(dsdneoUserDecodeMode mode);
+
 /**
  * @brief The symbol timing a preset starts a mode off on, at 48 kHz.
  *
@@ -141,10 +145,10 @@ decode_mode_base_symbol_timing(dsdneoUserDecodeMode mode, int* out_sps, int* out
     }
 }
 
-void
+int
 dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_input_rate_hz, dsd_state* state) {
-    if (!state) {
-        return;
+    if (!state || !decode_mode_preset_find(mode)) {
+        return -1;
     }
 
     int base_sps = 10;
@@ -154,10 +158,11 @@ dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_inp
     state->symbolCenter = base_center;
 
     if (effective_input_rate_hz <= 0 || effective_input_rate_hz == 48000) {
-        return;
+        return 0;
     }
 
     dsd_state_rescale_symbol_timing(state, 48000, effective_input_rate_hz);
+    return 0;
 }
 
 static void
@@ -628,46 +633,53 @@ decode_mode_apply_am(dsd_opts* o, dsd_state* s) {
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "AM Monitor");
 }
 
-static int
-decode_mode_apply_profiled(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
-                           dsd_state* state) {
-    switch (mode) {
-        case DSDCFG_MODE_AUTO: decode_mode_apply_auto(profile, opts, state); return 0;
-        case DSDCFG_MODE_NXDN48: decode_mode_apply_nxdn48(profile, opts, state); return 0;
-        case DSDCFG_MODE_NXDN96: decode_mode_apply_nxdn96(profile, opts, state); return 0;
-        case DSDCFG_MODE_X2TDMA: decode_mode_apply_x2tdma(profile, opts, state); return 0;
-        case DSDCFG_MODE_YSF: decode_mode_apply_ysf(profile, opts, state); return 0;
-        default: return -1;
-    }
-}
+/* Every decode preset. The profiled ones (AUTO, NXDN48, NXDN96, X2-TDMA, YSF) read the caller's profile, the rest
+   apply the same way from every entry point. One table, so a mode is refused before anything changes
+   (dsd_apply_decode_mode_preset()) by the same lookup that applies it. */
+struct decode_mode_preset {
+    dsdneoUserDecodeMode mode;
+    void (*apply)(dsd_opts* o, dsd_state* s);
+    void (*apply_profiled)(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s);
+};
 
-static int
-decode_mode_dispatch(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    if (decode_mode_apply_profiled(mode, profile, opts, state) == 0) {
-        return 0;
-    }
+static const decode_mode_preset k_decode_mode_presets[] = {
+    {DSDCFG_MODE_AUTO, NULL, decode_mode_apply_auto},
+    {DSDCFG_MODE_NXDN48, NULL, decode_mode_apply_nxdn48},
+    {DSDCFG_MODE_NXDN96, NULL, decode_mode_apply_nxdn96},
+    {DSDCFG_MODE_X2TDMA, NULL, decode_mode_apply_x2tdma},
+    {DSDCFG_MODE_YSF, NULL, decode_mode_apply_ysf},
+    {DSDCFG_MODE_P25P1, decode_mode_apply_p25p1, NULL},
+    {DSDCFG_MODE_P25P2, decode_mode_apply_p25p2, NULL},
+    {DSDCFG_MODE_DMR, decode_mode_apply_dmr, NULL},
+    {DSDCFG_MODE_DMR_MONO, decode_mode_apply_dmr_mono, NULL},
+    {DSDCFG_MODE_DSTAR, decode_mode_apply_dstar, NULL},
+    {DSDCFG_MODE_EDACS_PV, decode_mode_apply_edacs_pv, NULL},
+    {DSDCFG_MODE_DPMR, decode_mode_apply_dpmr, NULL},
+    {DSDCFG_MODE_M17, decode_mode_apply_m17, NULL},
+    {DSDCFG_MODE_TDMA, decode_mode_apply_tdma, NULL},
+    {DSDCFG_MODE_TETRA, decode_mode_apply_tetra, NULL},
+    {DSDCFG_MODE_ANALOG, decode_mode_apply_analog, NULL},
+    {DSDCFG_MODE_AM, decode_mode_apply_am, NULL},
+};
 
-    switch (mode) {
-        case DSDCFG_MODE_P25P1: decode_mode_apply_p25p1(opts, state); return 0;
-        case DSDCFG_MODE_P25P2: decode_mode_apply_p25p2(opts, state); return 0;
-        case DSDCFG_MODE_DMR: decode_mode_apply_dmr(opts, state); return 0;
-        case DSDCFG_MODE_DMR_MONO: decode_mode_apply_dmr_mono(opts, state); return 0;
-        case DSDCFG_MODE_DSTAR: decode_mode_apply_dstar(opts, state); return 0;
-        case DSDCFG_MODE_EDACS_PV: decode_mode_apply_edacs_pv(opts, state); return 0;
-        case DSDCFG_MODE_DPMR: decode_mode_apply_dpmr(opts, state); return 0;
-        case DSDCFG_MODE_M17: decode_mode_apply_m17(opts, state); return 0;
-        case DSDCFG_MODE_TDMA: decode_mode_apply_tdma(opts, state); return 0;
-        case DSDCFG_MODE_TETRA: decode_mode_apply_tetra(opts, state); return 0;
-        case DSDCFG_MODE_ANALOG: decode_mode_apply_analog(opts, state); return 0;
-        case DSDCFG_MODE_AM: decode_mode_apply_am(opts, state); return 0;
-        default: return -1;
+/* The preset that applies @p mode, or NULL for a mode no preset implements (DSDCFG_MODE_UNSET among them). */
+static const decode_mode_preset*
+decode_mode_preset_find(dsdneoUserDecodeMode mode) {
+    for (size_t i = 0; i < sizeof k_decode_mode_presets / sizeof k_decode_mode_presets[0]; i++) {
+        if (k_decode_mode_presets[i].mode == mode) {
+            return &k_decode_mode_presets[i];
+        }
     }
+    return NULL;
 }
 
 int
 dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
                              dsd_state* state) {
-    if (!opts || !state) {
+    /* A mode no preset implements (DSDCFG_MODE_UNSET: a config's [mode] without a decode key) is refused before
+       anything changes, the TETRA cleanup below included, so the session keeps the decoders it runs. */
+    const decode_mode_preset* preset = decode_mode_preset_find(mode);
+    if (!opts || !state || !preset) {
         return -1;
     }
 
@@ -680,8 +692,10 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         dsd_tetra_publication_reset(&state->tetra_pub);
     }
 
-    if (decode_mode_dispatch(mode, profile, opts, state) != 0) {
-        return -1;
+    if (preset->apply_profiled) {
+        preset->apply_profiled(profile, opts, state);
+    } else if (preset->apply) {
+        preset->apply(opts, state);
     }
 
     /* Analog monitor is a mode like any other, so leaving it is part of choosing a
@@ -690,8 +704,8 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
        order-dependent, and every decode chip in the Qt radio panel renders
        unselected because the engine reports a mode none of them carry. The CLI used
        to clear it at its own `-f` case; it belongs to the presets, which is where
-       every caller gets it. Applied after the dispatch so an unsupported mode
-       changes nothing at all.
+       every caller gets it. An unsupported mode was refused above, so it changes
+       nothing at all.
 
        monitor_input_audio only follows analog_only out. Unlike analog_only --
        which nothing but this preset and `-fA` ever set -- it is also the `-8`
