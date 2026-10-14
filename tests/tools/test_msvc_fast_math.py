@@ -75,15 +75,23 @@ class MsvcFastMath(unittest.TestCase):
                 command.append(f"-DCMAKE_C_COMPILER={ARGS.cc}")
             if ARGS.cxx:
                 command.append(f"-DCMAKE_CXX_COMPILER={ARGS.cxx}")
+            # CC/CXX can be wrappers, e.g. macOS CI's "ccache clang". CMake
+            # records the real compiler in ARG1 when it splits that command.
+            if ARGS.cc_arg1:
+                command.append(f"-DCMAKE_C_COMPILER_ARG1={ARGS.cc_arg1}")
+            if ARGS.cxx_arg1:
+                command.append(f"-DCMAKE_CXX_COMPILER_ARG1={ARGS.cxx_arg1}")
             self.run_command(*command)
             entries = json.loads((build / "compile_commands.json").read_text(encoding="utf-8"))
             count = 0
             for entry in entries:
                 command = entry["command"]
-                if generator == "Ninja Multi-Config" and f"/{configuration}/" not in entry["output"].replace("\\", "/"):
+                # CMake 3.20 omits the optional compilation database output field.
+                object_path = entry.get("output", command).replace("\\", "/")
+                if generator == "Ninja Multi-Config" and f".dir/{configuration}/" not in object_path:
                     continue
                 count += 1
-                target = re.search(r"CMakeFiles[/\\](\w+)\.dir", entry["output"])[1]
+                target = re.search(r"CMakeFiles/(\w+)\.dir", object_path)[1]
                 name = Path(entry["file"]).name
                 if target == "precise" or (target == "fast" and name == "precise.c"):
                     expected = ["precise"]
@@ -117,5 +125,7 @@ if __name__ == "__main__":
     parser.add_argument("--cmake", default="cmake")
     parser.add_argument("--cc")
     parser.add_argument("--cxx")
+    parser.add_argument("--cc-arg1")
+    parser.add_argument("--cxx-arg1")
     ARGS, remaining = parser.parse_known_args()
     unittest.main(argv=[__file__, *remaining])

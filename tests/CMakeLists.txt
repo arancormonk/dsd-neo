@@ -15580,7 +15580,8 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_msvc_fast_math.py --cmake
             ${CMAKE_COMMAND} --cc ${CMAKE_C_COMPILER} --cxx
-            ${CMAKE_CXX_COMPILER}
+            ${CMAKE_CXX_COMPILER} "--cc-arg1=${CMAKE_C_COMPILER_ARG1}"
+            "--cxx-arg1=${CMAKE_CXX_COMPILER_ARG1}"
     )
     add_test(
         NAME TOOLS_PFFFT_METADATA

@@ -32,7 +32,11 @@ function(dsd_msvc_fast_math directory)
         set(_target_modes
             "$<FILTER:$<GENEX_EVAL:$<TARGET_PROPERTY:DSD_MSVC_FP_OPTIONS>>,INCLUDE,^[-/]fp:(fast|precise|strict)$>"
         )
-        set(_default "$<$<NOT:$<BOOL:${_target_modes}>>:/fp:fast>")
+        # Select the language at generation time; an inferred source LANGUAGE
+        # property is not always available during this deferred configure pass.
+        set(_default
+            "$<$<AND:$<COMPILE_LANGUAGE:C,CXX>,$<NOT:$<BOOL:${_target_modes}>>>:/fp:fast>"
+        )
         get_target_property(_sources "${_target}" SOURCES)
         foreach(_source IN LISTS _sources)
             # Object-library references are already handled at their target.
@@ -47,15 +51,6 @@ function(dsd_msvc_fast_math directory)
                 ABSOLUTE
                 BASE_DIR "${directory}"
             )
-            get_source_file_property(
-                _language
-                "${_source}"
-                TARGET_DIRECTORY "${_target}"
-                LANGUAGE
-            )
-            if(NOT _language MATCHES "^(C|CXX)$")
-                continue()
-            endif()
             get_source_file_property(
                 _options
                 "${_source}"
