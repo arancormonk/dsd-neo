@@ -1293,18 +1293,28 @@ static void
 dmo_transmission_over(tetra_state_t* ts) {
     ts->dmo_dcc_valid = 0;
     ts->dmo_tx_crypt = (uint8_t)TETRA_DMO_CRYPT_UNKNOWN;
+    ts->dmo_tx_aie = TETRA_DMO_AIE_DM1;
     ts->dmo_tx_seed = 0U;
     dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
 }
 
-/* Another traffic transmission starts, protected as @p crypt, from the source whose colour code is @p seed (0 when
- * none is known): the call canonical slot 0 shows is this one's from here (tetra_state_t::dmo_tx_seq). */
+/* Another traffic transmission starts, of security class @p aie and protected as @p crypt, from the source whose colour
+ * code is @p seed (0 when none is known): the call canonical slot 0 shows is this one's from here
+ * (tetra_state_t::dmo_tx_seq). */
 static void
-dmo_start_transmission(tetra_state_t* ts, tetra_dmo_crypt_e crypt, uint32_t seed) {
+dmo_start_transmission(tetra_state_t* ts, uint8_t aie, tetra_dmo_crypt_e crypt, uint32_t seed) {
     ts->dmo_tx_crypt = (uint8_t)crypt;
+    ts->dmo_tx_aie = aie;
     ts->dmo_tx_seed = seed;
     ts->dmo_tx_seq++;
     dmo_set_crypt(ts, crypt);
+}
+
+/* A transmission is in progress, and of security class @p aie: the class its set-up gave, which it keeps (EN 300 396-3
+ * clause 8.5.3). */
+static int
+dmo_in_transmission_of(const tetra_state_t* ts, uint8_t aie) {
+    return ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN && ts->dmo_tx_aie == aie;
 }
 
 /* How closed a protection is: only CLEAR is audible, and the more closed of two is the one evidence allows. */
@@ -1332,9 +1342,10 @@ dmo_apply_unread(tetra_state_t* ts, const tetra_dmo_sync_s_t* s) {
     }
     if (s->enc_state == TETRA_DMO_AIE_DM2C) {
         ts->dmo_dcc_valid = 0;
-        /* A transmission keeps its security class (clause 8.5.3): a DM-2-C one is not the clear one before it. */
-        if (ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_AIR) {
-            dmo_start_transmission(ts, TETRA_DMO_CRYPT_AIR, 0U);
+        /* A transmission keeps its security class (clause 8.5.3): a DM-2-C one is not the clear, DM-2-A or DM-2-B one
+         * before it, whose source and destination it would otherwise go on with. */
+        if (!dmo_in_transmission_of(ts, TETRA_DMO_AIE_DM2C)) {
+            dmo_start_transmission(ts, TETRA_DMO_AIE_DM2C, TETRA_DMO_CRYPT_AIR, 0U);
             return;
         }
     }
@@ -1364,18 +1375,21 @@ dmo_source_seed(const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
 /* DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED protected as @p crypt. One from another source than the transmission in
  * progress (one that names none, which EN 300 396-5 clause 13.5.2.1.1 keeps for gateway-specific messages, is the same
  * as another that names none), or with none in progress, starts a transmission, and so does a set-up that gives another
- * class; one that repeats the set-up's class goes on with it. A DM-OCCUPIED shall carry the class of the DM-SETUP or DM-CONNECT ACK
- * that initiated its transmission (clause 8.5.3): one that agrees confirms it, which opens what an unread DMAC-SYNC
- * sealed; one that contradicts it leaves the more closed of the two, so it never opens speech its set-up closed. */
+ * class: another security class (DM-2-A, DM-2-B and DM-2-C all encrypt the air interface), or under DM-1 another
+ * end-to-end encryption; one that repeats the set-up's class goes on with it. A DM-OCCUPIED shall carry the class of
+ * the DM-SETUP or DM-CONNECT ACK that initiated its transmission (clause 8.5.3): one that agrees confirms it, which
+ * opens what an unread DMAC-SYNC sealed; one that contradicts it leaves the more closed of the two, so it never opens
+ * speech its set-up closed. */
 static void
 dmo_apply_setup(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
     const tetra_dmo_crypt_e crypt = dmo_call_class(s, h);
     const tetra_dmo_crypt_e tx = (tetra_dmo_crypt_e)ts->dmo_tx_crypt;
     const uint32_t seed = dmo_source_seed(s, h);
     const int occupied = h->msg_type == TETRA_DMO_MSG_OCCUPIED;
-    if (tx == TETRA_DMO_CRYPT_UNKNOWN || seed != ts->dmo_tx_seed || (!occupied && crypt != tx)) {
+    const int other_class = crypt != tx || !dmo_in_transmission_of(ts, s->enc_state);
+    if (tx == TETRA_DMO_CRYPT_UNKNOWN || seed != ts->dmo_tx_seed || (!occupied && other_class)) {
         dmo_learn_dcc(ts, s, h);
-        dmo_start_transmission(ts, crypt, seed);
+        dmo_start_transmission(ts, s->enc_state, crypt, seed);
         return;
     }
     dmo_learn_dcc(ts, s, h);

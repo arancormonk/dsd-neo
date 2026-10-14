@@ -300,6 +300,9 @@ typedef struct tetra_state {
      * dmo_crypt:      tetra_dmo_crypt_e of the current call's traffic, what its speech is classified by.
      * dmo_tx_crypt:   tetra_dmo_crypt_e the set-up of the traffic transmission in progress gave (EN 300 396-3 clause
      *                 8.5.3), which its DM-OCCUPIED repeats; UNKNOWN while none is in progress.
+     * dmo_tx_aie:     the security class (TETRA_DMO_AIE_*) of that set-up's SCH/S, which the transmission keeps
+     *                 (clause 8.5.3): DM-2-A, DM-2-B and DM-2-C are all TETRA_DMO_CRYPT_AIR, but each a transmission of
+     *                 its own; valid while dmo_tx_crypt is not UNKNOWN.
      * dmo_tx_seed:    the DM colour code seed of that transmission's source, 0 when none is known.
      * dmo_tx_seq:     counts the transmissions started: the direct mode call canonical slot 0 shows is of one of them.
      * dmo_since_sync: DNBs processed since the last DMAC-SYNC (colour code staleness). */
@@ -312,6 +315,7 @@ typedef struct tetra_state {
     uint8_t dmo_comm_type;
     uint8_t dmo_crypt;
     uint8_t dmo_tx_crypt;
+    uint8_t dmo_tx_aie;
 
     /* The status downlink of the last complete D-MM STATUS (EN 300 392-2 table 16.3), for the frontends; mm_status_valid
      * once one was decoded (tetra_mm.c). */

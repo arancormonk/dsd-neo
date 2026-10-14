@@ -1197,6 +1197,42 @@ test_direct_mode_transmissions_apart(void) {
            && call.ota_target_id == 0u && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
     session_close(&s);
 
+    /* The security class itself tells transmissions apart, not only whether it encrypts the air interface: a DM-2-C
+     * DMAC-SYNC after a DM-2-B transmission of source 100, with no end of that transmission heard, is another
+     * transmission whose source is unknown, not source 100's; and a DM-SETUP of source 100 under DM-2-A after its
+     * DM-2-B one sets up another transmission too. */
+    s = session_open();
+    session_history(&s);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM2B);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 100u
+           && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    const uint64_t dm2b = call.epoch;
+    dmo_dsb(&s, TETRA_DMO_AIE_DM2B);
+    assert(canonical(s.state).epoch == dm2b);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM2C);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != dm2b && call.ota_source_id == 0u
+           && call.ota_target_id == 0u && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    const uint64_t dm2c = call.epoch;
+    dmo_dsb(&s, TETRA_DMO_AIE_DM2C);
+    assert(canonical(s.state).epoch == dm2c);
+    session_close(&s);
+
+    s = session_open();
+    session_history(&s);
+    dmo_dsb_msg(&s, TETRA_DMO_AIE_DM2B, TETRA_DMO_MSG_SETUP);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 100u && call.ota_target_id == 0u);
+    const uint64_t setup_2b = call.epoch;
+    dmo_dsb_msg(&s, TETRA_DMO_AIE_DM2B, TETRA_DMO_MSG_SETUP);
+    assert(canonical(s.state).epoch == setup_2b);
+    dmo_dsb_msg(&s, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_SETUP);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != setup_2b && call.ota_source_id == 100u
+           && call.ota_target_id == 0x800001u);
+    session_close(&s);
+
     /* Set-up with presence check (EN 300 396-3 clause 6.2): DM-SETUP PRES announces the call, the called party's
      * DM-CONNECT answers, and the calling party's DM-CONNECT ACK starts the traffic, which DM-OCCUPIED goes on with:
      * one call, one canonical call. */

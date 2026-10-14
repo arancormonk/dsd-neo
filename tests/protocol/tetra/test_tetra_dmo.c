@@ -380,6 +380,27 @@ test_occupied_keeps_the_setup_class(void) {
           "a clear set-up starts the next transmission");
     free_state(st);
 
+    /* DM-2-A, DM-2-B and DM-2-C all encrypt the air interface, but each is a class of its own (clause 9.3.2). */
+    st = new_state();
+    apply_call_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_SETUP, 0);
+    const uint32_t seq_2a = tetra_st(st)->dmo_tx_seq;
+    apply_call_sync(st, TETRA_DMO_AIE_DM2B, TETRA_DMO_MSG_SETUP, 0);
+    CHECK(tetra_st(st)->dmo_tx_seq == seq_2a + 1u && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR,
+          "a DM-2-B set-up of the same source after a DM-2-A one starts the next transmission");
+    apply_call_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_OCCUPIED, 0);
+    CHECK(tetra_st(st)->dmo_tx_seq == seq_2a + 1u && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR,
+          "a DM-OCCUPIED of another encrypted class leaves it sealed");
+    bitw w2c;
+    tetra_dmo_sync_s_t s2c;
+    sync_s(&w2c, TETRA_DMO_AIE_DM2C);
+    (void)tetra_dmo_parse_sync_s(w2c.bits, &s2c);
+    tetra_dmo_apply_sync(st, &s2c, NULL);
+    CHECK(tetra_st(st)->dmo_tx_seq == seq_2a + 2u && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR,
+          "a DM-2-C DMAC-SYNC after a DM-2-B transmission starts the next one");
+    tetra_dmo_apply_sync(st, &s2c, NULL);
+    CHECK(tetra_st(st)->dmo_tx_seq == seq_2a + 2u, "and the next DM-2-C DMAC-SYNC goes on with it");
+    free_state(st);
+
     st = new_state();
     apply_call_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_SETUP, 1);
     apply_call_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_OCCUPIED, 0);

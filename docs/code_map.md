@@ -4755,7 +4755,8 @@ single "current call".
   identity), ends it at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT and DM-GRELEASE, after `TETRA_CALL_DMO_IDLE_S`
   without a PDU or speech of it, and when the channel's traffic is another transmission's (`dmo_tx_seq`,
   `dmo_call_of_transmission()`): a transmission keeps its source and class, so one of another class is another call
-  even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way). A call
+  even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way, and a
+  DM-2-C one after a DM-2-A or DM-2-B one, which encrypt the air interface too). A call
   its set-up announced before any transmission began (DM-SETUP PRES, whose calling party's DM-CONNECT ACK starts the
   traffic, clause 6.2; DM-GSETUP) takes the first transmission of its source as its own. The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
   `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
@@ -4767,10 +4768,14 @@ single "current call".
   skipped, or DM-2-C hides the message type) may be the message that sets it, so an encrypted SCH/S security class
   seals the traffic (`dmo_apply_unread()`; DM-2-C drops the colour code too, which it derives from the encrypted short
   identity, clause 8.2.4), whatever an earlier clear call left, and a DM-1 one opens nothing. A transmission keeps the
-  class its DM-SETUP or DM-CONNECT ACK gave (`dmo_tx_crypt`), which its DM-OCCUPIED shall repeat (clause 8.5.3): one
-  that agrees confirms it, opening what an unread DMAC-SYNC sealed, one that contradicts it leaves the more closed of the
-  two (`dmo_apply_setup()`), and a set-up from another source or of another class, like a DM-2-C DMAC-SYNC after a
-  transmission that was not air encrypted, starts the next transmission (`dmo_tx_seq`). The canonical direct mode
+  class its DM-SETUP or DM-CONNECT ACK gave (`dmo_tx_crypt`, and the SCH/S security class itself, `dmo_tx_aie`: DM-2-A,
+  DM-2-B and DM-2-C all encrypt the air interface, but are three classes), which its DM-OCCUPIED shall repeat (clause
+  8.5.3): one that agrees confirms it, opening what an unread DMAC-SYNC sealed, one that contradicts it leaves the more
+  closed of the two (`dmo_apply_setup()`), and a set-up from another source or of another class, like a DM-2-C
+  DMAC-SYNC after a transmission of any other class, DM-2-A and DM-2-B included, starts the next transmission
+  (`dmo_tx_seq`), so a DM-2-C one, which names no one, never goes on with the last one's source and destination. An
+  unread DM-2-A or DM-2-B DMAC-SYNC only seals: its transmission's next DMAC-SYNC, whose addresses those classes leave
+  clear, says whose it is. The canonical direct mode
   call takes a protection that no call PDU republishes at once (`tetra_calls_dmo_protection()`). The protection and the
   DM colour code belong to one traffic transmission (clauses 8.2.4, 8.5.3) and end with it
   (`tetra_dmo_transmission_over()`): at DM-TX CEASED, DM-RELEASE or DM-DISCONNECT, in a DMAC-SYNC or on the STCH in a
@@ -4815,7 +4820,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 |---|---|---|---|
 | Direct mode (`dmo`, `dmo_comm_type`) | the carrier | a DSB (`tetra_dmo_apply_sync()`) | a CRC-passed BSCH of a trunked system code or uplink SCH/HU (`tetra_dmo_leave()`), a carrier boundary |
 | DM colour code (`dmo_dcc_valid`, `dmo_dcc_seed`, `dmo_since_sync`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED, or of a fragmented DM-SDS | its end (`tetra_dmo_transmission_over()`: DM-TX CEASED, DM-RELEASE or DM-DISCONNECT in a DMAC-SYNC or DMAC-DATA, the call idle `TETRA_CALL_DMO_IDLE_S`), DM-2-C, a DMAC-SYNC with no source address, 200 DNBs without a DMAC-SYNC, leaving direct mode, a carrier boundary |
-| Direct mode protection (`dmo_crypt`; the set-up's `dmo_tx_crypt`, `dmo_tx_seed`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP or DM-CONNECT ACK, or of a DM-OCCUPIED when the set-up went unheard; a DM-OCCUPIED that contradicts the set-up and an unread DMAC-SYNC whose SCH/S is encrypted only seal it | as the colour code (UNKNOWN, sealed) |
+| Direct mode protection (`dmo_crypt`; the set-up's `dmo_tx_crypt`, `dmo_tx_aie`, `dmo_tx_seed`) and the transmission (`dmo_tx_seq`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP or DM-CONNECT ACK, or of a DM-OCCUPIED when the set-up went unheard; a set-up of another source or security class, and a DM-2-C DMAC-SYNC in a transmission of another class, start the next; a DM-OCCUPIED that contradicts the set-up and an unread DM-2-A or DM-2-B DMAC-SYNC only seal it | as the colour code (UNKNOWN, sealed) |
 | Direct mode call (`calls.dmo`) and its canonical call | the channel's call | DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, a DM-2-C DMAC-SYNC | its end PDUs, idling out, leaving direct mode, a carrier boundary (the engine ends the canonical call) |
 | Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session; published only on a trunked carrier (`tetra_pub_network()`) | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
 | Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell; its control channel published only on a trunked carrier | SYSINFO, addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`) |
