@@ -1410,13 +1410,12 @@ tetra_dmo_transmission_over(dsd_state* state) {
 
 void
 tetra_dmo_leave(dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st_existing(state);
+    const tetra_state_t* const ts = tetra_st_existing(state);
     if (!ts || !ts->dmo) {
         return;
     }
-    ts->dmo = 0;
-    ts->dmo_comm_type = 0;
-    dmo_forget_channel(ts);
+    /* What a carrier boundary forgets of direct mode, and the call with its canonical call, which the engine ends there. */
+    tetra_dmo_forget_carrier(state);
     tetra_calls_dmo_forget(opts, state);
 }
 
