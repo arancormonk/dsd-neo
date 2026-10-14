@@ -50,6 +50,7 @@
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
 #include "backup_archive.h"
+#include "decode_mode_flag.h"
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "imported_files_model.h"
@@ -1214,6 +1215,47 @@ refuse_typed_paths(const QByteArray& archive, const Fixture& f) {
                == BackupError::None);
 }
 
+/* A decode flag is split into the decoder's arguments like the extra arguments, so one that is more than a picker preset
+ * counts as extra decoder options (controller ruling R8). */
+void
+test_decode_flag_presets() {
+    for (const char* flag :
+         {"", "-ft", "-fs", "-fi", "-fn", "-fd", "-fy", "-fz", "-fA", "-fM", "-mq", " -ft ", "-fa", "-f1", "\t-fs\n"}) {
+        expect(qPrintable(QStringLiteral("picker preset: '%1'").arg(QLatin1String(flag))),
+               dsd_qt::decode_flag_is_preset(QLatin1String(flag)));
+    }
+    for (const char* flag : {"-fs -Y", "-mq -^", "-ft -w /sdcard/x.wav", "-fq", "-Z", "-f", "-ftt", "-mq -fs", "-fh"}) {
+        expect(qPrintable(QStringLiteral("more than a preset: '%1'").arg(QLatin1String(flag))),
+               !dsd_qt::decode_flag_is_preset(QLatin1String(flag)));
+    }
+}
+
+void
+test_decode_flag_counts(const QByteArray& archive) {
+    const Parts parts = split(archive);
+    const auto restored = [&](const QJsonValue& flag) {
+        // Row 1 is the replay system, with no extra arguments of its own; row 0 has "-Z".
+        return dsd_qt::backup::backup_parse_archive(set_row(parts, "saved_systems.json", 1, "decodeFlag", flag),
+                                                    dsd_qt::json_store_root())
+            .summary.systemsWithExtraArgs;
+    };
+    expect("a preset flag adds no extra options", restored("-fs") == 1 && restored("-mq") == 1 && restored("") == 1);
+    expect("a flag carrying arguments counts", restored("-fs -w /sdcard/x.wav") == 2);
+    expect("an importer refinement counts", restored("-fs -Y") == 2);
+    expect("an unmapped selector counts", restored("-fq") == 2);
+    expect("a numeric flag counts as its text", restored(5) == 2);
+
+    auto snapshot = dsd_qt::backup::backup_take_snapshot();
+    QJsonArray systems = snapshot.stores.value("saved_systems.json");
+    QJsonObject replay = systems.at(1).toObject();
+    replay.insert("decodeFlag", "-ft --dmr-key 1");
+    systems.replace(1, replay);
+    snapshot.stores.insert("saved_systems.json", systems);
+    const auto built = build(snapshot);
+    expect("the export counts a decode flag carrying arguments",
+           built.error == BackupError::None && built.summary.systemsWithExtraArgs == 2);
+}
+
 void
 test_passphrases() {
     using dsd_qt::backup::backup_passphrase_ok;
@@ -1306,6 +1348,7 @@ main(int argc, char** argv) {
 
     test_json_store_root();
     test_typed_path_table();
+    test_decode_flag_presets();
     test_passphrases();
     test_host_document_copies();
     {
@@ -1323,6 +1366,7 @@ main(int argc, char** argv) {
         refuse_store_shapes(base.archive);
         refuse_prefs_and_avoids(base.archive);
         refuse_typed_paths(base.archive, fixture);
+        test_decode_flag_counts(base.archive);
         test_export_repairs();
         test_export_drops_foreign_bundle(fixture);
         test_build_caps_and_cancel();

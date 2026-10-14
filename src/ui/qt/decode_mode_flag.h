@@ -55,6 +55,32 @@ decode_mode_for_flag(const QString& flag) {
     return flag.trimmed().isEmpty() ? static_cast<int>(DSDCFG_MODE_AUTO) : -1;
 }
 
+/**
+ * @brief Whether @p flag is nothing but a decode preset the picker selects.
+ *
+ * The session builder splits a saved decode flag into argv like the extra
+ * arguments, so a flag that is more than a preset carries decoder options of
+ * its own. A preset is: empty (the engine's default), one `-f` selector that
+ * decode_mode_for_flag() maps, or the P25 Simulcast chip's "-mq", the picker's
+ * one preset that is not a `-f` selector. Anything else - a second token, an
+ * unmapped selector - is more than a preset.
+ */
+inline bool
+decode_flag_is_preset(const QString& flag) {
+    const QStringList tokens = flag.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (tokens.isEmpty()) {
+        return true;
+    }
+    if (tokens.size() != 1) {
+        return false;
+    }
+    const QString& token = tokens.first();
+    if (token == QLatin1String("-mq")) {
+        return true;
+    }
+    return token.size() == 3 && token.startsWith(QLatin1String("-f")) && decode_mode_for_flag(token) >= 0;
+}
+
 } // namespace dsd_qt
 
 #endif /* DSD_NEO_SRC_UI_QT_DECODE_MODE_FLAG_H_ */

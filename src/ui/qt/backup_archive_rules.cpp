@@ -17,6 +17,7 @@
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <iterator>
 #include <stddef.h>
+#include "decode_mode_flag.h"
 #include "decryption_profiles_model.h"
 #include "imported_files_model.h"
 #include "saved_systems_model.h"
@@ -405,7 +406,11 @@ summarize(const QMap<QString, QJsonArray>& stores, const QVariantMap& prefs, int
         if (row.value(QLatin1String("sourceType")).toString() == QLatin1String("file")) {
             summary.recordingsToChoose++;
         }
-        if (!variant_string(row.value(QLatin1String("extraArgs"))).trimmed().isEmpty()) {
+        // The session builder splits a decode flag into argv like the extra arguments, so a flag that is more than a
+        // picker preset carries decoder options too.
+        const bool extra = !variant_string(row.value(QLatin1String("extraArgs"))).trimmed().isEmpty()
+                           || !decode_flag_is_preset(variant_string(row.value(QLatin1String("decodeFlag"))));
+        if (extra) {
             summary.systemsWithExtraArgs++;
         }
     }
