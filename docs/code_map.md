@@ -4674,7 +4674,11 @@ single "current call".
 - Allocations. The MAC hands the MLE a `tetra_mac_sdu` with the PDU's address and channel allocation. A call PDU in
   the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
   (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label a PDU
-  assigned to one of them; usage markers are noted) and never tunes. A "go to the MCCH" allocation (timeslots 0000,
+  assigned to one of them; usage markers are noted) and never tunes. An event label stands for one party on its
+  channel (EN 300 392-2 clause 23.4.1.2.3): an SSI + event label address (types 101, 111) names its party by the SSI
+  and assigns it the label, which no record of another party keeps from there, whether or not a record holds the party
+  it went to (`calls_label_taken()`), so the PDU that assigns it is not addressed to the record that held it; label 0
+  withdraws the party's label and the all-ones label assigns none. A "go to the MCCH" allocation (timeslots 0000,
   table 21.87) of the followed call releases it; an allocation to a party no record holds goes nowhere.
 - Following. Trunking on, an allocation that came with a call PDU, of a call whose D-SETUP named its called party, on
   a downlink phase-modulation channel with a frequency, is judged: encrypted calls not followed lock out
@@ -4839,7 +4843,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`); a burst it places in frame 18 is no speech | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
 | Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
-| A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `usage_marker`) | the cell (a label: one channel of it) | an allocation (`call_attach()`), an SSI + event label or usage marker assignment | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`) |
+| A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `usage_marker`) | the cell (a label: one channel of it) | an allocation (`call_attach()`), an SSI + event label or usage marker assignment | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`); a label also its assignment to another party or its withdrawal (label 0) |
 | D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
 | Carrier evidence (`confirm`) | the carrier | CRC-passed blocks | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |

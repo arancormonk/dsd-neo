@@ -76,11 +76,17 @@ address_ssi(const tetra_mac_address* addr, uint32_t* ssi) {
     }
 }
 
+/* An address that assigns an event label (types 101, 111): it names its party by the SSI or SMI, and gives it the label
+ * (EN 300 392-2 clause 23.4.1.2.3.1). */
 static int
-address_has_event_label(const tetra_mac_address* addr) {
-    return addr->type == TETRA_MAC_ADDR_EVENT_LABEL || addr->type == TETRA_MAC_ADDR_SSI_EVENT
-           || addr->type == TETRA_MAC_ADDR_SMI_EVENT;
+address_assigns_event_label(const tetra_mac_address* addr) {
+    return addr->type == TETRA_MAC_ADDR_SSI_EVENT || addr->type == TETRA_MAC_ADDR_SMI_EVENT;
 }
+
+/* Event label values not valid for normal use (clause 23.4.1.2.3.0): all zeros withdraws an assignment, all ones says
+ * the current labels stay valid after a channel change. */
+#define TETRA_EVENT_LABEL_WITHDRAW 0x000u
+#define TETRA_EVENT_LABEL_KEEP     0x3FFu
 
 static int
 sdu_ssi(const tetra_mac_sdu* sdu, uint32_t* ssi) {
@@ -178,13 +184,15 @@ calls_new(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint16_t call_id)
     return victim;
 }
 
-/* The call a party of which @p addr names: by its called, calling or talking SSI, or by the event label assigned to
- * one of them. The most recently heard of several. */
+/* The call a party of which @p addr names: by its called, calling or talking SSI, or, an address that is an event
+ * label (type 010), by the label assigned to one of them; an address that assigns a label names its party by the SSI
+ * alone. The most recently heard of several. */
 static tetra_call_t*
 calls_by_address(tetra_state_t* ts, const tetra_mac_address* addr) {
     uint32_t ssi = 0;
     const int by_ssi = address_ssi(addr, &ssi);
-    const int by_label = address_has_event_label(addr);
+    const int by_label = addr->type == TETRA_MAC_ADDR_EVENT_LABEL && addr->event_label != TETRA_EVENT_LABEL_WITHDRAW
+                         && addr->event_label != TETRA_EVENT_LABEL_KEEP;
     tetra_call_t* best = NULL;
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
         tetra_call_t* const c = &ts->calls.call[i];
@@ -829,22 +837,41 @@ call_apply(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
     }
 }
 
-/* Event labels (address types 101 and 111) and usage markers (110) the PDU assigned to a party of @p c. An event
- * label stands for one party on the channel, so another call loses it. */
+/* An event label assignment in @p addr took the label from whoever held it: it stands for one party on the channel
+ * (EN 300 392-2 clause 23.4.1.2.3), the one the address names, so no record of another party keeps it, whether or not a
+ * record holds the party it went to (one whose SSI is an encrypted short identity names no party here). The all-ones
+ * label assigns none. */
+static void
+calls_label_taken(tetra_state_t* ts, const tetra_mac_address* addr) {
+    if (!address_assigns_event_label(addr) || addr->event_label == TETRA_EVENT_LABEL_KEEP) {
+        return;
+    }
+    uint32_t ssi = 0;
+    const int named = address_ssi(addr, &ssi) && ssi != 0u;
+    for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
+        tetra_call_t* const o = &ts->calls.call[i];
+        const int party = named && (o->called_ssi == ssi || o->calling_ssi == ssi || o->talker_ssi == ssi);
+        if (!party && (o->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && o->event_label == addr->event_label) {
+            o->flags = (uint8_t)(o->flags & ~TETRA_CALL_F_EVENT_LABEL);
+        }
+    }
+}
+
+/* Event labels (address types 101 and 111) and usage markers (110) the PDU assigned to a party of @p c. Label 0
+ * withdraws the party's label and the all-ones label leaves it as it is (clause 23.4.1.2.3.0). */
 static void
 call_bind_address(tetra_state_t* ts, tetra_call_t* c, const tetra_mac_address* addr) {
     if (addr->esi) {
         return;
     }
-    if (addr->type == TETRA_MAC_ADDR_SSI_EVENT || addr->type == TETRA_MAC_ADDR_SMI_EVENT) {
-        for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
-            tetra_call_t* const o = &ts->calls.call[i];
-            if (o != c && (o->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && o->event_label == addr->event_label) {
-                o->flags = (uint8_t)(o->flags & ~TETRA_CALL_F_EVENT_LABEL);
-            }
+    if (address_assigns_event_label(addr)) {
+        calls_label_taken(ts, addr);
+        if (addr->event_label == TETRA_EVENT_LABEL_WITHDRAW) {
+            c->flags = (uint8_t)(c->flags & ~TETRA_CALL_F_EVENT_LABEL);
+        } else if (addr->event_label != TETRA_EVENT_LABEL_KEEP) {
+            c->event_label = addr->event_label;
+            c->flags = (uint8_t)(c->flags | TETRA_CALL_F_EVENT_LABEL);
         }
-        c->event_label = addr->event_label;
-        c->flags = (uint8_t)(c->flags | TETRA_CALL_F_EVENT_LABEL);
     } else if (addr->type == TETRA_MAC_ADDR_SSI_USAGE) {
         c->usage_marker = addr->usage_marker;
         c->flags = (uint8_t)(c->flags | TETRA_CALL_F_USAGE_MARKER);
@@ -982,6 +1009,7 @@ tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_addre
     if (tn <= 4u) {
         ts->calls.slot_enc[tn] = evidence;
     }
+    calls_label_taken(ts, addr);
     tetra_call_t* const c = calls_by_address(ts, addr);
     if (!c) {
         return;

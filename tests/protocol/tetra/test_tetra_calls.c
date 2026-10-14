@@ -1744,6 +1744,40 @@ test_cell_change_forgets_allocations(void) {
     session_close(&s);
 }
 
+/* An event label stands for one party on its channel (EN 300 392-2 clause 23.4.1.2.3): an SSI + event label address
+ * (type 101) names its party by the SSI and assigns it the label, so a label assigned to a party no record holds is no
+ * record's party's any more, and the PDU that assigns it, its channel allocation with it, is not addressed to the
+ * record that held it. Label 0 withdraws the party's label, and the all-ones label, which says the current labels stay
+ * valid after a channel change, assigns none. */
+static void
+test_event_label_assignment(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    send_event_label(&s, 0x100u, 0x55u, 0, 0);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x55u);
+
+    send_event_label(&s, 0x999u, 0x55u, 2, 130);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) == 0u && c->alloc.carrier == 120 && c->alloc.timeslots == 4);
+    send_by_event_label(&s, 0x55u, 2, 130);
+    assert(c->alloc.carrier == 120 && c->alloc.timeslots == 4);
+
+    send_event_label(&s, 0x100u, 0x55u, 0, 0);
+    send_event_label(&s, 0x100u, 0x3FFu, 0, 0);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x55u);
+    send_by_event_label(&s, 0x55u, 2, 130);
+    assert(c->alloc.carrier == 130 && c->alloc.timeslots == 2);
+
+    send_event_label(&s, 0x100u, 0u, 0, 0);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) == 0u);
+    send_by_event_label(&s, 0x55u, 4, 140);
+    send_by_event_label(&s, 0u, 4, 140);
+    assert(c->alloc.carrier == 130 && c->alloc.timeslots == 2);
+    session_close(&s);
+}
+
 /* The cells of a network may share a colour code, so a BSCH does not tell every change of cell: a SYSINFO naming
  * another main carrier than the cell's (EN 300 392-2 clause 21.4.4.1: the main carrier is the cell's), or another
  * location area, is another cell too, and forgets what a BSCH of another cell forgets before it is taken -- the records'
@@ -2208,6 +2242,7 @@ main(void) {
     test_cell_change_forgets_the_carrier();
     test_cell_change_forgets_allocations();
     test_sysinfo_tells_another_cell();
+    test_event_label_assignment();
     test_network_change_drops_calls();
     test_network_change_retires_the_followed_call();
     test_location_area_change_drops_calls();
