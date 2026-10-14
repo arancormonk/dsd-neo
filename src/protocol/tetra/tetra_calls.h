@@ -307,9 +307,9 @@ typedef struct {
 } tetra_speech;
 
 /**
- * @brief The call record whose traffic channel is timeslot @p tn of the frequency the receiver is tuned to
- * (dsd_opts_tuned_freq_hz()), the most recently allocated of several; NULL when there is no timeslot, no tuned
- * frequency or no such record.
+ * @brief The call record whose traffic channel is timeslot @p tn of the frequency the receiver is on
+ * (tetra_sm_receiver_freq(): the channel the state machine holds, else the tuned frequency), the most recently allocated
+ * of several; NULL when there is no timeslot, no such frequency known or no such record.
  */
 const tetra_call_t* tetra_calls_on_timeslot(const dsd_opts* opts, const dsd_state* state, uint8_t tn);
 

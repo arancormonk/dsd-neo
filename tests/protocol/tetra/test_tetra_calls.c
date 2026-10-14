@@ -2225,6 +2225,29 @@ test_direct_mode_speech(void) {
     session_close(&s);
 }
 
+/* Not trunking, speech belongs to the record whose traffic channel is its timeslot of the frequency the receiver is on.
+ * Trunking turned off while following keeps the receiver, and the state machine the channel, on the followed carrier,
+ * whatever the input reports as tuned (an audio input, a rigctl peer's included, reports none): the speech of the call's
+ * timeslot is the call's, judged by its own encryption, not anonymous speech judged by the timeslot's signalling. */
+static void
+test_held_channel_speech_is_the_records(void) {
+    session s = session_open();
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP | 0x10u, 4, 120);
+    assert(followed_call(s.state) == 0x0A && s.opts->audio_in_type == AUDIO_IN_PULSE);
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    assert(c && tetra_calls_on_timeslot(s.opts, s.state, 2) == c
+           && tetra_calls_on_timeslot(s.opts, s.state, 3) == NULL);
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->tdma_valid = 1;
+    ts->tn = 2;
+    tetra_speech sp;
+    assert(tetra_voice_gate(s.opts, s.state, &sp) && sp.kind == TETRA_SPEECH_CALL && sp.call_id == 0x0A && sp.sealed);
+    session_close(&s);
+}
+
 /* Trunking started on a secondary carrier rests ON_CC there without a retune once the SYSINFO names the main carrier,
  * which every carrier of the cell broadcasts (EN 300 392-2 clause 21.4.4.1): the carrier being received is the one the
  * receiver is tuned to, not the main carrier, for TB5 and for an event label bound to an allocated channel alike. A
@@ -2364,6 +2387,7 @@ main(void) {
     test_heard_call_identifier_let_go();
     test_direct_mode_speech();
     test_trunking_off_lets_go_of_the_call();
+    test_held_channel_speech_is_the_records();
     test_on_cc_carrier_is_the_tuned_one();
     test_receiving_carrier();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");

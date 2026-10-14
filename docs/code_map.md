@@ -4729,7 +4729,9 @@ single "current call".
   timeslot's speech is shown, so two muted calls do not take the slot from each other at every burst, gives way to
   speech that plays, and a held timeslot whose call turns muted holds the receiver only until
   `TETRA_CALL_SPEECH_END_S` after its last speech that played. Its speech belongs to the record whose traffic channel
-  is that timeslot of the tuned frequency (`tetra_calls_on_timeslot()`), else to no record, whose air encryption is
+  is that timeslot of the frequency the receiver is on (`tetra_calls_on_timeslot()`, by `tetra_sm_receiver_freq()`: the
+  channel the state machine holds once trunking was turned off while following, whatever the input reports as tuned),
+  else to no record, whose air encryption is
   then the last addressed MAC-RESOURCE's on its timeslot or carrier. Direct mode is never held by these gates. The call
   gives the talkgroup (its canonical call's kind, target and source: `tetra_calls_target()`, or the direct mode
   destination) and the encryption class: end-to-
@@ -4832,7 +4834,7 @@ first block on its carrier included, identifier reuse, another calling party or 
 renamed-over or aged followed identifier, a released, reused or evicted heard identifier, ageing,
 canonical calls and notices in trunked and direct mode, direct mode short data whose FCS fails and what repeats it,
 an individual call's two parties, speech publication, the receiving carrier (on a secondary carrier's control
-channel too), what a record change, a MAC header's
+channel too), the speech of a channel held with trunking off, what a record change, a MAC header's
 encryption and a reallocation do to the published call, a direct mode call idling out, direct mode transmissions of
 another security class, an anonymous call per timeslot, the last cell's channels and event labels a BSCH or SYSINFO
 of another cell drops, an event label's party and channel, the call trunking turned off lets go of), `TETRA_DMO` (the

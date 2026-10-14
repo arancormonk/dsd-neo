@@ -1325,7 +1325,7 @@ tetra_calls_dmo_forget(dsd_opts* opts, dsd_state* state) {
 const tetra_call_t*
 tetra_calls_on_timeslot(const dsd_opts* opts, const dsd_state* state, uint8_t tn) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    const long freq_hz = (long)dsd_opts_tuned_freq_hz(opts);
+    const long freq_hz = tetra_sm_receiver_freq(opts, state);
     const uint8_t bit = tetra_slot_bit(tn);
     if (!ts || bit == 0u || freq_hz <= 0L) {
         return NULL;
