@@ -60,28 +60,28 @@ decode_mode_for_flag(const QString& flag) {
  * @brief Whether @p token is one the app itself writes into a saved decode flag.
  *
  * The allowlist is what the producers write, read from their code:
- * - a CLI `-f` preset decode_mode_for_flag() maps: the wizard's decode chips
- *   (qml/Util.js DECODE_MODES, and its LEGACY_DECODE_LABELS for older saves),
- *   a scan list's frequency entries (scan_list_targets.cpp resolveSystem())
- *   and signal search's detections (signal_search_model.cpp
- *   confirmedDecodeFlag() and systemForHit());
- * - "-mq", the QPSK modulation selector of the P25 Simulcast chip and of the
- *   RadioReference simulcast alternates;
- * - "-^" and "-Y", the RadioReference generator's P25 trunked and conventional
- *   scan refinements, and "-fh", "-fH", "-fe", "-fE", its EDACS selectors
- *   (src/runtime/radioreference/rr_generate.c k_protocols, through
- *   dsd_rr_decode_flag() into radio_reference_model.cpp's plan);
- * - "-fp", signal search's ProVoice selector.
+ * - the wizard's decode chips (qml/Util.js DECODE_MODES): -ft -mq -fs -fi -fn
+ *   -fd -fy -fz -fA -fM; the older saves it still labels (LEGACY_DECODE_LABELS)
+ *   and the "-f1 -mq" chip saved_systems_model.cpp migrates on load: -f1;
+ * - a scan list's frequency entries (scan_list_targets.cpp resolveSystem()):
+ *   -ft -fs -fi -fn -fA -fM;
+ * - signal search's detections (signal_search_model.cpp confirmedDecodeFlag()
+ *   and systemForHit()): -ft -fs -fa -fd -fi -fn -fm -fz -fy -fp -fA -fM;
+ * - the RadioReference generator (src/runtime/radioreference/rr_generate.c
+ *   k_protocols, through dsd_rr_decode_flag() into radio_reference_model.cpp's
+ *   plan): -ft -mq -^ -fs -fi -fn -Y and the EDACS selectors -fh -fH -fe -fE.
+ * No producer writes any other -f selector (-fx, -f2, ...), so those count.
  */
 inline bool
 decode_flag_token_is_standard(const QString& token) {
-    static const char* const kProducedTokens[] = {"-mq", "-^", "-Y", "-fh", "-fH", "-fe", "-fE", "-fp"};
+    static const char* const kProducedTokens[] = {"-fa", "-fA", "-fM", "-fd", "-ft", "-f1", "-fs", "-fi", "-fn", "-fy",
+                                                  "-fm", "-fz", "-fh", "-fH", "-fe", "-fE", "-fp", "-mq", "-^",  "-Y"};
     for (const char* produced : kProducedTokens) {
         if (token == QLatin1String(produced)) {
             return true;
         }
     }
-    return token.size() == 3 && token.startsWith(QLatin1String("-f")) && decode_mode_for_flag(token) >= 0;
+    return false;
 }
 
 /**

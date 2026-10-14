@@ -1339,7 +1339,7 @@ test_decode_flag_standard(TestHost& host) {
                    !dsd_qt::decode_flag_is_standard(carrying));
         }
     }
-    for (const char* flag : {"-fq", "-fh344", "-f", "-ftt", "--fs", "-w", "-mqq", "-Y1", "^"}) {
+    for (const char* flag : {"-fx", "-f2", "-fq", "-fh344", "-f", "-ftt", "--fs", "-w", "-mqq", "-Y1", "^"}) {
         expect(qPrintable(QStringLiteral("unknown token counts: '%1'").arg(QLatin1String(flag))),
                !dsd_qt::decode_flag_is_standard(QLatin1String(flag)));
     }
@@ -1360,6 +1360,7 @@ test_decode_flag_counts(const QByteArray& archive) {
     expect("a flag carrying arguments counts", restored("-fs -w /sdcard/x.wav") == 2);
     expect("a flag carrying an unknown switch counts", restored("-fs -Y --rdio-api-key k") == 2);
     expect("an unmapped selector counts", restored("-fq") == 2);
+    expect("a mapped selector no producer writes counts", restored("-fx") == 2 && restored("-f2") == 2);
     expect("a numeric flag counts as its text", restored(5) == 2);
 
     auto snapshot = dsd_qt::backup::backup_take_snapshot();
