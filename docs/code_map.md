@@ -1257,7 +1257,11 @@ suite runs under this compiler.
     configuration check engine and frontends share (`dsd_signal_search_validate_config()`)
     and conservative DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
     carries validated protocol evidence and the decoder-thread active query, with no-op
-    defaults. It does not own radio I/O, persistence or Qt state.
+    defaults. P25 reports evidence from a control block whose CRC passes
+    (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves, never
+    from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on
+    a large share of random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
+    It does not own radio I/O, persistence or Qt state.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section

@@ -62,6 +62,13 @@ its details to reach the detection. When a digital probe
 expires, the display says **NFM monitoring · digital identification unresolved**.
 That fallback does not establish that the transmission is analog.
 
+P25 Phase 1 is confirmed by a control block whose CRC passes (TSBK, MBT or LCCH MAC)
+or by a call whose identity resolves. A carrier that sends only NIDs, such as a run
+of terminators, or voice whose link control never decodes, is not confirmed: the
+list-decoded NID accepts several percent of random words and the voice link
+control's soft Reed-Solomon decode about a fifth, so neither tells such a carrier
+from noise. That carrier is monitored as NFM with the display above.
+
 ## Controls, history and saved systems
 
 - **Hold** overrides quiet release and the maximum visit. A held probe still falls
