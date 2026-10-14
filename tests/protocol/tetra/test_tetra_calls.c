@@ -1842,6 +1842,84 @@ test_event_label_reuse_on_another_channel(void) {
     session_close(&s);
 }
 
+/* The all-ones label of an SSI + event label address keeps the party's current label valid after the channel change
+ * its PDU makes (EN 300 392-2 clause 23.4.1.2.3.0): the label moves with the party to the allocated channel, where its
+ * label-addressed PDUs are the party's, and is the party's no more on the channel left: from carrier 120 to 140, and
+ * from TN2 of the followed carrier to its TN3, where a "go to the MCCH" allocation by the label releases the followed
+ * call. Without an allocation no channel changes; one to the control channel names none the decoder can tell, so the
+ * label goes. */
+static void
+test_event_label_kept_across_a_channel_change(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(120);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    const tetra_call_t* c = tetra_calls_peek(s.state, 0x0A);
+    send_event_label(&s, 0x100u, 0x55u, 4, 120);
+    send_event_label(&s, 0x100u, 0x3FFu, 4, 140);
+    assert(has_label(c, 0x55u) && c->alloc.carrier == 140 && c->alloc.timeslots == 4);
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(140);
+    send_by_event_label(&s, 0x55u, 2, 140);
+    assert(c->alloc.carrier == 140 && c->alloc.timeslots == 2);
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(120);
+    send_by_event_label(&s, 0x55u, 1, 120);
+    assert(c->alloc.carrier == 140 && c->alloc.timeslots == 2);
+    send_event_label(&s, 0x100u, 0x3FFu, 0, 0);
+    assert(has_label(c, 0x55u) && c->label_chan.allocated && c->label_chan.carrier == 140);
+    send_event_label_to_cc(&s, 0x100u, 0x3FFu);
+    assert(!has_label(c, 0x55u));
+    session_close(&s);
+
+    s = session_open();
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && g_returns == 0);
+    tetra_confirm_note_signalling(s.state);
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->tdma_valid = 1;
+    ts->tn = 2;
+    c = tetra_calls_peek(s.state, 0x0A);
+    send_event_label(&s, 0x100u, 0x55u, 0, 0);
+    send_event_label(&s, 0x100u, 0x3FFu, 2, 120);
+    assert(has_label(c, 0x55u) && c->alloc.timeslots == 2 && followed_call(s.state) == 0x0A);
+    ts->tn = 3;
+    send_by_event_label(&s, 0x55u, 0, 0);
+    assert(followed_call(s.state) == -1 && g_returns == 1);
+    session_close(&s);
+}
+
+/* A channel allocation to the party by its SSI alone moves the call, not its label: without the all-ones label its
+ * label is valid on the channel left and no other (EN 300 392-2 clause 23.4.1.2.3.0), so it stays bound there and no
+ * label-addressed PDU of the new channel is the party's. T.201 is not modelled: the label lives as long as the record
+ * holding it, which ages out TETRA_CALL_IDLE_S after the last PDU or speech that named it, taking the label with it. */
+static void
+test_event_label_reallocation_and_ageing(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(140);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    send_event_label(&s, 0x100u, 0x55u, 4, 120);
+    send_block(&s, 0x100u, NULL, 4, 140);
+    assert(c->alloc.carrier == 140 && has_label(c, 0x55u) && c->label_chan.carrier == 120);
+    send_by_event_label(&s, 0x55u, 2, 140);
+    assert(c->alloc.carrier == 140 && c->alloc.timeslots == 4);
+
+    at_seconds(1000.0 + TETRA_CALL_IDLE_S + 1.0);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_calls_peek(s.state, 0x0A) == NULL);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    const tetra_call_t* const again = tetra_calls_peek(s.state, 0x0A);
+    assert(again && (again->flags & TETRA_CALL_F_EVENT_LABEL) == 0u);
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(120);
+    send_by_event_label(&s, 0x55u, 2, 120);
+    assert(again->alloc.timeslots == 0u);
+    session_close(&s);
+}
+
 /* A MAC-RESOURCE whose address is @p type @p ssi with event label @p label, starting a fragmented TM-SDU (length
  * indication 111111), in the clear; then, with @p mac_end, the MAC-END that completes it, without a channel allocation. */
 static void
@@ -2514,6 +2592,8 @@ main(void) {
     test_event_label_assignment();
     test_event_label_takes_effect_at_delivery();
     test_event_label_reuse_on_another_channel();
+    test_event_label_kept_across_a_channel_change();
+    test_event_label_reallocation_and_ageing();
     test_event_label_channel();
     test_network_change_drops_calls();
     test_network_change_retires_the_followed_call();

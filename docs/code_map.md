@@ -4686,22 +4686,45 @@ single "current call".
   never overwrites it, and the cell-wide `enc_mode` is for display only.
 - Allocations. The MAC hands the MLE a `tetra_mac_sdu` with the PDU's address and channel allocation. A call PDU in
   the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
-  (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label a PDU
-  assigned to one of them; usage markers are noted) and never tunes. An event label stands for one party on its
-  channel (EN 300 392-2 clause 23.4.1.2.3): an SSI + event label address (types 101, 111) names its party by the SSI
-  and assigns it the label, which no record of another party keeps from there on a channel that may be the one it is
-  assigned on (`label_channels_meet()`: the same carrier and an overlapping timeslot; one the decoder cannot tell may be
-  any), whether or not a record holds the party it went to (`label_bind()`), so the PDU that assigns it is not addressed
-  to the record that held it, while the same number held on another channel is another label and stays; label 0
-  withdraws the party's label and the all-ones label assigns none. The label is valid on one MAC channel: the one its
-  assigning PDU allocated, else the one that PDU came on until the receiver leaves it (a carrier boundary or a
-  retune, `tetra_confirm_carrier_epoch()`), on that channel's timeslots, so a PDU addressed by it on another channel,
-  another carrier or another timeslot is no record's party's (`calls_label_here()`); it takes effect when the PDU is
-  delivered, a fragmented one's at its MAC-END, never at its first fragment (`calls_label_delivered()`, from
-  `tetra_calls_on_allocation()`, clause 23.4.1.2.3.1), and an encrypted PDU assigns as a clear one: the MAC delivers its
-  clear address (`deliver_encrypted()`), in which an SSI is an encrypted short identity that names no party, so its
-  assignment only takes the label from whoever held it. A "go to the MCCH" allocation (timeslots 0000,
+  (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label assigned to
+  one of them on this channel; usage markers are noted) and never tunes. A "go to the MCCH" allocation (timeslots 0000,
   table 21.87) of the followed call releases it; an allocation to a party no record holds goes nowhere.
+- Event labels. An event label stands for one party in place of its address on one MAC channel of one cell (EN 300
+  392-2 clause 23.4.1.2.3); a record holds the label of a party of its call and the channel it is valid on
+  (`tetra_label_channel`: an allocated channel by its carrier number and timeslots, which names that channel of the
+  cell wherever the receiver is, or the channel the assignment came on, by the carrier the receiver was on then,
+  `tetra_confirm_carrier_epoch()`, and the timeslot the TDMA clock gave). Its whole lifecycle is one section of
+  `tetra_calls.c`, run once per delivered PDU (`calls_label_delivered()`), with the cell and the record:
+  - Assignment. An SSI or SMI + event label address (types 101, 111) gives its party the label when its PDU is
+    delivered (clause 23.4.1.2.3.1): a fragmented TM-SDU at its MAC-END, never at its first fragment, and an encrypted
+    PDU as a clear one, the MAC delivering its clear address (`deliver_encrypted()`), in which an SSI is an encrypted
+    short identity that names no party (EN 300 392-7 clause 4.2.6). It is valid on the channel the PDU allocates, else
+    the one it came on. A PDU addressed by the label (type 010) is the holder's only on that channel
+    (`calls_label_here()`): the carrier being received (`tetra_calls_carrier()`) for an allocated channel, the same
+    carrier epoch for the other, and an overlapping timeslot when both are known.
+  - Reuse. On one channel a label stands for one party, so an assignment takes the number from every record of
+    another party whose label is bound to a channel that meets the new one (`label_bind()`, `label_channels_meet()`:
+    the same carrier, overlapping timeslots), whether or not a record holds the party it went to; the same number held
+    on another carrier or timeslot is another label and stays.
+  - KEEP (all ones). The party's current label stays valid after the channel change its PDU makes (clause
+    23.4.1.2.3.0): with an allocation its binding moves to the allocated channel, the value kept, taking the number
+    there from others as an assignment does; without one nothing changes.
+  - Withdrawal (all zeros). The party's label goes.
+  - A channel the decoder cannot tell: a "go to the control channel" allocation (the MCCH or a common SCCH) or a
+    ciphertext one, and a received carrier whose number is not known. An assignment or KEEP to it binds none, the
+    party's label goes, and so does the number of every other party, since it may be any of their channels.
+  - Channel reallocation without KEEP. An allocation to the party (by its SSI, or by the label itself) moves its call,
+    not its label: the label is valid on the channel left and no other, so its binding stays there and no PDU of the
+    new channel addressed by it is the party's. A stale binding left on a channel the party left can only matter if
+    the SwMI gives that number there to another party without the decoder hearing the assignment, which takes it.
+  - Expiry (T.201) is not modelled: the decoder could only time it from the PDUs it happened to decode, and the SwMI
+    uses an expired number again only by assigning it, which takes it from the old holder. The label lives as long as
+    its record, which ends at its release, at an identifier taken, at eviction, or after `TETRA_CALL_IDLE_S` with no
+    PDU or speech naming it, taking the label with it.
+  - Cell change. Another cell (a BSCH or SYSINFO, `tetra_calls_forget_cell()`) drops every label.
+  - Carrier boundary or retune. A label bound to the carrier the receiver was on applies there no more (the carrier
+    epoch moved, and no reassignment there was heard while away); one bound to an allocated carrier number still names
+    that channel of the cell, so the call followed onto it keeps it.
 - Following. Trunking on, an allocation that came with a call PDU, of a call whose D-SETUP named its called party, on
   a downlink phase-modulation channel with a frequency, is judged: encrypted calls not followed lock out
   (`dsd_enc_lockout_note()`) a voice call the listener cannot decrypt (end-to-end encrypted, or air encrypted without
@@ -4846,7 +4869,8 @@ channel too), the speech of a channel held with trunking off, what a record chan
 encryption and a reallocation do to the published call, a direct mode call idling out, direct mode transmissions of
 another security class, an anonymous call per timeslot, the last cell's channels and event labels a BSCH or SYSINFO
 of another cell drops, an event label's party and channel, an assignment at its PDU's delivery and in an encrypted
-PDU, a label number reused on another channel, the call trunking turned off lets go of), `TETRA_DMO` (the
+PDU, a label number reused on another channel, a label kept across a channel change, one left by a reallocation and
+by its record's ageing, the call trunking turned off lets go of), `TETRA_DMO` (the
 DM-SDU's FCS and digest, an unread
 DMAC-SYNC's protection, a DMAC-DATA that ends the transmission, the security class a transmission keeps),
 `TETRA_PUBLICATION` (no trunked network on a direct mode carrier), `TETRA_VOICE_GATE`,
@@ -4877,7 +4901,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`); a burst it places in frame 18 is no speech | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
 | Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
-| A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `label_chan`, `usage_marker`) | the cell (a label: one channel of it, the allocated one or the one its assignment came on) | an allocation (`call_attach()`), an SSI + event label or usage marker assignment | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`); a label also its assignment to another party on a channel that meets its own, or its withdrawal (label 0), and, assigned without an allocation, a carrier boundary or retune (it applies there no more) |
+| A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `label_chan`, `usage_marker`) | the cell (a label: one channel of it, the allocated one or the one its assignment came on; Calls, "Event labels") | an allocation (`call_attach()`), an SSI + event label or usage marker assignment at its PDU's delivery; a label's channel also a KEEP with an allocation | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`); a label also its assignment to another party on a channel that meets its own, its withdrawal (label 0), an assignment or KEEP to a channel the decoder cannot tell, and, assigned without an allocation, a carrier boundary or retune (it applies there no more) |
 | D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
 | Carrier evidence (`confirm`: `carrier_blocks` for publication, `signalling_blocks`, downlink only, for grants) | the carrier | CRC-passed blocks (an uplink SCH/HU or MAC block counts for publication only) | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |

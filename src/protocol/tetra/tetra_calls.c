@@ -201,7 +201,12 @@ call_has_party(const tetra_call_t* c, uint32_t ssi) {
 /* An event label (EN 300 392-2 clause 23.4.1.2.3) stands for one party on one MAC channel of one cell, in place of its
  * address; a record holds the label of a party of its call with the channel it is valid on (tetra_label_channel). All
  * that happens to it happens here, once its PDU is delivered (calls_label_delivered()), and where its cell or record
- * ends (tetra_calls_forget_cell(), calls_free()). */
+ * ends (tetra_calls_forget_cell(), calls_free()): an assignment binds it on the channel it applies on and takes the
+ * number from the other parties of that channel only (label_bind()), the all-ones label moves the party's label to the
+ * channel its PDU allocates, label 0 withdraws it, and a channel the decoder cannot tell binds none and takes the number
+ * from every party. A reallocation without the all-ones label leaves the label on the channel left, the only one it is
+ * valid on. Its expiry (T.201) is not modelled: the SwMI uses an expired number again only by assigning it, which takes
+ * it, and the label lives no longer than its record, which ages (tetra_calls_tick()). */
 
 /* The channel the PDU being decoded came on: the carrier the receiver is on and the timeslot the TDMA clock places the
  * PDU in. */
@@ -302,15 +307,17 @@ label_bind(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetr
 }
 
 /* The PDU of @p sdu was delivered (a fragmented TM-SDU at its MAC-END, clause 23.4.1.2.3.1 b; an encrypted PDU as far
- * as its clear address goes): an SSI or SMI + event label address (types 101, 111) assigns the label to its party, whose
- * call @p holder is (NULL when no record holds it, or when the SSI is an encrypted short identity, which names no one,
- * clause 4.2.6 of EN 300 392-7), on the channel it applies on. Label 0 withdraws the party's label and the all-ones label
- * assigns none (clause 23.4.1.2.3.0). */
+ * as its clear address goes): an SSI or SMI + event label address (types 101, 111) names its party, whose call
+ * @p holder is (NULL when no record holds it, or when the SSI is an encrypted short identity, which names no one,
+ * clause 4.2.6 of EN 300 392-7). Label 0 withdraws the party's label. The all-ones label keeps the party's current
+ * label valid after the channel change the PDU makes (clause 23.4.1.2.3.0): with an allocation the label moves to the
+ * allocated channel, as an assignment there would bind it; without one no channel changes. Any other value is assigned
+ * to the party on the channel it applies on. */
 static void
 calls_label_delivered(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder,
                       const tetra_mac_sdu* sdu) {
     const tetra_mac_address* const addr = &sdu->addr;
-    if (!sdu->has_addr || !address_assigns_event_label(addr) || addr->event_label == TETRA_EVENT_LABEL_KEEP) {
+    if (!sdu->has_addr || !address_assigns_event_label(addr)) {
         return;
     }
     if (addr->event_label == TETRA_EVENT_LABEL_WITHDRAW) {
@@ -319,13 +326,17 @@ calls_label_delivered(const dsd_opts* opts, const dsd_state* state, tetra_state_
         }
         return;
     }
+    const int keep = addr->event_label == TETRA_EVENT_LABEL_KEEP;
+    if (keep && (!sdu->has_alloc || !holder || (holder->flags & TETRA_CALL_F_EVENT_LABEL) == 0u)) {
+        return;
+    }
     uint32_t party = 0;
     if (!address_ssi(addr, &party)) {
         party = 0u;
     }
     tetra_label_channel ch;
     const int known = label_channel_of(state, ts, sdu, &ch);
-    label_bind(opts, state, ts, holder, party, addr->event_label, known ? &ch : NULL);
+    label_bind(opts, state, ts, holder, party, keep ? holder->event_label : addr->event_label, known ? &ch : NULL);
 }
 
 /* The call a party of which @p addr names: by its called, calling or talking SSI, or, an address that is an event
