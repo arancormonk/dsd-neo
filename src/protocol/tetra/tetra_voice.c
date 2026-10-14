@@ -333,25 +333,27 @@ voice_burst(dsd_opts* opts, dsd_state* state, const tetra_speech* sp, const uint
     }
 }
 
-/* Undo the air interface encryption of an air-encrypted trunked call's speech; 1 when a key stream applied. */
+/* Undo the air interface encryption of an air-encrypted trunked call's speech; 1 when a key stream applied. The
+   encryption sits above the channel coding (EN 300 392-7 clause 6.1), whose first step orders the speech frame bits
+   into sensitivity classes (EN 300 395-2 clause 5.2), so @p frame_bits are speech frame bits B1..B137 in the order the
+   codec made them, after voice_reorder(). */
 static int
-voice_decrypt(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp, uint8_t* bits, int nbits, int kss) {
+voice_decrypt(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp, uint8_t* frame_bits, int nbits,
+              int kss) {
     return !sp->sealed && sp->air_enc != TETRA_ENC_MODE_NONE
-           && tetra_air_decrypt_voice(opts, state, sp->air_enc, bits, nbits, kss);
+           && tetra_air_decrypt_voice(opts, state, sp->air_enc, frame_bits, nbits, kss);
 }
 
 void
 tetra_voice_full_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good) {
-    uint8_t clear[TETRA_SPEECH_FULL_BITS];
     uint8_t frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
     tetra_speech sp;
     if (!state || !type1 || !tetra_st(state) || !tetra_voice_gate(opts, state, &sp)) {
         return;
     }
-    DSD_MEMCPY(clear, type1, sizeof(clear));
-    const int keystream = voice_decrypt(opts, state, &sp, clear, TETRA_SPEECH_FULL_BITS, TETRA_AIR_KSS_TCH_S);
-    tetra_voice_reorder_full(clear, frames);
-    DSD_SECURE_ZERO(clear, sizeof(clear));
+    /* Frame A takes KSS(0..136), frame B KSS(137..273). */
+    tetra_voice_reorder_full(type1, frames);
+    const int keystream = voice_decrypt(opts, state, &sp, frames, (int)sizeof(frames), TETRA_AIR_KSS_TCH_S);
     const int bad[2] = {!good, !good};
     voice_burst(opts, state, &sp, frames, bad, 2, keystream);
     DSD_SECURE_ZERO(frames, sizeof(frames));
@@ -359,18 +361,16 @@ tetra_voice_full_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, in
 
 void
 tetra_voice_half_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good) {
-    uint8_t clear[TETRA_SPEECH_HALF_BITS];
     uint8_t frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
     tetra_speech sp;
     if (!state || !type1 || !tetra_st(state) || !tetra_voice_gate(opts, state, &sp)) {
         return;
     }
-    DSD_MEMCPY(clear, type1, sizeof(clear));
-    const int keystream = voice_decrypt(opts, state, &sp, clear, TETRA_SPEECH_HALF_BITS, TETRA_AIR_KSS_TCH_S_HALF);
     /* Frame A of the slot was stolen (EN 300 395-2 clause 5.2): the codec conceals it, frame B is the speech. */
+    uint8_t* const speech = frames + DSD_TETRA_CODEC_FRAME_BITS;
     DSD_MEMSET(frames, 0, DSD_TETRA_CODEC_FRAME_BITS);
-    tetra_voice_reorder_half(clear, frames + DSD_TETRA_CODEC_FRAME_BITS);
-    DSD_SECURE_ZERO(clear, sizeof(clear));
+    tetra_voice_reorder_half(type1, speech);
+    const int keystream = voice_decrypt(opts, state, &sp, speech, DSD_TETRA_CODEC_FRAME_BITS, TETRA_AIR_KSS_TCH_S_HALF);
     const int bad[2] = {1, !good};
     voice_burst(opts, state, &sp, frames, bad, 2, keystream);
     DSD_SECURE_ZERO(frames, sizeof(frames));

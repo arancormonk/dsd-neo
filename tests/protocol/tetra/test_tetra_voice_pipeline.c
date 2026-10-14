@@ -443,7 +443,12 @@ expected_clear(const fixture* f, const uint8_t* plain, int count, int kss, uint8
     }
 }
 
-/* A full slot's speech takes key stream bits 0 to 273, the speech half of an STCH + TCH/S burst bits 216 to 352. */
+/* Air interface encryption sits in the upper MAC, above the channel coding (EN 300 392-7 clause 6.1), and the
+   sensitivity-class order of EN 300 395-2 tables 5 and 6 is the first step of that channel coding (clause 5.2: the
+   type-1 bits are ordered into classes at interface 2). So the key stream covers the speech frames in the order the
+   codec made them: a full slot's frame A bits B1..B137 take KSS(0..136) and frame B's KSS(137..273); the speech
+   frame of an STCH + TCH/S burst takes KSS(216..352) (table 6.4). The test undoes the class order first (the order
+   TETRA_SPEECH_REORDER checks against tables 5 and 6) and only then applies the key stream. */
 static void
 test_air_key_stream_positions(void) {
     fixture f;
@@ -451,16 +456,14 @@ test_air_key_stream_positions(void) {
     air_encrypted_call(&f, 1);
     uint8_t full[TETRA_SPEECH_FULL_BITS];
     uint8_t half[TETRA_SPEECH_HALF_BITS];
-    uint8_t clear_full[TETRA_SPEECH_FULL_BITS];
-    uint8_t clear_half[TETRA_SPEECH_HALF_BITS];
     uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
     uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 7U);
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 9U);
-    expected_clear(&f, full, TETRA_SPEECH_FULL_BITS, 0, clear_full);
-    expected_clear(&f, half, TETRA_SPEECH_HALF_BITS, 216, clear_half);
-    tetra_voice_reorder_full(clear_full, full_frames);
-    tetra_voice_reorder_half(clear_half, half_frame);
+    tetra_voice_reorder_full(full, full_frames);
+    tetra_voice_reorder_half(half, half_frame);
+    expected_clear(&f, full_frames, 2 * DSD_TETRA_CODEC_FRAME_BITS, 0, full_frames);
+    expected_clear(&f, half_frame, DSD_TETRA_CODEC_FRAME_BITS, 216, half_frame);
 
     tetra_voice_full_slot(f.opts, f.state, full, 1);
     tetra_voice_half_slot(f.opts, f.state, half, 1);

@@ -26,7 +26,10 @@ extern "C" {
 #endif
 
 /* First key stream bit of each speech channel in its slot's key stream segment (EN 300 392-7 table 6.4): a full-slot
- * TCH/S takes KSS(0..273); the speech half of an STCH+TCH/S slot takes KSS(216..352). */
+ * TCH/S takes KSS(0..273); the speech half of an STCH+TCH/S slot takes KSS(216..352). The encryption sits above the
+ * channel coding (clause 6.1), so the key stream covers the speech frame bits B1..B137 in the order the codec made
+ * them, frame A then frame B, not the sensitivity-class order the speech channel coding gives them (EN 300 395-2
+ * clause 5.2, tables 5 and 6). */
 #define TETRA_AIR_KSS_TCH_S      0
 #define TETRA_AIR_KSS_TCH_S_HALF 216
 

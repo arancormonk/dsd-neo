@@ -4562,8 +4562,11 @@ single "current call".
   end and direct mode encryption are never decrypted; air encryption is when `tetra_air_decrypt_voice()` applies a key
   stream from the encryption cipher key TB5 derives with the carrier being received (`tetra_calls_carrier()`: the
   followed call's carrier, the SYSINFO main carrier on the control channel, else the carrier whose frequency is exactly
-  the tuned one), the SYSINFO location area and the BSCH colour code. Only the encrypted values (2 and 3) of the
-  encryption mode element are encrypted; 1 is reserved. The speech in progress (the codec's decoder state, the speech's
+  the tuned one), the SYSINFO location area and the BSCH colour code. The encryption sits above the channel coding
+  (EN 300 392-7 clause 6.1) and the sensitivity-class order is part of that coding (EN 300 395-2 clause 5.2), so the
+  key stream applies after `tetra_voice_reorder_full()` / `_half()`, to the speech frame bits in codec order (table
+  6.4: a full slot's frame A takes KSS(0..136) and frame B KSS(137..273), a half slot's frame KSS(216..352)). Only the
+  encrypted values (2 and 3) of the encryption mode element are encrypted; 1 is reserved. The speech in progress (the codec's decoder state, the speech's
   integrity and its unplayed samples) belongs to one transmission: a burst of speech of another kind or target, or the
   first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, the state machine leaving the
   call, another call published), starts over (`voice_bind()` in `tetra_voice.c`), so nothing of one call plays under the
