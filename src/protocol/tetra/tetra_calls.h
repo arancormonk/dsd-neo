@@ -65,9 +65,10 @@ tetra_slot_bit(uint8_t tn) {
  */
 typedef struct {
     tetra_mac_address addr; /**< the address of the MAC-RESOURCE (or of the one that started a fragmented TM-SDU) */
-    tetra_chan_alloc alloc; /**< valid when @c has_alloc */
+    tetra_chan_alloc alloc; /**< valid when @c has_alloc and not @c alloc_unread */
     uint8_t has_addr;       /**< @c addr is the PDU's: a MAC-D-BLCK carries only an event label */
     uint8_t has_alloc;      /**< the PDU carried a channel allocation */
+    uint8_t alloc_unread;   /**< ...which is ciphertext (EN 300 392-7 clause 6.7.1.2): its channel is not known */
     uint8_t alloc_taken;    /**< a call PDU of the TM-SDU took the allocation, or named a call no record holds */
 } tetra_mac_sdu;
 
@@ -127,19 +128,19 @@ typedef struct {
 void tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* ev, tetra_mac_sdu* sdu);
 
 /**
- * @brief The MAC delivered @p sdu's PDU (a fragmented message at its MAC-END) and its call PDUs acted. A channel
+ * @brief The MAC delivered @p sdu's PDU (a fragmented message at its MAC-END) and its call PDUs acted; an encrypted PDU
+ * is delivered too, as far as its clear address goes (@c alloc_unread when it carried an allocation). A channel
  * allocation no call PDU took attaches to the call whose party the PDU addressed (by SSI, or by an event label assigned
  * to it on this channel): it updates that call's traffic channel, and a "go to the MCCH" allocation (no timeslots) to
- * the followed call ends it; it never tunes. An event label or usage marker the address assigns goes to the call of its
- * party from here (EN 300 392-2 clause 23.4.1.2.3.1), the label on the channel it applies on: the one the PDU
- * allocated, else the one it came on.
+ * the followed call ends it; it never tunes. An event label or usage marker the address assigns takes effect here and
+ * only here (EN 300 392-2 clause 23.4.1.2.3.1; the event label lifecycle in tetra_calls.c).
  */
 void tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu);
 
 /**
  * @brief An addressed MAC-RESOURCE (EN 300 392-2 table 21.55) was decoded on timeslot @p tn (0 when the TDMA clock does
- * not place it) with encryption mode @p enc_mode: an event label assignment (address types 101, 111) takes the label
- * from every other party's call (the label binds at delivery, tetra_calls_on_allocation()), an encrypted allocation to
+ * not place it) with encryption mode @p enc_mode, a fragmented TM-SDU's first fragment included (an event label it
+ * assigns takes effect at delivery, tetra_calls_on_allocation()): an encrypted allocation to
  * a call's party sets the call's air encryption, which the call's canonical call takes at once when it is published and
  * which, while encrypted calls are not followed, locks out and leaves a followed call it makes undecryptable; a PDU to
  * the followed call's party proves that call on the carrier (tetra_confirm), and the timeslot's signalling encryption

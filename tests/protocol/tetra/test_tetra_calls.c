@@ -1778,6 +1778,81 @@ test_event_label_assignment(void) {
     session_close(&s);
 }
 
+/* A MAC-RESOURCE whose address is @p type @p ssi with event label @p label, starting a fragmented TM-SDU (length
+ * indication 111111), in the clear; then, with @p mac_end, the MAC-END that completes it, without a channel allocation. */
+static void
+send_label_fragments(session* s, uint32_t type, uint32_t ssi, uint32_t label, int mac_end) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, type, ssi);
+    ttb_put(&b, label, 10);
+    ttb_set(&b, start + 7, 63, 6);
+    ttb_resource_flags(&b, 0);
+    ttb_put(&b, 0x5Au, 8);
+    ttb_finish(&b, TTB_SCH_HD_BITS, start + 2);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+    if (!mac_end) {
+        return;
+    }
+    b = (ttb_block){0};
+    const int end = ttb_end(&b);
+    ttb_put(&b, 0, 1); /* channel allocation flag */
+    ttb_put(&b, 0x5Au, 8);
+    ttb_close_end(&b, end);
+    ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* An encrypted MAC-RESOURCE (encryption mode 01) whose address is @p type @p ssi with event label @p label: no channel
+ * allocation, its TM-SDU ciphertext. */
+static void
+send_encrypted_label(session* s, uint32_t type, uint32_t ssi, uint32_t label) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, TETRA_ENC_MODE_ODD, type, ssi);
+    ttb_put(&b, label, 10);
+    ttb_resource_flags(&b, 0);
+    ttb_put(&b, 0x2A5u, 30);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* An event label assignment takes effect once its PDU is delivered (EN 300 392-2 clause 23.4.1.2.3.1), a fragmented
+ * TM-SDU's at its MAC-END: a first fragment assigning another party the label a call holds takes it from no one, nor
+ * does a TM-SDU whose MAC-END never comes (the timeslot's next block failed); its MAC-END does. An encrypted PDU assigns
+ * as a clear one, its address being clear but for an SSI (EN 300 392-7 clause 4.2.6): an encrypted short identity names
+ * no party, so its assignment only takes the label from the call that held it, and an SMI names its party, whose call
+ * takes the label. */
+static void
+test_event_label_takes_effect_at_delivery(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->tdma_valid = 1;
+    ts->tn = 1;
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    send_event_label(&s, 0x100u, 0x55u, 0, 0);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x55u);
+
+    send_label_fragments(&s, TETRA_MAC_ADDR_SSI_EVENT, 0x999u, 0x55u, 0);
+    assert(ts->mac_frag[1].active && (c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u);
+    tetra_mac_block_failed(s.state);
+    assert(!ts->mac_frag[1].active && (c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x55u);
+    send_label_fragments(&s, TETRA_MAC_ADDR_SSI_EVENT, 0x999u, 0x55u, 1);
+    assert(!ts->mac_frag[1].active && (c->flags & TETRA_CALL_F_EVENT_LABEL) == 0u);
+
+    send_event_label(&s, 0x100u, 0x66u, 0, 0);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x66u);
+    send_encrypted_label(&s, TETRA_MAC_ADDR_SSI_EVENT, 0x999u, 0x66u);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) == 0u);
+    send_encrypted_label(&s, TETRA_MAC_ADDR_SMI_EVENT, 0x100u, 0x77u);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x77u);
+    send_by_event_label(&s, 0x77u, 2, 130);
+    assert(c->alloc.carrier == 130 && c->alloc.timeslots == 2);
+    session_close(&s);
+}
+
 /* An event label is valid on one MAC channel (EN 300 392-2 clause 23.4.1.2.3): one assigned in a PDU with a channel
  * allocation applies on the allocated channel, one assigned without on the channel the PDU came on, until the receiver
  * leaves it. A PDU addressed by the label on another channel is for whichever party holds the label there, so its
@@ -2373,6 +2448,7 @@ main(void) {
     test_cell_change_forgets_allocations();
     test_sysinfo_tells_another_cell();
     test_event_label_assignment();
+    test_event_label_takes_effect_at_delivery();
     test_event_label_channel();
     test_network_change_drops_calls();
     test_network_change_retires_the_followed_call();

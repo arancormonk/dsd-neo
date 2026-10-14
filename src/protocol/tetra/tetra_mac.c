@@ -477,14 +477,31 @@ read_resource_header(const mac_block* b, const uint8_t* bits, int nbits, tetra_m
     return 0;
 }
 
+/* An encrypted PDU, or the MAC-END of a TM-SDU encrypted from its first fragment, delivered as far as the call records
+ * can read it: its clear address, and whether it carried a channel allocation, which is ciphertext (EN 300 392-7 clause
+ * 6.7.1.2). What the address assigns takes effect then, as for a clear PDU (tetra_calls_on_allocation()). */
+static void
+deliver_encrypted(const mac_block* b, const tetra_mac_address* addr, uint32_t alloc_present) {
+    tetra_mac_sdu ctx = {
+        .addr = *addr,
+        .has_addr = 1,
+        .has_alloc = (uint8_t)(alloc_present != 0u),
+        .alloc_unread = (uint8_t)(alloc_present != 0u),
+    };
+    tetra_calls_on_allocation(b->opts, b->state, &ctx);
+}
+
 /* MAC-RESOURCE whose encryption mode is not 00: everything after the channel allocation flag is ciphertext
- * (EN 300 392-7 clause 6.7.1.2), so neither the allocation nor the TM-SDU is read. */
+ * (EN 300 392-7 clause 6.7.1.2), so neither the allocation nor the TM-SDU is read. A first fragment is delivered at its
+ * MAC-END. */
 static void
 resource_encrypted(mac_block* b, const tetra_mac_resource* h, int sdu_bits) {
     print_resource(b, h, sdu_bits);
     publish_resource_header(b, h);
     if (h->length_ind == MAC_LI_FRAGMENT_START) {
         start_fragment(b, &h->addr, h->enc_mode, NULL, 0);
+    } else {
+        deliver_encrypted(b, &h->addr, h->alloc_present);
     }
 }
 
@@ -589,6 +606,7 @@ finish_fragment(mac_block* b, const uint8_t* bits, int pdu_bits, int body, uint3
         if (alloc_present != 0u) {
             publish_address(b, &f->addr, f->enc_mode, 1);
         }
+        deliver_encrypted(b, &f->addr, alloc_present);
         discard_fragment(f);
         return;
     }

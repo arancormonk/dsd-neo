@@ -108,6 +108,16 @@ enum {
     TETRA_CALL_F_USAGE_MARKER = 1u << 2, /* usage_marker is assigned to the call */
 };
 
+/* The MAC channel an event label is valid on (EN 300 392-2 clause 23.4.1.2.3, tetra_calls.c): an allocated channel,
+ * named by its carrier number, which names that channel of the cell wherever the receiver is, or the channel the
+ * assignment came on, named by the carrier the receiver was on then. */
+typedef struct {
+    uint32_t epoch;    /**< not @c allocated: the receiver's carrier then (tetra_confirm_carrier_epoch()) */
+    uint16_t carrier;  /**< @c allocated: the carrier number */
+    uint8_t slots;     /**< its timeslots (table 21.87 bitmap); 0 when not known: any */
+    uint8_t allocated; /**< the channel the assigning PDU allocated */
+} tetra_label_channel;
+
 /* tetra_call_t::calling_net when the calling party's network is not known: no calling party extension equals it. */
 #define TETRA_CALL_NET_UNKNOWN 0xFFFFFFFFu
 
@@ -123,18 +133,15 @@ typedef struct {
     uint32_t talker_ssi;    /**< transmitting party of the transmission in progress; 0 none or unknown */
     uint16_t call_id;       /**< call identifier */
     uint16_t event_label;   /**< event label assigned to a party of the call (TETRA_CALL_F_EVENT_LABEL) */
-    uint16_t label_carrier; /**< label_alloc: the carrier number of the allocated channel the label applies on */
-    uint32_t label_epoch;   /**< not label_alloc: the carrier (tetra_confirm_carrier_epoch()) the label applies on */
-    uint8_t label_slots;    /**< the timeslots the label applies on (table 21.87 bitmap); 0 when not known */
-    uint8_t label_alloc;    /**< the label applies on the channel the PDU that assigned it allocated */
-    uint8_t phase;          /**< TETRA_CALL_*; TETRA_CALL_FREE for an unused entry */
-    uint8_t flags;          /**< TETRA_CALL_F_* */
-    uint8_t basic_service;  /**< basic service information (table 14.35) as last signalled */
-    uint8_t e2ee;           /**< end-to-end encrypted: the basic service or D-TX GRANTED encryption control says so */
-    uint8_t air_enc;        /**< encryption mode (TETRA_ENC_MODE_*) of the MAC-RESOURCE that allocated its channel */
-    uint8_t priority;       /**< call priority from D-SETUP */
-    uint8_t timeout;        /**< call time-out (table 14.50) */
-    uint8_t usage_marker;   /**< usage marker assigned to the call (TETRA_CALL_F_USAGE_MARKER) */
+    tetra_label_channel label_chan; /**< the channel @c event_label is valid on */
+    uint8_t phase;                  /**< TETRA_CALL_*; TETRA_CALL_FREE for an unused entry */
+    uint8_t flags;                  /**< TETRA_CALL_F_* */
+    uint8_t basic_service;          /**< basic service information (table 14.35) as last signalled */
+    uint8_t e2ee;         /**< end-to-end encrypted: the basic service or D-TX GRANTED encryption control says so */
+    uint8_t air_enc;      /**< encryption mode (TETRA_ENC_MODE_*) of the MAC-RESOURCE that allocated its channel */
+    uint8_t priority;     /**< call priority from D-SETUP */
+    uint8_t timeout;      /**< call time-out (table 14.50) */
+    uint8_t usage_marker; /**< usage marker assigned to the call (TETRA_CALL_F_USAGE_MARKER) */
 } tetra_call_t;
 
 /* The CMCE calls tracked at once. The MCCH of a carrier with four timeslots signals the calls of every carrier of the
