@@ -10,8 +10,8 @@
 #include <stdlib.h>
 
 /* The state holds operator air keys, so it is wiped before it is freed; the codec library it loaded goes first. A
- * trunking tune the state machine has in flight loses its owner: one that failed is retired, one the backend still
- * owns is left to it (tetra_sm_disown_pending()). */
+ * trunking tune the state machine has in flight outlives it: the runtime trunk-tuning layer leaves one the backend
+ * still owns to the backend and retires its failure, whenever it comes (tetra_sm_disown_pending()). */
 static void
 tetra_state_free(void* ptr) {
     if (ptr) {

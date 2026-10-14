@@ -15,7 +15,9 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -264,8 +266,9 @@ test_carrier_boundary_abandons_a_return_in_flight(void) {
 
 /* A grant's tune still in flight at a carrier boundary is let go of with the call (tetra_sm_abandon_carrier()): the
  * backend still owns it, so the frame gate waits for its answer. One that fails later has nothing to put back, and the
- * machine's next tick retires it, so trunking goes on decoding rather than wait for a tune nobody makes; one that
- * succeeds later published its own tuner boundary, and the machine follows nothing for it. */
+ * runtime retires it once the backend answers (dsd_trunk_tuning_request_disown()), so trunking goes on decoding rather
+ * than wait for a tune nobody makes; one that succeeds later published its own tuner boundary, and the machine follows
+ * nothing for it. */
 static void
 test_carrier_boundary_retires_an_abandoned_tune_once_it_fails(void) {
     for (int fails = 1; fails >= 0; fails--) {
@@ -288,6 +291,65 @@ test_carrier_boundary_retires_an_abandoned_tune_once_it_fails(void) {
                    && s.opts->trunk_is_tuned == 0,
                "abandoned: either way the machine follows nothing for it");
         session_close(&s);
+    }
+}
+
+/* A request of the machine's in flight (its grant's tune, or its return) when the operator changes the decode mode:
+ * the mode change drops the TETRA state, the machine with it, and the request stays the backend's, so the frame gate
+ * waits for its answer. A failure answered after the change has no owner left to put anything back, and trunking stays
+ * on, so nothing retires failed requests for an inactive tuning owner either: the runtime retires it as soon as the
+ * backend answers, whether the session is still in the other mode or has come back to TETRA, whose new state machine
+ * knows nothing of it. A success is its own tuner boundary. */
+static void
+test_mode_change_leaves_a_request_in_flight_to_the_runtime(void) {
+    for (int returning = 0; returning <= 1; returning++) {
+        for (int back = 0; back <= 1; back++) {
+            for (int fails = 1; fails >= 0; fails--) {
+                session s = session_open();
+                g_tune_result = returning ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_PENDING;
+                expect(follow_grant(&s) == 1, "mode change: grant followed");
+                if (returning) {
+                    g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+                    at_seconds(2000.0 + TETRA_SM_GRANT_TIMEOUT_S + 0.5);
+                    engine_tick(&s);
+                }
+                const uint64_t request = g_request;
+                expect(request != 0U && tetra_sm_owns_return(s.state) && dsd_trunk_tuning_pending_request() == request,
+                       "mode change: the machine's request is in flight");
+                expect(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, s.opts, s.state)
+                               == 0
+                           && s.opts->frame_tetra == 0 && tetra_st_existing(s.state) == NULL,
+                       "mode change: the TETRA state goes with the mode");
+                expect(s.opts->trunk_enable == 1, "mode change: trunking stays on");
+                expect(dsd_trunk_tuning_pending_request() == request
+                           && !dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1),
+                       "mode change: the backend's answer is still awaited");
+                if (back) {
+                    expect(
+                        dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, s.opts, s.state)
+                                == 0
+                            && s.opts->frame_tetra == 1,
+                        "mode change: back to TETRA");
+                    engine_tick(&s);
+                    expect(dsd_trunk_tuning_pending_request() == request,
+                           "mode change: back on TETRA the unanswered request is still the backend's");
+                }
+                const uint64_t generation = dsd_trunk_tuning_generation();
+                dsd_trunk_tuning_request_publish(request,
+                                                 fails ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+                engine_tick(&s);
+                expect(dsd_trunk_tuning_pending_request() == 0U
+                           && dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1),
+                       fails ? "mode change: the failure no longer holds the frame gate shut"
+                             : "mode change: the success opens the frame gate");
+                expect(dsd_trunk_tuning_generation() == generation + (fails ? 0U : 1U),
+                       fails ? "mode change: a failure is no tuner boundary"
+                             : "mode change: a success is its own tuner boundary");
+                expect(tetra_sm_get_state(s.state) != TETRA_SM_TUNED && !tetra_sm_followed(s.state, NULL),
+                       "mode change: nothing is followed for it");
+                session_close(&s);
+            }
+        }
     }
 }
 
@@ -362,6 +424,7 @@ main(void) {
     test_carrier_boundary_abandons();
     test_carrier_boundary_abandons_a_return_in_flight();
     test_carrier_boundary_retires_an_abandoned_tune_once_it_fails();
+    test_mode_change_leaves_a_request_in_flight_to_the_runtime();
     test_no_carrier_forgets_evidence();
     test_no_carrier_leaves_the_follow_to_the_machine();
     test_no_carrier_leaves_a_return_in_flight_to_the_machine();

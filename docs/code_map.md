@@ -1696,7 +1696,11 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   (`src/app_control/app_command_queue.c`)
 
 Retune requests use a sibling table, `include/dsd-neo/runtime/trunk_tuning_hooks.h`, whose implementations the engine
-installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_install.c`.
+installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_install.c`. The correlated request records
+(`src/runtime/trunk_tuning_hooks.c`) outlive every owner: an owner that drops what it staged for a request in flight
+(the TETRA state machine, whose state a decode-mode change frees) disowns it (`dsd_trunk_tuning_request_disown()`),
+which leaves an unanswered request in flight, its success the tuner boundary, and retires its failure at once, since
+nothing is left to roll back (`RUNTIME_TRUNK_TUNING_HOOKS`, `ENGINE_TETRA_TRUNK`).
 
 ## App-Control
 
@@ -4519,13 +4523,12 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   point and the tick settle it first once it is answered: a completion commits, a failure restores the rollback first
   and completes the request after, so the frame gate opens onto restored state (`trunk_tuning_hooks.h`).
   `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own cleanup (a decode-mode change
-  drops the extension) let go of a request they find (`tetra_sm_disown_pending()`): one that failed is retired as rolled
-  back, and one the backend has not answered stays the backend's, so the frame gate waits for it and its completion
-  still publishes the tuner boundary. The machine keeps such a request as abandoned (`abandoned_request_id`): a failure
-  the backend answers later has nothing to put back and is retired at the machine's next entry point or tick
-  (`sm_retire_abandoned()`), so it does not hold the frame gate shut while trunking goes on; once the TETRA state
-  itself is gone, the mode exit or the next successful tune retires it (the mode-exit contract of
-  `dsd_trunk_tuning_retire_failed_requests()`).
+  drops the extension) let go of a request they find (`tetra_sm_disown_pending()`), and hand its terminal cleanup to
+  the runtime trunk-tuning layer, which outlives the TETRA state (`dsd_trunk_tuning_request_disown()`): one the
+  backend has not answered stays the backend's, so the frame gate waits for it and its completion still publishes the
+  tuner boundary, and its failure, answered before or after, is retired at once with nothing to put back, so it does
+  not hold the frame gate shut while trunking stays on, whether the session is still on TETRA, in another mode or back
+  on TETRA with a new state machine that knows nothing of it.
 - The carrier. The receiver's carrier changes when a tune completes, not when it is asked for: then
   `tetra_forget_carrier()` (`tetra.c`) drops the carrier's CRC evidence, the partial TM-SDUs
   (`tetra_mac_forget_fragments()`), the TDMA clock (`tetra_tdma_stop()`), which counts symbols a retune may have
@@ -4568,8 +4571,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   nothing. `DSD_SYNC_IS_INVERTED` includes the negative TETRA syncs.
 
 Tests: `TETRA_TRUNK_SM` (the state machine per session against stand-in tuning hooks), `ENGINE_TETRA_TRUNK` (the
-engine tick, the carrier boundary, a return in flight included, and the no-carrier pass with the real machine, which
-returns at its own deadlines and settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
+engine tick, the carrier boundary, a return in flight included, a decode-mode change with a request in flight, and the
+no-carrier pass with the real machine, which returns at its own deadlines and settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
 real machine's follow to it, with and without a control channel),
 `ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC and the other
 manual tunes, a return in flight included, decode-mode change), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed

@@ -39,6 +39,8 @@ typedef struct {
     int inherited_failure_gate;
     int backend_complete;
     int owner_ready;
+    /* The owner let go of it (dsd_trunk_tuning_request_disown()): a failure has nothing to roll back. */
+    int disowned;
 } dsd_trunk_tuning_request_record;
 
 static dsd_trunk_tuning_request_record g_trunk_tuning_requests[DSD_TRUNK_TUNING_REQUEST_HISTORY] = {{0}};
@@ -164,6 +166,7 @@ dsd_trunk_tuning_request_begin(void) {
     record->inherited_failure_gate = inherited_failure_gate;
     record->backend_complete = 0;
     record->owner_ready = 0;
+    record->disowned = 0;
     if (!inherited_failure_gate) {
         (void)atomic_fetch_add(&g_trunk_tuning_unresolved_count, 1);
     }
@@ -217,6 +220,9 @@ dsd_trunk_tuning_request_publish(uint64_t request_id, dsd_trunk_tune_result resu
         if (record->owner_ready) {
             dsd_trunk_tuning_finish_success_locked(record);
         }
+    } else if (record->disowned) {
+        /* No owner is left to roll back and complete it. */
+        dsd_trunk_tuning_finish_rolled_back_locked(record);
     } else {
         record->state = DSD_TRUNK_TUNING_REQUEST_FAILED_GATED;
     }
@@ -289,6 +295,28 @@ dsd_trunk_tuning_request_complete(uint64_t request_id, dsd_trunk_tune_result res
             record->result = result;
         }
         record->state = DSD_TRUNK_TUNING_REQUEST_FAILED_GATED;
+    }
+    dsd_trunk_tuning_requests_unlock();
+}
+
+void
+dsd_trunk_tuning_request_disown(uint64_t request_id) {
+    if (request_id == 0U) {
+        return;
+    }
+
+    dsd_trunk_tuning_requests_lock();
+    dsd_trunk_tuning_request_record* record = dsd_trunk_tuning_request_find_locked(request_id);
+    if (record && record->state == DSD_TRUNK_TUNING_REQUEST_PENDING) {
+        /* Still the backend's: its completion is the tuner boundary, and nothing staged waits for owner readiness. */
+        record->disowned = 1;
+        record->owner_ready = 1;
+        if (record->backend_complete && dsd_trunk_tune_result_is_complete(record->result)) {
+            dsd_trunk_tuning_finish_success_locked(record);
+        }
+    } else if (record && record->state == DSD_TRUNK_TUNING_REQUEST_FAILED_GATED) {
+        /* A failure the owner never rolled back: there is nothing left to roll back. */
+        dsd_trunk_tuning_finish_rolled_back_locked(record);
     }
     dsd_trunk_tuning_requests_unlock();
 }

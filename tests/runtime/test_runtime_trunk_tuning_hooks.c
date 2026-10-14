@@ -302,6 +302,57 @@ main(void) {
     assert(dsd_trunk_tuning_generation() == tune_generation);
     assert(dsd_trunk_tuning_frame_is_current(tune_generation));
 
+    // A request its owner let go of stays the backend's while unanswered; a failure, answered before or after, is
+    // retired with no owner to roll back, and a success is still the tuner boundary.
+    uint64_t disowned_request = dsd_trunk_tuning_request_begin();
+    assert(disowned_request != 0U);
+    dsd_trunk_tuning_request_mark_ready(disowned_request);
+    dsd_trunk_tuning_request_disown(disowned_request);
+    assert(dsd_trunk_tuning_pending_request() == disowned_request);
+    assert(dsd_trunk_tuning_request_status(disowned_request, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(!dsd_trunk_tuning_frame_is_dispatchable(tune_generation, 1));
+    dsd_trunk_tuning_request_publish(disowned_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_frame_is_dispatchable(tune_generation, 1));
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+
+    disowned_request = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_mark_ready(disowned_request);
+    dsd_trunk_tuning_request_publish(disowned_request, DSD_TRUNK_TUNE_RESULT_TIMEOUT);
+    assert(dsd_trunk_tuning_pending_request() == disowned_request);
+    dsd_trunk_tuning_request_disown(disowned_request);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_frame_is_dispatchable(tune_generation, 1));
+
+    disowned_request = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_mark_ready(disowned_request);
+    dsd_trunk_tuning_request_disown(disowned_request);
+    dsd_trunk_tuning_request_disown(disowned_request);
+    dsd_trunk_tuning_request_publish(disowned_request, DSD_TRUNK_TUNE_RESULT_OK);
+    tune_generation++;
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_frame_is_dispatchable(tune_generation, 1));
+    dsd_trunk_tuning_request_disown(disowned_request);
+    dsd_trunk_tuning_request_disown(0U);
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+
+    // A failure of a disowned request that inherited a bounded-history safety gate stays gated, as a rolled-back one.
+    for (int i = 0; i < 64; i++) {
+        const uint64_t failed_id = dsd_trunk_tuning_request_begin();
+        assert(failed_id != 0U);
+        dsd_trunk_tuning_request_publish(failed_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    }
+    disowned_request = dsd_trunk_tuning_request_begin();
+    assert(disowned_request != 0U);
+    dsd_trunk_tuning_request_disown(disowned_request);
+    dsd_trunk_tuning_request_publish(disowned_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
+    dsd_trunk_tuning_retire_failed_requests();
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+
     assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_OK));
     assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_PENDING));
     assert(!dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_DEFERRED));
