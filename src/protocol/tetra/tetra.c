@@ -908,15 +908,18 @@ tetra_pub_hz(long hz) {
     return (hz > 0L && hz <= DSD_TRUNK_FREQ_MAX_HZ) ? (uint32_t)hz : 0U;
 }
 
-/* The network identity and its air-interface encryption: the network's TEA comes from the KSG an OTAR named for it. */
+/* The trunked network identity and its air-interface encryption: the network's TEA comes from the KSG an OTAR named for
+ * it. A direct mode carrier belongs to no trunked network (EN 300 396-3: its colour code is the source's, clause 8.2.4),
+ * so the identity the session keeps from the last BSCH or --tetra-net is not published there. */
 static void
 tetra_pub_network(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_publication* pub) {
-    pub->net_known = (uint8_t)(ts->net_known != 0);
-    pub->mcc = ts->net_known ? ts->mcc : 0U;
-    pub->mnc = ts->net_known ? ts->mnc : 0U;
-    pub->colour = ts->net_known ? (uint8_t)(ts->colour & 0x3Fu) : 0U;
+    const int trunked = ts->net_known && !ts->dmo;
+    pub->net_known = (uint8_t)trunked;
+    pub->mcc = trunked ? ts->mcc : 0U;
+    pub->mnc = trunked ? ts->mnc : 0U;
+    pub->colour = trunked ? (uint8_t)(ts->colour & 0x3Fu) : 0U;
     pub->air_encryption = tetra_pub_air_encryption(ts);
-    const int ksg = (ts->net_known && !ts->dmo) ? tetra_air_ksg_lookup(state, ts->mcc, ts->mnc) : -1;
+    const int ksg = trunked ? tetra_air_ksg_lookup(state, ts->mcc, ts->mnc) : -1;
     pub->tea = (ksg >= 0 && ksg < DSD_TETRA_TEA_MAX) ? (uint8_t)(ksg + 1) : 0U;
 }
 
@@ -932,14 +935,16 @@ tetra_pub_trunk_state(const tetra_state_t* ts) {
     }
 }
 
+/* The cell's control channel and the traffic channel of its calls are trunked mode channels: a direct mode carrier
+ * publishes neither. */
 static void
 tetra_pub_channels(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_publication* pub) {
     pub->trunk_state = tetra_pub_trunk_state(ts);
-    pub->cc_known = (uint8_t)(ts->frames_sysinfo != 0);
+    pub->cc_known = (uint8_t)(ts->frames_sysinfo != 0 && !ts->dmo);
     pub->cc_carrier = pub->cc_known ? (uint16_t)(ts->sysinfo_main_carrier & 0xFFFu) : 0U;
     pub->cc_freq_hz = pub->cc_known ? tetra_pub_hz(ts->dl_carrier_hz) : 0U;
     tetra_chan_alloc traffic;
-    pub->traffic_valid = (uint8_t)tetra_calls_traffic(state, &traffic);
+    pub->traffic_valid = (uint8_t)(!ts->dmo && tetra_calls_traffic(state, &traffic));
     pub->traffic_carrier = pub->traffic_valid ? (uint16_t)(traffic.carrier & 0xFFFu) : 0U;
     pub->traffic_slots = pub->traffic_valid ? (uint8_t)(traffic.timeslots & 0x0Fu) : 0U;
     pub->traffic_freq_hz = pub->traffic_valid ? tetra_pub_hz(traffic.freq_hz) : 0U;
@@ -956,8 +961,9 @@ tetra_publish(dsd_state* state) {
     pub->mode = ts->decode_ok != 0 ? tetra_pub_mode(state, ts) : DSD_TETRA_MODE_NONE;
     tetra_pub_network(state, ts, pub);
     tetra_pub_channels(state, ts, pub);
-    pub->mm_status_valid = (uint8_t)(ts->mm_status_valid != 0);
-    pub->mm_status_code = ts->mm_status_valid ? (uint8_t)(ts->mm_status_code & 0x3Fu) : 0U;
+    /* The D-MM STATUS is the trunked network's to its MSs (EN 300 392-2 clause 16.9.2.5). */
+    pub->mm_status_valid = (uint8_t)(ts->mm_status_valid != 0 && !ts->dmo);
+    pub->mm_status_code = pub->mm_status_valid ? (uint8_t)(ts->mm_status_code & 0x3Fu) : 0U;
     pub->codec_status = tetra_pub_codec_status(&ts->voice);
     pub->codec_frames = ts->voice.frames;
     pub->codec_errors = ts->voice.codec_errors;

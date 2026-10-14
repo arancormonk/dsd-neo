@@ -897,7 +897,10 @@ suite runs under this compiler.
   stands, the SYSINFO main carrier and its frequency, the channel allocation's carrier, timeslot bitmap (bit 3 is
   timeslot 1, as the Timeslot assigned field carries it) and frequency, the last D-MM STATUS, and the speech codec's
   status (`dsd_tetra_codec_status`: unknown, ready, missing, load failed, decode errors) with its frame and error
-  counts. A synchronisation burst that sets the mode or the network publishes at once (`tetra_bsch_parse()`,
+  counts. The network, the SYSINFO main carrier, the traffic channel and the D-MM STATUS are a trunked network's, so a
+  direct mode carrier publishes none of them, though the TETRA state keeps the network identity for the trunked carrier
+  the session goes back to: a retune from a TMO cell to a DMO carrier shows no network of that cell beside the DMO
+  mode, as it shows no TEA, colour code or channel rows. A synchronisation burst that sets the mode or the network publishes at once (`tetra_bsch_parse()`,
   `tetra_dmo_apply_sync()`): the calls and notices the rest of its burst emits read the carrier's colour code from the
   publication (`dsd_access_code_current()`), so they carry the cell or direct mode channel they were decoded on, not the
   last burst's. Integers only, so it rides the `vertex_ks_count..ui_msg` snapshot range, pinned by a `_Static_assert` in
@@ -4809,12 +4812,12 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | DM colour code (`dmo_dcc_valid`, `dmo_dcc_seed`, `dmo_since_sync`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED, or of a fragmented DM-SDS | its end (`tetra_dmo_transmission_over()`: DM-TX CEASED, DM-RELEASE or DM-DISCONNECT in a DMAC-SYNC or DMAC-DATA, the call idle `TETRA_CALL_DMO_IDLE_S`), DM-2-C, a DMAC-SYNC with no source address, 200 DNBs without a DMAC-SYNC, leaving direct mode, a carrier boundary |
 | Direct mode protection (`dmo_crypt`; the set-up's `dmo_tx_crypt`, `dmo_tx_seed`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP or DM-CONNECT ACK, or of a DM-OCCUPIED when the set-up went unheard; a DM-OCCUPIED that contradicts the set-up and an unread DMAC-SYNC whose SCH/S is encrypted only seal it | as the colour code (UNKNOWN, sealed) |
 | Direct mode call (`calls.dmo`) and its canonical call | the channel's call | DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, a DM-2-C DMAC-SYNC | its end PDUs, idling out, leaving direct mode, a carrier boundary (the engine ends the canonical call) |
-| Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
-| Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell | SYSINFO, addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`) |
+| Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session; published only on a trunked carrier (`tetra_pub_network()`) | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
+| Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell; its control channel published only on a trunked carrier | SYSINFO, addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`) |
 | TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`) | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
 | Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
-| D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network | D-MM STATUS | a BSCH of another network |
+| D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network |
 | Carrier evidence (`confirm`) | the carrier | CRC-passed blocks | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
 | Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return; a decode-mode change disowns its tune in flight |

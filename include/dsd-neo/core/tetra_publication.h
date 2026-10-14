@@ -68,7 +68,9 @@ enum { DSD_TETRA_TEA_MAX = 4 };
 typedef struct dsd_tetra_publication {
     uint32_t generation;      /**< Bumped by every reset, so a reader can tell one session from the next. */
     uint8_t mode;             /**< dsd_tetra_mode */
-    uint8_t net_known;        /**< 1 once MCC, MNC and colour code are known (a BSCH, or --tetra-net). */
+    uint8_t net_known;        /**< 1 once MCC, MNC and colour code are known (a BSCH, or --tetra-net); 0 in direct
+                                   mode, whose carrier belongs to no trunked network, as for every trunked mode field
+                                   below (the network, the control and traffic channels, the D-MM STATUS). */
     uint8_t colour;           /**< The 6-bit colour code of the BSCH SYNC PDU (EN 300 392-2). */
     uint8_t air_encryption;   /**< dsd_tetra_air_enc */
     uint16_t mcc;             /**< The 10-bit mobile country code. */

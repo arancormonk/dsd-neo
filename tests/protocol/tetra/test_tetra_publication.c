@@ -188,6 +188,60 @@ test_direct_mode_and_uplink(void) {
     state_close(state);
 }
 
+/* The SCH/S of a real direct mode DSB (EN 300 396-3 table 21): a DMAC-SYNC, direct communication, DM-1. */
+static const char* k_dmo_sch_s = "110100000000000001100000000000000000000000000000000000000000";
+
+/* What the publication says of a trunked network -- its MCC, MNC and colour code, its D-MM STATUS, the SYSINFO control
+ * channel and a traffic channel of its calls -- describes a trunked mode carrier: a direct mode carrier has none of
+ * them, so after a retune from a TMO cell to a DMO carrier (the TETRA state kept, as the network identity is the
+ * session's) the publication shows none, and back on the trunked carrier the network shows again. */
+static void
+test_direct_mode_publishes_no_trunked_network(void) {
+    dsd_state* state = state_open();
+    tetra_state_t* const ts = tetra_st(state);
+    assert(ts != NULL);
+    ts->decode_ok = 1U;
+    ts->net_known = 1U;
+    ts->mcc = 262U;
+    ts->mnc = 1001U;
+    ts->colour = 0x19U;
+    ts->frames_sysinfo = 1U;
+    ts->sysinfo_main_carrier = 321U;
+    ts->dl_carrier_hz = 392012500L;
+    ts->mm_status_valid = 1U;
+    ts->mm_status_code = 7U;
+    ts->calls.call[0].phase = TETRA_CALL_SETUP;
+    ts->calls.call[0].call_id = 0x0AU;
+    ts->calls.call[0].alloc.carrier = 330U;
+    ts->calls.call[0].alloc.timeslots = 0x04U;
+    ts->calls.call[0].alloc.freq_hz = 392237500L;
+    tetra_publish(state);
+    const dsd_tetra_publication* const pub = &state->tetra_pub;
+    assert(pub->mode == DSD_TETRA_MODE_TMO_DOWNLINK && pub->net_known == 1U && pub->mcc == 262U);
+    assert(pub->mm_status_valid == 1U && pub->cc_known == 1U && pub->traffic_valid == 1U);
+
+    uint8_t bits[64] = {0};
+    for (size_t i = 0; k_dmo_sch_s[i] != '\0'; i++) {
+        bits[i] = (uint8_t)(k_dmo_sch_s[i] == '1');
+    }
+    tetra_dmo_sync_s_t s;
+    assert(tetra_dmo_parse_sync_s(bits, &s) == 1 && s.sync_pdu_type == TETRA_DMO_SYNC_DMAC);
+    tetra_forget_carrier(state);
+    tetra_dmo_apply_sync(state, &s, NULL);
+    assert(ts->net_known == 1U && ts->mcc == 262U && ts->mm_status_valid == 1U);
+    assert(pub->mode == DSD_TETRA_MODE_DMO_DIRECT);
+    assert(pub->net_known == 0U && pub->mcc == 0U && pub->mnc == 0U && pub->colour == 0U);
+    assert(pub->mm_status_valid == 0U && pub->mm_status_code == 0U);
+    assert(pub->cc_known == 0U && pub->cc_carrier == 0U && pub->cc_freq_hz == 0U);
+    assert(pub->traffic_valid == 0U && pub->traffic_carrier == 0U && pub->traffic_slots == 0U);
+
+    tetra_dmo_leave(NULL, state);
+    tetra_publish(state);
+    assert(pub->mode == DSD_TETRA_MODE_TMO_DOWNLINK && pub->net_known == 1U && pub->mcc == 262U);
+    assert(pub->mnc == 1001U && pub->colour == 0x19U && pub->mm_status_valid == 1U && pub->cc_known == 1U);
+    state_close(state);
+}
+
 /* Dropping the TETRA state drops what it published, and bumps the generation for the frontends. */
 static void
 test_reset_clears_the_publication(void) {
@@ -214,6 +268,7 @@ main(void) {
     test_trunked_downlink();
     test_codec_status();
     test_direct_mode_and_uplink();
+    test_direct_mode_publishes_no_trunked_network();
     test_reset_clears_the_publication();
     return 0;
 }
