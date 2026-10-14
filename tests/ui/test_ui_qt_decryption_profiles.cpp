@@ -6,6 +6,8 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QIODevice>
+#include <QJSEngine>
+#include <QJSValue>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -44,27 +46,67 @@ check(bool condition) {
 void
 LFSRN(const char*, char*, dsd_state*) {}
 
-/* A legacy ProVoice system's key migrates as a mixed profile. Read as dPMR, a key of any type but the dPMR scrambler
-   failed the profile's own validation and stopped the migration of every later system. */
+/* A legacy ProVoice (-fp) or dPMR (-fm) system's key migrates as a mixed profile, so a key of any type stays usable.
+   Read as dPMR, a ProVoice key of any type but the dPMR scrambler failed the profile's own validation and stopped the
+   migration of every later system. */
 static void
-test_provoice_legacy_migration(dsd_qt::DecryptionProfilesModel& profiles, dsd_qt::SavedSystemsModel& systems,
-                               const QString& secret) {
-    check(systems.add({{"name", "ProVoice legacy"},
-                       {"sourceType", "rtltcp"},
-                       {"host", "127.0.0.1"},
-                       {"port", 1234},
-                       {"freqMhz", "856.0"},
-                       {"decodeFlag", "-fp"},
-                       {"encKeyType", "hex"},
-                       {"encKeyValue", secret},
-                       {"encForceKey", 0}}));
-    const QString uid = systems.get(systems.count() - 1).value("uid").toString();
-    const int migrated = profiles.count();
-    check(profiles.migrateLegacySystems());
-    check(profiles.count() == migrated + 1 && systems.getByUid(uid).value("decryptionProfileUid").toString() == uid);
-    check(profiles.get(uid).value("protocol").toString() == "mixed");
-    QString error;
-    check(profiles.configuration(uid, &error).value("encKeyValue").toString() == secret && error.isEmpty());
+test_unprofiled_legacy_migration(dsd_qt::DecryptionProfilesModel& profiles, dsd_qt::SavedSystemsModel& systems,
+                                 const QString& secret) {
+    for (const char* flag : {"-fp", "-fm"}) {
+        check(systems.add({{"name", QStringLiteral("Legacy %1").arg(QLatin1String(flag))},
+                           {"sourceType", "rtltcp"},
+                           {"host", "127.0.0.1"},
+                           {"port", 1234},
+                           {"freqMhz", "856.0"},
+                           {"decodeFlag", flag},
+                           {"encKeyType", "hex"},
+                           {"encKeyValue", secret},
+                           {"encForceKey", 0}}));
+        const QString uid = systems.get(systems.count() - 1).value("uid").toString();
+        const int migrated = profiles.count();
+        check(profiles.migrateLegacySystems());
+        check(profiles.count() == migrated + 1
+              && systems.getByUid(uid).value("decryptionProfileUid").toString() == uid);
+        check(profiles.get(uid).value("protocol").toString() == "mixed");
+        QString error;
+        check(profiles.configuration(uid, &error).value("encKeyValue").toString() == secret && error.isEmpty());
+    }
+}
+
+/* The protocol session_args_profile_compatible() expects for @p flags: the one profile protocol it accepts, or mixed
+   when it accepts every one. */
+static QString
+session_expected_protocol(const QString& flags) {
+    QStringList accepted;
+    for (const char* protocol : {"p25", "dmr", "nxdn", "dpmr", "m17", "dstar", "ysf"}) {
+        if (dsd_qt::session_args_profile_compatible({{"decryptionProtocol", protocol}, {"decodeFlag", flags}})) {
+            accepted << QLatin1String(protocol);
+        }
+    }
+    return accepted.size() == 7 ? QStringLiteral("mixed") : accepted.value(0);
+}
+
+/* Util.decryptionProtocol() steers the QML editor and selector; session_args_profile_compatible() decides at start.
+   They must read ProVoice (-fp) and dPMR (-fm) alike: both mixed, ProVoice because no profile protocol describes it,
+   dPMR because an NXDN profile's scrambler also serves it. */
+static void
+test_qml_and_session_protocols_agree() {
+    QFile file(QStringLiteral(DSD_QML_UI_DIR "/Util.js"));
+    check(file.open(QIODevice::ReadOnly));
+    QString source = QString::fromUtf8(file.readAll());
+    source.remove(QStringLiteral(".pragma library"));
+    QJSEngine engine;
+    engine.installExtensions(QJSEngine::TranslationExtension);
+    check(!engine.evaluate(source, file.fileName()).isError());
+    QJSValue decryptionProtocol = engine.globalObject().property(QStringLiteral("decryptionProtocol"));
+    check(decryptionProtocol.isCallable());
+    for (const char* flag : {"-fp", "-fm"}) {
+        const QString qml = decryptionProtocol.call({QJSValue(QLatin1String(flag))}).toString();
+        check(qml == "mixed" && session_expected_protocol(QLatin1String(flag)) == qml);
+    }
+    // The cross-check itself tells protocols apart.
+    check(decryptionProtocol.call({QJSValue(QStringLiteral("-fs"))}).toString() == "dmr"
+          && session_expected_protocol(QStringLiteral("-fs")) == "dmr");
 }
 
 namespace {
@@ -431,7 +473,7 @@ main(int argc, char** argv) {
     check(profiles.configuration(systemUid, &error).value("encKeyValue").toString() == secret);
     const int migratedCount = profiles.count();
     check(profiles.migrateLegacySystems() && profiles.count() == migratedCount);
-    test_provoice_legacy_migration(profiles, systems, secret);
+    test_unprofiled_legacy_migration(profiles, systems, secret);
     QFile store(dsd_qt::json_store_path("saved_systems.json"));
     check(store.open(QIODevice::ReadOnly) && !store.readAll().contains(secret.toUtf8()));
     check(!profiles.removeProfile(systemUid).value("ok").toBool());
@@ -473,6 +515,7 @@ main(int argc, char** argv) {
        profile's scrambler. */
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fp"}}));
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fm"}}));
+    test_qml_and_session_protocols_agree();
     test_replay_migration(systems);
     test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
     dsd_neo_log_set_tap(captureWarning, nullptr);

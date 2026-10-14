@@ -499,14 +499,15 @@ function sourceText(id, name) {
 }
 
 // Profile forms describe decoder capabilities; protocol and modulation stay distinct.
-// dPMR is -fm. -fp is ProVoice, which no profile protocol describes, so it reads as mixed.
+// -fp is ProVoice, which no profile protocol describes, so it reads as mixed. dPMR (-fm)
+// reads as mixed too, as in session_args.cpp and the legacy migration: an NXDN profile's
+// scrambler also serves dPMR.
 function decryptionProtocol(flags) {
     var value = flags || ""
     if (value.indexOf("-ft") >= 0 || value.indexOf("-f1") >= 0 || value.indexOf("-f2") >= 0 || value.indexOf("-mq") >= 0) return "p25"
     if (value.indexOf("-fs") >= 0) return "dmr"
     if (value.indexOf("-fi") >= 0 || value.indexOf("-fn") >= 0) return "nxdn"
     if (value.indexOf("-fz") >= 0) return "m17"
-    if (value.indexOf("-fm") >= 0) return "dpmr"
     if (value.indexOf("-fd") >= 0) return "dstar"
     if (value.indexOf("-fy") >= 0) return "ysf"
     return "mixed"

@@ -3693,11 +3693,15 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_decryption_profiles
-        PRIVATE Qt6::Gui dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
+        PRIVATE Qt6::Gui Qt6::Qml dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
     )
+    # Util.js is evaluated in a QJSEngine so its decode-flag protocol mapping can
+    # be checked against the C++ one.
     target_compile_definitions(
         dsd-neo_test_ui_qt_decryption_profiles
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
     )
     set_target_properties(
         dsd-neo_test_ui_qt_decryption_profiles

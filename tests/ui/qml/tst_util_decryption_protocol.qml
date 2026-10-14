@@ -6,14 +6,16 @@ import QtTest
 import "../../../src/ui/qt/qml/Util.js" as Util
 
 // The decryption editors and the profile selector offer what the protocol a saved
-// system's decode flag names can use (Util.decryptionProtocol). dPMR is -fm;
-// -fp is ProVoice, which no profile protocol describes, so it reads as mixed.
+// system's decode flag names can use (Util.decryptionProtocol). -fp is ProVoice,
+// not dPMR: no profile protocol describes it, so it reads as mixed. dPMR (-fm)
+// reads as mixed too, as session_args.cpp does: an NXDN profile's scrambler
+// also serves it. UI_QT_DECRYPTION_PROFILES checks the two mappings agree.
 TestCase {
     name: "UtilDecryptionProtocol"
 
     function test_protocol_data() {
         return [
-            { tag: "dPMR", flags: "-fm", protocol: "dpmr" },
+            { tag: "dPMR", flags: "-fm", protocol: "mixed" },
             { tag: "ProVoice", flags: "-fp", protocol: "mixed" },
             { tag: "P25", flags: "-ft", protocol: "p25" },
             { tag: "P25 Simulcast", flags: "-mq", protocol: "p25" },
