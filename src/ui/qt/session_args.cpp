@@ -543,6 +543,8 @@ session_args_profile_compatible(const QVariantMap& system) {
         return true;
     }
     const QString flags = system.value("decodeFlag").toString();
+    // ProVoice (-fp) has no profile protocol of its own, and dPMR (-fm) also takes an NXDN profile's scrambler, so
+    // both expect mixed: any profile.
     QString expected = "mixed";
     if (flags.contains("-ft") || flags.contains("-f1") || flags.contains("-f2")) {
         expected = "p25";
@@ -550,8 +552,6 @@ session_args_profile_compatible(const QVariantMap& system) {
         expected = "dmr";
     } else if (flags.contains("-fi") || flags.contains("-fn")) {
         expected = "nxdn";
-    } else if (flags.contains("-fp")) {
-        expected = "dpmr";
     } else if (flags.contains("-fz")) {
         expected = "m17";
     } else if (flags.contains("-fd")) {

@@ -85,9 +85,8 @@ protocolFor(const QString& flags) {
     if (flags.contains("-fz")) {
         return "m17";
     }
-    if (flags.contains("-fp")) {
-        return "dpmr";
-    }
+    // -fp is ProVoice, not dPMR, and no profile protocol describes it. dPMR (-fm) migrates as mixed too: a legacy key
+    // of any type stays usable, as before.
     return "mixed";
 }
 

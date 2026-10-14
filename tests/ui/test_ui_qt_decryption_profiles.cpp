@@ -44,6 +44,29 @@ check(bool condition) {
 void
 LFSRN(const char*, char*, dsd_state*) {}
 
+/* A legacy ProVoice system's key migrates as a mixed profile. Read as dPMR, a key of any type but the dPMR scrambler
+   failed the profile's own validation and stopped the migration of every later system. */
+static void
+test_provoice_legacy_migration(dsd_qt::DecryptionProfilesModel& profiles, dsd_qt::SavedSystemsModel& systems,
+                               const QString& secret) {
+    check(systems.add({{"name", "ProVoice legacy"},
+                       {"sourceType", "rtltcp"},
+                       {"host", "127.0.0.1"},
+                       {"port", 1234},
+                       {"freqMhz", "856.0"},
+                       {"decodeFlag", "-fp"},
+                       {"encKeyType", "hex"},
+                       {"encKeyValue", secret},
+                       {"encForceKey", 0}}));
+    const QString uid = systems.get(systems.count() - 1).value("uid").toString();
+    const int migrated = profiles.count();
+    check(profiles.migrateLegacySystems());
+    check(profiles.count() == migrated + 1 && systems.getByUid(uid).value("decryptionProfileUid").toString() == uid);
+    check(profiles.get(uid).value("protocol").toString() == "mixed");
+    QString error;
+    check(profiles.configuration(uid, &error).value("encKeyValue").toString() == secret && error.isEmpty());
+}
+
 namespace {
 class ReplayTestHost : public dsd_qt::DecoderHost {
   public:
@@ -408,6 +431,7 @@ main(int argc, char** argv) {
     check(profiles.configuration(systemUid, &error).value("encKeyValue").toString() == secret);
     const int migratedCount = profiles.count();
     check(profiles.migrateLegacySystems() && profiles.count() == migratedCount);
+    test_provoice_legacy_migration(profiles, systems, secret);
     QFile store(dsd_qt::json_store_path("saved_systems.json"));
     check(store.open(QIODevice::ReadOnly) && !store.readAll().contains(secret.toUtf8()));
     check(!profiles.removeProfile(systemUid).value("ok").toBool());
@@ -445,6 +469,10 @@ main(int argc, char** argv) {
     check(profiles.configuration("vendor-test", &error) == vendor);
     check(!dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "m17"}, {"decodeFlag", "-fs"}}));
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "dmr"}, {"decodeFlag", "-fs"}}));
+    /* ProVoice (-fp) has no profile protocol: it is not dPMR, so it takes any profile; dPMR (-fm) also takes an NXDN
+       profile's scrambler. */
+    check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fp"}}));
+    check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fm"}}));
     test_replay_migration(systems);
     test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
     dsd_neo_log_set_tap(captureWarning, nullptr);
