@@ -1664,6 +1664,34 @@ test_followed_reallocation_moves_the_call(void) {
     session_close(&s);
 }
 
+/* A grant of another call takes the receiver from the followed call: while the tune is in flight the call followed
+ * before stays the canonical call, on the carrier the receiver is on, and once it completes that call ends as a
+ * teardown, as the state machine leaving a call ends it, rather than staying active until the new call publishes. */
+static void
+test_takeover_ends_the_call_left(void) {
+    session s = session_open();
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(followed_call(s.state) == 0x0A && call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0x100u);
+    const uint64_t epoch = call.epoch;
+    s.state->tg_hold = 0x200u;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 2, 130);
+    const uint64_t request = dsd_trunk_tuning_pending_request();
+    assert(request != 0U && followed_call(s.state) == 0x0B);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && call.ota_target_id == 0x100u);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    tetra_sm_tick(s.opts, s.state);
+    call = canonical(s.state);
+    assert(followed_call(s.state) == 0x0B && call.epoch == epoch && call.phase == DSD_CALL_PHASE_ENDED
+           && call.end_reason == DSD_CALL_END_EXPLICIT);
+    send_tx_granted(&s, 0x200u, 0x0B, 0x4444u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != epoch && call.ota_target_id == 0x200u);
+    session_close(&s);
+}
+
 /* Not trunking, the heard call's identifier goes with its record, as the followed call's does: once the heard call is
  * released, a D-SETUP gave its identifier to another call or a full table evicted it, the call given the identifier is
  * not the heard call until its own speech is heard, so its signalling publishes nothing (its channel may be another
@@ -1820,6 +1848,7 @@ main(void) {
     test_heard_call_speech();
     test_record_changes_reach_the_call();
     test_followed_reallocation_moves_the_call();
+    test_takeover_ends_the_call_left();
     test_heard_call_identifier_let_go();
     test_direct_mode_speech();
     test_receiving_carrier();

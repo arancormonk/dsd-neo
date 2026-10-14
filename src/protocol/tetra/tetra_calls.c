@@ -1364,8 +1364,15 @@ tetra_calls_on_speech(dsd_opts* opts, dsd_state* state, const tetra_speech* sp) 
 void
 tetra_calls_followed_moved(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
-    if (ts) {
-        calls_sync_published(opts, state, ts, tetra_calls_followed(state));
+    if (!ts) {
+        return;
+    }
+    const tetra_call_t* const c = tetra_calls_followed(state);
+    if (c && calls_carrying(state, ts, TETRA_PUB_CALL, c->call_id)) {
+        calls_sync_published(opts, state, ts, c);
+    } else if (ts->calls.published == TETRA_PUB_CALL || ts->calls.published == TETRA_PUB_ANON) {
+        /* The receiver left the call followed before, for another: the state machine leaving a call ends it. */
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
     }
 }
 

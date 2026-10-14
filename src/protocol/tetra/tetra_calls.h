@@ -175,7 +175,9 @@ const tetra_call_t* tetra_calls_followed(const dsd_state* state);
 
 /**
  * @brief The receiver reached the followed channel (tetra_trunk_sm.c): when the followed call is the canonical call,
- * which a reallocation of it moved to another carrier, the canonical call takes the channel it is followed on now.
+ * which a reallocation of it moved to another carrier, the canonical call takes the channel it is followed on now;
+ * when another call is (the one followed before, which a grant of another call took the receiver from), it ends as a
+ * teardown, as the state machine leaving a call ends it, and the followed call publishes once it proves itself there.
  * Never creates TETRA state.
  */
 void tetra_calls_followed_moved(dsd_opts* opts, dsd_state* state);
