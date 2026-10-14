@@ -159,6 +159,20 @@ followed_id(const dsd_state* state) {
     return tetra_sm_followed_call_id(state, &id) ? (int)id : -1;
 }
 
+/* Every entry point that acts on a decoded PDU (tetra_calls_on_addressed(), tetra_calls_on_event(),
+ * tetra_calls_on_allocation()) has the state machine settle a tune or return the backend answered before anything of
+ * the PDU reads the follow, its proof on the carrier or the carrier being received (tetra_sm_settle()): a failure that
+ * puts the call followed before back is in effect before the PDU is judged, so no PDU acts on a staged follow already
+ * undone. What the PDU itself then asks of the state machine (a release, a grant) goes through its entry points, which
+ * settle in turn; a request the PDU leaves in flight takes no grant until it is answered (call_consider()). With no
+ * options the next entry point that has them settles. */
+static void
+calls_settle(dsd_opts* opts, dsd_state* state) {
+    if (opts) {
+        (void)tetra_sm_settle(opts, state);
+    }
+}
+
 /* A new record for @p call_id: a free entry, else the one heard from least recently that is not followed. */
 static tetra_call_t*
 calls_new(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
@@ -682,6 +696,15 @@ call_note_lockout(const dsd_opts* opts, dsd_state* state, const tetra_call_t* c)
     }
 }
 
+/* The followed call @p c is encrypted beyond the listener's keys while encrypted calls are not followed (its basic
+ * service or encryption control, an encrypted allocation to its party, or its speech): it is locked out and left, as a
+ * grant for it would have been refused (call_check_followed_crypto()), and no reallocation of it is followed. */
+static int
+call_followed_excluded(const dsd_opts* opts, const dsd_state* state, const tetra_call_t* c) {
+    return opts && opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0 && !basic_is_data(c->basic_service)
+           && call_undecryptable(state, c) && c->called_ssi != 0u;
+}
+
 /* Whether @p c, which the policy allows, takes the receiver from the call it follows: a call of the held talkgroup
  * over one that is not, else a policy preemption (dsd_tg_policy_should_preempt()). */
 static int
@@ -714,9 +737,9 @@ call_log_skip(const tetra_state_t* ts, const tetra_call_t* c, const char* why) {
 /* Trunking: hand the state machine the channel just allocated to @p c, when the policy lets it be followed. The
  * followed call's own allocation moves it. When the allocation took the followed channel (@p takes_followed,
  * calls_take_channel()), the call followed there holds no channel for @p c to take over, so the policy alone decides.
- * Nothing is handed over while a tune is in flight (call_attach() settled what the backend had answered): the state
- * machine takes no grant then, and an answer that came between would settle it onto another follow than the one the
- * grant was judged against. */
+ * Nothing is handed over while a tune or return is in flight (the PDU's entry point settled what the backend had
+ * answered, calls_settle(); one this PDU started is unanswered): the state machine takes no grant then, and an answer
+ * that came between would settle it onto another follow than the one the grant was judged against. */
 static void
 call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c, int takes_followed) {
     if (!opts || opts->trunk_enable != 1 || !alloc_followable(&c->alloc)) {
@@ -730,7 +753,11 @@ call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_c
     tetra_sm_grant followed;
     const int tuned = tetra_sm_followed(state, &followed);
     if (followed_id(state) == (int)c->call_id) {
-        (void)tetra_sm_on_grant(opts, state, &grant);
+        /* Its own reallocation moves it, unless it is excluded for its encryption: its PDU asked to leave it
+         * (call_after_pdu()), and a return refused or deferred keeps the receiver where it is, never on a new channel. */
+        if (!call_followed_excluded(opts, state, c)) {
+            (void)tetra_sm_on_grant(opts, state, &grant);
+        }
         return;
     }
     if ((c->flags & TETRA_CALL_F_SETUP_SEEN) == 0u || c->called_ssi == 0u) {
@@ -843,17 +870,13 @@ calls_leave_taken_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, c
 /* @p alloc is @p c's traffic channel now, and no other call's (calls_take_channel()). A "go to the MCCH" allocation
  * (timeslot assigned 0000, table 21.87), which names no channel the decoder can place, takes none and ends the followed
  * call; any other may be followed when @p may_follow, and when it took the followed channel and @p c is not followed,
- * the state machine lets go of the channel (calls_leave_taken_channel()). Every decision here reads the follow as the
- * state machine settled it: a tune the backend answered since its last entry point (a failure that puts the call
- * followed before back, a block's earlier grant included) is settled first, so no channel is judged taken, and no
- * takeover waived, against a follow already undone. */
+ * the state machine lets go of the channel (calls_leave_taken_channel()). The follow it reads is the settled one
+ * (calls_settle() at the PDU's entry point), so no channel is judged taken, and no takeover waived, against a follow a
+ * failure already undid. */
 static void
 call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_chan_alloc* alloc,
             int may_follow) {
     const uint16_t id = c->call_id;
-    if (opts) {
-        (void)tetra_sm_settle(opts, state);
-    }
     if (alloc->timeslots == 0u) {
         DSD_MEMSET(&c->alloc, 0, sizeof c->alloc);
         c->alloc_m = 0.0;
@@ -1121,12 +1144,11 @@ call_follow_renamed(dsd_state* state, uint16_t old_id, uint16_t new_id) {
     }
 }
 
-/* The followed call turned out encrypted beyond the listener's keys (D-TX GRANTED encryption control) while encrypted
- * calls are not followed: it is locked out and left, as a grant for it would have been refused. */
+/* The followed call turned out encrypted beyond the listener's keys (call_followed_excluded()) while encrypted calls
+ * are not followed: it is locked out and left, as a grant for it would have been refused. */
 static void
 call_check_followed_crypto(dsd_opts* opts, dsd_state* state, const tetra_call_t* c) {
-    if (!opts || opts->trunk_enable != 1 || opts->trunk_tune_enc_calls != 0 || basic_is_data(c->basic_service)
-        || !call_undecryptable(state, c) || c->called_ssi == 0u) {
+    if (!call_followed_excluded(opts, state, c)) {
         return;
     }
     call_note_lockout(opts, state, c);
@@ -1164,6 +1186,7 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     if (!ts || !ev || ev->kind > TETRA_CALL_EV_RELEASE) {
         return;
     }
+    calls_settle(opts, state);
     tetra_call_t* c = calls_find(ts, (uint16_t)(ev->call_id & 0x3FFFu));
     if (ev->kind == TETRA_CALL_EV_SETUP) {
         c = call_setup(opts, state, ts, c, ev, sdu);
@@ -1225,6 +1248,7 @@ tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu) 
     if (!ts || !sdu) {
         return;
     }
+    calls_settle(opts, state);
     calls_attach_addressed(opts, state, ts, sdu);
     tetra_call_t* const c = sdu->has_addr ? calls_by_address(opts, state, ts, &sdu->addr) : NULL;
     calls_label_delivered(opts, state, ts, c, sdu);
@@ -1240,6 +1264,7 @@ tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_addre
     if (!ts || !addr) {
         return;
     }
+    calls_settle(opts, state);
     const uint8_t evidence = (uint8_t)(1u + (enc_mode & 3u));
     ts->calls.slot_enc[0] = evidence;
     if (tn <= 4u) {

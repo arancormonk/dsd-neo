@@ -2489,15 +2489,16 @@ test_rollback_channel_taken(void) {
 }
 
 /* A MAC-RESOURCE to @p ssi with an allocation of @p timeslots on @p carrier and, for @p call_id not 0, a D-SETUP (table
- * 14.15) of that group call; one of several in a block. */
+ * 14.15) of that call with @p basic_service; one of several in a block. */
 static void
-put_resource(ttb_block* b, uint32_t ssi, uint16_t call_id, uint32_t timeslots, uint32_t carrier) {
+put_resource(ttb_block* b, uint32_t ssi, uint16_t call_id, uint32_t basic_service, uint32_t timeslots,
+             uint32_t carrier) {
     const int start = ttb_resource(b, 0, TETRA_MAC_ADDR_SSI, ssi);
     ttb_resource_flags(b, 1u);
     ttb_allocation(b, timeslots, 1, carrier);
     if (call_id != 0U) {
         ttb_put(b, 2, 4); /* BL-UDATA */
-        ttb_d_setup(b, call_id, TTB_SPEECH_GROUP);
+        ttb_d_setup(b, call_id, basic_service);
     }
     ttb_close_resource(b, start);
 }
@@ -2516,7 +2517,7 @@ static void
 send_two_setups(session* s, const uint32_t* ssi, const uint16_t* call_id, uint32_t carrier) {
     ttb_block b = {0};
     for (int i = 0; i < 2; i++) {
-        put_resource(&b, ssi[i], call_id[i], 4, carrier);
+        put_resource(&b, ssi[i], call_id[i], TTB_SPEECH_GROUP, 4, carrier);
     }
     send_built_block(s, &b);
 }
@@ -2577,11 +2578,119 @@ test_go_to_mcch_after_a_failed_tune(void) {
     at_seconds(1002.0);
     g_tunes_failing_at_once = 1;
     ttb_block b = {0};
-    put_resource(&b, 0x300u, 0x0C, 4, 130);
-    put_resource(&b, 0x100u, 0U, 0, 100);
+    put_resource(&b, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 130);
+    put_resource(&b, 0x100u, 0U, 0u, 0, 100);
     send_built_block(&s, &b);
     assert(g_tunes == 2 && g_returns == 1 && dsd_trunk_tuning_pending_request() == 0U);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    session_close(&s);
+}
+
+/* And so is a followed call's encryption: with encrypted calls not followed, one block grants call C of a preempting
+ * priority, whose tune the backend reports in flight and fails at once, and then carries a D-SETUP of the followed
+ * call A that makes it end-to-end encrypted and reallocates it to carrier 140. By then the state machine is back on A,
+ * so A's encryption is judged as the followed call's: A is locked out and let go of, and never tuned to on carrier
+ * 140, whether the return completes or is deferred (which keeps the receiver where it is, as for any followed call it
+ * cannot leave, but moves it nowhere). */
+static void
+test_encrypted_reallocation_after_a_failed_tune(void) {
+    for (int deferred = 0; deferred < 2; deferred++) {
+        session s = session_open();
+        s.opts->trunk_tune_enc_calls = 0;
+        policy_row(s.state, 0x100u, 10, 0);
+        policy_row(s.state, 0x300u, 50, 1);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        assert(followed_call(s.state) == 0x0A && g_tunes == 1);
+        at_seconds(1002.0);
+        g_tunes_failing_at_once = 1;
+        g_return_result = deferred ? DSD_TRUNK_TUNE_RESULT_DEFERRED : DSD_TRUNK_TUNE_RESULT_OK;
+        ttb_block b = {0};
+        put_resource(&b, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 130);
+        put_resource(&b, 0x100u, 0x0A, TTB_SPEECH_GROUP | 0x10u, 4, 140); /* encryption flag (table 14.35) */
+        send_built_block(&s, &b);
+        assert(g_tunes == 2 && g_returns == 1 && dsd_enc_lockout_entry_active(s.state, 0x100u, 1) == 1);
+        assert(tetra_calls_peek(s.state, 0x0A)->e2ee && dsd_trunk_tuning_pending_request() == 0U);
+        tetra_sm_grant g;
+        if (deferred) {
+            assert(tetra_sm_followed(s.state, &g) && g.call_id == 0x0A && g.carrier == 120);
+        } else {
+            assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && !tetra_sm_followed(s.state, &g));
+        }
+        session_close(&s);
+    }
+}
+
+/* Following call A (group 0x100) on TN2 of carrier 120, with event label 0x55 assigned to its party there, a grant of
+ * call C of a preempting priority on carrier 130 whose tune the backend reports in flight and then fails: the failure
+ * is answered but no entry point has settled it yet. */
+static session
+session_with_unsettled_failure(void) {
+    session s = session_open();
+    policy_row(s.state, 0x100u, 10, 0);
+    policy_row(s.state, 0x300u, 50, 1);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    send_event_label(&s, 0x100u, 0x55u, 4, 120);
+    tetra_confirm_forget_followed_call(s.state); /* as a retune leaves it: nothing proved A on its carrier yet */
+    assert(followed_call(s.state) == 0x0A && !tetra_confirm_followed_call_proven(s.state));
+    at_seconds(1002.0);
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 130);
+    const uint64_t request = dsd_trunk_tuning_pending_request();
+    assert(request != 0U && followed_call(s.state) == 0x0C && g_tunes == 2);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    return s;
+}
+
+/* Every entry point of the call records settles an answered request before it reads the follow. An addressed
+ * MAC-RESOURCE to A's party proves A on the carrier (tetra_calls_on_addressed()). */
+static void
+test_addressed_settles_first(void) {
+    session s = session_with_unsettled_failure();
+    tetra_calls_on_addressed(s.opts, s.state, &(tetra_mac_address){.type = TETRA_MAC_ADDR_SSI, .ssi = 0x100u},
+                             TETRA_ENC_MODE_NONE, 0, 2);
+    assert(followed_call(s.state) == 0x0A && tetra_confirm_followed_call_proven(s.state));
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    session_close(&s);
+}
+
+/* A D-SETUP that makes A end-to-end encrypted, with no allocation, locks A out and lets go of it while encrypted calls
+ * are not followed (tetra_calls_on_event()). */
+static void
+test_event_settles_first(void) {
+    session s = session_with_unsettled_failure();
+    s.opts->trunk_tune_enc_calls = 0;
+    tetra_call_event setup;
+    DSD_MEMSET(&setup, 0, sizeof setup);
+    setup.kind = TETRA_CALL_EV_SETUP;
+    setup.call_id = 0x0A;
+    setup.basic_service = TTB_SPEECH_GROUP | 0x10u;
+    tetra_mac_sdu sdu;
+    DSD_MEMSET(&sdu, 0, sizeof sdu);
+    sdu.addr.type = TETRA_MAC_ADDR_SSI;
+    sdu.addr.ssi = 0x100u;
+    sdu.has_addr = 1;
+    tetra_calls_on_event(s.opts, s.state, &setup, &sdu);
+    assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    assert(dsd_enc_lockout_entry_active(s.state, 0x100u, 1) == 1);
+    session_close(&s);
+}
+
+/* A "go to the MCCH" allocation addressed by A's event label, which names A only on the carrier the follow is on,
+ * releases A (tetra_calls_on_allocation()). */
+static void
+test_allocation_settles_first(void) {
+    session s = session_with_unsettled_failure();
+    tetra_mac_sdu sdu;
+    DSD_MEMSET(&sdu, 0, sizeof sdu);
+    sdu.addr.type = TETRA_MAC_ADDR_EVENT_LABEL;
+    sdu.addr.event_label = 0x55u;
+    sdu.has_addr = 1;
+    sdu.has_alloc = 1;
+    sdu.alloc.up_down = 1;
+    sdu.alloc.carrier = 100;
+    tetra_calls_on_allocation(s.opts, s.state, &sdu);
+    assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
     session_close(&s);
 }
 
@@ -2971,6 +3080,10 @@ main(void) {
     test_rollback_channel_taken();
     test_allocation_judged_after_a_failed_tune();
     test_go_to_mcch_after_a_failed_tune();
+    test_encrypted_reallocation_after_a_failed_tune();
+    test_addressed_settles_first();
+    test_event_settles_first();
+    test_allocation_settles_first();
     test_heard_channel_taken();
     test_other_channels_take_nothing();
     test_every_allocation_takes_the_channel();
