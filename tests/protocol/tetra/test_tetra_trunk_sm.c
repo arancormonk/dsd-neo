@@ -45,7 +45,8 @@ static uint64_t g_request;
 static dsd_trunk_tune_result g_tune_result;
 static dsd_trunk_tune_result g_return_result;
 
-/* What the engine's tune hook does to the shared tuning state when it accepts a voice-channel tune. */
+/* What the engine's tune hook does to the shared tuning state and the tuned frequency when it accepts a voice-channel
+ * tune (dsd_engine_tune_rtl()). */
 static dsd_trunk_tune_result
 tune_hook(dsd_opts* opts, dsd_state* state, long freq, int ted_sps, uint64_t request_id) {
     g_tunes++;
@@ -53,6 +54,7 @@ tune_hook(dsd_opts* opts, dsd_state* state, long freq, int ted_sps, uint64_t req
     g_ted_sps = ted_sps;
     g_request = request_id;
     if (dsd_trunk_tune_result_is_ok(g_tune_result)) {
+        opts->rtlsdr_center_freq = (uint32_t)freq;
         opts->trunk_is_tuned = 1;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
@@ -68,6 +70,7 @@ return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     g_returns++;
     g_request = request_id;
     if (dsd_trunk_tune_result_is_ok(g_return_result)) {
+        opts->rtlsdr_center_freq = (uint32_t)state->trunk_cc_freq;
         opts->trunk_is_tuned = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
@@ -116,6 +119,8 @@ session_open(void) {
     s.opts->trunk_enable = 1;
     s.opts->trunk_hangtime = 2.0F;
     s.opts->frame_tetra = 1;
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = CC_HZ;
     s.state->trunk_cc_freq = CC_HZ;
     assert(tetra_st(s.state) != NULL);
     tetra_sm_on_cc_sync(s.opts, s.state);
@@ -344,6 +349,36 @@ test_grant_on_this_carrier(void) {
     tetra_sm_on_release(s.opts, s.state, 0x77U);
     assert(g_returns == 0 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0);
     assert(s.state->trunk_vc_freq[0] == 0);
+    session_close(&s);
+}
+
+/* SYSINFO names the main carrier on every carrier of the cell, so it does not say where the receiver is: started on a
+ * secondary carrier, a grant for a traffic timeslot of the main carrier is a retune, and a grant on the carrier the
+ * receiver is tuned to is not. With no tuned frequency known (no radio input) every grant is a retune. */
+static void
+test_grant_on_the_received_carrier(void) {
+    reset_backend();
+    session s = session_open();
+    s.opts->rtlsdr_center_freq = VC2_HZ;
+    tetra_sm_grant g = grant_of(CC_HZ, 0x2U, 0x77U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
+    assert(g_tunes == 1 && g_tuned_hz == CC_HZ && tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
+    assert(!tetra_confirm_followed_call_proven(s.state) && !tetra_confirm_carrier_proven(s.state));
+    session_close(&s);
+
+    reset_backend();
+    s = session_open();
+    s.opts->rtlsdr_center_freq = VC2_HZ;
+    g = grant_of(VC2_HZ, 0x2U, 0x78U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1 && g_tunes == 0);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && tetra_confirm_followed_call_proven(s.state));
+    session_close(&s);
+
+    reset_backend();
+    s = session_open();
+    s.opts->audio_in_type = AUDIO_IN_PULSE;
+    g = grant_of(CC_HZ, 0x2U, 0x79U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1 && g_tunes == 1 && g_tuned_hz == CC_HZ);
     session_close(&s);
 }
 
@@ -725,6 +760,7 @@ main(void) {
     test_release_by_call_id();
     test_refused_return_keeps_call();
     test_grant_on_this_carrier();
+    test_grant_on_the_received_carrier();
     test_same_carrier_grants();
     test_pending_grant_completes();
     test_pending_grant_fails();

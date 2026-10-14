@@ -4437,19 +4437,20 @@ is `tetra_state_t::sm` in the session's TETRA state extension (`DSD_STATE_EXT_PR
 it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk scan never runs it.
 
 - Grants. The call records decide what to follow (Calls below: talkgroup policy, hold, preemption, the encryption
-  lockout) and hand the state machine a
-  `tetra_sm_grant`: downlink frequency, carrier number, timeslot bitmap (table 21.80: bit 3 is timeslot 1) and CMCE
-  call identifier (0 when the allocation carried none). `tetra_sm_on_grant()` follows it only with trunking on, a
-  control channel known (`state->trunk_cc_freq`, which a SYSINFO with a valid main carrier sets before calling
-  `tetra_sm_on_cc_sync()`), a frequency, no tune in flight, and a CRC-passed BSCH or MAC block decoded on the carrier
-  the receiver is on before the block that carried the grant (`tetra_confirm_carrier_proven()`: `tetra.c` notes a
-  block only after the MAC acted on it). A grant for the followed call is ignored, a call identifier arriving after a
-  header-only allocation is adopted, and a grant on the carrier the receiver is on (a traffic timeslot of the main
-  carrier, or another call on the followed carrier) is followed without a retune; the grant itself then proves the
-  call on that carrier (`tetra_confirm_note_followed_call()`). Every other grant tunes through
-  `dsd_trunk_tuning_hook_tune_to_freq()` with `ted_sps` 0: a TETRA traffic carrier keeps the control channel's
-  symbol rate, and `dsd_engine_cc_is_p25()` (`trunk_tuning.c`) answers 0 for TETRA syncs, before looking at `rf_mod`,
-  whose QPSK value would otherwise read as P25 CQPSK.
+  lockout) and hand the state machine a `tetra_sm_grant`: downlink frequency, carrier number, timeslot bitmap (table
+  21.80: bit 3 is timeslot 1) and CMCE call identifier (0 when the allocation carried none). `tetra_sm_on_grant()`
+  follows it only with trunking on, a control channel known (`state->trunk_cc_freq`, which a SYSINFO with a valid main
+  carrier sets before calling `tetra_sm_on_cc_sync()`), a frequency, no tune in flight, and a CRC-passed BSCH or MAC
+  block decoded on the carrier the receiver is on before the block that carried the grant
+  (`tetra_confirm_carrier_proven()`: `tetra.c` notes a block only after the MAC acted on it). A grant for the followed
+  call is ignored, a call identifier arriving after a header-only allocation is adopted, and a grant on the carrier the
+  receiver is on (`sm_receiver_freq()`: the followed channel while TUNED, else the tuned frequency,
+  `dsd_opts_tuned_freq_hz()`; not the SYSINFO main carrier `trunk_cc_freq`, which a secondary carrier broadcasts too, so
+  a session started there tunes to a grant on the main carrier) is followed without a retune; the grant itself then
+  proves the call on that carrier (`tetra_confirm_note_followed_call()`). Every other grant tunes through
+  `dsd_trunk_tuning_hook_tune_to_freq()` with `ted_sps` 0: a TETRA traffic carrier keeps the control channel's symbol
+  rate, and `dsd_engine_cc_is_p25()` (`trunk_tuning.c`) answers 0 for TETRA syncs, before looking at `rf_mod`, whose
+  QPSK value would otherwise read as P25 CQPSK.
 - Releases. `tetra_sm_on_release()` releases only the followed call: its call identifier must match (a release of
   the followed call, a "go to the MCCH" allocation to it, or its turning undecryptable; see Calls). A traffic timeslot of the control
   channel's carrier, or a release with no control channel to go to, stops following without a tune; anything else

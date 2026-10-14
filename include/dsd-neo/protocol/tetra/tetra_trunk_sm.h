@@ -70,9 +70,10 @@ void tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state);
  *
  * Ignored unless trunking is on, a control channel is known, the grant names a frequency, no tune is in flight and a
  * CRC-passed BSCH or MAC block was decoded on the carrier the receiver is on before the block that carried the grant
- * (tetra_confirm). A grant for the call already followed is ignored. A grant on the carrier the receiver is on (a
- * traffic timeslot of the main carrier, or another call on the followed carrier) is followed without a retune; any
- * other is tuned to with no symbol-timing override (ted_sps 0). A refused or deferred tune changes nothing.
+ * (tetra_confirm). A grant for the call already followed is ignored. A grant on the carrier the receiver is on (the
+ * followed channel while TUNED, else the frequency it is tuned to, dsd_opts_tuned_freq_hz(); not the main carrier
+ * SYSINFO names, which a secondary carrier broadcasts too) is followed without a retune; any other is tuned to with no
+ * symbol-timing override (ted_sps 0). A refused or deferred tune changes nothing.
  *
  * @return 1 when the state machine now follows @p grant (tuned, tune in flight, or retargeted on the same carrier);
  *         0 when it ignored it.
