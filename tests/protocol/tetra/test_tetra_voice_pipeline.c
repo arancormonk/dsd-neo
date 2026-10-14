@@ -783,7 +783,7 @@ test_talker_change_resets_speech(void) {
 
 /* Speech that trails D-TX CEASED belongs to the transmission that ended, though its talker is no longer known: a grant
    after D-TX CEASED starts the next transmission, which takes nothing of that trail, neither its carried samples nor
-   its codec state, whatever talker it names. */
+   its codec state, whatever talker it names; and so does a grant that names no talker where one was known. */
 static void
 test_grant_after_cease_resets_speech(void) {
     fixture f;
@@ -816,6 +816,19 @@ test_grant_after_cease_resets_speech(void) {
     expect_segment(&f, 0, 1, half_frame, 0, block, "next transmission: the transmission");
     expect_segment(&f, block, 1, half_frame, 0, block, "next transmission: its trail");
     expect_segment(&f, 2 * block, 1, full_frames, 0, FRAME, "next transmission: from its own first decode");
+    fixture_close(&f);
+
+    /* D-TX CEASED unheard: a grant that names no talker where talker 0x5555 was known is the next transmission too. */
+    expect(fixture_open(&f) == 0, "next transmission: fixture");
+    follow_call(&f, 12, 800, 0x0F);
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x5555U);
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    expect(voice_of(&f)->carry_len == 80, "next transmission: talker 0x5555 carries");
+    tetra_call_event unnamed = {.call_id = 12, .kind = TETRA_CALL_EV_TX_GRANTED, .has = TETRA_CALL_HAS_GRANT};
+    unnamed.grant = 3U;
+    tetra_calls_on_event(f.opts, f.state, &unnamed, NULL);
+    tetra_voice_full_slot(f.opts, f.state, full, 0);
+    expect(fixture_output(&f, out, MAX_OUT) == block, "next transmission: no talker named, nothing of 0x5555's speech");
     fixture_close(&f);
 }
 

@@ -742,29 +742,44 @@ call_connected(tetra_call_t* c) {
     }
 }
 
+/* The transmitting party a grant names: the one the PDU names, else the addressed party when it is the one granted;
+ * 0 when it names none. */
+static uint32_t
+grant_talker(const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+    uint32_t ssi = 0;
+    if ((ev->has & TETRA_CALL_HAS_TALKER) != 0u) {
+        return ev->talker_ssi;
+    }
+    return (ev->grant == 0u && sdu_ssi(sdu, &ssi)) ? ssi : 0u;
+}
+
 /* D-TX GRANTED and D-TX INTERRUPT: a transmission granted (to the addressed party, or to the transmitting party the PDU
- * names) starts; their encryption control says whether it is end-to-end encrypted (table 14.18). One granted after
- * D-TX CEASED is the next transmission, whoever it names: the speech of the last one (the trail that follows D-TX CEASED
- * included, whose talker is no longer known) is not its speech (tetra_voice_transmission_started()). */
+ * names) starts; their encryption control says whether it is end-to-end encrypted (table 14.18). A grant is the SwMI's
+ * floor decision, never sent unsolicited (EN 300 392-2 clause 14.5.1.2.1), so one granted after D-TX CEASED, or one
+ * that names no talker where one was known, is the next transmission. After D-TX CEASED the speech of the last one (the
+ * trail that follows it, whose talker is no longer known) is not its speech (tetra_voice_transmission_started()); the
+ * canonical call of a talker no longer known ends, so the next transmission does not go on under that talker, and its
+ * speech starts over with it. */
 static void
-call_transmission(tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+call_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev,
+                  const tetra_mac_sdu* sdu) {
     if ((ev->has & TETRA_CALL_HAS_ENCRYPTION) != 0u) {
         c->e2ee = (uint8_t)(ev->encryption != 0u);
     }
     if ((ev->has & TETRA_CALL_HAS_GRANT) == 0u || !grant_is_transmission(ev->grant)) {
         return;
     }
-    if (c->phase == TETRA_CALL_CEASED) {
+    const uint32_t before = c->talker_ssi;
+    const int after_cease = c->phase == TETRA_CALL_CEASED;
+    c->phase = TETRA_CALL_TX_GRANTED;
+    c->talker_ssi = grant_talker(ev, sdu);
+    if (after_cease) {
         tetra_voice_transmission_started(&ts->voice, c->call_id);
     }
-    c->phase = TETRA_CALL_TX_GRANTED;
-    uint32_t ssi = 0;
-    if ((ev->has & TETRA_CALL_HAS_TALKER) != 0u) {
-        c->talker_ssi = ev->talker_ssi;
-    } else if (ev->grant == 0u && sdu_ssi(sdu, &ssi)) {
-        c->talker_ssi = ssi;
-    } else {
-        c->talker_ssi = 0u;
+    /* Ending the call starts its speech over too (tetra_calls_t::ends). */
+    if (before != 0u && c->talker_ssi == 0u && ts->calls.published == TETRA_PUB_CALL
+        && ts->calls.published_call_id == c->call_id) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
     }
 }
 
@@ -805,7 +820,7 @@ call_apply(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
             call_connected(c);
             break;
         case TETRA_CALL_EV_TX_GRANTED:
-        case TETRA_CALL_EV_TX_INTERRUPT: call_transmission(ts, c, ev, sdu); break;
+        case TETRA_CALL_EV_TX_INTERRUPT: call_transmission(opts, state, ts, c, ev, sdu); break;
         case TETRA_CALL_EV_TX_CEASED:
             c->phase = TETRA_CALL_CEASED;
             c->talker_ssi = 0u;

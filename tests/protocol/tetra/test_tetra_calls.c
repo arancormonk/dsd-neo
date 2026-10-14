@@ -787,6 +787,32 @@ test_fragmented_header_encryption_reaches_the_call(void) {
     session_close(&s);
 }
 
+/* A grant is the SwMI's floor decision, never sent unsolicited (EN 300 392-2 clause 14.5.1.2.1): one granted to
+ * another user that names no transmitting party, where the last grant named one, is the next transmission with its
+ * D-TX CEASED unheard. The canonical call of the talker no longer known ends, and the next transmission's goes on
+ * under no talker rather than the last one's. */
+static void
+test_grant_without_talker_is_the_next_transmission(void) {
+    session s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x4444u);
+    const uint64_t first = call.epoch;
+    tetra_call_event granted;
+    DSD_MEMSET(&granted, 0, sizeof granted);
+    granted.kind = TETRA_CALL_EV_TX_GRANTED;
+    granted.call_id = 0x0A;
+    granted.has = TETRA_CALL_HAS_GRANT;
+    granted.grant = 3U; /* granted to another user, no transmitting party named */
+    tetra_confirm_note_signalling(s.state);
+    tetra_calls_on_event(s.opts, s.state, &granted, NULL);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != first && call.ota_source_id == 0U);
+    session_close(&s);
+}
+
 /* D-SETUP (table 14.15) of call @p call_id with @p basic_service from @p caller to @p called, the MAC address, with
  * transmission grant @p grant (table 14.80) and an allocation of @p timeslots on @p carrier. The calling party is of
  * type identifier 1, its SSI, when @p extension is 0, else of type 2, its SSI and @p extension, the MCC and MNC of its
@@ -1970,6 +1996,7 @@ main(void) {
     test_followed_call_publishes();
     test_header_encryption_reaches_the_call();
     test_fragmented_header_encryption_reaches_the_call();
+    test_grant_without_talker_is_the_next_transmission();
     test_private_call_names_both_parties();
     test_encrypted_and_unfollowed_calls();
     test_sds_and_status_notices();

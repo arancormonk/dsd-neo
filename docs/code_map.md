@@ -4704,8 +4704,9 @@ single "current call".
   of another kind, call identifier or target, on another timeslot (each a traffic channel of its own, EN 300 392-2
   clause 9.4.2.2; speech no record names has no other identity), of another transmitting party (the call's talker, which D-TX GRANTED and
   D-TX INTERRUPT name, or the direct mode source; a party not known on either side is no change, as for the canonical
-  call), or the first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, the state
-  machine leaving the call, another call published, the call records forgotten), or the first after the heard speech
+  call), or the first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, a grant that
+  names no talker where one was known, the state machine leaving the call, another call published, the call records
+  forgotten), or the first after the heard speech
   stopped for `TETRA_CALL_SPEECH_END_S`, published or not (`calls_tick_heard()`), or the first after a grant that
   follows D-TX CEASED (`tetra_voice_transmission_started()`: the trail of speech after D-TX CEASED, whose talker is
   no longer known, is the last transmission's), starts over (`voice_bind()` in
@@ -4721,7 +4722,9 @@ single "current call".
   a unit-to-unit transmission, so the talkgroup policy's private-call audio and record gates judge both parties
   whoever transmits; carrier and frequency, basic service as service options, priority, and its crypto class. Not trunking, the
   heard call publishes from its speech and then its signalling, and speech no record names publishes an anonymous call
-  on a proven carrier. Once published, a call follows its record: whatever a CRC-passed PDU, its allocation, an
+  on a proven carrier. A grant is the SwMI's floor decision, never sent unsolicited (EN 300 392-2 clause 14.5.1.2.1),
+  so one that names no talker where the last named one is the next transmission with its D-TX CEASED unheard: the
+  last talker's canonical call ends and the next one publishes without a talker. Once published, a call follows its record: whatever a CRC-passed PDU, its allocation, an
   allocation addressed to the call's party or a MAC header changes of it (its parties, basic service, traffic channel or
   encryption) is observed at once (`calls_sync_published()`), on a carrier no block proved yet too, since the call was
   published before and the PDU passed its CRC; only publication itself waits for the proof. A reallocation of the
