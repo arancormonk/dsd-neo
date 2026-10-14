@@ -1605,7 +1605,13 @@ suite runs under this compiler.
     `dsd_scan_mode_resume()`), not when `dsd_scan_mode_prepare()` stages it for its tune, so a row whose preparation or
     tune fails before the commit goes back to the TETRA session whole (`RUNTIME_SCAN_MODE`, `ENGINE_CHANNEL_SCAN`);
     `dsd_scan_settings` carries `frame_tetra` with the other frame flags, so an inherited row and the end of the scan
-    bring the configured TETRA decoder back (`RUNTIME_SCAN_MODE`). On the RTL front end its 18 ksym/s profile runs CQPSK timing on the WIDE
+    bring the configured TETRA decoder back (`RUNTIME_SCAN_MODE`). TETRA follows calls of a trunked (TMO) network and
+    decodes direct mode (DMO), which is not trunked, so every place that offers trunking offers it for TETRA with no
+    answer assumed: the setup wizard asks its trunking question for TETRA on an RTL-SDR or rtl_tcp source as for the
+    other trunk-capable entries, No by default (`interactive_mode_supports_trunk()`, `RUNTIME_BOOTSTRAP_INTERACTIVE`),
+    the Qt wizard's Trunking switch is there for every chip and the TETRA chip does not suggest it (`Util.js`
+    `suggestsTrunking()`), and the terminal menu's Trunking row, `[trunking] enabled` and `-T` take it whatever the
+    mode. On the RTL front end its 18 ksym/s profile runs CQPSK timing on the WIDE
     channel filter (`dsd_rtl_channel_profile_for()`), and a retune keeps the active profile with its filter
     (`rtl_demod_maybe_refresh_ted_sps_after_rate_change()`): the options a stream opened with in another mode do not
     narrow a live switch to TETRA onto the P25 CQPSK filter (`IO_RTL_DEMOD_CONFIG`). Its rate rule lives in

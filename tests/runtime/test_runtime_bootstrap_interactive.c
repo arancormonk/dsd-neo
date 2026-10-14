@@ -287,10 +287,12 @@ test_tetra_entry_selects_tetra(void) {
     reset_harness();
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    rc |= with_stdin_text("2\n420.1M\n0\n22\n0\n72\n0\n1\n16\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= with_stdin_text("2\n420.1M\n0\n22\n0\n72\n0\n1\n16\nn\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
     rc |= expect_str("tetra-rtl-audio-in", opts.audio_in_dev, "rtl:0:420.1M:22:0:72:0:1");
     rc |= expect_int("tetra-decode-mode", g_last_decode_mode, DSDCFG_MODE_TETRA);
     rc |= expect_int("tetra-decode-profile", g_last_decode_profile, DSD_DECODE_PRESET_PROFILE_INTERACTIVE);
+    rc |= expect_int("tetra-dmo-trunking-off", opts.trunk_enable, 0);
+    rc |= expect_int("tetra-dmo-frontend-answered", opts.frontend_kind, DSD_FRONTEND_NONE);
 
     reset_harness();
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -304,6 +306,49 @@ test_tetra_entry_selects_tetra(void) {
     DSD_MEMSET(&state, 0, sizeof state);
     rc |= with_stdin_text("\n16\n4\n\n", dsd_bootstrap_interactive, &opts, &state);
     rc |= expect_int("pulse-tetra-refused-then-dmr", g_last_decode_mode, DSDCFG_MODE_DMR);
+    return rc;
+}
+
+/* TETRA is a trunked system (TMO) as well as direct mode (DMO): on an RTL-SDR or rtl_tcp source the wizard asks
+ * whether it is trunked, as for the other trunk-capable entries, with No the default for direct mode; a Yes turns call
+ * following on and takes the group list the follow policy reads. */
+static int
+test_tetra_entry_asks_about_trunking(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    const char* input = "3\n"
+                        "host.example\n"
+                        "2345\n"
+                        "420.1M\n"
+                        "22\n"
+                        "0\n"
+                        "72\n"
+                        "0\n"
+                        "1\n"
+                        "16\n"
+                        "y\n"
+                        "\n"
+                        "group.csv\n"
+                        "n\n"
+                        "n\n"
+                        "n\n"
+                        "n\n";
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.scanner_mode = 1;
+    rc |= with_stdin_text(input, dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("tetra-trunk-audio-in", opts.audio_in_dev, "rtltcp:host.example:2345:420.1M:22:0:72:0:1");
+    rc |= expect_int("tetra-trunk-decode-mode", g_last_decode_mode, DSDCFG_MODE_TETRA);
+    rc |= expect_int("tetra-trunk-enable", opts.trunk_enable, 1);
+    rc |= expect_int("tetra-trunk-clears-scanner", opts.scanner_mode, 0);
+    rc |= expect_int("tetra-trunk-channel-import-skipped", g_chan_import_calls, 0);
+    rc |= expect_str("tetra-trunk-group-file", opts.group_in_file, "group.csv");
+    rc |= expect_int("tetra-trunk-group-import", g_group_import_calls, 1);
+    rc |= expect_int("tetra-trunk-allow-list-off", opts.trunk_use_allow_list, 0);
+    rc |= expect_int("tetra-trunk-frontend-answered", opts.frontend_kind, DSD_FRONTEND_NONE);
     return rc;
 }
 
@@ -722,6 +767,7 @@ main(void) {
 #if !defined(_WIN32)
     rc |= test_pulse_defaults_apply_decode_and_ncurses();
     rc |= test_tetra_entry_selects_tetra();
+    rc |= test_tetra_entry_asks_about_trunking();
     rc |= test_rtltcp_trunking_imports_group_allow_list_and_null_output();
     rc |= test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv();
     rc |= test_am_entry_needs_an_iq_source();

@@ -336,6 +336,9 @@ interactive_mode_to_decode_mode(int mode) {
     return k_interactive_menu_modes[mode];
 }
 
+/* The entries that can follow calls off a control channel. TETRA is one: -fT decodes a trunked (TMO) network, whose
+   call following needs the trunking answer, as well as direct mode (DMO), which is not trunked and keeps the
+   question's default, No. */
 static int
 interactive_mode_supports_trunk(int mode) {
     switch (mode) {
@@ -346,7 +349,8 @@ interactive_mode_supports_trunk(int mode) {
         case 5:
         case 6:
         case 10:
-        case 13: return 1;
+        case 13:
+        case INTERACTIVE_MODE_TETRA: return 1;
         default: return 0;
     }
 }
