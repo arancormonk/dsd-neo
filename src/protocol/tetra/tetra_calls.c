@@ -240,31 +240,52 @@ label_drop(tetra_call_t* c) {
     DSD_MEMSET(&c->label_chan, 0, sizeof c->label_chan);
 }
 
-/* @p c's event label is valid on the channel the PDU being decoded came on: the allocated one, by its carrier number,
- * for one bound to an allocated channel, else the carrier its assignment came on, until the receiver leaves it, and the
- * timeslots of that channel. A timeslot not known on either side is no change. */
+/* Channels @p a and @p b are one: the same carrier, and timeslots that overlap (one not known on either side is any).
+ * A carrier the receiver was on is one no more once it left it; while it is on it, it is told from a carrier number by
+ * the carrier being received (tetra_calls_carrier()), and @p unknown answers when that number is not known. */
 static int
-calls_label_here(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts, const tetra_call_t* c) {
-    const tetra_label_channel* const ch = &c->label_chan;
-    const uint8_t bit = tetra_slot_bit(calls_pdu_timeslot(ts));
-    if (ch->slots != 0u && bit != 0u && (ch->slots & bit) == 0u) {
+label_channels_meet(const dsd_opts* opts, const dsd_state* state, const tetra_label_channel* a,
+                    const tetra_label_channel* b, int unknown) {
+    if (a->slots != 0u && b->slots != 0u && (a->slots & b->slots) == 0u) {
         return 0;
     }
-    if (!ch->allocated) {
-        return ch->epoch == tetra_confirm_carrier_epoch(state);
+    if (a->allocated && b->allocated) {
+        return a->carrier == b->carrier;
+    }
+    if (!a->allocated && !b->allocated) {
+        return a->epoch == b->epoch;
+    }
+    const tetra_label_channel* const received = a->allocated ? b : a;
+    const tetra_label_channel* const numbered = a->allocated ? a : b;
+    if (received->epoch != tetra_confirm_carrier_epoch(state)) {
+        return 0;
     }
     uint16_t carrier = 0;
-    return tetra_calls_carrier(opts, state, &carrier) && carrier == ch->carrier;
+    if (!tetra_calls_carrier(opts, state, &carrier)) {
+        return unknown;
+    }
+    return carrier == numbered->carrier;
+}
+
+/* @p c's event label is valid on the channel the PDU being decoded came on; a carrier whose number is not known is no
+ * allocated channel's. */
+static int
+calls_label_here(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts, const tetra_call_t* c) {
+    const tetra_label_channel here = label_channel_here(state, ts);
+    return label_channels_meet(opts, state, &c->label_chan, &here, 0);
 }
 
 /* Label @p value goes to @p holder (NULL: a party no record holds) on channel @p ch (NULL: one the decoder cannot tell,
- * which binds none): no record of another party than @p party keeps it, since a label stands for one party. */
+ * which binds none). A label stands for one party on its channel, so no record of another party than @p party keeps
+ * that number on a channel that may be the same one (all of them, for @p ch NULL); on another channel it is another
+ * label and stays. */
 static void
-label_bind(tetra_state_t* ts, tetra_call_t* holder, uint32_t party, uint16_t value, const tetra_label_channel* ch) {
+label_bind(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder, uint32_t party,
+           uint16_t value, const tetra_label_channel* ch) {
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
         tetra_call_t* const o = &ts->calls.call[i];
         if (o != holder && (o->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && o->event_label == value
-            && !call_has_party(o, party)) {
+            && !call_has_party(o, party) && (!ch || label_channels_meet(opts, state, &o->label_chan, ch, 1))) {
             label_drop(o);
         }
     }
@@ -286,7 +307,8 @@ label_bind(tetra_state_t* ts, tetra_call_t* holder, uint32_t party, uint16_t val
  * clause 4.2.6 of EN 300 392-7), on the channel it applies on. Label 0 withdraws the party's label and the all-ones label
  * assigns none (clause 23.4.1.2.3.0). */
 static void
-calls_label_delivered(const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder, const tetra_mac_sdu* sdu) {
+calls_label_delivered(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder,
+                      const tetra_mac_sdu* sdu) {
     const tetra_mac_address* const addr = &sdu->addr;
     if (!sdu->has_addr || !address_assigns_event_label(addr) || addr->event_label == TETRA_EVENT_LABEL_KEEP) {
         return;
@@ -303,7 +325,7 @@ calls_label_delivered(const dsd_state* state, tetra_state_t* ts, tetra_call_t* h
     }
     tetra_label_channel ch;
     const int known = label_channel_of(state, ts, sdu, &ch);
-    label_bind(ts, holder, party, addr->event_label, known ? &ch : NULL);
+    label_bind(opts, state, ts, holder, party, addr->event_label, known ? &ch : NULL);
 }
 
 /* The call a party of which @p addr names: by its called, calling or talking SSI, or, an address that is an event
@@ -1089,7 +1111,7 @@ tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu) 
     }
     calls_attach_addressed(opts, state, ts, sdu);
     tetra_call_t* const c = sdu->has_addr ? calls_by_address(opts, state, ts, &sdu->addr) : NULL;
-    calls_label_delivered(state, ts, c, sdu);
+    calls_label_delivered(opts, state, ts, c, sdu);
     if (c) {
         call_bind_usage_marker(c, &sdu->addr);
     }

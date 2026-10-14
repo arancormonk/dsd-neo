@@ -222,6 +222,20 @@ send_event_label(session* s, uint32_t ssi, uint32_t label, uint32_t timeslots, u
     tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
 }
 
+/* A MAC-RESOURCE to @p ssi that assigns it event label @p label with a "go to the control channel" allocation
+ * (timeslots 0000, table 21.87). */
+static void
+send_event_label_to_cc(session* s, uint32_t ssi, uint32_t label) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI_EVENT, ssi);
+    ttb_put(&b, label, 10);
+    ttb_resource_flags(&b, 1u);
+    ttb_allocation(&b, 0, 1, 100);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
 /* A MAC-RESOURCE addressed by event label @p label alone, with a channel allocation on @p carrier and no TM-SDU. */
 static void
 send_by_event_label(session* s, uint32_t label, uint32_t timeslots, uint32_t carrier) {
@@ -1778,6 +1792,56 @@ test_event_label_assignment(void) {
     session_close(&s);
 }
 
+static int
+has_label(const tetra_call_t* c, uint16_t label) {
+    return (c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == label;
+}
+
+/* A label stands for one party on one MAC channel (EN 300 392-2 clause 23.4.1.2.3), so the same number on another
+ * channel is another label: 0x55 assigned to call 10's party for carrier 120 and then to call 11's for carrier 130 is
+ * each one's on its own carrier, where a label-addressed allocation finds it. Assigned on a channel that meets the
+ * holder's (the same carrier and an overlapping timeslot; the carrier the receiver is on, for one assigned where it
+ * came, is the one it is tuned to), the label goes to the new party. One whose channel the decoder cannot tell takes
+ * it from every other party, since it may be any channel's: a "go to the control channel" allocation, or one assigned
+ * where it came on a carrier whose number is not known. */
+static void
+test_event_label_reuse_on_another_channel(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 0, 0);
+    const tetra_call_t* const a = tetra_calls_peek(s.state, 0x0A);
+    const tetra_call_t* const b = tetra_calls_peek(s.state, 0x0B);
+    send_event_label(&s, 0x100u, 0x55u, 4, 120);
+    send_event_label(&s, 0x200u, 0x55u, 4, 130);
+    assert(has_label(a, 0x55u) && has_label(b, 0x55u));
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(120);
+    send_by_event_label(&s, 0x55u, 2, 120);
+    assert(a->alloc.carrier == 120 && a->alloc.timeslots == 2 && b->alloc.carrier == 130 && b->alloc.timeslots == 4);
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(130);
+    send_by_event_label(&s, 0x55u, 1, 130);
+    assert(b->alloc.timeslots == 1 && a->alloc.carrier == 120);
+
+    send_event_label(&s, 0x100u, 0x55u, 1, 130);
+    assert(has_label(a, 0x55u) && has_label(b, 0x55u)); /* TN4 of carrier 130 is not call 11's TN2 */
+    send_event_label(&s, 0x100u, 0x55u, 4, 130);
+    assert(has_label(a, 0x55u) && !has_label(b, 0x55u));
+    send_event_label(&s, 0x200u, 0x55u, 0, 0);
+    assert(has_label(b, 0x55u) && !has_label(a, 0x55u));
+
+    send_event_label(&s, 0x100u, 0x66u, 4, 120);
+    send_event_label_to_cc(&s, 0x200u, 0x66u);
+    assert(!has_label(a, 0x66u) && !has_label(b, 0x66u));
+    send_event_label(&s, 0x100u, 0x77u, 4, 120);
+    s.opts->audio_in_type = AUDIO_IN_PULSE;
+    send_event_label(&s, 0x200u, 0x77u, 0, 0);
+    assert(!has_label(a, 0x77u) && has_label(b, 0x77u));
+    session_close(&s);
+}
+
 /* A MAC-RESOURCE whose address is @p type @p ssi with event label @p label, starting a fragmented TM-SDU (length
  * indication 111111), in the clear; then, with @p mac_end, the MAC-END that completes it, without a channel allocation. */
 static void
@@ -2449,6 +2513,7 @@ main(void) {
     test_sysinfo_tells_another_cell();
     test_event_label_assignment();
     test_event_label_takes_effect_at_delivery();
+    test_event_label_reuse_on_another_channel();
     test_event_label_channel();
     test_network_change_drops_calls();
     test_network_change_retires_the_followed_call();
