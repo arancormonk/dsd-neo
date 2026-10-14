@@ -1069,6 +1069,39 @@ test_timeslot_change_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* Not trunking, heard speech that stops for TETRA_CALL_SPEECH_END_S is over, published or not (no block proved this
+ * carrier, so no anonymous call was): the speech heard on the same timeslot after the gap is another transmission's,
+ * so none of the last one's carried samples play and its first bad burst conceals nothing with the last one's
+ * decoder. */
+static void
+test_speech_gap_resets_speech(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "gap: fixture");
+    dsd_decode_clock_use_test(1000000000000ULL);
+    uint8_t half[TETRA_SPEECH_HALF_BITS];
+    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    tetra_voice_reorder_half(half, half_frame);
+    tetra_voice_reorder_full(full, full_frames);
+    const size_t block = DSD_VOICE_FRAME_SAMPLES;
+    expect(!tetra_confirm_carrier_proven(f.state), "gap: an unproven carrier");
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    expect(voice_of(&f)->carry_len == 80, "gap: 80 samples carried");
+    dsd_decode_clock_test_set_ns(1000000000000ULL + (uint64_t)((TETRA_CALL_SPEECH_END_S + 0.5) * 1e9));
+    tetra_calls_tick(f.opts, f.state);
+    tetra_voice_full_slot(f.opts, f.state, full, 0);
+    static int16_t out[MAX_OUT];
+    expect(fixture_output(&f, out, MAX_OUT) == block, "gap: nothing of the last speech, nothing concealed");
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, 0, 1, half_frame, 0, block, "gap: the speech before the gap");
+    expect_segment(&f, block, 1, full_frames, 0, FRAME, "gap: the speech after it from its own first decode");
+    dsd_decode_clock_use_system();
+    fixture_close(&f);
+}
+
 /* The crypto class canonical slot 0 shows is the one the speech it carries has now, which can change with no PDU of
  * the call: the followed air-encrypted call is pending while no key is loaded and decryptable once the operator's
  * cipher key is, and anonymous speech, which its timeslot's signalling classifies, turns encrypted with it. */
@@ -1125,6 +1158,7 @@ main(void) {
     test_muted_call_holds_no_timeslot();
     test_timeslot_change_resets_speech();
     test_speech_reclassifies_the_call();
+    test_speech_gap_resets_speech();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

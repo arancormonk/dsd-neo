@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -1389,7 +1390,9 @@ tetra_calls_notice(dsd_opts* opts, dsd_state* state, int control, uint32_t src, 
     }
 }
 
-/* The heard speech stopped with no terminator heard: its call ends, unless the state machine follows it now. */
+/* The heard speech stopped with no terminator heard: its call ends, unless the state machine follows it now, and so
+ * does the speech in progress, whether or not anything of it was published (a carrier no block proved yet publishes
+ * no anonymous call): speech heard after the gap is another transmission's. */
 static void
 calls_tick_heard(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, double now_m, int followed) {
     if (!ts->calls.heard || now_m - ts->calls.heard_m < TETRA_CALL_SPEECH_END_S) {
@@ -1397,6 +1400,7 @@ calls_tick_heard(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, double now
     }
     ts->calls.heard = 0;
     ts->calls.held = 0;
+    tetra_voice_reset(state);
     const int heard_call = ts->calls.published == TETRA_PUB_CALL && ts->calls.heard_known
                            && ts->calls.published_call_id == ts->calls.heard_call_id
                            && followed != (int)ts->calls.heard_call_id;

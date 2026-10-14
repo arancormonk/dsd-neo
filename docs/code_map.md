@@ -4701,7 +4701,8 @@ single "current call".
   clause 9.4.2.2; speech no record names has no other identity), of another transmitting party (the call's talker, which D-TX GRANTED and
   D-TX INTERRUPT name, or the direct mode source; a party not known on either side is no change, as for the canonical
   call), or the first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, the state
-  machine leaving the call, another call published, the call records forgotten), starts over (`voice_bind()` in
+  machine leaving the call, another call published, the call records forgotten), or the first after the heard speech
+  stopped for `TETRA_CALL_SPEECH_END_S`, published or not (`calls_tick_heard()`), starts over (`voice_bind()` in
   `tetra_voice.c`), so nothing of one transmission plays under the next one's record policy and no bad opening frame is
   concealed with another call's, timeslot's or talker's codec state; the call identifier and the timeslot tell two
   transmissions apart at the second's first burst, which publishes nothing when its CRC fails. The kind tells direct
