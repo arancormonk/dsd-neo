@@ -168,7 +168,8 @@ tetra_tdma_stop(dsd_state* state) {
     }
 }
 
-/* A BSCH of another cell: its timebase, hyperframe numbering and SYSINFO are its own. The last cell's main carrier, band,
+/* A BSCH of another cell, or a SYSINFO of one that shares the colour code (tetra_bsch_sysinfo_cell()): its timebase,
+ * hyperframe numbering and SYSINFO are its own. The last cell's main carrier, band,
  * offset and location area go (EN 300 392-2 clause 21.4.4.1), and the control channel its SYSINFO gave with them, so
  * a channel allocation decoded before this cell's SYSINFO resolves to no frequency (clause 21.5.2) rather than to one
  * of the last cell's, and nothing is followed until the new SYSINFO names its control channel. The partial TM-SDUs go
@@ -223,6 +224,22 @@ bsch_identity_change(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const 
         /* The D-MM STATUS the frontends show was the last network's to its MSs (EN 300 392-2 clause 16.9.2.5). */
         ts->mm_status_valid = 0;
         ts->mm_status_code = 0;
+    }
+}
+
+void
+tetra_bsch_sysinfo_cell(dsd_opts* opts, dsd_state* state, long main_carrier_hz, int la_present, uint16_t la) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    const int other_main = ts->dl_carrier_hz > 0L && main_carrier_hz > 0L && main_carrier_hz != ts->dl_carrier_hz;
+    const int other_area = ts->sysinfo_known && la_present && la != ts->la;
+    if (other_main || other_area) {
+        TETRA_LOG_VERBOSE(ts, 1,
+                          "[TETRA SYSINFO] main carrier %ld Hz, location area %u: another cell than %ld Hz, %u\n",
+                          main_carrier_hz, (unsigned)la, ts->dl_carrier_hz, (unsigned)ts->la);
+        bsch_forget_cell(opts, state, ts);
     }
 }
 

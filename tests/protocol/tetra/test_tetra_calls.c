@@ -1744,6 +1744,58 @@ test_cell_change_forgets_allocations(void) {
     session_close(&s);
 }
 
+/* The cells of a network may share a colour code, so a BSCH does not tell every change of cell: a SYSINFO naming
+ * another main carrier than the cell's (EN 300 392-2 clause 21.4.4.1: the main carrier is the cell's), or another
+ * location area, is another cell too, and forgets what a BSCH of another cell forgets before it is taken -- the records'
+ * channels, the heard speech's call, the partial TM-SDUs and the TDMA clock -- while the call records, the network's,
+ * stay in the same location area. The same cell's SYSINFO keeps it all. */
+static void
+test_sysinfo_tells_another_cell(void) {
+    session s = session_open();
+    session_history(&s);
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(120);
+    tetra_state_t* const ts = tetra_st(s.state);
+    ttb_block si = {0};
+    ttb_sysinfo(&si, 100, 4, 2, 77);
+    tetra_mac_parse_schd(si.bits, si.n, 25, s.opts, s.state);
+    assert(ts->dl_carrier_hz == CARRIER_HZ(100) && ts->la == 77 && ts->frames_sysinfo == 1U);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120); /* TN2 of the carrier being received */
+    speech(&s, 2);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && canonical(s.state).ota_target_id == 0x100u);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    ts->mac_frag[3].active = 1;
+    ts->mac_frag[3].nbits = 40;
+    ts->tdma_valid = 1;
+    ts->tn = 1;
+    ts->fn = 1;
+    ts->mn = 1;
+    tetra_mac_parse_schd(si.bits, si.n, 25, s.opts, s.state);
+    assert(c->alloc.timeslots == 4 && ts->mac_frag[3].active && ts->tdma_valid);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
+
+    ttb_block other = {0};
+    ttb_sysinfo(&other, 101, 4, 2, 77);
+    tetra_mac_parse_schd(other.bits, other.n, 25, s.opts, s.state);
+    assert(tetra_calls_peek(s.state, 0x0A) == c && c->alloc.timeslots == 0u && c->alloc_m <= 0.0);
+    assert(!ts->mac_frag[3].active && !ts->tdma_valid && !ts->calls.heard);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+    assert(ts->dl_carrier_hz == CARRIER_HZ(101) && ts->la == 77 && ts->sysinfo_known && ts->freq_band == 4);
+    tetra_publish(s.state); /* as the burst's end does */
+    assert(s.state->tetra_pub.cc_known && s.state->tetra_pub.cc_carrier == 101U);
+
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 130);
+    ts->mac_frag[3].active = 1;
+    ts->mac_frag[3].nbits = 40;
+    ttb_block area = {0};
+    ttb_sysinfo(&area, 101, 4, 2, 78);
+    tetra_mac_parse_schd(area.bits, area.n, 25, s.opts, s.state);
+    assert(tetra_calls_peek(s.state, 0x0A) == NULL && !ts->mac_frag[3].active && ts->la == 78);
+    session_close(&s);
+}
+
 /* Speech of the followed call, once its signalling proved it on its carrier, marks its canonical call's media and keeps
  * the state machine on it; speech that trails its D-TX CEASED opens nothing; and a followed call whose speech the
  * listener cannot decrypt is locked out and left while encrypted calls are not followed. */
@@ -2155,6 +2207,7 @@ main(void) {
     test_cell_change_forgets_sysinfo();
     test_cell_change_forgets_the_carrier();
     test_cell_change_forgets_allocations();
+    test_sysinfo_tells_another_cell();
     test_network_change_drops_calls();
     test_network_change_retires_the_followed_call();
     test_location_area_change_drops_calls();

@@ -763,11 +763,13 @@ tetra_mac_broadcast_decode(const uint8_t* bits, int nbits, tetra_mac_broadcast* 
     }
 }
 
-/* Cache SYSINFO. The control channel moves to the main carrier only when it is a valid frequency. */
+/* Cache SYSINFO, once a main carrier or location area other than the cell's has forgotten the last cell
+ * (tetra_bsch_sysinfo_cell()). The control channel moves to the main carrier only when it is a valid frequency. */
 static void
 apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
     tetra_state_t* const ts = b->ts;
     const long dl_hz = carrier_frequency_hz(si->main_carrier, si->band, si->offset);
+    tetra_bsch_sysinfo_cell(b->opts, b->state, dl_hz, si->mle_present, si->la);
     if (dl_hz > 0L) {
         ts->dl_carrier_hz = dl_hz;
         ts->freq_band = si->band;
@@ -841,12 +843,13 @@ parse_broadcast(mac_block* b, const uint8_t* bits, int nbits) {
         return bc.access_define.nbits;
     }
     if (bc.type == TETRA_MAC_BC_SYSINFO && b->first) {
-        b->ts->frames_sysinfo++;
         if (complete) {
             report_sysinfo(b, &bc.sysinfo);
         } else {
             TETRA_LOG_PAYLOAD(b->ts, "[TETRA SYSINFO] CC=%d  too short (%d bits)\n", b->cc, nbits);
         }
+        /* Counted once it is taken: a SYSINFO of another cell first forgets the last cell's. */
+        b->ts->frames_sysinfo++;
         return nbits;
     }
     /* A SYSINFO behind another PDU is not a pi/4-DQPSK SYSINFO; SYSINFO-DA and the reserved type have no length

@@ -219,7 +219,7 @@ void tetra_calls_forget_carrier(dsd_state* state);
 void tetra_calls_forget_trunked_carrier(dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief A BSCH named another cell of the network: the records stay, as the network's calls go on across its cells, but
+ * @brief A BSCH or SYSINFO named another cell of the network (tetra_bsch.h): the records stay, as the network's calls go on across its cells, but
  * what each holds of the last cell goes. A channel allocation names a carrier number and timeslots of the cell that
  * made it (EN 300 392-2 clause 21.5.2), which another cell may give any call, and an event label or usage marker is
  * valid on one channel of one cell (clauses 23.4.1.2.3, 23.5.5). So no speech on a channel the last cell allocated
