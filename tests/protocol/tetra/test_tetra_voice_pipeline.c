@@ -1021,6 +1021,41 @@ test_muted_call_holds_no_timeslot(void) {
     fixture_close(&f);
 }
 
+/* Speech no call record names has no identity but its timeslot, and each timeslot is a traffic channel of its own
+ * (EN 300 392-2 clause 9.4.2.2), so the speech in progress starts over when the heard speech moves to another one. Not
+ * trunking: TN2's clear speech starts a decoder, then its encrypted speech, muted, keeps TN2 heard while its hold runs
+ * out; after clear signalling on TN3 its first burst, whose CRC fails, is heard but conceals nothing with TN2's
+ * decoder, and TN3's first good burst starts a decoder of its own. */
+static void
+test_timeslot_change_resets_speech(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "timeslot: fixture");
+    dsd_decode_clock_use_test(1000000000000ULL);
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    tetra_voice_reorder_full(full, full_frames);
+    tetra_state_t* const ts = tetra_st(f.state);
+
+    expect(played_on(&f, 2, 1000.0) == 2 * FRAME, "timeslot: TN2's clear speech plays");
+    ts->calls.slot_enc[2] = 1u + TETRA_ENC_MODE_ODD;
+    expect(played_on(&f, 2, 1000.5) == 0 && played_on(&f, 2, 1001.1) == 0, "timeslot: TN2's encrypted speech is muted");
+    expect(voice_of(&f)->confirmed == 1 && ts->calls.heard_tn == 2, "timeslot: and keeps TN2 heard");
+
+    ts->calls.slot_enc[3] = 1u + TETRA_ENC_MODE_NONE;
+    ts->tn = 3;
+    dsd_decode_clock_test_set_ns(1001200000000ULL);
+    static int16_t out[MAX_OUT];
+    const size_t before = fixture_output(&f, out, MAX_OUT);
+    tetra_voice_full_slot(f.opts, f.state, full, 0);
+    expect(fixture_output(&f, out, MAX_OUT) == before, "timeslot: TN3's bad first burst conceals nothing of TN2");
+    expect(voice_of(&f)->confirmed == 0 && voice_of(&f)->codec == NULL, "timeslot: TN3's speech starts over");
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, before, 1, full_frames, 0, FRAME, "timeslot: TN3's speech from its own first decode");
+    dsd_decode_clock_use_system();
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_clean_stream_plays_every_frame();
@@ -1037,6 +1072,7 @@ main(void) {
     test_network_change_resets_speech();
     test_call_identifier_change_resets_speech();
     test_muted_call_holds_no_timeslot();
+    test_timeslot_change_resets_speech();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

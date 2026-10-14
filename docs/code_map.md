@@ -4687,13 +4687,15 @@ single "current call".
   full slot's frame A takes KSS(0..136) and frame B KSS(137..273), a half slot's frame KSS(216..352)). Only the
   encrypted values (2 and 3) of the encryption mode element are encrypted; 1 is reserved. The speech in progress (the
   codec's decoder state, the speech's integrity and its unplayed samples) belongs to one transmission: a burst of speech
-  of another kind, call identifier or target, of another transmitting party (the call's talker, which D-TX GRANTED and
+  of another kind, call identifier or target, on another timeslot (each a traffic channel of its own, EN 300 392-2
+  clause 9.4.2.2; speech no record names has no other identity), of another transmitting party (the call's talker, which D-TX GRANTED and
   D-TX INTERRUPT name, or the direct mode source; a party not known on either side is no change, as for the canonical
   call), or the first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, the state
   machine leaving the call, another call published, the call records forgotten), starts over (`voice_bind()` in
   `tetra_voice.c`), so nothing of one transmission plays under the next one's record policy and no bad opening frame is
-  concealed with another call's or talker's codec state; the call identifier tells two calls of one group apart at the
-  second's first burst, which publishes nothing when its CRC fails. A D-INFO or D-CALL RESTORE renaming the call keeps
+  concealed with another call's, timeslot's or talker's codec state; the call identifier and the timeslot tell two
+  transmissions apart at the second's first burst, which publishes nothing when its CRC fails. The kind tells direct
+  mode from trunked mode; downlink or uplink is the session's (`--tetra-uplink`). A D-INFO or D-CALL RESTORE renaming the call keeps
   its speech (`tetra_voice_call_renamed()`).
 - Canonical calls. Slot 0, the TETRA synctype as protocol. The followed call publishes from its CRC-passed signalling
   once the carrier is proven and its tune settled, until its transmission ceased: a group call's called group as
@@ -4738,7 +4740,7 @@ an individual call's two parties, speech publication, the receiving carrier), `T
 digest), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, an
 individual call's speech judged by both parties, muted speech that holds no timeslot, the
-derived key stream, the speech starting over at call boundaries, another call identifier and another network, and
+derived key stream, the speech starting over at call boundaries, another call identifier, another timeslot and another network, and
 going on across a rename), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`,
 `CORE_ACCESS_CODE`.
 

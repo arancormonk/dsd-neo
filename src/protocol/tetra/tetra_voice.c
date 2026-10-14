@@ -278,19 +278,21 @@ voice_speech_reset(tetra_voice_t* v) {
 }
 
 /* The speech in progress belongs to one transmission. Speech of another call (another kind, call identifier or
-   target), of another transmitting party (D-TX GRANTED or D-TX INTERRUPT naming another talker, another direct mode
-   source; a party not known on either side is no change, as for the canonical call), or after a TETRA call ended (a
-   release, D-TX CEASED, the state machine leaving it, another call published), starts over: no samples, codec state or
-   confirmation of one transmission reach the next or its record policy. The call identifier tells two calls of the same
-   group apart at the first burst of the second, before anything of it was published: a burst whose CRC failed
-   publishes nothing. */
+   target), on another timeslot (each timeslot of a carrier is a traffic channel of its own, EN 300 392-2 clause
+   9.4.2.2: the speech no call record names included, which has no other identity), of another transmitting party (D-TX
+   GRANTED or D-TX INTERRUPT naming another talker, another direct mode source; a party not known on either side is no
+   change, as for the canonical call), or after a TETRA call ended (a release, D-TX CEASED, the state machine leaving
+   it, another call published), starts over: no samples, codec state or confirmation of one transmission reach the next
+   or its record policy. The call identifier and the timeslot tell two transmissions apart at the first burst of the
+   second, before anything of it was published: a burst whose CRC failed publishes nothing. The kind tells direct mode
+   from trunked mode, and whether trunked mode is the downlink or the uplink is the session's (--tetra-uplink). */
 static void
 voice_bind(tetra_state_t* ts, const tetra_speech* sp) {
     tetra_voice_t* const v = &ts->voice;
     const uint16_t call_id = sp->kind == TETRA_SPEECH_CALL ? sp->call_id : 0U;
     const int other_party = v->owner_source != 0u && sp->source != 0u && v->owner_source != sp->source;
-    if (v->bound && v->owner_kind == sp->kind && v->owner_call_id == call_id && v->owner_target == sp->target
-        && v->owner_ends == ts->calls.ends && !other_party) {
+    if (v->bound && v->owner_kind == sp->kind && v->owner_call_id == call_id && v->owner_tn == sp->tn
+        && v->owner_target == sp->target && v->owner_ends == ts->calls.ends && !other_party) {
         if (sp->source != 0u) {
             v->owner_source = sp->source;
         }
@@ -300,6 +302,7 @@ voice_bind(tetra_state_t* ts, const tetra_speech* sp) {
     v->bound = 1;
     v->owner_kind = sp->kind;
     v->owner_call_id = call_id;
+    v->owner_tn = sp->tn;
     v->owner_target = sp->target;
     v->owner_source = sp->source;
     v->owner_ends = ts->calls.ends;
