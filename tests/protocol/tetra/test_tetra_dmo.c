@@ -398,6 +398,34 @@ test_occupied_keeps_the_setup_class(void) {
     apply_call_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_OCCUPIED, 0);
     CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR, "and its own clear DM-OCCUPIED opens it again");
     free_state(st);
+
+    /* A DMAC-SYNC through a gateway that names no source (source address type 10, which EN 300 396-5 clause
+     * 13.5.2.1.1 keeps for gateway-specific messages): DM-OCCUPIEDs that name none go on with the transmission. */
+    st = new_state();
+    bitw w;
+    bw_reset(&w);
+    put(&w, 10, 0x155); /* gateway address */
+    put(&w, 4, 0);      /* fill bit, fragmentation flag, frame countdown */
+    put(&w, 2, 0);
+    put(&w, 24, 0x800001);
+    put(&w, 2, 2); /* no source address */
+    put(&w, 24, 0xBC4939);
+    put(&w, 5, TETRA_DMO_MSG_OCCUPIED);
+    call_elements(&w, 0, 0, 1);
+    tetra_dmo_sync_h_t h;
+    DSD_MEMSET(&s, 0, sizeof(s));
+    s.parsed = 1;
+    s.comm_type = 2;
+    (void)tetra_dmo_parse_sync_h(w.bits, 2, &h);
+    CHECK(h.has_addrs && h.src_type == 2u, "a gateway DM-OCCUPIED that names no source");
+    tetra_dmo_apply_sync(st, &s, &h);
+    const uint32_t gw_seq = tetra_st(st)->dmo_tx_seq;
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR, "is a clear transmission");
+    (void)tetra_dmo_parse_sync_h(w.bits, 2, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
+    CHECK(tetra_st(st)->dmo_tx_seq == gw_seq && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR,
+          "and the next one goes on with it");
+    free_state(st);
 }
 
 /* A DM-REP presence signal has its own SCH/S layout (EN 300 396-4 table 2). Read with the DMAC-SYNC layout, this one

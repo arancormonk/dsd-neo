@@ -1362,8 +1362,9 @@ dmo_source_seed(const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
 }
 
 /* DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED protected as @p crypt. One from another source than the transmission in
- * progress, or with none in progress, starts a transmission, and so does a set-up that gives another class; one that
- * repeats the set-up's class goes on with it. A DM-OCCUPIED shall carry the class of the DM-SETUP or DM-CONNECT ACK
+ * progress (one that names none, which EN 300 396-5 clause 13.5.2.1.1 keeps for gateway-specific messages, is the same
+ * as another that names none), or with none in progress, starts a transmission, and so does a set-up that gives another
+ * class; one that repeats the set-up's class goes on with it. A DM-OCCUPIED shall carry the class of the DM-SETUP or DM-CONNECT ACK
  * that initiated its transmission (clause 8.5.3): one that agrees confirms it, which opens what an unread DMAC-SYNC
  * sealed; one that contradicts it leaves the more closed of the two, so it never opens speech its set-up closed. */
 static void
@@ -1372,7 +1373,7 @@ dmo_apply_setup(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_
     const tetra_dmo_crypt_e tx = (tetra_dmo_crypt_e)ts->dmo_tx_crypt;
     const uint32_t seed = dmo_source_seed(s, h);
     const int occupied = h->msg_type == TETRA_DMO_MSG_OCCUPIED;
-    if (tx == TETRA_DMO_CRYPT_UNKNOWN || seed == 0U || seed != ts->dmo_tx_seed || (!occupied && crypt != tx)) {
+    if (tx == TETRA_DMO_CRYPT_UNKNOWN || seed != ts->dmo_tx_seed || (!occupied && crypt != tx)) {
         dmo_learn_dcc(ts, s, h);
         dmo_start_transmission(ts, crypt, seed);
         return;
