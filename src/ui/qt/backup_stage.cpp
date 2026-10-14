@@ -320,6 +320,15 @@ sweep_stale_staging() {
     }
 }
 
+bool
+discard_staging(const QString& stagingDir) {
+    const DataRoot root;
+    if (!staging_dir_ok(root, stagingDir)) {
+        return false;
+    }
+    return !entry_exists(stagingDir) || root.removeEntry(stagingDir);
+}
+
 QVariantMap
 read_result_file() {
     const DataRoot root;

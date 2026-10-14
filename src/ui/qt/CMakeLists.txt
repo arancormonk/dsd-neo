@@ -29,6 +29,7 @@ target_sources(
         backup_archive_build.cpp
         backup_archive_parse.cpp
         backup_archive_rules.cpp
+        backup_model.cpp
         backup_stage.cpp
         call_history_filter.cpp
         call_history_model.cpp

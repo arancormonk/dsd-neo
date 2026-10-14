@@ -22,6 +22,7 @@
 
 #include "app_prefs.h"
 #include "backup_apply.h"
+#include "backup_model.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"
 #include "command_bridge.h"
@@ -173,7 +174,6 @@ apply_confirmed_restore(const DecoderHost* host) {
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
-    (void)restoreOutcome; // reported once the backup screen is wired
     load_fonts(engine.rootContext());
 
     auto* metrics = new MetricsModel(&engine);
@@ -182,6 +182,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     DiagnosticsLog::installTap();
     auto* diagnostics = new DiagnosticsLogModel(nullptr, &engine);
     auto* prefs = new AppPrefs(&engine);
+    auto* backupModel = new BackupModel(host, restoreOutcome, &engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
     (void)systems->migrateCachedReplayFiles(host);
@@ -244,6 +245,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("commands"), commands);
     context->setContextProperty(QStringLiteral("uiController"), controller);
     context->setContextProperty(QStringLiteral("prefs"), prefs);
+    context->setContextProperty(QStringLiteral("backup"), backupModel);
     context->setContextProperty(QStringLiteral("decryptionProfiles"), decryptionProfiles);
     context->setContextProperty(QStringLiteral("sessionArgs"), sessionArgs);
     context->setContextProperty(QStringLiteral("savedSystems"), systems);

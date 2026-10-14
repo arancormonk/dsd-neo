@@ -87,6 +87,12 @@ bool pending_committed();
 /** Remove every `<root>/restore-staging-*`. Only while no staging job runs. */
 void sweep_stale_staging();
 
+/**
+ * Remove one staging_dir_for_job() directory (a cancelled job's), never following a link inside it. False when
+ * @p stagingDir is not such a directory or something of it stays; true when none is left.
+ */
+bool discard_staging(const QString& stagingDir);
+
 /** What a test makes a named apply step do. */
 enum class Fault {
     None,
