@@ -4359,7 +4359,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   `KnownFrequencyIndex` caches saved frequencies and referenced CSVs, rebuilding on model
   or file changes; Signal search, Spectrum and Live Exploring look up labels without
   reading files during rendering. Exact matches win, nearest matches use half the smaller
-  applicable channel width/spacing, and ties remain ambiguous. Saving uses an immutable
+  applicable channel width/spacing, and ties remain ambiguous. A channel-map row that names
+  no mode or bandwidth of its own takes the width/spacing of the saved system or target row
+  that references the map, so an NXDN48 system's plain `Channel,Frequency` map keeps its
+  6.25 kHz channels (`UI_QT_SIGNAL_SEARCH`). Saving uses an immutable
   hit snapshot, including its original source settings and unresolved identity.
   `SignalSearchModel::systemForHit()` shapes the captured receiver settings as saved-system
   fields, each source only its own: an Airspy's native `airspy` map, or an RTL's `ppm`

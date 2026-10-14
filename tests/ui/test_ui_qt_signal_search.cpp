@@ -484,6 +484,19 @@ main(int argc, char** argv) {
     assert(index.lookup(118304000, 12500).isEmpty());
     assert(index.lookup(464100000, 12500).size() == 1);
     assert(index.lookup(464000000, 12500).size() == 2); // saved map and nested target map
+    // A channel map row without its own mode or bandwidth takes the saved system's channel width: an NXDN48 system's
+    // 6.25 kHz channels match within 3.125 kHz, not the 6.25 kHz a 12.5 kHz default would allow.
+    const QString narrowChannels = temp.filePath(QStringLiteral("nxdn48-channels.csv"));
+    f = dsd_fopen_private(narrowChannels.toUtf8().constData(), "wb");
+    assert(f);
+    const char narrowCsv[] = "Channel,Frequency\n1,465000000\n";
+    assert(fwrite(narrowCsv, 1, sizeof(narrowCsv) - 1, f) == sizeof(narrowCsv) - 1);
+    fclose(f);
+    assert(systems.add({{QStringLiteral("name"), QStringLiteral("NXDN48 site")},
+                        {QStringLiteral("decodeFlag"), QStringLiteral("-fi")},
+                        {QStringLiteral("chanCsvPath"), narrowChannels}}));
+    assert(index.lookup(465002000, 12500).size() == 1);
+    assert(index.lookup(465005000, 12500).isEmpty());
     // Cached lookup keeps working without any rendering-time file reads.
     QFile::remove(channels);
     assert(index.lookup(464000500, 12500).size() == 2);

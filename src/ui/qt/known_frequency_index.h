@@ -48,7 +48,7 @@ class KnownFrequencyIndex : public QObject {
     SavedSystemsModel* m_systems;
     ScanListsModel* m_lists;
     void add(const QVariantMap& s, const QString& label);
-    void addCsv(const QString& path, const QVariantMap& s, const QString& label, int depth = 0);
+    void addCsv(const QString& path, const QVariantMap& s, const QString& label, double width, int depth = 0);
 };
 } // namespace dsd_qt
 #endif

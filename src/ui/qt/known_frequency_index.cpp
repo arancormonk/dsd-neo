@@ -25,7 +25,7 @@
 #include "scan_lists_model.h"
 
 namespace dsd_qt {
-static double knownWidth(const QString& mode, const QString& options);
+static double knownWidth(const QString& mode, const QString& options, double inherited = 12500);
 
 static QStringList
 csvFields(const QString& line) {
@@ -89,27 +89,28 @@ KnownFrequencyIndex::KnownFrequencyIndex(SavedSystemsModel* systems, ScanListsMo
 
 void
 KnownFrequencyIndex::add(const QVariantMap& s, const QString& label) {
+    double width =
+        s.value(QStringLiteral("channelBandwidthHz"),
+                knownWidth(s.value(QStringLiteral("decodeFlag"), s.value(QStringLiteral("protocol"))).toString(),
+                           s.value(QStringLiteral("extraArgs")).toString()))
+            .toDouble();
+    if (!std::isfinite(width) || width <= 0 || width > 200000) {
+        width = 12500;
+    }
+    double step = s.value(QStringLiteral("stepHz"), width).toDouble();
+    if (std::isfinite(step) && step > 0) {
+        width = std::min(step, width);
+    }
     qint64 hz = parseFrequency(s.value(QStringLiteral("freqMhz")).toString(), true);
     if (hz) {
-        double width =
-            s.value(QStringLiteral("channelBandwidthHz"),
-                    knownWidth(s.value(QStringLiteral("decodeFlag"), s.value(QStringLiteral("protocol"))).toString(),
-                               s.value(QStringLiteral("extraArgs")).toString()))
-                .toDouble();
-        if (!std::isfinite(width) || width <= 0 || width > 200000) {
-            width = 12500;
-        }
-        double step = s.value(QStringLiteral("stepHz"), width).toDouble();
-        if (std::isfinite(step) && step > 0) {
-            width = std::min(step, width);
-        }
         m_entries.append({hz,
                           width,
                           {{QStringLiteral("name"), label},
                            {QStringLiteral("frequencyHz"), hz},
                            {QStringLiteral("systemUid"), s.value(QStringLiteral("uid"))}}});
     }
-    addCsv(s.value(QStringLiteral("chanCsvPath")).toString(), s, label);
+    /* The system's channel map lists its channels: a row that names no mode or bandwidth of its own has its width. */
+    addCsv(s.value(QStringLiteral("chanCsvPath")).toString(), s, label, width);
 }
 
 namespace {
@@ -139,9 +140,10 @@ csvColumns(const QStringList& fields) {
 }
 } // namespace
 
+/* A channel's width from its mode and options; @p inherited when it names no mode and no bandwidth. */
 static double
-knownWidth(const QString& mode, const QString& options) {
-    double width = 12500;
+knownWidth(const QString& mode, const QString& options, double inherited) {
+    double width = mode.isEmpty() ? inherited : 12500;
     if (mode == QStringLiteral("am") || mode == QStringLiteral("am-conventional") || mode == QStringLiteral("-fM")) {
         width = 6000;
     } else if (mode.startsWith(QLatin1String("nxdn48")) || mode == QStringLiteral("-fi")) {
@@ -162,7 +164,7 @@ knownWidth(const QString& mode, const QString& options) {
 }
 
 void
-KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QString& label, int depth) {
+KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QString& label, double width, int depth) {
     if (path.isEmpty()) {
         return;
     }
@@ -200,13 +202,14 @@ KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QSt
         if (!channel.isEmpty()) {
             name += QStringLiteral(" / ") + channel;
         }
+        const double rowWidth = knownWidth(fields.value(columns.mode), fields.value(columns.options), width);
         m_entries.append({hz,
-                          knownWidth(fields.value(columns.mode), fields.value(columns.options)),
+                          rowWidth,
                           {{QStringLiteral("name"), name},
                            {QStringLiteral("frequencyHz"), hz},
                            {QStringLiteral("systemUid"), s.value(QStringLiteral("uid"))}}});
         if (depth == 0 && !fields.value(columns.channels).isEmpty()) {
-            addCsv(QDir(directory).filePath(fields[columns.channels]), s, name, depth + 1);
+            addCsv(QDir(directory).filePath(fields[columns.channels]), s, name, rowWidth, depth + 1);
         }
     }
 }
@@ -230,7 +233,7 @@ KnownFrequencyIndex::rebuild() {
                     add(s, name + QStringLiteral(" / ") + s.value(QStringLiteral("name")).toString());
                 }
             }
-            addCsv(list.value(QStringLiteral("targetsCsvPath")).toString(), list, name);
+            addCsv(list.value(QStringLiteral("targetsCsvPath")).toString(), list, name, 12500);
         }
     }
     std::sort(m_entries.begin(), m_entries.end(), [](const Entry& a, const Entry& b) { return a.hz < b.hz; });
