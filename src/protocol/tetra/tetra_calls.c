@@ -1061,6 +1061,7 @@ dmo_call_forget(tetra_dmo_call_t* d) {
     d->src = 0u;
     d->dst = 0u;
     d->active = 0;
+    d->in_tx = 0;
     d->addressed = 0;
     d->group = 0;
     d->group_known = 0;
@@ -1140,11 +1141,18 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
 /* The direct mode call canonical slot 0 shows ends when the channel's traffic is another transmission's now
  * (tetra_state_t::dmo_tx_seq): a transmission keeps its source and security class (EN 300 396-3 clauses 8.2.4,
  * 8.5.3), so what describes another is another call, which an identity the two calls do not both know could not tell
- * apart. 1 when the call on the channel is the transmission in progress's. */
+ * apart. A call its set-up announced before any transmission began (DM-SETUP PRES, whose DM-CONNECT ACK from the same
+ * calling party starts the traffic, clause 6.2; DM-GSETUP) takes the first transmission of @p src, the source of the
+ * PDU that describes it now (0 when none is known), as its own. 1 when the call on the channel is the transmission in
+ * progress's. */
 static int
-dmo_call_of_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+dmo_call_of_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint32_t src) {
     tetra_dmo_call_t* const d = &ts->calls.dmo;
     if (d->tx_seq == ts->dmo_tx_seq) {
+        return 1;
+    }
+    if (!d->in_tx && d->active && src != 0u && d->src == src) {
+        d->tx_seq = ts->dmo_tx_seq;
         return 1;
     }
     if (ts->calls.published == TETRA_PUB_DMO) {
@@ -1165,9 +1173,10 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
     if (!h->has_addrs) {
         /* DM-2-C encrypts the addresses and the message type too: an encrypted transmission, of no one known. */
         if (sync_enc_state == TETRA_DMO_AIE_DM2C) {
-            (void)dmo_call_of_transmission(opts, state, ts);
+            (void)dmo_call_of_transmission(opts, state, ts, 0u);
             dmo_call_forget(d);
             d->active = 1;
+            d->in_tx = (uint8_t)(ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
             d->seen_m = dsd_decode_now_mono_s();
             dmo_publish(opts, state, ts);
         }
@@ -1175,8 +1184,9 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
     }
     switch (dmo_pdu_kind(h)) {
         case DMO_PDU_CALL:
-            (void)dmo_call_of_transmission(opts, state, ts);
+            (void)dmo_call_of_transmission(opts, state, ts, h->src);
             dmo_call_from(d, h);
+            d->in_tx = (uint8_t)(d->in_tx || ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
             d->seen_m = dsd_decode_now_mono_s();
             dmo_publish(opts, state, ts);
             break;
@@ -1194,7 +1204,7 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
 void
 tetra_calls_dmo_protection(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
-    if (ts && calls_carrying(state, ts, TETRA_PUB_DMO, 0U) && dmo_call_of_transmission(opts, state, ts)) {
+    if (ts && calls_carrying(state, ts, TETRA_PUB_DMO, 0U) && dmo_call_of_transmission(opts, state, ts, 0u)) {
         calls_reclassify(opts, state, dmo_crypto_state(state));
     }
 }

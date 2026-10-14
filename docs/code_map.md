@@ -4738,7 +4738,9 @@ single "current call".
   identity), ends it at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT and DM-GRELEASE, after `TETRA_CALL_DMO_IDLE_S`
   without a PDU or speech of it, and when the channel's traffic is another transmission's (`dmo_tx_seq`,
   `dmo_call_of_transmission()`): a transmission keeps its source and class, so one of another class is another call
-  even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way). The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
+  even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way). A call
+  its set-up announced before any transmission began (DM-SETUP PRES, whose calling party's DM-CONNECT ACK starts the
+  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its source as its own. The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
   `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
   family.
 - Direct mode protection (`tetra_dmo.c`, `tetra_state_t::dmo_crypt`, `tetra_dmo_call_crypt()`) is that of the traffic

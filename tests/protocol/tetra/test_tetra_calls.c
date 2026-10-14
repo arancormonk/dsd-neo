@@ -1067,6 +1067,29 @@ dmo_dsb(session* s, uint8_t enc_state) {
     tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
 }
 
+/* dmo_dsb() with its SCH/H carrying message type @p msg_type in place of DM-OCCUPIED (bits 90..94 of the vector, after
+ * the addresses and the MNI); the message dependent elements read the same for DM-SETUP, DM-SETUP PRES and DM-CONNECT
+ * ACK (EN 300 396-3 tables 31, 32, 35). */
+static void
+dmo_dsb_msg(session* s, uint8_t enc_state, uint32_t msg_type) {
+    uint8_t bits[128];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_s, bits);
+    tetra_dmo_sync_s_t sync_s;
+    (void)tetra_dmo_parse_sync_s(bits, &sync_s);
+    sync_s.enc_state = enc_state;
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_h, bits);
+    for (int i = 0; i < 5; i++) {
+        bits[90 + i] = (uint8_t)((msg_type >> (4 - i)) & 1u);
+    }
+    tetra_dmo_sync_h_t sync_h;
+    (void)tetra_dmo_parse_sync_h(bits, 0, &sync_h);
+    assert(sync_h.has_addrs && sync_h.msg_type == msg_type && sync_h.src == 100u);
+    tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
+    tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
+}
+
 /* A DMAC-DATA of the channel with message type @p msg_type from @p src to @p dst. */
 static void
 dmo_data(session* s, uint8_t msg_type, uint32_t src, uint32_t dst, uint64_t sds_value) {
@@ -1125,7 +1148,8 @@ test_direct_mode_calls(void) {
 /* A direct mode transmission keeps its source and security class (EN 300 396-3 clauses 8.2.4, 8.5.3), so one of
  * another class is another call even when neither call names the other's parties: a clear call after an encrypted DM-2-C
  * one whose end went unheard, and a DM-2-C call after a clear one, each open a canonical call of their own instead of
- * taking the last one's epoch, parties or crypto class. */
+ * taking the last one's epoch, parties or crypto class. A call announced before its transmission began is the call of
+ * that transmission. */
 static void
 test_direct_mode_transmissions_apart(void) {
     session s = session_open();
@@ -1145,6 +1169,24 @@ test_direct_mode_transmissions_apart(void) {
     call = canonical(s.state);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != clear && call.ota_source_id == 0u
            && call.ota_target_id == 0u && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    session_close(&s);
+
+    /* Set-up with presence check (EN 300 396-3 clause 6.2): DM-SETUP PRES announces the call, the called party's
+     * DM-CONNECT answers, and the calling party's DM-CONNECT ACK starts the traffic, which DM-OCCUPIED goes on with:
+     * one call, one canonical call. */
+    s = session_open();
+    session_history(&s);
+    dmo_dsb_msg(&s, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_SETUP_PRES);
+    dmo_dsb_msg(&s, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_SETUP_PRES);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 100u && call.ota_target_id == 0x800001u);
+    const uint64_t announced = call.epoch;
+    dmo_dsb_msg(&s, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_CONNECT_ACK);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == announced && call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    dmo_dsb_msg(&s, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_OCCUPIED);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == announced);
     session_close(&s);
 }
 
