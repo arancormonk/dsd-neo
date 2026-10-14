@@ -56,6 +56,14 @@ dsd_neo_add_fuzzer(
 )
 
 dsd_neo_add_fuzzer(
+  dsd-neo_fuzz_crypto_backup_header
+  FUZZ_CRYPTO_BACKUP_HEADER
+  fuzz_crypto_backup_header.c
+  crypto_backup_header
+  dsd-neo_crypto
+)
+
+dsd_neo_add_fuzzer(
   dsd-neo_fuzz_core_csv_import
   FUZZ_CORE_CSV_IMPORT
   fuzz_core_csv_import.c
