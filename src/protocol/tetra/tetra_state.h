@@ -143,7 +143,7 @@ enum {
  * and the digest of every element (tetra_dmo_sync_h_t::sdu_digest). */
 typedef struct {
     uint64_t value;    /**< user data or status: its first 64 bits */
-    uint32_t digest;   /**< the DM-SDU's digest, over sdu_bits bits */
+    uint32_t digest;   /**< the DM-SDU's digest (tetra_dmo_sync_h_t::sdu_digest), its FCS left out */
     uint32_t src;      /**< source address */
     uint32_t dst;      /**< destination address; 0 when DM-2-B hides it */
     uint16_t length;   /**< user data length in bits */

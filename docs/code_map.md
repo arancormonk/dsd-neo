@@ -4685,8 +4685,9 @@ single "current call".
   control notices, once the carrier is proven (`tetra_calls_notice()`); direct mode short data becomes a data notice,
   a repeat within 10 s not again: a repeat is the same message (`tetra_dmo_sds_key`: message type, source,
   destination, short data type, user data length, and the whole DM-SDU, its first 64 bits of user data and the digest
-  of every element the parser read, `tetra_dmo_sync_h_t::sdu_digest`), so a pre-coded status and user data of the same
-  value, or two long messages that share their first 64 bits, are two notices. Its DM-SDU's FCS, when the FCS flag says it has one, is tested first (EN 300 396-3
+  of every element the parser read but an FCS that ends them, `tetra_dmo_sync_h_t::sdu_digest`: over that FCS too the
+  CRC would be its residue, the same for every message whose FCS is right), so a pre-coded status and user data of the
+  same value, or two long messages that share their first 64 bits, with an FCS or without, are two notices. Its DM-SDU's FCS, when the FCS flag says it has one, is tested first (EN 300 396-3
   clauses 6.3.4 and 9.7.10, annex B: the CRC of `tetra_llc_fcs32()` over the DM-SDU elements before it; the parser
   records the verdict, `tetra_dmo_sync_h_t::fcs_state`): short data whose FCS fails, or whose DM-SDU the block ends in
   before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does

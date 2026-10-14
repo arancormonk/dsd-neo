@@ -1257,6 +1257,22 @@ test_direct_mode_short_data_repeats(void) {
     pushes = history->push_seq;
     send_dmo_sds(&s, 200u, 300u, 3u, data, 99, 99, 0, -1);
     assert(history->push_seq == pushes);
+
+    /* With an FCS (annex B) each: two messages that differ only in their last bits, past the first 64, are two as well,
+       and a repeat of the second is still a repeat. A CRC over the data and its own valid FCS is the same residue for
+       every message, so the FCS adds nothing that tells them apart. */
+    DSD_MEMSET(data, 0, sizeof data);
+    bits_of_value(data, 0x5A5A5A5Au, 32);
+    send_dmo_sds(&s, 200u, 300u, 3u, data, 100, 100, 1, -1);
+    assert(history->push_seq > pushes);
+    pushes = history->push_seq;
+    data[98] = 1u;
+    data[99] = 1u;
+    send_dmo_sds(&s, 200u, 300u, 3u, data, 100, 100, 1, -1);
+    assert(history->push_seq > pushes);
+    pushes = history->push_seq;
+    send_dmo_sds(&s, 200u, 300u, 3u, data, 100, 100, 1, -1);
+    assert(history->push_seq == pushes);
     session_close(&s);
 }
 

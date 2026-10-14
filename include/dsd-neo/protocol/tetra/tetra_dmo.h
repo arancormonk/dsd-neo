@@ -194,8 +194,10 @@ typedef struct {
     uint32_t mni;       /* 24 bits: MCC(10) || MNC(14) */
     uint32_t e[TETRA_DMO_E_COUNT];
     uint64_t sds_value; /* DM-SDU: user defined data 1 to 3, pre-coded status, or the first 64 bits of data 4 */
-    /* DM-SDU: every element read in the clear, FCS included, as its sdu_bits bits and their CRC-32 (tetra_llc_fcs32()),
-     * which tells two messages apart wherever they differ; 0 when the DM-SDU was not read (encrypted, or none). */
+    /* DM-SDU: every element read in the clear, as its sdu_bits bits (an FCS that ends them included), and the CRC-32
+     * (tetra_llc_fcs32()) of those elements but that FCS, which tells two messages apart wherever they differ: over the
+     * FCS as well it would be the CRC's residue, the same for every message whose FCS is right. 0 when the DM-SDU was
+     * not read (encrypted, or none). */
     uint32_t sdu_digest;
     uint16_t sdu_bits;
     char external[25]; /* DM-SDU: external subscriber number */

@@ -439,6 +439,18 @@ dmo_check_fcs(const tetra_bit_reader* r, int sdu_start, tetra_dmo_sync_h_t* h) {
     h->fcs_state = (uint8_t)(expected == h->e[TETRA_DMO_E_FCS] ? TETRA_DMO_FCS_PASSED : TETRA_DMO_FCS_FAILED);
 }
 
+/* The digest of the h->sdu_bits DM-SDU bits read from bit `sdu_start` of `r` (tetra_dmo_sync_h_t::sdu_digest). An
+ * FCS that ends a whole DM-SDU is left out: the CRC of annex B over data followed by its own FCS is the CRC's residue,
+ * the same for every message whose FCS is right, and the elements before it say all the FCS does. */
+static void
+dmo_digest_sdu(const tetra_bit_reader* r, int sdu_start, tetra_dmo_sync_h_t* h) {
+    int bits = (int)h->sdu_bits;
+    if (h->e[TETRA_DMO_E_FCS_FLAG] && h->sdu_state == TETRA_DMO_SDU_CLEAR && bits >= 32) {
+        bits -= 32;
+    }
+    h->sdu_digest = bits > 0 ? tetra_llc_fcs32(r->bits + sdu_start, bits) : 0u;
+}
+
 /* The elements after the message type of a PDU read under air interface encryption state `enc`. */
 static void
 dmo_parse_elems(tetra_bit_reader* r, uint8_t enc, tetra_dmo_sync_h_t* h) {
@@ -467,7 +479,7 @@ dmo_parse_elems(tetra_bit_reader* r, uint8_t enc, tetra_dmo_sync_h_t* h) {
     }
     /* The reader stops at the element the block ended in, so a truncated DM-SDU digests the elements before it. */
     h->sdu_bits = (uint16_t)(r->pos - sdu_start);
-    h->sdu_digest = h->sdu_bits > 0u ? tetra_llc_fcs32(r->bits + sdu_start, h->sdu_bits) : 0u;
+    dmo_digest_sdu(r, sdu_start, h);
     dmo_check_fcs(r, sdu_start, h);
 }
 

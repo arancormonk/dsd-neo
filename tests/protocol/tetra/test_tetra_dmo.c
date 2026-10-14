@@ -816,8 +816,21 @@ test_short_data(void) {
           "the FCS over the DM-SDU elements passes");
     CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) > 0 && strstr(desc, "FCS failed") == NULL,
           "a passing FCS is not reported failed");
-    CHECK(h.sdu_bits == fcs_at + 32 - sdu_start && h.sdu_digest == tetra_llc_fcs32(w.bits + sdu_start, h.sdu_bits),
-          "the DM-SDU digest covers every element, the FCS included");
+    CHECK(h.sdu_bits == fcs_at + 32 - sdu_start && h.sdu_digest == good_fcs
+              && h.sdu_digest == tetra_llc_fcs32(w.bits + sdu_start, fcs_at - sdu_start),
+          "the DM-SDU digest covers every element before the FCS");
+    /* Over the FCS too it would be the CRC's residue, the same for every message whose FCS passes. */
+    const uint32_t residue = tetra_llc_fcs32(w.bits + sdu_start, h.sdu_bits);
+    w.bits[fcs_at - 1] ^= 1u;
+    w.at = fcs_at;
+    put(&w, 32, tetra_llc_fcs32(w.bits + sdu_start, fcs_at - sdu_start));
+    tetra_dmo_sync_h_t other;
+    CHECK(tetra_dmo_parse_sync_h(w.bits, 2, &other) == 1 && other.fcs_state == TETRA_DMO_FCS_PASSED
+              && tetra_llc_fcs32(w.bits + sdu_start, other.sdu_bits) == residue && other.sdu_digest != h.sdu_digest,
+          "two messages whose FCS passes have digests of their own");
+    w.bits[fcs_at - 1] ^= 1u;
+    w.at = fcs_at;
+    put(&w, 32, good_fcs);
     w.bits[fcs_at - 1] ^= 1u; /* a bit error in the status the channel CRC let through */
     CHECK(tetra_dmo_parse_sync_h(w.bits, 2, &h) == 1 && h.fcs_state == TETRA_DMO_FCS_FAILED,
           "a bit error in the data fails the FCS");
