@@ -27,10 +27,16 @@
 #include <cmath>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/signal_search.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <utility>
@@ -234,6 +240,58 @@ testTickRetryWithoutInitialization(dsd_qt::KnownFrequencyIndex* index) {
     reopenAdmission();
     spin(300);
     assert(!startQueued());
+    desktop.enter(dsd_qt::DecoderHost::Idle);
+    dsd_app_frontend_runtime_stop();
+}
+
+/* The session a queued start names: the decoder (here with no receiver, so it rejects the start) publishes it. */
+uint64_t
+submittedSession() {
+    auto opts = std::make_unique<dsd_opts>();
+    auto state = std::make_unique<dsd_state>();
+    dsd_runtime_pump_controls(opts.get(), state.get());
+    dsd_state_ext_free_all(state.get());
+    dsd_signal_search_status status{};
+    dsd_app_signal_search_status_get(&status, nullptr, 0);
+    return status.session_id;
+}
+
+/* Publishes a paused search that holds the tuner as session @p session, and lets the model read it. */
+void
+publishPaused(dsd_qt::SignalSearchModel& search, uint64_t session, uint64_t revision) {
+    dsd_signal_search_status paused{};
+    paused.session_id = session;
+    paused.revision = revision;
+    paused.phase = DSD_SEARCH_PAUSED;
+    paused.owned = 1;
+    dsd_app_signal_search_publish(&paused, nullptr, nullptr);
+    search.refresh();
+}
+
+/* A Resume restarts a paused search under its own session, so its hits keep numbering on. A start after a Stop is a
+   new session even when the model's status, refreshed only every 250 ms, still shows the paused one: reusing that ID
+   would number the new session's hits from 1 again and overwrite the old session's history. */
+void
+testRestartAfterPausedStop(dsd_qt::KnownFrequencyIndex* index) {
+    SessionHost desktop;
+    dsd_qt::SignalSearchModel search(&desktop, index);
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    desktop.enter(dsd_qt::DecoderHost::Running);
+    publishPaused(search, 31, 9000);
+    assert(search.arm().isEmpty());
+    assert(startQueued() && submittedSession() == 31);
+
+    publishPaused(search, 32, 9100);
+    desktop.enter(dsd_qt::DecoderHost::Stopping);
+    dsd_app_frontend_runtime_stop(); // the decoder session's teardown, not yet seen by the model's status tick
+    desktop.enter(dsd_qt::DecoderHost::Idle);
+    assert(search.arm().isEmpty());
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    desktop.enter(dsd_qt::DecoderHost::Starting);
+    desktop.enter(dsd_qt::DecoderHost::Running);
+    assert(startQueued());
+    const uint64_t restarted = submittedSession();
+    assert(restarted != 0 && restarted != 32);
     desktop.enter(dsd_qt::DecoderHost::Idle);
     dsd_app_frontend_runtime_stop();
 }
@@ -592,6 +650,7 @@ main(int argc, char** argv) {
     testRunningEdgeWithoutInitialization(&index);
     testTickRetryWithoutInitialization(&index);
     testResumeWhileWindingDown(&index);
+    testRestartAfterPausedStop(&index);
     return 0;
 }
 

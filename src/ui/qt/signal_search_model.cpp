@@ -337,12 +337,19 @@ SignalSearchModel::arm() {
         return tr("Add a range before searching.");
     }
     m_pending = {};
+    /* A Resume restarts the paused search under its own session, so its hits keep numbering on. Only while that search
+       still holds the tuner in the running decoder session: m_status can be a status tick old, and a start after a Stop
+       that reused the ID would number its hits from 1 again and overwrite that session's history. */
+    dsd_signal_search_status live{};
+    dsd_app_signal_search_status_get(&live, nullptr, 0);
+    const uint64_t newest = std::max(m_session, live.session_id);
     m_pending.session_id = (uint64_t)(dsd_realtime_now_s() * 1000000);
-    if (m_pending.session_id <= m_session) {
-        m_pending.session_id = m_session + 1;
+    if (m_pending.session_id <= newest) {
+        m_pending.session_id = newest + 1;
     }
-    if (m_status.value(QStringLiteral("phase")).toInt() == DSD_SEARCH_PAUSED) {
-        m_pending.session_id = m_session;
+    if (live.phase == DSD_SEARCH_PAUSED && live.owned && m_host != nullptr
+        && m_host->sessionState() == DecoderHost::Running) {
+        m_pending.session_id = live.session_id;
     }
     int enabled = 0;
     for (const auto& v : m_ranges) {
