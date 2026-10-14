@@ -4530,7 +4530,10 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   outside trunk scan, from `live_scanner_main_loop()` under the P25 SM tick guard, at every pass and after every frame,
   withheld ones included, since a TETRA carrier syncs on every burst and the synced-frames loop may never hand back.
   The decoders never tick it. `tetra_sm_init()` runs at engine start. `carrier_boundary_release_followed()` abandons
-  a TUNED machine without tuning (`tetra_sm_abandon_carrier()`); `carrier_boundary_forget_evidence()` clears the
+  the machine without tuning (`tetra_sm_abandon_carrier()`) whenever it owns the return (`tetra_sm_owns_return()`), not
+  only while TUNED: a return of its own in flight rests it on the control channel with `trunk_is_tuned` already
+  released, and that request failing later would put the call left back onto the operator's carrier;
+  `carrier_boundary_forget_evidence()` clears the
   evidence (`tetra_confirm_reset()`), and `dsd_engine_forget_carrier_decoding()` and the no-carrier reset
   (`no_carrier_reset_decode_state()`) forget the carrier (`tetra_forget_carrier()`). While the machine owns the return
   (`tetra_sm_owns_return()`: TUNED, a tune in flight and a grant still waiting for its first speech included, or a
@@ -4540,18 +4543,21 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   timeout still keeps, or drop the follow where no control channel is known. Otherwise `no_carrier_finish_cc_return()`
   reconciles an accepted return (`tetra_sm_on_external_cc_return()`: ON_CC, no tune); when it cleared the voice state
   without a return (the P25 helper failed, or no control channel) a TUNED machine drops its call where the receiver
-  is; a return that failed or was deferred never gets there and leaves the call. The manual Return to CC in
-  `app_command_queue.c` hands the machine over the same way.
+  is; a return that failed or was deferred never gets there and leaves the call. Every manual tune in
+  `app_command_queue.c` that moves the receiver under trunking (Return to CC, a skip or lockout returning to the
+  control channel, a control channel candidate or channel cycle) hands the machine over the same way once the calls
+  are ended (`hand_tetra_sm_over()`), a tune or return of its own in flight included, so the request failing later
+  puts nothing back.
 - Synctypes. `DSD_SYNC_IS_TRUNKABLE` includes TETRA, which offers the Qt "Follow this system" control on a TETRA
   carrier; direct mode shares the sync words, and there the state machine finds no control channel and follows
   nothing. `DSD_SYNC_IS_INVERTED` includes the negative TETRA syncs.
 
 Tests: `TETRA_TRUNK_SM` (the state machine per session against stand-in tuning hooks), `ENGINE_TETRA_TRUNK` (the
-engine tick, the carrier boundary and the no-carrier pass with the real machine, which returns at its own deadlines and
-settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
+engine tick, the carrier boundary, a return in flight included, and the no-carrier pass with the real machine, which
+returns at its own deadlines and settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
 real machine's follow to it, with and without a control channel),
-`ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC, decode-mode
-change), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
+`ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC and the other
+manual tunes, a return in flight included, decode-mode change), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
 CRCs and given the colour code, a retune inside a burst; and, at compile time, the TETRA syncs in the two synctype
 macros), `TETRA_MAC_STATE`, `TETRA_CALLS` (grants through the call records against stand-in tuning hooks).
 

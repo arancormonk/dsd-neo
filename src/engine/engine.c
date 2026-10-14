@@ -2481,14 +2481,19 @@ carrier_boundary_takes_guard(dsd_carrier_boundary_kind kind) {
    policy allows. The shared release then drops trunk_is_tuned and the voice channel frequencies, so
    dsd_opts_trunk_vc_followed() stamps no frequency of the assignment left behind. The caller holds the P25 SM tick
    guard whenever a state machine can be ticking (carrier_boundary_takes_guard()), so the inspection below and the
-   teardown run inside the same hold as the watchdog's writes. */
+   teardown run inside the same hold as the watchdog's writes.
+
+   The TETRA state machine is let go of whenever it owns the return (tetra_sm_owns_return()), not only while TUNED: a
+   return of its own in flight left it resting on the control channel with trunk_is_tuned already released, yet a
+   failure of that request would put the call it left back, with its voice channel, onto the operator's carrier, and
+   its hangtime would then return to the old control channel. */
 static void
 carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind) {
     /* Trunk scan hands its carriers back itself. */
     const int release_machines = carrier_boundary_takes_guard(kind) && opts->trunk_scan_enabled != 1;
     int p25_tuned = 0;
     int dmr_tuned = 0;
-    int tetra_tuned = 0;
+    int tetra_owned = 0;
     p25_sm_ctx_t* p25 = NULL;
     dmr_sm_ctx_t* dmr = NULL;
     if (release_machines) {
@@ -2496,9 +2501,9 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
         dmr = dmr_sm_get_ctx();
         p25_tuned = p25_sm_get_state(p25) == P25_SM_TUNED;
         dmr_tuned = dmr->state == DMR_SM_TUNED;
-        tetra_tuned = tetra_sm_get_state(state) == TETRA_SM_TUNED;
+        tetra_owned = tetra_sm_owns_return(state);
     }
-    if (opts->trunk_is_tuned != 1 && !p25_tuned && !dmr_tuned && !tetra_tuned) {
+    if (opts->trunk_is_tuned != 1 && !p25_tuned && !dmr_tuned && !tetra_owned) {
         return;
     }
     if (p25_tuned) {
@@ -2507,7 +2512,7 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
     if (dmr_tuned) {
         dmr_sm_abandon_carrier(dmr, opts, state, "carrier-boundary");
     }
-    if (tetra_tuned) {
+    if (tetra_owned) {
         tetra_sm_abandon_carrier(opts, state);
     }
     dsd_engine_release_tuned_call_state(opts, state);

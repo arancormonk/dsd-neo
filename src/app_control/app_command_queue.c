@@ -3047,6 +3047,18 @@ hand_p25_sm_to_cc(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_r
     LOG_DEBUG("P25 SM CC handoff declined (source=%s result=%d)\n", source ? source : "unknown", (int)tune_result);
 }
 
+/* The TETRA trunking state machine likewise, once a manual tune moved the receiver and the calls were ended
+   (reset_call_tracking()): it lets go of the call it follows, which its next tick would otherwise release again with a
+   return of its own, and of a tune or return of its own still in flight (tetra_sm_owns_return(); a return in flight
+   leaves it resting on the control channel, or IDLE when trunking was off as it was asked for), whose failure would
+   otherwise put that call and its voice channel back onto the carrier the operator chose. */
+static void
+hand_tetra_sm_over(const dsd_opts* opts, dsd_state* state) {
+    if (tetra_sm_get_state(state) != TETRA_SM_IDLE || tetra_sm_owns_return(state)) {
+        tetra_sm_on_external_cc_return(opts, state);
+    }
+}
+
 /* Whether the P25 SM owns this trunk. When it does, the tune, the decoder resets and
  * the SM handoff run under the watchdog guard as one step, like every other CC
  * retune (p25_sm_select_control_channel(), the no-carrier return): a watchdog tick
@@ -3089,11 +3101,7 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
     if (p25_live) {
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "return-to-cc");
     }
-    /* The TETRA state machine likewise: the receiver is on the control channel now, and a followed call it kept would
-       have its next tick release it again, with a return of its own. */
-    if (tetra_sm_get_state(state) != TETRA_SM_IDLE) {
-        tetra_sm_on_external_cc_return(opts, state);
-    }
+    hand_tetra_sm_over(opts, state);
     LOG_INFO("User Activated Return to CC\n");
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -3133,6 +3141,10 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     }
 
     reset_call_tracking(opts, state, 1);
+    if (cc_freq != 0) {
+        /* Before the no-carrier pass, which would tick a machine that still owns the return. */
+        hand_tetra_sm_over(opts, state);
+    }
     if (opts->trunk_enable == 1) {
         dsd_engine_no_carrier_locked(opts, state);
         state->trunk_cc_freq = cc_freq;
@@ -3178,6 +3190,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
            (issue #575). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     }
+    hand_tetra_sm_over(opts, state);
     LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);
@@ -3232,6 +3245,7 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
            (issue #575). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     }
+    hand_tetra_sm_over(opts, state);
     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
     state->lcn_freq_roll = next + 1;
     dsd_scan_row_keys_apply(state, next);

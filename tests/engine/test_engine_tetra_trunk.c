@@ -59,13 +59,15 @@ tune_hook(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t
     return g_tune_result;
 }
 
+/* As the engine's return (dsd_engine_return_to_cc_request()): a return accepted, completed or in flight, releases the
+ * shared tuning state at once. */
 static dsd_trunk_tune_result
 return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
-    (void)state;
     g_returns++;
     g_request = request_id;
-    if (g_return_result == DSD_TRUNK_TUNE_RESULT_OK) {
+    if (dsd_trunk_tune_result_is_ok(g_return_result)) {
         opts->trunk_is_tuned = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
     return g_return_result;
 }
@@ -222,6 +224,41 @@ test_carrier_boundary_abandons(void) {
     session_close(&s);
 }
 
+/* A return of the machine's own still in flight when the operator moves the receiver (a tune, a source change, an input
+ * switch) goes with the call it left: the machine already rests on the control channel and the return released the
+ * shared tuning state, so only its request in flight says the machine owns the return (tetra_sm_owns_return()). Once
+ * the boundary let go of it, the request's later failure puts nothing back on the operator's carrier: no follow of the
+ * voice channel left, no claim on the shared tuning state, and no return to the old control channel at its hangtime. */
+static void
+test_carrier_boundary_abandons_a_return_in_flight(void) {
+    static const dsd_carrier_boundary_kind kinds[] = {DSD_CARRIER_BOUNDARY_TUNE, DSD_CARRIER_BOUNDARY_SOURCE,
+                                                      DSD_CARRIER_BOUNDARY_INPUT_SWITCH};
+    for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        session s = session_open();
+        expect(follow_grant(&s) == 1 && tetra_sm_get_state(s.state) == TETRA_SM_TUNED, "in flight: grant followed");
+        g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        at_seconds(2000.0 + TETRA_SM_GRANT_TIMEOUT_S + 0.5);
+        engine_tick(&s);
+        const uint64_t request = g_request;
+        expect(g_returns == 1 && request != 0U && tetra_sm_owns_return(s.state), "in flight: the return is in flight");
+        expect(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.opts->trunk_is_tuned == 0,
+               "in flight: the machine rests on the control channel, the shared tuning state released");
+        dsd_engine_carrier_boundary(s.opts, s.state, kinds[i], 0);
+        expect(!tetra_sm_owns_return(s.state), "in flight: the boundary lets go of the return");
+        dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        engine_tick(&s);
+        expect(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && !tetra_sm_followed(s.state, NULL),
+               "in flight: its failure brings no follow back");
+        expect(s.opts->trunk_is_tuned == 0 && s.state->trunk_vc_freq[0] == 0 && s.state->p25_vc_freq[0] == 0,
+               "in flight: nor the voice channel's shared tuning state");
+        expect(g_returns == 1 && !tetra_sm_owns_return(s.state), "in flight: nor a return of its own");
+        at_seconds(2000.0 + TETRA_SM_GRANT_TIMEOUT_S + 30.0);
+        engine_tick(&s);
+        expect(g_returns == 1 && g_tunes == 1, "in flight: nor one later");
+        session_close(&s);
+    }
+}
+
 /* The no-carrier pass forgets what proved the carrier, as for every other confirmation gate. */
 static void
 test_no_carrier_forgets_evidence(void) {
@@ -291,6 +328,7 @@ main(void) {
     test_tick_settles_tunes();
     test_tick_runs_timers();
     test_carrier_boundary_abandons();
+    test_carrier_boundary_abandons_a_return_in_flight();
     test_no_carrier_forgets_evidence();
     test_no_carrier_leaves_the_follow_to_the_machine();
     test_no_carrier_leaves_a_return_in_flight_to_the_machine();

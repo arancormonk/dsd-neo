@@ -69,6 +69,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
@@ -5333,6 +5334,105 @@ test_return_cc_and_mode_change_hand_tetra_over(void) {
     rc |= expect_true("leaving TETRA retires its tune in flight", dsd_trunk_tuning_pending_request() == 0U);
     rc |= expect_int("leaving TETRA keeps its publication cleared", state.tetra_pub.trunk_state, DSD_TETRA_TRUNK_IDLE);
     freeState(&state);
+    dsd_trunk_tuning_requests_reset();
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+static uint64_t g_tetra_return_request = 0U;
+
+/* The engine's return in flight (dsd_engine_return_to_cc_request()): accepted, the shared tuning state released at
+   once, its tune not answered yet. */
+static dsd_trunk_tune_result
+tetra_return_in_flight(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    g_tetra_return_request = request_id;
+    opts->trunk_is_tuned = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    return DSD_TRUNK_TUNE_RESULT_PENDING;
+}
+
+/* A followed TETRA call let go of with its return to the control channel in flight: released over the air, or by the
+   tick that finds trunking turned off (@p trunking_off), which leaves the state machine IDLE rather than ON_CC. */
+static int
+tetra_return_a_call_in_flight(dsd_opts* opts, dsd_state* state, int trunking_off) {
+    if (!tetra_follow_a_call(opts, state, DSD_TRUNK_TUNE_RESULT_OK)) {
+        return 0;
+    }
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.return_to_cc_request = tetra_return_in_flight});
+    g_tetra_return_request = 0U;
+    if (trunking_off) {
+        opts->trunk_enable = 0;
+        tetra_sm_tick(opts, state);
+        opts->trunk_enable = 1;
+    } else {
+        tetra_sm_on_release(opts, state, 0x123U);
+    }
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    return g_tetra_return_request != 0U && tetra_sm_owns_return(state) && !tetra_sm_followed(state, NULL)
+           && tetra_sm_get_state(state) == (trunking_off ? TETRA_SM_IDLE : TETRA_SM_ON_CC);
+}
+
+/* Every manual tune that moves the receiver under trunking hands the TETRA trunking state machine over as Return to CC
+   does, a return of its own still in flight included: Return to CC (also when the return was asked for with trunking
+   off, which left the machine IDLE), a skip or lockout returning to the control channel, and a control channel
+   candidate or channel cycle. The request failing later then puts nothing back on the operator's carrier: no follow
+   of the call left, no claim on the shared tuning state. */
+static int
+test_manual_tunes_hand_a_tetra_return_over(void) {
+    enum { CASE_RETURN, CASE_RETURN_IDLE, CASE_SKIP, CASE_LOCKOUT, CASE_CANDIDATE, CASE_CHANNEL };
+
+    static const char* const names[] = {"return-to-CC", "return-to-CC, IDLE", "skip",
+                                        "lockout",      "candidate cycle",    "channel cycle"};
+    static const int commands[] = {DSD_APP_CMD_RETURN_CC,    DSD_APP_CMD_RETURN_CC,     DSD_APP_CMD_SKIP_SLOT,
+                                   DSD_APP_CMD_LOCKOUT_SLOT, DSD_APP_CMD_CHANNEL_CYCLE, DSD_APP_CMD_CHANNEL_CYCLE};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    char tag[96];
+    for (int k = CASE_RETURN; k <= CASE_CHANNEL; k++) {
+        init_test_context(&opts, &state);
+        dsd_trunk_tuning_requests_reset();
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the return is in flight", names[k]);
+        rc |= expect_true(tag, tetra_return_a_call_in_flight(&opts, &state, k == CASE_RETURN_IDLE));
+        if (k == CASE_SKIP || k == CASE_LOCKOUT) {
+            const dsd_call_observation call = {.protocol = DSD_SYNC_TETRA_NDB_POS,
+                                               .slot = 0,
+                                               .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                               .ota_target_id = 0x100U,
+                                               .policy_target_id = 0x100U,
+                                               .ota_source_id = 0x2222U,
+                                               .observed_m = dsd_decode_now_mono_s()};
+            rc |= expect_true("TETRA call seeded", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        } else if (k == CASE_CANDIDATE) {
+            opts.audio_in_type = AUDIO_IN_RTL; /* a cycle needs a tuner */
+            opts.p25_prefer_candidates = 1;
+            (void)dsd_trunk_cc_candidates_add(&state, 381012500L, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+        } else if (k == CASE_CHANNEL) {
+            opts.audio_in_type = AUDIO_IN_RTL;
+            state.lcn_freq_count = 2;
+            state.trunk_lcn_freq[0] = 382012500L;
+            state.trunk_lcn_freq[1] = 383012500L;
+        }
+        const int submitted = k == CASE_SKIP || k == CASE_LOCKOUT ? dsd_app_command_set_u8(commands[k], 0U)
+                                                                  : dsd_app_command_action(commands[k]);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: queued", names[k]);
+        rc |= expect_true(tag, submitted > 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: drained", names[k]);
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: tunes the receiver", names[k]);
+        rc |= expect_int(tag, g_io_control_tune_calls, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: hands the return in flight over", names[k]);
+        rc |= expect_true(tag, !tetra_sm_owns_return(&state));
+        dsd_trunk_tuning_request_publish(g_tetra_return_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        tetra_sm_tick(&opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the failed return puts no call back", names[k]);
+        rc |= expect_true(tag, tetra_sm_get_state(&state) != TETRA_SM_TUNED && !tetra_sm_followed(&state, NULL));
+        DSD_SNPRINTF(tag, sizeof tag, "%s: nor the shared tuning state", names[k]);
+        rc |= expect_true(tag, opts.trunk_is_tuned == 0 && state.trunk_vc_freq[0] == 0 && state.p25_vc_freq[0] == 0);
+        freeState(&state);
+    }
     dsd_trunk_tuning_requests_reset();
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
@@ -18036,6 +18136,7 @@ main(void) {
 #endif
     rc |= test_return_cc_keeps_the_dmr_decode_gate();
     rc |= test_return_cc_and_mode_change_hand_tetra_over();
+    rc |= test_manual_tunes_hand_a_tetra_return_over();
     rc |= test_scan_row_keys_commands();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
