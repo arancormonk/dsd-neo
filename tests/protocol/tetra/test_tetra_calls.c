@@ -1589,6 +1589,52 @@ test_heard_call_speech(void) {
     session_close(&s);
 }
 
+/* What a CRC-passed PDU or allocation changes in a record reaches the canonical call carrying it at once, not at the
+ * next PDU or speech that happens to publish the call again: the air encryption a clear allocation of a late-entry
+ * D-SETUP clears, the channel an allocation addressed to the call's party moves it to, and, on a traffic carrier that
+ * no block proved yet, the talker a D-TX GRANTED names (the call was published before and the PDU passed its CRC). */
+static void
+test_record_changes_reach_the_call(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100); /* TN2 of the carrier being received */
+    tetra_calls_find(s.state, 0x0C)->air_enc = TETRA_ENC_MODE_EVEN;
+    speech(&s, 2);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    const uint64_t epoch = call.epoch;
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    call = canonical(s.state);
+    assert(tetra_calls_peek(s.state, 0x0C)->air_enc == TETRA_ENC_MODE_NONE);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    send_block(&s, 0x300u, NULL, 4, 101);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && call.channel == 101U
+           && call.frequency_hz == CARRIER_HZ(101));
+    session_close(&s);
+
+    s = session_open();
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && !tetra_confirm_carrier_proven(s.state));
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0U);
+    tetra_call_event granted;
+    DSD_MEMSET(&granted, 0, sizeof granted);
+    granted.kind = TETRA_CALL_EV_TX_GRANTED;
+    granted.call_id = 0x0A;
+    granted.has = (uint8_t)(TETRA_CALL_HAS_GRANT | TETRA_CALL_HAS_TALKER);
+    granted.grant = 3U;
+    granted.talker_ssi = 0x4444u;
+    tetra_calls_on_event(s.opts, s.state, &granted, NULL);
+    assert(!tetra_confirm_carrier_proven(s.state));
+    const dsd_call_snapshot named = canonical(s.state);
+    assert(named.phase == DSD_CALL_PHASE_ACTIVE && named.epoch == call.epoch && named.ota_source_id == 0x4444u);
+    session_close(&s);
+}
+
 /* Not trunking, the heard call's identifier goes with its record, as the followed call's does: once the heard call is
  * released, a D-SETUP gave its identifier to another call or a full table evicted it, the call given the identifier is
  * not the heard call until its own speech is heard, so its signalling publishes nothing (its channel may be another
@@ -1743,6 +1789,7 @@ main(void) {
     test_location_area_change_drops_calls();
     test_followed_call_speech();
     test_heard_call_speech();
+    test_record_changes_reach_the_call();
     test_heard_call_identifier_let_go();
     test_direct_mode_speech();
     test_receiving_carrier();

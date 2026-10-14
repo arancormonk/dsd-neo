@@ -4714,7 +4714,11 @@ single "current call".
   a unit-to-unit transmission, so the talkgroup policy's private-call audio and record gates judge both parties
   whoever transmits; carrier and frequency, basic service as service options, priority, and its crypto class. Not trunking, the
   heard call publishes from its speech and then its signalling, and speech no record names publishes an anonymous call
-  on a proven carrier. Speech marks the media (`dsd_call_state_update_media()`). D-TX CEASED and releases end the call
+  on a proven carrier. Once published, a call follows its record: whatever a CRC-passed PDU, its allocation, an
+  allocation addressed to the call's party or a MAC header changes of it (its parties, basic service, traffic channel or
+  encryption) is observed at once (`calls_sync_published()`), on a carrier no block proved yet too, since the call was
+  published before and the PDU passed its CRC; only publication itself waits for the proof. Speech marks the media
+  (`dsd_call_state_update_media()`). D-TX CEASED and releases end the call
   as terminators, the state machine leaving it as a teardown, the heard speech stopping as a sync loss. Direct mode
   (`tetra_calls_dmo_pdu()`, EN 300 396-3) publishes the call on the channel from DM-SETUP, DM-SETUP PRES, DM-CONNECT
   ACK, DM-OCCUPIED and DM-GSETUP with what its security class leaves clear (DM-2-B hides the destination, DM-2-C every

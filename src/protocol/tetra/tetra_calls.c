@@ -912,6 +912,9 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     if (alloc) {
         call_attach(opts, state, ts, c, &sdu->alloc, 1);
     }
+    /* What the PDU and its allocation changed reaches the canonical call carrying it now, on a carrier not proven yet
+     * too: the call was published before, and the PDU passed its CRC. */
+    calls_sync_published(opts, state, ts, c);
 }
 
 /* ---- MAC addresses and allocations ----------------------------------------------------------------------------- */
@@ -930,6 +933,7 @@ tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu) 
         return;
     }
     call_attach(opts, state, ts, c, &sdu->alloc, 0);
+    calls_sync_published(opts, state, ts, c);
 }
 
 void
