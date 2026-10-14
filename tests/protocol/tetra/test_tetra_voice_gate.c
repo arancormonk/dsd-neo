@@ -304,7 +304,7 @@ static void
 test_heard_call(void) {
     fixture f;
     fixture_open(&f);
-    tetra_state_t* ts = tetra_st(f.state);
+    const tetra_state_t* ts = tetra_st(f.state);
     tetra_speech sp;
     group_call(&f, 9, 0x123456u, 392012500L, 0x04); /* TN2 */
     group_call(&f, 10, 0x222222u, 392037500L, 0x04);

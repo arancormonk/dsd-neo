@@ -1168,7 +1168,7 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
 
 void
 tetra_calls_dmo_protection(dsd_opts* opts, dsd_state* state) {
-    tetra_state_t* const ts = tetra_st_existing(state);
+    const tetra_state_t* const ts = tetra_st_existing(state);
     if (ts && calls_carrying(state, ts, TETRA_PUB_DMO, 0U)) {
         calls_reclassify(opts, state, dmo_crypto_state(state));
     }

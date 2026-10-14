@@ -661,7 +661,7 @@ test_dsb_leaves_trunked_mode(void) {
     ts->calls.slot_enc[2] = 1u + 0u;
     ts->mac_frag[2].active = 1;
     ts->mac_frag[2].nbits = 40;
-    uint8_t speech[TETRA_SPEECH_FULL_BITS] = {0};
+    const uint8_t speech[TETRA_SPEECH_FULL_BITS] = {0};
     tetra_voice_full_slot(s.opts, s.state, speech, 1);
     dsd_call_snapshot call;
     DSD_MEMSET(&call, 0, sizeof call);

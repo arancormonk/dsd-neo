@@ -882,7 +882,11 @@ test_call_identifier_change_resets_speech(void) {
 
     /* D-INFO gives call 10 the identifier 14: the same call, so its codec goes on with decodes 3 and 4. */
     tetra_call_event info = {
-        .call_id = 10, .kind = TETRA_CALL_EV_INFO, .has = TETRA_CALL_HAS_NEW_ID, .new_call_id = 14};
+        .call_id = 10,
+        .kind = TETRA_CALL_EV_INFO,
+        .has = TETRA_CALL_HAS_NEW_ID,
+        .new_call_id = 14,
+    };
     tetra_calls_on_event(f.opts, f.state, &info, NULL);
     expect(tetra_calls_peek(f.state, 14) != NULL, "call id: call 10 renamed 14");
     tetra_voice_full_slot(f.opts, f.state, full, 1);
