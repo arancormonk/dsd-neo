@@ -52,16 +52,19 @@ typedef struct {
     tetra_sm_grant followed;        /* the call followed while TUNED */
     double t_tune_m;  /* the followed tune completed, or the grant was taken on the same carrier; 0 in flight */
     double t_voice_m; /* last speech on a followed timeslot since then; 0 for none */
-    uint64_t pending_request_id; /* the correlated trunk-tuning request in flight; 0 for none */
-    uint8_t state;               /* tetra_sm_state_e */
-    uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel */
-    uint8_t followed_retired;    /* the followed call's identifier names another call now (tetra_sm_retire_call());
-                                    read while TUNED, cleared by every new follow */
+    uint64_t pending_request_id;   /* the correlated trunk-tuning request in flight; 0 for none */
+    uint64_t abandoned_request_id; /* one let go of while the backend still owned it, retired once it fails; 0 none */
+    uint8_t state;                 /* tetra_sm_state_e */
+    uint8_t pending_kind;     /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel */
+    uint8_t followed_retired; /* the followed call's identifier names another call now (tetra_sm_retire_call());
+                                 read while TUNED, cleared by every new follow */
 } tetra_sm_t;
 
 /* Let go of the tune @p sm has in flight (tetra_trunk_sm.c): starting over, a hand-over to the engine, the TETRA state
  * dropped. A request that failed is retired as rolled back, so it cannot keep the frame gate closed; one the backend
- * has not answered is left to it, so its completion still publishes the tuner boundary. */
+ * has not answered is left to it, so its completion still publishes the tuner boundary, and kept as abandoned: a
+ * failure the backend answers later has nothing to put back, and the state machine's next entry point or tick retires
+ * it, so it does not hold the frame gate shut while trunking goes on. */
 void tetra_sm_disown_pending(tetra_sm_t* sm);
 
 /* CRC evidence about the carrier on air and the burst being decoded (tetra_confirm.c). A training sequence alone is

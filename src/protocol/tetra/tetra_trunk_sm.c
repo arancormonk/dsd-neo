@@ -165,6 +165,25 @@ sm_unfollow(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     tetra_calls_unfollowed(opts, state);
 }
 
+/* A request let go of while the backend still owned it (tetra_sm_disown_pending()), once the backend answered: a
+ * failure is retired, nothing to put back, which opens the frame gate it held; a success published its own tuner
+ * boundary. */
+static void
+sm_retire_abandoned(tetra_sm_t* sm) {
+    const uint64_t request_id = sm->abandoned_request_id;
+    if (request_id == 0U) {
+        return;
+    }
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, NULL);
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        return;
+    }
+    sm->abandoned_request_id = 0U;
+    if (!dsd_trunk_tune_result_is_complete(result)) {
+        dsd_trunk_tuning_request_complete(request_id, result);
+    }
+}
+
 void
 tetra_sm_disown_pending(tetra_sm_t* sm) {
     const uint64_t request_id = sm ? sm->pending_request_id : 0U;
@@ -173,10 +192,16 @@ tetra_sm_disown_pending(tetra_sm_t* sm) {
     }
     sm->pending_request_id = 0U;
     sm->pending_kind = SM_PENDING_NONE;
-    /* One the backend still owns stays its own: its completion is the tuner boundary the frame gate waits for, and a
-     * later failure is retired by the mode exit or the next successful tune (trunk_tuning_hooks.h). */
+    /* One the backend still owns stays its own: its completion is the tuner boundary the frame gate waits for. Its
+     * failure, should it come, is retired once answered (sm_retire_abandoned()), or by the mode exit or the next
+     * successful tune when the state machine itself is gone (trunk_tuning_hooks.h). */
     const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, NULL);
-    if (result != DSD_TRUNK_TUNE_RESULT_PENDING && !dsd_trunk_tune_result_is_complete(result)) {
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        sm_retire_abandoned(sm);
+        sm->abandoned_request_id = request_id;
+        return;
+    }
+    if (!dsd_trunk_tune_result_is_complete(result)) {
         dsd_trunk_tuning_request_complete(request_id, result);
     }
 }
@@ -218,6 +243,7 @@ sm_return_completed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
  * completion would then publish no tuner boundary (trunk_tuning_hooks.h). */
 static int
 sm_settle_pending(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    sm_retire_abandoned(&ts->sm);
     const uint64_t request_id = ts->sm.pending_request_id;
     if (request_id == 0U) {
         return 1;
@@ -392,7 +418,10 @@ tetra_sm_init(dsd_opts* opts, dsd_state* state) {
     if (ts->sm.state == (uint8_t)TETRA_SM_TUNED) {
         sm_unfollow(opts, state, ts);
     }
+    /* Starting over keeps the request let go of, whose failure is still to be retired. */
+    const uint64_t abandoned = ts->sm.abandoned_request_id;
     DSD_MEMSET(&ts->sm, 0, sizeof ts->sm);
+    ts->sm.abandoned_request_id = abandoned;
     tetra_confirm_forget_followed_call(state);
 }
 

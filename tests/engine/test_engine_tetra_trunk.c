@@ -252,9 +252,41 @@ test_carrier_boundary_abandons_a_return_in_flight(void) {
         expect(s.opts->trunk_is_tuned == 0 && s.state->trunk_vc_freq[0] == 0 && s.state->p25_vc_freq[0] == 0,
                "in flight: nor the voice channel's shared tuning state");
         expect(g_returns == 1 && !tetra_sm_owns_return(s.state), "in flight: nor a return of its own");
+        expect(dsd_trunk_tuning_pending_request() == 0U
+                   && dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1),
+               "in flight: and it holds the frame gate shut no longer");
         at_seconds(2000.0 + TETRA_SM_GRANT_TIMEOUT_S + 30.0);
         engine_tick(&s);
         expect(g_returns == 1 && g_tunes == 1, "in flight: nor one later");
+        session_close(&s);
+    }
+}
+
+/* A grant's tune still in flight at a carrier boundary is let go of with the call (tetra_sm_abandon_carrier()): the
+ * backend still owns it, so the frame gate waits for its answer. One that fails later has nothing to put back, and the
+ * machine's next tick retires it, so trunking goes on decoding rather than wait for a tune nobody makes; one that
+ * succeeds later published its own tuner boundary, and the machine follows nothing for it. */
+static void
+test_carrier_boundary_retires_an_abandoned_tune_once_it_fails(void) {
+    for (int fails = 1; fails >= 0; fails--) {
+        session s = session_open();
+        g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        expect(follow_grant(&s) == 1 && tetra_sm_owns_return(s.state), "abandoned: the grant's tune in flight");
+        const uint64_t request = g_request;
+        dsd_engine_carrier_boundary(s.opts, s.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+        expect(!tetra_sm_owns_return(s.state) && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC,
+               "abandoned: the boundary lets go of the call and its tune");
+        expect(dsd_trunk_tuning_pending_request() == request, "abandoned: the backend's answer is still awaited");
+        engine_tick(&s);
+        expect(dsd_trunk_tuning_pending_request() == request, "abandoned: an unanswered tune stays the backend's");
+        dsd_trunk_tuning_request_publish(request, fails ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+        engine_tick(&s);
+        expect(dsd_trunk_tuning_pending_request() == 0U
+                   && dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1),
+               fails ? "abandoned: a failure is retired" : "abandoned: a success is its own tuner boundary");
+        expect(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && !tetra_sm_followed(s.state, NULL)
+                   && s.opts->trunk_is_tuned == 0,
+               "abandoned: either way the machine follows nothing for it");
         session_close(&s);
     }
 }
@@ -329,6 +361,7 @@ main(void) {
     test_tick_runs_timers();
     test_carrier_boundary_abandons();
     test_carrier_boundary_abandons_a_return_in_flight();
+    test_carrier_boundary_retires_an_abandoned_tune_once_it_fails();
     test_no_carrier_forgets_evidence();
     test_no_carrier_leaves_the_follow_to_the_machine();
     test_no_carrier_leaves_a_return_in_flight_to_the_machine();
