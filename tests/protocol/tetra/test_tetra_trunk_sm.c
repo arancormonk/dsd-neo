@@ -435,6 +435,47 @@ test_pending_grant_completes(void) {
     session_close(&s);
 }
 
+/* A rename of the followed call (D-INFO, D-CALL RESTORE) moves the identifier the state machine follows, whatever a
+ * grant would need (a proved carrier, a control channel), and keeps its timers; it moves the identifier a tune in
+ * flight would put back too, so a failure of that tune brings the call back under its new identifier. Another
+ * identifier, and a retired followed call, are not renamed. */
+static void
+test_rename_moves_the_followed_identifier(void) {
+    reset_backend();
+    session s = session_open();
+    const tetra_sm_grant a = grant_of(VC_HZ, 0x4U, 0x123U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &a) == 1 && !tetra_confirm_carrier_proven(s.state));
+    at_seconds(1001.0);
+    tetra_sm_note_voice(s.state, 2U);
+    s.state->trunk_cc_freq = 0; /* the control channel unknown for now: no grant could be followed */
+    tetra_sm_on_call_renamed(s.state, 0x124U, 0x200U);
+    assert(followed_call(s.state) == 0x123);
+    at_seconds(1001.5);
+    tetra_sm_on_call_renamed(s.state, 0x123U, 0x200U);
+    assert(followed_call(s.state) == 0x200 && g_tunes == 1);
+    assert(tetra_st(s.state)->sm.t_voice_m > 1000.9 && tetra_st(s.state)->sm.t_voice_m < 1001.1);
+    s.state->trunk_cc_freq = CC_HZ;
+
+    /* The rollback of a tune in flight to another call. */
+    tetra_confirm_note_signalling(s.state);
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const tetra_sm_grant b = grant_of(VC2_HZ, 0x8U, 0x300U);
+    assert(tetra_sm_on_grant(s.opts, s.state, &b) == 1 && followed_call(s.state) == 0x300);
+    tetra_sm_on_call_renamed(s.state, 0x200U, 0x201U);
+    assert(followed_call(s.state) == 0x300);
+    dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x201);
+    uint16_t id = 0;
+    assert(tetra_sm_followed_call_id(s.state, &id) && id == 0x201U);
+
+    /* A retired followed call is the channel, no call: a call renamed from its identifier is not it. */
+    tetra_sm_retire_call(s.state, 0x201U);
+    tetra_sm_on_call_renamed(s.state, 0x201U, 0x202U);
+    assert(followed_call(s.state) == 0x201 && !tetra_sm_followed_call_id(s.state, NULL));
+    session_close(&s);
+}
+
 /* A tune that fails after being reported in flight puts everything back and opens the frame gate. */
 static void
 test_pending_grant_fails(void) {
@@ -758,6 +799,7 @@ main(void) {
     test_grant_timeout();
     test_hangtime_after_speech();
     test_unplaced_speech_does_not_count();
+    test_rename_moves_the_followed_identifier();
     test_release_by_call_id();
     test_refused_return_keeps_call();
     test_grant_on_this_carrier();

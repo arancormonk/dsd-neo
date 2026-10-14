@@ -624,3 +624,24 @@ tetra_sm_retire_call(dsd_state* state, uint16_t call_id) {
         prev->followed_proven = 0;
     }
 }
+
+void
+tetra_sm_on_call_renamed(dsd_state* state, uint16_t old_id, uint16_t new_id) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    const uint16_t from = (uint16_t)(old_id & 0x3FFFu);
+    const uint16_t to = (uint16_t)(new_id & 0x3FFFu);
+    if (!ts || from == to) {
+        return;
+    }
+    if (ts->sm.state == (uint8_t)TETRA_SM_TUNED && !ts->sm.followed_retired && ts->sm.followed.call_id == from) {
+        ts->sm.followed.call_id = to;
+        if (sm_narrates(ts, 1)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] followed call %u is call %u now\n", (unsigned)from, (unsigned)to);
+        }
+    }
+    tetra_sm_rollback* const prev = &ts->sm.pending_prev;
+    if (ts->sm.pending_request_id != 0U && prev->state == (uint8_t)TETRA_SM_TUNED && !prev->followed_retired
+        && prev->followed.call_id == from) {
+        prev->followed.call_id = to;
+    }
+}

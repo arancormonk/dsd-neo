@@ -154,6 +154,16 @@ int tetra_sm_followed_call_id(const dsd_state* state, uint16_t* call_id);
  */
 void tetra_sm_retire_call(dsd_state* state, uint16_t call_id);
 
+/**
+ * @brief The followed call took the call identifier @p new_id in place of @p old_id (a D-INFO or a D-CALL RESTORE,
+ * EN 300 392-2 clauses 14.7.1.8 and 14.7.1.3): the state machine follows it under @p new_id, so a release of it still
+ * ends following, and so does what a tune in flight would put back. A rename names the call followed already, on the
+ * channel it is followed on: it is no grant, so nothing a new grant is admitted by applies (tetra_sm_on_grant(): a
+ * carrier proved before the block, trunking on, a control channel known) and no timer starts over. A retired followed
+ * call (tetra_sm_retire_call()) or another identifier changes nothing.
+ */
+void tetra_sm_on_call_renamed(dsd_state* state, uint16_t old_id, uint16_t new_id);
+
 #ifdef __cplusplus
 }
 #endif

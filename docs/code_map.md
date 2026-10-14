@@ -4610,7 +4610,9 @@ single "current call".
   followed call's proof goes, and no PDU, rename, allocation or speech of a call given the identifier counts as the
   followed call's or takes the followed call's grant path, until the grant timeout or hangtime gives up following or a
   grant the policy allows follows the new call as a call of its own. D-INFO and D-CALL RESTORE may rename a call: the
-  followed one is re-granted under its new identifier and stays one canonical call. D-TX GRANTED / D-TX INTERRUPT give
+  state machine takes the followed one's new identifier as it is (`tetra_sm_on_call_renamed()`), in what a tune in
+  flight would put back too, not as a grant to admit, since the first block decoded on a new traffic carrier can
+  rename it before anything proved that carrier, and no timer starts over; it stays one canonical call. D-TX GRANTED / D-TX INTERRUPT give
   the transmitting party (or the addressed one when granted) and their encryption control the end-to-end flag; D-TX
   CEASED ends the transmission. The records belong to the network and location area they were made in: a BSCH of
   another network or a SYSINFO of another location area ends them all (`tetra_calls_forget_calls()`, Signalling
@@ -4690,7 +4692,8 @@ single "current call".
   before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does
   not stand in for it. Cell reselection is not noted: it concerns one MS at a time.
 
-Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, identifier reuse, a released,
+Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, the followed call's in the
+first block on its carrier included, identifier reuse, a released,
 renamed-over or aged followed identifier, ageing,
 canonical calls and notices in trunked and direct mode, direct mode short data whose FCS fails and what repeats it,
 an individual call's two parties, speech publication, the receiving carrier), `TETRA_DMO` (the DM-SDU's FCS and

@@ -156,9 +156,10 @@ canonical(const dsd_state* state) {
 }
 
 /* A MAC-RESOURCE to @p ssi carrying @p cmce (the CMCE PDU after its protocol discriminator, @p cmce_bits long) and,
- * when @p timeslots is not 0, a channel allocation on @p carrier; decoded as one SCH/F block. */
+ * when @p timeslots is not 0, a channel allocation on @p carrier; decoded as one SCH/F block, the first CRC-passed
+ * block on its carrier unless @p proven says one before it proved the carrier (tetra_confirm.h). */
 static void
-send_block(session* s, uint32_t ssi, const ttb_block* cmce, uint32_t timeslots, uint32_t carrier) {
+send_block_on(session* s, uint32_t ssi, const ttb_block* cmce, uint32_t timeslots, uint32_t carrier, int proven) {
     ttb_block b = {0};
     const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, ssi);
     ttb_resource_flags(&b, timeslots != 0u ? 1u : 0u);
@@ -171,9 +172,16 @@ send_block(session* s, uint32_t ssi, const ttb_block* cmce, uint32_t timeslots, 
     }
     ttb_close_resource(&b, start);
     ttb_finish(&b, TTB_SCH_F_BITS, -1);
-    /* A CRC-passed block before this one proved the carrier it is on (tetra_confirm.h). */
-    tetra_confirm_note_signalling(s->state);
+    if (proven) {
+        tetra_confirm_note_signalling(s->state);
+    }
     tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* send_block_on() after a CRC-passed block that proved the carrier. */
+static void
+send_block(session* s, uint32_t ssi, const ttb_block* cmce, uint32_t timeslots, uint32_t carrier) {
+    send_block_on(s, ssi, cmce, timeslots, carrier, 1);
 }
 
 /* D-SETUP (table 14.15) of call @p call_id with @p basic_service, to @p ssi with an allocation of @p timeslots on
@@ -320,9 +328,10 @@ test_followed_call_turns_encrypted(void) {
     session_close(&s);
 }
 
-/* D-INFO (table 14.11) of call @p call_id giving it the identifier @p new_id. */
+/* D-INFO (table 14.11) of call @p call_id giving it the identifier @p new_id, as the first CRC-passed block on its
+ * carrier unless @p proven. */
 static void
-send_info_rename(session* s, uint32_t ssi, uint16_t call_id, uint16_t new_id) {
+send_info_rename_on(session* s, uint32_t ssi, uint16_t call_id, uint16_t new_id, int proven) {
     ttb_block cmce = {0};
     ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
     ttb_put(&cmce, TETRA_CMCE_D_INFO, 5);
@@ -333,7 +342,12 @@ send_info_rename(session* s, uint32_t ssi, uint16_t call_id, uint16_t new_id) {
     ttb_put(&cmce, new_id, 14);
     ttb_put(&cmce, 0, 9); /* the nine other type-2 elements absent */
     ttb_put(&cmce, 0, 1); /* M-bit */
-    send_block(s, ssi, &cmce, 0, 0);
+    send_block_on(s, ssi, &cmce, 0, 0, proven);
+}
+
+static void
+send_info_rename(session* s, uint32_t ssi, uint16_t call_id, uint16_t new_id) {
+    send_info_rename_on(s, ssi, call_id, new_id, 1);
 }
 
 /* D-INFO gives the followed call a new identifier: it is followed under that one, which releases it. */
@@ -350,6 +364,42 @@ test_followed_call_renamed(void) {
     send_call_pdu(&s, 0x100u, TETRA_CMCE_D_RELEASE, 0x0E, 5);
     assert(g_returns == 1 && followed_call(s.state) == -1);
     session_close(&s);
+}
+
+/* The followed call renamed (D-INFO, or the D-CALL RESTORE of a D-RESTORE-ACK) by the first CRC-passed block decoded
+ * on its traffic carrier, before anything else proved the carrier: a rename names the call followed already, it is no
+ * grant to admit, so the state machine follows the call under its new identifier, whose release returns to the control
+ * channel. Proved or not, the rename restarts none of its timers: the hangtime its speech started goes on. */
+static void
+test_followed_call_renamed_first_on_its_carrier(void) {
+    for (int pass = 0; pass < 3; pass++) {
+        const int restore = pass == 1;
+        session s = session_open();
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        assert(followed_call(s.state) == 0x0A && g_tunes == 1 && !tetra_confirm_carrier_proven(s.state));
+        at_seconds(1001.0);
+        tetra_sm_note_voice(s.state, 2U);
+        at_seconds(1001.5);
+        if (restore) {
+            tetra_call_event ev;
+            DSD_MEMSET(&ev, 0, sizeof ev);
+            ev.kind = TETRA_CALL_EV_RESTORE;
+            ev.call_id = 0x0A;
+            ev.new_call_id = 0x0E;
+            ev.has = TETRA_CALL_HAS_NEW_ID;
+            tetra_calls_on_event(s.opts, s.state, &ev, NULL);
+        } else {
+            send_info_rename_on(&s, 0x100u, 0x0A, 0x0E, pass == 2);
+        }
+        assert(tetra_calls_peek(s.state, 0x0A) == NULL && tetra_calls_peek(s.state, 0x0E) != NULL);
+        assert(followed_call(s.state) == 0x0E && tetra_calls_followed(s.state) == tetra_calls_peek(s.state, 0x0E));
+        const tetra_state_t* const ts = tetra_st(s.state);
+        assert(ts->sm.t_voice_m > 1000.9 && ts->sm.t_voice_m < 1001.1 && ts->sm.t_tune_m < 1000.1);
+        assert(g_tunes == 1 && g_returns == 0);
+        send_call_pdu(&s, 0x100u, TETRA_CMCE_D_RELEASE, 0x0E, 5);
+        assert(tetra_calls_peek(s.state, 0x0E) == NULL && g_returns == 1 && followed_call(s.state) == -1);
+        session_close(&s);
+    }
 }
 
 /* A D-SETUP that reuses the followed call's identifier for another talkgroup is another call: the followed one, whose
@@ -1371,6 +1421,7 @@ main(void) {
     test_priority_preemption();
     test_followed_call_turns_encrypted();
     test_followed_call_renamed();
+    test_followed_call_renamed_first_on_its_carrier();
     test_setup_reusing_followed_id();
     test_reused_id_while_following_held();
     test_released_followed_id_retired();

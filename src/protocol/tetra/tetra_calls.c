@@ -746,15 +746,14 @@ _Static_assert(sizeof k_event_names / sizeof k_event_names[0] == (size_t)TETRA_C
                "one name per call event");
 
 /* The followed call took a new identifier (D-INFO, D-CALL RESTORE): the state machine follows it under that one, on
- * the channel it is on, so its release still ends it. */
+ * the channel it is on, so its release still ends it. The rename is no grant: the state machine takes the new identifier
+ * as it is (tetra_sm_on_call_renamed()), not through the admission of a grant, which the first block decoded on a new
+ * traffic carrier would fail, leaving the state machine on an identifier no record holds. */
 static void
-call_follow_renamed(dsd_opts* opts, dsd_state* state, uint16_t old_id, uint16_t new_id) {
-    tetra_sm_grant g;
-    if (old_id == new_id || !opts || followed_id(state) != (int)old_id || !tetra_sm_followed(state, &g)) {
-        return;
+call_follow_renamed(dsd_state* state, uint16_t old_id, uint16_t new_id) {
+    if (old_id != new_id) {
+        tetra_sm_on_call_renamed(state, old_id, new_id);
     }
-    g.call_id = new_id;
-    (void)tetra_sm_on_grant(opts, state, &g);
 }
 
 /* The followed call turned out encrypted beyond the listener's keys (D-TX GRANTED encryption control) while encrypted
@@ -822,7 +821,7 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     }
     const uint16_t old_id = c->call_id;
     call_apply(opts, state, ts, c, ev, sdu);
-    call_follow_renamed(opts, state, old_id, c->call_id);
+    call_follow_renamed(state, old_id, c->call_id);
     c->seen_m = dsd_decode_now_mono_s();
     if (sdu && sdu->has_addr) {
         call_bind_address(ts, c, &sdu->addr);
