@@ -763,7 +763,8 @@ struct beside {
         double peak = 0, valley = 0, ridge = 0, ridge_before = 0, passed = 0, previous = 0;
         long long valley_at = start;
         bool fallen = false, own_rise = false;
-        for (long long i = 0; i <= a.reach; ++i) {
+        for (long long i = 0, next = 0; i <= a.reach; i = next) {
+            next = i + 1;
             const long long k = start + side * i;
             const double e = a.near_env(k);
             if (!fallen) {
@@ -797,9 +798,10 @@ struct beside {
                 continue;
             }
             /* Past this hump, the next must fall away from it first. */
-            i = std::max(i, reached);
+            const long long past = std::max(i, reached);
+            next = past + 1;
             fallen = false;
-            peak = a.near_env(start + side * i);
+            peak = a.near_env(start + side * past);
         }
     }
 
@@ -837,7 +839,8 @@ struct beside {
 
     void
     mirror_excess() {
-        for (long long i = a.half + 1; i <= a.reach; ++i) {
+        for (long long i = a.half + 1, next = 0; i <= a.reach; i = next) {
+            next = i + 1;
             const long long k = start + side * i;
             if (!outside(k) || !(a.near_env(k) >= kMirrorRiseRatio * mirrored(k))) {
                 continue;
@@ -848,8 +851,8 @@ struct beside {
                 const located h = separate(top, 0, start);
                 const int match = sources->find(h, a.decimation);
                 if (match == source_index) {
-                    /* The source's own edge. */
-                    i = std::max(i, std::llabs((side > 0 ? h.last : h.first) - start));
+                    /* The source's own edge: resume past it. */
+                    next = std::max(i, std::llabs((side > 0 ? h.last : h.first) - start)) + 1;
                     continue;
                 }
                 if (match < 0) {
