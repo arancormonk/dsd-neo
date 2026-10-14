@@ -15575,6 +15575,15 @@ add_test(NAME IO_FFT_CACHE COMMAND dsd-neo_test_io_fft_cache)
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(
+        NAME TOOLS_MSVC_FAST_MATH
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_msvc_fast_math.py --cmake
+            ${CMAKE_COMMAND} --cc ${CMAKE_C_COMPILER} --cxx
+            ${CMAKE_CXX_COMPILER} "--cc-arg1=${CMAKE_C_COMPILER_ARG1}"
+            "--cxx-arg1=${CMAKE_CXX_COMPILER_ARG1}"
+    )
+    add_test(
         NAME TOOLS_PFFFT_METADATA
         COMMAND
             ${Python3_EXECUTABLE}
