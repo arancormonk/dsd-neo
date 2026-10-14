@@ -4820,8 +4820,11 @@ first block on its carrier included, identifier reuse, another calling party or 
 renamed-over or aged followed identifier, a released, reused or evicted heard identifier, ageing,
 canonical calls and notices in trunked and direct mode, direct mode short data whose FCS fails and what repeats it,
 an individual call's two parties, speech publication, the receiving carrier, what a record change, a MAC header's
-encryption and a reallocation do to the published call, a direct mode call idling out), `TETRA_DMO` (the DM-SDU's FCS
-and digest, an unread DMAC-SYNC's protection, a DMAC-DATA that ends the transmission), `TETRA_VOICE_GATE`,
+encryption and a reallocation do to the published call, a direct mode call idling out, direct mode transmissions of
+another security class, an anonymous call per timeslot, the last cell's channels and event labels a BSCH or SYSINFO
+of another cell drops, an event label's party and channel), `TETRA_DMO` (the DM-SDU's FCS and digest, an unread
+DMAC-SYNC's protection, a DMAC-DATA that ends the transmission, the security class a transmission keeps),
+`TETRA_PUBLICATION` (no trunked network on a direct mode carrier), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, an
 individual call's speech judged by both parties, muted speech that holds no timeslot, the
 derived key stream, the speech starting over at call boundaries, another call identifier, another timeslot, another
