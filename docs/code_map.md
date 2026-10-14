@@ -4721,7 +4721,12 @@ single "current call".
   skipped, or DM-2-C hides the message type) may be the message that sets it, so an encrypted SCH/S security class
   seals the traffic (`dmo_apply_unread()`; DM-2-C drops the colour code too, which it derives from the encrypted short
   identity, clause 8.2.4), whatever an earlier clear call left, and a DM-1 one opens nothing. The canonical direct mode
-  call takes a protection that no call PDU republishes at once (`tetra_calls_dmo_protection()`).
+  call takes a protection that no call PDU republishes at once (`tetra_calls_dmo_protection()`). The protection and the
+  DM colour code belong to one traffic transmission (clauses 8.2.4, 8.5.3) and end with it
+  (`tetra_dmo_transmission_over()`): at DM-TX CEASED, DM-RELEASE or DM-DISCONNECT, in a DMAC-SYNC or on the STCH in a
+  DMAC-DATA (one under DM-2-C, whose message type is unread, ends nothing: a DMAC-DATA's security class is its own
+  message's), and when the call is idle for `TETRA_CALL_DMO_IDLE_S`, so a next transmission is never descrambled or
+  classified by the last one's.
 - Notices. D-SDS-DATA becomes a data notice with its text as the message, D-STATUS and MM D-ENABLE / D-DISABLE
   control notices, once the carrier is proven (`tetra_calls_notice()`); direct mode short data becomes a data notice,
   a repeat within 10 s not again: a repeat is the same message (`tetra_dmo_sds_key`: message type, source,

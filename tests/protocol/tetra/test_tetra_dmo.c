@@ -1024,6 +1024,50 @@ test_dmac_data(void) {
     free_state(st);
 }
 
+/* A DMAC-DATA on the STCH that ends the traffic transmission (DM-TX CEASED here) ends its colour code and protection as
+ * the same message in a DMAC-SYNC does (EN 300 396-3 clauses 8.2.4, 8.5.3): the next transmission's DMAC-SYNC gives its
+ * own, so its speech is not descrambled with this one's colour code nor classified clear by this one's protection. Its
+ * message type is clear under DM-2-B too; under DM-2-C nothing says what the message is, and a DMAC-DATA's security
+ * class is its own message's, so that one changes nothing. */
+static void
+test_dmac_data_ends_the_transmission(void) {
+    static const uint32_t k_classes[3] = {TETRA_DMO_AIE_DM1, TETRA_DMO_AIE_DM2B, TETRA_DMO_AIE_DM2C};
+    uint8_t bits[128];
+    tetra_dmo_sync_s_t s;
+    tetra_dmo_sync_h_t h;
+    bitw w;
+
+    printf("[DMAC-DATA ends the transmission]\n");
+    for (size_t i = 0; i < 3; i++) {
+        dsd_state* st = new_state();
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        from_string(k_sch_s, bits);
+        (void)tetra_dmo_parse_sync_s(bits, &s);
+        from_string(k_sch_h, bits);
+        (void)tetra_dmo_parse_sync_h(bits, 0, &h);
+        tetra_dmo_apply_sync(st, &s, &h);
+        CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR && tetra_st(st)->dmo_dcc_valid == 1,
+              "a clear DM-1 call");
+        bw_reset(&w);
+        put(&w, 2, 0); /* DMAC-DATA */
+        put(&w, 4, 0); /* fill, second half slot stolen, fragmentation, null PDU */
+        put(&w, 2, 0); /* countdown */
+        put(&w, 2, k_classes[i]);
+        put(&w, 2, 0);
+        put(&w, 24, 0x800001u);
+        put(&w, 2, 0);
+        put(&w, 24, 100u);
+        put(&w, 24, 0xBC4939u);
+        put(&w, 5, TETRA_DMO_MSG_TX_CEASED);
+        CHECK(tetra_dmo_log_dnb_pdu(w.bits, 124, "STCH-1", NULL, st) == 0, "a DMAC-DATA");
+        const int ends = k_classes[i] != TETRA_DMO_AIE_DM2C;
+        CHECK(tetra_st(st)->dmo_dcc_valid == (ends ? 0 : 1), "DM-TX CEASED ends the colour code, unless unread");
+        CHECK(tetra_dmo_call_crypt(st) == (ends ? TETRA_DMO_CRYPT_UNKNOWN : TETRA_DMO_CRYPT_CLEAR),
+              "and the protection with it");
+        free_state(st);
+    }
+}
+
 static void
 test_message_names(void) {
     printf("[message names]\n");
@@ -1046,6 +1090,7 @@ main(void) {
     test_gateway_messages();
     test_short_data();
     test_dmac_data();
+    test_dmac_data_ends_the_transmission();
     test_message_names();
     printf("%s\n", g_fail ? "FAILED" : "ALL TESTS PASSED");
     return g_fail ? 1 : 0;

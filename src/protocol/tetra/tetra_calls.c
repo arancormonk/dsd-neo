@@ -1390,7 +1390,9 @@ tetra_calls_tick(dsd_opts* opts, dsd_state* state) {
     }
     const double now_m = dsd_decode_now_mono_s();
     if (ts->calls.dmo.active && now_m - ts->calls.dmo.seen_m >= TETRA_CALL_DMO_IDLE_S) {
+        /* The call is over, and so is its transmission's colour code and protection. */
         ts->calls.dmo.active = 0;
+        tetra_dmo_transmission_over(state);
         if (ts->calls.published == TETRA_PUB_DMO) {
             calls_end_published(opts, state, ts, DSD_CALL_END_SYNC_LOSS);
         }

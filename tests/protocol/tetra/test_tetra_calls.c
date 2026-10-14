@@ -1087,6 +1087,24 @@ test_direct_mode_calls(void) {
     session_close(&s);
 }
 
+/* A direct mode call nothing of which was heard for TETRA_CALL_DMO_IDLE_S is over, and so is its transmission: its
+ * colour code and protection go with it (EN 300 396-3 clauses 8.2.4, 8.5.3), so speech of a next transmission whose
+ * DMAC-SYNC went unread is not taken for clear by the last call's protection. */
+static void
+test_direct_mode_idle_ends_the_transmission(void) {
+    session s = session_open();
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    const tetra_state_t* const ts = tetra_st(s.state);
+    assert(ts->calls.dmo.active && ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_CLEAR);
+    at_seconds(1000.0 + TETRA_CALL_DMO_IDLE_S - 0.5);
+    tetra_calls_tick(s.opts, s.state);
+    assert(ts->calls.dmo.active && ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_CLEAR);
+    at_seconds(1000.0 + TETRA_CALL_DMO_IDLE_S + 0.5);
+    tetra_calls_tick(s.opts, s.state);
+    assert(!ts->calls.dmo.active && !ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_UNKNOWN);
+    session_close(&s);
+}
+
 /* A SYNC PDU (EN 300 392-2 table 21.76) of network 262/1001 with colour code @p colour. */
 static void
 bsch_of(ttb_block* b, uint32_t colour) {
@@ -1663,6 +1681,7 @@ main(void) {
     test_encrypted_and_unfollowed_calls();
     test_sds_and_status_notices();
     test_direct_mode_calls();
+    test_direct_mode_idle_ends_the_transmission();
     test_direct_mode_short_data();
     test_direct_mode_short_data_fcs();
     test_direct_mode_short_data_repeats();

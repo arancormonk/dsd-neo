@@ -1287,6 +1287,14 @@ dmo_set_crypt(tetra_state_t* ts, tetra_dmo_crypt_e crypt) {
     ts->dmo_crypt = (uint8_t)crypt;
 }
 
+/* The current traffic transmission is over: its colour code and its protection, which the DMAC-SYNC that set it up gave
+ * (EN 300 396-3 clauses 8.2.4 and 8.5.3), are no other transmission's; the next one's DMAC-SYNC gives its own. */
+static void
+dmo_transmission_over(tetra_state_t* ts) {
+    ts->dmo_dcc_valid = 0;
+    dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
+}
+
 /* A DMAC-SYNC whose message went unread: its SCH/H failed its CRC or was skipped, or DM-2-C encrypts the message type.
  * It may be the DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED that sets the protection of the traffic after it (EN 300 396-3
  * clause 8.5.3), so its SCH/S, which is never encrypted (clause 8.5.3 NOTE 2), stands for that message: an encrypted
@@ -1320,8 +1328,7 @@ dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_s
     } else if (role == DMO_ROLE_FRAGMENTS && h->frag_flag) {
         dmo_learn_dcc(ts, s, h);
     } else if (role == DMO_ROLE_END) {
-        ts->dmo_dcc_valid = 0;
-        dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
+        dmo_transmission_over(ts);
     }
 }
 
@@ -1389,6 +1396,14 @@ tetra_dmo_forget_carrier(dsd_state* state) {
 }
 
 void
+tetra_dmo_transmission_over(dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (ts) {
+        dmo_transmission_over(ts);
+    }
+}
+
+void
 tetra_dmo_leave(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (!ts || !ts->dmo) {
@@ -1442,7 +1457,9 @@ dmo_security_name(uint32_t enc) {
 }
 
 /* One decoded DMAC-DATA PDU: a signalling summary by default, the MAC header detail with -Z; the call it describes goes
- * to the call records (tetra_calls_dmo_pdu()). */
+ * to the call records (tetra_calls_dmo_pdu()). A DM-TX CEASED, DM-RELEASE or DM-DISCONNECT on the STCH ends the traffic
+ * transmission as the same message in a DMAC-SYNC does, its colour code and protection with it; any other DMAC-DATA's
+ * security class is its own message's (EN 300 396-3 clause 8.5.3). */
 static void
 dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_opts* opts, dsd_state* state,
              const tetra_state_t* ts) {
@@ -1461,6 +1478,9 @@ dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_opts* opts, dsd
         return;
     }
     (void)tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc));
+    if (dmo_sync_role(&h) == DMO_ROLE_END) {
+        tetra_dmo_transmission_over(state);
+    }
     tetra_calls_dmo_pdu(opts, state, -1, &h);
     if (h.dst_encrypted) {
         DSD_SNPRINTF(dst, sizeof dst, "encrypted");
