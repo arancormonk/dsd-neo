@@ -1366,6 +1366,20 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 
+# The backup envelope; the Qt frontend calls it from C++ (issue #580).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_crypto_backup_seal
+  HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL
+  dsd-neo/crypto/backup_seal.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_crypto_backup_seal_cxx
+  HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL_CXX
+  dsd-neo/crypto/backup_seal.h
+  CXX
+)
+
 add_executable(
     dsd-neo_test_core_ambe_interleave
     core/test_core_ambe_interleave.c
@@ -1475,6 +1489,15 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_kirisun PRIVATE dsd-neo_crypto)
 
 add_test(NAME KIRISUN COMMAND dsd-neo_test_kirisun)
+
+add_executable(dsd-neo_test_backup_seal crypto/test_backup_seal.c)
+target_include_directories(
+    dsd-neo_test_backup_seal
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_backup_seal PRIVATE dsd-neo_crypto)
+
+add_test(NAME BACKUP_SEAL COMMAND dsd-neo_test_backup_seal)
 
 add_executable(
     dsd-neo_test_dstar_header_utils

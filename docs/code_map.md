@@ -3998,6 +3998,10 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   4.2.7 and 6.3.2.2): the encryption cipher key the generators take, from a cipher key (SCK or CCK) and the carrier
   number, location area and colour code, pinned by TETRA_crypto's four TB5 vectors (`TETRA_CRYPTO`). It is the only
   file that includes the upstream headers.
+- `backup_seal.c` / `<dsd-neo/crypto/backup_seal.h>` seal and open passphrase-protected backups (scrypt + AES-256-GCM,
+  issue #580). The 64-byte header is the GCM AAD. Seal and open both accept only log2(N) 14..17, r 8 and p 1..4, so
+  an untrusted file cannot demand more scrypt memory than that. `dsd_backup_open()` wipes its output on any failure:
+  plaintext leaves only after the tag verifies. Test: `BACKUP_SEAL`.
 - Build files: `src/crypto/CMakeLists.txt`
 
 ## Protocols
