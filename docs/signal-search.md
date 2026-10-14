@@ -358,7 +358,8 @@ A Resume keeps the paused search's session, while a start after Stop takes a new
 even before the screen's status tick has seen the Stop.
 Leaving the search (its Back, the system Back) or a Start it refuses abandons a
 start still waiting for USB permission, so the grant starts no session, while a
-start Home left waiting survives; Stop and an arm the screen refuses (missing or
+start Home left waiting survives, and when it is granted with the search screen open
+that screen closes rather than present the session as a search; Stop and an arm the screen refuses (missing or
 invalid ranges) leave nothing armed. A start the decoder's command queue turned away
 because the host reported Running before the decoder took commands (Android raises it
 just ahead of opening command admission) stays armed and goes in once, when

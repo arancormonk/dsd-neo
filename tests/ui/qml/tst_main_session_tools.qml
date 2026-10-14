@@ -203,6 +203,26 @@ Item {
             compare(decoderHost.sessionState, 1, "the grant finishes the ordinary start");
             verify(app.monitorMode);
         }
+        // The same ordinary start granted while Signal search is still open runs
+        // no search: the screen closes, so the session is not taken for one (its
+        // Pause would do nothing, its Back would follow a search's policy).
+        function test_ordinary_grant_closes_an_open_search() {
+            testContext.setLifecyclePhase(0);
+            testContext.setDongleStatus(false, 4, "No permission for RTL-SDR");
+            app.startWithMap(app.exploreSystem("usb", "", 1234, "451.000000"), -1, false);
+            verify(app.awaitingUsbAccess);
+            var screen = findChild(app, "signalSearchScreen");
+            searchStub.status = {phase: 0, owned: false, session: "0", hit: {}};
+            screen.searchModel = searchStub;
+            findChild(app, "homeScreen").signalSearch();
+            verify(app.signalSearchOpen);
+            wait(0);
+            testContext.setDongleStatus(true, 0, "");
+            compare(decoderHost.sessionState, 1, "the grant finishes the ordinary start");
+            verify(!app.signalSearchOpen, "an ordinary session is not a search");
+            verify(searchStub.cancels > 0, "nothing is left armed for the ordinary session");
+            verify(app.monitorMode);
+        }
         function findText(item, text) {
             if (item.text === text)
                 return item;

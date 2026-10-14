@@ -421,6 +421,12 @@ Window {
             var scan = mainRoot.pendingScanList;
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
+            // A start Home left waiting is no search: Signal search opened
+            // meanwhile closes, so its screen does not take that session for one.
+            if (sys && !sys.signalSearch && mainRoot.signalSearchOpen) {
+                mainRoot.abandonSignalSearchStart();
+                mainRoot.signalSearchOpen = false;
+            }
             if (sys)
                 mainRoot.startWithMap(sys, row, scan);
         }

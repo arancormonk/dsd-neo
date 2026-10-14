@@ -4343,7 +4343,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   (`abandonSignalSearchStart()` in Main): closing the screen, a Start it refuses
   (`startRefused`) and Stop cancel the model's arm and drop a USB-access start the search
   left pending (`pendingStart.signalSearch`), so a later grant cannot start a plain decoder
-  session behind Home; a start pending from Home keeps waiting. A refused `arm()` leaves
+  session behind Home; a start pending from Home keeps waiting, and when its grant lands
+  while the search screen is open the screen closes, so that session is not taken for a
+  search (`tst_main_session_tools.qml`). A refused `arm()` leaves
   nothing armed (`tst_main_session_tools.qml`, `tst_signal_search.qml`,
   `UI_QT_METRICS_MODEL`, `UI_QT_SIGNAL_SEARCH`).
   The armed start goes in when the decoder's command admission takes it, not merely on
