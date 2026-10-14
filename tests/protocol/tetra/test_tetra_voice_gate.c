@@ -212,8 +212,29 @@ test_heard_timeslot(void) {
     expect(!tetra_voice_gate(f.opts, f.state, &sp), "heard: and holds the receiver in turn");
     tetra_calls_forget_carrier(f.state);
     expect(tetra_voice_gate(f.opts, f.state, &sp), "heard: a new carrier hears any timeslot");
-    tetra_st(f.state)->tdma_valid = 0;
-    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 0, "heard: speech the clock cannot place is heard");
+
+    /* A downlink carrier's BSCH sets the TDMA clock, which then places every burst: one it cannot place yet may be any
+       timeslot's, so it is not heard, with no timeslot heard as with one holding the receiver. */
+    tetra_state_t* const ts = tetra_st(f.state);
+    ts->tdma_valid = 0;
+    expect(!tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 0 && sp.kind == 0,
+           "heard: a downlink burst the clock cannot place is not heard");
+    at_timeslot(&f, 4);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 4, "heard: TN4 once the clock places it");
+    tetra_calls_on_speech(f.opts, f.state, &sp);
+    ts->tdma_valid = 0;
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "heard: nor while TN4 holds the receiver");
+    at_timeslot(&f, 4);
+    expect(tetra_voice_gate(f.opts, f.state, &sp), "heard: TN4 goes on");
+
+    /* The uplink has no BSCH: nothing places its bursts, and its speech is heard as it comes. */
+    tetra_calls_forget_carrier(f.state);
+    ts->tdma_valid = 0;
+    ts->uplink = 1;
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 0,
+           "heard: uplink speech, which nothing places, is heard");
+    tetra_calls_on_speech(f.opts, f.state, &sp);
+    expect(tetra_voice_gate(f.opts, f.state, &sp), "heard: and goes on");
     fixture_close(&f);
 }
 

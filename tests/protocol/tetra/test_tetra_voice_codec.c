@@ -87,6 +87,19 @@ run_case(const codec_case* c) {
     }
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;
+    /* The bursts are TN1's, as a BSCH set the TDMA clock: the receiver hears speech the clock places. */
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts) {
+        expect(0, "TETRA state");
+        (void)dsd_close(out_fd);
+        (void)remove(out_path);
+        freeState(state);
+        free(state);
+        free(opts);
+        return;
+    }
+    ts->tdma_valid = 1;
+    ts->tn = 1;
 
     uint8_t bits[TETRA_SPEECH_FULL_BITS];
     DSD_MEMSET(bits, 0, sizeof(bits));

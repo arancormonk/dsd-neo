@@ -70,11 +70,17 @@ voice_followed(const dsd_state* state, const tetra_state_t* ts, tetra_speech* sp
     return 1;
 }
 
-/* Not trunking: the heard timeslot, or any while none has been heard for TETRA_CALL_SPEECH_END_S. */
+/* Not trunking: the heard timeslot, or any while none has been heard for TETRA_CALL_SPEECH_END_S. On the downlink the
+ * TDMA clock places each burst once the carrier's BSCH set it, and one it cannot place (tn 0) may be any timeslot's,
+ * so it is not heard, as a timeslot holding the receiver would not be told from another. The uplink has no BSCH, so
+ * nothing places its bursts (all tn 0) and its speech is heard as it comes. */
 static int
 voice_heard(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts, tetra_speech* sp) {
     const tetra_calls_t* const calls = &ts->calls;
-    if (calls->heard && sp->tn != 0u && calls->heard_tn != 0u && sp->tn != calls->heard_tn
+    if (sp->tn == 0u && !ts->uplink) {
+        return 0;
+    }
+    if (calls->heard && sp->tn != calls->heard_tn
         && dsd_decode_now_mono_s() - calls->heard_m < TETRA_CALL_SPEECH_END_S) {
         return 0;
     }

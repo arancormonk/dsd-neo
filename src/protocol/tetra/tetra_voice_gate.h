@@ -10,7 +10,9 @@
  * timeslots as the TDMA clock places the burst (none while the clock waits for the carrier's BSCH after a retune), and
  * once CRC-passed signalling of the call proved it on that carrier (tetra_confirm). Not trunking, the
  * receiver hears one timeslot at a time: the first with speech, until its speech stops for TETRA_CALL_SPEECH_END_S;
- * each timeslot of a carrier may be a traffic channel of its own call (EN 300 392-2 clause 9.4.2.2, table 9.27).
+ * each timeslot of a carrier may be a traffic channel of its own call (EN 300 392-2 clause 9.4.2.2, table 9.27). On the
+ * downlink that is a timeslot the TDMA clock places, once the carrier's BSCH set it; the uplink has no BSCH, and its
+ * speech is heard as it comes.
  * Direct mode carries one call on its channel (EN 300 396-3) and is never held back by the trunked gates.
  *
  * Decoder-thread private.
