@@ -51,7 +51,9 @@ typedef struct {
      * b1_valid:   1 when b1_dibuf holds a fresh capture, cleared
      *                   after processTetraFrame() consumes it.
      * polarity:   0 = normal (+TETRA), 1 = inverted (-TETRA).
-     *                     Written from the synchronisation burst only.
+     *                     Written by the frame sync from a synchronisation
+     *                     burst, and by the decoder from a control uplink
+     *                     burst whose SCH/HU passed its CRC.
      * nts2:        1 = this NDB matched training sequence 2.
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t b1_dibuf[108];

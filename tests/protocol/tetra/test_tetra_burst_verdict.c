@@ -79,25 +79,28 @@ dibits_of(const char* text, uint8_t* dibits, size_t count) {
     }
 }
 
-/* SCH/HD transmit chain (EN 300 392-2 clauses 8.2.3, 8.2.4 and 8.2.5, 8.3.1.4.1) for 124 type-1 bits: CRC-16 and
- * four tail bits, the rate-1/4 mother code punctured to 2/3, block interleaving with a = 101 and scrambling with
- * @p seed, as the dibits the decoder reads. */
+/* Signalling transmit chain (EN 300 392-2 clauses 8.2.3, 8.2.4 and 8.2.5) for @p ntype1 type-1 bits: CRC-16 and four
+ * tail bits, the rate-1/4 mother code punctured to 2/3 into @p ncoded bits, block interleaving with @p a and scrambling
+ * with @p seed, as the dibits the decoder reads. SCH/HD (clause 8.3.1.4.1) is 124 bits to 216 with a = 101, SCH/HU
+ * (clause 8.3.1.4.3) 92 bits to 168 with a = 13. */
 static void
-encode_sch_hd(const uint8_t* type1, uint32_t seed, uint8_t* dibits) {
-    enum { TYPE1 = 124, TYPE2 = 144, MOTHER = TYPE2 * 4, CODED = 216 };
+encode_signalling(const uint8_t* type1, int ntype1, int ncoded, int a, uint32_t seed, uint8_t* dibits) {
+    enum { TYPE2_MAX = 144, CODED_MAX = 216 };
 
-    uint8_t type2[TYPE2] = {0};
-    uint8_t mother[MOTHER];
-    uint8_t type3[CODED];
-    uint8_t type4[CODED];
-    uint16_t pn[CODED];
-    DSD_MEMCPY(type2, type1, TYPE1);
+    const int ntype2 = ntype1 + 16 + 4;
+    assert(ntype2 <= TYPE2_MAX && ncoded <= CODED_MAX);
+    uint8_t type2[TYPE2_MAX] = {0};
+    uint8_t mother[TYPE2_MAX * 4];
+    uint8_t type3[CODED_MAX];
+    uint8_t type4[CODED_MAX];
+    uint16_t pn[CODED_MAX];
+    DSD_MEMCPY(type2, type1, (size_t)ntype1);
     unsigned crc = 0;
     for (; crc < 65536U; crc++) {
         for (int i = 0; i < 16; i++) {
-            type2[TYPE1 + i] = (uint8_t)((crc >> (15 - i)) & 1U);
+            type2[ntype1 + i] = (uint8_t)((crc >> (15 - i)) & 1U);
         }
-        if (tetra_crc16_ccitt_bits(type2, TYPE1 + 16) == TETRA_CRC16_OK) {
+        if (tetra_crc16_ccitt_bits(type2, ntype1 + 16) == TETRA_CRC16_OK) {
             break;
         }
     }
@@ -107,7 +110,7 @@ encode_sch_hd(const uint8_t* type1, uint32_t seed, uint8_t* dibits) {
     uint8_t d2 = 0;
     uint8_t d3 = 0;
     uint8_t d4 = 0;
-    for (size_t i = 0; i < TYPE2; i++) {
+    for (size_t i = 0; i < (size_t)ntype2; i++) {
         const uint8_t b = type2[i];
         mother[(i * 4U) + 0U] = (uint8_t)(b ^ d1 ^ d4);
         mother[(i * 4U) + 1U] = (uint8_t)(b ^ d2 ^ d3 ^ d4);
@@ -118,18 +121,23 @@ encode_sch_hd(const uint8_t* type1, uint32_t seed, uint8_t* dibits) {
         d2 = d1;
         d1 = b;
     }
-    const int punctured = tetra_rcpc_puncture_by_id(TETRA_RCPC_PUNCT_2_3, mother, MOTHER, type3, CODED);
-    assert(punctured == CODED);
-    tetra_block_interleave(type3, type4, CODED, 101);
+    const int punctured = tetra_rcpc_puncture_by_id(TETRA_RCPC_PUNCT_2_3, mother, ntype2 * 4, type3, ncoded);
+    assert(punctured == ncoded);
+    tetra_block_interleave(type3, type4, ncoded, a);
     /* The scrambling sequence is what descrambling flips in an all-zero block. */
-    const uint8_t zeros[CODED] = {0};
-    tetra_hard_bits_to_soft(zeros, pn, CODED);
-    tetra_descramble_soft(pn, CODED, seed);
-    for (size_t i = 0; i < CODED / 2U; i++) {
+    const uint8_t zeros[CODED_MAX] = {0};
+    tetra_hard_bits_to_soft(zeros, pn, ncoded);
+    tetra_descramble_soft(pn, ncoded, seed);
+    for (size_t i = 0; i < (size_t)ncoded / 2U; i++) {
         const uint8_t b0 = (uint8_t)(type4[2U * i] ^ (pn[2U * i] == 0xFFFFU ? 1U : 0U));
         const uint8_t b1 = (uint8_t)(type4[(2U * i) + 1U] ^ (pn[(2U * i) + 1U] == 0xFFFFU ? 1U : 0U));
         dibits[i] = (uint8_t)((b0 << 1) | b1);
     }
+}
+
+static void
+encode_sch_hd(const uint8_t* type1, uint32_t seed, uint8_t* dibits) {
+    encode_signalling(type1, TTB_SCH_HD_BITS, 216, 101, seed, dibits);
 }
 
 static int g_tunes;
@@ -339,6 +347,60 @@ test_failed_bsch_runs_the_clock(void) {
     session_close(&s);
 }
 
+enum { CB_HALF_DIBITS = 42, SCH_HU_BITS = 92 };
+
+/* A control uplink burst (--tetra-uplink, network 460/4242 colour code 17 preset) whose 84 coded dibits are @p coded,
+ * locked as the frame sync locks it: block 1 captured, block 2 read after the training sequence, and the NDB synctype
+ * of its polarity (dsd_frame_sync.c). */
+static dsd_frame_verdict
+control_burst(session* s, const uint8_t* coded, int inverted) {
+    feed(s, coded + CB_HALF_DIBITS, CB_HALF_DIBITS);
+    DSD_MEMCPY(s->state->tetra_sync.b1_dibuf, coded, CB_HALF_DIBITS);
+    s->state->tetra_sync.b1_valid = 1;
+    s->state->tetra_sync.b1_soft_valid = 0;
+    s->state->tetra_sync.cb = 1;
+    s->state->tetra_sync.phase_rot = 0;
+    s->state->lastsynctype = inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS;
+    s->state->synctype = s->state->lastsynctype;
+    return dsd_dispatch_handle_tetra(s->opts, s->state);
+}
+
+/* The control burst's extended training sequence (EN 300 392-2 clause 9.4.4.3.3) tells its polarity, which normal
+ * bursts cannot (NTS2 is NTS1 inverted) and which the uplink has no synchronisation burst to set: an inverted control
+ * burst is decoded with its own polarity, and once its SCH/HU passed its CRC that polarity is the carrier's, for the
+ * normal bursts after it. One whose SCH/HU fails -- a normal-polarity NTS2 burst can match the inverted training --
+ * leaves the carrier's polarity as it was. */
+static void
+test_control_burst_tells_the_polarity(void) {
+    session s = session_open();
+    s.opts->tetra_uplink = 1;
+    s.opts->tetra_net_preset = 1;
+    s.opts->tetra_net_mcc = 460;
+    s.opts->tetra_net_mnc = 4242;
+    s.opts->tetra_net_colour = 17;
+    uint8_t mac[SCH_HU_BITS] = {0};
+    uint8_t coded[2 * CB_HALF_DIBITS];
+    encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
+    uint8_t inverted[2 * CB_HALF_DIBITS];
+    for (size_t i = 0; i < sizeof inverted; i++) {
+        inverted[i] = (uint8_t)(coded[i] ^ 2U);
+    }
+    s.state->tetra_sync.polarity = 0;
+    assert(control_burst(&s, coded, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_sync.polarity == 0);
+
+    /* Its block 1 broken: the CRC fails and the polarity stays. */
+    uint8_t broken[2 * CB_HALF_DIBITS];
+    DSD_MEMCPY(broken, inverted, sizeof broken);
+    for (int i = 0; i < CB_HALF_DIBITS; i += 2) {
+        broken[i] ^= 1U;
+    }
+    assert(control_burst(&s, broken, 1) == DSD_FRAME_VERDICT_UNPRODUCTIVE && s.state->tetra_sync.polarity == 0);
+
+    assert(control_burst(&s, inverted, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_sync.polarity == 1);
+    assert(control_burst(&s, coded, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_sync.polarity == 0);
+    session_close(&s);
+}
+
 /* A channel allocation in the first half of a normal burst moves the receiver: the second half was sent on the carrier
  * left, so it is not decoded, and nothing in it counts for the traffic carrier. */
 static void
@@ -424,6 +486,7 @@ main(void) {
     test_sync_burst_decodes_bnch();
     test_normal_burst_failure_and_colour();
     test_failed_bsch_runs_the_clock();
+    test_control_burst_tells_the_polarity();
     test_retune_leaves_the_rest_of_the_burst();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;

@@ -123,6 +123,14 @@ test_tetra_uplink_control_burst_is_not_a_normal_burst(void) {
     assert(state->tetra_sync.cb == 1 && state->tetra_sync.b2_lead_count == 0);
     assert(tetra_block1_is(state, stream + 70, 42));
 
+    /* Inverted, it locks with the negative synctype, which tells the decoder its polarity; the carrier's polarity is the
+     * decoder's to set once the burst's SCH/HU passed its CRC. */
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    DSD_MEMCPY(stream + 112, INV_TETRA_CB_SYNC, 15);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 127) == DSD_SYNC_TETRA_NDB_NEG);
+    assert(state->tetra_sync.cb == 1 && state->tetra_sync.polarity == 0
+           && state->lastsynctype == DSD_SYNC_TETRA_NDB_NEG);
+
     /* An uplink normal burst: block 1, NTS1, then two dibits of block 2 that complete no control burst. */
     DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
     tetra_data_dibits(stream, 118, &seed);

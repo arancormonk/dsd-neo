@@ -1127,7 +1127,9 @@ frame_sync_try_tetra_sb(frame_sync_match_ctx* ctx) {
 }
 
 /* Control uplink burst. Only searched in uplink mode: a 15-dibit word is short enough that running it against a
- * downlink carrier is not worth the false locks, and a downlink session never sets --tetra-uplink. */
+ * downlink carrier is not worth the false locks, and a downlink session never sets --tetra-uplink. Its extended
+ * training sequence is no other training sequence inverted, so the sign of the synctype is the burst's polarity; the
+ * decoder makes it the carrier's once the burst's SCH/HU passed its CRC (tetra_uplink_process_cb()). */
 static int
 frame_sync_try_tetra_cb(frame_sync_match_ctx* ctx) {
     if (!ctx->opts->tetra_uplink || !frame_sync_match_window_ready(ctx, 79)) {

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/tetra_training.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
@@ -109,14 +110,14 @@ tetra_burst_colour(const dsd_state* state) {
     return ts->net_known ? (int)(ts->colour & 0x3Fu) : 0;
 }
 
-/* Expand @p count dibits into 2 * @p count soft costs after undoing the slicer phase step and the polarity the frame
-   sync found. An inverted discriminator swaps the positive and negative symbol pairs, which is dibit XOR 2. A burst
-   whose training sequence matched only after a phase step had its soft values sliced in that rotated phase, so it
-   falls back to confident hard decisions. Descrambling is the caller's. */
+/* Expand @p count dibits into 2 * @p count soft costs after undoing the slicer phase step and polarity @p inverted. An
+   inverted discriminator swaps the positive and negative symbol pairs, which is dibit XOR 2. A burst whose training
+   sequence matched only after a phase step had its soft values sliced in that rotated phase, so it falls back to
+   confident hard decisions. Descrambling is the caller's. */
 static void
-tetra_expand_dibits(const dsd_state* state, const uint8_t* dibits, const float* soft_in, int count, uint16_t* out) {
+tetra_expand_dibits_as(const dsd_state* state, int inverted, const uint8_t* dibits, const float* soft_in, int count,
+                       uint16_t* out) {
     const int phase_rot = state->tetra_sync.phase_rot & 3;
-    const int inverted = state->tetra_sync.polarity != 0;
     if (phase_rot != 0) {
         soft_in = NULL;
     }
@@ -133,6 +134,12 @@ tetra_expand_dibits(const dsd_state* state, const uint8_t* dibits, const float* 
             out[(i * 2) + 1] = (d & 1u) ? 0xFFFFu : 0x0000u;
         }
     }
+}
+
+/* tetra_expand_dibits_as() with the carrier's polarity, which a synchronisation burst or a control uplink burst set. */
+static void
+tetra_expand_dibits(const dsd_state* state, const uint8_t* dibits, const float* soft_in, int count, uint16_t* out) {
+    tetra_expand_dibits_as(state, state->tetra_sync.polarity != 0, dibits, soft_in, count, out);
 }
 
 /* Block 1 of the burst, as the frame sync captured it. */
@@ -464,7 +471,12 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
     tetra_burst_done(opts, state);
 }
 
-/* Control uplink burst: its 168 bits are one SCH/HU block (EN 300 392-2 clause 8.3.1.4.3). */
+/* Control uplink burst: its 168 bits are one SCH/HU block (EN 300 392-2 clause 8.3.1.4.3). Its extended training
+   sequence (clause 9.4.4.3.3) is no other training sequence inverted, so the polarity it matched, which the frame sync
+   gave as the sign of its synctype, is the burst's: the block is decoded with it, and once its CRC passed it is the
+   carrier's for the normal bursts after it, whose NTS1 and NTS2 cannot tell it (and the uplink has no synchronisation
+   burst to). A block that fails keeps the carrier's polarity: a normal-polarity NTS2 burst can match the inverted
+   extended training sequence. */
 static void
 tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
@@ -482,15 +494,17 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     if (!tetra_uplink_net_known(ts) || !state->tetra_sync.b1_valid) {
         return;
     }
-    tetra_expand_dibits(state, state->tetra_sync.b1_dibuf,
-                        state->tetra_sync.b1_soft_valid ? state->tetra_sync.b1_soft : NULL, CB_HALF_DIBITS, type4);
-    tetra_expand_dibits(state, b2_dibits, b2_soft, CB_HALF_DIBITS, type4 + ((size_t)CB_HALF_DIBITS * 2U));
+    const int inverted = DSD_SYNC_IS_INVERTED(state->lastsynctype) ? 1 : 0;
+    tetra_expand_dibits_as(state, inverted, state->tetra_sync.b1_dibuf,
+                           state->tetra_sync.b1_soft_valid ? state->tetra_sync.b1_soft : NULL, CB_HALF_DIBITS, type4);
+    tetra_expand_dibits_as(state, inverted, b2_dibits, b2_soft, CB_HALF_DIBITS, type4 + ((size_t)CB_HALF_DIBITS * 2U));
     tetra_descramble_soft(type4, CB_BITS, ts->lfsr_seed);
     tetra_block1_consumed(state);
 
     if (!tetra_sch_hu_decode(type4, mac)) {
         return;
     }
+    state->tetra_sync.polarity = (uint8_t)inverted;
     ts->decode_ok++;
     tetra_confirm_note_block(state);
     /* MAC-ACCESS (EN 300 392-2 clause 21.4.2.1): PDU type 0, fill bit, encryption mode, address type and address. */

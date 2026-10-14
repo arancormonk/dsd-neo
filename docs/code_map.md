@@ -4409,7 +4409,12 @@ it reads on (`b2_lead_count`, `tetra_read_block2()` in `tetra.c`). Off the uplin
 as before. Every downlink burst runs the TDMA clock to its own slot on the symbol count before its blocks are decoded: a
 normal burst at its training sequence (`tetra_tdma_advance_ndb()`), a synchronisation burst at its BSCH, which sets the
 clock when its CRC passes and otherwise only runs it (`tetra_sb_bsch()`), so block 2 of a burst whose BSCH failed is not
-decoded as the last burst's timeslot. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`.
+decoded as the last burst's timeslot. Normal bursts cannot tell the signal's polarity (NTS2 is NTS1 inverted), so the
+carrier's polarity (`tetra_sync.polarity`) comes from a synchronisation burst's training, which the frame sync latches,
+and on the uplink from a control burst: its extended training sequence is no other training sequence inverted, so its
+synctype's sign is its polarity, its SCH/HU is decoded with it, and once that CRC passed the decoder makes it the
+carrier's (`tetra_uplink_process_cb()`); one that fails changes nothing, since a normal-polarity NTS2 burst can match
+the inverted extended training sequence. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`.
 
 #### Signalling decoders
 
