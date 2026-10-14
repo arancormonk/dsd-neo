@@ -70,8 +70,10 @@ That fallback does not establish that the transmission is analog.
   visited in the current pass returns with the next pass. **Avoid permanently** also saves it for
   future searches; removing a permanent avoid during a search lifts it from the
   running session too.
-- **Pause** permits range edits. **Resume** applies them and restarts the pass,
-  retaining session avoids. **Stop** ends the radio session and leaves Signal
+- **Pause** ends any call in progress on the channel and permits range edits. A search
+  that fails (its input stalls, for example) ends that call too.
+  **Resume** applies them and restarts the pass under the same session, retaining
+  session avoids; a start after **Stop** is always a new session. **Stop** ends the radio session and leaves Signal
   search open on the same receiver, ready to start again. The session's settings
   return to those it had before the search, frequency included, so the configuration
   it autosaves never keeps a frequency the search visited.
@@ -318,8 +320,10 @@ block and then plans its first span from it. Coordinator
 tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,
-live strength, lifting session avoids, pause/restart and scoped restoration, and
-that a session ending under a search leaves the frequency it started from.
+live strength, lifting session avoids, pause/restart and scoped restoration, that a
+Pause or a failure (a stalled or lost input during a held visit) runs the carrier boundary
+once, so a call it interrupts ends there, and that a session ending under a search leaves
+the frequency it started from.
 Stalled-input regressions check that the live read gives up after 100 ms only while
 a search owns the tuner, and that the FSK, monitor and CQPSK symbol readers alike
 take that as an interruption rather than the end of the session, then read the
@@ -340,6 +344,8 @@ is submitted, and that a start the engine rejects with no search left owns nothi
 and is retired when the decoder session ends, so a recreated frontend never restores
 the search screen over a later ordinary session. A rejected restart of a paused
 search keeps that search's phase, session and ownership; only its message changes.
+A Resume keeps the paused search's session, while a start after Stop takes a new one
+even before the screen's status tick has seen the Stop.
 Leaving the search (its Back, the system Back) or a Start it refuses abandons a
 start still waiting for USB permission, so the grant starts no session, while a
 start Home left waiting survives; Stop and an arm the screen refuses (missing or

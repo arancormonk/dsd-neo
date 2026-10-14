@@ -70,7 +70,11 @@ Generated (do not edit/commit):
     lifts a session avoid by frequency. Published status carries `owned` (a coordinator
     holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
     frequency are restored on exit: a search Stop tunes back, running the carrier boundary
-    and acquisition reset as each visit's tune does, and a decoder session that ends
+    and acquisition reset as each visit's tune does. The engine loop runs no `noCarrier()`
+    while a search is paused or failed, so the first tick that finds it PAUSED or ERROR runs
+    them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
+    a call heard on the channel ends at the Pause, the input stall or any other failure rather
+    than at the next tune or the Stop. A decoder session that ends
     under the search (the Qt Stop) restores the options in
     `dsd_engine_signal_search_shutdown()` before the engine's autosave, so the saved
     configuration never keeps a visited frequency. Protocol details enter only through
@@ -4342,7 +4346,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   belongs to one session, the one up when it was made (a paused search's Resume) or else
   the next to come up (a USB grant can hold that start while the host stays Idle), and
   that session's Stopping, Failed or return to Idle ends it, so it never starts a search
-  in a later, ordinary session (`UI_QT_SIGNAL_SEARCH`).
+  in a later, ordinary session (`UI_QT_SIGNAL_SEARCH`). `arm()` keeps a paused search's
+  session ID (its hits keep numbering on) only when the current native status, not the
+  copy a tick old, shows that search paused and holding the tuner in a Running decoder
+  session; a start after a Stop is always a new session, so its hits never overwrite the
+  old session's history rows (`UI_QT_SIGNAL_SEARCH`).
   Main binds the screen's `failure` to its own failure text, and the screen never assigns
   it: an assignment would drop the binding, and a connection, USB-access or configuration
   failure after Start or Resume would never reach the screen that covers Home's banner.
