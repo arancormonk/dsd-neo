@@ -107,6 +107,13 @@ fixture_open(fixture* f) {
     DSD_SNPRINTF(f->opts->tetra_codec_path, sizeof(f->opts->tetra_codec_path), "%s", TETRA_TEST_CODEC_GOOD);
     f->state->last_vc_sync_time = 0;
     f->state->last_vc_sync_time_m = 0.0;
+    /* A BSCH has set the TDMA clock: the bursts are TN1's (a trunked or heard timeslot is one the clock places). */
+    tetra_state_t* const ts = tetra_st(f->state);
+    if (!ts) {
+        return -1;
+    }
+    ts->tdma_valid = 1;
+    ts->tn = 1;
     return 0;
 }
 

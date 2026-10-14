@@ -131,10 +131,24 @@ test_trunked_gate(void) {
             expect(tetra_voice_gate(f.opts, f.state, &sp) == (tn == assigned), label);
         }
     }
+    /* After a retune the TDMA clock waits for the carrier's next BSCH, while addressed signalling can prove the call
+       there sooner: until the clock places the burst it may be any timeslot's, another call's on another timeslot
+       included, so nothing plays, whatever the allocation. */
     ts->tdma_valid = 0;
-    ts->sm.followed.timeslots = 0x01;
-    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 0, "trunked: a timeslot the clock cannot place is heard");
+    for (unsigned slots = 0x01; slots <= 0x0F; slots++) {
+        ts->sm.followed.timeslots = (uint8_t)slots;
+        char label[80];
+        DSD_SNPRINTF(label, sizeof(label), "trunked: a burst the clock cannot place is not heard (timeslots 0x%X)",
+                     slots);
+        expect(!tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 0 && sp.kind == 0, label);
+    }
+    at_timeslot(&f, 4);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.followed && sp.tn == 4,
+           "trunked: once the clock places the burst on a followed timeslot it is heard");
+    ts->tn = 0;
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: a clock outside TN1..TN4 places nothing");
     ts->sm.followed.timeslots = 0;
+    at_timeslot(&f, 1);
     expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: a followed call with no timeslot is not heard");
 
     /* A followed call no record names is heard without a talkgroup. */

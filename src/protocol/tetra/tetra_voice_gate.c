@@ -49,14 +49,17 @@ voice_of_call(const tetra_state_t* ts, const tetra_call_t* c, tetra_speech* sp) 
     sp->air_enc = evidence != 0u ? (uint8_t)(evidence - 1u) : (uint8_t)TETRA_ENC_MODE_NONE;
 }
 
-/* Trunking: the followed call's timeslots on its carrier, once the tune settled and its signalling proved it there. */
+/* Trunking: the followed call's timeslots on its carrier, once the tune settled and its signalling proved it there. A
+ * burst the TDMA clock cannot place (tn 0: a retune stopped the clock, and the carrier's next BSCH has not set it yet,
+ * though addressed signalling may already have proved the call) can be any timeslot's, another call's included, so it
+ * is not the followed call's. */
 static int
 voice_followed(const dsd_state* state, const tetra_state_t* ts, tetra_speech* sp) {
     tetra_sm_grant g;
     if (!tetra_sm_followed(state, &g) || ts->sm.pending_request_id != 0U) {
         return 0;
     }
-    if ((g.timeslots & 0x0Fu) == 0u || (sp->tn != 0u && (g.timeslots & tetra_slot_bit(sp->tn)) == 0u)) {
+    if ((g.timeslots & tetra_slot_bit(sp->tn)) == 0u) {
         return 0;
     }
     if (!tetra_confirm_followed_call_proven(state)) {

@@ -4634,7 +4634,9 @@ single "current call".
   signalling of the followed call, or an addressed MAC-RESOURCE to its party, proves it on the carrier
   (`tetra_confirm_note_followed_call()`).
 - Speech. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
-  the carrier. Not trunking, one timeslot is heard at a time, the first with speech, until its speech stops for
+  the carrier, and only as the TDMA clock places the burst: a retune stops the clock until the carrier's next BSCH, and
+  a burst it cannot place may be any timeslot's, another call's included, so none plays even when addressed signalling
+  proved the call sooner. Not trunking, one timeslot is heard at a time, the first with speech, until its speech stops for
   `TETRA_CALL_SPEECH_END_S`; its speech belongs to the record whose traffic channel is that timeslot of the tuned
   frequency (`tetra_calls_on_timeslot()`), else to no record, whose air encryption is then the last addressed
   MAC-RESOURCE's on its timeslot or carrier. Direct mode is never held by these gates. The call gives the talkgroup
