@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_ANDROID_DECODER_HOST_ANDROID_H_
 #define DSD_NEO_ANDROID_DECODER_HOST_ANDROID_H_
 
+#include <QByteArray>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -154,6 +155,32 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     QString importDocument(const QString& reference, const QString& fileName, const QString& replacePath) override;
 
+    /**
+     * @brief Finish the Activity so a committed restore applies at the next launch (#580).
+     *
+     * Dispatched to the Android main thread and not waited for. DsdNeoActivity.onDestroy then stops the engine and
+     * the service and ends the process, as it does for any other finish.
+     */
+    bool quitApp() override;
+
+    /**
+     * @brief Whether the service is anything but IDLE or the engine atomic is set (engine_busy()).
+     *
+     * Reads both directly and never refreshes: ui_load asks before the first poll, and a refresh can deliver a USB
+     * attachment that starts a session.
+     */
+    bool engineBusy() const override;
+
+    /*
+     * Document copies (#580). These run on BackupModel's worker thread, never the Qt main thread: the JNI calls
+     * attach that thread, use the application context, and never wait on the Qt or Android main thread, which
+     * BackupModel's destructor may be blocking in waitForDone(). A content:// reference goes to the platform's
+     * ContentResolver; a file:// URL or plain path takes the base host's copy.
+     */
+    int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const override;
+    bool copyFileToDocument(const QString& sourcePath, const QString& reference) const override;
+    void abortDocumentTransfers() override;
+
   private:
     // JNI supplies one coherent record; desktop tests exercise the same publication path.
     void applyLifecycleStatus(const QJsonObject& status, bool running);
@@ -161,6 +188,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     QJsonObject readLifecycleStatus() const;
     static bool readEngineRunning();
+    /** @brief DecoderService.stateName(); empty when the call failed. */
+    static QByteArray readServiceState();
     void requestServiceStop();
     QString serviceFailureText() const;
     /** @brief Record a start that never reached the service. Always returns false. */

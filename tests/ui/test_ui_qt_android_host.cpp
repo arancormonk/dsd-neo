@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -10,6 +11,7 @@
 #include <utility>
 #include "../../android/decoder_host_android.h"
 #include "../../android/run_status.h"
+#include "../../android/session_state_map.h"
 #include "decoder_host.h"
 
 class QObject;
@@ -20,8 +22,17 @@ retained_record() {
     return value;
 }
 
+static QByteArray&
+service_state() {
+    static QByteArray value = "IDLE";
+    return value;
+}
+
 static bool running;
 static int serviceStops;
+// Every host refresh reads the lifecycle record and refreshes presentation and the local device.
+static int lifecycleReads;
+static int hostRefreshes;
 
 // Only platform transport is replaced. The real Android host's refresh, stop,
 // phase publication and failureText getter are compiled by this desktop target.
@@ -30,12 +41,18 @@ DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : DecoderHost(parent) {}
 
 QJsonObject
 DecoderHostAndroid::readLifecycleStatus() const {
+    ++lifecycleReads;
     return retained_record();
 }
 
 bool
 DecoderHostAndroid::readEngineRunning() {
     return running;
+}
+
+QByteArray
+DecoderHostAndroid::readServiceState() {
+    return service_state();
 }
 
 QString
@@ -49,7 +66,9 @@ DecoderHostAndroid::requestServiceStop() {
 }
 
 void
-DecoderHostAndroid::refreshPresentation() {}
+DecoderHostAndroid::refreshPresentation() {
+    ++hostRefreshes;
+}
 
 qreal
 DecoderHostAndroid::fontPixelSize(qreal sp) const {
@@ -66,7 +85,9 @@ void
 DecoderHostAndroid::refreshLocation() {}
 
 void
-DecoderHostAndroid::refreshLocalDevice() {}
+DecoderHostAndroid::refreshLocalDevice() {
+    ++hostRefreshes;
+}
 
 void
 DecoderHostAndroid::requestCurrentLocation(qint64) {}
@@ -112,6 +133,26 @@ QString
 DecoderHostAndroid::importDocument(const QString&, const QString&, const QString&) {
     return {};
 }
+
+bool
+DecoderHostAndroid::quitApp() {
+    return false;
+}
+
+int
+DecoderHostAndroid::copyDocumentToFile(const QString&, const QString&, qint64) const {
+    return DocumentFailed;
+}
+
+bool
+DecoderHostAndroid::copyFileToDocument(const QString&, const QString&) const {
+    return false;
+}
+
+void
+DecoderHostAndroid::abortDocumentTransfers() {
+    DecoderHost::abortDocumentTransfers();
+}
 } // namespace dsd_android
 
 static int failures;
@@ -124,10 +165,51 @@ check(bool ok, const char* why) {
     }
 }
 
+/*
+ * A restore must not replace the configuration under an engine (#580). engineBusy() asks the service and the engine
+ * atomic directly: ui_load asks before the host's first poll, when the published phase still says Idle, and a refresh
+ * would deliver a pending USB attachment, which can start a session.
+ */
+static void
+check_engine_busy() {
+    using dsd_android::DecoderHostAndroid;
+
+    struct Case {
+        const char* state;
+        bool engine;
+        bool busy;
+        const char* why;
+    };
+
+    static const Case kCases[] = {
+        {"STARTING", false, true, "a service still configuring the engine is busy"},
+        {"RUNNING", false, true, "a running service whose engine has not entered its loop is busy"},
+        {"RUNNING", true, true, "a running engine is busy"},
+        {"STOPPING", false, true, "a stopping service is busy"},
+        {"IDLE", true, true, "an engine still running under an idle service is busy"},
+        {"IDLE", false, false, "an idle service with no engine is idle"},
+        {"", false, true, "a service state that could not be read counts as busy"},
+    };
+    DecoderHostAndroid host;
+    lifecycleReads = 0;
+    hostRefreshes = 0;
+    for (const Case& c : kCases) {
+        service_state() = c.state;
+        running = c.engine;
+        check(host.engineBusy() == c.busy, c.why);
+    }
+    check(lifecycleReads == 0 && hostRefreshes == 0, "asking whether the engine is busy never refreshes the host");
+    check(host.sessionState() == dsd_qt::DecoderHost::Idle, "asking whether the engine is busy publishes no phase");
+    check(dsd_android::engine_busy(nullptr, false), "a failed service state read counts as busy");
+    service_state() = "IDLE";
+    running = false;
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     using namespace dsd_android;
+    check_engine_busy();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");

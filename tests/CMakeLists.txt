@@ -16452,10 +16452,18 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite screen
     )
+    add_test(
+        NAME ANDROID_DOCUMENT_TRANSFER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            document_transfer
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
         ANDROID_SCREEN_POLICY_JVM
+        ANDROID_DOCUMENT_TRANSFER_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

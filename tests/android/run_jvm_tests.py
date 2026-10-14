@@ -119,6 +119,11 @@ SUITES = {
         builds=(Build(sources=("DecoderStatus.kt",), tests=("DecoderStatusTest.kt",)),),
         checks=(golden_records_match,),
     ),
+    # The bounded stream copy behind the backup's document transfers, with its teardown abort. Plain Kotlin with no
+    # Android imports, so no stubs.
+    "document_transfer": Suite(
+        builds=(Build(sources=("DocumentTransfer.kt",), tests=("DocumentTransferTest.kt",)),),
+    ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure
     # ScreenWake it answers with, against a PowerManager stub that models reference counting.

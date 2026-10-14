@@ -16,13 +16,17 @@
 #include "run_status.h"
 
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLatin1String>
 #include <QScreen>
+#include <QUrl>
 #include <QVariant>
+#include <atomic>
 #include <cmath>
 #include <dsd-neo/platform/audio.h>
 
@@ -39,6 +43,7 @@ constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
 constexpr const char* kLocationClass = "io/github/arancormonk/dsdneo/LocationSupport";
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
 constexpr const char* kScreenClass = "io/github/arancormonk/dsdneo/ScreenSupport";
+constexpr const char* kTransferClass = "io/github/arancormonk/dsdneo/DocumentTransfer";
 
 /* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
  * mapping below hands one straight to the other. */
@@ -88,12 +93,50 @@ to_java_string_array(QJniEnvironment& env, const QStringList& values) {
     return array;
 }
 
+/**
+ * @brief The application context, taken on the Qt main thread and held for the process.
+ *
+ * The document copies run on a worker thread. There the Activity may be finishing or being replaced, and asking Qt
+ * for the current context off its main thread is not documented as safe. The application context outlives both, and
+ * a worker reads it here without asking anyone. The global reference is never released: it lives as long as the
+ * process does.
+ */
+std::atomic<jobject> g_application_context{nullptr};
+
+void
+hold_application_context() {
+    if (g_application_context.load() != nullptr) {
+        return;
+    }
+    const QJniObject context = android_context();
+    if (!context.isValid()) {
+        return;
+    }
+    const QJniObject application = context.callObjectMethod("getApplicationContext", "()Landroid/content/Context;");
+    if (!application.isValid()) {
+        return;
+    }
+    QJniEnvironment env;
+    jobject held = env->NewGlobalRef(application.object());
+    jobject expected = nullptr;
+    if (held != nullptr && !g_application_context.compare_exchange_strong(expected, held)) {
+        env->DeleteGlobalRef(held);
+    }
+}
+
+/** @brief Whether @p reference is a content URI, which only the platform's ContentResolver opens. */
+bool
+is_content_uri(const QString& reference) {
+    return QUrl(reference).scheme() == QLatin1String("content");
+}
+
 /** @brief Prose for the toolbar and the platform notification. */
 
 } // namespace
 
 DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(parent) {
     dsd_qt::DiagnosticsLog::installTap();
+    hold_application_context();
     refreshPresentation();
 }
 
@@ -361,6 +404,78 @@ DecoderHostAndroid::importDocument(const QString& reference, const QString& file
     return result.isValid() ? result.toString() : QString();
 }
 
+bool
+DecoderHostAndroid::quitApp() {
+    if (!QNativeInterface::QAndroidApplication::isActivityContext()) {
+        return false;
+    }
+    /* Not waited for: finishing runs on the Android main thread, and its onDestroy waits for this thread's event
+     * loop to end. */
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([]() -> QVariant {
+        const auto context = android_context();
+        if (context.isValid()) {
+            // Must match AppSupport.kt: @JvmStatic fun finishApp(context: Context).
+            QJniObject::callStaticMethod<void>(kSupportClass, "finishApp", "(Landroid/content/Context;)V",
+                                               context.object());
+        }
+        return {};
+    });
+    return true;
+}
+
+/*
+ * The document copies run on BackupModel's worker thread. QJniObject attaches that thread to the VM and loads the app
+ * classes through Qt's class loader, and its call frames release their local references; the copies use the held
+ * application context. Neither waits on another thread.
+ */
+int
+DecoderHostAndroid::copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const {
+    if (!is_content_uri(reference)) {
+        return dsd_qt::DecoderHost::copyDocumentToFile(reference, destPath, maxBytes);
+    }
+    const jobject context = g_application_context.load();
+    if (documentTransfersAborted() || context == nullptr || destPath.isEmpty() || maxBytes < 0) {
+        return DocumentFailed;
+    }
+    const QJniObject uri = QJniObject::fromString(reference);
+    const QJniObject dest = QJniObject::fromString(destPath);
+    // Must match AppSupport.kt: @JvmStatic fun copyDocumentToFile(Context, String, String, Long): Int.
+    const jint copied = QJniObject::callStaticMethod<jint>(
+        kSupportClass, "copyDocumentToFile", "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;J)I",
+        context, uri.object(), dest.object(), static_cast<jlong>(maxBytes));
+    if (copied == DocumentTooLarge) {
+        return DocumentTooLarge;
+    }
+    /* A JNI call that failed (no such method, or an Error the Kotlin side does not catch) also reads as 0, so a copy
+     * counts only with its file in place. */
+    return copied == DocumentCopied && QFileInfo(destPath).isFile() ? DocumentCopied : DocumentFailed;
+}
+
+bool
+DecoderHostAndroid::copyFileToDocument(const QString& sourcePath, const QString& reference) const {
+    if (!is_content_uri(reference)) {
+        return dsd_qt::DecoderHost::copyFileToDocument(sourcePath, reference);
+    }
+    const jobject context = g_application_context.load();
+    if (documentTransfersAborted() || context == nullptr) {
+        return false;
+    }
+    const QJniObject source = QJniObject::fromString(sourcePath);
+    const QJniObject uri = QJniObject::fromString(reference);
+    // Must match AppSupport.kt: @JvmStatic fun copyFileToDocument(Context, String, String): Boolean.
+    return QJniObject::callStaticMethod<jboolean>(kSupportClass, "copyFileToDocument",
+                                                  "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z",
+                                                  context, source.object(), uri.object())
+           == JNI_TRUE;
+}
+
+void
+DecoderHostAndroid::abortDocumentTransfers() {
+    // Must match DocumentTransfer.kt: @JvmStatic fun abort(). Stops the Kotlin copies at their next chunk.
+    QJniObject::callStaticMethod<void>(kTransferClass, "abort", "()V");
+    dsd_qt::DecoderHost::abortDocumentTransfers();
+}
+
 // WP-D3: Kotlin owns permissions, timeout and cancellation; polling emits on the Qt thread.
 void
 DecoderHostAndroid::requestCurrentLocation(qint64 requestId) {
@@ -495,5 +610,12 @@ DecoderHostAndroid::readLifecycleStatus() const {
 bool
 DecoderHostAndroid::readEngineRunning() {
     return engine_is_running();
+}
+
+QByteArray
+DecoderHostAndroid::readServiceState() {
+    // Must match DecoderService.kt: @JvmStatic fun stateName(): String. A static read; it starts nothing.
+    const auto name = QJniObject::callStaticObjectMethod(kServiceClass, "stateName", "()Ljava/lang/String;");
+    return name.isValid() ? name.toString().toUtf8() : QByteArray();
 }
 } // namespace dsd_android

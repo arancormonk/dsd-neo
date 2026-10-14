@@ -179,6 +179,14 @@ DecoderHostAndroid::stop() {
     requestServiceStop();
 }
 
+bool
+DecoderHostAndroid::engineBusy() const {
+    /* The engine first: it only runs while the service is out of IDLE, so an IDLE read after a clear atomic means
+     * nothing was starting or running at that read. The other order could miss a start that began between the two. */
+    const bool running = readEngineRunning();
+    return engine_busy(readServiceState().constData(), running);
+}
+
 void
 DecoderHostAndroid::refresh() {
     refreshPresentation();
