@@ -79,7 +79,19 @@ group_call(fixture* f, uint16_t call_id, uint32_t gssi, long freq_hz, uint8_t ti
     c->alloc_m = dsd_decode_now_mono_s();
 }
 
-/* The trunking state machine follows call @p call_id on @p timeslots, its tune settled. */
+/* The followed grant and the record of the call it came from, both on @p timeslots, as a grant is made from the
+ * record's allocation (tetra_calls.c). */
+static void
+followed_timeslots(fixture* f, uint8_t timeslots) {
+    tetra_state_t* ts = tetra_st(f->state);
+    ts->sm.followed.timeslots = timeslots;
+    tetra_call_t* c = tetra_calls_find(f->state, ts->sm.followed.call_id);
+    if (c) {
+        c->alloc.timeslots = timeslots;
+    }
+}
+
+/* The trunking state machine follows call @p call_id on @p timeslots of its record's carrier, its tune settled. */
 static void
 follow(fixture* f, uint16_t call_id, uint8_t timeslots) {
     tetra_state_t* ts = tetra_st(f->state);
@@ -87,7 +99,10 @@ follow(fixture* f, uint16_t call_id, uint8_t timeslots) {
     ts->sm.state = (uint8_t)TETRA_SM_TUNED;
     ts->sm.pending_request_id = 0;
     ts->sm.followed.call_id = call_id;
-    ts->sm.followed.timeslots = timeslots;
+    const tetra_call_t* c = tetra_calls_peek(f->state, call_id);
+    ts->sm.followed.freq_hz = c ? c->alloc.freq_hz : 0L;
+    ts->sm.followed.carrier = c ? c->alloc.carrier : 0U;
+    followed_timeslots(f, timeslots);
 }
 
 static void
@@ -125,7 +140,7 @@ test_trunked_gate(void) {
     for (unsigned tn = 1; tn <= 4; ++tn) {
         at_timeslot(&f, (uint8_t)tn);
         for (unsigned assigned = 1; assigned <= 4; ++assigned) {
-            ts->sm.followed.timeslots = (uint8_t)(1u << (4u - assigned));
+            followed_timeslots(&f, (uint8_t)(1u << (4u - assigned)));
             char label[64];
             DSD_SNPRINTF(label, sizeof(label), "trunked: TN%u under an allocation of TN%u", tn, assigned);
             expect(tetra_voice_gate(f.opts, f.state, &sp) == (tn == assigned), label);
@@ -136,7 +151,7 @@ test_trunked_gate(void) {
        included, so nothing plays, whatever the allocation. */
     ts->tdma_valid = 0;
     for (unsigned slots = 0x01; slots <= 0x0F; slots++) {
-        ts->sm.followed.timeslots = (uint8_t)slots;
+        followed_timeslots(&f, (uint8_t)slots);
         char label[80];
         DSD_SNPRINTF(label, sizeof(label), "trunked: a burst the clock cannot place is not heard (timeslots 0x%X)",
                      slots);
@@ -150,6 +165,22 @@ test_trunked_gate(void) {
     ts->sm.followed.timeslots = 0;
     at_timeslot(&f, 1);
     expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: a followed call with no timeslot is not heard");
+
+    /* An allocation that moved the call away without moving the receiver (one no call PDU took, which never tunes, or
+       a reallocation whose tune failed) leaves the followed channel to whatever call comes there next; a record that
+       holds no allocation says nothing. */
+    followed_timeslots(&f, 0x08);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.followed, "trunked: the followed channel is heard");
+    tetra_call_t* const c = tetra_calls_find(f.state, 9);
+    c->alloc.carrier = 130;
+    c->alloc.freq_hz = 392037500L;
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: not once its record moved to another carrier");
+    c->alloc.carrier = 0;
+    c->alloc.freq_hz = 392012500L;
+    c->alloc.timeslots = 0x04;
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: nor once it moved to another timeslot");
+    DSD_MEMSET(&c->alloc, 0, sizeof c->alloc);
+    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.followed, "trunked: a record without allocation says nothing");
 
     /* A followed call no record names is heard without a talkgroup. */
     ts->sm.followed.timeslots = 0x08;

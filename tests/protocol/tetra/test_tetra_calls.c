@@ -42,6 +42,7 @@
 #include "tetra_confirm.h"
 #include "tetra_state.h"
 #include "tetra_test_pdu.h"
+#include "tetra_voice_gate.h"
 
 #define SECOND_NS     1000000000ULL
 
@@ -1692,6 +1693,42 @@ test_takeover_ends_the_call_left(void) {
     session_close(&s);
 }
 
+/* The followed call's speech is heard on the followed channel only while its record does not place the call elsewhere:
+ * an allocation to its group that came with no call PDU, which never tunes, or a reallocation whose tune failed,
+ * moves the call off the channel the receiver stays on, which the SwMI may give to any other call next, so speech
+ * there is not the followed call's. */
+static void
+test_followed_record_moved_away(void) {
+    for (int failed_tune = 0; failed_tune < 2; failed_tune++) {
+        session s = session_open();
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120); /* TN2 of carrier 120 */
+        tetra_confirm_note_followed_call(s.state);
+        tetra_state_t* const ts = tetra_st(s.state);
+        ts->tdma_valid = 1;
+        ts->tn = 2;
+        tetra_speech sp;
+        assert(tetra_voice_gate(s.opts, s.state, &sp) && sp.followed && sp.call_id == 0x0A);
+        if (failed_tune) {
+            g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+            send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 130);
+            const uint64_t request = dsd_trunk_tuning_pending_request();
+            assert(request != 0U);
+            dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+            tetra_sm_tick(s.opts, s.state);
+            tetra_confirm_note_followed_call(s.state);
+        } else {
+            send_block(&s, 0x100u, NULL, 4, 130);
+        }
+        tetra_sm_grant g;
+        assert(tetra_sm_followed(s.state, &g) && g.carrier == 120 && g.call_id == 0x0A);
+        assert(tetra_calls_peek(s.state, 0x0A)->alloc.carrier == 130 && tetra_confirm_followed_call_proven(s.state));
+        ts->tdma_valid = 1;
+        ts->tn = 2;
+        assert(!tetra_voice_gate(s.opts, s.state, &sp));
+        session_close(&s);
+    }
+}
+
 /* Not trunking, the heard call's identifier goes with its record, as the followed call's does: once the heard call is
  * released, a D-SETUP gave its identifier to another call or a full table evicted it, the call given the identifier is
  * not the heard call until its own speech is heard, so its signalling publishes nothing (its channel may be another
@@ -1849,6 +1886,7 @@ main(void) {
     test_record_changes_reach_the_call();
     test_followed_reallocation_moves_the_call();
     test_takeover_ends_the_call_left();
+    test_followed_record_moved_away();
     test_heard_call_identifier_let_go();
     test_direct_mode_speech();
     test_receiving_carrier();

@@ -4672,7 +4672,9 @@ single "current call".
   signalling of the followed call, or an addressed MAC-RESOURCE to its party, proves it on the carrier
   (`tetra_confirm_note_followed_call()`).
 - Speech. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
-  the carrier, and only as the TDMA clock places the burst: a retune stops the clock until the carrier's next BSCH, and
+  the carrier, while its record does not place it elsewhere (an allocation no call PDU took, which never tunes, or a
+  reallocation whose tune failed moves it off the channel the receiver stays on, which the SwMI may give any call next;
+  `voice_record_on()`), and only as the TDMA clock places the burst: a retune stops the clock until the carrier's next BSCH, and
   a burst it cannot place may be any timeslot's, another call's included, so none plays even when addressed signalling
   proved the call sooner. Not trunking, one timeslot is heard at a time, the first with speech that plays, until that
   speech stops for `TETRA_CALL_SPEECH_END_S` (`tetra_voice_hold()`, `tetra_calls_t::held`), and on the downlink only a

@@ -49,10 +49,23 @@ voice_of_call(const tetra_state_t* ts, const tetra_call_t* c, tetra_speech* sp) 
     sp->air_enc = evidence != 0u ? (uint8_t)(evidence - 1u) : (uint8_t)TETRA_ENC_MODE_NONE;
 }
 
-/* Trunking: the followed call's timeslots on its carrier, once the tune settled and its signalling proved it there. A
- * burst the TDMA clock cannot place (tn 0: a retune stopped the clock, and the carrier's next BSCH has not set it yet,
- * though addressed signalling may already have proved the call) can be any timeslot's, another call's included, so it
- * is not the followed call's. */
+/* The followed call's record does not place it elsewhere than the followed channel, timeslot @p tn of the followed
+ * carrier. An allocation that moved it away without moving the receiver (one no call PDU took, which never tunes, or a
+ * reallocation whose tune failed) leaves the followed channel to whatever call the SwMI gives it next; a record that
+ * holds no allocation says nothing. */
+static int
+voice_record_on(const tetra_call_t* c, const tetra_sm_grant* g, uint8_t tn) {
+    if (c->alloc.timeslots == 0u) {
+        return 1;
+    }
+    return c->alloc.carrier == g->carrier && (c->alloc.freq_hz == 0L || c->alloc.freq_hz == g->freq_hz)
+           && (c->alloc.timeslots & tetra_slot_bit(tn)) != 0u;
+}
+
+/* Trunking: the followed call's timeslots on its carrier, once the tune settled and its signalling proved it there, and
+ * while its record still has it there. A burst the TDMA clock cannot place (tn 0: a retune stopped the clock, and the
+ * carrier's next BSCH has not set it yet, though addressed signalling may already have proved the call) can be any
+ * timeslot's, another call's included, so it is not the followed call's. */
 static int
 voice_followed(const dsd_state* state, const tetra_state_t* ts, tetra_speech* sp) {
     tetra_sm_grant g;
@@ -65,8 +78,12 @@ voice_followed(const dsd_state* state, const tetra_state_t* ts, tetra_speech* sp
     if (!tetra_confirm_followed_call_proven(state)) {
         return 0;
     }
+    const tetra_call_t* const c = tetra_calls_peek(state, g.call_id);
+    if (c && !voice_record_on(c, &g, sp->tn)) {
+        return 0;
+    }
     sp->followed = 1;
-    voice_of_call(ts, tetra_calls_peek(state, g.call_id), sp);
+    voice_of_call(ts, c, sp);
     return 1;
 }
 
