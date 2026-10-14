@@ -62,6 +62,8 @@ typedef struct {
     uint64_t landed;
     int hold, skip, need_span, visit, measuring, stopping, probing, restored, restore_queued;
     int analog_visit, listen_ready;
+    /* Paused or failed, the search has ended what the decoder was receiving (search_end_reception()). */
+    int reception_ended;
     uint32_t ticket, target, before_generation;
 #ifdef USE_RADIO
     dsd_signal_search_span span;
@@ -268,6 +270,7 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
     c->tune_started = dsd_realtime_mono_ms();
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
     dsd_frame_sync_reset_acquisition(opts, state, 1);
+    c->reception_ended = 0;
     if (search_prepare_profile(c, opts, state, target, analog)) {
         search_error(c, "The receiver cannot apply this range's receive profile");
         return -1;
@@ -625,6 +628,7 @@ search_avoid_hit(search_coord* c) {
     return 0;
 }
 
+/* The next tick ends what the decoder was receiving (search_end_reception()). */
 static void
 search_pause(search_coord* c) {
     search_end_hit(c);
@@ -946,6 +950,20 @@ search_visit_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Paused or failed, the search reads nothing from the channel, and the engine loop runs no noCarrier() until a Resume
+   or Stop: the carrier boundary and acquisition reset each tune runs end the reception once, on the tick that finds
+   the search there, so a call heard on the channel ends then rather than at a later tune. A visit lands only through
+   search_queue_tune(), which runs them again and lets the next pause or failure end its reception. */
+static void
+search_end_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
+    if (c->reception_ended) {
+        return;
+    }
+    c->reception_ended = 1;
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_frame_sync_reset_acquisition(opts, state, 1);
+}
+
 static int
 search_input_lost(search_coord* c, dsd_opts* opts, dsd_state* state) {
     if (c->stopping) {
@@ -959,18 +977,9 @@ search_input_lost(search_coord* c, dsd_opts* opts, dsd_state* state) {
 }
 #endif
 
-int
-// cppcheck-suppress constParameterPointer -- Radio-enabled tuning applies receive profiles to state.
-dsd_engine_signal_search_tick(dsd_opts* opts, dsd_state* state) {
-    // cppcheck-suppress constVariablePointer -- Mutated below when USE_RADIO is enabled.
-    search_coord* c = search_get(state);
-    if (!c || c->status.phase == DSD_SEARCH_STOPPED) {
-        return 0;
-    }
-#ifndef USE_RADIO
-    (void)opts;
-    return 0;
-#else
+#ifdef USE_RADIO
+static int
+search_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL || !rtl_stream_is_active()) {
         return search_input_lost(c, opts, state);
     }
@@ -994,6 +1003,26 @@ dsd_engine_signal_search_tick(dsd_opts* opts, dsd_state* state) {
         return search_measure_tick(c, opts, state, &capture);
     }
     return c->visit ? search_visit_tick(c, opts, state) : 0;
+}
+#endif
+
+int
+// cppcheck-suppress constParameterPointer -- Radio-enabled tuning applies receive profiles to state.
+dsd_engine_signal_search_tick(dsd_opts* opts, dsd_state* state) {
+    // cppcheck-suppress constVariablePointer -- Mutated below when USE_RADIO is enabled.
+    search_coord* c = search_get(state);
+    if (!c || c->status.phase == DSD_SEARCH_STOPPED) {
+        return 0;
+    }
+#ifndef USE_RADIO
+    (void)opts;
+    return 0;
+#else
+    const int rc = search_tick(c, opts, state);
+    if (c->status.phase == DSD_SEARCH_PAUSED || c->status.phase == DSD_SEARCH_ERROR) {
+        search_end_reception(c, opts, state);
+    }
+    return rc;
 #endif
 }
 

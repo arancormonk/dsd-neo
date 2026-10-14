@@ -36,6 +36,8 @@ static int observed = 1;
 static int family, gain_value = 123, gain_auto, autogain = 1;
 static uint64_t now_ms = 1000;
 static uint64_t tuner_owner;
+/* How long ago the radio input delivered its latest samples. */
+static uint64_t stalled_ms;
 
 void
 rtl_signal_search_set_owner(uint64_t session) {
@@ -67,7 +69,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 46);
+    assert(owner >= 42 && owner <= 49);
     if (defer) {
         --defer;
         return 1;
@@ -106,7 +108,7 @@ rtl_signal_capture_get(dsd_signal_capture* out) {
 
 uint64_t
 rtl_signal_capture_last_ms(void) {
-    return dsd_realtime_mono_ms();
+    return dsd_realtime_mono_ms() - stalled_ms;
 }
 
 int
@@ -423,6 +425,69 @@ test_stop_restore_is_a_carrier_boundary(dsd_opts* o, dsd_state* s, dsd_signal_se
     assert(status.phase == DSD_SEARCH_STOPPED && boundary == before + 1 && o->rtlsdr_center_freq == 100000000);
 }
 
+/* A Pause stops the decoder reading the channel a visit holds, and the main loop runs no noCarrier() while paused: the
+   call heard there ends at the Pause, so its duration and voice end do not wait for a Resume or Stop. */
+static void
+test_pause_is_a_carrier_boundary(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    o->rtlsdr_center_freq = 100000000;
+    config->session_id = 47;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    const int before = boundary;
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && status.hit.ended && boundary == before + 1);
+    advance(30000);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_PAUSED && boundary == before + 1);
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && o->rtlsdr_center_freq == 100000000);
+}
+
+/* A search that fails stops the decoder reading the channel as a Pause does, and runs no noCarrier() until a Stop:
+   whether its input stalls during a held visit or goes away, the call heard there ends when the search fails. */
+static void
+test_error_is_a_carrier_boundary(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    o->rtlsdr_center_freq = 100000000;
+    config->session_id = 48;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    visit_strongest(o, s);
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    assert(status.phase == DSD_SEARCH_HELD);
+    int before = boundary;
+    stalled_ms = 20000;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && status.hit.ended && boundary == before + 1);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && boundary == before + 1);
+    stalled_ms = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+
+    config->session_id = 49;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    before = boundary;
+    live = 0;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && boundary == before + 1);
+    tick(o, s);
+    assert(boundary == before + 1);
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+    live = 1;
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -578,6 +643,8 @@ main(void) {
     test_listening_verdict_and_live_strength(o, s, &config);
     test_teardown_restores_frequency(o, s, &config);
     test_stop_restore_is_a_carrier_boundary(o, s, &config);
+    test_pause_is_a_carrier_boundary(o, s, &config);
+    test_error_is_a_carrier_boundary(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);
