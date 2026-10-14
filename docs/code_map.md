@@ -4475,12 +4475,15 @@ its SYSINFO names another location area, whose call identifiers may differ (clau
 `tetra_calls_note_location_area()`). Retunes within the cell, to a traffic carrier and back, keep all of it. Nothing
 here tunes: a followed call of the last network is followed on as a channel without a call record until the grant
 timeout or the hangtime ends it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per
-timeslot and dropped after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
+timeslot, the one the TDMA clock gives its first fragment: before the clock is set (a new carrier before its BSCH) a
+first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). It is dropped
+after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
 the timeslot that went by undecoded count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot
 join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
 `TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases, the sender's identity, the reassembly
 a network change drops),
-`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops), `TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
+`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot),
+`TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
 network and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a network change starts over).
 
 #### Trunking

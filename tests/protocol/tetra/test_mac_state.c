@@ -560,7 +560,9 @@ test_encrypted_pdus_not_parsed(void) {
                     && strstr(log, "CHANNEL-ALLOCATION") == NULL,
                 "an encrypted channel allocation is not applied");
 
-    /* The encryption mode of a first fragment applies to every fragment of its TM-SDU. */
+    /* The encryption mode of a first fragment applies to every fragment of its TM-SDU, rebuilt on its timeslot. */
+    ts->tdma_valid = 1;
+    ts->tn = 1;
     b = (ttb_block){0};
     start = ttb_resource(&b, TETRA_ENC_MODE_EVEN, TETRA_MAC_ADDR_SSI, 0x345678u);
     ttb_set(&b, start + 7, 63, 6);
@@ -575,7 +577,7 @@ test_encrypted_pdus_not_parsed(void) {
     ttb_close_end(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     tetra_test_mac_logged(b.bits, b.n, 0, opts, state, log, sizeof log);
-    ok &= check(tetra_calls_peek(state, 0x0ABCu) == NULL && !ts->mac_frag[0].active && strstr(log, "D-SETUP") == NULL,
+    ok &= check(tetra_calls_peek(state, 0x0ABCu) == NULL && !ts->mac_frag[1].active && strstr(log, "D-SETUP") == NULL,
                 "the last fragment of an encrypted TM-SDU is not handed to the MLE");
     free_state(state);
     free(opts);
@@ -922,15 +924,17 @@ test_fragmented_call_uses_mac_end_allocation(void) {
         dsd_opts* opts = new_opts();
         setup_trunking(opts, state);
         opts->trunk_tune_group_calls = pass != 0;
-        const tetra_state_t* ts = tetra_st(state);
+        tetra_state_t* ts = tetra_st(state);
+        ts->tdma_valid = 1; /* the TM-SDU is rebuilt on timeslot 1 */
+        ts->tn = 1;
         tetra_mac_parse_schd(first.bits, first.n, 1, opts, state);
-        ok &= check(tune_calls == 0 && ts->mac_frag[0].active && tetra_calls_peek(state, 0x2345u) == NULL,
+        ok &= check(tune_calls == 0 && ts->mac_frag[1].active && tetra_calls_peek(state, 0x2345u) == NULL,
                     "first fragment buffered");
         tetra_mac_parse_schd(end.bits, end.n, 1, opts, state);
         const tetra_call_t* const c = tetra_calls_peek(state, 0x2345u);
         if (pass == 0) {
             ok &= check(tune_calls == 0 && c && c->called_ssi == 0x456789u && c->alloc.carrier == 61
-                            && !ts->mac_frag[0].active,
+                            && !ts->mac_frag[1].active,
                         "fragmented setup decoded; policy blocks the tune");
         } else if (pass == 1) {
             ok &= check(tune_calls == 1 && tuned_freq == 401518750L && c && c->alloc.carrier == 61,

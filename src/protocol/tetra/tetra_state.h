@@ -222,8 +222,9 @@ typedef struct tetra_state {
     tetra_calls_t calls;
 
     /* Fragmented TM-SDU reconstruction (tetra_mac.c), one context per downlink timeslot (index = TN 1..4; index 0 while
-     * the TDMA timeslot is unknown). A fragment run belongs to the control channel of its timeslot, so fragments of
-     * different timeslots are never joined (EN 300 392-2 clause 23.4.3.1.1). */
+     * the TDMA timeslot is unknown, which never holds one: a first fragment of no known timeslot is not kept). A
+     * fragment run belongs to the control channel of its timeslot, so fragments of different timeslots are never
+     * joined (EN 300 392-2 clause 23.4.3.1.1). */
     tetra_mac_fragment mac_frag[5];
 
     /* Concatenated SDS reassembly contexts (EN 300 392-2 clause 29.5.14), allocated on first use and freed with the

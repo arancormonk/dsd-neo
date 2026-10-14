@@ -40,6 +40,16 @@ new_state(void) {
     return state;
 }
 
+/* A BSCH has set the TDMA clock, and the blocks are timeslot 1's: a TM-SDU is rebuilt on the timeslot it started on. */
+static dsd_state*
+new_state_on_tn1(void) {
+    dsd_state* state = new_state();
+    tetra_state_t* const ts = tetra_st(state);
+    ts->tdma_valid = 1;
+    ts->tn = 1;
+    return state;
+}
+
 static void
 free_state(dsd_state* state) {
     dsd_state_ext_free_all(state);
@@ -109,11 +119,11 @@ static void
 test_full_fragment_sequence(void) {
     ttb_block sdu = {0};
     put_d_setup(&sdu, 5);
-    dsd_state* state = new_state();
+    dsd_state* state = new_state_on_tn1();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     assert(opts != NULL);
     const tetra_state_t* ts = tetra_st(state);
-    const tetra_mac_fragment* f = &ts->mac_frag[0];
+    const tetra_mac_fragment* f = &ts->mac_frag[1];
     ttb_block b;
 
     first_fragment(&b, 0x001234u, sdu.bits, 10);
@@ -127,7 +137,8 @@ test_full_fragment_sequence(void) {
     parse(state, opts, &b, 2);
     check(!f->active && f->nbits == 0, "MAC-END closes the TM-SDU");
     check(delivered(state, 5), "TM-SDU taken from after the MAC-END header elements");
-    check(tetra_calls_peek(state, 5)->called_ssi == 0x001234u, "rebuilt TM-SDU keeps the first fragment's address");
+    check(delivered(state, 5) && tetra_calls_peek(state, 5)->called_ssi == 0x001234u,
+          "rebuilt TM-SDU keeps the first fragment's address");
     free_state(state);
     free(opts);
 }
@@ -136,11 +147,11 @@ static void
 test_fragment_guards(void) {
     ttb_block sdu = {0};
     put_d_setup(&sdu, 7);
-    dsd_state* state = new_state();
+    dsd_state* state = new_state_on_tn1();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     assert(opts != NULL);
     tetra_state_t* ts = tetra_st(state);
-    tetra_mac_fragment* f = &ts->mac_frag[0];
+    tetra_mac_fragment* f = &ts->mac_frag[1];
     ttb_block b;
 
     continuation(&b, sdu.bits, 9);
@@ -211,7 +222,7 @@ static void
 test_fragment_timeout(void) {
     ttb_block sdu = {0};
     put_d_setup(&sdu, 9);
-    dsd_state* state = new_state();
+    dsd_state* state = new_state_on_tn1();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     assert(opts != NULL);
     const tetra_state_t* ts = tetra_st(state);
@@ -227,9 +238,9 @@ test_fragment_timeout(void) {
     for (int half_slot = 0; half_slot < 7; half_slot++) {
         parse(state, opts, &other, 0);
     }
-    check(ts->mac_frag[0].active, "7 half slots without a fragment keep the TM-SDU");
+    check(ts->mac_frag[1].active, "7 half slots without a fragment keep the TM-SDU");
     parse(state, opts, &other, 0);
-    check(!ts->mac_frag[0].active, "8 half slots without a fragment drop it");
+    check(!ts->mac_frag[1].active, "8 half slots without a fragment drop it");
     last_fragment(&b, sdu.bits + 9, sdu.n - 9);
     parse(state, opts, &b, 0);
     check(!delivered(state, 9), "a late MAC-END delivers nothing");
@@ -329,8 +340,47 @@ test_network_change_drops_fragments(void) {
     }
 }
 
+/* A TM-SDU is rebuilt on the timeslot it started on (clause 23.4.3.1.1), which the TDMA clock gives. Before the clock
+ * is set (a new carrier before its BSCH) a first fragment's timeslot is not known, and a MAC-END could be another
+ * timeslot's: the first fragment is not kept, so no continuation completes it. Once the clock places the blocks, the
+ * same fragments rebuild the TM-SDU. */
+static void
+test_no_timeslot_no_tm_sdu(void) {
+    ttb_block sdu = {0};
+    put_d_setup(&sdu, 31);
+    dsd_state* state = new_state();
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    tetra_state_t* ts = tetra_st(state);
+    ttb_block b;
+
+    first_fragment(&b, 0x000031u, sdu.bits, 12);
+    parse(state, opts, &b, 1);
+    check(!ts->mac_frag[0].active, "no clock: the first fragment of no known timeslot is not kept");
+    continuation(&b, sdu.bits + 12, 6);
+    parse(state, opts, &b, 1);
+    last_fragment(&b, sdu.bits + 18, sdu.n - 18);
+    parse(state, opts, &b, 1);
+    check(!delivered(state, 31) && !ts->mac_frag[0].active,
+          "no clock: a continuation of any timeslot completes nothing");
+
+    ts->tdma_valid = 1;
+    ts->tn = 3;
+    first_fragment(&b, 0x000031u, sdu.bits, 12);
+    parse(state, opts, &b, 1);
+    continuation(&b, sdu.bits + 12, 6);
+    parse(state, opts, &b, 1);
+    last_fragment(&b, sdu.bits + 18, sdu.n - 18);
+    parse(state, opts, &b, 1);
+    check(delivered(state, 31) && tetra_calls_peek(state, 31)->called_ssi == 0x000031u && !ts->mac_frag[3].active,
+          "clock on TN3: the same fragments rebuild the TM-SDU");
+    free_state(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_no_timeslot_no_tm_sdu();
     test_full_fragment_sequence();
     test_fragment_guards();
     test_fragments_kept_per_timeslot();

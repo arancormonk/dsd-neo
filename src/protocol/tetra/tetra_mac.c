@@ -345,10 +345,18 @@ fragment_append(tetra_mac_fragment* f, const uint8_t* bits, int nbits) {
 }
 
 /* Clause 23.4.3.1.1 b) and i): a MAC-RESOURCE with length indication 111111 starts a TM-SDU on its control channel
- * and drops any partial one there, whatever its address. The encryption mode applies to every fragment. */
+ * and drops any partial one there, whatever its address. The encryption mode applies to every fragment. A TM-SDU is
+ * rebuilt on the timeslot it started on, which the TDMA clock gives: while the clock is stopped (a new carrier before
+ * its BSCH) the block's timeslot is not known, a continuation of any timeslot could join it, so it is not kept. */
 static void
 start_fragment(mac_block* b, const tetra_mac_address* addr, int encrypted, const uint8_t* sdu, int sdu_bits) {
     tetra_mac_fragment* const f = b->frag;
+    if (fragment_timeslot(b->ts) == 0) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  first fragment on no known timeslot; discarded\n", b->cc);
+        b->fragment_seen = 1;
+        discard_fragment(f);
+        return;
+    }
     if (f->active) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  partial TM-SDU of %u bits dropped\n", b->cc,
                           (unsigned)f->nbits);
@@ -904,7 +912,7 @@ expire_if_idle(const tetra_state_t* ts, tetra_mac_fragment* f, int cc) {
 /* N.203 counts the slots of the TM-SDU's control channel, decoded or not: before a block of timeslot TN is parsed, the
  * slots of that timeslot the TDMA clock counted since its last block, and that went by undecoded, count as slots
  * without a fragment, so a continuation arriving after them cannot revive an expired TM-SDU. While the clock is stopped
- * there is no timeslot, and only decoded blocks count. */
+ * there is no timeslot to count, and no TM-SDU is started without one (start_fragment()). */
 static void
 catch_up_fragment(const tetra_state_t* ts, tetra_mac_fragment* f, int cc) {
     if (fragment_timeslot(ts) == 0) {
