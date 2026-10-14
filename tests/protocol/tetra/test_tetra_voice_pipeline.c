@@ -688,6 +688,89 @@ test_call_boundary_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* D-TX GRANTED or D-TX INTERRUPT (EN 300 392-2 clauses 14.7.1.15, 14.7.1.17) of call @p call_id granting the
+   transmission to another user, @p talker transmitting. */
+static void
+grant_transmission(fixture* f, uint8_t kind, uint16_t call_id, uint32_t talker) {
+    tetra_call_event ev = {.call_id = call_id, .kind = kind};
+    ev.has = (uint8_t)(TETRA_CALL_HAS_GRANT | TETRA_CALL_HAS_TALKER);
+    ev.grant = 3U;
+    ev.talker_ssi = talker;
+    tetra_calls_on_event(f->opts, f->state, &ev, NULL);
+}
+
+/* Another transmitting party in the same call is the next transmission, the D-TX CEASED between them heard or not:
+   D-TX INTERRUPT or D-TX GRANTED naming another talker, or a direct mode call to the same destination from another
+   source, starts the speech over, so neither the last talker's carried samples nor its codec state reach the next
+   one. The same talker named again (a late-entry repeat) is the same transmission. */
+static void
+test_talker_change_resets_speech(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "talker: fixture");
+    uint8_t half[TETRA_SPEECH_HALF_BITS];
+    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    tetra_voice_reorder_half(half, half_frame);
+    tetra_voice_reorder_full(full, full_frames);
+    const size_t block = DSD_VOICE_FRAME_SAMPLES;
+
+    /* The talker not known yet: decode 1 plays one block and carries 80 samples. */
+    follow_call(&f, 12, 800, 0x0F);
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    expect(voice_of(&f)->carry_len == 80, "talker: 80 samples carried");
+    /* D-TX GRANTED names talker 0x4444: the same transmission, so the carried samples and decodes 2 and 3 play. */
+    const uint8_t* const b = full_frames + DSD_TETRA_CODEC_FRAME_BITS;
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x4444U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, 0, 1, half_frame, 0, block, "talker: the speech before the talker was named");
+    expect_segment(&f, block, 1, half_frame, block, FRAME - block,
+                   "talker: naming the talker keeps the carried samples");
+    expect_segment(&f, FRAME, 2, full_frames, 0, FRAME, "talker: naming the talker keeps the codec");
+    /* Named again (a late-entry repeat): decode 3's carried samples, then decodes 4 and 5. */
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x4444U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, 4 * block, 3, b, block, FRAME - block, "talker: the same talker keeps the carried samples");
+    expect_segment(&f, (4 * block) + (FRAME - block), 4, full_frames, 0, FRAME,
+                   "talker: the same talker keeps the codec");
+    expect(voice_of(&f)->carry_len == 80, "talker: 80 samples of decode 5 carried");
+
+    /* D-TX INTERRUPT to talker 0x5555: decode 5's carried samples go, the codec starts over. */
+    size_t at = 7 * block;
+    grant_transmission(&f, TETRA_CALL_EV_TX_INTERRUPT, 12, 0x5555U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, at, 1, full_frames, 0, FRAME, "talker: D-TX INTERRUPT starts over");
+    expect_segment(&f, at + FRAME, 2, full_frames + DSD_TETRA_CODEC_FRAME_BITS, 0, FRAME,
+                   "talker: D-TX INTERRUPT, second frame");
+    at += 2 * FRAME;
+
+    /* D-TX GRANTED to talker 0x6666. */
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x6666U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, at, 1, full_frames, 0, FRAME, "talker: D-TX GRANTED to another talker starts over");
+    at += 2 * FRAME;
+
+    /* Direct mode: the call to 1234 from source 0x10, then from source 0x11. */
+    tetra_state_t* ts = tetra_st(f.state);
+    ts->sm.state = (uint8_t)TETRA_SM_IDLE;
+    ts->dmo = 1;
+    ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+    ts->calls.dmo.active = 1;
+    ts->calls.dmo.dst = 1234;
+    ts->calls.dmo.src = 0x10;
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    expect(voice_of(&f)->carry_len == 80, "talker: direct mode, 80 samples carried");
+    ts->calls.dmo.src = 0x11;
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, at, 1, half_frame, 0, block, "talker: direct mode source 0x10");
+    expect_segment(&f, at + block, 1, full_frames, 0, FRAME, "talker: direct mode source 0x11 starts over");
+    static int16_t out[MAX_OUT];
+    expect(fixture_output(&f, out, MAX_OUT) == at + block + 2 * FRAME, "talker: nothing else played");
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_clean_stream_plays_every_frame();
@@ -699,6 +782,7 @@ main(void) {
     test_talkgroup_gate();
     test_record_gate();
     test_call_boundary_resets_speech();
+    test_talker_change_resets_speech();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

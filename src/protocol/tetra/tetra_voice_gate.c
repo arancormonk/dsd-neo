@@ -35,6 +35,7 @@ voice_of_call(const tetra_state_t* ts, const tetra_call_t* c, tetra_speech* sp) 
         sp->kind = TETRA_SPEECH_CALL;
         sp->call_id = c->call_id;
         sp->target = c->called_ssi;
+        sp->source = c->talker_ssi;
         sp->air_enc = c->air_enc;
         sp->sealed = c->e2ee;
         return;
@@ -83,6 +84,7 @@ static void
 voice_direct(const dsd_state* state, const tetra_state_t* ts, tetra_speech* sp) {
     sp->kind = TETRA_SPEECH_DMO;
     sp->target = ts->calls.dmo.active ? ts->calls.dmo.dst : 0u;
+    sp->source = ts->calls.dmo.active ? ts->calls.dmo.src : 0u;
     sp->sealed = (uint8_t)(tetra_dmo_call_crypt(state) != TETRA_DMO_CRYPT_CLEAR);
 }
 

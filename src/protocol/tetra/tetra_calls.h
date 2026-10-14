@@ -219,6 +219,7 @@ enum {
 /** A speech burst the voice gates let through (tetra_voice_gate.h), and the call it belongs to. */
 typedef struct {
     uint32_t target;  /**< the address the talkgroup policy judges it by: the call's called party, 0 when unknown */
+    uint32_t source;  /**< the transmitting party: the call's talker, the direct mode source; 0 when unknown */
     uint16_t call_id; /**< the call, for TETRA_SPEECH_CALL */
     uint8_t kind;     /**< TETRA_SPEECH_* */
     uint8_t tn;       /**< its timeslot, 0 when the TDMA clock does not place it */

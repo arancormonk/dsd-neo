@@ -45,9 +45,10 @@ typedef struct tetra_voice {
     uint8_t confirmed;
     uint8_t bad_run;
 
-    /* The transmission the speech in progress belongs to (bound): the kind and target of its speech (tetra_speech),
-       and the count of ended TETRA calls (tetra_calls_t::ends) when it started. */
+    /* The transmission the speech in progress belongs to (bound): the kind, target and transmitting party of its speech
+       (tetra_speech; the party once known), and the count of ended TETRA calls (tetra_calls_t::ends) when it started. */
     uint32_t owner_target;
+    uint32_t owner_source;
     uint32_t owner_ends;
     uint8_t owner_kind;
     uint8_t bound;

@@ -284,19 +284,27 @@ voice_speech_reset(tetra_voice_t* v) {
     v->bound = 0;
 }
 
-/* The speech in progress belongs to one transmission. Speech of another call (another kind or target), or after a TETRA
-   call ended (a release, D-TX CEASED, the state machine leaving it, another call published), starts over: no samples,
-   codec state or confirmation of one call reach the next or its record policy. */
+/* The speech in progress belongs to one transmission. Speech of another call (another kind or target), of another
+   transmitting party (D-TX GRANTED or D-TX INTERRUPT naming another talker, another direct mode source; a party not
+   known on either side is no change, as for the canonical call), or after a TETRA call ended (a release, D-TX CEASED,
+   the state machine leaving it, another call published), starts over: no samples, codec state or confirmation of one
+   transmission reach the next or its record policy. */
 static void
 voice_bind(tetra_state_t* ts, const tetra_speech* sp) {
     tetra_voice_t* const v = &ts->voice;
-    if (v->bound && v->owner_kind == sp->kind && v->owner_target == sp->target && v->owner_ends == ts->calls.ends) {
+    const int other_party = v->owner_source != 0u && sp->source != 0u && v->owner_source != sp->source;
+    if (v->bound && v->owner_kind == sp->kind && v->owner_target == sp->target && v->owner_ends == ts->calls.ends
+        && !other_party) {
+        if (sp->source != 0u) {
+            v->owner_source = sp->source;
+        }
         return;
     }
     voice_speech_reset(v);
     v->bound = 1;
     v->owner_kind = sp->kind;
     v->owner_target = sp->target;
+    v->owner_source = sp->source;
     v->owner_ends = ts->calls.ends;
 }
 

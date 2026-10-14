@@ -4567,15 +4567,17 @@ single "current call".
   end and direct mode encryption are never decrypted; air encryption is when `tetra_air_decrypt_voice()` applies a key
   stream from the encryption cipher key TB5 derives with the carrier being received (`tetra_calls_carrier()`: the
   followed call's carrier, the SYSINFO main carrier on the control channel, else the carrier whose frequency is exactly
-  the tuned one), the SYSINFO location area and the BSCH colour code. The encryption sits above the channel coding
-  (EN 300 392-7 clause 6.1) and the sensitivity-class order is part of that coding (EN 300 395-2 clause 5.2), so the
-  key stream applies after `tetra_voice_reorder_full()` / `_half()`, to the speech frame bits in codec order (table
-  6.4: a full slot's frame A takes KSS(0..136) and frame B KSS(137..273), a half slot's frame KSS(216..352)). Only the
-  encrypted values (2 and 3) of the encryption mode element are encrypted; 1 is reserved. The speech in progress (the codec's decoder state, the speech's
-  integrity and its unplayed samples) belongs to one transmission: a burst of speech of another kind or target, or the
+  the tuned one), the SYSINFO location area and the BSCH colour code. The encryption sits above the channel coding (EN
+  300 392-7 clause 6.1) and the sensitivity-class order is part of that coding (EN 300 395-2 clause 5.2), so the key
+  stream applies after `tetra_voice_reorder_full()` / `_half()`, to the speech frame bits in codec order (table 6.4: a
+  full slot's frame A takes KSS(0..136) and frame B KSS(137..273), a half slot's frame KSS(216..352)). Only the
+  encrypted values (2 and 3) of the encryption mode element are encrypted; 1 is reserved. The speech in progress (the
+  codec's decoder state, the speech's integrity and its unplayed samples) belongs to one transmission: a burst of speech
+  of another kind or target, of another transmitting party (the call's talker, which D-TX GRANTED and D-TX INTERRUPT
+  name, or the direct mode source; a party not known on either side is no change, as for the canonical call), or the
   first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, the state machine leaving the
-  call, another call published), starts over (`voice_bind()` in `tetra_voice.c`), so nothing of one call plays under the
-  next call's record policy and no bad opening frame is concealed with another call's codec state.
+  call, another call published), starts over (`voice_bind()` in `tetra_voice.c`), so nothing of one transmission plays
+  under the next one's record policy and no bad opening frame is concealed with another talker's codec state.
 - Canonical calls. Slot 0, the TETRA synctype as protocol. The followed call publishes from its CRC-passed signalling
   once the carrier is proven and its tune settled, until its transmission ceased: called party as target, talker as
   source, carrier and frequency, basic service as service options, priority, and its crypto class. Not trunking, the
