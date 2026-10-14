@@ -1241,11 +1241,19 @@ test_frame_18_is_no_speech(void) {
     expect(v->frames == 4 && v->concealed == 0 && v->bad_run == 0 && v->confirmed == 1,
            "frame 18: nothing decoded or concealed for it, and the speech goes on");
 
-    /* Direct mode runs no TDMA clock of the trunked carrier: its bursts are speech whatever a stale frame number says. */
+    /* Direct mode and the uplink run no TDMA clock of a trunked downlink: their bursts are speech whatever a stale frame
+     * number says. */
     ts->dmo = 1;
     ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
     ts->fn = 18;
     expect(played_by_burst(&f) == 2 * FRAME, "frame 18: direct mode speech plays");
+    fixture_close(&f);
+
+    expect(fixture_open(&f) == 0, "frame 18: uplink fixture");
+    f.opts->tetra_uplink = 1;
+    tetra_st(f.state)->uplink = 1;
+    tetra_st(f.state)->fn = 18;
+    expect(played_by_burst(&f) == 2 * FRAME, "frame 18: uplink speech plays");
     fixture_close(&f);
 }
 

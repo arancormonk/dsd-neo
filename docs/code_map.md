@@ -4701,7 +4701,8 @@ single "current call".
   frame 18 is never speech (`tetra_tdma_control_frame()`): its signalling block failing its CRC, the burst decoder does
   not try it as full-slot or half-slot speech (`tetra_nb_nts1()`, `tetra_nb_nts2()`), so no chance speech CRC proves the
   burst, and the voice gate hears nothing of it (`tetra_voice_gate()`), so no frame 18 is concealed into 60 ms of audio
-  the air never sent, and the speech in progress goes on in frame 1. Direct mode runs no such clock. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
+  the air never sent, and the speech in progress goes on in frame 1. Direct mode and the uplink run no such clock, and
+  a clock left from an earlier BSCH does not place their bursts either. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
   the carrier, while its record does not place it elsewhere (an allocation no call PDU took, which never tunes, or a
   reallocation whose tune failed moves it off the channel the receiver stays on, which the SwMI may give any call next;
   `voice_record_on()`), and only as the TDMA clock places the burst: a retune stops the clock until the carrier's next BSCH, and
