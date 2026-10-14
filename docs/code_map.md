@@ -4719,7 +4719,9 @@ single "current call".
   encryption) is observed at once (`calls_sync_published()`), on a carrier no block proved yet too, since the call was
   published before and the PDU passed its CRC; only publication itself waits for the proof. A reallocation of the
   followed call to another carrier moves its canonical call there when its tune completes
-  (`tetra_calls_followed_moved()`), and not while it is in flight. Speech marks the media
+  (`tetra_calls_followed_moved()`), and not while it is in flight. What changes a carried call's crypto class without
+  any PDU of it (a cipher key loaded, the network's KSG learnt, or the timeslot's signalling encryption that classifies
+  anonymous speech) reaches it with its next speech (`calls_reclassify()`). Speech marks the media
   (`dsd_call_state_update_media()`). D-TX CEASED and releases end the call
   as terminators, the state machine leaving it as a teardown, the heard speech stopping as a sync loss. Direct mode
   (`tetra_calls_dmo_pdu()`, EN 300 396-3) publishes the call on the channel from DM-SETUP, DM-SETUP PRES, DM-CONNECT

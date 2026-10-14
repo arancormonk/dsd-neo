@@ -1069,6 +1069,44 @@ test_timeslot_change_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* The crypto class canonical slot 0 shows is the one the speech it carries has now, which can change with no PDU of
+ * the call: the followed air-encrypted call is pending while no key is loaded and decryptable once the operator's
+ * cipher key is, and anonymous speech, which its timeslot's signalling classifies, turns encrypted with it. */
+static void
+test_speech_reclassifies_the_call(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "reclassify: fixture");
+    air_encrypted_call(&f, 0);
+    follow_group(&f, 1234, 0x08);
+    tetra_calls_find(f.state, 9)->air_enc = TETRA_ENC_MODE_EVEN;
+    expect(played_by_burst(&f) == 0, "reclassify: no key, muted");
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+               && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+           "reclassify: the call is pending");
+    const uint64_t epoch = call.epoch;
+    f.state->tetra_air_keys[0].loaded = 1;
+    expect(played_by_burst(&f) == 2 * FRAME, "reclassify: the loaded key decrypts it");
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.epoch == epoch
+               && call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE && call.audio_permitted,
+           "reclassify: and the call is decryptable");
+    fixture_close(&f);
+
+    expect(fixture_open(&f) == 0, "reclassify: fixture");
+    tetra_confirm_note_signalling(f.state);
+    expect(played_by_burst(&f) == 2 * FRAME, "reclassify: clear anonymous speech");
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+               && call.crypto == DSD_CALL_CRYPTO_CLEAR,
+           "reclassify: an anonymous clear call");
+    tetra_st(f.state)->calls.slot_enc[1] = 1u + TETRA_ENC_MODE_ODD;
+    expect(played_by_burst(&f) == 0, "reclassify: its timeslot's signalling turns encrypted");
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+               && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+           "reclassify: and so does the anonymous call");
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_clean_stream_plays_every_frame();
@@ -1086,6 +1124,7 @@ main(void) {
     test_call_identifier_change_resets_speech();
     test_muted_call_holds_no_timeslot();
     test_timeslot_change_resets_speech();
+    test_speech_reclassifies_the_call();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

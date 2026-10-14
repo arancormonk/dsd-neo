@@ -360,6 +360,19 @@ calls_classify(dsd_state* state, dsd_call_crypto_state crypto) {
     (void)dsd_call_state_update_crypto(state, 0U, &update);
 }
 
+/* The call canonical slot 0 carries is of crypto class @p crypto now, which DSD_CALL_CRYPTO_UNKNOWN leaves as it was. */
+static void
+calls_reclassify(dsd_opts* opts, dsd_state* state, dsd_call_crypto_state crypto) {
+    dsd_call_snapshot call;
+    if (crypto == DSD_CALL_CRYPTO_UNKNOWN || (dsd_call_state_get(state, 0U, &call) > 0 && call.crypto == crypto)) {
+        return;
+    }
+    calls_classify(state, crypto);
+    if (opts) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+}
+
 /* Observe @p o on canonical slot 0 as @p pub (call @p call_id) with crypto class @p crypto, which
  * DSD_CALL_CRYPTO_UNKNOWN leaves as it was. Another TETRA call there ends first. */
 static void
@@ -1155,17 +1168,8 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
 void
 tetra_calls_dmo_protection(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
-    if (!ts || !calls_carrying(state, ts, TETRA_PUB_DMO, 0U)) {
-        return;
-    }
-    const dsd_call_crypto_state crypto = dmo_crypto_state(state);
-    dsd_call_snapshot call;
-    if (crypto == DSD_CALL_CRYPTO_UNKNOWN || (dsd_call_state_get(state, 0U, &call) > 0 && call.crypto == crypto)) {
-        return;
-    }
-    calls_classify(state, crypto);
-    if (opts) {
-        dsd_event_sync_slot(opts, state, 0U);
+    if (ts && calls_carrying(state, ts, TETRA_PUB_DMO, 0U)) {
+        calls_reclassify(opts, state, dmo_crypto_state(state));
     }
 }
 
@@ -1227,6 +1231,9 @@ speech_of_record(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetr
         } else {
             calls_publish_call(opts, state, ts, c, &c->alloc);
         }
+    } else {
+        /* A cipher key loaded, or the network's KSG learnt, since: no PDU of the call says so, its speech does. */
+        calls_reclassify(opts, state, crypto_state(state, c->e2ee, c->air_enc));
     }
     return calls_carrying(state, ts, TETRA_PUB_CALL, c->call_id);
 }
@@ -1252,12 +1259,16 @@ speech_anonymous(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetr
     if (!tetra_confirm_carrier_proven(state)) {
         return 0;
     }
+    const dsd_call_crypto_state crypto = crypto_state(state, sp->sealed, sp->air_enc);
     if (!calls_carrying(state, ts, TETRA_PUB_ANON, 0U)) {
         dsd_call_observation o;
         DSD_MEMSET(&o, 0, sizeof o);
         o.protocol = calls_protocol(state);
         o.kind = DSD_CALL_KIND_VOICE;
-        calls_publish(opts, state, ts, &o, crypto_state(state, sp->sealed, sp->air_enc), TETRA_PUB_ANON, 0U);
+        calls_publish(opts, state, ts, &o, crypto, TETRA_PUB_ANON, 0U);
+    } else {
+        /* Its timeslot's signalling encryption, which classifies it, may have changed since. */
+        calls_reclassify(opts, state, crypto);
     }
     return calls_carrying(state, ts, TETRA_PUB_ANON, 0U);
 }
