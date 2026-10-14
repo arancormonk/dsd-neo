@@ -753,6 +753,40 @@ test_header_encryption_reaches_the_call(void) {
     session_close(&s);
 }
 
+/* A fragmented TM-SDU encrypted from its first fragment carries its channel allocation, ciphertext too, in its MAC-END
+ * (EN 300 392-2 clause 23.4.2.1.1, EN 300 392-7 clause 6.7.1.2): the call of the party its MAC-RESOURCE addressed is air
+ * encrypted from there, as for an encrypted MAC-RESOURCE that carries the whole TM-SDU, and its canonical call says so
+ * at once. */
+static void
+test_fragmented_header_encryption_reaches_the_call(void) {
+    session s = session_open();
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->tdma_valid = 1;
+    ts->tn = 1;
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, TETRA_ENC_MODE_ODD, TETRA_MAC_ADDR_USSI, 0x100u);
+    ttb_set(&b, start + 7, 63, 6); /* length indication 111111: a first fragment */
+    ttb_resource_flags(&b, 0);
+    ttb_put(&b, 0x5A5Au, 16); /* ciphertext */
+    ttb_finish(&b, TTB_SCH_HD_BITS, start + 2);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s.opts, s.state);
+    assert(ts->mac_frag[1].active && tetra_calls_peek(s.state, 0x0A)->air_enc == TETRA_ENC_MODE_NONE);
+    b = (ttb_block){0};
+    const int end = ttb_end(&b);
+    ttb_put(&b, 1, 1);       /* channel allocation flag */
+    ttb_put(&b, 0x2A5u, 30); /* the channel allocation and the last fragment, ciphertext */
+    ttb_close_end(&b, end);
+    ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s.opts, s.state);
+    assert(!ts->mac_frag[1].active && tetra_calls_peek(s.state, 0x0A)->air_enc == TETRA_ENC_MODE_ODD);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    session_close(&s);
+}
+
 /* D-SETUP (table 14.15) of call @p call_id with @p basic_service from @p caller to @p called, the MAC address, with
  * transmission grant @p grant (table 14.80) and an allocation of @p timeslots on @p carrier. The calling party is of
  * type identifier 1, its SSI, when @p extension is 0, else of type 2, its SSI and @p extension, the MCC and MNC of its
@@ -1893,6 +1927,7 @@ main(void) {
     test_table_eviction_and_ageing();
     test_followed_call_publishes();
     test_header_encryption_reaches_the_call();
+    test_fragmented_header_encryption_reaches_the_call();
     test_private_call_names_both_parties();
     test_encrypted_and_unfollowed_calls();
     test_sds_and_status_notices();

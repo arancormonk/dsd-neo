@@ -209,7 +209,7 @@ typedef struct {
 /** Reconstruction of one fragmented downlink TM-SDU (EN 300 392-2 clause 23.4.3.1.1). */
 typedef struct {
     uint8_t active;          /* a MAC-RESOURCE with length indication 111111 started a TM-SDU */
-    uint8_t encrypted;       /* its encryption mode was not 00, so every fragment is ciphertext */
+    uint8_t enc_mode;        /* its encryption mode (TETRA_ENC_MODE_*): not 00, every fragment is ciphertext */
     uint8_t idle_half_slots; /* half slots of this timeslot since the last fragment, for the N.203 limit */
     uint32_t slot_start;     /* tdma_slot_start of the last block of this timeslot: the slots the clock counted since */
     int8_t cc;               /* colour code of the block that started the TM-SDU */

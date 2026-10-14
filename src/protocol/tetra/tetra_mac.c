@@ -327,7 +327,7 @@ publish_resource_header(const mac_block* b, const tetra_mac_resource* h) {
 static void
 discard_fragment(tetra_mac_fragment* f) {
     f->active = 0;
-    f->encrypted = 0;
+    f->enc_mode = TETRA_ENC_MODE_NONE;
     f->idle_half_slots = 0;
     f->nbits = 0;
 }
@@ -345,11 +345,12 @@ fragment_append(tetra_mac_fragment* f, const uint8_t* bits, int nbits) {
 }
 
 /* Clause 23.4.3.1.1 b) and i): a MAC-RESOURCE with length indication 111111 starts a TM-SDU on its control channel
- * and drops any partial one there, whatever its address. The encryption mode applies to every fragment. A TM-SDU is
- * rebuilt on the timeslot it started on, which the TDMA clock gives: while the clock is stopped (a new carrier before
- * its BSCH) the block's timeslot is not known, a continuation of any timeslot could join it, so it is not kept. */
+ * and drops any partial one there, whatever its address. Its encryption mode @p enc_mode applies to every fragment. A
+ * TM-SDU is rebuilt on the timeslot it started on, which the TDMA clock gives: while the clock is stopped (a new
+ * carrier before its BSCH) the block's timeslot is not known, a continuation of any timeslot could join it, so it is
+ * not kept. */
 static void
-start_fragment(mac_block* b, const tetra_mac_address* addr, int encrypted, const uint8_t* sdu, int sdu_bits) {
+start_fragment(mac_block* b, const tetra_mac_address* addr, uint8_t enc_mode, const uint8_t* sdu, int sdu_bits) {
     tetra_mac_fragment* const f = b->frag;
     if (fragment_timeslot(b->ts) == 0) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  first fragment on no known timeslot; discarded\n", b->cc);
@@ -363,7 +364,7 @@ start_fragment(mac_block* b, const tetra_mac_address* addr, int encrypted, const
     }
     discard_fragment(f);
     f->active = 1;
-    f->encrypted = (uint8_t)encrypted;
+    f->enc_mode = (uint8_t)(enc_mode & 3u);
     f->cc = (int8_t)b->cc;
     f->addr = *addr;
     b->fragment_seen = 1;
@@ -483,7 +484,7 @@ resource_encrypted(mac_block* b, const tetra_mac_resource* h, int sdu_bits) {
     print_resource(b, h, sdu_bits);
     publish_resource_header(b, h);
     if (h->length_ind == MAC_LI_FRAGMENT_START) {
-        start_fragment(b, &h->addr, 1, NULL, 0);
+        start_fragment(b, &h->addr, h->enc_mode, NULL, 0);
     }
 }
 
@@ -523,7 +524,7 @@ parse_mac_resource(mac_block* b, const uint8_t* bits, int nbits) {
             TETRA_LOG_VERBOSE(b->ts, 1, "[TETRA MAC-RESOURCE] CC=%d  allocation in a first fragment ignored\n", b->cc);
         }
         publish_resource_header(b, &h);
-        start_fragment(b, &h.addr, 0, bits + r.pos, end - r.pos);
+        start_fragment(b, &h.addr, TETRA_ENC_MODE_NONE, bits + r.pos, end - r.pos);
         return h.pdu_bits;
     }
     if (h.alloc_present) {
@@ -543,7 +544,7 @@ parse_mac_frag(mac_block* b, const uint8_t* bits, int nbits) {
         return 0;
     }
     tetra_mac_fragment* const f = b->frag;
-    if (f->encrypted) {
+    if (f->enc_mode != TETRA_ENC_MODE_NONE) {
         return nbits;
     }
     const int end = content_end(bits, r.pos, nbits, fill);
@@ -580,9 +581,14 @@ complete_fragment(mac_block* b, const tetra_chan_alloc* alloc) {
 static void
 finish_fragment(mac_block* b, const uint8_t* bits, int pdu_bits, int body, uint32_t fill, uint32_t alloc_present) {
     tetra_mac_fragment* const f = b->frag;
-    if (f->encrypted) {
-        /* The allocation and the last fragment are ciphertext like the rest (EN 300 392-7 clause 6.7.1.2). */
+    if (f->enc_mode != TETRA_ENC_MODE_NONE) {
+        /* The allocation and the last fragment are ciphertext like the rest (EN 300 392-7 clause 6.7.1.2). An
+         * allocation there makes the traffic of the call of the addressed party air encrypted, as it does in an
+         * encrypted MAC-RESOURCE that carries a whole TM-SDU (publish_resource_header()). */
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  encrypted TM-SDU ends\n", b->cc);
+        if (alloc_present != 0u) {
+            publish_address(b, &f->addr, f->enc_mode, 1);
+        }
         discard_fragment(f);
         return;
     }

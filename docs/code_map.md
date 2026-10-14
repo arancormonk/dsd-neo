@@ -4652,7 +4652,8 @@ single "current call".
   clock. The followed record never ages: the state machine's hangtime ends it. A record's air encryption is the
   encryption mode of the MAC-RESOURCE that allocated its channel, learnt from the clear address (a USSI, SMI or event
   label: an encrypted PDU's SSI is an encrypted short identity, clause 4.2.6) when that allocation is ciphertext (EN 300
-  392-7 clause 6.5.1), which the call's canonical call takes at once (`calls_sync_published()`); end-to-end encryption
+  392-7 clause 6.5.1), in the MAC-RESOURCE or in the MAC-END of a TM-SDU encrypted from its first fragment, which the
+  call's canonical call takes at once (`calls_sync_published()`); end-to-end encryption
   never overwrites it, and the cell-wide `enc_mode` is for display only.
 - Allocations. The MAC hands the MLE a `tetra_mac_sdu` with the PDU's address and channel allocation. A call PDU in
   the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
