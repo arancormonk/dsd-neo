@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -353,6 +354,55 @@ test_mode_change_leaves_a_request_in_flight_to_the_runtime(void) {
     }
 }
 
+/* The engine's own return (dsd_engine_return_to_cc_request()), counted. */
+static dsd_trunk_tune_result
+engine_return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    g_returns++;
+    return dsd_engine_return_to_cc_request(opts, state, request_id);
+}
+
+/* Trunking turned off while following (the trunk toggle clears trunk_enable and nothing else) leaves the receiver on
+ * the traffic channel, as DMR's and P25's machines leave it, which do not tick while trunking is off. The engine's
+ * return moves no tuner then and still answers OK, so the machine asks it for nothing: it keeps the channel, at its tick
+ * and at a release of the followed call alike, reports no return, and keeps the evidence of the carrier the receiver
+ * never left; it lets go of the call, whose speech and signalling are decoded there as with trunking off. With trunking
+ * on again its grant timeout runs as before and asks the engine's return, which tunes through the backend: an audio
+ * input has none here, so the return is refused and the channel kept for the next tick. */
+static void
+test_trunking_off_leaves_the_receiver(void) {
+    session s = session_open();
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_request = tune_hook;
+    hooks.return_to_cc_request = engine_return_hook;
+    dsd_trunk_tuning_hooks_set(hooks);
+    expect(follow_grant(&s) == 1 && tetra_sm_get_state(s.state) == TETRA_SM_TUNED, "off: grant followed");
+    tetra_confirm_note_signalling(s.state);
+    tetra_confirm_note_followed_call(s.state);
+
+    s.opts->trunk_enable = 0;
+    engine_tick(&s);
+    expect(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && tetra_sm_followed(s.state, NULL),
+           "off: the machine keeps the channel");
+    expect(!tetra_sm_followed_call_id(s.state, NULL) && !tetra_confirm_followed_call_proven(s.state),
+           "off: and lets go of the call");
+    expect(g_returns == 0 && s.opts->trunk_is_tuned == 1 && s.state->trunk_vc_freq[0] == VC_HZ,
+           "off: no return is asked for, and the receiver is still the traffic channel's");
+    expect(tetra_confirm_carrier_proven(s.state), "off: the evidence of the carrier the receiver is on stays");
+    tetra_sm_on_release(s.opts, s.state, 0x123U);
+    expect(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0 && s.opts->trunk_is_tuned == 1,
+           "off: a release of the followed call asks for no return either");
+    at_seconds(2000.0 + TETRA_SM_GRANT_TIMEOUT_S + 30.0);
+    engine_tick(&s);
+    expect(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0, "off: nor does the grant timeout");
+
+    s.opts->trunk_enable = 1;
+    engine_tick(&s);
+    expect(g_returns == 1, "on again: the grant timeout asks the engine's return");
+    expect(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && s.opts->trunk_is_tuned == 1,
+           "on again: the backend refused the tune, so the channel is kept");
+    session_close(&s);
+}
+
 /* The no-carrier pass forgets what proved the carrier, as for every other confirmation gate. */
 static void
 test_no_carrier_forgets_evidence(void) {
@@ -425,6 +475,7 @@ main(void) {
     test_carrier_boundary_abandons_a_return_in_flight();
     test_carrier_boundary_retires_an_abandoned_tune_once_it_fails();
     test_mode_change_leaves_a_request_in_flight_to_the_runtime();
+    test_trunking_off_leaves_the_receiver();
     test_no_carrier_forgets_evidence();
     test_no_carrier_leaves_the_follow_to_the_machine();
     test_no_carrier_leaves_a_return_in_flight_to_the_machine();

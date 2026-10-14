@@ -2225,6 +2225,26 @@ test_direct_mode_speech(void) {
     session_close(&s);
 }
 
+/* Trunking turned off while following leaves the receiver on the followed channel and lets go of the call there: its
+ * record is no followed call's any more, so it ages like any other (the followed record never does) and its canonical
+ * call ends with it, while the state machine keeps the channel and asks for no return. */
+static void
+test_trunking_off_lets_go_of_the_call(void) {
+    session s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x0A);
+    assert(tetra_calls_followed(s.state) == NULL && tetra_calls_peek(s.state, 0x0A) != NULL);
+    at_seconds(1000.0 + TETRA_CALL_IDLE_S + 1.0);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_calls_peek(s.state, 0x0A) == NULL && canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    session_close(&s);
+}
+
 /* The carrier being received, for TB5: the followed call's, the main carrier on the control channel, else the one the
  * receiver is tuned to exactly; none between carriers, in direct mode or off any carrier. */
 static void
@@ -2241,7 +2261,7 @@ test_receiving_carrier(void) {
     ts->sm.pending_request_id = 0;
 
     s.opts->trunk_enable = 0;
-    tetra_sm_tick(s.opts, s.state);
+    tetra_sm_on_external_cc_return(s.opts, s.state);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
     assert(tetra_calls_carrier(s.opts, s.state, &cn) == 0);
     s.opts->audio_in_type = AUDIO_IN_RTL;
@@ -2308,6 +2328,7 @@ main(void) {
     test_followed_record_moved_away();
     test_heard_call_identifier_let_go();
     test_direct_mode_speech();
+    test_trunking_off_lets_go_of_the_call();
     test_receiving_carrier();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");
     return 0;

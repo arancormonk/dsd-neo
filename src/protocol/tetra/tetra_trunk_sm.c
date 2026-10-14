@@ -250,9 +250,19 @@ sm_settle_pending(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
 }
 
 /* Return to the control channel, or stop following on its carrier. Returns 1 when the call was let go (the return
- * done or in flight), 0 when the backend refused or deferred the return and the call is kept. */
+ * done or in flight), 0 when the call is kept: the backend refused or deferred the return, or trunking is off. With
+ * trunking off the receiver stays where it is, as DMR's and P25's machines leave it, which do not tick then: the
+ * engine's return tunes nothing without trunking (dsd_engine_return_to_cc_request()) yet answers OK, so a return asked
+ * for then would report the receiver back on the control channel while it is still on the traffic channel. */
 static int
 sm_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const char* reason) {
+    if (opts->trunk_enable != 1) {
+        if (sm_narrates(ts, 1)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] %s with trunking off; the receiver stays on the followed channel\n",
+                        reason);
+        }
+        return 0;
+    }
     const long cc = state->trunk_cc_freq;
     if (cc <= 0 || ts->sm.followed.freq_hz == cc) {
         /* A traffic timeslot of the control channel's carrier, or no control channel to go to: the receiver stays. */
@@ -484,6 +494,24 @@ tetra_sm_note_voice(dsd_state* state, uint8_t tn) {
     ts->sm.t_voice_m = dsd_decode_now_mono_s();
 }
 
+/* Trunking off while TUNED: the receiver stays on the followed channel (sm_release()), and what it decodes there is
+ * decoded as on any carrier with trunking off, not as the followed call's: the machine keeps the channel and its timers
+ * but lets go of the call (no call record, as tetra_sm_retire_call() leaves it), so the record ages, its signalling
+ * publishes it only as the heard call, and the proof the follow gate reads goes. With trunking on again the hangtime or
+ * the grant timeout returns from the channel as before. */
+static void
+sm_hold_untrunked(dsd_state* state, tetra_state_t* ts) {
+    if (ts->sm.followed_retired) {
+        return;
+    }
+    ts->sm.followed_retired = 1;
+    tetra_confirm_forget_followed_call(state);
+    if (sm_narrates(ts, 1)) {
+        DSD_FPRINTF(stderr, "[TETRA SM] trunking off: call %u let go, the receiver stays on its channel\n",
+                    (unsigned)ts->sm.followed.call_id);
+    }
+}
+
 /* TUNED: whether the followed call is over, and the move back to the control channel when it is. */
 static void
 sm_tick_tuned(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
@@ -495,7 +523,7 @@ sm_tick_tuned(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         return;
     }
     if (opts->trunk_enable != 1) {
-        (void)sm_release(opts, state, ts, "trunking off");
+        sm_hold_untrunked(state, ts);
         return;
     }
     const double now_m = dsd_decode_now_mono_s();

@@ -676,7 +676,9 @@ test_abandon_carrier(void) {
 }
 
 /* Another owner released the shared tuning state: the call is dropped where the receiver is. Turning trunking off
- * while tuned returns to the control channel. */
+ * while tuned leaves the receiver on the followed channel, as DMR's and P25's machines do: the machine keeps the
+ * channel and lets go of the call, and asks for no return, at the tick or at a release, until trunking is on again,
+ * whose next tick runs the grant timeout. */
 static void
 test_released_elsewhere_and_trunking_off(void) {
     reset_backend();
@@ -691,7 +693,16 @@ test_released_elsewhere_and_trunking_off(void) {
     assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
     s.opts->trunk_enable = 0;
     tetra_sm_tick(s.opts, s.state);
-    assert(tetra_sm_get_state(s.state) == TETRA_SM_IDLE && g_returns == 1 && s.opts->trunk_is_tuned == 0);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0 && s.opts->trunk_is_tuned == 1);
+    assert(followed_call(s.state) == 0x123 && !tetra_sm_followed_call_id(s.state, NULL));
+    tetra_sm_on_release(s.opts, s.state, 0x123U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0 && s.opts->trunk_is_tuned == 1);
+    at_seconds(1000.0 + TETRA_SM_GRANT_TIMEOUT_S + 1.0);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    s.opts->trunk_enable = 1;
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 1 && s.opts->trunk_is_tuned == 0);
     session_close(&s);
 }
 

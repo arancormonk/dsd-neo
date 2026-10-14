@@ -4547,17 +4547,25 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   the followed call, a "go to the MCCH" allocation to it, or its turning undecryptable; see Calls). A traffic timeslot of the control
   channel's carrier, or a release with no control channel to go to, stops following without a tune; anything else
   returns through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared, so no P25 alias or its symbol
-  profile comes along. A return the backend refuses or defers keeps the call, and the next tick tries again.
+  profile comes along. A return the backend refuses or defers keeps the call, and the next tick tries again. With
+  trunking off nothing returns (`sm_release()`): the engine's return tunes nothing without trunking
+  (`dsd_engine_return_to_cc_request()`) yet answers OK, so a return asked for then would report the receiver back on
+  the control channel while it stays on the traffic channel.
 - Timers. Liveness never depends on CMCE call state, which one missed release would leave stuck. Speech of the
   followed call (`tetra_calls_on_speech()`, for each burst the follow gate let through with a speech frame whose CRC
   passed) calls `tetra_sm_note_voice()` with the timeslot the TDMA clock gives it: that stamps
   `last_vc_sync_time(_m)`, and while TUNED it restarts the hangtime when the timeslot is a followed one (not 0, a
   timeslot the decoder cannot place, which may be any timeslot's). Other heard speech stamps `last_vc_sync_time(_m)` only. The tick returns `opts->trunk_hangtime` seconds after
   speech ends (the first gap of `TETRA_SM_SPEECH_GAP_S`, longer than a frame 18 gap), and after
-  `TETRA_SM_GRANT_TIMEOUT_S` (4 s, DMR's default; no option) when no speech followed the tune. It also returns when
-  trunking is turned off while tuned, drops the call without a tune when another owner released the shared tuning
-  state (`opts->trunk_is_tuned` cleared: a tuner hand-back, the stale-follow cleanup), and drops ON_CC to IDLE once
-  trunking is off or no control channel is known.
+  `TETRA_SM_GRANT_TIMEOUT_S` (4 s, DMR's default; no option) when no speech followed the tune. It drops the call
+  without a tune when another owner released the shared tuning state (`opts->trunk_is_tuned` cleared: a tuner
+  hand-back, the stale-follow cleanup), and drops ON_CC to IDLE once trunking is off or no control channel is known.
+  Trunking turned off while tuned (the trunk toggle clears `trunk_enable` alone) leaves the receiver on the followed
+  channel, as DMR's and P25's machines leave it, which do not tick then (`dsd_trunk_*_recovery_allowed()`): the machine
+  keeps the channel, its shared tuning state and its timers, and lets go of the call (`sm_hold_untrunked()`, no call
+  record, as `tetra_sm_retire_call()` leaves it), so what the receiver decodes there is decoded as on any carrier with
+  trunking off: the record ages, its signalling publishes it only as the heard call, and the follow gate's proof goes.
+  With trunking on again the hangtime or the grant timeout returns from the channel.
 - Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
   (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
   proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`).
@@ -4616,8 +4624,9 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   nothing. `DSD_SYNC_IS_INVERTED` includes the negative TETRA syncs.
 
 Tests: `TETRA_TRUNK_SM` (the state machine per session against stand-in tuning hooks), `ENGINE_TETRA_TRUNK` (the
-engine tick, the carrier boundary, a return in flight included, a decode-mode change with a request in flight, and the
-no-carrier pass with the real machine, which returns at its own deadlines and settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
+engine tick, the carrier boundary, a return in flight included, a decode-mode change with a request in flight, trunking
+turned off while tuned against the engine's own return, and the no-carrier pass with the real machine, which returns
+at its own deadlines and settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
 real machine's follow to it, with and without a control channel),
 `ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC and the other
 manual tunes, a return in flight included, decode-mode change, a refused switch off TETRA that keeps the follow), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
@@ -4822,7 +4831,8 @@ canonical calls and notices in trunked and direct mode, direct mode short data w
 an individual call's two parties, speech publication, the receiving carrier, what a record change, a MAC header's
 encryption and a reallocation do to the published call, a direct mode call idling out, direct mode transmissions of
 another security class, an anonymous call per timeslot, the last cell's channels and event labels a BSCH or SYSINFO
-of another cell drops, an event label's party and channel), `TETRA_DMO` (the DM-SDU's FCS and digest, an unread
+of another cell drops, an event label's party and channel, the call trunking turned off lets go of), `TETRA_DMO` (the
+DM-SDU's FCS and digest, an unread
 DMAC-SYNC's protection, a DMAC-DATA that ends the transmission, the security class a transmission keeps),
 `TETRA_PUBLICATION` (no trunked network on a direct mode carrier), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, an
@@ -4855,7 +4865,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
 | Carrier evidence (`confirm`) | the carrier | CRC-passed blocks | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
-| Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return; a decode-mode change disowns its tune in flight |
+| Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return; a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return |
 | Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; a grant after D-TX CEASED; the heard speech stopping; a pause of `TETRA_CALL_SPEECH_END_S` in it, in every mode; another cell; a carrier boundary |
 | Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst's training, a CRC-passed SCH/HU | the next of them |
 

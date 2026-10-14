@@ -85,7 +85,8 @@ int tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, const tetra_sm_grant* gr
  *
  * Only the followed call releases: TUNED with a followed call id equal to @p call_id returns to the control channel
  * (or, for a traffic timeslot of the control channel's carrier, just stops following). Any other id is ignored. A
- * return the backend refuses or defers keeps the call; the next tick tries again.
+ * return the backend refuses or defers keeps the call; the next tick tries again. With trunking off nothing returns:
+ * the receiver stays where it is, as tetra_sm_tick() leaves it.
  */
 void tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id);
 
@@ -101,10 +102,12 @@ void tetra_sm_note_voice(dsd_state* state, uint8_t tn);
 /**
  * @brief Time-driven transitions: settle the tune in flight once the backend answered it (until then nothing else
  * happens: the request stays the backend's and is never timed out here), then while TUNED end the followed call when
- * trunking was turned off (return to the control channel), when another owner released the shared tuning state (no
- * tune), on the grant timeout or after the hangtime that follows the last speech. ON_CC drops to IDLE once trunking is
- * off or no control channel is known (a BSCH of another cell dropped it). The session's call records age on the same
- * tick (tetra_calls_tick()), trunking or not.
+ * another owner released the shared tuning state (no tune), on the grant timeout or after the hangtime that follows the
+ * last speech. With trunking off the receiver stays on the followed channel, as DMR's and P25's machines leave it (the
+ * engine's return tunes nothing without trunking): TUNED keeps the channel and its timers, no call record (as
+ * tetra_sm_retire_call() leaves it), and asks for no return until trunking is on again. ON_CC drops to IDLE once
+ * trunking is off or no control channel is known (a BSCH of another cell dropped it). The session's call records age on
+ * the same tick (tetra_calls_tick()), trunking or not.
  */
 void tetra_sm_tick(dsd_opts* opts, dsd_state* state);
 

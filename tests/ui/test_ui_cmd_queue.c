@@ -5353,8 +5353,9 @@ tetra_return_in_flight(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     return DSD_TRUNK_TUNE_RESULT_PENDING;
 }
 
-/* A followed TETRA call let go of with its return to the control channel in flight: released over the air, or by the
-   tick that finds trunking turned off (@p trunking_off), which leaves the state machine IDLE rather than ON_CC. */
+/* A followed TETRA call let go of with its return to the control channel in flight, released over the air; with
+   @p trunking_off only once trunking is on again after a while off, which kept the receiver on the call's channel: the
+   tick and a release with trunking off ask for no return. */
 static int
 tetra_return_a_call_in_flight(dsd_opts* opts, dsd_state* state, int trunking_off) {
     if (!tetra_follow_a_call(opts, state, DSD_TRUNK_TUNE_RESULT_OK)) {
@@ -5362,29 +5363,31 @@ tetra_return_a_call_in_flight(dsd_opts* opts, dsd_state* state, int trunking_off
     }
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.return_to_cc_request = tetra_return_in_flight});
     g_tetra_return_request = 0U;
+    int held = 1;
     if (trunking_off) {
         opts->trunk_enable = 0;
         tetra_sm_tick(opts, state);
-        opts->trunk_enable = 1;
-    } else {
         tetra_sm_on_release(opts, state, 0x123U);
+        held = g_tetra_return_request == 0U && tetra_sm_get_state(state) == TETRA_SM_TUNED;
+        opts->trunk_enable = 1;
     }
+    tetra_sm_on_release(opts, state, 0x123U);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
-    return g_tetra_return_request != 0U && tetra_sm_owns_return(state) && !tetra_sm_followed(state, NULL)
-           && tetra_sm_get_state(state) == (trunking_off ? TETRA_SM_IDLE : TETRA_SM_ON_CC);
+    return held && g_tetra_return_request != 0U && tetra_sm_owns_return(state) && !tetra_sm_followed(state, NULL)
+           && tetra_sm_get_state(state) == TETRA_SM_ON_CC;
 }
 
 /* Every manual tune that moves the receiver under trunking hands the TETRA trunking state machine over as Return to CC
-   does, a return of its own still in flight included: Return to CC (also when the return was asked for with trunking
-   off, which left the machine IDLE), a skip or lockout returning to the control channel, and a control channel
+   does, a return of its own still in flight included: Return to CC (also one asked for once trunking is on again after
+   a while off, which asked for none), a skip or lockout returning to the control channel, and a control channel
    candidate or channel cycle. The request failing later then puts nothing back on the operator's carrier: no follow
    of the call left, no claim on the shared tuning state. */
 static int
 test_manual_tunes_hand_a_tetra_return_over(void) {
-    enum { CASE_RETURN, CASE_RETURN_IDLE, CASE_SKIP, CASE_LOCKOUT, CASE_CANDIDATE, CASE_CHANNEL };
+    enum { CASE_RETURN, CASE_RETURN_AFTER_OFF, CASE_SKIP, CASE_LOCKOUT, CASE_CANDIDATE, CASE_CHANNEL };
 
-    static const char* const names[] = {"return-to-CC", "return-to-CC, IDLE", "skip",
-                                        "lockout",      "candidate cycle",    "channel cycle"};
+    static const char* const names[] = {
+        "return-to-CC", "return-to-CC, trunking was off", "skip", "lockout", "candidate cycle", "channel cycle"};
     static const int commands[] = {DSD_APP_CMD_RETURN_CC,    DSD_APP_CMD_RETURN_CC,     DSD_APP_CMD_SKIP_SLOT,
                                    DSD_APP_CMD_LOCKOUT_SLOT, DSD_APP_CMD_CHANNEL_CYCLE, DSD_APP_CMD_CHANNEL_CYCLE};
     int rc = 0;
@@ -5396,7 +5399,7 @@ test_manual_tunes_hand_a_tetra_return_over(void) {
         dsd_trunk_tuning_requests_reset();
         reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
         DSD_SNPRINTF(tag, sizeof tag, "%s: the return is in flight", names[k]);
-        rc |= expect_true(tag, tetra_return_a_call_in_flight(&opts, &state, k == CASE_RETURN_IDLE));
+        rc |= expect_true(tag, tetra_return_a_call_in_flight(&opts, &state, k == CASE_RETURN_AFTER_OFF));
         if (k == CASE_SKIP || k == CASE_LOCKOUT) {
             const dsd_call_observation call = {.protocol = DSD_SYNC_TETRA_NDB_POS,
                                                .slot = 0,
