@@ -721,6 +721,14 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
         c->saved_frequency, state->rf_mod == 1, profile.symbol_rate_hz, profile.levels,
         dsd_rtl_channel_profile_for(opts, profile.symbol_rate_hz, profile.levels, state->rf_mod),
         state->samplesPerSymbol, 0, &gain);
+    /* The retune carries the session's receive family, as each visit's does: search_restore() also requests it live,
+       but a retune landing first retires that older request, which would leave an analog session on the digital family
+       the search last used. */
+    const int analog = dsd_opts_is_analog_family(opts);
+    const rtl_stream_retune_analog_profile family = {analog ? DSD_RX_FAMILY_ANALOG : DSD_RX_FAMILY_DIGITAL,
+                                                     analog ? opts->analog_demod : DSD_ANALOG_DEMOD_FM,
+                                                     analog ? dsd_opts_analog_width_hz(opts) : 0, 0};
+    (void)rtl_stream_prepare_retune_analog_profile_for_target(c->saved_frequency, &family);
     int rc = rtl_stream_tune_async(c->saved_frequency, c->status.session_id, &c->ticket);
     if (rc < 0) {
         search_error(c, "Unable to restore the previous frequency");

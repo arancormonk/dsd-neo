@@ -19,6 +19,7 @@
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -38,6 +39,9 @@ static uint64_t now_ms = 1000;
 static uint64_t tuner_owner;
 /* How long ago the radio input delivered its latest samples. */
 static uint64_t stalled_ms;
+/* The receive family the latest retune carries, and its target; -1 when none is attached. */
+static rtl_stream_retune_analog_profile retune_family = {-1, 0, 0, 0};
+static uint32_t retune_family_hz;
 
 void
 rtl_signal_search_set_owner(uint64_t session) {
@@ -69,7 +73,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 51);
+    assert(owner >= 42 && owner <= 52);
     if (defer) {
         --defer;
         return 1;
@@ -189,8 +193,9 @@ rtl_stream_request_analog_profile(int f, int kind, int width) {
 
 int
 rtl_stream_prepare_retune_analog_profile_for_target(uint32_t hz, const rtl_stream_retune_analog_profile* p) {
-    (void)hz;
     family = p->family;
+    retune_family = *p;
+    retune_family_hz = hz;
     return 0;
 }
 
@@ -512,6 +517,31 @@ test_auto_baseline_dispatches_dmr(dsd_opts* o, dsd_state* s, dsd_signal_search_c
     o->dmr_stereo = 1;
 }
 
+/* A Stop's restore retune carries the session's receive family, as each visit's does: the live family request the
+   restore queues is older than the retune, and a retune landing first retires it, which would leave an analog session
+   on the digital family the search last used. */
+static void
+test_restore_retune_carries_family(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    o->rtlsdr_center_freq = 100000000;
+    o->analog_only = 1;
+    o->analog_demod = DSD_ANALOG_DEMOD_FM;
+    o->analog_nfm_bandwidth_hz = 11000;
+    config->session_id = 52;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s); // the span tune the start queued
+    assert(target == 100000000 && retune_family_hz == 100000000);
+    assert(retune_family.family == DSD_RX_FAMILY_ANALOG && retune_family.kind == DSD_ANALOG_DEMOD_FM);
+    assert(retune_family.width_hz == 11000);
+    land(o, s); // the restore tune
+    assert(status.phase == DSD_SEARCH_STOPPED && o->analog_only == 1);
+    o->analog_only = 0;
+    o->analog_nfm_bandwidth_hz = 0;
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -670,6 +700,7 @@ main(void) {
     test_pause_is_a_carrier_boundary(o, s, &config);
     test_error_is_a_carrier_boundary(o, s, &config);
     test_auto_baseline_dispatches_dmr(o, s, &config);
+    test_restore_retune_carries_family(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

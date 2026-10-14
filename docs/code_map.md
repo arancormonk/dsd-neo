@@ -74,7 +74,9 @@ Generated (do not edit/commit):
     lifts a session avoid by frequency. Published status carries `owned` (a coordinator
     holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
     frequency are restored on exit: a search Stop tunes back, running the carrier boundary
-    and acquisition reset as each visit's tune does. The engine loop runs no `noCarrier()`
+    and acquisition reset as each visit's tune does, and its retune carries the session's
+    receive family (`rtl_stream_prepare_retune_analog_profile_for_target()`), since a
+    retune landing first retires the older live family request the restore also makes. The engine loop runs no `noCarrier()`
     while a search is paused or failed, so the first tick that finds it PAUSED or ERROR runs
     them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
     a call heard on the channel ends at the Pause, the input stall or any other failure rather
