@@ -176,10 +176,13 @@ DataRoot::removeTree(const QString& path) const {
 
 bool
 DataRoot::removeLink(const QString& path) const {
+    if (QDir::cleanPath(path) != path || !path.startsWith(m_root + QLatin1Char('/'))) {
+        return false;
+    }
+    // The directory, taken from the clean path itself: QFileInfo could spell it differently (a Windows drive letter).
+    const QString parent = path.left(path.lastIndexOf(QLatin1Char('/')));
     const QFileInfo info(path);
-    const QString parent = info.absolutePath();
-    const bool parentOk = parent == m_root ? valid() : contains(parent);
-    if (!is_link(info) || !parentOk || QDir::cleanPath(path) != path || !path.startsWith(m_root + QLatin1Char('/'))) {
+    if (!is_link(info) || !(parent == m_root ? valid() : contains(parent))) {
         return false;
     }
     // QFile::remove() unlinks a symlink; a directory symlink or junction on Windows needs rmdir, which removes the

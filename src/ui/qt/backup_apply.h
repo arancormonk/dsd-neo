@@ -71,7 +71,11 @@ bool promote_staging(const QString& stagingDir);
  */
 bool commit_pending();
 
-/** Remove `restore-pending/`, unless its apply has started (`journal/COMPLETE` exists). True when none is left. */
+/**
+ * Remove `restore-pending/`, unless its apply has started (committed, with `journal/COMPLETE`). The marker goes first:
+ * false with the stage no longer committed means some files stay but the restore will never apply (the next start
+ * removes them); false with the stage still committed means nothing was removed. True when none is left.
+ */
 bool discard_pending();
 
 /** Whether `restore-pending/` exists. */

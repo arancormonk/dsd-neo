@@ -275,13 +275,18 @@ discard_pending() {
     if (!root.valid() || !entry_exists(pending)) {
         return true;
     }
+    if (!is_real_dir(pending)) {
+        return root.removeEntry(pending); // not a stage: the apply ignores it
+    }
     // A committed restore with a complete journal is an apply in progress: only it may finish or undo it. Without the
     // marker the apply is past its commit point and the journal is only left over.
-    if (is_real_dir(pending) && entry_exists(pending + QLatin1Char('/') + QLatin1String(kCommittedName))
-        && entry_exists(pending + QStringLiteral("/journal/COMPLETE"))) {
+    const QString marker = pending + QLatin1Char('/') + QLatin1String(kCommittedName);
+    if (entry_exists(marker) && entry_exists(pending + QStringLiteral("/journal/COMPLETE"))) {
         return false;
     }
-    return root.removeEntry(pending);
+    // The marker goes first, like every ending of the apply: once it is gone nothing applies this stage, even if some
+    // of its files stay (the next start removes them). A marker that cannot be removed leaves the stage whole.
+    return root.removeFile(marker) && root.removeTree(pending);
 }
 
 bool

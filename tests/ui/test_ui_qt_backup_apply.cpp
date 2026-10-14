@@ -467,7 +467,6 @@ struct Old {
     QString externalFile; // a file outside the data root a live system names
     QString linkTarget;   // the external file a symlink under imports/ points at
     QString targetsDest;  // the fresh bundle the backup's target bundle moves to
-    QString external;     // a directory outside the root; holds an alias of the root
 };
 
 QString
@@ -596,7 +595,6 @@ add_not_owned_row(Old& old) {
 Old
 make_old(TestHost& host, const Backup& b, const QString& external) {
     Old old;
-    old.external = external;
     change_library(host, b, old);
     change_references(b, old, external);
     {
@@ -1439,6 +1437,40 @@ test_discard_after_commit_point(const Backup& b, const Old& old) {
            dsd_qt::backup::discard_pending() && !dsd_qt::backup::pending_exists());
 }
 
+/** Discarding drops the marker first: a stage it cannot remove whole is never applied, and one whose marker cannot be
+    removed is left whole. */
+void
+test_discard_order(const Backup& b, const Old& old) {
+    const auto lock = [](const QString& dir, bool locked) {
+        QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::ExeOwner
+                                       | (locked ? QFileDevice::Permissions() : QFileDevice::WriteOwner));
+    };
+    prepare(b, old);
+    const QString files = pending("files");
+    lock(files, true);
+    QFile probe(files + "/probe");
+    if (probe.open(QIODevice::WriteOnly)) {
+        lock(files, false);
+        DSD_FPRINTF(stderr, "note: directory permissions are not enforced here; discard-order cases skipped\n");
+        return;
+    }
+    expect("a discard that cannot remove every file reports it", !dsd_qt::backup::discard_pending());
+    expect("the stage it could not remove is no longer committed",
+           dsd_qt::backup::pending_exists() && !dsd_qt::backup::pending_committed());
+    lock(files, false);
+    expect("the next start only removes it",
+           apply().outcome == ApplyOutcome::None && !dsd_qt::backup::pending_exists());
+
+    // The marker itself cannot go: nothing goes, so the stage is still the one the user confirmed.
+    prepare(b, old);
+    const Tree before = capture_dir(pending());
+    lock(pending(), true);
+    expect("a discard that cannot remove the marker reports it", !dsd_qt::backup::discard_pending());
+    lock(pending(), false);
+    expect("a stage whose marker stays is left whole", same_tree(capture_dir(pending()), before, true));
+    expect("and it still applies", apply().outcome == ApplyOutcome::Applied);
+}
+
 /** The archive bytes of the carried file at @p path. */
 QByteArray
 archive_bytes(const Backup& b, const QString& path) {
@@ -1752,6 +1784,7 @@ main(int argc, char** argv) {
         test_symlinked_component(backup, old);
         test_symlinked_store(backup, old);
         test_discard_after_commit_point(backup, old);
+        test_discard_order(backup, old);
         test_old_file_where_a_directory_goes(backup, old);
         test_journal_problems(backup, old);
         test_unreadable_journal(backup, old);

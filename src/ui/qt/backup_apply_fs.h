@@ -7,8 +7,10 @@
  * @file
  * @brief The data-root file operations a restore stages and applies with (issue #580). Module-private.
  *
- * Every write, delete and rename of the staging and apply code goes through DataRoot, whose one check refuses a path
- * outside the data root or one whose existing components below the root include a symlink or a junction.
+ * Every write, delete and rename of the staging and apply code goes through DataRoot, whose one check (contains())
+ * refuses a path outside the data root or one whose existing components below the root include a symlink or a
+ * junction. The one exception is removeLink(), which unlinks a path whose last component is itself a link: it checks
+ * the link's directory instead, and removes only the link, never its target.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_BACKUP_APPLY_FS_H_
@@ -80,9 +82,10 @@ class DataRoot {
     bool removeFile(const QString& path) const;
 
     /**
-     * Remove the directory @p path and everything below it. Nothing is followed: a symlink or junction inside is
-     * unlinked itself (removeLink()), never descended into, and its target is never touched; every other entry goes
-     * through removeFile() or removeEmptyDir().
+     * Remove the directory @p path and everything below it, one level at a time. Nothing is followed: a symlink or
+     * junction inside is unlinked itself (removeLink()), never descended into, and its target is never touched; a
+     * file goes through removeFile(); a real subdirectory is removed by the same recursion, which ends, like this
+     * call, in removeEmptyDir() once it is empty.
      */
     bool removeTree(const QString& path) const;
 
