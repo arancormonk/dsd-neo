@@ -1,0 +1,945 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/* Applying a committed restore at the start of ui_load() (issue #580). The undo journal is written before the first
+ * change and the roll forward reads only the journal and the staging, so a crash anywhere re-runs to the same end
+ * state; an I/O failure rolls back from the journal. Staging lives in backup_stage.cpp. */
+
+#include "backup_apply.h"
+
+#include <QByteArray>
+#include <QChar>
+#include <QCoreApplication>
+#include <QDir>
+#include <QDirIterator>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QJsonValue>
+#include <QLatin1String>
+#include <QList>
+#include <QMap>
+#include <QSet>
+#include <QStorageInfo>
+#include <QStringList>
+#include <QVariant>
+#include <algorithm>
+#include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/signal_search.h>
+#include <qflags.h>
+#include <stdint.h>
+#include <utility>
+#include "app_prefs.h"
+#include "backup_apply_fs.h"
+#include "backup_archive.h"
+#include "backup_archive_rules.h"
+
+namespace dsd_qt {
+namespace backup {
+
+namespace {
+
+using namespace detail;
+
+constexpr int kJournalVersion = 1;
+constexpr qint64 kSpaceMargin = 1024LL * 1024;
+constexpr qint64 kMaxStagedJson = kMaxSealedBytes;
+constexpr int kMaxFreeNames = 10000;
+
+QString
+nothing_changed() {
+    return QCoreApplication::translate("BackupApply", "Nothing was changed");
+}
+
+QString
+stuck_reason() {
+    return QCoreApplication::translate("BackupApply", "Restore couldn't finish. Free up storage and reopen DSD-neo");
+}
+
+QString
+busy_reason() {
+    return QCoreApplication::translate("BackupApply", "The decoder was busy, so the restore waits for the next start");
+}
+
+QString
+space_reason() {
+    return QCoreApplication::translate("BackupApply",
+                                       "Not enough free storage to restore. Free up storage and reopen DSD-neo");
+}
+
+enum class Status { Ok, Failed, Crashed };
+
+/** One file the staging or the journal lists: a path relative to its directory, its size and sha256. */
+struct Listed {
+    QString path;
+    qint64 size = 0;
+    QString sha256;
+};
+
+/** The verified staging: the carried files and what the stores, settings and avoid list become. */
+struct Staging {
+    QStringList carried;               // archive paths, manifest order
+    QMap<QString, QString> carriedSha; // archive path → sha256
+    QMap<QString, QJsonArray> stores;
+    QVariantMap prefs;
+    QList<quint32> avoids;
+    QVariantMap summary;
+    qint64 bytes = 0;
+};
+
+/** The undo journal: the old configuration, and where every staged file goes. */
+struct Journal {
+    QList<Listed> files;                 // old managed files, relative to the root
+    QStringList stores;                  // which of the six store files existed
+    QStringList ownedRoots;              // old owned bundle roots
+    QMap<QString, QString> destinations; // archive path → destination, for every staged file
+    QMap<QString, QString> bundles;      // staged bundle root → the fresh one it was moved to
+    QStringList createdDirs;             // directories the roll forward may create
+    QVariantMap prefs;
+};
+
+QStringList
+six_store_files() {
+    return backup_store_names() << QLatin1String(kAvoidsFileName);
+}
+
+/** A relative path a journal or staging may list: clean, not absolute, no '..'. */
+bool
+clean_relative(const QString& path) {
+    return !path.isEmpty() && !path.startsWith(QLatin1Char('/')) && QDir::cleanPath(path) == path
+           && !path.split(QLatin1Char('/')).contains(QStringLiteral(".."));
+}
+
+QByteArray
+json_bytes(const QJsonObject& object) {
+    return QJsonDocument(object).toJson(QJsonDocument::Compact);
+}
+
+QJsonObject
+listed_json(const Listed& file) {
+    return QJsonObject{{QStringLiteral("path"), file.path},
+                       {QStringLiteral("size"), file.size},
+                       {QStringLiteral("sha256"), file.sha256}};
+}
+
+bool
+listed_from(const QJsonValue& value, Listed* file) {
+    const QJsonObject entry = value.toObject();
+    const QJsonValue size = entry.value(QLatin1String("size"));
+    file->path = entry.value(QLatin1String("path")).toString();
+    file->size = size.isDouble() ? size.toInteger(-1) : -1;
+    file->sha256 = entry.value(QLatin1String("sha256")).toString();
+    return clean_relative(file->path) && file->size >= 0 && is_sha256_hex(file->sha256);
+}
+
+QStringList
+string_list(const QJsonValue& value) {
+    QStringList out;
+    for (const auto& item : value.toArray()) {
+        out.append(item.toString());
+    }
+    return out;
+}
+
+QJsonObject
+map_json(const QMap<QString, QString>& map) {
+    QJsonObject object;
+    for (auto it = map.cbegin(); it != map.cend(); ++it) {
+        object.insert(it.key(), it.value());
+    }
+    return object;
+}
+
+QMap<QString, QString>
+json_map(const QJsonValue& value) {
+    QMap<QString, QString> map;
+    const QJsonObject object = value.toObject();
+    for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+        map.insert(it.key(), it.value().toString());
+    }
+    return map;
+}
+
+/** The directories between the root and @p path, outermost first. */
+QStringList
+ancestors(const QString& path) {
+    QStringList out;
+    for (qsizetype at = path.indexOf(QLatin1Char('/')); at > 0; at = path.indexOf(QLatin1Char('/'), at + 1)) {
+        out.append(path.left(at));
+    }
+    return out;
+}
+
+/** The native avoid store's own format (signal_search_store.cpp save_avoids()): "[a,b]\n", "[]\n" when empty. */
+QByteArray
+native_avoids(const QList<quint32>& avoids) {
+    QByteArray out("[");
+    for (qsizetype i = 0; i < avoids.size(); ++i) {
+        if (i != 0) {
+            out.append(',');
+        }
+        out.append(QByteArray::number(avoids.at(i)));
+    }
+    out.append("]\n");
+    return out;
+}
+
+/** Reads and checks the staging against its marker and manifest. */
+class StagingReader {
+  public:
+    StagingReader(const QString& dir, Staging* staging) : m_dir(dir), m_staging(staging) {}
+
+    bool
+    read() {
+        QByteArray manifest, marker;
+        if (!read_file(m_dir + QLatin1Char('/') + QLatin1String(kManifestName), kMaxStagingManifestBytes, &manifest)
+            || !read_file(m_dir + QLatin1Char('/') + QLatin1String(kCommittedName), 256, &marker)
+            || QString::fromLatin1(marker.trimmed()) != sha256_hex(manifest)) {
+            return false;
+        }
+        QJsonParseError error{};
+        const QJsonObject object = QJsonDocument::fromJson(manifest, &error).object();
+        const QJsonValue version = object.value(QLatin1String("stagingVersion"));
+        if (error.error != QJsonParseError::NoError || !version.isDouble() || version.toInteger(-1) != kStagingVersion
+            || !object.value(QLatin1String("summary")).isObject() || !object.value(QLatin1String("files")).isArray()) {
+            return false;
+        }
+        m_staging->summary = object.value(QLatin1String("summary")).toObject().toVariantMap();
+        const QJsonArray files = object.value(QLatin1String("files")).toArray();
+        return std::all_of(files.cbegin(), files.cend(), [this](const QJsonValue& v) { return readEntry(v); })
+               && m_seen.contains(QStringLiteral("prefs.json")) && m_seen.contains(QStringLiteral("avoids.json"));
+    }
+
+  private:
+    bool
+    readEntry(const QJsonValue& value) {
+        Listed file;
+        if (!listed_from(value, &file) || m_seen.contains(file.path)) {
+            return false;
+        }
+        m_seen.insert(file.path);
+        m_staging->bytes += file.size;
+        const QString path = m_dir + QLatin1Char('/') + file.path;
+        if (file.path.startsWith(QLatin1String("files/"))) {
+            const QString carried = file.path.mid(6);
+            QString sha;
+            qint64 size = -1;
+            if (!archive_path_problem(carried).isEmpty() || !hash_file(path, &sha, &size) || size != file.size
+                || sha != file.sha256) {
+                return false;
+            }
+            m_staging->carried.append(carried);
+            m_staging->carriedSha.insert(carried, sha);
+            return true;
+        }
+        QByteArray bytes;
+        const bool ok = read_file(path, kMaxStagedJson, &bytes) && bytes.size() == file.size
+                        && sha256_hex(bytes) == file.sha256 && readJson(file.path, bytes);
+        wipe(bytes); // stores hold keys
+        return ok;
+    }
+
+    bool
+    readJson(const QString& name, const QByteArray& bytes) {
+        QJsonParseError error{};
+        const QJsonDocument document = QJsonDocument::fromJson(bytes, &error);
+        if (error.error != QJsonParseError::NoError) {
+            return false;
+        }
+        if (name == QLatin1String("prefs.json")) {
+            m_staging->prefs = document.object().toVariantMap();
+            return document.isObject();
+        }
+        if (name == QLatin1String("avoids.json")) {
+            return document.isArray() && readAvoids(document.array());
+        }
+        const QString store = name.mid(7);
+        if (!name.startsWith(QLatin1String("stores/")) || !backup_store_names().contains(store)
+            || !document.isArray()) {
+            return false;
+        }
+        m_staging->stores.insert(store, document.array());
+        return true;
+    }
+
+    bool
+    readAvoids(const QJsonArray& list) {
+        if (list.size() > DSD_SEARCH_MAX_AVOIDS) {
+            return false;
+        }
+        for (const auto& value : list) {
+            const qint64 frequency = value.isDouble() ? value.toInteger(-1) : -1;
+            if (frequency < 1 || frequency > static_cast<qint64>(UINT32_MAX)) {
+                return false;
+            }
+            m_staging->avoids.append(static_cast<quint32>(frequency));
+        }
+        return true;
+    }
+
+    QString m_dir;
+    Staging* m_staging;
+    QSet<QString> m_seen;
+};
+
+/**
+ * The old configuration, positively identified from the live stores: the six store files, every regular file under
+ * imports/ a File value names, every owned bundle root a library row claims (first claim of a folded name only), and
+ * the regular files under decryption/ and scan_lists/. Nothing reached through a symlink counts.
+ */
+class LiveScan {
+  public:
+    LiveScan(const DataRoot& root, Journal* journal)
+        : m_root(root), m_canonical(root.canonical()), m_journal(journal) {}
+
+    qint64
+    run() {
+        if (m_canonical.isEmpty()) {
+            return 0;
+        }
+        for (const QString& name : six_store_files()) {
+            if (add(name)) {
+                m_journal->stores.append(name);
+            }
+        }
+        for (const QString& store : backup_store_names()) {
+            scanStore(store);
+        }
+        addTree(QStringLiteral("decryption"));
+        addTree(QStringLiteral("scan_lists"));
+        QStringList files(m_files.cbegin(), m_files.cend());
+        std::sort(files.begin(), files.end());
+        for (const QString& file : files) {
+            m_journal->files.append({file, QFileInfo(m_root.at(file)).size(), QString()});
+            m_bytes += m_journal->files.last().size;
+        }
+        return m_bytes;
+    }
+
+  private:
+    /** Whether @p relative is a regular file reached through no symlink. */
+    bool
+    regular(const QString& relative) const {
+        const QFileInfo info(m_root.at(relative));
+        return is_real_file(info.filePath()) && info.canonicalFilePath() == m_canonical + QLatin1Char('/') + relative;
+    }
+
+    bool
+    add(const QString& relative) {
+        if (!clean_relative(relative) || !regular(relative)) {
+            return false;
+        }
+        m_files.insert(relative);
+        return true;
+    }
+
+    void
+    addTree(const QString& relative) {
+        const QFileInfo info(m_root.at(relative));
+        if (!is_real_dir(info.filePath()) || info.canonicalFilePath() != m_canonical + QLatin1Char('/') + relative) {
+            return;
+        }
+        QDirIterator it(info.filePath(), QDir::Files | QDir::Hidden | QDir::System | QDir::NoSymLinks,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            add(it.next().mid(m_root.path().size() + 1));
+        }
+    }
+
+    /** The store's rows, read only from a regular store file (a symlinked store names nothing). */
+    QJsonArray
+    rows(const QString& store) const {
+        QByteArray bytes;
+        if (!regular(store) || !read_file(m_root.at(store), kMaxStagedJson, &bytes)) {
+            return {};
+        }
+        const QJsonArray array = QJsonDocument::fromJson(bytes).array();
+        wipe(bytes);
+        return array;
+    }
+
+    void
+    scanStore(const QString& store) {
+        const QString imports = m_root.at(QStringLiteral("imports/"));
+        const QString bundles = m_root.at(QStringLiteral("imports/bundles/"));
+        for (const TypedPathValue& value : typed_path_values(store, rows(store))) {
+            if (!value.value.startsWith(imports) || QDir::cleanPath(value.value) != value.value) {
+                continue;
+            }
+            const QString relative = value.value.mid(m_root.path().size() + 1);
+            if (value.field.kind == PathKind::File) {
+                add(relative);
+            } else if (value.field.kind == PathKind::BundleRoot && value.value.startsWith(bundles)
+                       && owned_name(value.value.mid(bundles.size())) && !m_claimed.contains(path_key(relative))) {
+                const QFileInfo info(value.value);
+                if (is_real_dir(value.value) && info.canonicalFilePath() == m_canonical + QLatin1Char('/') + relative) {
+                    m_claimed.insert(path_key(relative));
+                    m_journal->ownedRoots.append(relative);
+                    addTree(relative);
+                }
+            }
+        }
+    }
+
+    const DataRoot& m_root;
+    QString m_canonical;
+    Journal* m_journal;
+    QSet<QString> m_files;
+    QSet<QString> m_claimed;
+    qint64 m_bytes = 0;
+};
+
+/**
+ * Where every staged file goes. A destination that exists and is not part of the old configuration (an unknown
+ * file, a recording, an unreferenced bundle directory) is never overwritten: a bundle moves to a fresh id, a loose
+ * file takes the first free "name (n).ext" in its directory, and the stores' references follow when they are written.
+ */
+class Destinations {
+  public:
+    Destinations(const DataRoot& root, const Staging& staging, Journal* journal)
+        : m_root(root), m_staging(staging), m_journal(journal) {
+        for (const Listed& file : journal->files) {
+            m_old.insert(file.path);
+        }
+    }
+
+    bool
+    plan() {
+        const QStringList roots = stagedRoots();
+        for (const QString& root : roots) {
+            m_reserved.insert(path_key(root));
+        }
+        for (const QString& root : roots) {
+            if (bundleBlocked(root) && !moveBundle(root)) {
+                return false;
+            }
+        }
+        QStringList blocked;
+        for (const QString& file : m_staging.carried) {
+            const QString bundle = bundle_of(file);
+            if (m_journal->bundles.contains(bundle)) {
+                take(file, m_journal->bundles.value(bundle) + file.mid(bundle.size()));
+            } else if ((!bundle.isEmpty() && roots.contains(bundle)) || !blocked_at(file)) {
+                take(file, file);
+            } else {
+                blocked.append(file);
+            }
+        }
+        for (const QString& file : blocked) {
+            const QString name = freeName(file);
+            if (name.isEmpty()) {
+                return false;
+            }
+            take(file, name);
+        }
+        collectCreatedDirs();
+        return true;
+    }
+
+  private:
+    QStringList
+    stagedRoots() const {
+        const QString bundles = m_root.at(QStringLiteral("imports/bundles/"));
+        QStringList roots;
+        for (const auto& value : m_staging.stores.value(QLatin1String(kImportedFilesStore))) {
+            const QString root = value.toObject().value(QLatin1String("bundleRoot")).toString();
+            if (root.startsWith(bundles) && owned_name(root.mid(bundles.size()))) {
+                roots.append(root.mid(m_root.path().size() + 1));
+            }
+        }
+        roots.removeDuplicates();
+        std::sort(roots.begin(), roots.end());
+        return roots;
+    }
+
+    /** Whether writing @p relative would replace or pass through something the old configuration does not own. */
+    bool
+    blocked_at(const QString& relative, qsizetype from = 0) const {
+        const QFileInfo info(m_root.at(relative));
+        if (entry_exists(info.filePath()) && !m_old.contains(relative)) {
+            return true;
+        }
+        for (const QString& dir : ancestors(relative)) {
+            const QFileInfo parent(m_root.at(dir));
+            if (dir.size() <= from) {
+                continue;
+            }
+            if (parent.isSymLink() || parent.isJunction()
+                || (parent.exists() && !parent.isDir() && !m_old.contains(dir))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool
+    bundleBlocked(const QString& root) const {
+        if (entry_exists(m_root.at(root)) && !m_journal->ownedRoots.contains(root)) {
+            return true;
+        }
+        return std::any_of(m_staging.carried.cbegin(), m_staging.carried.cend(), [&](const QString& file) {
+            return bundle_of(file) == root && blocked_at(file, root.size());
+        });
+    }
+
+    bool
+    isFree(const QString& relative) const {
+        return !entry_exists(m_root.at(relative)) && !m_taken.contains(path_key(relative))
+               && !m_reserved.contains(path_key(relative));
+    }
+
+    bool
+    moveBundle(const QString& root) {
+        const QString id = root.mid(root.lastIndexOf(QLatin1Char('/')) + 1);
+        for (int n = 1; n < kMaxFreeNames; ++n) {
+            const QString suffix = QLatin1Char('-') + QString::number(n);
+            const QString fresh = QStringLiteral("imports/bundles/") + id.left(63 - suffix.size()) + suffix;
+            if (isFree(fresh)) {
+                m_journal->bundles.insert(root, fresh);
+                m_taken.insert(path_key(fresh));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    QString
+    freeName(const QString& file) const {
+        const qsizetype slash = file.lastIndexOf(QLatin1Char('/'));
+        const QFileInfo leaf(file.mid(slash + 1));
+        const QString base = leaf.completeBaseName(), suffix = leaf.suffix();
+        for (int n = 1; n < kMaxFreeNames; ++n) {
+            const QString number = QStringLiteral(" (%1)").arg(n);
+            const QString name = base.isEmpty()
+                                     ? leaf.fileName() + number
+                                     : base + number + (suffix.isEmpty() ? QString() : QLatin1Char('.') + suffix);
+            const QString candidate = file.left(slash + 1) + name;
+            if (isFree(candidate)) {
+                return candidate;
+            }
+        }
+        return {};
+    }
+
+    void
+    take(const QString& file, const QString& destination) {
+        m_journal->destinations.insert(file, destination);
+        m_taken.insert(path_key(destination));
+    }
+
+    void
+    collectCreatedDirs() {
+        QSet<QString> created;
+        for (const QString& destination : m_journal->destinations) {
+            for (const QString& dir : ancestors(destination)) {
+                if (!entry_exists(m_root.at(dir))) {
+                    created.insert(dir);
+                }
+            }
+        }
+        m_journal->createdDirs = QStringList(created.cbegin(), created.cend());
+        std::sort(m_journal->createdDirs.begin(), m_journal->createdDirs.end());
+    }
+
+    const DataRoot& m_root;
+    const Staging& m_staging;
+    Journal* m_journal;
+    QSet<QString> m_old;
+    QSet<QString> m_taken;    // folded destinations chosen so far
+    QSet<QString> m_reserved; // folded staged bundle roots
+};
+
+class Applier {
+  public:
+    explicit Applier(const ApplyEnv& env)
+        : m_env(env), m_pending(m_root.at(QLatin1String(kPendingDirName))),
+          m_journalDir(m_pending + QStringLiteral("/journal")) {}
+
+    ApplyResult
+    run() {
+        if (!m_root.valid() || !is_real_dir(m_pending)) {
+            return {};
+        }
+        if (!is_real_file(pendingPath(QLatin1String(kCommittedName)))) {
+            m_root.removeTree(m_pending); // never confirmed, or left over after the commit point
+            return {};
+        }
+        // Reading the staging changes nothing, and gives a deferred restore its summary.
+        const bool verified = StagingReader(m_pending, &m_staging).read();
+        if (busy()) {
+            return result(ApplyOutcome::Deferred, busy_reason());
+        }
+        if (!entry_exists(m_journalDir + QStringLiteral("/COMPLETE"))) {
+            return startFresh(verified);
+        }
+        if (!loadJournal()) {
+            return result(ApplyOutcome::Stuck, stuck_reason());
+        }
+        return verified && consistent() ? forward() : rollBackAndFinish();
+    }
+
+  private:
+    QString
+    pendingPath(const QString& name) const {
+        return m_pending + QLatin1Char('/') + name;
+    }
+
+    bool
+    busy() const {
+        return m_env.engineBusy && m_env.engineBusy();
+    }
+
+    Status
+    step(const char* name, const std::function<bool()>& op) const {
+        switch (m_env.fault ? m_env.fault(name) : Fault::None) {
+            case Fault::Crash: return Status::Crashed;
+            case Fault::IoError: return Status::Failed;
+            case Fault::None: break;
+        }
+        return op() ? Status::Ok : Status::Failed;
+    }
+
+    template <typename List, typename Op>
+    Status
+    each(const char* name, const List& items, Op op) const {
+        for (const auto& item : items) {
+            const Status status = step(name, [&] { return op(item); });
+            if (status != Status::Ok) {
+                return status;
+            }
+        }
+        return Status::Ok;
+    }
+
+    ApplyResult
+    result(ApplyOutcome outcome, const QString& reason) const {
+        if (outcome == ApplyOutcome::Applied) {
+            LOG_INFO("Backup restore applied at start\n");
+        } else if (outcome != ApplyOutcome::None) {
+            LOG_WARN("Backup restore at start: %s: %s\n", qUtf8Printable(apply_outcome_name(outcome)),
+                     qUtf8Printable(reason));
+        }
+        return {outcome, reason, m_staging.summary};
+    }
+
+    /** What a crash leaves: the caller sees nothing, as if the process had died. */
+    static ApplyResult
+    interrupted() {
+        return {ApplyOutcome::None, QStringLiteral("interrupted"), {}};
+    }
+
+    void
+    writeResult(ApplyOutcome outcome, const QString& reason) const {
+        const QJsonObject object{{QStringLiteral("outcome"), apply_outcome_name(outcome)},
+                                 {QStringLiteral("reason"), reason},
+                                 {QStringLiteral("summary"), QJsonObject::fromVariantMap(m_staging.summary)}};
+        if (!m_root.writeFile(m_root.at(QLatin1String(kResultName)), json_bytes(object))) {
+            LOG_WARN("Backup restore result could not be saved\n");
+        }
+    }
+
+    /* ---- steps 1 and 2: before any change ---- */
+
+    ApplyResult
+    startFresh(bool verified) {
+        if (!verified) {
+            // Nothing was changed: the stage cannot be trusted, so it goes.
+            writeResult(ApplyOutcome::Failed, nothing_changed());
+            m_root.removeTree(m_pending);
+            return result(ApplyOutcome::Failed, nothing_changed());
+        }
+        const qint64 oldBytes = LiveScan(m_root, &m_journal).run();
+        const qint64 free =
+            m_env.freeBytes ? m_env.freeBytes(m_root.path()) : QStorageInfo(m_root.path()).bytesAvailable();
+        if (free >= 0 && free < m_staging.bytes + oldBytes + kSpaceMargin) {
+            return result(ApplyOutcome::Deferred, space_reason());
+        }
+        const Status built = buildJournal();
+        if (built == Status::Crashed) {
+            return interrupted();
+        }
+        if (built == Status::Failed) {
+            m_root.removeTree(m_journalDir); // rebuilt from scratch next time; nothing live was changed
+            return result(ApplyOutcome::Deferred, space_reason());
+        }
+        if (busy()) {
+            return result(ApplyOutcome::Deferred, busy_reason());
+        }
+        return forward();
+    }
+
+    QByteArray
+    journalManifest() const {
+        QJsonArray files;
+        for (const Listed& file : m_journal.files) {
+            files.append(listed_json(file));
+        }
+        return json_bytes({{QStringLiteral("journalVersion"), kJournalVersion},
+                           {QStringLiteral("files"), files},
+                           {QStringLiteral("stores"), QJsonArray::fromStringList(m_journal.stores)},
+                           {QStringLiteral("ownedRoots"), QJsonArray::fromStringList(m_journal.ownedRoots)},
+                           {QStringLiteral("destinations"), map_json(m_journal.destinations)},
+                           {QStringLiteral("bundles"), map_json(m_journal.bundles)},
+                           {QStringLiteral("createdDirs"), QJsonArray::fromStringList(m_journal.createdDirs)}});
+    }
+
+    Status
+    buildJournal() {
+        if (!Destinations(m_root, m_staging, &m_journal).plan()) {
+            return Status::Failed;
+        }
+        Status status = step("journal.begin", [this] {
+            return m_root.removeTree(m_journalDir) && m_root.makeDirs(m_journalDir + QStringLiteral("/files"));
+        });
+        for (qsizetype i = 0; status == Status::Ok && i < m_journal.files.size(); ++i) {
+            Listed& file = m_journal.files[i];
+            status = step("journal.files", [&] {
+                return m_root.copyFile(m_root.at(file.path), m_journalDir + QStringLiteral("/files/") + file.path,
+                                       QString(), &file.sha256, &file.size);
+            });
+        }
+        if (status == Status::Ok) {
+            m_journal.prefs = AppPrefs::readPortable();
+            status = step("journal.prefs", [this] {
+                return m_root.writeFile(m_journalDir + QStringLiteral("/prefs.json"),
+                                        json_bytes(QJsonObject::fromVariantMap(m_journal.prefs)));
+            });
+        }
+        const QByteArray manifest = journalManifest();
+        if (status == Status::Ok) {
+            status = step("journal.manifest",
+                          [&] { return m_root.writeFile(m_journalDir + QStringLiteral("/manifest.json"), manifest); });
+        }
+        if (status == Status::Ok) {
+            status = step("journal.complete", [&] {
+                return m_root.writeFile(m_journalDir + QStringLiteral("/COMPLETE"), sha256_hex(manifest).toLatin1());
+            });
+        }
+        return status;
+    }
+
+    bool
+    loadJournal() {
+        QByteArray manifest, complete, prefs;
+        if (!read_file(m_journalDir + QStringLiteral("/manifest.json"), kMaxStagedJson, &manifest)
+            || !read_file(m_journalDir + QStringLiteral("/COMPLETE"), 256, &complete)
+            || QString::fromLatin1(complete.trimmed()) != sha256_hex(manifest)
+            || !read_file(m_journalDir + QStringLiteral("/prefs.json"), kMaxStagedJson, &prefs)) {
+            return false;
+        }
+        const QJsonObject object = QJsonDocument::fromJson(manifest).object();
+        if (object.value(QLatin1String("journalVersion")).toInteger(-1) != kJournalVersion) {
+            return false;
+        }
+        for (const auto& value : object.value(QLatin1String("files")).toArray()) {
+            Listed file;
+            if (!listed_from(value, &file)) {
+                return false;
+            }
+            m_journal.files.append(file);
+        }
+        m_journal.stores = string_list(object.value(QLatin1String("stores")));
+        m_journal.ownedRoots = string_list(object.value(QLatin1String("ownedRoots")));
+        m_journal.destinations = json_map(object.value(QLatin1String("destinations")));
+        m_journal.bundles = json_map(object.value(QLatin1String("bundles")));
+        m_journal.createdDirs = string_list(object.value(QLatin1String("createdDirs")));
+        m_journal.prefs = QJsonDocument::fromJson(prefs).object().toVariantMap();
+        const QStringList paths =
+            m_journal.destinations.values() + m_journal.bundles.values() + m_journal.ownedRoots + m_journal.createdDirs;
+        return std::all_of(paths.cbegin(), paths.cend(), clean_relative);
+    }
+
+    /** Whether the staging is the one the journal planned for. */
+    bool
+    consistent() const {
+        QStringList carried = m_staging.carried;
+        std::sort(carried.begin(), carried.end());
+        return carried == m_journal.destinations.keys();
+    }
+
+    /* ---- step 3: roll forward ---- */
+
+    /** A typed value with the staged files' and bundles' destinations followed. */
+    QString
+    remapped(const TypedPathValue& value) const {
+        const QString prefix = m_root.path() + QLatin1Char('/');
+        if (!value.value.startsWith(prefix)) {
+            return value.value;
+        }
+        const QString relative = value.value.mid(prefix.size());
+        const auto& map = value.field.kind == PathKind::BundleRoot ? m_journal.bundles : m_journal.destinations;
+        const auto it = map.constFind(relative);
+        return it == map.constEnd() ? value.value : prefix + *it;
+    }
+
+    bool
+    writeStore(const QString& store) const {
+        const auto it = m_staging.stores.constFind(store);
+        if (it == m_staging.stores.constEnd()) {
+            return m_root.removeFile(m_root.at(store));
+        }
+        const QJsonArray rows =
+            map_typed_path_values(store, *it, [this](const TypedPathValue& value) { return remapped(value); });
+        QByteArray bytes = QJsonDocument(rows).toJson(QJsonDocument::Compact);
+        const bool ok = m_root.writeFile(m_root.at(store), bytes);
+        wipe(bytes); // profiles hold keys
+        return ok;
+    }
+
+    Status
+    rollForwardSteps() const {
+        Status status = each("forward.delete", m_journal.files,
+                             [this](const Listed& file) { return m_root.removeFile(m_root.at(file.path)); });
+        if (status != Status::Ok) {
+            return status;
+        }
+        for (const QString& root : m_journal.ownedRoots) {
+            m_root.pruneEmptyDirs(m_root.at(root));
+        }
+        status = step("forward.generated", [this] {
+            // Their files were part of the old set; what is left is not ours and stays.
+            m_root.pruneEmptyDirs(m_root.at(QStringLiteral("decryption")));
+            m_root.pruneEmptyDirs(m_root.at(QStringLiteral("scan_lists")));
+            return true;
+        });
+        if (status == Status::Ok) {
+            status = each("forward.files", m_staging.carried, [this](const QString& file) {
+                return m_root.copyFile(pendingPath(QStringLiteral("files/") + file),
+                                       m_root.at(m_journal.destinations.value(file)), m_staging.carriedSha.value(file));
+            });
+        }
+        if (status == Status::Ok) {
+            status = each("forward.stores", backup_store_names(),
+                          [this](const QString& store) { return writeStore(store); });
+        }
+        if (status == Status::Ok) {
+            status = step("forward.avoids", [this] {
+                return m_root.writeFile(m_root.at(QLatin1String(kAvoidsFileName)), native_avoids(m_staging.avoids));
+            });
+        }
+        if (status == Status::Ok) {
+            status = step("forward.prefs", [this] { return AppPrefs::replacePortable(m_staging.prefs); });
+        }
+        return status;
+    }
+
+    ApplyResult
+    forward() {
+        const Status status = rollForwardSteps();
+        if (status == Status::Crashed) {
+            return interrupted();
+        }
+        return status == Status::Failed ? rollBackAndFinish() : finish(ApplyOutcome::Applied, QString());
+    }
+
+    /* ---- steps 4 to 6: the ending ---- */
+
+    ApplyResult
+    finish(ApplyOutcome outcome, const QString& reason) {
+        Status status = step("result.write", [&] {
+            writeResult(outcome, reason); // best effort: the outcome is also returned
+            return true;
+        });
+        if (status == Status::Crashed) {
+            return interrupted();
+        }
+        // The commit point: once the marker is gone, nothing will run this restore again.
+        status =
+            step("marker.remove", [this] { return m_root.removeFile(pendingPath(QLatin1String(kCommittedName))); });
+        if (status == Status::Crashed) {
+            return interrupted();
+        }
+        if (status == Status::Failed) {
+            writeResult(ApplyOutcome::Stuck, stuck_reason());
+            return result(ApplyOutcome::Stuck, stuck_reason());
+        }
+        // An unmarked leftover is removed at the next start.
+        if (step("cleanup", [this] { return m_root.removeTree(m_pending); }) == Status::Crashed) {
+            return interrupted();
+        }
+        return result(outcome, reason);
+    }
+
+    /**
+     * Delete @p relative when this apply could have written it. Everything it writes is a regular file reached through
+     * no symlink, so anything else at a destination (a symlink, a directory, a path through a symlink) was never its
+     * own and stays.
+     */
+    bool
+    removeWritten(const QString& relative) const {
+        const QString path = m_root.at(relative);
+        return !m_root.contains(path) || !is_real_file(path) || m_root.removeFile(path);
+    }
+
+    Status
+    rollBackSteps() const {
+        QStringList written = m_journal.destinations.values() + six_store_files();
+        written.removeDuplicates();
+        std::sort(written.begin(), written.end());
+        Status status = each("rollback.delete", written, [this](const QString& path) { return removeWritten(path); });
+        if (status != Status::Ok) {
+            return status;
+        }
+        QStringList created = m_journal.createdDirs;
+        std::sort(created.begin(), created.end(),
+                  [](const QString& a, const QString& b) { return a.size() > b.size(); });
+        for (const QString& dir : created) {
+            m_root.removeEmptyDir(m_root.at(dir));
+        }
+        status = each("rollback.files", m_journal.files, [this](const Listed& file) {
+            return m_root.copyFile(m_journalDir + QStringLiteral("/files/") + file.path, m_root.at(file.path),
+                                   file.sha256);
+        });
+        if (status == Status::Ok) {
+            status = step("rollback.prefs", [this] { return AppPrefs::replacePortable(m_journal.prefs); });
+        }
+        return status;
+    }
+
+    ApplyResult
+    rollBackAndFinish() {
+        const Status status = rollBackSteps();
+        if (status == Status::Crashed) {
+            return interrupted();
+        }
+        if (status == Status::Failed) {
+            // Everything is kept: the next start rolls forward again.
+            writeResult(ApplyOutcome::Stuck, stuck_reason());
+            return result(ApplyOutcome::Stuck, stuck_reason());
+        }
+        return finish(ApplyOutcome::Failed, nothing_changed());
+    }
+
+    const ApplyEnv& m_env;
+    DataRoot m_root;
+    QString m_pending, m_journalDir;
+    Staging m_staging;
+    Journal m_journal;
+};
+
+} // namespace
+
+QString
+apply_outcome_name(ApplyOutcome outcome) {
+    switch (outcome) {
+        case ApplyOutcome::None: return QString();
+        case ApplyOutcome::Applied: return QStringLiteral("applied");
+        case ApplyOutcome::Failed: return QStringLiteral("failed");
+        case ApplyOutcome::Deferred: return QStringLiteral("deferred");
+        case ApplyOutcome::Stuck: return QStringLiteral("stuck");
+    }
+    return QString();
+}
+
+ApplyResult
+apply_pending_restore(const ApplyEnv& env) {
+    Applier applier(env);
+    return applier.run();
+}
+
+} // namespace backup
+} // namespace dsd_qt

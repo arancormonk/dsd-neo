@@ -58,6 +58,15 @@ class ImportedFilesModel : public QAbstractListModel {
     /** @brief Every library row type the model can validate; a row of any other type cannot be used. */
     static QStringList knownTypes();
 
+    /**
+     * @brief Dry-run validate @p path as @p type; false when it cannot be parsed.
+     *
+     * The rule every library row passed when it was imported (a file with no usable row still passes, with
+     * @p accepted 0). A backup restore runs it on each staged library file before staging is accepted.
+     */
+    static bool validate(const QString& path, const QString& type, int* accepted, int* skipped,
+                         QString* detail = nullptr);
+
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     QVariant data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
@@ -202,10 +211,6 @@ class ImportedFilesModel : public QAbstractListModel {
      * complexity ceiling; the roles have no behaviour of their own.
      */
     static QVariant provenanceRole(const Row& row, int role);
-
-    /** @brief Dry-run validate @p path as @p type; false when it cannot be parsed. */
-    static bool validate(const QString& path, const QString& type, int* accepted, int* skipped,
-                         QString* detail = nullptr);
 
     /**
      * @brief Validate an already-stored copy and record a library row for it.

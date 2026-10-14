@@ -3989,6 +3989,31 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_backup_archive
     )
 
+    # Staging a validated backup and applying it at the next start (issue
+    # #580): the journaled, crash-safe apply, with archives built from the real
+    # models' stores and every named step driven through the fault seam. It
+    # links the whole UI library, so the deferred engine link below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_backup_apply
+        ui/test_ui_qt_backup_apply.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_backup_apply
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_backup_apply
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_backup_apply
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_NEO_TEST_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
+    )
+    set_target_properties(dsd-neo_test_ui_qt_backup_apply PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_BACKUP_APPLY COMMAND dsd-neo_test_ui_qt_backup_apply)
+
     # The RadioReference model, driven end to end with the captured API
     # responses through an injected transport: no network, no UI. dsd-neo_runtime
     # is mandatory because it carries the dsd_rr_* objects and the curl/expat
@@ -6886,6 +6911,7 @@ foreach(
     dsd-neo_test_ui_qt_imported_files_model
     dsd-neo_test_ui_qt_radio_reference_model
     dsd-neo_test_ui_qt_backup_archive
+    dsd-neo_test_ui_qt_backup_apply
 )
     if(TARGET ${_qt_import_target})
         target_link_libraries(

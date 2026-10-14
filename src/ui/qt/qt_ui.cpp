@@ -17,9 +17,11 @@
 #include <QStringList>
 #include <QUrl>
 #include <dsd-neo/runtime/git_ver.h>
+#include <functional>
 #include <qqml.h>
 
 #include "app_prefs.h"
+#include "backup_apply.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"
 #include "command_bridge.h"
@@ -150,8 +152,28 @@ wire_screen_policy(DecoderHost* host, const AppPrefs* prefs) {
     QObject::connect(prefs, &AppPrefs::screenPolicyChanged, host, applyScreenPolicy);
 }
 
+// The C++ types QML instantiates.
+static void
+register_qml_types() {
+    // WP-D4: cancellation observes pointer, keyboard and shortcut input.
+    qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
+    qmlRegisterType<SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
+    qmlRegisterType<WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
+}
+
+// A restore the user confirmed applies before any model reads a store it replaces (#580), so the restored data goes
+// through the loaders, migrations and pruning below like any other start's.
+static backup::ApplyResult
+apply_confirmed_restore(const DecoderHost* host) {
+    backup::ApplyEnv env;
+    env.engineBusy = [host]() { return host != nullptr && host->engineBusy(); };
+    return backup::apply_pending_restore(env);
+}
+
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
+    const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
+    (void)restoreOutcome; // reported once the backup screen is wired
     load_fonts(engine.rootContext());
 
     auto* metrics = new MetricsModel(&engine);
@@ -204,10 +226,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     wire_screen_policy(host, prefs);
 
     /* Register the C++ types QML instantiates before loading their importers. */
-    // WP-D4: cancellation observes pointer, keyboard and shortcut input.
-    qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
-    qmlRegisterType<SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
-    qmlRegisterType<WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
+    register_qml_types();
 
     // Integration slots: register later packages' owned context objects here,
     // before QML loads. Keeping these in one place prevents parallel packages

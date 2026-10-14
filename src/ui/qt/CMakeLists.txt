@@ -23,10 +23,13 @@ target_sources(
     dsd-neo_ui_qt
     PRIVATE
         app_prefs.cpp
+        backup_apply.cpp
+        backup_apply_fs.cpp
         backup_archive.cpp
         backup_archive_build.cpp
         backup_archive_parse.cpp
         backup_archive_rules.cpp
+        backup_stage.cpp
         call_history_filter.cpp
         call_history_model.cpp
         command_bridge.cpp
