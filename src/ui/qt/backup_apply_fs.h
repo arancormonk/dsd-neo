@@ -79,8 +79,18 @@ class DataRoot {
     /** Leave no entry at @p path; true when none is left. Refuses a directory and an uncontained path. */
     bool removeFile(const QString& path) const;
 
-    /** Remove the directory @p path and everything below it (symlinks are removed, never followed). */
+    /**
+     * Remove the directory @p path and everything below it. Nothing is followed: a symlink or junction inside is
+     * unlinked itself (removeLink()), never descended into, and its target is never touched; every other entry goes
+     * through removeFile() or removeEmptyDir().
+     */
     bool removeTree(const QString& path) const;
+
+    /** Unlink the symlink or junction at @p path itself, never its target; its directory must pass contains(). */
+    bool removeLink(const QString& path) const;
+
+    /** Remove whatever is at @p path without following it: a link (removeLink()), a tree (removeTree()) or a file. */
+    bool removeEntry(const QString& path) const;
 
     /** Remove @p path when it is an empty directory; false when it stays. */
     bool removeEmptyDir(const QString& path) const;

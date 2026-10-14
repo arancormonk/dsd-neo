@@ -163,24 +163,40 @@ DataRoot::removeTree(const QString& path) const {
     if (!contains(path) || !is_real_dir(path)) {
         return false;
     }
-    // Look at everything first, following nothing: a tree holding a symlink or junction is refused whole, so no link
-    // is ever followed or removed. Then remove entry by entry through the contained operations.
-    QStringList files, dirs;
-    QDirIterator it(path, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
-                    QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        const QFileInfo info(it.next());
-        if (is_link(info)) {
-            return false;
-        }
-        (info.isDir() ? dirs : files).append(info.filePath());
+    // One level at a time, so nothing is reached through a link: removeEntry() unlinks a link and descends only into
+    // real directories.
+    const QFileInfoList entries =
+        QDir(path).entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+    bool removed = true;
+    for (const QFileInfo& entry : entries) {
+        removed = removeEntry(entry.filePath()) && removed;
     }
-    const bool removed =
-        std::all_of(files.cbegin(), files.cend(), [this](const QString& file) { return removeFile(file); });
-    std::sort(dirs.begin(), dirs.end(), [](const QString& a, const QString& b) { return a.size() > b.size(); });
-    return removed
-           && std::all_of(dirs.cbegin(), dirs.cend(), [this](const QString& dir) { return removeEmptyDir(dir); })
-           && removeEmptyDir(path) && !entry_exists(path);
+    return removed && removeEmptyDir(path) && !entry_exists(path);
+}
+
+bool
+DataRoot::removeLink(const QString& path) const {
+    const QFileInfo info(path);
+    const QString parent = info.absolutePath();
+    const bool parentOk = parent == m_root ? valid() : contains(parent);
+    if (!is_link(info) || !parentOk || QDir::cleanPath(path) != path || !path.startsWith(m_root + QLatin1Char('/'))) {
+        return false;
+    }
+    // QFile::remove() unlinks a symlink; a directory symlink or junction on Windows needs rmdir, which removes the
+    // link and leaves its target alone.
+    if (!QFile::remove(path) && info.isDir()) {
+        QDir().rmdir(path);
+    }
+    return !entry_exists(path);
+}
+
+bool
+DataRoot::removeEntry(const QString& path) const {
+    const QFileInfo info(path);
+    if (is_link(info)) {
+        return removeLink(path);
+    }
+    return info.isDir() ? removeTree(path) : removeFile(path);
 }
 
 bool

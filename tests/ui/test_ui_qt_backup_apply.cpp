@@ -169,6 +169,24 @@ remove_tree(const QString& path) {
     }
 }
 
+/**
+ * The one way this test removes a single entry (a file or a symlink, never followed): the same rules as remove_tree(),
+ * and the path must lie strictly below the isolated root.
+ */
+bool
+remove_file(const QString& path) {
+    const QString base = root();
+    const bool ok = base.size() > 1 && QDir::isAbsolutePath(base) && QDir::cleanPath(base) == base
+                    && base.contains(QLatin1String("dsd-neo-backup-apply-")) && !path.isEmpty()
+                    && QDir::isAbsolutePath(path) && QDir::cleanPath(path) == path
+                    && path.startsWith(base + QLatin1Char('/'));
+    if (!ok) {
+        expect(QStringLiteral("only entries below the isolated data root are removed: '%1'").arg(path), false);
+        return false;
+    }
+    return QFile::remove(path);
+}
+
 /** Every entry below a directory - files by content, symlinks by target, directories by name - and the settings. */
 struct Tree {
     QMap<QString, QByteArray> files;
@@ -449,6 +467,7 @@ struct Old {
     QString externalFile; // a file outside the data root a live system names
     QString linkTarget;   // the external file a symlink under imports/ points at
     QString targetsDest;  // the fresh bundle the backup's target bundle moves to
+    QString external;     // a directory outside the root; holds an alias of the root
 };
 
 QString
@@ -515,6 +534,24 @@ change_references(const Backup& b, Old& old, const QString& external) {
            systems.add({{"name", "Both"}, {"sourceType", "usb"}, {"groupCsvPath", at("imports/both.csv")}}));
     expect("add system naming it as a recording",
            systems.add({{"name", "BothReplay"}, {"sourceType", "file"}, {"filePath", at("imports/both.csv")}}));
+    // The same, with the recording spelled another way: an unclean path, and the root through an alias.
+    expect("files named by other spellings", write_file(at("imports/both2.csv"), "RIFF unclean\n")
+                                                 && write_file(at("imports/both3.csv"), "RIFF alias\n")
+                                                 && QFile::link(root(), external + "/rootalias"));
+    expect("add systems naming them as lists",
+           systems.add({{"name", "Both2"}, {"sourceType", "usb"}, {"groupCsvPath", at("imports/both2.csv")}})
+               && systems.add({{"name", "Both3"}, {"sourceType", "usb"}, {"groupCsvPath", at("imports/both3.csv")}}));
+    expect("add systems naming them as recordings, spelled otherwise",
+           systems.add({{"name", "Both2Replay"}, {"sourceType", "file"}, {"filePath", at("imports/sub/../both2.csv")}})
+               && systems.add({{"name", "Both3Replay"},
+                               {"sourceType", "file"},
+                               {"filePath", external + "/rootalias/imports/both3.csv"}}));
+    // And in another case: the same file where storage folds case; a file kept to be safe where it does not.
+    expect("file named in another case", write_file(at("imports/both4.csv"), "RIFF case\n"));
+    expect(
+        "add systems naming it in two cases",
+        systems.add({{"name", "Both4"}, {"sourceType", "usb"}, {"groupCsvPath", at("imports/both4.csv")}})
+            && systems.add({{"name", "Both4Replay"}, {"sourceType", "file"}, {"filePath", at("IMPORTS/BOTH4.CSV")}}));
     expect("add a system to delete",
            systems.add({{"name", "Gone"}, {"sourceType", "file"}, {"filePath", at("recordings/gone.wav")}}));
     systems.remove(systems.rowCount() - 1);
@@ -559,6 +596,7 @@ add_not_owned_row(Old& old) {
 Old
 make_old(TestHost& host, const Backup& b, const QString& external) {
     Old old;
+    old.external = external;
     change_library(host, b, old);
     change_references(b, old, external);
     {
@@ -594,10 +632,15 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
                            relative(b.targetsRoot) + "/notes.txt",
                            "imports/notes.txt",
                            "imports/both.csv",
+                           "imports/both2.csv",
+                           "imports/both3.csv",
+                           "imports/both4.csv",
                            "imports/.staged-left",
                            "diagnostics/log.txt",
                            "unknown.dat"};
     old.tree = capture();
+    expect("the unclean recording spelling is stored as written",
+           old.tree.files.value("saved_systems.json").contains("imports/sub/../both2.csv"));
     if (old.tree.files.contains("signal-search-history.v1")) {
         old.kept.append("signal-search-history.v1");
     }
@@ -901,7 +944,7 @@ test_promote_commit_discard(const Backup& b, const Old& old) {
     expect("the sweep leaves a symlink and its target",
            QFileInfo(at("restore-staging-link")).isSymLink() && read_file(outside.filePath("keep.txt")) == "keep");
     expect("the sweep leaves the pending restore", dsd_qt::backup::pending_committed());
-    QFile::remove(at("restore-staging-link"));
+    remove_file(at("restore-staging-link"));
 
     expect("discard before the apply starts", dsd_qt::backup::discard_pending() && !dsd_qt::backup::pending_exists());
 
@@ -953,6 +996,11 @@ check_applied_content(const Backup& b, const Old& old) {
     expect("the target list follows the fresh bundle",
            targetsList.value("targetsCsvPath") == old.targetsDest + "/targets.csv");
     expect("a file a live recording names is kept", read_file(at("imports/both.csv")) == "RIFF both\n");
+    expect("a file a recording names by an unclean path is kept",
+           read_file(at("imports/both2.csv")) == "RIFF unclean\n");
+    expect("a file a recording names through a root alias is kept",
+           read_file(at("imports/both3.csv")) == "RIFF alias\n");
+    expect("a file a recording names in another case is kept", read_file(at("imports/both4.csv")) == "RIFF case\n");
     expect("the unknown file keeps its name", read_file(b.groups) == "my own notes\n");
     expect("the recording keeps its name", read_file(b.src) == "RIFF recording at an incoming name");
     const QJsonArray systems = dsd_qt::json_store_load_array("saved_systems.json");
@@ -1188,6 +1236,19 @@ test_failed_before_any_change(const Backup& b, const Old& old) {
     expect("a garbled marker fails", apply().outcome == ApplyOutcome::Failed);
     check_failed_state("garbled marker", old);
 
+    // The failed stage loses its marker before its files: a stage that cannot be removed is never run again.
+    prepare(b, old);
+    write_file(pending("COMMITTED"), "not a hash");
+    Faults stays;
+    stays.ioStep = "cleanup";
+    stays.ioCall = 1;
+    expect("a failed stage whose removal fails is still Failed", apply(&stays).outcome == ApplyOutcome::Failed);
+    expect("the failed stage is no longer committed",
+           dsd_qt::backup::pending_exists() && !dsd_qt::backup::pending_committed());
+    expect("the next start only removes it",
+           apply().outcome == ApplyOutcome::None && !dsd_qt::backup::pending_exists());
+    expect("the failed result stays", dsd_qt::backup::read_result_file().value("outcome") == "failed");
+
     for (const QString& staged :
          {QStringLiteral("files/") + b.parsed.files.first().path, QStringLiteral("stores/saved_systems.json"),
           QStringLiteral("prefs.json"), QStringLiteral("avoids.json")}) {
@@ -1199,7 +1260,7 @@ test_failed_before_any_change(const Backup& b, const Old& old) {
         check_failed_state(qUtf8Printable("corrupt " + staged), old);
     }
     prepare(b, old);
-    QFile::remove(pending("files/" + b.parsed.files.last().path));
+    remove_file(pending("files/" + b.parsed.files.last().path));
     expect("a missing staged file fails", apply().outcome == ApplyOutcome::Failed);
     check_failed_state("missing staged file", old);
 
@@ -1227,7 +1288,7 @@ test_failed_before_any_change(const Backup& b, const Old& old) {
     entries.removeAt(0);
     replanned.insert("files", entries);
     const QByteArray replannedBytes = QJsonDocument(replanned).toJson(QJsonDocument::Compact);
-    expect("re-plan the staging", dropped.startsWith("files/") && QFile::remove(pending(dropped))
+    expect("re-plan the staging", dropped.startsWith("files/") && remove_file(pending(dropped))
                                       && write_file(pending("manifest.json"), replannedBytes)
                                       && write_file(pending("COMMITTED"), sha256_hex(replannedBytes).toLatin1()));
     expect("a staging the journal did not plan for rolls back", apply().outcome == ApplyOutcome::Failed);
@@ -1342,7 +1403,7 @@ test_symlinked_component(const Backup& b, const Old& old) {
     expect("the files outside are untouched", same_tree(capture_dir(outside.path()), external, true));
     expect("the old state is back", same_tree(capture(), before, false, {kResultFile, "restore-pending"}));
     expect("nothing pending after the refusal", !dsd_qt::backup::pending_exists());
-    QFile::remove(bundles);
+    remove_file(bundles);
 }
 
 /** A store file that is a symlink is no store of ours: the apply cannot replace it, so it fails cleanly. */
@@ -1351,7 +1412,7 @@ test_symlinked_store(const Backup& b, const Old& old) {
     QTemporaryDir outside;
     prepare(b, old);
     const QString store = at("signal-search-ranges.json");
-    expect("a symlinked store file", write_file(outside.filePath("ranges.json"), "[]") && QFile::remove(store)
+    expect("a symlinked store file", write_file(outside.filePath("ranges.json"), "[]") && remove_file(store)
                                          && QFile::link(outside.filePath("ranges.json"), store));
     const Tree before = capture();
     const ApplyResult result = apply();
@@ -1518,34 +1579,114 @@ test_unreadable_journal(const Backup& b, const Old& old) {
     expect("an unreadable journal keeps everything", dsd_qt::backup::pending_committed());
 }
 
-/** A tree to remove that holds a symlink is refused whole; the link's target is never touched. */
+/** Symlinks to an outside file and an outside directory inside @p dir. */
+bool
+add_links(const QString& dir, const QString& outside) {
+    return QDir().mkpath(dir) && QFile::link(outside + "/keep.txt", dir + "/to-file")
+           && QFile::link(outside + "/dir", dir + "/to-dir");
+}
+
+/** Trees a restore removes may hold symlinks: each link is unlinked, never followed, and its target never touched. */
 void
-test_links_inside_removed_trees(const Backup& b, const Old& old) {
-    QTemporaryDir outside;
-    expect("an outside file", write_file(outside.filePath("keep.txt"), "keep\n"));
+test_links_inside_removed_trees(const Backup& b, const Old& old, const Tree& reference) {
+    QTemporaryDir outsideDir;
+    const QString outside = outsideDir.path();
+    expect("outside files",
+           write_file(outside + "/keep.txt", "keep\n") && write_file(outside + "/dir/inner.txt", "in\n"));
+    const Tree external = capture_dir(outside);
+    const auto untouched = [&](const QString& what) {
+        expect(what + ": the link targets are untouched", same_tree(capture_dir(outside), external, true));
+    };
     put_back(old.tree);
     QString error;
     const QString dir = dsd_qt::backup::staging_dir_for_job("linked");
-    expect("stage and promote",
-           dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error) && dsd_qt::backup::promote_staging(dir));
-    expect("a link inside the pending restore", QFile::link(outside.path(), pending("files/imports/outside")));
-    expect("an unmarked restore holding a link is not removed",
-           apply().outcome == ApplyOutcome::None && dsd_qt::backup::pending_exists());
-    expect("discarding a restore holding a link is refused",
-           !dsd_qt::backup::discard_pending() && dsd_qt::backup::pending_exists());
-    expect("the link's target is untouched", read_file(outside.filePath("keep.txt")) == "keep\n"
-                                                 && QFileInfo(pending("files/imports/outside")).isSymLink());
+    const QString other = dsd_qt::backup::staging_dir_for_job("other");
+    expect("staging dirs for the link cases", !dir.isEmpty() && !other.isEmpty());
+    if (dir.isEmpty() || other.isEmpty()) {
+        return;
+    }
+    const auto stagePending = [&]() {
+        return dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error) && dsd_qt::backup::promote_staging(dir)
+               && add_links(pending("files/imports"), outside);
+    };
+    expect("an unmarked restore holding links", stagePending());
+    expect("an unmarked restore holding links is removed",
+           apply().outcome == ApplyOutcome::None && !dsd_qt::backup::pending_exists());
+    untouched("unmarked restore");
 
-    const QString stale = dsd_qt::backup::staging_dir_for_job("stale");
-    expect("a staging dir holding a link", dsd_qt::backup::stage_restore(b.parsed, b.archive, stale, &error)
-                                               && QFile::link(outside.path(), stale + "/files/outside"));
+    expect("a restore to discard holding links", stagePending());
+    expect("a restore holding links is discarded",
+           dsd_qt::backup::discard_pending() && !dsd_qt::backup::pending_exists());
+    untouched("discard");
+
+    expect("a restore to replace holding links", stagePending());
+    expect("a restore holding links is replaced", dsd_qt::backup::stage_restore(b.parsed, b.archive, other, &error)
+                                                      && dsd_qt::backup::promote_staging(other)
+                                                      && !QFileInfo::exists(pending("files/imports/to-dir")));
+    untouched("promote");
+    expect("discard the replacement", dsd_qt::backup::discard_pending());
+
+    expect("a stale staging dir holding links",
+           dsd_qt::backup::stage_restore(b.parsed, b.archive, other, &error) && add_links(other + "/files", outside));
     dsd_qt::backup::sweep_stale_staging();
-    expect("the sweep leaves a staging dir holding a link", QFileInfo(stale).isDir());
-    expect("restaging over a dir holding a link is refused",
-           !dsd_qt::backup::stage_restore(b.parsed, b.archive, stale, &error) && error == "Io");
-    expect("the outside file is still untouched", read_file(outside.filePath("keep.txt")) == "keep\n");
-    QFile::remove(pending("files/imports/outside"));
-    QFile::remove(stale + "/files/outside");
+    expect("the sweep removes a staging dir holding links", !QFileInfo::exists(other));
+    expect("a staging dir holding links",
+           dsd_qt::backup::stage_restore(b.parsed, b.archive, other, &error) && add_links(other + "/files", outside));
+    expect("restaging over a staging dir holding links",
+           dsd_qt::backup::stage_restore(b.parsed, b.archive, other, &error)
+               && !QFileInfo::exists(other + "/files/to-dir"));
+    remove_tree(other);
+    untouched("staging");
+
+    // A journal left by an earlier start that holds links, or is a link or a file itself, is rebuilt.
+    for (const QString& shape : {QStringLiteral("holding links"), QStringLiteral("a link"), QStringLiteral("a file")}) {
+        prepare(b, old);
+        Faults crash;
+        crash.crashStep = "journal.files";
+        crash.crashCall = 2;
+        apply(&crash);
+        const QString journal = pending("journal");
+        bool made = false;
+        if (shape == QLatin1String("holding links")) {
+            made = add_links(journal + "/files", outside);
+        } else {
+            remove_tree(journal);
+            made = shape == QLatin1String("a link") ? QFile::link(outside + "/dir", journal)
+                                                    : write_file(journal, "not a directory\n");
+        }
+        const QString what = QStringLiteral("a journal ") + shape;
+        expect(what + ": made", made);
+        expect(what + ": rebuilt and applied", apply().outcome == ApplyOutcome::Applied);
+        expect(what + ": ends like a clean run", same_tree(capture(), reference, true));
+        untouched(what);
+    }
+}
+
+/** A journal left over that cannot be removed fails the restore with that reason, not as a storage shortage. */
+void
+test_journal_leftover(const Backup& b, const Old& old) {
+    prepare(b, old);
+    Faults crash;
+    crash.crashStep = "journal.files";
+    crash.crashCall = 2;
+    apply(&crash);
+    const QString locked = pending("journal/files");
+    QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+    QFile probe(locked + "/probe");
+    if (probe.open(QIODevice::WriteOnly)) {
+        DSD_FPRINTF(stderr, "note: directory permissions are not enforced here; leftover-journal case skipped\n");
+    } else {
+        const ApplyResult result = apply();
+        expect("a journal that cannot be removed fails the restore",
+               result.outcome == ApplyOutcome::Failed
+                   && result.reason
+                          == "Files left by an earlier restore attempt couldn't be removed. Nothing was changed");
+        expect("the failed restore is no longer committed", !dsd_qt::backup::pending_committed());
+        QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        expect("the leftover goes once it can",
+               apply().outcome == ApplyOutcome::None && !dsd_qt::backup::pending_exists());
+    }
+    QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
 }
 
 /** An empty avoid list is written in the native format and loads in the native store. */
@@ -1614,7 +1755,8 @@ main(int argc, char** argv) {
         test_old_file_where_a_directory_goes(backup, old);
         test_journal_problems(backup, old);
         test_unreadable_journal(backup, old);
-        test_links_inside_removed_trees(backup, old);
+        test_links_inside_removed_trees(backup, old, reference);
+        test_journal_leftover(backup, old);
         test_empty_avoids(host, backup, old);
     }
     dsd_app_signal_search_store_close();

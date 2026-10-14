@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <iterator>
 #include <qflags.h>
 #include <stdint.h>
 #include <utility>
@@ -79,6 +80,12 @@ unreadable_reason() {
 }
 
 QString
+leftover_reason() {
+    return QCoreApplication::translate(
+        "BackupApply", "Files left by an earlier restore attempt couldn't be removed. Nothing was changed");
+}
+
+QString
 space_reason() {
     return QCoreApplication::translate("BackupApply",
                                        "Not enough free storage to restore. Free up storage and reopen DSD-neo");
@@ -87,7 +94,7 @@ space_reason() {
 enum class Status { Ok, Failed, Crashed };
 
 /** Why a journal could not be built: storage (the next start tries again) or a cause retrying cannot fix. */
-enum class JournalProblem { Space, Names, Unreadable };
+enum class JournalProblem { Space, Names, Unreadable, Leftover };
 
 /** One file the staging or the journal lists: a path relative to its directory, its size and sha256. */
 struct Listed {
@@ -327,12 +334,11 @@ class LiveScan {
         }
         addTree(QStringLiteral("decryption"));
         addTree(QStringLiteral("scan_lists"));
-        // A file a live recording names is a recording, whatever else names it. (A store file is always replaced.)
+        // A file a live recording names is a recording, whatever else names it and however the recording spells it.
+        // (A store file is always replaced, so it stays.)
         const QStringList stores = six_store_files();
-        for (const QString& recording : m_recordings) {
-            if (!stores.contains(recording)) {
-                m_files.remove(recording);
-            }
+        for (auto it = m_files.begin(); it != m_files.end();) {
+            it = !stores.contains(*it) && isRecording(*it) ? m_files.erase(it) : std::next(it);
         }
         QStringList files(m_files.cbegin(), m_files.cend());
         std::sort(files.begin(), files.end());
@@ -385,6 +391,28 @@ class LiveScan {
         return array;
     }
 
+    /** Note a live Recording value, by the file it names (when it exists) and by its folded, cleaned spelling. */
+    void
+    noteRecording(const QString& value) {
+        if (!QDir::isAbsolutePath(value)) {
+            return;
+        }
+        const QString cleaned = QDir::cleanPath(value);
+        m_recordingKeys.insert(path_key(cleaned));
+        const QString canonical = QFileInfo(cleaned).canonicalFilePath();
+        if (!canonical.isEmpty()) {
+            m_recordingFiles.insert(canonical);
+        }
+    }
+
+    /** Whether a live Recording value names the old file at @p relative, in any spelling. */
+    bool
+    isRecording(const QString& relative) const {
+        const QString path = m_root.at(relative);
+        return m_recordingKeys.contains(path_key(path))
+               || m_recordingFiles.contains(QFileInfo(path).canonicalFilePath());
+    }
+
     /** Claim an owned bundle root's tree: the first claim of its folded name, a real directory reached through no
         symlink. */
     void
@@ -405,14 +433,16 @@ class LiveScan {
     scanStore(const QString& store) {
         const QString imports = m_root.at(QStringLiteral("imports/"));
         for (const TypedPathValue& value : typed_path_values(store, rows(store))) {
+            if (value.field.kind == PathKind::Recording) {
+                noteRecording(value.value);
+                continue;
+            }
             if (!value.value.startsWith(m_root.path() + QLatin1Char('/'))
                 || QDir::cleanPath(value.value) != value.value) {
                 continue;
             }
             const QString relative = value.value.mid(m_root.path().size() + 1);
-            if (value.field.kind == PathKind::Recording) {
-                m_recordings.insert(relative);
-            } else if (value.value.startsWith(imports)) {
+            if (value.value.startsWith(imports)) {
                 if (value.field.kind == PathKind::File) {
                     add(relative);
                 } else {
@@ -427,7 +457,8 @@ class LiveScan {
     Journal* m_journal;
     QSet<QString> m_files;
     QSet<QString> m_claimed;
-    QSet<QString> m_recordings; // below the root, named by a live Recording value
+    QSet<QString> m_recordingKeys;  // folded, cleaned spellings of live Recording values
+    QSet<QString> m_recordingFiles; // canonical paths of the files live Recording values name
     qint64 m_bytes = 0;
 };
 
@@ -731,11 +762,23 @@ class Applier {
         return result(ApplyOutcome::Stuck, stuck_reason());
     }
 
-    /** Failed before any change: the stage goes, so nothing runs it again. */
+    /**
+     * Failed before any change: the same ending as after a rollback. The marker goes first, so a stage whose files
+     * cannot all be removed is never run again (the next start removes what is left); a marker that cannot be removed
+     * repeats this outcome at the next start, which changes nothing either.
+     */
     ApplyResult
     failUnchanged(const QString& reason) {
-        writeResult(ApplyOutcome::Failed, reason);
-        m_root.removeTree(m_pending);
+        const Status written = step("result.write", [&] {
+            writeResult(ApplyOutcome::Failed, reason); // best effort
+            return true;
+        });
+        if (written == Status::Crashed
+            || step("marker.remove", [this] { return m_root.removeFile(pendingPath(QLatin1String(kCommittedName))); })
+                   == Status::Crashed
+            || step("cleanup", [this] { return m_root.removeTree(m_pending); }) == Status::Crashed) {
+            return interrupted();
+        }
         return result(ApplyOutcome::Failed, reason);
     }
 
@@ -773,10 +816,11 @@ class Applier {
             return interrupted();
         }
         if (built == Status::Failed) {
-            m_root.removeTree(m_journalDir); // nothing live was changed
+            m_root.removeEntry(m_journalDir); // nothing live was changed
             switch (m_problem) {
                 case JournalProblem::Names: return failUnchanged(names_reason());
                 case JournalProblem::Unreadable: return failUnchanged(unreadable_reason());
+                case JournalProblem::Leftover: return failUnchanged(leftover_reason());
                 case JournalProblem::Space: break;
             }
             return result(ApplyOutcome::Deferred, space_reason()); // the next start tries again
@@ -813,7 +857,11 @@ class Applier {
             return Status::Failed;
         }
         Status status = step("journal.begin", [this] {
-            return m_root.removeTree(m_journalDir) && m_root.makeDirs(m_journalDir + QStringLiteral("/files"));
+            if (!m_root.removeEntry(m_journalDir)) {
+                m_problem = JournalProblem::Leftover; // an earlier attempt's journal: not a matter of space
+                return false;
+            }
+            return m_root.makeDirs(m_journalDir + QStringLiteral("/files"));
         });
         for (qsizetype i = 0; status == Status::Ok && i < m_journal.files.size(); ++i) {
             Listed& file = m_journal.files[i];

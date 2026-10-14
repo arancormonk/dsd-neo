@@ -239,8 +239,11 @@ promote_staging(const QString& stagingDir) {
     }
     const QString pending = pending_dir(root);
     if (entry_exists(pending)) {
-        // A committed restore belongs to the user's confirmation; only an unconfirmed one is replaced.
-        if (entry_exists(pending + QLatin1Char('/') + QLatin1String(kCommittedName)) || !root.removeTree(pending)) {
+        // A committed restore belongs to the user's confirmation; only an unconfirmed one (or anything else of that
+        // name, which the apply ignores) is replaced.
+        const bool committed =
+            is_real_dir(pending) && entry_exists(pending + QLatin1Char('/') + QLatin1String(kCommittedName));
+        if (committed || !root.removeEntry(pending)) {
             return false;
         }
     }
@@ -274,11 +277,11 @@ discard_pending() {
     }
     // A committed restore with a complete journal is an apply in progress: only it may finish or undo it. Without the
     // marker the apply is past its commit point and the journal is only left over.
-    if (entry_exists(pending + QLatin1Char('/') + QLatin1String(kCommittedName))
+    if (is_real_dir(pending) && entry_exists(pending + QLatin1Char('/') + QLatin1String(kCommittedName))
         && entry_exists(pending + QStringLiteral("/journal/COMPLETE"))) {
         return false;
     }
-    return root.removeTree(pending);
+    return root.removeEntry(pending);
 }
 
 bool
