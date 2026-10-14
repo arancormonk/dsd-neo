@@ -418,6 +418,22 @@ calls_publish_followed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     calls_publish_call(opts, state, ts, c, &chan);
 }
 
+/* Canonical slot 0 shows @p c as its record is: when @p c is the call slot 0 carries, a change of its parties, service,
+ * traffic channel or protection is observed as it is made, not at the next PDU or speech that happens to publish the
+ * call. The followed call is observed on its followed channel once its tune settled (calls_publish_followed()), any
+ * other carried call on its record's channel. */
+static void
+calls_sync_published(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c) {
+    if (!c || !calls_carrying(state, ts, TETRA_PUB_CALL, c->call_id)) {
+        return;
+    }
+    if (followed_id(state) == (int)c->call_id) {
+        calls_publish_followed(opts, state, ts);
+    } else {
+        calls_publish_call(opts, state, ts, c, &c->alloc);
+    }
+}
+
 /* An over-the-air end of call @p call_id (D-TX CEASED, D-RELEASE, D-DISCONNECT) ends its canonical call. */
 static void
 calls_end_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
@@ -917,8 +933,8 @@ tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu) 
 }
 
 void
-tetra_calls_on_addressed(dsd_state* state, const tetra_mac_address* addr, uint8_t enc_mode, int alloc_present,
-                         uint8_t tn) {
+tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_address* addr, uint8_t enc_mode,
+                         int alloc_present, uint8_t tn) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !addr) {
         return;
@@ -933,14 +949,20 @@ tetra_calls_on_addressed(dsd_state* state, const tetra_mac_address* addr, uint8_
         return;
     }
     call_bind_address(ts, c, addr);
-    if (enc_mode != TETRA_ENC_MODE_NONE && alloc_present) {
-        /* The allocation is ciphertext (EN 300 392-7 clause 6.7.1.2): the channel stays as known, the call's traffic is
-         * now air encrypted. */
-        c->air_enc = (uint8_t)(enc_mode & 3u);
-    }
-    if (followed_id(state) == (int)c->call_id) {
+    const int followed = followed_id(state) == (int)c->call_id;
+    if (followed) {
         tetra_confirm_note_followed_call(state);
     }
+    if (enc_mode == TETRA_ENC_MODE_NONE || !alloc_present || c->air_enc == (enc_mode & 3u)) {
+        return;
+    }
+    /* The allocation is ciphertext (EN 300 392-7 clause 6.7.1.2): the channel stays as known, the call's traffic is now
+     * air encrypted, which its canonical call shows from here, and which may leave a followed call undecryptable. */
+    c->air_enc = (uint8_t)(enc_mode & 3u);
+    if (followed) {
+        call_check_followed_crypto(opts, state, c);
+    }
+    calls_sync_published(opts, state, ts, c);
 }
 
 /* ---- Direct mode (EN 300 396-3) ------------------------------------------------------------------------------- */

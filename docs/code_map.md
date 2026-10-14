@@ -4641,9 +4641,10 @@ single "current call".
   decoders above). A full table evicts the least recently heard record that is not followed;
   `tetra_calls_tick()` (from `tetra_sm_tick()`) drops records nothing named for `TETRA_CALL_IDLE_S` (30 s) on the decode
   clock. The followed record never ages: the state machine's hangtime ends it. A record's air encryption is the
-  encryption mode of the MAC-RESOURCE that allocated its channel, learnt from the clear address when that allocation is
-  ciphertext (EN 300 392-7 clause 6.5.1); end-to-end encryption never overwrites it, and the cell-wide `enc_mode` is for
-  display only.
+  encryption mode of the MAC-RESOURCE that allocated its channel, learnt from the clear address (a USSI, SMI or event
+  label: an encrypted PDU's SSI is an encrypted short identity, clause 4.2.6) when that allocation is ciphertext (EN 300
+  392-7 clause 6.5.1), which the call's canonical call takes at once (`calls_sync_published()`); end-to-end encryption
+  never overwrites it, and the cell-wide `enc_mode` is for display only.
 - Allocations. The MAC hands the MLE a `tetra_mac_sdu` with the PDU's address and channel allocation. A call PDU in
   the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
   (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label a PDU
@@ -4657,7 +4658,8 @@ single "current call".
   held talkgroup takes over a call of another one, else `dsd_tg_policy_should_preempt()` (route: carrier, any
   timeslot). `tetra_sm_on_grant()` then follows it and the route is noted active. A header-only allocation, one to an
   unknown party or one of a call without a called party never tunes. A followed call that turns undecryptable (its
-  encryption control or its speech) while encrypted calls are not followed is locked out and left. CRC-passed
+  encryption control, an encrypted allocation to its party, or its speech) while encrypted calls are not followed is
+  locked out and left. CRC-passed
   signalling of the followed call, or an addressed MAC-RESOURCE to its party, proves it on the carrier
   (`tetra_confirm_note_followed_call()`).
 - Speech. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on

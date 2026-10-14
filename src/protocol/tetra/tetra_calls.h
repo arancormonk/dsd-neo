@@ -137,11 +137,13 @@ void tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* 
  * @brief An addressed MAC-RESOURCE (EN 300 392-2 table 21.55) was decoded on timeslot @p tn (0 when the TDMA clock does
  * not place it) with encryption mode @p enc_mode: an event label (address types 101, 111) or usage marker (110)
  * assignment to a party of a call binds it to that call, an encrypted allocation to a call's party sets the call's air
- * encryption, a PDU to the followed call's party proves that call on the carrier (tetra_confirm), and the timeslot's
- * signalling encryption is noted for speech no call record names.
+ * encryption, which the call's canonical call takes at once when it is published and which, while encrypted calls are
+ * not followed, locks out and leaves a followed call it makes undecryptable; a PDU to the followed call's party proves
+ * that call on the carrier (tetra_confirm), and the timeslot's signalling encryption is noted for speech no call record
+ * names. @p opts may be NULL.
  */
-void tetra_calls_on_addressed(dsd_state* state, const tetra_mac_address* addr, uint8_t enc_mode, int alloc_present,
-                              uint8_t tn);
+void tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_address* addr, uint8_t enc_mode,
+                              int alloc_present, uint8_t tn);
 
 /**
  * @brief The number of the carrier being received, for TB5 (EN 300 392-7 clause 6.3.2.2): the followed call's

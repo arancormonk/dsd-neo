@@ -701,6 +701,57 @@ test_followed_call_publishes(void) {
     session_close(&s);
 }
 
+/* A MAC-RESOURCE whose encryption mode is not 00 addressed to a party of the followed call, with a channel allocation,
+ * makes the call's traffic air encrypted (EN 300 392-7 clause 6.7.1.2), the allocation being ciphertext: its canonical
+ * call reads encrypted at once, in the same epoch, not at the next PDU that would publish it again. Addressed by the
+ * called group's USSI, which encrypted signalling leaves clear (clause 4.2.6), or by the event label assigned to it.
+ * While encrypted calls are not followed, the followed call this leaves undecryptable (no cipher key loaded) is locked
+ * out and left at once, as a grant for it would have been refused. */
+static void
+test_header_encryption_reaches_the_call(void) {
+    for (int by_label = 0; by_label < 2; by_label++) {
+        session s = session_open();
+        session_history(&s);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        dsd_call_snapshot call = canonical(s.state);
+        assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_CLEAR && call.audio_permitted);
+        const uint64_t epoch = call.epoch;
+        tetra_call_t* const c = tetra_calls_find(s.state, 0x0A);
+        c->event_label = 0x55u;
+        c->flags = (uint8_t)(c->flags | TETRA_CALL_F_EVENT_LABEL);
+
+        ttb_block b = {0};
+        const uint32_t type = by_label ? TETRA_MAC_ADDR_EVENT_LABEL : TETRA_MAC_ADDR_USSI;
+        const int start = ttb_resource(&b, TETRA_ENC_MODE_ODD, type, 0x100u);
+        if (by_label) {
+            ttb_put(&b, 0x55u, 10); /* event label */
+        }
+        ttb_resource_flags(&b, 1);
+        ttb_put(&b, 0x2A5u, 30); /* the channel allocation and TM-SDU, ciphertext */
+        ttb_close_resource(&b, start);
+        ttb_finish(&b, TTB_SCH_F_BITS, -1);
+        tetra_mac_parse_schd(b.bits, b.n, 1, s.opts, s.state);
+        assert(c->air_enc == TETRA_ENC_MODE_ODD && followed_call(s.state) == 0x0A);
+        call = canonical(s.state);
+        assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch
+               && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && !call.audio_permitted);
+        session_close(&s);
+    }
+    session s = session_open();
+    s.opts->trunk_tune_enc_calls = 0;
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && g_returns == 0);
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, TETRA_ENC_MODE_EVEN, TETRA_MAC_ADDR_USSI, 0x100u);
+    ttb_resource_flags(&b, 1);
+    ttb_put(&b, 0x2A5u, 30);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s.opts, s.state);
+    assert(dsd_enc_lockout_entry_active(s.state, 0x100u, 1) && g_returns == 1 && followed_call(s.state) == -1);
+    session_close(&s);
+}
+
 /* D-SETUP (table 14.15) of call @p call_id with @p basic_service from @p caller to @p called, the MAC address, with
  * transmission grant @p grant (table 14.80) and an allocation of @p timeslots on @p carrier. The calling party is of
  * type identifier 1, its SSI, when @p extension is 0, else of type 2, its SSI and @p extension, the MCC and MNC of its
@@ -1607,6 +1658,7 @@ main(void) {
     test_aged_rollback_call_retired();
     test_table_eviction_and_ageing();
     test_followed_call_publishes();
+    test_header_encryption_reaches_the_call();
     test_private_call_names_both_parties();
     test_encrypted_and_unfollowed_calls();
     test_sds_and_status_notices();

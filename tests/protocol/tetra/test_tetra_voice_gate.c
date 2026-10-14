@@ -336,11 +336,11 @@ test_heard_call(void) {
     DSD_MEMSET(&addr, 0, sizeof(addr));
     addr.type = TETRA_MAC_ADDR_SSI;
     addr.ssi = 0x777777u;
-    tetra_calls_on_addressed(f.state, &addr, TETRA_ENC_MODE_ODD, 0, 2);
+    tetra_calls_on_addressed(f.opts, f.state, &addr, TETRA_ENC_MODE_ODD, 0, 2);
     expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.air_enc == TETRA_ENC_MODE_ODD,
            "heard call: the carrier's evidence when the timeslot had none");
-    tetra_calls_on_addressed(f.state, &addr, TETRA_ENC_MODE_NONE, 0, 3);
-    tetra_calls_on_addressed(f.state, &addr, TETRA_ENC_MODE_EVEN, 0, 1);
+    tetra_calls_on_addressed(f.opts, f.state, &addr, TETRA_ENC_MODE_NONE, 0, 3);
+    tetra_calls_on_addressed(f.opts, f.state, &addr, TETRA_ENC_MODE_EVEN, 0, 1);
     expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.air_enc == TETRA_ENC_MODE_NONE,
            "heard call: the timeslot's own evidence first");
     tetra_calls_forget_carrier(f.state);

@@ -316,7 +316,7 @@ static void
 publish_address(const mac_block* b, const tetra_mac_address* addr, uint8_t enc_mode, int alloc_present) {
     tetra_state_t* const ts = b->ts;
     ts->enc_mode = enc_mode;
-    tetra_calls_on_addressed(b->state, addr, enc_mode, alloc_present, (uint8_t)fragment_timeslot(ts));
+    tetra_calls_on_addressed(b->opts, b->state, addr, enc_mode, alloc_present, (uint8_t)fragment_timeslot(ts));
 }
 
 static void
