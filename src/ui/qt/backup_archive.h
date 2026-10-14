@@ -167,7 +167,9 @@ struct BuildResult {
 };
 
 /**
- * Build the archive for @p snapshot. Worker-safe: it reads only the filesystem.
+ * Build the archive for @p snapshot. Worker-safe: it reads only the filesystem. Each carried file is read twice
+ * (sized and hashed, then copied straight into the archive and checked again), so the archive is the only large
+ * buffer it holds.
  *
  * The snapshot's stores are copied and sanitized: a typed File value that is not a regular, non-symlink file whose
  * real path lies inside the root's imports/ (and is not a staging leftover) is cleared and listed in notIncluded; a

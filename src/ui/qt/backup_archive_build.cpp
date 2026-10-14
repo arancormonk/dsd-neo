@@ -15,7 +15,6 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
-#include <QFileDevice>
 #include <QFileInfo>
 #include <QIODevice>
 #include <QJsonArray>
@@ -70,7 +69,7 @@ class Builder {
         }
         dropUncoveredFiles();
         QByteArray archive;
-        if (!readFiles() || !assemble(&archive) || !selfCheck(archive)) {
+        if (!measureFiles() || !assemble(&archive) || !selfCheck(archive)) {
             wipe(archive);
             return m_result;
         }
@@ -334,20 +333,17 @@ class Builder {
     }
 
     void
-    listAbsoluteReferences(const QString& relative, const QByteArray& bytes) {
-        const auto map = m_channelMaps.constFind(relative);
-        if (map == m_channelMaps.constEnd()) {
-            return;
-        }
+    listAbsoluteReferences(const QString& label, const QByteArray& bytes) {
         for (const QString& reference : csv_companion_references(QString::fromUtf8(bytes))) {
             if (QDir::isAbsolutePath(reference)) {
-                notInclude(QObject::tr("%1: %2 (named by full path)").arg(*map, QFileInfo(reference).fileName()));
+                notInclude(QObject::tr("%1: %2 (named by full path)").arg(label, QFileInfo(reference).fileName()));
             }
         }
     }
 
+    /** Pass one: size and hash a carried file without keeping it (a channel map is kept until it is scanned). */
     bool
-    readFile(const QString& relative, qint64* total) {
+    measureFile(const QString& relative) {
         QFile file(m_sources.value(relative));
         if (!file.open(QIODevice::ReadOnly)) {
             return fail(BackupError::Io, QStringLiteral("read: %1").arg(relative));
@@ -355,37 +351,42 @@ class Builder {
         if (file.size() > kMaxFileBytes) {
             return fail(BackupError::TooLarge, QStringLiteral("files: %1 is larger than the file cap").arg(relative));
         }
-        QByteArray bytes = file.read(kMaxFileBytes + 1);
-        if (file.error() != QFileDevice::NoError || bytes.size() > kMaxFileBytes) {
-            wipe(bytes);
-            return fail(file.error() != QFileDevice::NoError ? BackupError::Io : BackupError::TooLarge,
-                        QStringLiteral("read: %1").arg(relative));
+        const auto map = m_channelMaps.constFind(relative);
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        QByteArray chunk(1 << 16, Qt::Uninitialized), text;
+        qint64 size = 0, n = 0;
+        while (size <= kMaxFileBytes && (n = file.read(chunk.data(), chunk.size())) > 0) {
+            size += n;
+            hash.addData(QByteArrayView(chunk.constData(), n));
+            if (map != m_channelMaps.constEnd()) {
+                text.append(chunk.constData(), n);
+            }
         }
-        *total += bytes.size();
-        listAbsoluteReferences(relative, bytes);
-        m_fileTable.append(
-            QJsonObject{{QStringLiteral("path"), relative},
-                        {QStringLiteral("size"), static_cast<qint64>(bytes.size())},
-                        {QStringLiteral("sha256"),
-                         QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}});
-        m_bytes.append(bytes);
+        wipe(chunk);
+        if (map != m_channelMaps.constEnd() && n == 0 && size <= kMaxFileBytes) {
+            listAbsoluteReferences(*map, text);
+        }
+        wipe(text);
+        if (n < 0 || size > kMaxFileBytes) {
+            return fail(n < 0 ? BackupError::Io : BackupError::TooLarge, QStringLiteral("read: %1").arg(relative));
+        }
+        m_fileBytes += size;
+        m_fileTable.append(QJsonObject{{QStringLiteral("path"), relative},
+                                       {QStringLiteral("size"), size},
+                                       {QStringLiteral("sha256"), QString::fromLatin1(hash.result().toHex())}});
         return true;
     }
 
     bool
-    readFiles() {
+    measureFiles() {
         if (m_carried.paths().size() > kMaxFiles) {
             return fail(BackupError::TooLarge, QStringLiteral("files: more files than the file count cap"));
         }
-        qint64 total = 0;
         for (const QString& relative : m_carried.paths()) {
-            if (cancelled()) {
+            if (cancelled() || !measureFile(relative)) {
                 return false;
             }
-            if (!readFile(relative, &total)) {
-                return false;
-            }
-            if (total > kMaxArchiveBytes) {
+            if (m_fileBytes > kMaxArchiveBytes) {
                 return fail(BackupError::TooLarge, QStringLiteral("files: larger than the archive cap"));
             }
         }
@@ -418,17 +419,41 @@ class Builder {
                            {QStringLiteral("notIncluded"), QJsonArray::fromStringList(m_notIncluded)}};
     }
 
+    /** Pass two: read a carried file straight into its place in @p archive, checking it did not change since pass one. */
+    bool
+    fillFile(const QJsonObject& entry, QByteArray* archive) {
+        const QString relative = entry.value(QLatin1String("path")).toString();
+        const qint64 size = entry.value(QLatin1String("size")).toInteger();
+        QFile file(m_sources.value(relative));
+        if (!file.open(QIODevice::ReadOnly)) {
+            return fail(BackupError::Io, QStringLiteral("read: %1").arg(relative));
+        }
+        const qint64 at = archive->size();
+        archive->resize(static_cast<qsizetype>(at + size)); // within the reserved capacity: no copy
+        char* out = archive->data() + at;
+        qint64 done = 0, n = 0;
+        while (done < size && (n = file.read(out + done, size - done)) > 0) {
+            done += n;
+        }
+        char extra = 0;
+        const QByteArray hash =
+            QCryptographicHash::hash(QByteArrayView(out, static_cast<qsizetype>(done)), QCryptographicHash::Sha256);
+        if (done != size || file.read(&extra, 1) != 0
+            || QString::fromLatin1(hash.toHex()) != entry.value(QLatin1String("sha256")).toString()) {
+            return fail(BackupError::Io, QStringLiteral("read: %1 changed during the export").arg(relative));
+        }
+        return true;
+    }
+
     bool
     assemble(QByteArray* archive) {
         QByteArray json = QJsonDocument(manifest()).toJson(QJsonDocument::Compact);
-        qint64 total = kHeaderBytes + json.size();
-        for (const QByteArray& bytes : m_bytes) {
-            total += bytes.size();
-        }
+        const qint64 total = kHeaderBytes + json.size() + m_fileBytes;
         if (json.size() > kMaxManifestBytes || total > kMaxArchiveBytes) {
             wipe(json);
             return fail(BackupError::TooLarge, QStringLiteral("archive: larger than the archive cap"));
         }
+        // One buffer, sized once: the files are read straight into it, never held alongside it.
         archive->reserve(static_cast<qsizetype>(total));
         archive->append(kMagic, 4);
         char length[4];
@@ -436,9 +461,10 @@ class Builder {
         archive->append(length, 4);
         archive->append(json);
         wipe(json);
-        for (QByteArray& bytes : m_bytes) {
-            archive->append(bytes);
-            wipe(bytes);
+        for (const auto& entry : m_fileTable) {
+            if (cancelled() || !fillFile(entry.toObject(), archive)) {
+                return false;
+            }
         }
         return true;
     }
@@ -469,7 +495,7 @@ class Builder {
     QMap<QString, QString> m_channelMaps;  // archive path of a carried, unbundled channel map → its row's label
     QStringList m_notIncluded;
     QJsonArray m_fileTable;
-    QList<QByteArray> m_bytes;
+    qint64 m_fileBytes = 0;
     BuildResult m_result;
 };
 
