@@ -858,9 +858,12 @@ calls_leave_taken_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, c
  * (timeslot assigned 0000, table 21.87), which names no channel the decoder can place, takes none and ends the followed
  * call; any other may be followed when @p may_follow, and when it took the followed channel and @p c is not followed,
  * the state machine lets go of the channel (calls_leave_taken_channel()). The follow it reads is the one the burst's
- * entry settled (tetra_burst_enter() in tetra.c), the same for every PDU of the burst. "Go to the MCCH" sent to the
- * party of the call a tune in flight would put back, should it fail, leaves that call off its channel: the state
- * machine retires it there (tetra_sm_retire_call()), so a failure puts the channel back without the call. */
+ * entry settled (tetra_burst_enter() in tetra.c), the same for every PDU of the burst. "Go to the MCCH" leaves the
+ * call off its channel: the followed call is released, and the call is retired either way (tetra_sm_retire_call(),
+ * as calls_leave_taken_channel() does): where the release cannot be made (a tune in flight for the rest of the burst,
+ * even the call's own, or the return refused or deferred) the state machine follows the channel without the call,
+ * and a tune in flight that fails puts the channel back without it; after a release that was made it changes
+ * nothing, and a return in flight that fails comes back without the call too. */
 static void
 call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_chan_alloc* alloc,
             int may_follow) {
@@ -868,13 +871,10 @@ call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c
     if (alloc->timeslots == 0u) {
         DSD_MEMSET(&c->alloc, 0, sizeof c->alloc);
         c->alloc_m = 0.0;
-        if (followed_id(state) == (int)id) {
-            if (opts) {
-                tetra_sm_on_release(opts, state, id);
-            }
-        } else {
-            tetra_sm_retire_call(state, id);
+        if (followed_id(state) == (int)id && opts) {
+            tetra_sm_on_release(opts, state, id);
         }
+        tetra_sm_retire_call(state, id);
         return;
     }
     c->alloc = *alloc;

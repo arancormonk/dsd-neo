@@ -2611,6 +2611,46 @@ test_go_to_mcch_after_a_failed_tune(void) {
     session_close(&s);
 }
 
+/* "Go to the MCCH" to the followed call itself while its own reallocation's tune is in flight: following A on TN2 of
+ * carrier 120, a burst reallocates A to carrier 130, the backend fails that tune during the burst, and the burst then
+ * sends A's party to the control channel. The release cannot be made then (the tune is in flight for the rest of the
+ * burst), so A is retired, in what the failure puts back too: the next tick returns the receiver to carrier 120
+ * without A, whose allocation went, so nothing of the channel A left plays as A's or keeps the follow, which the grant
+ * timeout then gives up. */
+static void
+test_go_to_mcch_during_own_tune(void) {
+    session s = session_open();
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    assert(followed_call(s.state) == 0x0A && tetra_confirm_followed_call_proven(s.state) && g_tunes == 1);
+    assert(burst_begin(&s));
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 130);
+    const uint64_t request = dsd_trunk_tuning_pending_request();
+    assert(g_tunes == 2 && request != 0U && followed_call(s.state) == 0x0A);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    ttb_block b = {0};
+    put_resource(&b, 0x100u, 0U, 0u, 0, 100);
+    send_built_block(&s, &b);
+    burst_end(&s);
+    assert(tetra_calls_peek(s.state, 0x0A)->alloc.timeslots == 0u && g_returns == 0);
+    tetra_sm_tick(s.opts, s.state);
+    tetra_sm_grant g;
+    assert(tetra_sm_followed(s.state, &g) && g.carrier == 120 && dsd_trunk_tuning_pending_request() == 0U);
+    assert(tetra_calls_followed(s.state) == NULL && !tetra_confirm_followed_call_proven(s.state));
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->tdma_valid = 1;
+    ts->tn = 2;
+    tetra_speech sp;
+    assert(!tetra_voice_gate(s.opts, s.state, &sp));
+    speech(&s, 2);
+    assert(ts->sm.t_voice_m <= 0.0);
+    at_seconds(1000.0 + TETRA_SM_GRANT_TIMEOUT_S + 0.1);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 1);
+    session_close(&s);
+}
+
 /* And so is a followed call's encryption: with encrypted calls not followed, one block grants call C of a preempting
  * priority, whose tune the backend reports in flight and fails at once, and then carries a D-SETUP of the followed
  * call A that makes it end-to-end encrypted and reallocates it to carrier 140. The rest of the burst sees C's tune in
@@ -3153,6 +3193,7 @@ main(void) {
     test_rollback_channel_taken();
     test_allocation_judged_after_a_failed_tune();
     test_go_to_mcch_after_a_failed_tune();
+    test_go_to_mcch_during_own_tune();
     test_encrypted_reallocation_after_a_failed_tune();
     test_tune_answered_mid_burst();
     test_burst_sees_one_state_machine();

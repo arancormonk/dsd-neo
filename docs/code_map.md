@@ -4704,9 +4704,11 @@ single "current call".
   the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
   (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label assigned to
   one of them on this channel; usage markers are noted) and never tunes. A "go to the MCCH" allocation (timeslots 0000,
-  table 21.87) of the followed call releases it, and one to the call a tune in flight would put back retires it there
-  (`tetra_sm_retire_call()`), so a failure puts the channel back without the call that left it; an allocation to a
-  party no record holds goes nowhere.
+  table 21.87) of the followed call releases it, and retires the call either way (`tetra_sm_retire_call()`, the
+  rollback of a tune or return in flight included): where the release cannot be made (a tune in flight for the rest
+  of the burst, the call's own reallocation's included, or the return refused or deferred) the state machine follows
+  the channel without the call, and a request in flight that fails puts the channel back without it, so nothing of
+  the channel the call left plays as its; an allocation to a party no record holds goes nowhere.
 - Channel exclusivity. The downlink of a traffic channel carries one call's traffic at a time, under one downlink
   traffic usage marker, and an MS whose call's downlink carries another's leaves the channel (EN 300 392-2 clauses
   23.5.5, 23.5.6.1.1 c)). So an allocation takes its channel from every other record, in the one place a record's
@@ -4912,7 +4914,7 @@ allowed, taken from the followed call, from a followed record moved elsewhere, f
 from the heard call, by every kind of allocation, and none taken by another timeslot, carrier or direction or by "go
 to the control channel"; an allocation, a "go to the MCCH" and an encrypted reallocation judged after a failed tune
 of the same block; a tune answered during a burst, which no PDU of it takes and which no label of the carrier left
-resolves to the call on the new one; one burst, one state machine),
+resolves to the call on the new one; one burst, one state machine; "go to the MCCH" during the call's own tune),
 `TETRA_DMO` (the
 DM-SDU's FCS and digest, an unread
 DMAC-SYNC's protection, a DMAC-DATA that ends the transmission, the security class a transmission keeps),
