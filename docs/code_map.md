@@ -4588,6 +4588,14 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   state machine, the one its entry left, and the answer is taken at the next burst. A request a PDU of the burst
   itself starts is in flight for the rest of the burst too, and no grant is handed over while one is
   (`call_consider()`). Outside a burst (the engine, the frontends' commands) an entry point settles as the tick does.
+  A known limit: a completion the backend publishes after the engine's last tick (`dsd_engine_tetra_trunk_tick_locked()`
+  in `live_scanner_process_synced_frames()`) but before the next burst's capture lets that burst, captured on the new
+  carrier, through the engine's tune-generation gate (`frame_tune_generation`) while the state machine has not yet
+  taken the completion. The burst's entry settle then commits the tune, moves the carrier evidence epoch, and drops the
+  burst as one captured on the carrier left: the first burst on the new carrier is lost, one burst, and decoding
+  resumes with the next. This is accepted because every burst is decoded against the state machine of one carrier, and
+  telling a burst captured on the new carrier from one captured on the old needs the tune generation the burst was
+  captured under, which the burst decoder is not given.
   `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own cleanup (a decode-mode change
   drops the extension) let go of a request they find (`tetra_sm_disown_pending()`), and hand its terminal cleanup to
   the runtime trunk-tuning layer, which outlives the TETRA state (`dsd_trunk_tuning_request_disown()`): one the
