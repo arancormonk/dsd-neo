@@ -11,6 +11,7 @@
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -798,15 +799,49 @@ test_short_data(void) {
     CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) > 0 && strstr(desc, "status=0x1234") != NULL
               && strstr(desc, "ext=*123") != NULL && strstr(desc, "fcs=0xa1b2c3d4") != NULL,
           "DM-SDS summary");
+    CHECK(h.fcs_state == TETRA_DMO_FCS_FAILED && strstr(desc, " FCS failed") != NULL,
+          "an FCS that does not match the DM-SDU elements fails (EN 300 396-3 clause 9.7.10)");
     tetra_dmo_apply_sync(st, &s, &h);
     CHECK(tetra_st(st)->dmo_dcc_valid == 1 && tetra_st(st)->dmo_dcc_seed == 0xE4000193u,
           "unfragmented DM-SDS UDATA keeps the colour code");
 
-    /* A reserved SDTI has no known length: the rest of the DM-SDU cannot be read. */
+    /* The FCS of annex B over the DM-SDU elements, from the additional addressing flag up to the FCS. */
+    const int sdu_start = 10 + 4 + 2 + 2 + 5 + 8;
+    const int fcs_at = w.at - 32;
+    const uint32_t good_fcs = tetra_llc_fcs32(w.bits + sdu_start, fcs_at - sdu_start);
+    w.at = fcs_at;
+    put(&w, 32, good_fcs);
+    CHECK(tetra_dmo_parse_sync_h(w.bits, 2, &h) == 1 && h.fcs_state == TETRA_DMO_FCS_PASSED
+              && h.e[TETRA_DMO_E_FCS] == good_fcs && h.sds_value == 0x1234u,
+          "the FCS over the DM-SDU elements passes");
+    CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) > 0 && strstr(desc, "FCS failed") == NULL,
+          "a passing FCS is not reported failed");
+    w.bits[fcs_at - 1] ^= 1u; /* a bit error in the status the channel CRC let through */
+    CHECK(tetra_dmo_parse_sync_h(w.bits, 2, &h) == 1 && h.fcs_state == TETRA_DMO_FCS_FAILED,
+          "a bit error in the data fails the FCS");
+    w.bits[fcs_at - 1] ^= 1u;
+    w.bits[sdu_start - 1] = 0; /* FCS flag clear: no FCS, the 32 bits after the status are not read */
+    CHECK(tetra_dmo_parse_sync_h(w.bits, 2, &h) == 1 && h.fcs_state == TETRA_DMO_FCS_NONE && h.e[TETRA_DMO_E_FCS] == 0
+              && h.sdu_state == TETRA_DMO_SDU_CLEAR,
+          "no FCS flag, no FCS");
+    w.bits[sdu_start - 1] = 1;
+
+    /* Under DM-2-A the DM-SDU, and its FCS, are encrypted: the SCH/H read as if clear settles to neither. */
+    s.enc_state = TETRA_DMO_AIE_DM2A;
+    tetra_dmo_parse_sync_h(w.bits, 2, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
+    CHECK(h.sdu_state == TETRA_DMO_SDU_ENCRYPTED && h.fcs_state == TETRA_DMO_FCS_ENCRYPTED && h.sds_value == 0,
+          "an encrypted DM-SDU's FCS is not read");
+    s.enc_state = TETRA_DMO_AIE_DM1;
+    tetra_st(st)->dmo_dcc_valid = 1;
+    tetra_st(st)->dmo_dcc_seed = 0xE4000193u;
+
+    /* A reserved SDTI has no known length: the rest of the DM-SDU cannot be read, its FCS included. */
     w.bits[w.at - 32 - 16 - 1] = 1; /* SDTI 0100 becomes 0101 */
     tetra_dmo_parse_sync_h(w.bits, 2, &h);
     CHECK(h.e[TETRA_DMO_E_SDTI] == 5 && h.sdu_state == TETRA_DMO_SDU_TRUNCATED && h.e[TETRA_DMO_E_FCS] == 0,
           "reserved SDTI stops the DM-SDU");
+    CHECK(h.fcs_state == TETRA_DMO_FCS_FAILED, "a DM-SDU that ends before its FCS has none to pass");
 
     /* Fragmented short data: SCH/F fragments use the colour code of the DMAC-SYNC that started them. */
     bw_reset(&w);

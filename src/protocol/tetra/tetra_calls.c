@@ -984,9 +984,13 @@ dmo_call_from(tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
 }
 
 /* Short data of the channel as a data notice (EN 300 396-3 clause 9.7); the DMAC-SYNC repeats it, so a repeat of the
- * last within 10 s is not noted again. */
+ * last within 10 s is not noted again. Short data whose FCS fails is discarded (clause 6.3.2) before either: the channel
+ * CRC does not stand in for it, and a corrupted copy kept as the last one noted would hide the good one. */
 static void
 dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
+    if (h->fcs_state == TETRA_DMO_FCS_FAILED) {
+        return;
+    }
     tetra_dmo_call_t* const d = &ts->calls.dmo;
     const double now_m = dsd_decode_now_mono_s();
     const uint32_t dst = h->dst_encrypted ? 0u : h->dst;

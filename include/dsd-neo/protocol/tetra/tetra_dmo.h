@@ -162,6 +162,13 @@ typedef enum {
 #define TETRA_DMO_SDU_TRUNCATED 1 /* the block ended inside them; the elements before the cut are valid */
 #define TETRA_DMO_SDU_ENCRYPTED 2 /* air interface encrypted: none were read */
 
+/* What the FCS a set FCS flag appends to the DM-SDU (EN 300 396-3 clauses 6.3.4 and 9.7.10) says of the DM-SDU elements
+ * before it. A message whose FCS fails is discarded (clause 6.3.2): nothing of its DM-SDU is published. */
+#define TETRA_DMO_FCS_NONE      0 /* no FCS: the FCS flag is clear, or the message has none */
+#define TETRA_DMO_FCS_PASSED    1
+#define TETRA_DMO_FCS_FAILED 2 /* it does not match them, or the block ended before it, so it cannot vouch for them */
+#define TETRA_DMO_FCS_ENCRYPTED 3 /* the DM-SDU, and the FCS in it, are air interface encrypted: neither was read */
+
 /* A DM-MAC PDU with a full header: DMAC-SYNC SCH/H (EN 300 396-3 table 22) or DMAC-DATA (table 23). */
 typedef struct {
     uint16_t relay_addr; /* DMAC-SYNC: repeater or gateway address, valid when has_relay */
@@ -180,6 +187,7 @@ typedef struct {
     uint8_t msg_type;
     uint8_t md_ok;      /* 1 when the message dependent elements were read whole */
     uint8_t sdu_state;  /* TETRA_DMO_SDU_* */
+    uint8_t fcs_state;  /* TETRA_DMO_FCS_* */
     uint8_t external_n; /* DM-SDU: digits in external, at most 24 */
     uint32_t dst;       /* 24 bits */
     uint32_t src;       /* 24 bits */

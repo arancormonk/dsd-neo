@@ -16,6 +16,7 @@
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -419,6 +420,25 @@ dmo_run(tetra_bit_reader* r, const dmo_step* steps, size_t n, tetra_dmo_sync_h_t
     return 1;
 }
 
+/* Test the DM-SDU elements read from bit `sdu_start` of `r` against the FCS a set FCS flag puts after them (EN 300
+ * 396-3 clauses 6.3.4 and 9.7.10): the FCS of annex B, the same 32-bit CRC as the LLC FCS of EN 300 392-2 annex C. The
+ * FCS ends the DM-SDU of every PDU that has one (tables 45 to 47), so it is the last 32 bits read. A DM-SDU the block
+ * ended in has no FCS to test against. */
+static void
+dmo_check_fcs(const tetra_bit_reader* r, int sdu_start, tetra_dmo_sync_h_t* h) {
+    if (!h->e[TETRA_DMO_E_FCS_FLAG]) {
+        h->fcs_state = TETRA_DMO_FCS_NONE;
+        return;
+    }
+    const int fcs_at = r->pos - 32;
+    if (h->sdu_state != TETRA_DMO_SDU_CLEAR || fcs_at < sdu_start) {
+        h->fcs_state = TETRA_DMO_FCS_FAILED;
+        return;
+    }
+    const uint32_t expected = tetra_llc_fcs32(r->bits + sdu_start, fcs_at - sdu_start);
+    h->fcs_state = (uint8_t)(expected == h->e[TETRA_DMO_E_FCS] ? TETRA_DMO_FCS_PASSED : TETRA_DMO_FCS_FAILED);
+}
+
 /* The elements after the message type of a PDU read under air interface encryption state `enc`. */
 static void
 dmo_parse_elems(tetra_bit_reader* r, uint8_t enc, tetra_dmo_sync_h_t* h) {
@@ -438,9 +458,14 @@ dmo_parse_elems(tetra_bit_reader* r, uint8_t enc, tetra_dmo_sync_h_t* h) {
     }
     if (enc != TETRA_DMO_AIE_DM1) {
         h->sdu_state = TETRA_DMO_SDU_ENCRYPTED;
-    } else if (!dmo_run(r, lay->sdu, lay->n_sdu, h)) {
+        h->fcs_state = (uint8_t)(h->e[TETRA_DMO_E_FCS_FLAG] ? TETRA_DMO_FCS_ENCRYPTED : TETRA_DMO_FCS_NONE);
+        return;
+    }
+    const int sdu_start = r->pos;
+    if (!dmo_run(r, lay->sdu, lay->n_sdu, h)) {
         h->sdu_state = TETRA_DMO_SDU_TRUNCATED;
     }
+    dmo_check_fcs(r, sdu_start, h);
 }
 
 /* Addresses and message type (EN 300 396-3 tables 22 and 23), then the elements. The MNI is always present for direct
@@ -481,6 +506,9 @@ dmo_hide_sdu(tetra_dmo_sync_h_t* h) {
     h->external_n = 0;
     h->sds_value = 0;
     h->sdu_state = (lay != NULL && lay->n_sdu > 0u && h->md_ok) ? TETRA_DMO_SDU_ENCRYPTED : TETRA_DMO_SDU_CLEAR;
+    h->fcs_state =
+        (uint8_t)((h->sdu_state == TETRA_DMO_SDU_ENCRYPTED && h->e[TETRA_DMO_E_FCS_FLAG]) ? TETRA_DMO_FCS_ENCRYPTED
+                                                                                          : TETRA_DMO_FCS_NONE);
 }
 
 /* Clear what security class `enc` encrypts in a DMAC-SYNC SCH/H that was read as if it were clear (EN 300 396-3
@@ -503,6 +531,7 @@ dmo_settle(tetra_dmo_sync_h_t* h, uint8_t enc) {
         h->has_addrs = 0;
         h->md_ok = 0;
         h->sdu_state = TETRA_DMO_SDU_ENCRYPTED;
+        h->fcs_state = TETRA_DMO_FCS_NONE; /* the FCS flag is encrypted too */
     }
 }
 
@@ -1157,6 +1186,8 @@ tetra_dmo_describe_elems(const tetra_dmo_sync_h_t* h, char* buf, int buf_len) {
         dmo_put(&t, " truncated");
     } else if (h->sdu_state == TETRA_DMO_SDU_ENCRYPTED) {
         dmo_put(&t, " DM-SDU encrypted");
+    } else if (h->fcs_state == TETRA_DMO_FCS_FAILED) {
+        dmo_put(&t, " FCS failed");
     }
     return (int)t.len;
 }

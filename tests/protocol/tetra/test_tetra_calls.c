@@ -1085,6 +1085,91 @@ test_direct_mode_short_data(void) {
     session_close(&s);
 }
 
+/* @p nbits bits of @p value into @p bits, MSB first. */
+static void
+bits_of_value(uint8_t* bits, uint64_t value, int nbits) {
+    for (int i = 0; i < nbits; i++) {
+        bits[i] = (uint8_t)((value >> (nbits - 1 - i)) & 1u);
+    }
+}
+
+/* A DMAC-DATA in an SCH/F (EN 300 396-3 table 23), clear (DM-1), carrying a DM-SDS UDATA (table 45) from @p src to
+ * @p dst without additional addressing: short data type @p sdti and its user data, @p data_bits of @p data (for SDTI 3
+ * after a length indicator of @p length_bits, which may claim more than follows), then with @p fcs an FCS over the
+ * DM-SDU elements before it (clause 9.7.10, annex B). Bit @p flip of the DM-SDU, counted from its first element, is
+ * flipped once the FCS is in (-1: none), as a bit error the channel CRC let through. Decoded as a DNB's SCH/F reaches
+ * the decoder (tetra_dmo_log_dnb_pdu()). */
+static void
+send_dmo_sds(session* s, uint32_t src, uint32_t dst, uint32_t sdti, const uint8_t* data, int data_bits, int length_bits,
+             int fcs, int flip) {
+    ttb_block b = {0};
+    ttb_put(&b, 0, 2);        /* MAC PDU type 00: DMAC-DATA */
+    ttb_put(&b, 0, 4);        /* fill bit, second half slot stolen, fragmentation and null PDU flags */
+    ttb_put(&b, 0, 2);        /* frame countdown */
+    ttb_put(&b, 0, 2);        /* air interface encryption state DM-1 */
+    ttb_put(&b, 0, 2);        /* destination address type: true SSI */
+    ttb_put(&b, dst, 24);     /* destination address */
+    ttb_put(&b, 0, 2);        /* source address type: true SSI */
+    ttb_put(&b, src, 24);     /* source address */
+    ttb_put(&b, 0x41901, 24); /* mobile network identity */
+    ttb_put(&b, TETRA_DMO_MSG_SDS_UDATA, 5);
+    ttb_put(&b, 0, 4); /* SDS time remaining */
+    ttb_put(&b, 0, 1); /* SDS transaction type: stand-alone */
+    ttb_put(&b, 0, 2); /* priority level */
+    ttb_put(&b, fcs ? 1u : 0u, 1);
+    const int sdu = b.n;
+    ttb_put(&b, 0, 1); /* additional addressing flag */
+    ttb_put(&b, sdti, 4);
+    if (sdti == 3u) {
+        ttb_put(&b, (uint32_t)length_bits, 11);
+    }
+    ttb_put_bits(&b, data, data_bits);
+    if (fcs) {
+        ttb_put(&b, tetra_llc_fcs32(b.bits + sdu, b.n - sdu), 32);
+    }
+    if (flip >= 0) {
+        assert(sdu + flip < b.n);
+        b.bits[sdu + flip] ^= 1u;
+    }
+    (void)tetra_dmo_log_dnb_pdu(b.bits, TTB_SCH_F_BITS, "SCH/F", s->opts, s->state);
+}
+
+/* Direct mode short data whose FCS fails is discarded (EN 300 396-3 clauses 6.3.2 and 6.3.4): no notice, and nothing of
+ * it kept as the last short data noted, so a good copy of the same message is still noted. The FCS is checked over the
+ * DM-SDU elements, whether the bit error is in the FCS or in the data it protects, and a DM-SDU the block ends in before
+ * its FCS has none to pass. Short data without an FCS is noted as before. */
+static void
+test_direct_mode_short_data_fcs(void) {
+    enum { STATUS_FCS_AT = 1 + 4 + 16 };
+
+    session s = session_open();
+    session_history(&s);
+    const Event_History_I* const history = &s.state->event_history_s[0];
+    uint8_t data[128];
+    bits_of_value(data, 0x1234u, 16);
+    uint64_t pushes = history->push_seq;
+    send_dmo_sds(&s, 200u, 300u, 4u, data, 16, 0, 1, STATUS_FCS_AT + 15);
+    assert(history->push_seq == pushes);
+    send_dmo_sds(&s, 200u, 300u, 4u, data, 16, 0, 1, 1 + 4 + 3);
+    assert(history->push_seq == pushes);
+    send_dmo_sds(&s, 200u, 300u, 4u, data, 16, 0, 1, -1);
+    assert(history->push_seq > pushes);
+    assert(strstr(history->Event_History_Items[1].event_string, "DMO SDS SRC: 200; TGT: 300;") != NULL);
+    pushes = history->push_seq;
+    send_dmo_sds(&s, 200u, 300u, 4u, data, 16, 0, 1, -1);
+    assert(history->push_seq == pushes);
+
+    /* No FCS: noted. A long message the block ends in before its FCS: discarded. */
+    bits_of_value(data, 0x4321u, 16);
+    send_dmo_sds(&s, 201u, 300u, 4u, data, 16, 0, 0, -1);
+    assert(history->push_seq > pushes);
+    pushes = history->push_seq;
+    DSD_MEMSET(data, 1, sizeof data);
+    send_dmo_sds(&s, 202u, 300u, 3u, data, 100, 160, 1, -1);
+    assert(history->push_seq == pushes);
+    session_close(&s);
+}
+
 /* One good full-slot speech burst on timeslot @p tn, through the voice path (no codec is loaded). */
 static void
 speech(session* s, uint8_t tn) {
@@ -1258,6 +1343,7 @@ main(void) {
     test_sds_and_status_notices();
     test_direct_mode_calls();
     test_direct_mode_short_data();
+    test_direct_mode_short_data_fcs();
     test_events_read_the_new_carrier();
     test_cell_change_forgets_sysinfo();
     test_network_change_drops_calls();

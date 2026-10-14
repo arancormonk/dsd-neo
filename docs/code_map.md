@@ -4674,12 +4674,16 @@ single "current call".
   family.
 - Notices. D-SDS-DATA becomes a data notice with its text as the message, D-STATUS and MM D-ENABLE / D-DISABLE
   control notices, once the carrier is proven (`tetra_calls_notice()`); direct mode short data becomes a data notice,
-  a repeat within 10 s not again. Cell reselection is not noted: it concerns one MS at a time.
+  a repeat within 10 s not again. Its DM-SDU's FCS, when the FCS flag says it has one, is tested first (EN 300 396-3
+  clauses 6.3.4 and 9.7.10, annex B: the CRC of `tetra_llc_fcs32()` over the DM-SDU elements before it; the parser
+  records the verdict, `tetra_dmo_sync_h_t::fcs_state`): short data whose FCS fails, or whose DM-SDU the block ends in
+  before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does
+  not stand in for it. Cell reselection is not noted: it concerns one MS at a time.
 
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, identifier reuse, a released,
 renamed-over or aged followed identifier, ageing,
-canonical calls and notices in trunked and direct mode, an individual call's two parties, speech publication, the
-receiving carrier), `TETRA_VOICE_GATE`,
+canonical calls and notices in trunked and direct mode, direct mode short data whose FCS fails, an individual call's
+two parties, speech publication, the receiving carrier), `TETRA_DMO` (the DM-SDU's FCS), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, an
 individual call's speech judged by both parties, the
 derived key stream, the speech starting over at call boundaries, another call identifier and another network, and
