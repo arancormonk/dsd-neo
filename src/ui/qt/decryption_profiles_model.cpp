@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QIODevice>
 #include <QJsonValue>
+#include <QMetaType>
 #include <Qt>
 #include <QtGlobal>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
@@ -100,6 +101,18 @@ withoutMaterial(const QVariantList& entries) {
     }
     return result;
 }
+
+bool
+hasCompiled(const QVariantMap& row) {
+    return row.value("compiled").typeId() == QMetaType::QVariantMap;
+}
+
+void
+removeFiles(const QStringList& paths) {
+    for (const auto& path : paths) {
+        QFile::remove(path);
+    }
+}
 } // namespace
 
 DecryptionProfilesModel::DecryptionProfilesModel(QObject* parent) : QAbstractListModel(parent) {
@@ -112,6 +125,45 @@ DecryptionProfilesModel::DecryptionProfilesModel(QObject* parent) : QAbstractLis
             ids.insert(id);
         }
     }
+    compileLoadedRows();
+}
+
+/* Issue #580: a restored store carries profile definitions only, never a compiled form, so a row stored without one is
+   compiled here through the editor's own validation into fresh files under decryption/<uid>/. The compiled rows are
+   persisted together; if that fails their files are removed and they stay uncompiled, to be tried again on the next
+   load. A row that cannot compile stays as stored, and configuration() asks for it to be saved again. A row that
+   already has a compiled form is kept as stored. */
+void
+DecryptionProfilesModel::compileLoadedRows() {
+    auto next = m_rows;
+    QStringList staged;
+    bool compiled = false;
+    for (auto& row : next) {
+        if (hasCompiled(row)) {
+            continue;
+        }
+        auto candidate = row;
+        if (candidate.value("runtimeRef").toString().isEmpty()) {
+            candidate.insert("runtimeRef", uuid());
+        }
+        QString error;
+        QStringList files;
+        if (compile(candidate, &error, &files)) {
+            row = std::move(candidate);
+            staged << files;
+            compiled = true;
+        } else {
+            removeFiles(files);
+        }
+    }
+    if (!compiled) {
+        return;
+    }
+    if (!persist(next)) {
+        removeFiles(staged);
+        return;
+    }
+    m_rows = std::move(next);
 }
 
 int
@@ -835,6 +887,12 @@ DecryptionProfilesModel::configuration(const QString& uid, QString* error) const
     if (row < 0) {
         if (error) {
             *error = tr("The decryption profile is missing. Select another profile.");
+        }
+        return {};
+    }
+    if (!hasCompiled(m_rows[row])) {
+        if (error) {
+            *error = tr("Open this decryption profile and save it again.");
         }
         return {};
     }

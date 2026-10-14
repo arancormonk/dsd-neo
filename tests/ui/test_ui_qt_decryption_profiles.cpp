@@ -3,9 +3,12 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QIODevice>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QList>
 #include <QMap>
 #include <QStandardPaths>
@@ -129,6 +132,175 @@ test_analog_scan_entries_hold_no_profile(dsd_qt::DecryptionProfilesModel& profil
     check(scans.remove(list));
 }
 
+static QByteArray
+storeBytes() {
+    QFile file(dsd_qt::json_store_path("decryption_profiles.json"));
+    check(file.open(QIODevice::ReadOnly));
+    return file.readAll();
+}
+
+static void
+seedStore(const QJsonArray& rows) {
+    check(dsd_qt::json_store_save_array(QStringLiteral("decryption_profiles.json"), rows));
+}
+
+static QStringList
+compiledFiles() {
+    QStringList files;
+    QDirIterator it(dsd_qt::json_store_path("decryption"), QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        files << it.next();
+    }
+    files.sort();
+    return files;
+}
+
+static QJsonObject
+storedRow(const QString& uid) {
+    for (const auto& value : QJsonDocument::fromJson(storeBytes()).array()) {
+        if (value.toObject().value("uid").toString() == uid) {
+            return value.toObject();
+        }
+    }
+    return {};
+}
+
+static const char kResaveError[] = "Open this decryption profile and save it again.";
+
+/* Rows saveProfile() wrote carry their compiled form: loading them compiles nothing and writes nothing. */
+static void
+test_compiled_rows_load_unchanged() {
+    const QByteArray before = storeBytes();
+    const QStringList files = compiledFiles();
+    check(!before.isEmpty() && !files.isEmpty());
+    dsd_qt::DecryptionProfilesModel loaded;
+    check(loaded.count() > 0);
+    check(storeBytes() == before && compiledFiles() == files);
+}
+
+/* Issue #580: a restored store carries profile definitions only. Loading compiles each through the editor's own
+   validation into fresh files under decryption/<uid>/ and persists the compiled form with a runtime reference; a row
+   that cannot compile (its key CSV did not come back) stays uncompiled and refuses to start. A row that already has a
+   compiled form is kept as stored. */
+static void
+test_definitions_compile_at_load(const QString& secret) {
+    const QJsonObject compiledRow = storedRow("profile-a");
+    check(compiledRow.value("compiled").isObject());
+    const QJsonObject key{
+        {"uid", "key-r"}, {"label", "Dispatch"}, {"keyId", 17}, {"kind", "aes128"}, {"material", secret}};
+    seedStore({compiledRow,
+               QJsonObject{{"uid", "restored-direct"},
+                           {"label", "Restored direct"},
+                           {"protocol", "p25"},
+                           {"mode", "direct"},
+                           {"force", 0},
+                           {"directType", "hex"},
+                           {"directValue", secret}},
+               QJsonObject{{"uid", "restored-managed"},
+                           {"label", "Restored managed"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"force", 0},
+                           {"keySource", "managed"},
+                           {"keys", QJsonArray{key}}},
+               QJsonObject{{"uid", "restored-vendor"},
+                           {"label", "Restored vendor"},
+                           {"protocol", "dmr"},
+                           {"mode", "vendor"},
+                           {"vendorType", "tytEp"},
+                           {"vendorValue", secret},
+                           {"runtimeRef", "kept-reference"},
+                           {"compiled", QJsonArray{"-5", "forged"}}},
+               QJsonObject{{"uid", "restored-csv"},
+                           {"label", "Restored CSV"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"keySource", "csv"},
+                           {"legacyCsvPath", dsd_qt::json_store_path("imports/absent.csv")}}});
+    dsd_qt::DecryptionProfilesModel loaded;
+    check(loaded.count() == 5);
+    check(storedRow("profile-a") == compiledRow);
+
+    QString error;
+    const auto direct = loaded.configuration("restored-direct", &error);
+    check(error.isEmpty() && direct.value("encKeyType").toString() == "hex"
+          && direct.value("encKeyValue").toString() == secret);
+    const QJsonObject directRow = storedRow("restored-direct");
+    const QString directRef = directRow.value("runtimeRef").toString();
+    check(!directRef.isEmpty() && directRow.value("compiled").isObject());
+    check(directRow.value("compiled").toObject().value("decryptionProfileRef").toString() == directRef);
+    check(direct.value("decryptionProfileRef").toString() == directRef);
+
+    const auto managed = loaded.configuration("restored-managed", &error);
+    check(error.isEmpty());
+    const QString hexPath = managed.value("keysHexCsvPath").toString();
+    check(hexPath.startsWith(dsd_qt::json_store_path("decryption/restored-managed/")) && QFile::exists(hexPath));
+    dsd_key_set keys = {};
+    check(dsd_key_set_load_csv(&keys, hexPath.toUtf8().constData(), nullptr, 0) == 0);
+    check(keys.count == 2 && keys.entries[0].index == 17 && keys.entries[1].index == 17 + 0x101);
+    dsd_key_set_free(&keys);
+    const QJsonObject managedRow = storedRow("restored-managed");
+    const QString managedRef = managedRow.value("runtimeRef").toString();
+    check(!managedRef.isEmpty() && managedRef != directRef);
+    check(managedRow.value("compiled").toObject().value("keysHexCsvPath").toString() == hexPath);
+    check(loaded.forRuntimeReference(managedRef).value("uid").toString() == "restored-managed");
+
+    const auto vendor = loaded.configuration("restored-vendor", &error);
+    check(error.isEmpty());
+    check(vendor.value("decryptionVendorArgs").toStringList()
+          == (QStringList{"-5", secret.left(16) + ' ' + secret.mid(16)}));
+    check(storedRow("restored-vendor").value("runtimeRef").toString() == "kept-reference");
+    check(vendor.value("decryptionProfileRef").toString() == "kept-reference");
+
+    check(loaded.configuration("restored-csv", &error).isEmpty() && error == kResaveError);
+    const QJsonObject csvRow = storedRow("restored-csv");
+    check(!csvRow.contains("compiled") && !csvRow.contains("runtimeRef"));
+    check(loaded.get("restored-csv").value("label").toString() == "Restored CSV");
+
+    /* The persisted compiled forms are used as stored the next time: nothing is compiled again. */
+    const QByteArray persisted = storeBytes();
+    const QStringList files = compiledFiles();
+    dsd_qt::DecryptionProfilesModel reopened;
+    check(storeBytes() == persisted && compiledFiles() == files);
+    check(reopened.configuration("restored-managed", &error) == managed && error.isEmpty());
+    check(reopened.configuration("restored-csv", &error).isEmpty() && error == kResaveError);
+}
+
+/* A compiled form that cannot be persisted is not used: its files are removed and the row stays uncompiled in memory
+   and on disk, so the next load tries again. The data directory is made read only so the store cannot be replaced
+   while the profile directory stays writable. */
+static void
+test_load_compile_persist_failure(const QString& secret) {
+    const QJsonObject key{
+        {"uid", "key-p"}, {"label", "Dispatch"}, {"keyId", 18}, {"kind", "aes128"}, {"material", secret}};
+    seedStore({QJsonObject{{"uid", "unsaved-managed"},
+                           {"label", "Unsaved managed"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"keySource", "managed"},
+                           {"keys", QJsonArray{key}}}});
+    const QByteArray before = storeBytes();
+    check(QDir().mkpath(dsd_qt::json_store_path("decryption")));
+    const QStringList files = compiledFiles();
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const auto permissions = QFile::permissions(directory);
+    check(QFile::setPermissions(directory, QFile::ReadOwner | QFile::ExeOwner));
+    QString error;
+    {
+        dsd_qt::DecryptionProfilesModel loaded;
+        check(QFile::setPermissions(directory, permissions));
+        check(loaded.count() == 1);
+        check(loaded.configuration("unsaved-managed", &error).isEmpty() && error == kResaveError);
+    }
+    check(storeBytes() == before && compiledFiles() == files);
+    dsd_qt::DecryptionProfilesModel retried;
+    check(retried.configuration("unsaved-managed", &error)
+              .value("keysHexCsvPath")
+              .toString()
+              .startsWith(dsd_qt::json_store_path("decryption/unsaved-managed/")));
+    check(error.isEmpty());
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -217,5 +389,8 @@ main(int argc, char** argv) {
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "dmr"}, {"decodeFlag", "-fs"}}));
     test_replay_migration(systems);
     test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
+    test_compiled_rows_load_unchanged();
+    test_definitions_compile_at_load(secret);
+    test_load_compile_persist_failure(secret);
     return 0;
 }

@@ -56,6 +56,7 @@ class DecryptionProfilesModel : public QAbstractListModel, public DecryptionProf
     static QVariantMap metadata(QVariantMap row);
     bool persist(const QList<QVariantMap>& rows) const;
     bool compile(QVariantMap& row, QString* error, QStringList* staged) const;
+    void compileLoadedRows();
     QList<QVariantMap> m_rows;
     SavedSystemsModel* m_systems = nullptr;
     ScanListsModel* m_scans = nullptr;
