@@ -376,10 +376,14 @@ tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     tetra_nb_signalling(opts, state, ctx, decoded, SCHF_TYPE1, "SCH/F");
 }
 
-/* Both kinds of normal burst, once block 2 is read. NTS1 needs block 1 from the frame sync. */
+/* Both kinds of normal burst, once block 2 is read. NTS1 needs block 1 from the frame sync. A burst the state machine's
+   settle at its entry left on the carrier the receiver moved from is not decoded (tetra_burst_enter()). */
 static void
 tetra_nb_decode(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* b2_dibits,
                 const float* b2_soft) {
+    if (!tetra_confirm_burst_current(state)) {
+        return;
+    }
     if (state->tetra_sync.nts2) {
         tetra_nb_nts2(opts, state, ctx, b2_dibits, b2_soft);
     } else if (state->tetra_sync.b1_valid) {
@@ -498,6 +502,11 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA UL");
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "CB SCH/HU");
     if (!tetra_uplink_net_known(ts) || !state->tetra_sync.b1_valid) {
+        return;
+    }
+    if (!tetra_confirm_burst_current(state)) {
+        /* The settle at the burst's entry moved the receiver (tetra_burst_enter()): the burst is not decoded. */
+        tetra_block1_consumed(state);
         return;
     }
     const int inverted = DSD_SYNC_IS_INVERTED(state->lastsynctype) ? 1 : 0;
@@ -813,6 +822,15 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
         state->tetra_sync.sb1_soft_valid = 0;
         return;
     }
+    if (!tetra_confirm_burst_current(state)) {
+        /* The settle at the burst's entry moved the receiver (tetra_burst_enter()): the burst's symbols go by
+         * undecoded, its BSCH block with them. */
+        skipDibit(opts, state, SB_BB_DIBITS);
+        skipDibit(opts, state, SB_BKN2_DIBITS);
+        state->tetra_sync.sb1_valid = 0;
+        state->tetra_sync.sb1_soft_valid = 0;
+        return;
+    }
     state->tetra_sync.sb1_valid = 0;
     if (tetra_sb_try_dmo(opts, state)) {
         return;
@@ -983,13 +1001,26 @@ tetra_frame_leave(dsd_state* state, const tetra_state_t* ts) {
     return tetra_confirm_burst_end(state);
 }
 
+/* Open the burst the frame sync just locked, captured on the carrier of the current evidence epoch. The trunking state
+ * machine settles a tune or return the backend answered first, once per burst and before any of its blocks
+ * (tetra_sm_settle()); nothing inside the burst settles (tetra_trunk_sm.c), so every block of it is decoded against the
+ * one state machine this left. A settle that moved the receiver (a tune or return completed) leaves the burst on the
+ * carrier it was captured on, which the receiver has left: it is dropped whole, its symbols read and none of its
+ * blocks decoded (tetra_confirm_burst_current(), tetra_nb_decode(), tetra_uplink_process_cb(), tetra_process_sb()). */
+static void
+tetra_burst_enter(dsd_opts* opts, dsd_state* state) {
+    const uint32_t captured = tetra_confirm_carrier_epoch(state);
+    (void)tetra_sm_settle(opts, state);
+    tetra_confirm_burst_begin_captured(state, captured);
+}
+
 int
 processTetraFrame(dsd_opts* opts, dsd_state* state) {
     const tetra_state_t* const ts = tetra_frame_enter(opts, state);
     if (!ts) {
         return 0;
     }
-    tetra_confirm_burst_begin(state);
+    tetra_burst_enter(opts, state);
     tetra_process_ndb(opts, state);
     return tetra_frame_leave(state, ts);
 }
@@ -1000,7 +1031,7 @@ processTetraSBFrame(dsd_opts* opts, dsd_state* state) {
     if (!ts) {
         return 0;
     }
-    tetra_confirm_burst_begin(state);
+    tetra_burst_enter(opts, state);
     tetra_process_sb(opts, state);
     return tetra_frame_leave(state, ts);
 }

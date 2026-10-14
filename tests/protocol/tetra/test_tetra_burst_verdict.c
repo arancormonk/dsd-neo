@@ -849,6 +849,97 @@ test_retune_leaves_the_rest_of_the_burst(void) {
     session_close(&s);
 }
 
+static dsd_trunk_tune_result
+tune_in_flight(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    g_tunes++;
+    g_tuned_hz = freq;
+    return DSD_TRUNK_TUNE_RESULT_PENDING;
+}
+
+/* The trunking state machine settles once per burst, at its entry and before any of its blocks (processTetraFrame(),
+ * processTetraSBFrame()), never inside it. A tune to a traffic carrier the backend answered after the burst that
+ * granted it: completed, it commits at the next burst's entry, and that burst, captured on the carrier the receiver
+ * has just left, is dropped whole, its blocks not decoded -- a normal or synchronisation burst on the downlink, and an
+ * uplink control burst; failed, it puts the control channel back, and the burst is decoded as the control channel's. */
+static void
+test_burst_entry_settles(void) {
+    for (int kind = 0; kind < 3; kind++) {
+        for (int completed = 0; completed < 2; completed++) {
+            session s = session_open();
+            s.opts->trunk_enable = 1;
+            s.opts->trunk_tune_group_calls = 1;
+            dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tune_in_flight});
+            dsd_trunk_tuning_requests_reset();
+            g_tunes = 0;
+            uint8_t bsch[BSCH_DIBITS];
+            uint8_t sysinfo[BLOCK_DIBITS];
+            dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+            dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+            uint8_t coded[2 * CB_HALF_DIBITS];
+            if (kind == 2) {
+                s.opts->tetra_uplink = 1;
+                s.opts->tetra_net_preset = 1;
+                s.opts->tetra_net_mcc = 460;
+                s.opts->tetra_net_mnc = 4242;
+                s.opts->tetra_net_colour = 17;
+                const uint8_t mac[SCH_HU_BITS] = {0};
+                encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
+                assert(control_burst(&s, coded, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+                /* The uplink carries no grant: the state machine is handed one, on a control channel a downlink
+                 * block proved, as the downlink's MAC would. */
+                s.state->trunk_cc_freq = 400000000L;
+                tetra_sm_on_cc_sync(s.opts, s.state);
+                tetra_confirm_note_signalling(s.state);
+                const tetra_sm_grant grant = {400250000L, 10, 4, 0x0BEE};
+                assert(tetra_sm_on_grant(s.opts, s.state, &grant) == 1);
+            } else {
+                assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+                assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+                ttb_block b = {0};
+                const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0x00BEEFu);
+                ttb_resource_flags(&b, 1);
+                ttb_allocation(&b, 4, 1, 50);
+                ttb_put(&b, 2, 4); /* BL-UDATA */
+                ttb_d_setup(&b, 0x0BEEu, TTB_SPEECH_GROUP);
+                ttb_close_resource(&b, start);
+                ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+                uint8_t grant[BLOCK_DIBITS];
+                encode_sch_hd(b.bits, tetra_st_existing(s.state)->lfsr_seed, grant);
+                (void)nts2_burst(&s, grant, sysinfo);
+            }
+            const uint64_t request = dsd_trunk_tuning_pending_request();
+            assert(g_tunes == 1 && request != 0U && tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
+            dsd_trunk_tuning_request_publish(request,
+                                             completed ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+            const tetra_state_t* const ts = tetra_st_existing(s.state);
+            const uint32_t sysinfos = ts->frames_sysinfo;
+            dsd_frame_verdict verdict = DSD_FRAME_VERDICT_UNPRODUCTIVE;
+            if (kind == 0) {
+                verdict = nts2_burst(&s, sysinfo, sysinfo);
+            } else if (kind == 1) {
+                verdict = sync_burst(&s, bsch, sysinfo);
+            } else {
+                verdict = control_burst(&s, coded, 0);
+            }
+            assert(dsd_trunk_tuning_pending_request() == 0U);
+            if (completed) {
+                assert(verdict == DSD_FRAME_VERDICT_UNPRODUCTIVE && ts->frames_sysinfo == sysinfos);
+                assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
+            } else {
+                assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+                assert(kind == 2 || ts->frames_sysinfo == sysinfos + (kind == 0 ? 2U : 1U));
+                assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+            }
+            dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+            session_close(&s);
+        }
+    }
+}
+
 /* An uplink normal burst (--tetra-uplink) locks two symbols after its training sequence, which the frame sync hands
  * over as the first two dibits of block 2 (dsd_tetra_sync_capture::b2_lead_count): block 2 is those and the 106 dibits
  * after them, so its SCH/HD block decodes. Read from the input alone it would start two dibits late. */
@@ -904,6 +995,7 @@ main(void) {
     test_dsb_leaves_trunked_mode();
     test_dsb_of_unread_layout();
     test_retune_leaves_the_rest_of_the_burst();
+    test_burst_entry_settles();
     test_frame_18_tries_no_speech();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;

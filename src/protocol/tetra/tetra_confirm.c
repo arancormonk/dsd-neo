@@ -51,6 +51,15 @@ tetra_confirm_burst_begin(dsd_state* state) {
     ts->confirm.burst_proven = 0;
 }
 
+void
+tetra_confirm_burst_begin_captured(dsd_state* state, uint32_t epoch) {
+    tetra_confirm_burst_begin(state);
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (ts) {
+        ts->confirm.burst_stale = (uint8_t)(ts->confirm.carrier_epoch != epoch);
+    }
+}
+
 int
 tetra_confirm_burst_end(dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);

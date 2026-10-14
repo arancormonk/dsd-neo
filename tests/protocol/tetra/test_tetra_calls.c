@@ -2522,23 +2522,38 @@ send_two_setups(session* s, const uint32_t* ssi, const uint16_t* call_id, uint32
     send_built_block(s, &b);
 }
 
-/* What an allocation takes is judged against the follow as the state machine settled it. Following call A on TN2 of
- * carrier 120, one block grants call C TN2 of carrier 130, taking the receiver from A (a preempting priority, or the
- * held group), whose tune the backend reports in flight and fails at once, and then gives that channel to call B: by
- * B's PDU the state machine is back on A, whose channel B does not take, so B is judged as any call competing with A.
- * Without the right to take over B is not tuned to, whether its tune would succeed or fail; a call of the held group
- * is, and when its tune is refused A is kept and not let go of. */
+/* A burst as the decoder takes one (processTetraFrame() in tetra.c): the state machine settles once, at its entry and
+ * before any of its blocks, and a settle that moved the receiver leaves the burst to the carrier it was captured on,
+ * so it is dropped whole. 1 when the burst is decoded. Nothing inside the burst settles. */
+static int
+burst_begin(session* s) {
+    const uint32_t captured = tetra_confirm_carrier_epoch(s->state);
+    (void)tetra_sm_settle(s->opts, s->state);
+    tetra_confirm_burst_begin_captured(s->state, captured);
+    return tetra_confirm_burst_current(s->state);
+}
+
+static void
+burst_end(session* s) {
+    (void)tetra_confirm_burst_end(s->state);
+}
+
+/* What a burst decodes is judged against the state machine its entry settled. Following call A on TN2 of carrier 120,
+ * one block grants call C TN2 of carrier 130, taking the receiver from A (a preempting priority, or the held group),
+ * whose tune the backend reports in flight and fails at once, and then gives that channel to call B. The rest of the
+ * burst still sees C's tune in flight: B takes C's channel, and the state machine takes no grant then, so B is not
+ * tuned to, whether its tune would succeed or fail and whether it may take the receiver from A. The next burst's entry
+ * puts A back, untouched, and nothing is let go of. */
 static void
 test_allocation_judged_after_a_failed_tune(void) {
     const struct {
         uint32_t hold;
         uint32_t c_ssi;
         dsd_trunk_tune_result b_tune;
-        int tunes;
     } k_cases[] = {
-        {0u, 0x300u, DSD_TRUNK_TUNE_RESULT_OK, 2},
-        {0u, 0x300u, DSD_TRUNK_TUNE_RESULT_FAILED, 2},
-        {0x200u, 0x200u, DSD_TRUNK_TUNE_RESULT_FAILED, 3},
+        {0u, 0x300u, DSD_TRUNK_TUNE_RESULT_OK},
+        {0u, 0x300u, DSD_TRUNK_TUNE_RESULT_FAILED},
+        {0x200u, 0x200u, DSD_TRUNK_TUNE_RESULT_FAILED},
     };
 
     for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
@@ -2554,10 +2569,15 @@ test_allocation_judged_after_a_failed_tune(void) {
         g_tune_result = k_cases[i].b_tune;
         const uint32_t ssi[2] = {k_cases[i].c_ssi, 0x200u};
         const uint16_t ids[2] = {0x0C, 0x0B};
+        assert(burst_begin(&s));
         send_two_setups(&s, ssi, ids, 130);
+        burst_end(&s);
         assert(tetra_calls_peek(s.state, 0x0B)->alloc.carrier == 130);
         assert(tetra_calls_peek(s.state, 0x0C)->alloc.timeslots == 0u);
-        assert(g_tunes == k_cases[i].tunes && g_returns == 0 && dsd_trunk_tuning_pending_request() == 0U);
+        assert(g_tunes == 2 && g_returns == 0 && dsd_trunk_tuning_pending_request() != 0U);
+        assert(burst_begin(&s));
+        burst_end(&s);
+        assert(g_tunes == 2 && g_returns == 0 && dsd_trunk_tuning_pending_request() == 0U);
         assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x0A);
         assert(tetra_calls_followed(s.state) == tetra_calls_peek(s.state, 0x0A));
         session_close(&s);
@@ -2566,8 +2586,8 @@ test_allocation_judged_after_a_failed_tune(void) {
 
 /* So is a "go to the MCCH" allocation (timeslots 0000, table 21.87): one block grants call C of a preempting priority,
  * whose tune the backend reports in flight and fails at once, and then sends the followed call A's party to the
- * control channel. By then the state machine is back on A, which it releases, rather than putting A back once the
- * failure is settled, on the channel A was told to leave. */
+ * control channel. A is the call that tune would put back, which has left its channel: the next burst's entry puts the
+ * channel back without a call, so nothing played there is A's, until the grant timeout or hangtime gives it up. */
 static void
 test_go_to_mcch_after_a_failed_tune(void) {
     session s = session_open();
@@ -2580,18 +2600,23 @@ test_go_to_mcch_after_a_failed_tune(void) {
     ttb_block b = {0};
     put_resource(&b, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 130);
     put_resource(&b, 0x100u, 0U, 0u, 0, 100);
+    assert(burst_begin(&s));
     send_built_block(&s, &b);
-    assert(g_tunes == 2 && g_returns == 1 && dsd_trunk_tuning_pending_request() == 0U);
-    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    burst_end(&s);
+    assert(burst_begin(&s));
+    burst_end(&s);
+    assert(g_tunes == 2 && g_returns == 0 && dsd_trunk_tuning_pending_request() == 0U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x0A);
+    assert(tetra_calls_followed(s.state) == NULL && !tetra_confirm_followed_call_proven(s.state));
     session_close(&s);
 }
 
 /* And so is a followed call's encryption: with encrypted calls not followed, one block grants call C of a preempting
  * priority, whose tune the backend reports in flight and fails at once, and then carries a D-SETUP of the followed
- * call A that makes it end-to-end encrypted and reallocates it to carrier 140. By then the state machine is back on A,
- * so A's encryption is judged as the followed call's: A is locked out and let go of, and never tuned to on carrier
- * 140, whether the return completes or is deferred (which keeps the receiver where it is, as for any followed call it
- * cannot leave, but moves it nowhere). */
+ * call A that makes it end-to-end encrypted and reallocates it to carrier 140. The rest of the burst sees C's tune in
+ * flight, so nothing tunes to A on carrier 140; the next burst's entry puts A back, and A's next PDU, its late-entry
+ * D-SETUP, judges it as the followed call: it is locked out and let go of, and still not tuned to on carrier 140
+ * whether the return completes or is deferred (which keeps the receiver where it is, but moves it nowhere). */
 static void
 test_encrypted_reallocation_after_a_failed_tune(void) {
     for (int deferred = 0; deferred < 2; deferred++) {
@@ -2607,9 +2632,17 @@ test_encrypted_reallocation_after_a_failed_tune(void) {
         ttb_block b = {0};
         put_resource(&b, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 130);
         put_resource(&b, 0x100u, 0x0A, TTB_SPEECH_GROUP | 0x10u, 4, 140); /* encryption flag (table 14.35) */
+        assert(burst_begin(&s));
         send_built_block(&s, &b);
+        burst_end(&s);
+        assert(g_tunes == 2 && tetra_calls_peek(s.state, 0x0A)->e2ee);
+        assert(burst_begin(&s));
+        assert(tetra_calls_followed(s.state) == tetra_calls_peek(s.state, 0x0A));
+        ttb_block late = {0};
+        put_resource(&late, 0x100u, 0x0A, TTB_SPEECH_GROUP | 0x10u, 4, 140);
+        send_built_block(&s, &late);
+        burst_end(&s);
         assert(g_tunes == 2 && g_returns == 1 && dsd_enc_lockout_entry_active(s.state, 0x100u, 1) == 1);
-        assert(tetra_calls_peek(s.state, 0x0A)->e2ee && dsd_trunk_tuning_pending_request() == 0U);
         tetra_sm_grant g;
         if (deferred) {
             assert(tetra_sm_followed(s.state, &g) && g.call_id == 0x0A && g.carrier == 120);
@@ -2620,77 +2653,117 @@ test_encrypted_reallocation_after_a_failed_tune(void) {
     }
 }
 
-/* Following call A (group 0x100) on TN2 of carrier 120, with event label 0x55 assigned to its party there, a grant of
- * call C of a preempting priority on carrier 130 whose tune the backend reports in flight and then fails: the failure
- * is answered but no entry point has settled it yet. */
+/* Following call B (group 0x200) on TN2 of carrier 120, event label 0x55 assigned to its party there, a preempting call
+ * C (group 0x300) granted TN2 of carrier 130, whose tune is in flight, and label 0x55 assigned to C's party there too,
+ * another label on another channel. @p request is the tune's. */
 static session
-session_with_unsettled_failure(void) {
+session_with_tune_in_flight(uint64_t* request) {
     session s = session_open();
-    policy_row(s.state, 0x100u, 10, 0);
+    policy_row(s.state, 0x200u, 10, 0);
     policy_row(s.state, 0x300u, 50, 1);
-    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
-    send_event_label(&s, 0x100u, 0x55u, 4, 120);
-    tetra_confirm_forget_followed_call(s.state); /* as a retune leaves it: nothing proved A on its carrier yet */
-    assert(followed_call(s.state) == 0x0A && !tetra_confirm_followed_call_proven(s.state));
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 4, 120);
+    send_event_label(&s, 0x200u, 0x55u, 4, 120);
+    tetra_confirm_forget_followed_call(s.state); /* as a retune leaves it: nothing proved B on its carrier yet */
+    assert(followed_call(s.state) == 0x0B && g_tunes == 1);
     at_seconds(1002.0);
     g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 130);
-    const uint64_t request = dsd_trunk_tuning_pending_request();
-    assert(request != 0U && followed_call(s.state) == 0x0C && g_tunes == 2);
-    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    *request = dsd_trunk_tuning_pending_request();
+    assert(*request != 0U && followed_call(s.state) == 0x0C && g_tunes == 2);
+    send_event_label(&s, 0x300u, 0x55u, 4, 130);
+    const tetra_call_t* const b = tetra_calls_peek(s.state, 0x0B);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0C);
+    assert((b->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && b->event_label == 0x55u && b->label_chan.carrier == 120);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x55u && c->label_chan.carrier == 130);
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     return s;
 }
 
-/* Every entry point of the call records settles an answered request before it reads the follow. An addressed
- * MAC-RESOURCE to A's party proves A on the carrier (tetra_calls_on_addressed()). */
+/* A burst on carrier 120 whose first half decodes before the backend completes the tune to C and whose second half is
+ * a MAC-RESOURCE addressed by event label 0x55: a "go to the MCCH" allocation (timeslots 0000), or, with encrypted
+ * calls not followed, an encrypted one, its allocation ciphertext. Sent on carrier 120, the label is B's there, never
+ * C's on carrier 130: the rest of the burst still sees C's tune in flight, which names no carrier being received, so
+ * the PDU is no call's, and C is neither let go of nor marked encrypted. The completion is taken at the next burst's
+ * entry, which commits the follow of C and drops that burst, captured on carrier 120, whole. */
 static void
-test_addressed_settles_first(void) {
-    session s = session_with_unsettled_failure();
-    tetra_calls_on_addressed(s.opts, s.state, &(tetra_mac_address){.type = TETRA_MAC_ADDR_SSI, .ssi = 0x100u},
-                             TETRA_ENC_MODE_NONE, 0, 2);
-    assert(followed_call(s.state) == 0x0A && tetra_confirm_followed_call_proven(s.state));
-    assert(dsd_trunk_tuning_pending_request() == 0U);
-    session_close(&s);
+test_tune_answered_mid_burst(void) {
+    for (int encrypted = 0; encrypted < 2; encrypted++) {
+        uint64_t request = 0U;
+        session s = session_with_tune_in_flight(&request);
+        s.opts->trunk_tune_enc_calls = encrypted ? 0 : 1;
+        assert(burst_begin(&s));
+        send_block(&s, 0x999u, NULL, 0, 0); /* first half: a MAC-RESOURCE to another party */
+        dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+        ttb_block b = {0};
+        const int start = ttb_resource(&b, encrypted ? TETRA_ENC_MODE_ODD : 0u, TETRA_MAC_ADDR_EVENT_LABEL, 0u);
+        ttb_put(&b, 0x55u, 10);
+        ttb_resource_flags(&b, 1u);
+        if (encrypted) {
+            ttb_put(&b, 0x2A5u, 30); /* the channel allocation and TM-SDU, ciphertext */
+        } else {
+            ttb_allocation(&b, 0, 1, 100);
+        }
+        ttb_close_resource(&b, start);
+        send_built_block(&s, &b);
+        burst_end(&s);
+        const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0C);
+        assert(g_returns == 0 && c->alloc.carrier == 130 && c->alloc.timeslots == 4);
+        assert(c->air_enc == TETRA_ENC_MODE_NONE && dsd_enc_lockout_entry_active(s.state, 0x300u, 1) == 0);
+        /* The state machine has not taken the completion: the tune is still its request in flight. */
+        assert(followed_call(s.state) == 0x0C && tetra_st(s.state)->sm.pending_request_id == request);
+        assert(!burst_begin(&s));
+        burst_end(&s);
+        tetra_sm_grant g;
+        assert(tetra_sm_followed(s.state, &g) && g.call_id == 0x0C && g.carrier == 130);
+        assert(tetra_st(s.state)->sm.pending_request_id == 0U && dsd_trunk_tuning_pending_request() == 0U);
+        assert(g_returns == 0);
+        session_close(&s);
+    }
 }
 
-/* A D-SETUP that makes A end-to-end encrypted, with no allocation, locks A out and lets go of it while encrypted calls
- * are not followed (tetra_calls_on_event()). */
+/* Every PDU of a burst sees the one state machine the burst's entry settled: an answer that lands during the burst,
+ * here the failure of C's tune, is taken at the next burst. Until then neither the call records' entry points
+ * (tetra_calls_on_addressed(), tetra_calls_on_event(), tetra_calls_on_allocation()) nor the state machine's
+ * (tetra_sm_on_release(), tetra_sm_on_grant(), tetra_sm_on_cc_sync()) settle it: C's tune stays in flight, so the
+ * state machine follows C, takes no grant and lets nothing go, and the PDU to B's party proves nothing of B; the next
+ * burst puts B back as the tune left it. */
 static void
-test_event_settles_first(void) {
-    session s = session_with_unsettled_failure();
-    s.opts->trunk_tune_enc_calls = 0;
+test_burst_sees_one_state_machine(void) {
+    uint64_t request = 0U;
+    session s = session_with_tune_in_flight(&request);
+    assert(burst_begin(&s));
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_calls_on_addressed(s.opts, s.state, &(tetra_mac_address){.type = TETRA_MAC_ADDR_SSI, .ssi = 0x200u},
+                             TETRA_ENC_MODE_NONE, 0, 2);
     tetra_call_event setup;
     DSD_MEMSET(&setup, 0, sizeof setup);
     setup.kind = TETRA_CALL_EV_SETUP;
-    setup.call_id = 0x0A;
-    setup.basic_service = TTB_SPEECH_GROUP | 0x10u;
+    setup.call_id = 0x0B;
+    setup.basic_service = TTB_SPEECH_GROUP;
     tetra_mac_sdu sdu;
     DSD_MEMSET(&sdu, 0, sizeof sdu);
     sdu.addr.type = TETRA_MAC_ADDR_SSI;
-    sdu.addr.ssi = 0x100u;
+    sdu.addr.ssi = 0x200u;
     sdu.has_addr = 1;
     tetra_calls_on_event(s.opts, s.state, &setup, &sdu);
-    assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
-    assert(dsd_enc_lockout_entry_active(s.state, 0x100u, 1) == 1);
-    session_close(&s);
-}
-
-/* A "go to the MCCH" allocation addressed by A's event label, which names A only on the carrier the follow is on,
- * releases A (tetra_calls_on_allocation()). */
-static void
-test_allocation_settles_first(void) {
-    session s = session_with_unsettled_failure();
-    tetra_mac_sdu sdu;
     DSD_MEMSET(&sdu, 0, sizeof sdu);
     sdu.addr.type = TETRA_MAC_ADDR_EVENT_LABEL;
     sdu.addr.event_label = 0x55u;
     sdu.has_addr = 1;
-    sdu.has_alloc = 1;
-    sdu.alloc.up_down = 1;
-    sdu.alloc.carrier = 100;
     tetra_calls_on_allocation(s.opts, s.state, &sdu);
-    assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    tetra_sm_on_release(s.opts, s.state, 0x0C);
+    const tetra_sm_grant grant = {CARRIER_HZ(140), 140, 4, 0x0D};
+    assert(tetra_sm_on_grant(s.opts, s.state, &grant) == 0);
+    tetra_sm_on_cc_sync(s.opts, s.state);
+    assert(followed_call(s.state) == 0x0C && dsd_trunk_tuning_pending_request() == request);
+    assert(g_tunes == 2 && g_returns == 0);
+    burst_end(&s);
+    assert(burst_begin(&s));
+    burst_end(&s);
+    /* B is back as the tune left it: the PDU addressed to its party during the burst proved nothing of it. */
+    assert(followed_call(s.state) == 0x0B && tetra_calls_followed(s.state) == tetra_calls_peek(s.state, 0x0B));
+    assert(!tetra_confirm_followed_call_proven(s.state));
+    assert(dsd_trunk_tuning_pending_request() == 0U && g_tunes == 2 && g_returns == 0);
     session_close(&s);
 }
 
@@ -3081,9 +3154,8 @@ main(void) {
     test_allocation_judged_after_a_failed_tune();
     test_go_to_mcch_after_a_failed_tune();
     test_encrypted_reallocation_after_a_failed_tune();
-    test_addressed_settles_first();
-    test_event_settles_first();
-    test_allocation_settles_first();
+    test_tune_answered_mid_burst();
+    test_burst_sees_one_state_machine();
     test_heard_channel_taken();
     test_other_channels_take_nothing();
     test_every_allocation_takes_the_channel();

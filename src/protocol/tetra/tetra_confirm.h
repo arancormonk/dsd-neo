@@ -41,6 +41,11 @@ extern "C" {
 /** Start a burst's accounting; call before decoding any of its blocks. */
 void tetra_confirm_burst_begin(dsd_state* state);
 
+/** Start the accounting of a burst captured on the carrier of evidence epoch @p epoch (tetra_confirm_carrier_epoch()):
+ * when the carrier was reset since (the trunking state machine settled a tune or return at the burst's entry), the
+ * burst is the last carrier's from its start, so tetra_confirm_burst_current() is 0 and none of it is decoded. */
+void tetra_confirm_burst_begin_captured(dsd_state* state, uint32_t epoch);
+
 /** Close the burst's accounting. @return 1 when the burst decoded a block whose CRC passed. */
 int tetra_confirm_burst_end(dsd_state* state);
 

@@ -249,6 +249,19 @@ sm_settle_pending(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     return 1;
 }
 
+/* Settle the request in flight at an entry point the decoder reaches while it decodes signalling or speech. A burst
+ * being decoded settles nothing: its entry did, once, before any of its blocks (tetra_sm_settle() from tetra.c), so
+ * every block of the burst sees one state machine, and an answer that comes during it is taken at the next burst or
+ * tick. Until then the request counts as in flight. Outside a burst (the engine, the frontends' commands) the entry
+ * point settles as the tick does. */
+static int
+sm_settle_at_entry(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    if (ts->confirm.burst_open) {
+        return ts->sm.pending_request_id == 0U;
+    }
+    return sm_settle_pending(opts, state, ts);
+}
+
 /* Return to the control channel, or stop following on its carrier. Returns 1 when the call was let go (the return
  * done or in flight), 0 when the call is kept: the backend refused or deferred the return, or trunking is off. With
  * trunking off the receiver stays where it is, as DMR's and P25's machines leave it, which do not tick then: the
@@ -413,7 +426,7 @@ tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state) {
         return;
     }
     tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !sm_settle_pending(opts, state, ts)) {
+    if (!ts || !sm_settle_at_entry(opts, state, ts)) {
         return;
     }
     if (opts->trunk_enable != 1 || state->trunk_cc_freq <= 0) {
@@ -438,7 +451,7 @@ tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, const tetra_sm_grant* grant)
     if (!ts) {
         return 0;
     }
-    if (!sm_settle_pending(opts, state, ts)) {
+    if (!sm_settle_at_entry(opts, state, ts)) {
         if (sm_narrates(ts, 3)) {
             DSD_FPRINTF(stderr, "[TETRA SM] grant ignored: a tune is in flight\n");
         }
@@ -468,7 +481,7 @@ tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id) {
         return;
     }
     tetra_state_t* const ts = tetra_st_existing(state);
-    if (!ts || !sm_settle_pending(opts, state, ts)) {
+    if (!ts || !sm_settle_at_entry(opts, state, ts)) {
         return;
     }
     if (ts->sm.state != (uint8_t)TETRA_SM_TUNED) {

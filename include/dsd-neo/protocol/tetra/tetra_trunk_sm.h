@@ -80,10 +80,11 @@ void tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state);
 int tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, const tetra_sm_grant* grant);
 
 /**
- * @brief Settle the tune or return in flight once the backend answered it, as every entry point does first: a
- * completion commits it, a failure puts back what the request staged and then completes it. For a caller that reads
- * the follow (tetra_sm_followed()) before it hands the state machine a grant or a release, so that it judges the
- * follow the state machine is in, not one a failure already undid. Never creates TETRA state.
+ * @brief Settle the tune or return in flight once the backend answered it: a completion commits it, a failure puts
+ * back what the request staged and then completes it. The decoder calls it once per burst, at the burst's entry and
+ * before any of its blocks (tetra.c), so every block of a burst is judged against one state machine: inside a burst
+ * the other entry points settle nothing, and an answer that comes during it is taken at the next burst or tick.
+ * Outside a burst they settle as the tick does. Never creates TETRA state.
  *
  * @return 1 when no request is in flight any more, 0 while the backend has not answered one.
  */

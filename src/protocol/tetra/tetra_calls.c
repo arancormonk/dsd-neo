@@ -159,20 +159,6 @@ followed_id(const dsd_state* state) {
     return tetra_sm_followed_call_id(state, &id) ? (int)id : -1;
 }
 
-/* Every entry point that acts on a decoded PDU (tetra_calls_on_addressed(), tetra_calls_on_event(),
- * tetra_calls_on_allocation()) has the state machine settle a tune or return the backend answered before anything of
- * the PDU reads the follow, its proof on the carrier or the carrier being received (tetra_sm_settle()): a failure that
- * puts the call followed before back is in effect before the PDU is judged, so no PDU acts on a staged follow already
- * undone. What the PDU itself then asks of the state machine (a release, a grant) goes through its entry points, which
- * settle in turn; a request the PDU leaves in flight takes no grant until it is answered (call_consider()). With no
- * options the next entry point that has them settles. */
-static void
-calls_settle(dsd_opts* opts, dsd_state* state) {
-    if (opts) {
-        (void)tetra_sm_settle(opts, state);
-    }
-}
-
 /* A new record for @p call_id: a free entry, else the one heard from least recently that is not followed. */
 static tetra_call_t*
 calls_new(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
@@ -737,9 +723,10 @@ call_log_skip(const tetra_state_t* ts, const tetra_call_t* c, const char* why) {
 /* Trunking: hand the state machine the channel just allocated to @p c, when the policy lets it be followed. The
  * followed call's own allocation moves it. When the allocation took the followed channel (@p takes_followed,
  * calls_take_channel()), the call followed there holds no channel for @p c to take over, so the policy alone decides.
- * Nothing is handed over while a tune or return is in flight (the PDU's entry point settled what the backend had
- * answered, calls_settle(); one this PDU started is unanswered): the state machine takes no grant then, and an answer
- * that came between would settle it onto another follow than the one the grant was judged against. */
+ * Nothing is handed over while a tune or return is in flight, answered during the burst or not (the burst's entry
+ * settled what the backend had answered before it, tetra_burst_enter() in tetra.c; one this burst started is in
+ * flight): the state machine takes no grant then, and the follow the grant was judged against is the one the whole
+ * burst sees. */
 static void
 call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c, int takes_followed) {
     if (!opts || opts->trunk_enable != 1 || !alloc_followable(&c->alloc)) {
@@ -870,9 +857,10 @@ calls_leave_taken_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, c
 /* @p alloc is @p c's traffic channel now, and no other call's (calls_take_channel()). A "go to the MCCH" allocation
  * (timeslot assigned 0000, table 21.87), which names no channel the decoder can place, takes none and ends the followed
  * call; any other may be followed when @p may_follow, and when it took the followed channel and @p c is not followed,
- * the state machine lets go of the channel (calls_leave_taken_channel()). The follow it reads is the settled one
- * (calls_settle() at the PDU's entry point), so no channel is judged taken, and no takeover waived, against a follow a
- * failure already undid. */
+ * the state machine lets go of the channel (calls_leave_taken_channel()). The follow it reads is the one the burst's
+ * entry settled (tetra_burst_enter() in tetra.c), the same for every PDU of the burst. "Go to the MCCH" sent to the
+ * party of the call a tune in flight would put back, should it fail, leaves that call off its channel: the state
+ * machine retires it there (tetra_sm_retire_call()), so a failure puts the channel back without the call. */
 static void
 call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_chan_alloc* alloc,
             int may_follow) {
@@ -880,8 +868,12 @@ call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c
     if (alloc->timeslots == 0u) {
         DSD_MEMSET(&c->alloc, 0, sizeof c->alloc);
         c->alloc_m = 0.0;
-        if (followed_id(state) == (int)id && opts) {
-            tetra_sm_on_release(opts, state, id);
+        if (followed_id(state) == (int)id) {
+            if (opts) {
+                tetra_sm_on_release(opts, state, id);
+            }
+        } else {
+            tetra_sm_retire_call(state, id);
         }
         return;
     }
@@ -1186,7 +1178,6 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     if (!ts || !ev || ev->kind > TETRA_CALL_EV_RELEASE) {
         return;
     }
-    calls_settle(opts, state);
     tetra_call_t* c = calls_find(ts, (uint16_t)(ev->call_id & 0x3FFFu));
     if (ev->kind == TETRA_CALL_EV_SETUP) {
         c = call_setup(opts, state, ts, c, ev, sdu);
@@ -1248,7 +1239,6 @@ tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu) 
     if (!ts || !sdu) {
         return;
     }
-    calls_settle(opts, state);
     calls_attach_addressed(opts, state, ts, sdu);
     tetra_call_t* const c = sdu->has_addr ? calls_by_address(opts, state, ts, &sdu->addr) : NULL;
     calls_label_delivered(opts, state, ts, c, sdu);
@@ -1264,7 +1254,6 @@ tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_addre
     if (!ts || !addr) {
         return;
     }
-    calls_settle(opts, state);
     const uint8_t evidence = (uint8_t)(1u + (enc_mode & 3u));
     ts->calls.slot_enc[0] = evidence;
     if (tn <= 4u) {

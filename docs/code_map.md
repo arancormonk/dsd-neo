@@ -4575,17 +4575,19 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
   proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`).
   Until the backend answers, the request is the backend's, however long that takes: nothing times it out locally (as
-  with P25's tunes), so the frame gate stays closed and the backend's completion is the tuner boundary. Every entry
-  point and the tick settle it first once it is answered: a completion commits, a failure restores the rollback first
-  and completes the request after, so the frame gate opens onto restored state (`trunk_tuning_hooks.h`). So does
-  every entry point of the calls module that acts on a decoded PDU (`tetra_calls_on_addressed()`,
-  `tetra_calls_on_event()`, `tetra_calls_on_allocation()`: `tetra_sm_settle()` through `calls_settle()`), before
-  anything of the PDU reads the follow, its proof or the carrier being received: a later PDU of the block whose grant
-  started the tune, decoded after the backend failed it, is judged against the call put back, not the one the failure
-  undid (its encryption, its proof, its event labels, the channel an allocation takes). What the PDU then asks of the
-  state machine goes through its entry points, which settle in turn, and no grant is handed over while a request is
-  in flight, one the PDU itself started included, so an answer that comes between cannot settle the follow onto
-  another call than the one the grant was judged against.
+  with P25's tunes), so the frame gate stays closed and the backend's completion is the tuner boundary. It is settled
+  once it is answered -- a completion commits, a failure restores the rollback first and completes the request after,
+  so the frame gate opens onto restored state (`trunk_tuning_hooks.h`) -- at one point per burst: the burst's entry,
+  before any of its blocks (`tetra_burst_enter()` in `tetra.c`, `tetra_sm_settle()`, for every burst `processTetraFrame()`
+  and `processTetraSBFrame()` take: the trunked downlink's normal and synchronisation bursts with both their blocks,
+  the uplink's normal and control bursts, direct mode's), and the tick between bursts. Nothing inside a burst settles:
+  the state machine's entry points the burst's PDUs and speech reach (`tetra_sm_on_grant()`, `tetra_sm_on_release()`,
+  `tetra_sm_on_cc_sync()`) take a request answered during the burst as still in flight (`sm_settle_at_entry()`), and
+  so do the call records' (`tetra_calls_on_addressed()`, `tetra_calls_on_event()`, `tetra_calls_on_allocation()`, the
+  fragments a MAC-END completes, the voice gate), so every PDU and speech frame of a burst is judged against one
+  state machine, the one its entry left, and the answer is taken at the next burst. A request a PDU of the burst
+  itself starts is in flight for the rest of the burst too, and no grant is handed over while one is
+  (`call_consider()`). Outside a burst (the engine, the frontends' commands) an entry point settles as the tick does.
   `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own cleanup (a decode-mode change
   drops the extension) let go of a request they find (`tetra_sm_disown_pending()`), and hand its terminal cleanup to
   the runtime trunk-tuning layer, which outlives the TETRA state (`dsd_trunk_tuning_request_disown()`): one the
@@ -4601,7 +4603,11 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   bursts are not descrambled with them and its calls and speech are not classified by them, and direct mode itself: the
   next carrier is trunked until its own DSB says otherwise, since no DNB decodes before that DSB gives its colour code
   anyway, and an uplink session, whose carriers have no BSCH, decodes its NUBs at once; the frame sync is told to look
-  for block 1 behind AACH half 1 again (`tetra_sync.block1_follows_training`). A tune completed inside a burst (a grant in its first block) leaves the rest of that
+  for block 1 behind AACH half 1 again (`tetra_sync.block1_follows_training`). A tune or return completed when a burst
+  begins (answered since the last burst or tick, and settled at the burst's entry) leaves that burst, captured on the
+  carrier left, to that carrier: it is dropped whole, its symbols read and none of its blocks decoded
+  (`tetra_confirm_burst_begin_captured()`: stale from its start; `tetra_nb_decode()`, `tetra_uplink_process_cb()`,
+  `tetra_process_sb()`). A tune completed inside a burst (a grant in its first block) leaves the rest of that
   burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops parsing the block and the
   normal-burst decoder skips the second half, and nothing the burst decoded counts for the new carrier, though the
   burst's verdict still does. Nothing here frees or replaces the state extension: the MAC holds its `tetra_state_t`
@@ -4643,7 +4649,8 @@ at its own deadlines and settles its own return in flight), `ENGINE_GENERIC_TRUN
 real machine's follow to it, with and without a control channel),
 `ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC and the other
 manual tunes, a return in flight included, decode-mode change, a refused switch off TETRA that keeps the follow), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
-CRCs and given the colour code, a retune inside a burst; and, at compile time, the TETRA syncs in the two synctype
+CRCs and given the colour code, a retune inside a burst, the settle at a burst's entry and the burst it drops whole;
+and, at compile time, the TETRA syncs in the two synctype
 macros), `TETRA_MAC_STATE`, `TETRA_CALLS` (grants through the call records against stand-in tuning hooks).
 
 #### Calls
@@ -4697,7 +4704,9 @@ single "current call".
   the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
   (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label assigned to
   one of them on this channel; usage markers are noted) and never tunes. A "go to the MCCH" allocation (timeslots 0000,
-  table 21.87) of the followed call releases it; an allocation to a party no record holds goes nowhere.
+  table 21.87) of the followed call releases it, and one to the call a tune in flight would put back retires it there
+  (`tetra_sm_retire_call()`), so a failure puts the channel back without the call that left it; an allocation to a
+  party no record holds goes nowhere.
 - Channel exclusivity. The downlink of a traffic channel carries one call's traffic at a time, under one downlink
   traffic usage marker, and an MS whose call's downlink carries another's leaves the channel (EN 300 392-2 clauses
   23.5.5, 23.5.6.1.1 c)). So an allocation takes its channel from every other record, in the one place a record's
@@ -4902,7 +4911,8 @@ by its record's ageing, the call trunking turned off lets go of, a channel alloc
 allowed, taken from the followed call, from a followed record moved elsewhere, from a failing tune's rollback and
 from the heard call, by every kind of allocation, and none taken by another timeslot, carrier or direction or by "go
 to the control channel"; an allocation, a "go to the MCCH" and an encrypted reallocation judged after a failed tune
-of the same block; each PDU entry point settling an answered request first),
+of the same block; a tune answered during a burst, which no PDU of it takes and which no label of the carrier left
+resolves to the call on the new one; one burst, one state machine),
 `TETRA_DMO` (the
 DM-SDU's FCS and digest, an unread
 DMAC-SYNC's protection, a DMAC-DATA that ends the transmission, the security class a transmission keeps),

@@ -126,9 +126,9 @@ typedef struct {
  * A D-SETUP makes or refreshes the record of its call; every other PDU updates the record it names and nothing when
  * there is none. A release frees the record (ending its canonical call and, when it is the followed call, telling the
  * trunking state machine). An allocation in the same MAC PDU attaches to the named call, takes its downlink from any
- * other call that held it and, while trunking, may be followed. A tune or return the backend answered is settled
- * first (tetra_sm_settle()), as by the other two entry points below. @p sdu may be NULL (a TM-SDU decoded without its
- * MAC PDU); @p opts may be NULL, which leaves the settling to the next entry point that has options.
+ * other call that held it and, while trunking, may be followed. Nothing here settles the trunking state machine: the
+ * burst's entry did (tetra_sm_settle() from tetra.c), so every PDU of a burst sees the same follow. @p sdu may be
+ * NULL (a TM-SDU decoded without its MAC PDU); @p opts may be NULL.
  */
 void tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* ev, tetra_mac_sdu* sdu);
 
@@ -139,7 +139,7 @@ void tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_eve
  * to it on this channel): it updates that call's traffic channel, taking it from any other call that held it, and a
  * "go to the MCCH" allocation (no timeslots) to the followed call ends it; it never tunes. An event label or usage
  * marker the address assigns takes effect here and only here (EN 300 392-2 clause 23.4.1.2.3.1; the event label
- * lifecycle in tetra_calls.c). An answered tune or return is settled first (tetra_sm_settle()).
+ * lifecycle in tetra_calls.c).
  */
 void tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu);
 
@@ -150,8 +150,7 @@ void tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* 
  * a call's party sets the call's air encryption, which the call's canonical call takes at once when it is published and
  * which, while encrypted calls are not followed, locks out and leaves a followed call it makes undecryptable; a PDU to
  * the followed call's party proves that call on the carrier (tetra_confirm), and the timeslot's signalling encryption
- * is noted for speech no call record names. An answered tune or return is settled first (tetra_sm_settle()). @p opts
- * may be NULL.
+ * is noted for speech no call record names. @p opts may be NULL.
  */
 void tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_address* addr, uint8_t enc_mode,
                               int alloc_present, uint8_t tn);
