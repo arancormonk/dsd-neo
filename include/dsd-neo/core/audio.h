@@ -21,6 +21,7 @@
 #include <dsd-neo/platform/sndfile_fwd.h>
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -268,6 +269,16 @@ int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsi
 /** @brief Talkgroup/whitelist/TG-hold gating for dual/slot mix (enc flags 0=unmuted,1=muted). */
 int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
+/**
+ * @brief The talkgroup gate of dsd_audio_group_gate_mono() for a call that is not published: a private call
+ * (@p private_call) is judged on both its parties, @p source and @p target, a group call on @p target and its
+ * @p source, as the gate judges a published call of that kind with those identities (enc flags 0=unmuted,1=muted).
+ *
+ * For a decoder that chooses between calls before it publishes one: TETRA's four timeslots share canonical slot 0, and
+ * only speech the policy lets play may hold the receiver on its timeslot.
+ */
+int dsd_audio_group_gate_call(const dsd_opts* opts, const dsd_state* state, int private_call, uint32_t target,
+                              uint32_t source, int enc_in, int* enc_out);
 /**
  * @brief Mono per-call WAV gate: the vocoder's verdict on the current slot's frame (dsd_state::mbe_slot_muted) and
  * the TG/allow-list/TG-hold policy. Called by the vocoder after it judged the frame.

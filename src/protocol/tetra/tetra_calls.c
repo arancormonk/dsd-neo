@@ -5,6 +5,7 @@
 
 #include "tetra_calls.h"
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -91,6 +92,17 @@ static tetra_call_t*
 calls_find(tetra_state_t* ts, uint16_t call_id) {
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
         tetra_call_t* const c = &ts->calls.call[i];
+        if (c->phase != TETRA_CALL_FREE && c->call_id == call_id) {
+            return c;
+        }
+    }
+    return NULL;
+}
+
+static const tetra_call_t*
+calls_find_const(const tetra_state_t* ts, uint16_t call_id) {
+    for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
+        const tetra_call_t* const c = &ts->calls.call[i];
         if (c->phase != TETRA_CALL_FREE && c->call_id == call_id) {
             return c;
         }
@@ -198,16 +210,7 @@ tetra_calls_find(dsd_state* state, uint16_t call_id) {
 const tetra_call_t*
 tetra_calls_peek(const dsd_state* state, uint16_t call_id) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (!ts) {
-        return NULL;
-    }
-    for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
-        const tetra_call_t* const c = &ts->calls.call[i];
-        if (c->phase != TETRA_CALL_FREE && c->call_id == (call_id & 0x3FFFu)) {
-            return c;
-        }
-    }
-    return NULL;
+    return ts ? calls_find_const(ts, (uint16_t)(call_id & 0x3FFFu)) : NULL;
 }
 
 const tetra_call_t*
@@ -1198,6 +1201,60 @@ speech_anonymous(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetr
     return calls_carrying(state, ts, TETRA_PUB_ANON, 0U);
 }
 
+/* The canonical call @p sp's speech publishes as (calls_publish_call(), dmo_publish(), speech_anonymous()): its kind
+ * (@p private_call for an individual call), target and source. */
+static void
+speech_identity(const tetra_state_t* ts, const tetra_speech* sp, int* private_call, uint32_t* target,
+                uint32_t* source) {
+    *private_call = 0;
+    *target = 0u;
+    *source = 0u;
+    if (sp->kind == TETRA_SPEECH_CALL) {
+        const tetra_call_t* const c = calls_find_const(ts, sp->call_id);
+        if (c) {
+            *private_call = call_kind(c) == DSD_CALL_KIND_PRIVATE_VOICE;
+            *target = tetra_calls_target(c);
+            *source = calls_source(c);
+        }
+    } else if (sp->kind == TETRA_SPEECH_DMO && ts->calls.dmo.active) {
+        const tetra_dmo_call_t* const d = &ts->calls.dmo;
+        *private_call = dmo_call_kind(d) == DSD_CALL_KIND_PRIVATE_VOICE;
+        *target = d->dst;
+        *source = d->src;
+    }
+}
+
+int
+tetra_calls_speech_muted(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || !sp || !opts) {
+        return 0;
+    }
+    int private_call = 0;
+    uint32_t target = 0u;
+    uint32_t source = 0u;
+    speech_identity(ts, sp, &private_call, &target, &source);
+    int muted = 0;
+    (void)dsd_audio_group_gate_call(opts, state, private_call, target, source, 0, &muted);
+    return muted;
+}
+
+/* Not trunking, canonical slot 0 shows @p sp's speech: its timeslot is the heard one, and holds the receiver while its
+ * speech plays (tetra_voice_hold()). Speech that does not play renews no hold. Another timeslot becomes the heard one
+ * only once the last one's speech stopped, or with speech that plays and so holds it, so no live hold carries over. */
+static void
+calls_hear(tetra_calls_t* calls, const tetra_speech* sp, double now_m) {
+    calls->heard = 1;
+    calls->heard_tn = sp->tn;
+    calls->heard_m = now_m;
+    calls->heard_known = (uint8_t)(sp->kind == TETRA_SPEECH_CALL);
+    calls->heard_call_id = sp->kind == TETRA_SPEECH_CALL ? sp->call_id : 0U;
+    if (sp->audible) {
+        calls->held = 1;
+        calls->held_m = now_m;
+    }
+}
+
 void
 tetra_calls_on_speech(dsd_opts* opts, dsd_state* state, const tetra_speech* sp) {
     tetra_state_t* const ts = tetra_st_existing(state);
@@ -1206,11 +1263,7 @@ tetra_calls_on_speech(dsd_opts* opts, dsd_state* state, const tetra_speech* sp) 
     }
     const double now_m = dsd_decode_now_mono_s();
     if (!sp->followed && sp->kind != TETRA_SPEECH_DMO) {
-        ts->calls.heard = 1;
-        ts->calls.heard_tn = sp->tn;
-        ts->calls.heard_m = now_m;
-        ts->calls.heard_known = (uint8_t)(sp->kind == TETRA_SPEECH_CALL);
-        ts->calls.heard_call_id = sp->kind == TETRA_SPEECH_CALL ? sp->call_id : 0U;
+        calls_hear(&ts->calls, sp, now_m);
     }
     int carried = 0;
     switch (sp->kind) {
@@ -1263,6 +1316,7 @@ calls_tick_heard(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, double now
         return;
     }
     ts->calls.heard = 0;
+    ts->calls.held = 0;
     const int heard_call = ts->calls.published == TETRA_PUB_CALL && ts->calls.heard_known
                            && ts->calls.published_call_id == ts->calls.heard_call_id
                            && followed != (int)ts->calls.heard_call_id;
@@ -1302,6 +1356,7 @@ tetra_calls_forget_carrier(dsd_state* state) {
     if (ts) {
         DSD_MEMSET(ts->calls.slot_enc, 0, sizeof ts->calls.slot_enc);
         ts->calls.heard = 0;
+        ts->calls.held = 0;
         ts->calls.heard_known = 0;
         /* The next carrier's direct mode call is set up by its own DMAC-SYNC (the engine ends the canonical calls). */
         DSD_MEMSET(&ts->calls.dmo, 0, sizeof ts->calls.dmo);
@@ -1321,6 +1376,7 @@ tetra_calls_forget_calls(dsd_opts* opts, dsd_state* state) {
         calls_drop(opts, state, ts, &ts->calls.call[i]);
     }
     ts->calls.heard = 0;
+    ts->calls.held = 0;
     ts->calls.heard_known = 0;
     ts->calls.heard_call_id = 0U;
     DSD_MEMSET(ts->calls.slot_enc, 0, sizeof ts->calls.slot_enc);

@@ -177,10 +177,12 @@ typedef struct {
     tetra_call_t call[TETRA_CALLS_MAX];
     tetra_dmo_call_t dmo;
     double heard_m;             /* decode clock: the last good speech of the heard timeslot (not trunking) */
+    double held_m;              /* decode clock: its last good speech that played (held) */
     uint16_t published_call_id; /* the call TETRA_PUB_CALL names */
     uint16_t heard_call_id;     /* the call the heard speech belongs to; heard_known */
     uint8_t published;          /* TETRA_PUB_* */
-    uint8_t heard;              /* speech is being heard on heard_tn (not trunking): other timeslots are not */
+    uint8_t heard;              /* canonical slot 0 shows the speech of heard_tn (not trunking) */
+    uint8_t held;               /* and its speech played: heard_tn holds the receiver, other timeslots are not heard */
     uint8_t heard_tn;           /* its timeslot, 0 while the TDMA clock does not place it */
     uint8_t heard_known;        /* heard_call_id names its call */
     uint32_t ends;              /* counts the ends of what canonical slot 0 carried: the speech path starts over */

@@ -376,6 +376,61 @@ test_supergroup_block_mutes_patched_member(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+// A call not published yet is judged as the gate judges a published call of its kind and identities
+// (dsd_audio_group_gate_call(), for a decoder choosing between calls before it publishes one): a private call on both
+// its parties, a group call on its target, a matching hold passing a mode block, an allow-list miss muting, and the
+// mute a caller brings in kept.
+static int
+test_unpublished_call_gate(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int private_call = 0; private_call < 2; ++private_call) {
+        for (int policy = 0; policy < 6; ++policy) {
+            DSD_MEMSET(opts, 0, sizeof(*opts));
+            reset_state(st);
+            st->synctype = DSD_SYNC_TETRA_NDB_POS;
+            int want = 0;
+            if (policy == 1) {
+                rc |= expect_eq("unpublished source block", seed_policy_group(st, 456U, "B", "SOURCE"), 0);
+                want = private_call;
+            } else if (policy == 2) {
+                rc |= expect_eq("unpublished target block", seed_policy_group(st, 123U, "B", "TARGET"), 0);
+                want = 1;
+            } else if (policy == 3) {
+                opts->trunk_use_allow_list = 1;
+                rc |= expect_eq("unpublished allow source", seed_policy_group(st, 456U, "A", "SOURCE"), 0);
+                want = !private_call;
+            } else if (policy == 4) {
+                rc |= expect_eq("unpublished held target", seed_policy_group(st, 123U, "B", "TARGET"), 0);
+                st->tg_hold = 123U;
+                want = 0;
+            } else if (policy == 5) {
+                rc |= expect_eq("unpublished avoided target", dsd_tg_policy_session_avoid_add(st, 123U), 0);
+                want = 1;
+            }
+            int unpublished = -1;
+            rc |= expect_eq("unpublished ret",
+                            dsd_audio_group_gate_call(opts, st, private_call, 123U, 456U, 0, &unpublished), 0);
+            rc |= expect_eq("unpublished verdict", unpublished, want);
+            int kept = -1;
+            rc |= expect_eq("unpublished enc ret",
+                            dsd_audio_group_gate_call(opts, st, private_call, 123U, 456U, 1, &kept), 0);
+            rc |= expect_eq("unpublished enc kept", kept, 1);
+            rc |= expect_eq("unpublished seed call",
+                            seed_call(st, 0U, DSD_SYNC_TETRA_NDB_POS,
+                                      private_call ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE, 123U,
+                                      123U, 456U),
+                            1);
+            int published = -1;
+            rc |= expect_eq("published ret", dsd_audio_group_gate_mono(opts, st, 123UL, 0, &published), 0);
+            rc |= expect_eq("published verdict matches", published, unpublished);
+        }
+    }
+    int out = 0;
+    rc |= expect_eq("unpublished null opts", dsd_audio_group_gate_call(NULL, st, 0, 1U, 2U, 0, &out), -1);
+    rc |= expect_eq("unpublished null out", dsd_audio_group_gate_call(opts, st, 0, 1U, 2U, 0, NULL), -1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -741,6 +796,7 @@ main(void) {
     rc |= test_session_avoid_overrides_hold(opts, st);
     rc |= test_call_skip_mutes_slot(opts, st);
     rc |= test_supergroup_block_mutes_patched_member(opts, st);
+    rc |= test_unpublished_call_gate(opts, st);
     rc |= test_p25_record_gate_honors_reverse_mute(opts, st);
     rc |= test_record_gate_protocol_boundaries(opts, st);
     rc |= test_private_audio_policy(opts, st);

@@ -1000,7 +1000,10 @@ suite runs under this compiler.
   reverse mute, a loaded key and a talkgroup hold cannot make that frame audible or recordable. Muted slots stage
   silence in `s_l`/`s_r` and retire their fresh-media marks, so a mixer cannot replay an earlier frame. A talkgroup
   hold decides policy and the effective slot preference only: `dsd_audio_group_gate_*()` and the SS3 hold helper
-  preserve the incoming mute, the user's slot switches and stored preference. MBE capture saves each frame after
+  preserve the incoming mute, the user's slot switches and stored preference. `dsd_audio_group_gate_call()` is the
+  same talkgroup gate for a call that is not published yet, judged on the kind and identities it will carry (a private
+  call on both parties, a group call on its target and source), for a decoder that chooses between calls before it
+  publishes one: TETRA's timeslots share canonical slot 0 (`CORE_AUDIO_GROUP_GATE`). MBE capture saves each frame after
   its own verdict and before staging (issue #661). The vocoder no longer writes `dmr_encL/R`; NXDN retains its own
   classification there for lockout. P25 Phase 2 playout snapshots the P25 rule and actual staged-media provenance
   per frame, so a queued muted frame remains silent.
@@ -4657,14 +4660,21 @@ single "current call".
 - Speech. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
   the carrier, and only as the TDMA clock places the burst: a retune stops the clock until the carrier's next BSCH, and
   a burst it cannot place may be any timeslot's, another call's included, so none plays even when addressed signalling
-  proved the call sooner. Not trunking, one timeslot is heard at a time, the first with speech, until its speech stops for
-  `TETRA_CALL_SPEECH_END_S`, and on the downlink only a timeslot the clock places: a burst it cannot place could be
-  the held timeslot's or any other's (the uplink has no BSCH, so nothing places its bursts and its speech is heard as
-  it comes); its speech belongs to the record whose traffic channel is that timeslot of the tuned
-  frequency (`tetra_calls_on_timeslot()`), else to no record, whose air encryption is then the last addressed
-  MAC-RESOURCE's on its timeslot or carrier. Direct mode is never held by these gates. The call gives the talkgroup
-  (`dsd_audio_group_gate_mono()` on its canonical target, `tetra_calls_target()`, or the direct mode destination) and
-  the encryption class: end-to-
+  proved the call sooner. Not trunking, one timeslot is heard at a time, the first with speech that plays, until that
+  speech stops for `TETRA_CALL_SPEECH_END_S` (`tetra_voice_hold()`, `tetra_calls_t::held`), and on the downlink only a
+  timeslot the clock places: a burst it cannot place could be the held timeslot's or any other's (the uplink has no
+  BSCH, so nothing places its bursts and its speech is heard as it comes). Whether a burst plays is judged before its
+  call is published (`tetra_voice_audible()`): its encryption class under the user's encrypted-audio and reverse mutes,
+  and the talkgroup policy on the identities its canonical call will carry (`tetra_calls_speech_muted()`, through
+  `dsd_audio_group_gate_call()`). Speech that does not play holds nothing and renews no hold, so a blocked or
+  undecryptable call never keeps one that plays off the receiver: it shows its call on canonical slot 0 while no other
+  timeslot's speech is shown, so two muted calls do not take the slot from each other at every burst, gives way to
+  speech that plays, and a held timeslot whose call turns muted holds the receiver only until
+  `TETRA_CALL_SPEECH_END_S` after its last speech that played. Its speech belongs to the record whose traffic channel
+  is that timeslot of the tuned frequency (`tetra_calls_on_timeslot()`), else to no record, whose air encryption is
+  then the last addressed MAC-RESOURCE's on its timeslot or carrier. Direct mode is never held by these gates. The call
+  gives the talkgroup (its canonical call's kind, target and source: `tetra_calls_target()`, or the direct mode
+  destination) and the encryption class: end-to-
   end and direct mode encryption are never decrypted; air encryption is when `tetra_air_decrypt_voice()` applies a key
   stream from the encryption cipher key TB5 derives with the carrier being received (`tetra_calls_carrier()`: the
   followed call's carrier, the SYSINFO main carrier on the control channel, else the carrier whose frequency is exactly
@@ -4716,7 +4726,7 @@ canonical calls and notices in trunked and direct mode, direct mode short data w
 an individual call's two parties, speech publication, the receiving carrier), `TETRA_DMO` (the DM-SDU's FCS and
 digest), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, an
-individual call's speech judged by both parties, the
+individual call's speech judged by both parties, muted speech that holds no timeslot, the
 derived key stream, the speech starting over at call boundaries, another call identifier and another network, and
 going on across a rename), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`,
 `CORE_ACCESS_CODE`.

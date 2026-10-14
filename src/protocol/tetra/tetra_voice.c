@@ -193,22 +193,15 @@ typedef struct {
     int record;  /* the record policy lets the recordings take it */
 } voice_route;
 
-/* The talkgroup policy judges the call the speech belongs to: its canonical call, published before the policy is
-   asked, gives a private call its two parties. */
+/* The burst plays as tetra_voice_audible() judged it; the record policy then judges the canonical call the speech
+   belongs to, published before it is asked, which gives a private call its two parties. */
 static voice_route
-voice_route_for(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp, int keystream_applied) {
-    voice_route route = {0, 0};
-    if (!dsd_voice_crypto_class_audible(opts, 0, tetra_voice_crypto_class(sp, keystream_applied))) {
-        return route;
+voice_route_for(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp) {
+    voice_route route = {sp->audible != 0u, 0};
+    if (route.audible) {
+        int allow = 0;
+        route.record = dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) == 0 && allow;
     }
-    int muted = 0;
-    (void)dsd_audio_group_gate_mono(opts, state, (unsigned long)sp->target, 0, &muted);
-    if (muted) {
-        return route;
-    }
-    route.audible = 1;
-    int allow = 0;
-    route.record = dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) == 0 && allow;
     return route;
 }
 
@@ -319,14 +312,19 @@ tetra_voice_call_renamed(tetra_voice_t* voice, uint16_t old_id, uint16_t new_id)
     }
 }
 
-/* The frames of one burst of @p sp's call: @p bad[i] for frame i of @p frames. Speech whose CRC passed reaches the call
-   first (tetra_calls_on_speech()); the talkgroup and record policy are asked once per burst, and only for a burst with
-   a frame to play. */
+/* The frames of one burst of @p sp's call: @p bad[i] for frame i of @p frames. Whether the burst plays is judged first
+   (tetra_voice_audible()), so that only speech that plays holds the receiver on its timeslot (tetra_voice_hold());
+   speech whose CRC passed then reaches the call (tetra_calls_on_speech()), and the record policy is asked once per
+   burst, only for a burst with a frame to play. */
 static void
-voice_burst(dsd_opts* opts, dsd_state* state, const tetra_speech* sp, const uint8_t* frames, const int* bad,
-            int nframes, int keystream_applied) {
+voice_burst(dsd_opts* opts, dsd_state* state, tetra_speech* sp, const uint8_t* frames, const int* bad, int nframes,
+            int keystream_applied) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (!ts) {
+        return;
+    }
+    sp->audible = (uint8_t)tetra_voice_audible(opts, state, sp, keystream_applied);
+    if (!tetra_voice_hold(opts, state, sp)) {
         return;
     }
     int good = 0;
@@ -345,7 +343,7 @@ voice_burst(dsd_opts* opts, dsd_state* state, const tetra_speech* sp, const uint
             continue;
         }
         if (!routed) {
-            route = voice_route_for(opts, state, sp, keystream_applied);
+            route = voice_route_for(opts, state, sp);
             routed = 1;
         }
         voice_frame_play(opts, state, &ts->voice, frames + ((size_t)i * DSD_TETRA_CODEC_FRAME_BITS), bad[i], &route);

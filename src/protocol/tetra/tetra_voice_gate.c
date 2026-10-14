@@ -70,18 +70,13 @@ voice_followed(const dsd_state* state, const tetra_state_t* ts, tetra_speech* sp
     return 1;
 }
 
-/* Not trunking: the heard timeslot, or any while none has been heard for TETRA_CALL_SPEECH_END_S. On the downlink the
- * TDMA clock places each burst once the carrier's BSCH set it, and one it cannot place (tn 0) may be any timeslot's,
- * so it is not heard, as a timeslot holding the receiver would not be told from another. The uplink has no BSCH, so
- * nothing places its bursts (all tn 0) and its speech is heard as it comes. */
+/* Not trunking: any timeslot, the one the receiver hears decided once the burst's audibility is known
+ * (tetra_voice_hold()). On the downlink the TDMA clock places each burst once the carrier's BSCH set it, and one it
+ * cannot place (tn 0) may be any timeslot's, so it is not heard, as a timeslot holding the receiver would not be told
+ * from another. The uplink has no BSCH, so nothing places its bursts (all tn 0) and its speech is heard as it comes. */
 static int
 voice_heard(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts, tetra_speech* sp) {
-    const tetra_calls_t* const calls = &ts->calls;
     if (sp->tn == 0u && !ts->uplink) {
-        return 0;
-    }
-    if (calls->heard && sp->tn != calls->heard_tn
-        && dsd_decode_now_mono_s() - calls->heard_m < TETRA_CALL_SPEECH_END_S) {
         return 0;
     }
     voice_of_call(ts, tetra_calls_on_timeslot(opts, state, sp->tn), sp);
@@ -121,6 +116,30 @@ tetra_voice_gate(const dsd_opts* opts, const dsd_state* state, tetra_speech* sp)
         DSD_MEMSET(sp, 0, sizeof(*sp));
     }
     return heard;
+}
+
+int
+tetra_voice_hold(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || !sp) {
+        return 0;
+    }
+    if ((opts && opts->trunk_enable == 1) || sp->kind == TETRA_SPEECH_DMO) {
+        return 1;
+    }
+    const tetra_calls_t* const calls = &ts->calls;
+    const double now_m = dsd_decode_now_mono_s();
+    if (!calls->heard || sp->tn == calls->heard_tn || now_m - calls->heard_m >= TETRA_CALL_SPEECH_END_S) {
+        return 1;
+    }
+    const int held = calls->held && now_m - calls->held_m < TETRA_CALL_SPEECH_END_S;
+    return !held && sp->audible;
+}
+
+int
+tetra_voice_audible(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp, int keystream_applied) {
+    return sp && dsd_voice_crypto_class_audible(opts, 0, tetra_voice_crypto_class(sp, keystream_applied))
+           && !tetra_calls_speech_muted(opts, state, sp);
 }
 
 dsd_voice_crypto_class

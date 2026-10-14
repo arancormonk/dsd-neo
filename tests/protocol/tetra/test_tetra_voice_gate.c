@@ -189,29 +189,46 @@ test_direct_mode(void) {
     fixture_close(&f);
 }
 
-/* Not trunking, the first timeslot with speech is heard until its speech stops for TETRA_CALL_SPEECH_END_S. */
+/* A burst through the gates: tetra_voice_gate(), then, @p audible saying whether it plays, the timeslot the receiver
+ * hears (tetra_voice_hold()). 1 when it is heard; then, when @p speech, its CRC-passed speech reaches the call
+ * (tetra_calls_on_speech()). */
+static int
+heard_burst(fixture* f, tetra_speech* sp, int audible, int speech) {
+    if (!tetra_voice_gate(f->opts, f->state, sp)) {
+        return 0;
+    }
+    sp->audible = (uint8_t)audible;
+    if (!tetra_voice_hold(f->opts, f->state, sp)) {
+        return 0;
+    }
+    if (speech) {
+        tetra_calls_on_speech(f->opts, f->state, sp);
+    }
+    return 1;
+}
+
+/* Not trunking, the first timeslot with speech that plays is heard until its speech stops for
+ * TETRA_CALL_SPEECH_END_S. */
 static void
 test_heard_timeslot(void) {
     fixture f;
     fixture_open(&f);
     tetra_speech sp;
     at_timeslot(&f, 2);
-    expect(tetra_voice_gate(f.opts, f.state, &sp) && !sp.followed && sp.tn == 2, "heard: any timeslot to start with");
-    tetra_calls_on_speech(f.opts, f.state, &sp);
+    expect(heard_burst(&f, &sp, 1, 1) && !sp.followed && sp.tn == 2, "heard: any timeslot to start with");
     at_timeslot(&f, 3);
-    expect(!tetra_voice_gate(f.opts, f.state, &sp), "heard: another timeslot waits while TN2 speaks");
+    expect(!heard_burst(&f, &sp, 1, 0), "heard: another timeslot waits while TN2 speaks");
     clock_at(1000.0 + TETRA_CALL_SPEECH_END_S - 0.1);
-    expect(!tetra_voice_gate(f.opts, f.state, &sp), "heard: and waits until the speech has stopped long enough");
+    expect(!heard_burst(&f, &sp, 1, 0), "heard: and waits until the speech has stopped long enough");
     at_timeslot(&f, 2);
-    expect(tetra_voice_gate(f.opts, f.state, &sp), "heard: TN2 goes on");
+    expect(heard_burst(&f, &sp, 1, 0), "heard: TN2 goes on");
     clock_at(1000.0 + TETRA_CALL_SPEECH_END_S);
     at_timeslot(&f, 3);
-    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 3, "heard: once TN2 stopped, TN3 is heard");
-    tetra_calls_on_speech(f.opts, f.state, &sp);
+    expect(heard_burst(&f, &sp, 1, 1) && sp.tn == 3, "heard: once TN2 stopped, TN3 is heard");
     at_timeslot(&f, 2);
-    expect(!tetra_voice_gate(f.opts, f.state, &sp), "heard: and holds the receiver in turn");
+    expect(!heard_burst(&f, &sp, 1, 0), "heard: and holds the receiver in turn");
     tetra_calls_forget_carrier(f.state);
-    expect(tetra_voice_gate(f.opts, f.state, &sp), "heard: a new carrier hears any timeslot");
+    expect(heard_burst(&f, &sp, 1, 0), "heard: a new carrier hears any timeslot");
 
     /* A downlink carrier's BSCH sets the TDMA clock, which then places every burst: one it cannot place yet may be any
        timeslot's, so it is not heard, with no timeslot heard as with one holding the receiver. */
@@ -220,21 +237,65 @@ test_heard_timeslot(void) {
     expect(!tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 0 && sp.kind == 0,
            "heard: a downlink burst the clock cannot place is not heard");
     at_timeslot(&f, 4);
-    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 4, "heard: TN4 once the clock places it");
-    tetra_calls_on_speech(f.opts, f.state, &sp);
+    expect(heard_burst(&f, &sp, 1, 1) && sp.tn == 4, "heard: TN4 once the clock places it");
     ts->tdma_valid = 0;
     expect(!tetra_voice_gate(f.opts, f.state, &sp), "heard: nor while TN4 holds the receiver");
     at_timeslot(&f, 4);
-    expect(tetra_voice_gate(f.opts, f.state, &sp), "heard: TN4 goes on");
+    expect(heard_burst(&f, &sp, 1, 0), "heard: TN4 goes on");
 
     /* The uplink has no BSCH: nothing places its bursts, and its speech is heard as it comes. */
     tetra_calls_forget_carrier(f.state);
     ts->tdma_valid = 0;
     ts->uplink = 1;
-    expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.tn == 0,
-           "heard: uplink speech, which nothing places, is heard");
-    tetra_calls_on_speech(f.opts, f.state, &sp);
-    expect(tetra_voice_gate(f.opts, f.state, &sp), "heard: and goes on");
+    expect(heard_burst(&f, &sp, 1, 1) && sp.tn == 0, "heard: uplink speech, which nothing places, is heard");
+    expect(heard_burst(&f, &sp, 1, 0), "heard: and goes on");
+    fixture_close(&f);
+}
+
+/* Not trunking, speech that does not play (its talkgroup policy or encryption mutes it) holds nothing: the heard
+ * timeslot shows its call, and speech that plays on another timeslot takes the receiver, which then holds it against
+ * muted and playing speech alike; muted speech of another timeslot waits while the shown call speaks, so two muted
+ * calls do not take turns. A hold runs out TETRA_CALL_SPEECH_END_S after the held timeslot's last speech that played,
+ * whatever muted speech of it came since. Trunking on and in direct mode, the hold does not apply. */
+static void
+test_muted_speech_holds_nothing(void) {
+    fixture f;
+    fixture_open(&f);
+    tetra_speech sp;
+    at_timeslot(&f, 2);
+    expect(heard_burst(&f, &sp, 0, 1), "muted: TN2's muted speech is heard");
+    at_timeslot(&f, 4);
+    expect(!heard_burst(&f, &sp, 0, 0), "muted: TN4's muted speech waits while TN2's is shown");
+    at_timeslot(&f, 3);
+    expect(heard_burst(&f, &sp, 1, 1) && sp.tn == 3, "muted: TN3's speech that plays takes the receiver");
+    at_timeslot(&f, 2);
+    expect(!heard_burst(&f, &sp, 0, 0) && !heard_burst(&f, &sp, 1, 0), "muted: TN3 then holds it against TN2");
+
+    /* TN3's speech goes on muted: its hold runs out a speech end after the last burst that played. */
+    clock_at(1000.0 + 0.5);
+    at_timeslot(&f, 3);
+    expect(heard_burst(&f, &sp, 0, 1), "muted: TN3 goes on muted");
+    clock_at(1000.0 + TETRA_CALL_SPEECH_END_S - 0.1);
+    at_timeslot(&f, 2);
+    expect(!heard_burst(&f, &sp, 1, 0), "muted: TN3 still holds the receiver");
+    at_timeslot(&f, 3);
+    expect(heard_burst(&f, &sp, 0, 1), "muted: TN3 muted again");
+    clock_at(1000.0 + TETRA_CALL_SPEECH_END_S + 0.1);
+    at_timeslot(&f, 4);
+    expect(!heard_burst(&f, &sp, 0, 0), "muted: TN4's muted speech still waits for TN3's shown call");
+    at_timeslot(&f, 2);
+    expect(heard_burst(&f, &sp, 1, 1) && sp.tn == 2, "muted: TN2's speech that plays takes the receiver");
+
+    /* Trunking on and direct mode have gates of their own. */
+    f.opts->trunk_enable = 1;
+    sp.tn = 3;
+    sp.audible = 0;
+    sp.kind = TETRA_SPEECH_CALL;
+    expect(tetra_voice_hold(f.opts, f.state, &sp), "muted: no hold while trunking");
+    f.opts->trunk_enable = 0;
+    sp.kind = TETRA_SPEECH_DMO;
+    expect(tetra_voice_hold(f.opts, f.state, &sp), "muted: nor in direct mode");
+    expect(!tetra_voice_hold(f.opts, f.state, NULL) && !tetra_voice_hold(f.opts, NULL, &sp), "muted: no state");
     fixture_close(&f);
 }
 
@@ -314,6 +375,7 @@ main(void) {
     test_trunked_gate();
     test_direct_mode();
     test_heard_timeslot();
+    test_muted_speech_holds_nothing();
     test_heard_call();
     test_crypto_class();
     if (g_fail) {

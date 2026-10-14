@@ -257,6 +257,7 @@ typedef struct {
     uint8_t tn;       /**< its timeslot, 0 when the TDMA clock does not place it */
     uint8_t followed; /**< speech of the call the trunking state machine follows */
     uint8_t air_enc;  /**< encryption mode (TETRA_ENC_MODE_*) of the call's air interface, trunked mode */
+    uint8_t audible;  /**< the burst plays: its encryption class and talkgroup policy let it (tetra_voice_audible()) */
     uint8_t
         sealed; /**< encrypted where no key stream here applies: end-to-end, or a direct mode call not known clear */
 } tetra_speech;
@@ -269,9 +270,18 @@ typedef struct {
 const tetra_call_t* tetra_calls_on_timeslot(const dsd_opts* opts, const dsd_state* state, uint8_t tn);
 
 /**
+ * @brief Whether the talkgroup policy mutes @p sp's speech, judged on the identities the canonical call of its speech
+ * carries (tetra_calls_on_speech() publishes it): a call record's kind, target and source, the direct mode call's, else a
+ * call without identities. Before the speech is published, so that only speech that plays holds the receiver on its
+ * timeslot (tetra_voice_hold()). @p opts may be NULL (nothing is muted).
+ */
+int tetra_calls_speech_muted(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp);
+
+/**
  * @brief Speech of @p sp's call whose CRC passed, before it plays.
  *
- * Not trunking, it makes its timeslot the heard one. Its call is seen (it does not age) and publishes on canonical slot
+ * Not trunking, it makes its timeslot the heard one, and when it plays (tetra_speech::audible) the one that holds the
+ * receiver (tetra_voice_hold()): speech that does not play holds nothing. Its call is seen (it does not age) and publishes on canonical slot
  * 0 unless it already does: the followed call or a call record (not after its D-TX CEASED), the direct mode call while
  * a DM-SETUP or DM-OCCUPIED set one up, else an anonymous call once the carrier is proven. The published call's media
  * turns active. A followed call that turned out undecryptable while encrypted calls are not followed is locked out and

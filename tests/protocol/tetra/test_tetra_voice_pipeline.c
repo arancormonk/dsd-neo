@@ -35,6 +35,7 @@
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -930,6 +931,96 @@ test_network_change_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* Not trunking, call @p call_id to group @p gssi whose traffic channel is timeslot @p tn of the tuned carrier. */
+static void
+hear_call_on(fixture* f, uint16_t call_id, uint32_t gssi, uint8_t tn) {
+    tetra_call_event setup = {.call_id = call_id, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
+    tetra_calls_on_event(NULL, f->state, &setup, NULL);
+    tetra_call_t* const c = tetra_calls_find(f->state, call_id);
+    c->called_ssi = gssi;
+    c->alloc.freq_hz = (long)f->opts->rtlsdr_center_freq;
+    c->alloc.timeslots = tetra_slot_bit(tn);
+    c->alloc.up_down = 1;
+    c->alloc_m = 1.0;
+}
+
+/* Samples one good full-slot burst on timeslot @p tn plays, at @p seconds on the decode clock. */
+static size_t
+played_on(fixture* f, uint8_t tn, double seconds) {
+    dsd_decode_clock_test_set_ns((uint64_t)(seconds * 1e9));
+    tetra_state_t* const ts = tetra_st(f->state);
+    ts->tdma_valid = 1;
+    ts->tn = tn;
+    return played_by_burst(f);
+}
+
+/* Not trunking, only speech that would be heard holds the receiver on its timeslot: a burst the talkgroup policy mutes,
+ * or one whose encryption no key undoes while encrypted audio is muted, holds nothing and renews nothing. So call 9 of
+ * blocked group 500 on TN2 leaves call 10 of group 600 on TN3 audible; once the receiver holds TN3, TN2 waits. Speech
+ * that does not play shows its call while no other timeslot's speech is shown, so two muted calls do not take canonical
+ * slot 0 from each other at every burst; and once the held call turns muted, its hold runs out
+ * TETRA_CALL_SPEECH_END_S after its last burst that played, its speech going on or not. */
+static void
+test_muted_call_holds_no_timeslot(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "muted hold: fixture");
+    dsd_decode_clock_use_test(1000000000000ULL);
+    f.opts->audio_in_type = AUDIO_IN_RTL;
+    f.opts->rtlsdr_center_freq = 400243750U;
+    hear_call_on(&f, 9, 500, 2);
+    hear_call_on(&f, 10, 600, 3);
+    hear_call_on(&f, 11, 700, 4);
+    expect(dsd_tg_policy_session_avoid_add(f.state, 500) == 0 && dsd_tg_policy_session_avoid_add(f.state, 700) == 0,
+           "muted hold: avoid 500 and 700");
+
+    double t = 1000.0;
+    expect(played_on(&f, 2, t) == 0, "muted hold: blocked group 500 is muted");
+    dsd_call_snapshot call;
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+               && call.ota_target_id == 500U,
+           "muted hold: and shows its call");
+    const uint64_t shown = call.epoch;
+    expect(played_on(&f, 4, t + 0.01) == 0, "muted hold: blocked group 700 is muted too");
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.epoch == shown && call.ota_target_id == 500U,
+           "muted hold: and does not take canonical slot 0 from group 500");
+    for (int i = 0; i < 3; i++) {
+        t += 0.06;
+        expect(played_on(&f, 2, t) == 0, "muted hold: group 500 goes on muted");
+        expect(played_on(&f, 3, t + 0.01) == 2 * FRAME, "muted hold: group 600 plays beside it");
+        expect(played_on(&f, 4, t + 0.02) == 0, "muted hold: group 700 stays muted");
+    }
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+               && call.ota_target_id == 600U,
+           "muted hold: group 600 holds canonical slot 0");
+
+    /* Group 600 muted from here: its speech goes on but holds nothing past its last burst that played. */
+    const double last_audible = t + 0.01;
+    dsd_tg_policy_session_avoid_clear(f.state);
+    expect(dsd_tg_policy_session_avoid_add(f.state, 600) == 0 && dsd_tg_policy_session_avoid_add(f.state, 700) == 0,
+           "muted hold: avoid 600 and 700, not 500");
+    expect(played_on(&f, 3, last_audible + 0.3) == 0, "muted hold: group 600 is muted");
+    expect(played_on(&f, 2, last_audible + 0.4) == 0, "muted hold: TN3 still holds the receiver");
+    expect(played_on(&f, 3, last_audible + TETRA_CALL_SPEECH_END_S - 0.05) == 0, "muted hold: group 600 goes on");
+    expect(played_on(&f, 2, last_audible + TETRA_CALL_SPEECH_END_S + 0.05) == 2 * FRAME,
+           "muted hold: once its hold ran out group 500 is heard");
+    expect(played_on(&f, 3, last_audible + TETRA_CALL_SPEECH_END_S + 0.1) == 0, "muted hold: and holds TN2");
+    expect(played_on(&f, 2, last_audible + TETRA_CALL_SPEECH_END_S + 0.15) == 2 * FRAME, "muted hold: TN2 goes on");
+
+    /* Speech whose air encryption no key undoes, while encrypted audio is muted, holds nothing either. */
+    dsd_tg_policy_session_avoid_clear(f.state);
+    t = 1100.0;
+    air_encrypted_call(&f, 0);
+    hear_call_on(&f, 9, 500, 2);
+    hear_call_on(&f, 10, 600, 3);
+    tetra_calls_find(f.state, 9)->air_enc = TETRA_ENC_MODE_ODD;
+    tetra_calls_find(f.state, 10)->air_enc = TETRA_ENC_MODE_NONE;
+    expect(played_on(&f, 2, t) == 0, "muted hold: undecryptable group 500 is muted");
+    expect(played_on(&f, 3, t + 0.01) == 2 * FRAME, "muted hold: and clear group 600 plays");
+    expect(played_on(&f, 2, t + 0.07) == 0, "muted hold: TN3 holds the receiver");
+    dsd_decode_clock_use_system();
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_clean_stream_plays_every_frame();
@@ -945,6 +1036,7 @@ main(void) {
     test_private_call_judged_by_both_parties();
     test_network_change_resets_speech();
     test_call_identifier_change_resets_speech();
+    test_muted_call_holds_no_timeslot();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;
