@@ -4435,7 +4435,10 @@ EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd(
 `tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the summary line, the call event,
 the notice, the SDS reassembly, the KSG an SCK or GCK Provide names. Of signalling, `tetra_state_t` keeps only what the
 decoder reads back: the cell's main carrier, band, offset and location area, the hyperframe number, the encryption mode
-of the last addressed MAC-RESOURCE, the reassembly contexts and the D-MM STATUS the frontends show. What a BSCH of
+of the last addressed MAC-RESOURCE, the reassembly contexts (one message each, keyed by its reference, its transport
+and its sender's TETRA subscriber identity: the SSI with the network a calling party of type 2 names in its extension
+and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44) and the D-MM
+STATUS the frontends show. What a BSCH of
 another cell or network forgets is decided in one place (`bsch_identity_change()` in `tetra_bsch.c`, before the new
 identity is taken, so what ends carries the network it was decoded on). The SYSINFO part belongs to the cell: a BSCH
 naming another MCC, MNC or colour code (`bsch_forget_cell()`) drops it with the TDMA clock and the partial TM-SDUs (a
@@ -4454,7 +4457,8 @@ timeout or the hangtime ends it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebu
 timeslot and dropped after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
 the timeslot that went by undecoded count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot
 join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
-`TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases, the reassembly a network change drops),
+`TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases, the sender's identity, the reassembly
+a network change drops),
 `TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops), `TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
 network and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a network change starts over).
 

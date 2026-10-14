@@ -1893,18 +1893,30 @@ test_sds_short_report_status(void) {
     return ok;
 }
 
-/* A concatenation part (tables 29.62 and 29.63) of a message from @p src_ssi into @p mle; returns its bits. */
+/* The calling party of a D-SDS-DATA (table 14.13): its type identifier (1 SSI, 2 SSI and address extension), SSI and,
+ * for type 2, extension (the MCC and MNC of the sender's network). */
+typedef struct {
+    uint32_t type;
+    uint32_t ssi;
+    uint32_t extension;
+} sds_sender;
+
+/* A concatenation part (tables 29.62 and 29.63) of a message from @p from into @p mle; returns its bits. */
 static int
-build_concat_fragment(uint8_t* mle, uint32_t src_ssi, int with_transport, uint16_t reference, uint8_t total,
-                      uint8_t sequence, int payload_pid, const uint8_t* data, int data_bits, uint8_t message_ref) {
+build_concat_fragment_from(uint8_t* mle, sds_sender from, int with_transport, uint16_t reference, uint8_t total,
+                           uint8_t sequence, int payload_pid, const uint8_t* data, int data_bits, uint8_t message_ref) {
     uint8_t cmce[128] = {0};
     int off = 0;
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, off, 5);
     off += 5;
-    pack_bits(cmce, 1, off, 2);
+    pack_bits(cmce, from.type, off, 2);
     off += 2;
-    pack_bits(cmce, src_ssi, off, 24);
+    pack_bits(cmce, from.ssi, off, 24);
     off += 24;
+    if (from.type == 2) {
+        pack_bits(cmce, from.extension, off, 24);
+        off += 24;
+    }
     pack_bits(cmce, 3, off, 2);
     off += 2;
     int length_offset = off;
@@ -1947,6 +1959,15 @@ build_concat_fragment(uint8_t* mle, uint32_t src_ssi, int with_transport, uint16
     return off + 3;
 }
 
+/* A concatenation part of a message from SSI @p src_ssi (calling party type 1). */
+static int
+build_concat_fragment(uint8_t* mle, uint32_t src_ssi, int with_transport, uint16_t reference, uint8_t total,
+                      uint8_t sequence, int payload_pid, const uint8_t* data, int data_bits, uint8_t message_ref) {
+    const sds_sender from = {1, src_ssi, 0};
+    return build_concat_fragment_from(mle, from, with_transport, reference, total, sequence, payload_pid, data,
+                                      data_bits, message_ref);
+}
+
 /* The part build_concat_fragment() builds, decoded with colour code 6; @p log receives the summary lines. */
 static void
 dispatch_concat_fragment(dsd_state* state, dsd_opts* opts, uint32_t src_ssi, int with_transport, uint16_t reference,
@@ -1984,6 +2005,55 @@ test_sds_concat_out_of_order_and_duplicates(void) {
     ok = ok && strstr(log, "part=1/3 received=3 complete") != NULL
          && strstr(log, "[TETRA CMCE D-SDS-DATA] CC=6 src_SSI=1193046") != NULL && notices(state) == before + 1U
          && notice(state, 1)->source_id == 0x123456 && strcmp(notice(state, 1)->text_message, "HELLO") == 0;
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* Part @p sequence of the two-part simple text with reference 9 from @p from, decoded with colour code 6. */
+static void
+dispatch_part_from(dsd_state* state, dsd_opts* opts, sds_sender from, uint8_t sequence, const uint8_t* data,
+                   int data_bits, char* log, size_t log_size) {
+    uint8_t mle[160] = {0};
+    const int nbits =
+        build_concat_fragment_from(mle, from, 0, 9, 2, sequence, sequence == 1 ? 2 : -1, data, data_bits, 0);
+    tetra_test_mle_logged(mle, nbits, 6, opts, state, log, log_size);
+}
+
+/* A concatenated message is its sender's, by its TETRA subscriber identity: the SSI with the network a calling party of
+ * type 2 names in its extension (tables 14.43, 14.44) and one of type 1 leaves to the current network (EN 300 392-2
+ * clause 14.2.3). Parts with the same SSI and reference from senders of two networks complete neither message; parts
+ * of one sender complete its message whether they name its network or not. */
+static int
+test_sds_concat_keyed_by_calling_party(void) {
+    dsd_state* state = alloc_notice_state();
+    dsd_opts* opts = alloc_opts();
+    char log[512];
+    uint8_t first[16] = {0}, second[8] = {0};
+    pack_bits(first, 1, 0, 8); /* No timestamp, Latin-1. */
+    pack_bits(first, 'A', 8, 8);
+    pack_bits(second, 'B', 0, 8);
+    tetra_state_t* const ts = tetra_st(state);
+    ts->net_known = 1;
+    ts->mcc = 262;
+    ts->mnc = 30;
+    const sds_sender one = {2, 77, 0x111111};
+    const sds_sender two = {2, 77, 0x222222};
+    const sds_sender here = {1, 77, 0};
+    const sds_sender here_named = {2, 77, (262u << 14) | 30u};
+    const uint64_t before = notices(state);
+
+    dispatch_part_from(state, opts, one, 1, first, 16, log, sizeof log);
+    int ok = strstr(log, "part=1/2 received=1\n") != NULL;
+    dispatch_part_from(state, opts, two, 2, second, 8, log, sizeof log);
+    ok = ok && strstr(log, "part=2/2 received=1\n") != NULL && notices(state) == before;
+    dispatch_part_from(state, opts, here, 1, first, 16, log, sizeof log);
+    ok = ok && strstr(log, "part=1/2 received=1\n") != NULL && notices(state) == before;
+    dispatch_part_from(state, opts, here_named, 2, second, 8, log, sizeof log);
+    ok = ok && strstr(log, "part=2/2 received=2 complete") != NULL && notices(state) == before + 1U
+         && strcmp(notice_text(state, 1), "AB") == 0;
+    dispatch_part_from(state, opts, one, 2, second, 8, log, sizeof log);
+    ok = ok && strstr(log, "part=2/2 received=2 complete") != NULL && notices(state) == before + 2U;
     free_state(state);
     free(opts);
     return ok;
@@ -2522,6 +2592,7 @@ main(void) {
     RUN(test_sds_transfer_timestamp_text);
     RUN(test_sds_concat_out_of_order_and_duplicates);
     RUN(test_sds_concat_transport_and_conflict);
+    RUN(test_sds_concat_keyed_by_calling_party);
     RUN(test_sds_annex_e_type34_tail);
     RUN(test_function_not_supported_extract_and_o_bit);
     RUN(test_standard_mle_envelopes);

@@ -816,16 +816,29 @@ typedef struct {
 
 /* Concatenated SDS reassembly, clause 29.5.14. */
 
-#define SDS_CONCAT_CONTEXTS   4
-#define SDS_CONCAT_PARTS      255
-#define SDS_CONCAT_PART_BITS  2047
-#define SDS_CONCAT_PART_BYTES ((SDS_CONCAT_PART_BITS + 7) / 8)
-#define SDS_CONCAT_TIMEOUT_MS 300000u
+#define SDS_CONCAT_CONTEXTS        4
+#define SDS_CONCAT_PARTS           255
+#define SDS_CONCAT_PART_BITS       2047
+#define SDS_CONCAT_PART_BYTES      ((SDS_CONCAT_PART_BITS + 7) / 8)
+#define SDS_CONCAT_TIMEOUT_MS      300000u
+
+/* The network of a calling party of type 1 while the decoder knows none: no 24-bit calling party extension equals it. */
+#define SDS_CONCAT_NETWORK_UNKNOWN 0xFFFFFFFFu
+
+/* The calling party a concatenated message comes from, as its TETRA subscriber identity: the SSI with the MCC and MNC
+ * of its network (table 14.44), which a calling party of type 2 (TSI, table 14.43) carries as its extension and one of
+ * type 1 (SSI) leaves to the current network (EN 300 392-2 clause 14.2.3). Two senders that share an SSI are kept apart;
+ * one sender is one, whether it names its network or not. The reserved types carry no address. */
+typedef struct {
+    uint32_t ssi;
+    uint32_t network; /* country code (10 bits) and network code (14 bits), as the extension holds them */
+    uint8_t type;     /* 1 for an SSI or TSI calling party; the reserved type identifier otherwise */
+} sds_concat_sender;
 
 /* One message being reassembled; the parts are stored packed, MSB first. */
 typedef struct {
     uint64_t updated_ms; /* decode-clock time of the last accepted part */
-    uint32_t src_ssi;
+    sds_concat_sender src;
     uint16_t part_bits[SDS_CONCAT_PARTS];
     uint16_t reference;
     uint8_t valid;
@@ -845,7 +858,7 @@ struct tetra_sds_concat_store {
 /* One concatenation part as received. */
 typedef struct {
     tetra_bit_reader data; /* the part's user data */
-    uint32_t src_ssi;
+    sds_concat_sender src;
     int payload_pid; /* -1 except in part 1 */
     uint16_t reference;
     uint8_t with_transport;
@@ -873,6 +886,11 @@ sds_concat_clear(sds_concat_ctx* c) {
     DSD_MEMSET(c, 0, sizeof(*c));
 }
 
+static int
+sds_concat_same_sender(const sds_concat_sender* a, const sds_concat_sender* b) {
+    return a->type == b->type && a->ssi == b->ssi && a->network == b->network;
+}
+
 /* The context collecting @p part's message: the matching one, else a free one, else the stalest. Contexts idle for
  * longer than SDS_CONCAT_TIMEOUT_MS are dropped on the way. */
 static sds_concat_ctx*
@@ -884,7 +902,7 @@ sds_concat_find(struct tetra_sds_concat_store* store, const sds_concat_part* par
         if (c->valid && now_ms - c->updated_ms > SDS_CONCAT_TIMEOUT_MS) {
             sds_concat_clear(c);
         }
-        if (c->valid && c->src_ssi == part->src_ssi && c->reference == part->reference
+        if (c->valid && sds_concat_same_sender(&c->src, &part->src) && c->reference == part->reference
             && c->with_transport == part->with_transport) {
             return c;
         }
@@ -898,7 +916,7 @@ sds_concat_find(struct tetra_sds_concat_store* store, const sds_concat_part* par
     sds_concat_ctx* c = free_ctx ? free_ctx : oldest;
     sds_concat_clear(c);
     c->valid = 1;
-    c->src_ssi = part->src_ssi;
+    c->src = part->src;
     c->reference = part->reference;
     c->with_transport = part->with_transport;
     c->total = part->total;
@@ -1207,6 +1225,19 @@ tetra_sds_decode(const uint8_t* bits, int nbits, tetra_sds_pdu* out) {
 
 /* Acting on a complete D-SDS-DATA. */
 
+/* The sender of @p calling's concatenation part, in the network the decoder is on. */
+static sds_concat_sender
+sds_concat_sender_of(const tetra_state_t* ts, const tetra_cmce_party* calling) {
+    sds_concat_sender from = {calling->ssi, SDS_CONCAT_NETWORK_UNKNOWN, calling->type};
+    if (calling->type == 2 && calling->extension_valid) {
+        from.network = calling->extension;
+        from.type = 1;
+    } else if (calling->type == 1 && ts->net_known) {
+        from.network = ((uint32_t)ts->mcc << 14) | ts->mnc;
+    }
+    return from;
+}
+
 /* Add a concatenation part to the reassembly and, when it completes the message, decode the message's text into
  * @p d. SDS_CONCAT_REJECTED when the part conflicts with the parts already held, or the message text is malformed. */
 static int
@@ -1214,7 +1245,7 @@ sds_reassemble(const mle_ctx* ctx, tetra_sds_data* d, sds_concat_status* concat)
     sds_concat_part part;
     DSD_MEMSET(&part, 0, sizeof part);
     part.data = tetra_bits_reader(ctx->bits, d->concat.data_pos + d->concat.data_bits, d->concat.data_pos);
-    part.src_ssi = d->calling.ssi;
+    part.src = sds_concat_sender_of(ctx->ts, &d->calling);
     part.payload_pid = d->concat.payload_pid;
     part.reference = d->concat.reference;
     part.with_transport = d->concat.with_transport;
