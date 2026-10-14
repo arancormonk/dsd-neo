@@ -370,7 +370,10 @@ class Parser {
         if (roots->contains(path_key(relative))) {
             return fail(BackupError::Damaged, QStringLiteral("typed: two library rows share a bundle root"));
         }
-        if (path.startsWith(bundles) && !path.startsWith(root + QLatin1Char('/'))) {
+        // Whether the file lies under imports/bundles/ is a clash question, so it is folded: a case-insensitive
+        // filesystem puts imports/Bundles/ there too. Whether it lies in its own root is answered exactly.
+        const bool bundled = path_key(archivePath(path)).startsWith(QStringLiteral("imports/bundles/"));
+        if (bundled && !path.startsWith(root + QLatin1Char('/'))) {
             return fail(BackupError::Damaged, QStringLiteral("typed: a bundled file lies outside its row's bundle"));
         }
         roots->insert(path_key(relative), index);
@@ -389,9 +392,10 @@ class Parser {
         }
         // Removing a row deletes its whole bundle, so no other row's file may live inside one.
         for (int i = 0; i < library.size(); ++i) {
+            // Folded, like the roots: imports/Bundles/<id>/ is the same directory on case-insensitive storage.
             const QString bundle =
-                bundle_of(archivePath(library.at(i).toObject().value(QLatin1String("path")).toString()));
-            const auto owner = bundle.isEmpty() ? roots.constEnd() : roots.constFind(path_key(bundle));
+                bundle_of(path_key(archivePath(library.at(i).toObject().value(QLatin1String("path")).toString())));
+            const auto owner = bundle.isEmpty() ? roots.constEnd() : roots.constFind(bundle);
             if (owner != roots.constEnd() && owner.value() != i) {
                 return fail(BackupError::Damaged, QStringLiteral("typed: a library file lies in another row's bundle"));
             }

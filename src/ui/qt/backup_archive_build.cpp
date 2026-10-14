@@ -223,7 +223,7 @@ class Builder {
         if (!root.isEmpty()) {
             // A bundled file belongs to its own row's bundle; one anywhere else under bundles/ keeps none.
             const QString own = QStringLiteral("imports/bundles/") + QFileInfo(root).fileName() + QLatin1Char('/');
-            const bool fits = !file.startsWith(QStringLiteral("imports/bundles/")) || file.startsWith(own);
+            const bool fits = !path_key(file).startsWith(QStringLiteral("imports/bundles/")) || file.startsWith(own);
             carried = fits ? carryBundle(root, label) : QString();
             if (carried.isEmpty()) {
                 notInclude(QObject::tr("%1: companion files").arg(label));
@@ -236,13 +236,13 @@ class Builder {
     /** Whether @p row's file lies in a bundle another row claims; removing that row would delete it. */
     bool
     inForeignBundle(const QJsonObject& row) const {
-        const QString file = row.value(QLatin1String("path")).toString().mid(m_root.size() + 1);
-        const QString bundle = bundle_of(file);
-        if (bundle.isEmpty() || !m_claimedRoots.contains(path_key(bundle))) {
+        // Folded, like the claimed roots: imports/Bundles/<id>/ is the same directory on case-insensitive storage.
+        const QString bundle = bundle_of(path_key(row.value(QLatin1String("path")).toString().mid(m_root.size() + 1)));
+        if (bundle.isEmpty() || !m_claimedRoots.contains(bundle)) {
             return false;
         }
         const QString own = row.value(QLatin1String("bundleRoot")).toString().mid(m_root.size() + 1);
-        return own.isEmpty() || path_key(own) != path_key(bundle);
+        return own.isEmpty() || path_key(own) != bundle;
     }
 
     void

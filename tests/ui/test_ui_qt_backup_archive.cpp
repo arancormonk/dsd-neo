@@ -790,6 +790,50 @@ test_export_drops_foreign_bundle(const Fixture& f) {
     QDir(own).removeRecursively();
 }
 
+/* The export answers the same folded question: a row whose file sits in a case variant of another row's bundle is
+ * dropped, and a row whose file sits in a case variant of its own bundle keeps no bundle. */
+void
+test_export_folded_bundle_paths(const Fixture& f) {
+    const QString id = f.chanRoot.mid(f.chanRoot.lastIndexOf('/') + 1);
+    auto snapshot = dsd_qt::backup::backup_take_snapshot();
+    const QString variant = snapshot.root + "/imports/Bundles/" + id + "/x.csv";
+    expect("write a file under a case variant of a bundle", write_file(variant, "DEC,Mode,Name,Tag\n1,A,x,y\n"));
+
+    QJsonArray library = snapshot.stores.value("imported_files.json");
+    QJsonObject beside = library.at(row_where(library, "type", "group")).toObject();
+    beside.insert("path", variant);
+    beside.insert("name", "variant.csv");
+    beside.insert("bundleRoot", "");
+    library.append(beside);
+    auto besideSnapshot = snapshot;
+    besideSnapshot.stores.insert("imported_files.json", library);
+    auto built = build(besideSnapshot);
+    auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, snapshot.root);
+    expect("export with a row beside a folded bundle succeeds",
+           built.error == BackupError::None && parsed.error == BackupError::None);
+    expect("a row in a case variant of another row's bundle is dropped",
+           row_where(parsed.stores.value("imported_files.json"), "name", "variant.csv") < 0
+               && lists(built.summary.notIncluded, "Imported file variant.csv"));
+
+    library = snapshot.stores.value("imported_files.json");
+    const int chanRow = row_where(library, "path", f.chan);
+    QJsonObject chan = library.at(chanRow).toObject();
+    const QString chanName = chan.value("name").toString();
+    chan.insert("path", variant);
+    library.replace(chanRow, chan);
+    auto ownSnapshot = snapshot;
+    ownSnapshot.stores.insert("imported_files.json", library);
+    built = build(ownSnapshot);
+    parsed = dsd_qt::backup::backup_parse_archive(built.archive, snapshot.root);
+    expect("export with a file under a case variant of its own bundle succeeds",
+           built.error == BackupError::None && parsed.error == BackupError::None);
+    const QJsonArray outLibrary = parsed.stores.value("imported_files.json");
+    const int outRow = row_where(outLibrary, "path", variant);
+    expect("that row keeps no bundle", outRow >= 0 && outLibrary.at(outRow).toObject().value("bundleRoot") == ""
+                                           && lists(built.summary.notIncluded, chanName + ": companion files"));
+    QDir(snapshot.root + "/imports/Bundles").removeRecursively();
+}
+
 void
 test_build_caps_and_cancel() {
     auto snapshot = dsd_qt::backup::backup_take_snapshot();
@@ -1075,6 +1119,34 @@ set_row(const Parts& parts, const char* store, int row, const char* key, const Q
     return assemble(edited);
 }
 
+/* Whether a file lies in a bundle is a clash question, answered on folded paths: imports/Bundles/<id>/ and
+ * imports/bundleſ/<id>/ are imports/bundles/<id>/ on case-insensitive storage. */
+void
+refuse_folded_bundle_paths(const Parts& parts, const Fixture& f) {
+    const QString root = dsd_qt::json_store_root();
+    const QJsonArray library = parts.manifest.value("stores").toObject().value("imported_files.json").toArray();
+    const int chanRow = row_where(library, "path", f.chan);
+    const int groupRow = row_where(library, "path", f.groups);
+    const QString id = f.chanRoot.mid(f.chanRoot.lastIndexOf('/') + 1);
+    for (const QString& variant :
+         {QStringLiteral("imports/Bundles/"), QStringLiteral("imports/bundle") + QChar(0x017F) + QLatin1Char('/')}) {
+        const QString file = variant + id + "/x.csv";
+        Parts beside = parts;
+        add_file(beside, file, "DEC,Mode,Name,Tag\n1,A,x,y\n");
+        with_row(beside, "imported_files.json", groupRow,
+                 [&](QJsonObject& row) { row.insert("path", root + '/' + file); });
+        refuse(qPrintable("row file in a folded variant of another row's bundle: " + variant), assemble(beside),
+               BackupError::Damaged, "typed: a library file lies in another row's bundle");
+    }
+    // A row's own file under a case variant of its own root is outside that root on case-sensitive storage.
+    const QString file = "imports/Bundles/" + id + "/x.csv";
+    Parts own = parts;
+    add_file(own, file, "x\n");
+    with_row(own, "imported_files.json", chanRow, [&](QJsonObject& row) { row.insert("path", root + '/' + file); });
+    refuse("own bundled file under a case variant of its root", assemble(own), BackupError::Damaged,
+           "typed: a bundled file lies outside its row's bundle");
+}
+
 void
 refuse_bundle_roots(const Parts& parts, const Fixture& f) {
     const QString root = dsd_qt::json_store_root();
@@ -1145,6 +1217,7 @@ refuse_bundle_roots(const Parts& parts, const Fixture& f) {
     expect("channel bundle carries a companion", !companion.isEmpty());
     refuse("row file inside another row's bundle", set_row(parts, "imported_files.json", groupRow, "path", companion),
            BackupError::Damaged, "typed: a library file lies in another row's bundle");
+    refuse_folded_bundle_paths(parts, f);
 }
 
 /* Every carried file must be one a later restore counts as configuration and replaces: named exactly by a path field
@@ -1434,6 +1507,7 @@ main(int argc, char** argv) {
         test_decode_flag_counts(base.archive);
         test_export_repairs();
         test_export_drops_foreign_bundle(fixture);
+        test_export_folded_bundle_paths(fixture);
         test_build_caps_and_cancel();
         test_sanitize();
     }
