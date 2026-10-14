@@ -139,7 +139,7 @@ typedef struct {
 enum {
     TETRA_PUB_NONE = 0, /* nothing */
     TETRA_PUB_CALL,     /* the CMCE call published_call_id */
-    TETRA_PUB_ANON,     /* trunked-mode speech no call record names */
+    TETRA_PUB_ANON,     /* trunked-mode speech no call record names, on the timeslot published_call_id holds */
     TETRA_PUB_DMO,      /* the direct mode call */
 };
 
@@ -180,7 +180,7 @@ typedef struct {
     tetra_dmo_call_t dmo;
     double heard_m;             /* decode clock: the last good speech of the heard timeslot (not trunking) */
     double held_m;              /* decode clock: its last good speech that played (held) */
-    uint16_t published_call_id; /* the call TETRA_PUB_CALL names */
+    uint16_t published_call_id; /* the call TETRA_PUB_CALL names; the timeslot of the speech TETRA_PUB_ANON shows */
     uint16_t heard_call_id;     /* the call the heard speech belongs to; heard_known */
     uint8_t published;          /* TETRA_PUB_* */
     uint8_t heard;              /* canonical slot 0 shows the speech of heard_tn (not trunking) */

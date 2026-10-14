@@ -1304,24 +1304,26 @@ speech_of_dmo(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, double now_m)
 }
 
 /* Speech no call record names publishes a call without identities, on a carrier a CRC-16 block proved: a speech frame's
- * CRC is too short to vouch for the carrier on its own. */
+ * CRC is too short to vouch for the carrier on its own. Its timeslot is all that names it: each timeslot is a traffic
+ * channel of its own (EN 300 392-2 clause 9.4.2.2), so the speech of another timeslot is another call, which ends the
+ * last one's (calls_publish()) rather than taking its epoch, media and crypto history. */
 static int
 speech_anonymous(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_speech* sp) {
     if (!tetra_confirm_carrier_proven(state)) {
         return 0;
     }
     const dsd_call_crypto_state crypto = crypto_state(state, sp->sealed, sp->air_enc);
-    if (!calls_carrying(state, ts, TETRA_PUB_ANON, 0U)) {
+    if (!calls_carrying(state, ts, TETRA_PUB_ANON, sp->tn)) {
         dsd_call_observation o;
         DSD_MEMSET(&o, 0, sizeof o);
         o.protocol = calls_protocol(state);
         o.kind = DSD_CALL_KIND_VOICE;
-        calls_publish(opts, state, ts, &o, crypto, TETRA_PUB_ANON, 0U);
+        calls_publish(opts, state, ts, &o, crypto, TETRA_PUB_ANON, sp->tn);
     } else {
         /* Its timeslot's signalling encryption, which classifies it, may have changed since. */
         calls_reclassify(opts, state, crypto);
     }
-    return calls_carrying(state, ts, TETRA_PUB_ANON, 0U);
+    return calls_carrying(state, ts, TETRA_PUB_ANON, sp->tn);
 }
 
 /* The canonical call @p sp's speech publishes as (calls_publish_call(), dmo_publish(), speech_anonymous()): its kind

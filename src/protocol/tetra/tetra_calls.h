@@ -323,7 +323,8 @@ int tetra_calls_speech_muted(const dsd_opts* opts, const dsd_state* state, const
  * Not trunking, it makes its timeslot the heard one, and when it plays (tetra_speech::audible) the one that holds the
  * receiver (tetra_voice_hold()): speech that does not play holds nothing. Its call is seen (it does not age) and publishes on canonical slot
  * 0 unless it already does: the followed call or a call record (not after its D-TX CEASED), the direct mode call while
- * a DM-SETUP or DM-OCCUPIED set one up, else an anonymous call once the carrier is proven. The published call's media
+ * a DM-SETUP or DM-OCCUPIED set one up, else an anonymous call of its timeslot once the carrier is proven (another
+ * timeslot's anonymous speech is another call). The published call's media
  * turns active. A followed call that turned out undecryptable while encrypted calls are not followed is locked out and
  * left. Speech of the followed call keeps the trunking state machine on it (tetra_sm_note_voice()); other speech marks
  * reception. @p opts may be NULL.

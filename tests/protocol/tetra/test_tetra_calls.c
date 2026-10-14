@@ -1832,6 +1832,42 @@ test_heard_call_speech(void) {
     session_close(&s);
 }
 
+/* Speech no call record names is one call per timeslot: each timeslot is a traffic channel of its own (EN 300 392-2
+ * clause 9.4.2.2), so when the heard timeslot moves, the anonymous call of the last one ends and the new timeslot's
+ * publishes as a call of its own, with its own epoch, media and crypto class. Here TN2's clear speech turns encrypted
+ * and muted, its bursts going on past its hold, and audible TN3 speech takes the receiver. */
+static void
+test_anonymous_call_per_timeslot(void) {
+    session s = session_open();
+    session_history(&s);
+    s.opts->trunk_enable = 0;
+    s.opts->dmr_mute_encL = 1;
+    tetra_sm_tick(s.opts, s.state);
+    tetra_state_t* const ts = tetra_st(s.state);
+    speech(&s, 2);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == DSD_CALL_KIND_VOICE && call.ota_target_id == 0u);
+    assert(call.crypto == DSD_CALL_CRYPTO_CLEAR && ts->calls.heard_tn == 2 && ts->calls.held);
+    const uint64_t tn2 = call.epoch;
+    ts->calls.slot_enc[2] = 1u + TETRA_ENC_MODE_EVEN; /* no key for it: muted */
+    for (int i = 1; i <= 3; i++) {
+        at_seconds(1000.0 + 0.5 * i);
+        speech(&s, 2);
+        call = canonical(s.state);
+        assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == tn2 && ts->calls.heard_tn == 2);
+    }
+    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    const uint64_t pushes = s.state->event_history_s[0].push_seq;
+    at_seconds(1001.6);
+    speech(&s, 3);
+    call = canonical(s.state);
+    assert(ts->calls.heard_tn == 3 && ts->calls.held);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != tn2 && call.ota_target_id == 0u
+           && call.crypto == DSD_CALL_CRYPTO_CLEAR && call.media_active == 1U);
+    assert(s.state->event_history_s[0].push_seq > pushes); /* TN2's call ended into the history */
+    session_close(&s);
+}
+
 /* What a CRC-passed PDU or allocation changes in a record reaches the canonical call carrying it at once, not at the
  * next PDU or speech that happens to publish the call again: the air encryption a clear allocation of a late-entry
  * D-SETUP clears, the channel an allocation addressed to the call's party moves it to, and, on a traffic carrier that
@@ -2124,6 +2160,7 @@ main(void) {
     test_location_area_change_drops_calls();
     test_followed_call_speech();
     test_heard_call_speech();
+    test_anonymous_call_per_timeslot();
     test_record_changes_reach_the_call();
     test_followed_reallocation_moves_the_call();
     test_takeover_ends_the_call_left();
