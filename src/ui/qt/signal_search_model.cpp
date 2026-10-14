@@ -19,6 +19,7 @@
 #include <cmath>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -173,12 +174,32 @@ parseRange(const QVariantMap& m, dsd_signal_search_range* r) {
     return dsd_signal_search_validate(r, error, sizeof(error)) ? QString::fromUtf8(error) : QString();
 }
 
+/* A range saved when a dynamic squelch took 0 to 2 dB ran with the 3 dB the receiver clamps those margins to: it
+   loads with that margin rather than failing validation and being dropped. */
+static QVariantMap
+storedRange(QVariantMap m) {
+    /* Only the whole numbers parseRangeNumbers() takes: a fraction or an out-of-range value is not rounded into one. */
+    auto whole = [&](const QString& key, double* value) {
+        bool ok = false;
+        *value = m.value(key).toDouble(&ok);
+        return ok && std::isfinite(*value) && std::abs(*value - std::round(*value)) <= 1e-8;
+    };
+    double mode = 0, margin = 0;
+    const bool dynamic = whole(QStringLiteral("squelchMode"), &mode) && mode > -0.5 && mode < 2.5
+                         && dsd_squelch_mode_is_dynamic((int)std::round(mode));
+    if (dynamic && whole(QStringLiteral("squelchMargin"), &margin) && margin > -0.5
+        && margin < DSD_SQUELCH_MARGIN_MIN_DB) {
+        m[QStringLiteral("squelchMargin")] = (int)DSD_SQUELCH_MARGIN_MIN_DB;
+    }
+    return m;
+}
+
 SignalSearchModel::SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* index, QObject* parent)
     : QObject(parent), m_host(host), m_index(index) {
     auto array = json_store_load_array(QStringLiteral("signal-search-ranges.json"));
     for (const auto& value : array) {
         dsd_signal_search_range r;
-        if (parseRange(value.toObject().toVariantMap(), &r).isEmpty()) {
+        if (parseRange(storedRange(value.toObject().toVariantMap()), &r).isEmpty()) {
             m_ranges.append(rangeMap(r));
         }
     }

@@ -13,6 +13,9 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QList>
 #include <QMap>
 #include <QMetaType>
@@ -22,6 +25,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 #include <cassert>
 #include <cmath>
@@ -43,6 +47,7 @@
 #include <vector>
 #include "../test_support/qt_test_paths.h"
 #include "decoder_host.h"
+#include "json_store.h"
 #include "known_frequency_index.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
@@ -294,6 +299,43 @@ testRestartAfterPausedStop(dsd_qt::KnownFrequencyIndex* index) {
     assert(restarted != 0 && restarted != 32);
     desktop.enter(dsd_qt::DecoderHost::Idle);
     dsd_app_frontend_runtime_stop();
+}
+
+/* Ranges saved when a dynamic squelch took 0 to 2 dB load with the 3 dB margin the receiver applied to them, rather
+   than being dropped as invalid; a Level range keeps the margin it does not use. */
+void
+testStoredMarginBelowMinimum(dsd_qt::KnownFrequencyIndex* index) {
+    const QString file = QStringLiteral("signal-search-ranges.json");
+    const QJsonArray previous = dsd_qt::json_store_load_array(file);
+    QVariantMap noise, level;
+    {
+        dsd_qt::SignalSearchModel defaults(nullptr, index);
+        noise = defaults.defaultRange();
+        level = defaults.defaultRange();
+    }
+    noise[QStringLiteral("name")] = QStringLiteral("Noise 1 dB");
+    noise[QStringLiteral("squelchMode")] = 2;
+    noise[QStringLiteral("squelchMargin")] = 1;
+    level[QStringLiteral("name")] = QStringLiteral("Level 0 dB");
+    level[QStringLiteral("squelchMode")] = 0;
+    level[QStringLiteral("squelchMargin")] = 0;
+    // Only a whole margin the validation took before is lifted: a malformed one is still refused, not rounded into it.
+    QJsonArray stored{QJsonObject::fromVariantMap(noise), QJsonObject::fromVariantMap(level)};
+    for (double malformed : {1.5, -0.25, 4294967296.0}) {
+        QVariantMap bad = noise;
+        bad[QStringLiteral("name")] = QStringLiteral("Malformed");
+        bad[QStringLiteral("squelchMargin")] = malformed;
+        stored.append(QJsonObject::fromVariantMap(bad));
+    }
+    assert(dsd_qt::json_store_save_array(file, stored));
+    dsd_qt::SignalSearchModel search(nullptr, index);
+    const QVariantList ranges = search.ranges();
+    assert(ranges.size() == 2);
+    assert(ranges[0].toMap().value(QStringLiteral("name")) == QStringLiteral("Noise 1 dB"));
+    assert(ranges[0].toMap().value(QStringLiteral("squelchMargin")).toInt() == 3);
+    assert(ranges[1].toMap().value(QStringLiteral("name")) == QStringLiteral("Level 0 dB"));
+    assert(ranges[1].toMap().value(QStringLiteral("squelchMargin")).toInt() == 0);
+    assert(dsd_qt::json_store_save_array(file, previous));
 }
 
 /* A Resume refused while the session winds down (admission already closed) is kept until that session ends, and
@@ -651,6 +693,7 @@ main(int argc, char** argv) {
     testTickRetryWithoutInitialization(&index);
     testResumeWhileWindingDown(&index);
     testRestartAfterPausedStop(&index);
+    testStoredMarginBelowMinimum(&index);
     return 0;
 }
 

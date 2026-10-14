@@ -11,6 +11,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <limits>
@@ -846,6 +847,21 @@ main() {
     }
     range.step_num = 1;
     assert(dsd_signal_search_validate(&range, nullptr, 0) < 0);
+    // A dynamic squelch takes the margins the receiver applies, never one it would clamp; Level mode uses none.
+    dsd_signal_search_range squelch;
+    dsd_signal_search_range_default(&squelch);
+    for (int mode : {DSD_SQUELCH_MODE_AUTO, DSD_SQUELCH_MODE_NOISE}) {
+        squelch.squelch_mode = mode;
+        squelch.squelch_margin_db = DSD_SQUELCH_MARGIN_MIN_DB - 1;
+        assert(dsd_signal_search_validate(&squelch, nullptr, 0) < 0);
+        squelch.squelch_margin_db = DSD_SQUELCH_MARGIN_MAX_DB + 1;
+        assert(dsd_signal_search_validate(&squelch, nullptr, 0) < 0);
+        squelch.squelch_margin_db = DSD_SQUELCH_MARGIN_MIN_DB;
+        assert(dsd_signal_search_validate(&squelch, nullptr, 0) == 0);
+    }
+    squelch.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    squelch.squelch_margin_db = 0;
+    assert(dsd_signal_search_validate(&squelch, nullptr, 0) == 0);
     return 0;
 }
 

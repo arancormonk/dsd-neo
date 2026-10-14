@@ -96,8 +96,14 @@ validate_listening(const dsd_signal_search_range* range) {
     }
     if (range->squelch_mode < DSD_SQUELCH_MODE_LEVEL || range->squelch_mode > DSD_SQUELCH_MODE_NOISE
         || (range->am && range->squelch_mode == DSD_SQUELCH_MODE_NOISE) || range->squelch_margin_db < 0
-        || range->squelch_margin_db > 30 || range->squelch_dbfs < -160 || range->squelch_dbfs > 0) {
+        || range->squelch_margin_db > DSD_SQUELCH_MARGIN_MAX_DB || range->squelch_dbfs < -160
+        || range->squelch_dbfs > 0) {
         return "Invalid listening squelch for this modulation";
+    }
+    /* The receiver clamps a dynamic squelch's margin into this range; a saved margin outside it would not be the one
+       applied. Level mode has no margin. */
+    if (dsd_squelch_mode_is_dynamic(range->squelch_mode) && range->squelch_margin_db < DSD_SQUELCH_MARGIN_MIN_DB) {
+        return "Squelch margin must be 3 to 30 dB";
     }
     return NULL;
 }

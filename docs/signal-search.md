@@ -36,7 +36,10 @@ suppressed until the next pass.
 | Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls |
 
 RF detection sensitivity and listening squelch are separate. Changing listening
-squelch does not change which channels pass the RF detector. AM and analog-only
+squelch does not change which channels pass the RF detector. An Auto or Noise
+listening squelch takes a margin of 3 to 30 dB, the range the receiver applies;
+a range with a margin outside it is refused rather than saved, and a range saved
+earlier with 0 to 2 dB loads with the 3 dB the receiver applied. AM and analog-only
 NFM ranges open their monitor directly. Digitally enabled NFM ranges first run
 the selected profile. Auto normally takes about six seconds to rotate its symbol
 profiles, so the two-second default cannot identify every supported signal.
