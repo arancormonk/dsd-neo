@@ -121,6 +121,10 @@ typedef struct {
     uint32_t talker_ssi;    /**< transmitting party of the transmission in progress; 0 none or unknown */
     uint16_t call_id;       /**< call identifier */
     uint16_t event_label;   /**< event label assigned to a party of the call (TETRA_CALL_F_EVENT_LABEL) */
+    uint16_t label_carrier; /**< label_alloc: the carrier number of the allocated channel the label applies on */
+    uint32_t label_epoch;   /**< not label_alloc: the carrier (tetra_confirm_carrier_epoch()) the label applies on */
+    uint8_t label_slots;    /**< the timeslots the label applies on (table 21.87 bitmap); 0 when not known */
+    uint8_t label_alloc;    /**< the label applies on the channel the PDU that assigned it allocated */
     uint8_t phase;          /**< TETRA_CALL_*; TETRA_CALL_FREE for an unused entry */
     uint8_t flags;          /**< TETRA_CALL_F_* */
     uint8_t basic_service;  /**< basic service information (table 14.35) as last signalled */

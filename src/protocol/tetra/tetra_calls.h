@@ -127,16 +127,19 @@ typedef struct {
 void tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* ev, tetra_mac_sdu* sdu);
 
 /**
- * @brief Attach a channel allocation no call PDU took to the call whose party the PDU addressed (by SSI or by an event
- * label assigned to it). It updates that call's traffic channel, and a "go to the MCCH" allocation (no timeslots) to
- * the followed call ends it; it never tunes.
+ * @brief The MAC delivered @p sdu's PDU (a fragmented message at its MAC-END) and its call PDUs acted. A channel
+ * allocation no call PDU took attaches to the call whose party the PDU addressed (by SSI, or by an event label assigned
+ * to it on this channel): it updates that call's traffic channel, and a "go to the MCCH" allocation (no timeslots) to
+ * the followed call ends it; it never tunes. An event label or usage marker the address assigns goes to the call of its
+ * party from here (EN 300 392-2 clause 23.4.1.2.3.1), the label on the channel it applies on: the one the PDU
+ * allocated, else the one it came on.
  */
 void tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu);
 
 /**
  * @brief An addressed MAC-RESOURCE (EN 300 392-2 table 21.55) was decoded on timeslot @p tn (0 when the TDMA clock does
- * not place it) with encryption mode @p enc_mode: an event label (address types 101, 111) or usage marker (110)
- * assignment to a party of a call binds it to that call, an encrypted allocation to a call's party sets the call's air
+ * not place it) with encryption mode @p enc_mode: an event label assignment (address types 101, 111) takes the label
+ * from every other party's call (the label binds at delivery, tetra_calls_on_allocation()), an encrypted allocation to a call's party sets the call's air
  * encryption, which the call's canonical call takes at once when it is published and which, while encrypted calls are
  * not followed, locks out and leaves a followed call it makes undecryptable; a PDU to the followed call's party proves
  * that call on the carrier (tetra_confirm), and the timeslot's signalling encryption is noted for speech no call record

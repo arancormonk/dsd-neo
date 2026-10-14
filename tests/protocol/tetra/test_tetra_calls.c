@@ -206,6 +206,35 @@ send_call_pdu(session* s, uint32_t ssi, uint32_t pdu_type, uint16_t call_id, int
     send_block(s, ssi, &cmce, 0, 0);
 }
 
+/* A MAC-RESOURCE to @p ssi that assigns it event label @p label (address type 101, EN 300 392-2 table 21.55), with no
+ * TM-SDU; when @p timeslots is not 0, with a channel allocation on @p carrier. */
+static void
+send_event_label(session* s, uint32_t ssi, uint32_t label, uint32_t timeslots, uint32_t carrier) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI_EVENT, ssi);
+    ttb_put(&b, label, 10);
+    ttb_resource_flags(&b, timeslots != 0u ? 1u : 0u);
+    if (timeslots != 0u) {
+        ttb_allocation(&b, timeslots, 1, carrier);
+    }
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* A MAC-RESOURCE addressed by event label @p label alone, with a channel allocation on @p carrier and no TM-SDU. */
+static void
+send_by_event_label(session* s, uint32_t label, uint32_t timeslots, uint32_t carrier) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_EVENT_LABEL, 0u);
+    ttb_put(&b, label, 10);
+    ttb_resource_flags(&b, 1u);
+    ttb_allocation(&b, timeslots, 1, carrier);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
 static int
 followed_call(const dsd_state* state) {
     tetra_sm_grant g;
@@ -717,9 +746,9 @@ test_header_encryption_reaches_the_call(void) {
         dsd_call_snapshot call = canonical(s.state);
         assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_CLEAR && call.audio_permitted);
         const uint64_t epoch = call.epoch;
-        tetra_call_t* const c = tetra_calls_find(s.state, 0x0A);
-        c->event_label = 0x55u;
-        c->flags = (uint8_t)(c->flags | TETRA_CALL_F_EVENT_LABEL);
+        const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+        send_event_label(&s, 0x100u, 0x55u, 0, 0); /* on the traffic carrier */
+        assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x55u);
 
         ttb_block b = {0};
         const uint32_t type = by_label ? TETRA_MAC_ADDR_EVENT_LABEL : TETRA_MAC_ADDR_USSI;
@@ -1671,35 +1700,6 @@ test_cell_change_forgets_the_carrier(void) {
     session_close(&s);
 }
 
-/* A MAC-RESOURCE to @p ssi that assigns it event label @p label (address type 101, EN 300 392-2 table 21.55), with no
- * TM-SDU; when @p timeslots is not 0, with a channel allocation on @p carrier. */
-static void
-send_event_label(session* s, uint32_t ssi, uint32_t label, uint32_t timeslots, uint32_t carrier) {
-    ttb_block b = {0};
-    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI_EVENT, ssi);
-    ttb_put(&b, label, 10);
-    ttb_resource_flags(&b, timeslots != 0u ? 1u : 0u);
-    if (timeslots != 0u) {
-        ttb_allocation(&b, timeslots, 1, carrier);
-    }
-    ttb_close_resource(&b, start);
-    ttb_finish(&b, TTB_SCH_F_BITS, -1);
-    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
-}
-
-/* A MAC-RESOURCE addressed by event label @p label alone, with a channel allocation on @p carrier and no TM-SDU. */
-static void
-send_by_event_label(session* s, uint32_t label, uint32_t timeslots, uint32_t carrier) {
-    ttb_block b = {0};
-    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_EVENT_LABEL, 0u);
-    ttb_put(&b, label, 10);
-    ttb_resource_flags(&b, 1u);
-    ttb_allocation(&b, timeslots, 1, carrier);
-    ttb_close_resource(&b, start);
-    ttb_finish(&b, TTB_SCH_F_BITS, -1);
-    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
-}
-
 /* A channel allocation names a traffic channel of the cell that made it (EN 300 392-2 clause 21.5.2: the carrier
  * number and timeslots of that cell's carriers), and an event label is valid on one MAC channel of one cell (clause
  * 23.4.1.2.3): a BSCH of another cell of the same network keeps the call records, which are the network's, but not
@@ -1775,6 +1775,58 @@ test_event_label_assignment(void) {
     send_by_event_label(&s, 0x55u, 4, 140);
     send_by_event_label(&s, 0u, 4, 140);
     assert(c->alloc.carrier == 130 && c->alloc.timeslots == 2);
+    session_close(&s);
+}
+
+/* An event label is valid on one MAC channel (EN 300 392-2 clause 23.4.1.2.3): one assigned in a PDU with a channel
+ * allocation applies on the allocated channel, one assigned without on the channel the PDU came on, until the receiver
+ * leaves it. A PDU addressed by the label on another channel is for whichever party holds the label there, so its
+ * allocation attaches to no record: on the control channel, a label assigned for traffic carrier 120 names no one, and
+ * a label of the control channel names no one once a carrier boundary took the receiver off it. Followed onto carrier
+ * 120, the label assigned for it there names the followed call, whose "go to the MCCH" allocation by it ends it. */
+static void
+test_event_label_channel(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->tdma_valid = 1;
+    ts->tn = 1;
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    send_event_label(&s, 0x100u, 0x55u, 4, 120);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x55u);
+    send_by_event_label(&s, 0x55u, 2, 140);
+    assert(c->alloc.carrier == 120 && c->alloc.timeslots == 4);
+
+    send_event_label(&s, 0x100u, 0x66u, 0, 0);
+    send_by_event_label(&s, 0x66u, 2, 140);
+    assert(c->alloc.carrier == 140 && c->alloc.timeslots == 2);
+    ts->tn = 2;
+    send_by_event_label(&s, 0x66u, 4, 150);
+    assert(c->alloc.carrier == 140); /* assigned on TN1, the control channel: not TN2's */
+    ts->tn = 1;
+    tetra_forget_carrier(s.state);
+    tetra_confirm_note_signalling(s.state);
+    ts->tdma_valid = 1;
+    send_by_event_label(&s, 0x66u, 4, 150);
+    assert(c->alloc.carrier == 140 && c->alloc.timeslots == 2);
+    session_close(&s);
+
+    s = session_open();
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 0, 0);
+    send_event_label(&s, 0x200u, 0x77u, 0, 0); /* call 11's party, on the control channel */
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    send_event_label(&s, 0x100u, 0x55u, 4, 120); /* call 10's party, for its traffic channel */
+    assert(followed_call(s.state) == 0x0A && g_returns == 0);
+    tetra_forget_carrier(s.state); /* the tune to carrier 120 completed */
+    tetra_confirm_note_signalling(s.state);
+    send_by_event_label(&s, 0x77u, 2, 140);
+    assert(tetra_calls_peek(s.state, 0x0B)->alloc.timeslots == 0u);
+    send_by_event_label(&s, 0x55u, 0, 0);
+    assert(followed_call(s.state) == -1 && g_returns == 1);
     session_close(&s);
 }
 
@@ -2243,6 +2295,7 @@ main(void) {
     test_cell_change_forgets_allocations();
     test_sysinfo_tells_another_cell();
     test_event_label_assignment();
+    test_event_label_channel();
     test_network_change_drops_calls();
     test_network_change_retires_the_followed_call();
     test_location_area_change_drops_calls();

@@ -184,11 +184,34 @@ calls_new(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint16_t call_id)
     return victim;
 }
 
+/* The timeslot the TDMA clock places the PDU being decoded in, 0 while it is stopped. */
+static uint8_t
+calls_pdu_timeslot(const tetra_state_t* ts) {
+    return (ts->tdma_valid && ts->tn >= 1u && ts->tn <= 4u) ? ts->tn : 0u;
+}
+
+/* @p c's event label is valid on the channel the PDU being decoded came on: an event label is valid on one MAC channel
+ * (EN 300 392-2 clause 23.4.1.2.3), the allocated one when its assignment came with a channel allocation, else the one
+ * the assignment came on until the receiver leaves it, and on the timeslots of that channel. A timeslot not known on
+ * either side is no change. */
+static int
+calls_label_here(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts, const tetra_call_t* c) {
+    const uint8_t bit = tetra_slot_bit(calls_pdu_timeslot(ts));
+    if (c->label_slots != 0u && bit != 0u && (c->label_slots & bit) == 0u) {
+        return 0;
+    }
+    if (!c->label_alloc) {
+        return c->label_epoch == tetra_confirm_carrier_epoch(state);
+    }
+    uint16_t carrier = 0;
+    return tetra_calls_carrier(opts, state, &carrier) && carrier == c->label_carrier;
+}
+
 /* The call a party of which @p addr names: by its called, calling or talking SSI, or, an address that is an event
- * label (type 010), by the label assigned to one of them; an address that assigns a label names its party by the SSI
- * alone. The most recently heard of several. */
+ * label (type 010), by the label assigned to one of them on this channel (calls_label_here()); an address that assigns
+ * a label names its party by the SSI alone. The most recently heard of several. */
 static tetra_call_t*
-calls_by_address(tetra_state_t* ts, const tetra_mac_address* addr) {
+calls_by_address(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, const tetra_mac_address* addr) {
     uint32_t ssi = 0;
     const int by_ssi = address_ssi(addr, &ssi);
     const int by_label = addr->type == TETRA_MAC_ADDR_EVENT_LABEL && addr->event_label != TETRA_EVENT_LABEL_WITHDRAW
@@ -201,8 +224,8 @@ calls_by_address(tetra_state_t* ts, const tetra_mac_address* addr) {
         }
         const int ssi_match =
             by_ssi && ssi != 0u && (c->called_ssi == ssi || c->calling_ssi == ssi || c->talker_ssi == ssi);
-        const int label_match =
-            by_label && (c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == addr->event_label;
+        const int label_match = by_label && (c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u
+                                && c->event_label == addr->event_label && calls_label_here(opts, state, ts, c);
         if ((ssi_match || label_match) && (!best || c->seen_m > best->seen_m)) {
             best = c;
         }
@@ -857,10 +880,30 @@ calls_label_taken(tetra_state_t* ts, const tetra_mac_address* addr) {
     }
 }
 
-/* Event labels (address types 101 and 111) and usage markers (110) the PDU assigned to a party of @p c. Label 0
- * withdraws the party's label and the all-ones label leaves it as it is (clause 23.4.1.2.3.0). */
+/* @p c's party takes the event label @p sdu's address assigns, on the channel it applies on (EN 300 392-2 clause
+ * 23.4.1.2.3.1): the one the PDU allocated, else the one it came on, the carrier the receiver is on now and the
+ * timeslot the TDMA clock places the PDU in. A "go to the MCCH" allocation names no channel the label could be told
+ * on, so it binds none. */
 static void
-call_bind_address(tetra_state_t* ts, tetra_call_t* c, const tetra_mac_address* addr) {
+call_take_label(const dsd_state* state, const tetra_state_t* ts, tetra_call_t* c, const tetra_mac_sdu* sdu) {
+    if (sdu->has_alloc && sdu->alloc.timeslots == 0u) {
+        c->flags = (uint8_t)(c->flags & ~TETRA_CALL_F_EVENT_LABEL);
+        return;
+    }
+    c->event_label = sdu->addr.event_label;
+    c->flags = (uint8_t)(c->flags | TETRA_CALL_F_EVENT_LABEL);
+    c->label_alloc = sdu->has_alloc;
+    c->label_carrier = sdu->has_alloc ? sdu->alloc.carrier : 0U;
+    c->label_slots = sdu->has_alloc ? sdu->alloc.timeslots : tetra_slot_bit(calls_pdu_timeslot(ts));
+    c->label_epoch = sdu->has_alloc ? 0U : tetra_confirm_carrier_epoch(state);
+}
+
+/* Event labels (address types 101 and 111) and usage markers (110) the PDU of @p sdu assigned to a party of @p c, once
+ * its TM-SDU was delivered (a fragmented message's at its MAC-END, clause 23.4.1.2.3.1 b). Label 0 withdraws the
+ * party's label and the all-ones label leaves it as it is (clause 23.4.1.2.3.0). */
+static void
+call_bind_address(const dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_mac_sdu* sdu) {
+    const tetra_mac_address* const addr = &sdu->addr;
     if (addr->esi) {
         return;
     }
@@ -869,8 +912,7 @@ call_bind_address(tetra_state_t* ts, tetra_call_t* c, const tetra_mac_address* a
         if (addr->event_label == TETRA_EVENT_LABEL_WITHDRAW) {
             c->flags = (uint8_t)(c->flags & ~TETRA_CALL_F_EVENT_LABEL);
         } else if (addr->event_label != TETRA_EVENT_LABEL_KEEP) {
-            c->event_label = addr->event_label;
-            c->flags = (uint8_t)(c->flags | TETRA_CALL_F_EVENT_LABEL);
+            call_take_label(state, ts, c, sdu);
         }
     } else if (addr->type == TETRA_MAC_ADDR_SSI_USAGE) {
         c->usage_marker = addr->usage_marker;
@@ -963,9 +1005,6 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     call_apply(opts, state, ts, c, ev, sdu);
     call_follow_renamed(state, old_id, c->call_id);
     c->seen_m = dsd_decode_now_mono_s();
-    if (sdu && sdu->has_addr) {
-        call_bind_address(ts, c, &sdu->addr);
-    }
     if (ev->kind == TETRA_CALL_EV_TX_CEASED) {
         calls_end_call(opts, state, ts, c->call_id);
     }
@@ -980,14 +1019,14 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
 
 /* ---- MAC addresses and allocations ----------------------------------------------------------------------------- */
 
-void
-tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu) {
-    tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !sdu || !sdu->has_alloc || sdu->alloc_taken) {
+/* An allocation no call PDU of the TM-SDU took goes to the call of the party the PDU addressed, and never tunes. */
+static void
+calls_attach_addressed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_mac_sdu* sdu) {
+    if (!sdu->has_alloc || sdu->alloc_taken) {
         return;
     }
     sdu->alloc_taken = 1;
-    tetra_call_t* const c = sdu->has_addr ? calls_by_address(ts, &sdu->addr) : NULL;
+    tetra_call_t* const c = sdu->has_addr ? calls_by_address(opts, state, ts, &sdu->addr) : NULL;
     if (!c) {
         TETRA_LOG_VERBOSE(ts, 1, "[TETRA CALL] allocation carrier=%u slots=0x%X names no tracked call; not followed\n",
                           (unsigned)sdu->alloc.carrier, (unsigned)sdu->alloc.timeslots);
@@ -995,6 +1034,19 @@ tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu) 
     }
     call_attach(opts, state, ts, c, &sdu->alloc, 0);
     calls_sync_published(opts, state, ts, c);
+}
+
+void
+tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu) {
+    tetra_state_t* const ts = tetra_st(state);
+    if (!ts || !sdu) {
+        return;
+    }
+    calls_attach_addressed(opts, state, ts, sdu);
+    tetra_call_t* const c = sdu->has_addr ? calls_by_address(opts, state, ts, &sdu->addr) : NULL;
+    if (c) {
+        call_bind_address(state, ts, c, sdu);
+    }
 }
 
 void
@@ -1010,11 +1062,10 @@ tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_addre
         ts->calls.slot_enc[tn] = evidence;
     }
     calls_label_taken(ts, addr);
-    tetra_call_t* const c = calls_by_address(ts, addr);
+    tetra_call_t* const c = calls_by_address(opts, state, ts, addr);
     if (!c) {
         return;
     }
-    call_bind_address(ts, c, addr);
     const int followed = followed_id(state) == (int)c->call_id;
     if (followed) {
         tetra_confirm_note_followed_call(state);
@@ -1568,6 +1619,10 @@ tetra_calls_forget_cell(dsd_state* state) {
         DSD_MEMSET(&c->alloc, 0, sizeof c->alloc);
         c->alloc_m = 0.0;
         c->event_label = 0U;
+        c->label_carrier = 0U;
+        c->label_epoch = 0U;
+        c->label_slots = 0U;
+        c->label_alloc = 0U;
         c->usage_marker = 0U;
         c->flags = (uint8_t)(c->flags & ~(TETRA_CALL_F_EVENT_LABEL | TETRA_CALL_F_USAGE_MARKER));
     }
