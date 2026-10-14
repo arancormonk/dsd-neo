@@ -219,6 +219,17 @@ void tetra_calls_forget_carrier(dsd_state* state);
 void tetra_calls_forget_trunked_carrier(dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief A BSCH named another cell of the network: the records stay, as the network's calls go on across its cells, but
+ * what each holds of the last cell goes. A channel allocation names a carrier number and timeslots of the cell that
+ * made it (EN 300 392-2 clause 21.5.2), which another cell may give any call, and an event label or usage marker is
+ * valid on one channel of one cell (clauses 23.4.1.2.3, 23.5.5). So no speech on a channel the last cell allocated
+ * is a record's (tetra_calls_on_timeslot()), no PDU addressed by a label the last cell assigned attaches to one, and no
+ * record shows a channel of the last cell as its traffic channel, until the new cell allocates one. The followed call's
+ * channel is the state machine's grant, which this leaves to it. Never creates TETRA state.
+ */
+void tetra_calls_forget_cell(dsd_state* state);
+
+/**
  * @brief The identifiers the records are keyed by name nothing here any more: a BSCH named another network, whose SwMI
  * numbers its calls and parties itself (EN 300 392-2 clause 14.2.3: a downlink SSI is of the current network), or a
  * SYSINFO another location area, whose call identifiers may differ from this one's (clause 14.2.3). Every record ends

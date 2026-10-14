@@ -1528,6 +1528,22 @@ tetra_calls_forget_trunked_carrier(dsd_opts* opts, dsd_state* state) {
 }
 
 void
+tetra_calls_forget_cell(dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
+        tetra_call_t* const c = &ts->calls.call[i];
+        DSD_MEMSET(&c->alloc, 0, sizeof c->alloc);
+        c->alloc_m = 0.0;
+        c->event_label = 0U;
+        c->usage_marker = 0U;
+        c->flags = (uint8_t)(c->flags & ~(TETRA_CALL_F_EVENT_LABEL | TETRA_CALL_F_USAGE_MARKER));
+    }
+}
+
+void
 tetra_calls_forget_calls(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (!ts) {

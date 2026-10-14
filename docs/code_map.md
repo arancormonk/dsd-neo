@@ -4486,8 +4486,9 @@ and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and 
 STATUS the frontends show. What a BSCH of
 another cell or network forgets is decided in one place (`bsch_identity_change()` in `tetra_bsch.c`, before the new
 identity is taken, so what ends carries the network it was decoded on). The SYSINFO part belongs to the cell: a BSCH
-naming another MCC, MNC or colour code (`bsch_forget_cell()`) drops it with the TDMA clock and the partial TM-SDUs (a
-TM-SDU is rebuilt on one cell's control channel, whatever the colour code of a later fragment), and `trunk_cc_freq`
+naming another MCC, MNC or colour code (`bsch_forget_cell()`) drops it with the TDMA clock, the partial TM-SDUs (a
+TM-SDU is rebuilt on one cell's control channel, whatever the colour code of a later fragment), the channels the last
+cell allocated to the calls and the event labels it assigned (`tetra_calls_forget_cell()`; the records stay), and `trunk_cc_freq`
 when that SYSINFO set it, so an allocation decoded before the new cell's SYSINFO resolves to no frequency and nothing
 is followed until it names its control channel; `tetra_forget_carrier()` keeps it, since another carrier of the same
 cell shares it. Another cell is also another carrier, whatever the engine saw (a radio retuned outside the decoder),
@@ -4656,7 +4657,11 @@ single "current call".
   the transmitting party (or the addressed one when granted) and their encryption control the end-to-end flag; D-TX
   CEASED ends the transmission. The records belong to the network and location area they were made in: a BSCH of
   another network or a SYSINFO of another location area ends them all (`tetra_calls_forget_calls()`, Signalling
-  decoders above). A full table evicts the least recently heard record that is not followed;
+  decoders above). What a record holds of a cell goes with the cell: a channel allocation names a carrier number and
+  timeslots of the cell that made it (clause 21.5.2), and an event label or usage marker is valid on one channel of one
+  cell (clauses 23.4.1.2.3, 23.5.5), so another cell of the network keeps the records but not their channels and labels
+  (`tetra_calls_forget_cell()`): no speech on a channel the last cell allocated is a record's, and no PDU addressed by a
+  label it assigned attaches to one, until the new cell allocates the call a channel of its own. A full table evicts the least recently heard record that is not followed;
   `tetra_calls_tick()` (from `tetra_sm_tick()`) drops records nothing named for `TETRA_CALL_IDLE_S` (30 s) on the decode
   clock. The followed record never ages: the state machine's hangtime ends it. A record's air encryption is the
   encryption mode of the MAC-RESOURCE that allocated its channel, learnt from the clear address (a USSI, SMI or event
@@ -4817,6 +4822,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`) | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
 | Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
+| A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `usage_marker`) | the cell (a label: one channel of it) | an allocation (`call_attach()`), an SSI + event label or usage marker assignment | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`) |
 | D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network |
 | Carrier evidence (`confirm`) | the carrier | CRC-passed blocks | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
@@ -4829,7 +4835,7 @@ What each decoded event does:
 | Event | Leaves | Enters / sets |
 |---|---|---|
 | CRC-passed BSCH, same cell | direct mode | the TDMA clock |
-| CRC-passed BSCH, another cell | direct mode; the cell, the clock, the partial TM-SDUs, the timeslot speech context, the speech in progress, the followed call's proof | the new cell's identity and clock |
+| CRC-passed BSCH, another cell | direct mode; the cell, the clock, the partial TM-SDUs, the records' channel allocations and event labels, the timeslot speech context, the speech in progress, the followed call's proof | the new cell's identity and clock |
 | CRC-passed BSCH, another network | as another cell, and the call records with the follow of their identifiers, the SDS reassembly, the D-MM STATUS shown | the new network |
 | BSCH that fails | nothing | runs the clock to its slot |
 | CRC-passed SCH/HU (uplink) | direct mode | the carrier's polarity |

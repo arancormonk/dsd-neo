@@ -1635,6 +1635,79 @@ test_cell_change_forgets_the_carrier(void) {
     session_close(&s);
 }
 
+/* A MAC-RESOURCE to @p ssi that assigns it event label @p label (address type 101, EN 300 392-2 table 21.55), with no
+ * TM-SDU; when @p timeslots is not 0, with a channel allocation on @p carrier. */
+static void
+send_event_label(session* s, uint32_t ssi, uint32_t label, uint32_t timeslots, uint32_t carrier) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI_EVENT, ssi);
+    ttb_put(&b, label, 10);
+    ttb_resource_flags(&b, timeslots != 0u ? 1u : 0u);
+    if (timeslots != 0u) {
+        ttb_allocation(&b, timeslots, 1, carrier);
+    }
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* A MAC-RESOURCE addressed by event label @p label alone, with a channel allocation on @p carrier and no TM-SDU. */
+static void
+send_by_event_label(session* s, uint32_t label, uint32_t timeslots, uint32_t carrier) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_EVENT_LABEL, 0u);
+    ttb_put(&b, label, 10);
+    ttb_resource_flags(&b, 1u);
+    ttb_allocation(&b, timeslots, 1, carrier);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* A channel allocation names a traffic channel of the cell that made it (EN 300 392-2 clause 21.5.2: the carrier
+ * number and timeslots of that cell's carriers), and an event label is valid on one MAC channel of one cell (clause
+ * 23.4.1.2.3): a BSCH of another cell of the same network keeps the call records, which are the network's, but not
+ * their channels or event labels. Not trunking, speech on the timeslot of the tuned frequency the last cell had
+ * allocated to a call is not that call's but anonymous speech, and an allocation the new cell addresses by the event
+ * label the last cell assigned attaches to no record; the call's own allocation in the new cell gives it a channel
+ * again. A BSCH of the same cell keeps the channels and labels. */
+static void
+test_cell_change_forgets_allocations(void) {
+    session s = session_open();
+    session_history(&s);
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(120);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120); /* TN2 of the carrier being received */
+    send_event_label(&s, 0x100u, 0x55u, 0, 0);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    assert(c && c->alloc.carrier == 120 && c->alloc.timeslots == 4 && c->alloc.freq_hz == CARRIER_HZ(120));
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x55u);
+    ttb_block same = {0};
+    bsch_of(&same, 25u);
+    assert(tetra_bsch_parse(same.bits, same.n, s.opts, s.state) == 1);
+    assert(c->alloc.timeslots == 4 && (c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u);
+
+    ttb_block other = {0};
+    bsch_of(&other, 30u);
+    assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state) == 1);
+    assert(tetra_calls_peek(s.state, 0x0A) == c && c->called_ssi == 0x100u);
+    assert(c->alloc.timeslots == 0u && c->alloc.carrier == 0u && c->alloc.freq_hz == 0L && c->alloc_m <= 0.0);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) == 0u);
+    assert(tetra_calls_on_timeslot(s.opts, s.state, 2) == NULL);
+    speech(&s, 2);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == DSD_CALL_KIND_VOICE && call.ota_target_id == 0u);
+    sysinfo_again(&s);
+    send_by_event_label(&s, 0x55u, 4, 120);
+    assert(c->alloc.timeslots == 0u);
+
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 2, 130);
+    assert(c->alloc.carrier == 130 && c->alloc.timeslots == 2 && c->alloc.freq_hz == CARRIER_HZ(130));
+    session_close(&s);
+}
+
 /* Speech of the followed call, once its signalling proved it on its carrier, marks its canonical call's media and keeps
  * the state machine on it; speech that trails its D-TX CEASED opens nothing; and a followed call whose speech the
  * listener cannot decrypt is locked out and left while encrypted calls are not followed. */
@@ -2009,6 +2082,7 @@ main(void) {
     test_events_read_the_new_carrier();
     test_cell_change_forgets_sysinfo();
     test_cell_change_forgets_the_carrier();
+    test_cell_change_forgets_allocations();
     test_network_change_drops_calls();
     test_network_change_retires_the_followed_call();
     test_location_area_change_drops_calls();
