@@ -202,8 +202,8 @@ bsch_forget_cell(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
  * code, or another network) forgets the cell (bsch_forget_cell()). Another network (another MCC or MNC) forgets as well
  * what is keyed by the identities its SwMI gives out: a downlink SSI is a party of the current network (EN 300 392-2
  * clause 14.2.3), and its call identifiers are its own, so the call records end with the state machine's follow of
- * their identifiers (tetra_calls_forget_calls()), and the concatenated short data being reassembled from its senders
- * goes (tetra_mle_forget_reassembly()). Another cell of the same network keeps them: its calls go on across cells, and
+ * their identifiers (tetra_calls_forget_calls()), the concatenated short data being reassembled from its senders goes
+ * (tetra_mle_forget_reassembly()), and so does the D-MM STATUS it sent. Another cell of the same network keeps them: its calls go on across cells, and
  * the call records end only when a SYSINFO names another location area (tetra_calls_note_location_area()). Runs before
  * the new identity is taken, so the calls that end carry the network they were decoded on. Nothing here tunes. */
 static void
@@ -218,6 +218,9 @@ bsch_identity_change(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const 
     if (other_network) {
         tetra_calls_forget_calls(opts, state);
         tetra_mle_forget_reassembly(state);
+        /* The D-MM STATUS the frontends show was the last network's to its MSs (EN 300 392-2 clause 16.9.2.5). */
+        ts->mm_status_valid = 0;
+        ts->mm_status_code = 0;
     }
 }
 

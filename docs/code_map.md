@@ -4491,7 +4491,7 @@ forgets the direct mode channel's (`tetra_dmo_leave()`). A BSCH naming another n
 SSI is a party of the current network and the call identifiers are the SwMI's (EN 300 392-2 clause 14.2.3), so the
 call records end, with the state machine's follow of their identifiers, the heard call and the speech in progress
 (`tetra_calls_forget_calls()`), and so do the concatenated short data being reassembled
-(`tetra_mle_forget_reassembly()`). Another cell of the same network keeps them; the call records end there only when
+(`tetra_mle_forget_reassembly()`) and the D-MM STATUS the frontends show. Another cell of the same network keeps them; the call records end there only when
 its SYSINFO names another location area, whose call identifiers may differ (clause 14.2.3,
 `tetra_calls_note_location_area()`). Retunes within the cell, to a traffic carrier and back, keep all of it. Nothing
 here tunes: a followed call of the last network is followed on as a channel without a call record until the grant
@@ -4790,6 +4790,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`) | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
 | Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
+| D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network |
 | Carrier evidence (`confirm`) | the carrier | CRC-passed blocks | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
 | Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return; a decode-mode change disowns its tune in flight |
@@ -4802,7 +4803,7 @@ What each decoded event does:
 |---|---|---|
 | CRC-passed BSCH, same cell | direct mode | the TDMA clock |
 | CRC-passed BSCH, another cell | direct mode; the cell, the clock, the partial TM-SDUs, the timeslot speech context, the speech in progress, the followed call's proof | the new cell's identity and clock |
-| CRC-passed BSCH, another network | as another cell, and the call records with the follow of their identifiers, the SDS reassembly | the new network |
+| CRC-passed BSCH, another network | as another cell, and the call records with the follow of their identifiers, the SDS reassembly, the D-MM STATUS shown | the new network |
 | BSCH that fails | nothing | runs the clock to its slot |
 | CRC-passed SCH/HU (uplink) | direct mode | the carrier's polarity |
 | DSB (CRC-passed SCH/S, DMO system code) | the trunked carrier's TM-SDUs, timeslot speech context and followed call's proof (`tetra_enter_dmo()`), the TDMA clock | direct mode; with its SCH/H, the colour code, protection and call its message sets; without it, an encrypted SCH/S seals the traffic |

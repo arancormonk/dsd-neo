@@ -1167,8 +1167,9 @@ sysinfo_again(session* s) {
 
 /* Call identifiers and party SSIs are numbered by each network: a BSCH naming another network (another MCC or MNC)
  * ends every call record of the last one, so a D-TX GRANTED of the new network that reuses an old call identifier, its
- * allocation with it, names no record and tunes nowhere. A retune within the network (a carrier boundary) and a BSCH
- * of another cell of it keep the records. */
+ * allocation with it, names no record and tunes nowhere, and the D-MM STATUS the last network sent is not shown any
+ * more. A retune within the network (a carrier boundary) and a BSCH of another cell of it keep the records and the
+ * status. */
 static void
 test_network_change_drops_calls(void) {
     session s = session_open();
@@ -1178,15 +1179,19 @@ test_network_change_drops_calls(void) {
     assert(g_tunes == 0 && tetra_calls_peek(s.state, 0x0A) != NULL);
 
     tetra_forget_carrier(s.state);
+    tetra_st(s.state)->mm_status_valid = 1; /* a D-MM STATUS of the network */
+    tetra_st(s.state)->mm_status_code = 5;
     ttb_block cell = {0};
     ttb_sync_pdu(&cell, 262, 1001, 30);
     assert(tetra_bsch_parse(cell.bits, cell.n, s.opts, s.state) == 1);
     assert(tetra_calls_peek(s.state, 0x0A) != NULL && tetra_calls_peek(s.state, 0x0B) != NULL);
+    assert(s.state->tetra_pub.mm_status_valid && s.state->tetra_pub.mm_status_code == 5);
 
     ttb_block other = {0};
     ttb_sync_pdu(&other, 262, 1002, 30);
     assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state) == 1);
     assert(tetra_calls_peek(s.state, 0x0A) == NULL && tetra_calls_peek(s.state, 0x0B) == NULL);
+    assert(!s.state->tetra_pub.mm_status_valid && s.state->tetra_pub.mm_status_code == 0);
     sysinfo_again(&s);
     send_tx_granted_on(&s, 0x100u, 0x0A, 0x4444u, 4, 120);
     assert(g_tunes == 0 && followed_call(s.state) == -1 && tetra_calls_peek(s.state, 0x0A) == NULL);
