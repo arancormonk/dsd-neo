@@ -388,7 +388,11 @@ validate_store(const QString& store, QJsonArray& rows, QString* why) {
     if (store == QLatin1String(kDecryptionProfilesStore)) {
         return validate_profiles(rows, why);
     }
-    return validate_ranges(rows, why);
+    if (store == QLatin1String(kSignalSearchRangesStore)) {
+        return validate_ranges(rows, why);
+    }
+    *why = QStringLiteral("not a store a backup carries");
+    return false;
 }
 
 Summary

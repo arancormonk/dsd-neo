@@ -50,6 +50,7 @@
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
 #include "backup_archive.h"
+#include "backup_archive_rules.h"
 #include "decode_mode_flag.h"
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
@@ -1257,6 +1258,14 @@ test_decode_flag_counts(const QByteArray& archive) {
 }
 
 void
+test_unknown_store_name() {
+    QJsonArray rows{QJsonObject{{"uid", "a"}}};
+    QString why;
+    expect("an unknown store name is refused",
+           !dsd_qt::backup::detail::validate_store("other.json", rows, &why) && !why.isEmpty());
+}
+
+void
 test_passphrases() {
     using dsd_qt::backup::backup_passphrase_ok;
     const QString acute = QString(QChar(0x0301));
@@ -1349,6 +1358,7 @@ main(int argc, char** argv) {
     test_json_store_root();
     test_typed_path_table();
     test_decode_flag_presets();
+    test_unknown_store_name();
     test_passphrases();
     test_host_document_copies();
     {
