@@ -864,9 +864,9 @@ DecryptionProfilesModel::saveProfile(const QVariantMap& draft) {
     }
     auto next = m_rows;
     if (at < 0) {
-        next.append(row);
+        next.append(std::move(row));
     } else {
-        next[at] = row;
+        next[at] = std::move(row);
     }
     if (!persist(next)) {
         removeFiles(staged);
