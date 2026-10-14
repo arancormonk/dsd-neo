@@ -1169,6 +1169,17 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     fillQualityView(next, snapshot);
     fillSiteView(next, snapshot);
 
+    fillControlViews(next, opts_snapshot, snapshot, now_m);
+
+    fillUiMessage(next, snapshot);
+
+    publish(next);
+    notifyDecodeNow();
+}
+
+void
+MetricsModel::fillControlViews(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
+                               double now_m) const {
     /* Engine truth for the monitor's toggle buttons. The engine owns both states
      * — commands only enqueue a request — and on Android the service outlives the
      * Activity, so a relaunched UI must read where they actually stand rather than
@@ -1183,11 +1194,6 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     fillScanTimingView(next, opts_snapshot, snapshot, now_m);
     fillRxToneView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
     fillTetraView(next, opts_snapshot, snapshot);
-
-    fillUiMessage(next, snapshot);
-
-    publish(next);
-    notifyDecodeNow();
 }
 
 qlonglong

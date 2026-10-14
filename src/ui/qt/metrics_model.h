@@ -2227,6 +2227,9 @@ class MetricsModel : public QObject {
     void fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The TETRA rows from the shared app-control view. */
     static void fillTetraView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief The control views refresh() reads after the call lines, against their decode reading @p now_m: the
+     * listening and scan controls, the scan timing, the received tone and the TETRA rows. */
+    void fillControlViews(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The tuner gain readout: "auto", the gain in dB, or a dash when the tuner reports none. */
     static QString tunerGainText(const dsd_frontend_metrics& metrics);
     /** @brief The engine's command acknowledgement until its expiry stamp; arms m_messageTimer for that expiry. */

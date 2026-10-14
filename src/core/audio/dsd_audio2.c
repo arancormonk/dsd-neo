@@ -689,6 +689,26 @@ dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short
     dsd_audio_play_decoded_pcm16_record(opts, state, pcm, count, 1);
 }
 
+/* One DSD_VOICE_FRAME_SAMPLES frame of decoded PCM through the voice chain to the outputs, and to the recordings when
+   @p record. */
+static void
+dsd_audio_play_decoded_frame(const dsd_opts* opts, dsd_state* state, const short* frame, int record) {
+    for (size_t i = 0; i < DSD_VOICE_FRAME_SAMPLES; i++) {
+        state->audio_out_temp_buf[i] = (float)frame[i];
+    }
+    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
+    dsd_voice_stage_short_left(opts, state);
+    if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
+        writeSynthesizedVoice(opts, state);
+    }
+    const dsd_mix_verdict verdict = record ? DSD_MIX_SETTLED : DSD_MIX_SETTLED_UNRECORDED;
+    if (opts->pulse_digi_out_channels == 2) {
+        dsd_play_voice_ss(opts, state, verdict);
+    } else {
+        dsd_play_voice_ms(opts, state, verdict);
+    }
+}
+
 void
 dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count,
                                     int record) {
@@ -702,20 +722,7 @@ dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, cons
         return;
     }
     for (size_t offset = 0; count - offset >= DSD_VOICE_FRAME_SAMPLES; offset += DSD_VOICE_FRAME_SAMPLES) {
-        for (size_t i = 0; i < DSD_VOICE_FRAME_SAMPLES; i++) {
-            state->audio_out_temp_buf[i] = (float)pcm[offset + i];
-        }
-        dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
-        dsd_voice_stage_short_left(opts, state);
-        if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
-            writeSynthesizedVoice(opts, state);
-        }
-        const dsd_mix_verdict verdict = record ? DSD_MIX_SETTLED : DSD_MIX_SETTLED_UNRECORDED;
-        if (opts->pulse_digi_out_channels == 2) {
-            dsd_play_voice_ss(opts, state, verdict);
-        } else {
-            dsd_play_voice_ms(opts, state, verdict);
-        }
+        dsd_audio_play_decoded_frame(opts, state, pcm + offset, record);
     }
 }
 
