@@ -48,7 +48,7 @@ class Parser {
     run() {
         const bool ok = checkTarget() && readManifest() && readIdentity() && readSourceRoots() && readOrigin()
                         && readFiles() && readStores() && readPrefs() && readAvoids() && checkTypedPaths()
-                        && checkBundles() && verifyHashes();
+                        && checkBundles() && checkCoverage() && verifyHashes();
         if (!ok) {
             ParseResult failed;
             failed.error = m_result.error;
@@ -323,10 +323,12 @@ class Parser {
         if (field.kind != PathKind::File || path.isEmpty()) {
             return true;
         }
-        if (!m_carried.contains(archivePath(path))) {
+        const QString carried = archivePath(path);
+        if (!m_carried.contains(carried)) {
             return fail(BackupError::Damaged, QStringLiteral("typed: %1 %2 names a file the backup does not carry")
                                                   .arg(store, QLatin1String(field.field)));
         }
+        m_named.insert(carried);
         return true;
     }
 
@@ -372,6 +374,7 @@ class Parser {
             return fail(BackupError::Damaged, QStringLiteral("typed: a bundled file lies outside its row's bundle"));
         }
         roots->insert(path_key(relative), index);
+        m_claimed.insert(relative);
         return true;
     }
 
@@ -386,13 +389,27 @@ class Parser {
         }
         // Removing a row deletes its whole bundle, so no other row's file may live inside one.
         for (int i = 0; i < library.size(); ++i) {
-            const QString file =
-                path_key(archivePath(library.at(i).toObject().value(QLatin1String("path")).toString()));
-            for (auto root = roots.cbegin(); root != roots.cend(); ++root) {
-                if (root.value() != i && file.startsWith(root.key() + QLatin1Char('/'))) {
-                    return fail(BackupError::Damaged,
-                                QStringLiteral("typed: a library file lies in another row's bundle"));
-                }
+            const QString bundle =
+                bundle_of(archivePath(library.at(i).toObject().value(QLatin1String("path")).toString()));
+            const auto owner = bundle.isEmpty() ? roots.constEnd() : roots.constFind(path_key(bundle));
+            if (owner != roots.constEnd() && owner.value() != i) {
+                return fail(BackupError::Damaged, QStringLiteral("typed: a library file lies in another row's bundle"));
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Every carried file is one a path field names or one inside a claimed bundle, exactly as a case-sensitive
+     * filesystem lays them out. Those are the files a later restore counts as this configuration and replaces; a file
+     * in neither would be written now and never removed again.
+     */
+    bool
+    checkCoverage() {
+        for (const QString& path : m_carried.paths()) {
+            if (!m_named.contains(path) && !m_claimed.contains(bundle_of(path))) {
+                return fail(BackupError::Damaged,
+                            QStringLiteral("typed: a carried file is named by no path field and lies in no bundle"));
             }
         }
         return true;
@@ -416,6 +433,8 @@ class Parser {
     qint64 m_dataOffset = 0;
     QStringList m_sourceRoots;
     CarriedSet m_carried;
+    QSet<QString> m_named;   // archive paths a File value names
+    QSet<QString> m_claimed; // exact archive paths of the claimed bundle roots
     ParseResult m_result;
 };
 

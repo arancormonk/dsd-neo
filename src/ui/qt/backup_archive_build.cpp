@@ -68,6 +68,7 @@ class Builder {
         for (const char* store : {kSavedSystemsStore, kScanListsStore, kDecryptionProfilesStore}) {
             sanitizeStore(QLatin1String(store));
         }
+        dropUncoveredFiles();
         QByteArray archive;
         if (!readFiles() || !assemble(&archive) || !selfCheck(archive)) {
             wipe(archive);
@@ -233,6 +234,18 @@ class Builder {
         return true;
     }
 
+    /** Whether @p row's file lies in a bundle another row claims; removing that row would delete it. */
+    bool
+    inForeignBundle(const QJsonObject& row) const {
+        const QString file = row.value(QLatin1String("path")).toString().mid(m_root.size() + 1);
+        const QString bundle = bundle_of(file);
+        if (bundle.isEmpty() || !m_claimedRoots.contains(path_key(bundle))) {
+            return false;
+        }
+        const QString own = row.value(QLatin1String("bundleRoot")).toString().mid(m_root.size() + 1);
+        return own.isEmpty() || path_key(own) != path_key(bundle);
+    }
+
     void
     sanitizeLibrary() {
         QJsonArray kept;
@@ -243,17 +256,10 @@ class Builder {
                 kept.append(row);
             }
         }
-        // Removing a row deletes its whole bundle, so a file inside another row's bundle cannot keep a row of its own.
         QJsonArray library;
         for (const auto& value : kept) {
             const QJsonObject row = value.toObject();
-            const QString file = path_key(row.value(QLatin1String("path")).toString().mid(m_root.size() + 1));
-            const QString own = path_key(row.value(QLatin1String("bundleRoot")).toString().mid(m_root.size() + 1));
-            bool foreign = false;
-            for (auto root = m_claimedRoots.cbegin(); root != m_claimedRoots.cend(); ++root) {
-                foreign = foreign || (root.key() != own && file.startsWith(root.key() + QLatin1Char('/')));
-            }
-            if (foreign) {
+            if (inForeignBundle(row)) {
                 notInclude(QObject::tr("Imported file %1").arg(row_label(row)));
                 continue;
             }
@@ -295,6 +301,36 @@ class Builder {
             rows.replace(i, row);
         }
         m_stores.insert(store, rows);
+    }
+
+    /**
+     * Keep only the files the sanitized stores still name or a kept row's bundle holds: the restore refuses any
+     * other carried file, because no later restore would count it as configuration and replace it.
+     */
+    void
+    dropUncoveredFiles() {
+        QSet<QString> named, claimed;
+        for (auto it = m_stores.cbegin(); it != m_stores.cend(); ++it) {
+            for (const TypedPathValue& value : typed_path_values(it.key(), it.value())) {
+                const QString relative = value.value.mid(m_root.size() + 1);
+                if (value.field.kind == PathKind::File) {
+                    named.insert(relative);
+                } else if (value.field.kind == PathKind::BundleRoot) {
+                    claimed.insert(relative);
+                }
+            }
+        }
+        CarriedSet kept;
+        QMap<QString, QString> sources;
+        for (const QString& path : m_carried.paths()) {
+            QString why;
+            if ((named.contains(path) || claimed.contains(bundle_of(path)))
+                && kept.add(path, &why) == CarriedSet::Added) {
+                sources.insert(path, m_sources.value(path));
+            }
+        }
+        m_carried = std::move(kept);
+        m_sources = std::move(sources);
     }
 
     void

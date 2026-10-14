@@ -67,7 +67,15 @@ bool unsafe_text(const QString& text);
 /** Why @p path may not name a carried file, or empty when it may. */
 QString archive_path_problem(const QString& path);
 
-/** The carried file table's paths, refusing anything a restore could not write as one distinct file. */
+/** The bundle directory ("imports/bundles/<id>", exact case) a path lies below, or empty when it lies in none. */
+QString bundle_of(const QString& path);
+
+/**
+ * The carried file table's paths, refusing anything a restore could not write as one distinct file.
+ *
+ * Clashes are found on folded keys (a case-insensitive or normalizing filesystem would merge them); which directory a
+ * file lies in is answered exactly, as a case-sensitive filesystem lays it out.
+ */
 class CarriedSet {
   public:
     enum Outcome { Added, Present, Refused };
@@ -79,10 +87,10 @@ class CarriedSet {
         return m_exact.contains(path);
     }
 
-    /** Whether some carried file lies below the directory @p path. */
+    /** Whether some carried file lies below the directory @p path, compared exactly. */
     bool
     holdsFilesUnder(const QString& path) const {
-        return m_directories.contains(path_key(path));
+        return m_directories.contains(path);
     }
 
     const QStringList&
@@ -92,7 +100,8 @@ class CarriedSet {
 
   private:
     QStringList m_paths;
-    QSet<QString> m_exact, m_files, m_directories;
+    QSet<QString> m_exact, m_directories;      // exact
+    QSet<QString> m_fileKeys, m_directoryKeys; // folded, for clashes only
 };
 
 /* Store identity: the loaders' own rules. The export repairs what a loader would repair; the restore refuses it. */

@@ -173,8 +173,9 @@ struct BuildResult {
  * library row whose file is not carried is dropped and listed; a bundle root that is not owned is cleared and its
  * row's file carried alone, while an owned one carries its whole subtree (regular, non-symlink files only); every
  * Recording value is cleared; profiles lose their compiled form and runtime references; rows the models' loaders
- * would drop are dropped and identities they would regenerate are regenerated. Carried channel maps that name
- * companion files by absolute path are listed too. Exceeding a cap fails with TooLarge.
+ * would drop are dropped and identities they would regenerate are regenerated. A file no kept value names and no kept
+ * row's bundle holds is not carried. Carried channel maps that name companion files by absolute path are listed too.
+ * Exceeding a cap fails with TooLarge.
  *
  * @param cancel Optional; checked between files. A raised flag ends the build with BuildResult::cancelled set.
  */
@@ -209,8 +210,10 @@ struct ParseResult {
  * Any failure returns only an error and a detail. On success every File value of the returned stores is empty or
  * names a carried file (targetRoot + "/" + path); every bundle root is empty or an owned imports/bundles/<id> that
  * holds carried files and that no other row's root or file lies in; a row's file under imports/bundles/ lies in its
- * own bundle (a channel map updated in place keeps its file in imports/, beside its bundle); and every Recording is
- * empty. @p targetRoot must be a clean absolute path (else Io).
+ * own bundle (a channel map updated in place keeps its file in imports/, beside its bundle); every Recording is
+ * empty; and every carried file is named exactly by a File value or lies, exactly, inside a claimed bundle root - the
+ * files a later restore counts as this configuration and replaces. @p targetRoot must be a clean absolute path (else
+ * Io).
  */
 ParseResult backup_parse_archive(const QByteArray& archive, const QString& targetRoot);
 

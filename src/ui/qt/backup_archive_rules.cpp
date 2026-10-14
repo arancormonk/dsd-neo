@@ -251,6 +251,16 @@ archive_path_problem(const QString& path) {
     return staging_name(parts.last()) ? QStringLiteral("staging leftover") : QString();
 }
 
+QString
+bundle_of(const QString& path) {
+    static const QString bundles = QStringLiteral("imports/bundles/");
+    if (!path.startsWith(bundles)) {
+        return {};
+    }
+    const qsizetype end = path.indexOf(QLatin1Char('/'), bundles.size());
+    return end > bundles.size() ? path.left(end) : QString();
+}
+
 CarriedSet::Outcome
 CarriedSet::add(const QString& path, QString* why) {
     if (m_exact.contains(path)) {
@@ -262,20 +272,22 @@ CarriedSet::add(const QString& path, QString* why) {
         return Refused;
     }
     const QString key = path_key(path);
-    QStringList directories;
-    for (qsizetype at = key.indexOf(QLatin1Char('/')); at > 0; at = key.indexOf(QLatin1Char('/'), at + 1)) {
-        directories.append(key.left(at));
+    QStringList directories, directoryKeys;
+    for (qsizetype at = path.indexOf(QLatin1Char('/')); at > 0; at = path.indexOf(QLatin1Char('/'), at + 1)) {
+        directories.append(path.left(at));
+        directoryKeys.append(path_key(directories.last()));
     }
-    const bool fileClash =
-        std::any_of(directories.cbegin(), directories.cend(), [this](const QString& d) { return m_files.contains(d); });
-    if (m_files.contains(key) || m_directories.contains(key) || fileClash) {
+    const bool fileClash = std::any_of(directoryKeys.cbegin(), directoryKeys.cend(),
+                                       [this](const QString& d) { return m_fileKeys.contains(d); });
+    if (m_fileKeys.contains(key) || m_directoryKeys.contains(key) || fileClash) {
         *why = QStringLiteral("collides with another carried path");
         return Refused;
     }
     m_exact.insert(path);
-    m_files.insert(key);
-    for (const QString& directory : directories) {
-        m_directories.insert(directory);
+    m_fileKeys.insert(key);
+    for (qsizetype i = 0; i < directories.size(); ++i) {
+        m_directories.insert(directories.at(i));
+        m_directoryKeys.insert(directoryKeys.at(i));
     }
     m_paths.append(path);
     return Added;

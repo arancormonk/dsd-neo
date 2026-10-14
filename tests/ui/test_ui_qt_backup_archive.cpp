@@ -751,6 +751,41 @@ test_export_repairs() {
     QDir(other).removeRecursively();
 }
 
+/* A row whose file lies in another row's bundle is dropped; the bundle it names of its own is not carried either, since
+ * no kept row would claim it and a restore refuses files nothing claims. */
+void
+test_export_drops_foreign_bundle(const Fixture& f) {
+    auto snapshot = dsd_qt::backup::backup_take_snapshot();
+    const QString own = snapshot.root + "/imports/bundles/foreign-bundle";
+    expect("write the foreign row's bundle", write_file(own + "/0.csv", "x\n"));
+    QString companion;
+    QDirIterator it(f.chanRoot, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        companion = path != f.chan ? path : companion;
+    }
+    QJsonArray library = snapshot.stores.value("imported_files.json");
+    QJsonObject foreign = library.at(row_where(library, "type", "group")).toObject();
+    foreign.insert("path", companion);
+    foreign.insert("name", "foreign.csv");
+    foreign.insert("bundleRoot", own);
+    library.append(foreign);
+    snapshot.stores.insert("imported_files.json", library);
+
+    const auto built = build(snapshot);
+    const auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, snapshot.root);
+    expect("export with a foreign row succeeds", built.error == BackupError::None && parsed.error == BackupError::None);
+    expect("the foreign row is dropped and listed",
+           row_where(parsed.stores.value("imported_files.json"), "name", "foreign.csv") < 0
+               && lists(built.summary.notIncluded, "Imported file foreign.csv"));
+    bool carried = false;
+    for (const auto& file : parsed.files) {
+        carried = carried || file.path.startsWith("imports/bundles/foreign-bundle/");
+    }
+    expect("the dropped row's own bundle is not carried", !carried);
+    QDir(own).removeRecursively();
+}
+
 void
 test_build_caps_and_cancel() {
     auto snapshot = dsd_qt::backup::backup_take_snapshot();
@@ -868,10 +903,6 @@ refuse_archive_layout(const QByteArray& archive) {
 void
 refuse_file_table(const QByteArray& archive) {
     const Parts parts = split(archive);
-    Parts extra = parts;
-    add_file(extra, "imports/extra.csv");
-    expect("an extra well-formed file parses",
-           dsd_qt::backup::backup_parse_archive(assemble(extra), dsd_qt::json_store_root()).error == BackupError::None);
     Parts many = parts;
     for (int i = static_cast<int>(parts.files.size()); i <= dsd_qt::backup::kMaxFiles; ++i) {
         add_file(many, QStringLiteral("imports/many/%1.csv").arg(i));
@@ -1033,18 +1064,118 @@ refuse_prefs_and_avoids(const QByteArray& archive) {
                == QList<quint32>({4294967295U}));
 }
 
+QByteArray
+set_row(const Parts& parts, const char* store, int row, const char* key, const QJsonValue& value) {
+    Parts edited = parts;
+    with_row(edited, store, row, [&](QJsonObject& object) { object.insert(QLatin1String(key), value); });
+    return assemble(edited);
+}
+
+void
+refuse_bundle_roots(const Parts& parts, const Fixture& f) {
+    const QString root = dsd_qt::json_store_root();
+    const QJsonArray library = parts.manifest.value("stores").toObject().value("imported_files.json").toArray();
+    const int chanRow = row_where(library, "path", f.chan);
+    const int groupRow = row_where(library, "path", f.groups);
+    const int bandplanRow = row_where(library, "path", f.bandplan);
+    const char* notOwned = "typed: a bundle root is not an owned bundle directory";
+    refuse("bundle root is imports/bundles",
+           set_row(parts, "imported_files.json", chanRow, "bundleRoot", root + "/imports/bundles"),
+           BackupError::Damaged, notOwned);
+    refuse("bundle root is imports", set_row(parts, "imported_files.json", chanRow, "bundleRoot", root + "/imports"),
+           BackupError::Damaged, notOwned);
+    refuse("bundle root is the data root", set_row(parts, "imported_files.json", chanRow, "bundleRoot", root),
+           BackupError::Damaged, notOwned);
+    refuse("bundle root name not owned",
+           set_row(parts, "imported_files.json", chanRow, "bundleRoot", root + "/imports/bundles/not owned"),
+           BackupError::Damaged, notOwned);
+    // Roots that hold carried files and overlap no other row: only the owned-directory rule refuses them.
+    Parts badName = parts;
+    add_file(badName, "imports/bundles/bad name/0.csv", "x\n");
+    with_row(badName, "imported_files.json", groupRow,
+             [&](QJsonObject& row) { row.insert("bundleRoot", root + "/imports/bundles/bad name"); });
+    refuse("bundle root with a non-owned name", assemble(badName), BackupError::Damaged, notOwned);
+    Parts outside = parts;
+    add_file(outside, "imports/sub/0.csv", "x\n");
+    with_row(outside, "imported_files.json", groupRow,
+             [&](QJsonObject& row) { row.insert("bundleRoot", root + "/imports/sub"); });
+    refuse("bundle root outside imports/bundles", assemble(outside), BackupError::Damaged, notOwned);
+    refuse("bundle root without carried files",
+           set_row(parts, "imported_files.json", groupRow, "bundleRoot", root + "/imports/bundles/empty-root"),
+           BackupError::Damaged, "typed: a bundle root holds no carried file");
+    // On case-sensitive storage imports/bundles/ABC is not the directory holding imports/bundles/abc/0.csv.
+    Parts caseRoot = parts;
+    add_file(caseRoot, "imports/bundles/abc/0.csv", "x\n");
+    with_row(caseRoot, "imported_files.json", groupRow,
+             [&](QJsonObject& row) { row.insert("bundleRoot", root + "/imports/bundles/ABC"); });
+    refuse("bundle root differing in case from its files", assemble(caseRoot), BackupError::Damaged,
+           "typed: a bundle root holds no carried file");
+    Parts spare = parts;
+    add_file(spare, "imports/bundles/spare/0.csv", "x\n");
+    with_row(spare, "imported_files.json", chanRow,
+             [&](QJsonObject& row) { row.insert("bundleRoot", root + "/imports/bundles/spare"); });
+    refuse("bundle root not holding its row's bundled file", assemble(spare), BackupError::Damaged,
+           "typed: a bundled file lies outside its row's bundle");
+    Parts overlap = parts;
+    with_row(overlap, "imported_files.json", groupRow, [&](QJsonObject& row) { row.insert("bundleRoot", f.chanRoot); });
+    refuse("two rows share a bundle root", assemble(overlap), BackupError::Damaged,
+           "typed: two library rows share a bundle root");
+    // Two roots that differ only by case hold distinct files, yet a case-insensitive filesystem merges them.
+    Parts caseTwins = parts;
+    add_file(caseTwins, "imports/bundles/caseroot/0.csv", "x\n");
+    add_file(caseTwins, "imports/bundles/CASEROOT/1.csv", "y\n");
+    with_row(caseTwins, "imported_files.json", groupRow,
+             [&](QJsonObject& row) { row.insert("bundleRoot", root + "/imports/bundles/caseroot"); });
+    with_row(caseTwins, "imported_files.json", bandplanRow,
+             [&](QJsonObject& row) { row.insert("bundleRoot", root + "/imports/bundles/CASEROOT"); });
+    refuse("two rows' bundle roots differ only by case", assemble(caseTwins), BackupError::Damaged,
+           "typed: two library rows share a bundle root");
+    // A row without a bundle of its own whose file lies in another row's bundle: removing that row would delete it.
+    QString companion;
+    for (const auto& value : parts.manifest.value("files").toArray()) {
+        const QString path = root + '/' + value.toObject().value("path").toString();
+        if (path.startsWith(f.chanRoot + '/') && path != f.chan) {
+            companion = path;
+        }
+    }
+    expect("channel bundle carries a companion", !companion.isEmpty());
+    refuse("row file inside another row's bundle", set_row(parts, "imported_files.json", groupRow, "path", companion),
+           BackupError::Damaged, "typed: a library file lies in another row's bundle");
+}
+
+/* Every carried file must be one a later restore counts as configuration and replaces: named exactly by a path field
+ * or inside a claimed bundle, as a case-sensitive filesystem lays it out. */
+void
+refuse_uncovered_files(const Parts& parts, const Fixture& f) {
+    const QString root = dsd_qt::json_store_root();
+    const char* uncovered = "typed: a carried file is named by no path field and lies in no bundle";
+    Parts extra = parts;
+    add_file(extra, "imports/extra.csv");
+    refuse("a carried file nothing names", assemble(extra), BackupError::Damaged, uncovered);
+    with_row(extra, "saved_systems.json", 0,
+             [&](QJsonObject& row) { row.insert("srcCsvPath", root + "/imports/extra.csv"); });
+    expect("the same file parses once a path field names it",
+           dsd_qt::backup::backup_parse_archive(assemble(extra), root).error == BackupError::None);
+    const QString chanBundle = f.chanRoot.mid(root.size() + 1);
+    Parts inBundle = parts;
+    add_file(inBundle, chanBundle + "/extra.csv");
+    expect("a file inside a claimed bundle parses",
+           dsd_qt::backup::backup_parse_archive(assemble(inBundle), root).error == BackupError::None);
+    const QString upper = QStringLiteral("imports/bundles/") + chanBundle.mid(16).toUpper();
+    expect("the bundle id has letters to fold", upper != chanBundle);
+    Parts caseVariant = parts;
+    add_file(caseVariant, upper + "/extra.csv");
+    refuse("a file in a case variant of a claimed bundle", assemble(caseVariant), BackupError::Damaged, uncovered);
+}
+
 void
 refuse_typed_paths(const QByteArray& archive, const Fixture& f) {
     const Parts parts = split(archive);
     const QString root = dsd_qt::json_store_root();
     const QJsonArray library = parts.manifest.value("stores").toObject().value("imported_files.json").toArray();
-    const int chanRow = row_where(library, "path", f.chan);
     const int groupRow = row_where(library, "path", f.groups);
-    const int targetsRow = row_where(library, "path", f.targets);
     const auto setRow = [&](const char* store, int row, const char* key, const QJsonValue& value) {
-        Parts edited = parts;
-        with_row(edited, store, row, [&](QJsonObject& object) { object.insert(QLatin1String(key), value); });
-        return assemble(edited);
+        return set_row(parts, store, row, key, value);
     };
     refuse("system names a file outside the root", setRow("saved_systems.json", 0, "chanCsvPath", "/etc/passwd"),
            BackupError::Damaged, "typed:");
@@ -1070,51 +1201,9 @@ refuse_typed_paths(const QByteArray& archive, const Fixture& f) {
     refuse("library row names an uncarried file", setRow("imported_files.json", groupRow, "path", root + "/x.csv"),
            BackupError::Damaged, "typed:");
     refuse("library row with an empty path", setRow("imported_files.json", groupRow, "path", ""), BackupError::Damaged,
-           "typed:");
-    refuse("bundle root is imports/bundles",
-           setRow("imported_files.json", chanRow, "bundleRoot", root + "/imports/bundles"), BackupError::Damaged,
-           "typed:");
-    refuse("bundle root is imports", setRow("imported_files.json", chanRow, "bundleRoot", root + "/imports"),
-           BackupError::Damaged, "typed:");
-    refuse("bundle root is the data root", setRow("imported_files.json", chanRow, "bundleRoot", root),
-           BackupError::Damaged, "typed:");
-    refuse("bundle root name not owned",
-           setRow("imported_files.json", chanRow, "bundleRoot", root + "/imports/bundles/not owned"),
-           BackupError::Damaged, "typed:");
-    // Roots that hold carried files and overlap no other row: only the owned-directory rule refuses them.
-    Parts badName = parts;
-    add_file(badName, "imports/bundles/bad name/0.csv", "x\n");
-    with_row(badName, "imported_files.json", groupRow,
-             [&](QJsonObject& row) { row.insert("bundleRoot", root + "/imports/bundles/bad name"); });
-    refuse("bundle root with a non-owned name", assemble(badName), BackupError::Damaged, "typed:");
-    Parts outside = parts;
-    add_file(outside, "imports/sub/0.csv", "x\n");
-    with_row(outside, "imported_files.json", groupRow,
-             [&](QJsonObject& row) { row.insert("bundleRoot", root + "/imports/sub"); });
-    refuse("bundle root outside imports/bundles", assemble(outside), BackupError::Damaged, "typed:");
-    refuse("bundle root without carried files",
-           setRow("imported_files.json", groupRow, "bundleRoot", root + "/imports/bundles/empty-root"),
-           BackupError::Damaged, "typed:");
-    Parts spare = parts;
-    add_file(spare, "imports/bundles/spare/0.csv", "x\n");
-    with_row(spare, "imported_files.json", chanRow,
-             [&](QJsonObject& row) { row.insert("bundleRoot", root + "/imports/bundles/spare"); });
-    refuse("bundle root not holding its row's bundled file", assemble(spare), BackupError::Damaged, "typed:");
-    Parts overlap = parts;
-    with_row(overlap, "imported_files.json", groupRow, [&](QJsonObject& row) { row.insert("bundleRoot", f.chanRoot); });
-    refuse("two rows share a bundle root", assemble(overlap), BackupError::Damaged, "typed:");
-    // A row without a bundle of its own whose file lies in another row's bundle: removing that row would delete it.
-    QString companion;
-    for (const auto& value : parts.manifest.value("files").toArray()) {
-        const QString path = root + '/' + value.toObject().value("path").toString();
-        if (path.startsWith(f.chanRoot + '/') && path != f.chan) {
-            companion = path;
-        }
-    }
-    expect("channel bundle carries a companion", !companion.isEmpty());
-    refuse("row file inside another row's bundle", setRow("imported_files.json", groupRow, "path", companion),
-           BackupError::Damaged, "typed:");
-    expect("the target bundle row is the one under test", targetsRow >= 0);
+           "typed: a library row names no file");
+    refuse_bundle_roots(parts, f);
+    refuse_uncovered_files(parts, f);
     Parts sourceRoot = parts;
     sourceRoot.manifest.insert("sourceRoots", QJsonArray{"/data/other"});
     const auto unrebased = dsd_qt::backup::backup_parse_archive(assemble(sourceRoot), "/restore/elsewhere/files");
@@ -1235,6 +1324,7 @@ main(int argc, char** argv) {
         refuse_prefs_and_avoids(base.archive);
         refuse_typed_paths(base.archive, fixture);
         test_export_repairs();
+        test_export_drops_foreign_bundle(fixture);
         test_build_caps_and_cancel();
         test_sanitize();
     }
