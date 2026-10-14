@@ -662,6 +662,7 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
         }
         tetra_dmo_apply_sync(state, &s, h_ok ? &h : NULL);
         tetra_dmo_log_sync(opts, ts, &s, &h, h_ok, state);
+        tetra_calls_dmo_protection(opts, state);
     }
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");
@@ -740,6 +741,7 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         tetra_dmo_sync_s_t s;
         (void)tetra_dmo_parse_sync_s(decoded, &s);
         tetra_dmo_apply_sync(state, &s, NULL);
+        tetra_calls_dmo_protection(opts, state);
         tetra_confirm_note_block(state);
         DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u | SCH/H skipped\n",
                     s.system_code, s.comm_type, s.ab_usage, s.slot, s.frame, s.enc_state);

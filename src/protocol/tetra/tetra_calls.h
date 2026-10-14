@@ -241,6 +241,11 @@ int tetra_calls_traffic(const dsd_state* state, tetra_chan_alloc* out);
  */
 void tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h);
 
+/** @brief The protection of the direct mode channel's traffic changed (tetra_dmo_call_crypt()) without a call PDU that
+ * publishes it: the direct mode call canonical slot 0 carries takes the new crypto class at once. @p opts may be NULL.
+ * Never creates TETRA state. */
+void tetra_calls_dmo_protection(dsd_opts* opts, dsd_state* state);
+
 /** @brief Direct mode ended (tetra_dmo_leave()): the direct mode call, its canonical call and its short data memory go.
  * @p opts may be NULL. Never creates TETRA state. */
 void tetra_calls_dmo_forget(dsd_opts* opts, dsd_state* state);

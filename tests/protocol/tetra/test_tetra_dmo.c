@@ -226,6 +226,49 @@ test_carrier_boundary_forgets_call(void) {
     free_state(st);
 }
 
+/* A DMAC-SYNC whose message went unread (its SCH/H failed or was skipped: no SCH/H here) may be the one that sets the
+ * protection of the traffic after it (EN 300 396-3 clause 8.5.3), so its SCH/S security class stands for it: after a
+ * clear DM-1 call, DM-2-A and DM-2-B seal the traffic and keep the colour code, which their clear source address still
+ * gives; DM-2-C seals it and drops the colour code, which it derives from the encrypted short identity (clause
+ * 8.2.4). A DM-1 SCH/S leaves the protection as it was. */
+static void
+test_unread_sync_protection(void) {
+    static const uint32_t k_classes[3] = {TETRA_DMO_AIE_DM2A, TETRA_DMO_AIE_DM2B, TETRA_DMO_AIE_DM2C};
+    uint8_t bits[128];
+    tetra_dmo_sync_s_t s;
+    tetra_dmo_sync_h_t h;
+    bitw w;
+
+    printf("[unread DMAC-SYNC]\n");
+    for (size_t i = 0; i < 3; i++) {
+        dsd_state* st = new_state();
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        from_string(k_sch_s, bits);
+        (void)tetra_dmo_parse_sync_s(bits, &s);
+        from_string(k_sch_h, bits);
+        (void)tetra_dmo_parse_sync_h(bits, 0, &h);
+        tetra_dmo_apply_sync(st, &s, &h);
+        CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR && tetra_st(st)->dmo_dcc_valid == 1,
+              "a clear DM-1 call");
+        sync_s(&w, TETRA_DMO_AIE_DM1);
+        (void)tetra_dmo_parse_sync_s(w.bits, &s);
+        tetra_dmo_apply_sync(st, &s, NULL);
+        CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR && tetra_st(st)->dmo_dcc_valid == 1,
+              "an unread DM-1 DMAC-SYNC leaves it clear");
+        sync_s(&w, k_classes[i]);
+        (void)tetra_dmo_parse_sync_s(w.bits, &s);
+        tetra_dmo_apply_sync(st, &s, NULL);
+        CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR, "an unread encrypted DMAC-SYNC seals the traffic");
+        CHECK(tetra_st(st)->dmo_dcc_valid == (k_classes[i] == TETRA_DMO_AIE_DM2C ? 0 : 1),
+              "and only DM-2-C drops the colour code");
+        sync_s(&w, TETRA_DMO_AIE_DM1);
+        (void)tetra_dmo_parse_sync_s(w.bits, &s);
+        tetra_dmo_apply_sync(st, &s, NULL);
+        CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR, "an unread DM-1 DMAC-SYNC opens nothing");
+        free_state(st);
+    }
+}
+
 /* DM-2-A, DM-2-B and DM-2-C (EN 300 396-3 clauses 8.5.3 and 9.3.2): what each security class leaves readable, and how
  * the call is classified for the voice path. */
 static void
@@ -995,6 +1038,7 @@ main(void) {
     printf("TETRA DMO\n");
     test_real_air_call();
     test_carrier_boundary_forgets_call();
+    test_unread_sync_protection();
     test_security_classes();
     test_repeater_presence();
     test_gateway();

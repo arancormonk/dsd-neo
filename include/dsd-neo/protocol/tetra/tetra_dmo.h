@@ -271,7 +271,9 @@ uint32_t tetra_dmo_dcc_seed(uint32_t net_id, uint32_t src_addr);
 const char* tetra_dmo_msg_name(int msg_type);
 
 /* Apply a decoded DSB to the decoder state: mode, DM clock, DM colour code and call protection. `h` may be NULL when
- * the SCH/H failed its CRC; otherwise its encrypted parts are first cleared to match the SCH/S security class. */
+ * the SCH/H failed its CRC; otherwise its encrypted parts are first cleared to match the SCH/S security class. A
+ * DMAC-SYNC whose message is not known (no `h`, or DM-2-C) may be the one that sets the protection of the traffic
+ * after it, so an encrypted SCH/S security class seals that traffic (TETRA_DMO_CRYPT_AIR). */
 void tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_dmo_sync_h_t* h);
 
 /* How the traffic of the current direct mode call is protected; UNKNOWN outside direct mode. */

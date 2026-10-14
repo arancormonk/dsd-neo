@@ -350,6 +350,16 @@ calls_carrying(const dsd_state* state, const tetra_state_t* ts, uint8_t pub, uin
            && DSD_SYNC_IS_TETRA(call.protocol);
 }
 
+/* Classify the call canonical slot 0 carries as @p crypto; audio is permitted for clear and decryptable calls. */
+static void
+calls_classify(dsd_state* state, dsd_call_crypto_state crypto) {
+    dsd_call_crypto_update update;
+    DSD_MEMSET(&update, 0, sizeof update);
+    update.classification = crypto;
+    update.audio_permitted = (uint8_t)(crypto == DSD_CALL_CRYPTO_CLEAR || crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    (void)dsd_call_state_update_crypto(state, 0U, &update);
+}
+
 /* Observe @p o on canonical slot 0 as @p pub (call @p call_id) with crypto class @p crypto, which
  * DSD_CALL_CRYPTO_UNKNOWN leaves as it was. Another TETRA call there ends first. */
 static void
@@ -360,11 +370,7 @@ calls_publish(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const dsd_cal
     }
     (void)dsd_call_state_observe(state, o, DSD_CALL_BOUNDARY_CONTINUE);
     if (crypto != DSD_CALL_CRYPTO_UNKNOWN) {
-        dsd_call_crypto_update update;
-        DSD_MEMSET(&update, 0, sizeof update);
-        update.classification = crypto;
-        update.audio_permitted = (uint8_t)(crypto == DSD_CALL_CRYPTO_CLEAR || crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
-        (void)dsd_call_state_update_crypto(state, 0U, &update);
+        calls_classify(state, crypto);
     }
     ts->calls.published = pub;
     ts->calls.published_call_id = call_id;
@@ -1117,6 +1123,23 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
             break;
         case DMO_PDU_SDS: dmo_sds_notice(opts, state, ts, h); break;
         default: break;
+    }
+}
+
+void
+tetra_calls_dmo_protection(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || !calls_carrying(state, ts, TETRA_PUB_DMO, 0U)) {
+        return;
+    }
+    const dsd_call_crypto_state crypto = dmo_crypto_state(state);
+    dsd_call_snapshot call;
+    if (crypto == DSD_CALL_CRYPTO_UNKNOWN || (dsd_call_state_get(state, 0U, &call) > 0 && call.crypto == crypto)) {
+        return;
+    }
+    calls_classify(state, crypto);
+    if (opts) {
+        dsd_event_sync_slot(opts, state, 0U);
     }
 }
 

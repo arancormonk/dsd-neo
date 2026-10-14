@@ -40,6 +40,7 @@
 #include "tetra_confirm.h"
 #include "tetra_state.h"
 #include "tetra_test_pdu.h"
+#include "tetra_voice_gate.h"
 
 /* Trunking can follow a TETRA carrier (the Qt "Follow this system" control asks), and the negative syncs are the
  * inverted polarity. */
@@ -440,19 +441,23 @@ static const char k_dmo_sch_h[] =
     "10110101110000000000000000"
     "001000100";
 
+/* Bits of a 0/1 text, MSB first. */
+static void
+bits_of(const char* text, uint8_t* bits) {
+    for (size_t i = 0; text[i] != '\0'; i++) {
+        bits[i] = (uint8_t)(text[i] - '0');
+    }
+}
+
 /* The direct mode call a DSB with k_dmo_sch_s and k_dmo_sch_h sets up: the mode, its DM colour code and
  * protection, and the call on the channel, published. */
 static void
 enter_direct_mode(session* s) {
     uint8_t bits[TTB_SCH_HD_BITS] = {0};
-    for (size_t i = 0; k_dmo_sch_s[i] != '\0'; i++) {
-        bits[i] = (uint8_t)(k_dmo_sch_s[i] - '0');
-    }
+    bits_of(k_dmo_sch_s, bits);
     tetra_dmo_sync_s_t sync_s;
     assert(tetra_dmo_parse_sync_s(bits, &sync_s) == 1);
-    for (size_t i = 0; k_dmo_sch_h[i] != '\0'; i++) {
-        bits[i] = (uint8_t)(k_dmo_sch_h[i] - '0');
-    }
+    bits_of(k_dmo_sch_h, bits);
     tetra_dmo_sync_h_t sync_h;
     (void)tetra_dmo_parse_sync_h(bits, 0, &sync_h);
     tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
@@ -518,6 +523,87 @@ test_control_burst_leaves_direct_mode(void) {
     assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase != DSD_CALL_PHASE_ACTIVE);
     verdict = uplink_nts2_burst(&s, zeros, block2);
     assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_pub.mode == DSD_TETRA_MODE_TMO_UPLINK);
+    session_close(&s);
+}
+
+/* A direct mode synchronisation burst (EN 300 396-2 clause 9.4.3.3) as the frame sync locks it: SCH/S, captured before
+ * the training sequence like a BSCH, and SCH/H right after it, then 15 dibits, all scrambled with the all-zero colour
+ * code (EN 300 396-3 clause 8.2.4). @p sch_h is the 124 type-1 bits of SCH/H, or NULL for a block that fails its
+ * CRC. */
+static dsd_frame_verdict
+dmo_sync_burst(session* s, const uint8_t* sch_s, const uint8_t* sch_h) {
+    uint8_t sch_s_dibits[BSCH_DIBITS];
+    encode_signalling(sch_s, 60, 120, 11, 3u, sch_s_dibits);
+    uint8_t tail[BLOCK_DIBITS + SB_BB_DIBITS] = {0};
+    if (sch_h) {
+        encode_sch_hd(sch_h, 3u, tail);
+    }
+    feed(s, tail, (int)sizeof tail);
+    DSD_MEMCPY(s->state->tetra_sync.sb1_dibuf, sch_s_dibits, BSCH_DIBITS);
+    s->state->tetra_sync.sb1_valid = 1;
+    s->state->tetra_sync.sb1_soft_valid = 0;
+    s->state->tetra_sync.phase_rot = 0;
+    s->state->tetra_sync.polarity = 0;
+    s->state->lastsynctype = DSD_SYNC_TETRA_SB_POS;
+    s->state->synctype = DSD_SYNC_TETRA_SB_POS;
+    return dsd_dispatch_handle_tetra(s->opts, s->state);
+}
+
+/* A DMAC-SYNC SCH/S (EN 300 396-3 table 21), direct, channel A, slot 1, frame 3, under security class @p enc. */
+static void
+dmo_sch_s(uint32_t enc, uint8_t* bits) {
+    ttb_block b = {0};
+    ttb_put(&b, 0xD, 4); /* system code: DMO */
+    ttb_put(&b, 0, 2);   /* SYNC PDU type: DMAC-SYNC */
+    ttb_put(&b, 0, 2);   /* communication type: direct MS-MS */
+    ttb_put(&b, 0, 2);   /* reserved */
+    ttb_put(&b, 0, 2);   /* channel A, normal mode */
+    ttb_put(&b, 0, 2);   /* slot 1 */
+    ttb_put(&b, 3, 5);   /* frame 3 */
+    ttb_put(&b, enc, 2); /* air interface encryption state */
+    if (enc != 0u) {
+        ttb_put(&b, 0x1234567u, 29); /* time variant parameter */
+        ttb_put(&b, 0, 1);
+        ttb_put(&b, 1, 4); /* KSG number */
+        ttb_put(&b, 7, 5); /* encryption key number */
+    }
+    while (b.n < 60) {
+        ttb_put(&b, 0, 1);
+    }
+    DSD_MEMCPY(bits, b.bits, 60U);
+}
+
+/* A DMAC-SYNC whose SCH/H fails its CRC leaves its message unknown, and it may be the DM-SETUP or DM-OCCUPIED that sets
+ * the protection of the traffic after it (EN 300 396-3 clause 8.5.3): after a clear DM-1 call, a DSB whose SCH/S says
+ * DM-2-A seals the channel's speech, which no direct mode key stream here decrypts, so encrypted audio stays muted, and
+ * the canonical call shows it encrypted at once. */
+static void
+test_dmo_unread_sync_seals_the_traffic(void) {
+    session s = session_open();
+    s.opts->dmr_mute_encL = 1;
+    uint8_t sch_s[60];
+    uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+    bits_of(k_dmo_sch_s, sch_s);
+    bits_of(k_dmo_sch_h, sch_h);
+    dsd_frame_verdict verdict = dmo_sync_burst(&s, sch_s, sch_h);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->dmo && ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_CLEAR);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.crypto == DSD_CALL_CRYPTO_CLEAR && call.ota_source_id == 100U);
+    const uint64_t epoch = call.epoch;
+    tetra_speech sp;
+    assert(tetra_voice_gate(s.opts, s.state, &sp) && !sp.sealed && tetra_voice_audible(s.opts, s.state, &sp, 0));
+
+    dmo_sch_s(TETRA_DMO_AIE_DM2A, sch_s);
+    verdict = dmo_sync_burst(&s, sch_s, NULL);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_AIR && ts->dmo_dcc_valid);
+    assert(tetra_voice_gate(s.opts, s.state, &sp) && sp.sealed && !tetra_voice_audible(s.opts, s.state, &sp, 0));
+    assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch
+           && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && !call.audio_permitted);
     session_close(&s);
 }
 
@@ -611,6 +697,7 @@ main(void) {
     test_control_burst_tells_the_polarity();
     test_control_burst_publishes_its_mode();
     test_control_burst_leaves_direct_mode();
+    test_dmo_unread_sync_seals_the_traffic();
     test_retune_leaves_the_rest_of_the_burst();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;

@@ -1287,19 +1287,28 @@ dmo_set_crypt(tetra_state_t* ts, tetra_dmo_crypt_e crypt) {
     ts->dmo_crypt = (uint8_t)crypt;
 }
 
+/* A DMAC-SYNC whose message went unread: its SCH/H failed its CRC or was skipped, or DM-2-C encrypts the message type.
+ * It may be the DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED that sets the protection of the traffic after it (EN 300 396-3
+ * clause 8.5.3), so its SCH/S, which is never encrypted (clause 8.5.3 NOTE 2), stands for that message: an encrypted
+ * security class seals the channel's traffic, whatever an earlier DMAC-SYNC said. DM-2-C scrambles that traffic with
+ * the encrypted short identity (clause 8.2.4), which needs the key, so its colour code is not known either. A DM-1
+ * SCH/S closes nothing it does not know: it leaves the protection as it was. */
+static void
+dmo_apply_unread(tetra_state_t* ts, const tetra_dmo_sync_s_t* s) {
+    if (s->enc_state == TETRA_DMO_AIE_DM1) {
+        return;
+    }
+    if (s->enc_state == TETRA_DMO_AIE_DM2C) {
+        ts->dmo_dcc_valid = 0;
+    }
+    dmo_set_crypt(ts, TETRA_DMO_CRYPT_AIR);
+}
+
 /* A DMAC-SYNC that sets up or occupies the channel defines the protection of the traffic that follows (EN 300 396-3
- * clause 8.5.3); the end of a transmission leaves it unknown until the next talker's. */
+ * clause 8.5.3); the end of a transmission leaves it unknown until the next talker's. Any other message's security
+ * class applies to that message alone. */
 static void
 dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
-    if (s->enc_state == TETRA_DMO_AIE_DM2C) {
-        /* DM-2-C hides the message type and scrambles with the encrypted short identity, which needs the key. */
-        ts->dmo_dcc_valid = 0;
-        dmo_set_crypt(ts, TETRA_DMO_CRYPT_AIR);
-        return;
-    }
-    if (!h->has_addrs) {
-        return;
-    }
     const int role = dmo_sync_role(h);
     if (role == DMO_ROLE_CALL) {
         tetra_dmo_crypt_e crypt = TETRA_DMO_CRYPT_AIR;
@@ -1332,7 +1341,11 @@ dmo_apply_sync(dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_s_t* s,
     ts->dmo_since_sync = 0;
     if (h) {
         dmo_settle(h, s->enc_state);
+    }
+    if (h && h->has_addrs) {
         dmo_apply_call(ts, s, h);
+    } else {
+        dmo_apply_unread(ts, s);
     }
 }
 

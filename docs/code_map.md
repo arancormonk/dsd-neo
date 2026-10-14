@@ -4710,6 +4710,14 @@ single "current call".
   without a PDU or speech of it. The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
   `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
   family.
+- Direct mode protection (`tetra_dmo.c`, `tetra_state_t::dmo_crypt`, `tetra_dmo_call_crypt()`) is that of the traffic
+  on the channel, which the DMAC-SYNC carrying a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED sets (EN 300 396-3 clause
+  8.5.3); any other message's security class is its own. There is no direct mode decryption, so only CLEAR speech is
+  audible, and protection fails closed: a DMAC-SYNC whose message went unread (its SCH/H failed its CRC or was
+  skipped, or DM-2-C hides the message type) may be the message that sets it, so an encrypted SCH/S security class
+  seals the traffic (`dmo_apply_unread()`; DM-2-C drops the colour code too, which it derives from the encrypted short
+  identity, clause 8.2.4), whatever an earlier clear call left, and a DM-1 one opens nothing. The canonical direct mode
+  call takes a protection that no call PDU republishes at once (`tetra_calls_dmo_protection()`).
 - Notices. D-SDS-DATA becomes a data notice with its text as the message, D-STATUS and MM D-ENABLE / D-DISABLE
   control notices, once the carrier is proven (`tetra_calls_notice()`); direct mode short data becomes a data notice,
   a repeat within 10 s not again: a repeat is the same message (`tetra_dmo_sds_key`: message type, source,
