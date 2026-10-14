@@ -280,8 +280,9 @@ tetra_nb_subtype(dsd_state* state, const tetra_nb_ctx* ctx, const char* what) {
 }
 
 /* A CRC-passed signalling block: the MAC in trunked mode, the DMAC logger in direct mode. It counts as evidence about
-   the carrier once it has been acted on, so a grant it carries is judged by the blocks before it. Only a trunked
-   downlink MAC block proves a control channel; the others prove the burst. */
+   the carrier once it has been acted on, so a grant it carries is judged by the blocks before it. A trunked downlink MAC
+   block proves a control channel, an uplink one the carrier for publication only (tetra_confirm.h), and a direct mode
+   one the burst. */
 static void
 tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* decoded, int len,
                     const char* kind) {
@@ -292,7 +293,7 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
     }
     tetra_mac_parse_schd(decoded, len, ctx->cc, opts, state);
     if (tetra_st_peek(state)->uplink) {
-        tetra_confirm_note_block(state);
+        tetra_confirm_note_uplink_signalling(state);
     } else {
         tetra_confirm_note_signalling(state);
     }
@@ -511,7 +512,7 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     }
     state->tetra_sync.polarity = (uint8_t)inverted;
     ts->decode_ok++;
-    tetra_confirm_note_block(state);
+    tetra_confirm_note_uplink_signalling(state);
     tetra_dmo_leave(opts, state);
     /* MAC-ACCESS (EN 300 392-2 clause 21.4.2.1): PDU type 0, fill bit, encryption mode, address type and address. */
     tetra_bit_reader r = tetra_bits_reader(mac, SCHHU_TYPE1, 0);

@@ -34,6 +34,7 @@ tetra_confirm_reset(dsd_state* state) {
     }
     tetra_confirm_t* const c = &ts->confirm;
     c->signalling_blocks = 0;
+    c->carrier_blocks = 0;
     c->carrier_epoch++;
     c->followed_call = 0;
     c->burst_stale = c->burst_open;
@@ -67,17 +68,34 @@ tetra_confirm_burst_current(const dsd_state* state) {
     return ts && !(ts->confirm.burst_open && ts->confirm.burst_stale);
 }
 
-void
-tetra_confirm_note_signalling(dsd_state* state) {
+/* A CRC-16 signalling block of the carrier: evidence for publication, and with @p downlink of a control channel. */
+static void
+confirm_note_carrier_block(dsd_state* state, int downlink) {
     int carrier_current = 0;
     tetra_confirm_t* const c = confirm_for_note(state, &carrier_current);
     if (!c) {
         return;
     }
     c->burst_proven = 1;
-    if (carrier_current && c->signalling_blocks < UINT32_MAX) {
+    if (!carrier_current) {
+        return;
+    }
+    if (c->carrier_blocks < UINT32_MAX) {
+        c->carrier_blocks++;
+    }
+    if (downlink && c->signalling_blocks < UINT32_MAX) {
         c->signalling_blocks++;
     }
+}
+
+void
+tetra_confirm_note_signalling(dsd_state* state) {
+    confirm_note_carrier_block(state, 1);
+}
+
+void
+tetra_confirm_note_uplink_signalling(dsd_state* state) {
+    confirm_note_carrier_block(state, 0);
 }
 
 void
@@ -91,6 +109,12 @@ tetra_confirm_note_block(dsd_state* state) {
 
 int
 tetra_confirm_carrier_proven(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return ts && ts->confirm.carrier_blocks != 0;
+}
+
+int
+tetra_confirm_downlink_proven(const dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
     return ts && ts->confirm.signalling_blocks != 0;
 }

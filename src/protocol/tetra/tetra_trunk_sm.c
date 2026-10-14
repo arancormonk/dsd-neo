@@ -369,8 +369,8 @@ tetra_sm_receiver_freq(const dsd_opts* opts, const dsd_state* state) {
     return (long)dsd_opts_tuned_freq_hz(opts);
 }
 
-/* Trunking on, a control channel known, a frequency to go to, and a CRC-passed block on this carrier before the one
- * that carried the grant. */
+/* Trunking on, a control channel known, a frequency to go to, and a CRC-passed downlink block on this carrier before
+ * the one that carried the grant. */
 static int
 sm_grant_followable(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts,
                     const tetra_sm_grant* grant) {
@@ -383,9 +383,9 @@ sm_grant_followable(const dsd_opts* opts, const dsd_state* state, const tetra_st
         }
         return 0;
     }
-    if (!tetra_confirm_carrier_proven(state)) {
+    if (!tetra_confirm_downlink_proven(state)) {
         if (sm_narrates(ts, 2)) {
-            DSD_FPRINTF(stderr, "[TETRA SM] grant ignored: no CRC-passed block on this carrier before it\n");
+            DSD_FPRINTF(stderr, "[TETRA SM] grant ignored: no CRC-passed downlink block on this carrier before it\n");
         }
         return 0;
     }

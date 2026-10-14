@@ -544,6 +544,52 @@ test_control_burst_leaves_direct_mode(void) {
     session_close(&s);
 }
 
+/* An uplink carrier (--tetra-uplink) has no BSCH, but its control burst's SCH/HU and its normal bursts' MAC blocks are
+ * CRC-16 signalling of the carrier like a downlink block (EN 300 392-2 clause 8.2.3.3): once one decoded, the carrier is
+ * proven for publication, so the speech after it publishes its anonymous call, with its media, in a session that
+ * follows nothing. It is no evidence of a downlink control channel, whose grants the uplink never carries: a grant is
+ * not admitted on it. */
+static void
+test_uplink_signalling_proves_the_carrier(void) {
+    for (int nub = 0; nub < 2; nub++) {
+        session s = session_open();
+        s.opts->tetra_uplink = 1;
+        s.opts->tetra_net_preset = 1;
+        s.opts->tetra_net_mcc = 460;
+        s.opts->tetra_net_mnc = 4242;
+        s.opts->tetra_net_colour = 17;
+        const uint32_t seed = tetra_compute_scramb_seed(460, 4242, 17);
+        const uint8_t mac[SCH_HU_BITS] = {0};
+        uint8_t coded[2 * CB_HALF_DIBITS];
+        encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, coded);
+        ttb_block b = {0};
+        ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+        uint8_t block2[BLOCK_DIBITS];
+        encode_sch_hd(b.bits, seed, block2);
+        const uint8_t zeros[BLOCK_DIBITS] = {0};
+        const dsd_frame_verdict verdict = nub ? uplink_nts2_burst(&s, zeros, block2) : control_burst(&s, coded, 0);
+        assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && tetra_confirm_carrier_proven(s.state));
+
+        const uint8_t speech[TETRA_SPEECH_FULL_BITS] = {0};
+        tetra_voice_full_slot(s.opts, s.state, speech, 1);
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof call);
+        assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+               && call.kind == DSD_CALL_KIND_VOICE && call.media_active);
+        assert(tetra_st_existing(s.state)->calls.published == TETRA_PUB_ANON);
+
+        s.opts->trunk_enable = 1;
+        s.state->trunk_cc_freq = 400012500L;
+        dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tune_accepted});
+        dsd_trunk_tuning_requests_reset();
+        g_tunes = 0;
+        const tetra_sm_grant grant = {401012500L, 40U, 4U, 0x123U};
+        assert(tetra_sm_on_grant(s.opts, s.state, &grant) == 0 && g_tunes == 0);
+        dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+        session_close(&s);
+    }
+}
+
 /* Direct mode is the carrier's: a carrier boundary leaves it, and the next carrier is trunked until its own DSB says
  * otherwise. An uplink session, whose carriers have no BSCH, decodes the next carrier's NUBs at once; a downlink one
  * the next carrier's NDBs, with the network's colour code, and the frame sync looks for the first one's block 1 behind
@@ -852,6 +898,7 @@ main(void) {
     test_control_burst_tells_the_polarity();
     test_control_burst_publishes_its_mode();
     test_control_burst_leaves_direct_mode();
+    test_uplink_signalling_proves_the_carrier();
     test_carrier_boundary_leaves_direct_mode();
     test_dmo_unread_sync_seals_the_traffic();
     test_dsb_leaves_trunked_mode();

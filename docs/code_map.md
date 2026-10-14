@@ -4532,9 +4532,11 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   lockout) and hand the state machine a `tetra_sm_grant`: downlink frequency, carrier number, timeslot bitmap (table
   21.80: bit 3 is timeslot 1) and CMCE call identifier (0 when the allocation carried none). `tetra_sm_on_grant()`
   follows it only with trunking on, a control channel known (`state->trunk_cc_freq`, which a SYSINFO with a valid main
-  carrier sets before calling `tetra_sm_on_cc_sync()`), a frequency, no tune in flight, and a CRC-passed BSCH or MAC
-  block decoded on the carrier the receiver is on before the block that carried the grant
-  (`tetra_confirm_carrier_proven()`: `tetra.c` notes a block only after the MAC acted on it). A grant for the followed
+  carrier sets before calling `tetra_sm_on_cc_sync()`), a frequency, no tune in flight, and a CRC-passed downlink BSCH
+  or MAC block decoded on the carrier the receiver is on before the block that carried the grant
+  (`tetra_confirm_downlink_proven()`: `tetra.c` notes a block only after the MAC acted on it; the uplink's SCH/HU and
+  MAC blocks prove its carrier for publication, `tetra_confirm_carrier_proven()`, but no control channel, and carry no
+  grant). A grant for the followed
   call is ignored, a call identifier arriving after a header-only allocation is adopted, and a grant on the carrier the
   receiver is on (`tetra_sm_receiver_freq()`: the followed channel while TUNED, else the tuned frequency,
   `dsd_opts_tuned_freq_hz()`, none while a request is in flight; not the SYSINFO main carrier `trunk_cc_freq`, which a
@@ -4769,7 +4771,8 @@ single "current call".
   a unit-to-unit transmission, so the talkgroup policy's private-call audio and record gates judge both parties
   whoever transmits; carrier and frequency, basic service as service options, priority, and its crypto class. Not trunking, the
   heard call publishes from its speech and then its signalling, and speech no record names publishes an anonymous call
-  on a proven carrier, one call per timeslot (`speech_anonymous()`: each timeslot is a traffic channel of its own, EN
+  on a proven carrier (a CRC-16 signalling block of it, `tetra_confirm_carrier_proven()`: on the uplink, which has no
+  BSCH, its SCH/HU or MAC blocks), one call per timeslot (`speech_anonymous()`: each timeslot is a traffic channel of its own, EN
   300 392-2 clause 9.4.2.2), so when the heard timeslot moves, the speech of the new one ends the last one's anonymous
   call and publishes its own, with its own epoch, media and crypto class. A grant is the SwMI's floor decision, never sent unsolicited (EN 300 392-2 clause 14.5.1.2.1),
   so one that names no talker where the last named one is the next transmission with its D-TX CEASED unheard: the
@@ -4846,7 +4849,8 @@ individual call's speech judged by both parties, muted speech that holds no time
 derived key stream, the speech starting over at call boundaries, another call identifier, another timeslot, another
 cell or network, a stop of the heard speech and a pause in the followed or direct mode call's, and going on across a
 rename, the crypto class speech gives the published call, frame 18 that plays nothing), `TETRA_BURST_VERDICT` (the modes a BSCH, an SCH/HU, a DSB and a carrier
-boundary leave and enter, an unread DMAC-SYNC that seals the traffic, a frame 18 burst not tried as speech), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
+boundary leave and enter, an unread DMAC-SYNC that seals the traffic, a frame 18 burst not tried as speech, the uplink
+signalling that proves its carrier for publication but admits no grant), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
 
 #### State and its boundaries
 
@@ -4870,7 +4874,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `label_*`, `usage_marker`) | the cell (a label: one channel of it, the allocated one or the one its assignment came on) | an allocation (`call_attach()`), an SSI + event label or usage marker assignment | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`); a label also its assignment to another party or its withdrawal (label 0), and, assigned without an allocation, a carrier boundary or retune (it applies there no more) |
 | D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
-| Carrier evidence (`confirm`) | the carrier | CRC-passed blocks | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
+| Carrier evidence (`confirm`: `carrier_blocks` for publication, `signalling_blocks`, downlink only, for grants) | the carrier | CRC-passed blocks (an uplink SCH/HU or MAC block counts for publication only) | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
 | Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return; a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return |
 | Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; a grant after D-TX CEASED; the heard speech stopping; a pause of `TETRA_CALL_SPEECH_END_S` in it, in every mode; another cell; a carrier boundary |
 | Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst's training, a CRC-passed SCH/HU | the next of them |
@@ -4883,7 +4887,7 @@ What each decoded event does:
 | CRC-passed BSCH, another cell | direct mode; the cell, the clock, the partial TM-SDUs, the records' channel allocations and event labels, the timeslot speech context, the speech in progress, the followed call's proof | the new cell's identity and clock |
 | CRC-passed BSCH, another network | as another cell, and the call records with the follow of their identifiers, the SDS reassembly, the D-MM STATUS shown | the new network |
 | BSCH that fails | nothing | runs the clock to its slot |
-| CRC-passed SCH/HU (uplink) | direct mode | the carrier's polarity |
+| CRC-passed SCH/HU (uplink) | direct mode | the carrier's polarity, its evidence for publication |
 | DSB (CRC-passed SCH/S, DMO system code) | the trunked carrier's TM-SDUs, timeslot speech context and followed call's proof (`tetra_enter_dmo()`), the TDMA clock | direct mode; with its SCH/H, the colour code, protection and call its message sets; without it, an encrypted SCH/S seals the traffic; a presence signal or a SYNC PDU type not read (managed direct mode, reserved types) only direct mode |
 | DMAC-DATA (CRC-passed DNB block) | at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT the transmission's colour code and protection | the call it names; its own security class is its message's only |
 | SYSINFO of another main carrier (a cell sharing the colour code) | as a BSCH of another cell | the new cell's SYSINFO |

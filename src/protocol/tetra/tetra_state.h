@@ -70,7 +70,9 @@ void tetra_sm_disown_pending(tetra_sm_t* sm);
  * weak enough for noise to match; a block whose CRC-16 passed (EN 300 392-2 clause 8.2.3.3) is not. Cleared at every
  * carrier boundary, no-carrier pass and trunking retune (tetra_confirm_reset()). */
 typedef struct {
-    uint32_t signalling_blocks; /* CRC-passed BSCH and MAC blocks decoded on this carrier */
+    uint32_t signalling_blocks; /* CRC-passed downlink BSCH and MAC blocks decoded on this carrier: a control channel */
+    uint32_t carrier_blocks;    /* CRC-16 signalling blocks decoded on this carrier, the uplink's SCH/HU and MAC blocks
+                                   included */
     uint32_t carrier_epoch;     /* counts the resets: evidence read at one epoch belongs to no other carrier */
     uint8_t followed_call;      /* CRC-passed signalling of the followed call was decoded on this carrier */
     uint8_t burst_open;         /* a burst is being decoded (tetra_confirm_burst_begin() to _end()) */

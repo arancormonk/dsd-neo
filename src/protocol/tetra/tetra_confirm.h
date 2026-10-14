@@ -9,8 +9,12 @@
  * CRC of a speech frame (EN 300 395-2 clause 5.5) that also re-encodes like speech. So:
  *
  * - The dispatch verdict is PROFILE_PROVEN for a burst that decoded such a block and UNPRODUCTIVE otherwise.
- * - A trunking grant is followed only once a CRC-passed BSCH or MAC block was decoded on this carrier before the block
- *   that carried the grant (tetra_confirm_carrier_proven(); the trunking state machine asks).
+ * - What the call records publish of the carrier (the heard call, speech no record names, notices) waits for a
+ *   CRC-16 signalling block of it: a downlink BSCH or MAC block, or on the uplink, which has no BSCH, an SCH/HU or MAC
+ *   block (tetra_confirm_carrier_proven()).
+ * - A trunking grant is followed only once a CRC-passed downlink BSCH or MAC block was decoded on this carrier before
+ *   the block that carried the grant (tetra_confirm_downlink_proven(); the trunking state machine asks): uplink
+ *   signalling says the carrier is a TETRA uplink, not a control channel, and carries no grant.
  * - Speech of a followed call plays only after CRC-passed signalling of that call on the carrier it is on
  *   (tetra_confirm_followed_call_proven(); the speech path asks, the call tracking notes it).
  *
@@ -43,14 +47,22 @@ int tetra_confirm_burst_end(dsd_state* state);
 /** 1 unless the carrier was reset since tetra_confirm_burst_begin(): the rest of the burst is the last carrier's. */
 int tetra_confirm_burst_current(const dsd_state* state);
 
-/** A BSCH or MAC block of this burst passed its CRC (after the block was decoded and acted on). */
+/** A downlink BSCH or MAC block of this burst passed its CRC (after the block was decoded and acted on). */
 void tetra_confirm_note_signalling(dsd_state* state);
 
-/** Another block of this burst passed its CRC: a speech frame, or direct-mode or uplink signalling. */
+/** An uplink SCH/HU or MAC block of this burst passed its CRC-16: evidence about the carrier for publication only. */
+void tetra_confirm_note_uplink_signalling(dsd_state* state);
+
+/** Another block of this burst passed its CRC: a speech frame, or direct-mode signalling. */
 void tetra_confirm_note_block(dsd_state* state);
 
-/** 1 when a CRC-passed BSCH or MAC block was decoded on this carrier (before the block being decoded). */
+/** 1 when a CRC-16 signalling block of this carrier was decoded (before the block being decoded): a downlink BSCH or
+ * MAC block, or an uplink SCH/HU or MAC block. What publication waits for. */
 int tetra_confirm_carrier_proven(const dsd_state* state);
+
+/** 1 when a CRC-passed downlink BSCH or MAC block was decoded on this carrier (before the block being decoded). What a
+ * trunking grant waits for. */
+int tetra_confirm_downlink_proven(const dsd_state* state);
 
 /** CRC-passed signalling of the followed call (tetra_sm_followed()) was decoded on this carrier. */
 void tetra_confirm_note_followed_call(dsd_state* state);
