@@ -620,7 +620,8 @@ tetra_dmo_presence(dsd_state* state, tetra_dmo_sync_s_t* s, const uint8_t* sch_s
         (void)tetra_dmo_describe_presence(&pres, desc, (int)sizeof(desc));
         DSD_FPRINTF(stderr, "[TETRA DMO PRES] sys=%u slot=%u frame=%u | %s\n", s->system_code, s->slot, s->frame, desc);
     } else {
-        tetra_st(state)->dmo = 1;
+        /* Direct mode all the same (managed direct mode, EN 300 396-10, is not read): the TMO clock stops. */
+        tetra_dmo_apply_sync(state, s, NULL);
         DSD_FPRINTF(stderr, "[TETRA DMO PRES] sys=%u comm=%u | presence layout not parsed\n", s->system_code,
                     s->comm_type);
     }
@@ -669,15 +670,20 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
         tetra_confirm_note_block(state);
     }
 
-    if (s.sync_pdu_type == 1) {
+    if (s.sync_pdu_type == TETRA_DMO_SYNC_PRES) {
         tetra_dmo_presence(state, &s, sch_s, h_ok ? sch_h : NULL);
-    } else {
+    } else if (s.sync_pdu_type == TETRA_DMO_SYNC_DMAC) {
         if (h_ok) {
             (void)tetra_dmo_parse_sync_h(sch_h, s.comm_type, &h);
         }
         tetra_dmo_apply_sync(state, &s, h_ok ? &h : NULL);
         tetra_dmo_log_sync(opts, ts, &s, &h, h_ok, state);
         tetra_calls_dmo_protection(opts, state);
+    } else {
+        /* A reserved SYNC PDU type (EN 300 396-3 clause 9.3.28): its SCH/H has no layout to read, so nothing of it is
+         * taken for a DMAC-SYNC's call or protection. */
+        tetra_dmo_apply_sync(state, &s, NULL);
+        DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u reserved SYNC PDU type %u\n", s.system_code, s.sync_pdu_type);
     }
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");

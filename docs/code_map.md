@@ -4819,11 +4819,11 @@ What each decoded event does:
 | CRC-passed BSCH, another network | as another cell, and the call records with the follow of their identifiers, the SDS reassembly, the D-MM STATUS shown | the new network |
 | BSCH that fails | nothing | runs the clock to its slot |
 | CRC-passed SCH/HU (uplink) | direct mode | the carrier's polarity |
-| DSB (CRC-passed SCH/S, DMO system code) | the trunked carrier's TM-SDUs, timeslot speech context and followed call's proof (`tetra_enter_dmo()`), the TDMA clock | direct mode; with its SCH/H, the colour code, protection and call its message sets; without it, an encrypted SCH/S seals the traffic |
+| DSB (CRC-passed SCH/S, DMO system code) | the trunked carrier's TM-SDUs, timeslot speech context and followed call's proof (`tetra_enter_dmo()`), the TDMA clock | direct mode; with its SCH/H, the colour code, protection and call its message sets; without it, an encrypted SCH/S seals the traffic; a presence signal or a SYNC PDU type not read (managed direct mode, reserved types) only direct mode |
 | DMAC-DATA (CRC-passed DNB block) | at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT the transmission's colour code and protection | the call it names; its own security class is its message's only |
 | SYSINFO of another location area | the call records | the new area |
 | Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress, the timeslot speech context, direct mode with its colour code, protection and call | trunked mode, block 1 behind AACH half 1 |
-| Decode-mode change off TETRA (committed) | the whole TETRA state (`tetra_state_reset()`), its tune in flight disowned | nothing |
+| Decode-mode change off TETRA (committed) | the whole TETRA state with its tune in flight disowned, the frame sync capture and the publication (`dsd_decode_mode_leave_tetra()`) | nothing |
 
 A DSB whose SCH/S fails is not told from noise on its training sequence and changes nothing; sealing at every such
 burst would mute clear direct mode calls at every false sync. The uplink has no TDMA clock, so its speech has no

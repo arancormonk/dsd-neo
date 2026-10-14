@@ -678,6 +678,38 @@ test_dsb_leaves_trunked_mode(void) {
     session_close(&s);
 }
 
+/* A DSB whose layout is not read is direct mode all the same, and nothing more: a presence signal of managed direct
+ * mode (communication type 00, EN 300 396-10) stops the TMO clock as any DSB does, and one of a reserved SYNC PDU type
+ * (EN 300 396-3 clause 9.3.28) does too, without its SCH/H being taken for a DMAC-SYNC that publishes a call. */
+static void
+test_dsb_of_unread_layout(void) {
+    for (uint32_t pdu_type = 1; pdu_type <= 2; pdu_type++) {
+        session s = session_open();
+        uint8_t bsch[BSCH_DIBITS];
+        uint8_t sysinfo[BLOCK_DIBITS];
+        dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+        dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+        dsd_frame_verdict verdict = sync_burst(&s, bsch, sysinfo);
+        assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        const tetra_state_t* ts = tetra_st_existing(s.state);
+        assert(ts->tdma_valid && !ts->dmo);
+        ttb_block sch_s = {0};
+        ttb_put(&sch_s, 0xD, 4);      /* system code: DMO */
+        ttb_put(&sch_s, pdu_type, 2); /* DPRES-SYNC, or reserved */
+        ttb_put(&sch_s, 0, 2);        /* communication type 00 */
+        while (sch_s.n < 60) {
+            ttb_put(&sch_s, 0, 1);
+        }
+        uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+        bits_of(k_dmo_sch_h, sch_h);
+        verdict = dmo_sync_burst(&s, sch_s.bits, sch_h);
+        assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        assert(ts->dmo && !ts->tdma_valid);
+        assert(!ts->calls.dmo.active && ts->calls.published == TETRA_PUB_NONE && !ts->dmo_dcc_valid);
+        session_close(&s);
+    }
+}
+
 /* A channel allocation in the first half of a normal burst moves the receiver: the second half was sent on the carrier
  * left, so it is not decoded, and nothing in it counts for the traffic carrier. */
 static void
@@ -771,6 +803,7 @@ main(void) {
     test_carrier_boundary_leaves_direct_mode();
     test_dmo_unread_sync_seals_the_traffic();
     test_dsb_leaves_trunked_mode();
+    test_dsb_of_unread_layout();
     test_retune_leaves_the_rest_of_the_burst();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;
