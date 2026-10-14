@@ -4410,23 +4410,27 @@ training as before. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`.
 
 #### Signalling decoders
 
-Each downlink signalling PDU family has a pure decoder that reads one PDU into a struct the caller provides and
-returns 1 only when the whole PDU, optional elements included, was there and well formed; it keeps nothing and acts on
-nothing. All are module-private: `tetra_mac_resource_decode()` and `tetra_mac_broadcast_decode()` (the MAC-RESOURCE
-header with its address, SYSINFO with its D-MLE-SYSINFO, ACCESS-DEFINE; `src/protocol/tetra/tetra_mac_pdu.h`),
-`tetra_mle_decode()` (the MLE protocol PDUs, the D-CALL RESTORE of a D-RESTORE-ACK included), `tetra_sds_decode()`
-(D-STATUS and D-SDS-DATA: the SDS-TL header, the text, a concatenation part's control fields but not its reassembly)
-and `tetra_sndcp_decode()` (the SN-PDU header; all three in `tetra_mle_pdu.h`), and `tetra_mm_decode()` (the MM PDUs
-of EN 300 392-2 clause 16 and EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd()`,
-`tetra_mle_dispatch()`, `tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the
-summary line, the call event, the notice, the SDS reassembly, the KSG an SCK or GCK Provide names. Of signalling,
-`tetra_state_t` keeps only what the decoder reads back: the cell's main carrier, band, offset and location area, the
-hyperframe number, the encryption mode of the last addressed MAC-RESOURCE, the reassembly contexts and the D-MM STATUS
-the frontends show. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per timeslot and dropped after N.203, four
-slots of its timeslot without a fragment, counted on the TDMA clock: the slots of the timeslot that went by undecoded
-count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot join an expired prefix. Tests:
-`TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`, `TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the
-SDS-TL, text and reassembly cases), `TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS`, `TETRA_TDMA_CLOCK`.
+Each downlink signalling PDU family has a pure decoder that reads one PDU into a struct the caller provides and returns
+1 only when the whole PDU, optional elements included, was there and well formed; it keeps nothing and acts on nothing.
+All are module-private: `tetra_mac_resource_decode()` and `tetra_mac_broadcast_decode()` (the MAC-RESOURCE header with
+its address, SYSINFO with its D-MLE-SYSINFO, ACCESS-DEFINE; `src/protocol/tetra/tetra_mac_pdu.h`), `tetra_mle_decode()`
+(the MLE protocol PDUs, the D-CALL RESTORE of a D-RESTORE-ACK included), `tetra_sds_decode()` (D-STATUS and D-SDS-DATA:
+the SDS-TL header, the text, a concatenation part's control fields but not its reassembly) and `tetra_sndcp_decode()`
+(the SN-PDU header; all three in `tetra_mle_pdu.h`), and `tetra_mm_decode()` (the MM PDUs of EN 300 392-2 clause 16 and
+EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd()`, `tetra_mle_dispatch()`,
+`tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the summary line, the call event,
+the notice, the SDS reassembly, the KSG an SCK or GCK Provide names. Of signalling, `tetra_state_t` keeps only what the
+decoder reads back: the cell's main carrier, band, offset and location area, the hyperframe number, the encryption mode
+of the last addressed MAC-RESOURCE, the reassembly contexts and the D-MM STATUS the frontends show. The SYSINFO part
+belongs to the cell: a BSCH naming another MCC, MNC or colour code (`bsch_forget_cell()` in `tetra_bsch.c`) drops it
+with the TDMA clock, and `trunk_cc_freq` when that SYSINFO set it, so an allocation decoded before the new cell's
+SYSINFO resolves to no frequency and nothing is followed until it names its control channel; `tetra_forget_carrier()`
+keeps it, since another carrier of the same cell shares it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per
+timeslot and dropped after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
+the timeslot that went by undecoded count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot
+join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
+`TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases), `TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS`,
+`TETRA_TDMA_CLOCK`.
 
 #### Trunking
 
@@ -4465,7 +4469,7 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `TETRA_SM_GRANT_TIMEOUT_S` (4 s, DMR's default; no option) when no speech followed the tune. It also returns when
   trunking is turned off while tuned, drops the call without a tune when another owner released the shared tuning
   state (`opts->trunk_is_tuned` cleared: a tuner hand-back, the stale-follow cleanup), and drops ON_CC to IDLE once
-  trunking is off.
+  trunking is off or no control channel is known.
 - Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
   (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
   proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`).

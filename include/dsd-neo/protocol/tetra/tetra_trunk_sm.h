@@ -102,7 +102,8 @@ void tetra_sm_note_voice(dsd_state* state, uint8_t tn);
  * happens: the request stays the backend's and is never timed out here), then while TUNED end the followed call when
  * trunking was turned off (return to the control channel), when another owner released the shared tuning state (no
  * tune), on the grant timeout or after the hangtime that follows the last speech. ON_CC drops to IDLE once trunking is
- * off. The session's call records age on the same tick (tetra_calls_tick()), trunking or not.
+ * off or no control channel is known (a BSCH of another cell dropped it). The session's call records age on the same
+ * tick (tetra_calls_tick()), trunking or not.
  */
 void tetra_sm_tick(dsd_opts* opts, dsd_state* state);
 

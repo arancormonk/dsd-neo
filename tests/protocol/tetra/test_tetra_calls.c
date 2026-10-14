@@ -745,6 +745,48 @@ bsch_of(ttb_block* b, uint32_t colour) {
     ttb_put(b, 0, 5); /* neighbour cell broadcast, cell load CA, late entry supported */
 }
 
+/* A BSCH of another cell (another MCC, MNC or colour code) leaves nothing of the last cell's SYSINFO: its main carrier,
+ * band, offset and location area go, and the control channel that SYSINFO gave, so a D-SETUP whose allocation has no
+ * extended carrier numbering, decoded before the new cell's SYSINFO, resolves to no frequency and tunes nowhere, and
+ * the state machine rests IDLE. A control channel that came from elsewhere stays, and the same cell's BSCH keeps it
+ * all. */
+static void
+test_cell_change_forgets_sysinfo(void) {
+    for (int from_sysinfo = 1; from_sysinfo >= 0; from_sysinfo--) {
+        session s = session_open();
+        session_history(&s);
+        tetra_state_t* const ts = tetra_st(s.state);
+        ts->dl_carrier_hz = from_sysinfo ? CARRIER_HZ(100) : CARRIER_HZ(101);
+        ts->sysinfo_main_carrier = from_sysinfo ? 100u : 101u;
+        ts->frames_sysinfo = 1;
+        ts->la = 77;
+        ts->sysinfo_known = 1;
+        ttb_block same = {0};
+        bsch_of(&same, 25u);
+        assert(tetra_bsch_parse(same.bits, same.n, s.opts, s.state) == 1);
+        assert(ts->freq_band == 4 && ts->freq_offset == 2 && ts->la == 77 && ts->sysinfo_known);
+        assert(s.state->trunk_cc_freq == CARRIER_HZ(100) && s.state->tetra_pub.cc_known);
+
+        ttb_block other = {0};
+        bsch_of(&other, 30u);
+        assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state) == 1);
+        assert(ts->freq_band == 0 && ts->freq_offset == 0 && ts->dl_carrier_hz == 0 && ts->sysinfo_main_carrier == 0);
+        assert(ts->la == 0 && !ts->sysinfo_known && !s.state->tetra_pub.cc_known);
+        tetra_sm_tick(s.opts, s.state);
+        if (!from_sysinfo) {
+            assert(s.state->trunk_cc_freq == CARRIER_HZ(100) && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+            session_close(&s);
+            continue;
+        }
+        assert(s.state->trunk_cc_freq == 0 && tetra_sm_get_state(s.state) == TETRA_SM_IDLE);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        assert(g_tunes == 0 && followed_call(s.state) == -1);
+        assert(tetra_calls_peek(s.state, 0x0A)->alloc.carrier == 120
+               && tetra_calls_peek(s.state, 0x0A)->alloc.freq_hz == 0);
+        session_close(&s);
+    }
+}
+
 /* An event takes the colour code of the carrier from what a synchronisation burst just set, not from the last burst's
  * view: the direct mode call a DSB sets up after a trunked cell, and its short data, carry no colour code, and short
  * data decoded after the BSCH of another cell carries that cell's. */
@@ -962,6 +1004,7 @@ main(void) {
     test_direct_mode_calls();
     test_direct_mode_short_data();
     test_events_read_the_new_carrier();
+    test_cell_change_forgets_sysinfo();
     test_followed_call_speech();
     test_heard_call_speech();
     test_direct_mode_speech();

@@ -164,6 +164,25 @@ tetra_tdma_stop(dsd_state* state) {
     }
 }
 
+/* A BSCH of another cell: its timebase, hyperframe numbering and SYSINFO are its own. The last cell's main carrier, band,
+ * offset and location area go (EN 300 392-2 clause 21.4.4.1), and the control channel its SYSINFO gave with them, so
+ * a channel allocation decoded before this cell's SYSINFO resolves to no frequency (clause 21.5.2) rather than to one
+ * of the last cell's, and nothing is followed until the new SYSINFO names its control channel. */
+static void
+bsch_forget_cell(dsd_state* state, tetra_state_t* ts) {
+    tdma_stop(ts);
+    if (ts->dl_carrier_hz > 0L && state->trunk_cc_freq == ts->dl_carrier_hz) {
+        state->trunk_cc_freq = 0;
+    }
+    ts->dl_carrier_hz = 0;
+    ts->frames_sysinfo = 0;
+    ts->sysinfo_main_carrier = 0;
+    ts->la = 0;
+    ts->freq_band = 0;
+    ts->freq_offset = 0;
+    ts->sysinfo_known = 0;
+}
+
 int
 tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
@@ -178,8 +197,7 @@ tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state)
         return 0;
     }
     if (ts->net_known && (ts->mcc != p.mcc || ts->mnc != p.mnc || ts->colour != p.colour)) {
-        /* Another cell: its timebase and hyperframe numbering are its own. */
-        tdma_stop(ts);
+        bsch_forget_cell(state, ts);
     }
     ts->mcc = p.mcc;
     ts->mnc = p.mnc;

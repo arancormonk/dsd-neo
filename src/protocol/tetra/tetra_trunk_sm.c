@@ -515,8 +515,8 @@ sm_tick(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     if (!sm_settle_pending(opts, state, ts)) {
         return;
     }
-    if (ts->sm.state == (uint8_t)TETRA_SM_ON_CC && opts->trunk_enable != 1) {
-        sm_set_state(state, ts, TETRA_SM_IDLE, "trunking off");
+    if (ts->sm.state == (uint8_t)TETRA_SM_ON_CC && sm_rest_state(opts, state) != TETRA_SM_ON_CC) {
+        sm_set_state(state, ts, TETRA_SM_IDLE, opts->trunk_enable != 1 ? "trunking off" : "no control channel");
         return;
     }
     if (ts->sm.state == (uint8_t)TETRA_SM_TUNED) {
