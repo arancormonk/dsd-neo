@@ -24,6 +24,9 @@ target_sources(
     PRIVATE
         app_prefs.cpp
         backup_archive.cpp
+        backup_archive_build.cpp
+        backup_archive_parse.cpp
+        backup_archive_rules.cpp
         call_history_filter.cpp
         call_history_model.cpp
         command_bridge.cpp
