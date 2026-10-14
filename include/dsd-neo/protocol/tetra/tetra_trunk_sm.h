@@ -135,12 +135,13 @@ int tetra_sm_followed(const dsd_state* state, tetra_sm_grant* out);
 int tetra_sm_followed_call_id(const dsd_state* state, uint16_t* call_id);
 
 /**
- * @brief Call @p call_id's identifier was given to another call while its release went unheard (a D-SETUP reused it),
- * and the state machine still follows it, or puts it back if a return in flight fails: the return was refused,
- * deferred or is pending. From here it follows the channel but no call record (tetra_sm_followed_call_id() reports
- * none) and the followed call's proof on the carrier is gone, so nothing of the call that took the identifier counts
- * as the followed call's and no grant of it is taken for the followed call. Following ends as it would have: the grant
- * timeout or the hangtime retries the return; a grant the call records hand over is followed as a new call.
+ * @brief Call @p call_id's record left the call records (its release, a D-SETUP or D-INFO that gave its identifier to
+ * another call, its ageing), so the identifier names no call any more, while the state machine still follows it, or
+ * puts it back if a tune in flight fails: a return was refused, deferred or is pending. From here it follows the
+ * channel but no call record (tetra_sm_followed_call_id() reports none) and the followed call's proof on the carrier is
+ * gone, so nothing of a call that takes the identifier counts as the followed call's and no grant of it is taken for
+ * the followed call. Following ends as it would have: the grant timeout or the hangtime retries the return; a grant the
+ * call records hand over is followed as a new call. Any other identifier changes nothing.
  */
 void tetra_sm_retire_call(dsd_state* state, uint16_t call_id);
 

@@ -102,6 +102,18 @@ calls_free(tetra_call_t* c) {
     DSD_MEMSET(c, 0, sizeof(*c));
 }
 
+/* @p c leaves the table, however it goes (a release, its identifier given to another call, ageing, eviction). Its
+ * identifier names no call from here, so the state machine stops taking it for the followed call's, in what a tune in
+ * flight would put back too (tetra_sm_retire_call()): a later call given the identifier is judged as a call of its own,
+ * never through the followed call's grant path. */
+static void
+calls_drop(dsd_state* state, tetra_call_t* c) {
+    if (c->phase != TETRA_CALL_FREE) {
+        tetra_sm_retire_call(state, c->call_id);
+    }
+    calls_free(c);
+}
+
 /* The call identifier of the followed call, or -1 when the state machine follows none, or follows a channel whose call
  * identifier names another call now (tetra_sm_retire_call()). */
 static int
@@ -112,7 +124,7 @@ followed_id(const dsd_state* state) {
 
 /* A new record for @p call_id: a free entry, else the one heard from least recently that is not followed. */
 static tetra_call_t*
-calls_new(const dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
+calls_new(dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
     const int followed = followed_id(state);
     tetra_call_t* victim = NULL;
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
@@ -128,7 +140,7 @@ calls_new(const dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
     if (!victim) {
         return NULL;
     }
-    calls_free(victim);
+    calls_drop(state, victim);
     victim->call_id = call_id;
     victim->phase = TETRA_CALL_SETUP;
     return victim;
@@ -529,19 +541,22 @@ setup_reuses_id(const tetra_call_t* c, const tetra_call_event* ev, int has_calle
            || ((c->basic_service ^ ev->basic_service) & kind_bits) != 0u;
 }
 
-/* @p c ended with its release unheard: a D-SETUP gave its identifier to another call. Its canonical call ends, its
- * record goes, and the state machine lets go of it as its release would have made it (call_release()). Where it cannot
- * -- the return to the control channel refused or deferred, a tune in flight, or a return in flight that would put
- * the call back if it failed -- the state machine follows the channel but no call record from here
- * (tetra_sm_retire_call()), so the call that took the identifier is never taken for the followed one. */
+/* @p c ends: its canonical call ends with @p reason, its record goes, and when it is the followed call the state
+ * machine lets go of it (tetra_sm_on_release()). Where it cannot -- the return to the control channel refused or
+ * deferred, a tune in flight, or a return in flight that would put the call back if it failed -- the state machine
+ * follows the channel but no call record from here (calls_drop()), so a call given the identifier later is never
+ * taken for the followed one. A release, and a call whose release went unheard, end this way. */
 static void
-call_retire_reused(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c) {
+call_end(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, dsd_call_end_reason reason) {
     const uint16_t id = c->call_id;
+    const int followed = followed_id(state) == (int)id;
     if (ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == id) {
-        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+        calls_end_published(opts, state, ts, reason);
     }
+    /* The record goes first, so what the release publishes shows none of it; its identifier is retired after the
+     * release, which may already have let go of it (calls_drop() in two steps). */
     calls_free(c);
-    if (followed_id(state) == (int)id && opts) {
+    if (followed && opts) {
         tetra_sm_on_release(opts, state, id);
     }
     tetra_sm_retire_call(state, id);
@@ -554,7 +569,8 @@ call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
     uint32_t called = 0;
     const int has_called = sdu_ssi(sdu, &called);
     if (c && setup_reuses_id(c, ev, has_called, called)) {
-        call_retire_reused(opts, state, ts, c);
+        /* The call whose identifier the D-SETUP reuses ended with its release unheard. */
+        call_end(opts, state, ts, c, DSD_CALL_END_EXPLICIT);
         c = NULL;
     }
     if (!c) {
@@ -580,16 +596,17 @@ call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
     return c;
 }
 
-/* D-INFO and D-CALL RESTORE may give the call a new identifier; a record already holding it is stale. */
+/* D-INFO and D-CALL RESTORE may give the call a new identifier. A record already holding it is a call whose release
+ * went unheard: it ends as a D-SETUP reusing its identifier ends it, the followed call let go of with it. */
 static void
-call_rename(tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev) {
+call_rename(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev) {
     if ((ev->has & TETRA_CALL_HAS_NEW_ID) == 0u) {
         return;
     }
     const uint16_t id = (uint16_t)(ev->new_call_id & 0x3FFFu);
     tetra_call_t* const other = calls_find(ts, id);
     if (other && other != c) {
-        calls_free(other);
+        call_end(opts, state, ts, other, DSD_CALL_END_EXPLICIT);
     }
     /* The canonical call and the heard speech go on under the new identifier. */
     if (ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == c->call_id) {
@@ -646,7 +663,8 @@ call_connect(tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* s
 }
 
 static void
-call_apply(tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+call_apply(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev,
+           const tetra_mac_sdu* sdu) {
     if ((ev->has & TETRA_CALL_HAS_BASIC) != 0u && ev->kind != TETRA_CALL_EV_SETUP) {
         c->basic_service = ev->basic_service;
         c->e2ee = (uint8_t)basic_e2ee(ev->basic_service);
@@ -657,9 +675,9 @@ call_apply(tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev, const
     switch ((tetra_call_event_kind)ev->kind) {
         case TETRA_CALL_EV_CONNECT: call_connect(c, ev, sdu); break;
         case TETRA_CALL_EV_CONNECT_ACK: call_connected(c); break;
-        case TETRA_CALL_EV_INFO: call_rename(ts, c, ev); break;
+        case TETRA_CALL_EV_INFO: call_rename(opts, state, ts, c, ev); break;
         case TETRA_CALL_EV_RESTORE:
-            call_rename(ts, c, ev);
+            call_rename(opts, state, ts, c, ev);
             call_connected(c);
             break;
         case TETRA_CALL_EV_TX_GRANTED:
@@ -725,18 +743,6 @@ call_check_followed_crypto(dsd_opts* opts, dsd_state* state, const tetra_call_t*
     tetra_sm_on_release(opts, state, c->call_id);
 }
 
-/* A release ends the record it names and its canonical call; the followed call's goes back to the control channel. */
-static void
-call_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c) {
-    const uint16_t id = c->call_id;
-    const int followed = followed_id(state) == (int)id;
-    calls_end_call(opts, state, ts, id);
-    calls_free(c);
-    if (followed && opts) {
-        tetra_sm_on_release(opts, state, id);
-    }
-}
-
 /* Not trunking, @p c is the call whose speech is being heard. */
 static int
 call_is_heard(const dsd_opts* opts, const tetra_state_t* ts, const tetra_call_t* c) {
@@ -783,11 +789,13 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
         return;
     }
     if (ev->kind == TETRA_CALL_EV_RELEASE) {
-        call_release(opts, state, ts, c);
+        /* A release ends the record it names and its canonical call; the followed call's goes back to the control
+         * channel. */
+        call_end(opts, state, ts, c, DSD_CALL_END_TERMINATOR);
         return;
     }
     const uint16_t old_id = c->call_id;
-    call_apply(ts, c, ev, sdu);
+    call_apply(opts, state, ts, c, ev, sdu);
     call_follow_renamed(opts, state, old_id, c->call_id);
     c->seen_m = dsd_decode_now_mono_s();
     if (sdu && sdu->has_addr) {
@@ -1180,7 +1188,7 @@ tetra_calls_tick(dsd_opts* opts, dsd_state* state) {
         if (c->phase != TETRA_CALL_FREE && (int)c->call_id != followed && now_m - c->seen_m >= TETRA_CALL_IDLE_S) {
             TETRA_LOG_VERBOSE(ts, 2, "[TETRA CALL] call=%u not heard from for %.0f s; dropped\n", (unsigned)c->call_id,
                               TETRA_CALL_IDLE_S);
-            calls_free(c);
+            calls_drop(state, c);
         }
     }
 }

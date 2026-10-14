@@ -607,7 +607,7 @@ tetra_sm_retire_call(dsd_state* state, uint16_t call_id) {
         ts->sm.followed_retired = 1;
         tetra_confirm_forget_followed_call(state);
         if (sm_narrates(ts, 1)) {
-            DSD_FPRINTF(stderr, "[TETRA SM] call %u now names another call; following its channel, no call\n",
+            DSD_FPRINTF(stderr, "[TETRA SM] call %u has no call record any more; following its channel, no call\n",
                         (unsigned)id);
         }
     }

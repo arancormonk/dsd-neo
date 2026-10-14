@@ -4544,13 +4544,15 @@ single "current call".
   every call PDU of EN 300 392-2 clause 14.7.1 carries. The MLE turns each CRC-passed call PDU into a `tetra_call_event`
   (`tetra_calls_on_event()`): D-SETUP is the only PDU that makes a record (its MAC address is the called party, its
   calling party and basic service the rest); every other PDU updates the record it names and nothing when there is none,
-  and D-RELEASE / D-DISCONNECT free it. A D-SETUP naming another called party or kind of call under a known identifier
-  is a new call reusing the identifier of one whose release went unheard: the old call's canonical call ends, its record
-  goes and, when it was the followed call, the state machine lets go of it as the release would have made it, so the new
-  call meets the talkgroup policy like any other (`call_retire_reused()`). While the state machine cannot let go (the
-  return refused or deferred, a tune in flight, or a return in flight that would put the call back if it failed) it
-  follows the channel but no call record (`tetra_sm_retire_call()`, kept in the rollback): `tetra_sm_followed_call_id()`
-  reports none, the followed call's proof goes, and no PDU, rename, allocation or speech of the new call counts as the
+  and D-RELEASE / D-DISCONNECT end it. A D-SETUP naming another called party or kind of call under a known identifier,
+  or a D-INFO or D-CALL RESTORE renaming another call to it, is a new call taking the identifier of one whose release
+  went unheard. Both end a call the same way (`call_end()`): its canonical call ends, its record goes and, when it was
+  the followed call, the state machine lets go of it (`tetra_sm_on_release()`), so a new call under the identifier meets
+  the talkgroup policy like any other. Every record that leaves the table, a release, an identifier taken, ageing or
+  eviction, lets go of its identifier (`calls_drop()`): while the state machine cannot let go (the return refused or
+  deferred, a tune in flight, or a return in flight that would put the call back if it failed) it follows the channel
+  but no call record (`tetra_sm_retire_call()`, the rollback included): `tetra_sm_followed_call_id()` reports none, the
+  followed call's proof goes, and no PDU, rename, allocation or speech of a call given the identifier counts as the
   followed call's or takes the followed call's grant path, until the grant timeout or hangtime gives up following or a
   grant the policy allows follows the new call as a call of its own. D-INFO and D-CALL RESTORE may rename a call: the
   followed one is re-granted under its new identifier and stays one canonical call. D-TX GRANTED / D-TX INTERRUPT give
@@ -4613,7 +4615,8 @@ single "current call".
   control notices, once the carrier is proven (`tetra_calls_notice()`); direct mode short data becomes a data notice,
   a repeat within 10 s not again. Cell reselection is not noted: it concerns one MS at a time.
 
-Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, identifier reuse, ageing,
+Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, identifier reuse, a released,
+renamed-over or aged followed identifier, ageing,
 canonical calls and notices in trunked and direct mode, speech publication, the receiving carrier), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, the
 derived key stream, the speech starting over at call boundaries), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`,

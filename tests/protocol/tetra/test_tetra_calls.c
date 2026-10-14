@@ -51,6 +51,7 @@
 static int g_tunes;
 static int g_returns;
 static long g_tuned_hz;
+static dsd_trunk_tune_result g_tune_result;
 static dsd_trunk_tune_result g_return_result;
 
 static dsd_trunk_tune_result
@@ -61,7 +62,7 @@ tune_hook(dsd_opts* opts, dsd_state* state, long freq, int ted_sps, uint64_t req
     g_tuned_hz = freq;
     opts->trunk_is_tuned = 1;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-    return DSD_TRUNK_TUNE_RESULT_OK;
+    return g_tune_result;
 }
 
 static dsd_trunk_tune_result
@@ -99,6 +100,7 @@ session_open(void) {
     g_tunes = 0;
     g_returns = 0;
     g_tuned_hz = 0;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
     session s;
     s.opts = (dsd_opts*)calloc(1U, sizeof(*s.opts));
@@ -459,6 +461,99 @@ test_reused_id_while_following_held(void) {
     send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
     assert(g_tunes == 1 && tetra_calls_followed(s.state) == tetra_calls_peek(s.state, 0x0A));
     assert(tetra_confirm_followed_call_proven(s.state) && publishes_call_to(s.state, 0x200u));
+    session_close(&s);
+}
+
+/* A D-RELEASE of the followed call lets go of its identifier as a D-SETUP that reuses it does: when the return to the
+ * control channel is deferred, or in flight and then fails and puts the call back, the receiver stays on the released
+ * call's channel but follows no call record, so a D-SETUP that gives the identifier to a call of a blocked talkgroup is
+ * judged by the policy like any other and is neither followed nor published. */
+static void
+test_released_followed_id_retired(void) {
+    for (int in_flight = 0; in_flight < 2; in_flight++) {
+        session s = session_open();
+        session_history(&s);
+        dsd_tg_policy_entry row;
+        assert(dsd_tg_policy_make_exact_entry(0x200u, "B", "blocked", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+        assert(dsd_tg_policy_upsert_exact(s.state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        send_call_pdu(&s, 0x100u, TETRA_CMCE_D_CONNECT, 0x0A, 4 + 1 + 1 + 2 + 1 + 1);
+        assert(followed_call(s.state) == 0x0A && g_tunes == 1 && tetra_confirm_followed_call_proven(s.state));
+
+        g_return_result = in_flight ? DSD_TRUNK_TUNE_RESULT_PENDING : DSD_TRUNK_TUNE_RESULT_DEFERRED;
+        send_call_pdu(&s, 0x100u, TETRA_CMCE_D_RELEASE, 0x0A, 5);
+        assert(g_returns == 1 && tetra_calls_peek(s.state, 0x0A) == NULL);
+        if (in_flight) {
+            const uint64_t request = dsd_trunk_tuning_pending_request();
+            assert(request != 0U && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+            dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+            tetra_sm_tick(s.opts, s.state);
+        }
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x0A);
+        assert(tetra_calls_followed(s.state) == NULL && !tetra_confirm_followed_call_proven(s.state));
+
+        send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 150);
+        assert(g_tunes == 1 && g_tuned_hz == CARRIER_HZ(120) && followed_call(s.state) == 0x0A);
+        assert(tetra_calls_peek(s.state, 0x0A)->called_ssi == 0x200u && tetra_calls_followed(s.state) == NULL);
+        assert(!tetra_confirm_followed_call_proven(s.state) && !publishes_call_to(s.state, 0x200u));
+        session_close(&s);
+    }
+}
+
+/* A D-INFO that gives another call the followed call's identifier says the followed call's release went unheard: it
+ * ends and is let go of as its release would have made it, and where the return is deferred the receiver follows the
+ * channel but no call record, so the renamed call is never taken for the followed one. */
+static void
+test_rename_onto_followed_id(void) {
+    session s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 0, 0);
+    assert(followed_call(s.state) == 0x0A && publishes_call_to(s.state, 0x100u));
+    g_return_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    send_info_rename(&s, 0x200u, 0x0B, 0x0A);
+    assert(g_returns == 1 && tetra_calls_peek(s.state, 0x0B) == NULL);
+    assert(tetra_calls_peek(s.state, 0x0A) != NULL && tetra_calls_peek(s.state, 0x0A)->called_ssi == 0x200u);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && tetra_calls_followed(s.state) == NULL);
+    assert(!tetra_confirm_followed_call_proven(s.state) && !publishes_call_to(s.state, 0x100u));
+    assert(!publishes_call_to(s.state, 0x200u));
+
+    /* Its next PDU or allocation is the renamed call's own: judged by the policy, not the followed call's grant. */
+    s.state->tg_hold = 0x300u;
+    send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 2, 160);
+    assert(g_tunes == 1 && !tetra_confirm_followed_call_proven(s.state) && !publishes_call_to(s.state, 0x200u));
+    session_close(&s);
+}
+
+/* A record that ages out lets go of its identifier too: the followed call, whose record aged while a tune to another
+ * call was in flight, comes back without a call record when that tune fails, so a D-SETUP that gives its identifier to
+ * a call of a blocked talkgroup does not take the followed call's grant path. */
+static void
+test_aged_rollback_call_retired(void) {
+    session s = session_open();
+    dsd_tg_policy_entry row;
+    assert(dsd_tg_policy_make_exact_entry(0x200u, "B", "blocked", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    assert(dsd_tg_policy_upsert_exact(s.state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && g_tunes == 1);
+    s.state->tg_hold = 0x300u;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    send_setup(&s, 0x300u, 0x0B, TTB_SPEECH_GROUP, 2, 130);
+    const uint64_t request = dsd_trunk_tuning_pending_request();
+    assert(g_tunes == 2 && request != 0U && followed_call(s.state) == 0x0B);
+
+    at_seconds(1000.0 + TETRA_CALL_IDLE_S + 1.0);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_calls_peek(s.state, 0x0A) == NULL && tetra_calls_peek(s.state, 0x0B) != NULL);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x0A);
+    assert(tetra_calls_followed(s.state) == NULL && !tetra_confirm_followed_call_proven(s.state));
+
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 4, 150);
+    assert(g_tunes == 2 && followed_call(s.state) == 0x0A && tetra_calls_followed(s.state) == NULL);
     session_close(&s);
 }
 
@@ -997,6 +1092,9 @@ main(void) {
     test_followed_call_renamed();
     test_setup_reusing_followed_id();
     test_reused_id_while_following_held();
+    test_released_followed_id_retired();
+    test_rename_onto_followed_id();
+    test_aged_rollback_call_retired();
     test_table_eviction_and_ageing();
     test_followed_call_publishes();
     test_encrypted_and_unfollowed_calls();
