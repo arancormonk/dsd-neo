@@ -1241,8 +1241,8 @@ test_frame_18_is_no_speech(void) {
     expect(v->frames == 4 && v->concealed == 0 && v->bad_run == 0 && v->confirmed == 1,
            "frame 18: nothing decoded or concealed for it, and the speech goes on");
 
-    /* Direct mode and the uplink run no TDMA clock of a trunked downlink: their bursts are speech whatever a stale frame
-     * number says. */
+    /* Direct mode and the uplink run no TDMA clock of a trunked downlink: their bursts are speech whatever a stale
+     * frame number says. */
     ts->dmo = 1;
     ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
     ts->fn = 18;

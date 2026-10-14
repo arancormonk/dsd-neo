@@ -139,11 +139,11 @@ void tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* 
 /**
  * @brief An addressed MAC-RESOURCE (EN 300 392-2 table 21.55) was decoded on timeslot @p tn (0 when the TDMA clock does
  * not place it) with encryption mode @p enc_mode: an event label assignment (address types 101, 111) takes the label
- * from every other party's call (the label binds at delivery, tetra_calls_on_allocation()), an encrypted allocation to a call's party sets the call's air
- * encryption, which the call's canonical call takes at once when it is published and which, while encrypted calls are
- * not followed, locks out and leaves a followed call it makes undecryptable; a PDU to the followed call's party proves
- * that call on the carrier (tetra_confirm), and the timeslot's signalling encryption is noted for speech no call record
- * names. @p opts may be NULL.
+ * from every other party's call (the label binds at delivery, tetra_calls_on_allocation()), an encrypted allocation to
+ * a call's party sets the call's air encryption, which the call's canonical call takes at once when it is published and
+ * which, while encrypted calls are not followed, locks out and leaves a followed call it makes undecryptable; a PDU to
+ * the followed call's party proves that call on the carrier (tetra_confirm), and the timeslot's signalling encryption
+ * is noted for speech no call record names. @p opts may be NULL.
  */
 void tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_address* addr, uint8_t enc_mode,
                               int alloc_present, uint8_t tn);
@@ -222,13 +222,13 @@ void tetra_calls_forget_carrier(dsd_state* state);
 void tetra_calls_forget_trunked_carrier(dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief A BSCH or SYSINFO named another cell of the network (tetra_bsch.h): the records stay, as the network's calls go on across its cells, but
- * what each holds of the last cell goes. A channel allocation names a carrier number and timeslots of the cell that
- * made it (EN 300 392-2 clause 21.5.2), which another cell may give any call, and an event label or usage marker is
- * valid on one channel of one cell (clauses 23.4.1.2.3, 23.5.5). So no speech on a channel the last cell allocated
- * is a record's (tetra_calls_on_timeslot()), no PDU addressed by a label the last cell assigned attaches to one, and no
- * record shows a channel of the last cell as its traffic channel, until the new cell allocates one. The followed call's
- * channel is the state machine's grant, which this leaves to it. Never creates TETRA state.
+ * @brief A BSCH or SYSINFO named another cell of the network (tetra_bsch.h): the records stay, as the network's calls
+ * go on across its cells, but what each holds of the last cell goes. A channel allocation names a carrier number and
+ * timeslots of the cell that made it (EN 300 392-2 clause 21.5.2), which another cell may give any call, and an event
+ * label or usage marker is valid on one channel of one cell (clauses 23.4.1.2.3, 23.5.5). So no speech on a channel the
+ * last cell allocated is a record's (tetra_calls_on_timeslot()), no PDU addressed by a label the last cell assigned
+ * attaches to one, and no record shows a channel of the last cell as its traffic channel, until the new cell allocates
+ * one. The followed call's channel is the state machine's grant, which this leaves to it. Never creates TETRA state.
  */
 void tetra_calls_forget_cell(dsd_state* state);
 

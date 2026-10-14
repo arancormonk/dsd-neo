@@ -169,16 +169,16 @@ tetra_tdma_stop(dsd_state* state) {
 }
 
 /* A BSCH of another cell, or a SYSINFO of one that shares the colour code (tetra_bsch_sysinfo_cell()): its timebase,
- * hyperframe numbering and SYSINFO are its own. The last cell's main carrier, band,
- * offset and location area go (EN 300 392-2 clause 21.4.4.1), and the control channel its SYSINFO gave with them, so
- * a channel allocation decoded before this cell's SYSINFO resolves to no frequency (clause 21.5.2) rather than to one
- * of the last cell's, and nothing is followed until the new SYSINFO names its control channel. The partial TM-SDUs go
- * too: a TM-SDU is rebuilt on one cell's control channel (clause 23.4.3.1.1), and a fragment of another cell must not
- * continue it, whatever its colour code. So do the channels the last cell allocated to the calls and the event labels
- * it assigned (tetra_calls_forget_cell()), the records staying. And the receiver is on another carrier, whatever the engine saw (a radio
- * retuned outside the decoder): what the last carrier's speech left goes as at a carrier boundary -- its timeslots'
- * signalling encryption, the heard timeslot with its canonical call, the speech in progress and the followed call's
- * proof on the carrier -- and so does the encryption mode the last cell's signalling showed. */
+ * hyperframe numbering and SYSINFO are its own. The last cell's main carrier, band, offset and location area go
+ * (EN 300 392-2 clause 21.4.4.1), and the control channel its SYSINFO gave with them, so a channel allocation decoded
+ * before this cell's SYSINFO resolves to no frequency (clause 21.5.2) rather than to one of the last cell's, and
+ * nothing is followed until the new SYSINFO names its control channel. The partial TM-SDUs go too: a TM-SDU is rebuilt
+ * on one cell's control channel (clause 23.4.3.1.1), and a fragment of another cell must not continue it, whatever its
+ * colour code. So do the channels the last cell allocated to the calls and the event labels it assigned
+ * (tetra_calls_forget_cell()), the records staying. And the receiver is on another carrier, whatever the engine saw (a
+ * radio retuned outside the decoder): what the last carrier's speech left goes as at a carrier boundary -- its
+ * timeslots' signalling encryption, the heard timeslot with its canonical call, the speech in progress and the followed
+ * call's proof on the carrier -- and so does the encryption mode the last cell's signalling showed. */
 static void
 bsch_forget_cell(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     tdma_stop(ts);

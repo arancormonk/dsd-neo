@@ -911,9 +911,9 @@ tetra_pub_hz(long hz) {
     return (hz > 0L && hz <= DSD_TRUNK_FREQ_MAX_HZ) ? (uint32_t)hz : 0U;
 }
 
-/* The trunked network identity and its air-interface encryption: the network's TEA comes from the KSG an OTAR named for
- * it. A direct mode carrier belongs to no trunked network (EN 300 396-3: its colour code is the source's, clause 8.2.4),
- * so the identity the session keeps from the last BSCH or --tetra-net is not published there. */
+/* The trunked network identity and its air-interface encryption: the network's TEA comes from the KSG an OTAR named
+ * for it. A direct mode carrier belongs to no trunked network (EN 300 396-3: its colour code is the source's, clause
+ * 8.2.4), so the identity the session keeps from the last BSCH or --tetra-net is not published there. */
 static void
 tetra_pub_network(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_publication* pub) {
     const int trunked = ts->net_known && !ts->dmo;

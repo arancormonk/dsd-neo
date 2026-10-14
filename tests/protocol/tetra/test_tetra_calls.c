@@ -1832,9 +1832,9 @@ test_event_label_channel(void) {
 
 /* The cells of a network may share a colour code, so a BSCH does not tell every change of cell: a SYSINFO naming
  * another main carrier than the cell's (EN 300 392-2 clause 21.4.4.1: the main carrier is the cell's), or another
- * location area, is another cell too, and forgets what a BSCH of another cell forgets before it is taken -- the records'
- * channels, the heard speech's call, the partial TM-SDUs and the TDMA clock -- while the call records, the network's,
- * stay in the same location area. The same cell's SYSINFO keeps it all. */
+ * location area, is another cell too, and forgets what a BSCH of another cell forgets before it is taken -- the
+ * records' channels, the heard speech's call, the partial TM-SDUs and the TDMA clock -- while the call records, the
+ * network's, stay in the same location area. The same cell's SYSINFO keeps it all. */
 static void
 test_sysinfo_tells_another_cell(void) {
     session s = session_open();
