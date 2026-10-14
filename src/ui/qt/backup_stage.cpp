@@ -272,8 +272,11 @@ discard_pending() {
     if (!root.valid() || !entry_exists(pending)) {
         return true;
     }
-    if (entry_exists(pending + QStringLiteral("/journal/COMPLETE"))) {
-        return false; // the apply has started; only it may finish or undo it
+    // A committed restore with a complete journal is an apply in progress: only it may finish or undo it. Without the
+    // marker the apply is past its commit point and the journal is only left over.
+    if (entry_exists(pending + QLatin1Char('/') + QLatin1String(kCommittedName))
+        && entry_exists(pending + QStringLiteral("/journal/COMPLETE"))) {
+        return false;
     }
     return root.removeTree(pending);
 }

@@ -150,14 +150,22 @@ pending(const QString& relativePath = QString()) {
     return relativePath.isEmpty() ? at("restore-pending") : at("restore-pending/" + relativePath);
 }
 
-/** Remove a directory below the isolated data root; anything else (an empty path is the working directory) is left. */
+/**
+ * The one way this test removes a directory tree: @p path must be a clean absolute path equal to or below the
+ * isolated data root, itself clean, absolute, not "/" and named for this test. Anything else - an empty path is the
+ * working directory - is refused and counted as a failure.
+ */
 void
-remove_below_root(const QString& path) {
+remove_tree(const QString& path) {
     const QString base = root();
-    if (base.size() > 1 && QDir::isAbsolutePath(path) && path.startsWith(base + QLatin1Char('/'))) {
+    const bool baseOk = base.size() > 1 && QDir::isAbsolutePath(base) && QDir::cleanPath(base) == base
+                        && base.contains(QLatin1String("dsd-neo-backup-apply-"));
+    const bool pathOk = !path.isEmpty() && QDir::isAbsolutePath(path) && QDir::cleanPath(path) == path
+                        && (path == base || path.startsWith(base + QLatin1Char('/')));
+    if (baseOk && pathOk) {
         QDir(path).removeRecursively();
     } else {
-        expect(QStringLiteral("only paths below the data root are removed: '%1'").arg(path), false);
+        expect(QStringLiteral("only the isolated data root is removed: '%1'").arg(path), false);
     }
 }
 
@@ -200,9 +208,7 @@ capture() {
 /** Replace the data root and the portable settings with @p tree. */
 void
 put_back(const Tree& tree) {
-    if (root().size() > 1 && QDir::isAbsolutePath(root())) {
-        QDir(root()).removeRecursively();
-    }
+    remove_tree(root());
     QDir().mkpath(root());
     for (const QString& dir : tree.dirs) {
         QDir().mkpath(at(dir));
@@ -292,7 +298,7 @@ same_tree(const Tree& gotTree, const Tree& wantTree, bool dirs, const QStringLis
 struct Backup {
     QByteArray archive;
     dsd_qt::backup::ParseResult parsed;
-    QString groups, keys, bandplan, src, mapping, chan, chanRoot, targets, targetsRoot;
+    QString groups, keys, bandplan, src, mapping, chan, chanRoot, targets, targetsRoot, extra;
 };
 
 QString
@@ -363,8 +369,13 @@ add_systems_and_lists(Backup& b) {
                                QVariantMap{{"kind", "freq"}, {"freqMhz", "462.5625"}, {"protocol", "nfm"}}};
     expect("add scan list",
            scans.add({{"name", "Patrol"}, {"groupCsvPath", b.groups}, {"srcCsvPath", b.src}, {"entries", entries}}));
-    expect("add target scan list",
-           scans.add({{"name", "Targets"}, {"targetSource", "csv"}, {"targetsCsvPath", b.targets}}));
+    // A file in a subdirectory of imports/ that only a path field names.
+    b.extra = at("imports/extra/notes.csv");
+    expect("write a talkgroup list in a subdirectory", write_file(b.extra, "TG,Mode,Name\n7,A,Extra\n"));
+    expect(
+        "add target scan list",
+        scans.add(
+            {{"name", "Targets"}, {"targetSource", "csv"}, {"targetsCsvPath", b.targets}, {"groupCsvPath", b.extra}}));
 
     dsd_qt::DecryptionProfilesModel profiles;
     profiles.setReferences(&systems, &scans);
@@ -498,6 +509,12 @@ change_references(const Backup& b, Old& old, const QString& external) {
     expect("referenced recording", write_file(at("recordings/capture.wav"), "RIFF referenced"));
     expect("unreferenced recording", write_file(at("recordings/loose.wav"), "RIFF loose"));
     expect("deleted system's recording", write_file(at("recordings/gone.wav"), "RIFF gone"));
+    // A file a path field and a recording both name: the recording keeps it.
+    expect("file named as a list and a recording", write_file(at("imports/both.csv"), "RIFF both\n"));
+    expect("add system naming it as a list",
+           systems.add({{"name", "Both"}, {"sourceType", "usb"}, {"groupCsvPath", at("imports/both.csv")}}));
+    expect("add system naming it as a recording",
+           systems.add({{"name", "BothReplay"}, {"sourceType", "file"}, {"filePath", at("imports/both.csv")}}));
     expect("add a system to delete",
            systems.add({{"name", "Gone"}, {"sourceType", "file"}, {"filePath", at("recordings/gone.wav")}}));
     systems.remove(systems.rowCount() - 1);
@@ -576,6 +593,7 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
                            "imports/bundles/CASEROOT/extra.txt",
                            relative(b.targetsRoot) + "/notes.txt",
                            "imports/notes.txt",
+                           "imports/both.csv",
                            "imports/.staged-left",
                            "diagnostics/log.txt",
                            "unknown.dat"};
@@ -679,14 +697,19 @@ apply(Faults* faults = nullptr, bool busy = false, qint64 free = -1) {
 
 /** Stage, promote and commit the backup over a fresh copy of the old configuration. */
 bool
-prepare(const Backup& b, const Old& old) {
-    put_back(old.tree);
+prepare_tree(const Backup& b, const Tree& tree) {
+    put_back(tree);
     const QString dir = dsd_qt::backup::staging_dir_for_job("job-1");
     QString error;
     const bool ok = dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error)
                     && dsd_qt::backup::promote_staging(dir) && dsd_qt::backup::commit_pending();
     expect("stage, promote and commit", ok);
     return ok;
+}
+
+bool
+prepare(const Backup& b, const Old& old) {
+    return prepare_tree(b, old.tree);
 }
 
 QString
@@ -755,7 +778,7 @@ test_staging_layout(const Backup& b) {
     expect("the manifest lists every staged file", listed == onDisk);
     expect("every staged file is private", privateFiles);
     expect("restaging replaces the directory", dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error));
-    remove_below_root(dir);
+    remove_tree(dir);
 }
 
 /** @p b's archive with the file at @p path replaced by @p bytes, size and hash updated. */
@@ -820,7 +843,7 @@ test_staging_validates_library_files(const Backup& b) {
     const auto empty = dsd_qt::backup::backup_parse_archive(emptyArchive, root());
     expect("a library file with no usable row is staged as the library keeps it",
            dsd_qt::backup::stage_restore(empty, emptyArchive, dir, &error));
-    remove_below_root(dir);
+    remove_tree(dir);
 
     const auto elsewhere = dsd_qt::backup::backup_parse_archive(b.archive, "/restore/elsewhere");
     expect("a parse for another data root is refused", !dsd_qt::backup::stage_restore(elsewhere, b.archive, dir, &error)
@@ -929,6 +952,7 @@ check_applied_content(const Backup& b, const Old& old) {
     const QJsonObject targetsList = dsd_qt::json_store_load_array("scan_lists.json").at(1).toObject();
     expect("the target list follows the fresh bundle",
            targetsList.value("targetsCsvPath") == old.targetsDest + "/targets.csv");
+    expect("a file a live recording names is kept", read_file(at("imports/both.csv")) == "RIFF both\n");
     expect("the unknown file keeps its name", read_file(b.groups) == "my own notes\n");
     expect("the recording keeps its name", read_file(b.src) == "RIFF recording at an incoming name");
     const QJsonArray systems = dsd_qt::json_store_load_array("saved_systems.json");
@@ -1250,7 +1274,10 @@ test_journal_failures(const Backup& b, const Old& old, const Tree& reference) {
         faults.ioCall = 1;
         const ApplyResult result = apply(&faults);
         const QString what = QStringLiteral("journal failure at %1").arg(step);
-        expect(what + ": Deferred", result.outcome == ApplyOutcome::Deferred);
+        expect(what + ": Deferred for storage", result.outcome == ApplyOutcome::Deferred
+                                                    && result.reason
+                                                           == "Not enough free storage to restore. Free up storage and "
+                                                              "reopen DSD-neo");
         expect(what + ": nothing changed, no journal left", same_tree(capture(), before, true));
         expect(what + ": the next start applies", apply().outcome == ApplyOutcome::Applied);
         expect(what + ": end state equals a clean run", same_tree(capture(), reference, true));
@@ -1266,10 +1293,20 @@ test_busy_after_journal(const Backup& b, const Old& old, const Tree& reference) 
     env.engineBusy = [&calls] { return ++calls > 1; };
     const ApplyResult result = dsd_qt::backup::apply_pending_restore(env);
     expect("busy after the journal defers", result.outcome == ApplyOutcome::Deferred && calls == 2);
-    expect("the journal is complete", QFileInfo::exists(pending("journal/COMPLETE")));
+    expect("a journal no change used is dropped",
+           !QFileInfo::exists(pending("journal")) && dsd_qt::backup::pending_committed());
     expect("nothing live changed", same_tree(capture(), old.tree, true, {"restore-pending"}));
-    expect("the next start applies", apply().outcome == ApplyOutcome::Applied);
+    Faults next;
+    expect("the next start applies", apply(&next).outcome == ApplyOutcome::Applied);
+    expect("the next start plans from the live configuration again", next.calls.value("journal.begin") == 1);
     expect("busy after the journal ends like a clean run", same_tree(capture(), reference, true));
+
+    // A deferred session can be discarded: its journal is gone.
+    prepare(b, old);
+    calls = 0;
+    dsd_qt::backup::apply_pending_restore(env);
+    expect("a restore deferred after its journal can be discarded",
+           dsd_qt::backup::discard_pending() && !dsd_qt::backup::pending_exists());
 }
 
 void
@@ -1295,7 +1332,7 @@ test_symlinked_component(const Backup& b, const Old& old) {
         const QString file = it.next();
         write_file(outside.path() + file.mid(bundles.size()), read_file(file));
     }
-    remove_below_root(bundles);
+    remove_tree(bundles);
     expect("bundles directory is a symlink", QFile::link(outside.path(), bundles));
     const Tree before = capture();
     const Tree external = capture_dir(outside.path());
@@ -1324,6 +1361,191 @@ test_symlinked_store(const Backup& b, const Old& old) {
     expect("the old state is back after a symlinked store",
            same_tree(capture(), before, true, {kResultFile, "restore-pending"}));
     expect("nothing pending after a symlinked store", !dsd_qt::backup::pending_exists());
+}
+
+/** After the commit point a journal is only a leftover: discarding it is allowed. */
+void
+test_discard_after_commit_point(const Backup& b, const Old& old) {
+    prepare(b, old);
+    Faults faults;
+    faults.crashStep = "cleanup";
+    faults.crashCall = 1;
+    apply(&faults);
+    expect("a crash in the cleanup leaves an unmarked journal", dsd_qt::backup::pending_exists()
+                                                                    && !dsd_qt::backup::pending_committed()
+                                                                    && QFileInfo::exists(pending("journal/COMPLETE")));
+    expect("a leftover after the commit point can be discarded",
+           dsd_qt::backup::discard_pending() && !dsd_qt::backup::pending_exists());
+}
+
+/** The archive bytes of the carried file at @p path. */
+QByteArray
+archive_bytes(const Backup& b, const QString& path) {
+    for (const auto& file : b.parsed.files) {
+        if (at(file.path) == path) {
+            return b.archive.mid(file.offset, file.size);
+        }
+    }
+    return {};
+}
+
+/** @p tree with the directory @p dir (and everything below it) replaced by a regular file. */
+Tree
+with_file_for_dir(Tree tree, const QString& dir) {
+    tree = without(tree, {dir});
+    tree.files.insert(dir, "an old file where a directory goes\n");
+    return tree;
+}
+
+/** An old file where the backup needs a directory: incoming files go around it, and a rollback puts it back. */
+void
+test_old_file_where_a_directory_goes(const Backup& b, const Old& old) {
+    const QString dir = relative(QFileInfo(b.extra).path());
+    Tree variant = with_file_for_dir(old.tree, dir);
+    QByteArray lists = variant.files.value("scan_lists.json");
+    lists.replace(b.extra.toUtf8(), at(dir).toUtf8()); // a live path field names the file, so it is old configuration
+    variant.files.insert("scan_lists.json", lists);
+
+    prepare_tree(b, variant);
+    expect("an old file where a directory goes: applied", apply().outcome == ApplyOutcome::Applied);
+    const QString moved = at(dir + " (1)/notes.csv");
+    expect("the incoming file goes around the old file", read_file(moved) == archive_bytes(b, b.extra));
+    expect("the old file was old configuration", !QFileInfo::exists(at(dir)));
+    expect("the list follows the moved file",
+           dsd_qt::json_store_load_array("scan_lists.json").at(1).toObject().value("groupCsvPath") == moved);
+
+    prepare_tree(b, variant);
+    Faults faults;
+    faults.ioStep = "forward.stores";
+    faults.ioCall = 1;
+    expect("an old file where a directory goes: rolled back", apply(&faults).outcome == ApplyOutcome::Failed);
+    expect("the rollback restores the old file", same_tree(capture(), variant, true, {kResultFile}));
+
+    // The same inside a bundle the old configuration owns: the incoming bundle takes a fresh id.
+    QString revision;
+    for (const auto& file : b.parsed.files) {
+        const QString rest = at(file.path).mid(b.chanRoot.size() + 1);
+        if (at(file.path).startsWith(b.chanRoot + '/') && rest.contains('/')) {
+            revision = relative(b.chanRoot) + '/' + rest.section('/', 0, 0);
+        }
+    }
+    expect("the channel bundle has a revision directory", !revision.isEmpty());
+    const Tree bundled = with_file_for_dir(old.tree, revision);
+    prepare_tree(b, bundled);
+    expect("an old file inside a bundle path: applied", apply().outcome == ApplyOutcome::Applied);
+    const QString movedChan = b.chanRoot + "-1" + b.chan.mid(b.chanRoot.size());
+    expect("the incoming bundle goes around the old file", read_file(movedChan) == archive_bytes(b, b.chan));
+    expect("the system follows the moved bundle",
+           dsd_qt::json_store_load_array("saved_systems.json").at(0).toObject().value("chanCsvPath") == movedChan);
+    prepare_tree(b, bundled);
+    Faults bundleFaults;
+    bundleFaults.ioStep = "forward.stores";
+    bundleFaults.ioCall = 1;
+    expect("an old file inside a bundle path: rolled back", apply(&bundleFaults).outcome == ApplyOutcome::Failed);
+    expect("the rollback restores the bundle's old file", same_tree(capture(), bundled, true, {kResultFile}));
+
+    // An old file at imports/bundles itself, which no bundle can move around: the restore replaces it (it is old
+    // configuration), and a rollback removes the directory it made there before putting the file back.
+    Tree flat = with_file_for_dir(old.tree, "imports/bundles");
+    QByteArray named = flat.files.value("scan_lists.json");
+    named.replace(b.extra.toUtf8(), at("imports/bundles").toUtf8());
+    flat.files.insert("scan_lists.json", named);
+    prepare_tree(b, flat);
+    expect("an old file at imports/bundles: applied", apply().outcome == ApplyOutcome::Applied);
+    expect("the bundles directory replaces the old file", read_file(b.chan) == archive_bytes(b, b.chan));
+    prepare_tree(b, flat);
+    Faults flatFaults;
+    flatFaults.ioStep = "forward.stores";
+    flatFaults.ioCall = 1;
+    expect("an old file at imports/bundles: rolled back", apply(&flatFaults).outcome == ApplyOutcome::Failed);
+    expect("the rollback puts the old file back at imports/bundles", same_tree(capture(), flat, true, {kResultFile}));
+}
+
+/** A journal that cannot be built for a reason other than storage fails with that reason; nothing is changed. */
+void
+test_journal_problems(const Backup& b, const Old& old) {
+    prepare(b, old);
+    const QString unreadable = at("imports/keys.csv");
+    QFile::setPermissions(unreadable, QFileDevice::Permissions());
+    QFile probe(unreadable);
+    if (probe.open(QIODevice::ReadOnly)) {
+        DSD_FPRINTF(stderr, "note: file permissions are not enforced here; unreadable-file case skipped\n");
+    } else {
+        const ApplyResult result = apply();
+        expect("an unreadable old file fails the restore",
+               result.outcome == ApplyOutcome::Failed
+                   && result.reason == "A file of the current configuration couldn't be read. Nothing was changed");
+        expect("an unreadable old file leaves nothing pending", !dsd_qt::backup::pending_exists());
+        QFile::setPermissions(unreadable, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        expect("an unreadable old file changes nothing", same_tree(capture(), old.tree, true, {kResultFile}));
+        expect("the result says why", dsd_qt::backup::read_result_file().value("reason") == result.reason);
+    }
+    QFile::setPermissions(unreadable, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+
+    // Every free name for an incoming file taken.
+    prepare(b, old);
+    const QString base = QFileInfo(b.groups).completeBaseName();
+    bool written = true;
+    for (int n = 1; n < 10000 && written; ++n) {
+        QFile file(QStringLiteral("%1/%2 (%3).csv").arg(QFileInfo(b.groups).path(), base).arg(n));
+        written = file.open(QIODevice::WriteOnly);
+    }
+    expect("every free name taken", written);
+    const ApplyResult names = apply();
+    expect("no free name fails the restore",
+           names.outcome == ApplyOutcome::Failed
+               && names.reason == "No free name was left for a restored file. Nothing was changed");
+    expect("no free name leaves nothing pending", !dsd_qt::backup::pending_exists());
+    expect("no free name changes nothing",
+           read_file(b.groups) == "my own notes\n"
+               && read_file(at("saved_systems.json")) == old.tree.files.value("saved_systems.json"));
+}
+
+/** An unreadable journal is Stuck, and says so in the result file too. */
+void
+test_unreadable_journal(const Backup& b, const Old& old) {
+    prepare(b, old);
+    Faults crash;
+    crash.crashStep = "forward.files";
+    crash.crashCall = 2;
+    apply(&crash);
+    write_file(at(kResultFile), R"({"outcome":"applied","reason":"","summary":{}})");
+    write_file(pending("journal/COMPLETE"), QByteArray(64, '0'));
+    const ApplyResult result = apply();
+    expect("an unreadable journal is Stuck", result.outcome == ApplyOutcome::Stuck);
+    expect("an unreadable journal's result file says stuck",
+           dsd_qt::backup::read_result_file().value("outcome") == "stuck");
+    expect("an unreadable journal keeps everything", dsd_qt::backup::pending_committed());
+}
+
+/** A tree to remove that holds a symlink is refused whole; the link's target is never touched. */
+void
+test_links_inside_removed_trees(const Backup& b, const Old& old) {
+    QTemporaryDir outside;
+    expect("an outside file", write_file(outside.filePath("keep.txt"), "keep\n"));
+    put_back(old.tree);
+    QString error;
+    const QString dir = dsd_qt::backup::staging_dir_for_job("linked");
+    expect("stage and promote",
+           dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error) && dsd_qt::backup::promote_staging(dir));
+    expect("a link inside the pending restore", QFile::link(outside.path(), pending("files/imports/outside")));
+    expect("an unmarked restore holding a link is not removed",
+           apply().outcome == ApplyOutcome::None && dsd_qt::backup::pending_exists());
+    expect("discarding a restore holding a link is refused",
+           !dsd_qt::backup::discard_pending() && dsd_qt::backup::pending_exists());
+    expect("the link's target is untouched", read_file(outside.filePath("keep.txt")) == "keep\n"
+                                                 && QFileInfo(pending("files/imports/outside")).isSymLink());
+
+    const QString stale = dsd_qt::backup::staging_dir_for_job("stale");
+    expect("a staging dir holding a link", dsd_qt::backup::stage_restore(b.parsed, b.archive, stale, &error)
+                                               && QFile::link(outside.path(), stale + "/files/outside"));
+    dsd_qt::backup::sweep_stale_staging();
+    expect("the sweep leaves a staging dir holding a link", QFileInfo(stale).isDir());
+    expect("restaging over a dir holding a link is refused",
+           !dsd_qt::backup::stage_restore(b.parsed, b.archive, stale, &error) && error == "Io");
+    expect("the outside file is still untouched", read_file(outside.filePath("keep.txt")) == "keep\n");
+    QFile::remove(pending("files/imports/outside"));
+    QFile::remove(stale + "/files/outside");
 }
 
 /** An empty avoid list is written in the native format and loads in the native store. */
@@ -1361,7 +1583,11 @@ main(int argc, char** argv) {
         QStringLiteral("dsd-neo-backup-apply-%1").arg(QCoreApplication::applicationPid()));
     dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir(dataDir).removeRecursively();
+    if (dataDir != root()) {
+        DSD_FPRINTF(stderr, "the data root is not the app data directory\n");
+        return 1;
+    }
+    remove_tree(dataDir);
     QDir().mkpath(dataDir);
 
     {
@@ -1384,11 +1610,16 @@ main(int argc, char** argv) {
         test_unmarked_pending(backup, old);
         test_symlinked_component(backup, old);
         test_symlinked_store(backup, old);
+        test_discard_after_commit_point(backup, old);
+        test_old_file_where_a_directory_goes(backup, old);
+        test_journal_problems(backup, old);
+        test_unreadable_journal(backup, old);
+        test_links_inside_removed_trees(backup, old);
         test_empty_avoids(host, backup, old);
     }
     dsd_app_signal_search_store_close();
 
-    QDir(dataDir).removeRecursively();
+    remove_tree(dataDir);
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

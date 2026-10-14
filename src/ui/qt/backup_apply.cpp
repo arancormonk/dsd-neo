@@ -14,7 +14,9 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -66,12 +68,26 @@ busy_reason() {
 }
 
 QString
+names_reason() {
+    return QCoreApplication::translate("BackupApply", "No free name was left for a restored file. Nothing was changed");
+}
+
+QString
+unreadable_reason() {
+    return QCoreApplication::translate("BackupApply",
+                                       "A file of the current configuration couldn't be read. Nothing was changed");
+}
+
+QString
 space_reason() {
     return QCoreApplication::translate("BackupApply",
                                        "Not enough free storage to restore. Free up storage and reopen DSD-neo");
 }
 
 enum class Status { Ok, Failed, Crashed };
+
+/** Why a journal could not be built: storage (the next start tries again) or a cause retrying cannot fix. */
+enum class JournalProblem { Space, Names, Unreadable };
 
 /** One file the staging or the journal lists: a path relative to its directory, its size and sha256. */
 struct Listed {
@@ -311,6 +327,13 @@ class LiveScan {
         }
         addTree(QStringLiteral("decryption"));
         addTree(QStringLiteral("scan_lists"));
+        // A file a live recording names is a recording, whatever else names it. (A store file is always replaced.)
+        const QStringList stores = six_store_files();
+        for (const QString& recording : m_recordings) {
+            if (!stores.contains(recording)) {
+                m_files.remove(recording);
+            }
+        }
         QStringList files(m_files.cbegin(), m_files.cend());
         std::sort(files.begin(), files.end());
         for (const QString& file : files) {
@@ -362,24 +385,38 @@ class LiveScan {
         return array;
     }
 
+    /** Claim an owned bundle root's tree: the first claim of its folded name, a real directory reached through no
+        symlink. */
+    void
+    claimBundle(const QString& value, const QString& relative) {
+        const QString bundles = m_root.at(QStringLiteral("imports/bundles/"));
+        if (!value.startsWith(bundles) || !owned_name(value.mid(bundles.size()))
+            || m_claimed.contains(path_key(relative))) {
+            return;
+        }
+        if (is_real_dir(value) && QFileInfo(value).canonicalFilePath() == m_canonical + QLatin1Char('/') + relative) {
+            m_claimed.insert(path_key(relative));
+            m_journal->ownedRoots.append(relative);
+            addTree(relative);
+        }
+    }
+
     void
     scanStore(const QString& store) {
         const QString imports = m_root.at(QStringLiteral("imports/"));
-        const QString bundles = m_root.at(QStringLiteral("imports/bundles/"));
         for (const TypedPathValue& value : typed_path_values(store, rows(store))) {
-            if (!value.value.startsWith(imports) || QDir::cleanPath(value.value) != value.value) {
+            if (!value.value.startsWith(m_root.path() + QLatin1Char('/'))
+                || QDir::cleanPath(value.value) != value.value) {
                 continue;
             }
             const QString relative = value.value.mid(m_root.path().size() + 1);
-            if (value.field.kind == PathKind::File) {
-                add(relative);
-            } else if (value.field.kind == PathKind::BundleRoot && value.value.startsWith(bundles)
-                       && owned_name(value.value.mid(bundles.size())) && !m_claimed.contains(path_key(relative))) {
-                const QFileInfo info(value.value);
-                if (is_real_dir(value.value) && info.canonicalFilePath() == m_canonical + QLatin1Char('/') + relative) {
-                    m_claimed.insert(path_key(relative));
-                    m_journal->ownedRoots.append(relative);
-                    addTree(relative);
+            if (value.field.kind == PathKind::Recording) {
+                m_recordings.insert(relative);
+            } else if (value.value.startsWith(imports)) {
+                if (value.field.kind == PathKind::File) {
+                    add(relative);
+                } else {
+                    claimBundle(value.value, relative);
                 }
             }
         }
@@ -390,6 +427,7 @@ class LiveScan {
     Journal* m_journal;
     QSet<QString> m_files;
     QSet<QString> m_claimed;
+    QSet<QString> m_recordings; // below the root, named by a live Recording value
     qint64 m_bytes = 0;
 };
 
@@ -397,6 +435,9 @@ class LiveScan {
  * Where every staged file goes. A destination that exists and is not part of the old configuration (an unknown
  * file, a recording, an unreferenced bundle directory) is never overwritten: a bundle moves to a fresh id, a loose
  * file takes the first free "name (n).ext" in its directory, and the stores' references follow when they are written.
+ * A directory the backup needs where something other than a directory is (an old file included: a rollback must be
+ * able to put it back) is never written through either: a bundle moves, and a loose file's directory takes a free
+ * "dir (n)".
  */
 class Destinations {
   public:
@@ -410,31 +451,29 @@ class Destinations {
     bool
     plan() {
         const QStringList roots = stagedRoots();
-        for (const QString& root : roots) {
-            m_reserved.insert(path_key(root));
-        }
+        reserve(roots);
         for (const QString& root : roots) {
             if (bundleBlocked(root) && !moveBundle(root)) {
                 return false;
             }
         }
-        QStringList blocked;
+        QMap<QString, QString> blocked; // staged file → the path it would take before a free name
         for (const QString& file : m_staging.carried) {
             const QString bundle = bundle_of(file);
             if (m_journal->bundles.contains(bundle)) {
                 take(file, m_journal->bundles.value(bundle) + file.mid(bundle.size()));
-            } else if ((!bundle.isEmpty() && roots.contains(bundle)) || !blocked_at(file)) {
+            } else if (!bundle.isEmpty() && roots.contains(bundle)) {
                 take(file, file);
-            } else {
-                blocked.append(file);
+            } else if (!placeLoose(file, &blocked)) {
+                return false;
             }
         }
-        for (const QString& file : blocked) {
-            const QString name = freeName(file);
+        for (auto it = blocked.cbegin(); it != blocked.cend(); ++it) {
+            const QString name = freeName(it.value());
             if (name.isEmpty()) {
                 return false;
             }
-            take(file, name);
+            take(it.key(), name);
         }
         collectCreatedDirs();
         return true;
@@ -456,24 +495,82 @@ class Destinations {
         return roots;
     }
 
-    /** Whether writing @p relative would replace or pass through something the old configuration does not own. */
+    /** No free name may take a path a staged file, or a directory it needs, has by itself. */
+    void
+    reserve(const QStringList& roots) {
+        for (const QString& root : roots) {
+            m_reserved.insert(path_key(root));
+        }
+        for (const QString& file : m_staging.carried) {
+            m_reserved.insert(path_key(file));
+            for (const QString& dir : ancestors(file)) {
+                m_reserved.insert(path_key(dir));
+            }
+        }
+    }
+
+    /** Whether something the old configuration does not own is at @p relative. */
     bool
-    blocked_at(const QString& relative, qsizetype from = 0) const {
+    leafBlocked(const QString& relative) const {
+        return entry_exists(m_root.at(relative)) && !m_old.contains(relative);
+    }
+
+    /** Whether a directory cannot be written through at @p relative: a symlink, a junction, or not a directory. */
+    bool
+    dirBlocked(const QString& relative) const {
         const QFileInfo info(m_root.at(relative));
-        if (entry_exists(info.filePath()) && !m_old.contains(relative)) {
+        return info.isSymLink() || info.isJunction() || (info.exists() && !info.isDir());
+    }
+
+    /** Whether writing @p relative would replace something the old configuration does not own, or pass through a
+        directory that cannot be written through (only the directories longer than @p from are looked at). */
+    bool
+    blocked_at(const QString& relative, qsizetype from) const {
+        if (leafBlocked(relative)) {
             return true;
         }
-        for (const QString& dir : ancestors(relative)) {
-            const QFileInfo parent(m_root.at(dir));
-            if (dir.size() <= from) {
-                continue;
+        const QStringList dirs = ancestors(relative);
+        return std::any_of(dirs.cbegin(), dirs.cend(),
+                           [&](const QString& dir) { return dir.size() > from && dirBlocked(dir); });
+    }
+
+    /** @p file with its first blocked directory (below imports/) moved to a free name; empty when none is free. */
+    QString
+    aroundBlockedDirs(const QString& file) {
+        for (const QString& dir : ancestors(file)) {
+            if (!dir.contains(QLatin1Char('/'))) {
+                continue; // imports/ itself is never renamed
             }
-            if (parent.isSymLink() || parent.isJunction()
-                || (parent.exists() && !parent.isDir() && !m_old.contains(dir))) {
-                return true;
+            const auto moved = m_dirMoves.constFind(dir);
+            if (moved != m_dirMoves.constEnd()) {
+                return *moved + file.mid(dir.size());
+            }
+            if (dirBlocked(dir)) {
+                const QString fresh = freeName(dir);
+                if (fresh.isEmpty()) {
+                    return {};
+                }
+                m_dirMoves.insert(dir, fresh);
+                m_taken.insert(path_key(fresh));
+                return fresh + file.mid(dir.size());
             }
         }
-        return false;
+        return file;
+    }
+
+    /** Place a file in no staged bundle: as is, around blocked directories, or (in @p blocked) for a free name. */
+    bool
+    placeLoose(const QString& file, QMap<QString, QString>* blocked) {
+        const QString around = aroundBlockedDirs(file);
+        if (around.isEmpty()) {
+            return false;
+        }
+        if (around == file ? leafBlocked(file) : !isFree(around)) {
+            blocked->insert(file, around);
+        } else {
+            take(file, around);
+        }
+        return true;
     }
 
     bool
@@ -536,8 +633,8 @@ class Destinations {
         QSet<QString> created;
         for (const QString& destination : m_journal->destinations) {
             for (const QString& dir : ancestors(destination)) {
-                if (!entry_exists(m_root.at(dir))) {
-                    created.insert(dir);
+                if (!is_real_dir(m_root.at(dir))) {
+                    created.insert(dir); // missing, or something a rollback must find gone to put it back
                 }
             }
         }
@@ -549,8 +646,9 @@ class Destinations {
     const Staging& m_staging;
     Journal* m_journal;
     QSet<QString> m_old;
-    QSet<QString> m_taken;    // folded destinations chosen so far
-    QSet<QString> m_reserved; // folded staged bundle roots
+    QSet<QString> m_taken;             // folded destinations chosen so far
+    QSet<QString> m_reserved;          // folded staged paths, their directories and bundle roots
+    QMap<QString, QString> m_dirMoves; // blocked directory → the free one loose files go to instead
 };
 
 class Applier {
@@ -577,7 +675,7 @@ class Applier {
             return startFresh(verified);
         }
         if (!loadJournal()) {
-            return result(ApplyOutcome::Stuck, stuck_reason());
+            return stuck();
         }
         return verified && consistent() ? forward() : rollBackAndFinish();
     }
@@ -626,6 +724,21 @@ class Applier {
         return {outcome, reason, m_staging.summary};
     }
 
+    /** Stuck: everything is kept for the next start, and the result file says so (best effort). */
+    ApplyResult
+    stuck() const {
+        writeResult(ApplyOutcome::Stuck, stuck_reason());
+        return result(ApplyOutcome::Stuck, stuck_reason());
+    }
+
+    /** Failed before any change: the stage goes, so nothing runs it again. */
+    ApplyResult
+    failUnchanged(const QString& reason) {
+        writeResult(ApplyOutcome::Failed, reason);
+        m_root.removeTree(m_pending);
+        return result(ApplyOutcome::Failed, reason);
+    }
+
     /** What a crash leaves: the caller sees nothing, as if the process had died. */
     static ApplyResult
     interrupted() {
@@ -647,10 +760,7 @@ class Applier {
     ApplyResult
     startFresh(bool verified) {
         if (!verified) {
-            // Nothing was changed: the stage cannot be trusted, so it goes.
-            writeResult(ApplyOutcome::Failed, nothing_changed());
-            m_root.removeTree(m_pending);
-            return result(ApplyOutcome::Failed, nothing_changed());
+            return failUnchanged(nothing_changed()); // the stage cannot be trusted
         }
         const qint64 oldBytes = LiveScan(m_root, &m_journal).run();
         const qint64 free =
@@ -663,10 +773,19 @@ class Applier {
             return interrupted();
         }
         if (built == Status::Failed) {
-            m_root.removeTree(m_journalDir); // rebuilt from scratch next time; nothing live was changed
-            return result(ApplyOutcome::Deferred, space_reason());
+            m_root.removeTree(m_journalDir); // nothing live was changed
+            switch (m_problem) {
+                case JournalProblem::Names: return failUnchanged(names_reason());
+                case JournalProblem::Unreadable: return failUnchanged(unreadable_reason());
+                case JournalProblem::Space: break;
+            }
+            return result(ApplyOutcome::Deferred, space_reason()); // the next start tries again
         }
         if (busy()) {
+            // Nothing live was changed either: a journal kept now would be replayed after a whole session on the old
+            // configuration. The next start plans again from the configuration as it is then.
+            m_root.removeFile(m_journalDir + QStringLiteral("/COMPLETE"));
+            m_root.removeTree(m_journalDir);
             return result(ApplyOutcome::Deferred, busy_reason());
         }
         return forward();
@@ -690,6 +809,7 @@ class Applier {
     Status
     buildJournal() {
         if (!Destinations(m_root, m_staging, &m_journal).plan()) {
+            m_problem = JournalProblem::Names;
             return Status::Failed;
         }
         Status status = step("journal.begin", [this] {
@@ -698,6 +818,11 @@ class Applier {
         for (qsizetype i = 0; status == Status::Ok && i < m_journal.files.size(); ++i) {
             Listed& file = m_journal.files[i];
             status = step("journal.files", [&] {
+                QFile source(m_root.at(file.path));
+                if (!source.open(QIODevice::ReadOnly)) {
+                    m_problem = JournalProblem::Unreadable; // not a matter of space: retrying would not help
+                    return false;
+                }
                 return m_root.copyFile(m_root.at(file.path), m_journalDir + QStringLiteral("/files/") + file.path,
                                        QString(), &file.sha256, &file.size);
             });
@@ -854,8 +979,7 @@ class Applier {
             return interrupted();
         }
         if (status == Status::Failed) {
-            writeResult(ApplyOutcome::Stuck, stuck_reason());
-            return result(ApplyOutcome::Stuck, stuck_reason());
+            return stuck();
         }
         // An unmarked leftover is removed at the next start.
         if (step("cleanup", [this] { return m_root.removeTree(m_pending); }) == Status::Crashed) {
@@ -907,9 +1031,7 @@ class Applier {
             return interrupted();
         }
         if (status == Status::Failed) {
-            // Everything is kept: the next start rolls forward again.
-            writeResult(ApplyOutcome::Stuck, stuck_reason());
-            return result(ApplyOutcome::Stuck, stuck_reason());
+            return stuck(); // the next start rolls forward again
         }
         return finish(ApplyOutcome::Failed, nothing_changed());
     }
@@ -919,6 +1041,7 @@ class Applier {
     QString m_pending, m_journalDir;
     Staging m_staging;
     Journal m_journal;
+    JournalProblem m_problem = JournalProblem::Space;
 };
 
 } // namespace

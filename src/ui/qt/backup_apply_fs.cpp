@@ -163,8 +163,24 @@ DataRoot::removeTree(const QString& path) const {
     if (!contains(path) || !is_real_dir(path)) {
         return false;
     }
-    QDir(path).removeRecursively();
-    return !entry_exists(path);
+    // Look at everything first, following nothing: a tree holding a symlink or junction is refused whole, so no link
+    // is ever followed or removed. Then remove entry by entry through the contained operations.
+    QStringList files, dirs;
+    QDirIterator it(path, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QFileInfo info(it.next());
+        if (is_link(info)) {
+            return false;
+        }
+        (info.isDir() ? dirs : files).append(info.filePath());
+    }
+    const bool removed =
+        std::all_of(files.cbegin(), files.cend(), [this](const QString& file) { return removeFile(file); });
+    std::sort(dirs.begin(), dirs.end(), [](const QString& a, const QString& b) { return a.size() > b.size(); });
+    return removed
+           && std::all_of(dirs.cbegin(), dirs.cend(), [this](const QString& dir) { return removeEmptyDir(dir); })
+           && removeEmptyDir(path) && !entry_exists(path);
 }
 
 bool
