@@ -119,10 +119,28 @@ SUITES = {
         builds=(Build(sources=("DecoderStatus.kt",), tests=("DecoderStatusTest.kt",)),),
         checks=(golden_records_match,),
     ),
-    # The bounded stream copy behind the backup's document transfers, with its teardown abort. Plain Kotlin with no
-    # Android imports, so no stubs.
+    # The backup's document transfers. The bounded stream copy and its teardown abort are plain Kotlin and build with no
+    # stubs, so an android.* import there fails the compile. The Android glue around it (size lookup, opens, trim, sync,
+    # delete and cancellation) builds apart, against a resolver stub that plays the document providers.
     "document_transfer": Suite(
-        builds=(Build(sources=("DocumentTransfer.kt",), tests=("DocumentTransferTest.kt",)),),
+        builds=(
+            Build(sources=("DocumentTransfer.kt",), tests=("DocumentTransferTest.kt",)),
+            Build(
+                sources=("DocumentCopies.kt", "DocumentTransfer.kt"),
+                tests=("DocumentCopiesTest.kt",),
+                stubs=(
+                    "AssetFileDescriptor.kt",
+                    "ContentResolver.kt",
+                    "Cursor.kt",
+                    "Log.kt",
+                    "Os.kt",
+                    "ParcelFileDescriptor.kt",
+                    "Provider.kt",
+                    "SystemOs.kt",
+                    "Uri.kt",
+                ),
+            ),
+        ),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure

@@ -101,19 +101,26 @@ failures would leave the marker no signal (discussion #602).
 typed live commands and legacy live commands, in both slots. `UI_KEY_CLEANUP` observes production volatile erasure
 while handler and TYT buffers are still alive.
 
-`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture, and the engine-busy
-decision a backup restore waits on (every service state but IDLE, or the engine atomic, is busy; asking never refreshes
-the host). The `ANDROID_*_JVM` tests run production Android Kotlin on the plain JVM, without an Android build or
-emulator, one suite of `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by default):
-`ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,
+`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture, the engine-busy decision
+a backup restore waits on (every service state but IDLE, or the engine atomic, is busy; asking never refreshes the
+host), and the backup's document dispatch: a `content://` reference goes to the platform transport (stubbed), a file URL
+or plain path to the base host's copy, a stale destination is removed before the platform copies, and a copy reported
+without its file fails. The `ANDROID_*_JVM` tests run production Android Kotlin on the plain JVM, without an Android
+build or emulator, one suite of `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by
+default): `ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,
 `ANDROID_DECODER_STATUS_JVM` runs `DecoderStatus.kt`, the notification status record's reader, with no stubs, and
 `ANDROID_SCREEN_POLICY_JVM` (the `screen` suite) runs the screen modes' policy and pure adapters (`ScreenPolicy.kt`,
 `ScreenController.kt`, `ScreenWake.kt`, `StatusFeed.kt`, `ActivitySlot.kt`, with `DecoderStatus.kt`) with no stubs at
 all, so an `android.*` import in any of them fails the compile, then `ScreenLocks.kt` (with `ScreenWake.kt`) on its own
 against a `PowerManager` stub that models reference counting and the screen's interactive state.
 `ANDROID_DOCUMENT_TRANSFER_JVM` (the `document_transfer` suite) runs `DocumentTransfer.kt`, the backup's bounded
-document copy, with no stubs: a source exactly at the cap and one byte over it around the chunk boundaries, an empty
-stream, read and write errors, trimming a file that mode "w" left longer, and the sticky teardown abort.
+document copy, with no stubs (a source exactly at the cap and one byte over it around the chunk boundaries, an empty
+stream, read and write errors, and the sticky teardown abort), then `DocumentCopies.kt`, the Android glue around it,
+against a `ContentResolver` stub that plays the document providers: the declared size refused before the open and the
+counted cap when the size is unknown, wrong or its lookup fails, `wt` then `w`, the trim after every save (a provider
+that ignores the `t` included) and the sync before close, a pipe neither trimmed nor synced, the delete after a failure
+once open and never before, and the abort cancelling a held size lookup, a held read open and a held write open (with no
+`w` retry), skipping the delete, and refusing later transfers without a provider call.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
 late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the

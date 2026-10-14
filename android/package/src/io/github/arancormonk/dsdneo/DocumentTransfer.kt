@@ -5,7 +5,6 @@
 
 package io.github.arancormonk.dsdneo
 
-import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -13,12 +12,12 @@ import java.io.OutputStream
 /**
  * The stream half of the backup's document copies (#580), free of Android so the JVM tests run it.
  *
- * [AppSupport] opens the document and the local file; this moves the bytes. The size cap is counted on what was
+ * [DocumentCopies] opens the document and the local file; this moves the bytes. The size cap is counted on what was
  * actually read, because a provider's declared size is only a hint, and every chunk first checks the process-wide
  * abort that teardown raises.
  */
 object DocumentTransfer {
-    /** AppSupport.copyDocumentToFile() results. Must match DecoderHost::DocumentCopy. */
+    /** DocumentCopies.copyDocumentToFile() results. Must match DecoderHost::DocumentCopy. */
     const val COPIED = 0
     const val TOO_LARGE = 1
     const val FAILED = 2
@@ -35,11 +34,10 @@ object DocumentTransfer {
     /**
      * Stop every copy at its next chunk, and fail every later one, for the rest of the process.
      *
-     * Only teardown calls it (DecoderHostAndroid::abortDocumentTransfers(), from BackupModel's destructor), so a copy
-     * a slow provider holds cannot keep the closing app waiting on its worker. A read or write the provider holds
-     * blocked is not interrupted: the copy stops once that call returns.
+     * Only teardown raises it, through DocumentCopies.abort() (DecoderHostAndroid::abortDocumentTransfers(), from
+     * BackupModel's destructor), which also cancels the provider calls in flight. A read or write on a descriptor the
+     * provider holds blocked is not interrupted: the copy stops once that call returns.
      */
-    @JvmStatic
     fun abort() {
         aborted = true
     }
@@ -67,19 +65,6 @@ object DocumentTransfer {
             }
             output.write(buffer, 0, n)
             total += n
-        }
-    }
-
-    /**
-     * Cut [output] back to [length] when it is a file that holds more.
-     *
-     * Mode "w" does not truncate on every provider, so a backup written over a longer document would keep the old
-     * tail and then fail to open. A stream that is no file (a provider's pipe) has no old tail and is left alone.
-     */
-    fun trimTo(output: OutputStream, length: Long) {
-        val channel = (output as? FileOutputStream)?.channel ?: return
-        if (channel.size() > length) {
-            channel.truncate(length)
         }
     }
 }

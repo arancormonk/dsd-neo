@@ -3,12 +3,9 @@ package io.github.arancormonk.dsdneo
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.RandomAccessFile
 
 /** [size] bytes counting up from 0, so a copy's content shows where it came from. */
 private fun bytes(size: Int) = ByteArray(size) { it.toByte() }
@@ -106,28 +103,6 @@ private fun aReadOrWriteErrorFails() {
     }) { "a write error fails the copy" }
 }
 
-/** Mode "w" does not truncate on every provider, so a backup written over a longer document is cut back to size. */
-private fun aShortCopyOverALongerFileIsTrimmed() {
-    val file = File.createTempFile("dsd-document-transfer", ".bin")
-    try {
-        file.writeBytes(bytes(10))
-        RandomAccessFile(file, "rw").use { opened ->
-            val output = FileOutputStream(opened.fd) // Opens without truncating, as "w" does on those providers.
-            val copied = DocumentTransfer.copyCapped(ByteArrayInputStream(byteArrayOf(9, 9, 9, 9)), output, 100)
-            DocumentTransfer.trimTo(output, copied)
-        }
-        check(file.readBytes().contentEquals(byteArrayOf(9, 9, 9, 9))) { "the old tail past the new copy is gone" }
-
-        RandomAccessFile(file, "rw").use { opened ->
-            DocumentTransfer.trimTo(FileOutputStream(opened.fd), 10)
-        }
-        check(file.length() == 4L) { "a file no longer than the copy is left alone" }
-        DocumentTransfer.trimTo(ByteArrayOutputStream(), 0) // A stream that is no file (a provider's pipe) is skipped.
-    } finally {
-        file.delete()
-    }
-}
-
 /** Last: the abort is sticky for the rest of the process. */
 private fun anAbortStopsACopyAtTheNextChunkAndRefusesNewOnes() {
     check(!DocumentTransfer.isAborted) { "nothing is aborted at first" }
@@ -165,7 +140,6 @@ fun main() {
     oneByteOverTheCapFails()
     anEmptyStreamCopiesNothing()
     aReadOrWriteErrorFails()
-    aShortCopyOverALongerFileIsTrimmed()
     anAbortStopsACopyAtTheNextChunkAndRefusesNewOnes()
     println("PASS: document transfers copy within the cap, fail on errors and stop on abort")
 }

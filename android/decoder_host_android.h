@@ -173,12 +173,18 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     /*
      * Document copies (#580). These run on BackupModel's worker thread, never the Qt main thread: the JNI calls
-     * attach that thread, use the application context, and never wait on the Qt or Android main thread, which
-     * BackupModel's destructor may be blocking in waitForDone(). A content:// reference goes to the platform's
+     * attach that thread, use the application's ContentResolver, and never wait on the Qt or Android main thread,
+     * which BackupModel's destructor may be blocking in waitForDone(). A content:// reference goes to the platform's
      * ContentResolver; a file:// URL or plain path takes the base host's copy.
+     *
+     * For a content:// reference, copyDocumentToFile() replaces @p destPath: whatever is there is removed before the
+     * copy starts (DocumentFailed when it cannot be), so a failure leaves nothing at @p destPath and DocumentCopied
+     * always names this copy's file.
      */
     int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const override;
     bool copyFileToDocument(const QString& sourcePath, const QString& reference) const override;
+
+    /** @brief Cancel the platform's document calls in flight and stop their copies, then the base host's. */
     void abortDocumentTransfers() override;
 
   private:
@@ -190,6 +196,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static bool readEngineRunning();
     /** @brief DecoderService.stateName(); empty when the call failed. */
     static QByteArray readServiceState();
+    /** @brief DocumentCopies.copyDocumentToFile() over JNI: a DocumentCopy value, and 0 when the call failed. */
+    static int platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes);
+    /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
+    static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
     void requestServiceStop();
     QString serviceFailureText() const;
     /** @brief Record a start that never reached the service. Always returns false. */

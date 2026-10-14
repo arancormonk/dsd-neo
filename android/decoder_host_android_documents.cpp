@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+
+/*
+ * The backup's document copies (#580), less their JNI transport (platformCopy*() in decoder_host_android.cpp), so the
+ * desktop host test compiles this dispatch as it ships. They run on BackupModel's worker thread.
+ */
+
+#include <QFile>
+#include <QFileInfo>
+#include <QLatin1String>
+#include <QString>
+#include <QUrl>
+#include <QtGlobal>
+#include "decoder_host.h"
+#include "decoder_host_android.h"
+
+namespace dsd_android {
+namespace {
+
+/** @brief Whether @p reference is a content URI, which only the platform's ContentResolver opens. */
+bool
+is_content_uri(const QString& reference) {
+    return QUrl(reference).scheme() == QLatin1String("content");
+}
+
+} // namespace
+
+int
+DecoderHostAndroid::copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const {
+    if (!is_content_uri(reference)) {
+        return dsd_qt::DecoderHost::copyDocumentToFile(reference, destPath, maxBytes);
+    }
+    if (documentTransfersAborted() || destPath.isEmpty() || maxBytes < 0) {
+        return DocumentFailed;
+    }
+    /* Cleared first, so that a file found at destPath afterwards can only be this copy's (see below). */
+    QFile::remove(destPath);
+    if (QFileInfo::exists(destPath) || QFileInfo(destPath).isSymLink()) {
+        return DocumentFailed;
+    }
+    const int copied = platformCopyDocumentToFile(reference, destPath, maxBytes);
+    if (copied == DocumentTooLarge) {
+        return DocumentTooLarge;
+    }
+    /* A JNI call that failed (no such method, or an Error the Kotlin side does not catch) also reads as 0, so a copy
+     * counts only with its file in place. */
+    return copied == DocumentCopied && QFileInfo(destPath).isFile() ? DocumentCopied : DocumentFailed;
+}
+
+bool
+DecoderHostAndroid::copyFileToDocument(const QString& sourcePath, const QString& reference) const {
+    if (!is_content_uri(reference)) {
+        return dsd_qt::DecoderHost::copyFileToDocument(sourcePath, reference);
+    }
+    if (documentTransfersAborted()) {
+        return false;
+    }
+    return platformCopyFileToDocument(sourcePath, reference);
+}
+
+} // namespace dsd_android

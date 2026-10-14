@@ -7,14 +7,12 @@ package io.github.arancormonk.dsdneo
 
 import android.Manifest
 import android.app.Activity
-import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Rect
 import android.view.WindowInsets
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.util.Log
 import android.util.TypedValue
@@ -22,8 +20,6 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.view.WindowInsetsController
 import java.io.File
-import java.io.IOException
-import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -223,7 +219,10 @@ object AppSupport {
             try {
                 // App-internal storage already isolates this copy. Tightening file
                 // permissions must not reject an otherwise usable SAF document.
-                ownerOnly(staging)
+                staging.setReadable(false, false)
+                staging.setWritable(false, false)
+                staging.setReadable(true, true)
+                staging.setWritable(true, true)
                 context.contentResolver.openInputStream(uri).use { input ->
                     if (input == null) {
                         return ""
@@ -243,94 +242,8 @@ object AppSupport {
         }
     }
 
-    /*
-     * Backup documents (#580). The two copies run on the Qt backup worker thread, never a main thread: the Qt side
-     * calls them straight from that thread and must not wait on either main thread, which teardown may be blocking.
-     * They go through the application context's resolver because the Activity may be finishing, and they check
-     * DocumentTransfer's abort, which teardown raises.
-     */
-
     /**
-     * Copy the document [uriText] names to [destPath], at most [maxBytes] of it: a DocumentTransfer result.
-     *
-     * The copy lands in a private temp file beside [destPath] and is renamed over it only once complete, so no
-     * failure, the cap included, leaves a partial file there. A size the provider declares above the cap is refused
-     * before anything is read, sparing a cloud provider the download of a document that cannot fit; the cap still
-     * counts the bytes actually read.
-     */
-    @JvmStatic
-    fun copyDocumentToFile(context: Context, uriText: String, destPath: String, maxBytes: Long): Int {
-        val directory = File(destPath).parentFile
-        if (DocumentTransfer.isAborted || destPath.isEmpty() || maxBytes < 0 || directory == null) {
-            return DocumentTransfer.FAILED
-        }
-        var staging: File? = null
-        return try {
-            val resolver = context.applicationContext.contentResolver
-            val uri = Uri.parse(uriText)
-            val declared = declaredSize(resolver, uri)
-            if (declared != null && declared > maxBytes) {
-                return DocumentTransfer.TOO_LARGE
-            }
-            val temp = File.createTempFile(".document", ".tmp", directory)
-            staging = temp
-            ownerOnly(temp)
-            val copied = resolver.openInputStream(uri)?.use { input ->
-                temp.outputStream().use { output -> DocumentTransfer.copyCapped(input, output, maxBytes) }
-            } ?: return DocumentTransfer.FAILED
-            when {
-                copied < 0 -> DocumentTransfer.TOO_LARGE
-                temp.renameTo(File(destPath)) -> DocumentTransfer.COPIED
-                else -> DocumentTransfer.FAILED
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "failed to copy a document", e)
-            DocumentTransfer.FAILED
-        } finally {
-            staging?.delete() // A no-op once the rename has landed.
-        }
-    }
-
-    /**
-     * Write the file at [sourcePath] into the document [uriText] names; false on any failure.
-     *
-     * Mode "wt" first, so the document loses whatever it held; "w" only where a provider refuses "wt", trimmed to
-     * the copy's length afterwards because "w" does not truncate everywhere. A failure once the document is open
-     * deletes it, best effort, so a partial backup never looks like a good one. A failure before then leaves it as
-     * it was: it may be an older document the user picked to replace.
-     */
-    @JvmStatic
-    fun copyFileToDocument(context: Context, sourcePath: String, uriText: String): Boolean {
-        if (DocumentTransfer.isAborted) {
-            return false
-        }
-        val resolver = context.applicationContext.contentResolver
-        val uri = Uri.parse(uriText)
-        var opened = false
-        return try {
-            File(sourcePath).inputStream().use { input ->
-                val (output, truncated) = openForReplace(resolver, uri)
-                opened = true
-                output.use {
-                    val copied = DocumentTransfer.copyCapped(input, it, Long.MAX_VALUE)
-                    if (!truncated) {
-                        DocumentTransfer.trimTo(it, copied)
-                    }
-                    it.flush()
-                }
-            }
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "failed to write a document", e)
-            if (opened) {
-                deletePartialDocument(resolver, uri)
-            }
-            false
-        }
-    }
-
-    /**
-     * Finish the app for a committed backup restore; called on the main thread.
+     * Finish the app for a committed backup restore (#580); called on the main thread.
      *
      * DsdNeoActivity.onDestroy then stops the engine and the service and ends the process, as for any other finish,
      * so the next launch applies the restore before anything reads the stores it replaces.
@@ -338,47 +251,5 @@ object AppSupport {
     @JvmStatic
     fun finishApp(context: Context) {
         (context as? Activity)?.finishAndRemoveTask()
-    }
-
-    /** The size the provider reports for [uri], or null when it reports none. */
-    private fun declaredSize(resolver: ContentResolver, uri: Uri): Long? = try {
-        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
-            val column = cursor.getColumnIndex(OpenableColumns.SIZE)
-            if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) cursor.getLong(column) else null
-        }
-    } catch (e: Exception) {
-        Log.w(TAG, "size lookup failed for a document", e)
-        null
-    }
-
-    /** Readable and writable by the owner only, best effort: app-internal storage already isolates the file. */
-    private fun ownerOnly(file: File) {
-        file.setReadable(false, false)
-        file.setWritable(false, false)
-        file.setReadable(true, true)
-        file.setWritable(true, true)
-    }
-
-    /** [uri] opened to replace its content, and whether opening already truncated it ("wt") or not ("w"). */
-    private fun openForReplace(resolver: ContentResolver, uri: Uri): Pair<OutputStream, Boolean> {
-        try {
-            resolver.openOutputStream(uri, "wt")?.let { return it to true }
-        } catch (e: Exception) {
-            // Some providers refuse "wt" (FileNotFoundException, IllegalArgumentException or
-            // UnsupportedOperationException, by provider); "w" is the mode every writable document takes.
-            Log.i(TAG, "document provider refused mode wt; writing with w", e)
-        }
-        val output = resolver.openOutputStream(uri, "w") ?: throw IOException("the document provider gave no stream")
-        return output to false
-    }
-
-    private fun deletePartialDocument(resolver: ContentResolver, uri: Uri) {
-        try {
-            if (!DocumentsContract.deleteDocument(resolver, uri)) {
-                Log.w(TAG, "could not delete a partly written document")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "could not delete a partly written document", e)
-        }
     }
 }
