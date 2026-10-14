@@ -1913,6 +1913,28 @@ no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
     return active;
 }
 
+/* The TETRA state machine owns the return from the call it follows, and from a return of its own in flight
+   (tetra_sm_owns_return()): its tick times a grant out after TETRA_SM_GRANT_TIMEOUT_S without speech and a call after
+   the hangtime that follows its last speech. The generic recovery below reads last_vc_sync_time against the hangtime
+   alone, so it would take the receiver back from a grant still waiting for its first speech, or drop it where no
+   control channel is known; while the machine owns the return the pass ticks it instead, as it ticks an active DMR
+   state machine, under the tick guard the decode loop runs it under (dsd_engine_tetra_trunk_tick_locked()). */
+static int
+no_carrier_tick_tetra_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
+    if (opts->frame_tetra != 1 || opts->trunk_scan_enabled == 1 || opts->trunk_enable != 1
+        || !tetra_sm_owns_return(state)) {
+        return 0;
+    }
+    if (!guard_held && !p25_sm_tick_guard_try_enter()) {
+        return 1;
+    }
+    dsd_engine_tetra_trunk_tick_locked(opts, state);
+    if (!guard_held) {
+        p25_sm_tick_guard_leave();
+    }
+    return 1;
+}
+
 /* The TETRA state machine's part in a no-carrier return. An accepted return moved the receiver to the control channel,
    which it reconciles to without tuning. Without one the voice state was cleared where the receiver is (the P25 helper
    failed, or there is no control channel to return to): a followed call is dropped there, without tuning either. A
@@ -1949,7 +1971,7 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
 
 static void
 no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now, int guard_held) {
-    if (no_carrier_tick_dmr_owner(opts, state, guard_held)) {
+    if (no_carrier_tick_dmr_owner(opts, state, guard_held) || no_carrier_tick_tetra_owner(opts, state, guard_held)) {
         return;
     }
     if (!no_carrier_is_cc_return_due(opts, state, now)) {

@@ -124,6 +124,14 @@ void tetra_sm_abandon_carrier(dsd_opts* opts, dsd_state* state);
 /** @brief The session's state; IDLE for a NULL @p state or a session without TETRA state. */
 tetra_sm_state_e tetra_sm_get_state(const dsd_state* state);
 
+/**
+ * @brief 1 while the state machine owns the receiver's way back to the control channel: TUNED (a tune in flight, and a
+ * grant still waiting for its first speech, included) or a return of its own in flight. Its tick then decides when to
+ * return (the grant timeout, the hangtime after the last speech), so the engine's generic no-carrier recovery must not
+ * return first. 0 otherwise, and for a session without TETRA state.
+ */
+int tetra_sm_owns_return(const dsd_state* state);
+
 /** @brief 1 and the followed grant in @p out (when not NULL) while TUNED; 0 otherwise. The grant is the channel the
  * receiver follows, retired or not (tetra_sm_retire_call()). */
 int tetra_sm_followed(const dsd_state* state, tetra_sm_grant* out);

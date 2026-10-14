@@ -573,6 +573,12 @@ tetra_sm_get_state(const dsd_state* state) {
 }
 
 int
+tetra_sm_owns_return(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return ts && (ts->sm.state == (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U);
+}
+
+int
 tetra_sm_followed(const dsd_state* state, tetra_sm_grant* out) {
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED) {

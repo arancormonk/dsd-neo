@@ -4528,7 +4528,12 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   The decoders never tick it. `tetra_sm_init()` runs at engine start. `carrier_boundary_release_followed()` abandons
   a TUNED machine without tuning (`tetra_sm_abandon_carrier()`); `carrier_boundary_forget_evidence()` clears the
   evidence (`tetra_confirm_reset()`), and `dsd_engine_forget_carrier_decoding()` and the no-carrier reset
-  (`no_carrier_reset_decode_state()`) forget the carrier (`tetra_forget_carrier()`). `no_carrier_finish_cc_return()`
+  (`no_carrier_reset_decode_state()`) forget the carrier (`tetra_forget_carrier()`). While the machine owns the return
+  (`tetra_sm_owns_return()`: TUNED, a tune in flight and a grant still waiting for its first speech included, or a
+  return of its own in flight), the no-carrier pass ticks it instead of running the generic recovery
+  (`no_carrier_tick_tetra_owner()`, as `no_carrier_tick_dmr_owner()` does for an active DMR machine): the generic
+  return reads `last_vc_sync_time` against the hangtime alone, so with `-t 1` it would end a grant its four-second
+  timeout still keeps, or drop the follow where no control channel is known. Otherwise `no_carrier_finish_cc_return()`
   reconciles an accepted return (`tetra_sm_on_external_cc_return()`: ON_CC, no tune); when it cleared the voice state
   without a return (the P25 helper failed, or no control channel) a TUNED machine drops its call where the receiver
   is; a return that failed or was deferred never gets there and leaves the call. The manual Return to CC in
@@ -4538,8 +4543,9 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   nothing. `DSD_SYNC_IS_INVERTED` includes the negative TETRA syncs.
 
 Tests: `TETRA_TRUNK_SM` (the state machine per session against stand-in tuning hooks), `ENGINE_TETRA_TRUNK` (the
-engine tick, the carrier boundary and the no-carrier pass with the real machine), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX`
-(the TETRA rows: accepted, unreturnable and failed no-carrier returns with real machine state),
+engine tick, the carrier boundary and the no-carrier pass with the real machine, which returns at its own deadlines and
+settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
+real machine's follow to it, with and without a control channel),
 `ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC, decode-mode
 change), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
 CRCs and given the colour code, a retune inside a burst; and, at compile time, the TETRA syncs in the two synctype

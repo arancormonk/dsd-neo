@@ -37,6 +37,7 @@ static int g_returns;
 static int g_ted_sps;
 static uint64_t g_request;
 static dsd_trunk_tune_result g_tune_result;
+static dsd_trunk_tune_result g_return_result;
 
 static void
 expect(int ok, const char* what) {
@@ -63,8 +64,10 @@ return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)state;
     g_returns++;
     g_request = request_id;
-    opts->trunk_is_tuned = 0;
-    return DSD_TRUNK_TUNE_RESULT_OK;
+    if (g_return_result == DSD_TRUNK_TUNE_RESULT_OK) {
+        opts->trunk_is_tuned = 0;
+    }
+    return g_return_result;
 }
 
 static void
@@ -105,6 +108,7 @@ session_open(void) {
     g_ted_sps = -1;
     g_request = 0U;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
     at_seconds(2000.0);
     tetra_sm_init(s.opts, s.state);
     tetra_sm_on_cc_sync(s.opts, s.state);
@@ -234,6 +238,53 @@ test_no_carrier_forgets_evidence(void) {
     session_close(&s);
 }
 
+/* With -t 1 a grant still waiting for its first speech is the state machine's to time out (TETRA_SM_GRANT_TIMEOUT_S):
+ * a no-carrier pass before then, whose generic return reads last_vc_sync_time against the one-second hangtime, takes
+ * no return of its own and leaves the follow; once the grant timeout passed, the pass ticks the machine, which returns
+ * to the control channel itself, once. Without a control channel known the pass does not drop the follow either. */
+static void
+test_no_carrier_leaves_the_follow_to_the_machine(void) {
+    for (int with_cc = 1; with_cc >= 0; with_cc--) {
+        session s = session_open();
+        expect(follow_grant(&s) == 1 && tetra_sm_get_state(s.state) == TETRA_SM_TUNED, "owner: grant followed");
+        if (!with_cc) {
+            s.state->trunk_cc_freq = 0;
+        }
+        at_seconds(2002.0);
+        engine_tick(&s);
+        noCarrier(s.opts, s.state);
+        expect(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && tetra_sm_followed(s.state, NULL),
+               "owner: the pass keeps a grant its timeout still keeps");
+        expect(g_returns == 0 && s.opts->trunk_is_tuned == 1, "owner: the pass takes no return of its own");
+        at_seconds(2000.0 + TETRA_SM_GRANT_TIMEOUT_S + 0.5);
+        noCarrier(s.opts, s.state);
+        expect(g_returns == with_cc && s.opts->trunk_is_tuned == 0 && !tetra_sm_followed(s.state, NULL),
+               "owner: the machine ends the follow at its grant timeout");
+        session_close(&s);
+    }
+}
+
+/* A return of the machine's own in flight is the machine's as well: one the backend failed is put back by the pass's
+ * tick of the machine, which keeps the call when its retry is deferred, rather than taken over by a generic return. */
+static void
+test_no_carrier_leaves_a_return_in_flight_to_the_machine(void) {
+    session s = session_open();
+    expect(follow_grant(&s) == 1, "owner: grant followed before the return");
+    g_return_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    at_seconds(2000.0 + TETRA_SM_GRANT_TIMEOUT_S + 0.5);
+    engine_tick(&s);
+    const uint64_t request = g_request;
+    expect(g_returns == 1 && dsd_trunk_tuning_pending_request() == request && request != 0U,
+           "owner: the grant timeout's return is in flight");
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    noCarrier(s.opts, s.state);
+    expect(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && tetra_sm_followed(s.state, NULL),
+           "owner: the failed return is put back and its deferred retry keeps the call");
+    expect(g_returns == 2 && dsd_trunk_tuning_pending_request() == 0U, "owner: one retry, by the machine");
+    session_close(&s);
+}
+
 int
 main(void) {
     dsd_decode_clock_use_test(2000ULL * 1000000000ULL);
@@ -241,6 +292,8 @@ main(void) {
     test_tick_runs_timers();
     test_carrier_boundary_abandons();
     test_no_carrier_forgets_evidence();
+    test_no_carrier_leaves_the_follow_to_the_machine();
+    test_no_carrier_leaves_a_return_in_flight_to_the_machine();
     dsd_decode_clock_use_system();
     if (g_failures == 0) {
         DSD_FPRINTF(stdout, "ENGINE_TETRA_TRUNK: OK\n");
