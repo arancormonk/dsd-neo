@@ -19,6 +19,9 @@
 
 namespace dsd_qt {
 
+/** @brief The app data directory every store and imported file lives under (AppDataLocation). */
+QString json_store_root();
+
 /** @brief Absolute path of @p fileName inside the app data directory. */
 QString json_store_path(const QString& fileName);
 

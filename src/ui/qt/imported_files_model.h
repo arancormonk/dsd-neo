@@ -55,6 +55,9 @@ class ImportedFilesModel : public QAbstractListModel {
     explicit ImportedFilesModel(DecoderHost* host, QObject* parent = nullptr);
     ~ImportedFilesModel() override;
 
+    /** @brief Every library row type the model can validate; a row of any other type cannot be used. */
+    static QStringList knownTypes();
+
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     QVariant data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;

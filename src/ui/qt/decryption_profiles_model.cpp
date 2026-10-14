@@ -116,6 +116,11 @@ removeFiles(const QStringList& paths) {
 }
 } // namespace
 
+bool
+DecryptionProfilesModel::validUid(const QString& uid) {
+    return validId(uid);
+}
+
 DecryptionProfilesModel::DecryptionProfilesModel(QObject* parent) : QAbstractListModel(parent) {
     QSet<QString> ids;
     for (const auto& value : json_store_load_array(QStringLiteral("decryption_profiles.json"))) {

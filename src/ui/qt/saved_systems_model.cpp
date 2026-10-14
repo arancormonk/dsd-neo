@@ -273,8 +273,8 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     // An edit cannot change identity. Loading can adopt a valid persisted UUID;
     // add() replaces it afterwards so duplicating a row never duplicates identity.
     if (row.uid.isEmpty()) {
-        const QUuid stored(map.value(QStringLiteral("uid")).toString());
-        row.uid = (stored.isNull() ? QUuid::createUuid() : stored).toString(QUuid::WithoutBraces);
+        const QString stored = canonicalUid(map.value(QStringLiteral("uid")).toString());
+        row.uid = stored.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : stored;
     }
     fillRowDetails(map, row);
     if (base.uid.isEmpty() && (!map.contains(QStringLiteral("siteLat")) || !map.contains(QStringLiteral("siteLon")))) {
@@ -311,6 +311,12 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     map_take_string(map, QStringLiteral("p25BandplanCsvPath"), &row.p25BandplanCsvPath);
     map_take_string(map, QStringLiteral("srcCsvPath"), &row.srcCsvPath);
     return row;
+}
+
+QString
+SavedSystemsModel::canonicalUid(const QString& candidate) {
+    const QUuid parsed(candidate);
+    return parsed.isNull() ? QString() : parsed.toString(QUuid::WithoutBraces);
 }
 
 QVariantMap

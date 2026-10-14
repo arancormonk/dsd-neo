@@ -48,6 +48,8 @@ class DecryptionProfilesModel : public QAbstractListModel, public DecryptionProf
     Q_INVOKABLE QVariantList directTypes(const QString& protocol) const;
     /** Copy legacy material into a profile before updating the system reference. */
     bool migrateLegacySystems();
+    /** Whether @p uid can name a profile: it names its decryption/<uid>/ directory, so it is a plain name. */
+    static bool validUid(const QString& uid);
   Q_SIGNALS:
     void countChanged();
 

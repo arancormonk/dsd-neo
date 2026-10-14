@@ -129,6 +129,18 @@ ownedRoot(const QString& root) {
 }
 } // namespace
 
+QStringList
+csv_companion_references(const QString& text) {
+    QStringList references;
+    (void)rewriteMap(text, [&references](const QString& path, const QString&) {
+        if (!references.contains(path)) {
+            references.append(path);
+        }
+        return path;
+    });
+    return references;
+}
+
 QString
 csv_companion_type_name(const QString& type) {
     if (type == "keysHex") {

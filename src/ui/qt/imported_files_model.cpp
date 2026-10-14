@@ -109,10 +109,21 @@ ImportedFilesModel::roleNames() const {
     return roles;
 }
 
+QStringList
+ImportedFilesModel::knownTypes() {
+    // Keep in step with validate(), which refuses every other type.
+    return {QStringLiteral("chan"),        QStringLiteral("group"),      QStringLiteral("keysDec"),
+            QStringLiteral("keysHex"),     QStringLiteral("vertexKeys"), QStringLiteral("dmrTgKeys"),
+            QStringLiteral("p25Bandplan"), QStringLiteral("src"),        QStringLiteral("trunkTargets")};
+}
+
 bool
 ImportedFilesModel::validate(const QString& path, const QString& type, int* accepted, int* skipped, QString* detail) {
     if (detail) {
         detail->clear();
+    }
+    if (!knownTypes().contains(type)) {
+        return false;
     }
     if (type == "trunkTargets") {
         char error[512] = {};
