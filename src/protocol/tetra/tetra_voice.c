@@ -284,17 +284,20 @@ voice_speech_reset(tetra_voice_t* v) {
     v->bound = 0;
 }
 
-/* The speech in progress belongs to one transmission. Speech of another call (another kind or target), of another
-   transmitting party (D-TX GRANTED or D-TX INTERRUPT naming another talker, another direct mode source; a party not
-   known on either side is no change, as for the canonical call), or after a TETRA call ended (a release, D-TX CEASED,
-   the state machine leaving it, another call published), starts over: no samples, codec state or confirmation of one
-   transmission reach the next or its record policy. */
+/* The speech in progress belongs to one transmission. Speech of another call (another kind, call identifier or
+   target), of another transmitting party (D-TX GRANTED or D-TX INTERRUPT naming another talker, another direct mode
+   source; a party not known on either side is no change, as for the canonical call), or after a TETRA call ended (a
+   release, D-TX CEASED, the state machine leaving it, another call published), starts over: no samples, codec state or
+   confirmation of one transmission reach the next or its record policy. The call identifier tells two calls of the same
+   group apart at the first burst of the second, before anything of it was published: a burst whose CRC failed
+   publishes nothing. */
 static void
 voice_bind(tetra_state_t* ts, const tetra_speech* sp) {
     tetra_voice_t* const v = &ts->voice;
+    const uint16_t call_id = sp->kind == TETRA_SPEECH_CALL ? sp->call_id : 0U;
     const int other_party = v->owner_source != 0u && sp->source != 0u && v->owner_source != sp->source;
-    if (v->bound && v->owner_kind == sp->kind && v->owner_target == sp->target && v->owner_ends == ts->calls.ends
-        && !other_party) {
+    if (v->bound && v->owner_kind == sp->kind && v->owner_call_id == call_id && v->owner_target == sp->target
+        && v->owner_ends == ts->calls.ends && !other_party) {
         if (sp->source != 0u) {
             v->owner_source = sp->source;
         }
@@ -303,9 +306,17 @@ voice_bind(tetra_state_t* ts, const tetra_speech* sp) {
     voice_speech_reset(v);
     v->bound = 1;
     v->owner_kind = sp->kind;
+    v->owner_call_id = call_id;
     v->owner_target = sp->target;
     v->owner_source = sp->source;
     v->owner_ends = ts->calls.ends;
+}
+
+void
+tetra_voice_call_renamed(tetra_voice_t* voice, uint16_t old_id, uint16_t new_id) {
+    if (voice && voice->bound && voice->owner_kind == TETRA_SPEECH_CALL && voice->owner_call_id == old_id) {
+        voice->owner_call_id = new_id;
+    }
 }
 
 /* The frames of one burst of @p sp's call: @p bad[i] for frame i of @p frames. Speech whose CRC passed reaches the call

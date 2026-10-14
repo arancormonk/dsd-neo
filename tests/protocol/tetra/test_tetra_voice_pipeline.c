@@ -773,6 +773,70 @@ test_talker_change_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* Not trunking, call @p call_id to group @p gssi whose traffic channel is timeslot 2 of the tuned carrier, allocated at
+   @p alloc_m on the decode clock. */
+static void
+hear_call(fixture* f, uint16_t call_id, uint32_t gssi, double alloc_m) {
+    tetra_call_event setup = {.call_id = call_id, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x04};
+    tetra_calls_on_event(NULL, f->state, &setup, NULL);
+    tetra_call_t* const c = tetra_calls_find(f->state, call_id);
+    c->called_ssi = gssi;
+    c->alloc.freq_hz = (long)f->opts->rtlsdr_center_freq;
+    c->alloc.timeslots = tetra_slot_bit(2);
+    c->alloc.up_down = 1;
+    c->alloc_m = alloc_m;
+}
+
+/* Not trunking, a D-SETUP that allocates the heard timeslot to another call of the same group, the last call's release
+   unheard, makes the speech there the new call's: it starts over at the new call's first burst even when that burst
+   fails its CRC and nothing of the new call has been published yet, so none of its bad frames is concealed with the
+   last call's codec state and none of the last call's carried samples play under it. */
+static void
+test_call_identifier_change_resets_speech(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "call id: fixture");
+    uint8_t half[TETRA_SPEECH_HALF_BITS];
+    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    tetra_voice_reorder_half(half, half_frame);
+    tetra_voice_reorder_full(full, full_frames);
+    const size_t block = DSD_VOICE_FRAME_SAMPLES;
+    f.opts->audio_in_type = AUDIO_IN_RTL;
+    f.opts->rtlsdr_center_freq = 400243750U;
+    tetra_state_t* const ts = tetra_st(f.state);
+    ts->tdma_valid = 1;
+    ts->tn = 2;
+
+    /* Call 9 to group 500: decode 1 plays one block and carries 80 samples. */
+    hear_call(&f, 9, 500, 1.0);
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    expect(voice_of(&f)->carry_len == 80, "call id: 80 samples of call 9 carried");
+    /* Call 10 to group 500 on the same timeslot: its first burst fails its CRC and plays nothing. */
+    hear_call(&f, 10, 500, 2.0);
+    tetra_voice_full_slot(f.opts, f.state, full, 0);
+    static int16_t out[MAX_OUT];
+    expect(fixture_output(&f, out, MAX_OUT) == block, "call id: no frame of call 10 concealed with call 9's codec");
+    expect(voice_of(&f)->carry_len == 0 && voice_of(&f)->confirmed == 0, "call id: call 10's speech starts over");
+    /* Its first good burst starts a codec of its own: decodes 1 and 2. */
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, 0, 1, half_frame, 0, block, "call id: call 9's speech");
+    expect_segment(&f, block, 1, full_frames, 0, FRAME, "call id: call 10's speech from its own first decode");
+
+    /* D-INFO gives call 10 the identifier 14: the same call, so its codec goes on with decodes 3 and 4. */
+    tetra_call_event info = {
+        .call_id = 10, .kind = TETRA_CALL_EV_INFO, .has = TETRA_CALL_HAS_NEW_ID, .new_call_id = 14};
+    tetra_calls_on_event(f.opts, f.state, &info, NULL);
+    expect(tetra_calls_peek(f.state, 14) != NULL, "call id: call 10 renamed 14");
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    const uint8_t* const b = full_frames + DSD_TETRA_CODEC_FRAME_BITS;
+    expect_segment(&f, block + (2 * FRAME), 3, full_frames, 0, FRAME, "call id: the renamed call's codec goes on");
+    expect_segment(&f, block + (3 * FRAME), 4, b, 0, FRAME, "call id: the renamed call's second frame");
+    fixture_close(&f);
+}
+
 /* The speech in progress belongs to a transmission of the network it was heard on: a BSCH naming another network
    starts it over, carried samples and codec state with it, while a BSCH of another cell of the same network does not. */
 static void
@@ -825,6 +889,7 @@ main(void) {
     test_call_boundary_resets_speech();
     test_talker_change_resets_speech();
     test_network_change_resets_speech();
+    test_call_identifier_change_resets_speech();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

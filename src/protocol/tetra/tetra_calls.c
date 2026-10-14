@@ -29,6 +29,7 @@
 #include "tetra_confirm.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
+#include "tetra_voice_state.h"
 
 /* Basic service information, EN 300 392-2 table 14.35: circuit mode type (3 bits, 000 speech), encryption flag
  * (end-to-end encryption), communication type (2 bits, 00 point to point) and slots per frame or speech service. */
@@ -608,13 +609,14 @@ call_rename(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c
     if (other && other != c) {
         call_end(opts, state, ts, other, DSD_CALL_END_EXPLICIT);
     }
-    /* The canonical call and the heard speech go on under the new identifier. */
+    /* The canonical call, the heard speech and the speech in progress go on under the new identifier. */
     if (ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == c->call_id) {
         ts->calls.published_call_id = id;
     }
     if (ts->calls.heard_known && ts->calls.heard_call_id == c->call_id) {
         ts->calls.heard_call_id = id;
     }
+    tetra_voice_call_renamed(&ts->voice, c->call_id, id);
     c->call_id = id;
 }
 

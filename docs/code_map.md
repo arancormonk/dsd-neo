@@ -4614,11 +4614,14 @@ single "current call".
   full slot's frame A takes KSS(0..136) and frame B KSS(137..273), a half slot's frame KSS(216..352)). Only the
   encrypted values (2 and 3) of the encryption mode element are encrypted; 1 is reserved. The speech in progress (the
   codec's decoder state, the speech's integrity and its unplayed samples) belongs to one transmission: a burst of speech
-  of another kind or target, of another transmitting party (the call's talker, which D-TX GRANTED and D-TX INTERRUPT
-  name, or the direct mode source; a party not known on either side is no change, as for the canonical call), or the
-  first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, the state machine leaving the
-  call, another call published), starts over (`voice_bind()` in `tetra_voice.c`), so nothing of one transmission plays
-  under the next one's record policy and no bad opening frame is concealed with another talker's codec state.
+  of another kind, call identifier or target, of another transmitting party (the call's talker, which D-TX GRANTED and
+  D-TX INTERRUPT name, or the direct mode source; a party not known on either side is no change, as for the canonical
+  call), or the first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, the state
+  machine leaving the call, another call published, the call records forgotten), starts over (`voice_bind()` in
+  `tetra_voice.c`), so nothing of one transmission plays under the next one's record policy and no bad opening frame is
+  concealed with another call's or talker's codec state; the call identifier tells two calls of one group apart at the
+  second's first burst, which publishes nothing when its CRC fails. A D-INFO or D-CALL RESTORE renaming the call keeps
+  its speech (`tetra_voice_call_renamed()`).
 - Canonical calls. Slot 0, the TETRA synctype as protocol. The followed call publishes from its CRC-passed signalling
   once the carrier is proven and its tune settled, until its transmission ceased: called party as target, talker as
   source, carrier and frequency, basic service as service options, priority, and its crypto class. Not trunking, the
@@ -4639,7 +4642,8 @@ Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, re
 renamed-over or aged followed identifier, ageing,
 canonical calls and notices in trunked and direct mode, speech publication, the receiving carrier), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, the
-derived key stream, the speech starting over at call boundaries), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`,
+derived key stream, the speech starting over at call boundaries, another call identifier and another network, and
+going on across a rename), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`,
 `CORE_ACCESS_CODE`.
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`

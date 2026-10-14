@@ -45,17 +45,22 @@ typedef struct tetra_voice {
     uint8_t confirmed;
     uint8_t bad_run;
 
-    /* The transmission the speech in progress belongs to (bound): the kind, target and transmitting party of its speech
-       (tetra_speech; the party once known), and the count of ended TETRA calls (tetra_calls_t::ends) when it started. */
+    /* The transmission the speech in progress belongs to (bound): the kind, call identifier (TETRA_SPEECH_CALL), target
+       and transmitting party of its speech (tetra_speech; the party once known), and the count of ended TETRA calls
+       (tetra_calls_t::ends) when it started. */
     uint32_t owner_target;
     uint32_t owner_source;
     uint32_t owner_ends;
+    uint16_t owner_call_id;
     uint8_t owner_kind;
     uint8_t bound;
 } tetra_voice_t;
 
 /** Unload the codec and clear @p voice; the TETRA state's cleanup calls it. */
 void tetra_voice_release(tetra_voice_t* voice);
+
+/** Call @p old_id goes on as call @p new_id (D-INFO, D-CALL RESTORE): speech in progress of it stays its speech. */
+void tetra_voice_call_renamed(tetra_voice_t* voice, uint16_t old_id, uint16_t new_id);
 
 #ifdef __cplusplus
 }
