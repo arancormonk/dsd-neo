@@ -625,6 +625,9 @@ constants, and Clang also folds an integer bit test on a float it computed or re
   per-block metrics, the terminal and Qt UIs) is built with IEEE semantics: `set_source_files_properties(... PROPERTIES
   COMPILE_OPTIONS "-fno-fast-math")` with an `elseif(MSVC)` `/fp:precise` branch, as in `src/runtime/CMakeLists.txt`.
   A source compiled directly into a test from `tests/CMakeLists.txt` does not inherit that directory-scoped property.
+  On MSVC, `cmake/MsvcFastMath.cmake` applies `/fp:fast` after all targets are declared, only to sources without an
+  explicit source or target `/fp` mode. This preserves the IEEE exceptions without conflicting options and D9025
+  warnings; configuration-specific target modes, including PFFFT's Debug `/fp:strict`, take precedence too.
 - A hot file keeps fast-math and moves its check into a small IEEE translation unit called off the per-sample path
   (`frames/dsd_dibit_reliability.c`, `io/radio/rtl_finite.cpp`); a by-value argument goes through `dsd_fp_opaque_*()`
   first.

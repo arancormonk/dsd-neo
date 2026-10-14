@@ -535,10 +535,10 @@ if(DSD_ENABLE_FAST_MATH)
             $<$<COMPILE_LANGUAGE:CXX>:-fno-math-errno>
         )
     elseif(MSVC)
-        add_compile_options(
-            $<$<COMPILE_LANGUAGE:C>:/fp:fast>
-            $<$<COMPILE_LANGUAGE:CXX>:/fp:fast>
-        )
+        # Wait for the per-source and per-target IEEE exceptions before
+        # choosing /fp:fast; conflicting /fp modes produce MSVC D9025.
+        include(MsvcFastMath)
+        cmake_language(DEFER CALL dsd_msvc_fast_math "${PROJECT_SOURCE_DIR}")
     endif()
 endif()
 
