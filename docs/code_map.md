@@ -4577,7 +4577,11 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   Until the backend answers, the request is the backend's, however long that takes: nothing times it out locally (as
   with P25's tunes), so the frame gate stays closed and the backend's completion is the tuner boundary. Every entry
   point and the tick settle it first once it is answered: a completion commits, a failure restores the rollback first
-  and completes the request after, so the frame gate opens onto restored state (`trunk_tuning_hooks.h`).
+  and completes the request after, so the frame gate opens onto restored state (`trunk_tuning_hooks.h`). So does the
+  calls module before it judges an allocation against the follow (`tetra_sm_settle()` in `call_attach()`): a later PDU
+  of the block whose grant started the tune, decoded after the backend failed it, is judged against the call put
+  back, not the one the failure undid; and no grant is handed over while a request is in flight, so an answer that
+  comes between cannot settle the follow onto another call than the one the grant was judged against.
   `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own cleanup (a decode-mode change
   drops the extension) let go of a request they find (`tetra_sm_disown_pending()`), and hand its terminal cleanup to
   the runtime trunk-tuning layer, which outlives the TETRA state (`dsd_trunk_tuning_request_disown()`): one the
@@ -4892,7 +4896,8 @@ PDU, a label number reused on another channel, a label kept across a channel cha
 by its record's ageing, the call trunking turned off lets go of, a channel allocated to another call: blocked or
 allowed, taken from the followed call, from a followed record moved elsewhere, from a failing tune's rollback and
 from the heard call, by every kind of allocation, and none taken by another timeslot, carrier or direction or by "go
-to the control channel"), `TETRA_DMO` (the
+to the control channel"; an allocation and a "go to the MCCH" judged after a failed tune of the same block),
+`TETRA_DMO` (the
 DM-SDU's FCS and digest, an unread
 DMAC-SYNC's protection, a DMAC-DATA that ends the transmission, the security class a transmission keeps),
 `TETRA_PUBLICATION` (no trunked network on a direct mode carrier), `TETRA_VOICE_GATE`,

@@ -54,13 +54,18 @@ static int g_returns;
 static long g_tuned_hz;
 static dsd_trunk_tune_result g_tune_result;
 static dsd_trunk_tune_result g_return_result;
+static int g_tunes_failing_at_once; /* the next tunes the backend reports in flight and answers FAILED at once */
 
 static dsd_trunk_tune_result
 tune_hook(dsd_opts* opts, dsd_state* state, long freq, int ted_sps, uint64_t request_id) {
     (void)ted_sps;
-    (void)request_id;
     g_tunes++;
     g_tuned_hz = freq;
+    if (g_tunes_failing_at_once > 0) {
+        g_tunes_failing_at_once--;
+        dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+        return DSD_TRUNK_TUNE_RESULT_PENDING;
+    }
     opts->trunk_is_tuned = 1;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     return g_tune_result;
@@ -103,6 +108,7 @@ session_open(void) {
     g_tuned_hz = 0;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_tunes_failing_at_once = 0;
     session s;
     s.opts = (dsd_opts*)calloc(1U, sizeof(*s.opts));
     s.state = (dsd_state*)calloc(1U, sizeof(*s.state));
@@ -2482,6 +2488,103 @@ test_rollback_channel_taken(void) {
     session_close(&s);
 }
 
+/* A MAC-RESOURCE to @p ssi with an allocation of @p timeslots on @p carrier and, for @p call_id not 0, a D-SETUP (table
+ * 14.15) of that group call; one of several in a block. */
+static void
+put_resource(ttb_block* b, uint32_t ssi, uint16_t call_id, uint32_t timeslots, uint32_t carrier) {
+    const int start = ttb_resource(b, 0, TETRA_MAC_ADDR_SSI, ssi);
+    ttb_resource_flags(b, 1u);
+    ttb_allocation(b, timeslots, 1, carrier);
+    if (call_id != 0U) {
+        ttb_put(b, 2, 4); /* BL-UDATA */
+        ttb_d_setup(b, call_id, TTB_SPEECH_GROUP);
+    }
+    ttb_close_resource(b, start);
+}
+
+/* Block @p b decoded as one SCH/F block, after a CRC-passed block that proved the carrier. */
+static void
+send_built_block(session* s, ttb_block* b) {
+    ttb_finish(b, TTB_SCH_F_BITS, -1);
+    tetra_confirm_note_signalling(s->state);
+    tetra_mac_parse_schd(b->bits, b->n, 1, s->opts, s->state);
+}
+
+/* One SCH/F block of two MAC-RESOURCEs, each a D-SETUP of group call @p call_id[i] to @p ssi[i] with an allocation of
+ * TN2 of @p carrier. */
+static void
+send_two_setups(session* s, const uint32_t* ssi, const uint16_t* call_id, uint32_t carrier) {
+    ttb_block b = {0};
+    for (int i = 0; i < 2; i++) {
+        put_resource(&b, ssi[i], call_id[i], 4, carrier);
+    }
+    send_built_block(s, &b);
+}
+
+/* What an allocation takes is judged against the follow as the state machine settled it. Following call A on TN2 of
+ * carrier 120, one block grants call C TN2 of carrier 130, taking the receiver from A (a preempting priority, or the
+ * held group), whose tune the backend reports in flight and fails at once, and then gives that channel to call B: by
+ * B's PDU the state machine is back on A, whose channel B does not take, so B is judged as any call competing with A.
+ * Without the right to take over B is not tuned to, whether its tune would succeed or fail; a call of the held group
+ * is, and when its tune is refused A is kept and not let go of. */
+static void
+test_allocation_judged_after_a_failed_tune(void) {
+    const struct {
+        uint32_t hold;
+        uint32_t c_ssi;
+        dsd_trunk_tune_result b_tune;
+        int tunes;
+    } k_cases[] = {
+        {0u, 0x300u, DSD_TRUNK_TUNE_RESULT_OK, 2},
+        {0u, 0x300u, DSD_TRUNK_TUNE_RESULT_FAILED, 2},
+        {0x200u, 0x200u, DSD_TRUNK_TUNE_RESULT_FAILED, 3},
+    };
+
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        session s = session_open();
+        policy_row(s.state, 0x100u, 10, 0);
+        policy_row(s.state, 0x300u, 50, 1);
+        policy_row(s.state, 0x200u, 60, 0);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        assert(followed_call(s.state) == 0x0A && g_tunes == 1);
+        at_seconds(1002.0);
+        s.state->tg_hold = k_cases[i].hold;
+        g_tunes_failing_at_once = 1;
+        g_tune_result = k_cases[i].b_tune;
+        const uint32_t ssi[2] = {k_cases[i].c_ssi, 0x200u};
+        const uint16_t ids[2] = {0x0C, 0x0B};
+        send_two_setups(&s, ssi, ids, 130);
+        assert(tetra_calls_peek(s.state, 0x0B)->alloc.carrier == 130);
+        assert(tetra_calls_peek(s.state, 0x0C)->alloc.timeslots == 0u);
+        assert(g_tunes == k_cases[i].tunes && g_returns == 0 && dsd_trunk_tuning_pending_request() == 0U);
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x0A);
+        assert(tetra_calls_followed(s.state) == tetra_calls_peek(s.state, 0x0A));
+        session_close(&s);
+    }
+}
+
+/* So is a "go to the MCCH" allocation (timeslots 0000, table 21.87): one block grants call C of a preempting priority,
+ * whose tune the backend reports in flight and fails at once, and then sends the followed call A's party to the
+ * control channel. By then the state machine is back on A, which it releases, rather than putting A back once the
+ * failure is settled, on the channel A was told to leave. */
+static void
+test_go_to_mcch_after_a_failed_tune(void) {
+    session s = session_open();
+    policy_row(s.state, 0x100u, 10, 0);
+    policy_row(s.state, 0x300u, 50, 1);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && g_tunes == 1);
+    at_seconds(1002.0);
+    g_tunes_failing_at_once = 1;
+    ttb_block b = {0};
+    put_resource(&b, 0x300u, 0x0C, 4, 130);
+    put_resource(&b, 0x100u, 0U, 0, 100);
+    send_built_block(&s, &b);
+    assert(g_tunes == 2 && g_returns == 1 && dsd_trunk_tuning_pending_request() == 0U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+    session_close(&s);
+}
+
 /* Not trunking, the heard timeslot's speech is the call whose traffic channel it is now: a D-SETUP that gives TN2 of
  * the carrier being received to call B of a blocked group takes it from the heard call A, whose canonical call ends
  * there and whose later PDUs publish nothing as the heard call's; B's speech on it is B's, muted; and once B moves on
@@ -2866,6 +2969,8 @@ main(void) {
     test_allowed_call_takes_the_followed_channel();
     test_moved_followed_channel_taken();
     test_rollback_channel_taken();
+    test_allocation_judged_after_a_failed_tune();
+    test_go_to_mcch_after_a_failed_tune();
     test_heard_channel_taken();
     test_other_channels_take_nothing();
     test_every_allocation_takes_the_channel();

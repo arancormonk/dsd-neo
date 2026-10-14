@@ -713,10 +713,17 @@ call_log_skip(const tetra_state_t* ts, const tetra_call_t* c, const char* why) {
 
 /* Trunking: hand the state machine the channel just allocated to @p c, when the policy lets it be followed. The
  * followed call's own allocation moves it. When the allocation took the followed channel (@p takes_followed,
- * calls_take_channel()), the call followed there holds no channel for @p c to take over, so the policy alone decides. */
+ * calls_take_channel()), the call followed there holds no channel for @p c to take over, so the policy alone decides.
+ * Nothing is handed over while a tune is in flight (call_attach() settled what the backend had answered): the state
+ * machine takes no grant then, and an answer that came between would settle it onto another follow than the one the
+ * grant was judged against. */
 static void
 call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c, int takes_followed) {
     if (!opts || opts->trunk_enable != 1 || !alloc_followable(&c->alloc)) {
+        return;
+    }
+    if (ts->sm.pending_request_id != 0U) {
+        call_log_skip(ts, c, "a tune is in flight");
         return;
     }
     const tetra_sm_grant grant = {c->alloc.freq_hz, c->alloc.carrier, c->alloc.timeslots, c->call_id};
@@ -836,11 +843,17 @@ calls_leave_taken_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, c
 /* @p alloc is @p c's traffic channel now, and no other call's (calls_take_channel()). A "go to the MCCH" allocation
  * (timeslot assigned 0000, table 21.87), which names no channel the decoder can place, takes none and ends the followed
  * call; any other may be followed when @p may_follow, and when it took the followed channel and @p c is not followed,
- * the state machine lets go of the channel (calls_leave_taken_channel()). */
+ * the state machine lets go of the channel (calls_leave_taken_channel()). Every decision here reads the follow as the
+ * state machine settled it: a tune the backend answered since its last entry point (a failure that puts the call
+ * followed before back, a block's earlier grant included) is settled first, so no channel is judged taken, and no
+ * takeover waived, against a follow already undone. */
 static void
 call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_chan_alloc* alloc,
             int may_follow) {
     const uint16_t id = c->call_id;
+    if (opts) {
+        (void)tetra_sm_settle(opts, state);
+    }
     if (alloc->timeslots == 0u) {
         DSD_MEMSET(&c->alloc, 0, sizeof c->alloc);
         c->alloc_m = 0.0;

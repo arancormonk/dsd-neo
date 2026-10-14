@@ -80,6 +80,16 @@ void tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state);
 int tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, const tetra_sm_grant* grant);
 
 /**
+ * @brief Settle the tune or return in flight once the backend answered it, as every entry point does first: a
+ * completion commits it, a failure puts back what the request staged and then completes it. For a caller that reads
+ * the follow (tetra_sm_followed()) before it hands the state machine a grant or a release, so that it judges the
+ * follow the state machine is in, not one a failure already undid. Never creates TETRA state.
+ *
+ * @return 1 when no request is in flight any more, 0 while the backend has not answered one.
+ */
+int tetra_sm_settle(dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief The call @p call_id was released (D-RELEASE, D-DISCONNECT, or a timeslot-0000 allocation to its party).
  *
  * Only the followed call releases: TUNED with a followed call id equal to @p call_id returns to the control channel

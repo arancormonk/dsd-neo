@@ -453,6 +453,15 @@ tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, const tetra_sm_grant* grant)
     return sm_tune_grant(opts, state, ts, grant);
 }
 
+int
+tetra_sm_settle(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    tetra_state_t* const ts = tetra_st_existing(state);
+    return !ts || sm_settle_pending(opts, state, ts);
+}
+
 void
 tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id) {
     if (!opts || !state) {
