@@ -17,8 +17,6 @@
 #include <cstdio>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/analog_tone.h>
-#include <functional>
-#include <initializer_list>
 #include <qsystemdetection.h>
 #include <qtenvironmentvariables.h>
 #include <utility>

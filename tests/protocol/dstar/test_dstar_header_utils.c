@@ -12,6 +12,7 @@
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -252,6 +253,84 @@ test_slow_data_header_accepts_wire_crc_order(void) {
     assert(strcmp(call.source_text, "N0CALL /TST") == 0);
 }
 
+/* What the signal search's confirmation can read when the evidence hook fires: the app-control observer copies the
+ * active call's callsigns inside the hook, from state, and only on that confirmation. */
+static struct {
+    int calls;
+    int call_active;
+    int call_protocol_matches;
+    char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+} g_search_evidence;
+
+static void
+capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
+                        const char* access) {
+    (void)target;
+    (void)source;
+    (void)access;
+    assert(protocol != NULL && strcmp(protocol, "D-STAR") == 0);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    g_search_evidence.calls++;
+    const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    g_search_evidence.call_active = active;
+    g_search_evidence.call_protocol_matches = active && call.protocol == state->synctype;
+    DSD_SNPRINTF(g_search_evidence.source_text, sizeof(g_search_evidence.source_text), "%s",
+                 active ? call.source_text : "");
+    DSD_SNPRINTF(g_search_evidence.target_text, sizeof(g_search_evidence.target_text), "%s",
+                 active ? call.target_text : "");
+}
+
+/* A slow-data header whose CRC passes is proof on its own; the signal search hears that proof only once the header's
+ * callsigns are on the call, so a header followed by nothing decodable still names the station. */
+static void
+test_slow_data_header_search_evidence_follows_the_published_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bytes[60];
+    uint8_t compact[51];
+    uint8_t bits[480];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&g_search_evidence, 0, sizeof(g_search_evidence));
+    DSD_MEMSET(bytes, 0x20, sizeof(bytes));
+    DSD_MEMSET(compact, 0x20, sizeof(compact));
+    state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
+
+    bytes[0] = 0x55;
+    compact[0] = 0x00;
+    compact[1] = 0x00;
+    compact[2] = 0x00;
+    DSD_MEMCPY(compact + 3, "RPT2TST ", 8);
+    DSD_MEMCPY(compact + 11, "RPT1TST ", 8);
+    DSD_MEMCPY(compact + 19, "CQCQCQ  ", 8);
+    DSD_MEMCPY(compact + 27, "N0CALL  /TST", 12);
+    compact[39] = 0xb0;
+
+    /* A damaged header tells the search nothing. */
+    compact[40] = 0x44;
+    set_compacted_slow_data_bytes(bytes, compact);
+    dsd_signal_search_evidence_set(capture_search_evidence);
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+    assert(g_search_evidence.calls == 0);
+
+    compact[40] = 0x43;
+    set_compacted_slow_data_bytes(bytes, compact);
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+    dsd_signal_search_evidence_set(NULL);
+
+    assert(g_search_evidence.calls == 1);
+    assert(g_search_evidence.call_active == 1);
+    assert(g_search_evidence.call_protocol_matches == 1);
+    assert(strcmp(g_search_evidence.target_text, "CQCQCQ") == 0);
+    assert(strcmp(g_search_evidence.source_text, "N0CALL /TST") == 0);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 pack_slow_data_bytes(const uint8_t bytes[60], uint8_t bits[480]) {
     DSD_MEMSET(bits, 0, 480);
@@ -412,6 +491,7 @@ main(void) {
     test_soft_header_decode_reports_a_failed_crc();
     test_crc16();
     test_slow_data_header_accepts_wire_crc_order();
+    test_slow_data_header_search_evidence_follows_the_published_call();
     test_slow_data_text_keeps_byte_after_marker();
     test_slow_data_aprs_latitude_uses_compacted_direction();
     return 0;

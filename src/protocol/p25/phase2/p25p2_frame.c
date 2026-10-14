@@ -1952,6 +1952,15 @@ processP2(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n");
         return;
     }
+    /* An input interruption cut the window (a Signal search left it, or a live read gave up on a stalled input): the
+       rest is erasures the reader stood in, so none of its bursts dispatches, as when a sync loss misses a window. The
+       receiver is still on the carrier, so what the slots gathered, and the frames the playout holds, stay; the next
+       window finds this one missing from its continuity. */
+    if (state->input_interrupted) {
+        state->dmr_stereo = 0;
+        DSD_FPRINTF(stderr, "\n");
+        return;
+    }
 
     //look at our ISCH values and determine location in superframe before running frame scramble
     s_isch_located = 0;

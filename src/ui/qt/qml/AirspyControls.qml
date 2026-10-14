@@ -4,6 +4,7 @@ import QtQuick.Controls
 
 Column {
     id: panel
+    property bool gainsOnly: false
 
     property var settings: ({
     })
@@ -48,6 +49,7 @@ Column {
 
             width: panel.width
             spacing: 4
+            visible: !panel.gainsOnly
 
             Text {
                 text: modelData.label
@@ -167,7 +169,7 @@ Column {
             required property var modelData
 
             width: panel.width
-            visible: modelData.key === "bias_tee" || panel.gainMode === "manual"
+            visible: modelData.key === "bias_tee" ? !panel.gainsOnly : panel.gainMode === "manual"
             title: modelData.label
             checked: panel.setting(modelData.key, 0) === true || String(panel.setting(modelData.key, 0)) === "1" || String(panel.setting(modelData.key, 0)) === "true"
             onToggled: function(on) {

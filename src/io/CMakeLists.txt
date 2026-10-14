@@ -35,6 +35,7 @@ if(DSD_HAS_RADIO)
             radio/rtl_stream_c.cpp
             radio/rtl_sdr_fm.cpp
             radio/rtl_wideband_spectrum.cpp
+            radio/signal_measure.cpp
             radio/soapy_profile.cpp
     )
     target_include_directories(
@@ -67,12 +68,14 @@ if(DSD_HAS_RADIO)
     # The auto-PPM controller and rtl_finite.cpp (the out-of-line isfinite()
     # behind the cold checks in rtl_device.cpp, rtl_metrics.cpp and
     # rtl_sdr_fm.cpp, which keep fast-math for their sample loops) do the same;
-    # none of them runs per sample.
+    # none of them runs per sample. The search detector, signal_measure.cpp,
+    # checks every sample, but only of the windows a search measures.
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         set_source_files_properties(
             radio/soapy_profile.cpp
             radio/rtl_auto_ppm.cpp
             radio/rtl_finite.cpp
+            radio/signal_measure.cpp
             PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
         )
     elseif(MSVC)
@@ -80,6 +83,7 @@ if(DSD_HAS_RADIO)
             radio/soapy_profile.cpp
             radio/rtl_auto_ppm.cpp
             radio/rtl_finite.cpp
+            radio/signal_measure.cpp
             PROPERTIES COMPILE_OPTIONS "/fp:precise"
         )
     endif()

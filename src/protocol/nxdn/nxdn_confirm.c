@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stddef.h>
 #include "nxdn_confirm.h"
 
 #include <dsd-neo/core/state.h>
@@ -59,6 +61,14 @@ nxdn_confirm_end_frame(dsd_state* state) {
     }
     if (state->nxdn_confirm_frame_evidence == 0) {
         state->nxdn_confirm_weak_streak = 0;
+        return;
+    }
+    /* The frame's own CRCs confirmed the transmission: a strong one, or the short one that completes or continues a weak
+     * streak. A signal search hears that only now, once the frame's channels have published the RAN and call their
+     * confirmation unlocked, since it reads them from state when it hears it. */
+    if (state->nxdn_confirm_frame_evidence == (uint8_t)NXDN_EVIDENCE_STRONG
+        || state->nxdn_confirm_weak_streak >= NXDN_CONFIRM_WEAK_OBSERVES) {
+        dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
     }
 }
 

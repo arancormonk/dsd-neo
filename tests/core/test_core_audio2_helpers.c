@@ -2465,6 +2465,25 @@ test_decoded_pcm16_plays_settled_frames(void) {
         "decoded pcm without output history writes nothing",
         g_audio_write_calls + g_dsd_write_calls + g_udp_blast_calls + g_voice_chain_calls + g_stage_short_calls, 0);
 
+    // Voice a decoder hands over while an input interruption stands came from a frame a Signal search's yield (or a
+    // stalled live read) cut, whose rest is erasures getSymbol() stood in: it plays nothing.
+    static short cut_history[320];
+    reset_sink_capture();
+    g_voice_chain_calls = 0;
+    g_stage_short_calls = 0;
+    state->audio_out_buf_p = cut_history;
+    state->input_interrupted = 1;
+    dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES);
+    state->input_interrupted = 0;
+    rc |= expect_int(
+        "decoded pcm from a cut frame writes nothing",
+        g_audio_write_calls + g_dsd_write_calls + g_udp_blast_calls + g_voice_chain_calls + g_stage_short_calls, 0);
+    rc |=
+        expect_int("decoded pcm from a cut frame retains the output pointer", state->audio_out_buf_p == cut_history, 1);
+    reset_sink_capture();
+    g_voice_chain_calls = 0;
+    g_stage_short_calls = 0;
+
     // Invalid stream shapes and incomplete frames must not run the chain or advance the output ring.
     static short shape_history[320];
     state->audio_out_buf_p = shape_history;

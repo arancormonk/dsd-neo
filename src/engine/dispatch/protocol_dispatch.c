@@ -59,6 +59,12 @@ processFrame(dsd_opts* opts, dsd_state* state) {
            the handler reported for the symbols it read. */
         if (state->carrier_seq != carrier_seq) {
             state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_UNPRODUCTIVE;
+        } else if (state->input_interrupted) {
+            /* An input interruption cut the frame (a Signal search left it, or a live read gave up on a stalled
+               input): its decoder dropped it, so whatever the handler reported, a sticky confirmation or a proof, the
+               frame validated nothing. Nor did it fail anything: the cut was the engine's, not the signal's, so like a
+               frame the engine declined to dispatch it is withheld from the SPS hunt's accounting. */
+            state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
         }
     }
 }

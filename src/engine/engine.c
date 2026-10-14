@@ -41,6 +41,7 @@
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/slicer_thresholds.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -2337,7 +2338,7 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
 static int
 engine_trunk_tuning_owner_active(const dsd_opts* opts, const dsd_state* state) {
     return opts
-           && (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1
+           && (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1 || dsd_engine_signal_search_active(state)
                || (opts->scanner_mode == 1 && dsd_channel_modes_present(state)));
 }
 
@@ -2926,6 +2927,11 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         }
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
+        if (dsd_engine_signal_search_should_yield(opts, state)) {
+            state->input_interrupted = 1;
+            state->synctype = DSD_SYNC_NONE;
+            break;
+        }
         if (opts->scanner_mode == 1 && opts->scan_voice_only == 1) {
             dsd_scan_voice_gate_tick(opts, state, frame_dispatchable, dsd_decode_now_mono_s());
             if (dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s())) {
@@ -3053,6 +3059,10 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         dsd_runtime_pump_controls(opts, state);
+        if (dsd_engine_signal_search_tick(opts, state)) {
+            dsd_sleep_ms(2);
+            continue;
+        }
         p25_sm_try_tick(opts, state);
         if (opts->trunk_scan_enabled != 1 && p25_sm_tick_guard_try_enter()) {
             if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
@@ -3141,6 +3151,7 @@ liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* 
     p25_sm_watchdog_start(opts, state);
     live_scanner_main_loop(opts, state);
     p25_sm_watchdog_stop();
+    dsd_engine_signal_search_shutdown(opts, state);
     return 0;
 }
 
@@ -3298,6 +3309,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
             LOG_WARN("WARNING: P25 band plan export to %s wrote nothing\n", opts->p25_bandplan_export_file);
         }
     }
+    dsd_engine_signal_search_shutdown(opts, state);
     dsd_engine_trunk_scan_shutdown(opts, state);
     dsd_engine_channel_scan_leave(opts, state);
     autosave_user_config(opts, state);

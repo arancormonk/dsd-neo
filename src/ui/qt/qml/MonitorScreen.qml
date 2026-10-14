@@ -785,6 +785,21 @@ Item {
                     }
                 }
 
+                Text {
+                    width: Math.min(implicitWidth, parent.width)
+                    visible: text.length > 0
+                    text: {
+                        if (typeof knownFrequencies === "undefined")
+                            return "";
+                        var revision = knownFrequencies.revision;
+                        return knownFrequencies.tunedNames(metrics.centerFreqHz, metrics.channelBandwidthHz).join(" / ");
+                    }
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(12)
+                    color: Theme.textSecondary
+                    elide: Text.ElideRight
+                }
+
                 Row {
                     spacing: 5
 

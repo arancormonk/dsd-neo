@@ -1848,6 +1848,15 @@ class Setup : public QObject {
         }
     }
 
+    /** Publish the `signalSearch` model Main.qml reads, so a case can load Main over a search the decoder already
+     * owns, as a recreated Activity does. Null withdraws it: the name then reads as undefined again, which is how
+     * Main and every other case see a fixture without the model. */
+    Q_INVOKABLE void
+    setSignalSearchModel(QObject* model) {
+        m_engine->rootContext()->setContextProperty(QStringLiteral("signalSearch"),
+                                                    model != nullptr ? QVariant::fromValue(model) : QVariant());
+    }
+
     // Qt.platform.os is read-only. Load the production shell with only that
     // platform reading substituted so desktop tests exercise the Android gate.
     // Reject source drift instead of silently changing unrelated platform checks.
@@ -2347,6 +2356,8 @@ class Setup : public QObject {
         metrics[QStringLiteral("snrDb")] = 0.0;
         metrics[QStringLiteral("cfoHz")] = 0.0;
         metrics[QStringLiteral("airspy")] = QVariantMap();
+        // The receiver the session runs on, as the Qt start path names it; none at rest.
+        metrics[QStringLiteral("radioSource")] = QVariantMap();
         metrics[QStringLiteral("tunerGainText")] = QStringLiteral("auto");
         // WP-F3 decode quality: validity is independent of radioInput.
         metrics[QStringLiteral("qualityValid")] = false;

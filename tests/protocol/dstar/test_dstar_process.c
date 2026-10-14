@@ -57,11 +57,17 @@ static float captured_soft_symbols[DSD_DSTAR_HEADER_CODED_BITS];
 /* The stream position whose read adopts a retune its capture recorded, where the carrier boundary moves the carrier
    count (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int boundary_at = -1;
+/* The stream position whose read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the
+   interruption there and stands erasures in for that symbol and every one after it; -1 for none. */
+static int interrupt_at = -1;
 
 static void
 note_read(dsd_state* state) {
     if (stream_pos == boundary_at && state != NULL) {
         state->carrier_seq++;
+    }
+    if (stream_pos == interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
     }
 }
 
@@ -85,6 +91,7 @@ reset_counters(void) {
     watchdog_current_calls = 0;
     header_decode_soft_calls = 0;
     boundary_at = -1;
+    interrupt_at = -1;
     DSD_MEMSET(captured_slow_data, 0, sizeof(captured_slow_data));
     DSD_MEMSET(captured_ambe_frames, 0, sizeof(captured_ambe_frames));
     DSD_MEMSET(captured_soft_symbols, 0, sizeof(captured_soft_symbols));
@@ -440,6 +447,97 @@ test_voice_superframe_split_by_a_carrier_boundary_is_dropped(void) {
     }
 }
 
+/* A Signal search left the superframe (its visit ended, or a command came) or a live read gave up on a stalled input:
+   getSymbol() stands 0 in for every symbol from there, and against thresholds that do not centre on 0 those read as
+   confident bits. Nothing from the voice frame read across or after the cut reaches the vocoder or the speaker, and the
+   slow data, which decodes only after the last voice frame, is dropped with it, as on a carrier boundary. */
+static void
+test_voice_superframe_cut_by_an_input_interruption_is_dropped(void) {
+    static const int cuts[4] = {
+        0,                                                             /* the first voice symbol */
+        (10 * DSTAR_FRAME_DIBITS) + 30,                                /* inside the eleventh voice frame */
+        (19 * DSTAR_FRAME_DIBITS) + DSTAR_VOICE_DIBITS_PER_FRAME + 10, /* inside the last slow data */
+        (20 * DSTAR_FRAME_DIBITS) + 71,                                /* the last voice symbol */
+    };
+    static const int voice_frames_before[4] = {0, 10, 20, 20};
+    for (int c = 0; c < 4; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        interrupt_at = cuts[c];
+
+        (void)processDSTAR(&opts, &state);
+
+        assert(state.input_interrupted == 1);
+        assert(state.carrier_seq == 0U);
+        assert(slow_data_calls == 0);
+        assert(mbe_frame_calls == voice_frames_before[c]);
+        assert(voice_play_calls == voice_frames_before[c]);
+        assert(soft_symbol_calls == (voice_frames_before[c] + 1) * DSTAR_VOICE_DIBITS_PER_FRAME);
+    }
+}
+
+/* The header's CRC-16 is checked after a soft Viterbi decode that reads the stood-in zeros as confident symbols. A
+   header an interruption cut decodes nothing: no header, no proof of the transmission, no capture boundary, and the
+   superframe behind it, which would read only erasures, is not read. */
+static void
+test_header_cut_by_an_input_interruption_decodes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+    reset_counters();
+    capture_close_calls = 0;
+    header_decode_soft_result = 1;
+    state.synctype = DSD_SYNC_DSTAR_HD_POS;
+    interrupt_at = 400;
+
+    assert(processDSTAR_HD(&opts, &state) == 0);
+
+    assert(header_decode_soft_calls == 0);
+    assert(capture_close_calls == 0);
+    assert(state.dstar_confirmed == 0);
+    assert(state.dstar_confirm_weak_streak == 0);
+    assert(soft_symbol_calls == DSD_DSTAR_HEADER_CODED_BITS);
+    assert(mbe_frame_calls == 0);
+    assert(voice_play_calls == 0);
+    assert(slow_data_calls == 0);
+}
+
+/* A carrier boundary inside the header (issue #575) drops it the same way: the rest of it is another carrier's. */
+static void
+test_header_split_by_a_carrier_boundary_decodes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+    reset_counters();
+    capture_close_calls = 0;
+    header_decode_soft_result = 1;
+    state.synctype = DSD_SYNC_DSTAR_HD_POS;
+    interrupt_at = -1;
+    boundary_at = 400;
+
+    assert(processDSTAR_HD(&opts, &state) == 0);
+
+    assert(state.carrier_seq == 1U);
+    assert(state.input_interrupted == 0);
+    assert(header_decode_soft_calls == 0);
+    assert(capture_close_calls == 0);
+    assert(state.dstar_confirmed == 0);
+    assert(mbe_frame_calls == 0);
+    assert(voice_play_calls == 0);
+    assert(slow_data_calls == 0);
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
@@ -450,6 +548,9 @@ main(void) {
     test_passing_header_confirms_the_voice_frame_behind_it();
     test_failed_header_leaves_the_transmission_pending();
     test_voice_superframe_split_by_a_carrier_boundary_is_dropped();
+    test_voice_superframe_cut_by_an_input_interruption_is_dropped();
+    test_header_cut_by_an_input_interruption_decodes_nothing();
+    test_header_split_by_a_carrier_boundary_decodes_nothing();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

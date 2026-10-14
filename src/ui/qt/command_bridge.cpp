@@ -11,6 +11,8 @@
 #include <QVariant>
 #include <QtGlobal>
 #include <cmath>
+#include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <stddef.h>
 #include <utility>
 #include "command_bridge.h"

@@ -44,9 +44,15 @@ static dmr_confidence_result g_confidence_result;
 /* The live read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at;
+/* The live read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there
+   and stands erasures in for every symbol after it; -1 for none. */
+static int g_interrupt_at;
+static int g_confidence_calls;
 
 static void
 reset_fixture(void) {
+    g_interrupt_at = -1;
+    g_confidence_calls = 0;
     g_hamming_ok = 1;
     g_golay_ok = 1;
     g_decoded_slot = 1;
@@ -107,6 +113,9 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
     if (g_boundary_at >= 0 && g_live_dibit_index == g_boundary_at && state != NULL) {
         state->carrier_seq++;
+    }
+    if (g_live_dibit_index == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
     }
     int index = g_live_dibit_index;
     if (index >= (int)(sizeof(g_live_dibits) / sizeof(g_live_dibits[0]))) {
@@ -185,6 +194,7 @@ dmr_confidence_result
 dmr_confidence_note_data_burst(dsd_state* state, unsigned int color_code) {
     (void)state;
     (void)color_code;
+    g_confidence_calls++;
     return g_confidence_result;
 }
 
@@ -421,6 +431,50 @@ test_live_half_split_by_a_carrier_boundary_is_dropped(void) {
     assert(g_skip_calls == 66);
 }
 
+/* A Signal search that leaves the burst (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts its live half: from the cut every symbol is an erasure getSymbol() stood in. The slot type decodes as
+   soon as its five live dibits are read, so one the cut reached would set the colour code and feed the confidence that
+   reports DMR to the search; a cut burst does neither, dispatches nothing, and is no FEC error. A cut in the second
+   half leaves the slot type, read whole before it, as it was. */
+static void
+test_live_half_cut_by_an_input_interruption_is_dropped(void) {
+    static const int cuts[3] = {0, 4, 20};
+    static const int confidence_notes[3] = {0, 0, 1};
+    for (int c = 0; c < 3; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        static int payload[90];
+        static dsd_dibit_soft_t reliab[90];
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        prepare_state(&state, payload, reliab);
+        reset_fixture();
+        state.dmr_stereo = 0;
+        state.color_code = 9;
+        state.dmrburstL = 13;
+        state.dmrburstR = 13;
+        state.min = 0;
+        state.lmid = 10;
+        state.center = 20;
+        state.umid = 30;
+        state.max = 40;
+        prepare_live_symbols(173U, 3);
+        g_interrupt_at = cuts[c];
+
+        dmr_data_sync(&opts, &state);
+
+        assert(state.input_interrupted == 1);
+        assert(state.carrier_seq == 0U);
+        assert(g_live_dibit_index == 54);
+        assert(g_confidence_calls == confidence_notes[c]);
+        assert(state.color_code == (confidence_notes[c] != 0 ? 5 : 9));
+        assert(g_handler_calls == 0);
+        assert(g_sm_calls == 0);
+        assert(g_cach_calls == 0);
+        assert(g_reset_calls == 1);
+        assert(g_skip_calls == 66);
+    }
+}
+
 static uint8_t
 run_live_reliability(uint8_t reliability) {
     static dsd_opts opts;
@@ -557,6 +611,7 @@ main(void) {
     test_golay_failure_resets_and_skips_live_tail();
     test_live_second_half_reliability_and_debug_output();
     test_live_half_split_by_a_carrier_boundary_is_dropped();
+    test_live_half_cut_by_an_input_interruption_is_dropped();
     test_live_reliability_is_forwarded_unscaled();
     test_direct_mode_sync_overrides_cach_slot();
     test_confidence_pending_and_reject_gate_dispatch();

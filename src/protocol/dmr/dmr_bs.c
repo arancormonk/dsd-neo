@@ -786,7 +786,8 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
 /* The carrier boundary moved state->carrier_seq while a burst was read (issue #575): the burst straddles two carriers,
    and what it carries from the carrier left (the first AMBE frames, the EMB colour code, a CACH fragment that may
    complete a short LC, the embedded LC the sixth burst assembles) would decode after the boundary ended that carrier's
-   calls. Nothing in it decodes; what earlier bursts gathered (data blocks, CACH fragments) goes, as on a sync loss. */
+   calls. Or an input interruption cut the burst, and the rest of it is erasures the reader stood in. Nothing in it
+   decodes; what earlier bursts gathered (data blocks, CACH fragments) goes, as on a sync loss. */
 static void
 drop_dmr_bs_carrier_left(dsd_opts* opts, dsd_state* state) {
     dmr_reset_blocks(opts, state);
@@ -814,9 +815,9 @@ process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     build_dmr_bs_emb_pdu(ctx);
     read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 90, 18, 18, NULL);
     read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr3, 108, 36, 0, NULL);
-    if (state->carrier_seq != carrier_seq) {
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         drop_dmr_bs_carrier_left(opts, state);
-        /* A carrier left is not a CACH/EMB decode failure. */
+        /* A carrier left, or a cut burst, is not a CACH/EMB decode failure. */
         ctx->tact_okay = 1;
         ctx->emb_ok = 1;
         return DMR_BS_ACTION_END;
@@ -908,8 +909,9 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     const uint32_t carrier_seq = state->carrier_seq;
     read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr2, 90, 18, 18, NULL);
     read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr3, 108, 36, 0, NULL);
-    if (state->carrier_seq != carrier_seq) {
-        /* The burst's second half came after the carrier boundary (issue #575): the burst is dropped, as in the loop. */
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        /* The burst's second half came after the carrier boundary (issue #575), or an input interruption cut it: the
+           burst is dropped, as in the loop. */
         drop_dmr_bs_carrier_left(opts, state);
         dmr_confidence_reset(state);
         return;

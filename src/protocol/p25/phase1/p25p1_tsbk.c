@@ -1056,6 +1056,12 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         DSD_MEMSET(PDU, 0, sizeof(PDU));
 
         int err = tsbk_decode_block(opts, state, &skipdibit, &ctx);
+        /* An input interruption cut the block (a Signal search left the frame): the rest of it is erasures the reader
+           stood in, which the list decoder may still fit to a CRC by chance. Neither it nor a block after it counts or
+           dispatches, as on a sync loss. */
+        if (state->input_interrupted) {
+            break;
+        }
         tsbk_update_fec_counters(state, err);
 
         int MFID = ctx.tsbk_byte[1];

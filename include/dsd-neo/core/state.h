@@ -1633,7 +1633,10 @@ struct dsd_state {
 
     /* Input switches on the decoder thread (issue #634).
        input_interrupted: a frame-sync hunt read gave way to a queued command once its input had been silent for a
-       stream pause; getFrameSync() returns at once and the engine loop applies the command.
+       stream pause; getFrameSync() returns at once and the engine loop applies the command. A Signal search also sets
+       it inside a frame, when it leaves the frame or a live read gives up on a stalled input: getSymbol() then stands
+       erasures in for every symbol until the engine loop consumes it, and the frame decoders drop the frame
+       (dsd_state_frame_read_lost()).
        input_boundary: the stream the decoder read was replaced (a switch, a rollback that restarted it, a loss, a
        fallback); the engine ends the reception (noCarrier() and an explicit end of every call) before it decodes the
        new stream.
@@ -1643,7 +1646,8 @@ struct dsd_state {
     int input_boundary;
     /* The carrier boundary's count (issue #575): dsd_engine_carrier_boundary() bumps it whenever the receiver leaves a
        carrier. A decoder that buffers several bursts or frames before it decodes them notes it when collection starts,
-       and drops what it buffered, as on a sync loss, when it moved meanwhile: those bursts belong to the carrier left. */
+       and drops what it buffered, as on a sync loss, when it moved meanwhile: those bursts belong to the carrier left.
+       It drops them as well when an input interruption cut them (dsd_state_frame_read_lost()). */
     uint32_t carrier_seq;
     /* The frame processFrame() is dispatching (issue #661): its synctype, which a decoder borrowing another protocol's
        vocoder (YSF, scrambled dPMR) leaves alone while it changes synctype, and carrier_seq when dispatch began.
@@ -2021,6 +2025,16 @@ struct dsd_state {
 // cppcheck-suppress-end uninitMemberVarNoCtor
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
+
+/* Whether a frame decoder that noted @p carrier_seq when it began reading must drop what it read, as on a sync loss:
+   the carrier boundary moved the carrier count meanwhile (issue #575), or an input interruption cut the frame
+   (input_interrupted: a Signal search left it, or a live read gave up on a stalled input), after which getSymbol()
+   stood erasures in for every symbol. Either way part of the frame is not the transmission's, so nothing of it may
+   decode, play or publish. */
+static inline int
+dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
+    return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
+}
 
 static inline int
 dsd_state_trunk_chan_valid(uint32_t channel) {

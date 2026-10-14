@@ -21,18 +21,27 @@
 #ifndef DSD_NEO_SRC_IO_RADIO_RTL_FFT_CACHE_H_
 #define DSD_NEO_SRC_IO_RADIO_RTL_FFT_CACHE_H_
 
+#include <cstddef>
 #include <dsd-neo/dsp/firdes.h>
 #include <pffft.h>
 
 namespace dsd_io {
 
 /**
- * @brief A pffft complex setup, rebuilt only when the transform size changes.
+ * @brief A pffft complex setup and its work buffer, rebuilt only when the
+ * transform size changes.
  *
- * Never frees the setup it holds. The instances are file-scope and outlive
- * every caller, and destroying one at static-destruction time could race a
- * demod thread that has not been joined yet — the same reason the
- * function-local statics this replaces were also never torn down.
+ * pffft takes a transform's scratch (8 bytes per point) from the caller's
+ * stack unless it is given a work buffer, and a search transform of
+ * DSD_SEARCH_MAX_FFT points would need 512 KiB of it: a whole macOS secondary
+ * thread stack, half a Windows one. The work buffer lives on the heap beside
+ * the setup instead.
+ *
+ * Has no destructor. The spectrum caches are file-scope and outlive every
+ * caller, and destroying one at static-destruction time could race a demod
+ * thread that has not been joined yet — the same reason the function-local
+ * statics this replaces were also never torn down. An owner that outlives its
+ * worker frees both buffers with release().
  *
  * The transform is a method rather than a setup handed back to the caller, so
  * this header is the one place in the project that names pffft — which is what
@@ -48,6 +57,18 @@ class FftSetupCache {
     FftSetupCache(const FftSetupCache&) = delete;
     FftSetupCache& operator=(const FftSetupCache&) = delete;
 
+    /** Release only after the owning worker has stopped using this cache. */
+    void
+    release() {
+        if (m_setup) {
+            pffft_destroy_setup(m_setup);
+        }
+        pffft_aligned_free(m_work);
+        m_setup = nullptr;
+        m_work = nullptr;
+        m_n = 0;
+    }
+
     /**
      * @brief Forward complex transform of @p n points, in place.
      *
@@ -62,30 +83,38 @@ class FftSetupCache {
         if (setup == nullptr || inout == nullptr) {
             return false;
         }
-        pffft_transform_ordered(setup, inout, inout, nullptr, PFFFT_FORWARD);
+        pffft_transform_ordered(setup, inout, inout, m_work, PFFFT_FORWARD);
         return true;
     }
 
   private:
-    /** @brief Setup for @p n points, or nullptr when pffft rejects the size. */
+    /** @brief Setup for @p n points with its work buffer, or nullptr when pffft
+     * rejects the size or either allocation fails. */
     PFFFT_Setup*
     get(int n) {
         if (m_setup != nullptr && m_n == n) {
             return m_setup;
         }
-        if (m_setup != nullptr) {
-            pffft_destroy_setup(m_setup);
-            m_setup = nullptr;
-            m_n = 0;
-        }
+        release();
         m_setup = pffft_new_setup(n, PFFFT_COMPLEX);
-        /* Left at 0 on failure so the next call retries rather than handing
-         * back a null setup it thinks is current. */
-        m_n = (m_setup != nullptr) ? n : 0;
+        if (m_setup == nullptr) {
+            return nullptr;
+        }
+        /* A complex transform's scratch is 2*n floats, aligned for pffft's SIMD. */
+        m_work = static_cast<float*>(pffft_aligned_malloc(sizeof(float) * 2 * static_cast<size_t>(n)));
+        if (m_work == nullptr) {
+            /* Never transform without it: pffft would fall back to the stack. */
+            release();
+            return nullptr;
+        }
+        /* Set only once both exist, so a failure leaves 0 and the next call
+         * retries rather than handing back a setup it thinks is current. */
+        m_n = n;
         return m_setup;
     }
 
     PFFFT_Setup* m_setup = nullptr;
+    float* m_work = nullptr;
     int m_n = 0;
 };
 

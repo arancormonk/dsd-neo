@@ -168,6 +168,13 @@ int rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz);
  */
 int rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
 
+/** Nonblocking tagged tuning on the active radio; 0 queued, 1 deferred, negative refused.
+ * A ticket uses the existing completion ledger and never replaces the callback registration.
+ * Poll returns 1 with a terminal result, 0 while pending, -1 after source shutdown.
+ * Call and poll on the decoder thread; preserve the capture settling gates. */
+int rtl_stream_tune_async(uint32_t frequency, uint64_t owner, uint32_t* ticket);
+int rtl_stream_tune_poll(uint32_t ticket, int* result);
+
 /**
  * @brief Register the process-wide tagged tune completion callback.
  *

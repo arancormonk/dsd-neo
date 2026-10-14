@@ -46,6 +46,47 @@ Generated (do not edit/commit):
     frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
     repeats the step, which then finds nothing left to do
   - Protocol/frame dispatch glue
+  - Signal search (issue #537): `signal_search.c` / `engine/signal_search.h` coordinate
+    capture measurement, tagged asynchronous tuning, identification and listening on
+    the decoder thread. Its private owner shares the stable trunk-scan extension slot
+    through `scan_owner.h`; extension IDs are unchanged. Search excludes other tuner
+    owners, suppresses visited frequencies per pass and retains native session avoids.
+    Its decoder baseline is the CONFIG-profile Auto preset, which leaves the DMR dispatch
+    flags as the session had them; when a mono preset (`-f1`) has turned both off, the
+    baseline takes dual-slot dispatch (`dmr_stereo`), since with both off no direct-mode
+    voice frame is read, and Stop restores the session's own flags (`ENGINE_SIGNAL_SEARCH`).
+    Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
+    loops; the in-frame yield check also services live strength, since a continuous
+    digital transmission keeps the decoder in its synced-frame loop. A stalled input
+    cannot hold a visit: while a search owns the tuner (`rtl_signal_search_owner()`; the
+    orchestrator's read carries no decoder state), a live radio read that finds no
+    samples for 100 ms gives up, and every RTL symbol reader (FSK discriminator, monitor,
+    CQPSK symbol rate) records that as `dsd_state::input_interrupted` instead of ending
+    the session. `getSymbol()` checks a recorded interruption before its every-64-symbol
+    yield throttle, so the rest of the frame reads as erasures without waiting again
+    until the engine loop consumes it. Whether the yield (a deadline, Skip, Pause or any
+    queued command) or a stall cut it, the frame decoders drop that frame as one a
+    carrier boundary splits (`dsd_state_frame_read_lost()`; see the carrier count's
+    guards under `dsd_engine_carrier_boundary()` in Protocols): nothing of it plays,
+    publishes, captures or reports evidence. An analog visit's
+    500 ms quiet timing starts only at the monitor's first verdict on the landed channel
+    (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s. `DSD_SEARCH_ACTION_UNAVOID`
+    lifts a session avoid by frequency. Published status carries `owned` (a coordinator
+    holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
+    frequency are restored on exit: a search Stop tunes back, running the carrier boundary
+    and acquisition reset as each visit's tune does, and its retune carries the session's
+    receive family (`rtl_stream_prepare_retune_analog_profile_for_target()`), since a
+    retune landing first retires the older live family request the restore also makes. The engine loop runs no `noCarrier()`
+    while a search is paused or failed, so the first tick that finds it PAUSED or ERROR runs
+    them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
+    a call heard on the channel ends at the Pause, the input stall or any other failure rather
+    than at the next tune or the Stop. It also publishes the opts/state snapshots, since frame
+    sync, which normally publishes them, does not run while the search is paused or failed. A decoder session that ends
+    under the search (the Qt Stop) restores the options in
+    `dsd_engine_signal_search_shutdown()` before the engine's autosave, so the saved
+    configuration never keeps a visited frequency. Protocol details enter only through
+    CRC/FEC confirmation or validated activity hooks, never a generic sync or dispatcher
+    verdict. See [Signal search](signal-search.md).
   - Trunk retune policy and bookkeeping: `src/engine/trunk_tuning.c` implements the tune-to-frequency,
     tune-to-control-channel and return-to-control-channel requests behind
     `include/dsd-neo/engine/trunk_tuning.h`, and `src/engine/trunk_tuning_hooks_install.c` installs them into the
@@ -1219,6 +1260,15 @@ suite runs under this compiler.
 - Path: `src/runtime`, `include/dsd-neo/runtime`
 - Target: `dsd-neo_runtime`
 - Responsibilities:
+  - Frontend-neutral Signal search records, rational range validation, the aggregate
+    configuration check engine and frontends share (`dsd_signal_search_validate_config()`)
+    and conservative DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
+    carries validated protocol evidence and the decoder-thread active query, with no-op
+    defaults. P25 reports evidence from a control block whose CRC passes
+    (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves, never
+    from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on
+    a large share of random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
+    It does not own radio I/O, persistence or Qt state.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
@@ -1584,6 +1634,32 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - Path: `src/app_control`, `include/dsd-neo/app_control`
 - Target: `dsd-neo_app_control`
 - Responsibilities:
+  - Signal search commands 712/713 are frontend-only and not public TCP API commands.
+    `actions/actions_signal_search.c` runs them on the decoder thread, enriches copied
+    hits using confirmed call/access-code and received-tone views, and flushes on stop.
+    Decoded-field enrichment runs only on confirmation callbacks; periodic status
+    refreshes cannot promote fields from a subsequent unconfirmed sync. The callback reads
+    the call and access code from state as it runs, so a protocol reports a confirmation
+    only after committing the content that passed the check: M17's LSF, D-STAR's
+    slow-data header and YSF's DCH report after publishing their callsigns (and M17's
+    CAN), and the dPMR and NXDN confirm modules report a frame's confirmation from
+    `*_confirm_end_frame()`, after the frame has published the identity, colour code or
+    RAN that confirmation unlocked. One valid frame is then enough for its details to
+    reach history.
+    `signal_search_store.cpp` owns the mutex-protected snapshots and a native worker for
+    the versioned private journal, bounded upserts and atomic compaction/avoids. History
+    and permanent avoids are separate files with separate write state: one whose write
+    failed stays owed, with its error, until its own write succeeds, so saving the other
+    neither retires it nor clears the error. Each later worker pass, flush and close
+    retries it; a history retry compacts every retained record, so nothing is appended
+    twice. The worker survives QML teardown; it never reads live decoder state. History
+    and avoid revisions let frontends copy history only when it changed. The control
+    actions mirror the session's own avoid list (cleared when it stops). A rejected start
+    with no coordinator left publishes an unowned error, and
+    `dsd_app_frontend_runtime_stop()` retires any status left behind
+    (`dsd_app_signal_search_session_ended()`). A rejected restart of a paused coordinator
+    keeps that coordinator's phase, session and ownership; only the published message
+    changes.
   - Frontend metrics and raw telemetry snapshots used by the terminal renderer
   - Command queue dispatch and menu service helpers. Decoder-owner runtime start/stop opens/closes admission under
     the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
@@ -2330,8 +2406,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issues #522 CTCSS, #523 DCS), public entry points in `include/dsd-neo/dsp/analog_rx.h`:
   `dsd_analog_rx_tap()`, `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()`,
-  `dsd_analog_rx_carrier_open_now()`, `dsd_analog_rx_block_straddles_boundary()`, the monitor playback
-  bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()` and the live input read bracket
+  `dsd_analog_rx_carrier_open_now()`, `dsd_analog_rx_carrier_observed_now()` (the tap has judged the channel on air,
+  so a closed carrier is a verdict rather than no read yet), `dsd_analog_rx_block_straddles_boundary()`, the monitor
+  playback bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()` and the live input read bracket
   `dsd_analog_rx_input_wait_begin()` / `dsd_analog_rx_input_wait_end()`. The same header holds the CTCSS timing
   contract in sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and
   per-event ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800).
@@ -3085,6 +3162,35 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 ## IO
 
 - Path: `src/io`, `include/dsd-neo/io`
+- Signal discovery (`radio/signal_measure.cpp`, `io/signal_measure.h`) uses an independent
+  PFFFT/Hann cache at the capture-rate I/Q boundary. Linear channel power and neighboring
+  noise are energy-normalized over two sample-count windows (local noise: the mean of the
+  sideband blocks within 6 dB of the third lowest of eight). Session/request IDs and
+  applied generation accompany every report; gain, rate, drops, tuning and input changes
+  invalidate partial and ready reports. Leakage rejection runs once per request on both
+  windows' power: transmitters are located in the spectrum (not just the requested
+  channels), each from the anchor its channels' windows climb to, centred where its
+  segment best overlaps its own mirror image, with segments cut and merged at valleys and
+  weak centres by comparing one source with two (refined on the FFT bins of the whole body
+  with aggregated bins); transmitters beside each are found by a valley rise above every
+  skirt ridge passed, 10 dB above the mirrored far side (rising from a dip, up to the first
+  other transmitter) or, within its width, an unmirrored rise beyond a 20 dB valley, and
+  located once (as a source of their own where their segment allows). A channel keeps a
+  raw detection only for a transmitter centred within its half-open interval on the
+  range's rational grid that holds its own power in both windows (within 10 dB).
+  `docs/signal-search.md` lists the measured limits. The tap's `feed_mutex`
+  serialises the detector (feeding and analysis, request, cancel); `tap_mutex` guards only
+  the published capture, readiness and report, so polls never wait for analysis; locks
+  are taken feed first. The tap describes only the stream feeding it: once the demod
+  thread has joined, the stream's soft stop resets it (`rtl_signal_measure_reset()`), so
+  no capture, latest-sample time or request outlives the stream. A search started on the
+  next stream before its first block then waits for that block under the startup
+  deadline instead of reading the stopped stream's age as a stall. Search bypass
+  preserves capture/control health while skipping demodulation, protocol/audio work and
+  display FFTs. Decoder-dependent
+  gain/PPM supervision is suspended during discovery. `rtl_stream_tune_async()` and
+  `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
+  the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
 - Targets:
   - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers; no SDR dependency
   - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides
@@ -4013,7 +4119,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   Nothing after the drop confirms or publishes for that frame: YSF does not set its FICH verdict from the carrier left's
   FICH, and `processFrame()` reports any frame whose handler saw the count move as `DSD_FRAME_VERDICT_UNPRODUCTIVE`,
   whatever the handler made of it, so the SPS hunt is not told a dropped frame proved anything. A unit whose own symbols
-  straddle the move is mixed, and its FEC or CRC decides, as for any noise. Guarded:
+  straddle the move is mixed, and its FEC or CRC decides, as for any noise, unless the unit is a whole frame guarded
+  below. Guarded:
   - P25 Phase 2 `processP2()`: the four-burst buffer (`p2_dibit_buffer()`); a boundary between buffers drops the slots'
     ESS fragments, voice streams and staged rekey (`p25p2_frame_forget_carrier()`).
   - P25 Phase 1: `processLDU1()` (link control, read by the seventh voice frame), `processLDU2()` (encryption sync),
@@ -4027,11 +4134,36 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     frame), X2-TDMA `processX2TDMAvoice()` (the six-slot signalling published as the call's encryption), YSF
     `processYSF()` (the V/D type 1 voice and data channels, the full-rate data channels), and the EDACS control frame
     `edacs()` (two of three voted copies can be read before the move).
+  - Frames that are one unit, interleaved or convolutionally coded over their whole length and decoded once read
+    whole: a boundary late in one leaves it mostly the carrier left's, which the FEC corrects into that carrier's
+    content after the boundary ended its call. The D-STAR header (`processDSTAR_HD()`; the superframe behind it is not
+    read), the YSF FICH (no evidence, and no call observed on the fallback type; `processYSF()` drops the frame), and
+    every M17 frame read over the air: the LSF (`processM17LSF()`), the stream frame with its LICH chunk
+    (`processM17STR()`: no frame number, chunk, voice, evidence or terminator), the packet frame (`processM17PKT()`:
+    no chunk, and no packet ended, decoded or confirmed) and the BERT frame (`processM17BRT()`).
 
   Not guarded, each because no unit is whole before its frame's last read: the P25 Phase 1 TSBK (each block decodes as
-  read), M17 (each frame is interleaved over its whole length and decodes as read; the LSF and a packet complete in the
-  frame that straddles), ProVoice (the two IMBE frames of a pair are interleaved together), the X2-TDMA data burst (read
-  from the frame sync's buffer), the D-STAR header (decoded as soon as read) and EDACS analog voice.
+  read), ProVoice (the two IMBE frames of a pair are interleaved together), the X2-TDMA data burst (read from the frame
+  sync's buffer) and EDACS analog voice.
+
+  An input interruption drops the same units: each guard is `dsd_state_frame_read_lost()`, true when the count moved or
+  `dsd_state::input_interrupted` is set. A Signal search sets the flag inside a frame when it leaves it (a deadline,
+  Skip, Pause or any queued command) or a live read gives up on a stalled input, and `getSymbol()` then stands erasures
+  in for every symbol until the engine loop consumes it, so the flag stays set wherever a guard sits, also for a frame a
+  decoder starts after the cut. The stood-in zeros slice to one constant dibit, which the BCH, Golay, Hamming, QR and
+  Reed-Solomon codes can take for their all-zero codeword, so units the count leaves unguarded check the flag too,
+  keeping the boundary's behaviour as it was: the P25 Phase 1 NID (the dispatcher decodes nothing and withholds the
+  verdict), each TSBK block, each IMBE frame (`process_IMBE()` hands nothing to the vocoder, and the LDUs raise no voice
+  activity on it), the ProVoice IMBE pairs, the DMR RC burst, and the DMR data burst's slot type and the MS EMB
+  (decoded as soon as read). Descrambled, stood-in M17 symbols can still clear every Golay block of a LICH and
+  Viterbi-decode to a stream frame number with its end flag set, which would end the call as a terminator does; the
+  M17 frame guards above drop such a frame. A P25
+  Phase 2 window an interruption cuts is dropped without `p25p2_frame_forget_carrier()`: the receiver is still on the
+  carrier, so the slots keep what they gathered and the playout keeps its frames. Behind the guards, `processFrame()`
+  withholds a cut frame's SPS-hunt verdict (`DSD_FRAME_VERDICT_WITHHELD`: the cut was the engine's), the MBE capture
+  refuses its frames, `dsd_audio_play_decoded_pcm16()` (M17's Codec2 voice) plays nothing, the search ignores evidence
+  noted while the flag stands, and `dsd_two_level_symbol_reliability()` gives the stood-in symbols no confidence.
+  Nothing sets the flag inside a frame outside a search, so none of this changes decoding there or symbol-file replay.
 
   It runs at the lowest-level primitives where the carrier changes, so a new command that reaches one is covered:
   - An accepted tune the user asked for: `svc_rtl_set_freq()`/`svc_rtl_set_freq_locked()` (`svc_rtl_tune()`) run it
@@ -4082,7 +4214,7 @@ Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEP
 `ENGINE_INPUT_BOUNDARY`, `UI_MENU_SERVICES`; the decoders' carrier-count guards: `P25_P2_RELIABILITY`, `P25_P1_LDU1_HELPERS`,
 `P25_P1_LDU2_HELPERS`, `P25_P1_HDU_HELPERS`, `P25_P1_TDULC`, `P25_P1_MDPU_HELPERS`, `DMR_BS_SYNC_TIMES`,
 `DMR_DATA_SYNC`, `DMR_MS_DATA`, `NXDN_FRAME_ROUTING`, `DPMR_VOICE_BRIDGE`, `DSTAR_PROCESS`, `X2TDMA_VOICE_HELPERS`,
-`YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`, `ENGINE_PROTOCOL_DISPATCH` (a split frame's verdict).
+`YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`, `M17_FRAME_CUT`, `ENGINE_PROTOCOL_DISPATCH` (a split frame's verdict).
 
 Key public headers (selection):
 
@@ -4121,6 +4253,8 @@ Private per-protocol modules worth knowing about:
   `NXDN_Elements_Content_decode()` carries no CRC verdict of its own: the channel decoders in `nxdn_deperm.c` and
   `NXDN_SACCH_Full_decode()` hand it CRC-verified content only, so the gate lives in those callers, with
   `nxdn_confirm_is_confirmed()` as the frame-level check at the sites that publish a call or refresh a scan hold.
+  Evidence confirms at once, before the RAN and call it unlocks are published; a signal search hears a frame's
+  confirmation once, from `nxdn_confirm_end_frame()`, after they are (`NXDN_CONFIRM`, `NXDN_DEPERM_PRIMITIVES`).
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
   alternating symbol run. Frame handlers report `(own check || confirmed)`, `dispatch_m17.c` reports it on an EOT, and
   `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain.
@@ -4167,7 +4301,9 @@ Private per-protocol modules worth knowing about:
   blocks, so a passing half means the half decoded. What it replaced was `dpmr_ids_are_strong()`, which accepted a
   CCH whose two leading Hamming blocks merely reported correctable — 13 of 16 syndromes are, so it passed 44% of
   noise superframes. One half passing is one chance in 128 and has to repeat; both halves in one frame is one in
-  16384 and confirms outright. `processdPMRvoice()` returns how many halves passed, `dsd_dispatch_handle_dpmr()`
+  16384 and confirms outright. Evidence confirms before the frame publishes its identity, service and colour code; a
+  signal search hears the frame's confirmation from `dpmr_confirm_end_frame()`, after the publication (`DPMR_CONFIRM`,
+  `DPMR_VOICE_BRIDGE`). `processdPMRvoice()` returns how many halves passed, `dsd_dispatch_handle_dpmr()`
   maps that to `DSD_FRAME_VERDICT_PROFILE_PROVEN` (for two seconds after the last decode) or `UNPRODUCTIVE`, and the
   engine clears both through the exported `dpmr_confirm_reset()` in `<dsd-neo/protocol/dpmr/dpmr.h>`.
   `tests/protocol/dpmr/fixtures` holds the CCH reference vectors that prove the pipeline decodes correct dPMR, which
@@ -4191,6 +4327,77 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Build files: `src/third_party/CMakeLists.txt` and subdirectory `CMakeLists.txt` files
 
 ## UI
+
+- Qt Signal search uses `SignalSearchModel`, `SignalSearchScreen.qml` and
+  `SignalSearchRangeEditor.qml`, sharing Theme/Plex controls, source startup and the
+  save-found-system wizard. Native status is copied on a 250 ms timer; history and the
+  avoid lists only when their store revisions move. Back delegates to Main's session
+  policy; a search a coordinator owns (`status.owned`) is a navigation root so its controls
+  remain accessible after Activity recreation. Range edits apply on paused restart.
+  Home's `onSignalSearch` seeds the source fields only when it opens the screen, so a screen
+  reopened over an owned search never had them seeded: while an owned search runs, its
+  `sourceType`/`host`/`port` follow `MetricsModel::radioSource`, the receiver in the
+  decoder's options snapshot named as the Qt start path names it (`usb`, `airspy`, or
+  `rtltcp` with the server the engine parsed; empty for audio, SoapySDR and I/Q replay
+  input). Stop from the screen keeps it open, reattached or opened from Home, so a restart
+  runs on that receiver. Leaving the search abandons the start it asked for
+  (`abandonSignalSearchStart()` in Main): closing the screen, a Start it refuses
+  (`startRefused`) and Stop cancel the model's arm and drop a USB-access start the search
+  left pending (`pendingStart.signalSearch`), so a later grant cannot start a plain decoder
+  session behind Home; a start pending from Home keeps waiting, and when its grant lands
+  while the search screen is open the screen closes, so that session is not taken for a
+  search (`tst_main_session_tools.qml`). A refused `arm()` leaves
+  nothing armed (`tst_main_session_tools.qml`, `tst_signal_search.qml`,
+  `UI_QT_METRICS_MODEL`, `UI_QT_SIGNAL_SEARCH`).
+  The armed start goes in when the decoder's command admission takes it, not merely on
+  Running: Android's engine thread raises `g_running` a moment before its
+  `dsd_app_frontend_runtime_start()` opens admission, and a session winding down closes
+  admission before Running drops. A refused submission queues nothing, so the model keeps the
+  arm and submits it again on `DecoderHost::sessionInitialized()` (which follows the
+  admission edge, and can arrive while the host still reads Starting) and on each 250 ms
+  tick while Running; an accepted one ends the arm, so the search starts once. An arm
+  belongs to one session, the one up when it was made (a paused search's Resume) or else
+  the next to come up (a USB grant can hold that start while the host stays Idle), and
+  that session's Stopping, Failed or return to Idle ends it, so it never starts a search
+  in a later, ordinary session (`UI_QT_SIGNAL_SEARCH`). `arm()` keeps a paused search's
+  session ID (its hits keep numbering on) only when the current native status, not the
+  copy a tick old, shows that search paused and holding the tuner in a Running decoder
+  session; a start after a Stop is always a new session, so its hits never overwrite the
+  old session's history rows (`UI_QT_SIGNAL_SEARCH`).
+  Main binds the screen's `failure` to its own failure text, and the screen never assigns
+  it: an assignment would drop the binding, and a connection, USB-access or configuration
+  failure after Start or Resume would never reach the screen that covers Home's banner.
+  The screen's own `arm()` refusals live in `localFailure`, shown beside the host's failure
+  until the next attempt or Back (`tst_signal_search.qml`, `tst_main_session_tools.qml`).
+  `KnownFrequencyIndex` caches saved frequencies and referenced CSVs, rebuilding on model
+  or file changes; Signal search, Spectrum and Live Exploring look up labels without
+  reading files during rendering. Exact matches win, nearest matches use half the smaller
+  applicable channel width/spacing, and ties remain ambiguous. A channel-map row that names
+  no mode or bandwidth of its own takes the width/spacing of the saved system or target row
+  that references the map, so an NXDN48 system's plain `Channel,Frequency` map keeps its
+  6.25 kHz channels (`UI_QT_SIGNAL_SEARCH`). NXDN48, dPMR and D-STAR are the 6.25 kHz modes,
+  as the receiver's channel filter has them; decode flags compare exactly (`-fm` is dPMR,
+  `-fM` AM) and mode or type names without case. Only the width option of the channel's own
+  analog kind applies (`--am-bandwidth-hz` for AM, `--nfm-bandwidth-hz` for NFM, either as
+  `--name value` or `--name=value`), so an NFM system that also sets an AM width keeps its
+  NFM channels' width, and its mode-less map rows inherit that. A saved system's mode is its decode
+  flag, as the session builder and the rest of the app read it (`decode_flag_names_am()`); a
+  decoder chosen only through its extra arguments is not read, a documented limit, so such a
+  system is labeled as its decode flag's channel. A scan-list entry's mode is its protocol. The Monitor and Spectrum labels name the
+  tuned channel through `tunedNames()`, at the width the receiver filters
+  (`MetricsModel::channelBandwidthHz`, 12.5 kHz when the input publishes none). Saving uses an immutable
+  hit snapshot, including its original source settings and unresolved identity.
+  `SignalSearchModel::systemForHit()` shapes the captured receiver settings as saved-system
+  fields, each source only its own: an Airspy's native `airspy` map, or an RTL's `ppm`
+  text and explicit `biasTee` (0 or 1, never the follow-the-app -1). The detection's tuner
+  gain (`gain` dB, `gainAuto`) becomes the whole-dB `gainDb` a saved session starts with,
+  the `-i` spec's gain field, where 0 is the tuner's AGC: AGC stays 0, and a manual gain
+  rounds to the nearest whole dB from 1 to 49, so a manual 0–1.4 dB detection stays manual
+  at 1 dB instead of becoming AGC. An Airspy's `gainDb` is -1, its gains being in its map.
+  The start path has no tenth-dB or manual-0 gain; the tuner runs its nearest step.
+  `WizardScreen.openForFound()` copies them into the draft only for a detection; the
+  Spectrum's save passes none and keeps the app defaults its session ran on
+  (`tst_wizard_search_save.qml`, `UI_QT_SIGNAL_SEARCH`).
 
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`

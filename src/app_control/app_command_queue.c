@@ -46,6 +46,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -72,6 +73,7 @@
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -261,8 +263,9 @@ dsd_app_command_session_set_open(int open) {
 // Dispatch commands via per-domain registries
 static int
 ui_cmd_dispatch(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    const struct dsd_app_command_reg* regs[] = {dsd_app_actions_audio, dsd_app_actions_radio, dsd_app_actions_trunk,
-                                                dsd_app_actions_logging, NULL};
+    const struct dsd_app_command_reg* regs[] = {dsd_app_actions_audio,         dsd_app_actions_radio,
+                                                dsd_app_actions_trunk,         dsd_app_actions_logging,
+                                                dsd_app_actions_signal_search, NULL};
     for (int i = 0; regs[i] != NULL; ++i) {
         for (const struct dsd_app_command_reg* r = regs[i]; r && r->fn != NULL; ++r) {
             if (r->id == c->id) {
@@ -4253,6 +4256,8 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_DSP_OP, sizeof(dsd_app_dsp_payload)},
     {DSD_APP_CMD_CONFIG_APPLY, sizeof(dsdneoUserConfig)},
     {DSD_APP_CMD_CONFIG_METADATA_SET, sizeof(dsd_app_config_metadata_payload)},
+    {DSD_APP_CMD_SIGNAL_SEARCH_START, sizeof(dsd_signal_search_config)},
+    {DSD_APP_CMD_SIGNAL_SEARCH_CONTROL, sizeof(dsd_signal_search_control)},
     {DSD_APP_CMD_RR_APPLY_IMPORT, sizeof(dsd_app_rr_apply_payload)},
     {DSD_APP_CMD_RR_ACCOUNT_SET, sizeof(dsd_app_rr_account_payload)},
 };
@@ -7714,7 +7719,30 @@ command_touches_wav_outputs(const struct dsd_app_command* c) {
 }
 
 static int
+command_allowed_during_search(dsd_state* state, const struct dsd_app_command* c) {
+    if (dsd_engine_signal_search_active(state)) {
+        switch (c->id) {
+            case DSD_APP_CMD_SIGNAL_SEARCH_START:
+            case DSD_APP_CMD_SIGNAL_SEARCH_CONTROL:
+            case DSD_APP_CMD_QUIT:
+            case DSD_APP_CMD_TOGGLE_MUTE:
+            case DSD_APP_CMD_GAIN_SET:
+            case DSD_APP_CMD_GAIN_DELTA:
+            case DSD_APP_CMD_AGAIN_SET:
+            case DSD_APP_CMD_AGAIN_DELTA:
+            case DSD_APP_CMD_UI_MSG_CLEAR: break;
+            default: ui_set_toast(state, 4, "Stop Signal search before changing receiver settings"); return 0;
+        }
+    }
+    return 1;
+}
+
+static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!command_allowed_during_search(state, c)) {
+        return UI_CMD_APPLY_FAILED;
+    }
+
     /* What the P25 Phase 2 playout reads changes under the tick guard, which the watchdog's release holds from the
        verdict it takes before its return tune to the drain after it. A call's new verdict is taken before the guard is
        free again: what the playout queued for an active call plays under the verdict the command left, also when the

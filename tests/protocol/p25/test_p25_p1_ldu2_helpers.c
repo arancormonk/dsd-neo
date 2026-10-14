@@ -94,6 +94,9 @@ static int g_imbe_dispatched = 1;
 /* The IMBE frame whose read adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at_imbe = -1;
+/* The IMBE frame a Signal search's yield (or a stalled live read) cuts: getSymbol() records the interruption there and
+   stands erasures in for the rest, so process_IMBE() drops that frame and every one after it; -1 for none. */
+static int g_interrupt_at_imbe = -1;
 static uint32_t g_last_policy_id;
 static uint8_t g_last_policy_source;
 static dsd_tg_policy_upsert_mode g_last_policy_upsert_mode;
@@ -198,8 +201,11 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
     if (g_imbe_calls == g_boundary_at_imbe && state != NULL) {
         state->carrier_seq++;
     }
+    if (g_imbe_calls == g_interrupt_at_imbe && state != NULL) {
+        state->input_interrupted = 1;
+    }
     g_imbe_calls++;
-    return g_imbe_dispatched;
+    return (state != NULL && state->input_interrupted) ? 0 : g_imbe_dispatched;
 }
 
 void
@@ -378,6 +384,7 @@ reset_hook_counters(void) {
     g_imbe_calls = 0;
     g_imbe_dispatched = 1;
     g_boundary_at_imbe = -1;
+    g_interrupt_at_imbe = -1;
     g_last_policy_id = 0U;
     g_last_policy_source = 0U;
     g_last_policy_upsert_mode = 0;
@@ -997,6 +1004,45 @@ test_ldu2_split_by_a_carrier_boundary_publishes_no_encryption_sync(void) {
     return rc;
 }
 
+/* A Signal search that leaves the LDU2 (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. No voice frame read across or after the
+   cut plays, the first voice frame raises no voice activity unless it was read whole before the cut, and the
+   encryption sync is dropped, as for an LDU2 the carrier boundary splits. */
+static int
+test_ldu2_cut_by_an_input_interruption_plays_and_publishes_nothing_after_the_cut(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    static const int cuts[2] = {0, 7};
+    static const int frames_before[2] = {0, 7};
+    for (int c = 0; c < 2; c++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_hook_counters();
+        state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        state.payload_algid = 0x81;
+        state.payload_keyid = 0x1234;
+        state.payload_miP = 0x0102030405060708ULL;
+        g_interrupt_at_imbe = cuts[c];
+
+        processLDU2(&opts, &state);
+
+        rc |= expect_int("cut LDU2 is interrupted", state.input_interrupted, 1);
+        rc |= expect_int("cut LDU2 moves no carrier count", (int)state.carrier_seq, 0);
+        rc |= expect_int("cut LDU2 still reads the frame", g_imbe_calls, 9);
+        rc |= expect_int("cut LDU2 plays only the frames before the cut", g_audio_play_calls, frames_before[c]);
+        rc |= expect_int("cut LDU2 raises activity only on a whole first frame", g_active_calls, c == 0 ? 0 : 1);
+        rc |= expect_int("cut LDU2 checks no encryption sync",
+                         (int)(state.p25_p1_voice_fec_ok + state.p25_p1_voice_fec_err), 0);
+        rc |= expect_int("cut LDU2 publishes no algorithm", state.payload_algid, 0x81);
+        rc |= expect_int("cut LDU2 publishes no key", state.payload_keyid, 0x1234);
+        rc |= expect_int("cut LDU2 advances no MI", state.payload_miP == 0x0102030405060708ULL, 1);
+    }
+    g_interrupt_at_imbe = -1;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1017,6 +1063,7 @@ main(void) {
     rc |= test_ldu2_lsd_alias_begin_clamps_length();
     rc |= test_ldu2_encrypted_trunk_lockout_state();
     rc |= test_ldu2_split_by_a_carrier_boundary_publishes_no_encryption_sync();
+    rc |= test_ldu2_cut_by_an_input_interruption_plays_and_publishes_nothing_after_the_cut();
     dsd_decode_clock_use_system();
     return rc;
 }

@@ -632,11 +632,12 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         ctx.dbuf[i + 8] = (uint8_t)getDibitSoft(opts, state, &soft);
         ctx.dbuf_reliab[i + 8] = soft.reliability;
     }
-    if (state->carrier_seq != carrier_seq) {
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the frame was read (issue #575). Everything after the
            LICH decodes only now, so a SACCH segment read whole before the move, possibly the one completing a
            superframe, would decode after the boundary ended that carrier's calls: the frame is dropped, with the
-           SACCH segments gathered, as on a sync loss. */
+           SACCH segments gathered, as on a sync loss. So is a frame an input interruption cut, whose rest is
+           erasures the reader stood in. */
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         nxdn_mark_bad_sync(state);

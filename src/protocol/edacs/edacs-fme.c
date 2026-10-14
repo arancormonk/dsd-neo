@@ -2584,10 +2584,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
     edacs_collect_bits(opts, state, edacs_bit);
     unsigned long long int msg_1_ec = 0;
     unsigned long long int msg_2_ec = 0;
-    if (state->carrier_seq != carrier_seq) {
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the frame was read (issue #575). The vote can take two
            copies of each message read before the move, so the carrier left's message would decode and act after the
-           boundary: the frame is dropped, as on a sync loss, with no verdict. */
+           boundary: the frame is dropped, as on a sync loss, with no verdict. So is a frame an input interruption cut:
+           the vote could take the copies read before it over the erasures standing in for the rest. */
         goto EDACS_END;
     }
 

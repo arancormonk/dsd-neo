@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QString>
 #include <stdint.h>
+#include <utility>
 #include "decoder_host.h"
 #include "decoder_host_android.h"
 #include "local_device_state.h"
@@ -106,7 +107,7 @@ DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
         return;
     }
     m_published_phase = phase;
-    m_failure = failure;
+    m_failure = std::move(failure);
     Q_EMIT sessionStateChanged();
 }
 

@@ -34,6 +34,9 @@ static int g_status_add_count;
 static int g_get_dibit_soft_count;
 static int g_dibit_sequence_len;
 static int g_dibit_sequence[80];
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for that symbol and every one after it; -1 for none. */
+static int g_interrupt_at = -1;
 static int g_open_mbe_calls;
 static int g_vocoder_calls;
 static int g_skip_keystream_calls;
@@ -61,8 +64,10 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
     int call_index = g_get_dibit_soft_count++;
+    if (call_index == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
+    }
     int dibit = g_status_dibit;
     const int sequence_capacity = (int)(sizeof(g_dibit_sequence) / sizeof(g_dibit_sequence[0]));
     if (call_index >= 0 && call_index < g_dibit_sequence_len && call_index < sequence_capacity) {
@@ -463,6 +468,47 @@ test_ldu_process_imbe_status_cadence_and_soft_dispatch(void) {
     return rc;
 }
 
+/* A Signal search that leaves the LDU, or a live read that gives up on a stalled input, cuts the voice frame: from there
+   getSymbol() stands 0 in for every symbol, and the four-level soft metrics score those as confidently as real ones.
+   The frame never reaches the vocoder, so nothing plays, captures or begins a call on it. Like the frames a sync loss
+   misses it takes no keystream position, and the read still consumes the whole frame. */
+static int
+test_ldu_process_imbe_cut_by_an_input_interruption_is_not_vocoded(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    static const int cuts[2] = {0, 73};
+    for (int c = 0; c < 2; c++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        g_get_dibit_soft_count = 0;
+        g_status_add_count = 0;
+        g_vocoder_calls = 0;
+        g_skip_keystream_calls = 0;
+        g_imbe_log_calls = 0;
+        g_dibit_sequence_len = 74;
+        for (int idx = 0; idx < g_dibit_sequence_len; idx++) {
+            g_dibit_sequence[idx] = 0;
+        }
+        state.payload_algid = 0x80;
+        state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        state.dmr_encL = 7;
+        g_interrupt_at = cuts[c];
+        int status_count = 1;
+
+        const int dispatched = process_IMBE(&opts, &state, &status_count);
+
+        rc |= expect_int("cut IMBE frame reports no dispatch", dispatched, 0);
+        rc |= expect_int("cut IMBE frame is still read whole", g_get_dibit_soft_count, 74);
+        rc |= expect_int("cut IMBE frame reaches no vocoder", g_vocoder_calls, 0);
+        rc |= expect_int("cut IMBE frame takes no keystream", g_skip_keystream_calls, 0);
+        rc |= expect_int("cut IMBE frame leaves the encryption flag", state.dmr_encL, 7);
+    }
+    g_interrupt_at = -1;
+    g_dibit_sequence_len = 0;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -472,6 +518,7 @@ main(void) {
     rc |= test_ldu_read_and_correct_hex_word();
     rc |= test_ldu_imbe_skip_and_encryption_flag();
     rc |= test_ldu_process_imbe_status_cadence_and_soft_dispatch();
+    rc |= test_ldu_process_imbe_cut_by_an_input_interruption_is_not_vocoded();
     return rc;
 }
 

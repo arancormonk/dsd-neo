@@ -34,9 +34,13 @@ static int g_play_calls[2];
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at = -1;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; -1 for none. */
+static int g_interrupt_at = -1;
 
 static void
 reset_stubs(void) {
+    g_interrupt_at = -1;
     DSD_MEMSET(g_get_queue, 0, sizeof(g_get_queue));
     DSD_MEMSET(g_mbe_first_bit, 0, sizeof(g_mbe_first_bit));
     DSD_MEMSET(g_play_calls, 0, sizeof(g_play_calls));
@@ -80,6 +84,9 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     (void)out_analog_signal;
     if (g_boundary_at >= 0 && g_get_pos == g_boundary_at && state != NULL) {
         state->carrier_seq++;
+    }
+    if (g_interrupt_at >= 0 && g_get_pos == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
     }
     assert(g_get_pos >= 0 && g_get_pos < g_get_len);
     return g_get_queue[g_get_pos++];
@@ -444,6 +451,35 @@ test_voice_superframe_split_by_a_carrier_boundary_publishes_nothing(void) {
     assert(call.crypto == DSD_CALL_CRYPTO_UNKNOWN);
 }
 
+/* A Signal search that leaves the superframe (its visit ended, or a command came), or a live read that gives up on a
+   stalled input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. From the slot it cut, nothing
+   decodes, plays or publishes, as from the slot a carrier boundary splits. */
+static void
+test_voice_superframe_cut_by_an_input_interruption_publishes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int dibits[144];
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 2;
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    /* Inside the sixth slot's second AMBE half: its first frame and its signalling were read before the cut. */
+    g_interrupt_at = 90 + (4 * 234) + 144 + 10;
+    processX2TDMAvoice(&opts, &state);
+    assert(state.input_interrupted == 1);
+    assert(state.carrier_seq == 0U);
+    assert(g_mbe_calls == 15);
+    assert(total_play_calls() == g_mbe_calls);
+    assert(dsd_call_state_get(&state, 0, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_UNKNOWN);
+}
+
 int
 main(void) {
     test_slot_light_and_mute_helpers();
@@ -451,6 +487,7 @@ main(void) {
     test_voice_frame_dispatch_gates_first_frame_and_mute();
     test_slot_iteration_voice_and_data_state();
     test_voice_superframe_split_by_a_carrier_boundary_publishes_nothing();
+    test_voice_superframe_cut_by_an_input_interruption_publishes_nothing();
     test_superframe_mixes_only_synthesized_frames();
     printf("X2TDMA_VOICE_HELPERS: OK\n");
     return 0;

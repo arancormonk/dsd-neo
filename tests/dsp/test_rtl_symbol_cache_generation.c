@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <sndfile.h>
@@ -59,6 +60,8 @@ static int g_symbol_rate_hz_after_bump = 0;
 static int g_symbol_levels_after_bump = 0;
 static int g_channel_profile_after_bump = -1;
 static int g_cleanup_calls = 0;
+/* A Signal search session is running (dsd_signal_search_is_running()). */
+static int g_search_running = 0;
 static int g_fail_reads = 0;
 static int g_failed_read_calls = 0;
 static int g_max_read_calls = 0;
@@ -349,6 +352,12 @@ fake_analog_family_active(void) {
     return g_analog_family;
 }
 
+static int
+fake_search_running(const dsd_state* state) {
+    (void)state;
+    return g_search_running;
+}
+
 static void
 reset_stream_fixture(void) {
     g_stream_generation = 1U;
@@ -372,6 +381,7 @@ reset_stream_fixture(void) {
     g_symbol_levels_after_bump = 0;
     g_channel_profile_after_bump = -1;
     g_cleanup_calls = 0;
+    g_search_running = 0;
     g_fail_reads = 0;
     g_failed_read_calls = 0;
     g_max_read_calls = 0;
@@ -1097,6 +1107,93 @@ test_replay_keeps_first_batch_after_change(dsd_opts* opts, dsd_state* state, voi
     reset_decoder_fixture(opts, state, rtl_context);
 }
 
+static const char*
+search_output_label(int output_kind) {
+    switch (output_kind) {
+        case RTL_STREAM_OUTPUT_SYMBOL_CQPSK: return "search visit, CQPSK symbol output";
+        case RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR: return "search visit, FSK discriminator output";
+        default: return "search visit, monitor output";
+    }
+}
+
+/*
+ * A Signal search visit bounds the radio read: an output that delivers nothing for 100 ms fails the read, so a stalled
+ * input cannot hold the decoder past the visit's deadlines and commands. Every RTL output's reader takes that failure
+ * as an interruption rather than the end of the stream: the FSK discriminator and monitor readers, and the CQPSK
+ * symbol-rate fast path alike. The read that failed counted no symbol, so the rest of the frame reads as erasures at
+ * once, whatever the count, rather than waiting out the bound again for every symbol; the engine loop then consumes the
+ * interruption, and the next read tries the input again. Outside a search a failed read still ends the stream, and a
+ * recorded interruption (which only a frame-sync hunt read leaves, and the hunt returns on at once) reads on.
+ */
+static void
+run_search_read_interruption(dsd_opts* opts, dsd_state* state, void* rtl_context, int output_kind) {
+    const char* label = search_output_label(output_kind);
+    /* One sample a read: the cache holds nothing between symbols, so each symbol's first sample is a read. */
+    if (output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK) {
+        start_cqpsk_stream(opts, state, rtl_context, 0, 1);
+    } else {
+        start_fsk_stream(opts, state, rtl_context, 0, 1);
+        g_output_kind = output_kind;
+        state->samplesPerSymbol = 10;
+        state->symbolCenter = 4;
+    }
+
+    state->input_interrupted = 1;
+    (void)getSymbol(opts, state, 1);
+    expect_int(label, "symbols read outside a search with an interruption recorded", state->symbolcnt, 1);
+    state->input_interrupted = 0;
+    /* Three symbols in: a count the in-frame yield check's throttle passes over. */
+    for (int i = 0; i < 2; i++) {
+        (void)getSymbol(opts, state, 1);
+    }
+    expect_int(label, "symbols before the stall", state->symbolcnt, 3);
+
+    g_search_running = 1;
+    g_fail_reads = 1;
+    expect_near(label, "the symbol the stalled read interrupts", getSymbol(opts, state, 1), 0.0f);
+    expect_int(label, "failed reads", g_failed_read_calls, 1);
+    expect_int(label, "interrupted", state->input_interrupted, 1);
+    expect_int(label, "cleanup calls (the session goes on)", g_cleanup_calls, 0);
+
+    for (int i = 0; i < 3; i++) {
+        state->symbol_replay_symbol_unusable = 0;
+        expect_near(label, "the rest of the frame", getSymbol(opts, state, 1), 0.0f);
+        expect_int(label, "the rest of the frame is erasures", state->symbol_replay_symbol_unusable, 1);
+    }
+    expect_int(label, "failed reads after the rest of the frame", g_failed_read_calls, 1);
+    expect_int(label, "symbols counted after the rest of the frame", state->symbolcnt, 3);
+    expect_int(label, "still interrupted", state->input_interrupted, 1);
+    expect_int(label, "cleanup calls after the rest of the frame", g_cleanup_calls, 0);
+
+    /* The engine loop consumes the interruption, and the input delivers again. */
+    state->input_interrupted = 0;
+    g_fail_reads = 0;
+    const int reads_before = g_read_calls;
+    (void)getSymbol(opts, state, 1);
+    expect_int(label, "read once the interruption was consumed", g_read_calls > reads_before, 1);
+    expect_int(label, "symbols after the input resumed", state->symbolcnt, 4);
+    expect_int(label, "cleanup calls after the input resumed", g_cleanup_calls, 0);
+
+    /* The search ends, and a failed read ends the stream again. */
+    g_search_running = 0;
+    g_fail_reads = 1;
+    g_failed_read_calls = 0;
+    g_cleanup_calls = 0;
+    expect_near(label, "the symbol a failed read ends outside a search", getSymbol(opts, state, 1), 0.0f);
+    expect_int(label, "failed reads outside a search", g_failed_read_calls, 1);
+    expect_int(label, "cleanup calls outside a search", g_cleanup_calls, 1);
+    expect_int(label, "interrupted outside a search", state->input_interrupted, 0);
+}
+
+static void
+test_search_visit_read_interruptions(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    run_search_read_interruption(opts, state, rtl_context, RTL_STREAM_OUTPUT_SYMBOL_CQPSK);
+    run_search_read_interruption(opts, state, rtl_context, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
+    run_search_read_interruption(opts, state, rtl_context, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+}
+
 /* Read until the stream has handed the decoder @p reads samples. */
 static void
 read_until_reads(dsd_opts* opts, dsd_state* state, int reads) {
@@ -1620,6 +1717,10 @@ main(void) {
     assert(g_cleanup_calls == 1);
 
     test_replay_keeps_first_batch_after_change(&opts, &state, &fake_rtl_context);
+
+    dsd_signal_search_active_set(fake_search_running);
+    test_search_visit_read_interruptions(&opts, &state, &fake_rtl_context);
+    dsd_signal_search_active_set(NULL);
 
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast_analog = fake_blast_analog});
     test_analog_block_follows_family_switch(&opts, &state, &fake_rtl_context);

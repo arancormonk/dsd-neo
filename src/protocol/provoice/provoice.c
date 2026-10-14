@@ -132,7 +132,11 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, " %016llX", secondary);
     }
 
-    if (dsd_provoice_load_imbe_frame_pair(provoice_next_bit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
+    /* Each pair plays as soon as it is read. Once an input interruption is set, it has cut the frame (a Signal search
+       left it, or a live read gave up on a stalled input): every symbol from the cut is an erasure the reader stood in,
+       so the frame ends there, as when a pair does not load, and no pair read across or after the cut plays. */
+    if (dsd_provoice_load_imbe_frame_pair(provoice_next_bit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0
+        || state->input_interrupted) {
         DSD_FPRINTF(stderr, "\n");
         provoice_confirm_end_frame(state);
         return provoice_confirm_is_confirmed(state);
@@ -146,7 +150,8 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n BF: %04X ", bf);
     }
 
-    if (dsd_provoice_load_imbe_frame_pair(provoice_next_bit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
+    if (dsd_provoice_load_imbe_frame_pair(provoice_next_bit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0
+        || state->input_interrupted) {
         DSD_FPRINTF(stderr, "\n");
         provoice_confirm_end_frame(state);
         return provoice_confirm_is_confirmed(state);

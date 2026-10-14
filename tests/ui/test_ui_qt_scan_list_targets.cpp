@@ -11,7 +11,6 @@
 #include <QVariantMap>
 #include <cstdio>
 #include <dsd-neo/runtime/analog_channel.h>
-#include <initializer_list>
 #include <utility>
 #include "scan_list_targets.h"
 #include "session_args.h"

@@ -7,6 +7,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -24,6 +25,9 @@ static int
 scan_visit_should_yield_from_frame(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return 0;
+    }
+    if (dsd_engine_signal_search_active(state)) {
+        return dsd_engine_signal_search_should_yield(opts, state);
     }
     if (opts->trunk_scan_enabled == 1) {
         return dsd_engine_trunk_scan_visit_expired(opts, state);
@@ -78,6 +82,7 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.eot_cc = eot_cc;
     hooks.no_carrier = noCarrier;
     hooks.scan_visit_should_yield = scan_visit_should_yield_from_frame;
+    hooks.signal_search_should_yield = dsd_engine_signal_search_should_yield;
     hooks.replay_retune = dsd_engine_leave_replay_carrier;
     dsd_frame_sync_hooks_set(hooks);
 }

@@ -41,6 +41,8 @@ static int g_retune_during_handler = 0;
 /* The handler's read adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575). */
 static int g_boundary_during_handler = 0;
+/* A Signal search's yield (or a stalled live read) interrupts the input while the handler reads its frame. */
+static int g_interrupt_during_handler = 0;
 static dsd_state* g_dispatch_state = NULL;
 /* The dispatch context a handler saw (issue #661). */
 static int g_seen_dispatch_active = -1;
@@ -66,6 +68,9 @@ record_handler(int handler_id) {
     }
     if (g_boundary_during_handler && g_dispatch_state != NULL) {
         g_dispatch_state->carrier_seq++;
+    }
+    if (g_interrupt_during_handler && g_dispatch_state != NULL) {
+        g_dispatch_state->input_interrupted = 1;
     }
     return g_handler_verdict;
 }
@@ -227,11 +232,14 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
     /* #391: the handler's verdict, recorded where getFrameSync() reads it on its next entry.
      * A synctype no handler claims leaves it productive -- the pre-#391 behaviour -- and
      * either way a verdict left over from the previous frame must not survive. Issue #575: a frame the carrier boundary
-     * split was dropped by its decoder and validated nothing on either carrier, whatever the handler reported. */
+     * split was dropped by its decoder and validated nothing on either carrier, whatever the handler reported. A frame an
+     * input interruption cut was dropped as well, and the cut was the engine's, so it is withheld. */
     const int dropped = g_boundary_during_handler && expected_handler != TEST_HANDLER_NONE;
+    const int cut = g_interrupt_during_handler && expected_handler != TEST_HANDLER_NONE;
     assert(state->sps_hunt_last_frame_verdict
            == (expected_handler == TEST_HANDLER_NONE ? DSD_FRAME_VERDICT_PRODUCTIVE
                : dropped                             ? DSD_FRAME_VERDICT_UNPRODUCTIVE
+               : cut                                 ? DSD_FRAME_VERDICT_WITHHELD
                                                      : (int)verdict));
     /* Productivity (including sticky NXDN call confirmation) is not recovery ownership. */
     assert(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25);
@@ -315,7 +323,19 @@ main(void) {
     run_dispatch_case(DSD_SYNC_X2TDMA_VOICE_POS, TEST_HANDLER_X2TDMA);
     run_dispatch_case_verdict(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1, DSD_FRAME_VERDICT_PROFILE_PROVEN, 0);
     run_dispatch_case(-1, TEST_HANDLER_NONE);
+    /* With an input interruption as well, the carrier boundary's verdict stands. */
+    g_interrupt_during_handler = 1;
+    run_dispatch_case_verdict(DSD_SYNC_DSTAR_VOICE_POS, TEST_HANDLER_DSTAR, DSD_FRAME_VERDICT_PRODUCTIVE, 0);
+    g_interrupt_during_handler = 0;
     g_boundary_during_handler = 0;
+    /* A Signal search left the frame, or a live read gave up on a stalled input: its decoder dropped what it read, so
+       neither a sticky confirmation, nor a proof, nor a failure the handler reports for it reaches the SPS hunt. */
+    g_interrupt_during_handler = 1;
+    run_dispatch_case(DSD_SYNC_DSTAR_VOICE_POS, TEST_HANDLER_DSTAR);
+    run_dispatch_case_verdict(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1, DSD_FRAME_VERDICT_PROFILE_PROVEN, 0);
+    run_dispatch_case_verdict(DSD_SYNC_NXDN_POS, TEST_HANDLER_NXDN, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);
+    run_dispatch_case(-1, TEST_HANDLER_NONE);
+    g_interrupt_during_handler = 0;
     run_dispatch_case(DSD_SYNC_DMR_BS_VOICE_POS, TEST_HANDLER_DMR);
     run_dispatch_case(DSD_SYNC_DPMR_FS1_POS, TEST_HANDLER_DPMR);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);

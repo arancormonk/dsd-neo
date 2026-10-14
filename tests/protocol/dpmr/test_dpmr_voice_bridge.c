@@ -18,6 +18,7 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,9 +42,19 @@ static int g_dibit_calls;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at = -1;
+/* The 24-bit channel code the first CC field carries (its twelve dibits follow the first CCH and TCH group); 0 sends
+   zeros, which decode to no channel code. */
+static uint32_t g_channel_code;
+
+enum { DPMR_TEST_FIRST_CC_DIBIT = 36 + 144, DPMR_TEST_CC_DIBITS = 12 };
+
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; -1 for none. */
+static int g_interrupt_at = -1;
 
 static void
 reset_capture(void) {
+    g_interrupt_at = -1;
     g_mbe_calls = 0;
     g_ms_calls = 0;
     DSD_MEMSET(g_mbe_synctype, 0, sizeof(g_mbe_synctype));
@@ -52,6 +63,7 @@ reset_capture(void) {
     DSD_MEMSET(g_mbe_mi, 0, sizeof(g_mbe_mi));
     g_dibit_calls = 0;
     g_boundary_at = -1;
+    g_channel_code = 0U;
 }
 
 int
@@ -61,7 +73,14 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     if (g_dibit_calls == g_boundary_at && state != NULL) {
         state->carrier_seq++;
     }
+    if (g_dibit_calls == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
+    }
+    const int cc_dibit = g_dibit_calls - DPMR_TEST_FIRST_CC_DIBIT;
     g_dibit_calls++;
+    if (cc_dibit >= 0 && cc_dibit < DPMR_TEST_CC_DIBITS) {
+        return (int)((g_channel_code >> (22U - (2U * (uint32_t)cc_dibit))) & 3U);
+    }
     return 0;
 }
 
@@ -642,6 +661,104 @@ test_process_dpmr_voice_split_by_a_carrier_boundary_publishes_nothing(void) {
     return rc;
 }
 
+/* What the signal search's confirmation can read when the evidence hook fires: the app-control observer copies the
+ * active call's identity and the carrier's colour code inside the hook, from state, and only on that confirmation. */
+static struct {
+    int calls;
+    int call_active;
+    char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    int has_service_metadata;
+    int color_code;
+} g_search_evidence;
+
+static void
+capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
+                        const char* access) {
+    (void)target;
+    (void)source;
+    (void)access;
+    assert(protocol != NULL && strcmp(protocol, "dPMR") == 0);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    g_search_evidence.calls++;
+    const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                       && call.protocol == state->synctype;
+    g_search_evidence.call_active = active;
+    DSD_SNPRINTF(g_search_evidence.target_text, sizeof(g_search_evidence.target_text), "%s",
+                 active ? call.target_text : "");
+    g_search_evidence.has_service_metadata = active ? call.has_service_metadata : 0;
+    g_search_evidence.color_code = state->dpmr_color_code;
+}
+
+/* The frame whose CCH CRCs confirm a transmission is the frame that publishes its called ID and colour code, and the
+ * search hears the confirmation only after it has: one frame followed by silence still names the call. A frame that
+ * proved nothing reports nothing. */
+static int
+test_process_dpmr_voice_search_evidence_follows_the_published_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&g_search_evidence, 0, sizeof(g_search_evidence));
+    state.synctype = DSD_SYNC_DPMR_FS1_POS;
+    state.dpmr_color_code = -1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    dsd_signal_search_evidence_set(capture_search_evidence);
+
+    /* A pair split by a carrier boundary decodes nothing. */
+    reset_capture();
+    g_boundary_at = 300;
+    (void)processdPMRvoice(&opts, &state);
+    rc |= expect_int("search-split-reports-nothing", g_search_evidence.calls, 0);
+
+    reset_capture();
+    g_channel_code = 0x55FF7FU; /* channel code 7 */
+    (void)processdPMRvoice(&opts, &state);
+    dsd_signal_search_evidence_set(NULL);
+
+    rc |= expect_int("search-frame-color-code-decoded", (int)state.dPMRVoiceFS2Frame.ColorCode[0], 7);
+    rc |= expect_int("search-one-confirmation", g_search_evidence.calls, 1);
+    rc |= expect_int("search-sees-the-call", g_search_evidence.call_active, 1);
+    rc |= expect_int("search-sees-the-called-id", strcmp(g_search_evidence.target_text, "0000000"), 0);
+    rc |= expect_int("search-sees-the-service-metadata", g_search_evidence.has_service_metadata, 1);
+    rc |= expect_int("search-sees-the-color-code", g_search_evidence.color_code, 7);
+    return rc;
+}
+
+/* A Signal search that leaves the pair (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. The pair is dropped as one the carrier
+   boundary splits is: no call, no colour code, no confirmation, and nothing plays. */
+static int
+test_process_dpmr_voice_cut_by_an_input_interruption_publishes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS1_POS;
+    state.dpmr_color_code = -1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    reset_capture();
+    g_interrupt_at = 300;
+
+    const int verdict = processdPMRvoice(&opts, &state);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("cut-interrupted", state.input_interrupted, 1);
+    rc |= expect_int("cut-no-carrier-move", (int)state.carrier_seq, 0);
+    rc |= expect_int("cut-dibit-count", g_dibit_calls, 372);
+    rc |= expect_int("cut-verdict", verdict, 0);
+    rc |= expect_int("cut-mbe-calls", (int)g_mbe_calls, 0);
+    rc |= expect_int("cut-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    rc |= expect_int("cut-no-crc", (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
+    rc |= expect_int("cut-no-confirmation", state.dpmr_confirmed, 0);
+    rc |= expect_int("cut-no-color-code", state.dpmr_color_code, -1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -659,6 +776,8 @@ main(void) {
     rc |= test_id_print_side_effects_suppress_invalid_ids();
     rc |= test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice();
     rc |= test_process_dpmr_voice_split_by_a_carrier_boundary_publishes_nothing();
+    rc |= test_process_dpmr_voice_search_evidence_follows_the_published_call();
+    rc |= test_process_dpmr_voice_cut_by_an_input_interruption_publishes_nothing();
 
     if (rc == 0) {
         printf("DPMR_VOICE_BRIDGE: OK\n");

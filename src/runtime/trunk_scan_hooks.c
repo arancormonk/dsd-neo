@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -92,6 +93,7 @@ dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state) {
 void
 dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                               uint32_t source, int is_private, int encrypted, int data_call) {
+    dsd_signal_search_note_evidence(state, "DMR", target, source, NULL);
     if (g_trunk_scan_hooks.dmr_conventional_activity) {
         g_trunk_scan_hooks.dmr_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
     }
@@ -100,6 +102,7 @@ dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_st
 void
 dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                uint32_t source, int is_private, int encrypted, int data_call) {
+    dsd_signal_search_note_evidence(state, "NXDN", target, source, NULL);
     if (g_trunk_scan_hooks.nxdn_conventional_activity) {
         g_trunk_scan_hooks.nxdn_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
     }
@@ -108,6 +111,7 @@ dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_s
 void
 dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                               uint32_t source, int is_private, int encrypted, int data_call) {
+    dsd_signal_search_note_evidence(state, "P25", target, source, NULL);
     if (g_trunk_scan_hooks.p25_conventional_activity) {
         g_trunk_scan_hooks.p25_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
     }

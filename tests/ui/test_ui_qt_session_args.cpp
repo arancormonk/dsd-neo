@@ -22,10 +22,10 @@
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
-#include <initializer_list>
 #include <limits>
 #include <qtenvironmentvariables.h>
 #include <stdio.h>
+#include <utility>
 #include "decoder_host.h"
 
 #include <dsd-neo/runtime/analog_channel.h>

@@ -325,7 +325,15 @@ Item {
             spacing: 2
 
             MicroLabel {
-                text: qsTr("Spectrum")
+                width: parent.width
+                elide: Text.ElideRight
+                text: {
+                    if (typeof knownFrequencies === "undefined")
+                        return qsTr("Spectrum");
+                    var revision = knownFrequencies.revision;
+                    var names = knownFrequencies.tunedNames(screen.tunedHz, metrics ? metrics.channelBandwidthHz : 0);
+                    return names.length ? qsTr("Spectrum · %1").arg(names.join(" / ")) : qsTr("Spectrum");
+                }
             }
 
             Row {

@@ -2377,6 +2377,26 @@ test_mbe_out_refuses_unconfirmed_and_carrier_crossing_frames(void) {
     dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, bits);
     rc |= expect_true("carrier-crossing frame creates nothing", opts.mbe_out_f == NULL);
 
+    /* Nor a frame read after an input interruption cut it (a Signal search's yield, or a stalled live read): its rest is
+       erasures getSymbol() stood in. */
+    mbe_out_test_reset(&opts, &state, dir);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.frame_dispatch_carrier_seq = 4U;
+    state.carrier_seq = 4U;
+    state.input_interrupted = 1;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, bits);
+    rc |= expect_true("frame read after an input interruption creates nothing", opts.mbe_out_f == NULL);
+    state.input_interrupted = 0;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, bits);
+    rc |= expect_true("the next whole frame creates the capture", opts.mbe_out_f != NULL);
+    closeMbeOutFile(&opts, &state);
+    remove_dir_tree(dir);
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_mbe_refuse")) {
+        return 1;
+    }
+
     mbe_out_test_reset(&opts, &state, dir);
     state.synctype = DSD_SYNC_YSF_POS;
     state.ysf_fich_confirmed = 0;

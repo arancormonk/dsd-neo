@@ -57,7 +57,13 @@ void nxdn_confirm_begin_frame(dsd_state* state);
  */
 void nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence);
 
-/** @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak. */
+/**
+ * @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak.
+ *
+ * A frame whose own CRCs confirmed the transmission is reported to a signal search here, once,
+ * after the frame's channels have published what the confirmation unlocked: the search reads
+ * the RAN and call from state when it hears it.
+ */
 void nxdn_confirm_end_frame(dsd_state* state);
 
 /** @brief Whether the current transmission has proved itself. */

@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stddef.h>
 #include "provoice_confirm.h"
 
 #include <dsd-neo/core/state.h>
@@ -37,6 +39,7 @@ provoice_confirm_note_evidence(dsd_state* state, provoice_evidence evidence) {
         state->provoice_confirm_frame_evidence = (uint8_t)PROVOICE_EVIDENCE_STRONG;
         state->provoice_confirm_weak_streak = 0;
         state->provoice_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "ProVoice", 0, 0, NULL);
         return;
     }
     if (evidence != PROVOICE_EVIDENCE_WEAK || state->provoice_confirm_frame_evidence != 0) {
@@ -49,6 +52,7 @@ provoice_confirm_note_evidence(dsd_state* state, provoice_evidence evidence) {
     }
     if (state->provoice_confirm_weak_streak >= PROVOICE_CONFIRM_WEAK_OBSERVES) {
         state->provoice_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "ProVoice", 0, 0, NULL);
     }
 }
 

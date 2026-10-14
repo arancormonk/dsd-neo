@@ -42,6 +42,9 @@ static int g_get_dibit_soft_calls;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at = -1;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; -1 for none. */
+static int g_interrupt_at = -1;
 static int g_status_add_calls;
 static int g_last_status_dibit;
 static int g_pdu_header_calls;
@@ -105,6 +108,9 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
     if (g_get_dibit_soft_calls == g_boundary_at && state != NULL) {
         state->carrier_seq++;
+    }
+    if (g_get_dibit_soft_calls == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
     }
     int call = g_get_dibit_soft_calls++;
     if (out_soft != NULL) {
@@ -848,7 +854,9 @@ test_process_mpdu_zero_block_header_orchestration(void) {
 
 /* Issue #575: the carrier boundary moved the carrier count while the MPDU's blocks were read (a replay read adopting a
    recorded retune). The header is read whole before its data blocks but decodes only after the last of them, so it
-   would publish the carrier left's packet after the boundary: the MPDU is dropped, as on a sync loss. */
+   would publish the carrier left's packet after the boundary: the MPDU is dropped, as on a sync loss. So is an MPDU a
+   Signal search's yield, or a live read that gave up on a stalled input, cut: from the cut every symbol is an erasure
+   getSymbol() stood in. */
 static int
 test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing(void) {
     static dsd_opts opts;
@@ -857,7 +865,8 @@ test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing(void) {
                                                        0x01U, 0x15U, 0x16U, 0x17U, 0x7AU, 0x1DU};
     int rc = 0;
 
-    for (int split = 0; split < 2; split++) {
+    /* 0: whole; 1: split by the carrier boundary; 2: cut by an input interruption. */
+    for (int split = 0; split < 3; split++) {
         DSD_MEMSET(&opts, 0, sizeof(opts));
         DSD_MEMSET(&state, 0, sizeof(state));
         DSD_MEMSET(g_soft_candidates, 0, sizeof(g_soft_candidates));
@@ -869,13 +878,16 @@ test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing(void) {
         g_get_dibit_soft_calls = 0;
         g_status_add_calls = 0;
         reset_dispatch_counters();
-        g_boundary_at = split ? 150 : -1; /* inside the data block: the header was read whole before it */
+        g_boundary_at = split == 1 ? 150 : -1; /* inside the data block: the header was read whole before it */
+        g_interrupt_at = split == 2 ? 150 : -1;
 
         processMPDU(&opts, &state);
 
         rc |= expect_int("mpdu reads the header and its data block", g_get_dibit_soft_calls, 202);
         if (split) {
-            rc |= expect_int("split mpdu moved the carrier count", (int)state.carrier_seq, 1);
+            rc |= expect_int("split mpdu moved the carrier count only on a boundary", (int)state.carrier_seq,
+                             split == 1 ? 1 : 0);
+            rc |= expect_int("split mpdu is interrupted only on a cut", state.input_interrupted, split == 2 ? 1 : 0);
             rc |= expect_int("split mpdu decodes no header", g_pdu_header_calls, 0);
             rc |= expect_int("split mpdu decodes no data", g_pdu_data_calls + g_pdu_trunking_calls, 0);
             rc |= expect_int("split mpdu checks no header", (int)(state.p25_p1_fec_ok + state.p25_p1_fec_err), 0);
@@ -884,6 +896,7 @@ test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing(void) {
         }
     }
     g_boundary_at = -1;
+    g_interrupt_at = -1;
     dsd_state_ext_free_all(&state);
     return rc;
 }

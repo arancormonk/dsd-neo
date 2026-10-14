@@ -52,6 +52,7 @@ Item {
     // Tap starts exploring with what was used last; long-press changes it. Same
     // split as a system card, where the face plays and the press manages.
     signal explore
+    signal signalSearch
     signal exploreSetup
 
     // Re-derives "Heard n minutes ago" once a minute so rows do not go stale.
@@ -393,6 +394,13 @@ Item {
 
             MicroLabel {
                 text: qsTr("Or go looking")
+            }
+            OutlineButton {
+                objectName: "homeSignalSearch"
+                width: parent.width
+                text: qsTr("Signal search")
+                accessibleName: qsTr("Signal search across frequency ranges")
+                onClicked: screen.signalSearch()
             }
 
             // Deliberately not a system card: there is nothing saved here, nothing

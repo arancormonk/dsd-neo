@@ -3701,6 +3701,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         rt.t++;
         if ((rt.t % 300) == 0) {
             frame_sync_publish_ui_throttled(opts, state);
+            if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
+                state->input_interrupted = 1;
+                frame_sync_sps_hunt_mark_return(state);
+                return DSD_SYNC_NONE;
+            }
         }
 
         rt.symbol = getSymbol(opts, state, 0);

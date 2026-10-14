@@ -515,6 +515,10 @@ typedef struct {
     /** Every boundary the tap crossed (a reset, a generation move, a pause, a rate move, an FM/AM switch): the PCM
         noise squelch starts its windows over when it moves. */
     uint32_t boundaries;
+    /** The boundary count at the last read the tap judged (neither dropped at a boundary nor skipped as backlog), and
+        whether there was one: dsd_analog_rx_carrier_observed_now(). */
+    uint32_t observed_boundaries;
+    int observed;
     /** The PCM noise squelch (issue #628): whether it took the previous monitor sample, the boundary count and rates it
         last ran at, the rigctl passband it keys its reference on, whether the backlog skip holds it, and the state
         it last logged a notice for. */
@@ -1193,6 +1197,9 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, con
         return;
     }
     const int squelch_open = analog_rx_squelch_open(opts, state, samples, flags, count);
+    /* This read is of the channel the boundaries now name, whatever it finds there. */
+    session->observed_boundaries = session->boundaries;
+    session->observed = 1;
     if (!session->detecting) {
         dsd_analog_rx_core_track_carrier(&session->core, samples, (int)count, rate_hz, squelch_open);
     } else if (!dsd_analog_rx_core_process(&session->core, samples, (int)count, rate_hz, squelch_open)) {
@@ -1450,6 +1457,16 @@ dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
     }
     const analog_rx_session* session = analog_rx_session_get(state);
     return session ? analog_rx_generations_current(opts, session) : 1;
+}
+
+int
+dsd_analog_rx_carrier_observed_now(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || !dsd_analog_monitor_tap_active(opts) || dsd_trunk_tuning_pending_request() != 0U) {
+        return 0;
+    }
+    const analog_rx_session* session = analog_rx_session_get(state);
+    return session && session->observed && session->observed_boundaries == session->boundaries
+           && analog_rx_generations_current(opts, session);
 }
 
 int

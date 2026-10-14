@@ -92,7 +92,8 @@ Window {
     // detail ("USB permission denied", "No RTL-SDR attached") reaches the screen
     // as it changes — the permission dialog answers long after the tap that
     // asked. Cleared when access is granted (which resumes the pending start
-    // below), when the banner is dismissed, or when another system starts.
+    // below), when the banner is dismissed, when another system starts, or when
+    // Signal search abandons the start it asked for.
     property bool awaitingUsbAccess: false
     // WP-D4: a restart waits for confirmed Idle and resolves stable identity then.
     property var pendingRestart: null
@@ -134,6 +135,20 @@ Window {
     // The system map waiting for USB access and its row (-1 for exploration).
     property var pendingStart: null
     property int pendingStartRow: -1
+    // Leaving Signal search abandons the start it asked for: closing the screen
+    // (its Back, the system Back, the window), a later Start it refuses, or Stop.
+    // The arm is cancelled, so a USB grant still finishing that start would run a
+    // plain decoder session behind Home instead of the search. A start pending
+    // from Home is not the search's and keeps waiting.
+    function abandonSignalSearchStart() {
+        if (signalSearchScreen.searchModel)
+            signalSearchScreen.searchModel.cancelArm();
+        if (!mainRoot.pendingStart || !mainRoot.pendingStart.signalSearch)
+            return;
+        mainRoot.awaitingUsbAccess = false;
+        mainRoot.pendingStart = null;
+        mainRoot.pendingStartRow = -1;
+    }
     // WP-S1 shares the saved-session USB gate and initialization bookkeeping.
     property bool pendingScanList: false
     property bool sessionScanList: false
@@ -146,7 +161,7 @@ Window {
     Binding {
         target: uiController
         property: "autoStartBlocked"
-        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0
+        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0
     }
     Connections {
         target: uiController
@@ -206,12 +221,17 @@ Window {
     Binding {
         target: Navigation
         property: "rootSurfaces"
-        value: mainRoot.monitorMode ? [monitor] : !prefs.onboardingDone ? [onboarding] : [nav, mainRoot.currentTab === 0 ? homeScreen : mainRoot.currentTab === 1 ? historyRoot : settingsRoot]
+        value: mainRoot.signalSearchOpen && mainRoot.sessionActive() ? [signalSearchScreen] : mainRoot.monitorMode ? [monitor] : !prefs.onboardingDone ? [onboarding] : [nav, mainRoot.currentTab === 0 ? homeScreen : mainRoot.currentTab === 1 ? historyRoot : settingsRoot]
     }
     NavigationLayer {
         surface: wizard
         active: mainRoot.wizardOpen
         onLeave: wizard.requestBack()
+    }
+    NavigationLayer {
+        surface: signalSearchScreen
+        active: mainRoot.signalSearchOpen && !mainRoot.sessionActive()
+        onLeave: signalSearchScreen.requestClose()
     }
     NavigationLayer {
         surface: exploreSetup
@@ -270,6 +290,7 @@ Window {
     }
     property bool wizardOpen: false
     property bool exploreSetupOpen: false
+    property bool signalSearchOpen: typeof signalSearch !== "undefined" && decoderHost.sessionActive && !!signalSearch.status.owned
     property bool licensesOpen: false
     property bool radioReferenceAccountOpen: false
     property bool diagnosticsOpen: false // WP-F5
@@ -400,6 +421,12 @@ Window {
             var scan = mainRoot.pendingScanList;
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
+            // A start Home left waiting is no search: Signal search opened
+            // meanwhile closes, so its screen does not take that session for one.
+            if (sys && !sys.signalSearch && mainRoot.signalSearchOpen) {
+                mainRoot.abandonSignalSearchStart();
+                mainRoot.signalSearchOpen = false;
+            }
             if (sys)
                 mainRoot.startWithMap(sys, row, scan);
         }
@@ -454,7 +481,7 @@ Window {
             close.accepted = false;
             return;
         }
-        if (!prefs.backgroundListening && mainRoot.monitorMode)
+        if (!prefs.backgroundListening && mainRoot.sessionActive())
             decoderHost.stop();
         close.accepted = !decoderHost.moveToBackground();
     }
@@ -567,7 +594,7 @@ Window {
                 mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name);
             return;
         }
-        mainRoot.exploring = (row < 0);
+        mainRoot.exploring = (row < 0) && !sys.signalSearch;
         mainRoot.sessionSystem = sys;
         mainRoot.sessionScanList = !!scan;
         mainRoot.scanWarnings = scan ? built.warnings.join("\n") : "";
@@ -579,7 +606,7 @@ Window {
         // The session's intent, decided here and nowhere else: a system someone
         // saved is a thing to listen to, and the spectrum watches it. Only a
         // session with no saved system behind it is free to wander.
-        mainRoot.exploring = !scan && (row < 0);
+        mainRoot.exploring = !scan && (row < 0) && !sys.signalSearch;
         // Belongs to the session that just ended. Carried into this one it would be
         // written back to prefs on stop as if it were where this exploring got to —
         // a frequency from two sessions ago, on a session that may never have moved.
@@ -680,7 +707,7 @@ Window {
         id: shell
 
         anchors.fill: safeArea
-        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen || mainRoot.sessionDestination.length > 0 || !prefs.onboardingDone) ? 0.0 : 1.0
+        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen || mainRoot.sessionDestination.length > 0 || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
         enabled: opacity > 0.9 && !siteChooser.visible
 
@@ -733,6 +760,12 @@ Window {
                 mainRoot.wizardOpen = true;
             }
             onExplore: mainRoot.startExploring()
+            onSignalSearch: {
+                signalSearchScreen.sourceType = prefs.exploreSourceType || "usb";
+                signalSearchScreen.host = prefs.exploreHost || "192.168.1.10";
+                signalSearchScreen.port = prefs.explorePort || 1234;
+                mainRoot.signalSearchOpen = true;
+            }
             onExploreSetup: {
                 exploreSetup.reset(prefs.exploreSourceType, prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz);
                 mainRoot.exploreSetupOpen = true;
@@ -859,7 +892,7 @@ Window {
         // grabs. Otherwise closing an overlay can deliver the same release to
         // "Stop listening" underneath. Session-menu rows keep passive grabs so
         // the sheet can scroll when a drag starts on a destination or Cancel.
-        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !sessionMenu.visible && !sessionRadio.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
+        enabled: opacity > 0.9 && !mainRoot.signalSearchOpen && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !sessionMenu.visible && !sessionRadio.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
 
         onOpenSpectrum: {
             spectrumLoader.active = true;
@@ -963,6 +996,46 @@ Window {
         onClosed: {
             mainRoot.talkgroupsOpen = false;
             Qt.inputMethod.hide();
+        }
+    }
+
+    SignalSearchScreen {
+        id: signalSearchScreen
+        anchors.fill: safeArea
+        visible: mainRoot.signalSearchOpen
+        enabled: visible && !mainRoot.wizardOpen
+        searchModel: typeof signalSearch !== "undefined" ? signalSearch : null
+        sessionActive: decoderHost.sessionActive
+        sessionSource: metrics.radioSource || ({})
+        failure: mainRoot.failureText
+        onBackRequested: mainRoot.requestBack()
+        onClosed: {
+            mainRoot.abandonSignalSearchStart();
+            mainRoot.signalSearchOpen = false;
+        }
+        onStartRefused: mainRoot.abandonSignalSearchStart()
+        onStop: {
+            mainRoot.abandonSignalSearchStart();
+            // Stopped from this screen, the search stays on it, ready to restart,
+            // whether Home opened it or a running search reopened it after
+            // Activity recreation, where only signalSearchOpen's status.owned
+            // binding held it open and would close it with the session.
+            mainRoot.signalSearchOpen = true;
+            decoderHost.stop();
+        }
+        onStart: function (sourceType, host, port, frequency) {
+            var sys = mainRoot.exploreSystem(sourceType, host, port, frequency);
+            sys.signalSearch = true;
+            sys.name = qsTr("Signal search");
+            sys.bandwidthKhz = 48;
+            mainRoot.startWithMap(sys, -1, false);
+            mainRoot.spectrumOpen = false;
+        }
+        onSaveDetection: function (hit) {
+            var source = mainRoot.sessionSystem || mainRoot.exploreSystem(sourceType, host, port, hit.freqMHz);
+            var found = searchModel.systemForHit(hit, source);
+            wizard.openForFound(found, hit.freqMHz, found);
+            mainRoot.wizardOpen = true;
         }
     }
 

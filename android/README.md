@@ -127,7 +127,10 @@ is surfaced as `DeviceBusy` without discarding the original code.
 
 `sessionInitialized()` comes from the engine lifecycle callback after initialization,
 not from `g_running`. Saved-system recency and `prefs.lastStartedKind/Uid` are
-written only on that edge. Saved systems carry stable UUIDs, so deleting another
+written only on that edge. `nativeRun()` raises `g_running` before
+`dsd_app_frontend_runtime_start()` opens command admission, so Running alone does not
+mean the decoder takes commands: Signal search keeps a start refused there and submits it
+again on this edge. Saved systems carry stable UUIDs, so deleting another
 row during startup cannot stamp the wrong system. Starting/Idle/Failed and
 trunk-scan target changes clear live model caches; history remains persistent.
 
@@ -974,6 +977,15 @@ including clear calls. Refresh keeps the import's saved choice (including older
 imports' exclusion behavior). Supplying keys never silently unblocks a talkgroup.
 
 ### Navigation, accessibility and replay
+
+**Signal search**, beside Explore on Home, searches configured frequency ranges
+using internal RF power measurements, then identifies and monitors detections.
+Ranges have independent detection sensitivity and listening squelch. The default
+digital probe is two seconds, followed by explicitly unresolved NFM monitoring;
+Hold, Skip, session/permanent avoids, detection history and Save as system are
+available. Search owns the radio exclusively and follows the existing background
+listening preference. See [Signal search](../docs/signal-search.md) for controls,
+limits, persistence and measured performance.
 
 Android Back dismisses input, then the top dialog, then the pushed screen or
 wizard step. Root Back follows the background-listening preference. Monitor's

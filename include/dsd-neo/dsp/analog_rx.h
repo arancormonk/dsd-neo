@@ -371,6 +371,19 @@ void dsd_analog_rx_block_restart(const dsd_state* state);
 int dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief Whether the tap has judged the channel the receiver is on now, so dsd_analog_rx_carrier_open_now() is a
+ * verdict on it rather than the absence of one.
+ *
+ * 1 once the analog monitor's tap (dsd_analog_monitor_tap_active()) has read samples of this channel past every
+ * boundary it knows of: none since (a reset, a generation or receive-profile move, a pause, a rate move), the
+ * boundaries it noted still current, and no retune unresolved (dsd_trunk_tuning_pending_request()). A read dropped at a
+ * boundary or skipped as the old channel's backlog judges nothing. 0 before that: after a retune whose first samples
+ * have not reached the decoder yet (a front end designing a noise-squelch plan delays them), the published carrier is
+ * closed only because nothing has been read. Signal search starts its quiet timing from here. Read-only.
+ */
+int dsd_analog_rx_carrier_observed_now(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Whether the last reception on the channel the receiver is on now ended rejected by the CTCSS/DCS receive
  * policy (issue #527): dsd_state::analog_rx.gate_rejected_ended, while received-tone detection runs, held to that
  * channel as dsd_analog_rx_carrier_open_now() holds the carrier (0 while a retune is unresolved, or once a boundary the

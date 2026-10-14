@@ -4,6 +4,7 @@
  */
 
 #include "dpmr_confirm.h"
+#include <dsd-neo/runtime/signal_search_hooks.h>
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
@@ -70,6 +71,14 @@ dpmr_confirm_end_frame(dsd_state* state) {
     }
     if (state->dpmr_confirm_frame_evidence == 0) {
         state->dpmr_confirm_weak_streak = 0;
+        return;
+    }
+    /* The frame's own CCH confirmed the transmission: both halves at once, or the half that completes or continues a
+     * weak streak. A signal search hears that only now, once the frame has published the identity, service and colour
+     * code the confirmation unlocked, since it reads them from state when it hears it. */
+    if (state->dpmr_confirm_frame_evidence == (uint8_t)DPMR_EVIDENCE_STRONG
+        || state->dpmr_confirm_weak_streak >= DPMR_CONFIRM_WEAK_OBSERVES) {
+        dsd_signal_search_note_evidence(state, "dPMR", 0, 0, NULL);
     }
 }
 

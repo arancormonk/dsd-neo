@@ -229,6 +229,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString scanMode READ scanMode NOTIFY controlChanged)
     Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
     Q_PROPERTY(QVariantMap airspy READ airspy NOTIFY controlChanged)
+    Q_PROPERTY(QVariantMap radioSource READ radioSource NOTIFY controlChanged)
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
     Q_PROPERTY(int configuredTunerGainDb READ configuredTunerGainDb NOTIFY controlChanged)
     Q_PROPERTY(bool tunerGainRowOverride READ tunerGainRowOverride NOTIFY controlChanged)
@@ -1625,6 +1626,19 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief The receiver the session runs on, named as the Qt start path names a source.
+     *
+     * `sourceType` is "usb" (an RTL-SDR), "airspy" or "rtltcp", the last with the `host` and `port` the engine parsed
+     * from the spec. Empty off a radio input and for the radio inputs no Qt start offers (SoapySDR, an I/Q replay),
+     * and cleared with the other readings when the session stops. Read from the options snapshot the tick holds, so a
+     * screen reattaching to a running session (Activity recreation) learns the receiver from the session itself.
+     */
+    QVariantMap
+    radioSource() const {
+        return m_view.radio_source;
+    }
+
+    /**
      * @brief Re-read the boundary. Call from the UI poll tick only.
      *
      * Takes the snapshots rather than fetching them so that one frame is built from
@@ -1768,6 +1782,7 @@ class MetricsModel : public QObject {
 
     struct View {
         QVariantMap airspy;
+        QVariantMap radio_source;
         SiteView site;
         dsd_app_p25_quality quality{};
         dsd_app_voice_errs voice_errs{};
@@ -2019,7 +2034,8 @@ class MetricsModel : public QObject {
                    && tuner_gain_configured_db == other.tuner_gain_configured_db
                    && tuner_gain_row_override == other.tuner_gain_row_override && squelch_db == other.squelch_db
                    && squelch_off == other.squelch_off && ppm == other.ppm && airspy == other.airspy
-                   && squelchOverrideEquals(other) && analogSettingEquals(other) && scanRowEquals(other);
+                   && radio_source == other.radio_source && squelchOverrideEquals(other) && analogSettingEquals(other)
+                   && scanRowEquals(other);
         }
 
         bool
@@ -2137,6 +2153,7 @@ class MetricsModel : public QObject {
 
   private:
     static QVariantMap airspyView(const dsd_opts* opts_snapshot);
+    static QVariantMap radioSourceView(const dsd_opts* opts_snapshot);
     View m_view;
     /* Held across frames rather than derived from one: frame sync comes and goes
      * between 250 ms polls, so a single sample answers "is it synced right now",

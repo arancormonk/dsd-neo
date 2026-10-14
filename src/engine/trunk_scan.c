@@ -56,6 +56,7 @@
 #include <time.h>
 
 #include "scan_analog_internal.h"
+#include "scan_owner.h"
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -2027,7 +2028,7 @@ trunk_scan_save_target_snapshot(dsd_trunk_scan_coord* coord, const dsd_state* st
 
 static dsd_trunk_scan_coord*
 trunk_scan_get(const dsd_state* state) {
-    return DSD_STATE_EXT_GET_AS(dsd_trunk_scan_coord, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    return (dsd_trunk_scan_coord*)dsd_engine_scan_owned(state, 0);
 }
 
 /* The published id is the target id verbatim, so the two buffers have to agree. */
@@ -2155,7 +2156,7 @@ trunk_scan_clear_enc_lockout_snapshots(const dsd_state* state) {
 
 static const dsd_trunk_scan_coord*
 trunk_scan_get_const(const dsd_state* state) {
-    return (const dsd_trunk_scan_coord*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    return (const dsd_trunk_scan_coord*)dsd_engine_scan_owned(state, 0);
 }
 
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
@@ -4302,7 +4303,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
 
-    if (dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, coord, trunk_scan_free) != 0) {
+    if (dsd_engine_scan_own(state, 0, coord, trunk_scan_free) != 0) {
         trunk_scan_init_release(opts, state, coord, &list);
         scan_set_error(err, err_sz, "failed to attach trunk scan coordinator");
         return -1;
@@ -4356,7 +4357,7 @@ dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
     dsd_scan_keys_leave(state);
     trunk_scan_uninstall_runtime_hooks(coord);
     trunk_scan_clear_published_target(state);
-    (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, NULL, NULL);
+    (void)dsd_engine_scan_own(state, 0, NULL, NULL);
 }
 
 #ifdef DSD_TRUNK_SCAN_TEST_CLOCK

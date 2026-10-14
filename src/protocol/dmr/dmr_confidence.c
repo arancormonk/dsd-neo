@@ -3,9 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include "dmr_confidence.h"
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
+#include "dmr_confidence.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -61,6 +63,7 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
             // co-channel interference never accumulates into a re-lock.
             state->dmr_confidence_candidate_cc = DMR_CONFIDENCE_UNKNOWN_CC;
             state->dmr_confidence_candidate_count = 0;
+            dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
             return DMR_CONFIDENCE_LOCKED;
         }
         if (state->dmr_confidence_mismatch_count < 255U) {
@@ -85,6 +88,7 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
             // The previous system identity is gone; voice slots must
             // re-qualify under the new colour code before audio resumes.
             dmr_confidence_clear_voice(state);
+            dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
             return DMR_CONFIDENCE_LOCKED;
         }
         return DMR_CONFIDENCE_REJECT;
@@ -101,6 +105,7 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
         state->dmr_confidence_locked = 1;
         state->dmr_confidence_color_code = (uint8_t)color_code;
         state->dmr_color_code = color_code;
+        dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
         return DMR_CONFIDENCE_LOCKED;
     }
 
@@ -141,6 +146,7 @@ dmr_confidence_note_voice_burst(dsd_state* state, unsigned int slot, unsigned in
 
     if (state->dmr_confidence_voice_count[slot] >= DMR_CONFIDENCE_VOICE_OBSERVES) {
         state->dmr_confidence_voice_open[slot] = 1;
+        dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
         return DMR_CONFIDENCE_LOCKED;
     }
 

@@ -6,6 +6,8 @@ target_sources(
         actions/actions_audio.c
         actions/actions_logging.c
         actions/actions_radio.c
+        actions/actions_signal_search.c
+        signal_search_store.cpp
         actions/actions_trunk.c
         access_code_view.c
         analog_width_view.c

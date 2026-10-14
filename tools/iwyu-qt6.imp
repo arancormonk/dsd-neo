@@ -83,7 +83,14 @@
   { include: ["@[\"<](.*/)?qpair\\.h[\">]", private, "<QPair>", public] },
   { include: ["@[\"<](.*/)?qvariant\\.h[\">]", private, "<QVariant>", public] },
 
-  # Item models.
+  # Item models. qabstractitemmodel.h declares the list and table models too, and
+  # Qt documents a class header for each; <QAbstractListModel> and
+  # <QAbstractTableModel> bring in the whole of it (QModelIndex included), so a
+  # model header that includes its base class's header needs nothing more.
+  { symbol: ["QAbstractListModel", private, "<QAbstractListModel>", public] },
+  { symbol: ["QAbstractTableModel", private, "<QAbstractTableModel>", public] },
+  { include: ["<QAbstractItemModel>", public, "<QAbstractListModel>", public] },
+  { include: ["<QAbstractItemModel>", public, "<QAbstractTableModel>", public] },
   { include: ["@[\"<](.*/)?qabstractitemmodel\\.h[\">]", private, "<QAbstractItemModel>", public] },
   { include: ["@[\"<](.*/)?qsortfilterproxymodel\\.h[\">]", private, "<QSortFilterProxyModel>", public] },
 

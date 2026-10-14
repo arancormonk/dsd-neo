@@ -191,6 +191,11 @@ dmrRC(dsd_opts* opts, dsd_state* state) {
     if (dmr_rc_collect_dibits(opts, state, dibits) == 0) {
         return;
     }
+    /* An input interruption cut the live dibits (a Signal search left the burst): they are erasures the reader stood
+       in, and a CRC-7 over four bits does not keep them out of the event history. The burst is dropped. */
+    if (state->input_interrupted) {
+        return;
+    }
 
     uint8_t emb_bits[16];
     uint8_t rc_bits[32];

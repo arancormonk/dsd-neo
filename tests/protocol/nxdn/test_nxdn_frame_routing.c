@@ -43,6 +43,9 @@ static size_t g_dibit_stream_pos;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. */
 static size_t g_boundary_at = SIZE_MAX;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; SIZE_MAX for none. */
+static size_t g_interrupt_at = SIZE_MAX;
 static uint8_t g_last_sacch_bit;
 static uint8_t g_last_sacch_reliab;
 static uint8_t g_last_facch_bit;
@@ -125,6 +128,7 @@ reset_state(void) {
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
     g_dibit_stream_pos = 0U;
     g_boundary_at = SIZE_MAX;
+    g_interrupt_at = SIZE_MAX;
     g_last_sacch_bit = 0;
     g_last_sacch_reliab = 0;
     g_last_facch_bit = 0;
@@ -155,6 +159,9 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
     if (g_dibit_stream_pos == g_boundary_at && state != NULL) {
         state->carrier_seq++;
+    }
+    if (g_dibit_stream_pos == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
     }
     uint8_t dibit = 0U;
     uint8_t reliab = 255U;
@@ -680,6 +687,39 @@ test_frame_split_by_a_carrier_boundary_is_dropped(void) {
     return rc;
 }
 
+/* A Signal search that leaves the frame (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. The frame is dropped as one the carrier
+   boundary splits is, SACCH segments and all: nothing decodes, nothing plays, nothing confirms. */
+static int
+test_frame_cut_by_an_input_interruption_is_dropped(void) {
+    int rc = 0;
+
+    reset_state();
+    g_stub_facch_ok = 1;
+    g_state.nxdn_sacch_frame_segment[0][0] = 0;
+    g_state.nxdn_sacch_frame_segcrc[0] = 0;
+    prepare_frame_stream(0x32U, 0);
+    g_interrupt_at = 150U; /* past the SACCH and the first FACCH1 */
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("cut frame is interrupted", g_state.input_interrupted, 1);
+    rc |= expect_int("cut frame moves no carrier count", (int)g_state.carrier_seq, 0);
+    rc |= expect_int("cut frame read whole", (int)g_dibit_stream_pos, 182);
+    rc |= expect_int("cut frame decodes no SACCH", g_sacch_calls, 0);
+    rc |= expect_int("cut frame decodes no FACCH1", g_facch_calls, 0);
+    rc |= expect_int("cut frame plays no voice", g_voice_calls, 0);
+    rc |= expect_int("cut frame confirms nothing", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("cut frame drops the SACCH segments", g_state.nxdn_sacch_frame_segment[0][0], 1);
+    rc |= expect_int("cut frame drops the SACCH segment CRCs", g_state.nxdn_sacch_frame_segcrc[0], 1);
+
+    reset_state();
+    prepare_frame_stream(0x32U, 0);
+    g_interrupt_at = 4U; /* inside the LICH */
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("LICH cut frame decodes no SACCH", g_sacch_calls, 0);
+    rc |= expect_int("LICH cut frame plays no voice", g_voice_calls, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -693,6 +733,7 @@ main(void) {
     rc |= test_unconfirmed_frame_is_inert();
     rc |= test_short_crc_confirms_only_when_repeated();
     rc |= test_frame_split_by_a_carrier_boundary_is_dropped();
+    rc |= test_frame_cut_by_an_input_interruption_is_dropped();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

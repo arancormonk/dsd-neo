@@ -41,7 +41,9 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     /* The superframe belongs to one carrier (issue #575): its slow data decodes only after the last voice frame, so a
        header, text or position message read whole before the carrier boundary moved the carrier count (a replay read
        adopting a recorded retune) would publish the carrier left's station after the boundary ended its call. From the
-       voice frame read across or after the move, the superframe is dropped, slow data and all, as on a sync loss. */
+       voice frame read across or after the move, the superframe is dropped, slow data and all, as on a sync loss. So it
+       is from the voice frame an input interruption cut (a Signal search leaving the superframe): the rest is erasures
+       getSymbol() stood in, which the vocoder must not play. */
     const uint32_t carrier_seq = state->carrier_seq;
     //20 voice and 19 slow data frames (20th is frame sync)
     for (j = 0; j < 21; j++) {
@@ -58,7 +60,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
             w++;
             x++;
         }
-        if (state->carrier_seq != carrier_seq) {
+        if (dsd_state_frame_read_lost(state, carrier_seq)) {
             break;
         }
 
@@ -96,10 +98,17 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
 
     int i;
     float soft_symbols[660];
+    const uint32_t carrier_seq = state->carrier_seq;
 
     // Capture soft symbols for soft-decision decoding
     for (i = 0; i < 660; i++) {
         getDibitAndSoftSymbol(opts, state, &soft_symbols[i]);
+    }
+    /* A carrier boundary split the header (issue #575), or an input interruption cut it (a Signal search left it): the
+       rest of it belongs to another carrier or is erasures the reader stood in, which the soft Viterbi decode reads as
+       confident symbols. It decodes nothing, and the superframe behind it is not read. */
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        return 0;
     }
 
     const int header_ok = dstar_header_decode_soft(state, soft_symbols);

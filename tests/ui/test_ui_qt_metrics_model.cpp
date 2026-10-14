@@ -17,6 +17,7 @@
 #include <QObject>
 #include <QString>
 #include <QVariant>
+#include <QVariantMap>
 #include <QtGlobal>
 #include <cmath>
 #include <initializer_list>
@@ -770,6 +771,68 @@ test_replay_input() {
 }
 
 /*
+ * The receiver the session runs on, in the Qt start path's source names, from the options snapshot: what a Signal
+ * search screen reattaching to a running search after Activity recreation restores its receiver from. It notifies
+ * the control group, and a cleared model names none.
+ */
+static void
+test_radio_source() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int controls = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&] { ++controls; });
+    /* A local receiver is named by its source type alone. */
+    const auto named_only = [&](const char* type) {
+        const QVariantMap source = model.radioSource();
+        return source.size() == 1 && source.value(QStringLiteral("sourceType")) == QString::fromLatin1(type);
+    };
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:450M:0:0:48");
+    model.refresh(&opts, &state);
+    expect("an RTL-SDR spec is the usb source", named_only("usb"));
+
+    const int before = controls;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:450M:8:0:0");
+    model.refresh(&opts, &state);
+    expect("an Airspy spec is the airspy source", named_only("airspy"));
+    expect("a new receiver notifies the control group", controls > before);
+
+    /* The server is the one the engine parsed from the spec, not a re-reading of the text. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:10.0.0.5:1235:450M");
+    DSD_SNPRINTF(opts.rtltcp_hostname, sizeof opts.rtltcp_hostname, "%s", "10.0.0.5");
+    opts.rtltcp_portno = 1235;
+    model.refresh(&opts, &state);
+    const QVariantMap rtltcp = model.radioSource();
+    expect("an rtl_tcp spec is the rtltcp source with its server",
+           rtltcp.value(QStringLiteral("sourceType")) == QStringLiteral("rtltcp")
+               && rtltcp.value(QStringLiteral("host")) == QStringLiteral("10.0.0.5")
+               && rtltcp.value(QStringLiteral("port")).toInt() == 1235);
+
+    /* No Qt start offers these receivers, and audio input has none. */
+    for (const char* dev : {"soapy:driver=rtlsdr", "iqreplay:capture.iq.json"}) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", dev);
+        model.refresh(&opts, &state);
+        expect("a receiver no Qt start offers names no source", model.radioSource().isEmpty());
+    }
+    opts.audio_in_type = AUDIO_IN_WAV;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:450M");
+    model.refresh(&opts, &state);
+    expect("audio input names no source", model.radioSource().isEmpty());
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    model.refresh(&opts, &state);
+    expect("a bare airspy spec is the airspy source", named_only("airspy"));
+    model.clear();
+    expect("a cleared model names no source", model.radioSource().isEmpty());
+    freeState(&state);
+}
+
+/*
  * Why the rotation is staying on the row on air, and how long is left (#508).
  *
  * The countdown is published in tenths of a second rather than milliseconds on
@@ -1428,6 +1491,7 @@ main(int argc, char** argv) {
     test_rigctl_audio_passband();
     test_options_readiness();
     test_replay_input();
+    test_radio_source();
     test_decode_clock_readings();
     test_temporary_lockout_metrics();
     test_call_skip_metrics();

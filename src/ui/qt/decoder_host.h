@@ -141,8 +141,10 @@ class DecoderHost : public QObject {
      * @brief Whether sessionInitialized() reports successful engine initialization.
      *
      * Running can precede tuner/file initialization on these hosts, so recency
-     * bookkeeping must wait for the signal. Other hosts use Running as their
-     * readiness edge. This capability is constant for the lifetime of a host.
+     * bookkeeping must wait for the signal. Running can also precede the decoder's
+     * command admission there, so a command submitted on that edge can be refused;
+     * the signal follows admission. Other hosts use Running as their readiness
+     * edge. This capability is constant for the lifetime of a host.
      */
     virtual bool
     signalsSessionInitialized() const {

@@ -4,7 +4,6 @@
  */
 
 #include <QPair>
-#include <initializer_list>
 #include <utility>
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
@@ -375,7 +374,7 @@ session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, co
     }
     if (!validation.isEmpty()) {
         if (error) {
-            *error = validation;
+            *error = std::move(validation);
         }
         return {};
     }

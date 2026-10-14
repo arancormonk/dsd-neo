@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Verify the production FFT wrapper against an independent complex DFT and
-// exercise both setup allocations, including retry after a failed size change.
+// Verify the production FFT wrapper against an independent complex DFT, run its
+// largest transform on a small thread stack, and exercise each of its allocations,
+// including retry after a failed size change.
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <dsd-neo/runtime/signal_search.h>
+#ifdef _WIN32
+#include <process.h>
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 #include "rtl_fft_cache.h"
 
@@ -84,6 +92,60 @@ test_sizes() {
         }
     }
 }
+
+// The signal search's largest transform. Without a work buffer, pffft takes 8 bytes per point of scratch from the
+// caller's stack: 512 KiB here, which overflows a macOS secondary thread (512 KiB) and most of a Windows one (1 MiB).
+constexpr int kLargestN = DSD_SEARCH_MAX_FFT;
+constexpr size_t kSmallStack = size_t{256} * 1024;
+// Static: 512 KiB of samples would not fit the small stack either.
+alignas(64) float largest[2 * kLargestN];
+
+void
+largest_transform() {
+    float* data = largest;
+    fill(data, kLargestN);
+    assert(cache.forward(kLargestN, data));
+    for (int k = 0; k < kLargestN; ++k) {
+        const double real = k == 3 ? 0.3 * kLargestN : 0.0;
+        const double imag = k == 7 ? -0.1 * kLargestN : 0.0;
+        assert(fabs(data[static_cast<size_t>(k) * 2] - real) < 0.01);
+        assert(fabs(data[static_cast<size_t>(k) * 2 + 1] - imag) < 0.01);
+    }
+}
+
+#ifdef _WIN32
+unsigned __stdcall
+largest_transform_entry(void*) {
+    largest_transform();
+    return 0;
+}
+#else
+void*
+largest_transform_entry(void*) {
+    largest_transform();
+    return nullptr;
+}
+#endif
+
+void
+test_small_stack() {
+#ifdef _WIN32
+    const uintptr_t handle = _beginthreadex(nullptr, static_cast<unsigned>(kSmallStack), largest_transform_entry,
+                                            nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    assert(handle != 0);
+    HANDLE thread = reinterpret_cast<HANDLE>(handle);
+    assert(WaitForSingleObject(thread, INFINITE) == WAIT_OBJECT_0);
+    CloseHandle(thread);
+#else
+    pthread_attr_t attr;
+    assert(pthread_attr_init(&attr) == 0);
+    assert(pthread_attr_setstacksize(&attr, kSmallStack) == 0);
+    pthread_t thread;
+    assert(pthread_create(&thread, &attr, largest_transform_entry, nullptr) == 0);
+    assert(pthread_join(thread, nullptr) == 0);
+    pthread_attr_destroy(&attr);
+#endif
+}
 } // namespace
 
 #ifdef DSD_TEST_FFT_ALLOC_WRAP
@@ -124,11 +186,14 @@ int
 main() {
     test_dft();
     test_sizes();
+    test_small_stack();
 #ifdef DSD_TEST_FFT_ALLOC_WRAP
     test_allocation_retry(1);
-    // Force a different cached size before exercising the twiddle allocation.
+    // Force a different cached size before exercising the twiddle and work buffer allocations.
     test_dft();
     test_allocation_retry(2);
+    test_dft();
+    test_allocation_retry(3);
 #endif
     return 0;
 }

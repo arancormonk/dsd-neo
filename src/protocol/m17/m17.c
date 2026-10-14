@@ -1074,12 +1074,24 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(m17_bits, 0, sizeof(m17_bits));
     DSD_MEMSET(lich_bits, 0, sizeof(lich_bits));
 
-    m17_confirm_begin_frame(state);
+    /* The LICH and the payload are interleaved over the whole frame and decode only once it is read. A carrier
+       boundary that moved the carrier count meanwhile (issue #575) left the rest of it another carrier's, and an input
+       interruption that cut it (a Signal search left the frame, or a live read gave up on a stalled input) left the
+       rest erasures getSymbol() stood in, which the LICH's Golay blocks can take for codewords and the Viterbi decode
+       for a frame number with its end flag set. Either way the frame is dropped, as on a sync loss: no LICH chunk, no
+       evidence, no voice and no end of the call. */
+    const uint32_t carrier_seq = state->carrier_seq;
 
     //load dibits into dibit buffer
     for (i = 0; i < 184; i++) {
         dbuf[i] = (uint8_t)get_dibit_and_analog_signal(opts, state, NULL);
     }
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        DSD_FPRINTF(stderr, "\n");
+        return 0;
+    }
+
+    m17_confirm_begin_frame(state);
 
     //convert dbuf into a bit array
     for (i = 0; i < 184; i++) {
@@ -1277,15 +1289,24 @@ processM17BRT(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(m17_bits, 0, sizeof(m17_bits));
     DSD_MEMSET(bert_bits, 0, sizeof(bert_bits));
 
-    m17_confirm_begin_frame(state);
+    /* A frame a carrier boundary split (issue #575) or an input interruption cut (a Signal search left it, or a live
+       read gave up on a stalled input) counts no bits, errors or lock: the rest of it is another carrier's or erasures
+       the reader stood in. It is dropped, as on a sync loss. */
+    const uint32_t carrier_seq = state->carrier_seq;
     m17_read_payload_randomized_bits(opts, state, m17_rnd_bits);
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        DSD_FPRINTF(stderr, "\n");
+        return 0;
+    }
+
+    m17_confirm_begin_frame(state);
     m17_payload_decode_bits(m17_rnd_bits, m17_bits);
     m17_decode_bert_payload_bits(m17_bits, bert_bits);
     m17_process_bert_payload(opts, state, bert_bits);
 
     /* A BERT frame carries no CRC, so a PRBS9 lock is the only thing here that can tell a real
      * test transmission from the alternating run that reaches this matcher on noise (#399). */
-    const int locked = (state != NULL && state->m17_bert_locked != 0U);
+    const int locked = state->m17_bert_locked != 0U;
     if (locked) {
         m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
     }
@@ -1301,13 +1322,15 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
     const uint16_t crc_cmp = m17_crc16(lsf_packed, 28);
     const int crc_err = (crc_cmp != crc_ext);
 
-    if (crc_err == 0) {
-        /* A CRC-16 over the link setup is proof the preamble that led here was real (#399). */
-        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
-    }
-
     if (crc_err == 0 || opts->aggressive_framesync == 0) {
         M17decodeLSF(opts, state, crc_err == 0);
+    }
+
+    if (crc_err == 0) {
+        /* A CRC-16 over the link setup is proof the preamble that led here was real (#399). Noted once the LSF's
+         * call is published: a signal search reads the callsigns and CAN from that call when it hears the
+         * confirmation, and this LSF may be the only one the transmission delivers. */
+        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
     }
 
     if (opts->payload == 1) {
@@ -1362,8 +1385,18 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(soft_symbols, 0, sizeof(soft_symbols));
     DSD_MEMSET(m17_soft_bits, 0, sizeof(m17_soft_bits));
 
-    m17_confirm_begin_frame(state);
+    /* An LSF a carrier boundary split (issue #575) or an input interruption cut (a Signal search left it, or a live
+       read gave up on a stalled input) decodes nothing: the rest of it is another carrier's or erasures the reader
+       stood in, through which the soft Viterbi decode can still clear the CRC and publish and confirm a link setup
+       that is not this transmission's. It is dropped, as on a sync loss. */
+    const uint32_t carrier_seq = state->carrier_seq;
     m17_capture_soft_symbols(opts, state, soft_symbols);
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        DSD_FPRINTF(stderr, "\n");
+        return 0;
+    }
+
+    m17_confirm_begin_frame(state);
     m17_soft_bits_from_symbols(soft_symbols, state, m17_soft_bits);
     const int crc_err = m17_decode_lsf_soft_bits(opts, state, m17_soft_bits);
     m17_confirm_end_frame(state);
@@ -3280,19 +3313,17 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
     m17_end_packet_call(opts, state);
 }
 
-/* Returns non-zero when the frame carried a packet chunk the decoder could use; the four
- * rejections below are checks this frame ran and failed, which is what the SPS hunt wants to
- * hear about (#419). */
+/* Decodes the frame's @p soft_symbols. Returns non-zero when the frame carried a packet chunk
+ * the decoder could use; the four rejections below are checks this frame ran and failed, which
+ * is what the SPS hunt wants to hear about (#419). */
 static int
-m17_process_packet_frame(dsd_opts* opts, dsd_state* state) {
+m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* soft_symbols) {
 
-    float soft_symbols[M17_PAYLOAD_SYMBOLS];    //Raw float symbol values for soft-decision Viterbi
     uint16_t m17_soft_bits[M17_PAYLOAD_BITS];   //368 soft costs (de-interleaved and de-scrambled)
     uint16_t m17_depunc[M17_PACKET_TYPE2_BITS]; //420 weighted values after depuncturing
     uint8_t pkt_packed[50];
     uint8_t pkt_bytes[48];
 
-    DSD_MEMSET(soft_symbols, 0, sizeof(soft_symbols));
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
     DSD_MEMSET(m17_soft_bits, 0, sizeof(m17_soft_bits));
     DSD_MEMSET(m17_depunc, 0, sizeof(m17_depunc));
@@ -3300,7 +3331,6 @@ m17_process_packet_frame(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(pkt_packed, 0, sizeof(pkt_packed));
     DSD_MEMSET(pkt_bytes, 0, sizeof(pkt_bytes));
 
-    m17_capture_soft_symbols(opts, state, soft_symbols);
     m17_soft_bits_from_symbols(soft_symbols, state, m17_soft_bits);
     m17_soft_depuncture_p3(m17_soft_bits, m17_depunc);
     (void)viterbi_decode(pkt_bytes, m17_depunc, M17_PACKET_TYPE2_BITS);
@@ -3367,8 +3397,22 @@ m17_process_packet_frame(dsd_opts* opts, dsd_state* state) {
 //WIP PKT decoder - soft symbol enhanced
 int
 processM17PKT(dsd_opts* opts, dsd_state* state) {
+    float soft_symbols[M17_PAYLOAD_SYMBOLS]; //Raw float symbol values for soft-decision Viterbi
+    DSD_MEMSET(soft_symbols, 0, sizeof(soft_symbols));
+
+    /* A packet frame a carrier boundary split (issue #575) or an input interruption cut (a Signal search left it, or a
+       live read gave up on a stalled input) adds no chunk and ends, decodes and confirms no packet: the rest of it is
+       another carrier's or erasures the reader stood in, which the soft Viterbi decode reads as symbols. It is
+       dropped, as on a sync loss. */
+    const uint32_t carrier_seq = state->carrier_seq;
+    m17_capture_soft_symbols(opts, state, soft_symbols);
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        DSD_FPRINTF(stderr, "\n");
+        return 0;
+    }
+
     m17_confirm_begin_frame(state);
-    const int decoded = m17_process_packet_frame(opts, state);
+    const int decoded = m17_process_packet_frame(opts, state, soft_symbols);
     m17_confirm_end_frame(state);
     return (decoded != 0 || m17_confirm_is_confirmed(state)) ? 1 : 0;
 } //end processM17PKT

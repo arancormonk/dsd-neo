@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stddef.h>
 #include "m17_confirm.h"
 
 #include <dsd-neo/core/state.h>
@@ -37,6 +39,7 @@ m17_confirm_note_evidence(dsd_state* state, m17_evidence evidence) {
         state->m17_confirm_frame_evidence = (uint8_t)M17_EVIDENCE_STRONG;
         state->m17_confirm_weak_streak = 0;
         state->m17_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "M17", 0, 0, NULL);
         return;
     }
     if (evidence != M17_EVIDENCE_WEAK || state->m17_confirm_frame_evidence != 0) {
@@ -49,6 +52,7 @@ m17_confirm_note_evidence(dsd_state* state, m17_evidence evidence) {
     }
     if (state->m17_confirm_weak_streak >= M17_CONFIRM_WEAK_OBSERVES) {
         state->m17_confirmed = 1;
+        dsd_signal_search_note_evidence(state, "M17", 0, 0, NULL);
     }
 }
 

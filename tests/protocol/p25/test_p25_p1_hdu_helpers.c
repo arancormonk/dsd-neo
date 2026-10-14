@@ -133,6 +133,9 @@ static int g_soft_calls;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
 static int g_boundary_at = -1;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; -1 for none. */
+static int g_interrupt_at = -1;
 
 static void
 reset_soft_inputs(void) {
@@ -159,6 +162,9 @@ append_soft_input(int dibit, uint8_t reliability, int16_t llr0, int16_t llr1) {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
+    if (g_soft_calls == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
+    }
     if (g_soft_calls++ == g_boundary_at && state != NULL) {
         state->carrier_seq++;
     }
@@ -818,6 +824,49 @@ test_hdu_split_by_a_carrier_boundary_publishes_nothing(void) {
     return rc;
 }
 
+/* A Signal search that leaves the HDU (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, cuts it: from the cut every symbol is an erasure getSymbol() stood in, which the Golay and Reed-Solomon codes
+   can take for the all-zero codeword. Nothing of the header is published, as for one the carrier boundary splits. */
+static int
+test_hdu_cut_by_an_input_interruption_publishes_nothing(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset_hook_counters();
+    reset_fec_stubs();
+    reset_soft_inputs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    g_soft_calls = 0;
+    processHDU(&opts, &state);
+    const int total_reads = g_soft_calls;
+
+    static const int cuts_from_end[2] = {3, 200};
+    for (int c = 0; c < 2; c++) {
+        reset_hook_counters();
+        reset_fec_stubs();
+        reset_soft_inputs();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.p25_p1_hdu_crypto_fresh = 1;
+        state.p25kid = 77;
+        g_soft_calls = 0;
+        g_interrupt_at = total_reads - cuts_from_end[c];
+
+        processHDU(&opts, &state);
+
+        rc |= expect_int("cut HDU is interrupted", state.input_interrupted, 1);
+        rc |= expect_int("cut HDU moves no carrier count", (int)state.carrier_seq, 0);
+        rc |= expect_int("cut HDU reads it all", g_soft_calls, total_reads);
+        rc |= expect_int("cut HDU publishes no key id", state.p25kid, 77);
+        rc |= expect_int("cut HDU publishes no encryption", state.p25_p1_hdu_crypto_fresh, 1);
+        rc |= expect_int("cut HDU leaves the drop bytes", state.dropL, 0);
+    }
+    g_interrupt_at = -1;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -833,6 +882,7 @@ main(void) {
     rc |= test_hdu_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_hdu_encrypted_trunk_lockout_state();
     rc |= test_hdu_split_by_a_carrier_boundary_publishes_nothing();
+    rc |= test_hdu_cut_by_an_input_interruption_publishes_nothing();
     dsd_decode_clock_use_system();
     return rc;
 }

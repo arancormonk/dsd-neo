@@ -19,6 +19,7 @@
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -60,6 +61,23 @@ static int g_mac_group[3] = {0};
 static int g_mac_source[3] = {0};
 static int g_status_count = 0;
 static long g_channel_freq = 0;
+/* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
+   stands erasures in for every symbol after it; -1 for none. The stub goes on handing out the block's real dibits, the
+   worst case of erasures the list decoder fits to a CRC. */
+static int g_interrupt_at = -1;
+/* Signal search evidence the decoded blocks reported, and the protocol named last. */
+static int g_evidence = 0;
+static char g_evidence_protocol[16];
+
+static void
+capture_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source, const char* access) {
+    (void)state;
+    (void)target;
+    (void)source;
+    (void)access;
+    g_evidence++;
+    DSD_SNPRINTF(g_evidence_protocol, sizeof(g_evidence_protocol), "%s", protocol);
+}
 
 static void
 append_tsbk_stream_block(const uint8_t dibits[98], int* skipdibit) {
@@ -113,7 +131,9 @@ build_network_status_stream(void) {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_stream_pos == g_interrupt_at && state != NULL) {
+        state->input_interrupted = 1;
+    }
     uint8_t dibit = 0;
     if (g_stream_pos < g_stream_len) {
         dibit = g_stream[g_stream_pos++];
@@ -374,6 +394,7 @@ expect_eq_int(const char* tag, int got, int want) {
 int
 main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
+    dsd_signal_search_evidence_set(capture_evidence);
     build_two_block_stream();
     reset_decode_counters();
 
@@ -397,6 +418,26 @@ main(void) {
     rc |= expect_eq_int("status symbols collected", g_status_count, 6);
     rc |= expect_eq_int("fec ok count", (int)state.p25_p1_fec_ok, 2);
     rc |= expect_eq_int("fec err count", (int)state.p25_p1_fec_err, 0);
+    /* A block whose CRC passes is the P25 evidence a Signal search confirms a control channel by: its NID alone is
+       not, since a list-decoded BCH takes several percent of random words. */
+    rc |= expect_eq_int("each crc-valid block is search evidence", g_evidence, 2);
+    rc |= expect_eq_int("search evidence names p25",
+                        g_evidence_protocol[0] == 'P' && g_evidence_protocol[1] == '2' && g_evidence_protocol[2] == '5'
+                            && !g_evidence_protocol[3],
+                        1);
+
+    /* A block whose CRC fails is no evidence. */
+    build_two_block_stream();
+    for (int i = 101 + 20; i < 101 + 80; i++) {
+        g_stream[i] = (uint8_t)(3 - g_stream[i]);
+    }
+    reset_decode_counters();
+    g_evidence = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    processTSBK(&opts, &state);
+    rc |= expect_eq_int("corrupt block fails its crc", state.p25_p1_fec_err > 0, 1);
+    rc |= expect_eq_int("only crc-valid blocks are search evidence", g_evidence, (int)state.p25_p1_fec_ok);
 
     build_network_status_stream();
     reset_decode_counters();
@@ -430,6 +471,31 @@ main(void) {
     rc |= expect_eq_int("net-sts rejected voice preserves tdma cc hint", state.p25_cc_is_tdma, 1);
     rc |= expect_eq_int("net-sts rejected voice skips wacn", (int)state.p2_wacn, 0);
     rc |= expect_eq_int("net-sts rejected voice skips sysid", (int)state.p2_sysid, 0);
+
+    /* A Signal search that leaves the TSDU (its visit ended, or a command came), or a live read that gives up on a
+       stalled input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. Neither the block it cut
+       nor any after it counts or dispatches, whatever its CRC says; the blocks read whole before it stand. */
+    static const int cuts[3] = {150, 100, 0};
+    static const int grants_before[3] = {1, 0, 0};
+    for (int c = 0; c < 3; c++) {
+        build_two_block_stream();
+        reset_decode_counters();
+        g_channel_freq = 0;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        g_interrupt_at = cuts[c];
+        g_evidence = 0;
+
+        processTSBK(&opts, &state);
+
+        rc |= expect_eq_int("cut tsdu is interrupted", state.input_interrupted, 1);
+        rc |= expect_eq_int("cut tsdu dispatches only the blocks before the cut", g_mac_count, grants_before[c]);
+        rc |=
+            expect_eq_int("cut tsdu counts only the blocks before the cut", (int)state.p25_p1_fec_ok, grants_before[c]);
+        rc |= expect_eq_int("cut tsdu counts no fec error", (int)state.p25_p1_fec_err, 0);
+        rc |= expect_eq_int("cut tsdu reports only the blocks before the cut", g_evidence, grants_before[c]);
+    }
+    g_interrupt_at = -1;
     dsd_decode_clock_use_system();
     return rc;
 }

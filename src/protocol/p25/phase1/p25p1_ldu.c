@@ -112,6 +112,12 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
         y++;
         z++;
     }
+    /* An input interruption cut the frame (a Signal search left the LDU): the rest of it is erasures the reader stood
+       in, and their soft metrics are as confident as real symbols'. The vocoder never sees it, so nothing plays,
+       captures or begins a call on it; like the frames a sync loss misses, it takes no keystream either. */
+    if (state->input_interrupted) {
+        return 0;
+    }
 
     update_ldu_encryption_flag(state);
 

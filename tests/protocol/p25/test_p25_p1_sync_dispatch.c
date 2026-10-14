@@ -38,9 +38,17 @@ static int g_close_mbe_calls;
 static int g_close_mbe_r_calls;
 static int g_resume_calls;
 static int g_status_classify_calls;
+static int g_dibit_reads;
+static int g_nid_decode_calls;
+/* The NID read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there
+   and stands erasures in for that symbol and every one after it; -1 for none. */
+static int g_interrupt_at_dibit = -1;
 
 static void
 reset_stub_state(void) {
+    g_dibit_reads = 0;
+    g_nid_decode_calls = 0;
+    g_interrupt_at_dibit = -1;
     g_test_duid = 0x3U;
     g_check_result = NID_OK;
     g_new_nac = 0x293;
@@ -56,7 +64,9 @@ reset_stub_state(void) {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_dibit_reads++ == g_interrupt_at_dibit && state != NULL) {
+        state->input_interrupted = 1;
+    }
     if (out_soft != NULL) {
         out_soft->reliability = 255;
         out_soft->llr[0] = -255;
@@ -72,6 +82,7 @@ p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observ
     (void)reliab63;
     (void)parity;
     (void)parity_reliab;
+    g_nid_decode_calls++;
     g_last_observed_nac = observed_nac;
     struct p25p1_nid_result result = {(enum NidResult)g_check_result, g_new_nac, g_test_duid, g_error_count};
     return result;
@@ -613,6 +624,43 @@ test_p25p1_verdict_follows_the_nid_evidence_window(void) {
     assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
 }
 
+/* A Signal search that leaves the frame (its visit ended, or a command came), or a live read that gives up on a stalled
+   input, can cut the NID: getSymbol() stands 0 in for every symbol from there, and when 0 slices to dibit 0 the BCH
+   takes the all-zero codeword (NAC 0, an HDU). A cut NID decodes nothing: no NAC, no data unit, no capture boundary,
+   and no evidence about the demodulator or the profile; the verdict is withheld, as the engine's own decision. */
+static void
+test_p25p1_nid_cut_by_an_input_interruption_decodes_nothing(void) {
+    static const int cuts[3] = {0, 15, 32};
+    for (int c = 0; c < 3; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_stub_state();
+        opts.mbe_out_f = stdout;
+        g_test_duid = 0x0U; /* what the all-zero codeword decodes to: an HDU */
+        g_new_nac = 0x293;
+        state.nac = 0x111;
+        state.lastp25type = 9;
+        state.rf_mod = 0;
+        state.p25_p1_validated_rf_mod = -1;
+        state.symbolcnt = 5000U;
+        g_interrupt_at_dibit = cuts[c];
+
+        assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
+
+        assert(g_dibit_reads == 33);
+        assert(g_nid_decode_calls == 0);
+        assert(state.nac == 0x111);
+        assert(state.lastp25type == 9);
+        assert(state.p25_p1_nid_evidence == 0);
+        assert(state.p25_p1_validated_rf_mod == -1);
+        assert(state.nid_failures_total == 0U);
+        assert(g_close_mbe_calls == 0);
+        assert(opts.mbe_out_f == stdout);
+    }
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -625,6 +673,7 @@ main(void) {
     test_p25p1_mbe_output_and_resume_side_effects();
     test_p25p1_valid_nid_learns_modulation();
     test_p25p1_verdict_follows_the_nid_evidence_window();
+    test_p25p1_nid_cut_by_an_input_interruption_decodes_nothing();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }

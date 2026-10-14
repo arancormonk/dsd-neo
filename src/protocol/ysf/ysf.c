@@ -9,6 +9,7 @@
  * 2023-07 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
@@ -281,6 +282,8 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
     //decode the callsign, etc, found in the DCH when no errors
     if (err == 0) {
         ysf_dch_decode2(state, bn, bt, fn, ft, cm, trellis_buf);
+        /* Reported once the callsign is on the call: a signal search reads it from there when it hears this. */
+        dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "DCH2 (CRC ERR) ");
@@ -337,6 +340,9 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
     //decode the callsign, etc, found in the DCH when no errors
     if (err == 0) {
         ysf_dch_decode(state, bn, bt, fn, ft, cm, trellis_buf);
+        /* A header's or terminator's callsigns arrive here, after its FICH reported: tell a signal search again once
+         * they are on the call, so the frame that carries them is enough for the search to name the stations. */
+        dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "DCH (CRC ERR) ");
@@ -485,10 +491,10 @@ typedef struct {
 /* Whether the carrier boundary moved the carrier count since the frame began (issue #575): a replay read adopting a
    recorded retune. A payload decodes only once read, so a data channel or voice channel read whole before the move
    would decode after the boundary ended the carrier left's call: from there nothing of the frame decodes or publishes,
-   as on a sync loss. */
+   as on a sync loss. Nor once an input interruption cut the frame, whose rest is erasures the reader stood in. */
 static bool
 ysf_carrier_left(const dsd_state* state, const ysf_fich_info* info) {
-    return state->carrier_seq != info->carrier_seq;
+    return dsd_state_frame_read_lost(state, info->carrier_seq) != 0;
 }
 
 // V/D2 decodes straight through mbelib, so its frames never reach the vocoder's
@@ -548,9 +554,17 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* l
     for (int i = 0; i < 100; i++) {
         fichrawdibits[i] = get_dibit_and_analog_signal(opts, state, NULL);
     }
+    /* A carrier boundary split the FICH (issue #575), or an input interruption cut it (a Signal search left the
+       frame): the rest of it belongs to another carrier or is erasures the reader stood in, so it decodes nothing, not
+       even the transmission's evidence, and processYSF() drops the frame. */
+    if (dsd_state_frame_read_lost(state, info->carrier_seq)) {
+        info->err = -1;
+        return;
+    }
 
     info->err = ysf_conv_fich(fichrawdibits, info->fich_decode, &info->v_error);
     if (info->err == 0) {
+        dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
         info->fi = (uint8_t)convert_bits_into_output(&info->fich_decode[0], 2);
         info->cm = (uint8_t)convert_bits_into_output(&info->fich_decode[4], 2);
         info->bn = (uint8_t)convert_bits_into_output(&info->fich_decode[6], 2);
@@ -973,6 +987,12 @@ processYSF(dsd_opts* opts, dsd_state* state) {
 
     info.carrier_seq = state->carrier_seq;
     ysf_parse_fich(opts, state, &info, &last_dt, &last_fi);
+    if (dsd_state_frame_read_lost(state, info.carrier_seq)) {
+        /* The FICH was split or cut: no call observation on the fallback dt/fi, and no payload laid out on them. The
+           frame is dropped, as on a sync loss. */
+        DSD_FPRINTF(stderr, "\n");
+        return 0;
+    }
     ysf_print_fich_summary(opts, &info);
     if (info.err == 0 && !ysf_carrier_left(state, &info)) {
         /* Confirmed as soon as the FICH verifies, so this frame's own voice is captured (issue #661); the verdict

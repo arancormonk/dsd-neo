@@ -127,6 +127,10 @@ static void
 p25p1_ldu1_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, int emit_active) {
     // A frame the vocoder never synthesized (a skipped non-standard c0) mixes nothing in any output (issue #654).
     const int dispatched = process_IMBE(opts, state, status_count);
+    // A frame an input interruption cut is no voice activity either (process_IMBE() dropped it).
+    if (state->input_interrupted) {
+        return;
+    }
     if (emit_active) {
         // SM event: ACTIVE (P1 uses slot 0).
         p25_sm_emit_active(opts, state, 0);
@@ -476,10 +480,11 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     }
 
     p25p1_ldu1_finalize_status(opts, state);
-    if (state->carrier_seq != carrier_seq) {
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the LDU was read (issue #575). The link control is read
            whole by the seventh voice frame but decodes only now, so it would publish the carrier left's call after the
-           boundary ended it: the link control and low-speed data are dropped, as on a sync loss. */
+           boundary ended it: the link control and low-speed data are dropped, as on a sync loss. So are those of an
+           LDU an input interruption cut, whose rest is erasures the reader stood in. */
         return;
     }
     int irrecoverable_errors = p25p1_ldu1_apply_rs_fec(state, ctx.hex_data, ctx.hex_parity, ctx.soft_dibits);

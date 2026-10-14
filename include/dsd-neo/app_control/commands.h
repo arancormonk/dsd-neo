@@ -317,9 +317,11 @@ enum dsd_app_command_id {
     DSD_APP_CMD_DECRYPTION_APPLY = 654,  // sensitive: dsd_app_decryption_payload; retained result
 
     // DSP runtime (rtl_stream_*)
-    DSD_APP_CMD_DSP_OP = 700,             // payload: dsd_app_dsp_payload
-    DSD_APP_CMD_CONFIG_APPLY = 710,       // payload: dsdneoUserConfig (see runtime/config.h)
-    DSD_APP_CMD_CONFIG_METADATA_SET = 711 // payload: dsd_app_config_metadata_payload
+    DSD_APP_CMD_DSP_OP = 700,               // payload: dsd_app_dsp_payload
+    DSD_APP_CMD_CONFIG_APPLY = 710,         // payload: dsdneoUserConfig (see runtime/config.h)
+    DSD_APP_CMD_CONFIG_METADATA_SET = 711,  // payload: dsd_app_config_metadata_payload
+    DSD_APP_CMD_SIGNAL_SEARCH_START = 712,  // payload: dsd_signal_search_config
+    DSD_APP_CMD_SIGNAL_SEARCH_CONTROL = 713 // payload: dsd_signal_search_control
 };
 
 /* DSD_APP_CMD_RTL_SET_SQL_SETTING: mode is dsd_squelch_mode (core/power.h); level the LEVEL threshold in mean-power

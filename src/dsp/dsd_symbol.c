@@ -47,6 +47,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -2187,6 +2188,18 @@ symbol_refresh_rtl_profile_after_take(dsd_state* state, symbol_work_ctx* work, i
     }
 }
 
+/* An RTL read that returned nothing. Outside a Signal search the stream ended. A search visit bounds the read instead
+   (an output that delivers nothing for 100 ms fails it), so there it is an interruption: every RTL output's reader
+   leaves the frame on erasures (getSymbol()) and the engine loop services the visit's deadlines and commands. */
+static inline void
+symbol_rtl_read_failed(dsd_opts* opts, dsd_state* state) {
+    if (dsd_signal_search_is_running(state)) {
+        state->input_interrupted = 1;
+    } else {
+        dsd_request_shutdown(opts, state);
+    }
+}
+
 static inline int
 symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
     for (;;) {
@@ -2197,7 +2210,7 @@ symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_ou
             return 1;
         }
         if (cache_status != RTL_SYMBOL_CACHE_RETRY && cache_status != RTL_SYMBOL_CACHE_REFRESH) {
-            dsd_request_shutdown(opts, state);
+            symbol_rtl_read_failed(opts, state);
             return 0;
         }
         work->rtl_span_restart = 1;
@@ -2229,7 +2242,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
     }
     int got = 0;
     if (dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got) < 0 || got != 1) {
-        dsd_request_shutdown(opts, state);
+        symbol_rtl_read_failed(opts, state);
         return 0;
     }
     work->rtl_sample_generation = dsd_rtl_stream_metrics_hook_stream_generation();
@@ -2545,7 +2558,7 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
             break;
         }
         if (cache_status != RTL_SYMBOL_CACHE_RETRY && cache_status != RTL_SYMBOL_CACHE_REFRESH) {
-            dsd_request_shutdown(opts, state);
+            symbol_rtl_read_failed(opts, state);
             return -1;
         }
 
@@ -2961,8 +2974,28 @@ symbol_commit_symbol(dsd_opts* opts, dsd_state* state, int have_sync, const symb
     return symbol;
 }
 
+/* Whether a search visit takes the decoder back from a long protocol reader. The yield check runs every 64 symbols; an
+   interruption a read recorded (symbol_rtl_read_failed()) stands for every symbol until the engine loop consumes it,
+   since that read counted no symbol and the count may sit off the throttle for the rest of the frame. */
+static inline int
+symbol_search_yields(const dsd_opts* opts, dsd_state* state) {
+    if (state->input_interrupted && dsd_signal_search_is_running(state)) {
+        return 1;
+    }
+    return (state->symbolcnt & 63) == 0 && dsd_frame_sync_hook_signal_search_should_yield(opts, state);
+}
+
 float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
+    /* Long protocol readers also leave a search visit at its deadline, or once a read gave up on a stalled input.
+       Completing their bounded frame with unusable symbols lets the engine regain its tick guard safely. The recorded
+       interruption marks them on every input: the frame decoders drop the frame it cut (dsd_state_frame_read_lost())
+       and two-level reliability gives them no confidence, so none plays, publishes or counts as evidence. */
+    if (symbol_search_yields(opts, state)) {
+        state->input_interrupted = 1;
+        state->symbol_replay_symbol_unusable = 1;
+        return 0.0f;
+    }
     symbol_work_ctx work;
     symbol_work_ctx_init(&work, state);
     work.hunting = have_sync == 0;
