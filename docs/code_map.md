@@ -1579,7 +1579,10 @@ suite runs under this compiler.
     (`dsd_decode_mode_runs_on_input()`, `dsd_decode_mode_runs_on_input_spec()`, `DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT`
     through `dsd_decode_mode_needs_iq_text()`). The CLI stops on `-fT` with a PCM input, a config's `decode = tetra`
     there keeps the mode with a warning, DECODE_MODE_SET refuses it, and the terminal picker labels it `TETRA (needs an
-    I/Q radio input)`. A typed `-Y` row's preset clears `frame_tetra` and drops the TETRA state; `dsd_scan_settings`
+    I/Q radio input)`. Every preset other than TETRA leaves the TETRA decoder (`dsd_decode_mode_leave_tetra()`:
+    `frame_tetra` off, the TETRA state extension, `tetra_sync` and `tetra_pub` dropped), and so do the `-f` selectors
+    the CLI handles itself (`-fp`, `-fh`, `-fH`, `-fe`, `-fE`, `-fZ`, `-fB`, `-fP`, `-fU`), so the last `-f` selector
+    replaces TETRA rather than running beside it. A typed `-Y` row's preset clears `frame_tetra` and drops the TETRA state; `dsd_scan_settings`
     carries `frame_tetra` with the other frame flags, so an inherited row and the end of the scan bring the configured
     TETRA decoder back (`RUNTIME_SCAN_MODE`). On the RTL front end its 18 ksym/s profile runs CQPSK timing on the WIDE
     channel filter (`dsd_rtl_channel_profile_for()`), and a retune keeps the active profile with its filter

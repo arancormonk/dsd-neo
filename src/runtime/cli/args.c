@@ -3002,6 +3002,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 opts->monitor_input_audio = 0;                                                                         \
                 /* ... and the AM detector -fM chose: the M17 encoder shares the analog front end. */                  \
                 opts->analog_demod = DSD_ANALOG_DEMOD_FM;                                                              \
+                /* ... and TETRA, as every preset but TETRA leaves it: left on, `-fT -fp` runs TETRA beside ProVoice,  \
+                   a decoder set no preset describes, and the RTL demodulator is timed for neither. */                 \
+                dsd_decode_mode_leave_tetra(opts, state);                                                              \
             }                                                                                                          \
             const char decode_preset = optarg[0] == 'r' ? 's' : optarg[0];                                             \
             dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;                                                        \

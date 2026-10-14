@@ -463,7 +463,8 @@ Notes
   - Custom AFS bit splits: `-fh344`, `-fH434`
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
 - dPMR: `-fm`
-- TETRA: `-fT`. TETRA's pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, so
+- TETRA: `-fT`. Like every `-f` selector it is replaced by a later one (`-fT -fp` decodes ProVoice alone). TETRA's
+  pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, so
   it decodes only at a DSP rate that is a multiple of 18 kHz. `-fT` therefore sets the DSP bandwidth to 72 kHz
   (4 samples per symbol), as `-fe` sets 24 kHz; a bandwidth field in the `-i` spec still names another, and a Qt
   TETRA system without its own bandwidth uses 72 kHz too. A stream that opens

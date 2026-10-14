@@ -12,6 +12,8 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -6514,6 +6516,86 @@ test_f_manual_selectors_leave_am(void) {
     return test_rc;
 }
 
+static int g_tetra_ext_cleanups;
+
+static void
+count_tetra_ext_cleanup(void* ptr) {
+    g_tetra_ext_cleanups++;
+    free(ptr);
+}
+
+/* One TETRA session, from -fT on the command line (@p from_cli) or from a loaded config's decode = tetra, replaced by
+ * the -f selector @p selector the -f case handles itself. 0 when that selector left no TETRA behind. */
+static int
+manual_selector_replaces_tetra(const char* selector, int from_cli) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    int* ext = (int*)calloc(1, sizeof(int));
+    if (!opts || !state || !ext) {
+        free(ext);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    int rc = 0;
+    /* What a TETRA session holds: its decoder flag, its state extension, the burst the frame sync captured for it and
+       what it published for the frontends. */
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state) != 0
+        || dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, ext, count_tetra_ext_cleanup) != 0) {
+        free(ext);
+        rc = 1;
+    }
+    g_tetra_ext_cleanups = 0;
+    state->tetra_sync.polarity = 1;
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    char storage[5][32];
+    char* argv[6] = {NULL};
+    const char* const args[] = {"dsd-neo", "-fT", selector, "-i", "rtl"};
+    int argc = 0;
+    for (size_t i = 0; i < sizeof args / sizeof args[0]; i++) {
+        if (i == 1 && !from_cli) {
+            continue;
+        }
+        DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", args[i]);
+        argv[argc] = storage[argc];
+        argc++;
+    }
+    int argc_effective = 0;
+    int exit_rc = -1;
+    const int parse_rc = rc == 0 ? dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc) : -1;
+    const int provoice = selector[1] == 'f' && strchr("phHeE", selector[2]) != NULL;
+    if (parse_rc != DSD_PARSE_CONTINUE || opts->frame_tetra != 0 || g_tetra_ext_cleanups != 1
+        || dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) != NULL || state->tetra_sync.polarity != 0
+        || state->tetra_pub.mode != DSD_TETRA_MODE_NONE
+        || (provoice && dsd_infer_decode_mode_preset_exact(opts) != DSDCFG_MODE_EDACS_PV)) {
+        DSD_FPRINTF(stderr, "%s%s left TETRA: rc=%d frame_tetra=%d cleanups=%d exact mode=%d\n", from_cli ? "-fT " : "",
+                    selector, parse_rc, opts->frame_tetra, g_tetra_ext_cleanups,
+                    (int)dsd_infer_decode_mode_preset_exact(opts));
+        rc = 1;
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+/* The last -f selector replaces TETRA, whether it is a preset or one the -f case handles itself (ProVoice and EDACS,
+ * the M17 encoder, BERT, packet and IP frame modes): it turns the TETRA decoder off and drops what it decoded, as every
+ * preset other than TETRA does (dsd_decode_mode_leave_tetra()). Left on beside ProVoice, `-fT -fp` ran two decoders
+ * that no preset describes, and the RTL demodulator was timed at 4800 symbols/s instead of ProVoice's 9600. */
+static int
+test_f_manual_selectors_replace_tetra(void) {
+    static const char* const selectors[] = {"-fp", "-fh", "-fH", "-fe", "-fE", "-fZ", "-fB", "-fP", "-fU"};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof selectors / sizeof selectors[0]; i++) {
+        test_rc |= manual_selector_replaces_tetra(selectors[i], 1);
+        test_rc |= manual_selector_replaces_tetra(selectors[i], 0);
+    }
+    return test_rc;
+}
+
 /* --am-bandwidth-hz takes whole Hz from 5000 to 20000 in both spellings and refuses anything else, never clamping. */
 static int
 test_am_bandwidth_option(void) {
@@ -10073,6 +10155,7 @@ main(void) {
     rc |= test_f_am_refused_on_pcm_input();
     rc |= test_f_tetra_needs_iq_or_symbols();
     rc |= test_f_manual_selectors_leave_am();
+    rc |= test_f_manual_selectors_replace_tetra();
     rc |= test_am_bandwidth_option();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();

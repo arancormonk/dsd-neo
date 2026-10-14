@@ -673,6 +673,17 @@ decode_mode_preset_find(dsdneoUserDecodeMode mode) {
     return NULL;
 }
 
+void
+dsd_decode_mode_leave_tetra(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    opts->frame_tetra = 0;
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, NULL, NULL);
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    dsd_tetra_publication_reset(&state->tetra_pub);
+}
+
 int
 dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
                              dsd_state* state) {
@@ -683,13 +694,8 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         return -1;
     }
 
-    /* Every preset other than TETRA leaves the TETRA decoder disabled, and drops what it had decoded (its state
-     * extension, the burst the frame sync last captured for it, and what it published for the frontends). */
     if (mode != DSDCFG_MODE_TETRA) {
-        opts->frame_tetra = 0;
-        (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, NULL, NULL);
-        DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
-        dsd_tetra_publication_reset(&state->tetra_pub);
+        dsd_decode_mode_leave_tetra(opts, state);
     }
 
     if (preset->apply_profiled) {

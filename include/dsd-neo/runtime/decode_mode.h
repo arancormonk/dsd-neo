@@ -52,6 +52,8 @@ int dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode)
 /**
  * @brief Apply a decode preset to opts/state.
  *
+ * Every preset other than TETRA leaves the TETRA decoder (dsd_decode_mode_leave_tetra()).
+ *
  * @param mode Decode mode preset.
  * @param profile Caller profile controlling preset semantics.
  * @param opts Decoder options.
@@ -60,6 +62,16 @@ int dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode)
  */
 int dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
                                  dsd_state* state);
+
+/**
+ * @brief Leave the TETRA decoder: turn it off (dsd_opts::frame_tetra) and drop what it decoded, its state extension,
+ * the burst the frame sync last captured for it and what it published for the frontends.
+ *
+ * Every preset other than TETRA leaves it as it applies (dsd_apply_decode_mode_preset()). A selector that sets the
+ * decoder flags itself, as the CLI's -fp, -fh, -fH, -fe, -fE, -fZ, -fB, -fP and -fU do, leaves it here, so the last
+ * selector replaces TETRA rather than running beside it. NULL arguments do nothing.
+ */
+void dsd_decode_mode_leave_tetra(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Rebuild preset symbol timing for a decode mode at a target PCM rate.
