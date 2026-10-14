@@ -4435,16 +4435,28 @@ EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd(
 `tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the summary line, the call event,
 the notice, the SDS reassembly, the KSG an SCK or GCK Provide names. Of signalling, `tetra_state_t` keeps only what the
 decoder reads back: the cell's main carrier, band, offset and location area, the hyperframe number, the encryption mode
-of the last addressed MAC-RESOURCE, the reassembly contexts and the D-MM STATUS the frontends show. The SYSINFO part
-belongs to the cell: a BSCH naming another MCC, MNC or colour code (`bsch_forget_cell()` in `tetra_bsch.c`) drops it
-with the TDMA clock, and `trunk_cc_freq` when that SYSINFO set it, so an allocation decoded before the new cell's
-SYSINFO resolves to no frequency and nothing is followed until it names its control channel; `tetra_forget_carrier()`
-keeps it, since another carrier of the same cell shares it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per
+of the last addressed MAC-RESOURCE, the reassembly contexts and the D-MM STATUS the frontends show. What a BSCH of
+another cell or network forgets is decided in one place (`bsch_identity_change()` in `tetra_bsch.c`, before the new
+identity is taken, so what ends carries the network it was decoded on). The SYSINFO part belongs to the cell: a BSCH
+naming another MCC, MNC or colour code (`bsch_forget_cell()`) drops it with the TDMA clock and the partial TM-SDUs (a
+TM-SDU is rebuilt on one cell's control channel, whatever the colour code of a later fragment), and `trunk_cc_freq`
+when that SYSINFO set it, so an allocation decoded before the new cell's SYSINFO resolves to no frequency and nothing
+is followed until it names its control channel; `tetra_forget_carrier()` keeps it, since another carrier of the same
+cell shares it. A BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
+SSI is a party of the current network and the call identifiers are the SwMI's (EN 300 392-2 clause 14.2.3), so the
+call records end, with the state machine's follow of their identifiers, the heard call and the speech in progress
+(`tetra_calls_forget_calls()`), and so do the concatenated short data being reassembled
+(`tetra_mle_forget_reassembly()`). Another cell of the same network keeps them; the call records end there only when
+its SYSINFO names another location area, whose call identifiers may differ (clause 14.2.3,
+`tetra_calls_note_location_area()`). Retunes within the cell, to a traffic carrier and back, keep all of it. Nothing
+here tunes: a followed call of the last network is followed on as a channel without a call record until the grant
+timeout or the hangtime ends it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per
 timeslot and dropped after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
 the timeslot that went by undecoded count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot
 join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
-`TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases), `TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS`,
-`TETRA_TDMA_CLOCK`.
+`TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases, the reassembly a network change drops),
+`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops), `TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
+network and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a network change starts over).
 
 #### Trunking
 
@@ -4557,7 +4569,9 @@ single "current call".
   grant the policy allows follows the new call as a call of its own. D-INFO and D-CALL RESTORE may rename a call: the
   followed one is re-granted under its new identifier and stays one canonical call. D-TX GRANTED / D-TX INTERRUPT give
   the transmitting party (or the addressed one when granted) and their encryption control the end-to-end flag; D-TX
-  CEASED ends the transmission. A full table evicts the least recently heard record that is not followed;
+  CEASED ends the transmission. The records belong to the network and location area they were made in: a BSCH of
+  another network or a SYSINFO of another location area ends them all (`tetra_calls_forget_calls()`, Signalling
+  decoders above). A full table evicts the least recently heard record that is not followed;
   `tetra_calls_tick()` (from `tetra_sm_tick()`) drops records nothing named for `TETRA_CALL_IDLE_S` (30 s) on the decode
   clock. The followed record never ages: the state machine's hangtime ends it. A record's air encryption is the
   encryption mode of the MAC-RESOURCE that allocated its channel, learnt from the clear address when that allocation is

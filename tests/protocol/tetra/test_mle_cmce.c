@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -24,6 +25,7 @@
 #include "tetra_mle_pdu.h"
 #include "tetra_state.h"
 #include "tetra_test_log.h"
+#include "tetra_test_pdu.h"
 
 /* -------------------------------------------------------------------------
  * Helpers
@@ -100,6 +102,12 @@ notices(const dsd_state* state) {
 static const Event_History*
 notice(const dsd_state* state, int back) {
     return &state->event_history_s[0].Event_History_Items[back];
+}
+
+/* The message of the notice @p back pushes ago; empty without an event history. */
+static const char*
+notice_text(const dsd_state* state, int back) {
+    return state->event_history_s ? state->event_history_s[0].Event_History_Items[back].text_message : "";
 }
 
 /* A D-SETUP (table 14.15) for group call @p call_id without optional elements, decoded without its MAC PDU. */
@@ -2414,6 +2422,38 @@ test_sds_concat_is_per_session(void) {
     return ok;
 }
 
+/* The sender of a concatenated message is an SSI of the network: a BSCH naming another network drops the messages
+ * being reassembled, so a part from the same SSI on the new network completes nothing of the last network's; a BSCH
+ * of another cell of the same network keeps them. */
+static int
+test_sds_concat_dropped_with_the_network(void) {
+    dsd_state* state = alloc_notice_state();
+    dsd_opts* opts = alloc_opts();
+    char log[512];
+    tetra_state_t* const ts = tetra_st(state);
+    ts->net_known = 1;
+    ts->mcc = 262;
+    ts->mnc = 30;
+    ts->colour = 1;
+    dispatch_concat_part(state, opts, 1, 'O', log, sizeof log);
+    ttb_block cell = {0};
+    ttb_sync_pdu(&cell, 262, 30, 2);
+    int ok = tetra_bsch_parse(cell.bits, cell.n, opts, state) == 1;
+    dispatch_concat_part(state, opts, 2, 'K', log, sizeof log);
+    ok = ok && strstr(log, "part=2/2 received=2 complete") != NULL && strcmp(notice_text(state, 1), "OK") == 0;
+
+    dispatch_concat_part(state, opts, 1, 'N', log, sizeof log);
+    ttb_block other = {0};
+    ttb_sync_pdu(&other, 262, 31, 2);
+    ok = ok && tetra_bsch_parse(other.bits, other.n, opts, state) == 1;
+    const uint64_t before = notices(state);
+    dispatch_concat_part(state, opts, 2, 'O', log, sizeof log);
+    ok = ok && strstr(log, "part=2/2 received=1\n") != NULL && notices(state) == before;
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
 /* A message whose parts stop arriving for 300 s on the decode clock is dropped. */
 static int
 test_sds_concat_timeout(void) {
@@ -2506,6 +2546,7 @@ main(void) {
     RUN(test_sds_long_text_utf8_boundary);
     RUN(test_sds_concat_is_per_session);
     RUN(test_sds_concat_timeout);
+    RUN(test_sds_concat_dropped_with_the_network);
     RUN(test_sds_truncated_concat_control);
 #undef RUN
 

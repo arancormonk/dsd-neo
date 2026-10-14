@@ -578,9 +578,10 @@ test_table_eviction_and_ageing(void) {
     session_close(&s);
 }
 
-/* D-TX GRANTED (table 14.18) of call @p call_id to another user, @p talker transmitting. */
+/* D-TX GRANTED (table 14.18) of call @p call_id to another user, @p talker transmitting, with an allocation of
+ * @p timeslots on @p carrier (none when 0). */
 static void
-send_tx_granted(session* s, uint32_t ssi, uint16_t call_id, uint32_t talker) {
+send_tx_granted_on(session* s, uint32_t ssi, uint16_t call_id, uint32_t talker, uint32_t timeslots, uint32_t carrier) {
     ttb_block cmce = {0};
     ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
     ttb_put(&cmce, TETRA_CMCE_D_TX_GRANTED, 5);
@@ -593,7 +594,13 @@ send_tx_granted(session* s, uint32_t ssi, uint16_t call_id, uint32_t talker) {
     ttb_put(&cmce, 1, 2); /* SSI */
     ttb_put(&cmce, talker, 24);
     ttb_put(&cmce, 0, 1); /* M-bit */
-    send_block(s, ssi, &cmce, 0, 0);
+    send_block(s, ssi, &cmce, timeslots, carrier);
+}
+
+/* D-TX GRANTED of call @p call_id to another user, @p talker transmitting. */
+static void
+send_tx_granted(session* s, uint32_t ssi, uint16_t call_id, uint32_t talker) {
+    send_tx_granted_on(s, ssi, call_id, talker, 0, 0);
 }
 
 /* The followed call is the canonical call: its called group, its talker, its traffic channel and basic service, from
@@ -825,19 +832,10 @@ test_direct_mode_calls(void) {
     session_close(&s);
 }
 
-/* A SYNC PDU (EN 300 392-2 table 21.76) of network 262/1001 with colour code @p colour, timeslot 1 of frame 1 of
- * multiframe 1. */
+/* A SYNC PDU (EN 300 392-2 table 21.76) of network 262/1001 with colour code @p colour. */
 static void
 bsch_of(ttb_block* b, uint32_t colour) {
-    ttb_put(b, 0x4u, 4); /* system code */
-    ttb_put(b, colour, 6);
-    ttb_put(b, 0, 2); /* timeslot 1 */
-    ttb_put(b, 1, 5); /* frame 1 */
-    ttb_put(b, 1, 6); /* multiframe 1 */
-    ttb_put(b, 0, 8); /* sharing mode, reserved frames, U-plane DTX, frame 18 extension, reserved */
-    ttb_put(b, 262, 10);
-    ttb_put(b, 1001, 14);
-    ttb_put(b, 0, 5); /* neighbour cell broadcast, cell load CA, late entry supported */
+    ttb_sync_pdu(b, 262, 1001, colour);
 }
 
 /* A BSCH of another cell (another MCC, MNC or colour code) leaves nothing of the last cell's SYSINFO: its main carrier,
@@ -880,6 +878,105 @@ test_cell_change_forgets_sysinfo(void) {
                && tetra_calls_peek(s.state, 0x0A)->alloc.freq_hz == 0);
         session_close(&s);
     }
+}
+
+/* The SYSINFO of a cell of the network a BSCH just named: band 4, offset -6,25 kHz, main carrier 100 its control
+ * channel. */
+static void
+sysinfo_again(session* s) {
+    tetra_state_t* const ts = tetra_st(s->state);
+    ts->freq_band = 4;
+    ts->freq_offset = 2;
+    ts->sysinfo_known = 1;
+    s->state->trunk_cc_freq = CARRIER_HZ(100);
+    tetra_sm_on_cc_sync(s->opts, s->state);
+}
+
+/* Call identifiers and party SSIs are numbered by each network: a BSCH naming another network (another MCC or MNC)
+ * ends every call record of the last one, so a D-TX GRANTED of the new network that reuses an old call identifier, its
+ * allocation with it, names no record and tunes nowhere. A retune within the network (a carrier boundary) and a BSCH
+ * of another cell of it keep the records. */
+static void
+test_network_change_drops_calls(void) {
+    session s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    send_setup(&s, 0x101u, 0x0B, TTB_SPEECH_GROUP, 0, 0);
+    assert(g_tunes == 0 && tetra_calls_peek(s.state, 0x0A) != NULL);
+
+    tetra_forget_carrier(s.state);
+    ttb_block cell = {0};
+    ttb_sync_pdu(&cell, 262, 1001, 30);
+    assert(tetra_bsch_parse(cell.bits, cell.n, s.opts, s.state) == 1);
+    assert(tetra_calls_peek(s.state, 0x0A) != NULL && tetra_calls_peek(s.state, 0x0B) != NULL);
+
+    ttb_block other = {0};
+    ttb_sync_pdu(&other, 262, 1002, 30);
+    assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state) == 1);
+    assert(tetra_calls_peek(s.state, 0x0A) == NULL && tetra_calls_peek(s.state, 0x0B) == NULL);
+    sysinfo_again(&s);
+    send_tx_granted_on(&s, 0x100u, 0x0A, 0x4444u, 4, 120);
+    assert(g_tunes == 0 && followed_call(s.state) == -1 && tetra_calls_peek(s.state, 0x0A) == NULL);
+    session_close(&s);
+}
+
+/* The call the state machine follows when a BSCH names another network ends with the network's other calls: its
+ * canonical call ends, and the receiver follows its channel but no call record, so a D-SETUP of the new network that
+ * reuses the identifier for a blocked talkgroup is judged by the policy and not followed; the grant timeout then
+ * returns. */
+static void
+test_network_change_retires_the_followed_call(void) {
+    session s = session_open();
+    session_history(&s);
+    dsd_tg_policy_entry row;
+    assert(dsd_tg_policy_make_exact_entry(0x200u, "B", "blocked", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    assert(dsd_tg_policy_upsert_exact(s.state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    send_call_pdu(&s, 0x100u, TETRA_CMCE_D_CONNECT, 0x0A, 4 + 1 + 1 + 2 + 1 + 1);
+    assert(followed_call(s.state) == 0x0A && g_tunes == 1 && publishes_call_to(s.state, 0x100u));
+
+    ttb_block other = {0};
+    ttb_sync_pdu(&other, 262, 1002, 25);
+    assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state) == 1);
+    assert(!publishes_call_to(s.state, 0x100u) && canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && tetra_calls_followed(s.state) == NULL);
+    assert(!tetra_confirm_followed_call_proven(s.state) && g_returns == 0);
+    send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 2, 150);
+    assert(g_tunes == 1 && !publishes_call_to(s.state, 0x200u) && !tetra_confirm_followed_call_proven(s.state));
+
+    at_seconds(1000.0 + TETRA_SM_GRANT_TIMEOUT_S);
+    tetra_sm_tick(s.opts, s.state);
+    assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    session_close(&s);
+}
+
+/* The SwMI's call identifiers may differ from one location area to the next (EN 300 392-2 clause 14.2.3): the records
+ * belong to the area the SYSINFO named, the same area's SYSINFO keeps them (a carrier or a cell of it), and another
+ * area's ends them, so its D-TX GRANTED reusing an identifier names no record and tunes nowhere. */
+static void
+test_location_area_change_drops_calls(void) {
+    session s = session_open();
+    session_history(&s);
+    ttb_block si = {0};
+    ttb_sysinfo(&si, 100, 4, 2, 77);
+    tetra_mac_parse_schd(si.bits, si.n, 1, s.opts, s.state);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    assert(tetra_calls_peek(s.state, 0x0A) != NULL);
+
+    tetra_forget_carrier(s.state);
+    ttb_block cell = {0};
+    ttb_sync_pdu(&cell, 262, 1001, 30);
+    assert(tetra_bsch_parse(cell.bits, cell.n, s.opts, s.state) == 1);
+    tetra_mac_parse_schd(si.bits, si.n, 30, s.opts, s.state);
+    assert(tetra_calls_peek(s.state, 0x0A) != NULL && tetra_st(s.state)->la == 77);
+
+    ttb_block other = {0};
+    ttb_sysinfo(&other, 100, 4, 2, 78);
+    tetra_mac_parse_schd(other.bits, other.n, 30, s.opts, s.state);
+    assert(tetra_calls_peek(s.state, 0x0A) == NULL && tetra_st(s.state)->la == 78);
+    send_tx_granted_on(&s, 0x100u, 0x0A, 0x4444u, 4, 120);
+    assert(g_tunes == 0 && followed_call(s.state) == -1 && tetra_calls_peek(s.state, 0x0A) == NULL);
+    session_close(&s);
 }
 
 /* An event takes the colour code of the carrier from what a synchronisation burst just set, not from the last burst's
@@ -1103,6 +1200,9 @@ main(void) {
     test_direct_mode_short_data();
     test_events_read_the_new_carrier();
     test_cell_change_forgets_sysinfo();
+    test_network_change_drops_calls();
+    test_network_change_retires_the_followed_call();
+    test_location_area_change_drops_calls();
     test_followed_call_speech();
     test_heard_call_speech();
     test_direct_mode_speech();

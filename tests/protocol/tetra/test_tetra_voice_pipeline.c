@@ -28,6 +28,7 @@
 #include <dsd-neo/crypto/tetra_tea.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
+#include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_codec_abi.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
@@ -44,6 +45,7 @@
 #include "tetra_confirm.h"
 #include "tetra_state.h"
 #include "tetra_test_codec.h"
+#include "tetra_test_pdu.h"
 #include "tetra_voice_state.h"
 
 #ifndef TETRA_TEST_CODEC_GOOD
@@ -771,6 +773,45 @@ test_talker_change_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* The speech in progress belongs to a transmission of the network it was heard on: a BSCH naming another network
+   starts it over, carried samples and codec state with it, while a BSCH of another cell of the same network does not. */
+static void
+test_network_change_resets_speech(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "network: fixture");
+    uint8_t half[TETRA_SPEECH_HALF_BITS];
+    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    tetra_voice_reorder_half(half, half_frame);
+    tetra_voice_reorder_full(full, full_frames);
+    const size_t block = DSD_VOICE_FRAME_SAMPLES;
+    tetra_state_t* const ts = tetra_st(f.state);
+    ts->net_known = 1;
+    ts->mcc = 262;
+    ts->mnc = 30;
+    ts->colour = 1;
+
+    /* Not trunking, speech no record names: decode 1 plays one block and carries 80 samples. */
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    expect(voice_of(&f)->carry_len == 80, "network: 80 samples carried");
+    ttb_block cell = {0};
+    ttb_sync_pdu(&cell, 262, 30, 2);
+    expect(tetra_bsch_parse(cell.bits, cell.n, f.opts, f.state) == 1, "network: another cell's BSCH");
+    expect(voice_of(&f)->carry_len == 80, "network: another cell of the network keeps the speech");
+    ttb_block other = {0};
+    ttb_sync_pdu(&other, 262, 31, 2);
+    expect(tetra_bsch_parse(other.bits, other.n, f.opts, f.state) == 1, "network: another network's BSCH");
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, 0, 1, half_frame, 0, block, "network: the last network's speech");
+    expect_segment(&f, block, 1, full_frames, 0, FRAME, "network: the new network's speech starts over");
+    static int16_t out[MAX_OUT];
+    expect(fixture_output(&f, out, MAX_OUT) == block + 2 * FRAME, "network: none of the carried samples played");
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_clean_stream_plays_every_frame();
@@ -783,6 +824,7 @@ main(void) {
     test_record_gate();
     test_call_boundary_resets_speech();
     test_talker_change_resets_speech();
+    test_network_change_resets_speech();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

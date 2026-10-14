@@ -164,28 +164,10 @@ test_llc_fcs_annex_c(void) {
     return ok;
 }
 
-/* SYSINFO (table 21.65, pi/4-DQPSK) with its D-MLE-SYSINFO TM-SDU (clause 18.4.2.2): 124 bits. */
+/* SYSINFO of main carrier @p carrier in location area 987. */
 static void
 put_sysinfo(ttb_block* b, uint32_t carrier, uint32_t band, uint32_t offset) {
-    ttb_put(b, 2, 2); /* MAC PDU type: broadcast */
-    ttb_put(b, 0, 2); /* broadcast type: SYSINFO */
-    ttb_put(b, carrier, 12);
-    ttb_put(b, band, 4);
-    ttb_put(b, offset, 2);
-    ttb_put(b, 5, 3);       /* duplex spacing */
-    ttb_put(b, 0, 1);       /* reverse operation */
-    ttb_put(b, 2, 2);       /* common secondary control channels */
-    ttb_put(b, 6, 3);       /* MS_TXPWR_MAX_CELL */
-    ttb_put(b, 9, 4);       /* RXLEV_ACCESS_MIN */
-    ttb_put(b, 3, 4);       /* ACCESS_PARAMETER */
-    ttb_put(b, 1, 4);       /* RADIO_DOWNLINK_TIMEOUT */
-    ttb_put(b, 0, 1);       /* hyperframe number follows */
-    ttb_put(b, 0x1234, 16); /* hyperframe number */
-    ttb_put(b, 3, 2);       /* optional field flag: extended services broadcast */
-    ttb_put(b, 0, 20);
-    ttb_put(b, 987, 14);    /* location area */
-    ttb_put(b, 0xBEEF, 16); /* subscriber class */
-    ttb_put(b, 0xA5C, 12);  /* BS service details */
+    ttb_sysinfo(b, carrier, band, offset, 987);
 }
 
 static int

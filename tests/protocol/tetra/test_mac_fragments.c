@@ -286,6 +286,49 @@ test_fragment_timeout_counts_missed_slots(void) {
     }
 }
 
+/* A TM-SDU is rebuilt on one cell's control channel (clause 23.4.3.1.1): a BSCH naming another network drops the
+ * partial ones, so a MAC-END of the new network on the same timeslot and colour code completes nothing of the last
+ * network's first fragment. Without the BSCH the same MAC-END completes it. */
+static void
+test_network_change_drops_fragments(void) {
+    for (int other_network = 0; other_network < 2; other_network++) {
+        ttb_block sdu = {0};
+        put_d_setup(&sdu, 22);
+        dsd_state* state = new_state();
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        assert(opts != NULL);
+        tetra_state_t* ts = tetra_st(state);
+        ts->net_known = 1;
+        ts->mcc = 262;
+        ts->mnc = 30;
+        ts->colour = 2;
+        ttb_block b;
+
+        clock_at(ts, 1, 0);
+        first_fragment(&b, 0x000111u, sdu.bits, 12);
+        parse(state, opts, &b, 2);
+        check(ts->mac_frag[1].active, "network: the first fragment is under way on timeslot 1");
+        if (other_network) {
+            /* The BSCH of a synchronisation burst in timeslot 1 four slots on (EN 300 392-2 clause 9.4.4.2.6). */
+            ttb_block sync = {0};
+            ttb_sync_pdu(&sync, 262, 31, 2);
+            state->symbolcnt = 1000U + (4U * TETRA_TDMA_SLOT_SYMBOLS) + TETRA_TDMA_SB_PARSE_SYMBOL;
+            check(tetra_bsch_parse(sync.bits, sync.n, opts, state) == 1, "network: the BSCH of MNC 31 decodes");
+        }
+        clock_at(ts, 1, 4);
+        last_fragment(&b, sdu.bits + 12, sdu.n - 12);
+        parse(state, opts, &b, 2);
+        if (other_network) {
+            check(!delivered(state, 22), "network: another network's MAC-END completes no TM-SDU of the last one");
+        } else {
+            check(delivered(state, 22) && tetra_calls_peek(state, 22)->called_ssi == 0x000111u,
+                  "network: the same network's MAC-END completes the TM-SDU");
+        }
+        free_state(state);
+        free(opts);
+    }
+}
+
 int
 main(void) {
     test_full_fragment_sequence();
@@ -293,6 +336,7 @@ main(void) {
     test_fragments_kept_per_timeslot();
     test_fragment_timeout();
     test_fragment_timeout_counts_missed_slots();
+    test_network_change_drops_fragments();
     if (g_fail != 0) {
         DSD_FPRINTF(stderr, "%d TETRA fragment reconstruction check(s) FAILED\n", g_fail);
         return 1;

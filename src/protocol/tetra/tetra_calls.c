@@ -1205,6 +1205,42 @@ tetra_calls_forget_carrier(dsd_state* state) {
     }
 }
 
+void
+tetra_calls_forget_calls(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    if (ts->calls.published == TETRA_PUB_CALL || ts->calls.published == TETRA_PUB_ANON) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
+        calls_drop(state, &ts->calls.call[i]);
+    }
+    ts->calls.heard = 0;
+    ts->calls.heard_known = 0;
+    ts->calls.heard_call_id = 0U;
+    DSD_MEMSET(ts->calls.slot_enc, 0, sizeof ts->calls.slot_enc);
+    ts->calls.la_known = 0;
+    /* The speech in progress was one of theirs. */
+    ts->calls.ends++;
+}
+
+void
+tetra_calls_note_location_area(dsd_opts* opts, dsd_state* state, uint16_t la) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    if (ts->calls.la_known && ts->calls.la != la) {
+        TETRA_LOG_VERBOSE(ts, 1, "[TETRA CALL] location area %u after %u: its calls are not the last area's\n",
+                          (unsigned)la, (unsigned)ts->calls.la);
+        tetra_calls_forget_calls(opts, state);
+    }
+    ts->calls.la = la;
+    ts->calls.la_known = 1;
+}
+
 int
 tetra_calls_traffic(const dsd_state* state, tetra_chan_alloc* out) {
     tetra_sm_grant g;

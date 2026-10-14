@@ -168,6 +168,46 @@ ttb_d_setup(ttb_block* b, uint32_t call_id, uint32_t basic_service) {
     ttb_put(b, 0, 1);             /* O-bit: no optional elements */
 }
 
+/* The SYNC PDU of a BSCH (table 21.76, with the D-MLE-SYNC PDU of table 18.17): network @p mcc / @p mnc, colour code
+ * @p colour, timeslot 1 of frame 1 of multiframe 1. 60 bits, for tetra_bsch_parse(). */
+static inline void
+ttb_sync_pdu(ttb_block* b, uint32_t mcc, uint32_t mnc, uint32_t colour) {
+    ttb_put(b, 0x4u, 4); /* system code */
+    ttb_put(b, colour, 6);
+    ttb_put(b, 0, 2); /* timeslot 1 */
+    ttb_put(b, 1, 5); /* frame 1 */
+    ttb_put(b, 1, 6); /* multiframe 1 */
+    ttb_put(b, 0, 8); /* sharing mode, reserved frames, U-plane DTX, frame 18 extension, reserved */
+    ttb_put(b, mcc, 10);
+    ttb_put(b, mnc, 14);
+    ttb_put(b, 0, 5); /* neighbour cell broadcast, cell load CA, late entry supported */
+}
+
+/* SYSINFO (table 21.65, pi/4-DQPSK) of main carrier @p carrier in band @p band with offset @p offset, with its
+ * D-MLE-SYSINFO TM-SDU (clause 18.4.2.2) naming location area @p la: 124 bits, a whole SCH/HD or BNCH block. */
+static inline void
+ttb_sysinfo(ttb_block* b, uint32_t carrier, uint32_t band, uint32_t offset, uint32_t la) {
+    ttb_put(b, 2, 2); /* MAC PDU type: broadcast */
+    ttb_put(b, 0, 2); /* broadcast type: SYSINFO */
+    ttb_put(b, carrier, 12);
+    ttb_put(b, band, 4);
+    ttb_put(b, offset, 2);
+    ttb_put(b, 5, 3);       /* duplex spacing */
+    ttb_put(b, 0, 1);       /* reverse operation */
+    ttb_put(b, 2, 2);       /* common secondary control channels */
+    ttb_put(b, 6, 3);       /* MS_TXPWR_MAX_CELL */
+    ttb_put(b, 9, 4);       /* RXLEV_ACCESS_MIN */
+    ttb_put(b, 3, 4);       /* ACCESS_PARAMETER */
+    ttb_put(b, 1, 4);       /* RADIO_DOWNLINK_TIMEOUT */
+    ttb_put(b, 0, 1);       /* hyperframe number follows */
+    ttb_put(b, 0x1234, 16); /* hyperframe number */
+    ttb_put(b, 3, 2);       /* optional field flag: extended services broadcast */
+    ttb_put(b, 0, 20);
+    ttb_put(b, la, 14);     /* location area */
+    ttb_put(b, 0xBEEF, 16); /* subscriber class */
+    ttb_put(b, 0xA5C, 12);  /* BS service details */
+}
+
 /* Basic service information (table 14.35) for clear speech: point to point or point to multipoint. */
 #define TTB_SPEECH_P2P   0x00u /* point to point */
 #define TTB_SPEECH_GROUP 0x04u /* point to multipoint */

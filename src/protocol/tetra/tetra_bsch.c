@@ -13,12 +13,14 @@
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
+#include <dsd-neo/protocol/tetra/tetra_mac.h>
 
 #include <stdint.h>
 #include <stdio.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "tetra_calls.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
 
@@ -167,10 +169,13 @@ tetra_tdma_stop(dsd_state* state) {
 /* A BSCH of another cell: its timebase, hyperframe numbering and SYSINFO are its own. The last cell's main carrier, band,
  * offset and location area go (EN 300 392-2 clause 21.4.4.1), and the control channel its SYSINFO gave with them, so
  * a channel allocation decoded before this cell's SYSINFO resolves to no frequency (clause 21.5.2) rather than to one
- * of the last cell's, and nothing is followed until the new SYSINFO names its control channel. */
+ * of the last cell's, and nothing is followed until the new SYSINFO names its control channel. The partial TM-SDUs go
+ * too: a TM-SDU is rebuilt on one cell's control channel (clause 23.4.3.1.1), and a fragment of another cell must not
+ * continue it, whatever its colour code. */
 static void
 bsch_forget_cell(dsd_state* state, tetra_state_t* ts) {
     tdma_stop(ts);
+    tetra_mac_forget_fragments(state);
     if (ts->dl_carrier_hz > 0L && state->trunk_cc_freq == ts->dl_carrier_hz) {
         state->trunk_cc_freq = 0;
     }
@@ -183,11 +188,33 @@ bsch_forget_cell(dsd_state* state, tetra_state_t* ts) {
     ts->sysinfo_known = 0;
 }
 
+/* What a BSCH naming another cell or another network leaves behind, decided in one place. Another cell (another colour
+ * code, or another network) forgets the cell (bsch_forget_cell()). Another network (another MCC or MNC) forgets as well
+ * what is keyed by the identities its SwMI gives out: a downlink SSI is a party of the current network (EN 300 392-2
+ * clause 14.2.3), and its call identifiers are its own, so the call records end with the state machine's follow of
+ * their identifiers (tetra_calls_forget_calls()), and the concatenated short data being reassembled from its senders
+ * goes (tetra_mle_forget_reassembly()). Another cell of the same network keeps them: its calls go on across cells, and
+ * the call records end only when a SYSINFO names another location area (tetra_calls_note_location_area()). Runs before
+ * the new identity is taken, so the calls that end carry the network they were decoded on. Nothing here tunes. */
+static void
+bsch_identity_change(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sync_pdu* p) {
+    if (!ts->net_known) {
+        return;
+    }
+    const int other_network = ts->mcc != p->mcc || ts->mnc != p->mnc;
+    if (other_network || ts->colour != p->colour) {
+        bsch_forget_cell(state, ts);
+    }
+    if (other_network) {
+        tetra_calls_forget_calls(opts, state);
+        tetra_mle_forget_reassembly(state);
+    }
+}
+
 int
 tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     tetra_sync_pdu p;
-    (void)opts;
     if (!bits || !ts) {
         return 0;
     }
@@ -196,9 +223,7 @@ tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state)
         TETRA_LOG_PAYLOAD(ts, "[TETRA BSCH] short PDU len=%d, need %d\n", len, TETRA_SYNC_PDU_BITS);
         return 0;
     }
-    if (ts->net_known && (ts->mcc != p.mcc || ts->mnc != p.mnc || ts->colour != p.colour)) {
-        bsch_forget_cell(state, ts);
-    }
+    bsch_identity_change(opts, state, ts, &p);
     ts->mcc = p.mcc;
     ts->mnc = p.mnc;
     ts->colour = p.colour;

@@ -166,6 +166,8 @@ typedef struct {
     uint8_t heard_tn;           /* its timeslot, 0 while the TDMA clock does not place it */
     uint8_t heard_known;        /* heard_call_id names its call */
     uint32_t ends;              /* counts the ends of what canonical slot 0 carried: the speech path starts over */
+    uint16_t la;                /* the location area the records were made in (la_known): its SwMI's call identifiers */
+    uint8_t la_known;
     /* 1 + the encryption mode of the last addressed MAC-RESOURCE decoded on this carrier since it was taken, 0 for
      * none: per timeslot at index TN, and at index 0 on any timeslot (or while the TDMA clock is stopped). */
     uint8_t slot_enc[5];

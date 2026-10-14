@@ -771,6 +771,7 @@ apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
     if (si->mle_present) {
         ts->la = si->la;
         ts->sysinfo_known = 1;
+        tetra_calls_note_location_area(b->opts, b->state, si->la);
     }
 }
 

@@ -960,6 +960,16 @@ sds_concat_store_part(sds_concat_ctx* c, const sds_concat_part* part) {
     return SDS_CONCAT_PENDING;
 }
 
+void
+tetra_mle_forget_reassembly(dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (ts && ts->sds_concat) {
+        for (unsigned i = 0; i < SDS_CONCAT_CONTEXTS; i++) {
+            sds_concat_clear(&ts->sds_concat->ctx[i]);
+        }
+    }
+}
+
 /* Add one well-formed part (sds_read_concat_control()) to the reassembly in @p ts and report the message state in
  * @p status. */
 static int

@@ -187,6 +187,26 @@ void tetra_calls_tick(dsd_opts* opts, dsd_state* state);
 void tetra_calls_forget_carrier(dsd_state* state);
 
 /**
+ * @brief The identifiers the records are keyed by name nothing here any more: a BSCH named another network, whose SwMI
+ * numbers its calls and parties itself (EN 300 392-2 clause 14.2.3: a downlink SSI is of the current network), or a
+ * SYSINFO another location area, whose call identifiers may differ from this one's (clause 14.2.3). Every record ends
+ * with its canonical call, and the state machine follows no identifier of them from here (tetra_sm_retire_call(), the
+ * rollback of a tune in flight included); the heard call, anonymous speech and the timeslots' signalling encryption go
+ * too, and the speech in progress starts over (tetra_calls_t::ends). @p opts may be NULL. Never creates TETRA state.
+ */
+void tetra_calls_forget_calls(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief A SYSINFO named location area @p la (D-MLE-SYSINFO, EN 300 392-2 clause 18.4.2.2): the records are of that
+ * area from here, and those made in another end first (tetra_calls_forget_calls()). @p opts may be NULL.
+ */
+void tetra_calls_note_location_area(dsd_opts* opts, dsd_state* state, uint16_t la);
+
+/** @brief The concatenated SDS messages being reassembled (tetra_mle.c) go: their senders' SSIs name parties of a
+ * network the receiver left. Never creates TETRA state. */
+void tetra_mle_forget_reassembly(dsd_state* state);
+
+/**
  * @brief The traffic channel the frontends show: the followed call's while trunking follows one, else the most recently
  * allocated call's. @return 1 and @p out when there is one.
  */
