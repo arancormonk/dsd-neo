@@ -1409,17 +1409,38 @@ tetra_calls_tick(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* What the speech of the trunked carrier left: its timeslots' signalling encryption and the heard timeslot. */
+static void
+calls_forget_carrier_speech(tetra_state_t* ts) {
+    DSD_MEMSET(ts->calls.slot_enc, 0, sizeof ts->calls.slot_enc);
+    ts->calls.heard = 0;
+    ts->calls.held = 0;
+    ts->calls.heard_known = 0;
+}
+
 void
 tetra_calls_forget_carrier(dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (ts) {
-        DSD_MEMSET(ts->calls.slot_enc, 0, sizeof ts->calls.slot_enc);
-        ts->calls.heard = 0;
-        ts->calls.held = 0;
-        ts->calls.heard_known = 0;
+        calls_forget_carrier_speech(ts);
         /* The next carrier's direct mode call is set up by its own DMAC-SYNC (the engine ends the canonical calls). */
         DSD_MEMSET(&ts->calls.dmo, 0, sizeof ts->calls.dmo);
     }
+}
+
+void
+tetra_calls_forget_trunked_carrier(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    /* The followed call is the state machine's to end; the heard call and anonymous speech were the last carrier's. */
+    const int heard_call =
+        ts->calls.published == TETRA_PUB_CALL && (int)ts->calls.published_call_id != followed_id(state);
+    if (ts->calls.published == TETRA_PUB_ANON || heard_call) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    calls_forget_carrier_speech(ts);
 }
 
 void

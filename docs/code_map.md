@@ -4481,7 +4481,10 @@ naming another MCC, MNC or colour code (`bsch_forget_cell()`) drops it with the 
 TM-SDU is rebuilt on one cell's control channel, whatever the colour code of a later fragment), and `trunk_cc_freq`
 when that SYSINFO set it, so an allocation decoded before the new cell's SYSINFO resolves to no frequency and nothing
 is followed until it names its control channel; `tetra_forget_carrier()` keeps it, since another carrier of the same
-cell shares it. A BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
+cell shares it. Another cell is also another carrier, whatever the engine saw (a radio retuned outside the decoder),
+so what the last carrier's speech left goes as at a carrier boundary: its timeslots' signalling encryption, the heard
+timeslot with the heard or anonymous canonical call (`tetra_calls_forget_trunked_carrier()`), the speech in progress,
+the followed call's proof on the carrier, and the encryption mode the last cell's signalling showed. A BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
 SSI is a party of the current network and the call identifiers are the SwMI's (EN 300 392-2 clause 14.2.3), so the
 call records end, with the state machine's follow of their identifiers, the heard call and the speech in progress
 (`tetra_calls_forget_calls()`), and so do the concatenated short data being reassembled
@@ -4499,7 +4502,8 @@ join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PD
 a network change drops),
 `TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot),
 `TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
-network and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a network change starts over).
+network, cell and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a cell or network change starts
+over).
 
 #### Trunking
 

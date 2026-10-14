@@ -1451,6 +1451,56 @@ speech(session* s, uint8_t tn) {
     tetra_voice_full_slot(s->opts, s->state, bits, 1);
 }
 
+/* A BSCH of another cell of the same network says the receiver is on another carrier, whatever the engine saw (a radio
+ * retuned outside the decoder): not trunking, the anonymous speech canonical slot 0 shows ends, and what the last
+ * carrier's speech left goes as at a carrier boundary -- its timeslots' signalling encryption, the heard timeslot, the
+ * speech in progress, the followed call's proof -- with the encryption mode the last cell's signalling showed. A BSCH
+ * of the same cell keeps it all. */
+static void
+test_cell_change_forgets_the_carrier(void) {
+    session s = session_open();
+    session_history(&s);
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->calls.slot_enc[2] = 1u + TETRA_ENC_MODE_EVEN;
+    ts->enc_mode = TETRA_ENC_MODE_EVEN;
+    ts->frames_resource = 1;
+    speech(&s, 2);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == DSD_CALL_KIND_VOICE && ts->calls.heard_tn == 2);
+    assert(ts->voice.bound && ts->calls.heard);
+    ttb_block same = {0};
+    bsch_of(&same, 25u);
+    assert(tetra_bsch_parse(same.bits, same.n, s.opts, s.state) == 1);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && ts->calls.heard && ts->voice.bound);
+    assert(ts->calls.slot_enc[2] != 0u && s.state->tetra_pub.air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED);
+
+    ttb_block other = {0};
+    bsch_of(&other, 30u);
+    assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state) == 1);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_EXPLICIT);
+    assert(!ts->calls.heard && !ts->calls.held && ts->calls.slot_enc[0] == 0u && ts->calls.slot_enc[2] == 0u);
+    assert(!ts->voice.bound && ts->voice.carry_len == 0U && !ts->voice.confirmed);
+    assert(s.state->tetra_pub.air_encryption == DSD_TETRA_AIR_ENC_UNKNOWN);
+    session_close(&s);
+
+    /* Trunking, the followed call's proof on the carrier was the last cell's carrier's; its canonical call and its
+     * following are the state machine's. */
+    s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    tetra_confirm_note_followed_call(s.state);
+    assert(followed_call(s.state) == 0x0A && tetra_confirm_followed_call_proven(s.state));
+    assert(tetra_bsch_parse(same.bits, same.n, s.opts, s.state) == 1);
+    assert(tetra_confirm_followed_call_proven(s.state));
+    assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state) == 1);
+    assert(!tetra_confirm_followed_call_proven(s.state) && followed_call(s.state) == 0x0A);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
+    session_close(&s);
+}
+
 /* Speech of the followed call, once its signalling proved it on its carrier, marks its canonical call's media and keeps
  * the state machine on it; speech that trails its D-TX CEASED opens nothing; and a followed call whose speech the
  * listener cannot decrypt is locked out and left while encrypted calls are not followed. */
@@ -1687,6 +1737,7 @@ main(void) {
     test_direct_mode_short_data_repeats();
     test_events_read_the_new_carrier();
     test_cell_change_forgets_sysinfo();
+    test_cell_change_forgets_the_carrier();
     test_network_change_drops_calls();
     test_network_change_retires_the_followed_call();
     test_location_area_change_drops_calls();
