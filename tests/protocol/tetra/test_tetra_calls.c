@@ -651,6 +651,65 @@ test_followed_call_publishes(void) {
     session_close(&s);
 }
 
+/* D-SETUP (table 14.15) of individual call @p call_id from @p caller (the calling party type identifier 1 and its SSI)
+ * to @p callee, the MAC address, with transmission grant @p grant (table 14.80) and an allocation of @p timeslots on
+ * @p carrier. */
+static void
+send_private_setup(session* s, uint32_t callee, uint16_t call_id, uint32_t caller, uint32_t grant, uint32_t timeslots,
+                   uint32_t carrier) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_SETUP, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, 4, 4);              /* call time-out */
+    ttb_put(&cmce, 0, 2);              /* hook method and simplex/duplex selection */
+    ttb_put(&cmce, TTB_SPEECH_P2P, 8); /* basic service information (table 14.35): point to point */
+    ttb_put(&cmce, grant, 2);          /* transmission grant */
+    ttb_put(&cmce, 0, 1);              /* transmission request permission */
+    ttb_put(&cmce, 0, 4);              /* call priority */
+    ttb_put(&cmce, 1, 1);              /* O-bit */
+    ttb_put(&cmce, 0, 2);              /* no notification indicator, no temporary address */
+    ttb_put(&cmce, 1, 1);              /* calling party type identifier present */
+    ttb_put(&cmce, 1, 2);              /* SSI */
+    ttb_put(&cmce, caller, 24);
+    ttb_put(&cmce, 0, 1); /* M-bit */
+    send_block(s, callee, &cmce, timeslots, carrier);
+}
+
+/* An individual call names both its parties whoever transmits, as DMR and P25 name a unit-to-unit transmission: the
+ * talker as source and the other party as target, so the talkgroup policy's private-call audio and record gates judge
+ * the caller and the callee. The followed call from ISSI 0x111 to ISSI 0x222 publishes 0x111 -> 0x222 while the
+ * caller talks, and 0x222 -> 0x111 once D-TX GRANTED names the callee; a talker not known leaves the caller the
+ * source. */
+static void
+test_private_call_names_both_parties(void) {
+    session s = session_open();
+    /* Transmission not granted yet (table 14.80): no talker, the caller the source. */
+    send_private_setup(&s, 0x222u, 0x0D, 0x111u, 1, 4, 120);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == DSD_CALL_KIND_PRIVATE_VOICE);
+    assert(call.ota_source_id == 0x111u && call.ota_target_id == 0x222u);
+    session_close(&s);
+
+    s = session_open();
+    send_private_setup(&s, 0x222u, 0x0E, 0x111u, 0, 4, 120);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == DSD_CALL_KIND_PRIVATE_VOICE);
+    assert(call.ota_source_id == 0x111u && call.ota_target_id == 0x222u && call.policy_target_id == 0x222u);
+    send_tx_granted(&s, 0x222u, 0x0E, 0x222u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == DSD_CALL_KIND_PRIVATE_VOICE);
+    assert(call.ota_source_id == 0x222u && call.ota_target_id == 0x111u && call.policy_target_id == 0x111u);
+    send_tx_granted(&s, 0x111u, 0x0E, 0x111u);
+    call = canonical(s.state);
+    assert(call.ota_source_id == 0x111u && call.ota_target_id == 0x222u);
+    send_call_pdu(&s, 0x222u, TETRA_CMCE_D_TX_CEASED, 0x0E, 1);
+    send_tx_granted(&s, 0x222u, 0x0E, 0x222u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x222u && call.ota_target_id == 0x111u);
+    session_close(&s);
+}
+
 /* An end-to-end encrypted call publishes as encrypted, without audio; a call no one follows publishes nothing. */
 static void
 test_encrypted_and_unfollowed_calls(void) {
@@ -1194,6 +1253,7 @@ main(void) {
     test_aged_rollback_call_retired();
     test_table_eviction_and_ageing();
     test_followed_call_publishes();
+    test_private_call_names_both_parties();
     test_encrypted_and_unfollowed_calls();
     test_sds_and_status_notices();
     test_direct_mode_calls();

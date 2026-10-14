@@ -34,7 +34,8 @@ voice_of_call(const tetra_state_t* ts, const tetra_call_t* c, tetra_speech* sp) 
     if (c) {
         sp->kind = TETRA_SPEECH_CALL;
         sp->call_id = c->call_id;
-        sp->target = c->called_ssi;
+        /* The canonical call's target, which the talkgroup policy finds the call by (tetra_calls_target()). */
+        sp->target = tetra_calls_target(c);
         sp->source = c->talker_ssi;
         sp->air_enc = c->air_enc;
         sp->sealed = c->e2ee;

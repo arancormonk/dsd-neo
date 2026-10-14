@@ -156,6 +156,16 @@ tetra_call_t* tetra_calls_find(dsd_state* state, uint16_t call_id);
 /** @brief The record of call @p call_id, or NULL; never creates TETRA state. */
 const tetra_call_t* tetra_calls_peek(const dsd_state* state, uint16_t call_id);
 
+/**
+ * @brief The target canonical slot 0 names for @p c, and the one its speech is judged under: a group call's called
+ * group, and for an individual call the party that is not transmitting (EN 300 392-2 clause 14.5.2: an individual call
+ * has two parties), the calling one while its called party talks. With the transmitting party (else the calling party)
+ * as source, the talkgroup policy's private-call audio and record gates judge both parties whoever transmits, as DMR
+ * and P25 name a unit-to-unit transmission. The called party while the calling one is not known, and for a call whose
+ * D-SETUP went unheard; 0 for NULL.
+ */
+uint32_t tetra_calls_target(const tetra_call_t* c);
+
 /** @brief The record of the call the trunking state machine follows, or NULL when it follows none. */
 const tetra_call_t* tetra_calls_followed(const dsd_state* state);
 

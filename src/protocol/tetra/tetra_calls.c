@@ -243,6 +243,30 @@ call_source(const tetra_call_t* c) {
     return c->talker_ssi != 0u ? c->talker_ssi : c->calling_ssi;
 }
 
+/* An individual call, which has two parties (EN 300 392-2 clause 14.5.2), as its D-SETUP's basic service says. */
+static int
+call_individual(const tetra_call_t* c) {
+    return (c->flags & TETRA_CALL_F_SETUP_SEEN) != 0u && !basic_is_group(c->basic_service);
+}
+
+uint32_t
+tetra_calls_target(const tetra_call_t* c) {
+    if (!c) {
+        return 0u;
+    }
+    if (call_individual(c) && c->calling_ssi != 0u && call_source(c) == c->called_ssi) {
+        return c->calling_ssi;
+    }
+    return c->called_ssi;
+}
+
+/* The source canonical slot 0 names for @p c: the transmitting party, and for an individual call the calling party
+ * while none is named, so that with the target (tetra_calls_target()) it names both parties. */
+static uint32_t
+calls_source(const tetra_call_t* c) {
+    return call_individual(c) ? call_source(c) : c->talker_ssi;
+}
+
 /* ---- Canonical calls ------------------------------------------------------------------------------------------- */
 
 /* The TETRA synchronisation burst type the decoder is on: every canonical TETRA call carries one. */
@@ -336,9 +360,9 @@ calls_publish_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const te
     DSD_MEMSET(&o, 0, sizeof o);
     o.protocol = calls_protocol(state);
     o.kind = call_kind(c);
-    o.ota_target_id = c->called_ssi;
-    o.policy_target_id = c->called_ssi;
-    o.ota_source_id = c->talker_ssi;
+    o.ota_target_id = tetra_calls_target(c);
+    o.policy_target_id = o.ota_target_id;
+    o.ota_source_id = calls_source(c);
     o.channel = chan->carrier;
     o.frequency_hz = chan->freq_hz;
     o.service_options = c->basic_service;

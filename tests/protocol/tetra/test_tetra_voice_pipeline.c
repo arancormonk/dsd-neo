@@ -773,6 +773,53 @@ test_talker_change_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* Trunking follows individual call @p call_id from @p caller to @p callee (a D-SETUP naming its calling party, table
+   14.15), @p talker transmitting (D-TX GRANTED to another user). */
+static void
+follow_private_call(fixture* f, uint16_t call_id, uint32_t caller, uint32_t callee, uint32_t talker) {
+    tetra_call_event setup = {.call_id = call_id, .kind = TETRA_CALL_EV_SETUP, .basic_service = 0x00};
+    setup.has = TETRA_CALL_HAS_CALLING;
+    setup.calling_ssi = caller;
+    tetra_calls_on_event(NULL, f->state, &setup, NULL);
+    tetra_calls_find(f->state, call_id)->called_ssi = callee;
+    tetra_state_t* ts = tetra_st(f->state);
+    f->opts->trunk_enable = 1;
+    ts->sm.state = (uint8_t)TETRA_SM_TUNED;
+    ts->sm.followed.call_id = call_id;
+    ts->sm.followed.timeslots = 0x0F;
+    tetra_confirm_note_followed_call(f->state);
+    grant_transmission(f, TETRA_CALL_EV_TX_GRANTED, call_id, talker);
+}
+
+/* An individual call's speech is judged by both its parties whoever transmits, as DMR and P25 judge a unit-to-unit
+   transmission: the talker is the canonical source and the other party the target. Call 13 from ISSI 111 to ISSI 222,
+   the callee transmitting (D-TX GRANTED naming 222): the caller's record=0 keeps the callee's speech out of the
+   recording, and an allowlist naming only the caller lets the callee's replies play. */
+static void
+test_private_call_judged_by_both_parties(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "private: fixture");
+    char wav_path[DSD_TEST_PATH_MAX];
+    expect(open_static_wav(&f, wav_path, sizeof(wav_path)) == 0, "private: WAV open");
+    dsd_tg_policy_entry row;
+    expect(dsd_tg_policy_make_exact_entry(111U, "A", "caller", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0,
+           "private: policy row");
+    row.record = 0U;
+    expect(dsd_tg_policy_upsert_exact(f.state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0, "private: policy");
+    follow_private_call(&f, 13, 111U, 222U, 222U);
+    expect(played_by_burst(&f) == 2 * FRAME, "private: the callee's reply plays");
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.kind == DSD_CALL_KIND_PRIVATE_VOICE
+               && call.ota_source_id == 222U && call.ota_target_id == 111U,
+           "private: the talker the canonical source, the caller the target");
+    expect(close_static_wav(&f, wav_path) == 0L, "private: and stays out of the recording the caller's policy refuses");
+    /* The allowlist on: the caller listed, the callee not. */
+    f.opts->trunk_use_allow_list = 1;
+    expect(played_by_burst(&f) == 2 * FRAME, "private: the callee's reply plays under the caller's allowlist entry");
+    fixture_close(&f);
+}
+
 /* Not trunking, call @p call_id to group @p gssi whose traffic channel is timeslot 2 of the tuned carrier, allocated at
    @p alloc_m on the decode clock. */
 static void
@@ -888,6 +935,7 @@ main(void) {
     test_record_gate();
     test_call_boundary_resets_speech();
     test_talker_change_resets_speech();
+    test_private_call_judged_by_both_parties();
     test_network_change_resets_speech();
     test_call_identifier_change_resets_speech();
     if (g_fail) {

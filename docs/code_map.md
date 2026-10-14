@@ -4625,7 +4625,8 @@ single "current call".
   `TETRA_CALL_SPEECH_END_S`; its speech belongs to the record whose traffic channel is that timeslot of the tuned
   frequency (`tetra_calls_on_timeslot()`), else to no record, whose air encryption is then the last addressed
   MAC-RESOURCE's on its timeslot or carrier. Direct mode is never held by these gates. The call gives the talkgroup
-  (`dsd_audio_group_gate_mono()` on its called party, or the direct mode destination) and the encryption class: end-to-
+  (`dsd_audio_group_gate_mono()` on its canonical target, `tetra_calls_target()`, or the direct mode destination) and
+  the encryption class: end-to-
   end and direct mode encryption are never decrypted; air encryption is when `tetra_air_decrypt_voice()` applies a key
   stream from the encryption cipher key TB5 derives with the carrier being received (`tetra_calls_carrier()`: the
   followed call's carrier, the SYSINFO main carrier on the control channel, else the carrier whose frequency is exactly
@@ -4644,8 +4645,11 @@ single "current call".
   second's first burst, which publishes nothing when its CRC fails. A D-INFO or D-CALL RESTORE renaming the call keeps
   its speech (`tetra_voice_call_renamed()`).
 - Canonical calls. Slot 0, the TETRA synctype as protocol. The followed call publishes from its CRC-passed signalling
-  once the carrier is proven and its tune settled, until its transmission ceased: called party as target, talker as
-  source, carrier and frequency, basic service as service options, priority, and its crypto class. Not trunking, the
+  once the carrier is proven and its tune settled, until its transmission ceased: a group call's called group as
+  target and its talker as source; an individual call's talker (the calling party while none is named) as source and
+  its other party as target (`tetra_calls_target()`: the calling party while the called one talks), as DMR and P25 name
+  a unit-to-unit transmission, so the talkgroup policy's private-call audio and record gates judge both parties
+  whoever transmits; carrier and frequency, basic service as service options, priority, and its crypto class. Not trunking, the
   heard call publishes from its speech and then its signalling, and speech no record names publishes an anonymous call
   on a proven carrier. Speech marks the media (`dsd_call_state_update_media()`). D-TX CEASED and releases end the call
   as terminators, the state machine leaving it as a teardown, the heard speech stopping as a sync loss. Direct mode
@@ -4661,8 +4665,10 @@ single "current call".
 
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, identifier reuse, a released,
 renamed-over or aged followed identifier, ageing,
-canonical calls and notices in trunked and direct mode, speech publication, the receiving carrier), `TETRA_VOICE_GATE`,
-`TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, the
+canonical calls and notices in trunked and direct mode, an individual call's two parties, speech publication, the
+receiving carrier), `TETRA_VOICE_GATE`,
+`TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, an
+individual call's speech judged by both parties, the
 derived key stream, the speech starting over at call boundaries, another call identifier and another network, and
 going on across a rename), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`,
 `CORE_ACCESS_CODE`.
