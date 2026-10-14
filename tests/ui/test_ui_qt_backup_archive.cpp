@@ -45,6 +45,7 @@
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <qanystringview.h>
 #include <qflags.h>
+#include <qsystemdetection.h>
 #include <stdio.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
@@ -1323,6 +1324,18 @@ test_host_document_copies() {
     expect("one byte over the cap is too large",
            host.copyDocumentToFile(source, capped, payload.size() - 1) == dsd_qt::DecoderHost::DocumentTooLarge);
     expect("too large leaves no destination", !QFileInfo::exists(capped));
+#ifdef Q_OS_LINUX
+    // procfs reports no size, so only the cap counted while copying can refuse it.
+    const QString proc = QStringLiteral("/proc/self/status");
+    expect("procfs source reports no size", QFileInfo(proc).isFile() && QFileInfo(proc).size() == 0);
+    const QString streamed = dir.filePath("streamed.bin");
+    expect("the cap is counted while copying",
+           host.copyDocumentToFile(proc, streamed, 16) == dsd_qt::DecoderHost::DocumentTooLarge);
+    expect("a cap met while copying leaves no destination", !QFileInfo::exists(streamed));
+    expect("an unsized source within the cap copies",
+           host.copyDocumentToFile(proc, streamed, 1 << 20) == dsd_qt::DecoderHost::DocumentCopied
+               && QFileInfo(streamed).size() > 16);
+#endif
     const QString failed = dir.filePath("failed.bin");
     expect("missing source fails",
            host.copyDocumentToFile(dir.filePath("absent"), failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
