@@ -15548,6 +15548,9 @@ if(DSD_ENABLE_QT_UI)
 endif()
 
 # The FFT wrapper is usable without radio hardware or an enabled SDR backend.
+# Its test runs a transform on a small-stack thread of its own, so it finds the
+# thread library here rather than through a backend that may be disabled.
+find_package(Threads REQUIRED)
 add_executable(dsd-neo_test_io_fft_cache io/test_io_fft_cache.cpp)
 target_include_directories(
     dsd-neo_test_io_fft_cache
@@ -15555,7 +15558,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_io_fft_cache
-    PRIVATE dsd-neo_pffft dsd-neo_warnings
+    PRIVATE dsd-neo_pffft dsd-neo_warnings Threads::Threads
 )
 if(NOT APPLE AND NOT WIN32 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_definitions(
