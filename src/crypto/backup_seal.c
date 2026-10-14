@@ -368,7 +368,10 @@ dsd_backup_derive_key(const uint8_t* pass, size_t pass_len, const uint8_t* salt,
         || (uint64_t)r * p > DSD_BACKUP_SCRYPT_PR_MAX) {
         return DSD_BACKUP_ERR_PARAMS;
     }
-    /* RFC 7914 section 2: N < 2^(128 * r / 8); with N <= 2^20 only r < 4 can break it. */
+    /*
+     * RFC 7914 section 2: N < 2^(128 * r / 8). With N <= 2^20 only r == 1 can break it; r < 4 keeps the shift
+     * below 64.
+     */
     if (r < 4U && n >= ((uint64_t)1U << (16U * r))) {
         return DSD_BACKUP_ERR_PARAMS;
     }

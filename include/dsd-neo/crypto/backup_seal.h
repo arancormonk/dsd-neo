@@ -114,6 +114,10 @@ int dsd_backup_open(const uint8_t* pass, size_t pass_len, const uint8_t* sealed,
 /**
  * Raw scrypt (RFC 7914) for known-answer tests, without the header's parameter policy.
  *
+ * Test/KAT helper only: never pass it untrusted or user-supplied parameters. It caps N but not memory (r = 2^16 with
+ * N = 2^20 already asks scrypt for 8 TiB). Production code uses dsd_backup_seal() and dsd_backup_open(), which bound
+ * the parameters.
+ *
  * Still refuses N that is not a power of two >= 2, N > 2^20, N >= 2^(16 r), r or p of 0, and r * p >= 2^30
  * (ERR_PARAMS). `key` is wiped when OpenSSL fails (ERR_INTERNAL).
  */
