@@ -1542,9 +1542,13 @@ apply_output_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* @p stage_mode: the preset is staged for an apply that can still be put back (dsd_stage_user_config_to_opts()), whose
+   caller commits it. */
 static void
-apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
-    if (cfg->has_mode) {
+apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state, int stage_mode) {
+    if (cfg->has_mode && stage_mode) {
+        (void)dsd_stage_decode_mode_preset(cfg->decode_mode, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
+    } else if (cfg->has_mode) {
         (void)dsd_apply_decode_mode_preset(cfg->decode_mode, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
     }
     if (cfg->has_dmr_mono && !(cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_DMR_MONO)) {
@@ -1818,7 +1822,7 @@ apply_file_input_symbol_timing(const dsdneoUserConfig* cfg, const dsd_opts* opts
 
 static void
 dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state,
-                                   int apply_file_input_rate_now) {
+                                   int apply_file_input_rate_now, int stage_mode) {
     if (!cfg || !opts || !state) {
         return;
     }
@@ -1826,7 +1830,7 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
     const int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
     apply_input_config(cfg, opts, apply_file_input_rate_now);
     apply_output_config(cfg, opts);
-    apply_mode_config(cfg, opts, state);
+    apply_mode_config(cfg, opts, state, stage_mode);
     apply_demod_config(cfg, opts, state);
     apply_trunking_config(cfg, opts);
     apply_radioreference_config(cfg, opts);
@@ -1841,12 +1845,17 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
 
 void
 dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
-    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 1);
+    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 1, 0);
+}
+
+void
+dsd_stage_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
+    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 1, 1);
 }
 
 void
 dsd_apply_user_config_to_opts_pre_cli(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
-    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 0);
+    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 0, 0);
 }
 
 void

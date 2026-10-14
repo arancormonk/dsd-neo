@@ -684,18 +684,27 @@ dsd_decode_mode_leave_tetra(dsd_opts* opts, dsd_state* state) {
     dsd_tetra_publication_reset(&state->tetra_pub);
 }
 
+void
+dsd_decode_mode_commit_tetra(dsd_opts* opts, dsd_state* state) {
+    if (opts && state && opts->frame_tetra == 0) {
+        dsd_decode_mode_leave_tetra(opts, state);
+    }
+}
+
 int
-dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
+dsd_stage_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
                              dsd_state* state) {
     /* A mode no preset implements (DSDCFG_MODE_UNSET: a config's [mode] without a decode key) is refused before
-       anything changes, the TETRA cleanup below included, so the session keeps the decoders it runs. */
+       anything changes, the TETRA decoder flag included, so the session keeps the decoders it runs. */
     const decode_mode_preset* preset = decode_mode_preset_find(mode);
     if (!opts || !state || !preset) {
         return -1;
     }
 
+    /* Every preset but TETRA's runs no TETRA decoder. What the TETRA decoder holds is the commit's to drop
+       (dsd_decode_mode_commit_tetra()): settings staged and then put back bring the session back whole. */
     if (mode != DSDCFG_MODE_TETRA) {
-        dsd_decode_mode_leave_tetra(opts, state);
+        opts->frame_tetra = 0;
     }
 
     if (preset->apply_profiled) {
@@ -729,6 +738,16 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         /* The analog kind belongs to the analog presets; a digital session never carries one it did not choose. */
         opts->analog_demod = DSD_ANALOG_DEMOD_FM;
     }
+    return 0;
+}
+
+int
+dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
+                             dsd_state* state) {
+    if (dsd_stage_decode_mode_preset(mode, profile, opts, state) != 0) {
+        return -1;
+    }
+    dsd_decode_mode_commit_tetra(opts, state);
     return 0;
 }
 

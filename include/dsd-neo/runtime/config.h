@@ -792,6 +792,18 @@ int dsd_user_config_apply_key(dsdneoUserConfig* cfg, const char* section, const 
 void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief dsd_apply_user_config_to_opts() for an apply that can still be put back: its [mode] preset is staged
+ * (dsd_stage_decode_mode_preset()), so what the TETRA decoder holds stays until the caller commits the apply with
+ * dsd_decode_mode_commit_tetra(). A runtime config apply that rolls the session back (a reopen that fails, a switch
+ * onto the analog monitor the front end refuses at once) thus goes back to a TETRA session whole.
+ *
+ * @param cfg User config to apply.
+ * @param opts Decoder options to mutate.
+ * @param state Decoder state to mutate.
+ */
+void dsd_stage_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief The radio input spec the config's [input] sets, without applying anything.
  *
  * What dsd_apply_user_config_to_opts() writes to opts->audio_in_dev for an `rtl` source with `rtl_freq`, an `rtltcp`

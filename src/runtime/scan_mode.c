@@ -620,12 +620,18 @@ scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, const scan_scope
     state->sps_hunt_idx = (int)profile.sps_profile_index;
 }
 
+/* How a row's decoder is put in place: staged for a tune whose settings are put back after it (dsd_scan_mode_prepare()),
+ * or committed with the row (dsd_scan_mode_enter(), dsd_scan_mode_resume()). */
+typedef enum { SCAN_ROW_STAGED = 0, SCAN_ROW_COMMITTED = 1 } scan_row_apply;
+
 /* Put the row @p scope describes over the configured decoder, all but its symbol timing, and fill @p out_profile with
  * the profile the row is timed with. Returns 0 for a blank row, which runs the configured decoder with its timing. The
  * caller times the row (scan_scope_apply_timing()) once the modulation the row runs is decided: the preset's, the
- * configured lock's or the scope's, and on resume the one a P25 row learned (dsd_scan_mode_resume()). */
+ * configured lock's or the scope's, and on resume the one a P25 row learned (dsd_scan_mode_resume()). A typed row runs
+ * no TETRA decoder: committed, it leaves TETRA as its preset does; staged, the TETRA session stays whole until a commit
+ * (dsd_stage_decode_mode_preset()), so a transition that fails before one goes back to it as it was. */
 static int
-scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope,
+scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope, scan_row_apply how,
                              dsd_decode_mode_profile* out_profile) {
     dsd_scan_settings_restore(&scope->configured, opts, state);
     if (scope->mode == DSD_SCAN_MODE_INHERIT) {
@@ -636,7 +642,11 @@ scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope*
     opts->mod_p25p2_profile_lock = 0;
     const int channels = opts->pulse_digi_out_channels;
     const int rate = opts->pulse_digi_rate_out;
-    (void)dsd_apply_decode_mode_preset(mode_presets[scope->mode], DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    if (how == SCAN_ROW_COMMITTED) {
+        (void)dsd_apply_decode_mode_preset(mode_presets[scope->mode], DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    } else {
+        (void)dsd_stage_decode_mode_preset(mode_presets[scope->mode], DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    }
     if (scope->mode == DSD_SCAN_MODE_P25) {
         opts->frame_dmr = 0;
         opts->frame_x2tdma = 0;
@@ -667,9 +677,9 @@ scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope*
 }
 
 static void
-scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
+scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope, scan_row_apply how) {
     dsd_decode_mode_profile profile;
-    if (scan_scope_apply_row_decoder(opts, state, scope, &profile)) {
+    if (scan_scope_apply_row_decoder(opts, state, scope, how, &profile)) {
         scan_scope_apply_timing(opts, state, scope, profile);
     }
 }
@@ -855,8 +865,8 @@ scan_squelch_settle(scan_scope* scope, const dsd_opts* opts, dsd_squelch_setting
 }
 
 static void
-scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
-    scan_scope_apply_decoder(opts, state, scope);
+scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope, scan_row_apply how) {
+    scan_scope_apply_decoder(opts, state, scope, how);
     scan_options_apply(opts, state, &scope->options);
 }
 
@@ -927,7 +937,7 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
     scope->suspended = 0;
     /* A new row makes its own landing decision. */
     scope->timed_digital_family = 0;
-    scan_scope_apply(opts, state, scope);
+    scan_scope_apply(opts, state, scope, SCAN_ROW_COMMITTED);
     /* No push here: the row's own options follow, and dsd_scan_mode_options() pushes the net
      * change once. A transition already pending keeps its origin, since the demod has heard
      * nothing since. */
@@ -1020,7 +1030,7 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
     scope->suspended = 0;
     dsd_decode_mode_profile profile;
-    const int timed = scan_scope_apply_row_decoder(opts, state, scope, &profile);
+    const int timed = scan_scope_apply_row_decoder(opts, state, scope, SCAN_ROW_COMMITTED, &profile);
     if (scope->mode == DSD_SCAN_MODE_P25) {
         /* Configuration updates do not move the receiver off its Phase 2 channel
          * or erase an unlocked modulation acquired on the current P25 row. */
@@ -1357,7 +1367,7 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
     if (mode == DSD_SCAN_MODE_INHERIT) {
         *out = temporary.configured;
     } else {
-        scan_scope_apply(opts, state, &temporary);
+        scan_scope_apply(opts, state, &temporary, SCAN_ROW_STAGED);
         dsd_scan_settings_capture(opts, state, out);
         dsd_scan_settings_restore(&effective, opts, state);
     }

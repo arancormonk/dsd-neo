@@ -50,7 +50,7 @@ typedef enum DSD_ATTR_PACKED {
 int dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode);
 
 /**
- * @brief Apply a decode preset to opts/state.
+ * @brief Apply a decode preset to opts/state: dsd_stage_decode_mode_preset() and its commit at once.
  *
  * Every preset other than TETRA leaves the TETRA decoder (dsd_decode_mode_leave_tetra()).
  *
@@ -72,6 +72,27 @@ int dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfi
  * selector replaces TETRA rather than running beside it. NULL arguments do nothing.
  */
 void dsd_decode_mode_leave_tetra(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Stage a decode preset over opts/state, for a transition that may still be put back before it commits.
+ *
+ * Writes every setting dsd_apply_decode_mode_preset() does, the TETRA decoder flag (dsd_opts::frame_tetra) turned off
+ * for a mode other than TETRA included, but leaves what the TETRA decoder holds, so that settings captured before and
+ * put back after (a typed scan row staged for its tune, a mode change the front end refuses at once) bring a TETRA
+ * session back whole. The transition's commit drops it when the settings in force run no TETRA decoder
+ * (dsd_decode_mode_commit_tetra()).
+ *
+ * @return 0 on success, -1 for invalid args or a mode no preset implements (nothing changes then).
+ */
+int dsd_stage_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
+                                 dsd_state* state);
+
+/**
+ * @brief The commit of a decode-mode transition staged with dsd_stage_decode_mode_preset(): when the settings in force
+ * run no TETRA decoder, leave it (dsd_decode_mode_leave_tetra()); a transition put back to TETRA keeps the session.
+ * NULL arguments do nothing.
+ */
+void dsd_decode_mode_commit_tetra(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Rebuild preset symbol timing for a decode mode at a target PCM rate.

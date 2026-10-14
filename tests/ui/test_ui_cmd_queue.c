@@ -13627,6 +13627,98 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     return rc;
 }
 
+static int g_tetra_ext_cleanups;
+
+static void
+count_tetra_ext_cleanup(void* ptr) {
+    g_tetra_ext_cleanups++;
+    free(ptr);
+}
+
+/* A TETRA session on an RTL front end at TETRA's 72 kHz DSP rate, holding what a TETRA decoder holds: its state
+   extension (@p ext, which the session owns from here on and frees through count_tetra_ext_cleanup(), or which is freed
+   here when the session cannot be set up), the burst the frame sync captured and its publication. */
+static int
+init_tetra_session_on_rtl(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, int* ext) {
+    init_decode_mode_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:420.1M:0:0:72");
+    opts->rtl_dsp_bw_khz = 72;
+    state->rtl_ctx = fake_ctx;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA);
+    (void)dsd_app_drain_cmds(opts, state);
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    g_fake_analog_family = 0;
+    if (!ext) {
+        return 0;
+    }
+    if (opts->frame_tetra != 1
+        || dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, ext, count_tetra_ext_cleanup) != 0) {
+        free(ext);
+        return 0;
+    }
+    g_tetra_ext_cleanups = 0;
+    state->tetra_sync.polarity = 1;
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    return 1;
+}
+
+/*
+ * A TETRA session's switch onto Analog that the front end refuses by its request (a retune moved the rate between the
+ * check and the request) goes back to TETRA whole, from DECODE_MODE_SET and from a config's [mode] alike: the mode
+ * change is staged (dsd_stage_decode_mode_preset()) and commits only once nothing put it back, so the decoder flag, the
+ * TETRA state extension, the burst the frame sync captured and the publication all stay. A switch that stands leaves
+ * TETRA at its commit, as every preset other than TETRA does.
+ */
+static int
+test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const via[] = {"mode set", "config"};
+    char tag[96];
+    int rc = 0;
+    for (int config = 0; config <= 1; config++) {
+        int* ext = (int*)calloc(1U, sizeof(int));
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: TETRA session", via[config]);
+        if (!init_tetra_session_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx, ext)) {
+            rc |= expect_true(tag, 0);
+            state.rtl_ctx = NULL;
+            freeState(&state);
+            continue;
+        }
+        g_analog_req_result = -1;
+        if (config) {
+            rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra config: refused");
+        } else {
+            rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra mode set: refused");
+        }
+        g_analog_req_result = 0;
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: refused, back on TETRA", via[config]);
+        rc |= expect_true(tag, opts.frame_tetra == 1 && opts.analog_only == 0
+                                   && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA);
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: refused, the TETRA session whole", via[config]);
+        rc |= expect_true(tag, dsd_state_ext_get(&state, DSD_STATE_EXT_PROTO_TETRA) == ext && g_tetra_ext_cleanups == 0
+                                   && state.tetra_sync.polarity == 1
+                                   && state.tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK);
+        if (config) {
+            rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra config: taken");
+        } else {
+            rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra mode set: taken");
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: taken, TETRA left", via[config]);
+        rc |= expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0
+                                   && dsd_state_ext_get(&state, DSD_STATE_EXT_PROTO_TETRA) == NULL
+                                   && g_tetra_ext_cleanups == 1 && state.tetra_sync.polarity == 0
+                                   && state.tetra_pub.mode == DSD_TETRA_MODE_NONE);
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
 /*
  * A width set right after a switch onto Analog, in the same drain, is the width command's, not a later mode change:
  * the front end still refusing the switch where it lands (its analog request now carries that width) puts the decoder
@@ -18002,6 +18094,7 @@ main(void) {
     rc |= test_refused_leave_off_the_monitor_reverts_a_switch_between_kinds();
     rc |= test_refused_leave_revert_refused_gets_the_leave_policy();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
+    rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();
     rc |= test_refused_switch_onto_analog_retimes_the_mode();

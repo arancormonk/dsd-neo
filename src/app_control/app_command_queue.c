@@ -5254,7 +5254,8 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 0;
     opts->mod_cli_lock = 0;
-    if (dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
+    /* Staged: the commit below, once nothing can put the session back, leaves TETRA (dsd_stage_decode_mode_preset()). */
+    if (dsd_stage_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
         opts->mod_cli_lock = mod_locks[0];
         opts->mod_p25p2_c4fm = mod_locks[1];
         opts->mod_p25p2_profile_lock = mod_locks[2];
@@ -5285,8 +5286,12 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        above) puts the decoder back as it was; one refused where it lands is
        put back by the next drain. */
     ui_arm_analog_entry(opts, state, was_analog_family, was_kind);
-    if (decode_mode_republish(opts, state, mode) != 0
-        && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL)) {
+    const int put_back = decode_mode_republish(opts, state, mode) != 0
+                         && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL);
+    /* The mode change commits: one that stands leaves TETRA unless it is TETRA, and one put back above finds the TETRA
+       session it left whole. */
+    dsd_decode_mode_commit_tetra(opts, state);
+    if (put_back) {
         return UI_CMD_APPLY_FAILED;
     }
     /* The decoder was hunting for a different protocol a moment ago: its
@@ -7201,7 +7206,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     ui_cfg_rollback rollback;
     ui_cfg_capture_rollback(opts, state, &rollback);
 #endif
-    dsd_apply_user_config_to_opts(&cfg, opts, state);
+    dsd_stage_user_config_to_opts(&cfg, opts, state);
     /* A [mode] preset carries an audio layout too, but the session's output streams were opened with the layout in
        force then, which the backend fixes for their life: the session's layout is kept, as decode_mode_apply_value()
        keeps it for DSD_APP_CMD_DECODE_MODE_SET. Put back before anything below opens or reopens an output (a changed
@@ -7226,6 +7231,12 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
     /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
     reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, &old_rx);
+    /* The apply commits here, past everything above that can put the session back: a [mode] that stands leaves TETRA
+       unless it is TETRA, and one put back (a reopen that failed, a switch onto the monitor refused at once) finds the
+       TETRA session whole (dsd_stage_user_config_to_opts()). */
+    if (cfg.has_mode) {
+        dsd_decode_mode_commit_tetra(opts, state);
+    }
 #ifdef USE_RADIO
     ui_cfg_note_refused_row(radio_rc);
     if (radio_rc != 0) {

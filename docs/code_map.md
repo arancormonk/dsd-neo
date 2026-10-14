@@ -902,7 +902,7 @@ suite runs under this compiler.
   publication (`dsd_access_code_current()`), so they carry the cell or direct mode channel they were decoded on, not the
   last burst's. Integers only, so it rides the `vertex_ks_count..ui_msg` snapshot range, pinned by a `_Static_assert` in
   `ui_snapshot.c`. `dsd_tetra_publication_reset()` clears it and bumps its `generation`: a preset other than TETRA does
-  (`dsd_apply_decode_mode_preset()`), and so does `tetra_state_reset()` with the state it drops. TETRA calls, short data
+  when it commits (`dsd_apply_decode_mode_preset()`, `dsd_decode_mode_commit_tetra()`), and so does `tetra_state_reset()` with the state it drops. TETRA calls, short data
   and status messages reach the frontends as canonical calls and event history notices (TETRA "Calls" below), not
   through the publication. Tests: `TETRA_PUBLICATION`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `RUNTIME_DECODE_MODE`.
 - API note: `<dsd-neo/core/analog_tone.h>` (issue #527) holds the receive policy's types only: `dsd_tone_filter_mode`
@@ -1555,7 +1555,13 @@ suite runs under this compiler.
     a table (`k_cli_presets`), and so are the presets (`k_decode_mode_presets`): `dsd_apply_decode_mode_preset()` looks
     the mode up before it changes anything, so a mode no preset implements (`DSDCFG_MODE_UNSET`, which a config's
     `[mode]` without a `decode` key and DECODE_MODE_SET 0 pass) changes nothing, a TETRA session's decoder and state
-    included. `dsd_apply_decode_mode_symbol_timing()` refuses such a mode the same way (it has no preset timing), and
+    included. A transition that can still be put back stages its preset (`dsd_stage_decode_mode_preset()`: every
+    setting, `frame_tetra` off for a mode other than TETRA, but the TETRA state extension, `tetra_sync` and `tetra_pub`
+    left) and commits once nothing can put it back (`dsd_decode_mode_commit_tetra()`: TETRA is left when the settings
+    in force run no TETRA decoder); `dsd_apply_decode_mode_preset()` is both at once. DECODE_MODE_SET commits after a
+    switch onto the monitor the front end refused at once was put back, and a runtime config apply
+    (`dsd_stage_user_config_to_opts()`) after its reopen and receive-family rollbacks, so a TETRA session they put back
+    is whole (`APP_COMMAND_QUEUE`). `dsd_apply_decode_mode_symbol_timing()` refuses such a mode the same way (it has no preset timing), and
     the config paths that call it for a file input (`apply_file_input_symbol_timing()` in `config_user.cpp`,
     `cfg_file_runtime_apply_*()` in `app_command_queue.c`) then rescale or keep the session's own timing
     (`RUNTIME_DECODE_MODE`, `RUNTIME_CONFIG_USER`, `APP_COMMAND_QUEUE`). AM (`DSDCFG_MODE_AM` = 16, `-fM`, issue #524) is the last preset: the analog monitor
@@ -1582,9 +1588,11 @@ suite runs under this compiler.
     I/Q radio input)`. Every preset other than TETRA leaves the TETRA decoder (`dsd_decode_mode_leave_tetra()`:
     `frame_tetra` off, the TETRA state extension, `tetra_sync` and `tetra_pub` dropped), and so do the `-f` selectors
     the CLI handles itself (`-fp`, `-fh`, `-fH`, `-fe`, `-fE`, `-fZ`, `-fB`, `-fP`, `-fU`), so the last `-f` selector
-    replaces TETRA rather than running beside it. A typed `-Y` row's preset clears `frame_tetra` and drops the TETRA state; `dsd_scan_settings`
-    carries `frame_tetra` with the other frame flags, so an inherited row and the end of the scan bring the configured
-    TETRA decoder back (`RUNTIME_SCAN_MODE`). On the RTL front end its 18 ksym/s profile runs CQPSK timing on the WIDE
+    replaces TETRA rather than running beside it. A typed `-Y` row leaves TETRA when it commits (`dsd_scan_mode_enter()`,
+    `dsd_scan_mode_resume()`), not when `dsd_scan_mode_prepare()` stages it for its tune, so a row whose preparation or
+    tune fails before the commit goes back to the TETRA session whole (`RUNTIME_SCAN_MODE`, `ENGINE_CHANNEL_SCAN`);
+    `dsd_scan_settings` carries `frame_tetra` with the other frame flags, so an inherited row and the end of the scan
+    bring the configured TETRA decoder back (`RUNTIME_SCAN_MODE`). On the RTL front end its 18 ksym/s profile runs CQPSK timing on the WIDE
     channel filter (`dsd_rtl_channel_profile_for()`), and a retune keeps the active profile with its filter
     (`rtl_demod_maybe_refresh_ted_sps_after_rate_change()`): the options a stream opened with in another mode do not
     narrow a live switch to TETRA onto the P25 CQPSK filter (`IO_RTL_DEMOD_CONFIG`). Its rate rule lives in

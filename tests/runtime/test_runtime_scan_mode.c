@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -1670,9 +1671,61 @@ test_tetra_session_survives_typed_rows(void) {
     free(o);
 }
 
+static int g_tetra_ext_cleanups;
+
+static void
+count_tetra_ext_cleanup(void* ptr) {
+    g_tetra_ext_cleanups++;
+    free(ptr);
+}
+
+/* A typed row staged for its tune (dsd_scan_mode_prepare(), as channel_scan_start_row() stages it before preparation
+ * steps and a tune that can still fail) leaves the TETRA session whole: the staged settings run no TETRA decoder, but
+ * the session keeps its decoder flag, its state extension, the burst the frame sync captured for it and its
+ * publication until the row commits (dsd_scan_mode_enter()), which leaves TETRA as the row's preset does. A transition
+ * that fails before its commit therefore goes back to the TETRA session as it was. */
+static void
+test_tetra_session_survives_row_staging(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    int* ext = (int*)calloc(1, sizeof(int));
+    assert(o && s && ext);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->pulse_digi_out_channels = 1;
+    o->pulse_digi_rate_out = 8000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    assert(dsd_state_ext_set(s, DSD_STATE_EXT_PROTO_TETRA, ext, count_tetra_ext_cleanup) == 0);
+    g_tetra_ext_cleanups = 0;
+    s->tetra_sync.polarity = 1;
+    s->tetra_pub.generation = 4U;
+    s->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+
+    dsd_scan_settings staged;
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_DMR, NULL, &staged) == 0);
+    assert(staged.frame_tetra == 0 && staged.frame_dmr == 1);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0);
+    assert(dsd_state_ext_get(s, DSD_STATE_EXT_PROTO_TETRA) == ext && g_tetra_ext_cleanups == 0);
+    assert(s->tetra_sync.polarity == 1 && s->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK
+           && s->tetra_pub.generation == 4U);
+
+    /* The commit: the row runs, TETRA is left. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->frame_tetra == 0 && o->frame_dmr == 1);
+    assert(dsd_state_ext_get(s, DSD_STATE_EXT_PROTO_TETRA) == NULL && g_tetra_ext_cleanups == 1);
+    assert(s->tetra_sync.polarity == 0 && s->tetra_pub.mode == DSD_TETRA_MODE_NONE && s->tetra_pub.generation == 5U);
+    dsd_scan_mode_leave(o, s);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
     test_tetra_session_survives_typed_rows();
+    test_tetra_session_survives_row_staging();
     test_nfm_class_names();
     test_configured_nfm_width_edit();
     test_configured_am_width_edit();
