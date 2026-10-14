@@ -77,6 +77,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
+        io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_squelch.c
@@ -104,6 +105,7 @@ elseif(MSVC)
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
+        io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_squelch.c
