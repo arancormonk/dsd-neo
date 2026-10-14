@@ -41,6 +41,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/backup_seal.h>
 #include <dsd-neo/runtime/git_ver.h>
+#include <dsd-neo/runtime/radioreference_generate.h>
 #include <functional>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <qanystringview.h>
@@ -1217,18 +1218,57 @@ refuse_typed_paths(const QByteArray& archive, const Fixture& f) {
                == BackupError::None);
 }
 
-/* A decode flag is split into the decoder's arguments like the extra arguments, so one that is more than a picker preset
- * counts as extra decoder options (controller ruling R8). */
-void
-test_decode_flag_presets() {
-    for (const char* flag :
-         {"", "-ft", "-fs", "-fi", "-fn", "-fd", "-fy", "-fz", "-fA", "-fM", "-mq", " -ft ", "-fa", "-f1", "\t-fs\n"}) {
-        expect(qPrintable(QStringLiteral("picker preset: '%1'").arg(QLatin1String(flag))),
-               dsd_qt::decode_flag_is_preset(QLatin1String(flag)));
+/* Every decode flag the app's own producers write, taken from those producers wherever they are callable. */
+QStringList
+app_produced_decode_flags(TestHost& host) {
+    // The wizard's decode chips (qml/Util.js DECODE_MODES), the older saves it still labels (LEGACY_DECODE_LABELS), the
+    // "-f1 -mq" chip saved_systems_model.cpp migrates on load, and a scan list's frequency entries
+    // (scan_list_targets.cpp resolveSystem()): QML and file-local code a test cannot call, so listed here.
+    QStringList flags{"", "-ft", "-mq", "-fs", "-fi", "-fn", "-fd", "-fy", "-fz", "-fA", "-fM", "-f1", "-f1 -mq"};
+    // The RadioReference generator, through the function the import calls, for every protocol and answer.
+    for (int protocol = 0; protocol < DSD_RR_PROTO_UNSUPPORTED; ++protocol) {
+        for (int bits = 0; bits < 8; ++bits) {
+            const char* flag =
+                dsd_rr_decode_flag(static_cast<dsd_rr_protocol>(protocol), bits & 1, (bits >> 1) & 1, (bits >> 2) & 1);
+            if (flag != nullptr) {
+                flags << QString::fromLatin1(flag);
+            }
+        }
     }
-    for (const char* flag : {"-fs -Y", "-mq -^", "-ft -w /sdcard/x.wav", "-fq", "-Z", "-f", "-ftt", "-mq -fs", "-fh"}) {
-        expect(qPrintable(QStringLiteral("more than a preset: '%1'").arg(QLatin1String(flag))),
-               !dsd_qt::decode_flag_is_preset(QLatin1String(flag)));
+    // Signal search detections, through the model's own system builder.
+    const dsd_qt::SignalSearchModel search(&host, nullptr);
+    for (const char* protocol :
+         {"P25", "DMR", "NXDN", "D-STAR", "NXDN48", "NXDN96", "dPMR", "M17", "YSF", "ProVoice"}) {
+        flags << search.systemForHit({{"confirmed", true}, {"protocol", protocol}}, {}).value("decodeFlag").toString();
+    }
+    for (const bool am : {false, true}) {
+        flags << search.systemForHit({{"confirmed", false}, {"am", am}}, {}).value("decodeFlag").toString();
+    }
+    flags.removeDuplicates();
+    return flags;
+}
+
+/* A decode flag is split into the decoder's arguments like the extra arguments: one the app itself writes is a decode
+ * choice, and one carrying any other token passes decoder options of its own (controller rulings R8, R10). */
+void
+test_decode_flag_standard(TestHost& host) {
+    const QStringList produced = app_produced_decode_flags(host);
+    for (const char* sample : {"-ft -^", "-mq -^", "-ft -Y", "-mq -Y", "-fs -Y", "-fh", "-fH", "-fe", "-fE", "-fp"}) {
+        expect(qPrintable(QStringLiteral("producer writes '%1'").arg(QLatin1String(sample))),
+               produced.contains(QLatin1String(sample)));
+    }
+    for (const QString& flag : produced) {
+        expect(qPrintable(QStringLiteral("app-produced flag is standard: '%1'").arg(flag)),
+               dsd_qt::decode_flag_is_standard(flag) && dsd_qt::decode_flag_is_standard(" " + flag + "\t"));
+        for (const char* extra : {"-w /sdcard/x.wav", "--rdio-api-key k", "-o pulse", "-Z"}) {
+            const QString carrying = flag + QLatin1Char(' ') + QLatin1String(extra);
+            expect(qPrintable(QStringLiteral("extra token counts: '%1'").arg(carrying)),
+                   !dsd_qt::decode_flag_is_standard(carrying));
+        }
+    }
+    for (const char* flag : {"-fq", "-fh344", "-f", "-ftt", "--fs", "-w", "-mqq", "-Y1", "^"}) {
+        expect(qPrintable(QStringLiteral("unknown token counts: '%1'").arg(QLatin1String(flag))),
+               !dsd_qt::decode_flag_is_standard(QLatin1String(flag)));
     }
 }
 
@@ -1241,9 +1281,11 @@ test_decode_flag_counts(const QByteArray& archive) {
                                                     dsd_qt::json_store_root())
             .summary.systemsWithExtraArgs;
     };
-    expect("a preset flag adds no extra options", restored("-fs") == 1 && restored("-mq") == 1 && restored("") == 1);
+    expect("an app-produced flag adds no extra options", restored("-fs") == 1 && restored("-mq") == 1
+                                                             && restored("") == 1 && restored("-fs -Y") == 1
+                                                             && restored("-mq -^") == 1 && restored("-fE") == 1);
     expect("a flag carrying arguments counts", restored("-fs -w /sdcard/x.wav") == 2);
-    expect("an importer refinement counts", restored("-fs -Y") == 2);
+    expect("a flag carrying an unknown switch counts", restored("-fs -Y --rdio-api-key k") == 2);
     expect("an unmapped selector counts", restored("-fq") == 2);
     expect("a numeric flag counts as its text", restored(5) == 2);
 
@@ -1370,7 +1412,6 @@ main(int argc, char** argv) {
 
     test_json_store_root();
     test_typed_path_table();
-    test_decode_flag_presets();
     test_unknown_store_name();
     test_passphrases();
     test_host_document_copies();
@@ -1389,6 +1430,7 @@ main(int argc, char** argv) {
         refuse_store_shapes(base.archive);
         refuse_prefs_and_avoids(base.archive);
         refuse_typed_paths(base.archive, fixture);
+        test_decode_flag_standard(host);
         test_decode_flag_counts(base.archive);
         test_export_repairs();
         test_export_drops_foreign_bundle(fixture);

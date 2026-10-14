@@ -127,8 +127,8 @@ struct Summary {
     int avoids = 0;
     /** Replay systems: a backup never carries recordings, so each needs its recording chosen again. */
     int recordingsToChoose = 0;
-    /** Saved systems that pass the decoder options of their own: extra arguments, or a decode flag that is more than
-        a picker preset (decode_flag_is_preset()), since both are split into the decoder's arguments. */
+    /** Saved systems that pass decoder options of their own: extra arguments, or a decode flag with a token the app
+        itself never writes (decode_flag_is_standard()), since both are split into the decoder's arguments. */
     int systemsWithExtraArgs = 0;
     /** Whether the app-wide extra decoder options are not empty. */
     bool appExtraArgs = false;

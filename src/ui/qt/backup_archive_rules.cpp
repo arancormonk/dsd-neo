@@ -410,10 +410,10 @@ summarize(const QMap<QString, QJsonArray>& stores, const QVariantMap& prefs, int
         if (row.value(QLatin1String("sourceType")).toString() == QLatin1String("file")) {
             summary.recordingsToChoose++;
         }
-        // The session builder splits a decode flag into argv like the extra arguments, so a flag that is more than a
-        // picker preset carries decoder options too.
+        // The session builder splits a decode flag into argv like the extra arguments, so a flag carrying a token the
+        // app itself never writes passes decoder options too.
         const bool extra = !variant_string(row.value(QLatin1String("extraArgs"))).trimmed().isEmpty()
-                           || !decode_flag_is_preset(variant_string(row.value(QLatin1String("decodeFlag"))));
+                           || !decode_flag_is_standard(variant_string(row.value(QLatin1String("decodeFlag"))));
         if (extra) {
             summary.systemsWithExtraArgs++;
         }

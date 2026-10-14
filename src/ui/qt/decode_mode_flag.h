@@ -23,6 +23,7 @@
 #include <QString>
 #include <QStringList>
 #include <Qt>
+#include <algorithm>
 
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -56,29 +57,46 @@ decode_mode_for_flag(const QString& flag) {
 }
 
 /**
- * @brief Whether @p flag is nothing but a decode preset the picker selects.
+ * @brief Whether @p token is one the app itself writes into a saved decode flag.
  *
- * The session builder splits a saved decode flag into argv like the extra
- * arguments, so a flag that is more than a preset carries decoder options of
- * its own. A preset is: empty (the engine's default), one `-f` selector that
- * decode_mode_for_flag() maps, or the P25 Simulcast chip's "-mq", the picker's
- * one preset that is not a `-f` selector. Anything else - a second token, an
- * unmapped selector - is more than a preset.
+ * The allowlist is what the producers write, read from their code:
+ * - a CLI `-f` preset decode_mode_for_flag() maps: the wizard's decode chips
+ *   (qml/Util.js DECODE_MODES, and its LEGACY_DECODE_LABELS for older saves),
+ *   a scan list's frequency entries (scan_list_targets.cpp resolveSystem())
+ *   and signal search's detections (signal_search_model.cpp
+ *   confirmedDecodeFlag() and systemForHit());
+ * - "-mq", the QPSK modulation selector of the P25 Simulcast chip and of the
+ *   RadioReference simulcast alternates;
+ * - "-^" and "-Y", the RadioReference generator's P25 trunked and conventional
+ *   scan refinements, and "-fh", "-fH", "-fe", "-fE", its EDACS selectors
+ *   (src/runtime/radioreference/rr_generate.c k_protocols, through
+ *   dsd_rr_decode_flag() into radio_reference_model.cpp's plan);
+ * - "-fp", signal search's ProVoice selector.
  */
 inline bool
-decode_flag_is_preset(const QString& flag) {
-    const QStringList tokens = flag.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    if (tokens.isEmpty()) {
-        return true;
-    }
-    if (tokens.size() != 1) {
-        return false;
-    }
-    const QString& token = tokens.first();
-    if (token == QLatin1String("-mq")) {
-        return true;
+decode_flag_token_is_standard(const QString& token) {
+    static const char* const kProducedTokens[] = {"-mq", "-^", "-Y", "-fh", "-fH", "-fe", "-fE", "-fp"};
+    for (const char* produced : kProducedTokens) {
+        if (token == QLatin1String(produced)) {
+            return true;
+        }
     }
     return token.size() == 3 && token.startsWith(QLatin1String("-f")) && decode_mode_for_flag(token) >= 0;
+}
+
+/**
+ * @brief Whether every token of @p flag is one the app itself writes.
+ *
+ * The session builder splits a saved decode flag into argv like the extra
+ * arguments, so a token no producer writes (decode_flag_token_is_standard())
+ * is a decoder option of its own: an output file, a socket, an unknown switch.
+ * An empty flag (the engine's default) is standard.
+ */
+inline bool
+decode_flag_is_standard(const QString& flag) {
+    const QStringList tokens = flag.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    return std::all_of(tokens.cbegin(), tokens.cend(),
+                       [](const QString& token) { return decode_flag_token_is_standard(token); });
 }
 
 } // namespace dsd_qt
