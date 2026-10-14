@@ -91,7 +91,7 @@ encode_signalling(const uint8_t* type1, int ntype1, int ncoded, int a, uint32_t 
     const int ntype2 = ntype1 + 16 + 4;
     assert(ntype2 <= TYPE2_MAX && ncoded <= CODED_MAX);
     uint8_t type2[TYPE2_MAX] = {0};
-    uint8_t mother[TYPE2_MAX * 4];
+    uint8_t mother[TYPE2_MAX * 4] = {0};
     uint8_t type3[CODED_MAX];
     uint8_t type4[CODED_MAX];
     uint16_t pn[CODED_MAX];
@@ -324,7 +324,8 @@ test_failed_bsch_runs_the_clock(void) {
     const uint8_t zeros[BLOCK_DIBITS] = {0};
     dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
     dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
-    assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const dsd_frame_verdict first = sync_burst(&s, bsch, sysinfo);
+    assert(first == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     tetra_state_t* ts = tetra_st_existing(s.state);
     assert(ts->tdma_valid && ts->tn == 3U);
     const uint32_t slot3 = ts->tdma_slot_start;
@@ -342,7 +343,8 @@ test_failed_bsch_runs_the_clock(void) {
      * decoder reads the broadcast block and block 2 after the training sequence. */
     s.state->symbolcnt =
         slot3 + (2U * TETRA_TDMA_SLOT_SYMBOLS) + TETRA_TDMA_SB_PARSE_SYMBOL - SB_BB_DIBITS - BLOCK_DIBITS;
-    assert(sync_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    const dsd_frame_verdict failed = sync_burst(&s, zeros, zeros);
+    assert(failed == DSD_FRAME_VERDICT_UNPRODUCTIVE);
     assert(ts->tdma_valid && ts->tn == 1U && ts->tdma_slot_start == slot3 + (2U * TETRA_TDMA_SLOT_SYMBOLS));
     assert(!ts->mac_frag[1].active && ts->mac_frag[4].active && ts->mac_frag[4].nbits == 40U);
     session_close(&s);
@@ -379,7 +381,7 @@ test_control_burst_tells_the_polarity(void) {
     s.opts->tetra_net_mcc = 460;
     s.opts->tetra_net_mnc = 4242;
     s.opts->tetra_net_colour = 17;
-    uint8_t mac[SCH_HU_BITS] = {0};
+    const uint8_t mac[SCH_HU_BITS] = {0};
     uint8_t coded[2 * CB_HALF_DIBITS];
     encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
     uint8_t inverted[2 * CB_HALF_DIBITS];
@@ -387,7 +389,8 @@ test_control_burst_tells_the_polarity(void) {
         inverted[i] = (uint8_t)(coded[i] ^ 2U);
     }
     s.state->tetra_sync.polarity = 0;
-    assert(control_burst(&s, coded, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_sync.polarity == 0);
+    dsd_frame_verdict verdict = control_burst(&s, coded, 0);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_sync.polarity == 0);
 
     /* Its block 1 broken: the CRC fails and the polarity stays. */
     uint8_t broken[2 * CB_HALF_DIBITS];
@@ -395,10 +398,13 @@ test_control_burst_tells_the_polarity(void) {
     for (int i = 0; i < CB_HALF_DIBITS; i += 2) {
         broken[i] ^= 1U;
     }
-    assert(control_burst(&s, broken, 1) == DSD_FRAME_VERDICT_UNPRODUCTIVE && s.state->tetra_sync.polarity == 0);
+    verdict = control_burst(&s, broken, 1);
+    assert(verdict == DSD_FRAME_VERDICT_UNPRODUCTIVE && s.state->tetra_sync.polarity == 0);
 
-    assert(control_burst(&s, inverted, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_sync.polarity == 1);
-    assert(control_burst(&s, coded, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_sync.polarity == 0);
+    verdict = control_burst(&s, inverted, 1);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_sync.polarity == 1);
+    verdict = control_burst(&s, coded, 0);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_sync.polarity == 0);
     session_close(&s);
 }
 
@@ -412,11 +418,11 @@ test_control_burst_publishes_its_mode(void) {
     s.opts->tetra_net_mcc = 460;
     s.opts->tetra_net_mnc = 4242;
     s.opts->tetra_net_colour = 17;
-    uint8_t mac[SCH_HU_BITS] = {0};
+    const uint8_t mac[SCH_HU_BITS] = {0};
     uint8_t coded[2 * CB_HALF_DIBITS];
     encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
-    assert(control_burst(&s, coded, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
-    assert(s.state->tetra_pub.mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK);
+    const dsd_frame_verdict verdict = control_burst(&s, coded, 0);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_pub.mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK);
     const uint8_t zeros[BLOCK_DIBITS] = {0};
     (void)nts2_burst(&s, zeros, zeros);
     assert(s.state->tetra_pub.mode == DSD_TETRA_MODE_TMO_UPLINK);
@@ -475,7 +481,8 @@ test_uplink_normal_burst_takes_the_lead(void) {
     const uint8_t zeros[BLOCK_DIBITS] = {0};
     dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
     dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
-    assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const dsd_frame_verdict sync_verdict = sync_burst(&s, bsch, sysinfo);
+    assert(sync_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     s.opts->tetra_uplink = 1;
 
     ttb_block b = {0};
@@ -496,7 +503,8 @@ test_uplink_normal_burst_takes_the_lead(void) {
     s.state->tetra_sync.b2_lead_soft_valid = 0;
     s.state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
     s.state->synctype = DSD_SYNC_TETRA_NDB_POS;
-    assert(dsd_dispatch_handle_tetra(s.opts, s.state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const dsd_frame_verdict verdict = dsd_dispatch_handle_tetra(s.opts, s.state);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     assert(s.state->tetra_sync.b2_lead_count == 0);
     session_close(&s);
 }
