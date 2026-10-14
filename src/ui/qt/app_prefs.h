@@ -16,11 +16,14 @@
 #ifndef DSD_NEO_SRC_UI_QT_APP_PREFS_H_
 #define DSD_NEO_SRC_UI_QT_APP_PREFS_H_
 
+#include <QList>
 #include <QObject>
 #include <QSettings>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QVariantList>
+#include <QVariantMap>
 #include <QtGlobal>
 
 namespace dsd_qt {
@@ -84,6 +87,22 @@ class AppPrefs : public QObject {
      */
     enum ScreenMode { ScreenSystem = 0, ScreenAlwaysOn = 1, ScreenDimBetweenCalls = 2, ScreenOffBetweenCalls = 3 };
     Q_ENUM(ScreenMode)
+
+    /** @brief One persisted key and whether it travels with a backup; device-local state does not. */
+    struct KeySpec {
+        const char* name;
+        bool portable;
+    };
+
+    /** @brief Every key AppPrefs persists. */
+    static QList<KeySpec> keyTable();
+    /** @brief The names of the keys with portable set. */
+    static QStringList portableKeys();
+    /** @brief Portable keys present in the persisted settings, read through a fresh QSettings on the same file. */
+    static QVariantMap readPortable();
+    /** @brief Set every portable key present in @p values, remove every portable key absent from it; ignore other
+     *         keys; sync() and return status() == QSettings::NoError. Device-local keys are never touched. */
+    static bool replacePortable(const QVariantMap& values);
 
     explicit AppPrefs(QObject* parent = nullptr);
     ~AppPrefs() override;
@@ -215,8 +234,15 @@ class AppPrefs : public QObject {
   private:
     void expireLocation() const;
     void armLocationExpiry();
+
+    /** @brief The app's settings file; the single place its scope and names are spelled. */
+    class Settings : public QSettings {
+      public:
+        Settings();
+    };
+
     QTimer m_locationExpiry;
-    mutable QSettings m_settings;
+    mutable Settings m_settings;
 };
 
 } // namespace dsd_qt

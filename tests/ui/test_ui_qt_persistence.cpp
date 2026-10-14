@@ -22,6 +22,7 @@
 #include <QList>
 #include <QMap>
 #include <QMetaProperty>
+#include <QMetaType>
 #include <QObject>
 #include <QSettings>
 #include <QStandardPaths>
@@ -737,6 +738,121 @@ test_foundation_key_type_migration() {
 
 } // namespace
 
+QSettings
+prefs_file() {
+    return QSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"),
+                     QStringLiteral("dsd-neo-app"));
+}
+
+QVariant
+sample_for(const QMetaProperty& prop) {
+    switch (prop.metaType().id()) {
+        case QMetaType::Bool: return true;
+        case QMetaType::Int: return 1;
+        case QMetaType::Double: return 5.5;
+        case QMetaType::QString: return QStringLiteral("sample");
+        default: return QVariant();
+    }
+}
+
+void
+test_prefs_key_table(void) {
+    {
+        QSettings s = prefs_file();
+        s.clear();
+        s.sync();
+    }
+    QStringList names;
+    for (const AppPrefs::KeySpec& k : AppPrefs::keyTable()) {
+        names.append(QString::fromLatin1(k.name));
+    }
+    expect("key table has no duplicate names", names.removeDuplicates() == 0);
+
+    {
+        AppPrefs prefs;
+        const QMetaObject* mo = prefs.metaObject();
+        for (int i = mo->propertyOffset(); i < mo->propertyCount(); ++i) {
+            const QMetaProperty prop = mo->property(i);
+            if (!prop.isWritable()) {
+                continue;
+            }
+            const QVariant v = sample_for(prop);
+            expect(prop.name(), v.isValid() && prop.write(&prefs, v));
+        }
+        prefs.setLocationFix(1.5, 2.5, QDateTime::currentMSecsSinceEpoch(), 7.0);
+    }
+    QSettings file = prefs_file();
+    file.sync();
+    const QStringList written = file.allKeys();
+    expect("every property wrote something", written.size() > 15);
+    for (const QString& key : written) {
+        expect(qPrintable(QStringLiteral("persisted key %1 is in the table").arg(key)), names.contains(key));
+    }
+
+    QStringList local;
+    for (const AppPrefs::KeySpec& k : AppPrefs::keyTable()) {
+        if (!k.portable) {
+            local.append(QString::fromLatin1(k.name));
+        }
+    }
+    local.sort();
+    const QStringList wantLocal = {
+        QStringLiteral("location/lastAccuracyM"),   QStringLiteral("location/lastFixAt"),
+        QStringLiteral("location/lastLat"),         QStringLiteral("location/lastLon"),
+        QStringLiteral("ui/notificationExplained"), QStringLiteral("ui/onboardingDone"),
+    };
+    expect("device-local set is exactly the pinned one", local == wantLocal);
+    const QStringList portable = AppPrefs::portableKeys();
+    expect("portable keys are the table minus device-local",
+           portable.size() + local.size() == names.size() && !portable.contains(QStringLiteral("ui/onboardingDone"))
+               && portable.contains(QStringLiteral("listen/keepAwake"))
+               && portable.contains(QStringLiteral("listen/lastStartedUid"))
+               && portable.contains(QStringLiteral("rr/appKey")));
+
+    const QVariantMap before = AppPrefs::readPortable();
+    expect("readPortable returns only portable keys", !before.isEmpty()
+                                                          && !before.contains(QStringLiteral("location/lastLat"))
+                                                          && !before.contains(QStringLiteral("ui/onboardingDone")));
+    for (auto it = before.constBegin(); it != before.constEnd(); ++it) {
+        expect("readPortable key is portable", portable.contains(it.key()));
+    }
+    expect("readPortable reads stored values", before.value(QStringLiteral("rr/username")).toString() == "sample"
+                                                   && before.value(QStringLiteral("tuner/gainDb")).toInt() == 1);
+    expect("readPortable omits absent keys", !before.contains(QStringLiteral("listen/keepAwake")));
+
+    file.setValue(QStringLiteral("ui/onboardingDone"), true);
+    file.setValue(QStringLiteral("location/lastLat"), 9.0);
+    file.sync();
+
+    QVariantMap incoming;
+    incoming.insert(QStringLiteral("tuner/gainDb"), 42);
+    incoming.insert(QStringLiteral("rr/username"), QStringLiteral("restored"));
+    incoming.insert(QStringLiteral("listen/keepAwake"), true);
+    incoming.insert(QStringLiteral("ui/onboardingDone"), false);
+    incoming.insert(QStringLiteral("not/a/key"), 1);
+    expect("replacePortable succeeds", AppPrefs::replacePortable(incoming));
+
+    QSettings after = prefs_file();
+    after.sync();
+    expect("present portable keys are set", after.value(QStringLiteral("tuner/gainDb")).toInt() == 42
+                                                && after.value(QStringLiteral("listen/keepAwake")).toBool());
+    expect("absent portable keys are removed",
+           !after.contains(QStringLiteral("tuner/ppm")) && !after.contains(QStringLiteral("explore/host")));
+    expect("device-local keys are untouched", after.value(QStringLiteral("ui/onboardingDone")).toBool()
+                                                  && after.value(QStringLiteral("location/lastLat")).toInt() == 9);
+    expect("unknown keys are ignored", !after.contains(QStringLiteral("not/a/key")));
+    {
+        AppPrefs fresh;
+        expect("a fresh AppPrefs reads the replaced values",
+               fresh.gainDb() == 42 && fresh.rrUsername() == "restored" && fresh.ppm() == 0);
+    }
+    const QVariantMap again = AppPrefs::readPortable();
+    expect("readPortable round-trips replacePortable",
+           again.size() == 3 && again.value(QStringLiteral("tuner/gainDb")).toInt() == 42);
+    expect("empty replace clears portable keys",
+           AppPrefs::replacePortable(QVariantMap()) && AppPrefs::readPortable().isEmpty());
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -778,6 +894,7 @@ main(int argc, char** argv) {
         expect("opt-out retains scan target",
                restored.lastStartedKind() == "scan" && restored.lastStartedUid() == "stable-scan-uid");
     }
+    test_prefs_key_table();
     test_key_persistence();
     test_foundation_key_type_migration();
     test_site_provenance_edits();
