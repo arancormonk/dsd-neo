@@ -9,7 +9,8 @@
  * Lives and dies with the TETRA state: tetra_voice_release() runs when the state is dropped, and the engine's
  * carrier-boundary reset (tetra_voice_reset()) forgets the speech in progress, as do a BSCH of another cell and the end
  * of the heard speech. The speech in progress belongs to one transmission: speech of another call, timeslot or talker,
- * or after a TETRA call ended, starts over from a reset. Decoder-thread private.
+ * after a TETRA call ended, or after a pause in it of TETRA_CALL_SPEECH_END_S, starts over from a reset.
+ * Decoder-thread private.
  */
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
@@ -45,6 +46,9 @@ typedef struct tetra_voice {
     /* Speech integrity: 1 once a CRC-passed burst started the speech; the bad frames since the last good one. */
     uint8_t confirmed;
     uint8_t bad_run;
+    /* Decode clock: the last burst of the speech in progress with a good frame; 0 for none. A burst that comes
+       TETRA_CALL_SPEECH_END_S or more after it is another transmission's. */
+    double last_good_m;
 
     /* The transmission the speech in progress belongs to (bound): the kind, call identifier (TETRA_SPEECH_CALL),
        timeslot, target and transmitting party of its speech (tetra_speech; the party once known), and the count of

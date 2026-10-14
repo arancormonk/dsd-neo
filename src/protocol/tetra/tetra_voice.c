@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -274,6 +275,7 @@ voice_speech_reset(tetra_voice_t* v) {
     v->confirmed = 0;
     v->bad_run = 0;
     v->carry_len = 0;
+    v->last_good_m = 0.0;
     v->bound = 0;
 }
 
@@ -283,16 +285,20 @@ voice_speech_reset(tetra_voice_t* v) {
    GRANTED or D-TX INTERRUPT naming another talker, another direct mode source; a party not known on either side is no
    change, as for the canonical call), or after a TETRA call ended (a release, D-TX CEASED, the state machine leaving
    it, another call published), starts over: no samples, codec state or confirmation of one transmission reach the next
-   or its record policy. The call identifier and the timeslot tell two transmissions apart at the first burst of the
+   or its record policy. So does speech that comes TETRA_CALL_SPEECH_END_S or more after the last burst of it with a
+   good frame (@p now_m), in every mode: a pause that long ends the transmission, as it ends the heard speech, so the
+   next one, whose D-TX CEASED, D-TX GRANTED or DMAC-SYNC may have gone unheard, conceals nothing with the last one's
+   decoder. The call identifier and the timeslot tell two transmissions apart at the first burst of the
    second, before anything of it was published: a burst whose CRC failed publishes nothing. The kind tells direct mode
    from trunked mode, and whether trunked mode is the downlink or the uplink is the session's (--tetra-uplink). */
 static void
-voice_bind(tetra_state_t* ts, const tetra_speech* sp) {
+voice_bind(tetra_state_t* ts, const tetra_speech* sp, double now_m) {
     tetra_voice_t* const v = &ts->voice;
     const uint16_t call_id = sp->kind == TETRA_SPEECH_CALL ? sp->call_id : 0U;
     const int other_party = v->owner_source != 0u && sp->source != 0u && v->owner_source != sp->source;
+    const int paused = v->last_good_m > 0.0 && now_m - v->last_good_m >= TETRA_CALL_SPEECH_END_S;
     if (v->bound && v->owner_kind == sp->kind && v->owner_call_id == call_id && v->owner_tn == sp->tn
-        && v->owner_target == sp->target && v->owner_ends == ts->calls.ends && !other_party) {
+        && v->owner_target == sp->target && v->owner_ends == ts->calls.ends && !other_party && !paused) {
         if (sp->source != 0u) {
             v->owner_source = sp->source;
         }
@@ -345,7 +351,11 @@ voice_burst(dsd_opts* opts, dsd_state* state, tetra_speech* sp, const uint8_t* f
         tetra_calls_on_speech(opts, state, sp);
     }
     /* After the call heard the speech: publishing this call may have ended the last one. */
-    voice_bind(ts, sp);
+    const double now_m = dsd_decode_now_mono_s();
+    voice_bind(ts, sp, now_m);
+    if (good) {
+        ts->voice.last_good_m = now_m;
+    }
     voice_route route = {0, 0};
     int routed = 0;
     for (int i = 0; i < nframes; i++) {

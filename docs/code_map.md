@@ -4726,7 +4726,10 @@ single "current call".
   call), or the first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, a grant that
   names no talker where one was known, the state machine leaving the call, another call published, the call records
   forgotten), or the first after the heard speech
-  stopped for `TETRA_CALL_SPEECH_END_S`, published or not (`calls_tick_heard()`), or the first after a grant that
+  stopped for `TETRA_CALL_SPEECH_END_S`, published or not (`calls_tick_heard()`), or the first that comes
+  `TETRA_CALL_SPEECH_END_S` or more after the last burst of the speech with a good frame (`tetra_voice_t::last_good_m`),
+  in every mode, the followed call's and direct mode's included, whose call goes on across the pause (the D-TX
+  CEASED, D-TX GRANTED or DMAC-SYNC between two transmissions may go unheard), or the first after a grant that
   follows D-TX CEASED (`tetra_voice_transmission_started()`: the trail of speech after D-TX CEASED, whose talker is
   no longer known, is the last transmission's), starts over (`voice_bind()` in
   `tetra_voice.c`), so nothing of one transmission plays under the next one's record policy and no bad opening frame is
@@ -4811,8 +4814,8 @@ and digest, an unread DMAC-SYNC's protection, a DMAC-DATA that ends the transmis
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, an
 individual call's speech judged by both parties, muted speech that holds no timeslot, the
 derived key stream, the speech starting over at call boundaries, another call identifier, another timeslot, another
-cell or network and a stop of the heard speech, and going on across a rename, the crypto class speech gives the
-published call, frame 18 that plays nothing), `TETRA_BURST_VERDICT` (the modes a BSCH, an SCH/HU, a DSB and a carrier
+cell or network, a stop of the heard speech and a pause in the followed or direct mode call's, and going on across a
+rename, the crypto class speech gives the published call, frame 18 that plays nothing), `TETRA_BURST_VERDICT` (the modes a BSCH, an SCH/HU, a DSB and a carrier
 boundary leave and enter, an unread DMAC-SYNC that seals the traffic, a frame 18 burst not tried as speech), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
 
 #### State and its boundaries
@@ -4839,7 +4842,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
 | Carrier evidence (`confirm`) | the carrier | CRC-passed blocks | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
 | Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return; a decode-mode change disowns its tune in flight |
-| Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; a grant after D-TX CEASED; the heard speech stopping; another cell; a carrier boundary |
+| Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; a grant after D-TX CEASED; the heard speech stopping; a pause of `TETRA_CALL_SPEECH_END_S` in it, in every mode; another cell; a carrier boundary |
 | Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst's training, a CRC-passed SCH/HU | the next of them |
 
 What each decoded event does:

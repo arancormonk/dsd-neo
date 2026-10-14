@@ -1157,6 +1157,51 @@ test_speech_gap_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* Trunking, the followed call's speech that stops for TETRA_CALL_SPEECH_END_S has ended its transmission too, as the
+ * heard speech's has when not trunking: a PTT release whose D-TX CEASED went unheard, with the next talker's D-TX
+ * GRANTED, leaves the call followed through the hangtime, and the speech on its timeslot after the gap is the next
+ * transmission's. Its first bad burst conceals nothing with the last transmission's decoder, nothing the last one left
+ * waiting plays, and its speech decodes with a decoder of its own. The same holds in direct mode, whose call goes on
+ * across the gap too. */
+static void
+test_followed_speech_gap_resets_speech(void) {
+    for (int direct = 0; direct < 2; direct++) {
+        fixture f;
+        expect(fixture_open(&f) == 0, "followed gap: fixture");
+        dsd_decode_clock_use_test(1000000000000ULL);
+        uint8_t full[TETRA_SPEECH_FULL_BITS];
+        uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+        burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+        tetra_voice_reorder_full(full, full_frames);
+        if (direct) {
+            tetra_st(f.state)->dmo = 1;
+            tetra_st(f.state)->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+        } else {
+            follow_group(&f, 1, 8); /* TN1 */
+            f.opts->trunk_is_tuned = 1;
+        }
+        tetra_voice_full_slot(f.opts, f.state, full, 1); /* decodes 1, 2 */
+        dsd_decode_clock_test_set_ns(1000000000000ULL + (uint64_t)((TETRA_CALL_SPEECH_END_S + 0.5) * 1e9));
+        tetra_calls_tick(f.opts, f.state);
+        uint16_t followed = 0;
+        expect(direct || (tetra_sm_followed_call_id(f.state, &followed) == 1 && followed == 9),
+               "followed gap: the call is still followed, inside the hangtime");
+        tetra_voice_full_slot(f.opts, f.state, full, 0);
+        static int16_t out[MAX_OUT];
+        expect(fixture_output(&f, out, MAX_OUT) == 2 * FRAME, "followed gap: the next transmission conceals nothing");
+        tetra_voice_full_slot(f.opts, f.state, full, 1);
+        const played_frame want[] = {
+            {1, 0, full_frames},
+            {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+            {1, 0, full_frames},
+            {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+        };
+        expect_output(&f, 0, want, 4, 4 * FRAME, "followed gap: the next transmission from its own first decode");
+        dsd_decode_clock_use_system();
+        fixture_close(&f);
+    }
+}
+
 /* Frame 18 is the control frame (EN 300 392-2 clause 19.4.3.1: traffic in frames 1 to 17, frame 18 signalling only,
  * the mapping of clause 9.5.1): the speech codec's 17 bursts of 60 ms fill the 1.02 s multiframe exactly. A burst the
  * TDMA clock places in frame 18 is no speech: one whose signalling block failed its CRC, which the decoder would
@@ -1262,6 +1307,7 @@ main(void) {
     test_timeslot_change_resets_speech();
     test_speech_reclassifies_the_call();
     test_speech_gap_resets_speech();
+    test_followed_speech_gap_resets_speech();
     test_frame_18_is_no_speech();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
