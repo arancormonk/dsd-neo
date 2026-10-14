@@ -4703,7 +4703,9 @@ single "current call".
   D-TX INTERRUPT name, or the direct mode source; a party not known on either side is no change, as for the canonical
   call), or the first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, the state
   machine leaving the call, another call published, the call records forgotten), or the first after the heard speech
-  stopped for `TETRA_CALL_SPEECH_END_S`, published or not (`calls_tick_heard()`), starts over (`voice_bind()` in
+  stopped for `TETRA_CALL_SPEECH_END_S`, published or not (`calls_tick_heard()`), or the first after a grant that
+  follows D-TX CEASED (`tetra_voice_transmission_started()`: the trail of speech after D-TX CEASED, whose talker is
+  no longer known, is the last transmission's), starts over (`voice_bind()` in
   `tetra_voice.c`), so nothing of one transmission plays under the next one's record policy and no bad opening frame is
   concealed with another call's, timeslot's or talker's codec state; the call identifier and the timeslot tell two
   transmissions apart at the second's first burst, which publishes nothing when its CRC fails. The kind tells direct
@@ -4794,7 +4796,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network |
 | Carrier evidence (`confirm`) | the carrier | CRC-passed blocks | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
 | Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return; a decode-mode change disowns its tune in flight |
-| Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; the heard speech stopping; another cell; a carrier boundary |
+| Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; a grant after D-TX CEASED; the heard speech stopping; another cell; a carrier boundary |
 | Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst's training, a CRC-passed SCH/HU | the next of them |
 
 What each decoded event does:

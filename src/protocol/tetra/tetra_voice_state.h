@@ -7,8 +7,9 @@
  * @brief The speech path's part of the TETRA decoder state (tetra_state_t::voice).
  *
  * Lives and dies with the TETRA state: tetra_voice_release() runs when the state is dropped, and the engine's
- * carrier-boundary reset (tetra_voice_reset()) forgets the speech in progress. The speech in progress belongs to one
- * transmission: speech of another call, or after a TETRA call ended, starts over from a reset. Decoder-thread private.
+ * carrier-boundary reset (tetra_voice_reset()) forgets the speech in progress, as do a BSCH of another cell and the end
+ * of the heard speech. The speech in progress belongs to one transmission: speech of another call, timeslot or talker,
+ * or after a TETRA call ended, starts over from a reset. Decoder-thread private.
  */
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
@@ -62,6 +63,10 @@ void tetra_voice_release(tetra_voice_t* voice);
 
 /** Call @p old_id goes on as call @p new_id (D-INFO, D-CALL RESTORE): speech in progress of it stays its speech. */
 void tetra_voice_call_renamed(tetra_voice_t* voice, uint16_t old_id, uint16_t new_id);
+
+/** Call @p call_id starts its next transmission (a grant after D-TX CEASED): speech in progress of it, whose talker
+ * may no longer be known, is not the next transmission's and starts over. */
+void tetra_voice_transmission_started(tetra_voice_t* voice, uint16_t call_id);
 
 #ifdef __cplusplus
 }

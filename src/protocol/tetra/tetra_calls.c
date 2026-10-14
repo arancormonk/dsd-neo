@@ -743,14 +743,19 @@ call_connected(tetra_call_t* c) {
 }
 
 /* D-TX GRANTED and D-TX INTERRUPT: a transmission granted (to the addressed party, or to the transmitting party the PDU
- * names) starts; their encryption control says whether it is end-to-end encrypted (table 14.18). */
+ * names) starts; their encryption control says whether it is end-to-end encrypted (table 14.18). One granted after
+ * D-TX CEASED is the next transmission, whoever it names: the speech of the last one (the trail that follows D-TX CEASED
+ * included, whose talker is no longer known) is not its speech (tetra_voice_transmission_started()). */
 static void
-call_transmission(tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+call_transmission(tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
     if ((ev->has & TETRA_CALL_HAS_ENCRYPTION) != 0u) {
         c->e2ee = (uint8_t)(ev->encryption != 0u);
     }
     if ((ev->has & TETRA_CALL_HAS_GRANT) == 0u || !grant_is_transmission(ev->grant)) {
         return;
+    }
+    if (c->phase == TETRA_CALL_CEASED) {
+        tetra_voice_transmission_started(&ts->voice, c->call_id);
     }
     c->phase = TETRA_CALL_TX_GRANTED;
     uint32_t ssi = 0;
@@ -800,7 +805,7 @@ call_apply(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
             call_connected(c);
             break;
         case TETRA_CALL_EV_TX_GRANTED:
-        case TETRA_CALL_EV_TX_INTERRUPT: call_transmission(c, ev, sdu); break;
+        case TETRA_CALL_EV_TX_INTERRUPT: call_transmission(ts, c, ev, sdu); break;
         case TETRA_CALL_EV_TX_CEASED:
             c->phase = TETRA_CALL_CEASED;
             c->talker_ssi = 0u;

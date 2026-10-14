@@ -781,6 +781,44 @@ test_talker_change_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* Speech that trails D-TX CEASED belongs to the transmission that ended, though its talker is no longer known: a grant
+   after D-TX CEASED starts the next transmission, which takes nothing of that trail, neither its carried samples nor
+   its codec state, whatever talker it names. */
+static void
+test_grant_after_cease_resets_speech(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "next transmission: fixture");
+    uint8_t half[TETRA_SPEECH_HALF_BITS];
+    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    tetra_voice_reorder_half(half, half_frame);
+    tetra_voice_reorder_full(full, full_frames);
+    const size_t block = DSD_VOICE_FRAME_SAMPLES;
+
+    follow_call(&f, 12, 800, 0x0F);
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x4444U);
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    tetra_call_event ceased = {.call_id = 12, .kind = TETRA_CALL_EV_TX_CEASED};
+    tetra_calls_on_event(f.opts, f.state, &ceased, NULL);
+    /* The trail of talker 0x4444's transmission: its speech starts over at the end, and carries 80 samples. */
+    tetra_voice_half_slot(f.opts, f.state, half, 1);
+    expect(voice_of(&f)->carry_len == 80 && voice_of(&f)->confirmed == 1, "next transmission: the trail carries");
+
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x5555U);
+    tetra_voice_full_slot(f.opts, f.state, full, 0);
+    static int16_t out[MAX_OUT];
+    expect(fixture_output(&f, out, MAX_OUT) == 2 * block,
+           "next transmission: nothing of the trail, nothing concealed with its codec");
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_segment(&f, 0, 1, half_frame, 0, block, "next transmission: the transmission");
+    expect_segment(&f, block, 1, half_frame, 0, block, "next transmission: its trail");
+    expect_segment(&f, 2 * block, 1, full_frames, 0, FRAME, "next transmission: from its own first decode");
+    fixture_close(&f);
+}
+
 /* Trunking follows individual call @p call_id from @p caller to @p callee (a D-SETUP naming its calling party, table
    14.15), @p talker transmitting (D-TX GRANTED to another user). */
 static void
@@ -1156,6 +1194,7 @@ main(void) {
     test_record_gate();
     test_call_boundary_resets_speech();
     test_talker_change_resets_speech();
+    test_grant_after_cease_resets_speech();
     test_private_call_judged_by_both_parties();
     test_network_change_resets_speech();
     test_call_identifier_change_resets_speech();

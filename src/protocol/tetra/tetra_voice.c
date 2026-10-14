@@ -315,6 +315,13 @@ tetra_voice_call_renamed(tetra_voice_t* voice, uint16_t old_id, uint16_t new_id)
     }
 }
 
+void
+tetra_voice_transmission_started(tetra_voice_t* voice, uint16_t call_id) {
+    if (voice && voice->bound && voice->owner_kind == TETRA_SPEECH_CALL && voice->owner_call_id == call_id) {
+        voice_speech_reset(voice);
+    }
+}
+
 /* The frames of one burst of @p sp's call: @p bad[i] for frame i of @p frames. Whether the burst plays is judged first
    (tetra_voice_audible()), so that only speech that plays holds the receiver on its timeslot (tetra_voice_hold());
    speech whose CRC passed then reaches the call (tetra_calls_on_speech()), and the record policy is asked once per
