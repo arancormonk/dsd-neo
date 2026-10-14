@@ -4536,9 +4536,11 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   block decoded on the carrier the receiver is on before the block that carried the grant
   (`tetra_confirm_carrier_proven()`: `tetra.c` notes a block only after the MAC acted on it). A grant for the followed
   call is ignored, a call identifier arriving after a header-only allocation is adopted, and a grant on the carrier the
-  receiver is on (`sm_receiver_freq()`: the followed channel while TUNED, else the tuned frequency,
-  `dsd_opts_tuned_freq_hz()`; not the SYSINFO main carrier `trunk_cc_freq`, which a secondary carrier broadcasts too, so
-  a session started there tunes to a grant on the main carrier) is followed without a retune; the grant itself then
+  receiver is on (`tetra_sm_receiver_freq()`: the followed channel while TUNED, else the tuned frequency,
+  `dsd_opts_tuned_freq_hz()`, none while a request is in flight; not the SYSINFO main carrier `trunk_cc_freq`, which a
+  secondary carrier broadcasts too, so a session started there tunes to a grant on the main carrier; the calls module
+  reads the carrier being received by the same rule, `tetra_calls_carrier()`) is followed without a retune; the grant
+  itself then
   proves the call on that carrier (`tetra_confirm_note_followed_call()`). Every other grant tunes through
   `dsd_trunk_tuning_hook_tune_to_freq()` with `ted_sps` 0: a TETRA traffic carrier keeps the control channel's symbol
   rate, and `dsd_engine_cc_is_p25()` (`trunk_tuning.c`) answers 0 for TETRA syncs, before looking at `rf_mod`, whose
@@ -4733,8 +4735,9 @@ single "current call".
   destination) and the encryption class: end-to-
   end and direct mode encryption are never decrypted; air encryption is when `tetra_air_decrypt_voice()` applies a key
   stream from the encryption cipher key TB5 derives with the carrier being received (`tetra_calls_carrier()`: the
-  followed call's carrier, the SYSINFO main carrier on the control channel, else the carrier whose frequency is exactly
-  the tuned one), the SYSINFO location area and the BSCH colour code. The encryption sits above the channel coding (EN
+  followed call's carrier, else the carrier whose frequency is exactly the one the receiver is on,
+  `tetra_sm_receiver_freq()`, on the control channel too, which may be a secondary carrier that broadcasts the main
+  carrier's SYSINFO), the SYSINFO location area and the BSCH colour code. The encryption sits above the channel coding (EN
   300 392-7 clause 6.1) and the sensitivity-class order is part of that coding (EN 300 395-2 clause 5.2), so the key
   stream applies after `tetra_voice_reorder_full()` / `_half()`, to the speech frame bits in codec order (table 6.4: a
   full slot's frame A takes KSS(0..136) and frame B KSS(137..273), a half slot's frame KSS(216..352)). Only the
@@ -4828,7 +4831,8 @@ Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, re
 first block on its carrier included, identifier reuse, another calling party or its network included, a released,
 renamed-over or aged followed identifier, a released, reused or evicted heard identifier, ageing,
 canonical calls and notices in trunked and direct mode, direct mode short data whose FCS fails and what repeats it,
-an individual call's two parties, speech publication, the receiving carrier, what a record change, a MAC header's
+an individual call's two parties, speech publication, the receiving carrier (on a secondary carrier's control
+channel too), what a record change, a MAC header's
 encryption and a reallocation do to the published call, a direct mode call idling out, direct mode transmissions of
 another security class, an anonymous call per timeslot, the last cell's channels and event labels a BSCH or SYSINFO
 of another cell drops, an event label's party and channel, the call trunking turned off lets go of), `TETRA_DMO` (the

@@ -70,10 +70,9 @@ void tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state);
  *
  * Ignored unless trunking is on, a control channel is known, the grant names a frequency, no tune is in flight and a
  * CRC-passed BSCH or MAC block was decoded on the carrier the receiver is on before the block that carried the grant
- * (tetra_confirm). A grant for the call already followed is ignored. A grant on the carrier the receiver is on (the
- * followed channel while TUNED, else the frequency it is tuned to, dsd_opts_tuned_freq_hz(); not the main carrier
- * SYSINFO names, which a secondary carrier broadcasts too) is followed without a retune; any other is tuned to with no
- * symbol-timing override (ted_sps 0). A refused or deferred tune changes nothing.
+ * (tetra_confirm). A grant for the call already followed is ignored. A grant on the carrier the receiver is on
+ * (tetra_sm_receiver_freq()) is followed without a retune; any other is tuned to with no symbol-timing override
+ * (ted_sps 0). A refused or deferred tune changes nothing.
  *
  * @return 1 when the state machine now follows @p grant (tuned, tune in flight, or retargeted on the same carrier);
  *         0 when it ignored it.
@@ -124,6 +123,16 @@ void tetra_sm_on_external_cc_return(const dsd_opts* opts, dsd_state* state);
  * it). Rests ON_CC, or IDLE without a control channel or with trunking off.
  */
 void tetra_sm_abandon_carrier(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief The frequency in Hz the receiver is on, 0 when it is not known: while TUNED the followed channel, whose tune
+ * completed (or whose grant was taken where the receiver was); else the frequency it is tuned to
+ * (dsd_opts_tuned_freq_hz(), 0 off a radio input); 0 while a tune or return is in flight, between carriers. Never the
+ * main carrier SYSINFO names (state->trunk_cc_freq): every carrier of the cell broadcasts the same SYSINFO, so it says
+ * where the control channel is, not where the receiver is, and ON_CC can rest on a secondary carrier a session started
+ * on. What the decoder reads as the carrier being received goes by it (tetra_calls.c).
+ */
+long tetra_sm_receiver_freq(const dsd_opts* opts, const dsd_state* state);
 
 /** @brief The session's state; IDLE for a NULL @p state or a session without TETRA state. */
 tetra_sm_state_e tetra_sm_get_state(const dsd_state* state);

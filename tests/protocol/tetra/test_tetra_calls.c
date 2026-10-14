@@ -2225,6 +2225,36 @@ test_direct_mode_speech(void) {
     session_close(&s);
 }
 
+/* Trunking started on a secondary carrier rests ON_CC there without a retune once the SYSINFO names the main carrier,
+ * which every carrier of the cell broadcasts (EN 300 392-2 clause 21.4.4.1): the carrier being received is the one the
+ * receiver is tuned to, not the main carrier, for TB5 and for an event label bound to an allocated channel alike. A
+ * label assigned for the secondary carrier names its party there, so its label-addressed allocation and the encryption
+ * of its label-addressed MAC-RESOURCE reach the call. */
+static void
+test_on_cc_carrier_is_the_tuned_one(void) {
+    session s = session_open();
+    s.opts->trunk_tune_group_calls = 0;
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(130);
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->dl_carrier_hz = CARRIER_HZ(100);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    uint16_t cn = 0;
+    assert(tetra_calls_carrier(s.opts, s.state, &cn) == 1 && cn == 130);
+
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 0, 0);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    send_event_label(&s, 0x100u, 0x55u, 4, 130);
+    assert(c && (c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->alloc.carrier == 130 && c->alloc.timeslots == 4);
+    send_by_event_label(&s, 0x55u, 2, 130);
+    assert(c->alloc.carrier == 130 && c->alloc.timeslots == 2 && g_tunes == 0);
+    tetra_calls_on_addressed(s.opts, s.state,
+                             &(tetra_mac_address){.type = TETRA_MAC_ADDR_EVENT_LABEL, .event_label = 0x55u},
+                             TETRA_ENC_MODE_ODD, 1, 0);
+    assert(c->air_enc == TETRA_ENC_MODE_ODD);
+    session_close(&s);
+}
+
 /* Trunking turned off while following leaves the receiver on the followed channel and lets go of the call there: its
  * record is no followed call's any more, so it ages like any other (the followed record never does) and its canonical
  * call ends with it, while the state machine keeps the channel and asks for no return. */
@@ -2245,15 +2275,20 @@ test_trunking_off_lets_go_of_the_call(void) {
     session_close(&s);
 }
 
-/* The carrier being received, for TB5: the followed call's, the main carrier on the control channel, else the one the
- * receiver is tuned to exactly; none between carriers, in direct mode or off any carrier. */
+/* The carrier being received, for TB5: the followed call's, else the one the receiver is tuned to exactly, on the
+ * control channel too (not the SYSINFO main carrier, which a secondary carrier broadcasts as well); none between
+ * carriers, in direct mode or off any carrier. */
 static void
 test_receiving_carrier(void) {
     session s = session_open();
     tetra_state_t* const ts = tetra_st(s.state);
     uint16_t cn = 0;
     ts->dl_carrier_hz = CARRIER_HZ(100);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && tetra_calls_carrier(s.opts, s.state, &cn) == 0);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
     assert(tetra_calls_carrier(s.opts, s.state, &cn) == 1 && cn == 100);
+    s.opts->audio_in_type = AUDIO_IN_PULSE;
     send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
     assert(tetra_calls_carrier(s.opts, s.state, &cn) == 1 && cn == 120);
     ts->sm.pending_request_id = 9;
@@ -2329,6 +2364,7 @@ main(void) {
     test_heard_call_identifier_let_go();
     test_direct_mode_speech();
     test_trunking_off_lets_go_of_the_call();
+    test_on_cc_carrier_is_the_tuned_one();
     test_receiving_carrier();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");
     return 0;

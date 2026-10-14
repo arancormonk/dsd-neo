@@ -1857,9 +1857,9 @@ Out-of-range decimal keys are rejected without changing the installed key.
   decoded from its key management signalling; end-to-end encryption and direct mode encryption are never decrypted.
   The key stream generator takes the ECK that TB5 derives from the cipher key with the carrier number, location area
   and colour code of the carrier being received (EN 300 392-7 clause 6.3.2.2): the followed call's carrier while
-  trunking (`-T`), the main carrier on the control channel, otherwise the carrier whose downlink frequency is exactly
-  the tuned frequency of an RTL-SDR or I/Q replay input. Until the carrier number, a SYSINFO's location area and a
-  BSCH's colour code are known, nothing is decrypted.
+  trunking (`-T`), otherwise the carrier whose downlink frequency is exactly the tuned frequency of an RTL-SDR or I/Q
+  replay input, on the control channel too (a secondary carrier broadcasts the main carrier's SYSINFO as well). Until
+  the carrier number, a SYSINFO's location area and a BSCH's colour code are known, nothing is decrypted.
 - Kenwood 15‑bit scrambler (decimal): `-9 <dec>`
 - Anytone 16‑bit BP (hex): `-A <hex>`
 - Generic keystream (length:hexbytes, optional frame align): `-S <bits:hex[:offset[:step]]>` (e.g., `-S 49:123456789ABC80`, `-S 168:<hex>:0:49`)

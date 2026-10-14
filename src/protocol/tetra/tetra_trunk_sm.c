@@ -357,12 +357,12 @@ sm_tune_grant(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_s
     return 1;
 }
 
-/* The frequency the receiver is on, 0 when unknown: while TUNED the followed channel, whose tune completed (or whose
- * grant was taken where the receiver was); else the frequency it is tuned to (dsd_opts_tuned_freq_hz()). Not the main
- * carrier SYSINFO names (state->trunk_cc_freq): a secondary carrier of the cell broadcasts the same SYSINFO, so it says
- * where the control channel is, not where the receiver is. */
-static long
-sm_receiver_freq(const dsd_opts* opts, const tetra_state_t* ts) {
+long
+tetra_sm_receiver_freq(const dsd_opts* opts, const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || ts->sm.pending_request_id != 0U) {
+        return 0;
+    }
     if (ts->sm.state == (uint8_t)TETRA_SM_TUNED) {
         return ts->sm.followed.freq_hz;
     }
@@ -447,7 +447,7 @@ tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, const tetra_sm_grant* grant)
     if (!sm_grant_followable(opts, state, ts, grant)) {
         return 0;
     }
-    if (grant->freq_hz == sm_receiver_freq(opts, ts)) {
+    if (grant->freq_hz == tetra_sm_receiver_freq(opts, state)) {
         return sm_follow_here(opts, state, ts, grant);
     }
     return sm_tune_grant(opts, state, ts, grant);

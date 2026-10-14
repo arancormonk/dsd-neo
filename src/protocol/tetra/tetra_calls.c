@@ -279,10 +279,7 @@ tetra_calls_carrier(const dsd_opts* opts, const dsd_state* state, uint16_t* carr
         *carrier = g.carrier;
         return 1;
     }
-    if (ts->sm.state == (uint8_t)TETRA_SM_ON_CC) {
-        return carrier_of_frequency(ts, ts->dl_carrier_hz, carrier);
-    }
-    return carrier_of_frequency(ts, (long)dsd_opts_tuned_freq_hz(opts), carrier);
+    return carrier_of_frequency(ts, tetra_sm_receiver_freq(opts, state), carrier);
 }
 
 /* Air interface encryption a key stream here undoes: an encrypted mode, not the reserved one, under a usable key. */
