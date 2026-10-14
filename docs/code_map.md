@@ -4832,7 +4832,9 @@ What each decoded event does:
 
 A DSB whose SCH/S fails is not told from noise on its training sequence and changes nothing; sealing at every such
 burst would mute clear direct mode calls at every false sync. The uplink has no TDMA clock, so its speech has no
-timeslot: one transmission's speech ends where the heard speech stops (`TETRA_CALL_SPEECH_END_S`).
+timeslot: one transmission's speech ends where the heard speech stops (`TETRA_CALL_SPEECH_END_S`). Direct mode is
+decoded as one channel: in frequency efficient mode, two calls on channels A and B of one carrier (EN 300 396-2 clause
+3.1; the SCH/S channel usage), their DSBs take the channel from each other, one colour code and protection at a time.
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 
