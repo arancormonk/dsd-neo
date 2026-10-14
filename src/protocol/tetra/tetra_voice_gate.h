@@ -15,7 +15,9 @@
  * nothing (tetra_voice_hold()). Each timeslot of a carrier may be a traffic channel of its own call (EN 300 392-2
  * clause 9.4.2.2, table 9.27). On the downlink that is a timeslot the TDMA clock places, once the carrier's BSCH set
  * it; the uplink has no BSCH, and its speech is heard as it comes.
- * Direct mode carries one call on its channel (EN 300 396-3) and is never held back by the trunked gates.
+ * Direct mode carries one call on its channel (EN 300 396-3) and is never held back by the trunked gates. Frame 18 of a
+ * trunked mode carrier carries signalling only (EN 300 392-2 clause 19.4.3.1), so a burst the TDMA clock places there
+ * is no one's speech (tetra_tdma_control_frame()).
  *
  * Decoder-thread private.
  */
@@ -38,7 +40,8 @@ extern "C" {
  * The followed call's speech belongs to the followed call. Heard trunked speech belongs to the call record whose
  * traffic channel is the burst's timeslot of the tuned frequency (tetra_calls_on_timeslot()), else to no record: its
  * air encryption is then that of the last addressed MAC-RESOURCE on its timeslot, or on the carrier when its timeslot
- * had none. Direct mode speech belongs to the direct mode call, judged by its destination and security class.
+ * had none. Direct mode speech belongs to the direct mode call, judged by its destination and security class. A burst
+ * in frame 18 of a trunked mode carrier is not heard.
  *
  * @return 1 when the burst is heard, 0 when it is not (@p sp is cleared).
  */
