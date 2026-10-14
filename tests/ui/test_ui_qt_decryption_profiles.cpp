@@ -17,11 +17,13 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/log.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "decoder_host.h"
@@ -167,6 +169,36 @@ storedRow(const QString& uid) {
 
 static const char kResaveError[] = "Open this decryption profile and save it again.";
 
+/* Warnings the model logs, kept by the process-lifetime log tap main() installs. */
+static QStringList&
+warnings() {
+    static QStringList captured;
+    return captured;
+}
+
+static void
+captureWarning(dsd_neo_log_level_t level, const char* text, void*) {
+    if (level == LOG_LEVEL_WARN) {
+        warnings().append(QString::fromUtf8(text));
+    }
+}
+
+static int
+warningsContaining(const QString& text) {
+    return static_cast<int>(std::count_if(warnings().cbegin(), warnings().cend(),
+                                          [&text](const QString& warning) { return warning.contains(text); }));
+}
+
+static QStringList
+filesUnder(const QString& uid) {
+    QStringList files = compiledFiles();
+    const QString prefix = dsd_qt::json_store_path("decryption/" + uid + "/");
+    files.erase(
+        std::remove_if(files.begin(), files.end(), [&prefix](const QString& file) { return !file.startsWith(prefix); }),
+        files.end());
+    return files;
+}
+
 /* Rows saveProfile() wrote carry their compiled form: loading them compiles nothing and writes nothing. */
 static void
 test_compiled_rows_load_unchanged() {
@@ -216,10 +248,22 @@ test_definitions_compile_at_load(const QString& secret) {
                            {"protocol", "p25"},
                            {"mode", "automatic"},
                            {"keySource", "csv"},
-                           {"legacyCsvPath", dsd_qt::json_store_path("imports/absent.csv")}}});
+                           {"legacyCsvPath", dsd_qt::json_store_path("imports/absent.csv")}},
+               /* Its key collection is written before its talkgroup overrides are refused (DMR only). */
+               QJsonObject{{"uid", "restored-mapped"},
+                           {"label", "Restored mapped"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"keySource", "managed"},
+                           {"keys", QJsonArray{key}},
+                           {"mappings", QJsonArray{QJsonObject{{"talkgroup", 100}, {"keyId", 17}}}}}});
+    warnings().clear();
     dsd_qt::DecryptionProfilesModel loaded;
-    check(loaded.count() == 5);
+    check(loaded.count() == 6);
     check(storedRow("profile-a") == compiledRow);
+    check(warningsContaining("could not be compiled") == 2 && warningsContaining("restored-csv") == 1
+          && warningsContaining("restored-mapped") == 1);
+    check(warningsContaining(secret) == 0 && warningsContaining(secret.left(16)) == 0);
 
     QString error;
     const auto direct = loaded.configuration("restored-direct", &error);
@@ -257,6 +301,9 @@ test_definitions_compile_at_load(const QString& secret) {
     check(!csvRow.contains("compiled") && !csvRow.contains("runtimeRef"));
     check(loaded.get("restored-csv").value("label").toString() == "Restored CSV");
 
+    check(loaded.configuration("restored-mapped", &error).isEmpty() && error == kResaveError);
+    check(!storedRow("restored-mapped").contains("compiled") && filesUnder("restored-mapped").isEmpty());
+
     /* The persisted compiled forms are used as stored the next time: nothing is compiled again. */
     const QByteArray persisted = storeBytes();
     const QStringList files = compiledFiles();
@@ -286,19 +333,30 @@ test_load_compile_persist_failure(const QString& secret) {
     const auto permissions = QFile::permissions(directory);
     check(QFile::setPermissions(directory, QFile::ReadOwner | QFile::ExeOwner));
     QString error;
-    {
-        dsd_qt::DecryptionProfilesModel loaded;
-        check(QFile::setPermissions(directory, permissions));
-        check(loaded.count() == 1);
-        check(loaded.configuration("unsaved-managed", &error).isEmpty() && error == kResaveError);
+    /* Root (or CAP_DAC_OVERRIDE) writes through the mode bits: probe before relying on them. */
+    QFile probe(directory + "/write-probe");
+    if (probe.open(QIODevice::WriteOnly)) {
+        probe.close();
+        check(probe.remove() && QFile::setPermissions(directory, permissions));
+        std::fputs("SKIP: the read-only data directory is still writable; load persist-failure checks skipped\n",
+                   stderr);
+    } else {
+        warnings().clear();
+        {
+            dsd_qt::DecryptionProfilesModel loaded;
+            check(QFile::setPermissions(directory, permissions));
+            check(loaded.count() == 1);
+            check(loaded.configuration("unsaved-managed", &error).isEmpty() && error == kResaveError);
+        }
+        check(warningsContaining("could not be persisted") == 1 && warningsContaining(secret) == 0);
+        check(storeBytes() == before && compiledFiles() == files);
     }
-    check(storeBytes() == before && compiledFiles() == files);
     dsd_qt::DecryptionProfilesModel retried;
     check(retried.configuration("unsaved-managed", &error)
               .value("keysHexCsvPath")
               .toString()
               .startsWith(dsd_qt::json_store_path("decryption/unsaved-managed/")));
-    check(error.isEmpty());
+    check(error.isEmpty() && storedRow("unsaved-managed").value("compiled").isObject());
 }
 
 int
@@ -389,6 +447,7 @@ main(int argc, char** argv) {
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "dmr"}, {"decodeFlag", "-fs"}}));
     test_replay_migration(systems);
     test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
+    dsd_neo_log_set_tap(captureWarning, nullptr);
     test_compiled_rows_load_unchanged();
     test_definitions_compile_at_load(secret);
     test_load_compile_persist_failure(secret);

@@ -33,6 +33,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/runtime/log.h>
 
 namespace dsd_qt {
 namespace {
@@ -131,8 +132,9 @@ DecryptionProfilesModel::DecryptionProfilesModel(QObject* parent) : QAbstractLis
 /* Issue #580: a restored store carries profile definitions only, never a compiled form, so a row stored without one is
    compiled here through the editor's own validation into fresh files under decryption/<uid>/. The compiled rows are
    persisted together; if that fails their files are removed and they stay uncompiled, to be tried again on the next
-   load. A row that cannot compile stays as stored, and configuration() asks for it to be saved again. A row that
-   already has a compiled form is kept as stored. */
+   load. A row that cannot compile stays as stored, and configuration() asks for it to be saved again. Both failures
+   are logged by profile reference and reason, never material. A row that already has a compiled form is kept as
+   stored. */
 void
 DecryptionProfilesModel::compileLoadedRows() {
     auto next = m_rows;
@@ -154,6 +156,8 @@ DecryptionProfilesModel::compileLoadedRows() {
             compiled = true;
         } else {
             removeFiles(files);
+            LOG_WARN("Decryption profile %s could not be compiled at load: %s\n",
+                     qUtf8Printable(row.value("uid").toString()), qUtf8Printable(error));
         }
     }
     if (!compiled) {
@@ -161,6 +165,8 @@ DecryptionProfilesModel::compileLoadedRows() {
     }
     if (!persist(next)) {
         removeFiles(staged);
+        LOG_WARN(
+            "Decryption profiles compiled at load could not be persisted; they compile again on the next start.\n");
         return;
     }
     m_rows = std::move(next);
@@ -848,9 +854,7 @@ DecryptionProfilesModel::saveProfile(const QVariantMap& draft) {
     row.insert("runtimeRef", uuid());
     QStringList staged;
     if (!compile(row, &error, &staged)) {
-        for (const auto& path : staged) {
-            QFile::remove(path);
-        }
+        removeFiles(staged);
         return failure(error);
     }
     auto next = m_rows;
@@ -860,9 +864,7 @@ DecryptionProfilesModel::saveProfile(const QVariantMap& draft) {
         next[at] = row;
     }
     if (!persist(next)) {
-        for (const auto& path : staged) {
-            QFile::remove(path);
-        }
+        removeFiles(staged);
         return failure(tr("Could not save the profile. The previous configuration is unchanged."));
     }
     if (at < 0) {
