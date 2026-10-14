@@ -90,18 +90,20 @@ typedef enum {
 
 /* tetra_call_event::has */
 enum {
-    TETRA_CALL_HAS_CALLING = 1u << 0,    /* calling_ssi: the calling party of D-SETUP */
-    TETRA_CALL_HAS_TALKER = 1u << 1,     /* talker_ssi: the transmitting party of D-TX GRANTED or D-TX INTERRUPT */
-    TETRA_CALL_HAS_NEW_ID = 1u << 2,     /* new_call_id: D-INFO or D-CALL RESTORE renames the call */
-    TETRA_CALL_HAS_BASIC = 1u << 3,      /* basic_service: the basic service information (table 14.35) */
-    TETRA_CALL_HAS_TIMEOUT = 1u << 4,    /* timeout: the call time-out (table 14.50) */
-    TETRA_CALL_HAS_GRANT = 1u << 5,      /* grant: the transmission grant (table 14.80) */
-    TETRA_CALL_HAS_ENCRYPTION = 1u << 6, /* encryption: the encryption control of D-TX GRANTED or D-TX INTERRUPT */
+    TETRA_CALL_HAS_CALLING = 1u << 0,     /* calling_ssi: the calling party of D-SETUP */
+    TETRA_CALL_HAS_TALKER = 1u << 1,      /* talker_ssi: the transmitting party of D-TX GRANTED or D-TX INTERRUPT */
+    TETRA_CALL_HAS_NEW_ID = 1u << 2,      /* new_call_id: D-INFO or D-CALL RESTORE renames the call */
+    TETRA_CALL_HAS_BASIC = 1u << 3,       /* basic_service: the basic service information (table 14.35) */
+    TETRA_CALL_HAS_TIMEOUT = 1u << 4,     /* timeout: the call time-out (table 14.50) */
+    TETRA_CALL_HAS_GRANT = 1u << 5,       /* grant: the transmission grant (table 14.80) */
+    TETRA_CALL_HAS_ENCRYPTION = 1u << 6,  /* encryption: the encryption control of D-TX GRANTED or D-TX INTERRUPT */
+    TETRA_CALL_HAS_CALLING_EXT = 1u << 7, /* calling_ext: the extension of a calling party of type 2 (table 14.43) */
 };
 
 /** One decoded CMCE call PDU, as the call records need it. */
 typedef struct {
     uint32_t calling_ssi;
+    uint32_t calling_ext; /**< the calling party's network, MCC << 14 | MNC (table 14.44) */
     uint32_t talker_ssi;
     uint16_t call_id;
     uint16_t new_call_id;

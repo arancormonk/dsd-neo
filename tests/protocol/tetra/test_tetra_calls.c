@@ -701,29 +701,124 @@ test_followed_call_publishes(void) {
     session_close(&s);
 }
 
-/* D-SETUP (table 14.15) of individual call @p call_id from @p caller (the calling party type identifier 1 and its SSI)
- * to @p callee, the MAC address, with transmission grant @p grant (table 14.80) and an allocation of @p timeslots on
- * @p carrier. */
+/* D-SETUP (table 14.15) of call @p call_id with @p basic_service from @p caller to @p called, the MAC address, with
+ * transmission grant @p grant (table 14.80) and an allocation of @p timeslots on @p carrier. The calling party is of
+ * type identifier 1, its SSI, when @p extension is 0, else of type 2, its SSI and @p extension, the MCC and MNC of its
+ * network (tables 14.43, 14.44). */
 static void
-send_private_setup(session* s, uint32_t callee, uint16_t call_id, uint32_t caller, uint32_t grant, uint32_t timeslots,
-                   uint32_t carrier) {
+send_setup_from(session* s, uint32_t called, uint16_t call_id, uint32_t basic_service, uint32_t caller,
+                uint32_t extension, uint32_t grant, uint32_t timeslots, uint32_t carrier) {
     ttb_block cmce = {0};
     ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
     ttb_put(&cmce, TETRA_CMCE_D_SETUP, 5);
     ttb_put(&cmce, call_id, 14);
-    ttb_put(&cmce, 4, 4);              /* call time-out */
-    ttb_put(&cmce, 0, 2);              /* hook method and simplex/duplex selection */
-    ttb_put(&cmce, TTB_SPEECH_P2P, 8); /* basic service information (table 14.35): point to point */
-    ttb_put(&cmce, grant, 2);          /* transmission grant */
-    ttb_put(&cmce, 0, 1);              /* transmission request permission */
-    ttb_put(&cmce, 0, 4);              /* call priority */
-    ttb_put(&cmce, 1, 1);              /* O-bit */
-    ttb_put(&cmce, 0, 2);              /* no notification indicator, no temporary address */
-    ttb_put(&cmce, 1, 1);              /* calling party type identifier present */
-    ttb_put(&cmce, 1, 2);              /* SSI */
+    ttb_put(&cmce, 4, 4);             /* call time-out */
+    ttb_put(&cmce, 0, 2);             /* hook method and simplex/duplex selection */
+    ttb_put(&cmce, basic_service, 8); /* basic service information (table 14.35) */
+    ttb_put(&cmce, grant, 2);         /* transmission grant */
+    ttb_put(&cmce, 0, 1);             /* transmission request permission */
+    ttb_put(&cmce, 0, 4);             /* call priority */
+    ttb_put(&cmce, 1, 1);             /* O-bit */
+    ttb_put(&cmce, 0, 2);             /* no notification indicator, no temporary address */
+    ttb_put(&cmce, 1, 1);             /* calling party type identifier present */
+    ttb_put(&cmce, extension != 0u ? 2u : 1u, 2);
     ttb_put(&cmce, caller, 24);
+    if (extension != 0u) {
+        ttb_put(&cmce, extension, 24);
+    }
     ttb_put(&cmce, 0, 1); /* M-bit */
-    send_block(s, callee, &cmce, timeslots, carrier);
+    send_block(s, called, &cmce, timeslots, carrier);
+}
+
+/* D-SETUP of individual call @p call_id from @p caller (type identifier 1, its SSI) to @p callee, with transmission
+ * grant @p grant and an allocation of @p timeslots on @p carrier. */
+static void
+send_private_setup(session* s, uint32_t callee, uint16_t call_id, uint32_t caller, uint32_t grant, uint32_t timeslots,
+                   uint32_t carrier) {
+    send_setup_from(s, callee, call_id, TTB_SPEECH_P2P, caller, 0u, grant, timeslots, carrier);
+}
+
+/* The talkgroup policy blocks @p id (mode B). */
+static void
+block_id(session* s, uint32_t id) {
+    dsd_tg_policy_entry row;
+    assert(dsd_tg_policy_make_exact_entry(id, "B", "blocked", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    assert(dsd_tg_policy_upsert_exact(s->state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
+}
+
+/* A D-SETUP that reuses a known call identifier with another calling party is another call whose predecessor's release
+ * went unheard, for individual and group calls alike: the old call ends and is let go of, and the new one is judged by
+ * the talkgroup policy and named by its own parties -- a blocked caller's is not followed and inherits neither the
+ * follow nor the old talker; an allowed caller's is followed as a call of its own once the return the old call's end
+ * made has left the block that carried it (its late-entry D-SETUP). A calling party is its SSI in its network: the
+ * extension of a party of type 2, the current network for one of type 1 (EN 300 392-2 clause 14.2.3, tables 14.43,
+ * 14.44), so the same SSI as a TSI of the current network is the same caller, of another network another. The same
+ * caller named again (a late-entry D-SETUP) or none named is the same call. */
+static void
+test_setup_reusing_id_with_another_caller(void) {
+    /* Following individual call 14 from ISSI 0x111 to ISSI 0x222; its release unheard, a D-SETUP gives 14 to blocked
+     * ISSI 0x333 calling 0x222, with the same service and allocation and a transmission grant. */
+    session s = session_open();
+    session_history(&s);
+    block_id(&s, 0x333u);
+    send_private_setup(&s, 0x222u, 0x0E, 0x111u, 0, 4, 120);
+    assert(followed_call(s.state) == 0x0E && g_tunes == 1);
+    const uint64_t first = canonical(s.state).epoch;
+    send_private_setup(&s, 0x222u, 0x0E, 0x111u, 0, 4, 120);
+    send_setup(&s, 0x222u, 0x0E, TTB_SPEECH_P2P, 4, 120);
+    assert(followed_call(s.state) == 0x0E && g_returns == 0 && canonical(s.state).epoch == first);
+    send_private_setup(&s, 0x222u, 0x0E, 0x333u, 0, 4, 120);
+    assert(g_returns == 1 && g_tunes == 1 && followed_call(s.state) == -1);
+    const tetra_call_t* c = tetra_calls_peek(s.state, 0x0E);
+    assert(c && c->calling_ssi == 0x333u && c->talker_ssi == 0x333u && c->called_ssi == 0x222u);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.epoch == first && call.phase == DSD_CALL_PHASE_ENDED && call.ota_source_id == 0x111u);
+    session_close(&s);
+
+    /* An allowed caller's call under the identifier is followed as a call of its own. */
+    s = session_open();
+    session_history(&s);
+    send_private_setup(&s, 0x222u, 0x0E, 0x111u, 0, 4, 120);
+    uint64_t epoch = canonical(s.state).epoch;
+    send_private_setup(&s, 0x222u, 0x0E, 0x333u, 0, 4, 120);
+    assert(g_returns == 1 && g_tunes == 1 && followed_call(s.state) == -1);
+    send_private_setup(&s, 0x222u, 0x0E, 0x333u, 0, 4, 120);
+    assert(g_returns == 1 && g_tunes == 2 && followed_call(s.state) == 0x0E);
+    call = canonical(s.state);
+    assert(call.epoch != epoch && call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x333u
+           && call.ota_target_id == 0x222u);
+    session_close(&s);
+
+    /* A group call: the same group, another calling party. */
+    s = session_open();
+    session_history(&s);
+    send_setup_from(&s, 0x500u, 0x0B, TTB_SPEECH_GROUP, 0x111u, 0u, 0, 4, 120);
+    assert(followed_call(s.state) == 0x0B && g_tunes == 1 && canonical(s.state).ota_source_id == 0x111u);
+    epoch = canonical(s.state).epoch;
+    send_setup_from(&s, 0x500u, 0x0B, TTB_SPEECH_GROUP, 0x333u, 0u, 0, 4, 120);
+    assert(g_returns == 1 && g_tunes == 1 && followed_call(s.state) == -1);
+    send_setup_from(&s, 0x500u, 0x0B, TTB_SPEECH_GROUP, 0x333u, 0u, 0, 4, 120);
+    assert(g_returns == 1 && g_tunes == 2 && followed_call(s.state) == 0x0B);
+    call = canonical(s.state);
+    assert(call.epoch != epoch && call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x333u
+           && call.ota_target_id == 0x500u);
+    session_close(&s);
+
+    /* The calling party's network, on network 262/1001: SSI 0x111 as a TSI of 262/1001 is the caller of type 1; as
+     * one of 262/1002 it is another. */
+    s = session_open();
+    session_history(&s);
+    send_private_setup(&s, 0x222u, 0x0E, 0x111u, 0, 4, 120);
+    epoch = canonical(s.state).epoch;
+    send_setup_from(&s, 0x222u, 0x0E, TTB_SPEECH_P2P, 0x111u, (262u << 14) | 1001u, 0, 4, 120);
+    assert(followed_call(s.state) == 0x0E && g_returns == 0 && canonical(s.state).epoch == epoch);
+    send_setup_from(&s, 0x222u, 0x0E, TTB_SPEECH_P2P, 0x111u, (262u << 14) | 1002u, 0, 4, 120);
+    assert(g_returns == 1 && g_tunes == 1 && followed_call(s.state) == -1);
+    send_setup_from(&s, 0x222u, 0x0E, TTB_SPEECH_P2P, 0x111u, (262u << 14) | 1002u, 0, 4, 120);
+    assert(g_returns == 1 && g_tunes == 2 && followed_call(s.state) == 0x0E && canonical(s.state).epoch != epoch);
+    send_private_setup(&s, 0x222u, 0x0E, 0x111u, 0, 4, 120);
+    assert(g_returns == 2 && followed_call(s.state) == -1);
+    session_close(&s);
 }
 
 /* An individual call names both its parties whoever transmits, as DMR and P25 name a unit-to-unit transmission: the
@@ -1439,6 +1534,7 @@ main(void) {
     test_followed_call_renamed();
     test_followed_call_renamed_first_on_its_carrier();
     test_setup_reusing_followed_id();
+    test_setup_reusing_id_with_another_caller();
     test_reused_id_while_following_held();
     test_released_followed_id_retired();
     test_rename_onto_followed_id();

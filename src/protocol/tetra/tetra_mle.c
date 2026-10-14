@@ -176,6 +176,10 @@ parse_cmce_d_setup(tetra_bit_reader* r, const mle_ctx* ctx) {
         ev.has = (uint8_t)(ev.has | TETRA_CALL_HAS_CALLING);
         ev.calling_ssi = s.calling.ssi;
     }
+    if (s.calling.extension_valid) {
+        ev.has = (uint8_t)(ev.has | TETRA_CALL_HAS_CALLING_EXT);
+        ev.calling_ext = s.calling.extension;
+    }
     cmce_call_event(ctx, &ev, TETRA_CALL_EV_SETUP, s.call_id);
     return 1;
 }

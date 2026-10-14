@@ -4608,12 +4608,17 @@ single "current call".
   every call PDU of EN 300 392-2 clause 14.7.1 carries. The MLE turns each CRC-passed call PDU into a `tetra_call_event`
   (`tetra_calls_on_event()`): D-SETUP is the only PDU that makes a record (its MAC address is the called party, its
   calling party and basic service the rest); every other PDU updates the record it names and nothing when there is none,
-  and D-RELEASE / D-DISCONNECT end it. A D-SETUP naming another called party or kind of call under a known identifier,
-  or a D-INFO or D-CALL RESTORE renaming another call to it, is a new call taking the identifier of one whose release
-  went unheard. Both end a call the same way (`call_end()`): its canonical call ends, its record goes and, when it was
-  the followed call, the state machine lets go of it (`tetra_sm_on_release()`), so a new call under the identifier meets
-  the talkgroup policy like any other. Every record that leaves the table, a release, an identifier taken, ageing or
-  eviction, lets go of its identifier (`calls_drop()`): while the state machine cannot let go (the return refused or
+  and D-RELEASE / D-DISCONNECT end it. A D-SETUP naming another called party, another calling party or another kind of
+  call under a known identifier, or a D-INFO or D-CALL RESTORE renaming another call to it, is a new call taking the
+  identifier of one whose release went unheard: a call keeps its parties, which a late-entry D-SETUP repeats. A calling
+  party is its SSI in its network (`setup_names_another_caller()`): one of type 2 names its network in its extension,
+  one of type 1, or the D-CONNECT address a record takes for one, is of the current network (EN 300 392-2 clause
+  14.2.3, tables 14.43 and 14.44), so the same SSI of another network is another party, and a party not known on
+  either side is no change. Both end a call the same way (`call_end()`): its canonical call ends, its record goes and,
+  when it was the followed call, the state machine lets go of it (`tetra_sm_on_release()`), so a new call under the
+  identifier meets the talkgroup policy like any other and is named by its own parties, never the old call's talker.
+  Every record that leaves the table, a release, an identifier taken, ageing or eviction, lets go of its identifier
+  (`calls_drop()`): while the state machine cannot let go (the return refused or
   deferred, a tune in flight, or a return in flight that would put the call back if it failed) it follows the channel
   but no call record (`tetra_sm_retire_call()`, the rollback included): `tetra_sm_followed_call_id()` reports none, the
   followed call's proof goes, and no PDU, rename, allocation or speech of a call given the identifier counts as the
@@ -4703,7 +4708,7 @@ single "current call".
   not stand in for it. Cell reselection is not noted: it concerns one MS at a time.
 
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, the followed call's in the
-first block on its carrier included, identifier reuse, a released,
+first block on its carrier included, identifier reuse, another calling party or its network included, a released,
 renamed-over or aged followed identifier, ageing,
 canonical calls and notices in trunked and direct mode, direct mode short data whose FCS fails and what repeats it,
 an individual call's two parties, speech publication, the receiving carrier), `TETRA_DMO` (the DM-SDU's FCS and

@@ -106,6 +106,9 @@ enum {
     TETRA_CALL_F_USAGE_MARKER = 1u << 2, /* usage_marker is assigned to the call */
 };
 
+/* tetra_call_t::calling_net when the calling party's network is not known: no calling party extension equals it. */
+#define TETRA_CALL_NET_UNKNOWN 0xFFFFFFFFu
+
 /** One CMCE call the downlink signalled, keyed by its 14-bit call identifier (tetra_calls.c). */
 typedef struct {
     double seen_m;          /**< decode clock: the last CRC-passed PDU that named the call, or its speech */
@@ -113,6 +116,8 @@ typedef struct {
     tetra_chan_alloc alloc; /**< the traffic channel it was last allocated; no timeslots for none */
     uint32_t called_ssi;    /**< called party: the GSSI of a group call, the ISSI of an individual one; 0 unknown */
     uint32_t calling_ssi;   /**< calling party; 0 unknown */
+    uint32_t calling_net;   /**< calling_ssi's network as a calling party extension holds it (MCC << 14 | MNC, EN 300
+                                 392-2 table 14.44); TETRA_CALL_NET_UNKNOWN when not known */
     uint32_t talker_ssi;    /**< transmitting party of the transmission in progress; 0 none or unknown */
     uint16_t call_id;       /**< call identifier */
     uint16_t event_label;   /**< event label assigned to a party of the call (TETRA_CALL_F_EVENT_LABEL) */

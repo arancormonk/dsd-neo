@@ -144,6 +144,7 @@ calls_new(dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
     calls_drop(state, victim);
     victim->call_id = call_id;
     victim->phase = TETRA_CALL_SETUP;
+    victim->calling_net = TETRA_CALL_NET_UNKNOWN;
     return victim;
 }
 
@@ -554,15 +555,43 @@ call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c
 
 /* ---- CMCE PDUs ------------------------------------------------------------------------------------------------- */
 
-/* A D-SETUP for a known call identifier that names another called party or another kind of call is a new call that
- * reuses the identifier of one whose release went unheard. */
+/* The network of a party the downlink names by its SSI: a calling party of type 2 (a TSI) names it in its extension
+ * (@p ext, when @p has_ext), and any other SSI is a party of the current network (EN 300 392-2 clause 14.2.3, tables
+ * 14.43, 14.44); TETRA_CALL_NET_UNKNOWN while the decoder knows none. */
+static uint32_t
+calls_party_net(const tetra_state_t* ts, int has_ext, uint32_t ext) {
+    if (has_ext) {
+        return ext & 0xFFFFFFu;
+    }
+    return ts->net_known ? (((uint32_t)ts->mcc << 14) | ts->mnc) : TETRA_CALL_NET_UNKNOWN;
+}
+
+/* The D-SETUP names another calling party than @p c's: another SSI, or the same SSI of another network
+ * (@p calling_net, calls_party_net()). A calling party not known on either side is no change. */
 static int
-setup_reuses_id(const tetra_call_t* c, const tetra_call_event* ev, int has_called, uint32_t called) {
+setup_names_another_caller(const tetra_call_t* c, const tetra_call_event* ev, uint32_t calling_net) {
+    if ((ev->has & TETRA_CALL_HAS_CALLING) == 0u || ev->calling_ssi == 0u || c->calling_ssi == 0u) {
+        return 0;
+    }
+    if (ev->calling_ssi != c->calling_ssi) {
+        return 1;
+    }
+    return calling_net != TETRA_CALL_NET_UNKNOWN && c->calling_net != TETRA_CALL_NET_UNKNOWN
+           && calling_net != c->calling_net;
+}
+
+/* A D-SETUP for a known call identifier that names another called party, another calling party or another kind of
+ * call is a new call that reuses the identifier of one whose release went unheard: a call keeps its parties and its
+ * kind, and a late-entry D-SETUP repeats them. */
+static int
+setup_reuses_id(const tetra_call_t* c, const tetra_call_event* ev, int has_called, uint32_t called,
+                uint32_t calling_net) {
     if ((c->flags & TETRA_CALL_F_SETUP_SEEN) == 0u) {
         return 0;
     }
     const uint8_t kind_bits = 0xECu; /* circuit mode type and communication type */
     return (has_called && c->called_ssi != 0u && c->called_ssi != called)
+           || setup_names_another_caller(c, ev, calling_net)
            || ((c->basic_service ^ ev->basic_service) & kind_bits) != 0u;
 }
 
@@ -593,7 +622,8 @@ call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
            const tetra_mac_sdu* sdu) {
     uint32_t called = 0;
     const int has_called = sdu_ssi(sdu, &called);
-    if (c && setup_reuses_id(c, ev, has_called, called)) {
+    const uint32_t calling_net = calls_party_net(ts, (ev->has & TETRA_CALL_HAS_CALLING_EXT) != 0u, ev->calling_ext);
+    if (c && setup_reuses_id(c, ev, has_called, called, calling_net)) {
         /* The call whose identifier the D-SETUP reuses ended with its release unheard. */
         call_end(opts, state, ts, c, DSD_CALL_END_EXPLICIT);
         c = NULL;
@@ -612,6 +642,10 @@ call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
         c->called_ssi = called;
     }
     if ((ev->has & TETRA_CALL_HAS_CALLING) != 0u) {
+        /* The record's calling party, or one it did not know: a known network is kept until another is named. */
+        if (c->calling_ssi != ev->calling_ssi || calling_net != TETRA_CALL_NET_UNKNOWN) {
+            c->calling_net = calling_net;
+        }
         c->calling_ssi = ev->calling_ssi;
     }
     /* A late-entry D-SETUP repeats the calling party; it names the talker only while none is known. */
@@ -672,9 +706,10 @@ call_transmission(tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_s
     }
 }
 
-/* D-CONNECT goes to the calling party (clause 14.7.1.4): its address is the caller, who talks when it is granted. */
+/* D-CONNECT goes to the calling party (clause 14.7.1.4): its address is the caller, a party of the current network, who
+ * talks when it is granted. */
 static void
-call_connect(tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+call_connect(const tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
     uint32_t ssi = 0;
     call_connected(c);
     if (!sdu_ssi(sdu, &ssi)) {
@@ -682,6 +717,7 @@ call_connect(tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* s
     }
     if (c->calling_ssi == 0u) {
         c->calling_ssi = ssi;
+        c->calling_net = calls_party_net(ts, 0, 0u);
     }
     if (c->talker_ssi == 0u && (ev->has & TETRA_CALL_HAS_GRANT) != 0u && ev->grant == 0u) {
         c->talker_ssi = ssi;
@@ -699,7 +735,7 @@ call_apply(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
         c->timeout = ev->timeout;
     }
     switch ((tetra_call_event_kind)ev->kind) {
-        case TETRA_CALL_EV_CONNECT: call_connect(c, ev, sdu); break;
+        case TETRA_CALL_EV_CONNECT: call_connect(ts, c, ev, sdu); break;
         case TETRA_CALL_EV_CONNECT_ACK: call_connected(c); break;
         case TETRA_CALL_EV_INFO: call_rename(opts, state, ts, c, ev); break;
         case TETRA_CALL_EV_RESTORE:
