@@ -207,13 +207,21 @@ calls_label_here(const dsd_opts* opts, const dsd_state* state, const tetra_state
     return tetra_calls_carrier(opts, state, &carrier) && carrier == c->label_carrier;
 }
 
+/* @p ssi (0 for none) is a party of @p c: its called, calling or talking party. */
+static int
+call_has_party(const tetra_call_t* c, uint32_t ssi) {
+    return ssi != 0u && (c->called_ssi == ssi || c->calling_ssi == ssi || c->talker_ssi == ssi);
+}
+
 /* The call a party of which @p addr names: by its called, calling or talking SSI, or, an address that is an event
  * label (type 010), by the label assigned to one of them on this channel (calls_label_here()); an address that assigns
  * a label names its party by the SSI alone. The most recently heard of several. */
 static tetra_call_t*
 calls_by_address(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, const tetra_mac_address* addr) {
     uint32_t ssi = 0;
-    const int by_ssi = address_ssi(addr, &ssi);
+    if (!address_ssi(addr, &ssi)) {
+        ssi = 0u;
+    }
     const int by_label = addr->type == TETRA_MAC_ADDR_EVENT_LABEL && addr->event_label != TETRA_EVENT_LABEL_WITHDRAW
                          && addr->event_label != TETRA_EVENT_LABEL_KEEP;
     tetra_call_t* best = NULL;
@@ -222,11 +230,9 @@ calls_by_address(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts
         if (c->phase == TETRA_CALL_FREE) {
             continue;
         }
-        const int ssi_match =
-            by_ssi && ssi != 0u && (c->called_ssi == ssi || c->calling_ssi == ssi || c->talker_ssi == ssi);
         const int label_match = by_label && (c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u
                                 && c->event_label == addr->event_label && calls_label_here(opts, state, ts, c);
-        if ((ssi_match || label_match) && (!best || c->seen_m > best->seen_m)) {
+        if ((call_has_party(c, ssi) || label_match) && (!best || c->seen_m > best->seen_m)) {
             best = c;
         }
     }
@@ -870,11 +876,13 @@ calls_label_taken(tetra_state_t* ts, const tetra_mac_address* addr) {
         return;
     }
     uint32_t ssi = 0;
-    const int named = address_ssi(addr, &ssi) && ssi != 0u;
+    if (!address_ssi(addr, &ssi)) {
+        ssi = 0u;
+    }
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
         tetra_call_t* const o = &ts->calls.call[i];
-        const int party = named && (o->called_ssi == ssi || o->calling_ssi == ssi || o->talker_ssi == ssi);
-        if (!party && (o->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && o->event_label == addr->event_label) {
+        if (!call_has_party(o, ssi) && (o->flags & TETRA_CALL_F_EVENT_LABEL) != 0u
+            && o->event_label == addr->event_label) {
             o->flags = (uint8_t)(o->flags & ~TETRA_CALL_F_EVENT_LABEL);
         }
     }
