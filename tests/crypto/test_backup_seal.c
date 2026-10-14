@@ -584,15 +584,27 @@ static int
 test_oversize(void) {
     int rc = 0;
     const dsd_backup_kdf_params kdf = fast_kdf(1U);
-    uint8_t payload[1] = {0U};
-    uint8_t sealed[TEST_GOLDEN_SEALED_N];
     size_t sealed_len = 999U;
-    /* Rejected on the length alone, before the payload is read. */
-    rc |= expect_int("seal oversize",
-                     dsd_backup_seal(pass_bytes(), pass_len(), &kdf, payload, (size_t)DSD_BACKUP_MAX_PAYLOAD_BYTES + 1U,
-                                     sealed, sizeof(sealed), &sealed_len),
-                     DSD_BACKUP_ERR_TOO_LARGE);
-    rc |= expect_size("seal oversize length", sealed_len, 0U);
+    /*
+     * Rejected on the length alone. The buffers really are that large (and stay untouched pages when the check
+     * comes first), so if TOO_LARGE stopped being checked first, sealing would run in bounds and fail on the
+     * status instead of reading or writing past the end.
+     */
+    const size_t oversize = (size_t)DSD_BACKUP_MAX_PAYLOAD_BYTES + 1U;
+    const size_t oversize_cap = oversize + DSD_BACKUP_HEADER_BYTES + DSD_BACKUP_TAG_BYTES;
+    uint8_t* big_payload = (uint8_t*)calloc(oversize, 1U);
+    uint8_t* big_out = (uint8_t*)malloc(oversize_cap);
+    if (big_payload == NULL || big_out == NULL) {
+        rc |= expect_true("seal oversize buffers", 0);
+    } else {
+        rc |= expect_int(
+            "seal oversize",
+            dsd_backup_seal(pass_bytes(), pass_len(), &kdf, big_payload, oversize, big_out, oversize_cap, &sealed_len),
+            DSD_BACKUP_ERR_TOO_LARGE);
+        rc |= expect_size("seal oversize length", sealed_len, 0U);
+    }
+    free(big_payload);
+    free(big_out);
 
     /* A header that announces MAX + 1 bytes is TOO_LARGE however long the input is. */
     uint8_t header[TEST_GOLDEN_SEALED_N];
