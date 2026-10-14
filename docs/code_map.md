@@ -4405,8 +4405,11 @@ sequence and captures block 1 from its history into `dsd_state::tetra_sync`. On 
 training sequence 1 is also dibits 2..12 of the control burst's extended training sequence (EN 300 392-2 clause
 9.4.4.3.3), so there the control burst is tried first and a normal burst's training is matched two symbols back, once
 those two symbols showed it ends no control burst; they are block 2's first two dibits, which the decoder takes before
-it reads on (`b2_lead_count`, `tetra_read_block2()` in `tetra.c`). Off the uplink the normal burst locks at its
-training as before. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`.
+it reads on (`b2_lead_count`, `tetra_read_block2()` in `tetra.c`). Off the uplink the normal burst locks at its training
+as before. Every downlink burst runs the TDMA clock to its own slot on the symbol count before its blocks are decoded: a
+normal burst at its training sequence (`tetra_tdma_advance_ndb()`), a synchronisation burst at its BSCH, which sets the
+clock when its CRC passes and otherwise only runs it (`tetra_sb_bsch()`), so block 2 of a burst whose BSCH failed is not
+decoded as the last burst's timeslot. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`.
 
 #### Signalling decoders
 

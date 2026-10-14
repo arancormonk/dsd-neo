@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -302,6 +303,42 @@ test_normal_burst_failure_and_colour(void) {
     session_close(&s);
 }
 
+/* A synchronisation burst whose BSCH fails its CRC still sits in the slot after the last burst: the TDMA clock runs to
+ * it on the symbol count, as for a normal burst, before block 2 is decoded. After a normal burst on TN4, block 2 of a
+ * synchronisation burst on TN1 that fails its CRC drops TN1's partial TM-SDU, not TN4's. The symbol count is set to
+ * where each burst's slot starts, 255 symbols apart (EN 300 392-2 clause 9.4.1). */
+static void
+test_failed_bsch_runs_the_clock(void) {
+    session s = session_open();
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->tdma_valid && ts->tn == 3U);
+    const uint32_t slot3 = ts->tdma_slot_start;
+
+    /* The normal burst of the next slot is read from its training sequence, TETRA_TDMA_NDB_SYNC_SYMBOL into it. */
+    s.state->symbolcnt = slot3 + TETRA_TDMA_SLOT_SYMBOLS + TETRA_TDMA_NDB_SYNC_SYMBOL;
+    (void)nts2_burst(&s, zeros, zeros);
+    assert(ts->tdma_valid && ts->tn == 4U && ts->tdma_slot_start == slot3 + TETRA_TDMA_SLOT_SYMBOLS);
+    ts->mac_frag[4].active = 1;
+    ts->mac_frag[4].nbits = 40;
+    ts->mac_frag[1].active = 1;
+    ts->mac_frag[1].nbits = 40;
+
+    /* The synchronisation burst of the slot after: block 2 ends TETRA_TDMA_SB_PARSE_SYMBOL into it, and the burst
+     * decoder reads the broadcast block and block 2 after the training sequence. */
+    s.state->symbolcnt =
+        slot3 + (2U * TETRA_TDMA_SLOT_SYMBOLS) + TETRA_TDMA_SB_PARSE_SYMBOL - SB_BB_DIBITS - BLOCK_DIBITS;
+    assert(sync_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(ts->tdma_valid && ts->tn == 1U && ts->tdma_slot_start == slot3 + (2U * TETRA_TDMA_SLOT_SYMBOLS));
+    assert(!ts->mac_frag[1].active && ts->mac_frag[4].active && ts->mac_frag[4].nbits == 40U);
+    session_close(&s);
+}
+
 /* A channel allocation in the first half of a normal burst moves the receiver: the second half was sent on the carrier
  * left, so it is not decoded, and nothing in it counts for the traffic carrier. */
 static void
@@ -386,6 +423,7 @@ main(void) {
     test_uplink_normal_burst_takes_the_lead();
     test_sync_burst_decodes_bnch();
     test_normal_burst_failure_and_colour();
+    test_failed_bsch_runs_the_clock();
     test_retune_leaves_the_rest_of_the_burst();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;

@@ -706,7 +706,8 @@ tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
 
 /* The BSCH of a trunked synchronisation burst, read once the rest of the burst has been: 1 when its CRC passed. A DMO
    system code that only the soft decision decoded is a DSB whose SCH/H went by unread; timing and mode come from its
-   SCH/S. */
+   SCH/S. A BSCH that failed its CRC still sits in the slot after the last burst's: the TDMA clock runs to it on the
+   symbol count, as for a normal burst, so block 2 is decoded in its own timeslot rather than the last burst's. */
 static int
 tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     uint8_t decoded[SB_TYPE2];
@@ -714,6 +715,7 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     state->tetra_sync.sb1_soft_valid = 0;
     tetra_sb_log_bits(state, ts, decoded);
     if (!crc_ok) {
+        tetra_tdma_follow(state, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
         return 0;
     }
     ts->decode_ok++;
