@@ -4548,7 +4548,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   rate, and `dsd_engine_cc_is_p25()` (`trunk_tuning.c`) answers 0 for TETRA syncs, before looking at `rf_mod`, whose
   QPSK value would otherwise read as P25 CQPSK.
 - Releases. `tetra_sm_on_release()` releases only the followed call: its call identifier must match (a release of
-  the followed call, a "go to the MCCH" allocation to it, or its turning undecryptable; see Calls). A traffic timeslot of the control
+  the followed call, a "go to the MCCH" allocation to it, its channel allocated to a call the state machine does not
+  follow, or its turning undecryptable; see Calls). A traffic timeslot of the control
   channel's carrier, or a release with no control channel to go to, stops following without a tune; anything else
   returns through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared, so no P25 alias or its symbol
   profile comes along. A return the backend refuses or defers keeps the call, and the next tick tries again. With
@@ -4689,6 +4690,23 @@ single "current call".
   (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label assigned to
   one of them on this channel; usage markers are noted) and never tunes. A "go to the MCCH" allocation (timeslots 0000,
   table 21.87) of the followed call releases it; an allocation to a party no record holds goes nowhere.
+- Channel exclusivity. The downlink of a traffic channel carries one call's traffic at a time, under one downlink
+  traffic usage marker, and an MS whose call's downlink carries another's leaves the channel (EN 300 392-2 clauses
+  23.5.5, 23.5.6.1.1 c)). So an allocation takes its channel from every other record, in the one place a record's
+  allocation is set (`call_attach()`, whatever carried it: D-SETUP, D-CONNECT, D-INFO, D-CALL RESTORE, D-TX GRANTED or
+  an addressed MAC-RESOURCE; `calls_take_channel()`): a record whose allocation assigns the downlink of a timeslot of
+  the same carrier (of the same frequency where both are known) holds no channel from there, whether the new call is
+  followed, allowed or blocked, its canonical call ends, it is not the heard call, and the state machine follows its
+  identifier no more (`tetra_sm_retire_call()`, a tune in flight's rollback included). The uplink and downlink of a
+  timeslot may be allocated to two calls (clause 23.5.5), so an allocation of the uplink alone takes nothing, and
+  neither does one the decoder cannot place ("go to the MCCH"; a ciphertext one attaches to no record). When the
+  followed channel is taken (the followed call's record lost it, or the allocation names the followed channel itself,
+  which a record moved elsewhere or a follow without a call record still holds), the call followed there is over: the
+  state machine follows the new call there without a retune when the policy follows it, as no call holds the channel
+  to take over, and otherwise lets go of the channel at once as for a "go to the MCCH" allocation, returning to the
+  control channel, as P25's machine leaves a voice channel whose new call the policy rejects; where it cannot (the
+  return refused or deferred, a tune in flight) it follows the channel without a call, where no speech plays as the
+  followed call's or renews the hangtime, until the hangtime or the grant timeout gives up (`calls_leave_taken_channel()`).
 - Event labels. An event label stands for one party in place of its address on one MAC channel of one cell (EN 300
   392-2 clause 23.4.1.2.3); a record holds the label of a party of its call and the channel it is valid on
   (`tetra_label_channel`: an allocated channel by its carrier number and timeslots, which names that channel of the
@@ -4746,7 +4764,8 @@ single "current call".
   a clock left from an earlier BSCH does not place their bursts either. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
   the carrier, while its record does not place it elsewhere (an allocation no call PDU took, which never tunes, or a
   reallocation whose tune failed moves it off the channel the receiver stays on, which the SwMI may give any call next;
-  `voice_record_on()`), and only as the TDMA clock places the burst: a retune stops the clock until the carrier's next BSCH, and
+  `voice_record_on()`) and no other call was allocated its channel (Channel exclusivity above: the state machine let
+  go of it then), and only as the TDMA clock places the burst: a retune stops the clock until the carrier's next BSCH, and
   a burst it cannot place may be any timeslot's, another call's included, so none plays even when addressed signalling
   proved the call sooner. Not trunking, one timeslot is heard at a time, the first with speech that plays, until that
   speech stops for `TETRA_CALL_SPEECH_END_S` (`tetra_voice_hold()`, `tetra_calls_t::held`), and on the downlink only a
@@ -4870,7 +4889,10 @@ encryption and a reallocation do to the published call, a direct mode call idlin
 another security class, an anonymous call per timeslot, the last cell's channels and event labels a BSCH or SYSINFO
 of another cell drops, an event label's party and channel, an assignment at its PDU's delivery and in an encrypted
 PDU, a label number reused on another channel, a label kept across a channel change, one left by a reallocation and
-by its record's ageing, the call trunking turned off lets go of), `TETRA_DMO` (the
+by its record's ageing, the call trunking turned off lets go of, a channel allocated to another call: blocked or
+allowed, taken from the followed call, from a followed record moved elsewhere, from a failing tune's rollback and
+from the heard call, by every kind of allocation, and none taken by another timeslot, carrier or direction or by "go
+to the control channel"), `TETRA_DMO` (the
 DM-SDU's FCS and digest, an unread
 DMAC-SYNC's protection, a DMAC-DATA that ends the transmission, the security class a transmission keeps),
 `TETRA_PUBLICATION` (no trunked network on a direct mode carrier), `TETRA_VOICE_GATE`,
@@ -4901,11 +4923,11 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`); a burst it places in frame 18 is no speech | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
 | Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
-| A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `label_chan`, `usage_marker`) | the cell (a label: one channel of it, the allocated one or the one its assignment came on; Calls, "Event labels") | an allocation (`call_attach()`), an SSI + event label or usage marker assignment at its PDU's delivery; a label's channel also a KEEP with an allocation | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`); a label also its assignment to another party on a channel that meets its own, its withdrawal (label 0), an assignment or KEEP to a channel the decoder cannot tell, and, assigned without an allocation, a carrier boundary or retune (it applies there no more) |
+| A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `label_chan`, `usage_marker`) | the cell (a label: one channel of it, the allocated one or the one its assignment came on; Calls, "Event labels") | an allocation (`call_attach()`), an SSI + event label or usage marker assignment at its PDU's delivery; a label's channel also a KEEP with an allocation | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`); the allocation also another call's allocation of a timeslot of its downlink (`calls_take_channel()`: one call per traffic channel, EN 300 392-2 clauses 23.5.5, 23.5.6.1.1); a label also its assignment to another party on a channel that meets its own, its withdrawal (label 0), an assignment or KEEP to a channel the decoder cannot tell, and, assigned without an allocation, a carrier boundary or retune (it applies there no more) |
 | D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
 | Carrier evidence (`confirm`: `carrier_blocks` for publication, `signalling_blocks`, downlink only, for grants) | the carrier | CRC-passed blocks (an uplink SCH/HU or MAC block counts for publication only) | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
-| Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return; a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return |
+| Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return, its channel allocated to a call it does not follow (it moves to one it does); a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return |
 | Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; a grant after D-TX CEASED; the heard speech stopping; a pause of `TETRA_CALL_SPEECH_END_S` in it, in every mode; another cell; a carrier boundary |
 | Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst's training, a CRC-passed SCH/HU | the next of them |
 

@@ -52,7 +52,8 @@ voice_of_call(const tetra_state_t* ts, const tetra_call_t* c, tetra_speech* sp) 
 /* The followed call's record does not place it elsewhere than the followed channel, timeslot @p tn of the followed
  * carrier. An allocation that moved it away without moving the receiver (one no call PDU took, which never tunes, or a
  * reallocation whose tune failed) leaves the followed channel to whatever call the SwMI gives it next; a record that
- * holds no allocation says nothing. */
+ * holds no allocation says nothing. A call whose channel was allocated to another call is no followed call's: the state
+ * machine let go of it there (calls_take_channel() in tetra_calls.c). */
 static int
 voice_record_on(const tetra_call_t* c, const tetra_sm_grant* g, uint8_t tn) {
     if (c->alloc.timeslots == 0u) {

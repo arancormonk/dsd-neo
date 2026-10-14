@@ -8,7 +8,10 @@
  * of a cell, several at once, so every call is a record keyed by the 14-bit call identifier that each call PDU of
  * clause 14.7.1 carries: a PDU updates the record it names and no other, and a release ends the record it names. The
  * traffic channel a call is given comes in a channel allocation element (clause 21.5.2, table 21.87) of the MAC PDU
- * that carried the call's CMCE PDU, or of a PDU addressed to one of the call's parties; it attaches to that call only.
+ * that carried the call's CMCE PDU, or of a PDU addressed to one of the call's parties; it attaches to that call only,
+ * and takes the channel from any other: the downlink of a traffic channel carries one call at a time (clauses 23.5.5,
+ * 23.5.6.1.1), so the call that held it holds no channel from there; a trunking state machine following that channel
+ * moves to the new call when the policy follows that one, and lets go of the channel when it does not.
  *
  * Following (trunking on): an allocation that came with a CMCE PDU of a call whose D-SETUP named its called party is
  * judged by the talkgroup policy and the encryption lockout, and the trunking state machine (tetra_trunk_sm.h) is
@@ -122,8 +125,9 @@ typedef struct {
  *
  * A D-SETUP makes or refreshes the record of its call; every other PDU updates the record it names and nothing when
  * there is none. A release frees the record (ending its canonical call and, when it is the followed call, telling the
- * trunking state machine). An allocation in the same MAC PDU attaches to the named call and, while trunking, may be
- * followed. @p sdu may be NULL (a TM-SDU decoded without its MAC PDU); @p opts may be NULL.
+ * trunking state machine). An allocation in the same MAC PDU attaches to the named call, takes its downlink from any
+ * other call that held it and, while trunking, may be followed. @p sdu may be NULL (a TM-SDU decoded without its MAC
+ * PDU); @p opts may be NULL.
  */
 void tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* ev, tetra_mac_sdu* sdu);
 
@@ -131,9 +135,10 @@ void tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_eve
  * @brief The MAC delivered @p sdu's PDU (a fragmented message at its MAC-END) and its call PDUs acted; an encrypted PDU
  * is delivered too, as far as its clear address goes (@c alloc_unread when it carried an allocation). A channel
  * allocation no call PDU took attaches to the call whose party the PDU addressed (by SSI, or by an event label assigned
- * to it on this channel): it updates that call's traffic channel, and a "go to the MCCH" allocation (no timeslots) to
- * the followed call ends it; it never tunes. An event label or usage marker the address assigns takes effect here and
- * only here (EN 300 392-2 clause 23.4.1.2.3.1; the event label lifecycle in tetra_calls.c).
+ * to it on this channel): it updates that call's traffic channel, taking it from any other call that held it, and a
+ * "go to the MCCH" allocation (no timeslots) to the followed call ends it; it never tunes. An event label or usage
+ * marker the address assigns takes effect here and only here (EN 300 392-2 clause 23.4.1.2.3.1; the event label
+ * lifecycle in tetra_calls.c).
  */
 void tetra_calls_on_allocation(dsd_opts* opts, dsd_state* state, tetra_mac_sdu* sdu);
 

@@ -2357,6 +2357,263 @@ test_followed_record_moved_away(void) {
     }
 }
 
+/* One call holds the downlink of a traffic channel at a time: it carries one call's traffic, under one downlink traffic
+ * usage marker, and an MS whose call's downlink carries another call's traffic leaves the channel (EN 300 392-2 clauses
+ * 23.5.5, 23.5.6.1.1 c)). Following call A on TN2 of carrier 120, its release unheard, a CRC-passed D-SETUP gives that
+ * channel to call B of a blocked group: A's record holds the channel no more, the state machine lets go of A at once as
+ * a "go to the MCCH" allocation of A makes it (the return to the control channel), A's canonical call ends, and B is
+ * not followed. Where the return is deferred, the receiver stays on the channel but follows no call there: B's speech
+ * is not A's, so it plays under no identity and renews no hangtime, and the hangtime from A's own last speech takes
+ * the receiver back. */
+static void
+test_blocked_call_takes_the_followed_channel(void) {
+    for (int deferred = 0; deferred < 2; deferred++) {
+        session s = session_open();
+        session_history(&s);
+        block_id(&s, 0x200u);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120); /* TN2 of carrier 120 */
+        send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+        speech(&s, 2);
+        tetra_state_t* const ts = tetra_st(s.state);
+        dsd_call_snapshot call = canonical(s.state);
+        assert(followed_call(s.state) == 0x0A && ts->sm.t_voice_m > 0.0 && call.media_active == 1U);
+        assert(publishes_call_to(s.state, 0x100u));
+        const uint64_t epoch = call.epoch;
+
+        at_seconds(1000.5);
+        g_return_result = deferred ? DSD_TRUNK_TUNE_RESULT_DEFERRED : DSD_TRUNK_TUNE_RESULT_OK;
+        send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 4, 120);
+        const tetra_call_t* const a = tetra_calls_peek(s.state, 0x0A);
+        const tetra_call_t* const b = tetra_calls_peek(s.state, 0x0B);
+        assert(a && b && a->alloc.timeslots == 0u && b->alloc.carrier == 120 && b->alloc.timeslots == 4);
+        assert(g_tunes == 1 && g_returns == 1 && tetra_calls_followed(s.state) == NULL);
+        call = canonical(s.state);
+        assert(call.epoch == epoch && call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_EXPLICIT);
+        if (!deferred) {
+            assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && followed_call(s.state) == -1);
+            session_close(&s);
+            continue;
+        }
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && !tetra_confirm_followed_call_proven(s.state));
+        at_seconds(1001.0);
+        ts->tdma_valid = 1;
+        ts->tn = 2;
+        tetra_speech sp;
+        assert(!tetra_voice_gate(s.opts, s.state, &sp));
+        speech(&s, 2);
+        call = canonical(s.state);
+        assert(call.epoch == epoch && call.phase == DSD_CALL_PHASE_ENDED && ts->sm.t_voice_m < 1000.5);
+        g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+        at_seconds(1000.0 + TETRA_SM_SPEECH_GAP_S + (double)s.opts->trunk_hangtime + 0.1);
+        tetra_sm_tick(s.opts, s.state);
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 2);
+        session_close(&s);
+    }
+}
+
+/* The same with B's group allowed: the channel is B's now, so the state machine follows B where it is, without a
+ * retune and without the takeover a call competing with the followed one needs (A holds no channel to compete for):
+ * A's canonical call ends, B's publishes, and the speech on the channel is B's. */
+static void
+test_allowed_call_takes_the_followed_channel(void) {
+    session s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    speech(&s, 2);
+    const uint64_t epoch = canonical(s.state).epoch;
+    at_seconds(1000.5);
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0B && tetra_calls_followed(s.state) == tetra_calls_peek(s.state, 0x0B));
+    assert(g_tunes == 1 && g_returns == 0 && tetra_calls_peek(s.state, 0x0A)->alloc.timeslots == 0u);
+    assert(canonical(s.state).epoch != epoch && publishes_call_to(s.state, 0x200u));
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->tdma_valid = 1;
+    ts->tn = 2;
+    tetra_speech sp;
+    assert(tetra_voice_gate(s.opts, s.state, &sp) && sp.followed && sp.call_id == 0x0B && sp.target == 0x200u);
+    session_close(&s);
+}
+
+/* The followed channel is taken whatever the followed call's record holds: once an allocation that came with no call
+ * PDU moved the record off the channel the receiver stays on (test_followed_record_moved_away()), a D-SETUP that gives
+ * that channel to a call of a blocked group lets go of the follow; with the return deferred, the followed call's
+ * canonical call still ends there and the receiver follows the channel without a call record. */
+static void
+test_moved_followed_channel_taken(void) {
+    session s = session_open();
+    session_history(&s);
+    block_id(&s, 0x200u);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120); /* TN2 of carrier 120 */
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    send_block(&s, 0x100u, NULL, 2, 120); /* the record to TN3, no tune */
+    assert(followed_call(s.state) == 0x0A && tetra_calls_peek(s.state, 0x0A)->alloc.timeslots == 2);
+    assert(publishes_call_to(s.state, 0x100u));
+    const uint64_t epoch = canonical(s.state).epoch;
+    g_return_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 4, 120);
+    assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_TUNED && tetra_calls_followed(s.state) == NULL);
+    assert(tetra_calls_peek(s.state, 0x0A)->alloc.timeslots == 2 && !tetra_confirm_followed_call_proven(s.state));
+    const dsd_call_snapshot call = canonical(s.state);
+    assert(call.epoch == epoch && call.phase == DSD_CALL_PHASE_ENDED);
+    session_close(&s);
+}
+
+/* A followed call whose channel another call is allocated while a tune to a third call is in flight comes back without
+ * a call record when that tune fails, as one whose record aged does (test_aged_rollback_call_retired()): what its
+ * channel carries is the other call's. */
+static void
+test_rollback_channel_taken(void) {
+    session s = session_open();
+    block_id(&s, 0x200u);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && g_tunes == 1);
+    s.state->tg_hold = 0x300u;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 2, 130);
+    const uint64_t request = dsd_trunk_tuning_pending_request();
+    assert(g_tunes == 2 && request != 0U && followed_call(s.state) == 0x0C);
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 4, 120);
+    assert(tetra_calls_peek(s.state, 0x0A)->alloc.timeslots == 0u && g_returns == 0);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && followed_call(s.state) == 0x0A);
+    assert(tetra_calls_followed(s.state) == NULL && !tetra_confirm_followed_call_proven(s.state));
+    session_close(&s);
+}
+
+/* Not trunking, the heard timeslot's speech is the call whose traffic channel it is now: a D-SETUP that gives TN2 of
+ * the carrier being received to call B of a blocked group takes it from the heard call A, whose canonical call ends
+ * there and whose later PDUs publish nothing as the heard call's; B's speech on it is B's, muted; and once B moves on
+ * to TN3 the speech of TN2 is no record's, not A's. */
+static void
+test_heard_channel_taken(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    block_id(&s, 0x700u);
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100); /* TN2 of the carrier being received */
+    speech(&s, 2);
+    assert(publishes_call_to(s.state, 0x300u));
+    const uint64_t epoch = canonical(s.state).epoch;
+    at_seconds(1000.5);
+    send_setup(&s, 0x700u, 0x0D, TTB_SPEECH_GROUP, 4, 100);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.epoch == epoch && call.phase == DSD_CALL_PHASE_ENDED);
+    const tetra_call_t* const b = tetra_calls_peek(s.state, 0x0D);
+    assert(tetra_calls_peek(s.state, 0x0C)->alloc.timeslots == 0u && tetra_calls_on_timeslot(s.opts, s.state, 2) == b);
+    send_tx_granted(&s, 0x300u, 0x0C, 0x5555u);
+    call = canonical(s.state);
+    assert(call.epoch == epoch && call.phase == DSD_CALL_PHASE_ENDED);
+    tetra_state_t* const ts = tetra_st(s.state);
+    ts->tdma_valid = 1;
+    ts->tn = 2;
+    tetra_speech sp;
+    assert(tetra_voice_gate(s.opts, s.state, &sp) && sp.kind == TETRA_SPEECH_CALL && sp.call_id == 0x0D);
+    assert(tetra_calls_speech_muted(s.opts, s.state, &sp));
+    send_setup(&s, 0x700u, 0x0D, TTB_SPEECH_GROUP, 2, 100); /* TN3 */
+    assert(tetra_calls_on_timeslot(s.opts, s.state, 2) == NULL && tetra_calls_on_timeslot(s.opts, s.state, 3) == b);
+    session_close(&s);
+}
+
+/* A D-SETUP of call @p call_id to @p ssi whose allocation assigns @p up_down (table 21.87: 01 the downlink, 10 the
+ * uplink) of @p timeslots on carrier 120, as the MLE hands it to the call records. */
+static void
+setup_allocating(session* s, uint32_t ssi, uint16_t call_id, uint8_t up_down, uint8_t timeslots) {
+    tetra_call_event setup;
+    DSD_MEMSET(&setup, 0, sizeof setup);
+    setup.kind = TETRA_CALL_EV_SETUP;
+    setup.call_id = call_id;
+    setup.basic_service = TTB_SPEECH_GROUP;
+    tetra_mac_sdu sdu;
+    DSD_MEMSET(&sdu, 0, sizeof sdu);
+    sdu.addr.type = TETRA_MAC_ADDR_SSI;
+    sdu.addr.ssi = ssi;
+    sdu.has_addr = 1;
+    sdu.has_alloc = 1;
+    sdu.alloc.timeslots = timeslots;
+    sdu.alloc.up_down = up_down;
+    sdu.alloc.carrier = 120;
+    sdu.alloc.freq_hz = CARRIER_HZ(120);
+    tetra_calls_on_event(s->opts, s->state, &setup, &sdu);
+}
+
+/* An allocation takes the downlink it assigns and nothing else: one of another timeslot or carrier, one of the uplink
+ * alone (the uplink and downlink of a timeslot may be allocated to two calls, EN 300 392-2 clause 23.5.5; the decoder
+ * receives the downlink), and "go to the control channel" (timeslots 0000, no channel the decoder can place) leave the
+ * followed call its channel and the state machine its follow. */
+static void
+test_other_channels_take_nothing(void) {
+    session s = session_open();
+    block_id(&s, 0x200u);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120); /* TN2 of carrier 120 */
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 2, 120); /* TN3 of carrier 120 */
+    send_setup(&s, 0x200u, 0x0C, TTB_SPEECH_GROUP, 4, 130); /* TN2 of carrier 130 */
+    setup_allocating(&s, 0x200u, 0x0D, 2u, 4u);             /* the uplink of TN2 of carrier 120 */
+    setup_allocating(&s, 0x200u, 0x0E, 1u, 0u);             /* the control channel */
+    const tetra_call_t* const a = tetra_calls_peek(s.state, 0x0A);
+    assert(a && a->alloc.carrier == 120 && a->alloc.timeslots == 4 && tetra_calls_followed(s.state) == a);
+    assert(tetra_calls_peek(s.state, 0x0B)->alloc.timeslots == 2
+           && tetra_calls_peek(s.state, 0x0C)->alloc.carrier == 130);
+    assert(tetra_calls_peek(s.state, 0x0D)->alloc.timeslots == 4
+           && tetra_calls_peek(s.state, 0x0E)->alloc.timeslots == 0);
+    assert(followed_call(s.state) == 0x0A && g_tunes == 1 && g_returns == 0);
+    session_close(&s);
+}
+
+/* D-INFO (table 14.11) of call @p call_id with no optional element, and an allocation of @p timeslots on @p carrier. */
+static void
+send_info_allocating(session* s, uint32_t ssi, uint16_t call_id, uint32_t timeslots, uint32_t carrier) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_INFO, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, 0, 2); /* reset call time-out timer, poll request */
+    ttb_put(&cmce, 0, 1); /* O-bit */
+    send_block(s, ssi, &cmce, timeslots, carrier);
+}
+
+/* Every path that gives a call a channel takes it from the call that held it, followed or not: an allocation addressed
+ * to a party of call C (of a blocked group) with no call PDU, which never tunes, a reallocation of C in its D-INFO, and
+ * one in the D-CALL RESTORE of a D-RESTORE-ACK, each give C the followed channel and let go of the followed call A. */
+static void
+test_every_allocation_takes_the_channel(void) {
+    for (int path = 0; path < 3; path++) {
+        session s = session_open();
+        block_id(&s, 0x200u);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120); /* followed: TN2 of carrier 120 */
+        send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 2, 130);
+        assert(followed_call(s.state) == 0x0A && g_returns == 0);
+        if (path == 0) {
+            send_block(&s, 0x200u, NULL, 4, 120);
+        } else if (path == 1) {
+            send_info_allocating(&s, 0x200u, 0x0B, 4, 120);
+        } else {
+            tetra_call_event restore;
+            DSD_MEMSET(&restore, 0, sizeof restore);
+            restore.kind = TETRA_CALL_EV_RESTORE;
+            restore.call_id = 0x0B;
+            tetra_mac_sdu sdu;
+            DSD_MEMSET(&sdu, 0, sizeof sdu);
+            sdu.addr.type = TETRA_MAC_ADDR_SSI;
+            sdu.addr.ssi = 0x200u;
+            sdu.has_addr = 1;
+            sdu.has_alloc = 1;
+            sdu.alloc.timeslots = 4;
+            sdu.alloc.up_down = 1;
+            sdu.alloc.carrier = 120;
+            sdu.alloc.freq_hz = CARRIER_HZ(120);
+            tetra_calls_on_event(s.opts, s.state, &restore, &sdu);
+        }
+        assert(tetra_calls_peek(s.state, 0x0B)->alloc.carrier == 120);
+        assert(tetra_calls_peek(s.state, 0x0A)->alloc.timeslots == 0u);
+        assert(followed_call(s.state) == -1 && g_returns == 1 && g_tunes == 1);
+        session_close(&s);
+    }
+}
+
 /* Not trunking, the heard call's identifier goes with its record, as the followed call's does: once the heard call is
  * released, a D-SETUP gave its identifier to another call or a full table evicted it, the call given the identifier is
  * not the heard call until its own speech is heard, so its signalling publishes nothing (its channel may be another
@@ -2605,6 +2862,13 @@ main(void) {
     test_followed_reallocation_moves_the_call();
     test_takeover_ends_the_call_left();
     test_followed_record_moved_away();
+    test_blocked_call_takes_the_followed_channel();
+    test_allowed_call_takes_the_followed_channel();
+    test_moved_followed_channel_taken();
+    test_rollback_channel_taken();
+    test_heard_channel_taken();
+    test_other_channels_take_nothing();
+    test_every_allocation_takes_the_channel();
     test_heard_call_identifier_let_go();
     test_direct_mode_speech();
     test_trunking_off_lets_go_of_the_call();

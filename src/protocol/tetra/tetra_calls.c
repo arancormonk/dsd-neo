@@ -712,9 +712,10 @@ call_log_skip(const tetra_state_t* ts, const tetra_call_t* c, const char* why) {
 }
 
 /* Trunking: hand the state machine the channel just allocated to @p c, when the policy lets it be followed. The
- * followed call's own allocation moves it. */
+ * followed call's own allocation moves it. When the allocation took the followed channel (@p takes_followed,
+ * calls_take_channel()), the call followed there holds no channel for @p c to take over, so the policy alone decides. */
 static void
-call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c) {
+call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c, int takes_followed) {
     if (!opts || opts->trunk_enable != 1 || !alloc_followable(&c->alloc)) {
         return;
     }
@@ -736,7 +737,7 @@ call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_c
                           (unsigned)c->called_ssi, dsd_tg_policy_block_reason_label(d.block_reasons));
         return;
     }
-    if (tuned && !call_takes_over(opts, state, c, &d, &followed)) {
+    if (tuned && !takes_followed && !call_takes_over(opts, state, c, &d, &followed)) {
         call_log_skip(ts, c, "another call is followed");
         return;
     }
@@ -747,8 +748,95 @@ call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_c
     }
 }
 
-/* @p alloc is @p c's traffic channel now. A "go to the MCCH" allocation (timeslot assigned 0000, table 21.87) ends the
- * followed call; any other may be followed when @p may_follow. */
+/* ---- Traffic channels ------------------------------------------------------------------------------------------ */
+
+/* The downlink of a traffic channel carries one call's traffic at a time: the AACH names it by its downlink traffic
+ * usage marker, and an MS whose call's downlink carries another's leaves the channel (EN 300 392-2 clauses 23.5.5,
+ * 23.5.6.1.1 c)). The uplink and the downlink of a timeslot may be allocated to two calls (clause 23.5.5), so only the
+ * downlink, the direction the decoder receives, is held by one call here. */
+
+/* Allocations @p a and @p b assign one downlink: the downlink in both (table 21.87, up/downlink assigned 01 or 11), a
+ * timeslot in common and the same carrier, of the same frequency where both are known (an extended carrier number may
+ * name another band). */
+static int
+alloc_downlinks_meet(const tetra_chan_alloc* a, const tetra_chan_alloc* b) {
+    return (a->up_down & b->up_down & 1u) != 0u && (a->timeslots & b->timeslots) != 0u && a->carrier == b->carrier
+           && (a->freq_hz == 0L || b->freq_hz == 0L || a->freq_hz == b->freq_hz);
+}
+
+/* The channel the state machine follows, as an allocation of its downlink. */
+static int
+followed_channel(const dsd_state* state, tetra_chan_alloc* out) {
+    tetra_sm_grant g;
+    if (!tetra_sm_followed(state, &g)) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->freq_hz = g.freq_hz;
+    out->carrier = g.carrier;
+    out->timeslots = g.timeslots;
+    out->up_down = 1u;
+    return 1;
+}
+
+/* @p o's traffic channel was allocated to another call, so @p o holds none until an allocation gives it one again. Its
+ * canonical call ends, what the channel carries being the other call's from here, the heard speech is not its, and the
+ * state machine follows its identifier no more, in what a tune in flight would put back too
+ * (tetra_sm_retire_call()). */
+static void
+call_lose_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* o) {
+    DSD_MEMSET(&o->alloc, 0, sizeof o->alloc);
+    o->alloc_m = 0.0;
+    if (ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == o->call_id) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    calls_forget_heard_call(ts, o->call_id);
+    tetra_sm_retire_call(state, o->call_id);
+}
+
+/* @p c's allocation is its traffic channel now: every other record whose allocation assigns the same downlink loses
+ * its channel (call_lose_channel()). Returns 1 when the follow loses its channel too, @p c not being the followed call:
+ * the followed call's record was one of them, or the followed channel is in the allocation (a record that holds no
+ * channel there any more, or a follow without a call record, tetra_sm_retire_call()). */
+static int
+calls_take_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c) {
+    const int followed = followed_id(state);
+    tetra_chan_alloc f;
+    int taken = followed != (int)c->call_id && followed_channel(state, &f) && alloc_downlinks_meet(&f, &c->alloc);
+    for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
+        tetra_call_t* const o = &ts->calls.call[i];
+        if (o != c && o->phase != TETRA_CALL_FREE && alloc_downlinks_meet(&o->alloc, &c->alloc)) {
+            taken |= (int)o->call_id == followed;
+            call_lose_channel(opts, state, ts, o);
+        }
+    }
+    return taken;
+}
+
+/* The followed channel was allocated to @p c, which the state machine does not follow (the policy blocks it, or the
+ * allocation came with no call PDU): the call followed there is over, as a "go to the MCCH" allocation of it says, so
+ * the state machine lets go of it and returns to the control channel. Where it cannot (the return refused or deferred,
+ * a tune in flight), it follows the channel without a call (tetra_sm_retire_call()): no speech there plays as the
+ * followed call's or renews the hangtime, and the hangtime or the grant timeout gives up following. */
+static void
+calls_leave_taken_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c) {
+    tetra_sm_grant g;
+    if (!tetra_sm_followed(state, &g) || followed_id(state) == (int)c->call_id) {
+        return;
+    }
+    if (g.call_id != c->call_id && ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == g.call_id) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    if (opts) {
+        tetra_sm_on_release(opts, state, g.call_id);
+    }
+    tetra_sm_retire_call(state, g.call_id);
+}
+
+/* @p alloc is @p c's traffic channel now, and no other call's (calls_take_channel()). A "go to the MCCH" allocation
+ * (timeslot assigned 0000, table 21.87), which names no channel the decoder can place, takes none and ends the followed
+ * call; any other may be followed when @p may_follow, and when it took the followed channel and @p c is not followed,
+ * the state machine lets go of the channel (calls_leave_taken_channel()). */
 static void
 call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_chan_alloc* alloc,
             int may_follow) {
@@ -764,8 +852,12 @@ call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c
     c->alloc = *alloc;
     c->alloc_m = dsd_decode_now_mono_s();
     c->air_enc = TETRA_ENC_MODE_NONE;
+    const int takes_followed = calls_take_channel(opts, state, ts, c);
     if (may_follow) {
-        call_consider(opts, state, ts, c);
+        call_consider(opts, state, ts, c, takes_followed);
+    }
+    if (takes_followed) {
+        calls_leave_taken_channel(opts, state, ts, c);
     }
 }
 
