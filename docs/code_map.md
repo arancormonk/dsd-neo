@@ -4744,7 +4744,11 @@ single "current call".
   audible, and protection fails closed: a DMAC-SYNC whose message went unread (its SCH/H failed its CRC or was
   skipped, or DM-2-C hides the message type) may be the message that sets it, so an encrypted SCH/S security class
   seals the traffic (`dmo_apply_unread()`; DM-2-C drops the colour code too, which it derives from the encrypted short
-  identity, clause 8.2.4), whatever an earlier clear call left, and a DM-1 one opens nothing. The canonical direct mode
+  identity, clause 8.2.4), whatever an earlier clear call left, and a DM-1 one opens nothing. A transmission keeps the
+  class its DM-SETUP or DM-CONNECT ACK gave (`dmo_tx_crypt`), which its DM-OCCUPIED shall repeat (clause 8.5.3): one
+  that agrees confirms it, opening what an unread DMAC-SYNC sealed, one that contradicts it leaves the more closed of the
+  two (`dmo_apply_setup()`), and a set-up from another source or of another class, like a DM-2-C DMAC-SYNC after a
+  transmission that was not air encrypted, starts the next transmission (`dmo_tx_seq`). The canonical direct mode
   call takes a protection that no call PDU republishes at once (`tetra_calls_dmo_protection()`). The protection and the
   DM colour code belong to one traffic transmission (clauses 8.2.4, 8.5.3) and end with it
   (`tetra_dmo_transmission_over()`): at DM-TX CEASED, DM-RELEASE or DM-DISCONNECT, in a DMAC-SYNC or on the STCH in a
@@ -4789,7 +4793,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 |---|---|---|---|
 | Direct mode (`dmo`, `dmo_comm_type`) | the carrier | a DSB (`tetra_dmo_apply_sync()`) | a CRC-passed BSCH of a trunked system code or uplink SCH/HU (`tetra_dmo_leave()`), a carrier boundary |
 | DM colour code (`dmo_dcc_valid`, `dmo_dcc_seed`, `dmo_since_sync`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED, or of a fragmented DM-SDS | its end (`tetra_dmo_transmission_over()`: DM-TX CEASED, DM-RELEASE or DM-DISCONNECT in a DMAC-SYNC or DMAC-DATA, the call idle `TETRA_CALL_DMO_IDLE_S`), DM-2-C, a DMAC-SYNC with no source address, 200 DNBs without a DMAC-SYNC, leaving direct mode, a carrier boundary |
-| Direct mode protection (`dmo_crypt`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED; an unread DMAC-SYNC whose SCH/S is encrypted seals it | as the colour code (UNKNOWN, sealed) |
+| Direct mode protection (`dmo_crypt`; the set-up's `dmo_tx_crypt`, `dmo_tx_seed`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP or DM-CONNECT ACK, or of a DM-OCCUPIED when the set-up went unheard; a DM-OCCUPIED that contradicts the set-up and an unread DMAC-SYNC whose SCH/S is encrypted only seal it | as the colour code (UNKNOWN, sealed) |
 | Direct mode call (`calls.dmo`) and its canonical call | the channel's call | DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, a DM-2-C DMAC-SYNC | its end PDUs, idling out, leaving direct mode, a carrier boundary (the engine ends the canonical call) |
 | Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
 | Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell | SYSINFO, addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`) |

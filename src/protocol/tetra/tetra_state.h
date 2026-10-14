@@ -295,14 +295,21 @@ typedef struct tetra_state {
      *                 or on the uplink an SCH/HU (tetra_dmo_leave()).
      * dmo_dcc_valid:  1 while dmo_dcc_seed holds the DM colour code of the current transmission (clause 8.2.4).
      * dmo_comm_type:  communication type of the last DSB: 0 direct, 1 DM-REP, 2 DM-GATE, 3 DM-REP/GATE.
-     * dmo_crypt:      tetra_dmo_crypt_e of the current call.
+     * dmo_crypt:      tetra_dmo_crypt_e of the current call's traffic, what its speech is classified by.
+     * dmo_tx_crypt:   tetra_dmo_crypt_e the set-up of the traffic transmission in progress gave (EN 300 396-3 clause
+     *                 8.5.3), which its DM-OCCUPIED repeats; UNKNOWN while none is in progress.
+     * dmo_tx_seed:    the DM colour code seed of that transmission's source, 0 when none is known.
+     * dmo_tx_seq:     counts the transmissions started: the direct mode call canonical slot 0 shows is of one of them.
      * dmo_since_sync: DNBs processed since the last DMAC-SYNC (colour code staleness). */
     uint32_t dmo_dcc_seed;
+    uint32_t dmo_tx_seed;
+    uint32_t dmo_tx_seq;
     uint16_t dmo_since_sync;
     uint8_t dmo;
     uint8_t dmo_dcc_valid;
     uint8_t dmo_comm_type;
     uint8_t dmo_crypt;
+    uint8_t dmo_tx_crypt;
 
     /* The status downlink of the last complete D-MM STATUS (EN 300 392-2 table 16.3), for the frontends; mm_status_valid
      * once one was decoded (tetra_mm.c). */

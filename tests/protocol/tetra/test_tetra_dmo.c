@@ -344,6 +344,62 @@ test_security_classes(void) {
     free_state(st);
 }
 
+/* Apply a DSB carrying @p msg from source 2 under security class @p enc, its DM-SDU's E2EE flag @p e2ee. */
+static void
+apply_call_sync(dsd_state* st, uint32_t enc, int msg, uint32_t e2ee) {
+    bitw ws;
+    bitw wh;
+    tetra_dmo_sync_s_t s;
+    tetra_dmo_sync_h_t h;
+    sync_s(&ws, enc);
+    (void)tetra_dmo_parse_sync_s(ws.bits, &s);
+    sync_h_header(&wh, msg);
+    call_elements(&wh, 0, e2ee, 1);
+    (void)tetra_dmo_parse_sync_h(wh.bits, 0, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
+}
+
+/* A transmission keeps the security class its DM-SETUP or DM-CONNECT ACK gave, which its DM-OCCUPIED shall repeat (EN
+ * 300 396-3 clause 8.5.3): a DM-OCCUPIED that contradicts it never opens what the set-up closed, one that agrees opens
+ * what an unread DMAC-SYNC sealed, and a set-up repeat goes on with the transmission while a set-up of another class
+ * starts the next one. */
+static void
+test_occupied_keeps_the_setup_class(void) {
+    printf("[DM-OCCUPIED keeps the set-up's class]\n");
+    dsd_state* st = new_state();
+    apply_call_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_SETUP, 0);
+    const uint32_t seq = tetra_st(st)->dmo_tx_seq;
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR, "a DM-2-A set-up is air encrypted");
+    apply_call_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_SETUP, 0);
+    CHECK(tetra_st(st)->dmo_tx_seq == seq, "a set-up repeat goes on with the transmission");
+    apply_call_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_OCCUPIED, 0);
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR && tetra_st(st)->dmo_tx_seq == seq,
+          "a clear DM-OCCUPIED does not open the air encrypted transmission");
+    apply_call_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_SETUP, 0);
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR && tetra_st(st)->dmo_tx_seq == seq + 1u,
+          "a clear set-up starts the next transmission");
+    free_state(st);
+
+    st = new_state();
+    apply_call_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_SETUP, 1);
+    apply_call_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_OCCUPIED, 0);
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_E2E,
+          "a DM-OCCUPIED without the E2EE flag does not open an end-to-end encrypted transmission");
+    free_state(st);
+
+    st = new_state();
+    apply_call_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_SETUP, 0);
+    bitw ws;
+    tetra_dmo_sync_s_t s;
+    sync_s(&ws, TETRA_DMO_AIE_DM2A);
+    (void)tetra_dmo_parse_sync_s(ws.bits, &s);
+    tetra_dmo_apply_sync(st, &s, NULL);
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR, "an unread DM-2-A DMAC-SYNC seals the clear transmission");
+    apply_call_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_OCCUPIED, 0);
+    CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR, "and its own clear DM-OCCUPIED opens it again");
+    free_state(st);
+}
+
 /* A DM-REP presence signal has its own SCH/S layout (EN 300 396-4 table 2). Read with the DMAC-SYNC layout, this one
  * gave channel A frequency efficient and air interface encryption state DM-2-A. */
 static void
@@ -1085,6 +1141,7 @@ main(void) {
     test_carrier_boundary_forgets_call();
     test_unread_sync_protection();
     test_security_classes();
+    test_occupied_keeps_the_setup_class();
     test_repeater_presence();
     test_gateway();
     test_call_control_elements();
