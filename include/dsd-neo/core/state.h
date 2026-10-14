@@ -55,6 +55,9 @@ typedef struct {
      *                     burst, and by the decoder from a control uplink
      *                     burst whose SCH/HU passed its CRC.
      * nts2:        1 = this NDB matched training sequence 2.
+     * cb:          1 = the frame sync locked a control uplink burst. Every
+     *                     TETRA lock sets it; it stays for the burst's
+     *                     publication (control uplink mode).
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t b1_dibuf[108];
     float b1_soft[108];

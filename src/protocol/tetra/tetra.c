@@ -541,8 +541,8 @@ tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
         return;
     }
     soft_symbol_frame_begin(state);
+    /* Every TETRA lock sets the burst kind, and the publication reads it after the burst (tetra_pub_mode()). */
     if (state->tetra_sync.cb) {
-        state->tetra_sync.cb = 0;
         tetra_uplink_process_cb(opts, state);
         return;
     }

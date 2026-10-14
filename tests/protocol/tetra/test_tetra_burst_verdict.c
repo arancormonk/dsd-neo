@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
@@ -401,6 +402,27 @@ test_control_burst_tells_the_polarity(void) {
     session_close(&s);
 }
 
+/* The frontends see which uplink burst was decoded: a control uplink burst publishes the control uplink mode
+ * (dsd_tetra_publication), a normal uplink burst after it the uplink mode. */
+static void
+test_control_burst_publishes_its_mode(void) {
+    session s = session_open();
+    s.opts->tetra_uplink = 1;
+    s.opts->tetra_net_preset = 1;
+    s.opts->tetra_net_mcc = 460;
+    s.opts->tetra_net_mnc = 4242;
+    s.opts->tetra_net_colour = 17;
+    uint8_t mac[SCH_HU_BITS] = {0};
+    uint8_t coded[2 * CB_HALF_DIBITS];
+    encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
+    assert(control_burst(&s, coded, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_pub.mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK);
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    (void)nts2_burst(&s, zeros, zeros);
+    assert(s.state->tetra_pub.mode == DSD_TETRA_MODE_TMO_UPLINK);
+    session_close(&s);
+}
+
 /* A channel allocation in the first half of a normal burst moves the receiver: the second half was sent on the carrier
  * left, so it is not decoded, and nothing in it counts for the traffic carrier. */
 static void
@@ -487,6 +509,7 @@ main(void) {
     test_normal_burst_failure_and_colour();
     test_failed_bsch_runs_the_clock();
     test_control_burst_tells_the_polarity();
+    test_control_burst_publishes_its_mode();
     test_retune_leaves_the_rest_of_the_burst();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;
