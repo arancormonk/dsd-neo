@@ -4484,7 +4484,10 @@ is followed until it names its control channel; `tetra_forget_carrier()` keeps i
 cell shares it. Another cell is also another carrier, whatever the engine saw (a radio retuned outside the decoder),
 so what the last carrier's speech left goes as at a carrier boundary: its timeslots' signalling encryption, the heard
 timeslot with the heard or anonymous canonical call (`tetra_calls_forget_trunked_carrier()`), the speech in progress,
-the followed call's proof on the carrier, and the encryption mode the last cell's signalling showed. A BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
+the followed call's proof on the carrier, and the encryption mode the last cell's signalling showed. A DSB that puts a
+trunked carrier in direct mode (`tetra_enter_dmo()` in `tetra.c`) forgets the same of the trunked carrier, its partial
+TM-SDUs too, and stops the TDMA clock; a BSCH of a trunked system code or an uplink SCH/HU that ends direct mode
+forgets the direct mode channel's (`tetra_dmo_leave()`). A BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
 SSI is a party of the current network and the call identifiers are the SwMI's (EN 300 392-2 clause 14.2.3), so the
 call records end, with the state machine's follow of their identifiers, the heard call and the speech in progress
 (`tetra_calls_forget_calls()`), and so do the concatenated short data being reassembled

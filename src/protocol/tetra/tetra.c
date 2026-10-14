@@ -626,6 +626,20 @@ tetra_dmo_presence(dsd_state* state, tetra_dmo_sync_s_t* s, const uint8_t* sch_s
     }
 }
 
+/* A DSB says the carrier is a direct mode one (EN 300 396-2 clause 9.4.3.3). Entering direct mode from trunked mode,
+   what the trunked carrier left goes, as at a BSCH of another cell: its partial TM-SDUs, what its timeslots' speech
+   left with the heard or anonymous canonical call (tetra_calls_forget_trunked_carrier()), and the followed call's proof
+   on the carrier; tetra_dmo_apply_sync() stops the TDMA clock. */
+static void
+tetra_enter_dmo(dsd_opts* opts, dsd_state* state) {
+    if (tetra_st_peek(state)->dmo) {
+        return;
+    }
+    tetra_mac_forget_fragments(state);
+    tetra_calls_forget_trunked_carrier(opts, state);
+    tetra_confirm_forget_followed_call(state);
+}
+
 /* Direct-mode synchronisation burst whose SCH/S (@p sch_s, CRC passed) carries a DMO system code. Its SCH/H follows
    the training sequence at once, with no broadcast block as in a trunked SB; it is read here and the broadcast
    block's 15 dibits skipped after it, so the burst consumes as many dibits as a trunked one. */
@@ -635,6 +649,7 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     if (!ts) {
         return;
     }
+    tetra_enter_dmo(opts, state);
     uint8_t b2_dibits[SB_BKN2_DIBITS];
     float b2_soft[SB_BKN2_DIBITS];
     uint16_t b2_costs[NB_BLOCK_BITS];
@@ -740,6 +755,7 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     if (tetra_dmo_system_code_is_dmo(decoded)) {
         tetra_dmo_sync_s_t s;
         (void)tetra_dmo_parse_sync_s(decoded, &s);
+        tetra_enter_dmo(opts, state);
         tetra_dmo_apply_sync(state, &s, NULL);
         tetra_calls_dmo_protection(opts, state);
         tetra_confirm_note_block(state);

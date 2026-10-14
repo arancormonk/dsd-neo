@@ -29,6 +29,7 @@
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -640,6 +641,40 @@ test_dmo_unread_sync_seals_the_traffic(void) {
     session_close(&s);
 }
 
+/* A DSB puts a trunked carrier in direct mode: what the trunked carrier left goes as at a BSCH of another cell, its
+ * partial TM-SDUs, its timeslots' signalling encryption and the heard timeslot, and the anonymous call its speech
+ * published ends, even when the DSB's SCH/H fails and no direct mode call takes canonical slot 0 from it. */
+static void
+test_dsb_leaves_trunked_mode(void) {
+    session s = session_open();
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    dsd_frame_verdict verdict = sync_burst(&s, bsch, sysinfo);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    tetra_state_t* ts = tetra_st_existing(s.state);
+    ts->tn = 2;
+    ts->calls.slot_enc[2] = 1u + 0u;
+    ts->mac_frag[2].active = 1;
+    ts->mac_frag[2].nbits = 40;
+    uint8_t speech[TETRA_SPEECH_FULL_BITS] = {0};
+    tetra_voice_full_slot(s.opts, s.state, speech, 1);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(ts->calls.published == TETRA_PUB_ANON && ts->calls.heard && ts->calls.heard_tn == 2);
+
+    uint8_t sch_s[60];
+    bits_of(k_dmo_sch_s, sch_s);
+    verdict = dmo_sync_burst(&s, sch_s, NULL);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && ts->dmo && !ts->tdma_valid);
+    assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    assert(ts->calls.published == TETRA_PUB_NONE && !ts->calls.heard && ts->calls.slot_enc[2] == 0u);
+    assert(!ts->mac_frag[2].active);
+    session_close(&s);
+}
+
 /* A channel allocation in the first half of a normal burst moves the receiver: the second half was sent on the carrier
  * left, so it is not decoded, and nothing in it counts for the traffic carrier. */
 static void
@@ -732,6 +767,7 @@ main(void) {
     test_control_burst_leaves_direct_mode();
     test_carrier_boundary_leaves_direct_mode();
     test_dmo_unread_sync_seals_the_traffic();
+    test_dsb_leaves_trunked_mode();
     test_retune_leaves_the_rest_of_the_burst();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;
