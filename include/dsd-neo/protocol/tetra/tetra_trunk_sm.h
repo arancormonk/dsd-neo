@@ -92,8 +92,9 @@ void tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id);
 /**
  * @brief Speech whose CRC passed was decoded on timeslot @p tn (1..4; 0 when the TDMA clock is not running).
  *
- * Reception activity (state->last_vc_sync_time and _m) in any state. While TUNED, speech on a followed timeslot (or
- * on a timeslot the decoder cannot place) restarts the hangtime and ends the grant timeout.
+ * Reception activity (state->last_vc_sync_time and _m) in any state. While TUNED, speech on a followed timeslot
+ * restarts the hangtime and ends the grant timeout; speech the decoder cannot place on a timeslot (0) may be any
+ * timeslot's, so it does neither.
  */
 void tetra_sm_note_voice(dsd_state* state, uint8_t tn);
 

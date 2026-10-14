@@ -4514,8 +4514,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
 - Timers. Liveness never depends on CMCE call state, which one missed release would leave stuck. Speech of the
   followed call (`tetra_calls_on_speech()`, for each burst the follow gate let through with a speech frame whose CRC
   passed) calls `tetra_sm_note_voice()` with the timeslot the TDMA clock gives it: that stamps
-  `last_vc_sync_time(_m)`, and while TUNED it restarts the hangtime when the timeslot is a followed one (or 0, a
-  timeslot the decoder cannot place). Other heard speech stamps `last_vc_sync_time(_m)` only. The tick returns `opts->trunk_hangtime` seconds after
+  `last_vc_sync_time(_m)`, and while TUNED it restarts the hangtime when the timeslot is a followed one (not 0, a
+  timeslot the decoder cannot place, which may be any timeslot's). Other heard speech stamps `last_vc_sync_time(_m)` only. The tick returns `opts->trunk_hangtime` seconds after
   speech ends (the first gap of `TETRA_SM_SPEECH_GAP_S`, longer than a frame 18 gap), and after
   `TETRA_SM_GRANT_TIMEOUT_S` (4 s, DMR's default; no option) when no speech followed the tune. It also returns when
   trunking is turned off while tuned, drops the call without a tune when another owner released the shared tuning

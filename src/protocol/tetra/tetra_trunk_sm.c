@@ -474,8 +474,9 @@ tetra_sm_note_voice(dsd_state* state, uint8_t tn) {
     if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U) {
         return;
     }
-    /* Bit 3 of the timeslot bitmap is timeslot 1 (EN 300 392-2 table 21.80). */
-    if (tn >= 1U && tn <= 4U && (ts->sm.followed.timeslots & (1U << (4U - tn))) == 0U) {
+    /* Only a followed timeslot (bit 3 of the bitmap is timeslot 1, EN 300 392-2 table 21.80) keeps the channel: speech
+     * the TDMA clock cannot place (0) may be any timeslot's, another call's included. */
+    if ((ts->sm.followed.timeslots & tetra_slot_bit(tn)) == 0U) {
         return;
     }
     ts->sm.t_voice_m = dsd_decode_now_mono_s();

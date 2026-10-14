@@ -274,21 +274,22 @@ test_hangtime_after_speech(void) {
     session_close(&s);
 }
 
-/* Speech the decoder cannot place on a timeslot (no TDMA clock) counts. */
+/* Speech the decoder cannot place on a timeslot (no TDMA clock) may be any timeslot's, so it is not the followed
+ * call's: it does not keep the channel, and the grant times out as though none had come. It is still reception. */
 static void
-test_unplaced_speech_counts(void) {
+test_unplaced_speech_does_not_count(void) {
     reset_backend();
     session s = session_open();
     const tetra_sm_grant g = grant_of(VC_HZ, 0x4U, 0x123U);
     assert(tetra_sm_on_grant(s.opts, s.state, &g) == 1);
     at_seconds(1003.9);
     tetra_sm_note_voice(s.state, 0U);
-    at_seconds(1005.0);
+    assert(s.state->last_vc_sync_time_m >= 1003.9 && tetra_st(s.state)->sm.t_voice_m <= 0.0);
+    tetra_sm_note_voice(s.state, 5U);
+    assert(tetra_st(s.state)->sm.t_voice_m <= 0.0);
+    at_seconds(1000.0 + TETRA_SM_GRANT_TIMEOUT_S);
     tetra_sm_tick(s.opts, s.state);
-    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
-    at_seconds(1003.9 + TETRA_SM_SPEECH_GAP_S + 2.0);
-    tetra_sm_tick(s.opts, s.state);
-    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && g_returns == 1);
     session_close(&s);
 }
 
@@ -756,7 +757,7 @@ main(void) {
     test_ignored_grants();
     test_grant_timeout();
     test_hangtime_after_speech();
-    test_unplaced_speech_counts();
+    test_unplaced_speech_does_not_count();
     test_release_by_call_id();
     test_refused_return_keeps_call();
     test_grant_on_this_carrier();
