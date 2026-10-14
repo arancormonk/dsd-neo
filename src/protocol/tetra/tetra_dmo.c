@@ -465,6 +465,9 @@ dmo_parse_elems(tetra_bit_reader* r, uint8_t enc, tetra_dmo_sync_h_t* h) {
     if (!dmo_run(r, lay->sdu, lay->n_sdu, h)) {
         h->sdu_state = TETRA_DMO_SDU_TRUNCATED;
     }
+    /* The reader stops at the element the block ended in, so a truncated DM-SDU digests the elements before it. */
+    h->sdu_bits = (uint16_t)(r->pos - sdu_start);
+    h->sdu_digest = h->sdu_bits > 0u ? tetra_llc_fcs32(r->bits + sdu_start, h->sdu_bits) : 0u;
     dmo_check_fcs(r, sdu_start, h);
 }
 
@@ -505,6 +508,8 @@ dmo_hide_sdu(tetra_dmo_sync_h_t* h) {
     DSD_MEMSET(h->external, 0, sizeof(h->external));
     h->external_n = 0;
     h->sds_value = 0;
+    h->sdu_digest = 0;
+    h->sdu_bits = 0;
     h->sdu_state = (lay != NULL && lay->n_sdu > 0u && h->md_ok) ? TETRA_DMO_SDU_ENCRYPTED : TETRA_DMO_SDU_CLEAR;
     h->fcs_state =
         (uint8_t)((h->sdu_state == TETRA_DMO_SDU_ENCRYPTED && h->e[TETRA_DMO_E_FCS_FLAG]) ? TETRA_DMO_FCS_ENCRYPTED

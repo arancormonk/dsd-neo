@@ -816,6 +816,8 @@ test_short_data(void) {
           "the FCS over the DM-SDU elements passes");
     CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) > 0 && strstr(desc, "FCS failed") == NULL,
           "a passing FCS is not reported failed");
+    CHECK(h.sdu_bits == fcs_at + 32 - sdu_start && h.sdu_digest == tetra_llc_fcs32(w.bits + sdu_start, h.sdu_bits),
+          "the DM-SDU digest covers every element, the FCS included");
     w.bits[fcs_at - 1] ^= 1u; /* a bit error in the status the channel CRC let through */
     CHECK(tetra_dmo_parse_sync_h(w.bits, 2, &h) == 1 && h.fcs_state == TETRA_DMO_FCS_FAILED,
           "a bit error in the data fails the FCS");
@@ -830,8 +832,9 @@ test_short_data(void) {
     s.enc_state = TETRA_DMO_AIE_DM2A;
     tetra_dmo_parse_sync_h(w.bits, 2, &h);
     tetra_dmo_apply_sync(st, &s, &h);
-    CHECK(h.sdu_state == TETRA_DMO_SDU_ENCRYPTED && h.fcs_state == TETRA_DMO_FCS_ENCRYPTED && h.sds_value == 0,
-          "an encrypted DM-SDU's FCS is not read");
+    CHECK(h.sdu_state == TETRA_DMO_SDU_ENCRYPTED && h.fcs_state == TETRA_DMO_FCS_ENCRYPTED && h.sds_value == 0
+              && h.sdu_digest == 0 && h.sdu_bits == 0,
+          "an encrypted DM-SDU's FCS is not read, nor its digest kept");
     s.enc_state = TETRA_DMO_AIE_DM1;
     tetra_st(st)->dmo_dcc_valid = 1;
     tetra_st(st)->dmo_dcc_seed = 0xE4000193u;

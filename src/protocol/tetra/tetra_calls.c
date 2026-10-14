@@ -983,9 +983,32 @@ dmo_call_from(tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
     }
 }
 
+/* The message @p h carries, with its destination as published (@p dst). */
+static tetra_dmo_sds_key
+dmo_sds_key_of(const tetra_dmo_sync_h_t* h, uint32_t dst) {
+    tetra_dmo_sds_key k;
+    DSD_MEMSET(&k, 0, sizeof k);
+    k.value = h->sds_value;
+    k.digest = h->sdu_digest;
+    k.src = h->src;
+    k.dst = dst;
+    k.length = (uint16_t)h->e[TETRA_DMO_E_SDS_LENGTH];
+    k.sdu_bits = h->sdu_bits;
+    k.type = h->msg_type;
+    k.sdti = (uint8_t)h->e[TETRA_DMO_E_SDTI];
+    return k;
+}
+
+static int
+dmo_sds_key_equal(const tetra_dmo_sds_key* a, const tetra_dmo_sds_key* b) {
+    return a->value == b->value && a->digest == b->digest && a->src == b->src && a->dst == b->dst
+           && a->length == b->length && a->sdu_bits == b->sdu_bits && a->type == b->type && a->sdti == b->sdti;
+}
+
 /* Short data of the channel as a data notice (EN 300 396-3 clause 9.7); the DMAC-SYNC repeats it, so a repeat of the
- * last within 10 s is not noted again. Short data whose FCS fails is discarded (clause 6.3.2) before either: the channel
- * CRC does not stand in for it, and a corrupted copy kept as the last one noted would hide the good one. */
+ * last within 10 s is not noted again: the same message, its short data type, length and whole DM-SDU included, from
+ * the same source to the same destination. Short data whose FCS fails is discarded (clause 6.3.2) before either: the
+ * channel CRC does not stand in for it, and a corrupted copy kept as the last one noted would hide the good one. */
 static void
 dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
     if (h->fcs_state == TETRA_DMO_FCS_FAILED) {
@@ -994,14 +1017,11 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
     tetra_dmo_call_t* const d = &ts->calls.dmo;
     const double now_m = dsd_decode_now_mono_s();
     const uint32_t dst = h->dst_encrypted ? 0u : h->dst;
-    if (d->sds_type == h->msg_type && d->sds_src == h->src && d->sds_dst == dst && d->sds_value == h->sds_value
-        && now_m - d->sds_m < 10.0) {
+    const tetra_dmo_sds_key key = dmo_sds_key_of(h, dst);
+    if (dmo_sds_key_equal(&d->sds, &key) && now_m - d->sds_m < 10.0) {
         return;
     }
-    d->sds_type = h->msg_type;
-    d->sds_src = h->src;
-    d->sds_dst = dst;
-    d->sds_value = h->sds_value;
+    d->sds = key;
     d->sds_m = now_m;
     char desc[160];
     char notice[224];

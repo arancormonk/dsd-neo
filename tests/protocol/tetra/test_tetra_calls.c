@@ -1170,6 +1170,46 @@ test_direct_mode_short_data_fcs(void) {
     session_close(&s);
 }
 
+/* What counts as a repeat of direct mode short data is the whole message: two that differ in their short data type, in
+ * the length of their user data, or anywhere in it, are two messages, each noted, though the first 64 bits of their
+ * data (sds_value) match; only the same message again within 10 s is not noted again. */
+static void
+test_direct_mode_short_data_repeats(void) {
+    session s = session_open();
+    session_history(&s);
+    const Event_History_I* const history = &s.state->event_history_s[0];
+    uint8_t data[128];
+    bits_of_value(data, 0x1234u, 16);
+    uint64_t pushes = history->push_seq;
+    send_dmo_sds(&s, 200u, 300u, 4u, data, 16, 0, 0, -1); /* pre-coded status 0x1234 */
+    assert(history->push_seq > pushes);
+    pushes = history->push_seq;
+    send_dmo_sds(&s, 200u, 300u, 0u, data, 16, 0, 0, -1); /* user defined data 1, 0x1234 */
+    assert(history->push_seq > pushes);
+    pushes = history->push_seq;
+    send_dmo_sds(&s, 200u, 300u, 0u, data, 16, 0, 0, -1);
+    assert(history->push_seq == pushes);
+
+    /* User defined data 4 (SDTI 3): the same first 64 bits, then other bits, or fewer. */
+    DSD_MEMSET(data, 0, sizeof data);
+    bits_of_value(data, 0xA5A5A5A5u, 32);
+    send_dmo_sds(&s, 200u, 300u, 3u, data, 100, 100, 0, -1);
+    assert(history->push_seq > pushes);
+    pushes = history->push_seq;
+    send_dmo_sds(&s, 200u, 300u, 3u, data, 100, 100, 0, -1);
+    assert(history->push_seq == pushes);
+    data[99] = 1u;
+    send_dmo_sds(&s, 200u, 300u, 3u, data, 100, 100, 0, -1);
+    assert(history->push_seq > pushes);
+    pushes = history->push_seq;
+    send_dmo_sds(&s, 200u, 300u, 3u, data, 99, 99, 0, -1);
+    assert(history->push_seq > pushes);
+    pushes = history->push_seq;
+    send_dmo_sds(&s, 200u, 300u, 3u, data, 99, 99, 0, -1);
+    assert(history->push_seq == pushes);
+    session_close(&s);
+}
+
 /* One good full-slot speech burst on timeslot @p tn, through the voice path (no codec is loaded). */
 static void
 speech(session* s, uint8_t tn) {
@@ -1344,6 +1384,7 @@ main(void) {
     test_direct_mode_calls();
     test_direct_mode_short_data();
     test_direct_mode_short_data_fcs();
+    test_direct_mode_short_data_repeats();
     test_events_read_the_new_carrier();
     test_cell_change_forgets_sysinfo();
     test_network_change_drops_calls();
