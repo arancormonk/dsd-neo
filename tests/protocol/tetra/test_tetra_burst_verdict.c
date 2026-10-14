@@ -252,6 +252,22 @@ nts2_burst(session* s, const uint8_t* block1, const uint8_t* block2) {
     return dsd_dispatch_handle_tetra(s->opts, s->state);
 }
 
+/* A normal downlink burst carrying one full-slot channel: block 1 as the frame sync captured it, then block 2. */
+static dsd_frame_verdict
+nts1_burst(session* s, const uint8_t* block1, const uint8_t* block2) {
+    uint8_t tail[NDB_AACH2_DIBITS + BLOCK_DIBITS] = {0};
+    DSD_MEMCPY(tail + NDB_AACH2_DIBITS, block2, BLOCK_DIBITS);
+    feed(s, tail, (int)sizeof tail);
+    DSD_MEMCPY(s->state->tetra_sync.b1_dibuf, block1, BLOCK_DIBITS);
+    s->state->tetra_sync.b1_valid = 1;
+    s->state->tetra_sync.b1_soft_valid = 0;
+    s->state->tetra_sync.nts2 = 0;
+    s->state->tetra_sync.cb = 0;
+    s->state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    s->state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    return dsd_dispatch_handle_tetra(s->opts, s->state);
+}
+
 /* Noise: a synchronisation burst whose BSCH fails its CRC proves nothing, and with no network known its block 2 cannot
  * be descrambled. */
 static void
@@ -710,6 +726,42 @@ test_dsb_of_unread_layout(void) {
     }
 }
 
+/* A normal burst whose signalling failed its CRC is tried as speech, full-slot on NTS1 and half-slot on NTS2, but not
+ * in frame 18, which carries signalling only (EN 300 392-2 clause 19.4.3.1, the mapping of clause 9.5.1): the decoder
+ * tries no speech frame of a burst the TDMA clock places there (no TCH line under -Z), so none plays and no speech CRC
+ * that passes by chance makes the burst a proven one. */
+static void
+test_frame_18_tries_no_speech(void) {
+    session s = session_open();
+    s.opts->payload = 1;
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    const dsd_frame_verdict sync_verdict = sync_burst(&s, bsch, sysinfo);
+    assert(sync_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->tdma_valid);
+    for (uint8_t fn = 17; fn <= 18; fn++) {
+        for (int nts2 = 0; nts2 < 2; nts2++) {
+            /* The burst is read in the slot the clock is at (TETRA_TDMA_NDB_SYNC_SYMBOL into it), frame @p fn. */
+            ts->fn = fn;
+            s.state->symbolcnt = ts->tdma_slot_start + TETRA_TDMA_NDB_SYNC_SYMBOL;
+            dsd_test_capture_stderr cap;
+            char out[8192];
+            assert(dsd_test_capture_stderr_begin(&cap, "tetra_frame18_err") == 0);
+            const dsd_frame_verdict verdict = nts2 ? nts2_burst(&s, zeros, zeros) : nts1_burst(&s, zeros, zeros);
+            assert(dsd_test_capture_stderr_end(&cap) == 0);
+            assert(dsd_test_capture_stderr_read(&cap, out, sizeof out) == 0);
+            assert(verdict == DSD_FRAME_VERDICT_UNPRODUCTIVE && ts->fn == fn);
+            const int tried = strstr(out, nts2 ? "[TETRA TCH/H]" : "[TETRA TCH/FS]") != NULL;
+            assert(tried == (fn != 18U));
+        }
+    }
+    session_close(&s);
+}
+
 /* A channel allocation in the first half of a normal burst moves the receiver: the second half was sent on the carrier
  * left, so it is not decoded, and nothing in it counts for the traffic carrier. */
 static void
@@ -805,6 +857,7 @@ main(void) {
     test_dsb_leaves_trunked_mode();
     test_dsb_of_unread_layout();
     test_retune_leaves_the_rest_of_the_burst();
+    test_frame_18_tries_no_speech();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;
 }

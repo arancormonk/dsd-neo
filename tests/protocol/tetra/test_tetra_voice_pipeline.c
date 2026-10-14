@@ -1157,6 +1157,53 @@ test_speech_gap_resets_speech(void) {
     fixture_close(&f);
 }
 
+/* Frame 18 is the control frame (EN 300 392-2 clause 19.4.3.1: traffic in frames 1 to 17, frame 18 signalling only,
+ * the mapping of clause 9.5.1): the speech codec's 17 bursts of 60 ms fill the 1.02 s multiframe exactly. A burst the
+ * TDMA clock places in frame 18 is no speech: one whose signalling block failed its CRC, which the decoder would
+ * otherwise try as full-slot or half-slot speech, conceals nothing, and none plays even when its speech CRC passes by
+ * chance. Each concealed frame 18 would add 60 ms the air never sent, and the playout would fall behind by that much
+ * every multiframe. The speech in progress goes on in frame 1 as if frame 18 had not been there. */
+static void
+test_frame_18_is_no_speech(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "frame 18: fixture");
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t half[TETRA_SPEECH_HALF_BITS];
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 4U);
+    burst_bits(half, TETRA_SPEECH_HALF_BITS, 8U);
+    tetra_voice_reorder_full(full, full_frames);
+    tetra_state_t* const ts = tetra_st(f.state);
+    ts->mn = 1;
+    ts->fn = 17;
+    tetra_voice_full_slot(f.opts, f.state, full, 1); /* decodes 1, 2 */
+    ts->fn = 18;
+    tetra_voice_full_slot(f.opts, f.state, full, 0); /* an SCH/F that failed its CRC, tried as speech */
+    tetra_voice_half_slot(f.opts, f.state, half, 0); /* an SCH/HD that failed its CRC, tried as a half slot */
+    tetra_voice_full_slot(f.opts, f.state, full, 1); /* a speech CRC that passed by chance */
+    ts->mn = 2;
+    ts->fn = 1;
+    tetra_voice_full_slot(f.opts, f.state, full, 1); /* decodes 3, 4 */
+
+    const played_frame want[] = {
+        {1, 0, full_frames},
+        {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+        {3, 0, full_frames},
+        {4, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+    };
+    expect_output(&f, 0, want, 4, 4 * FRAME, "frame 18: the speech of frames 17 and 1 only");
+    const tetra_voice_t* v = voice_of(&f);
+    expect(v->frames == 4 && v->concealed == 0 && v->bad_run == 0 && v->confirmed == 1,
+           "frame 18: nothing decoded or concealed for it, and the speech goes on");
+
+    /* Direct mode runs no TDMA clock of the trunked carrier: its bursts are speech whatever a stale frame number says. */
+    ts->dmo = 1;
+    ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+    ts->fn = 18;
+    expect(played_by_burst(&f) == 2 * FRAME, "frame 18: direct mode speech plays");
+    fixture_close(&f);
+}
+
 /* The crypto class canonical slot 0 shows is the one the speech it carries has now, which can change with no PDU of
  * the call: the followed air-encrypted call is pending while no key is loaded and decryptable once the operator's
  * cipher key is, and anonymous speech, which its timeslot's signalling classifies, turns encrypted with it. */
@@ -1215,6 +1262,7 @@ main(void) {
     test_timeslot_change_resets_speech();
     test_speech_reclassifies_the_call();
     test_speech_gap_resets_speech();
+    test_frame_18_is_no_speech();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

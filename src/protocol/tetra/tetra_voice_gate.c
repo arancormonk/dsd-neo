@@ -117,7 +117,8 @@ tetra_voice_gate(const dsd_opts* opts, const dsd_state* state, tetra_speech* sp)
     }
     DSD_MEMSET(sp, 0, sizeof(*sp));
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (!ts) {
+    if (!ts || tetra_tdma_control_frame(ts)) {
+        /* Frame 18 carries no speech: nothing of it is heard, played or concealed. */
         return 0;
     }
     sp->tn = voice_timeslot(ts);

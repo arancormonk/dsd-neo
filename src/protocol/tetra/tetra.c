@@ -326,8 +326,9 @@ tetra_nb_half(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, uint16_
     return 1;
 }
 
-/* NTS2: two half-slot channels. The second half that is not signalling may be speech after a stolen first half. A
-   first half that moved the receiver (a grant) leaves the second half to the carrier that was left. */
+/* NTS2: two half-slot channels. The second half that is not signalling may be speech after a stolen first half, but
+   not in frame 18, which carries signalling only (tetra_tdma_control_frame()). A first half that moved the receiver (a
+   grant) leaves the second half to the carrier that was left. */
 static void
 tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* b2_dibits,
               const float* b2_soft) {
@@ -340,13 +341,15 @@ tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
         }
     }
     tetra_expand_dibits(state, b2_dibits, b2_soft, NB_BLOCK_DIBITS, block);
-    if (!tetra_nb_half(opts, state, ctx, block, "STCH-2") && tetra_decode_tch_half(block, opts, state)) {
+    if (!tetra_nb_half(opts, state, ctx, block, "STCH-2") && !tetra_tdma_control_frame(tetra_st_peek(state))
+        && tetra_decode_tch_half(block, opts, state)) {
         tetra_confirm_note_block(state);
     }
 }
 
 /* NTS1: one 432-bit channel scrambled across both blocks (EN 300 392-2 clause 8.2.5; EN 300 396-2 clause 8.3.2.4).
-   SCH/F when its CRC passes, else full-slot speech. */
+   SCH/F when its CRC passes, else full-slot speech, but not in frame 18, which carries signalling only
+   (tetra_tdma_control_frame()). */
 static void
 tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* b2_dibits,
               const float* b2_soft) {
@@ -361,7 +364,7 @@ tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     tetra_descramble_soft(type4, SCHF_BITS, ctx->seed);
     if (!tetra_schf_decode_bits(type4, decoded)) {
         tetra_nb_block_failed(state, ctx);
-        if (tetra_decode_tch_fs(type4, ctx->cc, opts, state)) {
+        if (!tetra_tdma_control_frame(ts) && tetra_decode_tch_fs(type4, ctx->cc, opts, state)) {
             tetra_confirm_note_block(state);
         }
         return;

@@ -4686,7 +4686,12 @@ single "current call".
   locked out and left. CRC-passed
   signalling of the followed call, or an addressed MAC-RESOURCE to its party, proves it on the carrier
   (`tetra_confirm_note_followed_call()`).
-- Speech. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
+- Speech. Frame 18 is the control frame of a trunked mode carrier, signalling only (EN 300 392-2 clause 19.4.3.1: traffic
+  takes frames 1 to 17, and 17 speech bursts of 60 ms fill the 1.02 s multiframe), so a burst the TDMA clock places in
+  frame 18 is never speech (`tetra_tdma_control_frame()`): its signalling block failing its CRC, the burst decoder does
+  not try it as full-slot or half-slot speech (`tetra_nb_nts1()`, `tetra_nb_nts2()`), so no chance speech CRC proves the
+  burst, and the voice gate hears nothing of it (`tetra_voice_gate()`), so no frame 18 is concealed into 60 ms of audio
+  the air never sent, and the speech in progress goes on in frame 1. Direct mode runs no such clock. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
   the carrier, while its record does not place it elsewhere (an allocation no call PDU took, which never tunes, or a
   reallocation whose tune failed moves it off the channel the receiver stays on, which the SwMI may give any call next;
   `voice_record_on()`), and only as the TDMA clock places the burst: a retune stops the clock until the carrier's next BSCH, and
@@ -4807,8 +4812,8 @@ and digest, an unread DMAC-SYNC's protection, a DMAC-DATA that ends the transmis
 individual call's speech judged by both parties, muted speech that holds no timeslot, the
 derived key stream, the speech starting over at call boundaries, another call identifier, another timeslot, another
 cell or network and a stop of the heard speech, and going on across a rename, the crypto class speech gives the
-published call), `TETRA_BURST_VERDICT` (the modes a BSCH, an SCH/HU, a DSB and a carrier boundary leave and enter, an
-unread DMAC-SYNC that seals the traffic), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
+published call, frame 18 that plays nothing), `TETRA_BURST_VERDICT` (the modes a BSCH, an SCH/HU, a DSB and a carrier
+boundary leave and enter, an unread DMAC-SYNC that seals the traffic, a frame 18 burst not tried as speech), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
 
 #### State and its boundaries
 
@@ -4826,7 +4831,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | Direct mode call (`calls.dmo`) and its canonical call | the channel's call | DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, a DM-2-C DMAC-SYNC | its end PDUs, idling out, leaving direct mode, a carrier boundary (the engine ends the canonical call) |
 | Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session; published only on a trunked carrier (`tetra_pub_network()`) | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
 | Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell; its control channel published only on a trunked carrier | SYSINFO, addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`) |
-| TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`) | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
+| TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`); a burst it places in frame 18 is no speech | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
 | Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
 | A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `usage_marker`) | the cell (a label: one channel of it) | an allocation (`call_attach()`), an SSI + event label or usage marker assignment | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`) |

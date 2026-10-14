@@ -334,6 +334,14 @@ typedef struct tetra_state {
     uint8_t uplink_no_net_noted;
 } tetra_state_t;
 
+/** 1 when the TDMA clock places the burst being decoded in frame 18 of a trunked mode carrier: the control frame, which
+ * carries signalling only (EN 300 392-2 clause 19.4.3.1: traffic, speech included, takes frames 1 to 17; the mapping of
+ * clause 9.5.1), so nothing in it is speech. Direct mode and a stopped clock place no burst there. */
+static inline int
+tetra_tdma_control_frame(const tetra_state_t* ts) {
+    return ts != NULL && ts->tdma_valid && !ts->dmo && ts->fn == 18u;
+}
+
 /** The TETRA state of @p state, created on first use; NULL only when @p state is NULL or memory runs out. */
 tetra_state_t* tetra_st(dsd_state* state);
 
