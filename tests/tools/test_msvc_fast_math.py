@@ -62,6 +62,8 @@ class MsvcFastMath(unittest.TestCase):
 
     def check_configuration(self, generator, fast_math, configuration):
         with tempfile.TemporaryDirectory(prefix="dsd-msvc-fp-") as directory:
+            # Preserve Windows runners' short temporary paths. Expanding them
+            # during source-property lookup must not lose the selected mode.
             source = Path(directory) / "source"
             build = Path(directory) / "build"
             source.mkdir()

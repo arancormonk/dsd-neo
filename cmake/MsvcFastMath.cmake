@@ -32,8 +32,7 @@ function(dsd_msvc_fast_math directory)
         set(_target_modes
             "$<FILTER:$<GENEX_EVAL:$<TARGET_PROPERTY:DSD_MSVC_FP_OPTIONS>>,INCLUDE,^[-/]fp:(fast|precise|strict)$>"
         )
-        # Select the language at generation time; an inferred source LANGUAGE
-        # property is not always available during this deferred configure pass.
+        # Evaluate the language per compile so non-C/C++ sources get no option.
         set(_default
             "$<$<AND:$<COMPILE_LANGUAGE:C,CXX>,$<NOT:$<BOOL:${_target_modes}>>>:/fp:fast>"
         )
@@ -43,13 +42,13 @@ function(dsd_msvc_fast_math directory)
             if(_source MATCHES "\\$<")
                 continue()
             endif()
-            # This deferred pass runs in the root directory, while SOURCES
-            # entries are relative to the directory that created the target.
-            get_filename_component(
-                _source
-                "${_source}"
-                ABSOLUTE
-                BASE_DIR "${directory}"
+            # Resolve relative paths from the target's directory. Keep Windows
+            # short-path components: get_filename_component(ABSOLUTE) expands
+            # them, which would select a different source-property entry.
+            cmake_path(
+                ABSOLUTE_PATH _source
+                BASE_DIRECTORY "${directory}"
+                NORMALIZE
             )
             get_source_file_property(
                 _options
