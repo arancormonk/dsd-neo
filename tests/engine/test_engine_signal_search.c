@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,16 @@ static uint64_t now_ms = 1000;
 static uint64_t tuner_owner;
 /* How long ago the radio input delivered its latest samples. */
 static uint64_t stalled_ms;
+/* State snapshots published to frontends, and the carrier boundaries run when the latest was. */
+static int snapshots, snapshot_boundary;
+
+static void
+count_snapshot(const dsd_state* state) {
+    (void)state;
+    snapshots++;
+    snapshot_boundary = boundary;
+}
+
 /* The receive family the latest retune carries, and its target; -1 when none is attached. */
 static rtl_stream_retune_analog_profile retune_family = {-1, 0, 0, 0};
 static uint32_t retune_family_hz;
@@ -443,8 +454,11 @@ test_pause_is_a_carrier_boundary(dsd_opts* o, dsd_state* s, dsd_signal_search_co
     visit_strongest(o, s);
     assert(status.phase == DSD_SEARCH_LISTENING);
     const int before = boundary;
+    snapshots = 0;
     act(o, s, DSD_SEARCH_ACTION_PAUSE);
     assert(status.phase == DSD_SEARCH_PAUSED && status.hit.ended && boundary == before + 1);
+    /* The engine loop publishes nothing while paused: the call the boundary ended reaches frontends from here. */
+    assert(snapshots > 0 && snapshot_boundary == before + 1);
     advance(30000);
     tick(o, s);
     assert(status.phase == DSD_SEARCH_PAUSED && boundary == before + 1);
@@ -468,8 +482,10 @@ test_error_is_a_carrier_boundary(dsd_opts* o, dsd_state* s, dsd_signal_search_co
     assert(status.phase == DSD_SEARCH_HELD);
     int before = boundary;
     stalled_ms = 20000;
+    snapshots = 0;
     tick(o, s);
     assert(status.phase == DSD_SEARCH_ERROR && status.hit.ended && boundary == before + 1);
+    assert(snapshots > 0 && snapshot_boundary == before + 1);
     tick(o, s);
     assert(status.phase == DSD_SEARCH_ERROR && boundary == before + 1);
     stalled_ms = 0;
@@ -546,6 +562,7 @@ int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
     dsd_state* s = calloc(1, sizeof(*s));
+    dsd_telemetry_hooks_set((dsd_telemetry_hooks){count_snapshot, NULL, NULL});
     assert(o && s);
     // Controls must reject absent sessions before validating their action payload.
     dsd_signal_search_control absent = {42, 0, DSD_SEARCH_ACTION_STOP, 0};

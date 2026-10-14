@@ -25,6 +25,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -976,6 +977,9 @@ search_end_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
     c->reception_ended = 1;
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
     dsd_frame_sync_reset_acquisition(opts, state, 1);
+    /* The engine loop publishes no snapshot while the search is paused or failed (frame sync does, and it is not
+       running): frontends learn here that the call ended. */
+    dsd_telemetry_publish_both_and_redraw(opts, state);
 }
 
 static int

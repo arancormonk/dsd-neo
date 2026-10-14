@@ -80,7 +80,8 @@ Generated (do not edit/commit):
     while a search is paused or failed, so the first tick that finds it PAUSED or ERROR runs
     them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
     a call heard on the channel ends at the Pause, the input stall or any other failure rather
-    than at the next tune or the Stop. A decoder session that ends
+    than at the next tune or the Stop. It also publishes the opts/state snapshots, since frame
+    sync, which normally publishes them, does not run while the search is paused or failed. A decoder session that ends
     under the search (the Qt Stop) restores the options in
     `dsd_engine_signal_search_shutdown()` before the engine's autosave, so the saved
     configuration never keeps a visited frequency. Protocol details enter only through
