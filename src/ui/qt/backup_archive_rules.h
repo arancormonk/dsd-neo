@@ -27,6 +27,8 @@
 #include <QtGlobal>
 #include "backup_archive.h"
 
+class QByteArray;
+
 namespace dsd_qt {
 namespace backup {
 namespace detail {
@@ -48,6 +50,13 @@ QString new_uid();
 
 /** Wipe @p bytes (DSD_SECURE_ZERO) and empty it. */
 void wipe(QByteArray& bytes);
+
+/**
+ * Wipe @p text's buffer when it is @p text's own (as a string normalized() just built is), then empty it. A buffer
+ * shared with another string (normalized() hands back its input when that is already normalized) or static data is
+ * left alone: it belongs to the caller.
+ */
+void wipe_own(QString& text);
 
 /** A JSON value read the way the models read a stored field: through QVariant, so a number becomes its text. */
 QString variant_string(const QJsonValue& value);

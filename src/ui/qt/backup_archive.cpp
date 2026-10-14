@@ -137,12 +137,15 @@ backup_take_snapshot() {
 
 QByteArray
 backup_passphrase_bytes(const QString& passphrase) {
-    return passphrase.normalized(QString::NormalizationForm_C).toUtf8();
+    QString composed = passphrase.normalized(QString::NormalizationForm_C);
+    QByteArray bytes = composed.toUtf8();
+    detail::wipe_own(composed);
+    return bytes;
 }
 
 bool
 backup_passphrase_ok(const QString& passphrase) {
-    const QString composed = passphrase.normalized(QString::NormalizationForm_C);
+    QString composed = passphrase.normalized(QString::NormalizationForm_C);
     qsizetype points = 0;
     for (qsizetype i = 0; i < composed.size(); ++i) {
         if (composed.at(i).isHighSurrogate() && i + 1 < composed.size() && composed.at(i + 1).isLowSurrogate()) {
@@ -150,6 +153,7 @@ backup_passphrase_ok(const QString& passphrase) {
         }
         ++points;
     }
+    detail::wipe_own(composed);
     return points >= kMinPassphraseChars;
 }
 

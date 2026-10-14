@@ -1395,6 +1395,16 @@ test_passphrases() {
     expect("NFC and NFD encode the same bytes",
            dsd_qt::backup::backup_passphrase_bytes(nfc) == dsd_qt::backup::backup_passphrase_bytes(nfd)
                && dsd_qt::backup::backup_passphrase_bytes(nfc) == nfc.toUtf8());
+    // The normalized copy is wiped inside; the caller's string never is, whether normalized() shared it (already
+    // NFC), built a new one (NFD) or the string is static data.
+    const QString literal = QStringLiteral("static-passphrase");
+    for (const QString& input : {nfc, nfd, literal}) {
+        const QString before(input.constData(), input.size());
+        const QByteArray bytes = dsd_qt::backup::backup_passphrase_bytes(input);
+        const bool ok = backup_passphrase_ok(input);
+        expect(qUtf8Printable(QStringLiteral("the caller's passphrase stays as it was: %1").arg(before)),
+               input == before && ok && bytes == before.normalized(QString::NormalizationForm_C).toUtf8());
+    }
     int status = -100;
     const QByteArray sealed = dsd_qt::backup::backup_seal("DNBA payload", nfc, test_kdf(), &status);
     expect("NFC seal", status == DSD_BACKUP_OK);

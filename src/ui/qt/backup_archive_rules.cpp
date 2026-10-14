@@ -194,6 +194,14 @@ wipe(QByteArray& bytes) {
     bytes.clear();
 }
 
+void
+wipe_own(QString& text) {
+    if (text.isDetached() && !text.isEmpty()) {
+        DSD_SECURE_ZERO(text.data(), static_cast<size_t>(text.size()) * sizeof(QChar));
+    }
+    text.clear();
+}
+
 QString
 variant_string(const QJsonValue& value) {
     return value.toVariant().toString();
