@@ -93,6 +93,7 @@
 #include <dsd-neo/core/audio_input_switch.h>
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/protocol/tetra/tetra_confirm.h"
+#include "../../src/protocol/tetra/tetra_state.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -13635,11 +13636,18 @@ count_tetra_ext_cleanup(void* ptr) {
     free(ptr);
 }
 
+/* A TETRA state extension of the session's own, which only these tests free (count_tetra_ext_cleanup()): zeroed, as the
+   TETRA code that reads it in place finds a state of a session that follows nothing. */
+static tetra_state_t*
+new_tetra_ext(void) {
+    return (tetra_state_t*)calloc(1U, sizeof(tetra_state_t));
+}
+
 /* A TETRA session on an RTL front end at TETRA's 72 kHz DSP rate, holding what a TETRA decoder holds: its state
    extension (@p ext, which the session owns from here on and frees through count_tetra_ext_cleanup(), or which is freed
    here when the session cannot be set up), the burst the frame sync captured and its publication. */
 static int
-init_tetra_session_on_rtl(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, int* ext) {
+init_tetra_session_on_rtl(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, tetra_state_t* ext) {
     init_decode_mode_context(opts, state);
     opts->audio_in_type = AUDIO_IN_RTL;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:420.1M:0:0:72");
@@ -13667,7 +13675,7 @@ init_tetra_session_on_rtl(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_
 /* The TETRA session init_tetra_session_on_rtl() set up, still whole: its state extension @p ext, never cleaned up, the
    burst the frame sync captured and its publication. */
 static int
-tetra_session_kept(const dsd_state* state, const int* ext) {
+tetra_session_kept(const dsd_state* state, const tetra_state_t* ext) {
     return dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) == ext && g_tetra_ext_cleanups == 0
            && state->tetra_sync.polarity == 1 && state->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK;
 }
@@ -13695,7 +13703,7 @@ test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
     char tag[96];
     int rc = 0;
     for (int config = 0; config <= 1; config++) {
-        int* ext = (int*)calloc(1U, sizeof(int));
+        tetra_state_t* ext = new_tetra_ext();
         DSD_SNPRINTF(tag, sizeof tag, "tetra %s: TETRA session", via[config]);
         if (!init_tetra_session_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx, ext)) {
             rc |= expect_true(tag, 0);
@@ -13736,10 +13744,10 @@ test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
 
 /* A switch from TETRA onto the analog monitor, or onto AM, the front end has queued and not yet taken (@p mode, from
    DECODE_MODE_SET or a config's [mode] as @p config says), or NULL when the TETRA session could not be set up. */
-static int*
+static tetra_state_t*
 tetra_switch_queued(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, dsdneoUserDecodeMode mode, int config,
                     const char* label) {
-    int* ext = (int*)calloc(1U, sizeof(int));
+    tetra_state_t* ext = new_tetra_ext();
     if (!init_tetra_session_on_rtl(opts, state, fake_ctx, ext)) {
         return NULL;
     }
@@ -13773,7 +13781,7 @@ test_queued_switch_off_tetra_commits_once_taken(void) {
         for (size_t m = 0; m < sizeof modes / sizeof modes[0]; m++) {
             const char* const name = dsd_decode_mode_display_name(modes[m]);
             DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: TETRA session", via[config], name);
-            int* ext = tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, modes[m], config, tag);
+            tetra_state_t* ext = tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, modes[m], config, tag);
             rc |= expect_true(tag, ext != NULL);
             if (ext) {
                 DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: switched, the TETRA session kept", via[config], name);
@@ -13796,7 +13804,8 @@ test_queued_switch_off_tetra_commits_once_taken(void) {
     }
 
     /* Onto Analog and then AM over it, both queued: the refusal puts the session back on TETRA whole. */
-    int* ext = tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, DSDCFG_MODE_ANALOG, 0, "superseded");
+    tetra_state_t* ext =
+        tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, DSDCFG_MODE_ANALOG, 0, "superseded");
     rc |= expect_true("superseded: TETRA session", ext != NULL);
     if (ext) {
         rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "superseded: AM over it");
@@ -13816,7 +13825,7 @@ test_queued_switch_off_tetra_commits_once_taken(void) {
        the row still running. */
     for (int at_once = 1; at_once >= 0; at_once--) {
         const char* const how = at_once ? "under a row, at once" : "under a row, where it landed";
-        ext = (int*)calloc(1U, sizeof(int));
+        ext = new_tetra_ext();
         const int ok = init_tetra_session_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx, ext);
         DSD_SNPRINTF(tag, sizeof tag, "%s: TETRA session on an inherited row", how);
         rc |= expect_true(tag, ok && dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_INHERIT) == 0
@@ -13860,6 +13869,131 @@ test_queued_switch_off_tetra_commits_once_taken(void) {
     }
     state.rtl_ctx = NULL;
     freeState(&state);
+    reset_rx_family_wrap();
+    return rc;
+}
+
+enum { TETRA_FOLLOWED_HZ = 390012500 };
+
+/* A TETRA session on an RTL front end whose real trunking state machine follows a call on a traffic channel, with the
+   shared follow state the engine's tune hook leaves (dsd_engine_update_vc_tune_state()). */
+static int
+init_tetra_follow_on_rtl(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx) {
+    (void)init_tetra_session_on_rtl(opts, state, fake_ctx, NULL);
+    dsd_trunk_tuning_requests_reset();
+    if (opts->frame_tetra != 1 || !tetra_follow_a_call(opts, state, DSD_TRUNK_TUNE_RESULT_OK)) {
+        return 0;
+    }
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = TETRA_FOLLOWED_HZ;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = TETRA_FOLLOWED_HZ;
+    return opts->trunk_is_tuned == 1;
+}
+
+/* The follow init_tetra_follow_on_rtl() set up, whole: the state machine on the call, and the shared follow state. */
+static int
+tetra_follow_kept(const dsd_opts* opts, const dsd_state* state) {
+    return tetra_sm_get_state(state) == TETRA_SM_TUNED && tetra_sm_followed(state, NULL) && opts->trunk_is_tuned == 1
+           && state->trunk_vc_freq[0] == TETRA_FOLLOWED_HZ && state->trunk_vc_freq[1] == TETRA_FOLLOWED_HZ
+           && state->p25_vc_freq[0] == TETRA_FOLLOWED_HZ && state->p25_vc_freq[1] == TETRA_FOLLOWED_HZ;
+}
+
+/*
+ * A TETRA follow that a switch onto Analog or AM interrupts, which the front end then refuses, at once or where it
+ * lands, goes on once the session is back on TETRA, from DECODE_MODE_SET and from a config's [mode] alike: the switch
+ * cleared the shared follow state (trunk_is_tuned and the voice channel frequencies, reset_call_tracking()) with the
+ * calls it ended, and the refusal puts it back with the TETRA state the commit kept, so the state machine's next tick
+ * does not take the follow for one another owner released and drop it while the receiver stays on its traffic channel.
+ * Nothing is put back when the state machine let go of the call meanwhile (a carrier boundary abandons it), nor when
+ * the switch stands.
+ */
+static int
+test_refused_switch_off_tetra_keeps_the_follow(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const via[] = {"mode set", "config"};
+    static const dsdneoUserDecodeMode modes[] = {DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM};
+    char tag[112];
+    int rc = 0;
+    for (int config = 0; config <= 1; config++) {
+        for (size_t m = 0; m < sizeof modes / sizeof modes[0]; m++) {
+            for (int at_once = 0; at_once <= 1; at_once++) {
+                const char* const name = dsd_decode_mode_display_name(modes[m]);
+                const char* const how = at_once ? "at once" : "where it landed";
+                DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: TETRA follows a call", via[config], name, how);
+                rc |= expect_true(tag, init_tetra_follow_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx));
+                g_analog_req_result = at_once ? -1 : 0;
+                if (config) {
+                    (void)submit_config_mode(&opts, &state, modes[m], tag);
+                } else {
+                    (void)submit_decode_mode(&opts, &state, modes[m], tag);
+                }
+                g_analog_req_result = 0;
+                if (!at_once) {
+                    DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: queued", via[config], name, how);
+                    rc |= expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0);
+                    if (!config) {
+                        DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: the calls ended, the follow state cleared",
+                                     via[config], name, how);
+                        rc |= expect_true(tag, opts.trunk_is_tuned == 0 && state.trunk_vc_freq[0] == 0
+                                                   && state.p25_vc_freq[0] == 0);
+                    }
+                    demod_thread_refuses_analog_keeping(0, 0);
+                    (void)dsd_app_drain_cmds(&opts, &state);
+                }
+                DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: refused, back on TETRA following the call", via[config],
+                             name, how);
+                rc |= expect_true(tag, opts.frame_tetra == 1 && opts.analog_only == 0
+                                           && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA
+                                           && tetra_follow_kept(&opts, &state));
+                tetra_sm_tick(&opts, &state);
+                DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: the next tick keeps the call", via[config], name, how);
+                rc |= expect_true(tag, tetra_follow_kept(&opts, &state));
+                state.rtl_ctx = NULL;
+                freeState(&state);
+            }
+        }
+    }
+
+    /* Onto Analog, then AM over it, both queued: the refusal puts the follow back from before the first. */
+    rc |= expect_true("follow superseded: TETRA follows a call",
+                      init_tetra_follow_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx));
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "follow superseded: Analog");
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "follow superseded: AM over it");
+    demod_thread_refuses_analog_keeping(0, 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("follow superseded: refused, back on TETRA following the call",
+                      opts.frame_tetra == 1 && opts.analog_only == 0 && tetra_follow_kept(&opts, &state));
+    state.rtl_ctx = NULL;
+    freeState(&state);
+
+    /* A carrier boundary while the switch was queued abandoned the follow: the refusal puts none of it back. */
+    rc |= expect_true("follow abandoned: TETRA follows a call",
+                      init_tetra_follow_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx));
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "follow abandoned: Analog");
+    tetra_sm_abandon_carrier(&opts, &state);
+    demod_thread_refuses_analog_keeping(0, 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("follow abandoned: back on TETRA, no follow put back",
+                      opts.frame_tetra == 1 && tetra_sm_get_state(&state) != TETRA_SM_TUNED && opts.trunk_is_tuned == 0
+                          && state.trunk_vc_freq[0] == 0 && state.p25_vc_freq[0] == 0);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+
+    /* A switch that stands leaves TETRA, and its follow, as before. */
+    rc |= expect_true("follow left: TETRA follows a call",
+                      init_tetra_follow_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx));
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "follow left: Analog");
+    demod_thread_lands(0);
+    g_fake_analog_family = 1;
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("follow left: taken, TETRA and its follow left",
+                      opts.analog_only == 1 && opts.frame_tetra == 0
+                          && dsd_state_ext_get(&state, DSD_STATE_EXT_PROTO_TETRA) == NULL && opts.trunk_is_tuned == 0
+                          && state.trunk_vc_freq[0] == 0 && state.p25_vc_freq[0] == 0);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    dsd_trunk_tuning_requests_reset();
     reset_rx_family_wrap();
     return rc;
 }
@@ -18241,6 +18375,7 @@ main(void) {
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
     rc |= test_queued_switch_off_tetra_commits_once_taken();
+    rc |= test_refused_switch_off_tetra_keeps_the_follow();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();
     rc |= test_refused_switch_onto_analog_retimes_the_mode();

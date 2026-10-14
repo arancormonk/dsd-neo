@@ -4754,12 +4754,23 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
  */
 static dsd_scan_settings g_analog_entry_staged;
 
+/* The follow state a trunking state machine shares with the engine, which ending the calls clears
+   (reset_call_tracking()): whether a voice channel is followed, and its frequencies. */
+typedef struct {
+    int trunk_is_tuned;
+    long p25_vc_freq[2];
+    long trunk_vc_freq[2];
+} ui_follow_state;
+
+static ui_follow_state g_analog_entry_staged_follow;
+
 static struct {
     int armed;
     int kind; /* the dsd_analog_demod the switch is onto */
     /* A mode change off TETRA waits for the switch to settle before it leaves TETRA (ui_commit_mode_change()). */
     int commit_tetra;
     dsd_scan_settings before;
+    ui_follow_state before_follow; /* the follow state before the switch, as `before` is its settings */
     dsd_scan_settings after;
     int has_between[2];           /* by dsd_analog_demod */
     dsd_scan_settings between[2]; /* the settings the last superseded switch onto that kind left */
@@ -4768,6 +4779,30 @@ static struct {
 static void
 ui_stage_analog_entry(const dsd_opts* opts, const dsd_state* state) {
     dsd_scan_settings_capture(opts, state, &g_analog_entry_staged);
+    ui_follow_state* const f = &g_analog_entry_staged_follow;
+    f->trunk_is_tuned = opts->trunk_is_tuned;
+    DSD_MEMCPY(f->p25_vc_freq, state->p25_vc_freq, sizeof f->p25_vc_freq);
+    DSD_MEMCPY(f->trunk_vc_freq, state->trunk_vc_freq, sizeof f->trunk_vc_freq);
+}
+
+/*
+ * A refused switch put a TETRA session back (ui_revert_analog_entry()), whose state the commit kept for it
+ * (ui_commit_mode_change()): the switch, or the revert, ended the calls and with them cleared the follow state the
+ * TETRA trunking state machine shares (reset_call_tracking()), and the machine's next tick would take that for another
+ * owner releasing the receiver (a tuner hand-back) and drop the call without a tune, the receiver left on its traffic
+ * channel. When the machine still follows the call -- nothing moved the receiver meanwhile, as a carrier boundary
+ * abandons it -- the follow state from before the switch comes back with the session. Only a TETRA session: the other
+ * modes' machines are not kept across a switch.
+ */
+static void
+ui_restore_tetra_follow(dsd_opts* opts, dsd_state* state) {
+    if (g_analog_entry.before.frame_tetra != 1 || opts->frame_tetra != 1 || !tetra_sm_followed(state, NULL)) {
+        return;
+    }
+    const ui_follow_state* const f = &g_analog_entry.before_follow;
+    opts->trunk_is_tuned = f->trunk_is_tuned;
+    DSD_MEMCPY(state->p25_vc_freq, f->p25_vc_freq, sizeof state->p25_vc_freq);
+    DSD_MEMCPY(state->trunk_vc_freq, f->trunk_vc_freq, sizeof state->trunk_vc_freq);
 }
 
 /* The configured channel widths of @p now over @p settings. */
@@ -4868,6 +4903,7 @@ ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog
         g_analog_entry.has_between[g_analog_entry.kind] = 1;
     } else if (!supersedes) {
         g_analog_entry.before = g_analog_entry_staged;
+        g_analog_entry.before_follow = g_analog_entry_staged_follow;
         g_analog_entry.has_between[DSD_ANALOG_DEMOD_FM] = 0;
         g_analog_entry.has_between[DSD_ANALOG_DEMOD_AM] = 0;
     }
@@ -5150,6 +5186,9 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     }
     if (refused_at_once) {
         ui_settle_leave_revert_refused_at_once(opts, state, kept);
+    }
+    if (reverted) {
+        ui_restore_tetra_follow(opts, state);
     }
     /* A mode change off TETRA that waited for the switch finds the TETRA session back, or the settings moved on. */
     ui_analog_entry_settled(opts, state);

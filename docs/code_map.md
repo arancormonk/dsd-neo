@@ -1566,7 +1566,11 @@ suite runs under this compiler.
     `app_command_queue.c`): while the switch is armed with the settings it left still in force, a refusal where its
     request lands can still put the session back (`ui_revert_analog_entry()`), so the commit waits for the front end to
     take the request, refuse it, or the switch to be dropped (`ui_analog_entry_settled()`); a command that moves the
-    settings on to another mode commits at once. `dsd_apply_decode_mode_symbol_timing()` refuses a mode no preset
+    settings on to another mode commits at once. A refusal that puts a TETRA session back puts back as well the follow
+    state its trunking state machine shares, which ending the calls cleared (`reset_call_tracking()`: `trunk_is_tuned`
+    and the voice channel frequencies, as the first switch found them), while the machine still follows the call
+    (`ui_restore_tetra_follow()`; a carrier boundary meanwhile abandoned it), so its next tick does not drop the call as
+    one another owner released, the receiver left on its traffic channel. `dsd_apply_decode_mode_symbol_timing()` refuses a mode no preset
     implements the same way (it has no preset timing), and the config paths that call it for a file input
     (`apply_file_input_symbol_timing()` in `config_user.cpp`, `cfg_file_runtime_apply_*()` in `app_command_queue.c`)
     then rescale or keep the session's own timing
@@ -4584,7 +4588,7 @@ engine tick, the carrier boundary, a return in flight included, a decode-mode ch
 no-carrier pass with the real machine, which returns at its own deadlines and settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
 real machine's follow to it, with and without a control channel),
 `ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC and the other
-manual tunes, a return in flight included, decode-mode change), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
+manual tunes, a return in flight included, decode-mode change, a refused switch off TETRA that keeps the follow), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
 CRCs and given the colour code, a retune inside a burst; and, at compile time, the TETRA syncs in the two synctype
 macros), `TETRA_MAC_STATE`, `TETRA_CALLS` (grants through the call records against stand-in tuning hooks).
 
