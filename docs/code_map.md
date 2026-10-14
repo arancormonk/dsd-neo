@@ -1561,9 +1561,15 @@ suite runs under this compiler.
     in force run no TETRA decoder); `dsd_apply_decode_mode_preset()` is both at once. DECODE_MODE_SET commits after a
     switch onto the monitor the front end refused at once was put back, and a runtime config apply
     (`dsd_stage_user_config_to_opts()`) after its reopen and receive-family rollbacks, so a TETRA session they put back
-    is whole (`APP_COMMAND_QUEUE`). `dsd_apply_decode_mode_symbol_timing()` refuses such a mode the same way (it has no preset timing), and
-    the config paths that call it for a file input (`apply_file_input_symbol_timing()` in `config_user.cpp`,
-    `cfg_file_runtime_apply_*()` in `app_command_queue.c`) then rescale or keep the session's own timing
+    is whole (`APP_COMMAND_QUEUE`). A switch from TETRA onto the monitor or AM that a running RTL stream queued (under a
+    scan row, the one the row's resume makes) commits once it settles (`ui_commit_mode_change()` in
+    `app_command_queue.c`): while the switch is armed with the settings it left still in force, a refusal where its
+    request lands can still put the session back (`ui_revert_analog_entry()`), so the commit waits for the front end to
+    take the request, refuse it, or the switch to be dropped (`ui_analog_entry_settled()`); a command that moves the
+    settings on to another mode commits at once. `dsd_apply_decode_mode_symbol_timing()` refuses a mode no preset
+    implements the same way (it has no preset timing), and the config paths that call it for a file input
+    (`apply_file_input_symbol_timing()` in `config_user.cpp`, `cfg_file_runtime_apply_*()` in `app_command_queue.c`)
+    then rescale or keep the session's own timing
     (`RUNTIME_DECODE_MODE`, `RUNTIME_CONFIG_USER`, `APP_COMMAND_QUEUE`). AM (`DSDCFG_MODE_AM` = 16, `-fM`, issue #524) is the last preset: the analog monitor
     with `analog_demod` AM, read back as AM by `dsd_infer_decode_mode_preset()`. AM needs an I/Q radio input, one rule
     for two phases: before the engine opens the input, `dsd_decode_mode_input_spec_is_iq()` reads the spec (an rtl,

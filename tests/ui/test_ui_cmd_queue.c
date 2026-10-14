@@ -13664,12 +13664,27 @@ init_tetra_session_on_rtl(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_
     return 1;
 }
 
+/* The TETRA session init_tetra_session_on_rtl() set up, still whole: its state extension @p ext, never cleaned up, the
+   burst the frame sync captured and its publication. */
+static int
+tetra_session_kept(const dsd_state* state, const int* ext) {
+    return dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) == ext && g_tetra_ext_cleanups == 0
+           && state->tetra_sync.polarity == 1 && state->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK;
+}
+
+/* ... and left, as every preset other than TETRA leaves it: all of it dropped, once. */
+static int
+tetra_session_left(const dsd_state* state) {
+    return dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) == NULL && g_tetra_ext_cleanups == 1
+           && state->tetra_sync.polarity == 0 && state->tetra_pub.mode == DSD_TETRA_MODE_NONE;
+}
+
 /*
  * A TETRA session's switch onto Analog that the front end refuses by its request (a retune moved the rate between the
  * check and the request) goes back to TETRA whole, from DECODE_MODE_SET and from a config's [mode] alike: the mode
  * change is staged (dsd_stage_decode_mode_preset()) and commits only once nothing put it back, so the decoder flag, the
  * TETRA state extension, the burst the frame sync captured and the publication all stay. A switch that stands leaves
- * TETRA at its commit, as every preset other than TETRA does.
+ * TETRA at its commit, once the front end has taken it, as every preset other than TETRA does.
  */
 static int
 test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
@@ -13699,22 +13714,152 @@ test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
         rc |= expect_true(tag, opts.frame_tetra == 1 && opts.analog_only == 0
                                    && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA);
         DSD_SNPRINTF(tag, sizeof tag, "tetra %s: refused, the TETRA session whole", via[config]);
-        rc |= expect_true(tag, dsd_state_ext_get(&state, DSD_STATE_EXT_PROTO_TETRA) == ext && g_tetra_ext_cleanups == 0
-                                   && state.tetra_sync.polarity == 1
-                                   && state.tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK);
+        rc |= expect_true(tag, tetra_session_kept(&state, ext));
         if (config) {
             rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra config: taken");
         } else {
             rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra mode set: taken");
         }
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: queued, the TETRA session kept", via[config]);
+        rc |= expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0 && tetra_session_kept(&state, ext));
+        demod_thread_lands(0);
+        g_fake_analog_family = 1;
+        (void)dsd_app_drain_cmds(&opts, &state);
         DSD_SNPRINTF(tag, sizeof tag, "tetra %s: taken, TETRA left", via[config]);
-        rc |= expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0
-                                   && dsd_state_ext_get(&state, DSD_STATE_EXT_PROTO_TETRA) == NULL
-                                   && g_tetra_ext_cleanups == 1 && state.tetra_sync.polarity == 0
-                                   && state.tetra_pub.mode == DSD_TETRA_MODE_NONE);
+        rc |= expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0 && tetra_session_left(&state));
         state.rtl_ctx = NULL;
         freeState(&state);
     }
+    reset_rx_family_wrap();
+    return rc;
+}
+
+/* A switch from TETRA onto the analog monitor, or onto AM, the front end has queued and not yet taken (@p mode, from
+   DECODE_MODE_SET or a config's [mode] as @p config says), or NULL when the TETRA session could not be set up. */
+static int*
+tetra_switch_queued(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, dsdneoUserDecodeMode mode, int config,
+                    const char* label) {
+    int* ext = (int*)calloc(1U, sizeof(int));
+    if (!init_tetra_session_on_rtl(opts, state, fake_ctx, ext)) {
+        return NULL;
+    }
+    if (config) {
+        (void)submit_config_mode(opts, state, mode, label);
+    } else {
+        (void)submit_decode_mode(opts, state, mode, label);
+    }
+    return ext;
+}
+
+/*
+ * A switch from TETRA onto Analog or AM that a running RTL stream has queued commits once the front end takes it, not
+ * when the command that asked for it returns: until then the demod thread can still refuse it where it lands (a
+ * retune lowered the DSP rate after the check), and the next drain puts the session back on TETRA
+ * (ui_revert_analog_entry()), which finds its state extension, the burst the frame sync captured and the publication
+ * as they were, from DECODE_MODE_SET and from a config's [mode] alike. A second switch made over the queued one (onto
+ * the other analog kind) waits with it, and is put back to TETRA the same way; a switch onto a digital mode made over
+ * it commits at once, leaving TETRA, and the refusal of the analog switch it moved on from puts nothing back.
+ */
+static int
+test_queued_switch_off_tetra_commits_once_taken(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const via[] = {"mode set", "config"};
+    static const dsdneoUserDecodeMode modes[] = {DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM};
+    char tag[112];
+    int rc = 0;
+    for (int config = 0; config <= 1; config++) {
+        for (size_t m = 0; m < sizeof modes / sizeof modes[0]; m++) {
+            const char* const name = dsd_decode_mode_display_name(modes[m]);
+            DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: TETRA session", via[config], name);
+            int* ext = tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, modes[m], config, tag);
+            rc |= expect_true(tag, ext != NULL);
+            if (ext) {
+                DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: switched, the TETRA session kept", via[config], name);
+                rc |=
+                    expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0 && tetra_session_kept(&state, ext));
+                (void)dsd_app_drain_cmds(&opts, &state);
+                DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: still kept while queued", via[config], name);
+                rc |= expect_true(tag, opts.analog_only == 1 && tetra_session_kept(&state, ext));
+                demod_thread_refuses_analog_keeping(0, 0);
+                (void)dsd_app_drain_cmds(&opts, &state);
+                DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: refused where it landed, back on TETRA whole", via[config],
+                             name);
+                rc |= expect_true(tag, opts.frame_tetra == 1 && opts.analog_only == 0
+                                           && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA
+                                           && tetra_session_kept(&state, ext));
+            }
+            state.rtl_ctx = NULL;
+            freeState(&state);
+        }
+    }
+
+    /* Onto Analog and then AM over it, both queued: the refusal puts the session back on TETRA whole. */
+    int* ext = tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, DSDCFG_MODE_ANALOG, 0, "superseded");
+    rc |= expect_true("superseded: TETRA session", ext != NULL);
+    if (ext) {
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "superseded: AM over it");
+        rc |= expect_true("superseded: both queued, the TETRA session kept",
+                          opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM
+                              && tetra_session_kept(&state, ext));
+        demod_thread_refuses_analog_keeping(0, 0);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_true("superseded: refused, back on TETRA whole",
+                          opts.frame_tetra == 1 && opts.analog_only == 0 && tetra_session_kept(&state, ext));
+    }
+    state.rtl_ctx = NULL;
+    freeState(&state);
+
+    /* Under a scan row that inherits the configured TETRA mode the switch reaches the front end with the row's resume,
+       after the command's commit point: refused by that request, or where it landed, it finds the TETRA session whole,
+       the row still running. */
+    for (int at_once = 1; at_once >= 0; at_once--) {
+        const char* const how = at_once ? "under a row, at once" : "under a row, where it landed";
+        ext = (int*)calloc(1U, sizeof(int));
+        const int ok = init_tetra_session_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx, ext);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: TETRA session on an inherited row", how);
+        rc |= expect_true(tag, ok && dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_INHERIT) == 0
+                                   && dsd_scan_mode_options(&opts, &state, NULL) == 0 && opts.frame_tetra == 1
+                                   && tetra_session_kept(&state, ext));
+        if (ok) {
+            reset_rx_family_wrap();
+            g_analog_req_result = at_once ? -1 : 0;
+            (void)submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, how);
+            g_analog_req_result = 0;
+            if (!at_once) {
+                DSD_SNPRINTF(tag, sizeof tag, "%s: queued, the TETRA session kept", how);
+                rc |= expect_true(tag, opts.analog_only == 1 && tetra_session_kept(&state, ext));
+                demod_thread_refuses_analog_keeping(0, 0);
+                (void)dsd_app_drain_cmds(&opts, &state);
+            }
+            DSD_SNPRINTF(tag, sizeof tag, "%s: back on TETRA whole, the row still running", how);
+            rc |= expect_true(tag, opts.frame_tetra == 1 && opts.analog_only == 0
+                                       && dsd_scan_mode_configured_preset(&opts, &state) == DSDCFG_MODE_TETRA
+                                       && dsd_scan_mode_configured_view(&state) != NULL
+                                       && tetra_session_kept(&state, ext));
+            dsd_scan_mode_leave(&opts, &state);
+        }
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+
+    /* Onto Analog, then DMR over it: DMR commits at once and leaves TETRA, and the analog switch's refusal puts nothing
+       back. */
+    ext = tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, DSDCFG_MODE_ANALOG, 0, "moved on");
+    rc |= expect_true("moved on: TETRA session", ext != NULL);
+    if (ext) {
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "moved on: DMR over it");
+        rc |= expect_true("moved on: DMR leaves TETRA at once",
+                          opts.frame_dmr == 1 && opts.frame_tetra == 0 && tetra_session_left(&state));
+        demod_thread_refuses_analog_keeping(0, 0);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_true("moved on: DMR stays, TETRA stays left",
+                          dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR && opts.frame_tetra == 0
+                              && tetra_session_left(&state));
+    }
+    state.rtl_ctx = NULL;
+    freeState(&state);
     reset_rx_family_wrap();
     return rc;
 }
@@ -18095,6 +18240,7 @@ main(void) {
     rc |= test_refused_leave_revert_refused_gets_the_leave_policy();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
+    rc |= test_queued_switch_off_tetra_commits_once_taken();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();
     rc |= test_refused_switch_onto_analog_retimes_the_mode();

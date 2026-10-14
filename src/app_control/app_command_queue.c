@@ -4757,6 +4757,8 @@ static dsd_scan_settings g_analog_entry_staged;
 static struct {
     int armed;
     int kind; /* the dsd_analog_demod the switch is onto */
+    /* A mode change off TETRA waits for the switch to settle before it leaves TETRA (ui_commit_mode_change()). */
+    int commit_tetra;
     dsd_scan_settings before;
     dsd_scan_settings after;
     int has_between[2];           /* by dsd_analog_demod */
@@ -4797,6 +4799,53 @@ ui_analog_entry_keep_unpublished(dsd_scan_settings* settings, const dsd_scan_set
     UI_KEEP_UNPUBLISHED(inverted_m17);
     UI_KEEP_UNPUBLISHED(monitor_input_audio);
 #undef UI_KEEP_UNPUBLISHED
+}
+
+/* Whether the settings @p now (with a scan row's scope suspended) are still the ones the armed switch left, but for
+   what moves without a switch of its own: the channel widths, which a width command sets on its own
+   (DSD_APP_CMD_NFM_BANDWIDTH_SET), even in the same drain, and the settings no receive profile carries
+   (ui_analog_entry_keep_unpublished()). Only then does a refusal of the switch put the settings from before it back
+   (ui_revert_analog_entry()). dsd_scan_settings_equal() compares the width of the analog kind the switch left. */
+static int
+ui_analog_entry_unmoved(const dsd_scan_settings* now) {
+    dsd_scan_settings after = g_analog_entry.after;
+    ui_analog_entry_keep_widths(&after, now);
+    ui_analog_entry_keep_unpublished(&after, now, NULL);
+    return dsd_scan_settings_equal(now, &after, 0);
+}
+
+/*
+ * The commit of a mode change (dsd_decode_mode_commit_tetra(): TETRA is left when the settings in force run no TETRA
+ * decoder). A switch from TETRA onto the analog monitor, or between its kinds, stays armed until the front end takes or
+ * refuses its request (ui_arm_analog_entry(), ui_settle_receive_requests()), and a refusal where the request lands
+ * puts the session back on TETRA (ui_revert_analog_entry()), which has to find the TETRA state whole: its network,
+ * call, encryption and codec context, which no setting carries. So while a switch from TETRA is armed with the
+ * settings it left still in force, the commit waits for it to settle (ui_analog_entry_settled()); a command that moved
+ * the settings on from it, onto another mode, commits at once.
+ */
+static void
+ui_commit_mode_change(dsd_opts* opts, dsd_state* state) {
+    if (g_analog_entry.armed && g_analog_entry.before.frame_tetra == 1) {
+        dsd_scan_settings now;
+        dsd_scan_settings_capture(opts, state, &now);
+        if (ui_analog_entry_unmoved(&now)) {
+            g_analog_entry.commit_tetra = 1;
+            return;
+        }
+    }
+    g_analog_entry.commit_tetra = 0;
+    dsd_decode_mode_commit_tetra(opts, state);
+}
+
+/* The armed switch has settled (taken, refused or dropped): nothing can put the settings from before it back any more,
+   so a mode change that waited for it commits now, on the settings it leaves in force (ui_commit_mode_change()). */
+static void
+ui_analog_entry_settled(dsd_opts* opts, dsd_state* state) {
+    g_analog_entry.armed = 0;
+    if (g_analog_entry.commit_tetra) {
+        g_analog_entry.commit_tetra = 0;
+        dsd_decode_mode_commit_tetra(opts, state);
+    }
 }
 
 /* The configured options now run the analog family where they did not (@p was_analog_family), or another analog kind
@@ -5046,13 +5095,8 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     const int scoped = dsd_scan_mode_suspend(opts, state);
     dsd_scan_settings now;
     dsd_scan_settings_capture(opts, state, &now);
-    /* The channel widths are configuration a width command sets on its own (DSD_APP_CMD_NFM_BANDWIDTH_SET), not part of
-       the switch: one set after the switch, even in the same drain, does not mean the settings moved on, and the
-       revert keeps it (dsd_scan_settings_equal() compares the width of the analog kind the switch left). */
-    dsd_scan_settings after = g_analog_entry.after;
-    ui_analog_entry_keep_widths(&after, &now);
-    ui_analog_entry_keep_unpublished(&after, &now, NULL);
-    const int reverted = dsd_scan_settings_equal(&now, &after, 0);
+    /* A width set after the switch does not mean the settings moved on, and the revert keeps it. */
+    const int reverted = ui_analog_entry_unmoved(&now);
     if (reverted) {
         dsd_scan_settings back = *ui_analog_entry_rollback(kept);
         ui_analog_entry_keep_widths(&back, &now);
@@ -5107,6 +5151,8 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     if (refused_at_once) {
         ui_settle_leave_revert_refused_at_once(opts, state, kept);
     }
+    /* A mode change off TETRA that waited for the switch finds the TETRA session back, or the settings moved on. */
+    ui_analog_entry_settled(opts, state);
     return reverted;
 }
 
@@ -5288,9 +5334,9 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     ui_arm_analog_entry(opts, state, was_analog_family, was_kind);
     const int put_back = decode_mode_republish(opts, state, mode) != 0
                          && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL);
-    /* The mode change commits: one that stands leaves TETRA unless it is TETRA, and one put back above finds the TETRA
-       session it left whole. */
-    dsd_decode_mode_commit_tetra(opts, state);
+    /* The mode change commits: one that stands leaves TETRA unless it is TETRA, once a switch the front end has still
+       to take or refuse has settled, and one put back finds the TETRA session it left whole. */
+    ui_commit_mode_change(opts, state);
     if (put_back) {
         return UI_CMD_APPLY_FAILED;
     }
@@ -7143,9 +7189,9 @@ static int g_cfg_row_refusal_reported;
    it is noted for the resume (g_cfg_row_refusal_reported), which then puts back neither the mode the session had
    (ui_revert_analog_entry()) nor the width from before a config that set the one the row runs (issue #578). */
 static void
-ui_cfg_note_refused_row(int radio_rc) {
+ui_cfg_note_refused_row(dsd_opts* opts, dsd_state* state, int radio_rc) {
     if (radio_rc > 0) {
-        g_analog_entry.armed = 0;
+        ui_analog_entry_settled(opts, state);
         g_cfg_row_refusal_reported = 1;
     }
 }
@@ -7232,13 +7278,14 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
     reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, &old_rx);
     /* The apply commits here, past everything above that can put the session back: a [mode] that stands leaves TETRA
-       unless it is TETRA, and one put back (a reopen that failed, a switch onto the monitor refused at once) finds the
-       TETRA session whole (dsd_stage_user_config_to_opts()). */
+       unless it is TETRA, once a switch onto the monitor the front end has still to take or refuse has settled, and
+       one put back (a reopen that failed, a switch onto the monitor refused at once) finds the TETRA session whole
+       (dsd_stage_user_config_to_opts()). */
     if (cfg.has_mode) {
-        dsd_decode_mode_commit_tetra(opts, state);
+        ui_commit_mode_change(opts, state);
     }
 #ifdef USE_RADIO
-    ui_cfg_note_refused_row(radio_rc);
+    ui_cfg_note_refused_row(opts, state, radio_rc);
     if (radio_rc != 0) {
         return UI_CMD_APPLY_FAILED;
     }
@@ -7896,7 +7943,7 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
     svc_monitor_refusal refusal = {0};
     const int outcome = svc_take_monitor_request_outcome(opts, state, &refusal);
     if (outcome == SVC_MONITOR_REQUEST_TAKEN) {
-        g_analog_entry.armed = 0; /* the front end took the switch, or a request made after it */
+        ui_analog_entry_settled(opts, state); /* the front end took the switch, or a request made after it */
         return;
     }
     /* Nothing outstanding, still pending, or superseded before the front end took it: an armed switch stays armed. */
@@ -7921,10 +7968,10 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
             changed = ui_settle_refused_scan_leave(opts, state, &refusal);
         }
     } else if (refusal.scan_leave) {
-        g_analog_entry.armed = 0; /* the front end runs the analog family of the kind the switch was onto */
+        ui_analog_entry_settled(opts, state); /* the front end runs the analog family of the kind the switch was onto */
         changed = ui_settle_refused_scan_leave(opts, state, &refusal);
     } else {
-        g_analog_entry.armed = 0;
+        ui_analog_entry_settled(opts, state);
         const int kept_hz = refusal.kept_width_hz;
         if (dsd_app_analog_width_setting_hz(opts, refusal.kind) == refusal.width_hz && kept_hz != refusal.width_hz) {
             /* The width has not changed again since. */
