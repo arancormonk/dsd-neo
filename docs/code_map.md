@@ -4761,13 +4761,59 @@ Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, re
 first block on its carrier included, identifier reuse, another calling party or its network included, a released,
 renamed-over or aged followed identifier, a released, reused or evicted heard identifier, ageing,
 canonical calls and notices in trunked and direct mode, direct mode short data whose FCS fails and what repeats it,
-an individual call's two parties, speech publication, the receiving carrier), `TETRA_DMO` (the DM-SDU's FCS and
-digest), `TETRA_VOICE_GATE`,
+an individual call's two parties, speech publication, the receiving carrier, what a record change, a MAC header's
+encryption and a reallocation do to the published call, a direct mode call idling out), `TETRA_DMO` (the DM-SDU's FCS
+and digest, an unread DMAC-SYNC's protection, a DMAC-DATA that ends the transmission), `TETRA_VOICE_GATE`,
 `TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, an
 individual call's speech judged by both parties, muted speech that holds no timeslot, the
-derived key stream, the speech starting over at call boundaries, another call identifier, another timeslot and another network, and
-going on across a rename), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`,
-`CORE_ACCESS_CODE`.
+derived key stream, the speech starting over at call boundaries, another call identifier, another timeslot, another
+cell or network and a stop of the heard speech, and going on across a rename, the crypto class speech gives the
+published call), `TETRA_BURST_VERDICT` (the modes a BSCH, an SCH/HU, a DSB and a carrier boundary leave and enter, an
+unread DMAC-SYNC that seals the traffic), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
+
+#### State and its boundaries
+
+What each part of the TETRA decoder state belongs to, what sets it, and what forgets it. A boundary the engine sees (a
+manual tune, a source or input switch, a scan step, the no-carrier pass) and one the state machine makes (a tune or
+return completed, a hand-over) forget the carrier (`tetra_forget_carrier()`); a boundary only the air tells (a BSCH of
+another cell or network, a DSB on a trunked carrier, a trunked burst on a direct mode one) is handled where it is
+decoded, so the decoder forgets the same whatever moved the receiver.
+
+| State (in `tetra_state_t` unless named) | Belongs to | Set by | Forgotten at |
+|---|---|---|---|
+| Direct mode (`dmo`, `dmo_comm_type`) | the carrier | a DSB (`tetra_dmo_apply_sync()`) | a CRC-passed BSCH of a trunked system code or uplink SCH/HU (`tetra_dmo_leave()`), a carrier boundary |
+| DM colour code (`dmo_dcc_valid`, `dmo_dcc_seed`, `dmo_since_sync`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED, or of a fragmented DM-SDS | its end (`tetra_dmo_transmission_over()`: DM-TX CEASED, DM-RELEASE or DM-DISCONNECT in a DMAC-SYNC or DMAC-DATA, the call idle `TETRA_CALL_DMO_IDLE_S`), DM-2-C, a DMAC-SYNC with no source address, 200 DNBs without a DMAC-SYNC, leaving direct mode, a carrier boundary |
+| Direct mode protection (`dmo_crypt`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED; an unread DMAC-SYNC whose SCH/S is encrypted seals it | as the colour code (UNKNOWN, sealed) |
+| Direct mode call (`calls.dmo`) and its canonical call | the channel's call | DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, a DM-2-C DMAC-SYNC | its end PDUs, idling out, leaving direct mode, a carrier boundary (the engine ends the canonical call) |
+| Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
+| Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell | SYSINFO, addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`) |
+| TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`) | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
+| Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
+| Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
+| Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network |
+| Carrier evidence (`confirm`) | the carrier | CRC-passed blocks | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
+| Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return; a decode-mode change disowns its tune in flight |
+| Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; the heard speech stopping; another cell; a carrier boundary |
+| Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst's training, a CRC-passed SCH/HU | the next of them |
+
+What each decoded event does:
+
+| Event | Leaves | Enters / sets |
+|---|---|---|
+| CRC-passed BSCH, same cell | direct mode | the TDMA clock |
+| CRC-passed BSCH, another cell | direct mode; the cell, the clock, the partial TM-SDUs, the timeslot speech context, the speech in progress, the followed call's proof | the new cell's identity and clock |
+| CRC-passed BSCH, another network | as another cell, and the call records with the follow of their identifiers, the SDS reassembly | the new network |
+| BSCH that fails | nothing | runs the clock to its slot |
+| CRC-passed SCH/HU (uplink) | direct mode | the carrier's polarity |
+| DSB (CRC-passed SCH/S, DMO system code) | the trunked carrier's TM-SDUs, timeslot speech context and followed call's proof (`tetra_enter_dmo()`), the TDMA clock | direct mode; with its SCH/H, the colour code, protection and call its message sets; without it, an encrypted SCH/S seals the traffic |
+| DMAC-DATA (CRC-passed DNB block) | at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT the transmission's colour code and protection | the call it names; its own security class is its message's only |
+| SYSINFO of another location area | the call records | the new area |
+| Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress, the timeslot speech context, direct mode with its colour code, protection and call | trunked mode, block 1 behind AACH half 1 |
+| Decode-mode change off TETRA (committed) | the whole TETRA state (`tetra_state_reset()`), its tune in flight disowned | nothing |
+
+A DSB whose SCH/S fails is not told from noise on its training sequence and changes nothing; sealing at every such
+burst would mute clear direct mode calls at every false sync. The uplink has no TDMA clock, so its speech has no
+timeslot: one transmission's speech ends where the heard speech stops (`TETRA_CALL_SPEECH_END_S`).
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 
