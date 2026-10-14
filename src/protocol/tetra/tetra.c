@@ -1001,4 +1001,7 @@ tetra_forget_carrier(dsd_state* state) {
     tetra_voice_reset(state);
     tetra_dmo_forget_carrier(state);
     tetra_calls_forget_carrier(state);
+    /* The next carrier is trunked until its own DSB says otherwise: the frame sync finds block 1 of its first normal
+     * burst behind AACH half 1 on the downlink, as tetra_frame_leave() would have told it (the uplink is its own). */
+    state->tetra_sync.block1_follows_training = 0;
 }

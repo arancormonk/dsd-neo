@@ -530,7 +530,8 @@ test_control_burst_leaves_direct_mode(void) {
 
 /* Direct mode is the carrier's: a carrier boundary leaves it, and the next carrier is trunked until its own DSB says
  * otherwise. An uplink session, whose carriers have no BSCH, decodes the next carrier's NUBs at once; a downlink one
- * the next carrier's NDBs, with the network's colour code. */
+ * the next carrier's NDBs, with the network's colour code, and the frame sync looks for the first one's block 1 behind
+ * AACH half 1 again. */
 static void
 test_carrier_boundary_leaves_direct_mode(void) {
     for (int uplink = 0; uplink < 2; uplink++) {
@@ -550,7 +551,9 @@ test_carrier_boundary_leaves_direct_mode(void) {
         const uint8_t zeros[BLOCK_DIBITS] = {0};
 
         enter_direct_mode(&s);
+        s.state->tetra_sync.block1_follows_training = 1; /* as the burst decoder leaves it after a DSB */
         tetra_forget_carrier(s.state);
+        assert(s.state->tetra_sync.block1_follows_training == 0);
         verdict = uplink ? uplink_nts2_burst(&s, zeros, block2) : nts2_burst(&s, zeros, block2);
         assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
         assert(s.state->tetra_pub.mode == (uplink ? DSD_TETRA_MODE_TMO_UPLINK : DSD_TETRA_MODE_TMO_DOWNLINK));

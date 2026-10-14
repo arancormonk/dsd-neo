@@ -4567,7 +4567,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   code, seed and protection (`tetra_dmo_forget_carrier()`, `tetra_calls_forget_carrier()`), so the next carrier's normal
   bursts are not descrambled with them and its calls and speech are not classified by them, and direct mode itself: the
   next carrier is trunked until its own DSB says otherwise, since no DNB decodes before that DSB gives its colour code
-  anyway, and an uplink session, whose carriers have no BSCH, decodes its NUBs at once. A tune completed inside a burst (a grant in its first block) leaves the rest of that
+  anyway, and an uplink session, whose carriers have no BSCH, decodes its NUBs at once; the frame sync is told to look
+  for block 1 behind AACH half 1 again (`tetra_sync.block1_follows_training`). A tune completed inside a burst (a grant in its first block) leaves the rest of that
   burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops parsing the block and the
   normal-burst decoder skips the second half, and nothing the burst decoded counts for the new carrier, though the
   burst's verdict still does. Nothing here frees or replaces the state extension: the MAC holds its `tetra_state_t`
