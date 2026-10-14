@@ -736,58 +736,129 @@ test_foundation_key_type_migration() {
     expect("foundation rc4 type converts", model.get(2).value("encKeyType").toString() == "rc4");
 }
 
-} // namespace
-
 QSettings
 prefs_file() {
     return QSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"),
                      QStringLiteral("dsd-neo-app"));
 }
 
-QVariant
-sample_for(const QMetaProperty& prop) {
-    switch (prop.metaType().id()) {
-        case QMetaType::Bool: return true;
-        case QMetaType::Int: return 1;
-        case QMetaType::Double: return 5.5;
-        case QMetaType::QString: return QStringLiteral("sample");
-        default: return QVariant();
-    }
+void
+clear_prefs_file() {
+    QSettings s = prefs_file();
+    s.clear();
+    s.sync();
 }
+
+struct PinnedKey {
+    const char* property;
+    QVariant value; // differs from the default and passes the setter's sanitiser
+    const char* key;
+};
 
 void
 test_prefs_key_table(void) {
-    {
-        QSettings s = prefs_file();
-        s.clear();
-        s.sync();
-    }
+    clear_prefs_file();
     QStringList names;
     for (const AppPrefs::KeySpec& k : AppPrefs::keyTable()) {
         names.append(QString::fromLatin1(k.name));
     }
     expect("key table has no duplicate names", names.removeDuplicates() == 0);
 
+    const PinnedKey pinned[] = {
+        {"appearance", 2, "ui/appearance"},
+        {"metricUnits", true, "ui/metricUnits"},
+        {"onboardingDone", true, "ui/onboardingDone"},
+        {"notificationExplained", true, "ui/notificationExplained"},
+        {"backgroundListening", false, "listen/background"},
+        {"screenMode", 2, "listen/screenMode"},
+        {"screenDelaySec", 60, "listen/screenDelaySec"},
+        {"autoStartOnAttach", true, "listen/autoStartOnAttach"},
+        {"lastStartedKind", QStringLiteral("scan"), "listen/lastStartedKind"},
+        {"lastStartedUid", QStringLiteral("uid-1"), "listen/lastStartedUid"},
+        {"skipEncrypted", false, "decode/skipEncrypted"},
+        {"persistTgLockouts", false, "decode/persistTgLockouts"},
+        {"hangtimeSec", 5.5, "decode/hangtimeSec"},
+        {"autoPpm", true, "decode/autoPpm"},
+        {"extraArgs", QStringLiteral("-x"), "decode/extraArgs"},
+        {"gainDb", 41, "tuner/gainDb"},
+        {"ppm", 7, "tuner/ppm"},
+        {"bandwidthKhz", 96, "tuner/bandwidthKhz"},
+        {"biasTee", true, "tuner/biasTee"},
+        {"rrUsername", QStringLiteral("user"), "rr/username"},
+        {"rrAppKey", QStringLiteral("appkey"), "rr/appKey"},
+        {"exploreSourceType", QStringLiteral("usb"), "explore/sourceType"},
+        {"exploreHost", QStringLiteral("host"), "explore/host"},
+        {"explorePort", 4321, "explore/port"},
+        {"exploreFreqMhz", QStringLiteral("851.5"), "explore/freqMhz"},
+    };
+    QStringList covered;
+    int writable = 0;
+    {
+        AppPrefs probe;
+        const QMetaObject* mo = probe.metaObject();
+        for (int i = mo->propertyOffset(); i < mo->propertyCount(); ++i) {
+            writable += mo->property(i).isWritable() ? 1 : 0;
+        }
+    }
+    expect("every writable property is pinned", writable == int(sizeof(pinned) / sizeof(pinned[0])));
+    for (const PinnedKey& pin : pinned) {
+        clear_prefs_file();
+        {
+            AppPrefs prefs;
+            expect(pin.property, prefs.setProperty(pin.property, pin.value));
+        }
+        QSettings f = prefs_file();
+        f.sync();
+        expect(qPrintable(
+                   QStringLiteral("%1 lands exactly on %2").arg(QLatin1String(pin.property), QLatin1String(pin.key))),
+               f.allKeys() == QStringList{QString::fromLatin1(pin.key)});
+        covered.append(QString::fromLatin1(pin.key));
+    }
+    // The location fix writes four keys together.
+    clear_prefs_file();
     {
         AppPrefs prefs;
-        const QMetaObject* mo = prefs.metaObject();
-        for (int i = mo->propertyOffset(); i < mo->propertyCount(); ++i) {
-            const QMetaProperty prop = mo->property(i);
-            if (!prop.isWritable()) {
-                continue;
-            }
-            const QVariant v = sample_for(prop);
-            expect(prop.name(), v.isValid() && prop.write(&prefs, v));
+        prefs.setLocationFix(1.5, 2.5, QDateTime::currentMSecsSinceEpoch(), 7.0);
+    }
+    {
+        QSettings f = prefs_file();
+        f.sync();
+        QStringList got = f.allKeys();
+        got.sort();
+        const QStringList want = {QStringLiteral("location/lastAccuracyM"), QStringLiteral("location/lastFixAt"),
+                                  QStringLiteral("location/lastLat"), QStringLiteral("location/lastLon")};
+        expect("setLocationFix writes exactly the four location keys", got == want);
+        covered.append(want);
+    }
+    // The legacy keep-awake switch is read, never written: pin it through the migration.
+    clear_prefs_file();
+    {
+        QSettings f = prefs_file();
+        f.setValue(QStringLiteral("listen/keepAwake"), true);
+        f.sync();
+        AppPrefs prefs;
+        expect("legacy listen/keepAwake drives the migrated screen mode",
+               prefs.screenMode() == AppPrefs::ScreenAlwaysOn);
+        covered.append(QStringLiteral("listen/keepAwake"));
+    }
+    QStringList sortedCovered = covered;
+    QStringList sortedNames = names;
+    sortedCovered.sort();
+    sortedNames.sort();
+    expect("pinned keys cover exactly the key table", sortedCovered == sortedNames);
+
+    // Leave the state the replace checks below expect: one value per portable key.
+    clear_prefs_file();
+    {
+        AppPrefs prefs;
+        for (const PinnedKey& pin : pinned) {
+            prefs.setProperty(pin.property, pin.value);
         }
         prefs.setLocationFix(1.5, 2.5, QDateTime::currentMSecsSinceEpoch(), 7.0);
     }
     QSettings file = prefs_file();
     file.sync();
-    const QStringList written = file.allKeys();
-    expect("every property wrote something", written.size() > 15);
-    for (const QString& key : written) {
-        expect(qPrintable(QStringLiteral("persisted key %1 is in the table").arg(key)), names.contains(key));
-    }
+    expect("the pinned writes persist all but the legacy key", file.allKeys().size() == names.size() - 1);
 
     QStringList local;
     for (const AppPrefs::KeySpec& k : AppPrefs::keyTable()) {
@@ -816,8 +887,8 @@ test_prefs_key_table(void) {
     for (auto it = before.constBegin(); it != before.constEnd(); ++it) {
         expect("readPortable key is portable", portable.contains(it.key()));
     }
-    expect("readPortable reads stored values", before.value(QStringLiteral("rr/username")).toString() == "sample"
-                                                   && before.value(QStringLiteral("tuner/gainDb")).toInt() == 1);
+    expect("readPortable reads stored values", before.value(QStringLiteral("rr/username")).toString() == "user"
+                                                   && before.value(QStringLiteral("tuner/gainDb")).toInt() == 41);
     expect("readPortable omits absent keys", !before.contains(QStringLiteral("listen/keepAwake")));
 
     file.setValue(QStringLiteral("ui/onboardingDone"), true);
@@ -852,6 +923,7 @@ test_prefs_key_table(void) {
     expect("empty replace clears portable keys",
            AppPrefs::replacePortable(QVariantMap()) && AppPrefs::readPortable().isEmpty());
 }
+} // namespace
 
 int
 main(int argc, char** argv) {
