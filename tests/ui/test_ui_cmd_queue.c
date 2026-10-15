@@ -1982,6 +1982,98 @@ test_skip_command_reader_stress(void) {
  * lockout and the return-to-CC do -- through the tuning hooks, past
  * p25_sm_release() -- on both of its legs. Either one left the SM judging later
  * grants as preemptions of the assignment it was still following. */
+/*
+ * Issue #703: an operator move during a startup control-channel hunt restarts its window on the operator's frequency.
+ * The generic frequency entry (a radio build's command) does so through its carrier boundary; a trunked channel cycle
+ * skips the boundary and does so itself, for P25 under -ft (which owns no recovery yet, so the cycle runs unguarded) and
+ * for DMR under -fs.
+ */
+static int
+test_operator_retune_rearms_cold_start(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = 1;
+    opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_provoice = 0;
+    opts.p25_prefer_candidates = 0;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "site.csv"); // a startup hunt walks a channel map
+    state.lcn_freq_count = 1;
+    state.lcn_freq_roll = 0;
+    state.trunk_lcn_freq[0] = 851012500L;
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    sm->cold_start_hunt = 1;
+    sm->state = P25_SM_ON_CC;
+    sm->t_cold_start_armed_m = 1.0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+
+    double before = 0.0;
+#ifdef USE_RADIO // the frequency entry is a radio build's command
+    before = dsd_decode_now_mono_s();
+    rc |= expect_int("frequency entry queued", dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("the -ft entry stays a generic tune", g_cc_tune_calls, 0);
+    rc |= expect_int("the entry tuned the radio", g_io_control_tune_calls, 1);
+    rc |= expect_int("the entry marks the P25 startup hunt to park", sm->cold_start_park_pending, 1);
+    rc |= expect_true("the entry restarts the P25 window", sm->t_cold_start_armed_m >= before);
+
+    // A raw P25 sync proves no control channel: with no recovery admitted to time a selection out, the entry stays an
+    // operator move rather than a P25 control-channel selection.
+    sm->cold_start_park_pending = 0;
+    sm->t_cold_start_armed_m = 1.0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    before = dsd_decode_now_mono_s();
+    rc |= expect_int("entry after a raw P25 sync queued", dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("entry after a raw P25 sync drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("a raw P25 sync selects no control channel", g_cc_tune_calls, 0);
+    rc |= expect_int("the entry after a raw P25 sync marks the hunt to park", sm->cold_start_park_pending, 1);
+    rc |= expect_true("and restarts its window", sm->t_cold_start_armed_m >= before);
+    rc |= expect_true("and declares no control channel", state.p25_cc_freq != 853000000L);
+    state.lastsynctype = DSD_SYNC_NONE;
+
+    sm->cold_start_park_pending = 0;
+    sm->t_cold_start_armed_m = 1.0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+#endif
+    before = dsd_decode_now_mono_s();
+    rc |= expect_int("channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("the cycle tuned the next row", g_io_control_tune_calls, 1);
+    rc |= expect_int("the trunked cycle marks the P25 startup hunt to park", sm->cold_start_park_pending, 1);
+    rc |= expect_true("the trunked cycle restarts the P25 window", sm->t_cold_start_armed_m >= before);
+
+    opts.frame_p25p1 = opts.frame_p25p2 = 0; // -fs
+    p25_sm_init_ctx(sm, &opts, &state);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_sm_init_ctx(dmr, &opts, &state);
+    dmr->cold_start_hunt = 1;
+    dmr->state = DMR_SM_HUNTING;
+    dmr->cold_start_armed_m = 1.0;
+    state.lcn_freq_roll = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    before = dsd_decode_now_mono_s();
+    rc |= expect_int("DMR channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("DMR channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("the trunked cycle marks the DMR startup hunt to park", dmr->cold_start_park_pending, 1);
+    rc |= expect_true("the trunked cycle restarts the DMR window", dmr->cold_start_armed_m >= before);
+
+    p25_sm_init_ctx(sm, NULL, NULL);
+    dmr_sm_init_ctx(dmr, NULL, NULL);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    freeState(&state);
+    return rc;
+}
+
 static int
 test_channel_cycle_hands_p25_sm_back_to_cc(void) {
     int rc = 0;
@@ -18495,6 +18587,7 @@ main(void) {
     rc |= test_skip_hands_p25_sm_back_to_cc();
     rc |= test_skip_command_reader_stress();
     rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
+    rc |= test_operator_retune_rearms_cold_start();
     rc |= test_manual_scan_steps_clear_received_tone();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();

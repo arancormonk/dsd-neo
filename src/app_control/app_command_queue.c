@@ -56,6 +56,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -1808,6 +1809,13 @@ manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_enable != 1 || (opts->frame_p25p1 != 1 && opts->frame_p25p2 != 1)) {
         return 0;
     }
+    /* Before any protocol is proven, -ft's startup control-channel hunt owns the receiver and no P25 recovery would
+       time a selected control channel out: the entry is an operator move, which restarts the hunt's window on the new
+       frequency without declaring it the control channel (issue #703). */
+    if (!dsd_trunk_p25_recovery_allowed(opts, state) && dsd_trunk_p25_cold_start_presumed(opts, state)
+        && dsd_state_trunk_cold_start_eligible(opts, state)) {
+        return 0;
+    }
     if (cc_has_active_p25_context(opts, state)) {
         return 1;
     }
@@ -3171,6 +3179,24 @@ apply_skip_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p25_l
     return apply_user_block_transition_locked(opts, state, p25_live, "Skip return-to-CC", "user-skip");
 }
 
+/* A trunked channel or candidate cycle moves the receiver without a carrier boundary, so it restarts a startup
+   control-channel window itself (issue #703); with trunking off the carrier boundary did. Before any protocol owns the
+   trunk the cycle runs unguarded (p25_live is 0), so the P25 note takes the tick guard here. */
+static void
+cycle_rearms_cold_start_window(dsd_opts* opts, dsd_state* state, int p25_live) {
+    if (opts->trunk_enable != 1) {
+        return;
+    }
+    if (!p25_live) {
+        p25_sm_tick_guard_enter();
+    }
+    p25_sm_cold_start_note_retune(p25_sm_get_ctx(), opts, state);
+    if (!p25_live) {
+        p25_sm_tick_guard_leave();
+    }
+    dmr_sm_cold_start_note_retune(dmr_sm_get_ctx(), opts, state);
+}
+
 static int
 try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     long cand = 0;
@@ -3191,6 +3217,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     }
     hand_tetra_sm_over(opts, state);
+    cycle_rearms_cold_start_window(opts, state, p25_live);
     LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);
@@ -3246,6 +3273,7 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     }
     hand_tetra_sm_over(opts, state);
+    cycle_rearms_cold_start_window(opts, state, p25_live);
     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
     state->lcn_freq_roll = next + 1;
     dsd_scan_row_keys_apply(state, next);

@@ -6493,6 +6493,28 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
     )
     add_executable(
+        dsd-neo_test_engine_cold_start_hunt
+        engine/test_engine_cold_start_hunt.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_cold_start_hunt
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_cold_start_hunt
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_COLD_START_HUNT
+        COMMAND dsd-neo_test_engine_cold_start_hunt
+    )
+    add_executable(
         dsd-neo_test_engine_scan_timing
         engine/test_engine_scan_timing.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c

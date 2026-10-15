@@ -2634,6 +2634,11 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_engine_forget_carrier_decoding(opts, state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
     state->carrier_seq++;
+    if (take_guard || guard_held) {
+        /* An operator move restarts a startup control-channel window on the new carrier (issue #703). */
+        p25_sm_cold_start_note_retune(p25_sm_get_ctx(), opts, state);
+        dmr_sm_cold_start_note_retune(dmr_sm_get_ctx(), opts, state);
+    }
     if (take_guard) {
         p25_sm_tick_guard_leave();
     }
@@ -2959,6 +2964,18 @@ live_scanner_emit_start_log_if_enabled(const dsd_opts* opts, dsd_state* state) {
     write_event_to_log_file(opts, state, 0, 0, event_string);
 }
 
+/* The startup control-channel hunt is the decoder thread's (issue #703): ticked here, under the P25 SM tick guard, on
+   every pass of the outer loop and between frames, never from the watchdog. DMR's tick gates itself, and parks a
+   startup hunt it may no longer run. */
+static void
+dsd_engine_cold_start_tick_locked(dsd_opts* opts, dsd_state* state) {
+    if (opts->trunk_scan_enabled == 1) {
+        return;
+    }
+    p25_sm_cold_start_tick_locked(p25_sm_get_ctx(), opts, state);
+    dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
+}
+
 static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
@@ -2986,6 +3003,12 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         /* A TETRA carrier syncs on every burst, so this loop may never hand back to the outer one: the TETRA state
          * machine settles its tune and runs its hangtime here too, withheld frames included. */
         dsd_engine_tetra_trunk_tick_locked(opts, state);
+        /* So may a stream of syncs that never validate: a startup control-channel hunt runs between frames too, until
+           an owner is named and nothing is armed or hunting (issue #703). */
+        if (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN
+            || p25_sm_cold_start_active(p25_sm_get_ctx()) || dmr_sm_cold_start_active(dmr_sm_get_ctx())) {
+            dsd_engine_cold_start_tick_locked(opts, state);
+        }
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
         if (dsd_engine_signal_search_should_yield(opts, state)) {
@@ -3133,9 +3156,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         }
         p25_sm_try_tick(opts, state);
         if (opts->trunk_scan_enabled != 1 && p25_sm_tick_guard_try_enter()) {
-            if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
-                dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
-            }
+            dsd_engine_cold_start_tick_locked(opts, state);
             dsd_engine_tetra_trunk_tick_locked(opts, state);
             p25_sm_tick_guard_leave();
         }
