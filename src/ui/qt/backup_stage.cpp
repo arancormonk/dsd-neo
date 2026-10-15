@@ -20,11 +20,14 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
+#include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <algorithm>
 #include <dsd-neo/runtime/log.h>
 #include <qflags.h>
 #include <utility>
@@ -57,7 +60,8 @@ pending_dir(const DataRoot& root) {
 class Stager {
   public:
     Stager(const DataRoot& root, const ParseResult& parsed, const QByteArray& archive, const QString& dir)
-        : m_root(root), m_parsed(parsed), m_archive(archive), m_dir(dir) {}
+        : m_root(root), m_parsed(parsed), m_archive(archive), m_dir(dir), m_stores(parsed.stores),
+          m_summary(parsed.summary) {}
 
     BackupError
     run() {
@@ -66,7 +70,7 @@ class Stager {
             error = writeFiles();
         }
         if (error == BackupError::None) {
-            error = validateLibrary();
+            error = dropUnreadableRows();
         }
         if (error == BackupError::None && !(writeStores() && writePrefs() && writeAvoids() && writeManifest())) {
             error = fail(BackupError::Io, QStringLiteral("a staged file could not be written"));
@@ -77,6 +81,12 @@ class Stager {
     const QString&
     detail() const {
         return m_detail;
+    }
+
+    /** The staged backup's summary: the parse's, less the library rows left out. */
+    const Summary&
+    summary() const {
+        return m_summary;
     }
 
   private:
@@ -130,27 +140,126 @@ class Stager {
         return BackupError::None;
     }
 
-    /** The library's own dry run on each staged library file: a restored library never holds one it cannot use. */
+    /** A store path (root + "/" + archive path) as its staged copy. */
+    QString
+    stagedPath(const QString& path) const {
+        return m_dir + QStringLiteral("/files/") + path.mid(m_root.path().size() + 1);
+    }
+
+    /** Whether the row's staged file passes the library's own dry run (ImportedFilesModel::validate()). */
+    bool
+    readable(const QJsonObject& row) const {
+        int accepted = 0, skipped = 0;
+        return ImportedFilesModel::validate(stagedPath(row.value(QLatin1String("path")).toString()),
+                                            row.value(QLatin1String("type")).toString(), &accepted, &skipped);
+    }
+
+    /**
+     * The library's own dry run on each staged library file, so a restored library never holds one it cannot use. A
+     * row whose file does not load here (a channel map whose companions this phone refuses, say) is left out, the way
+     * an export leaves out what it cannot carry: its staged files go, every typed reference to them is cleared, and
+     * the summary lists it. Dropping files can only fail other rows, so the rest are checked again until none fails.
+     */
     BackupError
-    validateLibrary() {
-        for (const auto& value : m_parsed.stores.value(QLatin1String(kImportedFilesStore))) {
-            const QJsonObject row = value.toObject();
-            const QString path = row.value(QLatin1String("path")).toString();
-            const QString staged = m_dir + QStringLiteral("/files/") + path.mid(m_root.path().size() + 1);
-            int accepted = 0, skipped = 0;
-            if (!ImportedFilesModel::validate(staged, row.value(QLatin1String("type")).toString(), &accepted,
-                                              &skipped)) {
-                return fail(BackupError::Damaged, QStringLiteral("a library file does not parse as its type"));
+    dropUnreadableRows() {
+        const QString library = QLatin1String(kImportedFilesStore);
+        for (;;) {
+            QJsonArray kept;
+            QList<QJsonObject> failed;
+            for (const auto& value : m_stores.value(library)) {
+                const QJsonObject row = value.toObject();
+                if (readable(row)) {
+                    kept.append(value);
+                } else {
+                    failed.append(row);
+                }
+            }
+            if (failed.isEmpty()) {
+                break;
+            }
+            m_stores.insert(library, kept);
+            if (!leaveOut(failed, kept)) {
+                return fail(BackupError::Io, QStringLiteral("a staged file could not be removed"));
             }
         }
+        m_summary.libraryFiles = static_cast<int>(m_stores.value(library).size());
         return BackupError::None;
+    }
+
+    /** Leave out the @p failed rows' files (those no @p kept row still needs) and clear what names them. */
+    bool
+    leaveOut(const QList<QJsonObject>& failed, const QJsonArray& kept) {
+        const auto rootOf = [](const QJsonObject& row) { return row.value(QLatin1String("bundleRoot")).toString(); };
+        QSet<QString> keptFiles;
+        QStringList keptRoots;
+        for (const auto& value : kept) {
+            const QJsonObject row = value.toObject();
+            keptFiles.insert(row.value(QLatin1String("path")).toString());
+            if (!rootOf(row).isEmpty()) {
+                keptRoots.append(rootOf(row) + QLatin1Char('/'));
+            }
+        }
+        const auto needed = [&](const QString& path) {
+            return keptFiles.contains(path) || std::any_of(keptRoots.cbegin(), keptRoots.cend(), [&](const QString& r) {
+                       return path.startsWith(r);
+                   });
+        };
+        QSet<QString> goneFiles, goneRoots;
+        for (const QJsonObject& row : failed) {
+            notInclude(QObject::tr("%1: couldn't be read on this phone").arg(row_label(row)));
+            QStringList candidates{row.value(QLatin1String("path")).toString()};
+            const QString root = rootOf(row);
+            if (!root.isEmpty()) {
+                goneRoots.insert(root);
+                for (const ArchiveFile& file : m_parsed.files) {
+                    if (m_root.at(file.path).startsWith(root + QLatin1Char('/'))) {
+                        candidates.append(m_root.at(file.path));
+                    }
+                }
+            }
+            for (const QString& path : candidates) {
+                if (!needed(path)) {
+                    goneFiles.insert(path);
+                }
+            }
+        }
+        QSet<QString> goneEntries;
+        for (const QString& path : goneFiles) {
+            if (!m_root.removeFile(stagedPath(path))) {
+                return false;
+            }
+            goneEntries.insert(QStringLiteral("files/") + path.mid(m_root.path().size() + 1));
+        }
+        QJsonArray listed;
+        for (const auto& entry : m_files) {
+            if (!goneEntries.contains(entry.toObject().value(QLatin1String("path")).toString())) {
+                listed.append(entry);
+            }
+        }
+        m_files = listed;
+        for (auto it = m_stores.begin(); it != m_stores.end(); ++it) {
+            *it = map_typed_path_values(it.key(), *it, [&](const TypedPathValue& value) {
+                const bool gone = value.field.kind == PathKind::BundleRoot ? goneRoots.contains(value.value)
+                                                                           : goneFiles.contains(value.value);
+                return gone ? QString() : value.value;
+            });
+        }
+        return true;
+    }
+
+    void
+    notInclude(const QString& line) {
+        // Bounded like the manifest's list.
+        if (m_summary.notIncluded.size() < kMaxRowsPerStore && !m_summary.notIncluded.contains(line)) {
+            m_summary.notIncluded.append(line);
+        }
     }
 
     bool
     writeStores() {
         for (const QString& store : backup_store_names()) {
-            const auto it = m_parsed.stores.constFind(store);
-            if (it == m_parsed.stores.constEnd()) {
+            const auto it = m_stores.constFind(store);
+            if (it == m_stores.constEnd()) {
                 continue;
             }
             QByteArray bytes = QJsonDocument(*it).toJson(QJsonDocument::Compact);
@@ -180,10 +289,9 @@ class Stager {
 
     bool
     writeManifest() {
-        const QJsonObject manifest{
-            {QStringLiteral("stagingVersion"), kStagingVersion},
-            {QStringLiteral("files"), m_files},
-            {QStringLiteral("summary"), QJsonObject::fromVariantMap(summary_to_map(m_parsed.summary))}};
+        const QJsonObject manifest{{QStringLiteral("stagingVersion"), kStagingVersion},
+                                   {QStringLiteral("files"), m_files},
+                                   {QStringLiteral("summary"), QJsonObject::fromVariantMap(summary_to_map(m_summary))}};
         return m_root.writeFile(m_dir + QLatin1Char('/') + QLatin1String(kManifestName),
                                 QJsonDocument(manifest).toJson(QJsonDocument::Compact));
     }
@@ -192,6 +300,8 @@ class Stager {
     const ParseResult& m_parsed;
     const QByteArray& m_archive;
     QString m_dir;
+    QMap<QString, QJsonArray> m_stores; // the parse's stores, less the rows left out
+    Summary m_summary;
     QJsonArray m_files;
     QString m_detail;
 };
@@ -218,7 +328,7 @@ staging_dir_for_job(const QString& jobId) {
 
 bool
 stage_restore(const QString& dataRoot, const ParseResult& parsed, const QByteArray& archive, const QString& stagingDir,
-              QString* error) {
+              QString* error, Summary* summary) {
     const DataRoot root(dataRoot);
     BackupError result = parsed.error;
     QString detail = QStringLiteral("the backup did not parse");
@@ -230,6 +340,9 @@ stage_restore(const QString& dataRoot, const ParseResult& parsed, const QByteArr
             Stager stager(root, parsed, archive, stagingDir);
             result = stager.run();
             detail = stager.detail();
+            if (result == BackupError::None && summary != nullptr) {
+                *summary = stager.summary();
+            }
             if (result != BackupError::None) {
                 root.removeTree(stagingDir);
             }

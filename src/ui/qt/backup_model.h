@@ -76,7 +76,8 @@ class BackupModel : public QObject {
      * is acknowledged): `kind` ("" | "applied" | "failed" | "deferred" | "stuck"),
      * `message` (a sentence, may be empty), and the backup's counts: `systems`, `scanLists`, `libraryFiles`,
      * `profiles`, `ranges`, `avoids`, `recordingsToChoose`, `systemsWithExtraArgs` (ints), `appExtraArgs` (bool),
-     * `createdAt` (seconds since the epoch) and `app` (plain text).
+     * `createdAt` (seconds since the epoch), `app` (plain text) and `notIncluded` (plain lines: what the export could
+     * not carry and the library files this phone could not read).
      */
     Q_PROPERTY(QVariantMap startupOutcome READ startupOutcome NOTIFY startupOutcomeChanged)
     Q_PROPERTY(int minPassphraseLength READ minPassphraseLength CONSTANT)
@@ -209,7 +210,8 @@ class BackupModel : public QObject {
     void exportFinished(const QVariantMap& result);
     /**
      * `{ok, error, summary}`; `summary` holds `createdAt`, `app`, `systems`, `scanLists`, `libraryFiles`, `profiles`,
-     * `ranges`, `avoids`, `recordingsToChoose`, `systemsWithExtraArgs`, `appExtraArgs` and `notIncluded`.
+     * `ranges`, `avoids`, `recordingsToChoose`, `systemsWithExtraArgs`, `appExtraArgs` and `notIncluded`, as staged:
+     * a library row this phone cannot read is left out of the counts and listed in `notIncluded`.
      */
     void inspectFinished(const QVariantMap& result);
 

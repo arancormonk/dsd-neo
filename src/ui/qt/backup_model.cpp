@@ -167,6 +167,7 @@ outcome_map(const QString& kind, const QString& message, const QVariantMap& summ
     map.insert(QStringLiteral("appExtraArgs"), summary.value(QStringLiteral("appExtraArgs")).toBool());
     map.insert(QStringLiteral("createdAt"), summary.value(QStringLiteral("createdAt")).toLongLong());
     map.insert(QStringLiteral("app"), summary.value(QStringLiteral("app")).toString());
+    map.insert(QStringLiteral("notIncluded"), summary.value(QStringLiteral("notIncluded")).toStringList());
     return map;
 }
 
@@ -260,7 +261,7 @@ class Inspection {
         }
         wipe(m_archive);
         m_work.passphrase->wipe();
-        return result_map(error, error.isEmpty() ? backup::summary_to_map(m_parsed.summary) : QVariantMap());
+        return result_map(error, error.isEmpty() ? backup::summary_to_map(m_staged) : QVariantMap());
     }
 
   private:
@@ -318,7 +319,8 @@ class Inspection {
     QString
     stage() {
         QString error;
-        if (backup::stage_restore(m_work.root, m_parsed, m_archive, m_work.stagingDir, &error)) {
+        // The staging's summary: the parse's, less any library row this phone cannot read.
+        if (backup::stage_restore(m_work.root, m_parsed, m_archive, m_work.stagingDir, &error, &m_staged)) {
             return QString();
         }
         return error.isEmpty() ? error_name(BackupError::Io) : error;
@@ -327,6 +329,7 @@ class Inspection {
     InspectWork m_work;
     QByteArray m_archive;
     backup::ParseResult m_parsed;
+    backup::Summary m_staged;
 };
 
 } // namespace

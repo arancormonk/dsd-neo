@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import "Util.js" as Util
 
 // Issue #580: what the restore at this start did (applied, not applied, still
 // waiting, or stuck), at the top of Home until dismissed. The actions are the
@@ -30,6 +31,8 @@ UiPanel {
                 lines.push(qsTr("1 replay system needs its recording chosen again."));
             else if (replays > 1)
                 lines.push(qsTr("%1 replay systems need their recording chosen again.").arg(replays));
+            if ((outcome.notIncluded || []).length)
+                lines.push(Util.notIncludedText(outcome.notIncluded));
             return lines.join("\n");
         }
         if (kind === "failed")

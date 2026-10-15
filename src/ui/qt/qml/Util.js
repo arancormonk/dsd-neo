@@ -557,3 +557,15 @@ function decodeFlagIsAnalog(flags) {
     var flag = String(flags || "").trim().split(/\s+/).join(" ")
     return flag === "-fA" || flag === "-fM"
 }
+
+// Issue #580: the first few of the lines a backup leaves out (what its export could
+// not carry, and library files the restoring phone could not read), for the export
+// result, the restore confirmation and the Home card alike.
+function notIncludedText(items) {
+    var lines = items || []
+    var shown = lines.slice(0, 5)
+    var text = qsTr("Not included:") + "\n" + shown.join("\n")
+    if (lines.length > shown.length)
+        text += "\n" + qsTr("and %1 more").arg(lines.length - shown.length)
+    return text
+}

@@ -1423,6 +1423,47 @@ test_pending_at_start(const QString& document) {
            QFile::remove(journal) && dsd_qt::backup::discard_pending() && !dsd_qt::backup::pending_exists());
 }
 
+/**
+ * A library file this phone cannot read leaves its row out of the restore, not the whole backup: the inspection counts
+ * and lists it for the confirmation, and so does the outcome of the start that applies it.
+ */
+void
+test_unreadable_library_row(FakeHost& host, const QString& scratch) {
+    wipe_configuration();
+    build_configuration(host);
+    QString targets, name;
+    for (const auto& value : dsd_qt::json_store_load_array("imported_files.json")) {
+        if (value.toObject().value("type") == "trunkTargets") {
+            targets = value.toObject().value("path").toString();
+            name = value.toObject().value("name").toString();
+        }
+    }
+    expect("break the target list on disk", !targets.isEmpty() && write_file(targets, "not,a,target,list\n"));
+    const QString document = scratch + "/unreadable.dsdbak";
+    expect("the export carries it as it is", export_to(host, document).value("ok").toBool());
+    wipe_configuration();
+    const QString line = name + ": couldn't be read on this phone";
+    {
+        BackupModel model(&host, {});
+        Results results(model);
+        const QVariantMap inspected = inspect(model, results, document);
+        const QVariantMap summary = inspected.value("summary").toMap();
+        expect("a backup with an unreadable library file still inspects", inspected.value("ok").toBool());
+        expect("the inspection leaves the row out and says so",
+               summary.value("libraryFiles").toInt() == 3
+                   && summary.value("notIncluded").toStringList().contains(line));
+        expect("the restore commits", model.commitRestore().value("ok").toBool());
+    }
+    const ApplyResult applied = dsd_qt::backup::apply_pending_restore({});
+    expect("the rest applies", applied.outcome == ApplyOutcome::Applied);
+    BackupModel model(&host, applied);
+    const QVariantMap outcome = model.startupOutcome();
+    expect("the start that applies it lists it too",
+           outcome.value("libraryFiles").toInt() == 3 && outcome.value("notIncluded").toStringList().contains(line));
+    model.acknowledgeStartupOutcome();
+    dsd_app_signal_search_store_close();
+}
+
 /** Properties (type, name, notify), invokables and signals (return type and signature) a meta-object adds. */
 QStringList
 qml_surface(const QMetaObject& meta) {
@@ -1571,6 +1612,7 @@ main(int argc, char** argv) {
         quietly([&]() { test_base_host_abort(scratch.path()); });
         quietly([&]() { test_startup_outcome(host, full); });
         quietly([&]() { test_pending_at_start(full); });
+        quietly([&]() { test_unreadable_library_row(host, scratch.path()); });
         quietly([&]() { test_recorder_parity(); });
         quietly([&]() { test_sweep(host); });
         quietly([&]() { test_small_things(host); });
@@ -1578,7 +1620,7 @@ main(int argc, char** argv) {
     }
     dsd_app_signal_search_store_close();
 #ifndef BACKUP_MODEL_TEST_SANITIZED
-    expect("the one apply logs once", g_appliedLines == 1);
+    expect("each of the two applies logs once", g_appliedLines == 2);
 #endif
 
     remove_tree(dataDir);

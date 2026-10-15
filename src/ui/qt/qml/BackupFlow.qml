@@ -4,6 +4,7 @@
 import QtQuick
 import QtQuick.Dialogs
 import QtQuick.Window
+import "Util.js" as Util
 
 // Issue #580: export this phone's setup to a passphrase-encrypted file, and
 // restore one. Main owns the single instance both Settings screens use.
@@ -275,11 +276,7 @@ Item {
     function savedText(items) {
         if (!items || !items.length)
             return qsTr("Backup saved.");
-        var shown = items.slice(0, 5);
-        var text = qsTr("Backup saved. Not included:") + "\n" + shown.join("\n");
-        if (items.length > shown.length)
-            text += "\n" + qsTr("and %1 more").arg(items.length - shown.length);
-        return text;
+        return qsTr("Backup saved.") + " " + Util.notIncludedText(items);
     }
 
     // ---- restore ----
@@ -381,6 +378,9 @@ Item {
         var parts = [question];
         if (notes.length)
             parts.push(notes.join(" "));
+        // What the export could not carry, and library files this phone cannot read.
+        if ((summary.notIncluded || []).length)
+            parts.push(Util.notIncludedText(summary.notIncluded));
         parts.push(qsTr("DSD-neo will close; open it again to finish."));
         return parts.join("\n\n");
     }

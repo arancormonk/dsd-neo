@@ -863,8 +863,64 @@ with_file_bytes(const QByteArray& archive, const QString& path, const QByteArray
     return out;
 }
 
+/** The staged store @p name in @p dir. */
+QJsonArray
+staged_store(const QString& dir, const char* name) {
+    return QJsonDocument::fromJson(read_file(dir + "/stores/" + QLatin1String(name))).array();
+}
+
+/**
+ * A library row whose file this phone cannot read is left out, not the whole backup: the row and its bundle's files
+ * are not staged, what named them is cleared, the summary lists it, and the rest restores.
+ */
 void
-test_staging_validates_library_files(const Backup& b) {
+test_unreadable_row_left_out(TestHost& host, const Backup& b, const QByteArray& archive) {
+    put_back(Tree());
+    const auto broken = dsd_qt::backup::backup_parse_archive(archive, root());
+    expect("the broken archive parses", broken.error == BackupError::None);
+    QString name;
+    for (const auto& value : broken.stores.value("imported_files.json")) {
+        if (value.toObject().value("path") == b.targets) {
+            name = value.toObject().value("name").toString();
+        }
+    }
+    const QString dir = dsd_qt::backup::staging_dir_for_job("validate");
+    QString error;
+    dsd_qt::backup::Summary staged;
+    expect("a library file its type cannot parse leaves the backup restorable",
+           dsd_qt::backup::stage_restore(root(), broken, archive, dir, &error, &staged) && error.isEmpty());
+    const QJsonArray library = staged_store(dir, "imported_files.json");
+    expect("the unreadable row is left out", library.size() == broken.stores.value("imported_files.json").size() - 1
+                                                 && !QJsonDocument(library).toJson().contains(b.targets.toUtf8()));
+    const QJsonObject manifest = read_json_object(dir + "/manifest.json");
+    bool listed = false;
+    for (const auto& value : manifest.value("files").toArray()) {
+        listed = listed || value.toObject().value("path").toString().contains(relative(b.targetsRoot));
+    }
+    expect("its bundle's files are neither staged nor listed",
+           !listed && !QFileInfo::exists(dir + "/files/" + relative(b.targetsRoot) + "/targets.csv"));
+    expect("what named it is cleared",
+           staged_store(dir, "scan_lists.json").at(1).toObject().value("targetsCsvPath") == "");
+    const QString line = name + ": couldn't be read on this phone";
+    expect("the summary counts and lists it", !name.isEmpty() && staged.libraryFiles == broken.summary.libraryFiles - 1
+                                                  && staged.notIncluded.contains(line)
+                                                  && staged.systems == broken.summary.systems);
+    expect("the staged manifest carries that summary",
+           manifest.value("summary").toObject().toVariantMap()
+               == QJsonObject::fromVariantMap(dsd_qt::backup::summary_to_map(staged)).toVariantMap());
+    expect("the rest restores", dsd_qt::backup::promote_staging(dir) && dsd_qt::backup::commit_pending()
+                                    && apply().outcome == ApplyOutcome::Applied);
+    expect(
+        "the restore's result lists it too",
+        dsd_qt::backup::read_result_file().value("summary").toMap().value("notIncluded").toStringList().contains(line));
+    dsd_qt::ImportedFilesModel restored(&host);
+    expect("the library loads every other row",
+           restored.rowCount() == library.size() && restored.takePrunedPaths().isEmpty());
+    expect("no file of the left-out bundle was restored", !QFileInfo::exists(b.targetsRoot));
+}
+
+void
+test_staging_validates_library_files(TestHost& host, const Backup& b) {
     QTemporaryDir scratch;
     const QByteArray notTargets = "not,a,target,list\n";
     const QByteArray emptyGroups = "TG,Mode,Name\n";
@@ -879,15 +935,8 @@ test_staging_validates_library_files(const Backup& b) {
                && accepted == 0);
 
     const QString dir = dsd_qt::backup::staging_dir_for_job("validate");
-    const auto broken =
-        dsd_qt::backup::backup_parse_archive(with_file_bytes(b.archive, relative(b.targets), notTargets), root());
-    expect("the broken archive parses", broken.error == BackupError::None);
     QString error;
-    expect("a library file its type cannot parse is refused",
-           !dsd_qt::backup::stage_restore(root(), broken, with_file_bytes(b.archive, relative(b.targets), notTargets),
-                                          dir, &error)
-               && error == "Damaged");
-    expect("a refused stage leaves nothing", !QFileInfo::exists(dir));
+    test_unreadable_row_left_out(host, b, with_file_bytes(b.archive, relative(b.targets), notTargets));
 
     const QByteArray emptyArchive = with_file_bytes(b.archive, relative(b.groups), emptyGroups);
     const auto empty = dsd_qt::backup::backup_parse_archive(emptyArchive, root());
@@ -1997,7 +2046,7 @@ main(int argc, char** argv) {
         const Backup backup = make_backup(host);
         const Old old = make_old(host, backup, external.path());
         test_staging_layout(backup);
-        test_staging_validates_library_files(backup);
+        test_staging_validates_library_files(host, backup);
         test_staging_takes_the_callers_root(backup);
         test_promote_commit_discard(backup, old);
         const Tree reference = test_clean_apply(host, backup, old);
