@@ -330,7 +330,8 @@ Item {
     }
 
     function submitUnlock() {
-        if (step !== "unlock")
+        // No passphrase opens a file that is itself the problem.
+        if (step !== "unlock" || fileProblem)
             return;
         unlockError.text = "";
         if (!unlockField.text.length) {
@@ -648,7 +649,7 @@ Item {
             label: qsTr("Passphrase")
             echoMode: showUnlockPassphrase.checked ? TextInput.Normal : TextInput.Password
             inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase | (showUnlockPassphrase.checked ? Qt.ImhNone : Qt.ImhHiddenText)
-            enabled: flow.step === "unlock"
+            enabled: flow.step === "unlock" && !flow.fileProblem
             onTextChanged: error = ""
             onAccepted: flow.submitUnlock()
         }
@@ -656,7 +657,7 @@ Item {
             id: showUnlockPassphrase
             objectName: "backupShowUnlockPassphrase"
             text: qsTr("Show passphrase")
-            enabled: flow.step === "unlock"
+            enabled: flow.step === "unlock" && !flow.fileProblem
         }
         Text {
             id: unlockError

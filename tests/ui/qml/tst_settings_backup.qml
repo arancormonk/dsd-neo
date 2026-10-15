@@ -624,6 +624,7 @@ Item {
             compare(error.textFormat, Text.PlainText);
             if (data.field)
                 compare(field.text, "");
+            var toggle = part("backupShowUnlockPassphrase");
             if (data.file) {
                 // No passphrase opens this file: Unlock goes, another file is the way on.
                 verify(!button.visible && !button.enabled);
@@ -631,10 +632,20 @@ Item {
                 compare(choose.text, "Choose another file");
                 compare(buttons(sheet), ["Choose another file", "Cancel"]);
                 tryCompare(choose, "activeFocus", true);
+                // Nor can the passphrase be typed, revealed or submitted (the keyboard's Enter, or its IME action).
+                verify(!field.enabled && !toggle.enabled);
+                field.accepted();
+                flow.submitUnlock();
+                compare(calls("inspectRestore").length, 1);
+                compare(flow.step, "unlock");
+                compare(error.text, data.text);
+                compare(field.error, "");
+                verify(choose.visible && !button.visible);
             } else {
                 // A retry can work: Unlock stays, back in the field.
                 verify(button.visible && button.enabled);
                 verify(!choose.visible);
+                verify(field.enabled && toggle.enabled);
                 tryCompare(field.input, "activeFocus", true);
             }
             verify(backup.flowActive);
@@ -668,6 +679,7 @@ Item {
             compare(part("backupUnlockError").text, "");
             verify(part("backupUnlockButton").visible && part("backupUnlockButton").enabled);
             verify(!part("backupChooseFileButton").visible);
+            verify(part("backupUnlockField").enabled && part("backupShowUnlockPassphrase").enabled);
             part("backupUnlockField").text = pass;
             part("backupUnlockButton").activate();
             var inspect = calls("inspectRestore");
