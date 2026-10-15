@@ -42,7 +42,7 @@
 #define DSD_BACKUP_SALT_BYTES        16U
 #define DSD_BACKUP_NONCE_BYTES       12U
 #define DSD_BACKUP_KEY_BYTES         32U
-#define DSD_BACKUP_MAX_PAYLOAD_BYTES (64U * 1024U * 1024U)
+#define DSD_BACKUP_MAX_PAYLOAD_BYTES 67108864U /* 64 MiB, written out so no narrow product widens */
 
 #ifdef __cplusplus
 extern "C" {

@@ -5,15 +5,15 @@
 
 #include <dsd-neo/crypto/backup_seal.h>
 
-#include <openssl/opensslconf.h>
-
-#ifdef OPENSSL_NO_SCRYPT
-#error "dsd-neo backups need an OpenSSL build with scrypt (OPENSSL_NO_SCRYPT is set)"
-#endif
-
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#include <openssl/types.h>
+
+/* <openssl/evp.h> declares EVP_PBE_scrypt() and, through its configuration header, says when a build left it out. */
+#ifdef OPENSSL_NO_SCRYPT
+#error "dsd-neo backups need an OpenSSL build with scrypt (OPENSSL_NO_SCRYPT is set)"
+#endif
 
 #include <limits.h>
 #include <stddef.h>
@@ -48,7 +48,7 @@
 /* Limits of the raw scrypt entry point: N up to 2^20 and RFC 7914's r * p < 2^30. */
 #define DSD_BACKUP_SCRYPT_LOG2_N_MAX 20U
 #define DSD_BACKUP_SCRYPT_PR_MAX     ((1U << 30) - 1U)
-#define DSD_BACKUP_SCRYPT_MEM_SLACK  (1024U * 1024U)
+#define DSD_BACKUP_SCRYPT_MEM_SLACK  ((uint64_t)1024U * 1024U)
 
 /* The GCM calls take int lengths. */
 #if DSD_BACKUP_MAX_PAYLOAD_BYTES > INT_MAX

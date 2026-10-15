@@ -5,7 +5,6 @@
 
 #include <dsd-neo/crypto/backup_seal.h>
 
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +12,7 @@
 
 #include "dsd-neo/core/safe_api.h"
 
-#define TEST_ONE_MIB          (1024U * 1024U)
+#define TEST_ONE_MIB          ((size_t)1024U * 1024U)
 #define TEST_GOLDEN_PAYLOAD   "DSD-neo backup envelope v1 golden"
 #define TEST_GOLDEN_PAYLOAD_N (sizeof(TEST_GOLDEN_PAYLOAD) - 1U)
 #define TEST_GOLDEN_SEALED_N  (DSD_BACKUP_HEADER_BYTES + TEST_GOLDEN_PAYLOAD_N + DSD_BACKUP_TAG_BYTES)
