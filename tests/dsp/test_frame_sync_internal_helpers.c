@@ -44,8 +44,9 @@ reset(dsd_opts* opts, dsd_state* state) {
 
 static void
 test_tetra_soft_history_capture(void) {
+    /* The history outlives the call as the state does: the state keeps its address. */
     static dsd_state state;
-    float history[16];
+    static float history[16];
     float captured[5] = {0};
     DSD_MEMSET(&state, 0, sizeof(state));
     for (int i = 0; i < 16; i++) {
@@ -59,7 +60,7 @@ test_tetra_soft_history_capture(void) {
     assert(dsd_frame_sync_test_capture_tetra_soft(&state, captured, 5, 3) == 1);
     /* Eight-symbol window is history[10..15,0..1]; payload is its first five. */
     for (int i = 0; i < 5; i++) {
-        assert(captured[i] == (float)(110 + i));
+        assert(fabsf(captured[i] - (float)(110 + i)) < 1e-6F);
     }
 
     state.symbol_history_count = 7;
