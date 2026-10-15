@@ -732,8 +732,7 @@ at configure time as well as in `tools/check_arch_rules.sh`.
 targets list, goes further and dry-runs every file the list names, a channel
 map's own companions included. One call checks each file once: rows naming the
 same channel map or key list share its inspection and its dry run, with the same
-results and the same first error (`APP_CONTROL_TRUNK_SCAN_VALIDATE` counts them
-through `src/app_control/trunk_scan_document_internal.h`).
+results and the same first error.
 
 The Qt/Android monitor labels the active target with its saved-system name or frequency-entry name
 (falling back to the frequency), alongside its ordinal/count and hold state. Internal entry UIDs are not displayed.

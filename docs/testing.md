@@ -2294,6 +2294,15 @@ Clear the `DSD_REQUIRE_*` flags alongside the `DSD_ENABLE_*` ones. Against a
 cached build tree, configure otherwise stops with
 `DSD_REQUIRE_RTLSDR=ON requires DSD_ENABLE_RTLSDR=ON.`
 
+Module-private test probes compile only with `DSD_NEO_TEST_HOOKS`, so production
+builds carry neither the probes nor the counting behind them. A test that needs
+one compiles the module's source into its own executable with that define. For
+example, `APP_CONTROL_TRUNK_SCAN_VALIDATE` builds in
+`src/app_control/trunk_scan_document.cpp`, whose
+`trunk_scan_document_internal.h` counts the channel maps one
+`dsd_app_trunk_scan_validate_bundle()` call inspects and the files it dry-runs,
+so the test can show that rows naming the same file share one check.
+
 ### Decode time in unit tests
 
 Decode decisions and decoded-output stamps read the decode clock (`<dsd-neo/runtime/decode_clock.h>`), never the
