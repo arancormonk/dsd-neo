@@ -8,7 +8,6 @@
  * enter the decoder as confident costs (tetra_hard_bits_to_soft()).
  */
 
-#include <assert.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <stdint.h>
@@ -59,7 +58,11 @@ round_trip(int punct_id, int type2_len, int type3_len, uint32_t seed) {
     uint8_t decoded[MAX_TYPE2_BITS];
     const int mother_len = type2_len * 4;
 
-    assert(type2_len <= MAX_TYPE2_BITS);
+    /* A type-2 block holds at least the four tail bits, and the buffers bound both lengths. */
+    if (type2_len < 4 || type2_len > MAX_TYPE2_BITS || type3_len < 0 || type3_len > MAX_MOTHER_BITS) {
+        DSD_FPRINTF(stderr, "punct %d: lengths %d/%d out of range\n", punct_id, type2_len, type3_len);
+        return 1;
+    }
     fill_bits(info, type2_len, seed);
     /* The last four type-2 bits are the tail that returns the encoder to state 0. */
     for (int i = type2_len - 4; i < type2_len; i++) {
