@@ -36,8 +36,10 @@
  * Only the state changes the screens rely on are mimicked:
  * - `restoreAllowed` is the model's rule, no job running and no session on the host (setHost());
  * - a job sets `busy`, and its result clears it before the signal;
- * - a successful commit leaves `restorePending`, as a committed restore does;
- * - a discard that leaves no restore to apply clears it, and a deferred card with it;
+ * - a successful commit leaves `restorePending` and `restoreCancellable`, as a committed restore does;
+ * - a discard that leaves no restore to apply clears both, and a deferred card with them;
+ * - setting `restorePending` sets `restoreCancellable` alike (a waiting restore whose apply has not started); a case
+ *   that needs one part-way through sets `restoreCancellable` false after it;
  * - acknowledging clears the startup outcome.
  */
 class BackupRecorder : public QObject {
@@ -46,6 +48,7 @@ class BackupRecorder : public QObject {
     Q_PROPERTY(bool flowActive READ flowActive NOTIFY flowActiveChanged)
     Q_PROPERTY(bool restoreAllowed READ restoreAllowed NOTIFY restoreAllowedChanged)
     Q_PROPERTY(bool restorePending READ restorePending NOTIFY restorePendingChanged)
+    Q_PROPERTY(bool restoreCancellable READ restoreCancellable NOTIFY restoreCancellableChanged)
     Q_PROPERTY(QVariantMap startupOutcome READ startupOutcome NOTIFY startupOutcomeChanged)
     Q_PROPERTY(int minPassphraseLength READ minPassphraseLength CONSTANT)
     Q_PROPERTY(QVariantMap lastResult READ lastResult NOTIFY lastResultChanged)
@@ -71,6 +74,11 @@ class BackupRecorder : public QObject {
     bool
     restorePending() const {
         return m_restore_pending;
+    }
+
+    bool
+    restoreCancellable() const {
+        return m_restore_cancellable;
     }
 
     QVariantMap
@@ -196,8 +204,9 @@ class BackupRecorder : public QObject {
     }
 
     /**
-     * @brief Set one property by name, announcing a change: busy, flowActive, restorePending, startupOutcome or
-     * lastResult. False for any other name; restoreAllowed follows busy and the host's session.
+     * @brief Set one property by name, announcing a change: busy, flowActive, restorePending (restoreCancellable
+     * alike), restoreCancellable, startupOutcome or lastResult. False for any other name; restoreAllowed follows busy
+     * and the host's session.
      */
     bool
     setState(const QString& key, const QVariant& value) {
@@ -210,7 +219,21 @@ class BackupRecorder : public QObject {
             return true;
         }
         if (key == QStringLiteral("restorePending")) {
-            assign(m_restore_pending, value.toBool(), &BackupRecorder::restorePendingChanged);
+            // Both settle before either is announced, as the model's do.
+            const bool pending_changed = m_restore_pending != value.toBool();
+            const bool cancellable_changed = m_restore_cancellable != value.toBool();
+            m_restore_pending = value.toBool();
+            m_restore_cancellable = value.toBool();
+            if (pending_changed) {
+                Q_EMIT restorePendingChanged();
+            }
+            if (cancellable_changed) {
+                Q_EMIT restoreCancellableChanged();
+            }
+            return true;
+        }
+        if (key == QStringLiteral("restoreCancellable")) {
+            assign(m_restore_cancellable, value.toBool(), &BackupRecorder::restoreCancellableChanged);
             return true;
         }
         if (key == QStringLiteral("startupOutcome")) {
@@ -253,6 +276,7 @@ class BackupRecorder : public QObject {
     void flowActiveChanged();
     void restoreAllowedChanged();
     void restorePendingChanged();
+    void restoreCancellableChanged();
     void startupOutcomeChanged();
     void lastResultChanged();
     void exportPrepared(const QVariantMap& result);
@@ -306,6 +330,7 @@ class BackupRecorder : public QObject {
     /* The last restoreAllowed() announced, so a change is signalled once. */
     bool m_restore_allowed = true;
     bool m_restore_pending = false;
+    bool m_restore_cancellable = false;
     QPointer<dsd_qt::DecoderHost> m_host;
     QMetaObject::Connection m_session;
     QVariantMap m_startup_outcome;

@@ -37,11 +37,15 @@ UiPanel {
         }
         if (kind === "failed")
             return failedReason(outcome.message);
-        // The storage reason already says to reopen DSD-neo.
+        // One whose apply has started can only be finished; the storage reason
+        // already says to reopen DSD-neo.
         if (kind === "deferred")
-            return String(outcome.message || "").trim() === qsTranslate("BackupApply", "Not enough free storage to restore. Free up storage and reopen DSD-neo") ? "" : qsTr("Reopen DSD-neo to try again.");
+            return partWay ? Util.restorePartWayText() : String(outcome.message || "").trim() === qsTranslate("BackupApply", "Not enough free storage to restore. Free up storage and reopen DSD-neo") ? "" : qsTr("Reopen DSD-neo to try again.");
         return "";
     }
+    // A deferred restore is offered for discarding only while it can be.
+    readonly property bool partWay: backup.restorePending && !backup.restoreCancellable
+    readonly property bool discardable: kind === "deferred" && backup.restoreCancellable
     readonly property string speech: [title, detail].filter(function (text) {
         return text.length > 0;
     }).join(" ")
@@ -84,7 +88,7 @@ UiPanel {
         var result = backup.discardDeferredRestore();
         if (result.discarded)
             return;
-        actionError = result.error === "RestoreInProgress" ? qsTr("This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it.") : qsTr("Couldn't discard the restore. DSD-neo tries it again the next time it opens.");
+        actionError = result.error === "RestoreInProgress" ? Util.restorePartWayText() : qsTr("Couldn't discard the restore. DSD-neo tries it again the next time it opens.");
     }
     function dismiss() {
         actionError = "";
@@ -143,14 +147,14 @@ UiPanel {
             spacing: 8
             OutlineButton {
                 objectName: "backupResultDiscard"
-                visible: card.kind === "deferred"
+                visible: card.discardable
                 width: (parent.width - 8) / 2
                 text: qsTr("Discard restore")
                 onClicked: card.discard()
             }
             OutlineButton {
                 objectName: "backupResultDismiss"
-                width: card.kind === "deferred" ? (parent.width - 8) / 2 : parent.width
+                width: card.discardable ? (parent.width - 8) / 2 : parent.width
                 text: qsTr("Dismiss")
                 onClicked: card.dismiss()
             }

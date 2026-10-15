@@ -348,6 +348,7 @@ BackupModel::BackupModel(DecoderHost* host, const backup::ApplyResult& startup, 
     m_startupOutcome = startup_outcome(startup);
     // The startup apply has run: a stage still committed is one it deferred or could not finish.
     m_restorePending = backup::pending_committed();
+    m_restoreCancellable = m_restorePending && !backup::pending_apply_started();
     m_restoreAllowed = restoreAllowed();
     if (m_host != nullptr) {
         connect(m_host, &DecoderHost::sessionStateChanged, this, &BackupModel::updateRestoreAllowed);
@@ -730,14 +731,18 @@ BackupModel::updateRestoreAllowed() {
 
 void
 BackupModel::syncRestorePending() {
-    setRestorePending(backup::pending_committed());
-}
-
-void
-BackupModel::setRestorePending(bool pending) {
-    if (pending != m_restorePending) {
-        m_restorePending = pending;
+    const bool pending = backup::pending_committed();
+    const bool cancellable = pending && !backup::pending_apply_started();
+    const bool pendingChanged = pending != m_restorePending;
+    const bool cancellableChanged = cancellable != m_restoreCancellable;
+    m_restorePending = pending;
+    m_restoreCancellable = cancellable;
+    // Both settle before either is announced, so a binding on one sees the other's new value.
+    if (pendingChanged) {
         Q_EMIT restorePendingChanged();
+    }
+    if (cancellableChanged) {
+        Q_EMIT restoreCancellableChanged();
     }
 }
 

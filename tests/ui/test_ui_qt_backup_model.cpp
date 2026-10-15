@@ -259,7 +259,8 @@ class StayingHost : public dsd_qt::DecoderHost {
 /** Every result the model reports. */
 struct Results {
     QList<QVariantMap> prepared, finished, inspected;
-    int busyChanges = 0, allowedChanges = 0, pendingChanges = 0, outcomeChanges = 0, flowChanges = 0;
+    int busyChanges = 0, allowedChanges = 0, pendingChanges = 0, cancellableChanges = 0, outcomeChanges = 0,
+        flowChanges = 0;
 
     explicit Results(BackupModel& model) {
         QObject::connect(&model, &BackupModel::exportPrepared, [this](const QVariantMap& r) { prepared.append(r); });
@@ -268,6 +269,7 @@ struct Results {
         QObject::connect(&model, &BackupModel::busyChanged, [this]() { ++busyChanges; });
         QObject::connect(&model, &BackupModel::restoreAllowedChanged, [this]() { ++allowedChanges; });
         QObject::connect(&model, &BackupModel::restorePendingChanged, [this]() { ++pendingChanges; });
+        QObject::connect(&model, &BackupModel::restoreCancellableChanged, [this]() { ++cancellableChanges; });
         QObject::connect(&model, &BackupModel::startupOutcomeChanged, [this]() { ++outcomeChanges; });
         QObject::connect(&model, &BackupModel::flowActiveChanged, [this]() { ++flowChanges; });
     }
@@ -689,6 +691,8 @@ test_round_trip(FakeHost& host, const QString& document, const Captured& before)
                                                 && commit.value("error").toString().isEmpty());
         expect("quitApp is called once", host.quitCalls == 1);
         expect("the restore is confirmed and waits", dsd_qt::backup::pending_committed() && model.restorePending());
+        expect("a confirmed restore can be cancelled until it applies",
+               model.restoreCancellable() && results.cancellableChanges == 1);
     }
     // The next start.
     const ApplyResult applied = dsd_qt::backup::apply_pending_restore({});
@@ -1392,15 +1396,21 @@ commit_document(const QString& document) {
 void
 test_pending_at_start(const QString& document) {
     StayingHost host;
+    {
+        BackupModel model(&host, {});
+        expect("nothing waits, so nothing can be cancelled", !model.restorePending() && !model.restoreCancellable());
+    }
     commit_document(document);
     {
         BackupModel model(&host, {});
         Results results(model);
         expect("a restore an earlier start left committed waits from the start", model.restorePending());
+        expect("and can be cancelled", model.restoreCancellable());
         const QVariantMap discarded = model.discardRestore();
         expect("discarding it clears it", discarded.value("ok").toBool() && discarded.value("discarded").toBool()
                                               && !model.restorePending() && results.pendingChanges == 1
                                               && !dsd_qt::backup::pending_exists());
+        expect("and nothing is left to cancel", !model.restoreCancellable() && results.cancellableChanges == 1);
     }
 
     // The apply got as far as a complete journal, then stopped (stuck, or deferred on resuming it).
@@ -1411,6 +1421,7 @@ test_pending_at_start(const QString& document) {
         BackupModel model(&host, {});
         Results results(model);
         expect("an apply part-way through waits", model.restorePending());
+        expect("an apply part-way through is not offered for cancelling", !model.restoreCancellable());
         const QVariantMap refused = model.discardRestore();
         expect("an apply part-way through cannot be discarded, and says so",
                !refused.value("ok").toBool() && !refused.value("discarded").toBool()
@@ -1418,6 +1429,8 @@ test_pending_at_start(const QString& document) {
                    && results.pendingChanges == 0 && dsd_qt::backup::pending_committed());
         expect("its deferred card discards nothing either",
                model.discardDeferredRestore().value("error") == "RestoreInProgress" && model.restorePending());
+        expect("still not cancellable, and nothing announced",
+               !model.restoreCancellable() && results.cancellableChanges == 0);
     }
     expect("clean up",
            QFile::remove(journal) && dsd_qt::backup::discard_pending() && !dsd_qt::backup::pending_exists());

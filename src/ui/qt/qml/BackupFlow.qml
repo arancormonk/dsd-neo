@@ -73,10 +73,11 @@ Item {
             setNotice(discardRefusedText(result.error), true);
     }
 
-    // Shared with the Home card's "Discard restore".
+    // Settings offers "Cancel restore" only while backup.restoreCancellable, but
+    // the apply can start between that and the tap.
     function discardRefusedText(name) {
         if (name === "RestoreInProgress")
-            return qsTr("This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it.");
+            return Util.restorePartWayText();
         return qsTr("Couldn't cancel the restore. It still finishes when DSD-neo opens again.");
     }
 

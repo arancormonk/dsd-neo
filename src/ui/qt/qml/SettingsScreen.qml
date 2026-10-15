@@ -698,10 +698,11 @@ Item {
                         bottomPadding: 10
                         spacing: 10
 
+                        // Once its apply has started, only the next start can finish it.
                         Text {
                             objectName: "settingsBackupPendingNotice"
                             width: parent.width
-                            text: qsTr("Restore is ready. Close DSD-neo and open it again to finish.")
+                            text: backup.restoreCancellable ? qsTr("Restore is ready. Close DSD-neo and open it again to finish.") : Util.restorePartWayText()
                             wrapMode: Text.Wrap
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(13)
@@ -712,6 +713,7 @@ Item {
 
                         OutlineButton {
                             objectName: "settingsBackupCancelRestore"
+                            visible: backup.restoreCancellable
                             width: parent.width
                             text: qsTr("Cancel restore")
                             onClicked: screen.cancelRestoreRequested()

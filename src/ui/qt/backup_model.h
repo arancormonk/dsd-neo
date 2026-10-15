@@ -73,6 +73,12 @@ class BackupModel : public QObject {
      */
     Q_PROPERTY(bool restorePending READ restorePending NOTIFY restorePendingChanged)
     /**
+     * The waiting restore can still be cancelled: it is pending and its apply has not started (no complete journal).
+     * Once the apply has started only the next start can finish or undo it, so no screen offers to cancel it then.
+     * Follows the stage on disk like restorePending.
+     */
+    Q_PROPERTY(bool restoreCancellable READ restoreCancellable NOTIFY restoreCancellableChanged)
+    /**
      * What a restore applied at start did (this start's apply, else the result file an earlier start left until it
      * is acknowledged): `kind` ("" | "applied" | "failed" | "deferred" | "stuck"),
      * `message` (a sentence, may be empty), and the backup's counts: `systems`, `scanLists`, `libraryFiles`,
@@ -113,6 +119,11 @@ class BackupModel : public QObject {
     bool
     restorePending() const {
         return m_restorePending;
+    }
+
+    bool
+    restoreCancellable() const {
+        return m_restoreCancellable;
     }
 
     QVariantMap
@@ -203,6 +214,7 @@ class BackupModel : public QObject {
     void flowActiveChanged();
     void restoreAllowedChanged();
     void restorePendingChanged();
+    void restoreCancellableChanged();
     void startupOutcomeChanged();
     void lastResultChanged();
     /** `{ok, error, summary, notIncluded}`; `summary` as summary_to_map(), `notIncluded` a list of plain lines. */
@@ -252,8 +264,7 @@ class BackupModel : public QObject {
     void refuse(void (BackupModel::*signal)(const QVariantMap&), const QString& action, const QString& error);
     void dropExportFile();
     void updateRestoreAllowed();
-    void setRestorePending(bool pending);
-    /** restorePending from the stage on disk. */
+    /** restorePending and restoreCancellable from the stage on disk. */
     void syncRestorePending();
     void setStartupOutcome(const QVariantMap& outcome);
 
@@ -276,6 +287,7 @@ class BackupModel : public QObject {
     bool m_flowActive = false;
     bool m_restoreAllowed = false;
     bool m_restorePending = false;
+    bool m_restoreCancellable = false;
     bool m_quitting = false;
     QVariantMap m_startupOutcome;
     QVariantMap m_lastResult;

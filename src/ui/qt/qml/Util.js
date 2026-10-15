@@ -569,3 +569,10 @@ function notIncludedText(items) {
         text += "\n" + qsTr("and %1 more").arg(lines.length - shown.length)
     return text
 }
+
+// Issue #580: a waiting restore whose apply has started (backup.restoreCancellable
+// false), which only the next start can finish or undo. Settings, the Home card
+// and a refused cancel all say it in these words.
+function restorePartWayText() {
+    return qsTr("This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it.")
+}

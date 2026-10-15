@@ -754,7 +754,25 @@ Item {
         }
 
         function test_restore_part_way_through_cannot_be_cancelled() {
+            // Its apply has started: only the next start can finish it, so nothing offers to cancel it.
             verify(testContext.setBackup("startupOutcome", {kind: "stuck", message: "Restore couldn't finish. Free up storage and reopen DSD-neo"}));
+            verify(testContext.setBackup("restorePending", true));
+            verify(testContext.setBackup("restoreCancellable", false));
+            var line = findChild(settings, "settingsBackupPendingNotice");
+            tryCompare(line, "visible", true);
+            compare(line.text, "This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it.");
+            compare(line.color, Ui.Theme.alert);
+            verify(!findChild(settings, "settingsBackupCancelRestore").visible);
+            verify(buttons(settings).indexOf("Cancel restore") < 0);
+            verify(!findChild(settings, "settingsBackupRestoreRow").enabled);
+            // Once it can be cancelled again (a later start rolled it back), the way out returns.
+            verify(testContext.setBackup("restoreCancellable", true));
+            compare(line.text, "Restore is ready. Close DSD-neo and open it again to finish.");
+            verify(findChild(settings, "settingsBackupCancelRestore").visible);
+        }
+
+        function test_cancel_refused_once_the_apply_started() {
+            // Offered while it could be cancelled, refused because the apply started since.
             verify(testContext.setBackup("restorePending", true));
             testContext.setBackupReply("discardRestore", {ok: false, discarded: false, error: "RestoreInProgress"});
             findChild(settings, "settingsBackupCancelRestore").activate();
@@ -924,8 +942,9 @@ Item {
                 {tag: "applied, no recordings", outcome: Object.assign({kind: "applied", message: "", recordingsToChoose: 0}, counts), title: "Backup restored", lines: [], lacks: "replay system", problem: false, actions: ["Dismiss"]},
                 {tag: "applied, left out", outcome: Object.assign({kind: "applied", message: "", recordingsToChoose: 0, notIncluded: ["Targets.csv: couldn't be read on this phone"]}, counts), title: "Backup restored", lines: ["Not included:\nTargets.csv: couldn't be read on this phone"], problem: false, actions: ["Dismiss"]},
                 {tag: "failed", outcome: Object.assign({kind: "failed", message: "A file of the current configuration couldn't be read. Nothing was changed", recordingsToChoose: 0}, counts), title: "Restore not applied. Nothing was changed.", lines: ["A file of the current configuration couldn't be read."], problem: true, actions: ["Dismiss"]},
-                {tag: "deferred", outcome: Object.assign({kind: "deferred", message: "The decoder was busy, so the restore waits for the next start", recordingsToChoose: 0}, counts), title: "The decoder was busy, so the restore waits for the next start.", lines: ["Reopen DSD-neo to try again."], problem: true, actions: ["Discard restore", "Dismiss"]},
-                {tag: "deferred for storage", outcome: Object.assign({kind: "deferred", message: "Not enough free storage to restore. Free up storage and reopen DSD-neo", recordingsToChoose: 0}, counts), title: "Not enough free storage to restore. Free up storage and reopen DSD-neo.", lines: [], lacks: "Reopen DSD-neo to try again.", problem: true, actions: ["Discard restore", "Dismiss"]},
+                {tag: "deferred", outcome: Object.assign({kind: "deferred", message: "The decoder was busy, so the restore waits for the next start", recordingsToChoose: 0}, counts), pending: true, title: "The decoder was busy, so the restore waits for the next start.", lines: ["Reopen DSD-neo to try again."], problem: true, actions: ["Discard restore", "Dismiss"]},
+                {tag: "deferred for storage", outcome: Object.assign({kind: "deferred", message: "Not enough free storage to restore. Free up storage and reopen DSD-neo", recordingsToChoose: 0}, counts), pending: true, title: "Not enough free storage to restore. Free up storage and reopen DSD-neo.", lines: [], lacks: "Reopen DSD-neo to try again.", problem: true, actions: ["Discard restore", "Dismiss"]},
+                {tag: "deferred part-way through", outcome: Object.assign({kind: "deferred", message: "The decoder was busy, so the restore waits for the next start", recordingsToChoose: 0}, counts), pending: true, partWay: true, title: "The decoder was busy, so the restore waits for the next start.", lines: ["This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it."], lacks: "Reopen DSD-neo to try again.", problem: true, actions: ["Dismiss"]},
                 {tag: "stuck", outcome: Object.assign({kind: "stuck", message: "Restore couldn't finish. Free up storage and reopen DSD-neo", recordingsToChoose: 0}, counts), title: "Restore couldn't finish. Free up storage and reopen DSD-neo.", lines: [], problem: true, actions: ["Dismiss"]}
             ];
         }
@@ -939,6 +958,10 @@ Item {
             var card = findChild(home, "backupResultCard");
             verify(card !== null);
             verify(!card.visible);
+            if (data.pending)
+                verify(testContext.setBackup("restorePending", true));
+            if (data.partWay)
+                verify(testContext.setBackup("restoreCancellable", false));
             verify(testContext.setBackup("startupOutcome", data.outcome));
             tryCompare(card, "visible", true);
             compare(card.Accessible.role, Accessible.AlertMessage);
@@ -981,6 +1004,7 @@ Item {
             app.currentTab = 0;
             var card = findChild(findChild(app, "homeScreen"), "backupResultCard");
             verify(testContext.setBackup("startupOutcome", {kind: "deferred", message: "Not enough free storage to restore. Free up storage and reopen DSD-neo"}));
+            verify(testContext.setBackup("restorePending", true));
             tryCompare(card, "visible", true);
             testContext.setBackupReply("discardDeferredRestore", data.reply);
             findChild(card, "backupResultDiscard").activate();
