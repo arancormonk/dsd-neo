@@ -12,8 +12,8 @@
  * construction, that the passphrase is written nowhere, that idle is announced only once a job's outcome is in place,
  * that teardown stops a document copy instead of waiting for it, that a restore an earlier start left committed shows
  * as waiting (and one whose apply is part-way through cannot be discarded), and that the QML tests' stand-in carries
- * the model's exact surface. The log lines the libraries print are captured
- * and checked, so a clean run prints only "OK". Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
+ * the model's exact surface. The log lines the libraries print are captured and checked, so a clean run prints only
+ * "OK"; this test's own FAIL and note lines are printed as they happen. Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
 #include <QChar>
@@ -53,6 +53,7 @@
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/backup_seal.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <functional>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
@@ -102,11 +103,27 @@ constexpr char kResultFile[] = "backup-restore-result.json";
 int g_failures = 0;
 /** Set once a wait times out: later waits only check, so a broken model fails in seconds, not hours. */
 bool g_stalled = false;
+/**
+ * The real stderr while quietly() captures it, else -1. This test's own lines go straight there, so a step that
+ * crashes or hangs still shows every FAIL and note it printed before.
+ */
+int g_realStderr = -1;
+
+/** Print one line of this test's own (a FAIL or a note) where it is seen at once, captured or not. */
+void
+say(const QByteArray& line) {
+    if (g_realStderr >= 0) {
+        const QByteArray text = line + '\n';
+        (void)dsd_write(g_realStderr, text.constData(), static_cast<size_t>(text.size()));
+    } else {
+        DSD_FPRINTF(stderr, "%s\n", line.constData());
+    }
+}
 
 void
 expect(const char* what, bool ok) {
     if (!ok) {
-        DSD_FPRINTF(stderr, "FAIL: %s\n", what);
+        say(QByteArray("FAIL: ") + what);
         g_failures++;
     }
 }
@@ -322,8 +339,9 @@ expected_log_line(const QByteArray& line) {
 #endif
 
 /**
- * Run @p body with stderr captured. The log lines it expects are dropped; this test's own lines (FAIL, note) are
- * printed afterwards, and any other line is printed and fails the test.
+ * Run @p body with stderr captured. The log lines it expects are dropped and any other line fails the test; this
+ * test's own lines (FAIL, note) bypass the capture (say()), so none waits on the step finishing. Where the platform
+ * allows, the capture file is unlinked while still open, so a step that crashes leaves none behind.
  */
 void
 quietly(const std::function<void()>& body) {
@@ -336,21 +354,28 @@ quietly(const std::function<void()>& body) {
         body();
         return;
     }
-    body();
-    (void)dsd_test_capture_stderr_end(&capture);
     const QString path = QString::fromUtf8(capture.path);
-    QFile file(path);
-    const QByteArray text = file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
-    file.close();
+    QFile log(path);
+    const bool readable = log.open(QIODevice::ReadOnly);
+#ifdef Q_OS_UNIX
+    QFile::remove(path); // the open descriptors keep it readable
+#endif
+    g_realStderr = capture.saved_fd;
+    body();
+    g_realStderr = -1;
+    (void)dsd_test_capture_stderr_end(&capture);
+    const QByteArray text = readable ? log.readAll() : QByteArray();
+    log.close();
     QFile::remove(path);
+    expect("the captured log is read", readable);
     for (const QByteArray& line : text.split('\n')) {
         if (line.isEmpty() || expected_log_line(line)) {
             continue;
         }
         if (line.startsWith("FAIL: ") || line.startsWith("note: ")) {
-            DSD_FPRINTF(stderr, "%s\n", line.constData());
+            say(line);
         } else {
-            DSD_FPRINTF(stderr, "FAIL: unexpected output: %s\n", line.constData());
+            say("FAIL: unexpected output: " + line);
             g_failures++;
         }
     }
@@ -845,7 +870,7 @@ test_discard_failures(const QString& document) {
     expect("commit", model.commitRestore().value("ok").toBool() && model.restorePending());
     const QString pending = at("restore-pending");
     if (!permissions_enforced(pending)) {
-        DSD_FPRINTF(stderr, "note: directory permissions are not enforced; discard failures skipped\n");
+        say("note: directory permissions are not enforced; discard failures skipped");
         expect("clean up", dsd_qt::backup::discard_pending());
         return;
     }
