@@ -224,12 +224,12 @@ holding one square bracket of a pair (`AACH 2/1/9]` from a TETRA payload line) a
 one holding a semicolon. The
 `DECODE_IQ_*_AUTO_HUNT` cases are the documented exception, described below. I/Q
 replay defaults to `--iq-replay-rate fast`, so run one after another in
-`dev-debug` the 40 digital cases take about 27 seconds and the analog ones (see
-[Analog monitor audio checks](#analog-monitor-audio-checks)) about 22. The five
+`dev-debug` the 122 digital cases take about 79 seconds and the 104 analog ones (see
+[Analog monitor audio checks](#analog-monitor-audio-checks)) about 73. The 14
 `iq-determinism` cases (see [Replay determinism](#replay-determinism-issue-572))
-add 46 seconds, two realtime cases of 15.6 seconds among them; under
-`ctest -j 16` they run beside the suite's longest test, and the full suite
-still takes about 55 seconds.
+add 92 seconds, two realtime cases of 15.2 seconds among them; under
+`ctest -j 16` they run beside the suite's longest tests, and the full suite
+takes 85 to 110 seconds.
 
 Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control and
 voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
