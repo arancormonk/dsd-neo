@@ -179,6 +179,9 @@ Item {
             return tooShortText();
         case "Busy":
             return qsTr("Another backup task is still running. Try again in a moment.");
+        case "SourceChanged":
+            // A session appends to its lists while it listens.
+            return qsTr("Your setup changed while the backup was being made. Try again.");
         case "RestorePending":
             return qsTr("A restore is already waiting. Cancel it in Settings → Backup, or close and reopen DSD-neo to finish it.");
         }

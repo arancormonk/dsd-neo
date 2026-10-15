@@ -1426,6 +1426,8 @@ test_passphrases() {
                                  && backup_error_from_seal_status(DSD_BACKUP_OK) == BackupError::None);
     expect("error names", dsd_qt::backup::backup_error_name(BackupError::WrongPassphrase) == "WrongPassphrase"
                               && dsd_qt::backup::backup_error_name(BackupError::SessionActive) == "SessionActive");
+    expect("a file that changed during an export has its own name, not an I/O failure",
+           dsd_qt::backup::backup_error_name(BackupError::SourceChanged) == "SourceChanged");
 }
 
 void

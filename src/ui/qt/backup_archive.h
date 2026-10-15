@@ -73,7 +73,9 @@ enum class BackupError {
     Damaged,
     NoSpace,
     SessionActive,
-    Io
+    Io,
+    /** A carried file changed while the export read it (a session appends to its talkgroup lists, say). */
+    SourceChanged
 };
 
 /** The enumerator's name ("None", "NotBackup", …), for result maps handed to QML. */

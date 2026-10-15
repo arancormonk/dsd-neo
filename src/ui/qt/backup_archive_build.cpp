@@ -440,7 +440,7 @@ class Builder {
             QCryptographicHash::hash(QByteArrayView(out, static_cast<qsizetype>(done)), QCryptographicHash::Sha256);
         if (done != size || file.read(&extra, 1) != 0
             || QString::fromLatin1(hash.toHex()) != entry.value(QLatin1String("sha256")).toString()) {
-            return fail(BackupError::Io, QStringLiteral("read: %1 changed during the export").arg(relative));
+            return fail(BackupError::SourceChanged, QStringLiteral("read: %1 changed during the export").arg(relative));
         }
         return true;
     }

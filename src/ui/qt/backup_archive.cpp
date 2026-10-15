@@ -48,6 +48,7 @@ backup_error_name(BackupError error) {
         case BackupError::NoSpace: return QStringLiteral("NoSpace");
         case BackupError::SessionActive: return QStringLiteral("SessionActive");
         case BackupError::Io: return QStringLiteral("Io");
+        case BackupError::SourceChanged: return QStringLiteral("SourceChanged");
     }
     return QStringLiteral("Io");
 }

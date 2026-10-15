@@ -484,7 +484,8 @@ Item {
                 {tag: "PassphraseTooShort", field: "backupPassphraseField", text: "Use at least 8 characters."},
                 {tag: "Io", field: "", text: "Couldn't create the backup. Free some storage and try again."},
                 {tag: "TooLarge", field: "", text: "Your setup is too large for one backup."},
-                {tag: "Busy", field: "", text: "Another backup task is still running. Try again in a moment."}
+                {tag: "Busy", field: "", text: "Another backup task is still running. Try again in a moment."},
+                {tag: "SourceChanged", field: "", text: "Your setup changed while the backup was being made. Try again."}
             ];
         }
 

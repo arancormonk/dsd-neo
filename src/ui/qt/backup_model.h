@@ -22,7 +22,8 @@
  * document's name: a restore identifies its files by the sealed header alone.
  *
  * Result maps carry `ok` (bool) and `error`, empty on success, else a backup_error_name() ("NotBackup",
- * "NewerVersion", "WrongPassphrase", "TooLarge", "Damaged", "NoSpace", "SessionActive", "Io") or one of the model's own
+ * "NewerVersion", "WrongPassphrase", "TooLarge", "Damaged", "NoSpace", "SessionActive", "Io", "SourceChanged": a file
+ * changed while an export read it, which a session can cause, so retrying helps) or one of the model's own
  * names: "Busy" (another backup step is running), "PassphraseTooShort" (export only) and "RestorePending" (a confirmed
  * restore already waits for the next start). Text that comes from a backup (the app version, the not-included lines)
  * is plain data for QML to show as plain text.
