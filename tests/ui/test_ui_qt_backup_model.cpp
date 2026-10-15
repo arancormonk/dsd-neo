@@ -766,17 +766,23 @@ test_session_guards(FakeHost& host, const QString& document) {
     expect("the backup inspects when idle", inspected.value("ok").toBool());
 
     const int quits = host.quitCalls;
+    // A refused commit keeps the staged restore, unconfirmed, for the screen to retry or the user to cancel.
+    const auto kept = [&model]() {
+        return dsd_qt::backup::pending_exists() && !dsd_qt::backup::pending_committed() && !model.restorePending();
+    };
     host.setState(dsd_qt::DecoderHost::Starting);
     QVariantMap commit = model.commitRestore();
     expect("commit refused once a session starts", !commit.value("ok").toBool() && !commit.value("quitting").toBool()
-                                                       && commit.value("error") == "SessionActive"
-                                                       && !dsd_qt::backup::pending_committed());
+                                                       && commit.value("error") == "SessionActive" && kept());
+    host.setState(dsd_qt::DecoderHost::Stopping);
+    commit = model.commitRestore();
+    expect("commit refused while a session is still stopping",
+           !commit.value("ok").toBool() && commit.value("error") == "SessionActive" && kept());
     host.setState(dsd_qt::DecoderHost::Idle);
     host.busyEngine = true;
     commit = model.commitRestore();
-    expect("commit refused while the engine is busy", !commit.value("ok").toBool()
-                                                          && commit.value("error") == "SessionActive"
-                                                          && !dsd_qt::backup::pending_committed());
+    expect("commit refused while the engine is busy",
+           !commit.value("ok").toBool() && commit.value("error") == "SessionActive" && kept());
     expect("no quit for a refused commit", host.quitCalls == quits);
     host.busyEngine = false;
     commit = model.commitRestore();

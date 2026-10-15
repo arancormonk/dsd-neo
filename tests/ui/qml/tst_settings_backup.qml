@@ -8,8 +8,9 @@ import "../../../src/ui/qt/qml" as Ui
 
 // Issue #580: the Settings Backup card, the one backup flow Main owns for both
 // Settings instances, and the restore result card on Home. `backup` is the
-// recording fake in qml_test_context.h; a case drives its results through
-// testContext and reads back what the screens asked for.
+// recording fake in qml_backup_recorder.h (qml_test_context.h installs it); a
+// case drives its results through testContext and reads back what the screens
+// asked for.
 Item {
     width: 420
     height: 900
@@ -585,15 +586,15 @@ Item {
         function test_inspect_errors_stay_in_the_sheet_data() {
             return [
                 {tag: "WrongPassphrase", field: true, text: "Wrong passphrase, or the file is damaged."},
-                {tag: "NotBackup", text: "This isn't a DSD-neo backup."},
-                {tag: "NewerVersion", text: "This backup was made by a newer DSD-neo. Update first."},
-                {tag: "TooLarge", text: "This file is too large to be a DSD-neo backup."},
-                {tag: "Damaged", text: "The backup is damaged."},
+                {tag: "NotBackup", file: true, text: "This isn't a DSD-neo backup."},
+                {tag: "NewerVersion", file: true, text: "This backup was made by a newer DSD-neo. Update first."},
+                {tag: "TooLarge", file: true, text: "This file is too large to be a DSD-neo backup."},
+                {tag: "Damaged", file: true, text: "The backup is damaged."},
                 {tag: "NoSpace", text: "Not enough storage to restore. Free some space and try again."},
                 {tag: "SessionActive", text: "Stop listening before restoring."},
                 {tag: "RestorePending", text: "A restore is already waiting. Cancel it in Settings → Backup, or close and reopen DSD-neo to finish it."},
                 {tag: "Busy", text: "Another backup task is still running. Try again in a moment."},
-                {tag: "Io", text: "Couldn't read that file. Choose it again, or copy it to this phone first."}
+                {tag: "Io", file: true, text: "Couldn't read that file. Choose it again, or copy it to this phone first."}
             ];
         }
 
@@ -609,7 +610,7 @@ Item {
             verify(!part("backupConfirmRestore").visible);
             var button = part("backupUnlockButton");
             compare(button.text, "Unlock");
-            verify(button.enabled);
+            var choose = part("backupChooseFileButton");
             var field = part("backupUnlockField");
             var error = part("backupUnlockError");
             compare(field.error, data.field ? data.text : "");
@@ -618,14 +619,67 @@ Item {
             compare(error.textFormat, Text.PlainText);
             if (data.field)
                 compare(field.text, "");
-            // Back in the field either way.
-            tryCompare(field.input, "activeFocus", true);
+            if (data.file) {
+                // No passphrase opens this file: Unlock goes, another file is the way on.
+                verify(!button.visible && !button.enabled);
+                verify(choose.visible && choose.enabled);
+                compare(choose.text, "Choose another file");
+                compare(buttons(sheet), ["Choose another file", "Cancel"]);
+                tryCompare(choose, "activeFocus", true);
+            } else {
+                // A retry can work: Unlock stays, back in the field.
+                verify(button.visible && button.enabled);
+                verify(!choose.visible);
+                tryCompare(field.input, "activeFocus", true);
+            }
             verify(backup.flowActive);
             // Nothing was staged, so leaving discards nothing.
             part("backupUnlockCancel").activate();
             tryCompare(sheet, "visible", false);
             compare(calls("discardRestore").length, 0);
             compare(lastFlowActive(), false);
+        }
+
+        function test_choose_another_file() {
+            unlock();
+            verify(testContext.emitBackup("inspectFinished", {ok: false, error: "NotBackup", summary: {}}));
+            var sheet = part("backupUnlockSheet");
+            part("backupChooseFileButton").activate();
+            tryCompare(sheet, "visible", false);
+            var picker = part("backupOpenPicker");
+            tryCompare(picker, "visible", true);
+            compare(flow.step, "restorePicker");
+            // Still one flow: nothing let auto-start go between the two files.
+            verify(backup.flowActive);
+            compare(lastFlowActive(), true);
+            verify(uiController.autoStartBlocked);
+            compare(calls("discardRestore").length, 0);
+            var path = testContext.writeFixtureCsv("other.dsdbak", "DSDNEOBK");
+            verify(path.length > 0);
+            var other = "file://" + path;
+            pick(picker, other);
+            tryCompare(sheet, "visible", true);
+            compare(flow.step, "unlock");
+            compare(part("backupUnlockError").text, "");
+            verify(part("backupUnlockButton").visible && part("backupUnlockButton").enabled);
+            verify(!part("backupChooseFileButton").visible);
+            part("backupUnlockField").text = pass;
+            part("backupUnlockButton").activate();
+            var inspect = calls("inspectRestore");
+            compare(inspect.length, 2);
+            compare(inspect[1].args[0], other);
+        }
+
+        function test_choose_another_file_then_cancel() {
+            unlock();
+            verify(testContext.emitBackup("inspectFinished", {ok: false, error: "Damaged", summary: {}}));
+            part("backupChooseFileButton").activate();
+            var picker = part("backupOpenPicker");
+            tryCompare(picker, "visible", true);
+            picker.reject();
+            compare(flow.step, "");
+            compare(lastFlowActive(), false);
+            verify(!part("backupUnlockSheet").visible);
         }
 
         function test_confirm_message_data() {
@@ -638,6 +692,7 @@ Item {
                 {tag: "singular and plural", summary: Object.assign({}, fullSummary, {recordingsToChoose: 1, systemsWithExtraArgs: 4}), has: ["1 replay system will need its recording chosen again.", "4 systems carry extra decoder options.", close], lacks: []},
                 {tag: "settings arguments", summary: Object.assign({}, fullSummary, {appExtraArgs: true}), has: ["Your settings carry extra decoder options.", close], lacks: []},
                 {tag: "no date or version", summary: Object.assign({}, fullSummary, {createdAt: 0, app: ""}), has: ["search ranges and settings with the backup? Call history", close], lacks: ["DSD-neo 1.4.0"]},
+                {tag: "version as Settings shows it", summary: Object.assign({}, fullSummary, {app: "v2.10.0"}), has: ["(DSD-neo 2.10.0)?", close], lacks: ["DSD-neo v2.10.0"]},
                 {tag: "left out", summary: Object.assign({}, fullSummary, {notIncluded: ["Targets.csv: couldn't be read on this phone", "Metro: groups.csv (named by full path)"]}), has: ["Not included:\nTargets.csv: couldn't be read on this phone\nMetro: groups.csv (named by full path)", close], lacks: []},
                 {tag: "nothing left out", summary: fullSummary, has: [close], lacks: ["Not included"]}
             ];
@@ -812,16 +867,8 @@ Item {
             compare(notice().text, "");
         }
 
-        function test_refused_commit_data() {
-            return [
-                {tag: "SessionActive", text: "Stop listening before restoring."},
-                {tag: "Busy", text: "Another backup task is still running. Try again in a moment."},
-                {tag: "Io", text: "Couldn't start the restore. Try again."}
-            ];
-        }
-
-        function test_refused_commit(data) {
-            testContext.setBackupReply("commitRestore", {ok: false, quitting: false, error: data.tag});
+        function test_refused_commit() {
+            testContext.setBackupReply("commitRestore", {ok: false, quitting: false, error: "Io"});
             var confirm = toConfirm();
             findChild(confirm, "confirmActionButton").activate();
             tryCompare(confirm, "visible", false);
@@ -830,8 +877,64 @@ Item {
             compare(calls("discardRestore").length, 1);
             verify(!part("backupClosingSheet").visible);
             compare(lastFlowActive(), false);
-            compare(notice().text, data.text);
+            compare(notice().text, "Couldn't start the restore. Try again.");
             compare(notice().color, Ui.Theme.alert);
+        }
+
+        function test_commit_refused_for_a_moment_data() {
+            return [
+                {tag: "SessionActive", text: "DSD-neo is still stopping a session. Try again in a moment."},
+                {tag: "Busy", text: "Another backup task is still running. Try again in a moment."}
+            ];
+        }
+
+        // A session still stopping (or a job about to end) passes: the unpacked
+        // backup stays, and confirming again retries without a new pick.
+        function test_commit_refused_for_a_moment(data) {
+            testContext.setBackupReply("commitRestore", {ok: false, quitting: false, error: data.tag});
+            var confirm = toConfirm();
+            findChild(confirm, "confirmActionButton").activate();
+            compare(calls("commitRestore").length, 1);
+            verify(confirm.visible);
+            compare(flow.step, "confirm");
+            var error = findChild(confirm, "confirmError");
+            verify(error.visible);
+            compare(error.text, data.text);
+            compare(error.color, Ui.Theme.alert);
+            compare(error.Accessible.role, Accessible.AlertMessage);
+            compare(error.textFormat, Text.PlainText);
+            compare(calls("discardRestore").length, 0);
+            verify(backup.flowActive);
+            compare(notice().text, "");
+            compare(buttons(confirm), ["Replace and close", "Cancel"]);
+            // Confirming again retries.
+            testContext.setBackupReply("commitRestore", {ok: true, quitting: true, error: ""});
+            findChild(confirm, "confirmActionButton").activate();
+            compare(calls("commitRestore").length, 2);
+            tryCompare(confirm, "visible", false);
+            tryCompare(part("backupClosingSheet"), "visible", true);
+            compare(calls("discardRestore").length, 0);
+        }
+
+        function test_commit_refused_for_a_moment_then_cancel() {
+            testContext.setBackupReply("commitRestore", {ok: false, quitting: false, error: "SessionActive"});
+            var confirm = toConfirm();
+            findChild(confirm, "confirmActionButton").activate();
+            verify(confirm.visible);
+            // Only the user's Cancel drops the unpacked backup.
+            findChild(confirm, "confirmCancelButton").activate();
+            tryCompare(confirm, "visible", false);
+            compare(calls("discardRestore").length, 1);
+            compare(lastFlowActive(), false);
+            compare(findChild(confirm, "confirmError").text, "");
+            // The next confirmation starts without the old error.
+            toUnlock();
+            part("backupUnlockField").text = pass;
+            part("backupUnlockButton").activate();
+            verify(testContext.emitBackup("inspectFinished", {ok: true, error: "", summary: fullSummary}));
+            tryCompare(confirm, "visible", true);
+            compare(findChild(confirm, "confirmError").text, "");
+            verify(!findChild(confirm, "confirmError").visible);
         }
 
         // ---- layering ----

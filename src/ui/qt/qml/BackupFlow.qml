@@ -27,6 +27,9 @@ Item {
     // The picked document, passed to the model exactly as the picker gave it.
     property string reference: ""
     property var notIncluded: []
+    // The unlock sheet's last error was about the file, not the passphrase:
+    // retrying cannot help, so the sheet offers another file instead.
+    property bool fileProblem: false
 
     // Entering a restore: Main drops a start still waiting on USB access.
     signal restoreBegun
@@ -118,6 +121,8 @@ Item {
         unlockField.text = "";
         reference = "";
         notIncluded = [];
+        fileProblem = false;
+        confirmRestore.error = "";
         setNotice(text, problem);
         backup.setFlowActive(false);
     }
@@ -175,7 +180,8 @@ Item {
         case "NoSpace":
             return qsTr("Not enough storage to restore. Free some space and try again.");
         case "SessionActive":
-            return qsTr("Stop listening before restoring.");
+            // At the confirmation nothing can start, so a session still there is stopping.
+            return action === "commit" ? qsTr("DSD-neo is still stopping a session. Try again in a moment.") : qsTr("Stop listening before restoring.");
         case "PassphraseTooShort":
             return tooShortText();
         case "Busy":
@@ -287,12 +293,24 @@ Item {
 
     function showUnlock(ref) {
         reference = ref;
+        fileProblem = false;
         unlockField.text = "";
         unlockField.error = "";
         unlockError.text = "";
         showUnlockPassphrase.checked = false;
         unlockSheet.open();
         Qt.callLater(focusField, unlockField);
+    }
+
+    // After an error about the file: back to the picker, the flow still active.
+    function chooseAnotherFile() {
+        if (step !== "unlock" || !fileProblem)
+            return;
+        step = "restorePicker";
+        closeSheet(unlockSheet);
+        unlockField.text = "";
+        reference = "";
+        openPicker.open();
     }
 
     function restorePicked(ref) {
@@ -340,16 +358,22 @@ Item {
                 unlockField.error = errorText(result.error, "inspect");
                 announce(unlockField.error);
                 focusField(unlockField);
-            } else {
-                unlockError.text = errorText(result.error, "inspect");
-                announce(unlockError.text);
-                focusField(unlockField);
+                return;
             }
+            unlockError.text = errorText(result.error, "inspect");
+            announce(unlockError.text);
+            // Errors about the file itself: no passphrase opens it.
+            fileProblem = ["NotBackup", "NewerVersion", "TooLarge", "Damaged", "Io"].indexOf(result.error) >= 0;
+            if (fileProblem)
+                chooseFileButton.forceActiveFocus();
+            else
+                focusField(unlockField);
             return;
         }
         step = "confirm";
         closeSheet(unlockSheet);
         unlockField.text = "";
+        confirmRestore.error = "";
         confirmRestore.message = restoreQuestion(result.summary || ({}));
         confirmRestore.open();
     }
@@ -363,7 +387,8 @@ Item {
     // the file, so it is inserted last, where no later arg() can rewrite it.
     function restoreQuestion(summary) {
         var day = count(summary.createdAt) > 0 ? Qt.formatDate(new Date(count(summary.createdAt) * 1000), "MMM d, yyyy") : "";
-        var version = String(summary.app || "");
+        // Without a leading "v", as Settings shows this build's version.
+        var version = String(summary.app || "").replace(/^v/, "");
         var source = day.length && version.length ? qsTr("the backup from %1 (DSD-neo %2)").arg(day).arg(version) : day.length ? qsTr("the backup from %1").arg(day) : version.length ? qsTr("the backup (DSD-neo %1)").arg(version) : qsTr("the backup");
         var question = qsTr("Replace this phone's saved systems (%1), scan lists (%2), imported files (%3), decryption profiles (%4), search ranges and settings with %5? Call history and recordings on this phone are kept.").arg(count(summary.systems)).arg(count(summary.scanLists)).arg(count(summary.libraryFiles)).arg(count(summary.profiles)).arg(source);
         var notes = [];
@@ -389,6 +414,8 @@ Item {
         return parts.join("\n\n");
     }
 
+    // The confirmation stays up until this settles it: a refusal that passes
+    // keeps the staged restore and the dialog, so confirming again retries.
     function commit() {
         if (step !== "confirm")
             return;
@@ -397,12 +424,20 @@ Item {
             // DSD-neo is closing: the flow stays active, holding auto-start,
             // until the process goes.
             step = "closing";
+            closeSheet(confirmRestore);
             closingSheet.open();
             return;
         }
         if (result.ok) {
             // The host could not close the app; the card says what is waiting.
             finish("", false);
+            return;
+        }
+        if (result.error === "SessionActive" || result.error === "Busy") {
+            // A session still stopping, or a job about to end: only Cancel drops
+            // the unpacked backup.
+            confirmRestore.error = errorText(result.error, "commit");
+            announce(confirmRestore.error);
             return;
         }
         // Nothing half-done should wait for the next start.
@@ -633,12 +668,23 @@ Item {
             Accessible.role: Accessible.AlertMessage
             Accessible.name: text
         }
+        // The primary action: Unlock, or another file once this one is the problem.
         GradientButton {
             objectName: "backupUnlockButton"
             width: parent.width
+            visible: !flow.fileProblem
             text: flow.step === "checking" ? qsTr("Checking backup…") : qsTr("Unlock")
-            enabled: flow.step === "unlock"
+            enabled: flow.step === "unlock" && !flow.fileProblem
             onClicked: flow.submitUnlock()
+        }
+        GradientButton {
+            id: chooseFileButton
+            objectName: "backupChooseFileButton"
+            width: parent.width
+            visible: flow.fileProblem
+            text: qsTr("Choose another file")
+            enabled: flow.step === "unlock" && flow.fileProblem
+            onClicked: flow.chooseAnotherFile()
         }
         OutlineButton {
             objectName: "backupUnlockCancel"
@@ -654,6 +700,7 @@ Item {
         title: qsTr("Replace your setup?")
         confirmText: qsTr("Replace and close")
         destructive: true
+        closeOnConfirm: false
         onConfirmed: flow.commit()
         onCancelled: flow.declineRestore()
     }
