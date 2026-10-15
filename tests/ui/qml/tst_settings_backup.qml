@@ -59,9 +59,12 @@ Item {
             flow = findChild(app, "backupFlow");
             verify(settings !== null);
             verify(flow !== null);
-            // Keys and taps go to the active window, and Main is its own.
+            // Keys and taps go to the active window, and Main is its own. The
+            // first window a run activates reports active a turn before its
+            // focus-in lands, and only then can an item take keyboard focus.
             app.requestActivate();
             tryCompare(app, "active", true);
+            tryCompare(app.contentItem, "activeFocus", true);
             tryVerify(function () {
                 return settings.visible && settings.opacity > 0.9;
             });
