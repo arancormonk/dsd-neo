@@ -4021,6 +4021,8 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_backup_model
         ui/test_ui_qt_backup_model.cpp
+        # The QML tests' stand-in, held against the model's meta-object here.
+        ui/qml_backup_recorder.h
     )
     target_include_directories(
         dsd-neo_test_ui_qt_backup_model
@@ -4190,6 +4192,7 @@ if(DSD_ENABLE_QT_UI)
             dsd-neo_test_ui_qt_qml
             ui/test_ui_qt_qml_main.cpp
             ui/qml_test_context.h
+            ui/qml_backup_recorder.h
             # WP-F2: real network fixture, using only the snapshot-copy facade.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/p25_network.c

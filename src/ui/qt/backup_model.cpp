@@ -57,6 +57,7 @@ constexpr qint64 kStagingMarginBytes = 1024LL * 1024;
 constexpr char kBusy[] = "Busy";
 constexpr char kPassphraseTooShort[] = "PassphraseTooShort";
 constexpr char kRestorePending[] = "RestorePending";
+constexpr char kRestoreInProgress[] = "RestoreInProgress";
 
 QString
 error_name(BackupError error) {
@@ -343,6 +344,8 @@ BackupModel::BackupModel(DecoderHost* host, const backup::ApplyResult& startup, 
     sweep_cache(cache_dir());
     backup::sweep_stale_staging();
     m_startupOutcome = startup_outcome(startup);
+    // The startup apply has run: a stage still committed is one it deferred or could not finish.
+    m_restorePending = backup::pending_committed();
     m_restoreAllowed = restoreAllowed();
     if (m_host != nullptr) {
         connect(m_host, &DecoderHost::sessionStateChanged, this, &BackupModel::updateRestoreAllowed);
@@ -502,9 +505,7 @@ BackupModel::commitRestore() {
     if (!m_quitting && m_host != nullptr && m_host->quitApp()) {
         m_quitting = true;
     }
-    if (!m_quitting) {
-        setRestorePending(true);
-    }
+    syncRestorePending();
     return {
         {QStringLiteral("ok"), true}, {QStringLiteral("quitting"), m_quitting}, {QStringLiteral("error"), QString()}};
 }
@@ -517,18 +518,19 @@ BackupModel::discardRestore() {
     const bool removed = backup::discard_pending();
     // A false answer means one of two things, and only the marker tells which.
     const bool discarded = removed || !backup::pending_committed();
-    if (discarded) {
-        setRestorePending(false);
-        if (m_startupOutcome.value(QStringLiteral("kind")) == QLatin1String("deferred")) {
-            acknowledgeStartupOutcome();
-        }
+    syncRestorePending();
+    if (discarded && m_startupOutcome.value(QStringLiteral("kind")) == QLatin1String("deferred")) {
+        acknowledgeStartupOutcome();
     }
     if (dropped) {
         announceIdle();
     }
-    return {{QStringLiteral("ok"), removed},
-            {QStringLiteral("discarded"), discarded},
-            {QStringLiteral("error"), removed ? QString() : error_name(BackupError::Io)}};
+    QString error;
+    if (!removed) {
+        error = backup::pending_apply_started() ? QLatin1String(kRestoreInProgress) : error_name(BackupError::Io);
+    }
+    return {
+        {QStringLiteral("ok"), removed}, {QStringLiteral("discarded"), discarded}, {QStringLiteral("error"), error}};
 }
 
 void
@@ -722,6 +724,11 @@ BackupModel::updateRestoreAllowed() {
         m_restoreAllowed = allowed;
         Q_EMIT restoreAllowedChanged();
     }
+}
+
+void
+BackupModel::syncRestorePending() {
+    setRestorePending(backup::pending_committed());
 }
 
 void

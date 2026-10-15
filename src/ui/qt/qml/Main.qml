@@ -1458,10 +1458,12 @@ Window {
     }
 
     // ---- Backup export and restore (issue #580) ----
-    // One flow for both Settings screens. Declared last so its sheets cover
-    // every layer, the session's Settings included.
+    // One flow for both Settings screens. Above the scan-list editor (z 20) and
+    // the scan warnings (z 21), so its sheets cover every layer, the session's
+    // Settings included; with no sheet up it is an empty item taps pass through.
     BackupFlow {
         id: backupFlow
+        z: 22
         anchors.fill: safeArea
         onRestoreBegun: mainRoot.dropPendingStarts()
     }

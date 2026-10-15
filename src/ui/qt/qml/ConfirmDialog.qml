@@ -38,6 +38,7 @@ ModalSheet {
         color: Theme.textPrimary
     }
     Text {
+        objectName: "confirmMessage"
         width: parent.width
         text: sheet.message
         textFormat: Text.PlainText

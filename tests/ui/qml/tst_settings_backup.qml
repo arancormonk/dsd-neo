@@ -192,7 +192,7 @@ Item {
 
         // ---- the Settings card ----
 
-        function verifyCard(screen) {
+        function verifyCard(screen, listening) {
             var header = findChild(screen, "settingsBackupHeader");
             verify(header !== null);
             compare(header.text, "Backup");
@@ -201,8 +201,9 @@ Item {
             compare(exportRow.subtitle, "Encrypted file with your settings, systems, scan lists, imported files and keys");
             var restoreRow = findChild(screen, "settingsBackupRestoreRow");
             compare(restoreRow.title, "Restore from backup");
-            compare(restoreRow.subtitle, "Replaces your setup on this phone");
-            verify(restoreRow.enabled);
+            // A restore replaces what a session uses: it waits for Stop.
+            compare(restoreRow.subtitle, listening ? "Stop listening to restore" : "Replaces your setup on this phone");
+            compare(restoreRow.enabled, !listening);
             verify(exportRow.height >= Ui.Theme.minimumTouchSize);
             verify(restoreRow.height >= Ui.Theme.minimumTouchSize);
             // The card sits right before About & support.
@@ -211,7 +212,7 @@ Item {
 
         function test_card_in_both_settings_instances() {
             compare(count(app.contentItem, "backupFlow"), 1, "one flow serves both Settings screens");
-            verifyCard(settings);
+            verifyCard(settings, false);
             openExport();
             compare(flow.step, "exportPassphrase");
             part("backupExportCancel").activate();
@@ -225,7 +226,8 @@ Item {
             tryVerify(function () {
                 return session.visible;
             });
-            verifyCard(session);
+            compare(backup.restoreAllowed, false);
+            verifyCard(session, true);
             findChild(session, "settingsBackupExportRow").activate();
             tryCompare(part("backupPassphraseSheet"), "visible", true);
             compare(flow.step, "exportPassphrase");
@@ -236,18 +238,32 @@ Item {
             app.sessionDestination = "";
         }
 
-        function test_restore_row_follows_restore_allowed() {
+        function test_restore_row_follows_restore_allowed_data() {
+            return [
+                // A job on the worker shuts the row but is no reason to stop listening.
+                {tag: "busy", busy: true, phase: 0, subtitle: "Replaces your setup on this phone"},
+                {tag: "listening", busy: false, phase: 2, subtitle: "Stop listening to restore"},
+                {tag: "starting", busy: false, phase: 1, subtitle: "Stop listening to restore"}
+            ];
+        }
+
+        function test_restore_row_follows_restore_allowed(data) {
             var row = findChild(settings, "settingsBackupRestoreRow");
-            verify(testContext.setBackup("restoreAllowed", false));
+            verify(row.enabled);
+            verify(testContext.setBackup("busy", data.busy));
+            testContext.setLifecyclePhase(data.phase);
+            compare(backup.restoreAllowed, false);
             compare(row.enabled, false);
-            compare(row.subtitle, "Stop listening to restore");
+            compare(row.subtitle, data.subtitle);
             compare(row.showCaret, false);
             row.activate();
             flow.beginRestore();
             compare(flow.step, "");
             compare(calls("setFlowActive").length, 0);
             compare(part("backupOpenPicker").visible, false);
-            verify(testContext.setBackup("restoreAllowed", true));
+            verify(testContext.setBackup("busy", false));
+            testContext.setLifecyclePhase(0);
+            compare(backup.restoreAllowed, true);
             verify(row.enabled);
             compare(row.subtitle, "Replaces your setup on this phone");
         }
@@ -313,6 +329,33 @@ Item {
             openExport();
             compare(part("backupShowPassphrases").checked, false);
             compare(part("backupPassphraseField").input.echoMode, TextInput.Password);
+        }
+
+        function test_show_passphrase_on_unlock() {
+            toUnlock();
+            var show = part("backupShowUnlockPassphrase");
+            var field = part("backupUnlockField");
+            compare(show.checked, false);
+            show.toggle();
+            compare(field.input.echoMode, TextInput.Normal);
+            show.toggle();
+            compare(field.input.echoMode, TextInput.Password);
+            show.toggle();
+            part("backupUnlockCancel").activate();
+            toUnlock();
+            compare(part("backupShowUnlockPassphrase").checked, false, "reopening starts hidden");
+            compare(field.input.echoMode, TextInput.Password);
+        }
+
+        function test_cancel_before_encrypting_cancels_no_job() {
+            openExport();
+            typePassphrases(pass, pass);
+            part("backupExportCancel").activate();
+            tryCompare(part("backupPassphraseSheet"), "visible", false);
+            compare(calls("cancel").length, 0);
+            compare(calls("prepareExport").length, 0);
+            compare(lastFlowActive(), false);
+            compare(part("backupPassphraseField").text, "");
         }
 
         function test_export_saves_to_the_picked_document() {
@@ -447,6 +490,10 @@ Item {
 
         function test_export_prepare_errors_stay_in_the_sheet(data) {
             encrypt();
+            // Focus is off the field, as after a keyboard user's Encrypt (and once the open's own focus has run).
+            wait(0);
+            part("backupPassphraseSheet").forceActiveFocus();
+            verify(part("backupPassphraseSheet").activeFocus);
             verify(testContext.emitBackup("exportPrepared", {ok: false, error: data.tag, summary: {}, notIncluded: []}));
             var sheet = part("backupPassphraseSheet");
             verify(sheet.visible);
@@ -459,7 +506,10 @@ Item {
             else
                 compare(part("backupExportError").text, data.text);
             compare(part("backupExportError").Accessible.role, Accessible.AlertMessage);
+            compare(part("backupExportError").textFormat, Text.PlainText);
             verify(backup.flowActive);
+            // Back in the field, ready to change the passphrase or try again.
+            tryCompare(part("backupPassphraseField").input, "activeFocus", true);
         }
 
         function test_export_save_error_lands_in_the_card() {
@@ -540,7 +590,7 @@ Item {
                 {tag: "Damaged", text: "The backup is damaged."},
                 {tag: "NoSpace", text: "Not enough storage to restore. Free some space and try again."},
                 {tag: "SessionActive", text: "Stop listening before restoring."},
-                {tag: "RestorePending", text: "A restore is already waiting. Close DSD-neo and open it again to finish it, or cancel it in Settings."},
+                {tag: "RestorePending", text: "A restore is already waiting. Cancel it in Settings → Backup, or close and reopen DSD-neo to finish it."},
                 {tag: "Busy", text: "Another backup task is still running. Try again in a moment."},
                 {tag: "Io", text: "Couldn't read that file. Choose it again, or copy it to this phone first."}
             ];
@@ -548,6 +598,9 @@ Item {
 
         function test_inspect_errors_stay_in_the_sheet(data) {
             unlock();
+            wait(0);
+            part("backupUnlockSheet").forceActiveFocus();
+            verify(part("backupUnlockSheet").activeFocus);
             verify(testContext.emitBackup("inspectFinished", {ok: false, error: data.tag, summary: {}}));
             var sheet = part("backupUnlockSheet");
             verify(sheet.visible);
@@ -561,8 +614,11 @@ Item {
             compare(field.error, data.field ? data.text : "");
             compare(error.text, data.field ? "" : data.text);
             compare(error.Accessible.role, Accessible.AlertMessage);
+            compare(error.textFormat, Text.PlainText);
             if (data.field)
                 compare(field.text, "");
+            // Back in the field either way.
+            tryCompare(field.input, "activeFocus", true);
             verify(backup.flowActive);
             // Nothing was staged, so leaving discards nothing.
             part("backupUnlockCancel").activate();
@@ -579,7 +635,7 @@ Item {
                 {tag: "every note", summary: fullSummary, has: [head, "2 replay systems will need their recording chosen again.", "1 system carries extra decoder options.", close], lacks: ["Your settings carry"]},
                 {tag: "no notes", summary: Object.assign({}, fullSummary, {recordingsToChoose: 0, systemsWithExtraArgs: 0}), has: [head, close], lacks: ["replay system", "extra decoder"]},
                 {tag: "singular and plural", summary: Object.assign({}, fullSummary, {recordingsToChoose: 1, systemsWithExtraArgs: 4}), has: ["1 replay system will need its recording chosen again.", "4 systems carry extra decoder options.", close], lacks: []},
-                {tag: "settings arguments", summary: Object.assign({}, fullSummary, {appExtraArgs: true}), has: ["Your settings carry extra decoder arguments.", close], lacks: []},
+                {tag: "settings arguments", summary: Object.assign({}, fullSummary, {appExtraArgs: true}), has: ["Your settings carry extra decoder options.", close], lacks: []},
                 {tag: "no date or version", summary: Object.assign({}, fullSummary, {createdAt: 0, app: ""}), has: ["search ranges and settings with the backup? Call history", close], lacks: ["DSD-neo 1.4.0"]}
             ];
         }
@@ -605,6 +661,9 @@ Item {
         function test_backup_text_stays_plain() {
             var confirm = toConfirm(Object.assign({}, fullSummary, {app: "<b>9.9</b> %1"}));
             verify(confirm.message.indexOf("(DSD-neo <b>9.9</b> %1)") >= 0, confirm.message);
+            var message = findChild(confirm, "confirmMessage");
+            compare(message.text, confirm.message);
+            compare(message.textFormat, Text.PlainText);
         }
 
         function test_confirm_commits_and_closes() {
@@ -625,7 +684,8 @@ Item {
             compare(buttons(closing), []);
             verify(backup.flowActive);
             verify(uiController.autoStartBlocked);
-            compare(backup.restorePending, false);
+            // The stage is committed, quitting or not.
+            verify(backup.restorePending);
         }
 
         function test_commit_without_quitting_waits_for_a_reopen() {
@@ -674,6 +734,34 @@ Item {
             compare(notice().color, data.problem ? Ui.Theme.alert : Ui.Theme.textSecondary);
         }
 
+        function test_waiting_restore_from_an_earlier_start() {
+            // An earlier start deferred it: the card on Home and the waiting line in Settings both offer the way out.
+            verify(testContext.setBackup("startupOutcome", {kind: "deferred", message: "The decoder was busy, so the restore waits for the next start"}));
+            verify(testContext.setBackup("restorePending", true));
+            var line = findChild(settings, "settingsBackupPendingNotice");
+            tryCompare(line, "visible", true);
+            compare(line.text, "Restore is ready. Close DSD-neo and open it again to finish.");
+            var cancel = findChild(settings, "settingsBackupCancelRestore");
+            verify(cancel.visible);
+            cancel.activate();
+            compare(calls("discardRestore").length, 1);
+            verify(!backup.restorePending);
+            compare(backup.startupOutcome.kind, "", "discarding retires the deferred card too");
+            compare(notice().text, "Restore cancelled.");
+        }
+
+        function test_restore_part_way_through_cannot_be_cancelled() {
+            verify(testContext.setBackup("startupOutcome", {kind: "stuck", message: "Restore couldn't finish. Free up storage and reopen DSD-neo"}));
+            verify(testContext.setBackup("restorePending", true));
+            testContext.setBackupReply("discardRestore", {ok: false, discarded: false, error: "RestoreInProgress"});
+            findChild(settings, "settingsBackupCancelRestore").activate();
+            compare(calls("discardRestore").length, 1);
+            verify(backup.restorePending);
+            compare(notice().text, "This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it.");
+            compare(notice().color, Ui.Theme.alert);
+            verify(findChild(settings, "settingsBackupPendingNotice").visible);
+        }
+
         function test_cancel_at_confirm_discards_data() {
             return [{tag: "Cancel", method: "button"}, {tag: "Back", method: "back"}, {tag: "host Back", method: "host"}, {tag: "scrim", method: "scrim"}];
         }
@@ -689,6 +777,17 @@ Item {
             compare(calls("commitRestore").length, 0);
             compare(lastFlowActive(), false);
             compare(flow.step, "");
+            compare(notice().text, "");
+        }
+
+        function test_decline_with_files_left_reports_nothing() {
+            // An unconfirmed stage never applies: what a partial discard leaves, the next start removes.
+            testContext.setBackupReply("discardRestore", {ok: false, discarded: true, error: "Io"});
+            var confirm = toConfirm();
+            findChild(confirm, "confirmCancelButton").activate();
+            tryCompare(confirm, "visible", false);
+            compare(calls("discardRestore").length, 1);
+            compare(lastFlowActive(), false);
             compare(notice().text, "");
         }
 
@@ -712,6 +811,33 @@ Item {
             compare(lastFlowActive(), false);
             compare(notice().text, data.text);
             compare(notice().color, Ui.Theme.alert);
+        }
+
+        // ---- layering ----
+
+        function test_backup_sheets_cover_the_scan_layers() {
+            // The scan-list editor (z 20) and the session's scan warnings (z 21) are Main's highest layers.
+            var editor = findChild(app, "scanListScreen");
+            verify(flow.z > editor.z);
+            app.scanListOpen = true;
+            testContext.setLifecyclePhase(2);
+            tryCompare(app, "monitorMode", true);
+            app.scanWarnings = "Target 2 skipped: no channel map";
+            app.sessionDestination = "settings";
+            findChild(findChild(app, "sessionSettingsScreen"), "settingsBackupExportRow").activate();
+            var sheet = part("backupPassphraseSheet");
+            tryCompare(sheet, "visible", true);
+            waitForRendering(app.contentItem);
+            // A point inside the warning panel, over the scrim: the flow is on top there.
+            var point = sheet.mapToItem(app.contentItem, 10, sheet.height - 10);
+            compare(app.contentItem.childAt(point.x, point.y), flow);
+            mouseClick(app.contentItem, point.x, point.y);
+            tryCompare(sheet, "visible", false);
+            compare(app.scanWarnings, "Target 2 skipped: no channel map", "the tap landed on the scrim, not the warning");
+            compare(lastFlowActive(), false);
+            app.scanWarnings = "";
+            app.scanListOpen = false;
+            app.sessionDestination = "";
         }
 
         // ---- the restore flow and USB starts ----
@@ -842,7 +968,8 @@ Item {
         function test_deferred_discard_data() {
             return [
                 {tag: "discarded", reply: {ok: true, discarded: true, error: ""}, stays: false},
-                {tag: "refused", reply: {ok: false, discarded: false, error: "Io"}, stays: true}
+                {tag: "refused", reply: {ok: false, discarded: false, error: "Io"}, stays: true, text: "Couldn't discard the restore. DSD-neo tries it again the next time it opens."},
+                {tag: "part-way through", reply: {ok: false, discarded: false, error: "RestoreInProgress"}, stays: true, text: "This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it."}
             ];
         }
 
@@ -861,8 +988,9 @@ Item {
             }
             verify(card.visible);
             var error = findChild(card, "backupResultError");
-            compare(error.text, "Couldn't discard the restore. DSD-neo tries it again the next time it opens.");
+            compare(error.text, data.text);
             compare(error.color, Ui.Theme.alert);
+            compare(error.textFormat, Text.PlainText);
         }
 
         function test_result_card_announces_once() {

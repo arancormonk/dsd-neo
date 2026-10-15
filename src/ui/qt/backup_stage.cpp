@@ -196,6 +196,13 @@ class Stager {
     QString m_detail;
 };
 
+/** A committed stage whose journal is complete: its apply has started. */
+bool
+apply_started(const QString& pending) {
+    return entry_exists(pending + QLatin1Char('/') + QLatin1String(kCommittedName))
+           && entry_exists(pending + QStringLiteral("/journal/COMPLETE"));
+}
+
 } // namespace
 
 QString
@@ -281,7 +288,7 @@ discard_pending() {
     // A committed restore with a complete journal is an apply in progress: only it may finish or undo it. Without the
     // marker the apply is past its commit point and the journal is only left over.
     const QString marker = pending + QLatin1Char('/') + QLatin1String(kCommittedName);
-    if (entry_exists(marker) && entry_exists(pending + QStringLiteral("/journal/COMPLETE"))) {
+    if (apply_started(pending)) {
         return false;
     }
     // The marker goes first, like every ending of the apply: once it is gone nothing applies this stage, even if some
@@ -299,6 +306,12 @@ bool
 pending_committed() {
     const DataRoot root;
     return pending_exists() && is_real_file(pending_dir(root) + QLatin1Char('/') + QLatin1String(kCommittedName));
+}
+
+bool
+pending_apply_started() {
+    const DataRoot root;
+    return root.valid() && is_real_dir(pending_dir(root)) && apply_started(pending_dir(root));
 }
 
 void

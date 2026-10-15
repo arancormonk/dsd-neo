@@ -58,7 +58,8 @@ Item {
         showUnlock(ref);
     }
 
-    // Settings' "Cancel restore": drop a restore that waits for the next start.
+    // Settings' "Cancel restore": drop a restore that waits for the next start,
+    // whether confirmed here or left by an earlier start.
     function cancelPendingRestore() {
         if (active)
             return;
@@ -68,7 +69,14 @@ Item {
         else if (result.discarded)
             setNotice(qsTr("Restore cancelled. Its leftover files are removed the next time DSD-neo opens."), false);
         else
-            setNotice(qsTr("Couldn't cancel the restore. It still finishes when DSD-neo opens again."), true);
+            setNotice(discardRefusedText(result.error), true);
+    }
+
+    // Shared with the Home card's "Discard restore".
+    function discardRefusedText(name) {
+        if (name === "RestoreInProgress")
+            return qsTr("This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it.");
+        return qsTr("Couldn't cancel the restore. It still finishes when DSD-neo opens again.");
     }
 
     function restoreOpen() {
@@ -171,7 +179,7 @@ Item {
         case "Busy":
             return qsTr("Another backup task is still running. Try again in a moment.");
         case "RestorePending":
-            return qsTr("A restore is already waiting. Close DSD-neo and open it again to finish it, or cancel it in Settings.");
+            return qsTr("A restore is already waiting. Cancel it in Settings → Backup, or close and reopen DSD-neo to finish it.");
         }
         // Io, and any name this screen does not know yet.
         if (action === "prepare")
@@ -226,6 +234,7 @@ Item {
                 exportError.text = errorText(result.error, "prepare");
                 announce(exportError.text);
             }
+            focusField(passphraseField);
             return;
         }
         notIncluded = result.notIncluded || [];
@@ -333,6 +342,7 @@ Item {
             } else {
                 unlockError.text = errorText(result.error, "inspect");
                 announce(unlockError.text);
+                focusField(unlockField);
             }
             return;
         }
@@ -367,7 +377,7 @@ Item {
         else if (extra > 1)
             notes.push(qsTr("%1 systems carry extra decoder options.").arg(extra));
         if (summary.appExtraArgs === true)
-            notes.push(qsTr("Your settings carry extra decoder arguments."));
+            notes.push(qsTr("Your settings carry extra decoder options."));
         var parts = [question];
         if (notes.length)
             parts.push(notes.join(" "));
@@ -396,14 +406,15 @@ Item {
         finish(errorText(result.error, "commit"), true);
     }
 
+    // The stage is not confirmed, and an unconfirmed stage never applies:
+    // whatever a partial discard leaves, the next start removes. A committed
+    // stage cannot be here (the model refuses an inspection while one waits),
+    // so there is nothing to report either way.
     function declineRestore() {
         if (step !== "confirm")
             return;
-        var result = backup.discardRestore();
-        if (result.discarded)
-            finish("", false);
-        else
-            finish(qsTr("Couldn't cancel the restore. It still finishes when DSD-neo opens again."), true);
+        backup.discardRestore();
+        finish("", false);
     }
 
     Connections {

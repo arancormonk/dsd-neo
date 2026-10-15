@@ -10,7 +10,9 @@
  * meanings, every error a restore reports, busy refusals, cancelled exports and inspections (on the worker and after
  * it finished) confined to their own files, the startup outcome from the apply and from the result file, the sweep at
  * construction, that the passphrase is written nowhere, that idle is announced only once a job's outcome is in place,
- * and that teardown stops a document copy instead of waiting for it. The log lines the libraries print are captured
+ * that teardown stops a document copy instead of waiting for it, that a restore an earlier start left committed shows
+ * as waiting (and one whose apply is part-way through cannot be discarded), and that the QML tests' stand-in carries
+ * the model's exact surface. The log lines the libraries print are captured
  * and checked, so a clean run prints only "OK". Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
@@ -30,6 +32,9 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
+#include <QMetaMethod>
+#include <QMetaObject>
+#include <QMetaProperty>
 #include <QObject>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -69,6 +74,7 @@
 #include "decryption_profiles_model.h"
 #include "imported_files_model.h"
 #include "json_store.h"
+#include "qml_backup_recorder.h"
 #include "realtime_clock.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
@@ -682,7 +688,7 @@ test_round_trip(FakeHost& host, const QString& document, const Captured& before)
         expect("the commit closes the app", commit.value("ok").toBool() && commit.value("quitting").toBool()
                                                 && commit.value("error").toString().isEmpty());
         expect("quitApp is called once", host.quitCalls == 1);
-        expect("the restore is confirmed", dsd_qt::backup::pending_committed() && !model.restorePending());
+        expect("the restore is confirmed and waits", dsd_qt::backup::pending_committed() && model.restorePending());
     }
     // The next start.
     const ApplyResult applied = dsd_qt::backup::apply_pending_restore({});
@@ -1363,12 +1369,98 @@ test_startup_outcome(FakeHost& host, const QString& document) {
     expect("a deferred outcome", model.startupOutcome().value("kind") == "deferred"
                                      && model.startupOutcome().value("message") == deferred.reason
                                      && model.startupOutcome().value("recordingsToChoose").toInt() == 1);
-    expect("a deferred restore is not a reopen notice", !model.restorePending());
+    expect("a deferred restore waits", model.restorePending());
     const QVariantMap discarded = model.discardDeferredRestore();
     expect("the deferred restore is discarded", discarded.value("ok").toBool() && discarded.value("discarded").toBool()
-                                                    && !dsd_qt::backup::pending_exists());
+                                                    && !dsd_qt::backup::pending_exists() && !model.restorePending());
     expect("and its card is gone",
            model.startupOutcome().value("kind").toString().isEmpty() && results.outcomeChanges == 1);
+}
+
+/** Inspect @p document and commit it through a host that cannot quit, as a start that deferred it would leave it. */
+void
+commit_document(const QString& document) {
+    StayingHost staying;
+    BackupModel model(&staying, {});
+    Results results(model);
+    expect("the backup inspects", inspect(model, results, document).value("ok").toBool());
+    BackupModel unconfirmed(&staying, {});
+    expect("an unconfirmed restore does not wait", !unconfirmed.restorePending());
+    expect("the restore commits", model.commitRestore().value("ok").toBool());
+}
+
+void
+test_pending_at_start(const QString& document) {
+    StayingHost host;
+    commit_document(document);
+    {
+        BackupModel model(&host, {});
+        Results results(model);
+        expect("a restore an earlier start left committed waits from the start", model.restorePending());
+        const QVariantMap discarded = model.discardRestore();
+        expect("discarding it clears it", discarded.value("ok").toBool() && discarded.value("discarded").toBool()
+                                              && !model.restorePending() && results.pendingChanges == 1
+                                              && !dsd_qt::backup::pending_exists());
+    }
+
+    // The apply got as far as a complete journal, then stopped (stuck, or deferred on resuming it).
+    commit_document(document);
+    const QString journal = at("restore-pending/journal/COMPLETE");
+    expect("mark the journal complete", write_file(journal, QByteArray()));
+    {
+        BackupModel model(&host, {});
+        Results results(model);
+        expect("an apply part-way through waits", model.restorePending());
+        const QVariantMap refused = model.discardRestore();
+        expect("an apply part-way through cannot be discarded, and says so",
+               !refused.value("ok").toBool() && !refused.value("discarded").toBool()
+                   && refused.value("error") == "RestoreInProgress" && model.restorePending()
+                   && results.pendingChanges == 0 && dsd_qt::backup::pending_committed());
+        expect("its deferred card discards nothing either",
+               model.discardDeferredRestore().value("error") == "RestoreInProgress" && model.restorePending());
+    }
+    expect("clean up",
+           QFile::remove(journal) && dsd_qt::backup::discard_pending() && !dsd_qt::backup::pending_exists());
+}
+
+/** Properties (type, name, notify), invokables and signals (return type and signature) a meta-object adds. */
+QStringList
+qml_surface(const QMetaObject& meta) {
+    QStringList surface;
+    for (int i = meta.propertyOffset(); i < meta.propertyCount(); ++i) {
+        const QMetaProperty property = meta.property(i);
+        surface.append(QStringLiteral("property %1 %2 %3%4")
+                           .arg(QLatin1String(property.typeName()), QLatin1String(property.name()),
+                                property.isWritable() ? QStringLiteral("writable ") : QString(),
+                                property.hasNotifySignal()
+                                    ? QStringLiteral("notify %1").arg(QLatin1String(property.notifySignal().name()))
+                                    : QStringLiteral("constant")));
+    }
+    for (int i = meta.methodOffset(); i < meta.methodCount(); ++i) {
+        const QMetaMethod method = meta.method(i);
+        const bool signal = method.methodType() == QMetaMethod::Signal;
+        if (!signal && method.methodType() != QMetaMethod::Method) {
+            continue; // slots are the model's own plumbing
+        }
+        surface.append(QStringLiteral("%1 %2 %3")
+                           .arg(signal ? QStringLiteral("signal") : QStringLiteral("invokable"),
+                                QLatin1String(method.typeName()), QLatin1String(method.methodSignature())));
+    }
+    surface.sort();
+    return surface;
+}
+
+void
+test_recorder_parity() {
+    const QStringList model = qml_surface(BackupModel::staticMetaObject);
+    const QStringList recorder = qml_surface(BackupRecorder::staticMetaObject);
+    expect("the model publishes a QML surface", model.size() > 20);
+    for (const QString& entry : model) {
+        expect(QStringLiteral("the QML tests' backup stand-in has: %1").arg(entry), recorder.contains(entry));
+    }
+    for (const QString& entry : recorder) {
+        expect(QStringLiteral("the model has the stand-in's: %1").arg(entry), model.contains(entry));
+    }
 }
 
 void
@@ -1478,6 +1570,8 @@ main(int argc, char** argv) {
         quietly([&]() { test_teardown_stops_a_held_copy(host, full); });
         quietly([&]() { test_base_host_abort(scratch.path()); });
         quietly([&]() { test_startup_outcome(host, full); });
+        quietly([&]() { test_pending_at_start(full); });
+        quietly([&]() { test_recorder_parity(); });
         quietly([&]() { test_sweep(host); });
         quietly([&]() { test_small_things(host); });
         test_passphrase_written_nowhere(scratch.path());

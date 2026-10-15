@@ -65,7 +65,11 @@ class BackupModel : public QObject {
     Q_PROPERTY(bool flowActive READ flowActive NOTIFY flowActiveChanged)
     /** No session is on screen and no job runs. */
     Q_PROPERTY(bool restoreAllowed READ restoreAllowed NOTIFY restoreAllowedChanged)
-    /** A confirmed restore waits for the next start because the host could not close the app. */
+    /**
+     * A committed restore waits for the next start: confirmed here (the app may not have closed), or left by an earlier
+     * start that deferred it or could not finish it. Follows the stage on disk after construction, commits and
+     * discards.
+     */
     Q_PROPERTY(bool restorePending READ restorePending NOTIFY restorePendingChanged)
     /**
      * What a restore applied at start did (this start's apply, else the result file an earlier start left until it
@@ -151,7 +155,8 @@ class BackupModel : public QObject {
      * Confirm the pending restore and ask the host to close the app. Synchronous; refused while a job runs (Busy),
      * a session is on screen or the engine is busy (SessionActive), and when nothing could be marked (Io).
      *
-     * @return `{ok, quitting, error}`: `quitting` false with `ok` means the app stays open and restorePending is set.
+     * @return `{ok, quitting, error}`: `quitting` false with `ok` means the app stays open. A commit sets
+     *         restorePending either way.
      */
     Q_INVOKABLE QVariantMap commitRestore();
 
@@ -160,7 +165,8 @@ class BackupModel : public QObject {
      *
      * @return `{ok, discarded, error}`: `ok` when nothing is left; `discarded` when the restore will not apply. Not
      *         `ok` but `discarded`: some of its files stay until the next start removes them. Neither: nothing was
-     *         removed and the restore still applies at the next start (`error` "Io").
+     *         removed and the restore still applies at the next start; `error` is "RestoreInProgress" when its apply
+     *         has started (only the next start can finish or undo it), else "Io".
      */
     Q_INVOKABLE QVariantMap discardRestore();
 
@@ -244,6 +250,8 @@ class BackupModel : public QObject {
     void dropExportFile();
     void updateRestoreAllowed();
     void setRestorePending(bool pending);
+    /** restorePending from the stage on disk. */
+    void syncRestorePending();
     void setStartupOutcome(const QVariantMap& outcome);
 
     /** Queue @p work for the worker thread. */

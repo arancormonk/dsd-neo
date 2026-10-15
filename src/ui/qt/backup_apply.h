@@ -84,6 +84,12 @@ bool pending_exists();
 /** Whether `restore-pending/` exists and is committed. */
 bool pending_committed();
 
+/**
+ * Whether the apply has started on the committed `restore-pending/` (its journal is complete): only the apply may finish
+ * or undo it, so discard_pending() refuses it.
+ */
+bool pending_apply_started();
+
 /** Remove every `<root>/restore-staging-*`. Only while no staging job runs. */
 void sweep_stale_staging();
 

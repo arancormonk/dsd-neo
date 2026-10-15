@@ -79,8 +79,9 @@ UiPanel {
     function discard() {
         actionError = "";
         var result = backup.discardDeferredRestore();
-        if (!result.discarded)
-            actionError = qsTr("Couldn't discard the restore. DSD-neo tries it again the next time it opens.");
+        if (result.discarded)
+            return;
+        actionError = result.error === "RestoreInProgress" ? qsTr("This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it.") : qsTr("Couldn't discard the restore. DSD-neo tries it again the next time it opens.");
     }
     function dismiss() {
         actionError = "";

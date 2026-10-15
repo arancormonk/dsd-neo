@@ -663,13 +663,15 @@ Item {
 
                     // A restore replaces what a running session uses, so it waits
                     // for Stop; one already waiting finishes or is cancelled first.
+                    // A backup job on the worker also shuts the row, but is no
+                    // reason to stop listening.
                     DisclosureRow {
                         objectName: "settingsBackupRestoreRow"
                         readonly property bool available: backup.restoreAllowed && !backup.restorePending
                         enabled: available
                         showCaret: available
                         title: qsTr("Restore from backup")
-                        subtitle: !backup.restoreAllowed ? qsTr("Stop listening to restore") : backup.restorePending ? qsTr("A restore is waiting to finish") : qsTr("Replaces your setup on this phone")
+                        subtitle: !backup.restoreAllowed && decoderHost.sessionActive ? qsTr("Stop listening to restore") : backup.restorePending ? qsTr("A restore is waiting to finish") : qsTr("Replaces your setup on this phone")
                         onTapped: screen.restoreBackupRequested()
                     }
 

@@ -80,6 +80,7 @@
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "p25_network_model.h" // WP-F2
+#include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
 #include "qml_spectrum_stub.h"
 #include "saved_systems_model.h"
@@ -1546,268 +1547,6 @@ class ReadingMap : public QQmlPropertyMap {
                         bool geocodeOk, const QString& postal, const QString& country, const QString& error);
 };
 
-/**
- * @brief Stand-in for BackupModel (issue #580) that records instead of working.
- *
- * Mirrors the QML-facing surface of src/ui/qt/backup_model.h: the same read-only
- * properties, invokables and result signals. A case drives it through `testContext`
- * (setBackup(), setBackupReply(), emitBackup()) rather than by writing the
- * properties, which stay read-only as they are in production, so a screen that
- * wrote one would fail here as it would on the phone.
- *
- * Only the state changes the screens rely on are mimicked: a job sets `busy` and
- * its result clears it before the signal, a commit that does not quit leaves
- * `restorePending`, a discard clears it (and a deferred card), and acknowledging
- * clears the startup outcome.
- */
-class BackupRecorder : public QObject {
-    Q_OBJECT
-    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
-    Q_PROPERTY(bool flowActive READ flowActive NOTIFY flowActiveChanged)
-    Q_PROPERTY(bool restoreAllowed READ restoreAllowed NOTIFY restoreAllowedChanged)
-    Q_PROPERTY(bool restorePending READ restorePending NOTIFY restorePendingChanged)
-    Q_PROPERTY(QVariantMap startupOutcome READ startupOutcome NOTIFY startupOutcomeChanged)
-    Q_PROPERTY(int minPassphraseLength READ minPassphraseLength CONSTANT)
-    Q_PROPERTY(QVariantMap lastResult READ lastResult NOTIFY lastResultChanged)
-
-  public:
-    explicit BackupRecorder(QObject* parent) : QObject(parent) { reset(); }
-
-    bool
-    busy() const {
-        return m_busy;
-    }
-
-    bool
-    flowActive() const {
-        return m_flow_active;
-    }
-
-    bool
-    restoreAllowed() const {
-        return m_restore_allowed;
-    }
-
-    bool
-    restorePending() const {
-        return m_restore_pending;
-    }
-
-    QVariantMap
-    startupOutcome() const {
-        return m_startup_outcome;
-    }
-
-    static int
-    minPassphraseLength() {
-        return 8;
-    }
-
-    QVariantMap
-    lastResult() const {
-        return m_last_result;
-    }
-
-    /* A fixed name: the real one stamps today's date, which a case cannot pin. */
-    Q_INVOKABLE QString
-    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
-    suggestedFileName() const {
-        return QStringLiteral("dsd-neo-backup-2026-10-14.dsdbak");
-    }
-
-    Q_INVOKABLE void
-    prepareExport(const QString& passphrase) {
-        record(QStringLiteral("prepareExport"), {passphrase});
-        setBusy(true);
-    }
-
-    Q_INVOKABLE void
-    saveExport(const QString& reference) {
-        record(QStringLiteral("saveExport"), {reference});
-        setBusy(true);
-    }
-
-    Q_INVOKABLE void
-    discardExport() {
-        record(QStringLiteral("discardExport"), {});
-    }
-
-    Q_INVOKABLE void
-    inspectRestore(const QString& reference, const QString& passphrase) {
-        record(QStringLiteral("inspectRestore"), {reference, passphrase});
-        setBusy(true);
-    }
-
-    Q_INVOKABLE QVariantMap
-    commitRestore() {
-        record(QStringLiteral("commitRestore"), {});
-        const QVariantMap reply = m_replies.value(QStringLiteral("commitRestore")).toMap();
-        if (reply.value(QStringLiteral("ok")).toBool() && !reply.value(QStringLiteral("quitting")).toBool()) {
-            setState(QStringLiteral("restorePending"), true);
-        }
-        return reply;
-    }
-
-    Q_INVOKABLE QVariantMap
-    discardRestore() {
-        record(QStringLiteral("discardRestore"), {});
-        return applyDiscard(QStringLiteral("discardRestore"),
-                            m_startup_outcome.value(QStringLiteral("kind")).toString() == QStringLiteral("deferred"));
-    }
-
-    Q_INVOKABLE QVariantMap
-    discardDeferredRestore() {
-        record(QStringLiteral("discardDeferredRestore"), {});
-        return applyDiscard(QStringLiteral("discardDeferredRestore"), true);
-    }
-
-    Q_INVOKABLE void
-    cancel() {
-        record(QStringLiteral("cancel"), {});
-        setBusy(false);
-    }
-
-    Q_INVOKABLE void
-    setFlowActive(bool active) {
-        record(QStringLiteral("setFlowActive"), {active});
-        setState(QStringLiteral("flowActive"), active);
-    }
-
-    Q_INVOKABLE void
-    acknowledgeStartupOutcome() {
-        record(QStringLiteral("acknowledgeStartupOutcome"), {});
-        setState(QStringLiteral("startupOutcome"), QVariantMap{{QStringLiteral("kind"), QString()}});
-    }
-
-    /** @brief Every call so far, oldest first, as `{name, args}` maps. */
-    QVariantList
-    calls() const {
-        return m_calls;
-    }
-
-    /** @brief Back to a fresh model: idle, restore allowed, nothing pending, no outcome, no calls. */
-    void
-    reset() {
-        m_calls.clear();
-        const QVariantMap commit_reply{
-            {QStringLiteral("ok"), true}, {QStringLiteral("quitting"), false}, {QStringLiteral("error"), QString()}};
-        const QVariantMap discard_reply{
-            {QStringLiteral("ok"), true}, {QStringLiteral("discarded"), true}, {QStringLiteral("error"), QString()}};
-        m_replies = {{QStringLiteral("commitRestore"), commit_reply},
-                     {QStringLiteral("discardRestore"), discard_reply},
-                     {QStringLiteral("discardDeferredRestore"), discard_reply}};
-        setState(QStringLiteral("busy"), false);
-        setState(QStringLiteral("flowActive"), false);
-        setState(QStringLiteral("restoreAllowed"), true);
-        setState(QStringLiteral("restorePending"), false);
-        setState(QStringLiteral("startupOutcome"), QVariantMap{{QStringLiteral("kind"), QString()}});
-        setState(QStringLiteral("lastResult"), QVariantMap());
-    }
-
-    /** @brief Set one property by name, announcing a change; false for a name the model does not publish. */
-    bool
-    setState(const QString& key, const QVariant& value) {
-        if (key == QStringLiteral("busy")) {
-            return assign(m_busy, value.toBool(), &BackupRecorder::busyChanged);
-        }
-        if (key == QStringLiteral("flowActive")) {
-            return assign(m_flow_active, value.toBool(), &BackupRecorder::flowActiveChanged);
-        }
-        if (key == QStringLiteral("restoreAllowed")) {
-            return assign(m_restore_allowed, value.toBool(), &BackupRecorder::restoreAllowedChanged);
-        }
-        if (key == QStringLiteral("restorePending")) {
-            return assign(m_restore_pending, value.toBool(), &BackupRecorder::restorePendingChanged);
-        }
-        if (key == QStringLiteral("startupOutcome")) {
-            m_startup_outcome = value.toMap();
-            Q_EMIT startupOutcomeChanged();
-            return true;
-        }
-        if (key == QStringLiteral("lastResult")) {
-            m_last_result = value.toMap();
-            Q_EMIT lastResultChanged();
-            return true;
-        }
-        return false;
-    }
-
-    /** @brief What commitRestore(), discardRestore() or discardDeferredRestore() answers next. */
-    void
-    setReply(const QString& call, const QVariantMap& reply) {
-        m_replies.insert(call, reply);
-    }
-
-    /** @brief Deliver one result signal the way the model does: idle first, then the signal. */
-    bool
-    emitResult(const QString& signal, const QVariantMap& result) {
-        setBusy(false);
-        if (signal == QStringLiteral("exportPrepared")) {
-            Q_EMIT exportPrepared(result);
-        } else if (signal == QStringLiteral("exportFinished")) {
-            Q_EMIT exportFinished(result);
-        } else if (signal == QStringLiteral("inspectFinished")) {
-            Q_EMIT inspectFinished(result);
-        } else {
-            return false;
-        }
-        return true;
-    }
-
-  Q_SIGNALS:
-    void busyChanged();
-    void flowActiveChanged();
-    void restoreAllowedChanged();
-    void restorePendingChanged();
-    void startupOutcomeChanged();
-    void lastResultChanged();
-    void exportPrepared(const QVariantMap& result);
-    void exportFinished(const QVariantMap& result);
-    void inspectFinished(const QVariantMap& result);
-
-  private:
-    void
-    record(const QString& name, const QVariantList& args) {
-        m_calls.append(QVariantMap{{QStringLiteral("name"), name}, {QStringLiteral("args"), args}});
-    }
-
-    void
-    setBusy(bool busy) {
-        assign(m_busy, busy, &BackupRecorder::busyChanged);
-    }
-
-    bool
-    assign(bool& field, bool value, void (BackupRecorder::*changed)()) {
-        if (field != value) {
-            field = value;
-            Q_EMIT(this->*changed)();
-        }
-        return true;
-    }
-
-    /* The model's discard: when the restore will never apply, nothing is pending and a deferred card goes. */
-    QVariantMap
-    applyDiscard(const QString& call, bool clearsOutcome) {
-        const QVariantMap reply = m_replies.value(call).toMap();
-        if (reply.value(QStringLiteral("discarded")).toBool()) {
-            setState(QStringLiteral("restorePending"), false);
-            if (clearsOutcome) {
-                setState(QStringLiteral("startupOutcome"), QVariantMap{{QStringLiteral("kind"), QString()}});
-            }
-        }
-        return reply;
-    }
-
-    bool m_busy = false;
-    bool m_flow_active = false;
-    bool m_restore_allowed = true;
-    bool m_restore_pending = false;
-    QVariantMap m_startup_outcome;
-    QVariantMap m_last_result;
-    QVariantMap m_replies;
-    QVariantList m_calls;
-};
-
 class RadioReferenceRecorder : public QQmlPropertyMap {
     Q_OBJECT
 
@@ -2033,7 +1772,7 @@ class Setup : public QObject {
         }
     }
 
-    /** @brief Set one `backup` property (busy, flowActive, restoreAllowed, restorePending, startupOutcome, lastResult). */
+    /** @brief Set one `backup` property (busy, flowActive, restorePending, startupOutcome, lastResult). */
     Q_INVOKABLE bool
     setBackup(const QString& key, const QVariant& value) {
         return m_backup != nullptr && m_backup->setState(key, value);
@@ -2137,6 +1876,9 @@ class Setup : public QObject {
         if (on) {
             m_lifecycle_host = signals_initialized ? m_initializing_host : m_import_host;
             m_lifecycle_host->acceptStart = true;
+            if (m_backup != nullptr) {
+                m_backup->setHost(m_lifecycle_host); // the model's session gate follows the host the case runs on
+            }
             m_lifecycle_host->startRunning = start_running;
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_app_prefs);
@@ -3009,6 +2751,7 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("appVersionText"), QStringLiteral("0.0.0-test"));
         // Issue #580: the backup model's surface, recorded rather than run.
         m_backup = new BackupRecorder(engine);
+        m_backup->setHost(m_lifecycle_host);
         ctx->setContextProperty(QStringLiteral("backup"), m_backup);
     }
 
