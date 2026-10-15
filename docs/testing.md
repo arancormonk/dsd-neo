@@ -216,7 +216,12 @@ ctest --preset dev-debug -L iq-decode --output-on-failure
 
 Each decode case asserts on a decoded payload field (NAC, WACN/SYS, colour code,
 RAN, callsign, site ID) rather than a sync count, so a silent framing or protocol
-regression fails the test instead of merely moving a counter. The
+regression fails the test instead of merely moving a counter. A case that needs the field
+a minimum number of times counts its matches with `tests/regex_match_count.cmake`
+(`REGEX_MATCH_COUNT`), as `iq_float_symbol_replay_check.cmake` and
+`audio_stdout_check.cmake` do: a list from `string(REGEX MATCHALL)` runs together matches
+holding one square bracket of a pair (`AACH 2/1/9]` from a TETRA payload line) and splits
+one holding a semicolon. The
 `DECODE_IQ_*_AUTO_HUNT` cases are the documented exception, described below. I/Q
 replay defaults to `--iq-replay-rate fast`, so run one after another in
 `dev-debug` the 40 digital cases take about 27 seconds and the analog ones (see

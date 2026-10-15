@@ -434,6 +434,16 @@ add_test(
         -P ${PROJECT_SOURCE_DIR}/tests/cmake/SarifDropSuppressed.cmake
 )
 
+# The decode check scripts count a payload regex's matches with
+# tests/regex_match_count.cmake, whose count a match holding one square bracket
+# of a pair or a semicolon must not change.
+add_test(
+    NAME REGEX_MATCH_COUNT
+    COMMAND
+        ${CMAKE_COMMAND} -P
+        ${PROJECT_SOURCE_DIR}/tests/cmake/RegexMatchCount.cmake
+)
+
 # Runs everywhere: the macOS curses decision takes fabricated prefix trees, so
 # hosts that can never reach the real code path still guard it.
 add_test(

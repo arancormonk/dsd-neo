@@ -15,6 +15,8 @@ foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
     endif()
 endforeach()
 
+include("${CMAKE_CURRENT_LIST_DIR}/regex_match_count.cmake")
+
 # MODE may carry several space-separated decoder flags (e.g. "-fs -F").
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
 
@@ -68,8 +70,7 @@ if(DEFINED MIN_MATCHES AND NOT "${MIN_MATCHES}" STREQUAL "")
             "iq_decode_check: MIN_MATCHES must be a positive integer"
         )
     endif()
-    string(REGEX MATCHALL "${EXPECTED}" _expected_matches "${_all}")
-    list(LENGTH _expected_matches _expected_match_count)
+    dsd_test_count_regex_matches(_expected_match_count "${EXPECTED}" "${_all}")
     if(_expected_match_count LESS MIN_MATCHES)
         message(
             FATAL_ERROR

@@ -28,6 +28,8 @@ if(NOT "${MIN_MATCHES}" MATCHES "^[1-9][0-9]*$")
     )
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/regex_match_count.cmake")
+
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 
@@ -49,8 +51,7 @@ function(_float_replay_expect leg rc all out_var)
     if(NOT "${rc}" STREQUAL "0")
         _float_replay_fail("${leg}: exited with '${rc}' (expected 0)\n${all}")
     endif()
-    string(REGEX MATCHALL "${EXPECTED}" _matches "${all}")
-    list(LENGTH _matches _count)
+    dsd_test_count_regex_matches(_count "${EXPECTED}" "${all}")
     if(_count LESS MIN_MATCHES)
         _float_replay_fail(
             "${leg}: payload /${EXPECTED}/ matched ${_count} times, expected at least ${MIN_MATCHES}\n${all}"

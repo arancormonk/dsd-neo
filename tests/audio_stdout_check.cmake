@@ -24,6 +24,8 @@ foreach(
     endif()
 endforeach()
 
+include("${CMAKE_CURRENT_LIST_DIR}/regex_match_count.cmake")
+
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
@@ -49,8 +51,7 @@ endfunction()
 
 # Count the matches of a regex in a string.
 function(_audio_stdout_count out_var regex text)
-    string(REGEX MATCHALL "${regex}" _hits "${text}")
-    list(LENGTH _hits _count)
+    dsd_test_count_regex_matches(_count "${regex}" "${text}")
     set(${out_var} ${_count} PARENT_SCOPE)
 endfunction()
 
