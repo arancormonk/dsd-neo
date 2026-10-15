@@ -46,6 +46,7 @@ struct PlatformCopies {
     int answer = dsd_qt::DecoderHost::DocumentCopied;
     bool writesDest = true; // As the Kotlin side's rename does on a copy.
     bool saves = true;
+    bool holdsResolver = true;
 };
 } // namespace
 
@@ -164,6 +165,11 @@ DecoderHostAndroid::importDocument(const QString&, const QString&, const QString
 bool
 DecoderHostAndroid::quitApp() {
     return false;
+}
+
+bool
+DecoderHostAndroid::platformHoldsResolver() {
+    return platform().holdsResolver;
 }
 
 int
@@ -292,8 +298,8 @@ check_document_dispatch() {
     write_file(dest, "stale");
     platform() = PlatformCopies();
     platform().writesDest = false;
-    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentFailed,
-          "a copy reported without its file fails");
+    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentLocalFailed,
+          "a copy reported without its file (a failed JNI call reads as 0) is the app's failure, not the document's");
     check(!platform().destExisted, "a stale destination is removed before the platform copies");
     check(!QFileInfo::exists(dest), "a failed copy leaves nothing at the destination");
 
@@ -327,6 +333,15 @@ check_document_dispatch() {
     check(host.copyDocumentToFile(content, QString(), 77) == DecoderHost::DocumentFailed
               && host.copyDocumentToFile(content, dest, -1) == DecoderHost::DocumentFailed && platform().calls == 0,
           "an empty destination or a negative cap never reaches the platform");
+
+    /* Without the application's ContentResolver no platform transfer can run: the app's failure, never the document's,
+     * and the platform is not asked. */
+    platform() = PlatformCopies();
+    platform().holdsResolver = false;
+    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentLocalFailed && platform().calls == 0,
+          "a copy without a held ContentResolver is the app's failure");
+    check(!host.copyFileToDocument(source, content) && platform().calls == 0,
+          "a save without a held ContentResolver fails without asking the platform");
 
     platform() = PlatformCopies();
     check(host.copyFileToDocument(source, content) && platform().calls == 1 && platform().sourcePath == source

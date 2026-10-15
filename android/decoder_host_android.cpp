@@ -424,11 +424,16 @@ DecoderHostAndroid::quitApp() {
  * QJniObject attaches that thread to the VM and loads the app classes through Qt's class loader, and its call frames
  * release their local references; the calls use the held ContentResolver. Neither waits on another thread.
  */
+bool
+DecoderHostAndroid::platformHoldsResolver() {
+    return g_content_resolver.load() != nullptr;
+}
+
 int
 DecoderHostAndroid::platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) {
     const jobject resolver = g_content_resolver.load();
     if (resolver == nullptr) {
-        return DocumentFailed;
+        return DocumentLocalFailed; // the app never held its ContentResolver: nothing to do with the document
     }
     const QJniObject uri = QJniObject::fromString(reference);
     const QJniObject dest = QJniObject::fromString(destPath);

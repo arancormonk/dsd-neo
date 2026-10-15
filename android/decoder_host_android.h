@@ -179,8 +179,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      *
      * For a content:// reference, copyDocumentToFile() replaces @p destPath: whatever is there is removed before the
      * copy starts (DocumentLocalFailed when it cannot be), so a failure leaves nothing at @p destPath and
-     * DocumentCopied always names this copy's file. The platform's DocumentLocalFailed (its temp file or the rename
-     * failed) passes through, as does DocumentTooLarge; any other answer but a copy whose file is there fails.
+     * DocumentCopied always names this copy's file. The platform's DocumentLocalFailed (no held ContentResolver, or
+     * its temp file or the rename failed) passes through, as does DocumentTooLarge. A copy reported without its file
+     * (a failed JNI call reads as 0) is DocumentLocalFailed too; any other answer is DocumentFailed.
      */
     int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const override;
     bool copyFileToDocument(const QString& sourcePath, const QString& reference) const override;
@@ -204,7 +205,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static bool readEngineRunning();
     /** @brief DecoderService.stateName(); empty when the call failed. */
     static QByteArray readServiceState();
-    /** @brief DocumentCopies.copyDocumentToFile() over JNI: a DocumentCopy value, and 0 when the call failed. */
+    /** @brief Whether the application's ContentResolver is held, without which no platform transfer can run. */
+    static bool platformHoldsResolver();
+    /**
+     * @brief DocumentCopies.copyDocumentToFile() over JNI: a DocumentCopy value, 0 when the call failed, and
+     * DocumentLocalFailed without a held ContentResolver.
+     */
     static int platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes);
     /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
     static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
