@@ -304,6 +304,37 @@ test_am_system(void) {
     tcpTetra.insert(QStringLiteral("port"), 7355);
     expect("the TETRA start refusal carries its category",
            tetraBuilder.build(tcpTetra).value(QStringLiteral("error")).toString() == QStringLiteral("tetra-needs-iq"));
+
+    /* Issue #580: a restored backup leaves every replay system without its recording. Such a system is refused before
+       it starts (never "-i" with an empty path), for that reason, ahead of what its decode mode needs of the file: a
+       TETRA one must not be told to choose a radio. AM still needs a radio whatever the file. */
+    for (const char* flag : {"", "-ft", "-fT"}) {
+        for (const char* path : {"", "   "}) {
+            QVariantMap replay;
+            replay.insert(QStringLiteral("sourceType"), QStringLiteral("file"));
+            replay.insert(QStringLiteral("filePath"), QString::fromLatin1(path));
+            replay.insert(QStringLiteral("decodeFlag"), QString::fromLatin1(flag));
+            error = SessionArgsError::None;
+            expect(qPrintable(QStringLiteral("a file system without its recording is refused for that (%1)")
+                                  .arg(QString::fromLatin1(flag))),
+                   session_args_build(replay, SessionArgPrefs(), &error).isEmpty()
+                       && error == SessionArgsError::RecordingMissing);
+            expect("the missing-recording start refusal carries its category",
+                   tetraBuilder.build(replay).value(QStringLiteral("error")).toString()
+                       == QStringLiteral("recording-missing"));
+        }
+    }
+    QVariantMap amReplay;
+    amReplay.insert(QStringLiteral("sourceType"), QStringLiteral("file"));
+    amReplay.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fM"));
+    error = SessionArgsError::None;
+    expect("AM on a file still needs a radio, recording or not",
+           session_args_build(amReplay, SessionArgPrefs(), &error).isEmpty()
+               && error == SessionArgsError::AmNeedsRadio);
+    expect(
+        "the missing-recording refusal says how to fix it",
+        session_args_error_text(SessionArgsError::RecordingMissing)
+            == QStringLiteral("This system's recording is missing. Edit the system and choose its recording again."));
 }
 
 /*
@@ -761,8 +792,8 @@ test_every_error_has_text() {
             g_failures++;
         }
     }
-    expect("the last error value is AM on a radio whose bandwidth cannot filter it",
-           dsd_qt::SessionArgsErrorLast == SessionArgsError::TetraNeedsIq);
+    expect("the last error value is a file system without its recording",
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::RecordingMissing);
     expect("a value past the last one has no text",
            dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
 }

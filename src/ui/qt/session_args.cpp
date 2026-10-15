@@ -505,6 +505,8 @@ constexpr SessionArgsErrorText k_error_texts[] = {
     {SessionArgsError::TetraNeedsIq, "TETRA needs a radio source (USB, Airspy or rtl_tcp) or a symbol capture (.bin) "
                                      "file: network audio and audio files arrive already demodulated. Choose a radio "
                                      "source, or another decode mode."},
+    {SessionArgsError::RecordingMissing,
+     "This system's recording is missing. Edit the system and choose its recording again."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -619,7 +621,9 @@ session_args_bandwidth_khz(const QVariantMap& system, const SessionArgPrefs& pre
    I/Q, and the engine refuses it on audio that arrives already demodulated; the wizard keeps the pair from being saved,
    and a system saved before that fails here with a reason rather than at engine startup. The same holds for an AM
    channel the radio's DSP bandwidth cannot filter (session_args_am_fits_bandwidth()), and for -fT, whose symbols the
-   engine reads from a radio's I/Q or a symbol capture file only (dsd_opts_audio_in_dev_is_symbol_capture()). */
+   engine reads from a radio's I/Q or a symbol capture file only (dsd_opts_audio_in_dev_is_symbol_capture()). A file
+   source needs its recording first (issue #580: a restored backup leaves every replay system without one), so the
+   reason it cannot start names that, not what the decode mode would need of the file. */
 static SessionArgsError
 session_args_source_error(const QVariantMap& system, const QString& sourceType, int bandwidthKhz,
                           const QString& freqMhz) {
@@ -628,6 +632,10 @@ session_args_source_error(const QVariantMap& system, const QString& sourceType, 
     if (!is_radio_source(sourceType)) {
         if (am) {
             return SessionArgsError::AmNeedsRadio;
+        }
+        if (sourceType == QLatin1String("file")
+            && system.value(QStringLiteral("filePath")).toString().trimmed().isEmpty()) {
+            return SessionArgsError::RecordingMissing;
         }
         const QByteArray path = system.value(QStringLiteral("filePath")).toString().toUtf8();
         const bool symbols =
@@ -780,8 +788,10 @@ validationResult(SessionArgsError error) {
                                            : error == SessionArgsError::AmNeedsRadio ? QStringLiteral("am-needs-radio")
                                            : error == SessionArgsError::AmBandwidth  ? QStringLiteral("am-bandwidth")
                                            : error == SessionArgsError::TetraNeedsIq ? QStringLiteral("tetra-needs-iq")
-                                           : error == SessionArgsError::None         ? QString()
-                                                                                     : QStringLiteral("encryption"));
+                                           : error == SessionArgsError::RecordingMissing
+                                               ? QStringLiteral("recording-missing")
+                                           : error == SessionArgsError::None ? QString()
+                                                                             : QStringLiteral("encryption"));
     result.insert(QStringLiteral("errorText"), session_args_error_text(error));
     if (error == SessionArgsError::AmBandwidth) {
         result.insert(QStringLiteral("bandwidthChoices"), session_args_am_bandwidth_choices());

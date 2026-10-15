@@ -598,6 +598,8 @@ Window {
                 mainRoot.startError = qsTr("The session contains a prohibited extra option or grouped short options. Remove prohibited options and write each short option separately.");
             } else if (built.error === "am-needs-radio") {
                 mainRoot.startError = qsTr("“%1” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it.").arg(sys.name);
+            } else if (built.error === "recording-missing") {
+                mainRoot.startError = qsTr("The recording for “%1” is missing. Edit the system and choose its recording again.").arg(sys.name);
             } else if (built.error === "tetra-needs-iq") {
                 mainRoot.startError = qsTr("“%1” decodes TETRA, which needs a radio source or a symbol capture (.bin): network audio and audio files arrive already demodulated. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "am-bandwidth") {
