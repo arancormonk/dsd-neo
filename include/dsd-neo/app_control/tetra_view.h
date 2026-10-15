@@ -35,7 +35,10 @@ enum {
  *
  * Every text is "" when its row has nothing to show, and is always terminated; the enumerations the fields name are
  * in core/tetra_publication.h. @c network_text names the colour code the way the call history names one ("CC 25",
- * app_control/access_code_view.h), in decimal like every colour code.
+ * app_control/access_code_view.h), in decimal like every colour code, with the location area and the carrier being
+ * received once known: the fields a TEA1 reduced key is bound to. @c mode_text names every air interface algorithm
+ * signalling named; @c security_text the cell's broadcast security and the key that applies to the carrier being
+ * received, or a direct mode transmission's security class.
  */
 typedef struct {
     uint8_t visible;         /**< 1 = TETRA decoding runs and a block has decoded: the TETRA rows belong on screen. */
@@ -43,6 +46,7 @@ typedef struct {
     uint8_t trunked;         /**< 1 = trunked mode (TMO); 0 = direct mode (DMO). */
     uint8_t encrypted;       /**< 1 = the air interface is encrypted. */
     uint8_t network_known;   /**< 1 = @c network_text is set. */
+    uint8_t security_known;  /**< 1 = @c security_text is set. */
     uint8_t trunk_visible;   /**< 1 = trunking follows calls on this downlink: @c trunk_text is set. */
     uint8_t trunk_state;     /**< dsd_tetra_trunk_state */
     uint8_t on_traffic;      /**< 1 = tuned to a traffic channel (a call, or its hangtime). */
@@ -54,7 +58,8 @@ typedef struct {
     uint8_t codec_fault;     /**< 1 = no codec, one that failed to load, or one whose last frames failed. */
     uint32_t generation;     /**< The publication's reset counter. */
     char mode_text[DSD_APP_TETRA_TEXT_SIZE];      /**< "TMO downlink · encrypted (TEA2)", "DMO direct · clear". */
-    char network_text[DSD_APP_TETRA_TEXT_SIZE];   /**< "MCC 262 · MNC 1001 · CC 25". */
+    char network_text[DSD_APP_TETRA_TEXT_SIZE];   /**< "MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654". */
+    char security_text[DSD_APP_TETRA_TEXT_SIZE];  /**< "class 2 · SCKN 3 · authentication · TEA1 reduced key". */
     char trunk_text[DSD_APP_TETRA_TEXT_SIZE];     /**< "control channel", "traffic channel", "idle". */
     char control_text[DSD_APP_TETRA_TEXT_SIZE];   /**< "carrier 321 · 392.0125 MHz". */
     char traffic_text[DSD_APP_TETRA_TEXT_SIZE];   /**< "carrier 654 · TS 1,3 · 392.1250 MHz". */

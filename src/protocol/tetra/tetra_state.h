@@ -232,6 +232,20 @@ typedef struct {
     uint8_t bits[TETRA_MAC_TM_SDU_MAX_BITS]; /* one bit per byte */
 } tetra_mac_fragment;
 
+/** The security information a cell broadcasts in its SYSINFO extended services broadcast (EN 300 392-7 table A.104,
+ * EN 300 392-2 table 21.67). Elements a note of table A.104 voids read zero. */
+typedef struct {
+    uint8_t auth;          /* authentication required on this cell */
+    uint8_t class1;        /* security class 1 MSs supported */
+    uint8_t class3;        /* 1: security class 3 MSs supported; 0: class 2 */
+    uint8_t sckn;          /* class 2: the SCK number, 1..32; 0 in a class 3 cell */
+    uint8_t dck_initial;   /* class 3: DCK retrieval during initial cell selection */
+    uint8_t dck_reselect;  /* class 3: DCK retrieval during cell re-selection */
+    uint8_t linked_gck;    /* class 3 with GCK supported: linked GCK crypto-periods */
+    uint8_t short_gck_vn;  /* with linked GCK crypto-periods: the 2 low bits of their GCK-VN */
+    uint8_t gck_supported; /* GCK supported on this cell */
+} tetra_cell_security;
+
 /* Networks whose air interface algorithm evidence is kept: room for every network an air key can be loaded for
  * (DSD_TETRA_AIR_KEY_SLOTS), whose evidence is never evicted, and four more (tetra_air.c). */
 #define TETRA_AIR_KSG_NETS 20
@@ -274,6 +288,14 @@ typedef struct tetra_state {
     long dl_carrier_hz;
     uint32_t frames_sysinfo;
     uint16_t sysinfo_main_carrier;
+    /* The cell's broadcast security: sec from the last SYSINFO with the extended services broadcast (sec_valid once
+     * one was decoded; the optional field alternates with others, EN 300 392-7 clause 6.2.0.0), and whether the BS
+     * service details of the last D-MLE-SYSINFO offer air interface encryption (aie_available, aie_known once one was
+     * decoded). Cell properties: bsch_forget_cell() clears them, a retune within the cell keeps them. */
+    tetra_cell_security sec;
+    uint8_t sec_valid;
+    uint8_t aie_known;
+    uint8_t aie_available;
     uint16_t la;
     uint8_t freq_band;
     uint8_t freq_offset;
@@ -334,7 +356,10 @@ typedef struct tetra_state {
      * dmo_tx_aie:     the security class (TETRA_DMO_AIE_*) of that set-up's SCH/S, which the transmission keeps
      *                 (clause 8.5.3): DM-2-A, DM-2-B and DM-2-C are all TETRA_DMO_CRYPT_AIR, but each a transmission of
      *                 its own; valid while dmo_tx_crypt is not UNKNOWN.
-     * dmo_tx_seed:    the DM colour code seed of that transmission's source, 0 when none is known.
+     * dmo_tx_ksg, dmo_tx_key_number: the KSG number and encryption key number (SCK dmo_tx_key_number + 1) of the
+ *                 DMAC-SYNC that set it up, when its class is not DM-1 (EN 300 396-3 clauses 9.3.7 and 9.3.14; the
+ *                 ciphering parameters do not change within a call transaction, EN 300 396-6 clause 5.2); 0 otherwise.
+ * dmo_tx_seed:    the DM colour code seed of that transmission's source, 0 when none is known.
      * dmo_tx_seq:     counts the transmissions started: the direct mode call canonical slot 0 shows is of one of them.
      * dmo_since_sync: DNBs processed since the last DMAC-SYNC (colour code staleness). */
     uint32_t dmo_dcc_seed;
@@ -347,6 +372,8 @@ typedef struct tetra_state {
     uint8_t dmo_crypt;
     uint8_t dmo_tx_crypt;
     uint8_t dmo_tx_aie;
+    uint8_t dmo_tx_ksg;
+    uint8_t dmo_tx_key_number;
 
     /* The status downlink of the last complete D-MM STATUS (EN 300 392-2 table 16.3), for the frontends; mm_status_valid
      * once one was decoded (tetra_mm.c). */

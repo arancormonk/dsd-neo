@@ -1294,17 +1294,23 @@ dmo_transmission_over(tetra_state_t* ts) {
     ts->dmo_dcc_valid = 0;
     ts->dmo_tx_crypt = (uint8_t)TETRA_DMO_CRYPT_UNKNOWN;
     ts->dmo_tx_aie = TETRA_DMO_AIE_DM1;
+    ts->dmo_tx_ksg = 0U;
+    ts->dmo_tx_key_number = 0U;
     ts->dmo_tx_seed = 0U;
     dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
 }
 
-/* Another traffic transmission starts, of security class @p aie and protected as @p crypt, from the source whose colour
- * code is @p seed (0 when none is known): the call canonical slot 0 shows is this one's from here
- * (tetra_state_t::dmo_tx_seq). */
+/* Another traffic transmission starts, set up by the DMAC-SYNC whose SCH/S is @p s, of security class @p aie and
+ * protected as @p crypt, from the source whose colour code is @p seed (0 when none is known): the call canonical slot 0
+ * shows is this one's from here (tetra_state_t::dmo_tx_seq), and so are the algorithm and key @p s names. */
 static void
-dmo_start_transmission(tetra_state_t* ts, uint8_t aie, tetra_dmo_crypt_e crypt, uint32_t seed) {
+dmo_start_transmission(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, uint8_t aie, tetra_dmo_crypt_e crypt,
+                       uint32_t seed) {
+    const int keyed = aie != TETRA_DMO_AIE_DM1;
     ts->dmo_tx_crypt = (uint8_t)crypt;
     ts->dmo_tx_aie = aie;
+    ts->dmo_tx_ksg = keyed ? (uint8_t)(s->ksg & 0xFu) : 0U;
+    ts->dmo_tx_key_number = keyed ? (uint8_t)(s->key_number & 0x1Fu) : 0U;
     ts->dmo_tx_seed = seed;
     ts->dmo_tx_seq++;
     dmo_set_crypt(ts, crypt);
@@ -1345,7 +1351,7 @@ dmo_apply_unread(tetra_state_t* ts, const tetra_dmo_sync_s_t* s) {
         /* A transmission keeps its security class (clause 8.5.3): a DM-2-C one is not the clear, DM-2-A or DM-2-B one
          * before it, whose source and destination it would otherwise go on with. */
         if (!dmo_in_transmission_of(ts, TETRA_DMO_AIE_DM2C)) {
-            dmo_start_transmission(ts, TETRA_DMO_AIE_DM2C, TETRA_DMO_CRYPT_AIR, 0U);
+            dmo_start_transmission(ts, s, TETRA_DMO_AIE_DM2C, TETRA_DMO_CRYPT_AIR, 0U);
             return;
         }
     }
@@ -1389,7 +1395,7 @@ dmo_apply_setup(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_
     const int other_class = crypt != tx || !dmo_in_transmission_of(ts, s->enc_state);
     if (tx == TETRA_DMO_CRYPT_UNKNOWN || seed != ts->dmo_tx_seed || (!occupied && other_class)) {
         dmo_learn_dcc(ts, s, h);
-        dmo_start_transmission(ts, s->enc_state, crypt, seed);
+        dmo_start_transmission(ts, s, s->enc_state, crypt, seed);
         return;
     }
     dmo_learn_dcc(ts, s, h);

@@ -3444,7 +3444,7 @@ ui_render_call_info_channel_line(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* The TETRA rows: the shared app-control view's text, as the Qt/Android monitor shows it. */
-enum { UI_TETRA_LINE_MAX = 7, UI_TETRA_LINE_SIZE = DSD_APP_TETRA_TEXT_SIZE + 16 };
+enum { UI_TETRA_LINE_MAX = 8, UI_TETRA_LINE_SIZE = DSD_APP_TETRA_TEXT_SIZE + 16 };
 
 typedef struct {
     char text[UI_TETRA_LINE_MAX][UI_TETRA_LINE_SIZE];
@@ -3478,6 +3478,7 @@ ui_format_tetra_lines(const dsd_opts* opts, const dsd_state* state, ui_tetra_lin
     }
     ui_tetra_line_add(lines, 1, "TETRA", view.mode_text);
     ui_tetra_line_add(lines, view.network_known, "Network", view.network_text);
+    ui_tetra_line_add(lines, view.security_known, "Security", view.security_text);
     ui_tetra_line_add(lines, view.trunk_visible, "Trunk", view.trunk_text);
     ui_tetra_line_add(lines, view.control_known, "Control", view.control_text);
     ui_tetra_line_add(lines, view.traffic_known, "Traffic", view.traffic_text);

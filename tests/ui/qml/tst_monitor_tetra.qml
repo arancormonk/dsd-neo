@@ -31,6 +31,7 @@ Item {
             testContext.setMetric("tetraModeText", "");
             testContext.setMetric("tetraEncrypted", false);
             testContext.setMetric("tetraNetworkText", "");
+            testContext.setMetric("tetraSecurityText", "");
             testContext.setMetric("tetraTrunkText", "");
             testContext.setMetric("tetraOnTraffic", false);
             testContext.setMetric("tetraControlText", "");
@@ -53,6 +54,7 @@ Item {
             verify(!item("monitorTetraChannels").visible);
             verify(!item("monitorTetraMmStatus").visible);
             verify(!item("monitorTetraCodec").visible);
+            verify(!item("monitorTetraSecurity").visible);
         }
         // Texts the view filled stay off screen while it says the rows are hidden (another
         // preset, or nothing decoded yet).
@@ -102,6 +104,18 @@ Item {
             tryCompare(item("monitorTetraCodecValue"), "text", "missing");
             compare(item("monitorTetraCodecValue").color, Ui.Theme.cyan);
         }
+        // The cell's security and the key that applies, in the encryption colour; no row
+        // while the view has nothing for it.
+        function test_security_row() {
+            showControlChannel();
+            verify(!item("monitorTetraSecurity").visible);
+            testContext.setMetric("tetraSecurityText", "class 2 · SCKN 3 · TEA1 reduced key");
+            tryCompare(item("monitorTetraSecurity"), "visible", true);
+            compare(item("monitorTetraSecurityValue").text, "class 2 · SCKN 3 · TEA1 reduced key");
+            compare(item("monitorTetraSecurityValue").color, Ui.Theme.magenta);
+            testContext.setMetric("tetraVisible", false);
+            tryCompare(item("monitorTetraSecurity"), "visible", false);
+        }
         function test_mm_status_row() {
             showControlChannel();
             testContext.setMetric("tetraMmStatusText", "7 · MS frequency bands request");
@@ -117,6 +131,9 @@ Item {
             testContext.setMetric("tetraModeText", "DMO via repeater/gateway · encrypted (TEA2)");
             testContext.setMetric("tetraTrafficText", "carrier 4095 · TS 1,2,3,4 · 1234.56789 MHz");
             testContext.setMetric("tetraCodecText", "decode errors · 4294967295 frames · 4294967295 errors");
+            testContext.setMetric("tetraNetworkText", "MCC 1023 · MNC 16383 · LA 16383 · CC 63 · carrier 4095");
+            testContext.setMetric("tetraSecurityText",
+                                  "no air encryption · authentication · TEA1 reduced key");
             var row = item("monitorTetra");
             tryCompare(row, "visible", true);
             waitForItemPolished(row);
@@ -125,6 +142,7 @@ Item {
             verify(insideBody(item("monitorTetraControl")));
             verify(insideBody(item("monitorTetraTraffic")));
             verify(insideBody(item("monitorTetraCodecValue")));
+            verify(insideBody(item("monitorTetraSecurityValue")));
         }
     }
 }

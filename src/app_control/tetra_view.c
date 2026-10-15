@@ -11,6 +11,7 @@
 #include <dsd-neo/core/tetra_publication.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* What goes between the parts of a row: a middle dot (U+00B7), as the Qt monitor joins its readings, or a hyphen on a
    terminal without UTF-8. */
@@ -37,21 +38,67 @@ tetra_view_mode_is_trunked(uint8_t mode) {
            || mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK;
 }
 
-/* "TMO downlink · encrypted (TEA2)": the mode, then whatever is known of the air-interface encryption. */
+/* Append @p text to @p out (capacity @p cap, @p used bytes long) after @p sep when it is not the first part. Returns 0
+ * when it does not fit, leaving @p out as it was. */
+static int
+tetra_view_append(char* out, size_t cap, size_t* used, const char* sep, const char* text) {
+    const int n = DSD_SNPRINTF(out + *used, cap - *used, "%s%s", *used > 0U ? sep : "", text);
+    if (n < 0 || (size_t)n >= cap - *used) {
+        out[*used] = '\0';
+        return 0;
+    }
+    *used += (size_t)n;
+    return 1;
+}
+
+/* "TEA1/TEA2", "proprietary KSG 9", "TEA4/KSG 5": every KSG number of @p mask (EN 300 392-7 table 6.2), as many as fit
+ * in @p out, "/..." for the rest. A name other than the last leaves room for that marker. */
+static void
+tetra_view_ksg_names(uint16_t mask, char* out, size_t cap) {
+    static const char k_more[] = "/...";
+    size_t used = 0U;
+    out[0] = '\0';
+    if (cap <= sizeof k_more) {
+        return;
+    }
+    const size_t room = cap - (sizeof k_more - 1U);
+    for (unsigned k = 0U; k < 16U; k++) {
+        if (((mask >> k) & 1U) == 0U) {
+            continue;
+        }
+        char name[24];
+        if (k < 4U) {
+            DSD_SNPRINTF(name, sizeof name, "TEA%u", k + 1U);
+        } else {
+            DSD_SNPRINTF(name, sizeof name, "%sKSG %u", k >= 8U ? "proprietary " : "", k);
+        }
+        const int last = (mask >> (k + 1U)) == 0U;
+        if (!tetra_view_append(out, last ? cap : room, &used, "/", name)) {
+            (void)tetra_view_append(out, cap, &used, "/", "...");
+            return;
+        }
+    }
+}
+
+/* "TMO downlink · encrypted (TEA2)": the mode, then whatever is known of the air-interface encryption, and the
+   algorithms signalling named whatever the last PDU's encryption ("TMO downlink · clear · TEA2"). */
 static void
 tetra_view_fill_mode(dsd_app_tetra* out, const dsd_tetra_publication* pub, unsigned flags) {
     const char* const mode = tetra_view_mode_name(pub->mode);
     const char* const sep = tetra_view_sep(flags);
-    char tea[8] = "";
-    if (pub->tea >= 1U && pub->tea <= (uint8_t)DSD_TETRA_TEA_MAX) {
-        DSD_SNPRINTF(tea, sizeof tea, "TEA%u", (unsigned)pub->tea);
+    if (!mode) {
+        return;
     }
+    /* The algorithms take what the row leaves them after its longest form, "<mode><sep>encrypted (...)". */
+    const size_t fixed = strlen(mode) + strlen(sep) + sizeof("encrypted ()") - 1U;
+    char tea[DSD_APP_TETRA_TEXT_SIZE];
+    tetra_view_ksg_names(pub->ksg_mask, tea, fixed < sizeof tea ? sizeof tea - fixed : 1U);
     out->encrypted = (uint8_t)(pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED);
     if (out->encrypted) {
         DSD_SNPRINTF(out->mode_text, sizeof out->mode_text, "%s%sencrypted%s%s%s", mode, sep, tea[0] ? " (" : "", tea,
                      tea[0] ? ")" : "");
     } else if (pub->air_encryption == DSD_TETRA_AIR_ENC_CLEAR) {
-        DSD_SNPRINTF(out->mode_text, sizeof out->mode_text, "%s%sclear", mode, sep);
+        DSD_SNPRINTF(out->mode_text, sizeof out->mode_text, "%s%sclear%s%s", mode, sep, tea[0] ? sep : "", tea);
     } else if (tea[0] != '\0') {
         DSD_SNPRINTF(out->mode_text, sizeof out->mode_text, "%s%s%s", mode, sep, tea);
     } else {
@@ -59,7 +106,72 @@ tetra_view_fill_mode(dsd_app_tetra* out, const dsd_tetra_publication* pub, unsig
     }
 }
 
-/* "MCC 262 · MNC 1001 · CC 25". */
+/* The security class(es) a cell offers air interface encryption under (EN 300 392-7 table A.104: class 1 beside class
+ * 2 or class 3). */
+static const char*
+tetra_view_cell_classes(const dsd_tetra_publication* pub) {
+    if (pub->sec_class3) {
+        return pub->sec_class1 ? "classes 1 and 3" : "class 3";
+    }
+    return pub->sec_class1 ? "classes 1 and 2" : "class 2";
+}
+
+/* Trunked mode: "class 2 · SCKN 3 · authentication · TEA1 reduced key". The class bits mean something only on a cell
+   whose BS service details offer air interface encryption (table A.104 note 1). */
+static void
+tetra_view_fill_cell_security(dsd_app_tetra* out, const dsd_tetra_publication* pub, const char* sep) {
+    char* const row = out->security_text;
+    const size_t cap = sizeof out->security_text;
+    size_t used = 0U;
+    char part[24];
+    if (pub->aie == DSD_TETRA_AIE_UNAVAILABLE) {
+        (void)tetra_view_append(row, cap, &used, sep, "no air encryption");
+    } else if (pub->aie == DSD_TETRA_AIE_AVAILABLE) {
+        (void)tetra_view_append(row, cap, &used, sep,
+                                pub->sec_known ? tetra_view_cell_classes(pub) : "air encryption available");
+        if (pub->sec_known && !pub->sec_class3 && pub->sec_sckn != 0U) {
+            DSD_SNPRINTF(part, sizeof part, "SCKN %u", (unsigned)pub->sec_sckn);
+            (void)tetra_view_append(row, cap, &used, sep, part);
+        }
+    }
+    if (pub->sec_known && pub->sec_auth) {
+        (void)tetra_view_append(row, cap, &used, sep, "authentication");
+    }
+    if (pub->key_kind == DSD_TETRA_KEY_TEA1_REDUCED) {
+        (void)tetra_view_append(row, cap, &used, sep, "TEA1 reduced key");
+    } else if (pub->key_kind == DSD_TETRA_KEY_CK && pub->key_tea >= 1U && pub->key_tea <= 3U) {
+        DSD_SNPRINTF(part, sizeof part, "TEA%u key", (unsigned)pub->key_tea);
+        (void)tetra_view_append(row, cap, &used, sep, part);
+    }
+}
+
+/* Direct mode: the transmission's security class (EN 300 396-3 clause 9.3.2) and SCKN, "DM-2-A · SCKN 5". */
+static void
+tetra_view_fill_dmo_security(dsd_app_tetra* out, const dsd_tetra_publication* pub, const char* sep) {
+    static const char* const k_classes[] = {NULL, "DM-1", "DM-2-A", "DM-2-B", "DM-2-C"};
+    if (pub->dmo_class >= sizeof k_classes / sizeof k_classes[0] || k_classes[pub->dmo_class] == NULL) {
+        return;
+    }
+    if (pub->dmo_class != DSD_TETRA_DMO_CLASS_DM1 && pub->dmo_sckn != 0U) {
+        DSD_SNPRINTF(out->security_text, sizeof out->security_text, "%s%sSCKN %u", k_classes[pub->dmo_class], sep,
+                     (unsigned)pub->dmo_sckn);
+    } else {
+        DSD_SNPRINTF(out->security_text, sizeof out->security_text, "%s", k_classes[pub->dmo_class]);
+    }
+}
+
+static void
+tetra_view_fill_security(dsd_app_tetra* out, const dsd_tetra_publication* pub, unsigned flags) {
+    const char* const sep = tetra_view_sep(flags);
+    if (out->trunked) {
+        tetra_view_fill_cell_security(out, pub, sep);
+    } else {
+        tetra_view_fill_dmo_security(out, pub, sep);
+    }
+    out->security_known = (uint8_t)(out->security_text[0] != '\0');
+}
+
+/* "MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654", the location area and the carrier once known. */
 static void
 tetra_view_fill_network(dsd_app_tetra* out, const dsd_tetra_publication* pub, unsigned flags) {
     char cc[16];
@@ -69,8 +181,16 @@ tetra_view_fill_network(dsd_app_tetra* out, const dsd_tetra_publication* pub, un
         return;
     }
     const char* const sep = tetra_view_sep(flags);
-    DSD_SNPRINTF(out->network_text, sizeof out->network_text, "MCC %u%sMNC %u%s%s", (unsigned)pub->mcc, sep,
-                 (unsigned)pub->mnc, sep, cc);
+    char la[16] = "";
+    char carrier[24] = "";
+    if (pub->la_known != 0U) {
+        DSD_SNPRINTF(la, sizeof la, "LA %u%s", (unsigned)pub->la, sep);
+    }
+    if (pub->rx_carrier_known != 0U) {
+        DSD_SNPRINTF(carrier, sizeof carrier, "%scarrier %u", sep, (unsigned)pub->rx_carrier);
+    }
+    DSD_SNPRINTF(out->network_text, sizeof out->network_text, "MCC %u%sMNC %u%s%s%s%s", (unsigned)pub->mcc, sep,
+                 (unsigned)pub->mnc, sep, la, cc, carrier);
     out->network_known = 1U;
 }
 
@@ -207,6 +327,7 @@ dsd_app_tetra_view(const dsd_opts* opts, const dsd_state* state, unsigned flags,
     out->mode = pub->mode;
     out->trunked = (uint8_t)tetra_view_mode_is_trunked(pub->mode);
     tetra_view_fill_mode(out, pub, flags);
+    tetra_view_fill_security(out, pub, flags);
     tetra_view_fill_network(out, pub, flags);
     tetra_view_fill_channels(out, opts, pub, flags);
     tetra_view_fill_mm_status(out, pub, flags);

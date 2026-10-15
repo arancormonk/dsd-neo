@@ -3354,19 +3354,30 @@ test_tetra_rows_follow_the_view(void) {
     state->tetra_pub.mm_status_valid = 1U;
     state->tetra_pub.mm_status_code = 7U;
     state->tetra_pub.codec_status = DSD_TETRA_CODEC_MISSING;
+    state->tetra_pub.aie = DSD_TETRA_AIE_AVAILABLE;
+    state->tetra_pub.sec_known = 1U;
+    state->tetra_pub.sec_sckn = 3U;
+    state->tetra_pub.key_kind = DSD_TETRA_KEY_TEA1_REDUCED;
+    state->tetra_pub.key_tea = 1U;
+    state->tetra_pub.ksg_mask = 1U;
+    state->tetra_pub.la_known = 1U;
+    state->tetra_pub.la = 4097U;
+    state->tetra_pub.rx_carrier_known = 1U;
+    state->tetra_pub.rx_carrier = 654U;
     g_unicode_stub = 0;
-    assert(ui_format_tetra_lines(opts, state, &lines) == 7);
-    assert(strcmp(lines.text[0], "TETRA: TMO downlink - clear") == 0);
-    assert(strcmp(lines.text[1], "Network: MCC 262 - MNC 1001 - CC 25") == 0);
-    assert(strcmp(lines.text[2], "Trunk: traffic channel") == 0);
-    assert(strcmp(lines.text[3], "Control: carrier 321 - 392.0125 MHz") == 0);
-    assert(strcmp(lines.text[4], "Traffic: carrier 654 - TS 1,3 - 392.1250 MHz") == 0);
-    assert(strcmp(lines.text[5], "MM status: 7 - MS frequency bands request") == 0);
-    assert(strcmp(lines.text[6], "Codec: missing") == 0);
+    assert(ui_format_tetra_lines(opts, state, &lines) == 8);
+    assert(strcmp(lines.text[0], "TETRA: TMO downlink - clear - TEA1") == 0);
+    assert(strcmp(lines.text[1], "Network: MCC 262 - MNC 1001 - LA 4097 - CC 25 - carrier 654") == 0);
+    assert(strcmp(lines.text[2], "Security: class 2 - SCKN 3 - TEA1 reduced key") == 0);
+    assert(strcmp(lines.text[3], "Trunk: traffic channel") == 0);
+    assert(strcmp(lines.text[4], "Control: carrier 321 - 392.0125 MHz") == 0);
+    assert(strcmp(lines.text[5], "Traffic: carrier 654 - TS 1,3 - 392.1250 MHz") == 0);
+    assert(strcmp(lines.text[6], "MM status: 7 - MS frequency bands request") == 0);
+    assert(strcmp(lines.text[7], "Codec: missing") == 0);
 
     reset_printw_capture();
     ui_render_call_info_tetra(opts, state);
-    assert_capture_starts_with("| TETRA: TMO downlink - clear\n| Network: ");
+    assert_capture_starts_with("| TETRA: TMO downlink - clear - TEA1\n| Network: ");
 
     state->tetra_pub.mode = DSD_TETRA_MODE_NONE; /* reset: nothing decoded yet */
     assert(ui_format_tetra_lines(opts, state, &lines) == 0);

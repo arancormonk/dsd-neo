@@ -64,6 +64,8 @@ typedef struct {
     uint8_t cck_flag;         /**< hyperframe_or_cck holds a CCK identifier or static cipher key version */
     uint8_t option_flag; /**< optional field flag: even or odd multiframe, default access code, extended services */
     uint8_t mle_present; /**< the block carried the 42-bit D-MLE-SYSINFO */
+    uint8_t security_present;     /**< option_flag 3: @c security is the extended services broadcast's */
+    tetra_cell_security security; /**< the security information of the extended services broadcast */
 } tetra_mac_sysinfo;
 
 /** ACCESS-DEFINE (table 21.79). */

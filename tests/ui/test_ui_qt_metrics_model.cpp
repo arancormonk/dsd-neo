@@ -1503,7 +1503,7 @@ test_tetra_rows() {
     dsd_tetra_publication* const pub = &snapshot->tetra_pub;
     pub->mode = DSD_TETRA_MODE_TMO_DOWNLINK;
     pub->air_encryption = DSD_TETRA_AIR_ENC_ENCRYPTED;
-    pub->tea = 2U;
+    pub->ksg_mask = 1U << 1;
     pub->net_known = 1U;
     pub->mcc = 262U;
     pub->mnc = 1001U;
@@ -1548,19 +1548,39 @@ test_tetra_rows() {
 
     model.refresh(opts, snapshot);
     expect("an unchanged TETRA publication announces nothing", changes == 1);
+    expect("TETRA security row hidden while nothing is known", model.tetraSecurityText().isEmpty());
+
+    /* A change of the cell's security alone is announced, and clearing it hides the row again. */
+    pub->aie = DSD_TETRA_AIE_AVAILABLE;
+    pub->sec_known = 1U;
+    pub->sec_sckn = 3U;
+    pub->sec_auth = 1U;
+    model.refresh(opts, snapshot);
+    expect("a security-only change is announced", changes == 2);
+    expect("TETRA security row",
+           model.tetraSecurityText() == QString::fromUtf8("class 2 \xC2\xB7 SCKN 3 \xC2\xB7 authentication"));
+    pub->sec_auth = 0U;
+    model.refresh(opts, snapshot);
+    expect("and so is a change of one security element",
+           changes == 3 && model.tetraSecurityText() == QString::fromUtf8("class 2 \xC2\xB7 SCKN 3"));
+    pub->aie = DSD_TETRA_AIE_UNKNOWN;
+    pub->sec_known = 0U;
+    pub->sec_sckn = 0U;
+    model.refresh(opts, snapshot);
+    expect("clearing the security hides its row", changes == 4 && model.tetraSecurityText().isEmpty());
 
     /* Trunking off: no trunk row, the channels stay. */
     opts->trunk_enable = 0;
     model.refresh(opts, snapshot);
     expect("TETRA trunk row needs trunking", model.tetraTrunkText().isEmpty() && !model.tetraOnTraffic()
-                                                 && !model.tetraControlText().isEmpty() && changes == 2);
+                                                 && !model.tetraControlText().isEmpty() && changes == 5);
 
     /* A reset (a mode change, or the TETRA state dropped) hides the rows again. */
     dsd_tetra_publication_reset(pub);
     model.refresh(opts, snapshot);
     expect("a reset TETRA publication hides the rows",
            !model.tetraVisible() && model.tetraModeText().isEmpty() && model.tetraNetworkText().isEmpty()
-               && model.tetraCodecText().isEmpty() && !model.tetraCodecFault() && changes == 3);
+               && model.tetraCodecText().isEmpty() && !model.tetraCodecFault() && changes == 6);
 
     dsd_state_ext_free_all(snapshot);
     free(snapshot);

@@ -2321,9 +2321,89 @@ test_lu_accept_energy_saving(void) {
           "LU accept energy saving information decoded");
 }
 
+/* A D-LOCATION UPDATE COMMAND (table 16.12) with @p cipher_control and 10-bit @p params and the MS's MNI 460/4242 in
+ * its address extension; @return its length in bits. */
+static int
+lu_command_bits(uint8_t* bits, uint32_t cipher_control, uint32_t params) {
+    int off = 0;
+    pack_bits(bits, off, TETRA_MM_D_LOCATION_UPDATING_COMMAND, 4);
+    off += 4;
+    pack_bits(bits, off, 0, 1); /* group identity report */
+    off++;
+    pack_bits(bits, off, cipher_control, 1);
+    off++;
+    if (cipher_control) {
+        pack_bits(bits, off, params, 10);
+        off += 10;
+    }
+    pack_bits(bits, off, 1, 1); /* O-bit */
+    off++;
+    pack_bits(bits, off, 1, 1); /* address extension P-bit */
+    off++;
+    pack_bits(bits, off, 460, 10);
+    off += 10;
+    pack_bits(bits, off, 4242, 14);
+    off += 14;
+    pack_bits(bits, off, 0, 1); /* terminating M-bit */
+    return off + 1;
+}
+
+/* The ciphering parameters of D-LOCATION UPDATE COMMAND and REJECT (EN 300 392-7 table A.46: KSG number 4, security
+ * class 1, SCK number 5 or class 3 flags) name the algorithm the serving network uses: the KSG is remembered for the
+ * network being received, not for the MS's network in the address extension. Cipher control off, a truncated PDU and
+ * a direct mode carrier remember nothing. */
+static void
+test_lu_ciphering_parameters_ksg(void) {
+    uint8_t bits[64];
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    tetra_state_t* ts = tetra_st(state);
+    ts->net_known = 1;
+    ts->mcc = 262;
+    ts->mnc = 1001;
+
+    DSD_MEMSET(bits, 0, sizeof bits);
+    int n = lu_command_bits(bits, 1, (1u << 6) | (0u << 5) | 2u); /* TEA2, class 2, SCKN 3 */
+    tetra_mm_dispatch(bits, n - 1, 3, opts, state);
+    CHECK(tetra_air_ksg_seen(state, 262, 1001) == 0U, "a truncated LU command names nothing");
+    tetra_mm_dispatch(bits, n, 3, opts, state);
+    CHECK(tetra_air_ksg_lookup(state, 262, 1001) == 1, "LU command ciphering parameters name TEA2 for the network");
+    CHECK(tetra_air_ksg_seen(state, 460, 4242) == 0U, "not for the MS's network in the address extension");
+
+    DSD_MEMSET(bits, 0, sizeof bits);
+    pack_bits(bits, 0, TETRA_MM_D_LOCATION_UPDATING_REJECT, 4);
+    pack_bits(bits, 4, 3, 3);                       /* location update type */
+    pack_bits(bits, 7, 17, 5);                      /* reject cause */
+    pack_bits(bits, 12, 1, 1);                      /* cipher control on */
+    pack_bits(bits, 13, (0u << 6) | (1u << 5), 10); /* TEA1, class 3 */
+    pack_bits(bits, 23, 0, 1);                      /* O-bit */
+    tetra_mm_dispatch(bits, 24, 3, opts, state);
+    CHECK(tetra_air_ksg_seen(state, 262, 1001) == 0x0003U && tetra_air_ksg_lookup(state, 262, 1001) == -1,
+          "an LU reject naming TEA1 too leaves the network with two algorithms");
+
+    ts->mnc = 1002;
+    DSD_MEMSET(bits, 0, sizeof bits);
+    n = lu_command_bits(bits, 0, 0);
+    tetra_mm_dispatch(bits, n, 3, opts, state);
+    CHECK(tetra_air_ksg_seen(state, 262, 1002) == 0U, "cipher control off names no algorithm");
+
+    ts->dmo = 1;
+    DSD_MEMSET(bits, 0, sizeof bits);
+    n = lu_command_bits(bits, 1, 2u << 6);
+    tetra_mm_dispatch(bits, n, 3, opts, state);
+    CHECK(tetra_air_ksg_seen(state, 262, 1002) == 0U, "a direct mode carrier belongs to no trunked network");
+    ts->dmo = 0;
+    ts->net_known = 0;
+    tetra_mm_dispatch(bits, n, 3, opts, state);
+    CHECK(tetra_air_ksg_seen(state, 262, 1002) == 0U, "nor does a carrier whose network is not known");
+    free_state(state);
+    free(opts);
+}
+
 int
 main(void) {
     test_carrier_to_dl_hz();
+    test_lu_ciphering_parameters_ksg();
     test_security_golden_pdus();
     test_standard_mm_pdus();
     test_otar_cck_provide();

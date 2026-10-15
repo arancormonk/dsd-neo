@@ -519,6 +519,7 @@ MetricsModel::fillTetraView(View& next, const dsd_opts* opts_snapshot, const dsd
     next.tetra_mode_text = QString::fromUtf8(view.mode_text);
     next.tetra_encrypted = view.encrypted != 0U;
     next.tetra_network_text = QString::fromUtf8(view.network_text);
+    next.tetra_security_text = QString::fromUtf8(view.security_text);
     next.tetra_trunk_text = QString::fromUtf8(view.trunk_text);
     next.tetra_on_traffic = view.on_traffic != 0U;
     next.tetra_control_text = QString::fromUtf8(view.control_text);

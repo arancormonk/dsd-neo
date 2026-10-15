@@ -199,6 +199,10 @@ bsch_forget_cell(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     ts->freq_band = 0;
     ts->freq_offset = 0;
     ts->sysinfo_known = 0;
+    DSD_MEMSET(&ts->sec, 0, sizeof(ts->sec));
+    ts->sec_valid = 0;
+    ts->aie_known = 0;
+    ts->aie_available = 0;
 }
 
 /* What a BSCH naming another cell or another network leaves behind, decided in one place. Another cell (another colour

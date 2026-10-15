@@ -682,6 +682,26 @@ enum {
 
 static const uint8_t k_sysinfo_bits[SI_FIELDS] = {12, 4, 2, 3, 1, 2, 3, 4, 4, 4, 1, 16, 2, 20, 14, 16, 12};
 
+/* The extended services broadcast (table 21.67) in the 20-bit optional field, MSB first: the 8-bit security information
+ * of EN 300 392-7 table A.104 (authentication, class 1, class 2 or 3, then the SCKN of a class 2 cell or the DCK and
+ * linked GCK services of a class 3 one), SDS-TL addressing (2), GCK supported (1) and a section (2 + 7). */
+static void
+decode_security(uint32_t option, tetra_cell_security* sec) {
+    sec->auth = (uint8_t)((option >> 19) & 1u);
+    sec->class1 = (uint8_t)((option >> 18) & 1u);
+    sec->class3 = (uint8_t)((option >> 17) & 1u);
+    sec->gck_supported = (uint8_t)((option >> 9) & 1u);
+    if (!sec->class3) {
+        sec->sckn = (uint8_t)(((option >> 12) & 0x1Fu) + 1u);
+        return;
+    }
+    sec->dck_initial = (uint8_t)((option >> 16) & 1u);
+    sec->dck_reselect = (uint8_t)((option >> 15) & 1u);
+    /* Table A.104 notes 5 and 6: linked crypto-periods need GCK, the short GCK-VN needs linked crypto-periods. */
+    sec->linked_gck = (uint8_t)(sec->gck_supported & ((option >> 14) & 1u));
+    sec->short_gck_vn = sec->linked_gck ? (uint8_t)((option >> 12) & 3u) : 0U;
+}
+
 /* SYSINFO, clause 21.4.4.1. With pi/4-DQPSK it fills the whole 124-bit block; @p r is after the broadcast type. */
 static int
 decode_sysinfo(tetra_bit_reader* r, tetra_mac_sysinfo* si) {
@@ -712,6 +732,10 @@ decode_sysinfo(tetra_bit_reader* r, tetra_mac_sysinfo* si) {
     si->hyperframe_or_cck = (uint16_t)v[SI_HF_OR_CCK];
     si->option_flag = (uint8_t)v[SI_OPTION_FLAG];
     si->option = v[SI_OPTION];
+    si->security_present = (uint8_t)(si->option_flag == 3u);
+    if (si->security_present) {
+        decode_security(si->option, &si->security);
+    }
     si->la = (uint16_t)v[SI_LA];
     si->subscriber_class = (uint16_t)v[SI_SUBSCRIBER_CLASS];
     si->bs_service = (uint16_t)v[SI_BS_SERVICE];
@@ -802,7 +826,14 @@ apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
         ts->hyperframe_valid = 1;
     }
     ts->sysinfo_main_carrier = si->main_carrier;
+    if (si->security_present) {
+        ts->sec = si->security;
+        ts->sec_valid = 1;
+    }
     if (si->mle_present) {
+        /* BS service details (table 18.26), MSB first: air interface encryption is the 11th of its 12 bits. */
+        ts->aie_available = (uint8_t)((si->bs_service >> 1) & 1u);
+        ts->aie_known = 1;
         ts->la = si->la;
         ts->sysinfo_known = 1;
         tetra_calls_note_location_area(b->opts, b->state, si->la);

@@ -183,10 +183,14 @@ ttb_sync_pdu(ttb_block* b, uint32_t mcc, uint32_t mnc, uint32_t colour) {
     ttb_put(b, 0, 5); /* neighbour cell broadcast, cell load CA, late entry supported */
 }
 
-/* SYSINFO (table 21.65, pi/4-DQPSK) of main carrier @p carrier in band @p band with offset @p offset, with its
- * D-MLE-SYSINFO TM-SDU (clause 18.4.2.2) naming location area @p la: 124 bits, a whole SCH/HD or BNCH block. */
+/* SYSINFO (table 21.65, pi/4-DQPSK) of main carrier @p carrier in band @p band with offset @p offset, its optional
+ * field flag @p option_flag and 20-bit field @p option (flag 3: the extended services broadcast of table 21.67, its
+ * first 8 bits EN 300 392-7 table A.104), with its D-MLE-SYSINFO TM-SDU (clause 18.4.2.2) naming location area @p la
+ * and BS service details @p bs_service (table 18.26; bit 1 is air interface encryption): 124 bits, a whole SCH/HD or
+ * BNCH block. */
 static inline void
-ttb_sysinfo(ttb_block* b, uint32_t carrier, uint32_t band, uint32_t offset, uint32_t la) {
+ttb_sysinfo_ext(ttb_block* b, uint32_t carrier, uint32_t band, uint32_t offset, uint32_t la, uint32_t option_flag,
+                uint32_t option, uint32_t bs_service) {
     ttb_put(b, 2, 2); /* MAC PDU type: broadcast */
     ttb_put(b, 0, 2); /* broadcast type: SYSINFO */
     ttb_put(b, carrier, 12);
@@ -201,11 +205,18 @@ ttb_sysinfo(ttb_block* b, uint32_t carrier, uint32_t band, uint32_t offset, uint
     ttb_put(b, 1, 4);       /* RADIO_DOWNLINK_TIMEOUT */
     ttb_put(b, 0, 1);       /* hyperframe number follows */
     ttb_put(b, 0x1234, 16); /* hyperframe number */
-    ttb_put(b, 3, 2);       /* optional field flag: extended services broadcast */
-    ttb_put(b, 0, 20);
-    ttb_put(b, la, 14);     /* location area */
-    ttb_put(b, 0xBEEF, 16); /* subscriber class */
-    ttb_put(b, 0xA5C, 12);  /* BS service details */
+    ttb_put(b, option_flag, 2);
+    ttb_put(b, option, 20);
+    ttb_put(b, la, 14);         /* location area */
+    ttb_put(b, 0xBEEF, 16);     /* subscriber class */
+    ttb_put(b, bs_service, 12); /* BS service details */
+}
+
+/* ttb_sysinfo_ext() with an all-zero extended services broadcast and BS service details 0xA5C (no air interface
+ * encryption). */
+static inline void
+ttb_sysinfo(ttb_block* b, uint32_t carrier, uint32_t band, uint32_t offset, uint32_t la) {
+    ttb_sysinfo_ext(b, carrier, band, offset, la, 3, 0, 0xA5C);
 }
 
 /* Basic service information (table 14.35) for clear speech: point to point or point to multipoint. */

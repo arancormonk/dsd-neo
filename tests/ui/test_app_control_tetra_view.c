@@ -101,15 +101,123 @@ test_mode_line(void) {
     pub->air_encryption = DSD_TETRA_AIR_ENC_ENCRYPTED;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted") == 0 && view.encrypted == 1U);
-    pub->tea = 2U;
+    pub->ksg_mask = 1U << 1;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted (TEA2)") == 0);
     pub->air_encryption = DSD_TETRA_AIR_ENC_UNKNOWN;
     assert(dsd_app_tetra_view(f.opts, f.state, DSD_APP_TETRA_ASCII, &view) == 1);
     assert(strcmp(view.mode_text, "TMO downlink - TEA2") == 0);
-    pub->tea = 5U; /* no such TEA: named nowhere */
+    /* The network's algorithm shows whatever the last PDU's encryption. */
+    pub->air_encryption = DSD_TETRA_AIR_ENC_CLEAR;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
-    assert(strcmp(view.mode_text, "TMO downlink") == 0);
+    assert(strcmp(view.mode_text, "TMO downlink" MID "clear" MID "TEA2") == 0);
+    pub->air_encryption = DSD_TETRA_AIR_ENC_ENCRYPTED;
+    pub->ksg_mask = (1U << 0) | (1U << 1);
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted (TEA1/TEA2)") == 0);
+    pub->ksg_mask = 1U << 9;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted (proprietary KSG 9)") == 0);
+    pub->ksg_mask = (1U << 3) | (1U << 5);
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted (TEA4/KSG 5)") == 0);
+
+    /* More algorithms than the row holds: it stays whole, and says some were left out. */
+    static const struct {
+        uint8_t mode;
+        uint16_t mask;
+    } k_cut[] = {
+        {DSD_TETRA_MODE_TMO_DOWNLINK, 0x0707U},
+        {DSD_TETRA_MODE_DMO_REPEATER_GATEWAY, 0xFFFFU},
+    };
+
+    for (size_t i = 0; i < sizeof k_cut / sizeof k_cut[0]; i++) {
+        pub->mode = k_cut[i].mode;
+        pub->ksg_mask = k_cut[i].mask;
+        assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+        const size_t len = strlen(view.mode_text);
+        assert(len < sizeof view.mode_text && strstr(view.mode_text, "(TEA1/TEA2/") != NULL);
+        assert(len > 5U && strcmp(view.mode_text + len - 5U, "/...)") == 0);
+    }
+    /* The last name is never traded for the marker when it fits. */
+    pub->mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    pub->ksg_mask = 0x0307U;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted (TEA1/TEA2/TEA3/proprietary KSG 8/proprietary KSG 9)")
+           == 0);
+    fixture_close(&f);
+}
+
+/* The Security row: the cell's broadcast security class(es), its SCKN and authentication, whether it offers air
+ * encryption at all, and the loaded key that applies to the carrier being received; in direct mode the transmission's
+ * security class and SCKN. */
+static void
+test_security(void) {
+    fixture f = fixture_open();
+    dsd_tetra_publication* const pub = &f.state->tetra_pub;
+    dsd_app_tetra view;
+    pub->mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(view.security_known == 0U && view.security_text[0] == '\0');
+
+    pub->aie = DSD_TETRA_AIE_UNAVAILABLE;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(view.security_known == 1U && strcmp(view.security_text, "no air encryption") == 0);
+    pub->aie = DSD_TETRA_AIE_AVAILABLE;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.security_text, "air encryption available") == 0);
+    pub->sec_known = 1U;
+    pub->sec_sckn = 3U;
+    pub->sec_auth = 1U;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.security_text, "class 2" MID "SCKN 3" MID "authentication") == 0);
+    pub->sec_class1 = 1U;
+    assert(dsd_app_tetra_view(f.opts, f.state, DSD_APP_TETRA_ASCII, &view) == 1);
+    assert(strcmp(view.security_text, "classes 1 and 2 - SCKN 3 - authentication") == 0);
+    pub->sec_class3 = 1U;
+    pub->sec_sckn = 0U;
+    pub->sec_auth = 0U;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.security_text, "classes 1 and 3") == 0);
+    pub->sec_class1 = 0U;
+    pub->key_kind = DSD_TETRA_KEY_CK;
+    pub->key_tea = 2U;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.security_text, "class 3" MID "TEA2 key") == 0);
+    pub->key_kind = DSD_TETRA_KEY_TEA1_REDUCED;
+    pub->key_tea = 1U;
+    pub->aie = DSD_TETRA_AIE_UNKNOWN; /* no D-MLE-SYSINFO yet: the class bits mean nothing without it */
+    pub->sec_auth = 1U;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.security_text, "authentication" MID "TEA1 reduced key") == 0);
+    pub->aie = DSD_TETRA_AIE_UNAVAILABLE;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.security_text, "no air encryption" MID "authentication" MID "TEA1 reduced key") == 0);
+
+    /* Direct mode: the transmission's class, only. */
+    DSD_MEMSET(pub, 0, sizeof *pub);
+    pub->mode = DSD_TETRA_MODE_DMO_DIRECT;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1 && view.security_known == 0U);
+    pub->dmo_class = DSD_TETRA_DMO_CLASS_DM1;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1 && strcmp(view.security_text, "DM-1") == 0);
+
+    static const struct {
+        uint8_t dmo_class;
+        const char* text;
+    } k_classes[] = {
+        {DSD_TETRA_DMO_CLASS_DM2A, "DM-2-A" MID "SCKN 5"},
+        {DSD_TETRA_DMO_CLASS_DM2B, "DM-2-B" MID "SCKN 5"},
+        {DSD_TETRA_DMO_CLASS_DM2C, "DM-2-C" MID "SCKN 5"},
+    };
+
+    pub->dmo_sckn = 5U;
+    for (size_t i = 0; i < sizeof k_classes / sizeof k_classes[0]; i++) {
+        pub->dmo_class = k_classes[i].dmo_class;
+        assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+        assert(strcmp(view.security_text, k_classes[i].text) == 0);
+    }
+    pub->dmo_class = 9U; /* a class this build does not know */
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1 && view.security_known == 0U);
     fixture_close(&f);
 }
 
@@ -136,6 +244,19 @@ test_network(void) {
     pub->colour = 63U;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(strcmp(view.network_text, "MCC 1023" MID "MNC 16383" MID "CC 63") == 0);
+    /* The location area and the carrier being received, once known: every field a TEA1 reduced key is bound to. */
+    pub->la_known = 1U;
+    pub->la = 16383U;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.network_text, "MCC 1023" MID "MNC 16383" MID "LA 16383" MID "CC 63") == 0);
+    pub->rx_carrier_known = 1U;
+    pub->rx_carrier = 4095U;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.network_text, "MCC 1023" MID "MNC 16383" MID "LA 16383" MID "CC 63" MID "carrier 4095") == 0);
+    pub->la_known = 0U;
+    assert(dsd_app_tetra_view(f.opts, f.state, DSD_APP_TETRA_ASCII, &view) == 1);
+    assert(strcmp(view.network_text, "MCC 1023 - MNC 16383 - CC 63 - carrier 4095") == 0);
+    pub->rx_carrier_known = 0U;
     pub->colour = 64U; /* not a colour code: no network row rather than a wrong one */
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(view.network_known == 0U && view.network_text[0] == '\0');
@@ -258,6 +379,7 @@ int
 main(void) {
     test_visibility();
     test_mode_line();
+    test_security();
     test_network();
     test_channels();
     test_mm_status_and_codec();

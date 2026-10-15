@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -215,6 +216,83 @@ test_sysinfo_band_zero_keeps_control_channel(void) {
                     "SYSINFO in band 0 leaves the control channel and band alone");
         ok &= check(ts->sysinfo_known && ts->la == 987, "SYSINFO in band 0 still publishes its cell data");
     }
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* Extended services broadcast fields (EN 300 392-2 table 21.67, its security information EN 300 392-7 table A.104),
+ * MSB first in the 20-bit optional field. */
+#define XSB_AUTH         (1u << 19)
+#define XSB_CLASS1       (1u << 18)
+#define XSB_CLASS3       (1u << 17)
+#define XSB_SCKN(n)      ((uint32_t)((n) - 1u) << 12)
+#define XSB_DCK_INITIAL  (1u << 16)
+#define XSB_DCK_RESELECT (1u << 15)
+#define XSB_LINKED_GCK   (1u << 14)
+#define XSB_SHORT_VN(v)  ((uint32_t)(v) << 12)
+#define XSB_GCK          (1u << 9)
+#define BS_SVC_AIE       0xA5Eu /* 0xA5C with air interface encryption available */
+
+/* The cell's security, as its SYSINFO broadcasts it: the extended services broadcast's security information, and
+ * whether its D-MLE-SYSINFO's BS service details offer air interface encryption, each kept until the next of its kind
+ * (the optional field alternates with others, and a SYSINFO may lack its D-MLE-SYSINFO), forgotten with the cell and
+ * kept across a retune within it. */
+static int
+test_sysinfo_security(void) {
+    dsd_state* state = new_state();
+    dsd_opts* opts = new_opts();
+    const tetra_state_t* ts = tetra_st(state);
+    int ok = 1;
+
+    ttb_block b = {0};
+    ttb_sysinfo_ext(&b, 50, 4, 2, 987, 3, XSB_AUTH | XSB_SCKN(3), BS_SVC_AIE);
+    tetra_mac_broadcast bc;
+    ok &= check(tetra_mac_broadcast_decode(b.bits, b.n, &bc) && bc.sysinfo.security_present && bc.sysinfo.security.auth
+                    && !bc.sysinfo.security.class1 && !bc.sysinfo.security.class3 && bc.sysinfo.security.sckn == 3,
+                "a class 2 cell with SCKN 3 and authentication decodes");
+    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
+    ok &= check(ts->sec_valid && ts->sec.auth && ts->sec.sckn == 3 && ts->aie_known && ts->aie_available,
+                "the cell keeps its security and air interface encryption service");
+
+    b = (ttb_block){0};
+    ttb_sysinfo_ext(&b, 50, 4, 2, 987, 3,
+                    XSB_CLASS1 | XSB_CLASS3 | XSB_DCK_INITIAL | XSB_LINKED_GCK | XSB_SHORT_VN(2) | XSB_GCK, BS_SVC_AIE);
+    ok &= check(tetra_mac_broadcast_decode(b.bits, b.n, &bc) && bc.sysinfo.security.class1 && bc.sysinfo.security.class3
+                    && bc.sysinfo.security.dck_initial && !bc.sysinfo.security.dck_reselect
+                    && bc.sysinfo.security.linked_gck && bc.sysinfo.security.short_gck_vn == 2
+                    && bc.sysinfo.security.gck_supported && bc.sysinfo.security.sckn == 0,
+                "a class 1 and 3 cell decodes its DCK and GCK services, and no SCKN");
+    b = (ttb_block){0};
+    ttb_sysinfo_ext(&b, 50, 4, 2, 987, 3, XSB_CLASS3 | XSB_LINKED_GCK | XSB_SHORT_VN(3), BS_SVC_AIE);
+    ok &= check(tetra_mac_broadcast_decode(b.bits, b.n, &bc) && !bc.sysinfo.security.linked_gck
+                    && bc.sysinfo.security.short_gck_vn == 0,
+                "linked GCK crypto-periods mean nothing without GCK support (table A.104 note 5)");
+    b = (ttb_block){0};
+    ttb_sysinfo_ext(&b, 50, 4, 2, 987, 3, XSB_CLASS3 | XSB_GCK | XSB_SHORT_VN(3), BS_SVC_AIE);
+    ok &= check(tetra_mac_broadcast_decode(b.bits, b.n, &bc) && bc.sysinfo.security.short_gck_vn == 0,
+                "nor a short GCK-VN without linked crypto-periods (note 6)");
+
+    /* Another optional field (the multiframe definition) and a SYSINFO without its D-MLE-SYSINFO keep what they lack. */
+    b = (ttb_block){0};
+    ttb_sysinfo_ext(&b, 50, 4, 2, 987, 0, 0xFFFFF, 0xA5C);
+    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
+    ok &= check(ts->sec_valid && ts->sec.sckn == 3 && ts->aie_known && !ts->aie_available,
+                "an even multiframe definition keeps the security; its BS service details take no encryption");
+    b = (ttb_block){0};
+    ttb_sysinfo_ext(&b, 50, 4, 2, 987, 3, XSB_SCKN(7), BS_SVC_AIE);
+    tetra_mac_parse_schd(b.bits, b.n - 42, 0, opts, state);
+    ok &= check(ts->sec_valid && ts->sec.sckn == 7 && !ts->sec.auth && ts->aie_known && !ts->aie_available,
+                "a SYSINFO without its D-MLE-SYSINFO takes the security and keeps the encryption service");
+
+    /* A retune within the cell keeps it; another location area is another cell. */
+    tetra_forget_carrier(state);
+    ok &= check(ts->sec_valid && ts->aie_known, "a carrier change within the cell keeps it");
+    b = (ttb_block){0};
+    ttb_sysinfo_ext(&b, 50, 4, 2, 988, 0, 0, BS_SVC_AIE);
+    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
+    ok &= check(!ts->sec_valid && ts->aie_known && ts->aie_available,
+                "another location area forgets the last cell's security");
     free_state(state);
     free(opts);
     return ok;
@@ -978,6 +1056,7 @@ main(void) {
     ok &= test_sysinfo();
     ok &= test_sysinfo_band_zero_keeps_control_channel();
     ok &= test_sysinfo_tooshort();
+    ok &= test_sysinfo_security();
     ok &= test_null_state();
     ok &= test_mac_resource_ssi();
     ok &= test_null_pdu_leaves_state();

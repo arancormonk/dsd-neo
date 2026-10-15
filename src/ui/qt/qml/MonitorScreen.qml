@@ -965,6 +965,37 @@ Item {
                 }
             }
 
+            // The cell's broadcast security class, SCKN and authentication, and
+            // the loaded key that applies to the carrier being received; in
+            // direct mode the transmission's security class. Magenta, as
+            // encryption is on the rows around it.
+            Flow {
+                objectName: "monitorTetraSecurity"
+
+                width: parent.width
+                spacing: 5
+                visible: metrics.tetraVisible && metrics.tetraSecurityText.length > 0
+
+                Text {
+                    text: qsTr("SECURITY")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorTetraSecurityValue"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    text: metrics.tetraSecurityText
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.magenta
+                }
+            }
+
             // Each label and its reading are children of the Flow, so a long
             // reading moves under its label rather than off the body.
             Flow {
