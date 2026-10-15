@@ -317,6 +317,18 @@ DERIVED_NOISE = [
     ("noise_floor", 398, 10.0, 16.0),
 ]
 
+# The stretch of the real-air TETRA call between its talkers (tetra_call_real_air_72k), with noise. The call's
+# timeslot carries SCH/F signalling there that is nearly all zero bits, under an AACH saying assigned control, and no
+# speech at all. The noise breaks the SCH/F CRC often enough that such a block, tried as speech, would pass the speech
+# CRC (all zero bits are a codeword of every linear code); the AACH keeps it out (docs/testing.md). Deterministic from
+# the seed; complex Gaussian noise added at the source's own level, sigma in LSB of the cu8 range. The sidecar keeps the
+# source's centre frequency.
+#
+# name, source, start_s, stop_s, seed, sigma (LSB of the cu8 range)
+DERIVED_TETRA_GAP = [
+    ("tetra_call_gap_noisy_72k", "tetra_call_real_air_72k", 1.6, 4.9, 24004, 24.0),
+]
+
 # A capture whose input level reaches the cu8 rails only in its last replay chunk (issues #572, #626).
 # A replay hands the demod chunks of one live transfer's time, 256 pairs (5.33 ms) at 48 kHz, and
 # publishes each chunk's raw input level as the demod starts it; the decoder polls the level every
@@ -719,8 +731,8 @@ def build_iq_excerpt(out_dir, name, path, start_s, duration_s, offset_hz, out_ra
         resampled[first : first + count],
         sample_rate=out_rate_hz,
         dsp_bw_khz=out_rate_hz // 1000,
-    )
         **sidecar,
+    )
 
 
 def nfm_synth_samples(seed, interferer_hz, interferer_db):
@@ -937,8 +949,8 @@ def write_fixture(
         to_cu8(samples, normalize=normalize).tobytes(),
         sample_rate_hz=sample_rate,
         rtl_dsp_bw_khz=dsp_bw_khz,
-    )
         **sidecar,
+    )
 
 
 def load_cu8_fixture(path):
@@ -1535,6 +1547,34 @@ def build_attenuated(out_dir):
     return total
 
 
+def build_tetra_gap(out_dir):
+    """Write the noisy stretch between the real-air TETRA call's talkers (DERIVED_TETRA_GAP)."""
+    total = 0
+    for name, source, start_s, stop_s, seed, sigma_lsb in DERIVED_TETRA_GAP:
+        samples = load_cu8_fixture(os.path.join(out_dir, source + ".iq"))
+        with open(os.path.join(out_dir, source + ".iq.json"), encoding="utf-8") as handle:
+            centre_hz = json.load(handle)["center_frequency_hz"]
+        rate = TETRA_EXCERPT_RATE_HZ
+        stretch = samples[int(round(start_s * rate)) : int(round(stop_s * rate))]
+        rng = np.random.default_rng(seed)
+        sigma = sigma_lsb / 127.5
+        noise = rng.normal(0.0, sigma, len(stretch)) + 1j * rng.normal(0.0, sigma, len(stretch))
+        # to_cu8(normalize=False) scales by its default headroom; divide it back out (build_attenuated()).
+        written = write_fixture(
+            out_dir,
+            name,
+            (stretch + noise) / 0.9,
+            normalize=False,
+            sample_rate=rate,
+            dsp_bw_khz=rate // 1000,
+            center_frequency_hz=centre_hz,
+            capture_center_frequency_hz=centre_hz,
+        )
+        total += written
+        print(f"{name:28s} derived {written // 1024:6d} KiB")
+    return total
+
+
 def analog_voice_band(rng, count):
     """Voice-band audio: noise limited to 300-3000 Hz, louder in syllables than between them.
 
@@ -1800,6 +1840,7 @@ def derived_fixture_names():
             TETRA_BAD_CRC_IMPAIRED_NAME,
             TETRA_72K_NAME,
         ]
+        + [entry[0] for entry in DERIVED_TETRA_GAP]
     )
 
 
@@ -1853,6 +1894,7 @@ def main():
         total += build_derived_gap(args.out)
         total += build_dpmr_synth(args.out)
         total += build_tetra_synth(args.out)
+        total += build_tetra_gap(args.out)
         total += build_nfm_synth(args.out)
         total += build_am_synth(args.out)
         total += build_analog_synth(args.out)

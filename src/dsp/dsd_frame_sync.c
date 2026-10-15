@@ -1097,6 +1097,9 @@ frame_sync_try_tetra_ndb(frame_sync_match_ctx* ctx) {
      * ages 11..118 in direct mode, 13..120 on the uplink. */
     const int follows = uplink || state->tetra_sync.block1_follows_training;
     frame_sync_tetra_capture_block1(ctx, 108, (follows ? 11 : 18) + lead);
+    state->tetra_sync.aach1_valid =
+        (uint8_t)(!follows
+                  && frame_sync_capture_tetra_dibits_aged(ctx->history, state->tetra_sync.aach1_dibuf, 7, 11 + lead));
     frame_sync_tetra_capture_lead(ctx, lead);
     return frame_sync_tetra_finish(ctx, inverted ? "-TETRA NDB" : "+TETRA NDB",
                                    inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS, 11 + lead);

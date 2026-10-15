@@ -11114,6 +11114,7 @@ add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 # dropped from the CTest name).
 set(_dsd_tetra_test_sources
     acelp_reference
+    tetra_aach
     tetra_bits
     air_chain_vector
     d_tx_granted_chan
@@ -13563,6 +13564,31 @@ if(DSD_HAS_RADIO)
         ""
         40
     )
+    # The AACH (ACCESS-ASSIGN, header/field 1/field 2 under -Z) tells the call's traffic from its signalling: every
+    # speech burst decodes under its traffic usage marker 51, and no burst whose AACH says control or unallocated is
+    # tried as speech. tetra_call_gap_noisy_72k is the stretch between the talkers with noise added (DERIVED_TETRA_GAP
+    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 21 of
+    # them under an assigned control AACH and decodes none (before the AACH was read, 3 passed as speech).
+    set(_dsd_tetra_aach_not_traffic
+        "AACH (0/[0-9]+|[123]/[0-3])/[0-9]+\\]\\[TETRA TCH"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_AACH
+        tetra_call_real_air_72k
+        "-fT -Z"
+        "AACH 3/51/51\\]\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok"
+        "${_dsd_tetra_aach_not_traffic}"
+        40
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE
+        tetra_call_gap_noisy_72k
+        "-fT -Z"
+        "AACH 2/1/9\\][^[]"
+        "${_dsd_tetra_aach_not_traffic}"
+        8
+    )
+    unset(_dsd_tetra_aach_not_traffic)
     # Complex-conjugated IQ reverses every differential phase step. Require
     # protected payloads after negative-polarity synchronization and dibit-MSB
     # normalization in both the BSCH and NDB paths.
