@@ -278,6 +278,10 @@ Limits:
   without a running decoder. If that restore had already started changing files (it was interrupted, or could not
   finish), the setup you use meanwhile is partly restored, and changes you make to it can be overwritten when the
   restore completes.
+- If DSD-neo cannot delete the restore's own "ready to apply" marker once the new setup is in place, the restore
+  counts as couldn't finish rather than being undone: undoing it would end by deleting that same marker, so it could
+  not finish either. The next start applies the restore again, which changes nothing that is already in place, and
+  deletes the marker then.
 - If a part-way restore's undo record is damaged (only tampering or storage corruption can do that, and the settings it
   keeps are checked too), every start says the restore couldn't finish and nothing can cancel it. The way out is to
   clear DSD-neo's storage in Android's app settings, which erases all of its data, and then restore the backup again.

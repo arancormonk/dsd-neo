@@ -5472,7 +5472,9 @@ Qt Quick frontend (`src/ui/qt`):
     the way of a restored channel map…"). A crash re-runs to the same end state, and an I/O failure rolls back byte for
     byte (pruned empty directories excepted). Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine
     busy or storage short; kept) and `Stuck` (neither finishing nor undoing worked; kept); `backup-restore-result.json`
-    records the applied, failed and stuck ones. A journal whose `prefs.json` does not match the hash its
+    records the applied, failed and stuck ones. A commit marker that cannot be removed is Stuck without a rollback, on
+    purpose: a rollback ends by removing that same marker, so it could not complete either; the next start repeats the
+    idempotent roll forward and removes the marker then. A journal whose `prefs.json` does not match the hash its
     manifest records is unreadable (Stuck) rather than a rollback that would clear the settings. `discard_pending()`
     refuses once the journal is complete (`pending_apply_started()`). `detail::DataRoot` is the only writer, deleter and
     renamer: it refuses a path outside the data root or one with a symlink or junction among its existing components,

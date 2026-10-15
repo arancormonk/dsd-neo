@@ -1125,6 +1125,10 @@ class Applier {
             return interrupted();
         }
         if (status == Status::Failed) {
+            // Stuck, not rolled back: a rollback ends here too, with this same marker to remove, so it could never
+            // complete either, and it would only undo a configuration already in place. The marker and the journal
+            // stay; the next start repeats the roll forward, which is idempotent (it reads only the journal and the
+            // staging), and removes the marker then.
             return stuck();
         }
         // An unmarked leftover is removed at the next start.
