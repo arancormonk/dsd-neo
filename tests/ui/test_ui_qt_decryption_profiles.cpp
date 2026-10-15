@@ -16,6 +16,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTemporaryDir>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -424,6 +425,73 @@ test_load_compile_persist_failure(const QString& secret) {
     check(error.isEmpty() && storedRow("unsaved-managed").value("compiled").isObject());
 }
 
+/* Everything below @p dir, for checking that nothing was written there. */
+static QStringList
+entriesBelow(const QString& dir) {
+    QStringList entries;
+    QDirIterator it(dir, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        entries << it.next();
+    }
+    return entries;
+}
+
+/* Issue #580: key files are written in the clear, so a compile (at load or on save) never writes through a symlinked
+   decryption/ or decryption/<uid>/: it is refused, nothing lands at the link's target, and the profile asks to be saved
+   again. With the links gone the same row compiles. */
+static void
+test_compile_refuses_linked_directories(const QString& secret) {
+    const QJsonObject key{
+        {"uid", "key-l"}, {"label", "Dispatch"}, {"keyId", 19}, {"kind", "aes128"}, {"material", secret}};
+    const QJsonObject row{{"uid", "linked-managed"}, {"label", "Linked managed"}, {"protocol", "p25"},
+                          {"mode", "automatic"},     {"keySource", "managed"},    {"keys", QJsonArray{key}}};
+    const QString decryption = dsd_qt::json_store_path("decryption");
+    const QString aside = decryption + ".aside";
+    check(QDir().mkpath(decryption) && QFile::rename(decryption, aside));
+    QTemporaryDir outside;
+    check(outside.isValid());
+    const QString linkedUid = decryption + "/linked-managed";
+    const QString linkedSave = decryption + "/linked-saved";
+
+    // decryption/ itself a link, then decryption/<uid>/.
+    for (const bool linkTop : {true, false}) {
+        if (linkTop) {
+            check(QFile::link(outside.path(), decryption));
+        } else {
+            check(QDir().mkdir(decryption) && QFile::link(outside.path(), linkedUid)
+                  && QFile::link(outside.path(), linkedSave));
+        }
+        seedStore({row});
+        {
+            dsd_qt::DecryptionProfilesModel loaded;
+            QString error;
+            check(loaded.configuration("linked-managed", &error).isEmpty() && error == kResaveError);
+            check(!storedRow("linked-managed").contains("compiled"));
+            const QVariantMap saved = loaded.saveProfile({{"uid", "linked-saved"},
+                                                          {"label", "Linked saved"},
+                                                          {"protocol", "p25"},
+                                                          {"mode", "automatic"},
+                                                          {"keys", QVariantList{key.toVariantMap()}}});
+            check(!saved.value("ok").toBool());
+        }
+        check(entriesBelow(outside.path()).isEmpty()); // nothing written through the link
+        if (linkTop) {
+            check(QFile::remove(decryption));
+        } else {
+            check(QFile::remove(linkedUid) && QFile::remove(linkedSave) && QDir().rmdir(decryption));
+        }
+    }
+    check(QFile::rename(aside, decryption));
+    dsd_qt::DecryptionProfilesModel unlinked;
+    QString error;
+    check(unlinked.configuration("linked-managed", &error)
+              .value("keysHexCsvPath")
+              .toString()
+              .startsWith(dsd_qt::json_store_path("decryption/linked-managed/"))
+          && error.isEmpty());
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -522,5 +590,6 @@ main(int argc, char** argv) {
     test_compiled_rows_load_unchanged();
     test_definitions_compile_at_load(secret);
     test_load_compile_persist_failure(secret);
+    test_compile_refuses_linked_directories(secret);
     return 0;
 }

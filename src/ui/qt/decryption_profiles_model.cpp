@@ -63,12 +63,52 @@ scanEntryAnalog(const QVariantMap& entry, const SavedSystemsModel* systems) {
     return scan_list_entry_analog_kind(entry, flag) >= 0;
 }
 
+/**
+ * Whether @p path lies below <data root>/decryption with no symlink or junction among its existing components from the
+ * data root down, the path itself included. Key files are written in the clear, so a planted link there (a restored
+ * setup keeps what it does not own under decryption/, issue #580) must never steer them anywhere else.
+ */
+bool
+reachedThroughNoLink(const QString& path) {
+    const QString root = QDir::cleanPath(json_store_root());
+    if (root.size() < 2 || !QDir::isAbsolutePath(root) || QDir::cleanPath(path) != path
+        || !path.startsWith(root + QStringLiteral("/decryption/"))) {
+        return false;
+    }
+    QString current = root;
+    for (const QString& part : path.mid(root.size() + 1).split(QLatin1Char('/'))) {
+        current += QLatin1Char('/') + part;
+        const QFileInfo info(current);
+        if (info.isSymLink() || info.isJunction()) {
+            return false;
+        }
+        if (!info.exists()) {
+            break; // nothing exists below a missing component
+        }
+    }
+    return true;
+}
+
+/**
+ * Write a key file privately (owner-only, through QSaveFile). Refused, with nothing written, unless the file and its
+ * directories lie inside <data root>/decryption, reached through no link, before and after its directories are made.
+ */
 bool
 privateWrite(const QString& path, const QByteArray& bytes) {
+    const QString directory = QFileInfo(path).absolutePath();
+    if (!reachedThroughNoLink(path) || !QDir().mkpath(directory) || !reachedThroughNoLink(path)) {
+        return false;
+    }
+    const QString inside = QFileInfo(json_store_path(QStringLiteral("decryption"))).canonicalFilePath();
+    const QString canonicalRoot = QFileInfo(json_store_root()).canonicalFilePath();
+    const QString canonicalDirectory = QFileInfo(directory).canonicalFilePath();
+    if (canonicalRoot.isEmpty() || inside != canonicalRoot + QStringLiteral("/decryption")
+        || !canonicalDirectory.startsWith(inside + QLatin1Char('/'))) {
+        return false;
+    }
     QSaveFile file(path);
-    return QDir().mkpath(QFileInfo(path).absolutePath()) && file.open(QIODevice::WriteOnly)
-           && file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) && file.write(bytes) == bytes.size()
-           && file.commit();
+    return file.open(QIODevice::WriteOnly) && file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+           && file.write(bytes) == bytes.size() && file.commit();
 }
 
 QString

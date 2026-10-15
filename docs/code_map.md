@@ -5510,16 +5510,18 @@ Qt Quick frontend (`src/ui/qt`):
     export result and the Home card list `notIncluded` through `Util.notIncludedText()`. `BackupResultCard.qml` on Home
     shows `startupOutcome` and matches the `BackupApply` reason strings of `backup_apply.cpp` through `qsTranslate()`,
     so a change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
-  - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or
-    device-local (onboarding, the notification explanation and the last location fix are device-local), with
+  - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or device-local
+    (onboarding, the notification explanation and the last location fix are device-local), with
     `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
-    any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is
-    kept, and `configuration()` refuses it ("Open this decryption profile and save it again."). `-fp` (ProVoice)
-    reads as `mixed` in `Util.js` `decryptionProtocol()`, `session_args_profile_compatible()` and the legacy key
-    migration. `json_store_root()` is the data root every store path builds on. A file-source system without its
-    recording, as every restored replay system arrives, is refused before it starts
-    (`SessionArgsError::RecordingMissing`, start category `recording-missing`), checked after AM's source rule (AM needs
-    a radio whatever the file) and before TETRA's, so it never runs `-i ""` and is never told to choose a radio.
+    any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is kept,
+    and `configuration()` refuses it ("Open this decryption profile and save it again."). Its key files are written only
+    below `<root>/decryption` reached through no symlink or junction (`privateWrite()`), so a link left under
+    `decryption/` refuses the compile, at load or on save, instead of placing keys elsewhere. `-fp` (ProVoice) reads as
+    `mixed` in `Util.js` `decryptionProtocol()`, `session_args_profile_compatible()` and the legacy key migration.
+    `json_store_root()` is the data root every store path builds on. A file-source system without its recording, as
+    every restored replay system arrives, is refused before it starts (`SessionArgsError::RecordingMissing`, start
+    category `recording-missing`), checked after AM's source rule (AM needs a radio whatever the file) and before
+    TETRA's, so it never runs `-i ""` and is never told to choose a radio.
   - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback; two
     restores in a row), `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's
     `tests/ui/qml_backup_recorder.h`), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,
