@@ -2420,7 +2420,8 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out, cons
     return 1;
 }
 
-/* Wait for the next UDP sample. A frame-sync hunt read leaves the wait for a queued command (issue #634), but only
+/* Wait for the next UDP sample. A frame-sync hunt read leaves the wait for a queued command (issue #634), or for
+   decoder-thread trunking timers that are due (a startup control-channel hunt or DMR recovery, issue #703), but only
    once the input has been silent for a stream pause, as long as the analog receiver takes for a boundary
    (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the partial symbol and sync history it gives up then belong to a paused stream,
    and a shorter gap never costs a sync. The silence is counted from the first wait that came back empty, with nothing
@@ -2444,7 +2445,8 @@ symbol_wait_udp_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
             silent_since_ms = now_ms;
             continue;
         }
-        if (now_ms - silent_since_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS && dsd_runtime_controls_pending()) {
+        if (now_ms - silent_since_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS
+            && (dsd_runtime_controls_pending() || dsd_frame_sync_hook_decoder_ticks_due(opts, state))) {
             state->input_interrupted = 1;
             return -1;
         }

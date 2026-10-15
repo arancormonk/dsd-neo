@@ -19,13 +19,14 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -51,6 +52,7 @@ enum scenario {
     SC_INPUT_SWITCH,
     SC_MODE_CHANGE_DMR,
     SC_INPUT_SWITCH_PENDING,
+    SC_INPUT_SWITCH_NEW_REQUEST,
 };
 
 static enum scenario g_scenario;
@@ -63,7 +65,9 @@ static uint64_t g_tunes_before_ms; // decode time of the last tune
 static int g_validated_sent;
 static int g_dmr_armed_seen; // DMR's startup window was armed before the mode change
 static int g_failures;
-static uint64_t g_pending_request; // the probe left in flight across an input switch
+static uint64_t g_pending_request;    // the probe left in flight across an input switch
+static uint64_t g_new_device_request; // a tune the new device was given between the switch and its boundary
+static int g_new_request_kept;
 
 static int
 expect(int cond, const char* what) {
@@ -143,6 +147,15 @@ install_session(dsd_opts* opts, dsd_state* state) {
     state->lcn_freq_count = 3;
 }
 
+/* An input switch's commit, as the command (or the engine's fallback) makes it: under the tick guard, with the
+   replacement. */
+static void
+commit_input_switch(dsd_state* state) {
+    p25_sm_tick_guard_enter();
+    dsd_engine_note_input_replaced(state);
+    p25_sm_tick_guard_leave();
+}
+
 static int
 finish(void) {
     dsd_exitflag_store(1);
@@ -181,6 +194,25 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     advance(250U);
     switch (g_scenario) {
         case SC_OUTER_LOOP:
+            if (g_now_ms == 250U) {
+                // The session just became eligible after this pass's startup tick: its first tick is due, which a
+                // silent input must not starve; without a channel map nothing is.
+                char map[sizeof opts->chan_in_file];
+                DSD_SNPRINTF(map, sizeof map, "%s", opts->chan_in_file);
+                opts->chan_in_file[0] = '\0';
+                expect(!dsd_frame_sync_hook_decoder_ticks_due(opts, state), "no decoder timers without a channel map");
+                DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", map);
+                expect(dsd_frame_sync_hook_decoder_ticks_due(opts, state),
+                       "an eligible session's first startup tick is a decoder timer");
+            }
+            if (g_now_ms == 2000U) {
+                expect(dsd_frame_sync_hook_decoder_ticks_due(opts, state),
+                       "an armed startup window is a decoder timer a silent input must not starve");
+                opts->trunk_enable = 0; // turned off after this pass's tick: the window still needs a tick to go
+                expect(dsd_frame_sync_hook_decoder_ticks_due(opts, state),
+                       "an armed window stays a decoder timer once trunking is off");
+                opts->trunk_enable = 1;
+            }
             if (g_now_ms > 7000U) {
                 return finish();
             }
@@ -198,7 +230,12 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
             return DSD_SYNC_P25P1_POS;
         case SC_INPUT_SWITCH:
             if (g_now_ms == 4750U) {
-                state->input_boundary = 1; // an input switch committed just before the window runs out
+                commit_input_switch(state); // an input switch committed just before the window runs out
+            }
+            if (g_now_ms == 5000U) {
+                // The first read of the new input: a silent one waits here, so the window must already be running.
+                expect(dsd_frame_sync_hook_decoder_ticks_due(opts, state),
+                       "the new input's startup window is armed before its first read");
             }
             if (g_now_ms > 11000U) {
                 return finish();
@@ -206,12 +243,27 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
             return DSD_SYNC_NONE;
         case SC_INPUT_SWITCH_PENDING:
             if (g_now_ms == 6000U) {
-                state->input_boundary = 1; // the input is replaced with the probe still in flight
+                commit_input_switch(state); // the input is replaced with the probe still in flight
             }
             if (g_now_ms == 6500U && g_pending_request != 0U) {
                 dsd_trunk_tuning_request_publish(g_pending_request, DSD_TRUNK_TUNE_RESULT_FAILED); // the old device
             }
             if (g_now_ms > 8000U) {
+                return finish();
+            }
+            return DSD_SYNC_NONE;
+        case SC_INPUT_SWITCH_NEW_REQUEST:
+            if (g_now_ms == 1000U) {
+                commit_input_switch(state);
+                // Recovery tuned the new device before the engine reached the switch's boundary.
+                g_new_device_request = dsd_trunk_tuning_request_begin();
+                dsd_trunk_tuning_request_mark_ready(g_new_device_request);
+            }
+            if (g_now_ms == 1250U) {
+                g_new_request_kept = dsd_trunk_tuning_pending_request() == g_new_device_request;
+                dsd_trunk_tuning_request_publish(g_new_device_request, DSD_TRUNK_TUNE_RESULT_OK);
+            }
+            if (g_now_ms > 1500U) {
                 return finish();
             }
             return DSD_SYNC_NONE;
@@ -252,6 +304,8 @@ run_scenario(enum scenario sc, int ft) {
     g_validated_sent = 0;
     g_dmr_armed_seen = 0;
     g_pending_request = 0U;
+    g_new_device_request = 0U;
+    g_new_request_kept = 0;
     dsd_decode_clock_use_test(T0_NS);
     dsd_exitflag_store(0);
     dsd_trunk_tuning_requests_reset();
@@ -288,7 +342,7 @@ run_scenario(enum scenario sc, int ft) {
             expect(g_tunes == 1, "and never probes again");
             break;
         case SC_INPUT_SWITCH:
-            expect(g_tunes >= 1 && g_tunes_before_ms > 10000U,
+            expect(g_tunes >= 1 && g_tunes_before_ms > 9750U,
                    "an input switch commit holds the probe until a full window after its boundary");
             break;
         case SC_INPUT_SWITCH_PENDING:
@@ -296,6 +350,10 @@ run_scenario(enum scenario sc, int ft) {
             expect(dsd_trunk_tuning_pending_request() == 0U
                        && dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()),
                    "the replaced device's requests no longer gate the new input's frames");
+            break;
+        case SC_INPUT_SWITCH_NEW_REQUEST:
+            expect(g_new_device_request != 0U && g_new_request_kept,
+                   "a tune the new device was given before the switch's boundary still gates its frames");
             break;
         case SC_MODE_CHANGE_DMR:
             expect(g_dmr_armed_seen == 1, "DMR armed its startup window between frames");
@@ -349,6 +407,7 @@ main(void) {
     run_scenario(SC_INPUT_SWITCH, 1);
     run_scenario(SC_MODE_CHANGE_DMR, 0);
     run_scenario(SC_INPUT_SWITCH_PENDING, 1);
+    run_scenario(SC_INPUT_SWITCH_NEW_REQUEST, 1);
     if (g_failures == 0) {
         printf("engine cold start hunt: OK\n");
     }

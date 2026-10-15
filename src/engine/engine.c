@@ -3183,6 +3183,13 @@ dsd_engine_end_input_boundary(dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
     init_rrc_filter_memory();
     dsd_symbol_matched_filter_reset(state);
+    if (opts->trunk_scan_enabled != 1) {
+        /* This pass's startup tick ran with the switch pending and unarmed both windows: arm them on the new input now,
+           before a silent one's read waits for a timer nothing started (issue #703). */
+        p25_sm_tick_guard_enter();
+        dsd_engine_cold_start_tick_locked(opts, state);
+        p25_sm_tick_guard_leave();
+    }
 }
 
 void

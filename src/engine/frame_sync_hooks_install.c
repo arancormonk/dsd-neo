@@ -13,6 +13,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -72,10 +73,30 @@ p25_sm_vc_no_sync_from_frame_sync(dsd_opts* opts, const dsd_state* state) {
     p25_sm_note_vc_no_sync_pass(ctx, opts, state);
 }
 
+/* Decoder-thread trunking timers a silent UDP input must not starve (issue #703): a startup control-channel hunt, armed
+   or due to arm (a session that became eligible after its pass's tick, or whose tick found the guard busy), or DMR
+   recovery, whose ticks run on this thread only. Trunking turned off is no exception: an armed window or a hunt still
+   needs the tick that lets it go. A busy guard counts as due: leaving the wait costs one pass. */
+static int
+engine_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->trunk_scan_enabled == 1) {
+        return 0;
+    }
+    if (!p25_sm_tick_guard_try_enter()) {
+        return 1;
+    }
+    const dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    const int due = p25_sm_cold_start_due(p25_sm_get_ctx(), opts, state) || dmr_sm_cold_start_due(dmr, opts, state)
+                    || (dsd_trunk_dmr_recovery_allowed(opts, state) && dmr_sm_get_state(dmr) != DMR_SM_IDLE);
+    p25_sm_tick_guard_leave();
+    return due;
+}
+
 void
 dsd_engine_frame_sync_hooks_install(void) {
     dsd_frame_sync_hooks hooks = {0};
     hooks.p25_sm_try_tick = p25_sm_try_tick;
+    hooks.decoder_ticks_due = engine_decoder_ticks_due;
     hooks.p25_sm_release = p25_sm_release_from_frame_sync;
     hooks.p25_sm_vc_sync = p25_sm_vc_sync_from_frame_sync;
     hooks.p25_sm_vc_no_sync = p25_sm_vc_no_sync_from_frame_sync;
