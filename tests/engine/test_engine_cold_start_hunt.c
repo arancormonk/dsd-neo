@@ -185,6 +185,17 @@ processFrame(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-lin
 }
 
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+/* No watchdog thread: it never runs a startup hunt (P25_SM_COLD_START covers that), and here, where decode time runs
+   far ahead of the real clock, one watchdog tick holding the P25 SM tick guard could span every pass of a scenario,
+   whose outer loop only tries the guard, and the decoder-ticks hook would read the busy guard as due. */
+void __wrap_p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state);
+
+void
+__wrap_p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
 int
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     g_calls++;

@@ -6504,6 +6504,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_engine_cold_start_hunt
         PRIVATE
             "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=p25_sm_watchdog_start"
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"
