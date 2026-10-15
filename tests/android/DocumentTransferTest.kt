@@ -103,6 +103,41 @@ private fun aReadOrWriteErrorFails() {
     }) { "a write error fails the copy" }
 }
 
+/** A local output's failures, and only its, read as the local side's: the document's stay plain I/O errors. */
+private fun aLocalOutputsFailuresAreLocal() {
+    val local = { block: () -> Unit ->
+        try {
+            block()
+            "none"
+        } catch (e: DocumentTransfer.LocalFailure) {
+            "local"
+        } catch (e: IOException) {
+            "other"
+        }
+    }
+    check(local {
+        DocumentTransfer.copyCapped(ByteArrayInputStream(bytes(3 * DocumentTransfer.CHUNK_BYTES)),
+            DocumentTransfer.LocalOutput(FailingOutput(DocumentTransfer.CHUNK_BYTES)), 1L shl 30)
+    } == "local") { "a write the local output refuses is a local failure" }
+    check(local {
+        DocumentTransfer.copyCapped(FailingInput(DocumentTransfer.CHUNK_BYTES + 5),
+            DocumentTransfer.LocalOutput(ByteArrayOutputStream()), 1L shl 30)
+    } == "other") { "a read the document refuses is not a local failure" }
+    val failingFlush = object : OutputStream() {
+        override fun write(b: Int) {}
+
+        override fun flush() = throw IOException("flush failed")
+
+        override fun close() = throw IOException("close failed")
+    }
+    check(local { DocumentTransfer.LocalOutput(failingFlush).flush() } == "local") { "a failed flush is local" }
+    check(local { DocumentTransfer.LocalOutput(failingFlush).close() } == "local") { "a failed close is local" }
+    check(local { DocumentTransfer.LocalOutput(FailingOutput(0)).write(1) } == "local") { "a failed byte is local" }
+    val sink = ByteArrayOutputStream()
+    DocumentTransfer.LocalOutput(sink).use { it.write(bytes(10), 0, 10) }
+    check(sink.toByteArray().contentEquals(bytes(10))) { "a local output passes its bytes through" }
+}
+
 /** Last: the abort is sticky for the rest of the process. */
 private fun anAbortStopsACopyAtTheNextChunkAndRefusesNewOnes() {
     check(!DocumentTransfer.isAborted) { "nothing is aborted at first" }
@@ -140,6 +175,7 @@ fun main() {
     oneByteOverTheCapFails()
     anEmptyStreamCopiesNothing()
     aReadOrWriteErrorFails()
+    aLocalOutputsFailuresAreLocal()
     anAbortStopsACopyAtTheNextChunkAndRefusesNewOnes()
     println("PASS: document transfers copy within the cap, fail on errors and stop on abort")
 }

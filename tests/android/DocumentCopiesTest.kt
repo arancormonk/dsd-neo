@@ -198,7 +198,15 @@ private fun aCopyThatCannotProceedFailsAndLeavesNothing() {
         DocumentTransfer.FAILED) { "a document the provider cannot open fails" }
     val uri = resolver.add(bytes(10))
     check(DocumentCopies.copyDocumentToFile(resolver, uri, File(scratch, "nowhere/a.in").path, 100) ==
-        DocumentTransfer.FAILED) { "a destination directory that does not exist fails" }
+        DocumentTransfer.LOCAL_FAILED) { "a destination directory that does not exist is this device's failure" }
+    // The document reads whole, but the copy cannot take the destination's place: a directory holding a file.
+    val occupied = File(directory, "occupied.in").apply { mkdirs() }
+    File(occupied, "keep").writeBytes(bytes(1))
+    check(DocumentCopies.copyDocumentToFile(resolver, uri, occupied.path, 100) == DocumentTransfer.LOCAL_FAILED) {
+        "a copy that cannot be renamed into place is this device's failure"
+    }
+    check(directory.list()!!.toList() == listOf("occupied.in")) { "a failed rename leaves no temp file" }
+    occupied.deleteRecursively()
     val before = resolver.calls.size
     check(DocumentCopies.copyDocumentToFile(resolver, uri, "", 100) == DocumentTransfer.FAILED) { "an empty path fails" }
     check(DocumentCopies.copyDocumentToFile(resolver, uri, File(directory, "b.in").path, -1) ==

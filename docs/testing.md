@@ -121,7 +121,9 @@ counted cap when the size is unknown, wrong or its lookup fails, `wt` then `w`, 
 that ignores the `t` included) and the sync before close, a pipe neither trimmed nor synced, a failure once open
 closing the document with an error (a pipe's write failure included) and deleting it, never before, and the abort
 cancelling a held size lookup, a held read open and a held write open (with no `w` retry), skipping the delete, and
-refusing later transfers without a provider call.
+refusing later transfers without a provider call. A failure on the device's side of a copy (a missing destination
+directory, a rename that cannot land, a write through `LocalOutput`) reads `LOCAL_FAILED`, and the suite first checks
+that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
 late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the

@@ -178,8 +178,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * ContentResolver; a file:// URL or plain path takes the base host's copy.
      *
      * For a content:// reference, copyDocumentToFile() replaces @p destPath: whatever is there is removed before the
-     * copy starts (DocumentFailed when it cannot be), so a failure leaves nothing at @p destPath and DocumentCopied
-     * always names this copy's file.
+     * copy starts (DocumentLocalFailed when it cannot be), so a failure leaves nothing at @p destPath and
+     * DocumentCopied always names this copy's file. The platform's DocumentLocalFailed (its temp file or the rename
+     * failed) passes through, as does DocumentTooLarge; any other answer but a copy whose file is there fails.
      */
     int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const override;
     bool copyFileToDocument(const QString& sourcePath, const QString& reference) const override;

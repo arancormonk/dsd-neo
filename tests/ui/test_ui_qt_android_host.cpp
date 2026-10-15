@@ -307,6 +307,8 @@ check_document_dispatch() {
     static const Answer kAnswers[] = {
         {DecoderHost::DocumentTooLarge, false, DecoderHost::DocumentTooLarge, "too large passes through"},
         {DecoderHost::DocumentFailed, false, DecoderHost::DocumentFailed, "a failure passes through"},
+        {DecoderHost::DocumentLocalFailed, false, DecoderHost::DocumentLocalFailed,
+         "this device's failure passes through"},
         {7, true, DecoderHost::DocumentFailed, "an unknown answer is a failure"},
     };
     for (const Answer& answer : kAnswers) {
@@ -319,9 +321,9 @@ check_document_dispatch() {
 
     QDir(dir.path()).mkpath(QStringLiteral("busy/inner"));
     platform() = PlatformCopies();
-    check(host.copyDocumentToFile(content, dir.filePath(QStringLiteral("busy")), 77) == DecoderHost::DocumentFailed
+    check(host.copyDocumentToFile(content, dir.filePath(QStringLiteral("busy")), 77) == DecoderHost::DocumentLocalFailed
               && platform().calls == 0,
-          "a destination that cannot be cleared fails before the platform is asked");
+          "a destination that cannot be cleared is this device's failure, before the platform is asked");
     check(host.copyDocumentToFile(content, QString(), 77) == DecoderHost::DocumentFailed
               && host.copyDocumentToFile(content, dest, -1) == DecoderHost::DocumentFailed && platform().calls == 0,
           "an empty destination or a negative cap never reaches the platform");

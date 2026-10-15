@@ -34,14 +34,15 @@ DecoderHostAndroid::copyDocumentToFile(const QString& reference, const QString& 
     if (documentTransfersAborted() || destPath.isEmpty() || maxBytes < 0) {
         return DocumentFailed;
     }
-    /* Cleared first, so that a file found at destPath afterwards can only be this copy's (see below). */
+    /* Cleared first, so that a file found at destPath afterwards can only be this copy's (see below). A destination
+     * that stays is this device's failure, not the document's. */
     QFile::remove(destPath);
     if (QFileInfo::exists(destPath) || QFileInfo(destPath).isSymLink()) {
-        return DocumentFailed;
+        return DocumentLocalFailed;
     }
     const int copied = platformCopyDocumentToFile(reference, destPath, maxBytes);
-    if (copied == DocumentTooLarge) {
-        return DocumentTooLarge;
+    if (copied == DocumentTooLarge || copied == DocumentLocalFailed) {
+        return copied;
     }
     /* A JNI call that failed (no such method, or an Error the Kotlin side does not catch) also reads as 0, so a copy
      * counts only with its file in place. */

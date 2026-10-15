@@ -68,7 +68,8 @@ object DocumentCopies {
      * The copy lands in a private temp file beside [destPath] and is renamed over it only once complete, so no
      * failure, the cap included, leaves a partial file there. A size the provider declares above the cap is refused
      * before the open, which spares a cloud provider downloading a document that cannot fit. The cap still counts the
-     * bytes actually read. A cancelled provider call (OperationCanceledException) is a failure like any other.
+     * bytes actually read. A cancelled provider call (OperationCanceledException) is a failure like any other. A
+     * failure on this device's side (the temp file, a write to it, the rename) is LOCAL_FAILED, not FAILED.
      */
     @JvmStatic
     fun copyDocumentToFile(resolver: ContentResolver, uriText: String, destPath: String, maxBytes: Long): Int {
@@ -84,20 +85,25 @@ object DocumentCopies {
             if (declared != null && declared > maxBytes) {
                 return DocumentTransfer.TOO_LARGE
             }
-            val temp = File.createTempFile(".document", ".tmp", directory)
+            val temp = localTempFile(directory)
             staging = temp
             ownerOnly(temp)
             val document = resolver.openAssetFileDescriptor(uri, "r", signal) ?: return DocumentTransfer.FAILED
             val copied = document.use { opened ->
                 opened.createInputStream().use { input ->
-                    temp.outputStream().use { output -> DocumentTransfer.copyCapped(input, output, maxBytes) }
+                    DocumentTransfer.LocalOutput(localStream(temp)).use { output ->
+                        DocumentTransfer.copyCapped(input, output, maxBytes)
+                    }
                 }
             }
             when {
                 copied < 0 -> DocumentTransfer.TOO_LARGE
                 temp.renameTo(File(destPath)) -> DocumentTransfer.COPIED
-                else -> DocumentTransfer.FAILED
+                else -> DocumentTransfer.LOCAL_FAILED
             }
+        } catch (e: DocumentTransfer.LocalFailure) {
+            Log.w(TAG, "could not write the copy of a document", e)
+            DocumentTransfer.LOCAL_FAILED
         } catch (e: Exception) {
             Log.w(TAG, "failed to copy a document", e)
             DocumentTransfer.FAILED
@@ -216,6 +222,20 @@ object DocumentCopies {
         } catch (e: Exception) {
             Log.w(TAG, "could not delete a partly written document", e)
         }
+    }
+
+    /** A temp file in [directory] for a copy; a failure is this device's ([DocumentTransfer.LocalFailure]). */
+    private fun localTempFile(directory: File): File = try {
+        File.createTempFile(".document", ".tmp", directory)
+    } catch (e: IOException) {
+        throw DocumentTransfer.LocalFailure(e)
+    }
+
+    /** [file] opened for writing; a failure is this device's ([DocumentTransfer.LocalFailure]). */
+    private fun localStream(file: File): FileOutputStream = try {
+        FileOutputStream(file)
+    } catch (e: IOException) {
+        throw DocumentTransfer.LocalFailure(e)
     }
 
     /** Readable and writable by the owner only, best effort: app-internal storage already isolates the file. */

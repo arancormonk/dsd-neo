@@ -22,6 +22,33 @@ object DocumentTransfer {
     const val TOO_LARGE = 1
     const val FAILED = 2
 
+    /** The document could be read, but this device could not write the copy: a temp file, a write or the rename. */
+    const val LOCAL_FAILED = 3
+
+    /** A failure on the local side of a copy (the file DSD-neo writes), not on the document's. */
+    class LocalFailure(cause: IOException) : IOException(cause.message, cause)
+
+    /** [target] with every failure it raises reported as a [LocalFailure]. */
+    class LocalOutput(private val target: OutputStream) : OutputStream() {
+        override fun write(b: Int) = local { target.write(b) }
+
+        override fun write(b: ByteArray, off: Int, len: Int) = local { target.write(b, off, len) }
+
+        override fun flush() = local { target.flush() }
+
+        override fun close() = local { target.close() }
+
+        private inline fun local(operation: () -> Unit) {
+            try {
+                operation()
+            } catch (e: LocalFailure) {
+                throw e
+            } catch (e: IOException) {
+                throw LocalFailure(e)
+            }
+        }
+    }
+
     const val CHUNK_BYTES = 64 * 1024
 
     @Volatile
