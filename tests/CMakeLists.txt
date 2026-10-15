@@ -1366,6 +1366,20 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 
+# The backup envelope; the Qt frontend calls it from C++ (issue #580).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_crypto_backup_seal
+  HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL
+  dsd-neo/crypto/backup_seal.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_crypto_backup_seal_cxx
+  HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL_CXX
+  dsd-neo/crypto/backup_seal.h
+  CXX
+)
+
 add_executable(
     dsd-neo_test_core_ambe_interleave
     core/test_core_ambe_interleave.c
@@ -1475,6 +1489,15 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_kirisun PRIVATE dsd-neo_crypto)
 
 add_test(NAME KIRISUN COMMAND dsd-neo_test_kirisun)
+
+add_executable(dsd-neo_test_backup_seal crypto/test_backup_seal.c)
+target_include_directories(
+    dsd-neo_test_backup_seal
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_backup_seal PRIVATE dsd-neo_crypto)
+
+add_test(NAME BACKUP_SEAL COMMAND dsd-neo_test_backup_seal)
 
 add_executable(
     dsd-neo_test_dstar_header_utils
@@ -3670,11 +3693,15 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_decryption_profiles
-        PRIVATE Qt6::Gui dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
+        PRIVATE Qt6::Gui Qt6::Qml dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
     )
+    # Util.js is evaluated in a QJSEngine so its decode-flag protocol mapping can
+    # be checked against the C++ one.
     target_compile_definitions(
         dsd-neo_test_ui_qt_decryption_profiles
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
     )
     set_target_properties(
         dsd-neo_test_ui_qt_decryption_profiles
@@ -3931,6 +3958,89 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_imported_files_model
     )
 
+    # The configuration backup archive (issue #580): stores built by the real
+    # models, sealed, opened, and validated as untrusted input on restore; plus
+    # DecoderHost's base document copies. It links the whole UI library, so the
+    # deferred engine link below applies to it as to the import-model tests.
+    add_executable(
+        dsd-neo_test_ui_qt_backup_archive
+        ui/test_ui_qt_backup_archive.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_backup_archive
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_backup_archive
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_backup_archive
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_NEO_TEST_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_backup_archive
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_BACKUP_ARCHIVE
+        COMMAND dsd-neo_test_ui_qt_backup_archive
+    )
+
+    # Staging a validated backup and applying it at the next start (issue
+    # #580): the journaled, crash-safe apply, with archives built from the real
+    # models' stores and every named step driven through the fault seam. It
+    # links the whole UI library, so the deferred engine link below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_backup_apply
+        ui/test_ui_qt_backup_apply.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_backup_apply
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_backup_apply
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_backup_apply
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_NEO_TEST_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
+    )
+    set_target_properties(dsd-neo_test_ui_qt_backup_apply PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_BACKUP_APPLY COMMAND dsd-neo_test_ui_qt_backup_apply)
+
+    # The backup screens' model (issue #580): export, inspect, commit and the
+    # startup outcome through the model's worker, with a fake host, archives
+    # built from the real models' stores and the apply the next start runs. It
+    # links the whole UI library, so the deferred engine link below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_backup_model
+        ui/test_ui_qt_backup_model.cpp
+        # The QML tests' stand-in, held against the model's meta-object here.
+        ui/qml_backup_recorder.h
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_backup_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_backup_model
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_backup_model
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_NEO_TEST_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
+    )
+    set_target_properties(dsd-neo_test_ui_qt_backup_model PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_BACKUP_MODEL COMMAND dsd-neo_test_ui_qt_backup_model)
+
     # The RadioReference model, driven end to end with the captured API
     # responses through an injected transport: no network, no UI. dsd-neo_runtime
     # is mandatory because it carries the dsd_rr_* objects and the curl/expat
@@ -4082,6 +4192,7 @@ if(DSD_ENABLE_QT_UI)
             dsd-neo_test_ui_qt_qml
             ui/test_ui_qt_qml_main.cpp
             ui/qml_test_context.h
+            ui/qml_backup_recorder.h
             # WP-F2: real network fixture, using only the snapshot-copy facade.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/p25_network.c
@@ -6827,6 +6938,9 @@ foreach(
     _qt_import_target
     dsd-neo_test_ui_qt_imported_files_model
     dsd-neo_test_ui_qt_radio_reference_model
+    dsd-neo_test_ui_qt_backup_archive
+    dsd-neo_test_ui_qt_backup_apply
+    dsd-neo_test_ui_qt_backup_model
 )
     if(TARGET ${_qt_import_target})
         target_link_libraries(
@@ -16070,10 +16184,12 @@ if(DSD_HAS_RADIO)
     )
 endif()
 
-# The validation facade must exercise the real CSV parser and its cleanup path.
+# The validation facade must exercise the real CSV parser and its cleanup path. The document inspector is built in
+# with its test probes (DSD_NEO_TEST_HOOKS), which production builds leave out.
 add_executable(
     dsd-neo_test_app_control_trunk_scan_validate
     ui/test_app_control_trunk_scan_validate.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/trunk_scan_document.cpp
 )
 target_link_libraries(
     dsd-neo_test_app_control_trunk_scan_validate
@@ -16081,7 +16197,9 @@ target_link_libraries(
 )
 target_compile_definitions(
     dsd-neo_test_app_control_trunk_scan_validate
-    PRIVATE "DSD_NEO_TEST_EXAMPLES_DIR=\"${PROJECT_SOURCE_DIR}/examples\""
+    PRIVATE
+        "DSD_NEO_TEST_EXAMPLES_DIR=\"${PROJECT_SOURCE_DIR}/examples\""
+        DSD_NEO_TEST_HOOKS
 )
 add_test(
     NAME APP_CONTROL_TRUNK_SCAN_VALIDATE
@@ -16097,6 +16215,7 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_android_host
         ui/test_ui_qt_android_host.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_documents.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -16341,10 +16460,18 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite screen
     )
+    add_test(
+        NAME ANDROID_DOCUMENT_TRANSFER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            document_transfer
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
         ANDROID_SCREEN_POLICY_JVM
+        ANDROID_DOCUMENT_TRANSFER_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

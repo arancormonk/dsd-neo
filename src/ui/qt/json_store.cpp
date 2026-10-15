@@ -18,9 +18,13 @@
 namespace dsd_qt {
 
 QString
+json_store_root() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+}
+
+QString
 json_store_path(const QString& fileName) {
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    return dir + QLatin1Char('/') + fileName;
+    return json_store_root() + QLatin1Char('/') + fileName;
 }
 
 QJsonArray

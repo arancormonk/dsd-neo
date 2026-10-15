@@ -7,7 +7,10 @@
 
 #include <QLatin1String>
 #include <QList>
+#include <QMetaType>
+#include <QStringList>
 #include <QVariant>
+#include <QVariantMap>
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -18,36 +21,100 @@ namespace dsd_qt {
 namespace {
 
 // Keys are flat and stable: renaming one silently resets that preference for
-// every existing install, so treat them as a persistence format.
-constexpr const char kAppearance[] = "ui/appearance";
-constexpr const char kMetricUnits[] = "ui/metricUnits";
-constexpr const char kOnboardingDone[] = "ui/onboardingDone";
-constexpr const char kBackgroundListening[] = "listen/background";
-constexpr const char kScreenMode[] = "listen/screenMode";
-constexpr const char kScreenDelaySec[] = "listen/screenDelaySec";
-// The keep-awake switch the screen mode replaced (#574). Read only, to migrate an
-// install that never chose a mode; never written, so a downgrade finds it intact.
-constexpr const char kLegacyKeepAwake[] = "listen/keepAwake";
-constexpr const char kSkipEncrypted[] = "decode/skipEncrypted";
-constexpr const char kPersistTgLockouts[] = "decode/persistTgLockouts";
-constexpr const char kHangtimeSec[] = "decode/hangtimeSec";
-constexpr const char kAutoPpm[] = "decode/autoPpm";
-constexpr const char kGainDb[] = "tuner/gainDb";
-constexpr const char kPpm[] = "tuner/ppm";
-constexpr const char kBandwidthKhz[] = "tuner/bandwidthKhz";
-constexpr const char kBiasTee[] = "tuner/biasTee";
-constexpr const char kExtraArgs[] = "decode/extraArgs";
-// RadioReference account. There is deliberately no password key: the password is
-// held in memory for the session and re-prompted next launch.
-constexpr const char kRrUsername[] = "rr/username";
-constexpr const char kRrAppKey[] = "rr/appKey";
-// Where the last explore session was pointed, so the next one resumes there
-// instead of asking again. Not a saved system: exploring has no card, no name and
-// no trunking, and it must not appear in the list of things to listen to.
-constexpr const char kExploreSourceType[] = "explore/sourceType";
-constexpr const char kExploreHost[] = "explore/host";
-constexpr const char kExplorePort[] = "explore/port";
-constexpr const char kExploreFreqMhz[] = "explore/freqMhz";
+// every existing install, so treat them as a persistence format. This table is
+// the one place that names them and says whether a key travels with a backup
+// (portable) or belongs to this device only. Append new keys; never reorder
+// without moving the Key enum with them.
+enum Key {
+    kAppearance,
+    kMetricUnits,
+    kOnboardingDone,
+    kNotificationExplained,
+    kBackgroundListening,
+    kScreenMode,
+    kScreenDelaySec,
+    // The keep-awake switch the screen mode replaced (#574). Read only, to migrate an
+    // install that never chose a mode; never written, so a downgrade finds it intact.
+    kLegacyKeepAwake,
+    kAutoStartOnAttach,
+    kLastStartedKind,
+    kLastStartedUid,
+    kSkipEncrypted,
+    kPersistTgLockouts,
+    kHangtimeSec,
+    kAutoPpm,
+    kGainDb,
+    kPpm,
+    kBandwidthKhz,
+    kBiasTee,
+    kExtraArgs,
+    // RadioReference account. There is deliberately no password key: the password is
+    // held in memory for the session and re-prompted next launch.
+    kRrUsername,
+    kRrAppKey,
+    // Where the last explore session was pointed, so the next one resumes there
+    // instead of asking again. Not a saved system: exploring has no card, no name and
+    // no trunking, and it must not appear in the list of things to listen to.
+    kExploreSourceType,
+    kExploreHost,
+    kExplorePort,
+    kExploreFreqMhz,
+    // The last location fix is a short-lived private hint tied to this device.
+    kLastLat,
+    kLastLon,
+    kLastFixAt,
+    kLastAccuracyM,
+    kKeyCount
+};
+
+constexpr AppPrefs::KeySpec kKeyTable[] = {
+    {"ui/appearance", true},
+    {"ui/metricUnits", true},
+    {"ui/onboardingDone", false},
+    {"ui/notificationExplained", false},
+    {"listen/background", true},
+    {"listen/screenMode", true},
+    {"listen/screenDelaySec", true},
+    {"listen/keepAwake", true},
+    {"listen/autoStartOnAttach", true},
+    {"listen/lastStartedKind", true},
+    {"listen/lastStartedUid", true},
+    {"decode/skipEncrypted", true},
+    {"decode/persistTgLockouts", true},
+    {"decode/hangtimeSec", true},
+    {"decode/autoPpm", true},
+    {"tuner/gainDb", true},
+    {"tuner/ppm", true},
+    {"tuner/bandwidthKhz", true},
+    {"tuner/biasTee", true},
+    {"decode/extraArgs", true},
+    {"rr/username", true},
+    {"rr/appKey", true},
+    {"explore/sourceType", true},
+    {"explore/host", true},
+    {"explore/port", true},
+    {"explore/freqMhz", true},
+    {"location/lastLat", false},
+    {"location/lastLon", false},
+    {"location/lastFixAt", false},
+    {"location/lastAccuracyM", false},
+};
+static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
+
+/** @brief The settings key for @p id. */
+QString
+key_name(Key id) {
+    return QLatin1String(kKeyTable[id].name);
+}
+
+/** @brief A JSON scalar for a stored value: the ini backend can hand back a list for text with commas. */
+QVariant
+as_scalar(const QVariant& stored) {
+    if (stored.metaType().id() == QMetaType::QStringList) {
+        return stored.toStringList().join(QLatin1Char(','));
+    }
+    return stored;
+}
 
 /*
  * Preferences are range-checked on the way out. They are checked on the way
@@ -132,12 +199,7 @@ stored_int_differs(const QVariant& stored, int next) {
 
 } // namespace
 
-AppPrefs::AppPrefs(QObject* parent)
-    // Explicit scope and names: the organization name is empty on some platforms,
-    // and QSettings' fallback location would then depend on how the process was
-    // launched rather than on the app.
-    : QObject(parent),
-      m_settings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"), QStringLiteral("dsd-neo-app")) {
+AppPrefs::AppPrefs(QObject* parent) : QObject(parent), m_settings() {
     m_locationExpiry.setSingleShot(true);
     connect(&m_locationExpiry, &QTimer::timeout, this, [this]() {
         armLocationExpiry(); // Re-arm if the wall clock moved backwards before the timer fired.
@@ -148,11 +210,69 @@ AppPrefs::AppPrefs(QObject* parent)
 
 AppPrefs::~AppPrefs() = default;
 
+// Explicit scope and names: the organization name is empty on some platforms,
+// and QSettings' fallback location would then depend on how the process was
+// launched rather than on the app. The one place the settings file is opened.
+AppPrefs::Settings::Settings()
+    : QSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"), QStringLiteral("dsd-neo-app")) {}
+
+QList<AppPrefs::KeySpec>
+AppPrefs::keyTable() {
+    QList<KeySpec> table;
+    for (const KeySpec& spec : kKeyTable) {
+        table.append(spec);
+    }
+    return table;
+}
+
+QStringList
+AppPrefs::portableKeys() {
+    QStringList keys;
+    for (const KeySpec& spec : kKeyTable) {
+        if (spec.portable) {
+            keys.append(QLatin1String(spec.name));
+        }
+    }
+    return keys;
+}
+
+QVariantMap
+AppPrefs::readPortable() {
+    Settings settings;
+    QVariantMap values;
+    for (const KeySpec& spec : kKeyTable) {
+        const QString name = QLatin1String(spec.name);
+        if (spec.portable && settings.contains(name)) {
+            values.insert(name, as_scalar(settings.value(name)));
+        }
+    }
+    return values;
+}
+
+bool
+AppPrefs::replacePortable(const QVariantMap& values) {
+    Settings settings;
+    for (const KeySpec& spec : kKeyTable) {
+        if (!spec.portable) {
+            continue;
+        }
+        const QString name = QLatin1String(spec.name);
+        const auto it = values.constFind(name);
+        if (it != values.constEnd()) {
+            settings.setValue(name, it.value());
+        } else {
+            settings.remove(name);
+        }
+    }
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
 void
 AppPrefs::armLocationExpiry() {
     m_locationExpiry.stop();
     expireLocation();
-    const qint64 at = m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong();
+    const qint64 at = m_settings.value(key_name(kLastFixAt), 0).toLongLong();
     if (at > 0) {
         const qint64 remaining = 24LL * 60 * 60 * 1000 - (realtimeMSecsSinceEpoch() - at);
         m_locationExpiry.start(static_cast<int>(qMax<qint64>(1, remaining)));
@@ -163,35 +283,35 @@ AppPrefs::armLocationExpiry() {
 // stale coordinates cannot silently be reused or survive in a settings export.
 void
 AppPrefs::expireLocation() const {
-    const qint64 at = m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong();
+    const qint64 at = m_settings.value(key_name(kLastFixAt), 0).toLongLong();
     const qint64 now = realtimeMSecsSinceEpoch();
     if (at > 0 && at <= now && now - at < 24LL * 60 * 60 * 1000) {
         return;
     }
-    m_settings.remove(QStringLiteral("location/lastLat"));
-    m_settings.remove(QStringLiteral("location/lastLon"));
-    m_settings.remove(QStringLiteral("location/lastFixAt"));
-    m_settings.remove(QStringLiteral("location/lastAccuracyM"));
+    m_settings.remove(key_name(kLastLat));
+    m_settings.remove(key_name(kLastLon));
+    m_settings.remove(key_name(kLastFixAt));
+    m_settings.remove(key_name(kLastAccuracyM));
 }
 
 int
 AppPrefs::appearance() const {
-    return sane_appearance(m_settings.value(QLatin1String(kAppearance), FollowSystem).toInt());
+    return sane_appearance(m_settings.value(key_name(kAppearance), FollowSystem).toInt());
 }
 
 void
 AppPrefs::setAppearance(int mode) {
     const int next = sane_appearance(mode);
-    if (next == m_settings.value(QLatin1String(kAppearance), FollowSystem).toInt()) {
+    if (next == m_settings.value(key_name(kAppearance), FollowSystem).toInt()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kAppearance), next);
+    m_settings.setValue(key_name(kAppearance), next);
     Q_EMIT appearanceChanged();
 }
 
 bool
 AppPrefs::metricUnits() const {
-    return m_settings.value(QLatin1String(kMetricUnits), false).toBool();
+    return m_settings.value(key_name(kMetricUnits), false).toBool();
 }
 
 void
@@ -199,13 +319,13 @@ AppPrefs::setMetricUnits(bool on) {
     if (on == metricUnits()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kMetricUnits), on);
+    m_settings.setValue(key_name(kMetricUnits), on);
     Q_EMIT metricUnitsChanged();
 }
 
 bool
 AppPrefs::onboardingDone() const {
-    return m_settings.value(QLatin1String(kOnboardingDone), false).toBool();
+    return m_settings.value(key_name(kOnboardingDone), false).toBool();
 }
 
 void
@@ -213,13 +333,13 @@ AppPrefs::setOnboardingDone(bool done) {
     if (done == onboardingDone()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kOnboardingDone), done);
+    m_settings.setValue(key_name(kOnboardingDone), done);
     Q_EMIT onboardingDoneChanged();
 }
 
 bool
 AppPrefs::notificationExplained() const {
-    return m_settings.value(QStringLiteral("ui/notificationExplained"), false).toBool();
+    return m_settings.value(key_name(kNotificationExplained), false).toBool();
 }
 
 void
@@ -227,13 +347,13 @@ AppPrefs::setNotificationExplained(bool value) {
     if (value == notificationExplained()) {
         return;
     }
-    m_settings.setValue(QStringLiteral("ui/notificationExplained"), value);
+    m_settings.setValue(key_name(kNotificationExplained), value);
     Q_EMIT notificationExplainedChanged();
 }
 
 bool
 AppPrefs::backgroundListening() const {
-    return m_settings.value(QLatin1String(kBackgroundListening), true).toBool();
+    return m_settings.value(key_name(kBackgroundListening), true).toBool();
 }
 
 void
@@ -241,25 +361,25 @@ AppPrefs::setBackgroundListening(bool on) {
     if (on == backgroundListening()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kBackgroundListening), on);
+    m_settings.setValue(key_name(kBackgroundListening), on);
     Q_EMIT backgroundListeningChanged();
 }
 
 int
 AppPrefs::screenMode() const {
-    const QVariant stored = m_settings.value(QLatin1String(kScreenMode));
+    const QVariant stored = m_settings.value(key_name(kScreenMode));
     if (stored.isValid()) {
         return sane_screen_mode(stored);
     }
     // Never chosen: carry the old switch over. Reading only — the new key is
     // written when the user picks a mode, and the old one never is.
-    return m_settings.value(QLatin1String(kLegacyKeepAwake), false).toBool() ? ScreenAlwaysOn : ScreenSystem;
+    return m_settings.value(key_name(kLegacyKeepAwake), false).toBool() ? ScreenAlwaysOn : ScreenSystem;
 }
 
 void
 AppPrefs::setScreenMode(int mode) {
     const int next = sane_screen_mode(mode);
-    const QVariant stored = m_settings.value(QLatin1String(kScreenMode));
+    const QVariant stored = m_settings.value(key_name(kScreenMode));
     // With no stored mode, what the user sees is the migrated one: choosing it
     // again is not a change.
     if (stored.isValid() ? !stored_int_differs(stored, next) : next == screenMode()) {
@@ -268,22 +388,22 @@ AppPrefs::setScreenMode(int mode) {
     // Storage only. The platform effect (the Android screen policy) is applied by
     // the DecoderHost the shared UI wires this preference to — this layer stays
     // free of platform APIs.
-    m_settings.setValue(QLatin1String(kScreenMode), next);
+    m_settings.setValue(key_name(kScreenMode), next);
     Q_EMIT screenPolicyChanged();
 }
 
 int
 AppPrefs::screenDelaySec() const {
-    return sane_screen_delay(m_settings.value(QLatin1String(kScreenDelaySec), kDefaultScreenDelaySec));
+    return sane_screen_delay(m_settings.value(key_name(kScreenDelaySec), kDefaultScreenDelaySec));
 }
 
 void
 AppPrefs::setScreenDelaySec(int seconds) {
     const int next = sane_screen_delay(seconds);
-    if (!stored_int_differs(m_settings.value(QLatin1String(kScreenDelaySec), kDefaultScreenDelaySec), next)) {
+    if (!stored_int_differs(m_settings.value(key_name(kScreenDelaySec), kDefaultScreenDelaySec), next)) {
         return;
     }
-    m_settings.setValue(QLatin1String(kScreenDelaySec), next);
+    m_settings.setValue(key_name(kScreenDelaySec), next);
     Q_EMIT screenPolicyChanged();
 }
 
@@ -298,7 +418,7 @@ AppPrefs::screenDelayChoices() const {
 
 bool
 AppPrefs::persistTgLockouts() const {
-    return m_settings.value(QLatin1String(kPersistTgLockouts), true).toBool();
+    return m_settings.value(key_name(kPersistTgLockouts), true).toBool();
 }
 
 void
@@ -306,13 +426,13 @@ AppPrefs::setPersistTgLockouts(bool on) {
     if (on == persistTgLockouts()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kPersistTgLockouts), on);
+    m_settings.setValue(key_name(kPersistTgLockouts), on);
     Q_EMIT persistTgLockoutsChanged();
 }
 
 bool
 AppPrefs::skipEncrypted() const {
-    return m_settings.value(QLatin1String(kSkipEncrypted), true).toBool();
+    return m_settings.value(key_name(kSkipEncrypted), true).toBool();
 }
 
 void
@@ -320,28 +440,28 @@ AppPrefs::setSkipEncrypted(bool on) {
     if (on == skipEncrypted()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kSkipEncrypted), on);
+    m_settings.setValue(key_name(kSkipEncrypted), on);
     Q_EMIT skipEncryptedChanged();
 }
 
 double
 AppPrefs::hangtimeSec() const {
-    return sane_hangtime(m_settings.value(QLatin1String(kHangtimeSec), 2.0).toDouble());
+    return sane_hangtime(m_settings.value(key_name(kHangtimeSec), 2.0).toDouble());
 }
 
 void
 AppPrefs::setHangtimeSec(double seconds) {
     const double value = sane_hangtime(seconds);
-    if (qFuzzyCompare(value, m_settings.value(QLatin1String(kHangtimeSec), 2.0).toDouble())) {
+    if (qFuzzyCompare(value, m_settings.value(key_name(kHangtimeSec), 2.0).toDouble())) {
         return;
     }
-    m_settings.setValue(QLatin1String(kHangtimeSec), value);
+    m_settings.setValue(key_name(kHangtimeSec), value);
     Q_EMIT hangtimeSecChanged();
 }
 
 bool
 AppPrefs::autoPpm() const {
-    return m_settings.value(QLatin1String(kAutoPpm), false).toBool();
+    return m_settings.value(key_name(kAutoPpm), false).toBool();
 }
 
 void
@@ -349,13 +469,13 @@ AppPrefs::setAutoPpm(bool on) {
     if (on == autoPpm()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kAutoPpm), on);
+    m_settings.setValue(key_name(kAutoPpm), on);
     Q_EMIT autoPpmChanged();
 }
 
 int
 AppPrefs::gainDb() const {
-    return m_settings.value(QLatin1String(kGainDb), 30).toInt();
+    return m_settings.value(key_name(kGainDb), 30).toInt();
 }
 
 void
@@ -363,13 +483,13 @@ AppPrefs::setGainDb(int db) {
     if (db == gainDb()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kGainDb), db);
+    m_settings.setValue(key_name(kGainDb), db);
     Q_EMIT gainDbChanged();
 }
 
 int
 AppPrefs::ppm() const {
-    return m_settings.value(QLatin1String(kPpm), 0).toInt();
+    return m_settings.value(key_name(kPpm), 0).toInt();
 }
 
 void
@@ -377,13 +497,13 @@ AppPrefs::setPpm(int value) {
     if (value == ppm()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kPpm), value);
+    m_settings.setValue(key_name(kPpm), value);
     Q_EMIT ppmChanged();
 }
 
 int
 AppPrefs::bandwidthKhz() const {
-    return m_settings.value(QLatin1String(kBandwidthKhz), 48).toInt();
+    return m_settings.value(key_name(kBandwidthKhz), 48).toInt();
 }
 
 void
@@ -391,13 +511,13 @@ AppPrefs::setBandwidthKhz(int khz) {
     if (khz == bandwidthKhz()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kBandwidthKhz), khz);
+    m_settings.setValue(key_name(kBandwidthKhz), khz);
     Q_EMIT bandwidthKhzChanged();
 }
 
 bool
 AppPrefs::biasTee() const {
-    return m_settings.value(QLatin1String(kBiasTee), false).toBool();
+    return m_settings.value(key_name(kBiasTee), false).toBool();
 }
 
 void
@@ -405,13 +525,13 @@ AppPrefs::setBiasTee(bool on) {
     if (on == biasTee()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kBiasTee), on);
+    m_settings.setValue(key_name(kBiasTee), on);
     Q_EMIT biasTeeChanged();
 }
 
 QString
 AppPrefs::extraArgs() const {
-    return m_settings.value(QLatin1String(kExtraArgs), QString()).toString();
+    return m_settings.value(key_name(kExtraArgs), QString()).toString();
 }
 
 void
@@ -419,13 +539,13 @@ AppPrefs::setExtraArgs(const QString& args) {
     if (args == extraArgs()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kExtraArgs), args);
+    m_settings.setValue(key_name(kExtraArgs), args);
     Q_EMIT extraArgsChanged();
 }
 
 QString
 AppPrefs::rrUsername() const {
-    return m_settings.value(QLatin1String(kRrUsername), QString()).toString();
+    return m_settings.value(key_name(kRrUsername), QString()).toString();
 }
 
 void
@@ -433,13 +553,13 @@ AppPrefs::setRrUsername(const QString& username) {
     if (username == rrUsername()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kRrUsername), username);
+    m_settings.setValue(key_name(kRrUsername), username);
     Q_EMIT rrUsernameChanged();
 }
 
 QString
 AppPrefs::rrAppKey() const {
-    return m_settings.value(QLatin1String(kRrAppKey), QString()).toString();
+    return m_settings.value(key_name(kRrAppKey), QString()).toString();
 }
 
 void
@@ -447,28 +567,28 @@ AppPrefs::setRrAppKey(const QString& key) {
     if (key == rrAppKey()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kRrAppKey), key);
+    m_settings.setValue(key_name(kRrAppKey), key);
     Q_EMIT rrAppKeyChanged();
 }
 
 QString
 AppPrefs::exploreSourceType() const {
-    return sane_explore_source_type(m_settings.value(QLatin1String(kExploreSourceType), QString()).toString());
+    return sane_explore_source_type(m_settings.value(key_name(kExploreSourceType), QString()).toString());
 }
 
 void
 AppPrefs::setExploreSourceType(const QString& type) {
     const QString next = sane_explore_source_type(type);
-    if (next == m_settings.value(QLatin1String(kExploreSourceType), QString()).toString()) {
+    if (next == m_settings.value(key_name(kExploreSourceType), QString()).toString()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kExploreSourceType), next);
+    m_settings.setValue(key_name(kExploreSourceType), next);
     Q_EMIT exploreChanged();
 }
 
 QString
 AppPrefs::exploreHost() const {
-    return m_settings.value(QLatin1String(kExploreHost), QString()).toString();
+    return m_settings.value(key_name(kExploreHost), QString()).toString();
 }
 
 void
@@ -476,22 +596,22 @@ AppPrefs::setExploreHost(const QString& host) {
     if (host == exploreHost()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kExploreHost), host);
+    m_settings.setValue(key_name(kExploreHost), host);
     Q_EMIT exploreChanged();
 }
 
 int
 AppPrefs::explorePort() const {
-    return sane_explore_port(m_settings.value(QLatin1String(kExplorePort), 1234).toInt());
+    return sane_explore_port(m_settings.value(key_name(kExplorePort), 1234).toInt());
 }
 
 void
 AppPrefs::setExplorePort(int port) {
     const int next = sane_explore_port(port);
-    if (next == m_settings.value(QLatin1String(kExplorePort), 1234).toInt()) {
+    if (next == m_settings.value(key_name(kExplorePort), 1234).toInt()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kExplorePort), next);
+    m_settings.setValue(key_name(kExplorePort), next);
     Q_EMIT exploreChanged();
 }
 
@@ -500,7 +620,7 @@ AppPrefs::exploreFreqMhz() const {
     /* A string, like every other frequency in this app: the session-args builder and
      * the card meta both read freqMhz as text, and a number here loses the trailing
      * digits that tell a user which channel they were on. */
-    return m_settings.value(QLatin1String(kExploreFreqMhz), QString()).toString();
+    return m_settings.value(key_name(kExploreFreqMhz), QString()).toString();
 }
 
 void
@@ -508,88 +628,88 @@ AppPrefs::setExploreFreqMhz(const QString& mhz) {
     if (mhz == exploreFreqMhz()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kExploreFreqMhz), mhz);
+    m_settings.setValue(key_name(kExploreFreqMhz), mhz);
     Q_EMIT exploreChanged();
 }
 
 bool
 AppPrefs::autoStartOnAttach() const {
-    return m_settings.value(QStringLiteral("listen/autoStartOnAttach"), false).toBool();
+    return m_settings.value(key_name(kAutoStartOnAttach), false).toBool();
 }
 
 void
 AppPrefs::setAutoStartOnAttach(bool value) {
-    if (m_settings.value(QStringLiteral("listen/autoStartOnAttach"), false).toBool() == value) {
+    if (m_settings.value(key_name(kAutoStartOnAttach), false).toBool() == value) {
         return;
     }
-    m_settings.setValue(QStringLiteral("listen/autoStartOnAttach"), value);
+    m_settings.setValue(key_name(kAutoStartOnAttach), value);
     Q_EMIT autoStartOnAttachChanged();
 }
 
 QString
 AppPrefs::lastStartedKind() const {
-    return m_settings.value(QStringLiteral("listen/lastStartedKind"), QString()).toString();
+    return m_settings.value(key_name(kLastStartedKind), QString()).toString();
 }
 
 void
 AppPrefs::setLastStartedKind(const QString& value) {
-    if (m_settings.value(QStringLiteral("listen/lastStartedKind"), QString()).toString() == value) {
+    if (m_settings.value(key_name(kLastStartedKind), QString()).toString() == value) {
         return;
     }
-    m_settings.setValue(QStringLiteral("listen/lastStartedKind"), value);
+    m_settings.setValue(key_name(kLastStartedKind), value);
     Q_EMIT lastStartedKindChanged();
 }
 
 QString
 AppPrefs::lastStartedUid() const {
-    return m_settings.value(QStringLiteral("listen/lastStartedUid"), QString()).toString();
+    return m_settings.value(key_name(kLastStartedUid), QString()).toString();
 }
 
 void
 AppPrefs::setLastStartedUid(const QString& value) {
-    if (m_settings.value(QStringLiteral("listen/lastStartedUid"), QString()).toString() == value) {
+    if (m_settings.value(key_name(kLastStartedUid), QString()).toString() == value) {
         return;
     }
-    m_settings.setValue(QStringLiteral("listen/lastStartedUid"), value);
+    m_settings.setValue(key_name(kLastStartedUid), value);
     Q_EMIT lastStartedUidChanged();
 }
 
 double
 AppPrefs::lastLat() const {
     expireLocation();
-    return m_settings.value(QStringLiteral("location/lastLat"), 0.0).toDouble();
+    return m_settings.value(key_name(kLastLat), 0.0).toDouble();
 }
 
 void
 AppPrefs::setLastLat(double value) {
-    if (qFuzzyCompare(m_settings.value(QStringLiteral("location/lastLat"), 0.0).toDouble(), value)) {
+    if (qFuzzyCompare(m_settings.value(key_name(kLastLat), 0.0).toDouble(), value)) {
         return;
     }
-    m_settings.setValue(QStringLiteral("location/lastLat"), value);
+    m_settings.setValue(key_name(kLastLat), value);
     Q_EMIT locationChanged();
 }
 
 double
 AppPrefs::lastLon() const {
     expireLocation();
-    return m_settings.value(QStringLiteral("location/lastLon"), 0.0).toDouble();
+    return m_settings.value(key_name(kLastLon), 0.0).toDouble();
 }
 
 void
 AppPrefs::setLastLon(double value) {
-    if (qFuzzyCompare(m_settings.value(QStringLiteral("location/lastLon"), 0.0).toDouble(), value)) {
+    if (qFuzzyCompare(m_settings.value(key_name(kLastLon), 0.0).toDouble(), value)) {
         return;
     }
-    m_settings.setValue(QStringLiteral("location/lastLon"), value);
+    m_settings.setValue(key_name(kLastLon), value);
     Q_EMIT locationChanged();
 }
 
 void
 AppPrefs::setLocationFix(double lat, double lon, qint64 fixAtMs, double accuracyM) {
-    m_settings.setValue(QStringLiteral("location/lastAccuracyM"), accuracyM);
-    m_settings.setValue(QStringLiteral("location/lastLat"), lat);
-    m_settings.setValue(QStringLiteral("location/lastLon"), lon);
-    m_settings.setValue(QStringLiteral("location/lastFixAt"), fixAtMs);
+    m_settings.setValue(key_name(kLastAccuracyM), accuracyM);
+    m_settings.setValue(key_name(kLastLat), lat);
+    m_settings.setValue(key_name(kLastLon), lon);
+    m_settings.setValue(key_name(kLastFixAt), fixAtMs);
     armLocationExpiry();
     Q_EMIT locationChanged();
 }
@@ -597,21 +717,21 @@ AppPrefs::setLocationFix(double lat, double lon, qint64 fixAtMs, double accuracy
 double
 AppPrefs::lastAccuracyM() const {
     expireLocation();
-    return m_settings.value(QStringLiteral("location/lastAccuracyM"), 0.0).toDouble();
+    return m_settings.value(key_name(kLastAccuracyM), 0.0).toDouble();
 }
 
 qint64
 AppPrefs::lastFixAt() const {
     expireLocation();
-    return m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong();
+    return m_settings.value(key_name(kLastFixAt), 0).toLongLong();
 }
 
 void
 AppPrefs::setLastFixAt(qint64 value) {
-    if (m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong() == value) {
+    if (m_settings.value(key_name(kLastFixAt), 0).toLongLong() == value) {
         return;
     }
-    m_settings.setValue(QStringLiteral("location/lastFixAt"), value);
+    m_settings.setValue(key_name(kLastFixAt), value);
     armLocationExpiry();
     Q_EMIT locationChanged();
 }

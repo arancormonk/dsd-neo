@@ -22,6 +22,7 @@
 #include <QStringList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <atomic>
 
 namespace dsd_qt {
 
@@ -73,8 +74,72 @@ class DecoderHost : public QObject {
     };
     Q_ENUM(LocalDeviceFailureKind)
 
+    /**
+     * @brief copyDocumentToFile() results. DocumentFailed: the document could not be read (or the copy was aborted);
+     * DocumentLocalFailed: it could, but this device could not write the copy (its destination could not be cleared,
+     * opened, written or committed).
+     */
+    enum DocumentCopy { DocumentCopied = 0, DocumentTooLarge = 1, DocumentFailed = 2, DocumentLocalFailed = 3 };
+
     explicit DecoderHost(QObject* parent = nullptr);
     ~DecoderHost() override;
+
+    /*
+     * Backup primitives (#580). Unlike the rest of this interface they are thread-agnostic: they touch no QObject
+     * state, so a worker thread may call them. A transfer is not cancellable once it starts.
+     */
+
+    /**
+     * @brief Close the app so a staged restore applies on the next launch.
+     * @return true when the platform is closing the app; the base host cannot and answers false.
+     */
+    virtual bool
+    quitApp() {
+        return false;
+    }
+
+    /**
+     * @brief Whether a decoder engine outside this UI's view is starting or running.
+     *
+     * Asked right before a restore commits and before the startup apply changes anything. The base host owns no
+     * out-of-process engine and answers false.
+     */
+    virtual bool
+    engineBusy() const {
+        return false;
+    }
+
+    /**
+     * @brief Copy a picked document to @p destPath (written private, through QSaveFile).
+     *
+     * The base host takes a file:// URL or a plain absolute path. A source larger than @p maxBytes gives
+     * DocumentTooLarge, and a destination that cannot be written DocumentLocalFailed; any failure leaves no file at
+     * @p destPath. The destination's directory must exist.
+     *
+     * @return A DocumentCopy value.
+     */
+    virtual int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const;
+
+    /**
+     * @brief Copy @p sourcePath into the document @p reference chose.
+     *
+     * The base host takes a file:// URL or a plain absolute path and writes it private, through QSaveFile, so a
+     * failure leaves no partial document.
+     */
+    virtual bool copyFileToDocument(const QString& sourcePath, const QString& reference) const;
+
+    /**
+     * @brief Stop every document copy in progress and refuse new ones, for the rest of the process.
+     *
+     * Only teardown calls it (BackupModel's destructor), so that a copy a slow document provider holds cannot keep
+     * the UI thread waiting while the app closes. Sticky: no document copy succeeds afterwards. A copy it stops fails
+     * (DocumentFailed, or false). The base host's copies then leave no destination file. A host's save into a document
+     * provider may leave the document partly written (Android skips the delete after an abort, because the delete is
+     * one more provider call that could hold teardown); such a document never opens as a backup, since the envelope's
+     * length and tag are checked. The base host raises a flag its copies check before every chunk; a host that runs
+     * transfers of its own stops them too and calls this base.
+     */
+    virtual void abortDocumentTransfers();
 
     virtual bool
     usesPlatformFontScaling() const {
@@ -326,10 +391,11 @@ class DecoderHost : public QObject {
     /**
      * @brief Materialize a picked document into durable app storage.
      *
-     * Unlike importContentUri(), which serves a one-shot open (its Android copy
-     * lands in the evictable cache), this copy must outlive the session: saved
-     * systems keep the returned path. Collisions on @p fileName are unique-ified,
-     * never overwritten — two different documents may share a display name.
+     * Unlike importContentUri(), which serves a one-shot open, this copy must
+     * outlive the session: saved systems keep the returned path. (The Android
+     * host makes the same durable copy for both.) Collisions on @p fileName are
+     * unique-ified, never overwritten — two different documents may share a
+     * display name.
      *
      * @param reference   Platform file reference from the picker (file:// URL or
      *                    Android SAF content URI).
@@ -420,6 +486,16 @@ class DecoderHost : public QObject {
     void statusTextChanged();
     void sessionStateChanged();
     void localDeviceChanged();
+
+  protected:
+    /** Whether abortDocumentTransfers() was called; document copies check it before every chunk. */
+    bool
+    documentTransfersAborted() const {
+        return m_documentTransfersAborted.load();
+    }
+
+  private:
+    std::atomic<bool> m_documentTransfersAborted{false};
 };
 
 } // namespace dsd_qt

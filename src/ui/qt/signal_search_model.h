@@ -63,6 +63,11 @@ class SignalSearchModel : public QObject {
         return m_error.isEmpty() ? m_persistenceError : m_error;
     }
 
+    /**
+     * @brief The range the model loads from a stored row, in the shape it stores ranges.
+     * @return false when loading would drop the row.
+     */
+    static bool storedRangeRow(const QVariantMap& stored, QVariantMap* range);
     Q_INVOKABLE QVariantMap defaultRange() const;
     Q_INVOKABLE QString saveRange(int row, const QVariantMap& value);
     Q_INVOKABLE void removeRange(int row);

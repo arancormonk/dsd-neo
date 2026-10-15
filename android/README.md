@@ -15,8 +15,9 @@ Supported inputs: a directly attached RTL-SDR or native Airspy R2/Mini over USB-
 
 Saved systems store `encKeyType` (`""`, `basic`, `hex`, `rc4`, or `scrambler`),
 `encKeyValue`, and `encForceKey` (0 normal, 1 force privacy, 2 force RC4).
-Keys rest **unencrypted** in the app-private systems store, `saved_systems.json`; Android sets
-`allowBackup=false`. On desktop the same file is under Qt's `AppDataLocation`, with
+Keys rest **unencrypted** in the app-private systems store, `saved_systems.json`. Android's own backup is off
+(`allowBackup=false`), so they leave the phone only inside a backup you export, encrypted under your passphrase (see
+[Backup and restore](#backup-and-restore)). On desktop the same file is under Qt's `AppDataLocation`, with
 owner-only read/write permissions on POSIX at creation and replacement. Retained keys are
 resolved and passed to the host entirely in C++; QML validation/start results contain no key arguments.
 QString/QML copies cannot promise erasure. Native command payloads, parsed key
@@ -169,23 +170,20 @@ keyboard, scroll their contents, and reveal the focused field.
 
 The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
 a regular file, `O_NOFOLLOW`), so SAF content URIs are always materialized into a
-copy first. There are two copy paths, with different lifetimes:
-
-- `AppSupport.copyContentUriToCache` → `cacheDir`, for one-shot opens (the
-  wizard's audio/capture "File" source). Android may evict it.
-- `AppSupport.importDocumentToFiles` → `files/imports/`, for the CSV library
-  (channel maps, talkgroup lists, key files, P25 band plans, source ID lists). These must survive restarts —
-  saved systems reference the path, and the engine appends learned talkgroup
-  rows to the group list in place. Display-name collisions are unique-ified
-  (`chan.csv` → `chan (2).csv`); updates stage a temp file and rename over the
-  target so a half-copied CSV is never observable.
+copy first. `AppSupport.importDocumentToFiles` makes that copy in `files/imports/`,
+both for the wizard's audio/capture "File" source and for the CSV library (channel
+maps, talkgroup lists, key files, P25 band plans, source ID lists). These copies must
+survive restarts — saved systems reference the path, and the engine appends learned
+talkgroup rows to the group list in place — so none of them goes to the evictable
+cache. Display-name collisions are unique-ified (`chan.csv` → `chan (2).csv`); updates
+stage a temp file and rename over the target so a half-copied CSV is never observable.
 
 Embedded `single_key_dec`/`single_key_hex` values in a channel map travel with that copied file and therefore work on
 Android. The companion selection flow copies referenced files into a private bundle
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
 
-Both are reached through `DecoderHost` virtuals (`importContentUri` /
+Both uses are reached through `DecoderHost` virtuals (`importContentUri` /
 `importDocument`); the desktop default of `importDocument` implements the same
 semantics under `QStandardPaths::AppDataLocation`, which is what
 `UI_QT_IMPORTED_FILES` tests on the host. The library itself (one JSON-persisted
@@ -197,6 +195,105 @@ The imported-file kinds include `chan`, `group`, `keysDec`, `keysHex`, `p25Bandp
 ID lists use `id,name[,tags]` and supply labels only; they can be applied or cleared in a running session. A group
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
 No storage permissions are involved; SAF needs none.
+
+## Backup and restore
+
+Settings → **Backup** saves your setup as one encrypted file, to keep a copy or to move it to another phone.
+
+A backup carries your saved systems (with their saved keys), scan lists, imported files (channel maps, talkgroup lists,
+key files, band plans, source ID lists, trunk scan targets, and the companion files bundled with them), decryption
+profiles with their keys, Signal search ranges and permanent avoids, and your settings, including the app-wide Extra
+decoder arguments and the RadioReference username and application-key override.
+
+It does not carry: call history, recordings (replay files), Signal search's detection history, diagnostics, the last
+location fix and first-run state. The RadioReference password is never saved, so it is never in a backup.
+Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again. A
+file that a saved system, scan list or profile names outside DSD-neo's imported files cannot be carried: the export
+leaves that reference out and lists it under **Not included** on the Settings card.
+
+### Exporting
+
+**Export backup** works while listening too. Type a passphrase of at least 8 characters twice (**Show passphrases**
+reveals both fields), then **Encrypt**. Android's save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak`;
+keep DSD-neo open until Settings reads **Backup saved.** The passphrase is the only way to open the backup. DSD-neo
+keeps no copy of it, and a forgotten passphrase cannot be recovered or reset. A running session keeps adding to its
+talkgroup lists; if a file changes while the backup is being made, the export stops with **Your setup changed while the
+backup was being made. Try again.**
+
+### Restoring
+
+**Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop
+listening to restore** until then). Pick the file in Android's file picker (DSD-neo checks the file's contents, not its
+name) and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or
+the file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
+damaged, or unreadable), **Choose another file** opens the picker again. DSD-neo checks the whole backup before it
+changes anything. An imported file this phone cannot read (a channel map whose companion files it refuses, say) is left
+out of the restore rather than refusing the whole backup; whatever named it loses that reference. Then it asks **Replace
+your setup?** with the backup's date, app version and counts, how many replay systems will need their recording chosen
+again, how many systems carry extra decoder options, and what is **Not included** (what the export could not carry, and
+files left out on this phone).
+
+**Replace and close** closes DSD-neo. If DSD-neo is still stopping a session, the confirmation says so and stays open:
+confirm again in a moment, or **Cancel** to drop the restore. Open DSD-neo again: the restore is applied before
+anything is loaded, and Home shows the result until you **Dismiss** it:
+
+- **Backup restored**, with what the phone now has and what was not included.
+- **Restore not applied. Nothing was changed.** Your previous setup is intact.
+- The decoder was busy, or there was not enough free storage: the restore waits for the next start, and **Discard
+  restore** drops it instead.
+- **Restore couldn't finish.** Neither finishing nor undoing it worked, and DSD-neo tries again at the next start. Free
+  some storage and reopen DSD-neo.
+
+While a confirmed restore waits (DSD-neo could not close itself, or the restore was put off or could not finish),
+Settings → Backup shows **Restore is ready** with **Cancel restore**. Once a restore has started changing files, nothing
+can stop it: neither **Cancel restore** nor **Discard restore** is offered, Settings and Home say the restore is
+part-way through, and reopening DSD-neo finishes or undoes it.
+
+A backup never carries recordings, so each replay system arrives without its file: open it with Edit and choose the
+recording again (until then, starting it says its recording is missing). A restore replaces the old setup as a whole:
+its saved systems, scan lists, decryption profiles, settings, Signal search ranges and permanent avoids, and the
+imported files it used (generated scan-list CSVs and compiled decryption files are made again). It never deletes a
+recording or any other file the old setup did not use. When such a file holds a name an incoming file needs, the
+incoming file takes a free name instead (`group (1).csv`) and the restored lists point to it.
+
+**Restore only backups you made or trust.** A backup carries every setting, and extra decoder options run exactly as
+typed: a crafted backup could, for example, send decoded audio to someone else's server. The confirmation therefore
+counts the systems that pass options of their own (anything in their Extra decoder arguments, or a decode mode the app
+itself never writes) and says when the app-wide Extra decoder arguments are set. Review them after restoring a backup
+you did not make.
+
+Limits:
+
+- Paths typed into Extra decoder arguments are restored as typed; DSD-neo does not adjust them for another phone.
+- Paths written inside CSV files are restored exactly as they are. Companion files that an import bundled are named by
+  relative paths, so they keep working; a channel map that names a companion by its full path is listed under **Not
+  included** when you export.
+- The file is encrypted with AES-256-GCM under a key that scrypt derives from the passphrase (N = 2^16, r = 8, p = 2,
+  about 64 MiB of memory per attempt). That slows guessing; it cannot protect a short or common passphrase.
+- The sealed backup file is at most 64 MiB. Inside it: up to 4096 files of up to 32 MiB each, and up to 4096 entries
+  of each kind (saved systems, scan lists, imported files, profiles, ranges).
+- Google Drive has not been tested as a place to save or restore: it cannot be exercised on the test emulators. If it
+  fails, save the backup to the phone first, or copy it there before restoring.
+- If DSD-neo reopens while its decoder is still running in the background, a confirmed restore waits for a start
+  without a running decoder. If that restore had already started changing files (it was interrupted, or could not
+  finish), the setup you use meanwhile is partly restored, and changes you make to it can be overwritten when the
+  restore completes.
+- If DSD-neo cannot delete the restore's own "ready to apply" marker once the new setup is in place, the restore
+  counts as couldn't finish rather than being undone: undoing it would end by deleting that same marker, so it could
+  not finish either. The next start applies the restore again, which changes nothing that is already in place, and
+  deletes the marker then.
+- If a part-way restore's undo record is damaged (only tampering or storage corruption can do that, and the settings it
+  keeps are checked too), every start says the restore couldn't finish and nothing can cancel it. The way out is to
+  clear DSD-neo's storage in Android's app settings, which erases all of its data, and then restore the backup again.
+- A channel map you updated with companion files keeps its own file beside the folder of companions and names that
+  folder in its contents, which a restore never rewrites, so the folder cannot take a free name. If a folder of the
+  same name, left by an earlier import, is already on the phone, the restore fails, changing nothing (**A folder left
+  by an earlier import is in the way of a restored channel map.**). Clearing DSD-neo's storage in Android's app
+  settings removes that folder, along with all of DSD-neo's data (call history and recordings included); then restore
+  the backup again.
+- A restore always fails, changing nothing, while one of DSD-neo's own list files is a symbolic link. DSD-neo never
+  makes one; only something with access to its private storage (root, or `adb` on a debuggable build) can, and
+  clearing DSD-neo's storage removes it.
 
 ## Build
 

@@ -1,6 +1,6 @@
 # DSD-neo Privacy Policy
 
-**Effective date: August 8, 2026**
+**Effective date: October 14, 2026**
 
 This policy covers the DSD-neo Android app (package `io.github.arancormonk.dsdneo`)
 distributed on Google Play. The same practices apply to the desktop builds of DSD-neo.
@@ -34,9 +34,15 @@ infrastructure. The developer never receives any of this traffic.
 ## Files on your device
 
 Recordings, logs, and configuration created by the app are stored locally on your device
-and never uploaded anywhere by the app. Android's cloud backup is disabled for this app
-(`allowBackup` is off), so this data does not enter device backups either. Uninstalling
-the app removes its private data.
+and never uploaded anywhere by the app. Android's automatic cloud backup is disabled for
+this app (`allowBackup` is off), so this data does not enter device backups either.
+Uninstalling the app removes its private data.
+
+In the Android app you can export its configuration yourself (Settings → Backup) as a file
+encrypted with a passphrase you choose. It holds your saved systems, keys and settings, but
+no recordings or call history. The app writes it only to the place you pick in Android's
+file picker and never uploads it on its own; if you pick a cloud service such as Google
+Drive, that service stores the file under its own terms. The developer never receives it.
 
 ## Permissions
 

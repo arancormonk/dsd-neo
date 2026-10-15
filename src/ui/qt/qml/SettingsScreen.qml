@@ -85,6 +85,14 @@ Item {
     signal openRadioReferenceAccount
     signal openLicenses
 
+    // Issue #580: Main owns the one backup flow both Settings screens use; these
+    // reach it, and the flow's last result comes back for the card.
+    property string backupNotice: ""
+    property bool backupNoticeProblem: false
+    signal exportBackupRequested
+    signal restoreBackupRequested
+    signal cancelRestoreRequested
+
     Rectangle {
         anchors.fill: parent
         color: Theme.bg
@@ -619,6 +627,97 @@ Item {
                         title: qsTr("RadioReference")
                         subtitle: qsTr("Username and application key")
                         onTapped: screen.openRadioReferenceAccount()
+                    }
+                }
+            }
+
+            // BACKUP
+            UiPanel {
+                width: parent.width
+                height: backupColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: backupColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsBackupHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Backup")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsBackupExportRow"
+                        title: qsTr("Export backup")
+                        subtitle: qsTr("Encrypted file with your settings, systems, scan lists, imported files and keys")
+                        showDivider: true
+                        onTapped: screen.exportBackupRequested()
+                    }
+
+                    // A restore replaces what a running session uses, so it waits
+                    // for Stop; one already waiting finishes or is cancelled first.
+                    // A backup job on the worker also shuts the row, but is no
+                    // reason to stop listening.
+                    DisclosureRow {
+                        objectName: "settingsBackupRestoreRow"
+                        readonly property bool available: backup.restoreAllowed && !backup.restorePending
+                        enabled: available
+                        showCaret: available
+                        title: qsTr("Restore from backup")
+                        subtitle: !backup.restoreAllowed && decoderHost.sessionActive ? qsTr("Stop listening to restore") : backup.restorePending ? qsTr("A restore is waiting to finish") : qsTr("Replaces your setup on this phone")
+                        onTapped: screen.restoreBackupRequested()
+                    }
+
+                    Text {
+                        objectName: "settingsBackupNotice"
+                        x: Theme.cardPadding
+                        width: parent.width - 2 * Theme.cardPadding
+                        visible: text.length > 0
+                        bottomPadding: 10
+                        text: screen.backupNotice
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
+                        color: screen.backupNoticeProblem ? Theme.alert : Theme.textSecondary
+                        Accessible.role: screen.backupNoticeProblem ? Accessible.AlertMessage : Accessible.StaticText
+                        Accessible.name: text
+                    }
+
+                    Column {
+                        x: Theme.cardPadding
+                        width: parent.width - 2 * Theme.cardPadding
+                        visible: backup.restorePending
+                        bottomPadding: 10
+                        spacing: 10
+
+                        // Once its apply has started, only the next start can finish it.
+                        Text {
+                            objectName: "settingsBackupPendingNotice"
+                            width: parent.width
+                            text: backup.restoreCancellable ? qsTr("Restore is ready. Close DSD-neo and open it again to finish.") : Util.restorePartWayText()
+                            wrapMode: Text.Wrap
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(13)
+                            color: Theme.alert
+                            Accessible.role: Accessible.AlertMessage
+                            Accessible.name: text
+                        }
+
+                        OutlineButton {
+                            objectName: "settingsBackupCancelRestore"
+                            visible: backup.restoreCancellable
+                            width: parent.width
+                            text: qsTr("Cancel restore")
+                            onClicked: screen.cancelRestoreRequested()
+                        }
                     }
                 }
             }

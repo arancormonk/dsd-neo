@@ -77,6 +77,13 @@ class SavedSystemsModel : public QAbstractListModel {
     QString keyValueForUid(const QString& uid) const;
     bool migrateCachedReplayFiles(DecoderHost* host);
 
+    /**
+     * @brief @p candidate in the form this model stores a UID (a brace-less UUID), or empty when it is no UUID.
+     *
+     * Loading adopts a stored UID through this and replaces one it rejects; a restored backup is held to it too.
+     */
+    static QString canonicalUid(const QString& candidate);
+
     explicit SavedSystemsModel(QObject* parent = nullptr);
     ~SavedSystemsModel() override;
 

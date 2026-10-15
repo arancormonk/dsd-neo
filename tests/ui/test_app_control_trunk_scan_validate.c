@@ -5,6 +5,7 @@
 #include <dsd-neo/core/power.h>
 #include <stdio.h>
 #include <string.h>
+#include "../../src/app_control/trunk_scan_document_internal.h"
 #include "../test_support/test_support.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/file_compat.h"
@@ -302,6 +303,69 @@ test_trunk_scan_examples_validate(void) {
     }
 }
 
+/* --- One validation call checks each referenced file once --- */
+
+static void
+write_file_in(const char* dir, const char* name, const char* body) {
+    char path[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(path, sizeof path, "%s/%s", dir, name);
+    FILE* fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    fputs(body, fp);
+    fclose(fp);
+}
+
+/* @p rows targets rows, each naming @p map (and, at @p odd_row when nonzero, @p odd_map instead). */
+static void
+write_bundle_targets(const char* dir, int rows, const char* map, int odd_row, const char* odd_map) {
+    char body[4096] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n";
+    for (int i = 1; i <= rows; i++) {
+        char row[128];
+        DSD_SNPRINTF(row, sizeof row, "t%d,p25-trunk,%d,%s,250,,\n", i, 851000000 + 12500 * i,
+                     i == odd_row ? odd_map : map);
+        const size_t used = strlen(body);
+        DSD_SNPRINTF(body + used, sizeof body - used, "%s", row);
+    }
+    write_file_in(dir, "targets.csv", body);
+}
+
+/* Many rows naming one channel map inspect it, and dry-run it and its shared key list, once; the result and the error
+ * a later bad row reports are what they were when every row checked them again. */
+static void
+test_bundle_checks_each_file_once(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "trunk-scan-bundle-"));
+    write_file_in(dir, "keys.csv", "id,value\n01,ABCDEF0123\n");
+    write_file_in(dir, "map.csv",
+                  "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,keys.csv\n"
+                  "2,851025000,p25,keys.csv\n");
+    write_file_in(dir, "badmap.csv", "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,gone.csv\n");
+    char targets[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(targets, sizeof targets, "%s/targets.csv", dir);
+
+    write_bundle_targets(dir, 12, "map.csv", 0, NULL);
+    int count = 0;
+    char err[256] = {0};
+    dsd_app_trunk_scan_test_reset_counts();
+    assert(dsd_app_trunk_scan_validate_bundle(targets, &count, NULL, err, sizeof err) == 0);
+    assert(count == 12 && err[0] == '\0');
+    /* Twelve rows, one map and one key list it names on two rows: each inspected or dry-run once (36 dry runs and 12
+     * inspections when every row checked them again). */
+    assert(dsd_app_trunk_scan_test_channel_inspections() == 1);
+    assert(dsd_app_trunk_scan_test_file_validations() == 2);
+
+    /* The first bad row reports what it did when every row was checked on its own. */
+    write_bundle_targets(dir, 12, "map.csv", 9, "missing.csv");
+    assert(dsd_app_trunk_scan_validate_bundle(targets, &count, NULL, err, sizeof err) != 0 && count == 0);
+    assert(strcmp(err, "row 10 chan_csv: Cannot open CSV. Select an existing imported file.") == 0);
+    write_bundle_targets(dir, 12, "map.csv", 9, "badmap.csv");
+    assert(dsd_app_trunk_scan_validate_bundle(targets, &count, NULL, err, sizeof err) != 0 && count == 0);
+    assert(strcmp(err, "row 10 chan_csv: channel row 2 keys_hex_csv companion is missing, unreadable or invalid") == 0);
+
+    const char* const files[] = {"keys.csv", "map.csv", "badmap.csv", "targets.csv", NULL};
+    assert(dsd_test_remove_temp_dir(dir, files) == 0);
+}
+
 int
 main(void) {
     int count = 99;
@@ -332,6 +396,7 @@ main(void) {
     test_am_targets(path);
     test_nfm_target_tone_lists(path);
     test_trunk_scan_examples_validate();
+    test_bundle_checks_each_file_once();
     remove(path);
     puts("APP_CONTROL_TRUNK_SCAN_VALIDATE ok");
     return 0;

@@ -194,13 +194,23 @@ storedRange(QVariantMap m) {
     return m;
 }
 
+bool
+SignalSearchModel::storedRangeRow(const QVariantMap& stored, QVariantMap* range) {
+    dsd_signal_search_range r;
+    if (!parseRange(storedRange(stored), &r).isEmpty()) {
+        return false;
+    }
+    *range = rangeMap(r);
+    return true;
+}
+
 SignalSearchModel::SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* index, QObject* parent)
     : QObject(parent), m_host(host), m_index(index) {
     auto array = json_store_load_array(QStringLiteral("signal-search-ranges.json"));
     for (const auto& value : array) {
-        dsd_signal_search_range r;
-        if (parseRange(storedRange(value.toObject().toVariantMap()), &r).isEmpty()) {
-            m_ranges.append(rangeMap(r));
+        QVariantMap range;
+        if (storedRangeRow(value.toObject().toVariantMap(), &range)) {
+            m_ranges.append(range);
         }
     }
     if (m_ranges.isEmpty()) {

@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_ANDROID_DECODER_HOST_ANDROID_H_
 #define DSD_NEO_ANDROID_DECODER_HOST_ANDROID_H_
 
+#include <QByteArray>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -154,6 +155,47 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     QString importDocument(const QString& reference, const QString& fileName, const QString& replacePath) override;
 
+    /**
+     * @brief Finish the Activity so a committed restore applies at the next launch (#580).
+     *
+     * Dispatched to the Android main thread and not waited for. DsdNeoActivity.onDestroy then stops the engine and
+     * the service and ends the process, as it does for any other finish.
+     */
+    bool quitApp() override;
+
+    /**
+     * @brief Whether the service is anything but IDLE or the engine atomic is set (engine_busy()).
+     *
+     * Reads both directly and never refreshes: ui_load asks before the first poll, and a refresh can deliver a USB
+     * attachment that starts a session.
+     */
+    bool engineBusy() const override;
+
+    /*
+     * Document copies (#580). These run on BackupModel's worker thread, never the Qt main thread: the JNI calls
+     * attach that thread, use the application's ContentResolver, and never wait on the Qt or Android main thread,
+     * which BackupModel's destructor may be blocking in waitForDone(). A content:// reference goes to the platform's
+     * ContentResolver; a file:// URL or plain path takes the base host's copy.
+     *
+     * For a content:// reference, copyDocumentToFile() replaces @p destPath: whatever is there is removed before the
+     * copy starts (DocumentLocalFailed when it cannot be), so a failure leaves nothing at @p destPath and
+     * DocumentCopied always names this copy's file. The platform's DocumentLocalFailed (no held ContentResolver, or
+     * its temp file or the rename failed) passes through, as does DocumentTooLarge. A copy reported without its file
+     * (a failed JNI call reads as 0) is DocumentLocalFailed too; any other answer is DocumentFailed.
+     */
+    int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const override;
+    bool copyFileToDocument(const QString& sourcePath, const QString& reference) const override;
+
+    /**
+     * @brief Cancel the platform's document calls in flight and stop their copies, then the base host's.
+     *
+     * A copy into a file still leaves nothing at its destination. A save stopped partway through leaves its document
+     * partly written: DocumentCopies skips the delete after an abort, because deleteDocument() takes no cancellation
+     * and could hold teardown. Such a document never opens as a backup, since the envelope's length and tag are
+     * checked.
+     */
+    void abortDocumentTransfers() override;
+
   private:
     // JNI supplies one coherent record; desktop tests exercise the same publication path.
     void applyLifecycleStatus(const QJsonObject& status, bool running);
@@ -161,6 +203,17 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     QJsonObject readLifecycleStatus() const;
     static bool readEngineRunning();
+    /** @brief DecoderService.stateName(); empty when the call failed. */
+    static QByteArray readServiceState();
+    /** @brief Whether the application's ContentResolver is held, without which no platform transfer can run. */
+    static bool platformHoldsResolver();
+    /**
+     * @brief DocumentCopies.copyDocumentToFile() over JNI: a DocumentCopy value, 0 when the call failed, and
+     * DocumentLocalFailed without a held ContentResolver.
+     */
+    static int platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes);
+    /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
+    static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
     void requestServiceStop();
     QString serviceFailureText() const;
     /** @brief Record a start that never reached the service. Always returns false. */

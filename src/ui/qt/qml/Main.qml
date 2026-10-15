@@ -149,6 +149,16 @@ Window {
         mainRoot.pendingStart = null;
         mainRoot.pendingStartRow = -1;
     }
+    // Issue #580: a restore replaces the systems a waiting start or restart
+    // names, so entering one drops both rather than letting them run after it.
+    function dropPendingStarts() {
+        cancelPendingRestart();
+        if (mainRoot.pendingStart && mainRoot.pendingStart.signalSearch)
+            abandonSignalSearchStart();
+        mainRoot.awaitingUsbAccess = false;
+        mainRoot.pendingStart = null;
+        mainRoot.pendingStartRow = -1;
+    }
     // WP-S1 shares the saved-session USB gate and initialization bookkeeping.
     property bool pendingScanList: false
     property bool sessionScanList: false
@@ -161,7 +171,8 @@ Window {
     Binding {
         target: uiController
         property: "autoStartBlocked"
-        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0
+        // A backup flow counts for its whole length: its system pickers show no sheet.
+        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive
     }
     Connections {
         target: uiController
@@ -421,6 +432,14 @@ Window {
             var scan = mainRoot.pendingScanList;
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
+            // Issue #580: a backup flow holds the screen, and a restore replaces
+            // the setup this start would run on. The grant ends the wait and
+            // starts nothing.
+            if (backup.flowActive) {
+                if (sys && sys.signalSearch)
+                    mainRoot.abandonSignalSearchStart();
+                return;
+            }
             // A start Home left waiting is no search: Signal search opened
             // meanwhile closes, so its screen does not take that session for one.
             if (sys && !sys.signalSearch && mainRoot.signalSearchOpen) {
@@ -579,6 +598,8 @@ Window {
                 mainRoot.startError = qsTr("The session contains a prohibited extra option or grouped short options. Remove prohibited options and write each short option separately.");
             } else if (built.error === "am-needs-radio") {
                 mainRoot.startError = qsTr("“%1” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it.").arg(sys.name);
+            } else if (built.error === "recording-missing") {
+                mainRoot.startError = qsTr("The recording for “%1” is missing. Edit the system and choose its recording again.").arg(sys.name);
             } else if (built.error === "tetra-needs-iq") {
                 mainRoot.startError = qsTr("“%1” decodes TETRA, which needs a radio source or a symbol capture (.bin): network audio and audio files arrive already demodulated. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "am-bandwidth") {
@@ -797,6 +818,11 @@ Window {
             onOpenImports: mainRoot.importsOpen = true
             onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
             onOpenLicenses: mainRoot.licensesOpen = true
+            backupNotice: backupFlow.notice
+            backupNoticeProblem: backupFlow.noticeProblem
+            onExportBackupRequested: backupFlow.beginExport()
+            onRestoreBackupRequested: backupFlow.beginRestore()
+            onCancelRestoreRequested: backupFlow.cancelPendingRestore()
         }
 
         BottomNav {
@@ -1194,6 +1220,11 @@ Window {
             onOpenImports: mainRoot.importsOpen = true
             onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
             onOpenLicenses: mainRoot.licensesOpen = true
+            backupNotice: backupFlow.notice
+            backupNoticeProblem: backupFlow.noticeProblem
+            onExportBackupRequested: backupFlow.beginExport()
+            onRestoreBackupRequested: backupFlow.beginRestore()
+            onCancelRestoreRequested: backupFlow.cancelPendingRestore()
         }
     }
     ActionMenu {
@@ -1426,5 +1457,16 @@ Window {
             wizard.openForAdd(true);
             mainRoot.wizardOpen = true;
         }
+    }
+
+    // ---- Backup export and restore (issue #580) ----
+    // One flow for both Settings screens. Above the scan-list editor (z 20) and
+    // the scan warnings (z 21), so its sheets cover every layer, the session's
+    // Settings included; with no sheet up it is an empty item taps pass through.
+    BackupFlow {
+        id: backupFlow
+        z: 22
+        anchors.fill: safeArea
+        onRestoreBegun: mainRoot.dropPendingStarts()
     }
 }

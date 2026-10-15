@@ -93,6 +93,30 @@ class Suite(NamedTuple):
     checks: tuple = ()
 
 
+def document_copy_codes_match():
+    """DecoderHost::DocumentCopy and DocumentTransfer's result codes cross JNI as plain ints, so they must agree."""
+    header = REPO / "src/ui/qt/decoder_host.h"
+    kotlin = REPO / APP_SOURCES / "DocumentTransfer.kt"
+    try:
+        enum = re.search(r"enum\s+DocumentCopy\s*\{([^}]*)\}", header.read_text(encoding="utf-8"))
+        kotlin_text = kotlin.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the document copy codes: {error}"
+    if not enum:
+        return f"{header.relative_to(REPO)}: no enum DocumentCopy"
+    native = {}
+    for name, value in re.findall(r"Document(\w+)\s*=\s*(\d+)", enum.group(1)):
+        native[re.sub(r"(?<!^)(?=[A-Z])", "_", name).upper()] = int(value)
+    jvm = {name: int(value) for name, value in re.findall(r"const val ([A-Z_]+) = (\d+)", kotlin_text)}
+    jvm.pop("CHUNK_BYTES", None)
+    if native != jvm:
+        return (
+            f"DecoderHost::DocumentCopy in {header.relative_to(REPO)} ({native}) and the result codes in "
+            f"{kotlin.relative_to(REPO)} ({jvm}) must name the same values"
+        )
+    return None
+
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -118,6 +142,30 @@ SUITES = {
     "decoder_status": Suite(
         builds=(Build(sources=("DecoderStatus.kt",), tests=("DecoderStatusTest.kt",)),),
         checks=(golden_records_match,),
+    ),
+    # The backup's document transfers. The bounded stream copy and its teardown abort are plain Kotlin and build with no
+    # stubs, so an android.* import there fails the compile. The Android glue around it (size lookup, opens, trim, sync,
+    # delete and cancellation) builds apart, against a resolver stub that plays the document providers.
+    "document_transfer": Suite(
+        checks=(document_copy_codes_match,),
+        builds=(
+            Build(sources=("DocumentTransfer.kt",), tests=("DocumentTransferTest.kt",)),
+            Build(
+                sources=("DocumentCopies.kt", "DocumentTransfer.kt"),
+                tests=("DocumentCopiesTest.kt",),
+                stubs=(
+                    "AssetFileDescriptor.kt",
+                    "ContentResolver.kt",
+                    "Cursor.kt",
+                    "Log.kt",
+                    "Os.kt",
+                    "ParcelFileDescriptor.kt",
+                    "Provider.kt",
+                    "SystemOs.kt",
+                    "Uri.kt",
+                ),
+            ),
+        ),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure

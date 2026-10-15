@@ -79,30 +79,67 @@ replace_destination(const QDir& dir, const QString& replacePath) {
 }
 
 /**
- * @brief Copy @p source to @p out in chunks; false on any read or write error.
+ * @brief Copy @p source to @p out in chunks, at most @p maxBytes of it (no limit when negative).
  *
  * Loops on the read result rather than atEnd(): a read error returns an empty
  * chunk without advancing pos(), so an atEnd()-driven loop would spin forever on
  * it, and a readable source QFile reports size 0 for (a FIFO, /proc) claims to be
- * at its end before a byte has been read.
+ * at its end before a byte has been read. The cap is counted on what was read for
+ * the same reason, not taken from the source's reported size.
+ *
+ * @param abort Optional; checked before every chunk. Once raised the copy fails.
+ * @return A DecoderHost::DocumentCopy value (a failed write to @p out is DocumentLocalFailed); any failure cancels
+ *         @p out.
  */
-bool
-copy_stream(QIODevice& source, QSaveFile& out) {
+int
+copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes, const std::atomic<bool>* abort = nullptr) {
     QByteArray chunk(1 << 16, Qt::Uninitialized);
+    qint64 total = 0;
     for (;;) {
+        if (abort != nullptr && abort->load()) {
+            out.cancelWriting();
+            return DecoderHost::DocumentFailed;
+        }
         const qint64 n = source.read(chunk.data(), chunk.size());
         if (n < 0) {
             out.cancelWriting();
-            return false;
+            return DecoderHost::DocumentFailed;
         }
         if (n == 0) {
-            return true;
+            return DecoderHost::DocumentCopied;
+        }
+        total += n;
+        if (maxBytes >= 0 && total > maxBytes) {
+            out.cancelWriting();
+            return DecoderHost::DocumentTooLarge;
         }
         if (out.write(chunk.constData(), n) != n) {
             out.cancelWriting();
-            return false;
+            return DecoderHost::DocumentLocalFailed;
         }
     }
+}
+
+/** @brief Copy @p source to @p out in chunks; false on any read or write error. */
+bool
+copy_stream(QIODevice& source, QSaveFile& out) {
+    return copy_stream_capped(source, out, -1) == DecoderHost::DocumentCopied;
+}
+
+/** @brief The local path a file:// URL or a plain absolute path names; empty for anything else (a content URI). */
+QString
+local_document_path(const QString& reference) {
+    const QUrl url(reference);
+    if (url.isLocalFile()) {
+        return url.toLocalFile();
+    }
+    return QDir::isAbsolutePath(reference) ? reference : QString();
+}
+
+/** @brief Open @p out for writing, readable and writable by the owner only. */
+bool
+open_private(QSaveFile& out) {
+    return out.open(QIODevice::WriteOnly) && out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
 }
 
 } // namespace
@@ -120,6 +157,50 @@ DecoderHost::DecoderHost(QObject* parent) : QObject(parent) {
 }
 
 DecoderHost::~DecoderHost() = default;
+
+int
+DecoderHost::copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const {
+    const QString path = local_document_path(reference);
+    if (path.isEmpty() || destPath.isEmpty() || maxBytes < 0 || !QFileInfo(path).isFile()) {
+        return DocumentFailed;
+    }
+    QFile source(path);
+    if (!source.open(QIODevice::ReadOnly)) {
+        return DocumentFailed;
+    }
+    if (source.size() > maxBytes) {
+        return DocumentTooLarge;
+    }
+    // QSaveFile writes beside the destination and renames on commit, so no
+    // failure, cap included, can leave a partial file there. Every failure on
+    // that side is this device's, not the document's.
+    QSaveFile out(destPath);
+    if (!open_private(out)) {
+        return DocumentLocalFailed;
+    }
+    const int copied = copy_stream_capped(source, out, maxBytes, &m_documentTransfersAborted);
+    if (copied != DocumentCopied) {
+        return copied;
+    }
+    return out.commit() ? DocumentCopied : DocumentLocalFailed;
+}
+
+bool
+DecoderHost::copyFileToDocument(const QString& sourcePath, const QString& reference) const {
+    const QString path = local_document_path(reference);
+    QFile source(sourcePath);
+    if (path.isEmpty() || !QFileInfo(sourcePath).isFile() || !source.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    QSaveFile out(path);
+    return open_private(out) && copy_stream_capped(source, out, -1, &m_documentTransfersAborted) == DocumentCopied
+           && out.commit();
+}
+
+void
+DecoderHost::abortDocumentTransfers() {
+    m_documentTransfersAborted.store(true);
+}
 
 QVariantMap
 DecoderHost::documentInfo(const QString& path) const {
@@ -199,7 +280,7 @@ DecoderHost::importLocalFile(const QString& sourcePath, const QString& fileName,
     // QSaveFile stages beside the target and renames over it on commit, so an
     // update never leaves a half-written CSV where a saved system points.
     QSaveFile out(destination);
-    if (!out.open(QIODevice::WriteOnly) || !out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+    if (!open_private(out)) {
         return QString();
     }
     if (!copy_stream(source, out) || !out.commit()) {

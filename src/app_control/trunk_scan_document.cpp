@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#ifdef DSD_NEO_TEST_HOOKS
+#include <atomic>
+#include "trunk_scan_document_internal.h"
+#endif
+
 #include <algorithm>
 #include <climits>
 #include <cstdio>
@@ -14,11 +19,19 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <iterator>
 #include <memory>
+#include <set>
 #include <stdint.h>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
+#ifdef DSD_NEO_TEST_HOOKS
+/* Test probes (trunk_scan_document_internal.h): counts only, and only in test builds. */
+std::atomic<unsigned> g_channel_inspections{0};
+std::atomic<unsigned> g_file_validations{0};
+#endif
+
 struct Bytes {
     Bytes() = default;
     Bytes(const Bytes&) = delete;
@@ -371,6 +384,9 @@ safeReplacement(const char* path) {
 
 int
 validateReference(const Reference& ref) {
+#ifdef DSD_NEO_TEST_HOOKS
+    g_file_validations.fetch_add(1U, std::memory_order_relaxed);
+#endif
     dsd_csv_validation stats{};
     switch (ref.kind) {
         case DSD_APP_SCAN_FILE_CHANNEL: return dsd_csv_validate_chan_file(ref.resolved.c_str(), &stats);
@@ -387,11 +403,47 @@ validateReference(const Reference& ref) {
     return -1;
 }
 
+/**
+ * The referenced files one validation call has found valid, by kind and resolved path, so a file many rows name is
+ * checked once. Only passes are kept: the first failure ends the call, so its error is the one checking every row again
+ * would report.
+ */
+struct Validated {
+    std::set<std::pair<int, std::string>> files;    // validateReference() passed
+    std::set<std::pair<int, std::string>> complete; // validateCompleteReference() passed
+};
+
+std::pair<int, std::string>
+validationKey(const Reference& ref) {
+    return {static_cast<int>(ref.kind), ref.resolved};
+}
+
+/** validateReference(), once per file a call meets. */
+bool
+validOnce(const Reference& ref, std::set<std::pair<int, std::string>>& valid) {
+    const auto key = validationKey(ref);
+    if (valid.count(key) != 0) {
+        return true;
+    }
+    if (validateReference(ref) != 0) {
+        return false;
+    }
+    valid.insert(key);
+    return true;
+}
+
 int
-validateCompleteReference(const Reference& ref, char* err, size_t size) {
+validateCompleteReference(const Reference& ref, Validated& seen, char* err, size_t size) {
+    const auto key = validationKey(ref);
+    if (seen.complete.count(key) != 0) {
+        return 0;
+    }
     if (ref.kind == DSD_APP_SCAN_FILE_CHANNEL) {
         Document channel;
         char detail[256] = {};
+#ifdef DSD_NEO_TEST_HOOKS
+        g_channel_inspections.fetch_add(1U, std::memory_order_relaxed);
+#endif
         if (inspectDocument(ref.resolved.c_str(), nullptr, true, channel, detail, sizeof detail)) {
             if (err && size) {
                 DSD_SNPRINTF(err, size, "row %u chan_csv: %s", ref.row, detail);
@@ -399,7 +451,7 @@ validateCompleteReference(const Reference& ref, char* err, size_t size) {
             return -1;
         }
         const auto invalid = std::find_if(channel.refs.begin(), channel.refs.end(),
-                                          [](const Reference& leaf) { return validateReference(leaf) != 0; });
+                                          [&seen](const Reference& leaf) { return !validOnce(leaf, seen.files); });
         if (invalid != channel.refs.end()) {
             if (err && size) {
                 DSD_SNPRINTF(err, size,
@@ -409,13 +461,14 @@ validateCompleteReference(const Reference& ref, char* err, size_t size) {
             return -1;
         }
     }
-    if (validateReference(ref)) {
+    if (!validOnce(ref, seen.files)) {
         if (err && size) {
             DSD_SNPRINTF(err, size, "row %u: %s companion is missing, unreadable or invalid", ref.row,
                          ref.field.c_str());
         }
         return -1;
     }
+    seen.complete.insert(key);
     return 0;
 }
 } // namespace
@@ -557,8 +610,11 @@ dsd_app_trunk_scan_validate_bundle(const char* path, int* count, uint32_t* first
         if (inspectDocument(path, nullptr, false, doc, err, err_sz)) {
             return -1;
         }
-        const auto invalid = std::find_if(doc.refs.begin(), doc.refs.end(), [err, err_sz](const Reference& ref) {
-            return validateCompleteReference(ref, err, err_sz) != 0;
+        // Rows that name the same file share one check of it (a targets list may name one large channel map on every
+        // row): same results, each file read once.
+        Validated seen;
+        const auto invalid = std::find_if(doc.refs.begin(), doc.refs.end(), [&seen, err, err_sz](const Reference& ref) {
+            return validateCompleteReference(ref, seen, err, err_sz) != 0;
         });
         if (invalid != doc.refs.end()) {
             return -1;
@@ -577,3 +633,21 @@ dsd_app_trunk_scan_validate_bundle(const char* path, int* count, uint32_t* first
         return fail(err, err_sz, "Cannot allocate CSV validation storage.");
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+extern "C" void
+dsd_app_trunk_scan_test_reset_counts(void) {
+    g_channel_inspections.store(0U, std::memory_order_relaxed);
+    g_file_validations.store(0U, std::memory_order_relaxed);
+}
+
+extern "C" unsigned
+dsd_app_trunk_scan_test_channel_inspections(void) {
+    return g_channel_inspections.load(std::memory_order_relaxed);
+}
+
+extern "C" unsigned
+dsd_app_trunk_scan_test_file_validations(void) {
+    return g_file_validations.load(std::memory_order_relaxed);
+}
+#endif

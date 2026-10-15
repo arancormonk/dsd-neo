@@ -3998,6 +3998,14 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   4.2.7 and 6.3.2.2): the encryption cipher key the generators take, from a cipher key (SCK or CCK) and the carrier
   number, location area and colour code, pinned by TETRA_crypto's four TB5 vectors (`TETRA_CRYPTO`). It is the only
   file that includes the upstream headers.
+- `backup_seal.c` / `<dsd-neo/crypto/backup_seal.h>` seal and open passphrase-protected backups (scrypt + AES-256-GCM,
+  issue #580). The 64-byte header is the GCM AAD. Seal and open both accept only log2(N) 14..17, r 8 and p 1..4, so an
+  untrusted file cannot demand more scrypt memory than that. `dsd_backup_open()` wipes its output on any failure:
+  plaintext leaves only after the tag verifies. New backups use `dsd_backup_kdf_params_default()` (log2(N) 16, r 8, p 2,
+  about 64 MiB). `dsd_backup_derive_key()` is a known-answer helper without that policy; never pass it untrusted
+  parameters. The Qt archive inside the envelope is under UI, Qt, "Configuration backup". Tests: `BACKUP_SEAL`,
+  `FUZZ_CRYPTO_BACKUP_HEADER` (`dsd_backup_parse_header()`, the only parser that runs before authentication),
+  `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL` and `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL_CXX`.
 - Build files: `src/crypto/CMakeLists.txt`
 
 ## Protocols
@@ -5412,9 +5420,121 @@ Qt Quick frontend (`src/ui/qt`):
   transitions. `qml/DiagnosticsScreen.qml` provides pause, copy, clear and host share.
   Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
   platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
-- Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
-  internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
-  interface, implemented per host (`android/decoder_host_android.cpp` today).
+- Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is
+  crypto's `backup_seal`; everything inside it is Qt code.
+  - Archive (`backup_archive.{h,cpp}` public surface, `backup_archive_build.cpp` export, `backup_archive_parse.cpp`
+    restore validation, module-private `backup_archive_rules.{h,cpp}` in `dsd_qt::backup::detail`): `DNBA`, a
+    big-endian u32 manifest length, the manifest JSON (format, version 1, app tag, creation time, source roots, the
+    portable settings, the five stores, the permanent signal-search avoids, `notIncluded`, and a path/size/sha256
+    table), then the carried files' bytes. One table, `typed_path_fields()` (store, field, `File` | `Recording` |
+    `BundleRoot`), drives export sanitizing, restore validation and the apply's remapping: a new store field that names
+    a path must join it. The export (worker-safe; only `backup_take_snapshot()` reads app state, on the UI thread)
+    repairs rows the way the loaders would, clears every `Recording`, strips each profile's `compiled`, `runtimeRef`
+    and `pastRuntimeRefs`, carries only regular non-symlink files under the data root's `imports/` (an owned bundle
+    whole), clears any other reference and lists it in `notIncluded`, then parses its own output as a self-check. A
+    carried file that changes between the export's two reads (a session appends to its talkgroup lists) fails it with
+    `BackupError::SourceChanged`, not `Io`.
+    `backup_parse_archive()` is pure and treats the archive as untrusted: size caps (64 MiB sealed, 4096 files, 32 MiB
+    a file, 4096 rows a store, 4 MiB manifest), a sha256 per file, archive paths under `imports/` with case- and
+    NFC-folded duplicates refused, store shapes and identities, settings filtered to `AppPrefs::portableKeys()`; it
+    rebases every typed value from the source root onto the target root. Every carried file must be named exactly by a
+    `File` value or lie inside a claimed bundle root. A bundle root is an owned `imports/bundles/<id>` holding a carried
+    file and claimed by one row only; a row's file under `imports/bundles/` lies in its own root, and no row's file lies
+    in another row's root. A plain channel map updated in place with companions keeps its file in `imports/` beside its
+    bundle, so a root need not hold its row's file. `Summary::systemsWithExtraArgs` counts systems with extra
+    arguments or a decode flag with a token `decode_flag_is_standard()` (`decode_mode_flag.h`) does not list. That
+    allowlist is every token the app's producers write (wizard chips, scan-list entries, signal search, the
+    RadioReference generator), so a new producer token must join it. Passphrases are NFC UTF-8 of at least 8 code
+    points (`backup_passphrase_ok()`); the byte and normalized copies the backup code makes are wiped, the strings
+    QML hands it cannot be.
+  - Staging and apply (`backup_apply.h`, `backup_stage.cpp`, `backup_apply.cpp`, module-private
+    `backup_apply_fs.{h,cpp}`): `stage_restore()` takes the data root its caller read (the model passes the UI thread's
+    reading to its worker) and writes `restore-staging-<job>/` (files, stores, settings, avoids and a manifest, each
+    file 0600). It dry-run validates each library file with `ImportedFilesModel::validate()`; a row that fails (a
+    channel map whose companions this phone refuses, say) is left out, not the whole backup: its file and its bundle's
+    files are not staged, every typed reference to them is cleared, and the staged summary counts it out and lists
+    "<name>: couldn't be read on this phone" in `notIncluded`. Only structural problems refuse a staging. The dry runs
+    stop as soon as the job is cancelled (`stage_restore()`'s `proceed`), and are bounded: rows the app writes never
+    name each other's files, so a library still losing rows on its third pass (a crafted chain) is refused as `Damaged`,
+    at most three dry runs a row. `promote_staging()` renames it to `restore-pending/`, and `commit_pending()` writes
+    `COMMITTED` (the manifest's sha256); every check reads only a regular `COMMITTED` file as the marker, as the apply
+    does. `ui_load()` calls `apply_pending_restore()` as its first statement, before any model reads a store, so
+    restored stores go through the loaders and migrations like any start's; its `engineBusy` is
+    `DecoderHost::engineBusy()`. The apply writes an undo journal (`restore-pending/journal/`, `COMPLETE` last) of the
+    old managed set: the five stores and the avoid file, the files under `imports/` a store's `File` value names (never
+    one a `Recording` names), the owned bundle directories library rows claim (the first claim of a folded name), and
+    the files the app generates under `decryption/` (`<uid>/<uuid>.(hex|dec|map).csv`) and `scan_lists/` (`<uid>.csv`);
+    anything else there is kept, with the directories it is in. Only those are deleted. An incoming file whose
+    destination holds anything else takes a free name (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory `dir
+    (n)`) and the stores' references follow. File contents are never rewritten, so a bundle whose row keeps its file
+    outside it (a plain channel map beside its bundle names companions `bundles/<id>/…`) never moves: when an entry the
+    old setup does not own holds its place, the apply fails before any change ("A folder left by an earlier import is in
+    the way of a restored channel map…"). A crash re-runs to the same end state, and an I/O failure rolls back byte for
+    byte (pruned empty directories excepted). Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine
+    busy or storage short; kept) and `Stuck` (neither finishing nor undoing worked; kept); `backup-restore-result.json`
+    records the applied, failed and stuck ones. A commit marker that cannot be removed is Stuck without a rollback, on
+    purpose: a rollback ends by removing that same marker, so it could not complete either; the next start repeats the
+    idempotent roll forward and removes the marker then. A journal whose `prefs.json` does not match the hash its
+    manifest records is unreadable (Stuck) rather than a rollback that would clear the settings. `discard_pending()`
+    refuses once the journal is complete (`pending_apply_started()`). `detail::DataRoot` is the only writer, deleter and
+    renamer: it refuses a path outside the data root or one with a symlink or junction among its existing components,
+    and removes trees without following links. Documented limits: a resumed apply (journal complete) that finds the
+    engine busy is Deferred, and that session runs on the half-applied configuration, whose edits the next roll forward
+    can overwrite; a corrupt complete journal is Stuck at every start and cannot be discarded; a store file that is a
+    symlink fails every restore (`QSaveFile` writes through a link, so the models' own saves never replace it).
+    `ApplyEnv` injects the engine check, free space and a fault per named step.
+  - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`. One low-priority worker thread (a `QThreadPool` of
+    one) runs each job; work and replies cross through two queues under one `std::mutex`, and a job's files are its own
+    (`<CacheLocation>/backup/<job>.dsdbak` or `.in`, `restore-staging-<job>/`), so a cancelled job removes only them
+    (`discard_staging()` for its staging directory). Construction sweeps both (`sweep_stale_staging()`).
+    `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` calls
+    `DecoderHost::copyFileToDocument()`; `inspectRestore()` copies the document with `copyDocumentToFile()` (capped at
+    64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and stages, and the UI thread promotes.
+    `commitRestore()` refuses while a job runs, a session is on screen or `engineBusy()`, commits, and asks `quitApp()`
+    once; a refused commit leaves the stage as it was. `restorePending` follows the committed stage on disk, and
+    `restoreCancellable` (pending, no complete journal) with it; `discardRestore()` reports `RestoreInProgress` once the
+    apply has started. The inspection reports the staged summary, so the confirmation sees left-out rows; its `Io`
+    means only that the picked document could not be read (`DocumentFailed`), while a failure on this phone is
+    `StagingFailed` (the screen offers the same file again, not another one): no cache or staging place, a copy it
+    could not write (`DecoderHost::DocumentLocalFailed`) or read back, an argument or OpenSSL failure once the header
+    has parsed (`backup_error_from_open_status()`), a staging or promotion that failed.
+    `startupOutcome` is this start's `ApplyResult`, else the result file until acknowledged, and carries the restored
+    backup's `notIncluded` lines. The destructor calls `abortDocumentTransfers()` while a job may be on the worker, then
+    waits for it. Production seals with `dsd_backup_kdf_params_default()`.
+  - QML: one `BackupFlow.qml` in `Main.qml` (z 22, above the scan layers) serves both Settings instances through
+    `exportBackupRequested()`, `restoreBackupRequested()` and `cancelRestoreRequested()`. `backup.flowActive` (set for
+    the flow's whole length, kept while the app closes) joins `autoStartBlocked`, a USB grant that lands while it is set
+    starts nothing, and entering a restore drops pending starts (`dropPendingStarts()`). An unlock error about the file
+    (not a backup, newer, too large, damaged, unreadable) swaps Unlock for "Choose another file", which reopens the
+    picker inside the same flow. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
+    (`ConfirmDialog.closeOnConfirm: false`, its `error` line) for a retry; only Cancel discards. Settings' Backup card
+    gates the Restore row on `restoreAllowed` and `!restorePending`, and it and the Home card offer "Cancel
+    restore"/"Discard restore" only while `restoreCancellable`, else `Util.restorePartWayText()`. The confirmation, the
+    export result and the Home card list `notIncluded` through `Util.notIncludedText()`. `BackupResultCard.qml` on Home
+    shows `startupOutcome` and matches the `BackupApply` reason strings of `backup_apply.cpp` through `qsTranslate()`,
+    so a change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
+  - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or device-local
+    (onboarding, the notification explanation and the last location fix are device-local), with
+    `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
+    any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is kept,
+    and `configuration()` refuses it ("Open this decryption profile and save it again."). Its key files are written only
+    below `<root>/decryption` reached through no symlink or junction (`privateWrite()`), so a link left under
+    `decryption/` refuses the compile, at load or on save, instead of placing keys elsewhere. `-fp` (ProVoice) reads as
+    `mixed` in `Util.js` `decryptionProtocol()`, `session_args_profile_compatible()` and the legacy key migration.
+    `json_store_root()` is the data root every store path builds on. A file-source system without its recording, as
+    every restored replay system arrives, is refused before it starts (`SessionArgsError::RecordingMissing`, start
+    category `recording-missing`), checked after AM's source rule (AM needs a radio whatever the file) and before
+    TETRA's, so it never runs `-i ""` and is never told to choose a radio.
+  - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback; two
+    restores in a row), `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's
+    `tests/ui/qml_backup_recorder.h`), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,
+    `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
+    `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
+    `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
+- Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
+  backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
+  (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
+  host (`android/decoder_host_android.cpp` today).
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 
@@ -5773,6 +5893,39 @@ supply focused wiring patches for serial application in orchestrator order. New
 live models join `clearLiveModels()` for lifecycle and trunk-scan target edges.
 Context registration placeholders in `qt_ui.cpp` keep those ownership decisions
 in one place. Every new UI_QT target also belongs in Android CI's explicit build list.
+
+Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") adds five `DecoderHost`
+methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker
+thread, which the rest of the interface never is.
+
+- Startup apply: `ui_load()` runs `apply_pending_restore()` first, before any model reads a store (the native
+  signal-search store opens later, from `SignalSearchModel`), and asks `engineBusy()` there.
+  `DecoderHostAndroid::engineBusy()` (`decoder_host_android_lifecycle.cpp`) reads the engine atomic, then
+  `DecoderService.stateName()`, and returns `engine_busy()` from `session_state_map.h`: busy unless the service is IDLE
+  with the engine off, and busy when the state cannot be read. It never refreshes the host, because a refresh can
+  deliver a USB attachment that starts a session. `commitRestore()` asks it too.
+- `quitApp()` returns false without an Activity context; otherwise it posts `AppSupport.finishApp()`
+  (`finishAndRemoveTask()`) to the Android main thread without waiting, and `DsdNeoActivity.onDestroy` stops the
+  engine and the service and ends the process as for any finish. The base host answers false, and the model then
+  leaves the confirmed restore waiting for the next start.
+- Document copies run on `BackupModel`'s worker thread, never the Qt main thread (`decoder_host_android_documents.cpp`).
+  A `content://` reference goes over JNI to `DocumentCopies.kt` through the application `ContentResolver` the
+  constructor holds; a file URL or plain path takes the base host's copy. The read side refuses a provider-declared size
+  over the cap before opening, counts the cap while copying (`DocumentTransfer.kt`), writes a temp file beside the
+  destination and renames it; a stale destination is removed first, and `DocumentCopied` counts only when the file is
+  there. A failure on this device's side (no held `ContentResolver`, a stale destination that stays, the temp file, a
+  write to it through `DocumentTransfer.LocalOutput`, the rename, a copy reported without its file because the JNI call
+  failed) is `DocumentLocalFailed` (`LOCAL_FAILED`), not the document's `DocumentFailed`; the codes cross JNI as plain
+  ints, and the `document_transfer` suite checks that both sides name the same values. A save opens the document `wt`,
+  else `w`; a file (not a provider's pipe) is cut back to the copy's length and synced. A save that fails once the
+  document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
+  than a short document, and deletes it; only a whole save closes normally.
+- `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
+  raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
+  after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
+- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document dispatch), `ANDROID_DOCUMENT_TRANSFER_JVM`
+  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
+  `finishAndRemoveTask()` need a device or emulator.
 
 ### Android screen modes
 

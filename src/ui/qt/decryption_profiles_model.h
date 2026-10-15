@@ -48,6 +48,8 @@ class DecryptionProfilesModel : public QAbstractListModel, public DecryptionProf
     Q_INVOKABLE QVariantList directTypes(const QString& protocol) const;
     /** Copy legacy material into a profile before updating the system reference. */
     bool migrateLegacySystems();
+    /** Whether @p uid can name a profile: it names its decryption/<uid>/ directory, so it is a plain name. */
+    static bool validUid(const QString& uid);
   Q_SIGNALS:
     void countChanged();
 
@@ -56,6 +58,7 @@ class DecryptionProfilesModel : public QAbstractListModel, public DecryptionProf
     static QVariantMap metadata(QVariantMap row);
     bool persist(const QList<QVariantMap>& rows) const;
     bool compile(QVariantMap& row, QString* error, QStringList* staged) const;
+    void compileLoadedRows();
     QList<QVariantMap> m_rows;
     SavedSystemsModel* m_systems = nullptr;
     ScanListsModel* m_scans = nullptr;

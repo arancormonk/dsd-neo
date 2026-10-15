@@ -23,6 +23,14 @@ target_sources(
     dsd-neo_ui_qt
     PRIVATE
         app_prefs.cpp
+        backup_apply.cpp
+        backup_apply_fs.cpp
+        backup_archive.cpp
+        backup_archive_build.cpp
+        backup_archive_parse.cpp
+        backup_archive_rules.cpp
+        backup_model.cpp
+        backup_stage.cpp
         call_history_filter.cpp
         call_history_model.cpp
         command_bridge.cpp
@@ -70,6 +78,8 @@ qt_add_resources(
         qml/DecryptionProfileSelector.qml
         qml/DecryptionApplyFlow.qml
         qml/FailureCard.qml
+        qml/BackupFlow.qml
+        qml/BackupResultCard.qml
         qml/CsvImportFlow.qml
         qml/HistoryDetailSheet.qml
         qml/PlexComboBox.qml
@@ -208,7 +218,7 @@ target_link_libraries(
         Qt6::Quick
         Qt6::QuickControls2
         Qt6::QuickDialogs2
-    PRIVATE dsd-neo_app_control dsd-neo_core dsd-neo_runtime
+    PRIVATE dsd-neo_app_control dsd-neo_core dsd-neo_crypto dsd-neo_runtime
 )
 
 set_target_properties(dsd-neo_ui_qt PROPERTIES AUTOMOC ON)
@@ -229,4 +239,5 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_network_sheet.qml" # WP-F2
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_wizard_encryption.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_key_sheet.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_settings_backup.qml"
 )

@@ -29,7 +29,8 @@
 
     <!-- allowBackup is off deliberately: a full-data backup binds a backup agent into
          this process and tears it down again, which killed a 28-minute decode session on
-         device. Nothing here is worth backing up — the config is regenerated. -->
+         device. The app's own encrypted backup (Settings → Backup, issue #580) moves a
+         setup to another phone instead, and runs only when the user asks for it. -->
     <application
         android:name="org.qtproject.qt.android.bindings.QtApplication"
         android:hardwareAccelerated="true"

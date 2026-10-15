@@ -54,11 +54,19 @@ future starts; apply it explicitly to update a running session. A changed saved
 revision is identified separately from the revision currently loaded.
 
 Profiles are stored **unencrypted** in app-private `decryption_profiles.json` with
-private generated CSVs under `decryption/`. Android backup remains disabled.
+private generated CSVs under `decryption/`. Android's own backup remains disabled.
+A profile leaves the device only inside the passphrase-encrypted backup the user
+exports from Settings → Backup ([backup and restore](../android/README.md#backup-and-restore)).
+The backup carries each profile's definition, key material included, plus the key,
+mapping and vendor CSVs it names from the file library, never its generated files.
+The restoring app compiles every profile again at its next start; a profile that
+cannot compile there stays listed, and a start that uses it is refused with
+"Open this decryption profile and save it again."
 Existing direct keys migrate from `saved_systems.json` only after their profile is
 saved successfully. Public model rows, snapshots, history and diagnostics contain
-metadata and opaque references, never material. Private configuration and generated
-scan CSVs must not be exported. QString/QML copies cannot guarantee memory erasure.
+metadata and opaque references, never material. Outside that backup, private
+configuration must not be exported, and the generated `decryption/` and scan CSVs
+never leave the device. QString/QML copies cannot guarantee memory erasure.
 Removing a profile requires removing its saved and active-session references first;
 attached profile files must be reassigned before removal from the file library.
 

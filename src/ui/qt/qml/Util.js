@@ -499,13 +499,15 @@ function sourceText(id, name) {
 }
 
 // Profile forms describe decoder capabilities; protocol and modulation stay distinct.
+// -fp is ProVoice, which no profile protocol describes, so it reads as mixed. dPMR (-fm)
+// reads as mixed too, as in session_args.cpp and the legacy migration: an NXDN profile's
+// scrambler also serves dPMR.
 function decryptionProtocol(flags) {
     var value = flags || ""
     if (value.indexOf("-ft") >= 0 || value.indexOf("-f1") >= 0 || value.indexOf("-f2") >= 0 || value.indexOf("-mq") >= 0) return "p25"
     if (value.indexOf("-fs") >= 0) return "dmr"
     if (value.indexOf("-fi") >= 0 || value.indexOf("-fn") >= 0) return "nxdn"
     if (value.indexOf("-fz") >= 0) return "m17"
-    if (value.indexOf("-fp") >= 0) return "dpmr"
     if (value.indexOf("-fd") >= 0) return "dstar"
     if (value.indexOf("-fy") >= 0) return "ysf"
     return "mixed"
@@ -554,4 +556,23 @@ function toneFilterSummary(mode, list) {
 function decodeFlagIsAnalog(flags) {
     var flag = String(flags || "").trim().split(/\s+/).join(" ")
     return flag === "-fA" || flag === "-fM"
+}
+
+// Issue #580: the first few of the lines a backup leaves out (what its export could
+// not carry, and library files the restoring phone could not read), for the export
+// result, the restore confirmation and the Home card alike.
+function notIncludedText(items) {
+    var lines = items || []
+    var shown = lines.slice(0, 5)
+    var text = qsTr("Not included:") + "\n" + shown.join("\n")
+    if (lines.length > shown.length)
+        text += "\n" + qsTr("and %1 more").arg(lines.length - shown.length)
+    return text
+}
+
+// Issue #580: a waiting restore whose apply has started (backup.restoreCancellable
+// false), which only the next start can finish or undo. Settings, the Home card
+// and a refused cancel all say it in these words.
+function restorePartWayText() {
+    return qsTr("This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it.")
 }

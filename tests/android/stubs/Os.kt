@@ -2,7 +2,13 @@
 package android.os
 import java.util.concurrent.ConcurrentLinkedQueue
 class Bundle
-class CancellationSignal { var cancelled = false; fun cancel() { cancelled = true } }
+// Cancelled from one thread and read on another, as the platform's is.
+class CancellationSignal {
+    @Volatile var cancelled = false
+    fun cancel() { cancelled = true }
+    fun throwIfCanceled() { if (cancelled) throw OperationCanceledException() }
+}
+class OperationCanceledException(message: String? = null) : RuntimeException(message ?: "The operation has been canceled.")
 object Build { object VERSION { var SDK_INT = 30 } }
 object SystemClock { fun elapsedRealtimeNanos() = Handler.nowMs * 1_000_000L }
 class Looper { companion object { fun getMainLooper() = Looper() } }

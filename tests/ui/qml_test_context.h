@@ -46,6 +46,8 @@
 #include <QHash>
 #include <QIODevice>
 #include <QList>
+#include <QMetaObject>
+#include <QMetaProperty>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQmlPropertyMap>
@@ -78,6 +80,7 @@
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "p25_network_model.h" // WP-F2
+#include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
 #include "qml_spectrum_stub.h"
 #include "saved_systems_model.h"
@@ -1755,6 +1758,43 @@ class Setup : public QObject {
         }
     }
 
+    /** @brief Issue #580: every call the screens made on `backup`, oldest first, as `{name, args}` maps. */
+    Q_INVOKABLE QVariantList
+    backupCalls() const {
+        return m_backup != nullptr ? m_backup->calls() : QVariantList();
+    }
+
+    /** @brief Back to a fresh `backup`: idle, restore allowed, nothing pending, no outcome, no calls. */
+    Q_INVOKABLE void
+    resetBackup() {
+        if (m_backup != nullptr) {
+            m_backup->reset();
+        }
+    }
+
+    /**
+     * @brief Set one `backup` property (busy, flowActive, restorePending, restoreCancellable, startupOutcome,
+     * lastResult); restorePending sets restoreCancellable alike (see BackupRecorder::setState()).
+     */
+    Q_INVOKABLE bool
+    setBackup(const QString& key, const QVariant& value) {
+        return m_backup != nullptr && m_backup->setState(key, value);
+    }
+
+    /** @brief What `backup`'s commitRestore(), discardRestore() or discardDeferredRestore() answers next. */
+    Q_INVOKABLE void
+    setBackupReply(const QString& call, const QVariantMap& reply) {
+        if (m_backup != nullptr) {
+            m_backup->setReply(call, reply);
+        }
+    }
+
+    /** @brief Deliver exportPrepared, exportFinished or inspectFinished with @p result. */
+    Q_INVOKABLE bool
+    emitBackup(const QString& signal, const QVariantMap& result) {
+        return m_backup != nullptr && m_backup->emitResult(signal, result);
+    }
+
     /**
      * @brief Reads in @p qmlFiles that name a context-property key the fixture lacks.
      *
@@ -1839,6 +1879,9 @@ class Setup : public QObject {
         if (on) {
             m_lifecycle_host = signals_initialized ? m_initializing_host : m_import_host;
             m_lifecycle_host->acceptStart = true;
+            if (m_backup != nullptr) {
+                m_backup->setHost(m_lifecycle_host); // the model's session gate follows the host the case runs on
+            }
             m_lifecycle_host->startRunning = start_running;
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_app_prefs);
@@ -2169,13 +2212,21 @@ class Setup : public QObject {
 
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
+        /* `backup` is a QObject, whose properties answer an unknown name with `undefined` just as a map does; its
+         * keys are the properties the fake publishes. */
+        QVariantMap backupKeys;
+        const QMetaObject& backupMeta = BackupRecorder::staticMetaObject;
+        for (int i = backupMeta.propertyOffset(); i < backupMeta.propertyCount(); ++i) {
+            backupKeys.insert(QString::fromLatin1(backupMeta.property(i).name()), true);
+        }
         const QHash<QString, QVariantMap> maps = {{QStringLiteral("metrics"), m_metrics},
                                                   {QStringLiteral("prefs"), m_prefs},
                                                   {QStringLiteral("decoderHost"), m_host},
-                                                  {QStringLiteral("radioReference"), m_radio_reference}};
+                                                  {QStringLiteral("radioReference"), m_radio_reference},
+                                                  {QStringLiteral("backup"), backupKeys}};
         /* Group 3 captures the "(" that marks a call rather than a read. */
-        static const QRegularExpression read(
-            QStringLiteral("\\b(metrics|prefs|decoderHost|radioReference)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
+        static const QRegularExpression read(QStringLiteral(
+            "\\b(metrics|prefs|decoderHost|radioReference|backup)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
 
         QStringList missing;
         for (const QString& name : qmlFiles) {
@@ -2701,6 +2752,10 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("scanListStarter"), starter);
         ctx->setContextProperty(QStringLiteral("sessionArgs"), session_args);
         ctx->setContextProperty(QStringLiteral("appVersionText"), QStringLiteral("0.0.0-test"));
+        // Issue #580: the backup model's surface, recorded rather than run.
+        m_backup = new BackupRecorder(engine);
+        m_backup->setHost(m_lifecycle_host);
+        ctx->setContextProperty(QStringLiteral("backup"), m_backup);
     }
 
   private:
@@ -2712,6 +2767,7 @@ class Setup : public QObject {
     QVariantMap m_host;
     QVariantMap m_radio_reference;
     RadioReferenceRecorder* m_radio_reference_recorder = nullptr;
+    BackupRecorder* m_backup = nullptr;
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     CommandRecorder* m_commands = nullptr;

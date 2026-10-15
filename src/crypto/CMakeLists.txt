@@ -4,6 +4,7 @@ add_library(dsd-neo_crypto)
 target_sources(
     dsd-neo_crypto
     PRIVATE
+        backup_seal.c
         crypt-aes.c
         crypt-csi72.c
         crypt-des.c

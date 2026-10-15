@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QIODevice>
 #include <QJsonValue>
+#include <QMetaType>
 #include <Qt>
 #include <QtGlobal>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
@@ -32,6 +33,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/runtime/log.h>
 
 namespace dsd_qt {
 namespace {
@@ -61,12 +63,52 @@ scanEntryAnalog(const QVariantMap& entry, const SavedSystemsModel* systems) {
     return scan_list_entry_analog_kind(entry, flag) >= 0;
 }
 
+/**
+ * Whether @p path lies below <data root>/decryption with no symlink or junction among its existing components from the
+ * data root down, the path itself included. Key files are written in the clear, so a planted link there (a restored
+ * setup keeps what it does not own under decryption/, issue #580) must never steer them anywhere else.
+ */
+bool
+reachedThroughNoLink(const QString& path) {
+    const QString root = QDir::cleanPath(json_store_root());
+    if (root.size() < 2 || !QDir::isAbsolutePath(root) || QDir::cleanPath(path) != path
+        || !path.startsWith(root + QStringLiteral("/decryption/"))) {
+        return false;
+    }
+    QString current = root;
+    for (const QString& part : path.mid(root.size() + 1).split(QLatin1Char('/'))) {
+        current += QLatin1Char('/') + part;
+        const QFileInfo info(current);
+        if (info.isSymLink() || info.isJunction()) {
+            return false;
+        }
+        if (!info.exists()) {
+            break; // nothing exists below a missing component
+        }
+    }
+    return true;
+}
+
+/**
+ * Write a key file privately (owner-only, through QSaveFile). Refused, with nothing written, unless the file and its
+ * directories lie inside <data root>/decryption, reached through no link, before and after its directories are made.
+ */
 bool
 privateWrite(const QString& path, const QByteArray& bytes) {
+    const QString directory = QFileInfo(path).absolutePath();
+    if (!reachedThroughNoLink(path) || !QDir().mkpath(directory) || !reachedThroughNoLink(path)) {
+        return false;
+    }
+    const QString inside = QFileInfo(json_store_path(QStringLiteral("decryption"))).canonicalFilePath();
+    const QString canonicalRoot = QFileInfo(json_store_root()).canonicalFilePath();
+    const QString canonicalDirectory = QFileInfo(directory).canonicalFilePath();
+    if (canonicalRoot.isEmpty() || inside != canonicalRoot + QStringLiteral("/decryption")
+        || !canonicalDirectory.startsWith(inside + QLatin1Char('/'))) {
+        return false;
+    }
     QSaveFile file(path);
-    return QDir().mkpath(QFileInfo(path).absolutePath()) && file.open(QIODevice::WriteOnly)
-           && file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) && file.write(bytes) == bytes.size()
-           && file.commit();
+    return file.open(QIODevice::WriteOnly) && file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+           && file.write(bytes) == bytes.size() && file.commit();
 }
 
 QString
@@ -83,9 +125,8 @@ protocolFor(const QString& flags) {
     if (flags.contains("-fz")) {
         return "m17";
     }
-    if (flags.contains("-fp")) {
-        return "dpmr";
-    }
+    // -fp is ProVoice, not dPMR, and no profile protocol describes it. dPMR (-fm) migrates as mixed too: a legacy key
+    // of any type stays usable, as before.
     return "mixed";
 }
 
@@ -100,7 +141,24 @@ withoutMaterial(const QVariantList& entries) {
     }
     return result;
 }
+
+bool
+hasCompiled(const QVariantMap& row) {
+    return row.value("compiled").typeId() == QMetaType::QVariantMap;
+}
+
+void
+removeFiles(const QStringList& paths) {
+    for (const auto& path : paths) {
+        QFile::remove(path);
+    }
+}
 } // namespace
+
+bool
+DecryptionProfilesModel::validUid(const QString& uid) {
+    return validId(uid);
+}
 
 DecryptionProfilesModel::DecryptionProfilesModel(QObject* parent) : QAbstractListModel(parent) {
     QSet<QString> ids;
@@ -112,6 +170,50 @@ DecryptionProfilesModel::DecryptionProfilesModel(QObject* parent) : QAbstractLis
             ids.insert(id);
         }
     }
+    compileLoadedRows();
+}
+
+/* Issue #580: a restored store carries profile definitions only, never a compiled form, so a row stored without one is
+   compiled here through the editor's own validation into fresh files under decryption/<uid>/. The compiled rows are
+   persisted together; if that fails their files are removed and they stay uncompiled, to be tried again on the next
+   load. A row that cannot compile stays as stored, and configuration() asks for it to be saved again. Both failures
+   are logged by profile reference and reason, never material. A row that already has a compiled form is kept as
+   stored. */
+void
+DecryptionProfilesModel::compileLoadedRows() {
+    auto next = m_rows;
+    QStringList staged;
+    bool compiled = false;
+    for (auto& row : next) {
+        if (hasCompiled(row)) {
+            continue;
+        }
+        auto candidate = row;
+        if (candidate.value("runtimeRef").toString().isEmpty()) {
+            candidate.insert("runtimeRef", uuid());
+        }
+        QString error;
+        QStringList files;
+        if (compile(candidate, &error, &files)) {
+            row = std::move(candidate);
+            staged << files;
+            compiled = true;
+        } else {
+            removeFiles(files);
+            LOG_WARN("Decryption profile %s could not be compiled at load: %s\n",
+                     qUtf8Printable(row.value("uid").toString()), qUtf8Printable(error));
+        }
+    }
+    if (!compiled) {
+        return;
+    }
+    if (!persist(next)) {
+        removeFiles(staged);
+        LOG_WARN(
+            "Decryption profiles compiled at load could not be persisted; they compile again on the next start.\n");
+        return;
+    }
+    m_rows = std::move(next);
 }
 
 int
@@ -796,21 +898,17 @@ DecryptionProfilesModel::saveProfile(const QVariantMap& draft) {
     row.insert("runtimeRef", uuid());
     QStringList staged;
     if (!compile(row, &error, &staged)) {
-        for (const auto& path : staged) {
-            QFile::remove(path);
-        }
+        removeFiles(staged);
         return failure(error);
     }
     auto next = m_rows;
     if (at < 0) {
-        next.append(row);
+        next.append(std::move(row));
     } else {
-        next[at] = row;
+        next[at] = std::move(row);
     }
     if (!persist(next)) {
-        for (const auto& path : staged) {
-            QFile::remove(path);
-        }
+        removeFiles(staged);
         return failure(tr("Could not save the profile. The previous configuration is unchanged."));
     }
     if (at < 0) {
@@ -835,6 +933,12 @@ DecryptionProfilesModel::configuration(const QString& uid, QString* error) const
     if (row < 0) {
         if (error) {
             *error = tr("The decryption profile is missing. Select another profile.");
+        }
+        return {};
+    }
+    if (!hasCompiled(m_rows[row])) {
+        if (error) {
+            *error = tr("Open this decryption profile and save it again.");
         }
         return {};
     }

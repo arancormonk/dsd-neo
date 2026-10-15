@@ -3,22 +3,30 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QIODevice>
+#include <QJSEngine>
+#include <QJSValue>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QList>
 #include <QMap>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTemporaryDir>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/log.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "decoder_host.h"
@@ -38,6 +46,69 @@ check(bool condition) {
 
 void
 LFSRN(const char*, char*, dsd_state*) {}
+
+/* A legacy ProVoice (-fp) or dPMR (-fm) system's key migrates as a mixed profile, so a key of any type stays usable.
+   Read as dPMR, a ProVoice key of any type but the dPMR scrambler failed the profile's own validation and stopped the
+   migration of every later system. */
+static void
+test_unprofiled_legacy_migration(dsd_qt::DecryptionProfilesModel& profiles, dsd_qt::SavedSystemsModel& systems,
+                                 const QString& secret) {
+    for (const char* flag : {"-fp", "-fm"}) {
+        check(systems.add({{"name", QStringLiteral("Legacy %1").arg(QLatin1String(flag))},
+                           {"sourceType", "rtltcp"},
+                           {"host", "127.0.0.1"},
+                           {"port", 1234},
+                           {"freqMhz", "856.0"},
+                           {"decodeFlag", flag},
+                           {"encKeyType", "hex"},
+                           {"encKeyValue", secret},
+                           {"encForceKey", 0}}));
+        const QString uid = systems.get(systems.count() - 1).value("uid").toString();
+        const int migrated = profiles.count();
+        check(profiles.migrateLegacySystems());
+        check(profiles.count() == migrated + 1
+              && systems.getByUid(uid).value("decryptionProfileUid").toString() == uid);
+        check(profiles.get(uid).value("protocol").toString() == "mixed");
+        QString error;
+        check(profiles.configuration(uid, &error).value("encKeyValue").toString() == secret && error.isEmpty());
+    }
+}
+
+/* The protocol session_args_profile_compatible() expects for @p flags: the one profile protocol it accepts, or mixed
+   when it accepts every one. */
+static QString
+session_expected_protocol(const QString& flags) {
+    QStringList accepted;
+    for (const char* protocol : {"p25", "dmr", "nxdn", "dpmr", "m17", "dstar", "ysf"}) {
+        if (dsd_qt::session_args_profile_compatible({{"decryptionProtocol", protocol}, {"decodeFlag", flags}})) {
+            accepted << QLatin1String(protocol);
+        }
+    }
+    return accepted.size() == 7 ? QStringLiteral("mixed") : accepted.value(0);
+}
+
+/* Util.decryptionProtocol() steers the QML editor and selector; session_args_profile_compatible() decides at start.
+   They must read ProVoice (-fp) and dPMR (-fm) alike: both mixed, ProVoice because no profile protocol describes it,
+   dPMR because an NXDN profile's scrambler also serves it. */
+static void
+test_qml_and_session_protocols_agree() {
+    QFile file(QStringLiteral(DSD_QML_UI_DIR "/Util.js"));
+    check(file.open(QIODevice::ReadOnly));
+    QString source = QString::fromUtf8(file.readAll());
+    source.remove(QStringLiteral(".pragma library"));
+    QJSEngine engine;
+    engine.installExtensions(QJSEngine::TranslationExtension);
+    check(!engine.evaluate(source, file.fileName()).isError());
+    QJSValue decryptionProtocol = engine.globalObject().property(QStringLiteral("decryptionProtocol"));
+    check(decryptionProtocol.isCallable());
+    for (const char* flag : {"-fp", "-fm"}) {
+        const QString qml = decryptionProtocol.call({QJSValue(QLatin1String(flag))}).toString();
+        check(qml == "mixed" && session_expected_protocol(QLatin1String(flag)) == qml);
+    }
+    // The cross-check itself tells protocols apart.
+    check(decryptionProtocol.call({QJSValue(QStringLiteral("-fs"))}).toString() == "dmr"
+          && session_expected_protocol(QStringLiteral("-fs")) == "dmr");
+}
 
 namespace {
 class ReplayTestHost : public dsd_qt::DecoderHost {
@@ -129,6 +200,298 @@ test_analog_scan_entries_hold_no_profile(dsd_qt::DecryptionProfilesModel& profil
     check(scans.remove(list));
 }
 
+static QByteArray
+storeBytes() {
+    QFile file(dsd_qt::json_store_path("decryption_profiles.json"));
+    check(file.open(QIODevice::ReadOnly));
+    return file.readAll();
+}
+
+static void
+seedStore(const QJsonArray& rows) {
+    check(dsd_qt::json_store_save_array(QStringLiteral("decryption_profiles.json"), rows));
+}
+
+static QStringList
+compiledFiles() {
+    QStringList files;
+    QDirIterator it(dsd_qt::json_store_path("decryption"), QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        files << it.next();
+    }
+    files.sort();
+    return files;
+}
+
+static QJsonObject
+storedRow(const QString& uid) {
+    for (const auto& value : QJsonDocument::fromJson(storeBytes()).array()) {
+        if (value.toObject().value("uid").toString() == uid) {
+            return value.toObject();
+        }
+    }
+    return {};
+}
+
+static const char kResaveError[] = "Open this decryption profile and save it again.";
+
+/* Warnings the model logs, kept by the process-lifetime log tap main() installs. */
+static QStringList&
+warnings() {
+    static QStringList captured;
+    return captured;
+}
+
+static void
+captureWarning(dsd_neo_log_level_t level, const char* text, void*) {
+    if (level == LOG_LEVEL_WARN) {
+        warnings().append(QString::fromUtf8(text));
+    }
+}
+
+static int
+warningsContaining(const QString& text) {
+    return static_cast<int>(std::count_if(warnings().cbegin(), warnings().cend(),
+                                          [&text](const QString& warning) { return warning.contains(text); }));
+}
+
+static QStringList
+filesUnder(const QString& uid) {
+    QStringList files = compiledFiles();
+    const QString prefix = dsd_qt::json_store_path("decryption/" + uid + "/");
+    files.erase(
+        std::remove_if(files.begin(), files.end(), [&prefix](const QString& file) { return !file.startsWith(prefix); }),
+        files.end());
+    return files;
+}
+
+/* Rows saveProfile() wrote carry their compiled form: loading them compiles nothing and writes nothing. */
+static void
+test_compiled_rows_load_unchanged() {
+    const QByteArray before = storeBytes();
+    const QStringList files = compiledFiles();
+    check(!before.isEmpty() && !files.isEmpty());
+    dsd_qt::DecryptionProfilesModel loaded;
+    check(loaded.count() > 0);
+    check(storeBytes() == before && compiledFiles() == files);
+}
+
+/* Issue #580: a restored store carries profile definitions only. Loading compiles each through the editor's own
+   validation into fresh files under decryption/<uid>/ and persists the compiled form with a runtime reference; a row
+   that cannot compile (its key CSV did not come back) stays uncompiled and refuses to start. A row that already has a
+   compiled form is kept as stored. */
+static void
+test_definitions_compile_at_load(const QString& secret) {
+    const QJsonObject compiledRow = storedRow("profile-a");
+    check(compiledRow.value("compiled").isObject());
+    const QJsonObject key{
+        {"uid", "key-r"}, {"label", "Dispatch"}, {"keyId", 17}, {"kind", "aes128"}, {"material", secret}};
+    seedStore({compiledRow,
+               QJsonObject{{"uid", "restored-direct"},
+                           {"label", "Restored direct"},
+                           {"protocol", "p25"},
+                           {"mode", "direct"},
+                           {"force", 0},
+                           {"directType", "hex"},
+                           {"directValue", secret}},
+               QJsonObject{{"uid", "restored-managed"},
+                           {"label", "Restored managed"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"force", 0},
+                           {"keySource", "managed"},
+                           {"keys", QJsonArray{key}}},
+               QJsonObject{{"uid", "restored-vendor"},
+                           {"label", "Restored vendor"},
+                           {"protocol", "dmr"},
+                           {"mode", "vendor"},
+                           {"vendorType", "tytEp"},
+                           {"vendorValue", secret},
+                           {"runtimeRef", "kept-reference"},
+                           {"compiled", QJsonArray{"-5", "forged"}}},
+               QJsonObject{{"uid", "restored-csv"},
+                           {"label", "Restored CSV"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"keySource", "csv"},
+                           {"legacyCsvPath", dsd_qt::json_store_path("imports/absent.csv")}},
+               /* Its key collection is written before its talkgroup overrides are refused (DMR only). */
+               QJsonObject{{"uid", "restored-mapped"},
+                           {"label", "Restored mapped"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"keySource", "managed"},
+                           {"keys", QJsonArray{key}},
+                           {"mappings", QJsonArray{QJsonObject{{"talkgroup", 100}, {"keyId", 17}}}}}});
+    warnings().clear();
+    dsd_qt::DecryptionProfilesModel loaded;
+    check(loaded.count() == 6);
+    check(storedRow("profile-a") == compiledRow);
+    check(warningsContaining("could not be compiled") == 2 && warningsContaining("restored-csv") == 1
+          && warningsContaining("restored-mapped") == 1);
+    check(warningsContaining(secret) == 0 && warningsContaining(secret.left(16)) == 0);
+
+    QString error;
+    const auto direct = loaded.configuration("restored-direct", &error);
+    check(error.isEmpty() && direct.value("encKeyType").toString() == "hex"
+          && direct.value("encKeyValue").toString() == secret);
+    const QJsonObject directRow = storedRow("restored-direct");
+    const QString directRef = directRow.value("runtimeRef").toString();
+    check(!directRef.isEmpty() && directRow.value("compiled").isObject());
+    check(directRow.value("compiled").toObject().value("decryptionProfileRef").toString() == directRef);
+    check(direct.value("decryptionProfileRef").toString() == directRef);
+
+    const auto managed = loaded.configuration("restored-managed", &error);
+    check(error.isEmpty());
+    const QString hexPath = managed.value("keysHexCsvPath").toString();
+    check(hexPath.startsWith(dsd_qt::json_store_path("decryption/restored-managed/")) && QFile::exists(hexPath));
+    dsd_key_set keys = {};
+    check(dsd_key_set_load_csv(&keys, hexPath.toUtf8().constData(), nullptr, 0) == 0);
+    check(keys.count == 2 && keys.entries[0].index == 17 && keys.entries[1].index == 17 + 0x101);
+    dsd_key_set_free(&keys);
+    const QJsonObject managedRow = storedRow("restored-managed");
+    const QString managedRef = managedRow.value("runtimeRef").toString();
+    check(!managedRef.isEmpty() && managedRef != directRef);
+    check(managedRow.value("compiled").toObject().value("keysHexCsvPath").toString() == hexPath);
+    check(loaded.forRuntimeReference(managedRef).value("uid").toString() == "restored-managed");
+
+    const auto vendor = loaded.configuration("restored-vendor", &error);
+    check(error.isEmpty());
+    check(vendor.value("decryptionVendorArgs").toStringList()
+          == (QStringList{"-5", secret.left(16) + ' ' + secret.mid(16)}));
+    check(storedRow("restored-vendor").value("runtimeRef").toString() == "kept-reference");
+    check(vendor.value("decryptionProfileRef").toString() == "kept-reference");
+
+    check(loaded.configuration("restored-csv", &error).isEmpty() && error == kResaveError);
+    const QJsonObject csvRow = storedRow("restored-csv");
+    check(!csvRow.contains("compiled") && !csvRow.contains("runtimeRef"));
+    check(loaded.get("restored-csv").value("label").toString() == "Restored CSV");
+
+    check(loaded.configuration("restored-mapped", &error).isEmpty() && error == kResaveError);
+    check(!storedRow("restored-mapped").contains("compiled") && filesUnder("restored-mapped").isEmpty());
+
+    /* The persisted compiled forms are used as stored the next time: nothing is compiled again. */
+    const QByteArray persisted = storeBytes();
+    const QStringList files = compiledFiles();
+    dsd_qt::DecryptionProfilesModel reopened;
+    check(storeBytes() == persisted && compiledFiles() == files);
+    check(reopened.configuration("restored-managed", &error) == managed && error.isEmpty());
+    check(reopened.configuration("restored-csv", &error).isEmpty() && error == kResaveError);
+}
+
+/* A compiled form that cannot be persisted is not used: its files are removed and the row stays uncompiled in memory
+   and on disk, so the next load tries again. The data directory is made read only so the store cannot be replaced
+   while the profile directory stays writable. */
+static void
+test_load_compile_persist_failure(const QString& secret) {
+    const QJsonObject key{
+        {"uid", "key-p"}, {"label", "Dispatch"}, {"keyId", 18}, {"kind", "aes128"}, {"material", secret}};
+    seedStore({QJsonObject{{"uid", "unsaved-managed"},
+                           {"label", "Unsaved managed"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"keySource", "managed"},
+                           {"keys", QJsonArray{key}}}});
+    const QByteArray before = storeBytes();
+    check(QDir().mkpath(dsd_qt::json_store_path("decryption")));
+    const QStringList files = compiledFiles();
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const auto permissions = QFile::permissions(directory);
+    check(QFile::setPermissions(directory, QFile::ReadOwner | QFile::ExeOwner));
+    QString error;
+    /* Root (or CAP_DAC_OVERRIDE) writes through the mode bits: probe before relying on them. */
+    QFile probe(directory + "/write-probe");
+    if (probe.open(QIODevice::WriteOnly)) {
+        probe.close();
+        check(probe.remove() && QFile::setPermissions(directory, permissions));
+        std::fputs("SKIP: the read-only data directory is still writable; load persist-failure checks skipped\n",
+                   stderr);
+    } else {
+        warnings().clear();
+        {
+            dsd_qt::DecryptionProfilesModel loaded;
+            check(QFile::setPermissions(directory, permissions));
+            check(loaded.count() == 1);
+            check(loaded.configuration("unsaved-managed", &error).isEmpty() && error == kResaveError);
+        }
+        check(warningsContaining("could not be persisted") == 1 && warningsContaining(secret) == 0);
+        check(storeBytes() == before && compiledFiles() == files);
+    }
+    dsd_qt::DecryptionProfilesModel retried;
+    check(retried.configuration("unsaved-managed", &error)
+              .value("keysHexCsvPath")
+              .toString()
+              .startsWith(dsd_qt::json_store_path("decryption/unsaved-managed/")));
+    check(error.isEmpty() && storedRow("unsaved-managed").value("compiled").isObject());
+}
+
+/* Everything below @p dir, for checking that nothing was written there. */
+static QStringList
+entriesBelow(const QString& dir) {
+    QStringList entries;
+    QDirIterator it(dir, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        entries << it.next();
+    }
+    return entries;
+}
+
+/* Issue #580: key files are written in the clear, so a compile (at load or on save) never writes through a symlinked
+   decryption/ or decryption/<uid>/: it is refused, nothing lands at the link's target, and the profile asks to be saved
+   again. With the links gone the same row compiles. */
+static void
+test_compile_refuses_linked_directories(const QString& secret) {
+    const QJsonObject key{
+        {"uid", "key-l"}, {"label", "Dispatch"}, {"keyId", 19}, {"kind", "aes128"}, {"material", secret}};
+    const QJsonObject row{{"uid", "linked-managed"}, {"label", "Linked managed"}, {"protocol", "p25"},
+                          {"mode", "automatic"},     {"keySource", "managed"},    {"keys", QJsonArray{key}}};
+    const QString decryption = dsd_qt::json_store_path("decryption");
+    const QString aside = decryption + ".aside";
+    check(QDir().mkpath(decryption) && QFile::rename(decryption, aside));
+    QTemporaryDir outside;
+    check(outside.isValid());
+    const QString linkedUid = decryption + "/linked-managed";
+    const QString linkedSave = decryption + "/linked-saved";
+
+    // decryption/ itself a link, then decryption/<uid>/.
+    for (const bool linkTop : {true, false}) {
+        if (linkTop) {
+            check(QFile::link(outside.path(), decryption));
+        } else {
+            check(QDir().mkdir(decryption) && QFile::link(outside.path(), linkedUid)
+                  && QFile::link(outside.path(), linkedSave));
+        }
+        seedStore({row});
+        {
+            dsd_qt::DecryptionProfilesModel loaded;
+            QString error;
+            check(loaded.configuration("linked-managed", &error).isEmpty() && error == kResaveError);
+            check(!storedRow("linked-managed").contains("compiled"));
+            const QVariantMap saved = loaded.saveProfile({{"uid", "linked-saved"},
+                                                          {"label", "Linked saved"},
+                                                          {"protocol", "p25"},
+                                                          {"mode", "automatic"},
+                                                          {"keys", QVariantList{key.toVariantMap()}}});
+            check(!saved.value("ok").toBool());
+        }
+        check(entriesBelow(outside.path()).isEmpty()); // nothing written through the link
+        if (linkTop) {
+            check(QFile::remove(decryption));
+        } else {
+            check(QFile::remove(linkedUid) && QFile::remove(linkedSave) && QDir().rmdir(decryption));
+        }
+    }
+    check(QFile::rename(aside, decryption));
+    dsd_qt::DecryptionProfilesModel unlinked;
+    QString error;
+    check(unlinked.configuration("linked-managed", &error)
+              .value("keysHexCsvPath")
+              .toString()
+              .startsWith(dsd_qt::json_store_path("decryption/linked-managed/"))
+          && error.isEmpty());
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -178,6 +541,7 @@ main(int argc, char** argv) {
     check(profiles.configuration(systemUid, &error).value("encKeyValue").toString() == secret);
     const int migratedCount = profiles.count();
     check(profiles.migrateLegacySystems() && profiles.count() == migratedCount);
+    test_unprofiled_legacy_migration(profiles, systems, secret);
     QFile store(dsd_qt::json_store_path("saved_systems.json"));
     check(store.open(QIODevice::ReadOnly) && !store.readAll().contains(secret.toUtf8()));
     check(!profiles.removeProfile(systemUid).value("ok").toBool());
@@ -215,7 +579,17 @@ main(int argc, char** argv) {
     check(profiles.configuration("vendor-test", &error) == vendor);
     check(!dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "m17"}, {"decodeFlag", "-fs"}}));
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "dmr"}, {"decodeFlag", "-fs"}}));
+    /* ProVoice (-fp) has no profile protocol: it is not dPMR, so it takes any profile; dPMR (-fm) also takes an NXDN
+       profile's scrambler. */
+    check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fp"}}));
+    check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fm"}}));
+    test_qml_and_session_protocols_agree();
     test_replay_migration(systems);
     test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
+    dsd_neo_log_set_tap(captureWarning, nullptr);
+    test_compiled_rows_load_unchanged();
+    test_definitions_compile_at_load(secret);
+    test_load_compile_persist_failure(secret);
+    test_compile_refuses_linked_directories(secret);
     return 0;
 }

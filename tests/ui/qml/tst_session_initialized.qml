@@ -192,6 +192,16 @@ Item {
                     sentence: "“First” decodes TETRA, which needs a radio source or a symbol capture (.bin): network audio and audio files arrive already demodulated. Edit the source to correct it."
                 },
                 {
+                    // Issue #580: a restored replay system, here a TETRA one, has no recording yet.
+                    tag: "recording-missing",
+                    fields: {
+                        sourceType: "file",
+                        filePath: "",
+                        decodeFlag: "-fT"
+                    },
+                    sentence: "The recording for “First” is missing. Edit the system and choose its recording again."
+                },
+                {
                     tag: "am-bandwidth",
                     fields: {
                         decodeFlag: "-fM",

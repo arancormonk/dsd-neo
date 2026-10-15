@@ -101,15 +101,29 @@ failures would leave the marker no signal (discussion #602).
 typed live commands and legacy live commands, in both slots. `UI_KEY_CLEANUP` observes production volatile erasure
 while handler and TYT buffers are still alive.
 
-`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture. The `ANDROID_*_JVM` tests
-run production Android Kotlin on the plain JVM, without an Android build or emulator, one suite of
-`tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by default): `ANDROID_LOCATION_JVM` runs
-the location broker and geocoder queue with deterministic platform stubs, `ANDROID_DECODER_STATUS_JVM` runs
-`DecoderStatus.kt`, the notification status record's reader, with no stubs, and `ANDROID_SCREEN_POLICY_JVM` (the
-`screen` suite) runs the screen modes' policy and pure adapters (`ScreenPolicy.kt`, `ScreenController.kt`,
-`ScreenWake.kt`, `StatusFeed.kt`, `ActivitySlot.kt`, with `DecoderStatus.kt`) with no stubs at all, so an `android.*`
-import in any of them fails the compile, then `ScreenLocks.kt` (with `ScreenWake.kt`) on its own against a
-`PowerManager` stub that models reference counting and the screen's interactive state.
+`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture, the engine-busy decision
+a backup restore waits on (every service state but IDLE, or the engine atomic, is busy; asking never refreshes the
+host), and the backup's document dispatch: a `content://` reference goes to the platform transport (stubbed), a file URL
+or plain path to the base host's copy, a stale destination is removed before the platform copies, and a copy reported
+without its file fails. The `ANDROID_*_JVM` tests run production Android Kotlin on the plain JVM, without an Android
+build or emulator, one suite of `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by
+default): `ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,
+`ANDROID_DECODER_STATUS_JVM` runs `DecoderStatus.kt`, the notification status record's reader, with no stubs, and
+`ANDROID_SCREEN_POLICY_JVM` (the `screen` suite) runs the screen modes' policy and pure adapters (`ScreenPolicy.kt`,
+`ScreenController.kt`, `ScreenWake.kt`, `StatusFeed.kt`, `ActivitySlot.kt`, with `DecoderStatus.kt`) with no stubs at
+all, so an `android.*` import in any of them fails the compile, then `ScreenLocks.kt` (with `ScreenWake.kt`) on its own
+against a `PowerManager` stub that models reference counting and the screen's interactive state.
+`ANDROID_DOCUMENT_TRANSFER_JVM` (the `document_transfer` suite) runs `DocumentTransfer.kt`, the backup's bounded
+document copy, with no stubs (a source exactly at the cap and one byte over it around the chunk boundaries, an empty
+stream, read and write errors, and the sticky teardown abort), then `DocumentCopies.kt`, the Android glue around it,
+against a `ContentResolver` stub that plays the document providers: the declared size refused before the open and the
+counted cap when the size is unknown, wrong or its lookup fails, `wt` then `w`, the trim after every save (a provider
+that ignores the `t` included) and the sync before close, a pipe neither trimmed nor synced, a failure once open
+closing the document with an error (a pipe's write failure included) and deleting it, never before, and the abort
+cancelling a held size lookup, a held read open and a held write open (with no `w` retry), skipping the delete, and
+refusing later transfers without a provider call. A failure on the device's side of a copy (a missing destination
+directory, a rename that cannot land, a write through `LocalOutput`) reads `LOCAL_FAILED`, and the suite first checks
+that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
 late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the
@@ -2194,6 +2208,25 @@ The QML suites, and the C++ cases that load a production screen (`UI_QT_CONTROLL
 watch the incremental collector again, set `QV4_GC_TIMELIMIT` to a slice length in milliseconds
 (Qt's default is 5): the policy keeps any integer it finds.
 
+The backup suites (`UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY`, `UI_QT_BACKUP_MODEL`; issue #580) build their
+configurations through the real models in storage that `dsd_test_qt_isolate_paths()`
+(`tests/test_support/qt_test_paths.h`) makes disposable, and they delete whole trees. All three check that
+`AppDataLocation` is the isolated root they named before touching anything, and remove trees only through one guard
+(`remove_tree()`) that refuses a path that is not clean, absolute, and at or below that root; the apply and archive
+suites remove single entries through the same rules (`remove_file()`). An unguarded removal of an
+empty path, which `QDir` reads as the working directory, deletes `build/<preset>/tests`, so keep new tree removals
+behind such a guard. `UI_QT_BACKUP_APPLY` drives the startup apply through `ApplyEnv` (`src/ui/qt/backup_apply.h`):
+`engineBusy` and `freeBytes` stand in for the host and the volume, and `fault` is asked before every named step, so a
+test can make a step fail (`Fault::IoError`) or stop there as if the process died (`Fault::Crash`). The suite crashes
+each step of a clean apply and of a rollback in turn, runs the next start, and checks the end state against a clean
+run's tree (file bytes, symlink targets, directories and settings), or against the old configuration once the rollback
+had finished. The cases that need a read-only file or directory print a `note:` and skip where permissions are not
+enforced (root). `UI_QT_BACKUP_MODEL` holds a job on the worker at a gate in its fake host's document copy, and
+`test_recorder_parity()` compares `BackupModel`'s meta-object with the QML fixture's fake
+(`tests/ui/qml_backup_recorder.h`), so the QML tests cannot drift from the model. It runs each step with stderr captured
+so the libraries' expected log lines stay quiet, but its own `FAIL:` and `note:` lines go straight to the real stderr,
+so a step that crashes or hangs still shows them.
+
 #### Build-time constants that gate a branch
 
 `DSD_RR_APP_KEY` bakes the RadioReference application key into a generated C
@@ -2260,6 +2293,15 @@ ctest --preset dev-debug --output-on-failure
 Clear the `DSD_REQUIRE_*` flags alongside the `DSD_ENABLE_*` ones. Against a
 cached build tree, configure otherwise stops with
 `DSD_REQUIRE_RTLSDR=ON requires DSD_ENABLE_RTLSDR=ON.`
+
+Module-private test probes compile only with `DSD_NEO_TEST_HOOKS`, so production
+builds carry neither the probes nor the counting behind them. A test that needs
+one compiles the module's source into its own executable with that define. For
+example, `APP_CONTROL_TRUNK_SCAN_VALIDATE` builds in
+`src/app_control/trunk_scan_document.cpp`, whose
+`trunk_scan_document_internal.h` counts the channel maps one
+`dsd_app_trunk_scan_validate_bundle()` call inspects and the files it dry-runs,
+so the test can show that rows naming the same file share one check.
 
 ### Decode time in unit tests
 

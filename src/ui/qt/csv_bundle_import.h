@@ -36,6 +36,8 @@ CsvBundleImport stage_trunk_csv_bundle(DecoderHost* host, const QString& referen
 QString csv_companion_type_name(const QString& type);
 QString csv_companion_type_error(const QString& name, const QString& actual, const QString& expected);
 void discard_csv_bundle(const CsvBundleImport& bundle, bool existingRoot = false);
+/** Every companion file a channel map's key columns and option cells name, as written, each once. */
+QStringList csv_companion_references(const QString& text);
 /** Reclaim unreferenced revision directories on idle startup, only for owned,
  * registered target bundles that still pass complete validation. */
 void clean_trunk_csv_revisions(const QString& path, const QString& root);

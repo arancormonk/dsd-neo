@@ -40,6 +40,22 @@ enum SessionPhase {
 };
 
 /**
+ * @brief Whether a decoder engine is starting, running or winding down (#580).
+ *
+ * A restore must not replace the configuration under an engine, and the UI phase cannot rule one out: it reads Idle
+ * before the host's first poll and trails the service by a tick. So this takes the two authorities themselves. Any
+ * service state but IDLE is busy (STARTING covers nativeConfigure, before the engine atomic is set), and so is a
+ * running engine whatever the service says. A state that could not be read counts as busy.
+ *
+ * @param service_state DecoderService.stateName(), or null or empty when the call failed.
+ * @param engine_running The native g_running atomic.
+ */
+inline bool
+engine_busy(const char* service_state, bool engine_running) {
+    return engine_running || service_state == nullptr || strcmp(service_state, "IDLE") != 0;
+}
+
+/**
  * @brief How many IDLE polls to tolerate between asking for a start and seeing it.
  *
  * startForegroundService() only queues an intent, so the service is still IDLE for a

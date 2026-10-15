@@ -22,6 +22,7 @@
 #include <QList>
 #include <QMap>
 #include <QMetaProperty>
+#include <QMetaType>
 #include <QObject>
 #include <QSettings>
 #include <QStandardPaths>
@@ -735,6 +736,193 @@ test_foundation_key_type_migration() {
     expect("foundation rc4 type converts", model.get(2).value("encKeyType").toString() == "rc4");
 }
 
+QSettings
+prefs_file() {
+    return QSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"),
+                     QStringLiteral("dsd-neo-app"));
+}
+
+void
+clear_prefs_file() {
+    QSettings s = prefs_file();
+    s.clear();
+    s.sync();
+}
+
+struct PinnedKey {
+    const char* property;
+    QVariant value; // differs from the default and passes the setter's sanitiser
+    const char* key;
+};
+
+void
+test_prefs_key_table(void) {
+    clear_prefs_file();
+    QStringList names;
+    for (const AppPrefs::KeySpec& k : AppPrefs::keyTable()) {
+        names.append(QString::fromLatin1(k.name));
+    }
+    expect("key table has no duplicate names", names.removeDuplicates() == 0);
+
+    const PinnedKey pinned[] = {
+        {"appearance", 2, "ui/appearance"},
+        {"metricUnits", true, "ui/metricUnits"},
+        {"onboardingDone", true, "ui/onboardingDone"},
+        {"notificationExplained", true, "ui/notificationExplained"},
+        {"backgroundListening", false, "listen/background"},
+        {"screenMode", 2, "listen/screenMode"},
+        {"screenDelaySec", 60, "listen/screenDelaySec"},
+        {"autoStartOnAttach", true, "listen/autoStartOnAttach"},
+        {"lastStartedKind", QStringLiteral("scan"), "listen/lastStartedKind"},
+        {"lastStartedUid", QStringLiteral("uid-1"), "listen/lastStartedUid"},
+        {"skipEncrypted", false, "decode/skipEncrypted"},
+        {"persistTgLockouts", false, "decode/persistTgLockouts"},
+        {"hangtimeSec", 5.5, "decode/hangtimeSec"},
+        {"autoPpm", true, "decode/autoPpm"},
+        {"extraArgs", QStringLiteral("-x"), "decode/extraArgs"},
+        {"gainDb", 41, "tuner/gainDb"},
+        {"ppm", 7, "tuner/ppm"},
+        {"bandwidthKhz", 96, "tuner/bandwidthKhz"},
+        {"biasTee", true, "tuner/biasTee"},
+        {"rrUsername", QStringLiteral("user"), "rr/username"},
+        {"rrAppKey", QStringLiteral("appkey"), "rr/appKey"},
+        {"exploreSourceType", QStringLiteral("usb"), "explore/sourceType"},
+        {"exploreHost", QStringLiteral("host"), "explore/host"},
+        {"explorePort", 4321, "explore/port"},
+        {"exploreFreqMhz", QStringLiteral("851.5"), "explore/freqMhz"},
+    };
+    QStringList covered;
+    int writable = 0;
+    {
+        AppPrefs probe;
+        const QMetaObject* mo = probe.metaObject();
+        for (int i = mo->propertyOffset(); i < mo->propertyCount(); ++i) {
+            writable += mo->property(i).isWritable() ? 1 : 0;
+        }
+    }
+    expect("every writable property is pinned", writable == int(sizeof(pinned) / sizeof(pinned[0])));
+    for (const PinnedKey& pin : pinned) {
+        clear_prefs_file();
+        {
+            AppPrefs prefs;
+            expect(pin.property, prefs.setProperty(pin.property, pin.value));
+        }
+        QSettings f = prefs_file();
+        f.sync();
+        expect(qPrintable(
+                   QStringLiteral("%1 lands exactly on %2").arg(QLatin1String(pin.property), QLatin1String(pin.key))),
+               f.allKeys() == QStringList{QString::fromLatin1(pin.key)});
+        covered.append(QString::fromLatin1(pin.key));
+    }
+    // The location fix writes four keys together.
+    clear_prefs_file();
+    {
+        AppPrefs prefs;
+        prefs.setLocationFix(1.5, 2.5, QDateTime::currentMSecsSinceEpoch(), 7.0);
+    }
+    {
+        QSettings f = prefs_file();
+        f.sync();
+        QStringList got = f.allKeys();
+        got.sort();
+        const QStringList want = {QStringLiteral("location/lastAccuracyM"), QStringLiteral("location/lastFixAt"),
+                                  QStringLiteral("location/lastLat"), QStringLiteral("location/lastLon")};
+        expect("setLocationFix writes exactly the four location keys", got == want);
+        covered.append(want);
+    }
+    // The legacy keep-awake switch is read, never written: pin it through the migration.
+    clear_prefs_file();
+    {
+        QSettings f = prefs_file();
+        f.setValue(QStringLiteral("listen/keepAwake"), true);
+        f.sync();
+        AppPrefs prefs;
+        expect("legacy listen/keepAwake drives the migrated screen mode",
+               prefs.screenMode() == AppPrefs::ScreenAlwaysOn);
+        covered.append(QStringLiteral("listen/keepAwake"));
+    }
+    QStringList sortedCovered = covered;
+    QStringList sortedNames = names;
+    sortedCovered.sort();
+    sortedNames.sort();
+    expect("pinned keys cover exactly the key table", sortedCovered == sortedNames);
+
+    // Leave the state the replace checks below expect: one value per portable key.
+    clear_prefs_file();
+    {
+        AppPrefs prefs;
+        for (const PinnedKey& pin : pinned) {
+            prefs.setProperty(pin.property, pin.value);
+        }
+        prefs.setLocationFix(1.5, 2.5, QDateTime::currentMSecsSinceEpoch(), 7.0);
+    }
+    QSettings file = prefs_file();
+    file.sync();
+    expect("the pinned writes persist all but the legacy key", file.allKeys().size() == names.size() - 1);
+
+    QStringList local;
+    for (const AppPrefs::KeySpec& k : AppPrefs::keyTable()) {
+        if (!k.portable) {
+            local.append(QString::fromLatin1(k.name));
+        }
+    }
+    local.sort();
+    const QStringList wantLocal = {
+        QStringLiteral("location/lastAccuracyM"),   QStringLiteral("location/lastFixAt"),
+        QStringLiteral("location/lastLat"),         QStringLiteral("location/lastLon"),
+        QStringLiteral("ui/notificationExplained"), QStringLiteral("ui/onboardingDone"),
+    };
+    expect("device-local set is exactly the pinned one", local == wantLocal);
+    const QStringList portable = AppPrefs::portableKeys();
+    expect("portable keys are the table minus device-local",
+           portable.size() + local.size() == names.size() && !portable.contains(QStringLiteral("ui/onboardingDone"))
+               && portable.contains(QStringLiteral("listen/keepAwake"))
+               && portable.contains(QStringLiteral("listen/lastStartedUid"))
+               && portable.contains(QStringLiteral("rr/appKey")));
+
+    const QVariantMap before = AppPrefs::readPortable();
+    expect("readPortable returns only portable keys", !before.isEmpty()
+                                                          && !before.contains(QStringLiteral("location/lastLat"))
+                                                          && !before.contains(QStringLiteral("ui/onboardingDone")));
+    for (auto it = before.constBegin(); it != before.constEnd(); ++it) {
+        expect("readPortable key is portable", portable.contains(it.key()));
+    }
+    expect("readPortable reads stored values", before.value(QStringLiteral("rr/username")).toString() == "user"
+                                                   && before.value(QStringLiteral("tuner/gainDb")).toInt() == 41);
+    expect("readPortable omits absent keys", !before.contains(QStringLiteral("listen/keepAwake")));
+
+    file.setValue(QStringLiteral("ui/onboardingDone"), true);
+    file.setValue(QStringLiteral("location/lastLat"), 9.0);
+    file.sync();
+
+    QVariantMap incoming;
+    incoming.insert(QStringLiteral("tuner/gainDb"), 42);
+    incoming.insert(QStringLiteral("rr/username"), QStringLiteral("restored"));
+    incoming.insert(QStringLiteral("listen/keepAwake"), true);
+    incoming.insert(QStringLiteral("ui/onboardingDone"), false);
+    incoming.insert(QStringLiteral("not/a/key"), 1);
+    expect("replacePortable succeeds", AppPrefs::replacePortable(incoming));
+
+    QSettings after = prefs_file();
+    after.sync();
+    expect("present portable keys are set", after.value(QStringLiteral("tuner/gainDb")).toInt() == 42
+                                                && after.value(QStringLiteral("listen/keepAwake")).toBool());
+    expect("absent portable keys are removed",
+           !after.contains(QStringLiteral("tuner/ppm")) && !after.contains(QStringLiteral("explore/host")));
+    expect("device-local keys are untouched", after.value(QStringLiteral("ui/onboardingDone")).toBool()
+                                                  && after.value(QStringLiteral("location/lastLat")).toInt() == 9);
+    expect("unknown keys are ignored", !after.contains(QStringLiteral("not/a/key")));
+    {
+        AppPrefs fresh;
+        expect("a fresh AppPrefs reads the replaced values",
+               fresh.gainDb() == 42 && fresh.rrUsername() == "restored" && fresh.ppm() == 0);
+    }
+    const QVariantMap again = AppPrefs::readPortable();
+    expect("readPortable round-trips replacePortable",
+           again.size() == 3 && again.value(QStringLiteral("tuner/gainDb")).toInt() == 42);
+    expect("empty replace clears portable keys",
+           AppPrefs::replacePortable(QVariantMap()) && AppPrefs::readPortable().isEmpty());
+}
 } // namespace
 
 int
@@ -778,6 +966,7 @@ main(int argc, char** argv) {
         expect("opt-out retains scan target",
                restored.lastStartedKind() == "scan" && restored.lastStartedUid() == "stable-scan-uid");
     }
+    test_prefs_key_table();
     test_key_persistence();
     test_foundation_key_type_migration();
     test_site_provenance_edits();

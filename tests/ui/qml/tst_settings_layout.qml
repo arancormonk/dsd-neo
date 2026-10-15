@@ -39,8 +39,8 @@ Item {
 
         function test_group_order_and_disclosure() {
             var names = ["Appearance", "Units", "Listening", "Decoding · next start",
-                         "Radio defaults · next start", "Libraries", "Account", "About & support"];
-            var headers = ["Appearance", "Units", "Listening", "Decoding", "RadioDefaults", "Libraries", "Account", "Support"];
+                         "Radio defaults · next start", "Libraries", "Account", "Backup", "About & support"];
+            var headers = ["Appearance", "Units", "Listening", "Decoding", "RadioDefaults", "Libraries", "Account", "Backup", "Support"];
             var previousY = -1;
             for (var i = 0; i < names.length; ++i) {
                 var header = findChild(settings, "settings" + headers[i] + "Header");
