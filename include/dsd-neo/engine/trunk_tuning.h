@@ -114,6 +114,15 @@ void dsd_engine_rigctl_tune_cache_forget(void);
  */
 void dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state);
 
+/**
+ * Retire failed tune requests once no tune owner is active (trunking, trunk scan, signal search, a typed -Y list), so
+ * a failure nobody will roll back cannot gate frames (issue #703). An asynchronous RTL retune staged the decoder's
+ * tuner frequency when it was issued; when the newest unresolved request is a failure, the radio never left the
+ * frequency the stream last applied, so the decoder's tuner frequency is reconciled with it first, and a block decoded
+ * afterwards is attributed to the frequency the radio is on. A request still in flight is left alone.
+ */
+void dsd_engine_retire_inactive_tune_failures(dsd_opts* opts, const dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

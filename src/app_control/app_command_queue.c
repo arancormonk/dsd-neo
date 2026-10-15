@@ -498,19 +498,19 @@ static int
 ui_cmd_finish_input_switch(dsd_opts* opts, dsd_state* state, int rc, const char* what, const char* name) {
     switch (rc) {
         case DSD_AUDIO_INPUT_SWITCHED:
-            state->input_boundary = 1;
+            dsd_engine_note_input_replaced(state);
             if (ui_input_switched(opts, state) != 0) {
                 return UI_CMD_APPLY_FAILED;
             }
             ui_set_toast(state, 3, "Applied: %s -> %s", what, name);
             return UI_CMD_APPLY_COMPLETED;
         case DSD_AUDIO_INPUT_RESTARTED:
-            state->input_boundary = 1;
+            dsd_engine_note_input_replaced(state);
             ui_input_left(opts, state);
             ui_set_toast(state, 5, "Failed: %s -> %s; the UDP input before it was restarted", what, name);
             return UI_CMD_APPLY_FAILED;
         case DSD_AUDIO_INPUT_LOST:
-            state->input_boundary = 1;
+            dsd_engine_note_input_replaced(state);
             ui_input_left(opts, state);
             ui_set_toast(state, 5, "Failed: %s -> %s; the UDP input before it did not bind again", what, name);
             return UI_CMD_APPLY_FAILED;
@@ -1694,7 +1694,7 @@ ui_radio_row_took_over(dsd_opts* opts, dsd_state* state, int pcm_timing_rate_hz)
     if (pcm_timing_rate_hz > 0) {
         dsd_symbol_note_timing_rate(pcm_timing_rate_hz);
     }
-    state->input_boundary = 1;
+    dsd_engine_note_input_replaced(state);
 }
 
 /* Input > Switch source > RTL-SDR or Airspy. The watchdog reads the input, and may retune it, while it holds the P25 SM
@@ -3850,7 +3850,7 @@ apply_cfg_note_reopen(dsd_opts* opts, dsd_state* state, int rc, int old_staged_f
     if (rc == DSD_AUDIO_INPUT_KEPT) {
         return;
     }
-    state->input_boundary = 1;
+    dsd_engine_note_input_replaced(state);
     if (rc == DSD_AUDIO_INPUT_RESTARTED || rc == DSD_AUDIO_INPUT_LOST) {
         ui_input_left(opts, state);
     }

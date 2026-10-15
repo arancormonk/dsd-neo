@@ -2386,11 +2386,39 @@ engine_trunk_tuning_owner_active(const dsd_opts* opts, const dsd_state* state) {
                || (opts->scanner_mode == 1 && dsd_channel_modes_present(state)));
 }
 
+/* A failed asynchronous RTL retune left the radio on the frequency the stream last applied, while the decoder's tuner
+   frequency still names the target staged when the retune was issued: make them agree. */
 static void
-no_carrier_retire_inactive_tune_failures(const dsd_opts* opts, const dsd_state* state) {
-    if (!engine_trunk_tuning_owner_active(opts, state)) {
-        dsd_trunk_tuning_retire_failed_requests();
+engine_reconcile_failed_tune(dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    uint32_t applied_hz = 0U;
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && rtl_stream_get_last_applied_freq(&applied_hz) == 0
+        && applied_hz != 0U) {
+        opts->rtlsdr_center_freq = applied_hz;
     }
+#else
+    UNUSED(opts);
+    UNUSED(state);
+#endif
+}
+
+void
+dsd_engine_retire_inactive_tune_failures(dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || engine_trunk_tuning_owner_active(opts, state)) {
+        return;
+    }
+    const uint64_t newest = dsd_trunk_tuning_pending_request();
+    if (newest == 0U) {
+        return;
+    }
+    if (dsd_trunk_tuning_request_status(newest, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        /* Still in flight, it decides where the radio goes: only older failures go now. One that fails after this
+           read is reconciled on a later pass before it is retired. */
+        dsd_trunk_tuning_retire_failed_requests_through(newest - 1U);
+        return;
+    }
+    engine_reconcile_failed_tune(opts, state);
+    dsd_trunk_tuning_retire_failed_requests_through(newest);
 }
 
 static void
@@ -2633,6 +2661,11 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_engine_forget_carrier_codes(state);
     dsd_engine_forget_carrier_decoding(opts, state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
+    if (kind == DSD_CARRIER_BOUNDARY_SOURCE) {
+        /* A radio stream on another device: the replaced device's tune requests go with it, as at an input replacement
+           (dsd_engine_note_input_replaced()), here at the stream's start (issue #703). */
+        dsd_trunk_tuning_requests_reset();
+    }
     state->carrier_seq++;
     if (take_guard || guard_held) {
         /* An operator move restarts a startup control-channel window on the new carrier (issue #703). */
@@ -2770,7 +2803,7 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
         s_last_rtl_freq = 0;
 #endif
     }
-    no_carrier_retire_inactive_tune_failures(opts, state);
+    dsd_engine_retire_inactive_tune_failures(opts, state);
 
 #ifdef USE_RADIO
     maybe_request_rtl_fsk_reacquire_on_no_sync(opts, state, now);
@@ -2976,6 +3009,39 @@ dsd_engine_cold_start_tick_locked(dsd_opts* opts, dsd_state* state) {
     dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
 }
 
+/* One synced frame, under the P25 SM tick guard: dispatched, or withheld while the retune generation says it is stale,
+   then the trunking ticks that must run between frames. Returns whether the frame was dispatchable. */
+static int
+live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, const uint64_t* frame_tune_generation) {
+    const uint64_t dispatch_generation = frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();
+    if (!dsd_trunk_tuning_frame_is_current(dispatch_generation)) {
+        /* With no tune owner, a failure nobody will roll back is retired, once the tuner frequency is reconciled with
+           it (issue #703); never unreconciled, as dsd_trunk_tuning_frame_is_dispatchable() would. */
+        dsd_engine_retire_inactive_tune_failures(opts, state);
+    }
+    const int frame_dispatchable = dsd_trunk_tuning_frame_is_current(dispatch_generation);
+    if (!frame_tune_generation || frame_dispatchable) {
+        processFrame(opts, state);
+    } else {
+        /* A real sync the retune generation says is stale. Nothing consumes it, so
+         * without saying so the SPS hunt is charged for the search that found it and
+         * credited nothing -- and rotates the profile off the channel the retune was
+         * tuning to, mid-retune (#392). processFrame() is what normally stamps this
+         * field, so the skip has to stamp it itself. */
+        state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
+    }
+    /* A TETRA carrier syncs on every burst, so the synced-frames loop may never hand back to the outer one: the TETRA
+     * state machine settles its tune and runs its hangtime here too, withheld frames included. */
+    dsd_engine_tetra_trunk_tick_locked(opts, state);
+    /* So may a stream of syncs that never validate: a startup control-channel hunt runs between frames too, until
+       an owner is named and nothing is armed or hunting (issue #703). */
+    if (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN || p25_sm_cold_start_active(p25_sm_get_ctx())
+        || dmr_sm_cold_start_active(dmr_sm_get_ctx())) {
+        dsd_engine_cold_start_tick_locked(opts, state);
+    }
+    return frame_dispatchable;
+}
+
 static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
@@ -2986,29 +3052,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         /* processFrame() runs under the tick guard: nothing below it may pump
          * controls, since a guarded command apply would self-deadlock (#554). */
         p25_sm_tick_guard_enter();
-        const uint64_t dispatch_generation =
-            frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();
-        const int frame_dispatchable =
-            dsd_trunk_tuning_frame_is_dispatchable(dispatch_generation, engine_trunk_tuning_owner_active(opts, state));
-        if (!frame_tune_generation || frame_dispatchable) {
-            processFrame(opts, state);
-        } else {
-            /* A real sync the retune generation says is stale. Nothing consumes it, so
-             * without saying so the SPS hunt is charged for the search that found it and
-             * credited nothing -- and rotates the profile off the channel the retune was
-             * tuning to, mid-retune (#392). processFrame() is what normally stamps this
-             * field, so the skip has to stamp it itself. */
-            state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
-        }
-        /* A TETRA carrier syncs on every burst, so this loop may never hand back to the outer one: the TETRA state
-         * machine settles its tune and runs its hangtime here too, withheld frames included. */
-        dsd_engine_tetra_trunk_tick_locked(opts, state);
-        /* So may a stream of syncs that never validate: a startup control-channel hunt runs between frames too, until
-           an owner is named and nothing is armed or hunting (issue #703). */
-        if (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN
-            || p25_sm_cold_start_active(p25_sm_get_ctx()) || dmr_sm_cold_start_active(dmr_sm_get_ctx())) {
-            dsd_engine_cold_start_tick_locked(opts, state);
-        }
+        const int frame_dispatchable = live_scanner_dispatch_synced_frame_locked(opts, state, frame_tune_generation);
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
         if (dsd_engine_signal_search_should_yield(opts, state)) {
@@ -3097,16 +3141,30 @@ dsd_engine_input_fallback(dsd_opts* opts, dsd_state* state) {
     const int switched = dsd_audio_switch_input(opts, state, &request);
     const int output_failed =
         switched == DSD_AUDIO_INPUT_SWITCHED && dsd_audio_reconfigure_output_for_input_policy(opts) != 0;
-    if (switched == DSD_AUDIO_INPUT_SWITCHED && !output_failed && !peer_before) {
-        dsd_engine_rigctl_ask_session_passband(opts, state);
+    if (switched == DSD_AUDIO_INPUT_SWITCHED && !output_failed) {
+        if (!peer_before) {
+            dsd_engine_rigctl_ask_session_passband(opts, state);
+        }
+        dsd_engine_note_input_replaced(state);
     }
     p25_sm_tick_guard_leave();
     if (switched != DSD_AUDIO_INPUT_SWITCHED || output_failed) {
         dsd_request_shutdown(opts, state);
         return -1;
     }
-    state->input_boundary = 1;
     return 0;
+}
+
+void
+dsd_engine_note_input_replaced(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    /* The replaced device's tune requests go with it, as at the start of a run: none can gate the new input's frames,
+       nothing will roll a failed one back, and a late completion of one is a stale ID the tuning layer ignores. A tune
+       recovery gives the new device from here on is its own and is kept (issue #703). */
+    dsd_trunk_tuning_requests_reset();
+    state->input_boundary = 1;
 }
 
 /* The stream the decoder read was replaced (state->input_boundary, issue #634): noCarrier() has ended the reception,

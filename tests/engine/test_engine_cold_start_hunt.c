@@ -50,6 +50,7 @@ enum scenario {
     SC_NAMED_BETWEEN_FRAMES,
     SC_INPUT_SWITCH,
     SC_MODE_CHANGE_DMR,
+    SC_INPUT_SWITCH_PENDING,
 };
 
 static enum scenario g_scenario;
@@ -62,6 +63,7 @@ static uint64_t g_tunes_before_ms; // decode time of the last tune
 static int g_validated_sent;
 static int g_dmr_armed_seen; // DMR's startup window was armed before the mode change
 static int g_failures;
+static uint64_t g_pending_request; // the probe left in flight across an input switch
 
 static int
 expect(int cond, const char* what) {
@@ -76,8 +78,13 @@ expect(int cond, const char* what) {
 static dsd_trunk_tune_result
 stub_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)ted_sps;
-    (void)request_id;
     g_tunes++;
+    if (g_scenario == SC_INPUT_SWITCH_PENDING && g_pending_request == 0U) {
+        g_pending_request = request_id; // the first probe never completes before the switch
+        opts->rtlsdr_center_freq = (uint32_t)freq;
+        state->trunk_cc_freq = freq;
+        return DSD_TRUNK_TUNE_RESULT_PENDING;
+    }
     if (g_first_tune == 0) {
         g_first_tune = freq;
     }
@@ -197,6 +204,17 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                 return finish();
             }
             return DSD_SYNC_NONE;
+        case SC_INPUT_SWITCH_PENDING:
+            if (g_now_ms == 6000U) {
+                state->input_boundary = 1; // the input is replaced with the probe still in flight
+            }
+            if (g_now_ms == 6500U && g_pending_request != 0U) {
+                dsd_trunk_tuning_request_publish(g_pending_request, DSD_TRUNK_TUNE_RESULT_FAILED); // the old device
+            }
+            if (g_now_ms > 8000U) {
+                return finish();
+            }
+            return DSD_SYNC_NONE;
         case SC_MODE_CHANGE_DMR:
             if (g_now_ms == 2750U) {
                 g_dmr_armed_seen = dmr_sm_cold_start_active(dmr_sm_get_ctx());
@@ -233,6 +251,7 @@ run_scenario(enum scenario sc, int ft) {
     g_tunes_before_ms = 0U;
     g_validated_sent = 0;
     g_dmr_armed_seen = 0;
+    g_pending_request = 0U;
     dsd_decode_clock_use_test(T0_NS);
     dsd_exitflag_store(0);
     dsd_trunk_tuning_requests_reset();
@@ -272,6 +291,12 @@ run_scenario(enum scenario sc, int ft) {
             expect(g_tunes >= 1 && g_tunes_before_ms > 10000U,
                    "an input switch commit holds the probe until a full window after its boundary");
             break;
+        case SC_INPUT_SWITCH_PENDING:
+            expect(g_pending_request != 0U, "a probe was left in flight across the switch");
+            expect(dsd_trunk_tuning_pending_request() == 0U
+                       && dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()),
+                   "the replaced device's requests no longer gate the new input's frames");
+            break;
         case SC_MODE_CHANGE_DMR:
             expect(g_dmr_armed_seen == 1, "DMR armed its startup window between frames");
             expect(g_tunes == 0 && dmr->cold_start_armed_m <= 0.0 && dmr->cold_start_hunt == 0,
@@ -289,13 +314,41 @@ run_scenario(enum scenario sc, int ft) {
     return 0;
 }
 
+/* A radio stream restarted on another device (a config apply that changes the RTL device): the replaced device's tune
+   requests go with it, as at an input switch, so its failure cannot gate the new device's frames. */
+static void
+test_source_change_resets_requests(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        g_failures++;
+        return;
+    }
+    initOpts(opts);
+    initState(state);
+    dsd_trunk_tuning_requests_reset();
+    const uint64_t failed = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_mark_ready(failed);
+    dsd_trunk_tuning_request_publish(failed, DSD_TRUNK_TUNE_RESULT_FAILED);
+    expect(dsd_trunk_tuning_pending_request() == failed, "the old device's failure gates frames");
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SOURCE, 0);
+    expect(dsd_trunk_tuning_pending_request() == 0U, "a new radio source drops the old device's requests");
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_source_change_resets_requests();
     run_scenario(SC_OUTER_LOOP, 1);
     run_scenario(SC_SYNCED_LOOP, 1);
     run_scenario(SC_NAMED_BETWEEN_FRAMES, 1);
     run_scenario(SC_INPUT_SWITCH, 1);
     run_scenario(SC_MODE_CHANGE_DMR, 0);
+    run_scenario(SC_INPUT_SWITCH_PENDING, 1);
     if (g_failures == 0) {
         printf("engine cold start hunt: OK\n");
     }

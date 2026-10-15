@@ -6514,6 +6514,31 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_COLD_START_HUNT
         COMMAND dsd-neo_test_engine_cold_start_hunt
     )
+    if(DSD_HAS_RADIO)
+        add_executable(
+            dsd-neo_test_engine_tune_failure_reconcile
+            engine/test_engine_tune_failure_reconcile.c
+        )
+        target_include_directories(
+            dsd-neo_test_engine_tune_failure_reconcile
+            PRIVATE ${PROJECT_SOURCE_DIR}/include
+        )
+        target_link_libraries(
+            dsd-neo_test_engine_tune_failure_reconcile
+            PRIVATE
+                "-Wl,--wrap=rtl_stream_get_last_applied_freq"
+                "-Wl,--wrap=dsd_trunk_tuning_request_status"
+                "-Wl,--start-group"
+                dsd-neo_engine
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+        add_test(
+            NAME ENGINE_TUNE_FAILURE_RECONCILE
+            COMMAND dsd-neo_test_engine_tune_failure_reconcile
+        )
+    endif()
     add_executable(
         dsd-neo_test_engine_scan_timing
         engine/test_engine_scan_timing.c

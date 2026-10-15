@@ -94,6 +94,14 @@ void dsd_trunk_tuning_requests_reset(void);
 void dsd_trunk_tuning_retire_failed_requests(void);
 
 /**
+ * @brief Retire the terminal failed requests up to and including @p request_id.
+ *
+ * For a caller that reconciles decoder state with a failure before retiring it: a request newer than the one it
+ * inspected, or one that fails after it inspected it, stays gated for a later call.
+ */
+void dsd_trunk_tuning_retire_failed_requests_through(uint64_t request_id);
+
+/**
  * @brief Publish backend completion for an exact tune transition.
  *
  * Successful completion commits the generation after the owner has marked its
@@ -171,7 +179,10 @@ int dsd_trunk_tuning_frame_is_current(uint64_t frame_generation);
  *
  * When no trunking or trunk-scan tuner owns frame dispatch, terminal failed
  * requests are retired before checking the generation. In-flight requests
- * remain gated until their backend publishes a terminal result.
+ * remain gated until their backend publishes a terminal result. The engine
+ * reconciles its tuner state before it retires a failure
+ * (dsd_engine_retire_inactive_tune_failures()) and then checks the generation
+ * with dsd_trunk_tuning_frame_is_current().
  *
  * @param frame_generation Tune generation captured before frame sync.
  * @param tune_owner_active Non-zero while trunking or trunk scan owns tuning.
