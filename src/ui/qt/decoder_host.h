@@ -128,8 +128,11 @@ class DecoderHost : public QObject {
      *
      * Only teardown calls it (BackupModel's destructor), so that a copy a slow document provider holds cannot keep
      * the UI thread waiting while the app closes. Sticky: no document copy succeeds afterwards. A copy it stops fails
-     * (DocumentFailed, or false) and leaves no destination file. The base host raises a flag its copies check before
-     * every chunk; a host that runs transfers of its own stops them too and calls this base.
+     * (DocumentFailed, or false). The base host's copies then leave no destination file. A host's save into a document
+     * provider may leave the document partly written (Android skips the delete after an abort, because the delete is
+     * one more provider call that could hold teardown); such a document never opens as a backup, since the envelope's
+     * length and tag are checked. The base host raises a flag its copies check before every chunk; a host that runs
+     * transfers of its own stops them too and calls this base.
      */
     virtual void abortDocumentTransfers();
 

@@ -39,7 +39,10 @@ execution, or unsafe release behavior.
   application settings; the account password is held in process memory for one
   app session and is never written to disk. The application key a build is
   compiled with is extractable from the shipped binary with `strings` and is not
-  treated as a secret.
+  treated as a secret. The Qt/Android app's configuration backup (see
+  Cryptography and Credentials) carries these settings and the saved radio
+  keys, encrypted under a passphrase the user chooses; the RadioReference
+  password is never in it.
 - Floating-point DSP output is not guaranteed to be bit-identical across all
   compiler, architecture, SIMD, and optimization combinations.
 
@@ -109,6 +112,30 @@ Users should protect local config and key files with OS permissions, avoid
 passing sensitive keys through shared shell history, and prefer encrypted
 transport when using remote rdio API or network audio endpoints. Rdio API
 uploads do not follow redirects; configure the final trusted endpoint directly.
+
+The Qt/Android app can export its configuration, saved radio keys included, as
+a passphrase-encrypted backup file written where the user chooses
+(`android/README.md`, "Backup and restore"; `<dsd-neo/crypto/backup_seal.h>`):
+
+- The key is scrypt (N = 2^16, r = 8, p = 2, about 64 MiB) over the
+  NFC-normalized UTF-8 passphrase and a random 16-byte salt. The archive is
+  sealed with AES-256-GCM under a random 12-byte nonce, and the whole 64-byte
+  header, KDF parameters included, is authenticated as associated data.
+- A backup's confidentiality rests on its passphrase alone. The app requires at
+  least 8 characters but cannot judge strength, and nothing is escrowed: a lost
+  passphrase cannot be recovered.
+- Opening accepts only log2(N) 14..17, r 8 and p 1..4, so a file cannot demand
+  more KDF memory or time than that, and no plaintext is released before the
+  tag verifies.
+- A restored backup is untrusted input even when its passphrase is right, since
+  anyone can hand a user a crafted file together with its passphrase. Before
+  anything is written the app validates the whole archive (format and version,
+  size caps, a SHA-256 per carried file, paths confined to its own imports
+  directory, the shape and identities of every store), then stages it and
+  applies it at the next start behind an undo journal. Validation cannot vet
+  decoder options, which a backup carries as typed, so the restore confirmation
+  counts the systems and settings that carry them and users should restore only
+  backups they made or trust.
 
 The RadioReference import (`docs/radioreference-import.md`) parses untrusted XML
 from a network peer, so its parser is hardened rather than trusted: DOCTYPE and

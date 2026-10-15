@@ -38,6 +38,12 @@ and never uploaded anywhere by the app. Android's cloud backup is disabled for t
 (`allowBackup` is off), so this data does not enter device backups either. Uninstalling
 the app removes its private data.
 
+You can export the app's configuration yourself (Settings → Backup) as a file encrypted
+with a passphrase you choose. It holds your saved systems, keys and settings, but no
+recordings or call history. The app writes it only to the place you pick in Android's file
+picker and never uploads it on its own; if you pick a cloud service such as Google Drive,
+that service stores the file under its own terms. The developer never receives it.
+
 ## Permissions
 
 - **Internet** — used only for the user-configured connections listed above.

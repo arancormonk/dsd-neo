@@ -2205,6 +2205,23 @@ The QML suites, and the C++ cases that load a production screen (`UI_QT_CONTROLL
 watch the incremental collector again, set `QV4_GC_TIMELIMIT` to a slice length in milliseconds
 (Qt's default is 5): the policy keeps any integer it finds.
 
+The backup suites (`UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY`, `UI_QT_BACKUP_MODEL`; issue #580) build their
+configurations through the real models in storage that `dsd_test_qt_isolate_paths()`
+(`tests/test_support/qt_test_paths.h`) makes disposable, and they delete whole trees. `UI_QT_BACKUP_APPLY` and
+`UI_QT_BACKUP_MODEL` check that `AppDataLocation` is the isolated root they named before touching anything, and remove
+trees only through one guard (`remove_tree()`) that refuses a path that is not clean, absolute, and at or below that
+root; the apply suite removes single entries through the same rules (`remove_file()`). An unguarded removal of an
+empty path, which `QDir` reads as the working directory, deletes `build/<preset>/tests`, so keep new tree removals
+behind such a guard. `UI_QT_BACKUP_APPLY` drives the startup apply through `ApplyEnv` (`src/ui/qt/backup_apply.h`):
+`engineBusy` and `freeBytes` stand in for the host and the volume, and `fault` is asked before every named step, so a
+test can make a step fail (`Fault::IoError`) or stop there as if the process died (`Fault::Crash`). The suite crashes
+each step of a clean apply and of a rollback in turn, runs the next start, and checks the end state against a clean
+run's tree (file bytes, symlink targets, directories and settings), or against the old configuration once the rollback
+had finished. The cases that need a read-only file or directory print a `note:` and skip where permissions are not
+enforced (root). `UI_QT_BACKUP_MODEL` holds a job on the worker at a gate in its fake host's document copy, and
+`test_recorder_parity()` compares `BackupModel`'s meta-object with the QML fixture's fake
+(`tests/ui/qml_backup_recorder.h`), so the QML tests cannot drift from the model.
+
 #### Build-time constants that gate a branch
 
 `DSD_RR_APP_KEY` bakes the RadioReference application key into a generated C

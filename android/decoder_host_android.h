@@ -184,7 +184,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const override;
     bool copyFileToDocument(const QString& sourcePath, const QString& reference) const override;
 
-    /** @brief Cancel the platform's document calls in flight and stop their copies, then the base host's. */
+    /**
+     * @brief Cancel the platform's document calls in flight and stop their copies, then the base host's.
+     *
+     * A copy into a file still leaves nothing at its destination. A save stopped partway through leaves its document
+     * partly written: DocumentCopies skips the delete after an abort, because deleteDocument() takes no cancellation
+     * and could hold teardown. Such a document never opens as a backup, since the envelope's length and tag are
+     * checked.
+     */
     void abortDocumentTransfers() override;
 
   private:
