@@ -112,6 +112,12 @@ typedef struct {
     int cc_confirmed;
     int cc_hunt_index;
 
+    // Startup control-channel hunt (issue #703): a single-system session whose start frequency yields no validated
+    // control within cc_grace_s walks its channel map with the ordinary hunt. Decoder thread only.
+    double cold_start_armed_m;   // Monotonic time the startup window opened; 0 while unarmed
+    int cold_start_hunt;         // 1 while a hunt the startup window started runs and no owner is named
+    int cold_start_park_pending; // 0 none; 1 park keeping the window, 2 park unarmed, once settled
+
     // Configuration
     double hangtime_s;      // Hangtime after voice ends (default 2.0s)
     double grant_timeout_s; // Max wait for voice after grant (default 4.0s)
@@ -160,6 +166,21 @@ void dmr_sm_event(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr
  * Call at ~1-10 Hz. Handles hangtime expiry, grant timeout, CC loss detection.
  */
 void dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Note an operator move of the receiver during the startup window or hunt (issue #703).
+ *
+ * Restarts the startup window at the move; a running startup hunt drops its probe attribution and is marked to park
+ * keeping that window once the tuning layer is settled. No-op outside the startup state. Decoder thread only.
+ */
+void dmr_sm_cold_start_note_retune(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state);
+
+/** @brief Return 1 while the startup window is armed or a startup hunt runs (issue #703). */
+int dmr_sm_cold_start_active(const dmr_sm_ctx_t* ctx);
+
+/** @brief Return 1 while the decoder's DMR tick has startup work: the window armed or a hunt running, or an IDLE
+ *  admitted machine whose window the next tick arms (issue #703). Decoder thread, under the P25 SM tick guard. */
+int dmr_sm_cold_start_due(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Get current state machine state.

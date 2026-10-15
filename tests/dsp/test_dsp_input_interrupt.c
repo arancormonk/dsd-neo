@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <stdint.h>
@@ -223,6 +224,46 @@ test_a_short_gap_never_leaves_the_read(void) {
     g_pending = 0;
 }
 
+/* Decoder-thread trunking timers due (issue #703): a startup control-channel hunt or DMR recovery runs only on this
+   thread, so a silent UDP input gives way to them as it does to a queued command, after a stream pause. */
+static int g_ticks_due = 0;
+
+static int
+fake_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_ticks_due;
+}
+
+static void
+test_a_silent_hunt_read_leaves_for_due_trunking_timers(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_frame_sync_hooks hooks = {0};
+    hooks.decoder_ticks_due = fake_decoder_ticks_due;
+    dsd_frame_sync_hooks_set(&hooks);
+
+    init_udp_session(&opts, &state, 1000, 0);
+    g_pending = 0;
+    g_ticks_due = 1;
+    const uint64_t start_ms = dsd_realtime_mono_ms();
+    assert(getSymbol(&opts, &state, 0) == 0.0f);
+    const uint64_t waited_ms = dsd_realtime_mono_ms() - start_ms;
+    assert(state.input_interrupted == 1);
+    assert(g_cleanup_calls == 0 && exitflag == 0);
+    assert(waited_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS && waited_ms < 5000U);
+
+    init_udp_session(&opts, &state, 8, 0); // frame decoding still never leaves its read
+    (void)getSymbol(&opts, &state, 1);
+    assert(state.input_interrupted == 0 && g_waits == 9);
+
+    init_udp_session(&opts, &state, 8, 1); // and nothing due waits on
+    g_ticks_due = 0;
+    (void)getSymbol(&opts, &state, 0);
+    assert(state.input_interrupted == 0 && g_waits == 9);
+    dsd_frame_sync_hooks_set(NULL);
+}
+
 /* --- TCP: a reconnect the hunt gives up for a queued command; a lost input is no socket. --- */
 
 static int g_tcp_connects = 0;
@@ -356,6 +397,7 @@ main(void) {
     test_a_silent_read_with_nothing_queued_waits();
     test_frame_decoding_never_leaves_its_read();
     test_a_short_gap_never_leaves_the_read();
+    test_a_silent_hunt_read_leaves_for_due_trunking_timers();
     test_the_m17_tcp_retry_leaves_for_a_queued_command();
     test_a_cancelled_reconnect_is_no_lost_input();
     test_a_lost_tcp_input_is_no_socket();

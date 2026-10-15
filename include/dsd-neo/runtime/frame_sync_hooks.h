@@ -34,9 +34,15 @@ typedef struct {
     int (*scan_visit_should_yield)(const dsd_opts* opts, dsd_state* state);
     int (*signal_search_should_yield)(const dsd_opts* opts, dsd_state* state);
     void (*replay_retune)(dsd_opts* opts, dsd_state* state);
+    int (*decoder_ticks_due)(const dsd_opts* opts, const dsd_state* state);
 } dsd_frame_sync_hooks;
 
 int dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_state* state);
+
+/** Whether decoder-thread trunking timers are due (a startup control-channel hunt armed or running, or DMR recovery
+ * under way): a frame-sync hunt read that sits on a silent input leaves it for them after a stream pause, as it does
+ * for a queued command (issue #703). 0 when nothing is installed. Call on the decoder thread outside the SM guard. */
+int dsd_frame_sync_hook_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state);
 
 /** Install a copy of @p hooks; NULL clears every slot. */
 void dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks);

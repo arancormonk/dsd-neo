@@ -5424,6 +5424,22 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_core_trunk_cold_start
+    test_support/scan_group_stubs.c
+    core/test_core_trunk_cold_start.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+)
+target_include_directories(
+    dsd-neo_test_core_trunk_cold_start
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_trunk_cold_start
+    PRIVATE dsd-neo_runtime
+)
+add_test(NAME CORE_TRUNK_COLD_START COMMAND dsd-neo_test_core_trunk_cold_start)
+
+add_executable(
     dsd-neo_test_core_talkgroup_policy
     core/test_core_talkgroup_policy.c
 )
@@ -6476,6 +6492,54 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_SYNCED_TRUNK_SCAN_TICK
         COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
     )
+    add_executable(
+        dsd-neo_test_engine_cold_start_hunt
+        engine/test_engine_cold_start_hunt.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_cold_start_hunt
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_cold_start_hunt
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=p25_sm_watchdog_start"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_COLD_START_HUNT
+        COMMAND dsd-neo_test_engine_cold_start_hunt
+    )
+    if(DSD_HAS_RADIO)
+        add_executable(
+            dsd-neo_test_engine_tune_failure_reconcile
+            engine/test_engine_tune_failure_reconcile.c
+        )
+        target_include_directories(
+            dsd-neo_test_engine_tune_failure_reconcile
+            PRIVATE ${PROJECT_SOURCE_DIR}/include
+        )
+        target_link_libraries(
+            dsd-neo_test_engine_tune_failure_reconcile
+            PRIVATE
+                "-Wl,--wrap=rtl_stream_get_last_applied_freq"
+                "-Wl,--wrap=dsd_trunk_tuning_request_status"
+                "-Wl,--start-group"
+                dsd-neo_engine
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+        add_test(
+            NAME ENGINE_TUNE_FAILURE_RECONCILE
+            COMMAND dsd-neo_test_engine_tune_failure_reconcile
+        )
+    endif()
     add_executable(
         dsd-neo_test_engine_scan_timing
         engine/test_engine_scan_timing.c
@@ -10952,6 +11016,18 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_p25_sm_core PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_CORE COMMAND dsd-neo_test_p25_sm_core)
+
+# P25 SM startup control-channel hunt (issue #703)
+add_executable(
+    dsd-neo_test_p25_sm_cold_start
+    protocol/p25/test_p25_sm_cold_start.c
+)
+target_include_directories(
+    dsd-neo_test_p25_sm_cold_start
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_p25_sm_cold_start PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_SM_COLD_START COMMAND dsd-neo_test_p25_sm_cold_start)
 
 # P25 SM Phase 2 grant gating on decoded WACN/SYSID/NAC
 add_executable(

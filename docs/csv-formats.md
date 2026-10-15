@@ -162,6 +162,9 @@ Notes:
   like an unparsable one. Sites that broadcast their band plan (`IDEN_UP`) purge the map entries of a band the
   moment the plan arrives; a map is the workaround for sites that never do, and a [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv)
   replaces it with one row per identifier.
+- In a trunked single-system session the rows are also the control-channel hunt list, in file order: a session whose
+  start frequency carries no control channel searches them
+  ([Startup control-channel hunt](cli.md#startup-control-channel-hunt)).
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
   so keep rows in the LCN order you want. An imported LCN list has no length limit; it is bounded only by memory.
   Site broadcasts never write into an imported list or shorten it - the list is positional, so a skipped row's 0

@@ -19,7 +19,6 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
-#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -159,9 +158,9 @@ tsbk_decode_block(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_
 }
 
 static void
-tsbk_update_fec_counters(dsd_state* state, int err) {
+tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
     if (err == 0) {
-        p25_sm_note_cc_activity(state);
+        p25_sm_note_validated_cc(opts, state);
         state->p25_p1_fec_ok++;
 #ifdef USE_RTLSDR
         dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
@@ -1062,7 +1061,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         if (state->input_interrupted) {
             break;
         }
-        tsbk_update_fec_counters(state, err);
+        tsbk_update_fec_counters(opts, state, err);
 
         int MFID = ctx.tsbk_byte[1];
         int protectbit = (ctx.tsbk_byte[0] >> 6) & 0x1;

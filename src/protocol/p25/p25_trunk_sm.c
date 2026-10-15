@@ -16,6 +16,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -73,6 +74,7 @@ static void p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts
                                          int new_epoch, int allow_coalesce, int continuous_activity,
                                          p25_call_obs_provenance provenance, double observed_m);
 static void p25_call_end_slot(dsd_opts* opts, dsd_state* state, int slot, double observed_m);
+static void p25_sm_cold_start_clear(p25_sm_ctx_t* ctx);
 #ifdef USE_RADIO
 static int p25_sm_hold_release_for_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state,
                                                       const char* reason, double now_m);
@@ -286,6 +288,17 @@ p25_sm_seed_cc_modulation_from_current_sync(dsd_state* state) {
     }
 }
 
+/* The control channel validated control was decoded on, with its type from the sync it came on. */
+static void
+p25_sm_seed_cc_at(dsd_state* state, long freq) {
+    state->p25_cc_freq = freq;
+    state->trunk_cc_freq = freq;
+    p25_sm_seed_cc_modulation_from_current_sync(state);
+    if (state->trunk_lcn_freq[0] == 0) {
+        state->trunk_lcn_freq[0] = freq;
+    }
+}
+
 static void
 p25_sm_seed_cc_from_known_trunk_alias_if_unknown(dsd_state* state) {
     if (!state || state->p25_cc_freq != 0 || state->trunk_cc_freq <= 0) {
@@ -315,13 +328,30 @@ p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* st
     if (freq <= 0) {
         return;
     }
-    state->p25_cc_freq = freq;
-    state->trunk_cc_freq = freq;
-    p25_sm_seed_cc_modulation_from_current_sync(state);
-    if (state->trunk_lcn_freq[0] == 0) {
-        state->trunk_lcn_freq[0] = freq;
-    }
+    p25_sm_seed_cc_at(state, freq);
     p25_sm_diagf((dsd_opts*)opts, state, NULL, "cc_seed", "source=current-tuner freq=%ld", freq);
+}
+
+/* When the tuner cannot say where it is (a rigctl peer that did not answer), the probe a startup hunt's tuner completed
+   is the control channel: nothing but that hunt has moved the tuner while cold_start_probe_hz is set (issue #703). */
+static void
+p25_sm_cold_start_establish_probe_cc(const p25_sm_ctx_t* ctx, dsd_state* state) {
+    if (ctx->cold_start_hunt && ctx->cold_start_probe_hz > 0 && !ctx->cc_tune_pending && state->p25_cc_freq == 0) {
+        p25_sm_seed_cc_at(state, ctx->cold_start_probe_hz);
+    }
+}
+
+void
+p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    p25_sm_note_cc_activity(state);
+    if (opts && opts->trunk_enable == 1) {
+        p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
+        // Here, before any handler of the same block (a grant) can end the probe's acquisition.
+        p25_sm_cold_start_establish_probe_cc(p25_sm_get_ctx(), state);
+    }
 }
 
 static int
@@ -528,6 +558,7 @@ p25_sm_refresh_cc_sync_from_state(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_s
             const double reacquire_m = ctx->t_cc_reacquire_m;
             const int reacquire_attempted = ctx->cc_reacquire_attempted;
             const p25_sm_cc_acquisition_origin_e origin = ctx->cc_acquisition_origin;
+            const int cold_start = ctx->cold_start_hunt;
             ctx->t_cc_sync_m = decoded_cc_m;
             ctx->t_cc_tune_m = 0.0;
             ctx->cc_sync_pending = 0;
@@ -536,11 +567,15 @@ p25_sm_refresh_cc_sync_from_state(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_s
             p25_sm_set_expected_cc_nac(ctx, state, 1);
             p25_sm_diagf(opts, state, ctx, "cc_reacquired",
                          "source=%s origin=%s decoded_cc_m=%.3f tune_m=%.3f last_cc_m=%.3f expected_nac=0x%03X "
-                         "reacquire_attempted=%d soft_reacquire=%d reacquire_latency=%.3f",
+                         "reacquire_attempted=%d soft_reacquire=%d reacquire_latency=%.3f cold_start=%d",
                          trigger ? trigger : "state", p25_sm_cc_acquisition_origin_name(origin), decoded_cc_m, tune_m,
                          state ? state->last_cc_sync_time_m : 0.0, ctx->expected_cc_nac, reacquire_attempted,
                          reacquire_m > 0.0 ? 1 : 0,
-                         reacquire_m > 0.0 && decoded_cc_m > reacquire_m ? decoded_cc_m - reacquire_m : 0.0);
+                         reacquire_m > 0.0 && decoded_cc_m > reacquire_m ? decoded_cc_m - reacquire_m : 0.0,
+                         cold_start);
+            // Validated control ended any startup hunt (issue #703); p25_sm_cold_start_tick_locked() normally parks
+            // it first, on the owner the same control named.
+            p25_sm_cold_start_clear(ctx);
             return 1;
         }
         p25_sm_set_expected_cc_nac(ctx, state, 0);
@@ -742,6 +777,8 @@ p25_sm_resolve_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_NONE;
     p25_sm_reset_cc_reacquire_tracking(ctx);
     ctx->t_hunt_try_m = 0.0;
+    // A startup probe that failed never reached the tuner: the next probe or a settle tune replaces it (issue #703).
+    ctx->cold_start_probe_hz = 0;
     p25_sm_diagf(opts, state, ctx, "cc_tune_complete", "request=%llu origin=%s result=%s",
                  (unsigned long long)request_id, p25_sm_cc_acquisition_origin_name(origin),
                  p25_tune_result_name(result));
@@ -764,6 +801,7 @@ p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_sta
         state->p25_cc_eval_start_m = ctx->t_cc_tune_m;
     }
     ctx->t_hunt_try_m = 0.0;
+    p25_sm_cold_start_clear(ctx); // an external control-channel acquisition supersedes a startup hunt (issue #703)
     set_state(ctx, opts, state, P25_SM_ON_CC, reason);
     return 1;
 }
@@ -777,6 +815,7 @@ p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
     const char* reason = source ? source : "external-retune";
     p25_sm_wait_for_cc_tune_completion(ctx, opts, state, request_id, reason, P25_SM_CC_ACQUISITION_RETURN);
     ctx->t_hunt_try_m = 0.0;
+    p25_sm_cold_start_clear(ctx); // an external control-channel acquisition supersedes a startup hunt (issue #703)
     set_state(ctx, opts, state, P25_SM_ON_CC, reason);
     return 1;
 }
@@ -4989,10 +5028,160 @@ next_primary_cc_freq(dsd_state* state, long* out_freq) {
     return 1;
 }
 
+/* ----------------------------------------------------------------------------
+ * Startup control-channel hunt (issue #703)
+ *
+ * A single-system session whose start frequency yields no validated control within the CC grace walks its channel
+ * map with the ordinary hunt below. It is the decoder thread's: p25_sm_cold_start_tick_locked() runs under the tick
+ * guard between frames and on every outer-loop pass, and the watchdog never ticks a machine whose cold_start_hunt is
+ * set, so every decoder field the hunt reads is read on the thread that writes it.
+ * ---------------------------------------------------------------------------- */
+
+static void
+p25_sm_cold_start_clear(p25_sm_ctx_t* ctx) {
+    ctx->t_cold_start_armed_m = 0.0;
+    ctx->cold_start_hunt = 0;
+    ctx->cold_start_park_pending = 0;
+    ctx->cold_start_probe_hz = 0;
+}
+
+static int
+p25_sm_cold_start_may_run(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_state_trunk_cold_start_eligible(opts, state)
+           && (dsd_trunk_p25_recovery_allowed(opts, state) || dsd_trunk_p25_cold_start_presumed(opts, state));
+}
+
+/* The window runs from the later of its opening and the last DMR content that passed its colour-code gate: validated
+   traffic means the frequency is not dead, even when it carries no control channel (a Hytera XPT call). */
+static int
+p25_sm_cold_start_window_expired(const p25_sm_ctx_t* ctx, const dsd_state* state, double now_m) {
+    double start_m = ctx->t_cold_start_armed_m;
+    if (state->dmr_confidence_lock_m > start_m) {
+        start_m = state->dmr_confidence_lock_m;
+    }
+    return (now_m - start_m) > ctx->config.cc_grace_s;
+}
+
+/* Leave the startup hunt for IDLE: only once the tuning layer is settled, or when trunking or the input went away. */
+static void
+p25_sm_cold_start_park_now(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int keep_window, const char* reason) {
+    const double armed_m = ctx->t_cold_start_armed_m;
+    p25_sm_cancel_pending_cc_acquisition(ctx);
+    state->p25_cc_eval_freq = 0;
+    state->p25_cc_eval_start_m = 0.0;
+    ctx->t_hunt_try_m = 0.0;
+    p25_sm_cold_start_clear(ctx);
+    if (keep_window) {
+        ctx->t_cold_start_armed_m = armed_m;
+    }
+    p25_sm_diagf(opts, state, ctx, "cold_start_park", "reason=%s keep_window=%d", reason, keep_window);
+    set_state(ctx, opts, state, P25_SM_IDLE, reason);
+}
+
+/* Validated control named an owner: the hunt ends where it is, and the owner's ordinary recovery takes over. A P25 owner
+   has its control channel: the decode boundary established it (p25_sm_note_validated_cc()), or does so here if the
+   probe's tune was still unresolved there. A grant followed meanwhile stands: only the startup bookkeeping ends. */
+static void
+p25_sm_cold_start_end_named(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    if (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_P25) {
+        p25_sm_cold_start_establish_probe_cc(ctx, state);
+    }
+    if (ctx->state == P25_SM_TUNED) {
+        p25_sm_cold_start_clear(ctx);
+        p25_sm_diagf(opts, state, ctx, "cold_start_end", "reason=cold-start-owner-named followed_grant=1");
+        return;
+    }
+    p25_sm_cold_start_park_now(ctx, opts, state, 0, "cold-start-owner-named");
+}
+
+/* Park once settled. The tuning layer withholds frames while any request is unresolved, and an in-flight or failed
+   probe leaves the decoder's tuner options naming a frequency the radio may not be on: so a probe in flight is
+   resolved here (never by a new probe), any other tune in flight (a settle tune, or one the hunt does not track) is
+   waited for, and only a failure is replaced, by a settle tune to the frequency the options name, whose success makes
+   radio and options agree and retires every older failure. A settle tune carries no symbol profile of its own: it keeps
+   the receive profile in force, which a mode change may have chosen. The hunt never disowns, publishes or completes a
+   request. */
+static void
+p25_sm_cold_start_settle(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int keep_window, const char* reason) {
+    ctx->cold_start_park_pending = keep_window ? 1 : 2;
+    if (ctx->cc_tune_pending && p25_sm_resolve_pending_cc_tune(ctx, opts, state) == 0) {
+        return;
+    }
+    const uint64_t newest = dsd_trunk_tuning_pending_request();
+    if (newest != 0U) {
+        if (dsd_trunk_tuning_request_status(newest, NULL) != DSD_TRUNK_TUNE_RESULT_PENDING) {
+            const long freq = p25_sm_current_tuner_freq_hz(opts);
+            const long alias_before = state->trunk_cc_freq;
+            uint64_t request_id = 0U;
+            const dsd_trunk_tune_result result =
+                freq > 0 ? dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0, &request_id)
+                         : DSD_TRUNK_TUNE_RESULT_FAILED;
+            state->trunk_cc_freq = alias_before;
+            p25_sm_diagf(opts, state, ctx, "cold_start_settle_tune", "freq=%ld result=%s request=%llu", freq,
+                         p25_tune_result_name(result), (unsigned long long)request_id);
+        }
+        return;
+    }
+    p25_sm_cold_start_park_now(ctx, opts, state, keep_window, reason);
+}
+
+/* Whether a startup hunt goes on probing; otherwise it is ended, parked, or settling toward a park. At a probe
+   decision point (@p decision) an unexpired window parks it too. */
+static int
+p25_sm_cold_start_gate(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, int decision) {
+    if (state->trunk_recovery_protocol != (int)DSD_TRUNK_RECOVERY_UNKNOWN) {
+        p25_sm_cold_start_end_named(ctx, opts, state);
+        return 0;
+    }
+    if (opts->trunk_enable != 1 || state->input_boundary != 0) {
+        // The tuning layer retires failures once no tune owner is active, and the engine resets its requests when the
+        // input is replaced: nothing is left for this hunt to settle.
+        p25_sm_cold_start_park_now(ctx, opts, state, 0, "cold-start-trunking-or-input-left");
+        return 0;
+    }
+    if (!p25_sm_cold_start_may_run(opts, state)) {
+        p25_sm_cold_start_settle(ctx, opts, state, 0, "cold-start-not-admitted");
+        return 0;
+    }
+    if (ctx->cold_start_park_pending != 0) {
+        p25_sm_cold_start_settle(ctx, opts, state, ctx->cold_start_park_pending == 1, "cold-start-operator-move");
+        return 0;
+    }
+    if (decision && !p25_sm_cold_start_window_expired(ctx, state, now_m)) {
+        p25_sm_cold_start_settle(ctx, opts, state, 1, "cold-start-window");
+        return 0;
+    }
+    return 1;
+}
+
+/* Whether try_next_cc() may pick and tune a probe now: a startup hunt settles first, and parks when it must. */
+static int
+p25_sm_hunt_may_probe(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!ctx || !state) {
+        return 0;
+    }
+    return !ctx->cold_start_hunt || !opts || p25_sm_cold_start_gate(ctx, opts, state, now_m, 1);
+}
+
+/* A hunt probe's tune. A startup probe is no control channel until its control validates: the shared alias keeps no
+   unproven frequency (as DMR probes do), and p25_sm_note_validated_cc() establishes the control channel from the tuner
+   (issue #703). */
+static dsd_trunk_tune_result
+p25_sm_hunt_tune_to_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long cand, int sps,
+                       uint64_t* out_request_id) {
+    const long alias_before = state->trunk_cc_freq;
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps, out_request_id);
+    if (ctx->cold_start_hunt && dsd_trunk_tune_result_is_ok(result)) {
+        state->trunk_cc_freq = alias_before;
+        ctx->cold_start_probe_hz = cand;
+    }
+    return result;
+}
+
 // Try tuning to next CC candidate or LCN freq
 static void
 try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
-    if (!ctx || !state) {
+    if (!p25_sm_hunt_may_probe(ctx, opts, state, now_m)) {
         return;
     }
     long cand = 0;
@@ -5009,7 +5198,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
                      p25_diag_freq_in_current_site_candidates(state, cand), p25_diag_freq_in_lcn_list(state, cand),
                      p25_diag_freq_in_neighbors(state, cand));
         uint64_t tune_request_id = 0U;
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps, &tune_request_id);
+        dsd_trunk_tune_result tune_result = p25_sm_hunt_tune_to_cc(ctx, opts, state, cand, sps, &tune_request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=current-site-candidate freq=%ld result=%s", cand,
                          p25_tune_result_name(tune_result));
@@ -5036,7 +5225,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
                      p25_diag_freq_in_current_site_candidates(state, cand), p25_diag_freq_in_lcn_list(state, cand),
                      p25_diag_freq_in_neighbors(state, cand));
         uint64_t tune_request_id = 0U;
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps, &tune_request_id);
+        dsd_trunk_tune_result tune_result = p25_sm_hunt_tune_to_cc(ctx, opts, state, cand, sps, &tune_request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=%s freq=%ld result=%s", source, cand,
                          p25_tune_result_name(tune_result));
@@ -5056,6 +5245,71 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     // No candidates - stay in HUNTING and wait for CC_SYNC
     p25_sm_diagf(opts, state, ctx, "hunt_no_candidate", "has_user_lcn=%d prefer_candidates=%d", has_user_lcn_list,
                  opts ? opts->p25_prefer_candidates : 0);
+}
+
+void
+p25_sm_cold_start_tick_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    if (!ctx || !opts || !state) {
+        return;
+    }
+    if (!ctx->initialized) {
+        p25_sm_init_ctx(ctx, opts, state);
+    }
+    const double now_m = dsd_decode_now_mono_s();
+    if (ctx->cold_start_hunt) {
+        if (p25_sm_cold_start_gate(ctx, opts, state, now_m, 0)) {
+            p25_sm_tick_ctx(ctx, opts, state); // probe acquisitions; try_next_cc() is the decision point
+        }
+        return;
+    }
+    if (ctx->state != P25_SM_IDLE || !p25_sm_cold_start_may_run(opts, state)) {
+        ctx->t_cold_start_armed_m = 0.0;
+        return;
+    }
+    if (ctx->t_cold_start_armed_m <= 0.0) {
+        ctx->t_cold_start_armed_m = now_m;
+        p25_sm_diagf(opts, state, ctx, "cold_start_armed", "grace=%.3f", ctx->config.cc_grace_s);
+        return;
+    }
+    if (!p25_sm_cold_start_window_expired(ctx, state, now_m)) {
+        return;
+    }
+    ctx->cold_start_hunt = 1;
+    ctx->t_hunt_try_m = now_m;
+    set_state(ctx, opts, state, P25_SM_HUNTING, "cold-start");
+    try_next_cc(ctx, opts, state, now_m);
+}
+
+void
+p25_sm_cold_start_note_retune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    if (!ctx || !ctx->initialized) {
+        return;
+    }
+    const double now_m = dsd_decode_now_mono_s();
+    if (ctx->cold_start_hunt) {
+        // Parks keeping a window that runs from the move, once the tuning layer is settled; the probe is not where
+        // the receiver is any more.
+        ctx->t_cold_start_armed_m = now_m;
+        ctx->cold_start_park_pending = 1;
+        ctx->cold_start_probe_hz = 0;
+    } else if (ctx->state == P25_SM_IDLE && ctx->t_cold_start_armed_m > 0.0) {
+        ctx->t_cold_start_armed_m = now_m;
+    }
+}
+
+int
+p25_sm_cold_start_active(const p25_sm_ctx_t* ctx) {
+    return ctx && (ctx->cold_start_hunt || ctx->t_cold_start_armed_m > 0.0);
+}
+
+int
+p25_sm_cold_start_due(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (p25_sm_cold_start_active(ctx)) {
+        return 1;
+    }
+    return ctx && opts && state && ctx->state == P25_SM_IDLE && p25_sm_cold_start_may_run(opts, state);
 }
 
 /* ============================================================================

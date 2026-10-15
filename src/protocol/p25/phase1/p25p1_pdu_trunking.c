@@ -17,7 +17,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -1273,7 +1272,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_by
         return 0;
     }
 
-    p25_sm_note_cc_activity(state);
+    p25_sm_note_validated_cc(opts, state);
 
     if (p25_mbt_has_unsupported_survey_format(&fields)) {
         DSD_FPRINTF(stderr, " - broadcast format %02X not handled", fields.fmt);

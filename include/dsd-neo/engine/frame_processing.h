@@ -95,6 +95,13 @@ typedef enum {
  * thread. */
 void dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held);
 
+/** The stream the decoder read was replaced (an input switch, a radio row's stream taking over, a config reopen, the
+ *  engine's fallback to Pulse): the engine ends the reception before it decodes the new stream (state->input_boundary,
+ *  issue #634), and the replaced device's tune requests go now, with the replacement (dsd_trunk_tuning_requests_reset()),
+ *  so none can gate the new input's frames while a tune the new device is given afterwards is kept (issue #703). The
+ *  caller holds the P25 SM tick guard, so no watchdog tick runs between the replacement and the reset. */
+void dsd_engine_note_input_replaced(dsd_state* state);
+
 /** Note the source a radio stream just started on (issue #575): its kind of device and which one, never its settings
  *  or tuning (an RTL-SDR index, an rtl_tcp host and port, an Airspy serial, a SoapySDR device, a replay capture). A start
  *  on another source than the stream before it, or of a replay, which plays its capture again from the start, is a

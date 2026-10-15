@@ -91,6 +91,57 @@ test_recovery_ownership(void) {
     assert(!dsd_trunk_dmr_recovery_allowed(&opts, NULL));
 }
 
+/* Before any protocol proves itself, P25 hunts the startup control channel of a P25+DMR frame set (-ft, the default
+   set) and of a P25-only one; a set with NXDN or ProVoice (-fa) has nobody to hunt it. Recovery ownership itself does
+   not change (issue #703). */
+static void
+test_presumptive_startup_owner(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = 1; // -ft
+    assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state)); // ownership is unchanged
+    assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
+    opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 1; // the default frame set (-mq imports)
+    assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.frame_nxdn48 = 1;
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.frame_nxdn48 = 0;
+    opts.frame_nxdn96 = 1;
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.frame_nxdn96 = 0;
+    opts.frame_provoice = 1; // -fa adds NXDN and ProVoice
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.frame_provoice = 0;
+    opts.frame_p25p1 = opts.frame_p25p2 = 0; // -fs: DMR hunts its own startup
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    assert(dsd_trunk_dmr_recovery_allowed(&opts, &state));
+    opts.frame_dmr = opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 0;
+    opts.frame_p25p1 = 1; // -1
+    assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = 1;
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_P25); // a proven owner ends the startup
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_DMR);
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_UNKNOWN;
+    opts.scanner_mode = 1;
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.trunk_scan_enabled = 0;
+    opts.trunk_enable = 0;
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.trunk_enable = 1;
+    assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    assert(!dsd_trunk_p25_cold_start_presumed(NULL, &state));
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, NULL));
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -144,5 +195,6 @@ main(void) {
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 1);
     test_recovery_ownership();
+    test_presumptive_startup_owner();
     return 0;
 }

@@ -74,6 +74,7 @@ static int g_queries;
 static int g_query_failed;
 static uint64_t g_request;
 static dsd_trunk_tune_result g_result;
+static int g_hw_model; // 1: the radio moves only when a tune succeeds (startup-hunt cases, issue #703)
 
 static int
 expect(int condition, const char* message) {
@@ -97,7 +98,9 @@ cc_tune(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_i
     ++g_cc_tunes;
     g_request = request_id;
     if (dsd_trunk_tune_result_is_ok(g_result)) {
-        g_frequency = freq;
+        if (!g_hw_model || g_result == DSD_TRUNK_TUNE_RESULT_OK) {
+            g_frequency = freq;
+        }
         opts->rtlsdr_center_freq = (uint32_t)freq;
         state->trunk_cc_freq = freq; // The real shared tune helper stages this field.
         dsd_mark_cc_sync(state);
@@ -172,6 +175,7 @@ setup(float hangtime) {
     g_opts.trunk_scan_enabled = 1;
     g_opts.trunk_hangtime = hangtime;
     g_cc_tunes = g_returns = g_queries = g_query_failed = 0;
+    g_hw_model = 0;
     g_request = 0U;
     g_result = DSD_TRUNK_TUNE_RESULT_OK;
     dsd_trunk_tuning_requests_reset();
@@ -1155,6 +1159,441 @@ user_block_mutes_queued_voice(void) {
     return rc;
 }
 
+/* ---- Startup control-channel hunt (issue #703) ----
+ * A single-system session whose saved control channel is dead at start: the harness's trunk scan is shut down and the
+ * map loaded as a -C channel map. Tune counts are compared against the baseline left by setup()'s own scan start. */
+
+static void
+single_system_cold_start(int ft) {
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    g_opts.trunk_scan_enabled = 0;
+    g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = 1;
+    g_opts.frame_p25p1 = g_opts.frame_p25p2 = ft ? 1 : 0;
+    g_state.trunk_cc_freq = g_state.p25_cc_freq = 0;
+    g_state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_UNKNOWN;
+    g_state.trunk_lcn_freq[0] = 451000000L;
+    g_state.trunk_lcn_freq[1] = 452000000L;
+    g_state.trunk_lcn_freq[2] = 452000000L;
+    g_state.trunk_lcn_freq[3] = 453000000L;
+    g_state.lcn_freq_count = 4;
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof(g_opts.chan_in_file), "%s", g_channels);
+    g_frequency = 450000000L; // the dead start frequency
+    g_opts.rtlsdr_center_freq = 450000000U;
+    dsd_trunk_tuning_requests_reset();
+    dmr_sm_init_ctx(dmr_sm_get_ctx(), &g_opts, &g_state);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+}
+
+/* Arm the DMR startup window and run it out: the first probe goes to row 0. */
+static void
+dmr_cold_start_first_probe(dmr_sm_ctx_t* dmr) {
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+}
+
+static int
+dmr_cold_start_hunts_the_map(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    const int base = g_cc_tunes;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    int rc = expect(dmr->state == DMR_SM_IDLE, "dead start: DMR starts idle");
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == base && dmr->cold_start_armed_m > 0.0, "the first tick only arms the startup window");
+    dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == base + 1 && g_frequency == 451000000L, "the expired window probes the first map row");
+    rc |= expect(dmr->cold_start_hunt == 1 && g_state.trunk_cc_freq == 0, "a startup probe is no control channel");
+    expire_acquisition(dmr);
+    rc |= expect(g_frequency == 452000000L, "the startup hunt walks the map in file order");
+    expire_acquisition(dmr);
+    rc |= expect(g_frequency == 453000000L, "the startup hunt skips an adjacent duplicate row");
+    aloha(1);
+    rc |= expect(g_state.trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR && g_state.trunk_cc_freq == 453000000L,
+                 "validated control on a probe names it the control channel");
+    rc |= expect(dmr->cold_start_hunt == 0 && dmr->cc_confirmed == 1, "validated control ends the startup hunt");
+    cleanup();
+    return rc;
+}
+
+static int
+dmr_live_cc_at_start_never_hunts(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    const int base = g_cc_tunes;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    aloha(1); // the saved control channel is live
+    dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(g_cc_tunes == base && dmr->cc_confirmed && g_state.trunk_cc_freq == 450000000L,
+                    "a live control channel at start is never hunted away from");
+    cleanup();
+    return rc;
+}
+
+static int
+dmr_cold_start_holds_validated_content(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    const int base = g_cc_tunes;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    g_state.dmr_confidence_lock_m = dsd_decode_now_mono_s() - 1.0; // a call that passed the colour-code gate
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(g_cc_tunes == base && dmr->cold_start_hunt == 0, "validated DMR content holds the startup window");
+    g_state.dmr_confidence_lock_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == base + 1, "the window runs out once the content is older than the grace");
+    cleanup();
+    return rc;
+}
+
+static int
+dmr_owner_named_without_confirmation_stops_in_place(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_cold_start_first_probe(dmr);
+    const int tunes = g_cc_tunes;
+    uint8_t bits[196] = {0};
+    uint8_t bytes[24] = {0};
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0); // CRC-good, but no control-channel proof (an XPT status, say)
+    int rc = expect(g_state.trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR && !dmr->cc_confirmed,
+                    "a valid CSBK names DMR without confirming a control channel");
+    expire_acquisition(dmr);
+    rc |= expect(dmr->state == DMR_SM_IDLE && dmr->cold_start_hunt == 0 && g_cc_tunes == tunes,
+                 "a named owner ends the startup hunt where it is");
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == tunes, "an unconfirmed DMR site is not hunted again");
+    cleanup();
+    return rc;
+}
+
+static int
+dmr_stop_with_probe_in_flight(void) {
+    int rc = 0;
+    for (int fail = 0; fail <= 1; ++fail) {
+        if (setup(0.0f)) {
+            cleanup();
+            return 1;
+        }
+        single_system_cold_start(0);
+        g_hw_model = 1;
+        dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+        g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        const uint64_t probe = g_request;
+        const int tunes = g_cc_tunes;
+        g_opts.chan_in_file[0] = '\0'; // eligibility lost with the probe in flight
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        rc |=
+            expect(dmr->cold_start_hunt == 1 && g_cc_tunes == tunes, "a probe in flight is waited for, never replaced");
+        g_result = DSD_TRUNK_TUNE_RESULT_OK;
+        if (!fail) {
+            g_frequency = 451000000L;
+            dsd_trunk_tuning_request_publish(probe, DSD_TRUNK_TUNE_RESULT_OK);
+            dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+            rc |= expect(dmr->state == DMR_SM_IDLE && dmr->cold_start_hunt == 0 && g_cc_tunes == tunes,
+                         "a successful probe lets the hunt park");
+        } else {
+            dsd_trunk_tuning_request_publish(probe, DSD_TRUNK_TUNE_RESULT_FAILED); // the radio stayed at 450 MHz
+            dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+            rc |= expect(g_cc_tunes == tunes + 1 && g_frequency == (long)g_opts.rtlsdr_center_freq,
+                         "a settle tune makes the radio and the options agree");
+            dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+            rc |= expect(dmr->state == DMR_SM_IDLE && dmr->cold_start_hunt == 0, "the hunt parks once settled");
+        }
+        rc |= expect(dsd_trunk_tuning_pending_request() == 0U, "no tune request is left gating frames");
+        rc |= expect(g_state.trunk_cc_freq == 0, "stopping establishes no control channel");
+        cleanup();
+    }
+    return rc;
+}
+
+static int
+dmr_stop_after_deadline_then_late_success(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    g_hw_model = 1;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    const uint64_t late = g_request;
+    dmr->cc_tune_deadline_m = dsd_decode_now_mono_s() - 0.1; // the backend never answered in time
+    g_opts.chan_in_file[0] = '\0';
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const int tunes = g_cc_tunes;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state); // the deadline publishes FAILED, as today; a settle tune follows
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(g_cc_tunes == tunes + 1 && dmr->state == DMR_SM_IDLE && dsd_trunk_tuning_pending_request() == 0U,
+                    "a missed deadline is settled before the park");
+    dsd_trunk_tuning_request_publish(late, DSD_TRUNK_TUNE_RESULT_OK); // ignored, as today
+    g_opts.trunk_enable = 0;
+    g_state.trunk_cc_freq = 0;
+    aloha(1);
+    rc |= expect(g_state.trunk_cc_freq == g_frequency, "later control is attributed to the tuner, never a probe");
+    cleanup();
+    return rc;
+}
+
+/* A one-row map whose only probe failed: the row is probed again, since only a success retires the failure that gates
+   every frame. */
+static int
+dmr_one_row_map_retries_a_failed_probe(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    g_hw_model = 1;
+    g_state.trunk_lcn_freq[1] = g_state.trunk_lcn_freq[2] = g_state.trunk_lcn_freq[3] = 0;
+    g_state.lcn_freq_count = 1;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dmr_cold_start_first_probe(dmr);
+    const uint64_t probe = g_request;
+    const int tunes = g_cc_tunes;
+    dsd_trunk_tuning_request_publish(probe, DSD_TRUNK_TUNE_RESULT_FAILED); // the radio stayed at 450 MHz
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dmr->cc_retry_after_m = 0.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(g_cc_tunes == tunes + 1 && g_frequency == 451000000L, "the only row is probed again");
+    rc |= expect(dsd_trunk_tuning_pending_request() == 0U, "its success retires the failure");
+    expire_acquisition(dmr);
+    rc |= expect(g_cc_tunes == tunes + 1, "a row the radio is on is listened to, never retuned");
+    cleanup();
+    return rc;
+}
+
+/* A grant followed during a startup hunt: a trunked channel cycle (an operator move, which drops the probe's
+   attribution) staged the shared alias, as its control-channel tune does, so a Connect Plus grant resolves and is
+   followed without confirming a control channel. The owner it names ends the startup bookkeeping, never the call. */
+static int
+dmr_cold_start_followed_grant_stands(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_cold_start_first_probe(dmr);
+    g_state.trunk_cc_freq = 452000000L; // the cycle's tune to the next row
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+    dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 453000000L, 4, 0, 1001, 2001);
+    int rc = expect(dmr->state == DMR_SM_TUNED && g_opts.trunk_is_tuned == 1, "the grant is followed");
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->state == DMR_SM_TUNED && g_opts.trunk_is_tuned == 1 && dmr->vc_freq_hz == 453000000L,
+                 "the followed call stands");
+    rc |= expect(dmr->cold_start_hunt == 0 && dmr->cold_start_park_pending == 0, "the startup hunt is over");
+    cleanup();
+    return rc;
+}
+
+/* A grant followed while the startup window is still open (a trunked channel cycle staged the alias, so it resolves):
+   the machine left IDLE, which keeps no startup window. */
+static int
+dmr_grant_from_idle_disarms_the_window(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(dmr->state == DMR_SM_IDLE && dmr->cold_start_armed_m > 0.0, "the startup window is armed");
+    g_state.trunk_cc_freq = 452000000L; // the cycle's tune to the next row
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+    dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 453000000L, 4, 0, 1001, 2001);
+    rc |= expect(dmr->state == DMR_SM_TUNED, "the grant is followed from IDLE");
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->state == DMR_SM_TUNED && !dmr_sm_cold_start_active(dmr), "a machine out of IDLE keeps no window");
+    cleanup();
+    return rc;
+}
+
+/* A failure followed by a tune in flight the hunt does not track (an operator's): that tune's outcome is waited for,
+   never replaced, and its success retires the failure. */
+static int
+dmr_settle_waits_for_a_tune_in_flight(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    g_hw_model = 1;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dmr_cold_start_first_probe(dmr);
+    dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state); // the probe's failure resolved
+    const uint64_t operator_tune = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_mark_ready(operator_tune);
+    g_opts.chan_in_file[0] = '\0';
+    const int tunes = g_cc_tunes;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(g_cc_tunes == tunes && dmr->cold_start_hunt == 1, "a tune in flight is waited for, never replaced");
+    dsd_trunk_tuning_request_publish(operator_tune, DSD_TRUNK_TUNE_RESULT_OK);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == tunes && dmr->state == DMR_SM_IDLE && dsd_trunk_tuning_pending_request() == 0U,
+                 "its success settles the hunt, which parks");
+    cleanup();
+    return rc;
+}
+
+/* A settle tune the backend never answers is given up at the probe deadline, as a probe is, and replaced: the hunt
+   still parks, with nothing left gating frames. */
+static int
+dmr_settle_tune_deadline(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    g_hw_model = 1;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dmr_cold_start_first_probe(dmr);
+    dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_opts.chan_in_file[0] = '\0'; // eligibility lost after the failure
+    const int tunes = g_cc_tunes;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(g_cc_tunes == tunes + 1 && dmr->cold_start_hunt == 1, "a settle tune replaces the failure");
+    dmr->cc_tune_deadline_m = dsd_decode_now_mono_s() - 0.1; // the backend never answers it
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == tunes + 2, "an unanswered settle tune is replaced at its deadline");
+    rc |= expect(dmr->state == DMR_SM_IDLE && dmr->cold_start_hunt == 0 && dsd_trunk_tuning_pending_request() == 0U,
+                 "the hunt parks with nothing left gating frames");
+    cleanup();
+    return rc;
+}
+
+static int
+dmr_stop_trunking_off_parks_at_once(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_cold_start_first_probe(dmr);
+    g_opts.trunk_enable = 0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(dmr->state == DMR_SM_IDLE && dmr->cold_start_hunt == 0 && dmr->cold_start_armed_m <= 0.0,
+                    "turning trunking off parks a startup hunt at once");
+    g_opts.trunk_enable = 1;
+    const int tunes = g_cc_tunes;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == tunes && dmr->cold_start_armed_m > 0.0, "turning it back on arms a fresh window");
+    cleanup();
+    return rc;
+}
+
+static int
+dmr_operator_moves(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_cold_start_first_probe(dmr);
+    const int tunes = g_cc_tunes;
+    const double moved_m = dsd_decode_now_mono_s();
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(dmr->state == DMR_SM_IDLE && dmr->cold_start_hunt == 0 && dmr->cold_start_armed_m >= moved_m,
+                    "a settled operator move parks keeping a window from the move");
+    rc |= expect(g_cc_tunes == tunes, "the move is not overridden");
+    cleanup();
+
+    // The probe's request completes in the backend before the decoder consumes it, then the operator moves.
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    g_hw_model = 1;
+    dmr = dmr_sm_get_ctx();
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_OK);
+    g_frequency = 454000000L; // the operator's tune lands after the probe
+    g_opts.rtlsdr_center_freq = 454000000U;
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+    aloha(1); // control decoded on the operator's frequency before the next DMR tick
+    rc |= expect(g_state.trunk_cc_freq != 451000000L && !(dmr->cc_confirmed && dmr->cc_freq_hz == 451000000L),
+                 "control after an operator move is never credited to the completed probe");
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->cc_rx_freq_hz != 451000000L, "the probe's attribution is dropped");
+    aloha(1);
+    rc |= expect(g_state.trunk_cc_freq == 454000000L && dmr->cc_confirmed,
+                 "control on the operator's frequency confirms it, never the probe");
+    cleanup();
+    return rc;
+}
+
+static int
+ft_cold_start_hands_dmr_over(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(1);
+    const int base = g_cc_tunes;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    p25_sm_ctx_t* p25 = p25_sm_get_ctx();
+    p25_sm_tick_guard_enter();
+    p25_sm_cold_start_tick_locked(p25, &g_opts, &g_state);
+    p25->t_cold_start_armed_m = dsd_decode_now_mono_s() - p25->config.cc_grace_s - 1.0;
+    p25_sm_cold_start_tick_locked(p25, &g_opts, &g_state);
+    p25_sm_tick_guard_leave();
+    int rc = expect(g_cc_tunes == base + 1 && g_frequency == 451000000L, "-ft: P25 drives the startup hunt");
+    rc |= expect(g_state.trunk_cc_freq == 0 && g_state.p25_cc_freq == 0, "the probe publishes no control channel");
+    aloha(1); // the probed frequency is a DMR control channel
+    rc |= expect(g_state.trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR && dmr->cc_confirmed
+                     && g_state.trunk_cc_freq == 451000000L,
+                 "validated DMR control on a P25-driven probe hands the trunk to DMR");
+    p25_sm_tick_guard_enter();
+    p25_sm_cold_start_tick_locked(p25, &g_opts, &g_state);
+    p25_sm_tick_guard_leave();
+    rc |= expect(p25->state == P25_SM_IDLE && p25->cold_start_hunt == 0, "P25 ends its startup hunt where it is");
+    const int tunes = g_cc_tunes;
+    p25_sm_try_tick(&g_opts, &g_state);
+    rc |= expect(g_cc_tunes == tunes, "P25 does not retune a DMR-owned receiver");
+    cleanup();
+    return rc;
+}
+
 int
 main(void) {
     (void)dsd_test_unsetenv("DSD_NEO_DMR_HANGTIME");
@@ -1179,5 +1618,19 @@ main(void) {
     rc |= pending_probe_timeout();
     rc |= pending_park_timeout();
     rc |= visit_hook_defers_tuning_until_decoder_unwinds();
+    rc |= dmr_cold_start_hunts_the_map();
+    rc |= dmr_live_cc_at_start_never_hunts();
+    rc |= dmr_cold_start_holds_validated_content();
+    rc |= dmr_owner_named_without_confirmation_stops_in_place();
+    rc |= dmr_stop_with_probe_in_flight();
+    rc |= dmr_stop_after_deadline_then_late_success();
+    rc |= dmr_one_row_map_retries_a_failed_probe();
+    rc |= dmr_cold_start_followed_grant_stands();
+    rc |= dmr_grant_from_idle_disarms_the_window();
+    rc |= dmr_settle_waits_for_a_tune_in_flight();
+    rc |= dmr_settle_tune_deadline();
+    rc |= dmr_stop_trunking_off_parks_at_once();
+    rc |= dmr_operator_moves();
+    rc |= ft_cold_start_hands_dmr_over();
     return rc;
 }

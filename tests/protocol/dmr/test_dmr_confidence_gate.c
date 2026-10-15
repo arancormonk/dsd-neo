@@ -5,6 +5,9 @@
 
 #include <assert.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "dmr_confidence.h"
 #include "dsd-neo/core/safe_api.h"
@@ -191,6 +194,52 @@ test_reset_clears_gate_state(void) {
     assert(dmr_confidence_any_voice_open(&state) == 0);
 }
 
+#define GATE_TEST_T0_NS 1000000000000000000ULL
+
+static void
+at_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(GATE_TEST_T0_NS + ms * 1000000ULL);
+}
+
+static int
+stamped_at_ms(const dsd_state* state, uint64_t ms) {
+    const double want = (double)(GATE_TEST_T0_NS + ms * 1000000ULL) / 1e9;
+    return fabs(state->dmr_confidence_lock_m - want) < 1e-6;
+}
+
+static void
+test_validated_content_stamps_decode_time(void) {
+    // A startup control-channel hunt (issue #703) restarts its window from the last DMR content that passed this gate,
+    // so every lock and every matching observation stamps the decode clock, and nothing else does.
+    static dsd_state state;
+    init_state(&state);
+    dsd_decode_clock_use_test(GATE_TEST_T0_NS);
+
+    at_ms(1000);
+    assert(dmr_confidence_note_data_burst(&state, 5) == DMR_CONFIDENCE_PENDING);
+    assert(state.dmr_confidence_lock_m < 1e-9); // one burst proves nothing
+    assert(dmr_confidence_note_data_burst(&state, 5) == DMR_CONFIDENCE_LOCKED);
+    assert(stamped_at_ms(&state, 1000));
+    at_ms(2000);
+    assert(dmr_confidence_note_data_burst(&state, 5) == DMR_CONFIDENCE_LOCKED);
+    assert(stamped_at_ms(&state, 2000));
+    at_ms(2500);
+    assert(dmr_confidence_note_data_burst(&state, 9) == DMR_CONFIDENCE_REJECT);
+    assert(stamped_at_ms(&state, 2000));
+    dmr_confidence_reset(&state); // a carrier boundary does not undo content that was decoded
+    assert(stamped_at_ms(&state, 2000));
+
+    init_state(&state);
+    at_ms(3000);
+    dmr_confidence_note_voice_sync(&state, 1);
+    assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_PENDING);
+    assert(state.dmr_confidence_lock_m < 1e-9);
+    at_ms(3060);
+    assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(stamped_at_ms(&state, 3060));
+    dsd_decode_clock_use_system();
+}
+
 int
 main(void) {
     test_single_data_burst_does_not_lock();
@@ -203,6 +252,7 @@ main(void) {
     test_invalid_color_code_rejected();
     test_voice_requires_voice_sync_before_open();
     test_reset_clears_gate_state();
+    test_validated_content_stamps_decode_time();
     printf("DMR confidence gate: OK\n");
     return 0;
 }

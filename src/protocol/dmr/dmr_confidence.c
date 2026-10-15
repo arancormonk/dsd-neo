@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -15,6 +16,14 @@
 #define DMR_CONFIDENCE_LOCK_OBSERVES   2U
 #define DMR_CONFIDENCE_VOICE_OBSERVES  2U
 #define DMR_CONFIDENCE_RELOCK_OBSERVES 4U
+
+/* DMR content passed the gate: signal search's evidence, and the stamp a startup control-channel hunt reads on the
+   decoder thread (issue #703). Never cleared: a carrier boundary does not undo content that was decoded. */
+static void
+dmr_confidence_note_evidence(dsd_state* state) {
+    state->dmr_confidence_lock_m = dsd_decode_now_mono_s();
+    dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
+}
 
 static int
 dmr_confidence_valid_cc(unsigned int color_code) {
@@ -63,7 +72,7 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
             // co-channel interference never accumulates into a re-lock.
             state->dmr_confidence_candidate_cc = DMR_CONFIDENCE_UNKNOWN_CC;
             state->dmr_confidence_candidate_count = 0;
-            dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
+            dmr_confidence_note_evidence(state);
             return DMR_CONFIDENCE_LOCKED;
         }
         if (state->dmr_confidence_mismatch_count < 255U) {
@@ -88,7 +97,7 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
             // The previous system identity is gone; voice slots must
             // re-qualify under the new colour code before audio resumes.
             dmr_confidence_clear_voice(state);
-            dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
+            dmr_confidence_note_evidence(state);
             return DMR_CONFIDENCE_LOCKED;
         }
         return DMR_CONFIDENCE_REJECT;
@@ -105,7 +114,7 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
         state->dmr_confidence_locked = 1;
         state->dmr_confidence_color_code = (uint8_t)color_code;
         state->dmr_color_code = color_code;
-        dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
+        dmr_confidence_note_evidence(state);
         return DMR_CONFIDENCE_LOCKED;
     }
 
@@ -146,7 +155,7 @@ dmr_confidence_note_voice_burst(dsd_state* state, unsigned int slot, unsigned in
 
     if (state->dmr_confidence_voice_count[slot] >= DMR_CONFIDENCE_VOICE_OBSERVES) {
         state->dmr_confidence_voice_open[slot] = 1;
-        dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
+        dmr_confidence_note_evidence(state);
         return DMR_CONFIDENCE_LOCKED;
     }
 

@@ -86,6 +86,9 @@ set_state(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dmr_sm_state_e new_state, con
     }
     dmr_sm_state_e old = ctx->state;
     ctx->state = new_state;
+    if (new_state != DMR_SM_IDLE && !ctx->cold_start_hunt) {
+        ctx->cold_start_armed_m = 0.0; // only an IDLE machine keeps a startup window (issue #703)
+    }
 
     if (sm_status_log_enabled(opts)) {
         DSD_FPRINTF(stderr, "\n[DMR SM] %s -> %s (%s)\n", dmr_sm_state_name(old), dmr_sm_state_name(new_state),
@@ -190,6 +193,125 @@ dmr_cc_current_frequency(const dsd_opts* opts, const dmr_sm_ctx_t* ctx) {
     return ctx->cc_probe_freq_hz != 0 ? ctx->cc_probe_freq_hz : ctx->cc_freq_hz;
 }
 
+/* ----------------------------------------------------------------------------
+ * Startup control-channel hunt (issue #703)
+ *
+ * A single-system session whose start frequency yields no validated control within cc_grace_s walks its channel map
+ * with the ordinary hunt. Decoder thread only, like every DMR tick.
+ * ---------------------------------------------------------------------------- */
+
+static void
+dmr_sm_cold_start_clear(dmr_sm_ctx_t* ctx) {
+    ctx->cold_start_armed_m = 0.0;
+    ctx->cold_start_hunt = 0;
+    ctx->cold_start_park_pending = 0;
+}
+
+/* The window runs from the later of its opening and the last DMR content that passed its colour-code gate: validated
+   traffic means the frequency is not dead, even when it carries no control channel (a Hytera XPT call). */
+static int
+dmr_sm_cold_start_window_expired(const dmr_sm_ctx_t* ctx, const dsd_state* state, double now_m) {
+    double start_m = ctx->cold_start_armed_m;
+    if (state->dmr_confidence_lock_m > start_m) {
+        start_m = state->dmr_confidence_lock_m;
+    }
+    return (now_m - start_m) > ctx->cc_grace_s;
+}
+
+/* Leave the startup hunt for IDLE, dropping the probe's attribution: only once the tuning layer is settled, or when
+   trunking or the input went away, or where validated control named an owner. */
+static void
+dmr_sm_cold_start_park_now(dmr_sm_ctx_t* ctx, const dsd_opts* opts, int keep_window, const char* reason) {
+    const double armed_m = ctx->cold_start_armed_m;
+    ctx->cc_tune_request_id = 0U;
+    ctx->cc_acquiring = 0;
+    ctx->cc_probe_freq_hz = 0;
+    ctx->cc_rx_freq_hz = 0;
+    ctx->cc_retry_after_m = 0.0;
+    dmr_sm_cold_start_clear(ctx);
+    if (keep_window) {
+        ctx->cold_start_armed_m = armed_m;
+    }
+    sm_recovery_log(opts, reason);
+    set_state(ctx, opts, DMR_SM_IDLE, reason);
+}
+
+/* Park once settled: a probe in flight is resolved here (never replaced by a new probe), any other tune in flight (one
+   the hunt does not track) is waited for, and only a failure is replaced, by a settle tune to the frequency the tuner
+   reports, whose success makes radio and options agree and retires every older failure. A settle tune is tracked like a
+   probe, its deadline included: one the backend never answers is failed at the deadline, as a probe is, and replaced.
+   The hunt never disowns or completes a request. */
+static void
+dmr_sm_cold_start_settle(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, int keep_window,
+                         const char* reason) {
+    ctx->cold_start_park_pending = keep_window ? 1 : 2;
+    if (ctx->cc_tune_request_id != 0U) {
+        (void)dmr_cc_resolve_pending(ctx, opts, now_m);
+        if (ctx->cc_tune_request_id != 0U) {
+            return;
+        }
+    }
+    const uint64_t newest = dsd_trunk_tuning_pending_request();
+    if (newest != 0U) {
+        if (dsd_trunk_tuning_request_status(newest, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
+            return;
+        }
+        const long freq = dmr_cc_current_frequency(opts, NULL);
+        const long alias_before = state->trunk_cc_freq;
+        uint64_t request_id = 0U;
+        const dsd_trunk_tune_result result = freq > 0
+                                                 ? dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0, &request_id)
+                                                 : DSD_TRUNK_TUNE_RESULT_FAILED;
+        state->trunk_cc_freq = alias_before;
+        if (dsd_trunk_tune_result_is_ok(result)) {
+            ctx->cc_probe_freq_hz = freq; // its attribution goes with the park
+            ctx->cc_tune_request_id = request_id;
+            ctx->cc_tune_deadline_m = now_m + DMR_CC_TUNE_TIMEOUT_S;
+        }
+        sm_recovery_log(opts, "cold-start-settle-tune");
+        return;
+    }
+    dmr_sm_cold_start_park_now(ctx, opts, keep_window, reason);
+}
+
+/* Whether a startup hunt goes on probing; otherwise it is ended, parked, or settling toward a park. At a probe
+   decision point (@p decision) an unexpired window parks it too. */
+static int
+dmr_sm_cold_start_gate(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, int decision) {
+    if (state->trunk_recovery_protocol != (int)DSD_TRUNK_RECOVERY_UNKNOWN) {
+        // Validated control named an owner without confirming a control channel here (a confirmation clears the
+        // startup hunt in dmr_cc_note_activity_ctx()): the hunt ends where it is, as an XPT site is followed today. A
+        // grant it followed stands: only the startup bookkeeping ends.
+        if (ctx->state == DMR_SM_TUNED) {
+            dmr_sm_cold_start_clear(ctx);
+            sm_recovery_log(opts, "cold-start-owner-named");
+        } else {
+            dmr_sm_cold_start_park_now(ctx, opts, 0, "cold-start-owner-named");
+        }
+        return 0;
+    }
+    if (opts->trunk_enable != 1 || state->input_boundary != 0) {
+        // The tuning layer retires failures once no tune owner is active, and the engine resets its requests when the
+        // input is replaced: nothing is left for this hunt to settle.
+        dmr_sm_cold_start_park_now(ctx, opts, 0, "cold-start-trunking-or-input-left");
+        return 0;
+    }
+    if (!dsd_state_trunk_cold_start_eligible(opts, state) || !dsd_trunk_dmr_recovery_allowed(opts, state)) {
+        dmr_sm_cold_start_settle(ctx, opts, state, now_m, 0, "cold-start-not-admitted");
+        return 0;
+    }
+    if (ctx->cold_start_park_pending != 0) {
+        dmr_sm_cold_start_settle(ctx, opts, state, now_m, ctx->cold_start_park_pending == 1,
+                                 "cold-start-operator-move");
+        return 0;
+    }
+    if (decision && !dmr_sm_cold_start_window_expired(ctx, state, now_m)) {
+        dmr_sm_cold_start_settle(ctx, opts, state, now_m, 1, "cold-start-window");
+        return 0;
+    }
+    return 1;
+}
+
 static dmr_sm_ctx_t*
 dmr_cc_activity_context(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 1 || opts->trunk_is_tuned == 1) {
@@ -225,6 +347,7 @@ dmr_cc_note_activity_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* sta
     ctx->cc_rx_freq_hz = current;
     ctx->cc_rx_generation = dsd_trunk_tuning_generation();
     const int acquired = !ctx->cc_confirmed || ctx->cc_acquiring;
+    dmr_sm_cold_start_clear(ctx); // validated control on this frequency ends any startup hunt (issue #703)
     ctx->cc_confirmed = 1;
     ctx->cc_acquiring = 0;
     ctx->cc_retry_after_m = 0.0;
@@ -286,13 +409,18 @@ dmr_cc_map_has_frequency(const dsd_state* state, long freq) {
 
 static long
 dmr_cc_next_mapped_candidate(dmr_sm_ctx_t* ctx, const dsd_state* state) {
+    int probe_listed = 0;
     for (int tries = 0; tries < state->lcn_freq_count; ++tries) {
         if (ctx->cc_hunt_index >= state->lcn_freq_count || ctx->cc_hunt_index < 0) {
             ctx->cc_hunt_index = 0;
         }
         const int index = ctx->cc_hunt_index++;
         const long freq = *dsd_state_trunk_lcn_slot_const(state, index);
-        if (freq <= 0 || dsd_state_trunk_lcn_avoid_get(state, (size_t)index) || freq == ctx->cc_probe_freq_hz) {
+        if (freq <= 0 || dsd_state_trunk_lcn_avoid_get(state, (size_t)index)) {
+            continue;
+        }
+        if (freq == ctx->cc_probe_freq_hz) {
+            probe_listed = 1;
             continue;
         }
         /* Adjacent LSNs often name the same RF channel. */
@@ -302,7 +430,13 @@ dmr_cc_next_mapped_candidate(dmr_sm_ctx_t* ctx, const dsd_state* state) {
         }
         return freq;
     }
-    return 0; // No eligible alternative: keep listening without a retune.
+    /* No eligible alternative: keep listening without a retune on a row the radio is on. One whose tune never completed
+       (a failed or expired probe) is probed again, since only a success retires the failure that gates every frame. */
+    if (probe_listed
+        && (ctx->cc_rx_freq_hz != ctx->cc_probe_freq_hz || !dsd_trunk_tuning_frame_is_current(ctx->cc_rx_generation))) {
+        return ctx->cc_probe_freq_hz;
+    }
+    return 0;
 }
 
 static long
@@ -331,6 +465,9 @@ dmr_cc_next_candidate(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state)
 static void
 dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     if (!dsd_trunk_dmr_recovery_allowed(opts, state) || opts->trunk_is_tuned == 1 || ctx->cc_retry_after_m > now_m) {
+        return;
+    }
+    if (ctx->cold_start_hunt && !dmr_sm_cold_start_gate(ctx, opts, state, now_m, 1)) {
         return;
     }
     ctx->cc_retry_after_m = now_m + 2.0;
@@ -368,6 +505,26 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         DSD_FPRINTF(stderr, "\n[DMR SM] CC probe %.6lf MHz; acquisition %.2f s\n", (double)freq / 1000000.0,
                     DMR_CC_PROBE_GRACE_S);
     }
+}
+
+static void
+dmr_sm_tick_idle_cold_start(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!dsd_state_trunk_cold_start_eligible(opts, state)) {
+        ctx->cold_start_armed_m = 0.0;
+        return;
+    }
+    if (ctx->cold_start_armed_m <= 0.0) {
+        ctx->cold_start_armed_m = now_m;
+        return;
+    }
+    if (!dmr_sm_cold_start_window_expired(ctx, state, now_m)) {
+        return;
+    }
+    ctx->cold_start_hunt = 1;
+    ctx->cc_retry_after_m = 0.0;
+    sm_recovery_log(opts, "cold-start-hunt");
+    set_state(ctx, opts, DMR_SM_HUNTING, "cold-start");
+    dmr_cc_hunt(ctx, opts, state, now_m);
 }
 
 /* ============================================================================
@@ -820,9 +977,27 @@ dmr_sm_event(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     }
 }
 
+/* A machine the ownership gate does not admit: a startup hunt it may no longer run settles and parks here, where the
+   decoder still ticks it, and an armed window is dropped (issue #703). */
+static void
+dmr_sm_tick_not_admitted(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    if (!ctx->initialized) {
+        return;
+    }
+    if (opts && state && ctx->cold_start_hunt) {
+        (void)dmr_sm_cold_start_gate(ctx, opts, state, dsd_decode_now_mono_s(), 0);
+    } else {
+        ctx->cold_start_armed_m = 0.0;
+    }
+}
+
 void
 dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
-    if (!ctx || !dsd_trunk_dmr_recovery_allowed(opts, state)) {
+    if (!ctx) {
+        return;
+    }
+    if (!dsd_trunk_dmr_recovery_allowed(opts, state)) {
+        dmr_sm_tick_not_admitted(ctx, opts, state);
         return;
     }
 
@@ -834,12 +1009,15 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     double hangtime = ctx->hangtime_s;
     double grant_timeout = ctx->grant_timeout_s;
     double cc_grace = ctx->cc_acquiring ? DMR_CC_PROBE_GRACE_S : ctx->cc_grace_s;
+    if (ctx->cold_start_hunt && !dmr_sm_cold_start_gate(ctx, opts, state, now_m, 0)) {
+        return;
+    }
     if (!dmr_cc_resolve_pending(ctx, opts, now_m)) {
         return;
     }
 
     switch (ctx->state) {
-        case DMR_SM_IDLE: break;
+        case DMR_SM_IDLE: dmr_sm_tick_idle_cold_start(ctx, opts, state, now_m); break;
 
         case DMR_SM_ON_CC:
             if (!opts || opts->trunk_is_tuned != 1) {
@@ -851,6 +1029,39 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
         case DMR_SM_HUNTING: dmr_cc_hunt(ctx, opts, state, now_m); break;
     }
+}
+
+void
+dmr_sm_cold_start_note_retune(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    if (!ctx || !ctx->initialized) {
+        return;
+    }
+    const double now_m = dsd_decode_now_mono_s();
+    if (ctx->cold_start_hunt) {
+        // Parks keeping a window that runs from the move, once settled; the probe is not where the receiver is.
+        ctx->cold_start_armed_m = now_m;
+        ctx->cold_start_park_pending = 1;
+        ctx->cc_probe_freq_hz = 0;
+        ctx->cc_rx_freq_hz = 0;
+    } else if (ctx->state == DMR_SM_IDLE && ctx->cold_start_armed_m > 0.0) {
+        ctx->cold_start_armed_m = now_m;
+    }
+}
+
+int
+dmr_sm_cold_start_active(const dmr_sm_ctx_t* ctx) {
+    return ctx && (ctx->cold_start_hunt || ctx->cold_start_armed_m > 0.0);
+}
+
+int
+dmr_sm_cold_start_due(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (dmr_sm_cold_start_active(ctx)) {
+        return 1;
+    }
+    return ctx && opts && state && ctx->state == DMR_SM_IDLE && dsd_trunk_dmr_recovery_allowed(opts, state)
+           && dsd_state_trunk_cold_start_eligible(opts, state);
 }
 
 /* ============================================================================

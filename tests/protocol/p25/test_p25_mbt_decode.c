@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1033,6 +1034,45 @@ main(void) {
         (void)p25_decode_pdu_trunking(&opts, &state, reg, sizeof reg);
         rc |= expect_eq_int("mbt 0x2C rejected aff count", state.p25_aff_count, 0);
         rc |= expect_eq_int("mbt 0x2C rejected ga count", state.p25_ga_count, 0);
+    }
+
+    // Issue #703: every validated outbound block establishes the control channel where it was decoded, not only the
+    // handlers that seed it. A registration response names the P25 owner and seeds nothing itself.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        uint8_t reg[48];
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(reg, 0, sizeof reg);
+        reg[0] = 0x37;
+        reg[3] = 0x01;
+        reg[4] = 0x23;
+        reg[5] = 0x45;
+        reg[6] = 0x01;
+        reg[7] = 0x2C;
+        reg[17] = 0x02;
+        opts.trunk_enable = 1;
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.rtlsdr_center_freq = 851012500U;
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+
+        (void)p25_decode_pdu_trunking(&opts, &state, reg, sizeof reg);
+        rc |=
+            expect_eq_int("validated block names the P25 owner", state.trunk_recovery_protocol, DSD_TRUNK_RECOVERY_P25);
+        rc |= expect_eq_long("validated block establishes the CC from the tuner", state.p25_cc_freq, 851012500L);
+        rc |= expect_eq_long("validated block sets the shared CC alias", state.trunk_cc_freq, 851012500L);
+
+        opts.rtlsdr_center_freq = 852000000U; // a later block never moves an established control channel
+        (void)p25_decode_pdu_trunking(&opts, &state, reg, sizeof reg);
+        rc |= expect_eq_long("an established CC stays", state.p25_cc_freq, 851012500L);
+
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.trunk_enable = 0; // monitoring a control channel without trunking establishes nothing
+        (void)p25_decode_pdu_trunking(&opts, &state, reg, sizeof reg);
+        rc |= expect_eq_int("untrunked block still names the owner", state.trunk_recovery_protocol,
+                            DSD_TRUNK_RECOVERY_P25);
+        rc |= expect_eq_long("untrunked block establishes no CC", state.p25_cc_freq, 0L);
     }
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
