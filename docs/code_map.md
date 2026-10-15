@@ -5902,18 +5902,17 @@ thread, which the rest of the interface never is.
   (`finishAndRemoveTask()`) to the Android main thread without waiting, and `DsdNeoActivity.onDestroy` stops the
   engine and the service and ends the process as for any finish. The base host answers false, and the model then
   leaves the confirmed restore waiting for the next start.
-- Document copies run on `BackupModel`'s worker thread, never the Qt main thread
-  (`decoder_host_android_documents.cpp`). A `content://` reference goes over JNI to `DocumentCopies.kt` through the
-  application `ContentResolver` the constructor holds; a file URL or plain path takes the base host's copy. The read
-  side refuses a provider-declared size over the cap before opening, counts the cap while copying
-  (`DocumentTransfer.kt`), writes a temp file beside the destination and renames it; a stale destination is removed
-  first, and `DocumentCopied` counts only when the file is there. A failure on this device's side (a stale destination
-  that stays, the temp file, a write to it through `DocumentTransfer.LocalOutput`, the rename) is
-  `DocumentLocalFailed` (`LOCAL_FAILED`), not the document's `DocumentFailed`; the codes cross JNI as plain ints, and
-  the `document_transfer` suite checks that both sides name the same values. A save opens the document `wt`, else `w`; a file
-  (not a provider's pipe) is cut back to the copy's length and synced. A save that fails once the document is open
-  closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather than a short
-  document, and deletes it; only a whole save closes normally.
+- Document copies run on `BackupModel`'s worker thread, never the Qt main thread (`decoder_host_android_documents.cpp`).
+  A `content://` reference goes over JNI to `DocumentCopies.kt` through the application `ContentResolver` the
+  constructor holds; a file URL or plain path takes the base host's copy. The read side refuses a provider-declared size
+  over the cap before opening, counts the cap while copying (`DocumentTransfer.kt`), writes a temp file beside the
+  destination and renames it; a stale destination is removed first, and `DocumentCopied` counts only when the file is
+  there. A failure on this device's side (a stale destination that stays, the temp file, a write to it through
+  `DocumentTransfer.LocalOutput`, the rename) is `DocumentLocalFailed` (`LOCAL_FAILED`), not the document's
+  `DocumentFailed`; the codes cross JNI as plain ints, and the `document_transfer` suite checks that both sides name the
+  same values. A save opens the document `wt`, else `w`; a file (not a provider's pipe) is cut back to the copy's length
+  and synced. A save that fails once the document is open closes it with `closeWithError()`, so a provider reading a
+  pipe or socket sees the failure rather than a short document, and deletes it; only a whole save closes normally.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.

@@ -60,9 +60,9 @@ QString staging_dir_for_job(const QString& jobId);
  *
  * @param dataRoot json_store_root(), read by the caller: a worker passes the value the UI thread read.
  * @param summary  Optional; on success, the staged backup's summary (the parse's, less the rows left out).
- * @param proceed  Optional; asked before each library file's dry run, the costly step (at most three a row: a library
- *                 still losing rows on the third pass is refused as "Damaged"). False stops the staging: it returns
- *                 false with @p error empty and nothing left at @p stagingDir.
+ * @param proceed  Optional; asked once before any file is written, then before each library file's dry run, the costly
+ *                 step (at most three a row: a library still losing rows on the third pass is refused as "Damaged").
+ *                 False stops the staging: it returns false with @p error empty and nothing left at @p stagingDir.
  * @param error On failure, the backup_error_name(): "Damaged" when the parse result does not belong to this data root
  *              or does not match the archive, "StagingFailed" when the staging directory could not be written.
  * @return true when everything is staged; on failure nothing is left at @p stagingDir.
