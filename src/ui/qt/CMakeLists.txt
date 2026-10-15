@@ -79,6 +79,7 @@ qt_add_resources(
         qml/DecryptionApplyFlow.qml
         qml/FailureCard.qml
         qml/BackupFlow.qml
+        qml/BackupResultCard.qml
         qml/CsvImportFlow.qml
         qml/HistoryDetailSheet.qml
         qml/PlexComboBox.qml

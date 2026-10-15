@@ -6,10 +6,10 @@ import QtQuick.Dialogs
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
-// Issue #580: the Settings Backup card and the one backup flow Main owns for
-// both Settings instances. `backup` is the recording fake in
-// qml_test_context.h; a case drives its results through testContext and reads
-// back what the screens asked for.
+// Issue #580: the Settings Backup card, the one backup flow Main owns for both
+// Settings instances, and the restore result card on Home. `backup` is the
+// recording fake in qml_test_context.h; a case drives its results through
+// testContext and reads back what the screens asked for.
 Item {
     width: 420
     height: 900
@@ -783,6 +783,101 @@ Item {
             // Positive control: with the flow over, an attachment starts.
             testContext.emitLocalDeviceAttached();
             compare(decoderHost.sessionState, 1);
+        }
+
+        // ---- the Home result card ----
+
+        function test_result_card_data() {
+            var counts = {systems: 3, scanLists: 2, libraryFiles: 5, profiles: 1, ranges: 2, avoids: 4, systemsWithExtraArgs: 0, appExtraArgs: false, createdAt: 1760000000, app: "1.4.0"};
+            return [
+                {tag: "applied", outcome: Object.assign({kind: "applied", message: "", recordingsToChoose: 2}, counts), title: "Backup restored", lines: ["This phone now has the backup's saved systems (3), scan lists (2), imported files (5), decryption profiles (1), search ranges and settings.", "2 replay systems need their recording chosen again."], problem: false, actions: ["Dismiss"]},
+                {tag: "applied, one recording", outcome: Object.assign({kind: "applied", message: "", recordingsToChoose: 1}, counts), title: "Backup restored", lines: ["1 replay system needs its recording chosen again."], problem: false, actions: ["Dismiss"]},
+                {tag: "applied, no recordings", outcome: Object.assign({kind: "applied", message: "", recordingsToChoose: 0}, counts), title: "Backup restored", lines: [], lacks: "replay system", problem: false, actions: ["Dismiss"]},
+                {tag: "failed", outcome: Object.assign({kind: "failed", message: "A file of the current configuration couldn't be read. Nothing was changed", recordingsToChoose: 0}, counts), title: "Restore not applied. Nothing was changed.", lines: ["A file of the current configuration couldn't be read."], problem: true, actions: ["Dismiss"]},
+                {tag: "deferred", outcome: Object.assign({kind: "deferred", message: "The decoder was busy, so the restore waits for the next start", recordingsToChoose: 0}, counts), title: "The decoder was busy, so the restore waits for the next start.", lines: ["Reopen DSD-neo to try again."], problem: true, actions: ["Discard restore", "Dismiss"]},
+                {tag: "deferred for storage", outcome: Object.assign({kind: "deferred", message: "Not enough free storage to restore. Free up storage and reopen DSD-neo", recordingsToChoose: 0}, counts), title: "Not enough free storage to restore. Free up storage and reopen DSD-neo.", lines: [], lacks: "Reopen DSD-neo to try again.", problem: true, actions: ["Discard restore", "Dismiss"]},
+                {tag: "stuck", outcome: Object.assign({kind: "stuck", message: "Restore couldn't finish. Free up storage and reopen DSD-neo", recordingsToChoose: 0}, counts), title: "Restore couldn't finish. Free up storage and reopen DSD-neo.", lines: [], problem: true, actions: ["Dismiss"]}
+            ];
+        }
+
+        function test_result_card(data) {
+            app.currentTab = 0;
+            var home = findChild(app, "homeScreen");
+            tryVerify(function () {
+                return home.visible;
+            });
+            var card = findChild(home, "backupResultCard");
+            verify(card !== null);
+            verify(!card.visible);
+            verify(testContext.setBackup("startupOutcome", data.outcome));
+            tryCompare(card, "visible", true);
+            compare(card.Accessible.role, Accessible.AlertMessage);
+            tryCompare(card, "announced", card.Accessible.name);
+            var title = findChild(card, "backupResultTitle");
+            compare(title.text, data.title);
+            compare(title.textFormat, Text.PlainText);
+            var detail = findChild(card, "backupResultDetail");
+            compare(detail.textFormat, Text.PlainText);
+            for (var line of data.lines)
+                verify(detail.text.indexOf(line) >= 0, "missing: " + line + " in " + detail.text);
+            if (data.lacks)
+                verify(detail.text.indexOf(data.lacks) < 0);
+            verify(card.Accessible.name.indexOf(data.title) === 0);
+            compare(card.border.color, data.problem ? Ui.Theme.alertBorder : Ui.Theme.panelBorder);
+            compare(buttons(card), data.actions);
+            // At the top of Home: only the screen title sits above it.
+            tryVerify(function () {
+                return card.parent.children.filter(function (item) {
+                    return item !== card && item.visible && item.height > 0 && item.y < card.y;
+                }).length === 1;
+            }, 2000, "only the title sits above the card");
+            var dismiss = findChild(card, "backupResultDismiss");
+            verify(dismiss.height >= Ui.Theme.minimumTouchSize);
+            dismiss.activate();
+            compare(calls("acknowledgeStartupOutcome").length, 1);
+            compare(calls("discardDeferredRestore").length, 0);
+            tryCompare(card, "visible", false);
+        }
+
+        function test_deferred_discard_data() {
+            return [
+                {tag: "discarded", reply: {ok: true, discarded: true, error: ""}, stays: false},
+                {tag: "refused", reply: {ok: false, discarded: false, error: "Io"}, stays: true}
+            ];
+        }
+
+        function test_deferred_discard(data) {
+            app.currentTab = 0;
+            var card = findChild(findChild(app, "homeScreen"), "backupResultCard");
+            verify(testContext.setBackup("startupOutcome", {kind: "deferred", message: "Not enough free storage to restore. Free up storage and reopen DSD-neo"}));
+            tryCompare(card, "visible", true);
+            testContext.setBackupReply("discardDeferredRestore", data.reply);
+            findChild(card, "backupResultDiscard").activate();
+            compare(calls("discardDeferredRestore").length, 1);
+            compare(calls("acknowledgeStartupOutcome").length, 0);
+            if (!data.stays) {
+                tryCompare(card, "visible", false);
+                return;
+            }
+            verify(card.visible);
+            var error = findChild(card, "backupResultError");
+            compare(error.text, "Couldn't discard the restore. DSD-neo tries it again the next time it opens.");
+            compare(error.color, Ui.Theme.alert);
+        }
+
+        function test_result_card_announces_once() {
+            app.currentTab = 0;
+            var card = findChild(findChild(app, "homeScreen"), "backupResultCard");
+            verify(testContext.setBackup("startupOutcome", {kind: "stuck", message: "Restore couldn't finish. Free up storage and reopen DSD-neo"}));
+            tryCompare(card, "visible", true);
+            tryCompare(card, "announcements", 1);
+            compare(card.announced, "Restore couldn't finish. Free up storage and reopen DSD-neo.");
+            app.currentTab = 2;
+            tryCompare(card, "visible", false);
+            app.currentTab = 0;
+            tryCompare(card, "visible", true);
+            wait(50);
+            compare(card.announcements, 1, "showing the tab again repeats nothing");
         }
     }
 }

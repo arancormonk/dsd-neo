@@ -146,6 +146,12 @@ Item {
                 }
             }
 
+            // Issue #580: what this start's restore did, first thing, until dismissed.
+            BackupResultCard {
+                width: parent.width
+                outcome: backup.startupOutcome
+            }
+
             // WP-D5: keep the complete USB diagnostic next to the dongle pill.
             UiPanel {
                 width: parent.width
