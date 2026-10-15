@@ -100,6 +100,13 @@ void dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_proto
  * sync, modulation or CC hints written outside that guard by frame acquisition. */
 int dsd_trunk_p25_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
 int dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
+
+/** Whether P25 runs the startup control-channel hunt of a single-system trunked session that no protocol has proven
+ * yet (issue #703): trunking on, neither -Y nor --trunk-scan, no validated owner, P25 decoded, and none of NXDN48,
+ * NXDN96 or ProVoice (whose control channels a P25-driven hunt would leave too soon). DMR alongside is fine: its first
+ * validated control message names DMR the owner. This grants no recovery ownership; only the decoder thread's
+ * startup hunt reads it. */
+int dsd_trunk_p25_cold_start_presumed(const dsd_opts* opts, const dsd_state* state);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 /**
  * @brief Report decoded conventional DMR/NXDN/P25 activity to the scan coordinator.
