@@ -149,7 +149,8 @@ struct ApplyResult {
  *     every staged file's size and sha256 are verified (else the stage is removed → Failed), and free space for the
  *     staged and journal bytes plus 1 MiB is required (else Deferred).
  *  2. Without a complete journal, the journal is built from the live configuration (old files copied, settings,
- *     destinations with the free names chosen for blocked ones), `journal/COMPLETE` last.
+ *     destinations with the free names chosen for blocked ones), `journal/COMPLETE` last. A blocked bundle whose row
+ *     keeps its file outside it cannot take a free name (that file names it by its id): Failed, nothing changed.
  *  3. Roll forward from the journal and the staging only.
  *  4. Success: result file (best effort), the marker removed (the commit point), the stage removed → Applied.
  *  5. A failure in 3, or a staging that no longer verifies after the journal is complete → roll back from the

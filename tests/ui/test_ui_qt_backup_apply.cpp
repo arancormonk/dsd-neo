@@ -6,10 +6,10 @@
 /* Unit tests: staging a validated backup and applying it at the next start (issue #580). The backup and the older
  * configuration it is restored over are both built by the real models. Covered: the staging layout and its library
  * dry run; promote, commit, discard and the staging sweep; a clean apply; the files an apply must keep (recordings,
- * unknown files, external, symlinked and non-owned references) and the free names incoming files take instead; the
- * containment check; a crash at every step of the apply and of its rollback; I/O failures that roll back to a
- * byte-identical state; Stuck; Failed before any change; Deferred; and the result file. Registered only when the Qt
- * frontend is enabled (DSD_ENABLE_QT_UI). */
+ * unknown files, external, symlinked and non-owned references) and the free names incoming files take instead, except
+ * for a bundle a channel map beside it names, which never moves; the containment check; a crash at every step of the
+ * apply and of its rollback; I/O failures that roll back to a byte-identical state; Stuck; Failed before any change;
+ * Deferred; and the result file. Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
 #include <QChar>
@@ -736,16 +736,22 @@ apply(Faults* faults = nullptr, bool busy = false, qint64 free = -1) {
     return dsd_qt::backup::apply_pending_restore(env);
 }
 
-/** Stage, promote and commit the backup over a fresh copy of the old configuration. */
+/** Stage, promote and commit @p parsed over a fresh copy of @p tree. */
 bool
-prepare_tree(const Backup& b, const Tree& tree) {
+stage_over(const dsd_qt::backup::ParseResult& parsed, const QByteArray& archive, const Tree& tree) {
     put_back(tree);
     const QString dir = dsd_qt::backup::staging_dir_for_job("job-1");
     QString error;
-    const bool ok = dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error)
-                    && dsd_qt::backup::promote_staging(dir) && dsd_qt::backup::commit_pending();
+    const bool ok = dsd_qt::backup::stage_restore(parsed, archive, dir, &error) && dsd_qt::backup::promote_staging(dir)
+                    && dsd_qt::backup::commit_pending();
     expect("stage, promote and commit", ok);
     return ok;
+}
+
+/** Stage, promote and commit the backup over a fresh copy of the old configuration. */
+bool
+prepare_tree(const Backup& b, const Tree& tree) {
+    return stage_over(b.parsed, b.archive, tree);
 }
 
 bool
@@ -1744,6 +1750,85 @@ test_empty_avoids(TestHost& host, const Backup& b, const Old& old) {
     dsd_app_signal_search_store_close();
 }
 
+/** A backup of one channel map kept beside its bundle, and the configuration it was exported from. */
+struct Beside {
+    QByteArray archive;
+    dsd_qt::backup::ParseResult parsed;
+    Tree tree;
+    QString map, bundle;
+};
+
+/** A plain channel map updated in place with companions keeps its file in imports/ and names them by the bundle's id. */
+Beside
+make_beside(TestHost& host) {
+    Beside beside;
+    put_back(Tree());
+    {
+        dsd_qt::ImportedFilesModel library(&host);
+        QTemporaryDir source;
+        expect("write the beside fixtures",
+               write_file(source.filePath("plain.csv"), "channel,frequency_hz,mode\n1,461000000,dmr\n")
+                   && write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
+                   && write_file(source.filePath("channels.csv"),
+                                 "channel,frequency_hz,mode,keys_hex_csv\n1,461000000,dmr,keys.csv\n"));
+        QVariantMap result = library.importBundle(source.filePath("plain.csv"), "Plain.csv", "chan", {});
+        const int row = library.rowForPath(result.value("path").toString());
+        result = library.importBundle(source.filePath("channels.csv"), "Plain.csv", "chan", {}, row);
+        expect("the plain map is updated with companions", result.value("ok").toBool());
+        beside.map = result.value("path").toString();
+        beside.bundle = library.get(row).value("bundleRoot").toString();
+    }
+    expect("the map stays beside its bundle and names it", !beside.bundle.isEmpty()
+                                                               && !beside.map.startsWith(beside.bundle + '/')
+                                                               && read_file(beside.map).contains("bundles/"));
+    const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
+    beside.archive = built.archive;
+    beside.parsed = dsd_qt::backup::backup_parse_archive(beside.archive, root());
+    expect("the beside backup builds and parses",
+           built.error == BackupError::None && beside.parsed.error == BackupError::None);
+    beside.tree = capture();
+    return beside;
+}
+
+/** Whether the restored map's companions load, as the library checks them. */
+bool
+map_loads(const Beside& beside) {
+    int accepted = 0, skipped = 0;
+    return dsd_qt::ImportedFilesModel::validate(beside.map, "chan", &accepted, &skipped) && accepted == 1;
+}
+
+/**
+ * A bundle a map beside it names by its id cannot take a free name, since the restore never rewrites the map: when an
+ * unowned entry holds its place the restore fails before any change. Where the place is free or owned, it restores.
+ */
+void
+test_bundle_named_from_outside(TestHost& host, const Old& old) {
+    const Beside beside = make_beside(host);
+
+    stage_over(beside.parsed, beside.archive, beside.tree);
+    expect("over its own configuration: applied", apply().outcome == ApplyOutcome::Applied);
+    expect("over its own configuration: the map loads", map_loads(beside));
+
+    stage_over(beside.parsed, beside.archive, old.tree);
+    expect("over another configuration: applied", apply().outcome == ApplyOutcome::Applied);
+    expect("over another configuration: the bundle keeps its id and the map loads",
+           QFileInfo(beside.bundle).isDir() && map_loads(beside));
+
+    Tree blocked = old.tree;
+    blocked.dirs.insert(relative(beside.bundle));
+    blocked.files.insert(relative(beside.bundle) + "/stray.txt", "left by an earlier import\n");
+    stage_over(beside.parsed, beside.archive, blocked);
+    const ApplyResult result = apply();
+    const QString reason = "A folder left by an earlier import is in the way of a restored channel map. To restore "
+                           "this backup, clear DSD-neo's storage first. Nothing was changed";
+    expect("a stray entry where a named bundle goes fails the restore",
+           result.outcome == ApplyOutcome::Failed && result.reason == reason);
+    expect("the failed restore changes nothing", same_tree(capture(), blocked, true, {kResultFile}));
+    expect("the failed restore leaves nothing pending", !dsd_qt::backup::pending_exists());
+    expect("the result says why", dsd_qt::backup::read_result_file().value("reason") == reason);
+    expect("no bundle took a fresh id", !QFileInfo::exists(beside.bundle + "-1"));
+}
+
 } // namespace
 
 int
@@ -1791,6 +1876,7 @@ main(int argc, char** argv) {
         test_links_inside_removed_trees(backup, old, reference);
         test_journal_leftover(backup, old);
         test_empty_avoids(host, backup, old);
+        test_bundle_named_from_outside(host, old);
     }
     dsd_app_signal_search_store_close();
 

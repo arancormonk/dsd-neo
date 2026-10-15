@@ -86,6 +86,13 @@ leftover_reason() {
 }
 
 QString
+bundle_reason() {
+    return QCoreApplication::translate(
+        "BackupApply", "A folder left by an earlier import is in the way of a restored channel map. To restore this "
+                       "backup, clear DSD-neo's storage first. Nothing was changed");
+}
+
+QString
 space_reason() {
     return QCoreApplication::translate("BackupApply",
                                        "Not enough free storage to restore. Free up storage and reopen DSD-neo");
@@ -94,7 +101,7 @@ space_reason() {
 enum class Status { Ok, Failed, Crashed };
 
 /** Why a journal could not be built: storage (the next start tries again) or a cause retrying cannot fix. */
-enum class JournalProblem { Space, Names, Unreadable, Leftover };
+enum class JournalProblem { Space, Names, Unreadable, Leftover, BundleInTheWay };
 
 /** One file the staging or the journal lists: a path relative to its directory, its size and sha256. */
 struct Listed {
@@ -469,6 +476,10 @@ class LiveScan {
  * A directory the backup needs where something other than a directory is (an old file included: a rollback must be
  * able to put it back) is never written through either: a bundle moves, and a loose file's directory takes a free
  * "dir (n)".
+ *
+ * One bundle cannot move: one whose row keeps its file outside it (a channel map updated in place stays beside its
+ * bundle), since that file names the companions by the bundle's id, in contents a restore never rewrites. When such a
+ * bundle's place is taken, the plan fails instead.
  */
 class Destinations {
   public:
@@ -479,12 +490,32 @@ class Destinations {
         }
     }
 
+    /** False with @p problem set (Names or BundleInTheWay) when no plan exists; @p problem is untouched otherwise. */
     bool
-    plan() {
+    plan(JournalProblem* problem) {
+        bool inTheWay = false;
+        if (placeAll(&inTheWay)) {
+            return true;
+        }
+        *problem = inTheWay ? JournalProblem::BundleInTheWay : JournalProblem::Names;
+        return false;
+    }
+
+  private:
+    bool
+    placeAll(bool* inTheWay) {
         const QStringList roots = stagedRoots();
+        const QSet<QString> named = namedFromOutside();
         reserve(roots);
         for (const QString& root : roots) {
-            if (bundleBlocked(root) && !moveBundle(root)) {
+            if (!bundleBlocked(root)) {
+                continue;
+            }
+            if (named.contains(root)) {
+                *inTheWay = true;
+                return false;
+            }
+            if (!moveBundle(root)) {
                 return false;
             }
         }
@@ -510,7 +541,6 @@ class Destinations {
         return true;
     }
 
-  private:
     QStringList
     stagedRoots() const {
         const QString bundles = m_root.at(QStringLiteral("imports/bundles/"));
@@ -523,6 +553,22 @@ class Destinations {
         }
         roots.removeDuplicates();
         std::sort(roots.begin(), roots.end());
+        return roots;
+    }
+
+    /** The staged bundle roots whose row's file lies outside them. */
+    QSet<QString>
+    namedFromOutside() const {
+        const QString prefix = m_root.path() + QLatin1Char('/');
+        QSet<QString> roots;
+        for (const auto& value : m_staging.stores.value(QLatin1String(kImportedFilesStore))) {
+            const QJsonObject row = value.toObject();
+            const QString root = row.value(QLatin1String("bundleRoot")).toString();
+            if (root.startsWith(prefix)
+                && !row.value(QLatin1String("path")).toString().startsWith(root + QLatin1Char('/'))) {
+                roots.insert(root.mid(prefix.size()));
+            }
+        }
         return roots;
     }
 
@@ -821,6 +867,7 @@ class Applier {
                 case JournalProblem::Names: return failUnchanged(names_reason());
                 case JournalProblem::Unreadable: return failUnchanged(unreadable_reason());
                 case JournalProblem::Leftover: return failUnchanged(leftover_reason());
+                case JournalProblem::BundleInTheWay: return failUnchanged(bundle_reason());
                 case JournalProblem::Space: break;
             }
             return result(ApplyOutcome::Deferred, space_reason()); // the next start tries again
@@ -852,8 +899,7 @@ class Applier {
 
     Status
     buildJournal() {
-        if (!Destinations(m_root, m_staging, &m_journal).plan()) {
-            m_problem = JournalProblem::Names;
+        if (!Destinations(m_root, m_staging, &m_journal).plan(&m_problem)) {
             return Status::Failed;
         }
         Status status = step("journal.begin", [this] {
