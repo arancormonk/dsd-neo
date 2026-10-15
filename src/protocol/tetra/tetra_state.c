@@ -52,7 +52,7 @@ tetra_st_existing(dsd_state* state) {
 const tetra_state_t*
 tetra_st_peek(const dsd_state* state) {
     /* What a session with no TETRA state reads: every field at its zero default. */
-    static const tetra_state_t k_empty;
+    static const tetra_state_t k_empty = {0};
     if (!state) {
         return NULL;
     }

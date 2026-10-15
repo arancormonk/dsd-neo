@@ -698,7 +698,7 @@ call_takes_over(const dsd_opts* opts, dsd_state* state, const tetra_call_t* c, c
                 const tetra_sm_grant* followed) {
     const tetra_call_t* const cur = tetra_calls_followed(state);
     const double now_m = dsd_decode_now_mono_s();
-    dsd_tg_policy_decision cur_d;
+    dsd_tg_policy_decision cur_d = {0};
     const int cur_judged = cur && call_decision(opts, state, cur, &cur_d) == 0;
     if (d->tg_hold_match && !(cur_judged && cur_d.tg_hold_match)) {
         return 1;

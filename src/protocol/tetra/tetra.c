@@ -965,7 +965,7 @@ tetra_pub_channels(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_pu
     pub->cc_known = (uint8_t)(ts->frames_sysinfo != 0 && !ts->dmo);
     pub->cc_carrier = pub->cc_known ? (uint16_t)(ts->sysinfo_main_carrier & 0xFFFu) : 0U;
     pub->cc_freq_hz = pub->cc_known ? tetra_pub_hz(ts->dl_carrier_hz) : 0U;
-    tetra_chan_alloc traffic;
+    tetra_chan_alloc traffic = {0};
     pub->traffic_valid = (uint8_t)(!ts->dmo && tetra_calls_traffic(state, &traffic));
     pub->traffic_carrier = pub->traffic_valid ? (uint16_t)(traffic.carrier & 0xFFFu) : 0U;
     pub->traffic_slots = pub->traffic_valid ? (uint8_t)(traffic.timeslots & 0x0Fu) : 0U;
