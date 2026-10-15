@@ -31,6 +31,7 @@
 #include <Qt>
 #include <QtEndian>
 #include <QtGlobal>
+#include <algorithm>
 #include <atomic>
 #include <dsd-neo/runtime/log.h>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
@@ -382,15 +383,20 @@ class Builder {
         if (m_carried.paths().size() > kMaxFiles) {
             return fail(BackupError::TooLarge, QStringLiteral("files: more files than the file count cap"));
         }
-        for (const QString& relative : m_carried.paths()) {
-            if (cancelled() || !measureFile(relative)) {
-                return false;
-            }
-            if (m_fileBytes > kMaxArchiveBytes) {
-                return fail(BackupError::TooLarge, QStringLiteral("files: larger than the archive cap"));
-            }
+        const QStringList& paths = m_carried.paths();
+        const bool measured = std::all_of(paths.cbegin(), paths.cend(), [this](const QString& relative) {
+            return !cancelled() && measureFile(relative) && withinArchiveCap();
+        });
+        return measured && !cancelled();
+    }
+
+    /** Whether the files measured so far fit the archive cap; TooLarge once they do not. */
+    bool
+    withinArchiveCap() {
+        if (m_fileBytes > kMaxArchiveBytes) {
+            return fail(BackupError::TooLarge, QStringLiteral("files: larger than the archive cap"));
         }
-        return !cancelled();
+        return true;
     }
 
     QJsonObject
@@ -464,12 +470,9 @@ class Builder {
         archive->append(length, 4);
         archive->append(json);
         wipe(json);
-        for (const auto& entry : m_fileTable) {
-            if (cancelled() || !fillFile(entry.toObject(), archive)) {
-                return false;
-            }
-        }
-        return true;
+        return std::none_of(m_fileTable.cbegin(), m_fileTable.cend(), [this, archive](const QJsonValue& entry) {
+            return cancelled() || !fillFile(entry.toObject(), archive);
+        });
     }
 
     /** Every backup must pass its own restore validation; a mismatch here is a bug, not a user error. */

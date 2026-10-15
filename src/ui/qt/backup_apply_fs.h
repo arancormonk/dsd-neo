@@ -77,38 +77,41 @@ class DataRoot {
     QString at(const QString& relative) const;
 
     /**
-     * The containment check: @p path is a clean absolute path below the root, and none of its existing components
+     * The containment check: @p location is a clean absolute path below the root, and none of its existing components
      * below the root (the path itself included) is a symlink or a junction.
      */
-    bool contains(const QString& path) const;
+    bool contains(const QString& location) const;
 
-    /** Leave no entry at @p path; true when none is left. Refuses a directory and an uncontained path. */
-    bool removeFile(const QString& path) const;
+    /** Leave no entry at @p location; true when none is left. Refuses a directory and an uncontained path. */
+    bool removeFile(const QString& location) const;
 
     /**
-     * Remove the directory @p path and everything below it, one level at a time. Nothing is followed: a symlink or
+     * Remove the directory @p location and everything below it, one level at a time. Nothing is followed: a symlink or
      * junction inside is unlinked itself (removeLink()), never descended into, and its target is never touched; a
      * file goes through removeFile(); a real subdirectory is removed by the same recursion, which ends, like this
      * call, in removeEmptyDir() once it is empty.
      */
-    bool removeTree(const QString& path) const;
+    bool removeTree(const QString& location) const;
 
-    /** Unlink the symlink or junction at @p path itself, never its target; its directory must pass contains(). */
-    bool removeLink(const QString& path) const;
+    /** Unlink the symlink or junction at @p location itself, never its target; its directory must pass contains(). */
+    bool removeLink(const QString& location) const;
 
-    /** Remove whatever is at @p path without following it: a link (removeLink()), a tree (removeTree()) or a file. */
-    bool removeEntry(const QString& path) const;
+    /**
+     * Remove whatever is at @p location without following it: a link (removeLink()), a tree (removeTree()) or a
+     * file.
+     */
+    bool removeEntry(const QString& location) const;
 
-    /** Remove @p path when it is an empty directory; false when it stays. */
-    bool removeEmptyDir(const QString& path) const;
+    /** Remove @p location when it is an empty directory; false when it stays. */
+    bool removeEmptyDir(const QString& location) const;
 
-    /** Remove every empty directory at or below @p path, deepest first; directories with content stay. */
-    void pruneEmptyDirs(const QString& path) const;
+    /** Remove every empty directory at or below @p location, deepest first; directories with content stay. */
+    void pruneEmptyDirs(const QString& location) const;
 
-    bool makeDirs(const QString& path) const;
+    bool makeDirs(const QString& location) const;
 
-    /** Write @p bytes to @p path through QSaveFile with mode 0600, creating its directories. */
-    bool writeFile(const QString& path, const QByteArray& bytes) const;
+    /** Write @p bytes to @p location through QSaveFile with mode 0600, creating its directories. */
+    bool writeFile(const QString& location, const QByteArray& bytes) const;
 
     /**
      * Copy the regular file @p from to @p to (QSaveFile, 0600). When @p expected is not empty the copy must hash to

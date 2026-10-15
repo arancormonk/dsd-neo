@@ -271,8 +271,8 @@ class BackupModel : public QObject {
 
     /** Queue @p work for the worker thread. */
     void post(std::function<void()> work);
-    /** Worker side: queue @p reply for the UI thread and ask the event loop to run it. */
-    void reply(std::function<void()> reply);
+    /** Worker side: queue @p handler for the UI thread and ask the event loop to run it. */
+    void reply(std::function<void()> handler);
     /** Worker side: run the oldest queued work. */
     void runNext();
 

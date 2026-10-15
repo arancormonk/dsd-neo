@@ -103,8 +103,8 @@ class Stager {
 
   private:
     BackupError
-    fail(BackupError error, const QString& detail) {
-        m_detail = detail;
+    fail(BackupError error, const QString& why) {
+        m_detail = why;
         return error;
     }
 
@@ -122,10 +122,12 @@ class Stager {
     checkTarget() {
         const QString imports = m_root.at(QStringLiteral("imports/"));
         for (auto it = m_parsed.stores.cbegin(); it != m_parsed.stores.cend(); ++it) {
-            for (const TypedPathValue& value : typed_path_values(it.key(), it.value())) {
-                if (value.field.kind == PathKind::Recording || !value.value.startsWith(imports)) {
-                    return fail(BackupError::Damaged, QStringLiteral("a path does not belong to this data root"));
-                }
+            const QList<TypedPathValue> values = typed_path_values(it.key(), it.value());
+            const bool foreign = std::any_of(values.cbegin(), values.cend(), [&imports](const TypedPathValue& value) {
+                return value.field.kind == PathKind::Recording || !value.value.startsWith(imports);
+            });
+            if (foreign) {
+                return fail(BackupError::Damaged, QStringLiteral("a path does not belong to this data root"));
             }
         }
         return BackupError::None;
@@ -218,64 +220,104 @@ class Stager {
         return BackupError::None;
     }
 
-    /** Leave out the @p failed rows' files (those no @p kept row still needs) and clear what names them. */
+    /** What the kept library rows still name: their files, and everything below their bundles. */
+    class KeptFiles {
+      public:
+        explicit KeptFiles(const QJsonArray& kept) {
+            for (const auto& value : kept) {
+                const QJsonObject row = value.toObject();
+                m_files.insert(row.value(QLatin1String("path")).toString());
+                const QString root = bundle_root(row);
+                if (!root.isEmpty()) {
+                    m_roots.append(root + QLatin1Char('/'));
+                }
+            }
+        }
+
+        bool
+        needs(const QString& path) const {
+            return m_files.contains(path)
+                   || std::any_of(m_roots.cbegin(), m_roots.cend(),
+                                  [&path](const QString& root) { return path.startsWith(root); });
+        }
+
+      private:
+        QSet<QString> m_files;
+        QStringList m_roots;
+    };
+
+    static QString
+    bundle_root(const QJsonObject& row) {
+        return row.value(QLatin1String("bundleRoot")).toString();
+    }
+
+    /** A failed row's file and its bundle's carried files, as store paths. */
+    QStringList
+    rowFiles(const QJsonObject& row) const {
+        QStringList files{row.value(QLatin1String("path")).toString()};
+        const QString root = bundle_root(row);
+        if (!root.isEmpty()) {
+            for (const ArchiveFile& file : m_parsed.files) {
+                if (m_root.at(file.path).startsWith(root + QLatin1Char('/'))) {
+                    files.append(m_root.at(file.path));
+                }
+            }
+        }
+        return files;
+    }
+
+    /** Remove the staged copies of @p files and their manifest entries. */
     bool
-    leaveOut(const QList<QJsonObject>& failed, const QJsonArray& kept) {
-        const auto rootOf = [](const QJsonObject& row) { return row.value(QLatin1String("bundleRoot")).toString(); };
-        QSet<QString> keptFiles;
-        QStringList keptRoots;
-        for (const auto& value : kept) {
-            const QJsonObject row = value.toObject();
-            keptFiles.insert(row.value(QLatin1String("path")).toString());
-            if (!rootOf(row).isEmpty()) {
-                keptRoots.append(rootOf(row) + QLatin1Char('/'));
-            }
-        }
-        const auto needed = [&](const QString& path) {
-            return keptFiles.contains(path) || std::any_of(keptRoots.cbegin(), keptRoots.cend(), [&](const QString& r) {
-                       return path.startsWith(r);
-                   });
-        };
-        QSet<QString> goneFiles, goneRoots;
-        for (const QJsonObject& row : failed) {
-            notInclude(QObject::tr("%1: couldn't be read on this phone").arg(row_label(row)));
-            QStringList candidates{row.value(QLatin1String("path")).toString()};
-            const QString root = rootOf(row);
-            if (!root.isEmpty()) {
-                goneRoots.insert(root);
-                for (const ArchiveFile& file : m_parsed.files) {
-                    if (m_root.at(file.path).startsWith(root + QLatin1Char('/'))) {
-                        candidates.append(m_root.at(file.path));
-                    }
-                }
-            }
-            for (const QString& path : candidates) {
-                if (!needed(path)) {
-                    goneFiles.insert(path);
-                }
-            }
-        }
-        QSet<QString> goneEntries;
-        for (const QString& path : goneFiles) {
+    unstage(const QSet<QString>& files) {
+        QSet<QString> entries;
+        for (const QString& path : files) {
             if (!m_root.removeFile(stagedPath(path))) {
                 return false;
             }
-            goneEntries.insert(QStringLiteral("files/") + path.mid(m_root.path().size() + 1));
+            entries.insert(QStringLiteral("files/") + path.mid(m_root.path().size() + 1));
         }
         QJsonArray listed;
         for (const auto& entry : m_files) {
-            if (!goneEntries.contains(entry.toObject().value(QLatin1String("path")).toString())) {
+            if (!entries.contains(entry.toObject().value(QLatin1String("path")).toString())) {
                 listed.append(entry);
             }
         }
         m_files = listed;
+        return true;
+    }
+
+    /** Clear every typed value that names one of @p files, or one of @p roots as a bundle root. */
+    void
+    clearReferences(const QSet<QString>& files, const QSet<QString>& roots) {
         for (auto it = m_stores.begin(); it != m_stores.end(); ++it) {
             *it = map_typed_path_values(it.key(), *it, [&](const TypedPathValue& value) {
-                const bool gone = value.field.kind == PathKind::BundleRoot ? goneRoots.contains(value.value)
-                                                                           : goneFiles.contains(value.value);
+                const bool gone = value.field.kind == PathKind::BundleRoot ? roots.contains(value.value)
+                                                                           : files.contains(value.value);
                 return gone ? QString() : value.value;
             });
         }
+    }
+
+    /** Leave out the @p failed rows' files (those no @p kept row still needs) and clear what names them. */
+    bool
+    leaveOut(const QList<QJsonObject>& failed, const QJsonArray& kept) {
+        const KeptFiles needed(kept);
+        QSet<QString> goneFiles, goneRoots;
+        for (const QJsonObject& row : failed) {
+            notInclude(QObject::tr("%1: couldn't be read on this phone").arg(row_label(row)));
+            if (!bundle_root(row).isEmpty()) {
+                goneRoots.insert(bundle_root(row));
+            }
+            for (const QString& path : rowFiles(row)) {
+                if (!needed.needs(path)) {
+                    goneFiles.insert(path);
+                }
+            }
+        }
+        if (!unstage(goneFiles)) {
+            return false;
+        }
+        clearReferences(goneFiles, goneRoots);
         return true;
     }
 

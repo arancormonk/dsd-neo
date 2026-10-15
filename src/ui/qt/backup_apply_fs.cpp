@@ -123,13 +123,13 @@ DataRoot::at(const QString& relative) const {
 }
 
 bool
-DataRoot::contains(const QString& path) const {
-    if (!valid() || !QDir::isAbsolutePath(path) || QDir::cleanPath(path) != path
-        || !path.startsWith(m_root + QLatin1Char('/'))) {
+DataRoot::contains(const QString& location) const {
+    if (!valid() || !QDir::isAbsolutePath(location) || QDir::cleanPath(location) != location
+        || !location.startsWith(m_root + QLatin1Char('/'))) {
         return false;
     }
     QString current = m_root;
-    for (const QString& part : path.mid(m_root.size() + 1).split(QLatin1Char('/'))) {
+    for (const QString& part : location.mid(m_root.size() + 1).split(QLatin1Char('/'))) {
         current += QLatin1Char('/') + part;
         const QFileInfo info(current);
         if (is_link(info)) {
@@ -143,105 +143,105 @@ DataRoot::contains(const QString& path) const {
 }
 
 bool
-DataRoot::removeFile(const QString& path) const {
-    if (!entry_exists(path)) {
+DataRoot::removeFile(const QString& location) const {
+    if (!entry_exists(location)) {
         return true;
     }
-    if (!contains(path) || QFileInfo(path).isDir()) {
+    if (!contains(location) || QFileInfo(location).isDir()) {
         return false;
     }
-    QFile::remove(path);
-    return !entry_exists(path);
+    QFile::remove(location);
+    return !entry_exists(location);
 }
 
 bool
-DataRoot::removeTree(const QString& path) const {
-    if (!entry_exists(path)) {
+DataRoot::removeTree(const QString& location) const {
+    if (!entry_exists(location)) {
         return true;
     }
-    if (!contains(path) || !is_real_dir(path)) {
+    if (!contains(location) || !is_real_dir(location)) {
         return false;
     }
     // One level at a time, so nothing is reached through a link: removeEntry() unlinks a link and descends only into
     // real directories.
     const QFileInfoList entries =
-        QDir(path).entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        QDir(location).entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
     bool removed = true;
     for (const QFileInfo& entry : entries) {
         removed = removeEntry(entry.filePath()) && removed;
     }
-    return removed && removeEmptyDir(path) && !entry_exists(path);
+    return removed && removeEmptyDir(location) && !entry_exists(location);
 }
 
 bool
-DataRoot::removeLink(const QString& path) const {
-    if (QDir::cleanPath(path) != path || !path.startsWith(m_root + QLatin1Char('/'))) {
+DataRoot::removeLink(const QString& location) const {
+    if (QDir::cleanPath(location) != location || !location.startsWith(m_root + QLatin1Char('/'))) {
         return false;
     }
     // The directory, taken from the clean path itself: QFileInfo could spell it differently (a Windows drive letter).
-    const QString parent = path.left(path.lastIndexOf(QLatin1Char('/')));
-    const QFileInfo info(path);
+    const QString parent = location.left(location.lastIndexOf(QLatin1Char('/')));
+    const QFileInfo info(location);
     if (!is_link(info) || !(parent == m_root ? valid() : contains(parent))) {
         return false;
     }
     // QFile::remove() unlinks a symlink; a directory symlink or junction on Windows needs rmdir, which removes the
-    // link and leaves its target alone.
-    if (!QFile::remove(path) && info.isDir()) {
-        QDir().rmdir(path);
+    // link and leaves its location alone.
+    if (!QFile::remove(location) && info.isDir()) {
+        QDir().rmdir(location);
     }
-    return !entry_exists(path);
+    return !entry_exists(location);
 }
 
 bool
-DataRoot::removeEntry(const QString& path) const {
-    const QFileInfo info(path);
+DataRoot::removeEntry(const QString& location) const {
+    const QFileInfo info(location);
     if (is_link(info)) {
-        return removeLink(path);
+        return removeLink(location);
     }
-    return info.isDir() ? removeTree(path) : removeFile(path);
+    return info.isDir() ? removeTree(location) : removeFile(location);
 }
 
 bool
-DataRoot::removeEmptyDir(const QString& path) const {
-    if (!contains(path) || !is_real_dir(path)) {
+DataRoot::removeEmptyDir(const QString& location) const {
+    if (!contains(location) || !is_real_dir(location)) {
         return false;
     }
-    return QDir().rmdir(path);
+    return QDir().rmdir(location);
 }
 
 void
-DataRoot::pruneEmptyDirs(const QString& path) const {
-    if (!contains(path) || !is_real_dir(path)) {
+DataRoot::pruneEmptyDirs(const QString& location) const {
+    if (!contains(location) || !is_real_dir(location)) {
         return;
     }
     QStringList dirs;
-    QDirIterator it(path, QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+    QDirIterator it(location, QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot | QDir::NoSymLinks,
                     QDirIterator::Subdirectories);
     while (it.hasNext()) {
         dirs.append(it.next());
     }
     // Deepest first, so a directory is empty by the time its turn comes when all below it were.
     std::sort(dirs.begin(), dirs.end(), [](const QString& a, const QString& b) { return a.size() > b.size(); });
-    dirs.append(path);
+    dirs.append(location);
     for (const QString& dir : dirs) {
         removeEmptyDir(dir);
     }
 }
 
 bool
-DataRoot::makeDirs(const QString& path) const {
-    if (path == m_root) {
-        return valid() && QDir().mkpath(path) && QFileInfo(path).isDir(); // the root itself may be a symlink
+DataRoot::makeDirs(const QString& location) const {
+    if (location == m_root) {
+        return valid() && QDir().mkpath(location) && QFileInfo(location).isDir(); // the root itself may be a symlink
     }
-    return contains(path) && QDir().mkpath(path) && is_real_dir(path);
+    return contains(location) && QDir().mkpath(location) && is_real_dir(location);
 }
 
 bool
-DataRoot::writeFile(const QString& path, const QByteArray& bytes) const {
-    if (!contains(path) || QFileInfo(path).isDir() || !makeDirs(QFileInfo(path).absolutePath())) {
+DataRoot::writeFile(const QString& location, const QByteArray& bytes) const {
+    if (!contains(location) || QFileInfo(location).isDir() || !makeDirs(QFileInfo(location).absolutePath())) {
         return false;
     }
-    QSaveFile file(path);
+    QSaveFile file(location);
     return open_private(file) && file.write(bytes) == bytes.size() && file.commit();
 }
 

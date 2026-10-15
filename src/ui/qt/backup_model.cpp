@@ -617,10 +617,10 @@ BackupModel::runNext() {
 }
 
 void
-BackupModel::reply(std::function<void()> reply) {
+BackupModel::reply(std::function<void()> handler) {
     {
         const std::lock_guard<std::mutex> lock(m_handoff);
-        m_replies.push_back(std::move(reply));
+        m_replies.push_back(std::move(handler));
     }
     // The destructor's waitForDone() keeps the model alive while the worker runs; the guard and Qt drop the queued
     // call if the model is gone by the time the event loop gets to it.

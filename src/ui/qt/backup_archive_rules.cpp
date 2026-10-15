@@ -252,10 +252,11 @@ archive_path_problem(const QString& path) {
     if (parts.size() < 2 || parts.size() > kMaxPathComponents) {
         return QStringLiteral("too shallow or too deep");
     }
-    for (const QString& part : parts) {
-        if (part.isEmpty() || part == QLatin1String(".") || part == QLatin1String("..")) {
-            return QStringLiteral("empty, '.' or '..' component");
-        }
+    const bool unusable = std::any_of(parts.cbegin(), parts.cend(), [](const QString& part) {
+        return part.isEmpty() || part == QLatin1String(".") || part == QLatin1String("..");
+    });
+    if (unusable) {
+        return QStringLiteral("empty, '.' or '..' component");
     }
     return staging_name(parts.last()) ? QStringLiteral("staging leftover") : QString();
 }

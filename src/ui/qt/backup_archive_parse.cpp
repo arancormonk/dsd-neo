@@ -212,10 +212,9 @@ class Parser {
             return fail(BackupError::TooLarge, QStringLiteral("files: more files than the file count cap"));
         }
         qint64 offset = m_dataOffset;
-        for (const auto& value : table) {
-            if (!readFile(value, &offset)) {
-                return false;
-            }
+        if (!std::all_of(table.cbegin(), table.cend(),
+                         [this, &offset](const QJsonValue& value) { return readFile(value, &offset); })) {
+            return false;
         }
         if (offset != m_archive.size()) {
             return fail(BackupError::Damaged, QStringLiteral("files: file data does not fill the archive"));
@@ -334,14 +333,17 @@ class Parser {
 
     bool
     checkTypedPaths() {
+        const QList<TypedPathField>& fields = typed_fields();
         for (auto it = m_result.stores.cbegin(); it != m_result.stores.cend(); ++it) {
             for (const auto& value : it.value()) {
                 const QJsonObject row = value.toObject();
-                for (const auto& field : typed_fields()) {
-                    if (is_typed_field(it.key(), field)
-                        && !checkTypedValue(it.key(), field, row.value(QLatin1String(field.field)))) {
-                        return false;
-                    }
+                const QString& store = it.key();
+                const bool valid = std::all_of(fields.cbegin(), fields.cend(), [&](const TypedPathField& field) {
+                    return !is_typed_field(store, field)
+                           || checkTypedValue(store, field, row.value(QLatin1String(field.field)));
+                });
+                if (!valid) {
+                    return false;
                 }
             }
         }
@@ -410,11 +412,13 @@ class Parser {
      */
     bool
     checkCoverage() {
-        for (const QString& path : m_carried.paths()) {
-            if (!m_named.contains(path) && !m_claimed.contains(bundle_of(path))) {
-                return fail(BackupError::Damaged,
-                            QStringLiteral("typed: a carried file is named by no path field and lies in no bundle"));
-            }
+        const QStringList& paths = m_carried.paths();
+        const bool covered = std::all_of(paths.cbegin(), paths.cend(), [this](const QString& carried) {
+            return m_named.contains(carried) || m_claimed.contains(bundle_of(carried));
+        });
+        if (!covered) {
+            return fail(BackupError::Damaged,
+                        QStringLiteral("typed: a carried file is named by no path field and lies in no bundle"));
         }
         return true;
     }

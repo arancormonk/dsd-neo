@@ -116,8 +116,8 @@ QList<TypedPathField> typed_path_fields();
 
 /** One present, non-empty string value of a typed path field. */
 struct TypedPathValue {
-    int row;
-    TypedPathField field;
+    int row = 0;
+    TypedPathField field{nullptr, nullptr, PathKind::File};
     QString value;
 };
 

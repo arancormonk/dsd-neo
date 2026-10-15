@@ -814,7 +814,7 @@ class Applier {
      * repeats this outcome at the next start, which changes nothing either.
      */
     ApplyResult
-    failUnchanged(const QString& reason) {
+    failUnchanged(const QString& reason) const {
         const Status written = step("result.write", [&] {
             writeResult(ApplyOutcome::Failed, reason); // best effort
             return true;
@@ -1047,7 +1047,7 @@ class Applier {
     }
 
     ApplyResult
-    forward() {
+    forward() const {
         const Status status = rollForwardSteps();
         if (status == Status::Crashed) {
             return interrupted();
@@ -1058,7 +1058,7 @@ class Applier {
     /* ---- steps 4 to 6: the ending ---- */
 
     ApplyResult
-    finish(ApplyOutcome outcome, const QString& reason) {
+    finish(ApplyOutcome outcome, const QString& reason) const {
         Status status = step("result.write", [&] {
             writeResult(outcome, reason); // best effort: the outcome is also returned
             return true;
@@ -1119,7 +1119,7 @@ class Applier {
     }
 
     ApplyResult
-    rollBackAndFinish() {
+    rollBackAndFinish() const {
         const Status status = rollBackSteps();
         if (status == Status::Crashed) {
             return interrupted();
