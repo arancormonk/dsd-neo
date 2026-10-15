@@ -7,9 +7,10 @@
  * configuration it is restored over are both built by the real models. Covered: the staging layout and its library
  * dry run; promote, commit, discard and the staging sweep; a clean apply; the files an apply must keep (recordings,
  * unknown files, external, symlinked and non-owned references) and the free names incoming files take instead, except
- * for a bundle a channel map beside it names, which never moves; the containment check; a crash at every step of the
- * apply and of its rollback; I/O failures that roll back to a byte-identical state; Stuck; Failed before any change;
- * Deferred; and the result file. Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
+ * for a bundle a channel map beside it names, which never moves; two restores in a row, the second owning exactly what
+ * the first wrote; the containment check; a crash at every step of the apply and of its rollback; I/O failures that
+ * roll back to a byte-identical state; Stuck; Failed before any change; Deferred; and the result file. Registered only
+ * when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
 #include <QChar>
@@ -37,6 +38,7 @@
 #include <QVariantMap>
 #include <QtEndian>
 #include <QtGlobal>
+#include <algorithm>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/signal_search.h>
@@ -1829,6 +1831,93 @@ test_bundle_named_from_outside(TestHost& host, const Old& old) {
     expect("no bundle took a fresh id", !QFileInfo::exists(beside.bundle + "-1"));
 }
 
+/**
+ * Two restores in a row: B, exported from a restored A, is restored over it. The second restore's journal owns
+ * exactly what the first restore wrote (the moved "-1" bundle and the files with free names included), the stores and
+ * the generated folders; its only owned roots are A's two bundles, so no wider root gains deletion authority, and
+ * every other file stays byte-identical.
+ */
+void
+test_two_restores_in_a_row(const Backup& b, const Old& old, const Tree& restored) {
+    put_back(restored);
+    QSet<QString> written; // what the first restore wrote
+    for (const auto& file : b.parsed.files) {
+        written.insert(destination(b, old, file.path));
+    }
+    expect("the first restore moved a bundle and renamed files",
+           written.contains(relative(old.groupsDest)) && written.contains(relative(old.srcDest))
+               && written.contains(relative(old.targetsDest) + "/targets.csv"));
+    {
+        dsd_qt::DecryptionProfilesModel profiles; // the first start compiles the restored profiles into decryption/
+    }
+    const Tree restoredA = capture();
+    expect("the restored profiles were compiled", QFileInfo(at("decryption/managed")).isDir());
+    {
+        dsd_qt::ScanListsModel scans;
+        expect("B drops the list only a scan list named", scans.remove(1));
+    }
+    const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
+    const auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, root());
+    expect("B builds and parses", built.error == BackupError::None && parsed.error == BackupError::None);
+    expect("B no longer carries the dropped list",
+           std::none_of(parsed.files.cbegin(), parsed.files.cend(),
+                        [&](const dsd_qt::backup::ArchiveFile& file) { return at(file.path) == b.extra; }));
+
+    QSet<QString> expected = written;
+    for (auto it = restoredA.files.cbegin(); it != restoredA.files.cend(); ++it) {
+        const QString& name = it.key();
+        if (name.startsWith("decryption/") || name.startsWith("scan_lists/")
+            || QStringList{"saved_systems.json", "scan_lists.json", "imported_files.json", "decryption_profiles.json",
+                           "signal-search-ranges.json", kAvoidsFile}
+                   .contains(name)) {
+            expected.insert(name);
+        }
+    }
+
+    stage_over(parsed, built.archive, restoredA);
+    Faults stop;
+    stop.crashStep = "forward.delete";
+    stop.crashCall = 1;
+    apply(&stop);
+    const QJsonObject journal = read_json_object(pending("journal/manifest.json"));
+    QSet<QString> owned;
+    for (const auto& value : journal.value("files").toArray()) {
+        owned.insert(value.toObject().value("path").toString());
+    }
+    for (const QString& name : owned - expected) {
+        DSD_FPRINTF(stderr, "  owned beyond the first restore: %s\n", qUtf8Printable(name));
+    }
+    for (const QString& name : expected - owned) {
+        DSD_FPRINTF(stderr, "  not owned though the first restore wrote it: %s\n", qUtf8Printable(name));
+    }
+    expect("the second restore owns exactly what the first restore wrote", stop.crashed && owned == expected);
+    QStringList roots;
+    for (const auto& value : journal.value("ownedRoots").toArray()) {
+        roots.append(value.toString());
+    }
+    roots.sort();
+    QStringList wantRoots{relative(b.chanRoot), relative(old.targetsDest)};
+    wantRoots.sort();
+    expect("the only owned roots are the first restore's two bundles", roots == wantRoots);
+
+    expect("the second restore applies", apply().outcome == ApplyOutcome::Applied);
+    const Tree after = capture();
+    bool kept = true;
+    for (auto it = restoredA.files.cbegin(); it != restoredA.files.cend(); ++it) {
+        if (!owned.contains(it.key()) && it.key() != QLatin1String(kResultFile)
+            && after.files.value(it.key()) != it.value()) {
+            DSD_FPRINTF(stderr, "  changed though not owned: %s\n", qUtf8Printable(it.key()));
+            kept = false;
+        }
+    }
+    expect("the second restore deletes or changes nothing else", kept && after.links == restoredA.links);
+    expect("the second restore removed the list B dropped", !QFileInfo::exists(b.extra));
+    expect("the unreferenced folder at the moved bundle's old id survives both restores",
+           read_file(b.targetsRoot + "/notes.txt") == "not a bundle of ours\n");
+    expect("B's files land where A's were", read_file(old.groupsDest) == restoredA.files.value(relative(old.groupsDest))
+                                                && QFileInfo(old.targetsDest + "/targets.csv").isFile());
+}
+
 } // namespace
 
 int
@@ -1876,6 +1965,7 @@ main(int argc, char** argv) {
         test_links_inside_removed_trees(backup, old, reference);
         test_journal_leftover(backup, old);
         test_empty_avoids(host, backup, old);
+        test_two_restores_in_a_row(backup, old, reference);
         test_bundle_named_from_outside(host, old);
     }
     dsd_app_signal_search_store_close();
