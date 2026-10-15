@@ -196,11 +196,16 @@ class Stager {
     QString m_detail;
 };
 
+/** Whether @p pending holds the commit marker: a regular file, as the apply reads it (anything else there is not). */
+bool
+marked(const QString& pending) {
+    return is_real_file(pending + QLatin1Char('/') + QLatin1String(kCommittedName));
+}
+
 /** A committed stage whose journal is complete: its apply has started. */
 bool
 apply_started(const QString& pending) {
-    return entry_exists(pending + QLatin1Char('/') + QLatin1String(kCommittedName))
-           && entry_exists(pending + QStringLiteral("/journal/COMPLETE"));
+    return marked(pending) && entry_exists(pending + QStringLiteral("/journal/COMPLETE"));
 }
 
 } // namespace
@@ -248,8 +253,7 @@ promote_staging(const QString& stagingDir) {
     if (entry_exists(pending)) {
         // A committed restore belongs to the user's confirmation; only an unconfirmed one (or anything else of that
         // name, which the apply ignores) is replaced.
-        const bool committed =
-            is_real_dir(pending) && entry_exists(pending + QLatin1Char('/') + QLatin1String(kCommittedName));
+        const bool committed = is_real_dir(pending) && marked(pending);
         if (committed || !root.removeEntry(pending)) {
             return false;
         }
@@ -292,8 +296,9 @@ discard_pending() {
         return false;
     }
     // The marker goes first, like every ending of the apply: once it is gone nothing applies this stage, even if some
-    // of its files stay (the next start removes them). A marker that cannot be removed leaves the stage whole.
-    return root.removeFile(marker) && root.removeTree(pending);
+    // of its files stay (the next start removes them). A marker that cannot be removed leaves the stage whole. Whatever
+    // else has the marker's name never marked it, and goes the same way.
+    return root.removeEntry(marker) && root.removeTree(pending);
 }
 
 bool
@@ -305,7 +310,7 @@ pending_exists() {
 bool
 pending_committed() {
     const DataRoot root;
-    return pending_exists() && is_real_file(pending_dir(root) + QLatin1Char('/') + QLatin1String(kCommittedName));
+    return pending_exists() && marked(pending_dir(root));
 }
 
 bool

@@ -1479,6 +1479,37 @@ test_discard_order(const Backup& b, const Old& old) {
     expect("and it still applies", apply().outcome == ApplyOutcome::Applied);
 }
 
+/** Only a regular COMMITTED file marks a stage, as the apply reads it: anything else of that name marks nothing. */
+void
+test_marker_must_be_a_file(const Backup& b, const Old& old) {
+    const auto unmark = [] {
+        return remove_file(pending("COMMITTED")) && QDir().mkdir(pending("COMMITTED"))
+               && QFileInfo(pending("COMMITTED")).isDir();
+    };
+    prepare(b, old);
+    Faults faults;
+    faults.crashStep = "forward.delete";
+    faults.crashCall = 1;
+    apply(&faults);
+    expect("a complete journal, nothing live changed yet",
+           dsd_qt::backup::pending_apply_started() && same_tree(capture(), old.tree, true, {"restore-pending"}));
+    expect("the marker becomes a directory", unmark());
+    expect("a stage whose marker is a directory is neither committed nor started",
+           !dsd_qt::backup::pending_committed() && !dsd_qt::backup::pending_apply_started());
+    expect("it is discarded whole", dsd_qt::backup::discard_pending() && !dsd_qt::backup::pending_exists());
+
+    put_back(old.tree);
+    QString error;
+    const QString dir = dsd_qt::backup::staging_dir_for_job("unmarked");
+    expect("a stage whose marker is a directory", dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error)
+                                                      && dsd_qt::backup::promote_staging(dir)
+                                                      && QDir().mkdir(pending("COMMITTED")));
+    expect("a newer stage replaces it", dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error)
+                                            && dsd_qt::backup::promote_staging(dir)
+                                            && !QFileInfo::exists(pending("COMMITTED")));
+    expect("discard it", dsd_qt::backup::discard_pending());
+}
+
 /** The archive bytes of the carried file at @p path. */
 QByteArray
 archive_bytes(const Backup& b, const QString& path) {
@@ -1959,6 +1990,7 @@ main(int argc, char** argv) {
         test_symlinked_store(backup, old);
         test_discard_after_commit_point(backup, old);
         test_discard_order(backup, old);
+        test_marker_must_be_a_file(backup, old);
         test_old_file_where_a_directory_goes(backup, old);
         test_journal_problems(backup, old);
         test_unreadable_journal(backup, old);

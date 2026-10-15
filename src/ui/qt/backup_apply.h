@@ -81,7 +81,7 @@ bool discard_pending();
 /** Whether `restore-pending/` exists. */
 bool pending_exists();
 
-/** Whether `restore-pending/` exists and is committed. */
+/** Whether `restore-pending/` exists and is committed: its COMMITTED marker is a regular file, as the apply reads it. */
 bool pending_committed();
 
 /**
