@@ -4445,7 +4445,8 @@ Private per-protocol modules worth knowing about:
 #### Burst sync
 
 The frame sync (`frame_sync_try_tetra()` in `src/dsp/dsd_frame_sync.c`) locks a TETRA burst at the end of its training
-sequence and captures block 1 from its history into `dsd_state::tetra_sync`. On the uplink (`--tetra-uplink`) normal
+sequence and captures block 1 from its history into `dsd_state::tetra_sync`, on the TMO downlink with AACH half 1, the
+7 dibits right before the training sequence (`aach1_dibuf`; the decoder reads half 2 after it). On the uplink (`--tetra-uplink`) normal
 training sequence 1 is also dibits 2..12 of the control burst's extended training sequence (EN 300 392-2 clause
 9.4.4.3.3), so there the control burst is tried first and a normal burst's training is matched two symbols back, once
 those two symbols showed it ends no control burst; they are block 2's first two dibits, which the decoder takes before
@@ -4473,7 +4474,8 @@ into the PCM sample domain; scaled, both inner levels would slice as outer ones.
 Each downlink signalling PDU family has a pure decoder that reads one PDU into a struct the caller provides and returns
 1 only when the whole PDU, optional elements included, was there and well formed; it keeps nothing and acts on nothing.
 All are module-private: `tetra_mac_resource_decode()` and `tetra_mac_broadcast_decode()` (the MAC-RESOURCE header with
-its address, SYSINFO with its D-MLE-SYSINFO, ACCESS-DEFINE; `src/protocol/tetra/tetra_mac_pdu.h`), `tetra_mle_decode()`
+its address, SYSINFO with its D-MLE-SYSINFO, ACCESS-DEFINE; `src/protocol/tetra/tetra_mac_pdu.h`, with
+`tetra_access_assign_dl_usage()`, the downlink usage an AACH's ACCESS-ASSIGN gives its slot), `tetra_mle_decode()`
 (the MLE protocol PDUs, the D-CALL RESTORE of a D-RESTORE-ACK included), `tetra_sds_decode()` (D-STATUS and D-SDS-DATA:
 the SDS-TL header, the text, a concatenation part's control fields but not its reassembly) and `tetra_sndcp_decode()`
 (the SN-PDU header; all three in `tetra_mle_pdu.h`), and `tetra_mm_decode()` (the MM PDUs of EN 300 392-2 clause 16 and
@@ -4790,7 +4792,14 @@ single "current call".
   not try it as full-slot or half-slot speech (`tetra_nb_nts1()`, `tetra_nb_nts2()`), so no chance speech CRC proves the
   burst, and the voice gate hears nothing of it (`tetra_voice_gate()`), so no frame 18 is concealed into 60 ms of audio
   the air never sent, and the speech in progress goes on in frame 1. Direct mode and the uplink run no such clock, and
-  a clock left from an earlier BSCH does not place their bursts either. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
+  a clock left from an earlier BSCH does not place their bursts either. Nor is speech tried in a downlink slot whose
+  AACH says it carries no traffic: TCH and STCH are sent under a traffic usage marker in frames 1 to 17 (clause
+  23.5.6), so a block that fails its CRC in a slot the ACCESS-ASSIGN PDU gives to control or leaves unallocated
+  (`tetra_access_assign_dl_usage()`, table 21.82) is signalling that failed. Between a call's talkers its timeslot
+  sends SCH/F blocks of nearly all zero bits, which pass the speech CRC once noise breaks theirs (all zero bits are a
+  codeword of every linear code). The AACH is the shortened (30,14) Reed-Muller code (`tetra_rm3014_decode()`, up to 3
+  bits corrected, scrambled with the colour code); one that cannot be read says nothing, and the block is tried as
+  speech as before. The `-Z` NDB line shows the PDU read, header/field 1/field 2 (`AACH 3/51/51`), or `AACH ?`. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
   the carrier, while its record does not place it elsewhere (an allocation no call PDU took, which never tunes, or a
   reallocation whose tune failed moves it off the channel the receiver stays on, which the SwMI may give any call next;
   `voice_record_on()`) and no other call was allocated its channel (Channel exclusivity above: the state machine let
@@ -4933,8 +4942,11 @@ individual call's speech judged by both parties, muted speech that holds no time
 derived key stream, the speech starting over at call boundaries, another call identifier, another timeslot, another
 cell or network, a stop of the heard speech and a pause in the followed or direct mode call's, and going on across a
 rename, the crypto class speech gives the published call, frame 18 that plays nothing), `TETRA_BURST_VERDICT` (the modes a BSCH, an SCH/HU, a DSB and a carrier
-boundary leave and enter, an unread DMAC-SYNC that seals the traffic, a frame 18 burst not tried as speech, the uplink
-signalling that proves its carrier for publication but admits no grant), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
+boundary leave and enter, an unread DMAC-SYNC that seals the traffic, a frame 18 burst not tried as speech, nor one
+whose AACH says control or unallocated, the uplink signalling that proves its carrier for publication but admits no
+grant), `TETRA_AACH` (the Reed-Muller code and table 21.82 against AACH words received off air),
+`DECODE_IQ_TETRA_REAL_AIR_CALL_AACH`, `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE`, `TETRA_AIR`, `TETRA_CRYPTO` (TB5),
+`TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
 
 #### State and its boundaries
 

@@ -1042,3 +1042,24 @@ tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd
     }
     age_fragment(&b);
 }
+
+tetra_dl_usage
+tetra_access_assign_dl_usage(uint16_t pdu, uint8_t* usage_marker) {
+    const unsigned header = (pdu >> 12) & 3u;
+    const unsigned field1 = (pdu >> 6) & 0x3Fu;
+    tetra_dl_usage usage = TETRA_DL_TRAFFIC;
+    /* Header 00 gives field 1 to the uplink's access rights; the other headers make it the downlink usage marker. */
+    if (header == 0u || field1 == 2u) {
+        usage = TETRA_DL_COMMON_CONTROL;
+    } else if (field1 == 0u) {
+        usage = TETRA_DL_UNALLOCATED;
+    } else if (field1 == 1u) {
+        usage = TETRA_DL_ASSIGNED_CONTROL;
+    } else if (field1 == 3u) {
+        usage = TETRA_DL_COMMON_ASSIGNED_CONTROL;
+    }
+    if (usage_marker) {
+        *usage_marker = usage == TETRA_DL_TRAFFIC ? (uint8_t)field1 : 0u;
+    }
+    return usage;
+}

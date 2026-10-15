@@ -6,21 +6,38 @@
 # alone ignores the exit code, which would let a crash occurring after the
 # first payload match pass silently.
 #
-# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED; optional NOT_EXPECTED
-# and MIN_MATCHES (minimum number of non-overlapping EXPECTED matches).
+# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED; optional NOT_EXPECTED,
+# MIN_MATCHES (minimum number of non-overlapping EXPECTED matches) and
+# EVENT_EXPECTED with WORK_DIR (a regex the run's event history must match).
 foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "iq_decode_check: missing -D${_var}")
     endif()
 endforeach()
 
+include("${CMAKE_CURRENT_LIST_DIR}/regex_match_count.cmake")
+
 # MODE may carry several space-separated decoder flags (e.g. "-fs -F").
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
 
+# Optional -DEVENT_EXPECTED, with -DWORK_DIR: the run also writes its event
+# history (-J) into WORK_DIR, which must match EVENT_EXPECTED, for what a decoder
+# publishes as a call rather than prints.
+set(_event_args)
+if(DEFINED EVENT_EXPECTED)
+    if(NOT DEFINED WORK_DIR)
+        message(FATAL_ERROR "iq_decode_check: EVENT_EXPECTED needs -DWORK_DIR")
+    endif()
+    file(REMOVE_RECURSE "${WORK_DIR}")
+    file(MAKE_DIRECTORY "${WORK_DIR}")
+    set(_event_log "${WORK_DIR}/events.log")
+    set(_event_args -J "${_event_log}")
+endif()
+
 execute_process(
     COMMAND
-        "${DSD_BIN}" --frontend none ${_mode_args} --iq-replay "${FIXTURE}" -o
-        null
+        "${DSD_BIN}" --frontend none ${_mode_args} ${_event_args} --iq-replay
+        "${FIXTURE}" -o null
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out
     ERROR_VARIABLE _err
@@ -53,8 +70,7 @@ if(DEFINED MIN_MATCHES AND NOT "${MIN_MATCHES}" STREQUAL "")
             "iq_decode_check: MIN_MATCHES must be a positive integer"
         )
     endif()
-    string(REGEX MATCHALL "${EXPECTED}" _expected_matches "${_all}")
-    list(LENGTH _expected_matches _expected_match_count)
+    dsd_test_count_regex_matches(_expected_match_count "${EXPECTED}" "${_all}")
     if(_expected_match_count LESS MIN_MATCHES)
         message(
             FATAL_ERROR
@@ -71,6 +87,20 @@ if(DEFINED NOT_EXPECTED AND NOT "${NOT_EXPECTED}" STREQUAL "")
         message(
             FATAL_ERROR
             "iq_decode_check: forbidden output /${NOT_EXPECTED}/ matched '${_hit}'\n${_all}"
+        )
+    endif()
+endif()
+
+if(DEFINED EVENT_EXPECTED)
+    set(_events "")
+    if(EXISTS "${_event_log}")
+        file(READ "${_event_log}" _events)
+    endif()
+    file(REMOVE_RECURSE "${WORK_DIR}")
+    if(NOT "${_events}" MATCHES "${EVENT_EXPECTED}")
+        message(
+            FATAL_ERROR
+            "iq_decode_check: /${EVENT_EXPECTED}/ not found in the event history\n${_events}"
         )
     endif()
 endif()

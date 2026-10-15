@@ -518,3 +518,84 @@ tetra_speech_half_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int* 
     DSD_MEMCPY(out_bits, type2, TETRA_SPEECH_HALF_BITS);
     return TETRA_SPEECH_HALF_BITS;
 }
+
+/* ---------------------------------------------------------------------------------------------------------------
+ * Shortened (30,14) Reed-Muller code (EN 300 392-2 clause 8.2.3.2)
+ * ------------------------------------------------------------------------------------------------------------- */
+
+enum { RM3014_BITS = 30, RM3014_INFO_BITS = 14 };
+
+/* G = [I14 | P]: row i of P is what type-1 bit b1(i + 1) adds to b2(15) .. b2(30), b2(15) the most significant. */
+static const uint16_t k_rm3014_parity[RM3014_INFO_BITS] = {
+    0x9B60u, 0x2DE0u, 0xFC20u, 0xE03Cu, 0x983Au, 0x5436u, 0x2C2Eu,
+    0xFFDFu, 0x8339u, 0x42B5u, 0x21ADu, 0x1273u, 0x096Bu, 0x04E7u,
+};
+
+static uint16_t
+rm3014_parity(uint16_t info) {
+    uint16_t parity = 0;
+    for (int i = 0; i < RM3014_INFO_BITS; i++) {
+        if ((info >> (RM3014_INFO_BITS - 1 - i)) & 1u) {
+            parity ^= k_rm3014_parity[i];
+        }
+    }
+    return parity;
+}
+
+/* The syndrome an error in bit @p k of a word (0 = b2(30)) leaves: its parity row for a type-1 bit, itself for a
+   parity bit. */
+static uint16_t
+rm3014_bit_syndrome(int k) {
+    return k >= 16 ? k_rm3014_parity[RM3014_BITS - 1 - k] : (uint16_t)(1u << k);
+}
+
+uint32_t
+tetra_rm3014_encode(uint16_t info) {
+    info &= (uint16_t)((1u << RM3014_INFO_BITS) - 1u);
+    return ((uint32_t)info << 16) | rm3014_parity(info);
+}
+
+/* The error of at most 3 bits that leaves syndrome @p s, into @p error; its weight, or -1 for none. With minimum
+   distance 8 two such errors differ by a codeword of weight 6 or less, so there is at most one and the search order
+   does not matter. */
+static int
+rm3014_error_for(uint16_t s, uint32_t* error) {
+    for (int a = 0; a < RM3014_BITS; a++) {
+        const uint16_t sa = rm3014_bit_syndrome(a);
+        if (sa == s) {
+            *error = 1u << a;
+            return 1;
+        }
+        for (int b = a + 1; b < RM3014_BITS; b++) {
+            const uint16_t sab = (uint16_t)(sa ^ rm3014_bit_syndrome(b));
+            if (sab == s) {
+                *error = (1u << a) | (1u << b);
+                return 2;
+            }
+            for (int c = b + 1; c < RM3014_BITS; c++) {
+                if ((uint16_t)(sab ^ rm3014_bit_syndrome(c)) == s) {
+                    *error = (1u << a) | (1u << b) | (1u << c);
+                    return 3;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+int
+tetra_rm3014_decode(uint32_t received, uint16_t* info) {
+    if ((received >> RM3014_BITS) != 0u) {
+        return -1;
+    }
+    const uint16_t s = (uint16_t)(rm3014_parity((uint16_t)(received >> 16)) ^ (received & 0xFFFFu));
+    uint32_t error = 0;
+    const int corrected = s == 0u ? 0 : rm3014_error_for(s, &error);
+    if (corrected < 0) {
+        return -1;
+    }
+    if (info) {
+        *info = (uint16_t)((received ^ error) >> 16);
+    }
+    return corrected;
+}

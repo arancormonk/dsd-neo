@@ -216,21 +216,27 @@ ctest --preset dev-debug -L iq-decode --output-on-failure
 
 Each decode case asserts on a decoded payload field (NAC, WACN/SYS, colour code,
 RAN, callsign, site ID) rather than a sync count, so a silent framing or protocol
-regression fails the test instead of merely moving a counter. The
+regression fails the test instead of merely moving a counter. A case that needs the field
+a minimum number of times counts its matches with `tests/regex_match_count.cmake`
+(`REGEX_MATCH_COUNT`), as `iq_float_symbol_replay_check.cmake` and
+`audio_stdout_check.cmake` do: a list from `string(REGEX MATCHALL)` runs together matches
+holding one square bracket of a pair (`AACH 2/1/9]` from a TETRA payload line) and splits
+one holding a semicolon. The
 `DECODE_IQ_*_AUTO_HUNT` cases are the documented exception, described below. I/Q
 replay defaults to `--iq-replay-rate fast`, so run one after another in
-`dev-debug` the 40 digital cases take about 27 seconds and the analog ones (see
-[Analog monitor audio checks](#analog-monitor-audio-checks)) about 22. The five
+`dev-debug` the 122 digital cases take about 79 seconds and the 104 analog ones (see
+[Analog monitor audio checks](#analog-monitor-audio-checks)) about 73. The 14
 `iq-determinism` cases (see [Replay determinism](#replay-determinism-issue-572))
-add 46 seconds, two realtime cases of 15.6 seconds among them; under
-`ctest -j 16` they run beside the suite's longest test, and the full suite
-still takes about 55 seconds.
+add 92 seconds, two realtime cases of 15.2 seconds among them; under
+`ctest -j 16` they run beside the suite's longest tests, and the full suite
+takes 85 to 110 seconds.
 
 Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control and
 voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
 voice, DMR Tier III control (including a CSBK-only RAS control channel replayed
 with `-F`, colour code 0 — regression coverage for issue #348), NXDN48, NXDN96,
-dPMR, D-STAR, YSF, EDACS, ProVoice, and M17, plus the received CTCSS tone and DCS code on synthetic
+dPMR, D-STAR, YSF, EDACS, ProVoice, M17, and TETRA (control channel, call control and speech), plus the received
+CTCSS tone and DCS code on synthetic
 analog NFM under `-fA` (see "Received tone (CTCSS) on the analog monitor" and "Received code
 (DCS) on the analog monitor" below). The analog FM
 monitor's audio has its own cases, which score the audio rather than a log line; see
@@ -275,6 +281,31 @@ retains its noise, fading and ISI while reversing all differential phase steps;
 requires at least 15. `tools/tetra/prepare_real_air_fixture.py` verifies the raw
 SCBS, resampled, marginal, and inverted hashes; the adjacent provenance file
 records the source commits, transforms, and parameters.
+
+Both of those captures are control channels. `tetra_call_real_air_72k` is the real-air traffic: 6.5 seconds of the
+Signal Identification Wiki's `TETRA_IQ.zip`, a 48 kHz recording of one downlink carrier of another network (MCC 228,
+MNC 8889, colour code 1, main carrier 1068 at 426.7 MHz) with a cleartext group call on timeslot 2.
+`tools/build_iq_fixtures.py` (`TETRA_EXCERPTS`) cuts it where the floor passes from one talker to the next and
+resamples it to 72 kHz, the rate `-fT` runs an RTL-SDR at; the recording's carrier offset, about +343 Hz, is kept for
+the receiver to recover. The wiki gives no frequency, so the sidecar is tuned to carrier 1068, where the call's
+allocation sends the call: a call's speech is its own only on the carrier its allocation names, and
+`DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT` requires the replay to publish the group call, talkgroup 100601 from SSI 100702 on
+426.7 MHz, to its event history (`-J`, through `iq_decode_check.cmake`'s `EVENT_EXPECTED`). The other
+`DECODE_IQ_TETRA_REAL_AIR_CALL_*` cases assert at least 200 BSCH identities (`_BSCH`; the
+replay decodes 232), the main carrier in SYSINFO, the call's channel allocation, its D-SETUP from SSI 100701,
+D-TX-CEASED and D-TX-GRANTED to SSI 100702, and at least 40 TCH/S bursts whose class-2 CRC passes (`_TCH_FS`; the
+replay decodes 48, all of the speech in the excerpt, and none fails). This fixture's margin is ±20 counts of added
+noise rather than ±45: the excerpt carries each call-control PDU twice, and at ±30 one copy of some is lost.
+`DECODE_IQ_TETRA_REAL_AIR_CALL_AACH` asserts that the speech decodes under its AACH: at least 40 TCH/S bursts behind
+`AACH 3/51/51` (all 48), the traffic usage marker 51 the call's MAC-RESOURCE assigned. Between the talkers the
+timeslot sends SCH/F blocks of nearly all zero bits under an assigned control AACH (`2/1/9`); once noise breaks their
+CRC, all zero bits pass the speech CRC too. `tetra_call_gap_noisy_72k` (`DERIVED_TETRA_GAP`, `--derived-only`) is that
+stretch, 3.3 seconds with no speech in it, with complex Gaussian noise of sigma 24 LSB: before the AACH was read, 3
+of its blocks played as speech. `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE` requires at least 8 bursts read as assigned
+control that decode nothing (21 now; 10 to 22 over nine other noise seeds), and both cases refuse a burst tried as
+speech behind an AACH saying control or unallocated. An AACH that cannot be read (four or more bit errors) says
+nothing, and its block is still tried as speech: one false frame in 24 seed and level runs of this stretch got
+through that way, so the gate case asserts the AACH's decisions rather than the absence of every false frame.
 
 The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) repeat one
 sequence 100 times at 54 kHz: a synchronisation burst with a CRC-valid BSCH (MCC 460, MNC 4242, colour code 17), a
@@ -1313,7 +1344,8 @@ except where a published vector is the point. Tests that need time run on the de
 | `TETRA_AIR_CHAIN_VECTOR`, `TETRA_REAL_AIR_BIT_TRACE` | Fixed BSCH and SYSINFO type-5 vectors through descrambling, deinterleaving, depuncturing, Viterbi and CRC, kept out of the fixture generator so a generator and decoder cannot agree on a wrong order (deinterleaving before descrambling fails the CRC); a CRC-decoded off-air BNCH; BSCH and SYSINFO parsing against a [published Osmocom real-air decode](https://lists.osmocom.org/hyperkitty/list/tetra@lists.osmocom.org/thread/6DN55M2TG23RWBDOLGJYJPNQB337C4H6/) (MCC 293, MNC 7, colour code 3, 393.7125 MHz). |
 | `TETRA_RCPC_MAP`, `TETRA_DEPUNCTURE_REGRESSION`, `TETRA_SCH_HU` | Every RCPC puncturing scheme against its clause (EN 300 392-2 8.2.3.1, EN 300 395-2 5.4.3.2), a round trip through the production coding chain, and the SCH/HU coding loop. |
 | `TETRA_SPEECH_CHANNEL`, `TETRA_SPEECH_REORDER`, `TETRA_ACELP_REFERENCE` | The speech channel decoder against an encoder written from EN 300 395-2 clause 5, CRC and parity bit included (a wrong parity bit fails it; random blocks are almost never speech); type-1 bits to speech frames (tables 4 to 6); telive's GPL-3.0 "Hello Tetra" sample decoded to the 8,220 bits the ETSI reference decoder produces, with every class-2 CRC passing (`tests/fixtures/tetra/acelp/PROVENANCE.md`). |
-| `TETRA_BURST_VERDICT` | Whole bursts through the dispatch handler: PROFILE_PROVEN for a burst that decoded a CRC-passed block and UNPRODUCTIVE otherwise, the synchronisation burst's BNCH decoded with the scrambling its BSCH just set, a failed signalling CRC dropping the timeslot's partial TM-SDU, and the MAC given the network's colour code. |
+| `TETRA_BURST_VERDICT` | Whole bursts through the dispatch handler: PROFILE_PROVEN for a burst that decoded a CRC-passed block and UNPRODUCTIVE otherwise, the synchronisation burst's BNCH decoded with the scrambling its BSCH just set, a failed signalling CRC dropping the timeslot's partial TM-SDU, and the MAC given the network's colour code. A block of all zero bits, which fails the signalling CRC and passes as speech, is tried as full-slot and half-slot speech under an AACH naming a traffic usage marker or one with four bit errors, and not under one saying common, assigned or both kinds of control or unallocated (three corrected bit errors either way). |
+| `TETRA_AACH` | The shortened (30,14) Reed-Muller code of the AACH (EN 300 392-2 clause 8.2.3.2) and the downlink usage of table 21.82, against AACH words received off air from `tetra_call_real_air_72k` (common control, the call's traffic usage marker 51, assigned control between its talkers, two with bit errors corrected), so an encoder and decoder sharing a wrong generator fail; minimum distance 8 over every codeword, every error of up to 3 bits corrected and every 4-bit error on a codeword refused. |
 | `TETRA_TDMA_CLOCK` | The BSCH sets TN, FN and MN as sent (1-based); normal bursts advance the clock by the slots counted since, wrapping FN 18 to 1 and MN 60 to 1 and counting hyperframes, so the EN 300 392-7 initial value is never 0. |
 | `TETRA_MAC_STATE`, `TETRA_MAC_PDUS`, `TETRA_MAC_FRAGMENTS` | The downlink MAC and basic-link LLC of EN 300 392-2 clauses 21 and 23: PDUs bounded by their length indication, several PDUs per block, fill bits, the Null PDU, encrypted TM-SDUs left unparsed, the LLC FCS against the CRC-32/BZIP2 check value and an annex C long division, MAC-D-BLCK, ACCESS-DEFINE and SYSINFO through their decoders; TM-SDU reconstruction per timeslot with its guards and the N.203 limit. |
 | `TETRA_MLE_CMCE`, `TETRA_MLE_PDUS`, `TETRA_CMCE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_D_TX_GRANTED_CHAN` | MLE routing and the CMCE, SDS, SNDCP and MLE protocol decoders against their tables (clauses 14, 18, 28, 29): a PDU that does not fit, or ends without its O-bit or terminating M-bit, acts on nothing; SDS text with unpaired surrogates and C1 controls made safe; concatenated SDS reassembled per session and timed out on the decode clock. |

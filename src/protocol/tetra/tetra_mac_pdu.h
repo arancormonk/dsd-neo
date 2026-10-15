@@ -103,6 +103,26 @@ typedef struct {
  */
 int tetra_mac_broadcast_decode(const uint8_t* bits, int nbits, tetra_mac_broadcast* out);
 
+/** What the ACCESS-ASSIGN PDU in the AACH of a downlink slot in frames 1 to 17 says the slot carries (EN 300 392-2
+ * clause 21.4.7.2, table 21.82). */
+typedef enum {
+    TETRA_DL_UNALLOCATED,             /**< usage marker UMx */
+    TETRA_DL_ASSIGNED_CONTROL,        /**< UMa */
+    TETRA_DL_COMMON_CONTROL,          /**< header 00, or UMc */
+    TETRA_DL_COMMON_ASSIGNED_CONTROL, /**< UMr */
+    TETRA_DL_TRAFFIC,                 /**< a traffic usage marker UMt: TCH or STCH */
+} tetra_dl_usage;
+
+/**
+ * @brief The downlink usage of a 14-bit ACCESS-ASSIGN PDU sent in frames 1 to 17.
+ *
+ * @param pdu          The PDU as tetra_rm3014_decode() gives it: the header its two most significant bits, then field 1
+ *                     and field 2, six bits each.
+ * @param usage_marker When not NULL, receives the traffic usage marker for TETRA_DL_TRAFFIC, else 0.
+ * @return The usage. Frame 18's PDU (table 21.83) gives none: frame 18 carries signalling only.
+ */
+tetra_dl_usage tetra_access_assign_dl_usage(uint16_t pdu, uint8_t* usage_marker);
+
 #ifdef __cplusplus
 }
 #endif

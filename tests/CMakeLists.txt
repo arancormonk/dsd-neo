@@ -434,6 +434,16 @@ add_test(
         -P ${PROJECT_SOURCE_DIR}/tests/cmake/SarifDropSuppressed.cmake
 )
 
+# The decode check scripts count a payload regex's matches with
+# tests/regex_match_count.cmake, whose count a match holding one square bracket
+# of a pair or a semicolon must not change.
+add_test(
+    NAME REGEX_MATCH_COUNT
+    COMMAND
+        ${CMAKE_COMMAND} -P
+        ${PROJECT_SOURCE_DIR}/tests/cmake/RegexMatchCount.cmake
+)
+
 # Runs everywhere: the macOS curses decision takes fabricated prefix trees, so
 # hosts that can never reach the real code path still guard it.
 add_test(
@@ -11104,6 +11114,7 @@ add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 # dropped from the CTest name).
 set(_dsd_tetra_test_sources
     acelp_reference
+    tetra_aach
     tetra_bits
     air_chain_vector
     d_tx_granted_chan
@@ -13482,6 +13493,102 @@ if(DSD_HAS_RADIO)
         ""
         15
     )
+    # Real-air traffic: 6.5 s of the Signal Identification Wiki's TETRA I/Q
+    # recording at 72 kHz (tools/build_iq_fixtures.py, TETRA_EXCERPTS), one
+    # carrier of another network carrying a cleartext group call on timeslot 2
+    # as the floor passes from one talker to the next. The replay decodes 232
+    # identities and 48 TCH/S bursts whose class-2 CRC passes, and each
+    # signalling PDU twice; every case below still holds with +/-20 counts of
+    # noise added to the cu8 samples.
+    # The fixture is tuned to carrier 1068 (426.7 MHz), where the call's allocation
+    # sends it, so its speech is call 113's: the replay publishes the group call to
+    # its event history (-J). A "." stands for each ";" of the event line, which an
+    # add_test argument would split at.
+    add_test(
+        NAME DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_call_real_air_72k.iq.json"
+            "-DEXPECTED=\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
+            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. Group."
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_BSCH
+        tetra_call_real_air_72k
+        -fT
+        "\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
+        ""
+        200
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_SYSINFO
+        tetra_call_real_air_72k
+        -fT
+        "\\[TETRA SYSINFO\\] CC=1  carrier=1068  band=4"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_CHANNEL_ALLOCATION
+        tetra_call_real_air_72k
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=3 carrier=1068 freq=426700000"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_SETUP
+        tetra_call_real_air_72k
+        -fT
+        "\\[TETRA CMCE D-SETUP\\] CC=1 call=113 timeout=0 circuit=0 enc=0 com=1 service=0 grant=1 request=0 priority=1 calling_SSI=100701"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_TX_CEASED
+        tetra_call_real_air_72k
+        -fT
+        "\\[TETRA CMCE D-TX-CEASED\\] CC=1 call=113 request=0"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_TX_GRANTED
+        tetra_call_real_air_72k
+        -fT
+        "\\[TETRA CMCE D-TX-GRANTED\\] CC=1 call=113 grant=3 request=0 enc=0 granted_SSI=100702"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_TCH_FS
+        tetra_call_real_air_72k
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok"
+        ""
+        40
+    )
+    # The AACH (ACCESS-ASSIGN, header/field 1/field 2 under -Z) tells the call's traffic from its signalling: every
+    # speech burst decodes under its traffic usage marker 51, and no burst whose AACH says control or unallocated is
+    # tried as speech. tetra_call_gap_noisy_72k is the stretch between the talkers with noise added (DERIVED_TETRA_GAP
+    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 21 of
+    # them under an assigned control AACH and decodes none (before the AACH was read, 3 passed as speech).
+    set(_dsd_tetra_aach_not_traffic
+        "AACH (0/[0-9]+|[123]/[0-3])/[0-9]+\\]\\[TETRA TCH"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_AACH
+        tetra_call_real_air_72k
+        "-fT -Z"
+        "AACH 3/51/51\\]\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok"
+        "${_dsd_tetra_aach_not_traffic}"
+        40
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE
+        tetra_call_gap_noisy_72k
+        "-fT -Z"
+        "AACH 2/1/9\\][^[]"
+        "${_dsd_tetra_aach_not_traffic}"
+        8
+    )
+    unset(_dsd_tetra_aach_not_traffic)
     # Complex-conjugated IQ reverses every differential phase step. Require
     # protected payloads after negative-polarity synchronization and dibit-MSB
     # normalization in both the BSCH and NDB paths.

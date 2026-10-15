@@ -11,8 +11,10 @@
  *
  * Training sequence 1 (NTS1) marks one 432-bit logical channel over both blocks, scrambled as one block: SCH/F
  * (interleaver a = 103, rate 2/3, CRC-16) or full-slot speech. Training sequence 2 (NTS2) marks two half-slot channels,
- * each scrambled on its own: SCH/HD or STCH, the second half also half-slot speech after a stolen first half. The AACH,
- * not decoded here, would say which; the CRCs separate them instead.
+ * each scrambled on its own: SCH/HD or STCH, the second half also half-slot speech after a stolen first half. A block
+ * whose signalling CRC passes is signalling. One that fails is tried as speech unless the AACH (the ACCESS-ASSIGN PDU)
+ * says the slot carries no traffic: TCH and STCH are sent under a traffic usage marker (clause 23.5.6). An AACH that
+ * cannot be read says nothing, and the block is tried as speech.
  */
 
 #include <dsd-neo/core/dibit.h>
@@ -43,6 +45,7 @@
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_log.h"
+#include "tetra_mac_pdu.h"
 #include "tetra_state.h"
 #include "tetra_voice_state.h"
 
@@ -50,8 +53,12 @@ enum {
     /* One block of a normal burst. */
     NB_BLOCK_DIBITS = 108,
     NB_BLOCK_BITS = 216,
-    /* AACH half 2, between the training sequence and block 2 of an NDB. */
+    /* The AACH of an NDB (EN 300 392-2 clause 8.3.1.1, table 9.7): half 1 before the training sequence, half 2 between
+       it and block 2, 30 bits of shortened (30,14) Reed-Muller code. */
+    NDB_AACH1_DIBITS = 7,
+    NDB_AACH1_BITS = 14,
     NDB_AACH2_DIBITS = 8,
+    NDB_AACH_BITS = 30,
     /* SCH/HD, STCH and BNCH (EN 300 392-2 clause 8.3.1.4.1): 124 type-1 bits, CRC-16 and four tail bits at rate 2/3,
        interleaved with a = 101. Half-slot speech uses the same interleaver. */
     HD_TYPE1 = 124,
@@ -270,6 +277,7 @@ typedef struct {
     int cc;             /* its colour code, which the MAC keeps fragments of different cells apart by */
     int direct;         /* direct mode: signalling goes to the DMAC logger */
     const char* prefix; /* "", "DNB " or "NUB ": the burst kind shown in the frame subtype */
+    int no_traffic;     /* the downlink AACH said the slot carries no TCH or STCH (tetra_ndb_aach()) */
 } tetra_nb_ctx;
 
 static void
@@ -329,8 +337,8 @@ tetra_nb_half(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, uint16_
 }
 
 /* NTS2: two half-slot channels. The second half that is not signalling may be speech after a stolen first half, but
-   not in frame 18, which carries signalling only (tetra_tdma_control_frame()). A first half that moved the receiver (a
-   grant) leaves the second half to the carrier that was left. */
+   not in frame 18, which carries signalling only (tetra_tdma_control_frame()), nor in a slot the AACH says carries no
+   traffic. A first half that moved the receiver (a grant) leaves the second half to the carrier that was left. */
 static void
 tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* b2_dibits,
               const float* b2_soft) {
@@ -344,14 +352,14 @@ tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     }
     tetra_expand_dibits(state, b2_dibits, b2_soft, NB_BLOCK_DIBITS, block);
     if (!tetra_nb_half(opts, state, ctx, block, "STCH-2") && !tetra_tdma_control_frame(tetra_st_peek(state))
-        && tetra_decode_tch_half(block, opts, state)) {
+        && !ctx->no_traffic && tetra_decode_tch_half(block, opts, state)) {
         tetra_confirm_note_block(state);
     }
 }
 
 /* NTS1: one 432-bit channel scrambled across both blocks (EN 300 392-2 clause 8.2.5; EN 300 396-2 clause 8.3.2.4).
    SCH/F when its CRC passes, else full-slot speech, but not in frame 18, which carries signalling only
-   (tetra_tdma_control_frame()). */
+   (tetra_tdma_control_frame()), nor in a slot the AACH says carries no traffic: there it is an SCH/F that failed. */
 static void
 tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* b2_dibits,
               const float* b2_soft) {
@@ -366,7 +374,7 @@ tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     tetra_descramble_soft(type4, SCHF_BITS, ctx->seed);
     if (!tetra_schf_decode_bits(type4, decoded)) {
         tetra_nb_block_failed(state, ctx);
-        if (!tetra_tdma_control_frame(ts) && tetra_decode_tch_fs(type4, ctx->cc, opts, state)) {
+        if (!tetra_tdma_control_frame(ts) && !ctx->no_traffic && tetra_decode_tch_fs(type4, ctx->cc, opts, state)) {
             tetra_confirm_note_block(state);
         }
         return;
@@ -406,6 +414,7 @@ static void
 tetra_block1_consumed(dsd_state* state) {
     state->tetra_sync.b1_valid = 0;
     state->tetra_sync.b1_soft_valid = 0;
+    state->tetra_sync.aach1_valid = 0;
 }
 
 /* The uplink scrambles with the cell's colour code, which only a BSCH or --tetra-net supplies. */
@@ -435,7 +444,7 @@ tetra_dmo_process_ndb(dsd_opts* opts, dsd_state* state) {
     float b2_soft[NB_BLOCK_DIBITS];
     const float* const soft = tetra_read_block2(opts, state, b2_dibits, b2_soft);
 
-    const tetra_nb_ctx ctx = {ts->dmo_dcc_seed, 0, 1, "DNB "};
+    const tetra_nb_ctx ctx = {ts->dmo_dcc_seed, 0, 1, "DNB ", 0};
     tetra_nb_subtype(state, &ctx, state->tetra_sync.nts2 ? "NTS2" : "NTS1");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA DMO");
 
@@ -467,7 +476,7 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
     float b2_soft[NB_BLOCK_DIBITS];
     const float* const soft = tetra_read_block2(opts, state, b2_dibits, b2_soft);
 
-    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "NUB "};
+    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "NUB ", 0};
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA UL");
     tetra_nb_subtype(state, &ctx, state->tetra_sync.nts2 ? "NTS2" : "NTS1");
     TETRA_LOG_PAYLOAD(ts, " [TETRA NUB  NTS%d  pol=%d rot=%d]", state->tetra_sync.nts2 ? 2 : 1,
@@ -548,9 +557,28 @@ tetra_tdma_advance_ndb(dsd_state* state) {
     }
 }
 
-/* A normal burst: control uplink, normal uplink, direct mode, or the trunked downlink NDB. Block 1 was captured by the
-   frame sync; the downlink reads AACH half 2 and block 2 here. The AACH is not decoded; the blocks are descrambled with
-   the network's extended colour code (from the BSCH or --tetra-net), whose colour code the MAC is told. */
+/* The AACH of a trunked downlink normal burst (EN 300 392-2 clause 8.3.1.1): half 1 as the frame sync captured it and
+   @p half2, descrambled with @p seed from bb(1) and decoded. Returns 1 with the ACCESS-ASSIGN PDU in @p pdu, 0 when
+   half 1 was not captured or no codeword lies within 3 bits of what was received. */
+static int
+tetra_ndb_aach(const dsd_state* state, const uint8_t* half2, uint32_t seed, uint16_t* pdu) {
+    if (!state->tetra_sync.aach1_valid) {
+        return 0;
+    }
+    uint16_t costs[NDB_AACH_BITS];
+    tetra_expand_dibits(state, state->tetra_sync.aach1_dibuf, NULL, NDB_AACH1_DIBITS, costs);
+    tetra_expand_dibits(state, half2, NULL, NDB_AACH2_DIBITS, costs + NDB_AACH1_BITS);
+    tetra_descramble_soft(costs, NDB_AACH_BITS, seed);
+    uint32_t word = 0;
+    for (int i = 0; i < NDB_AACH_BITS; i++) {
+        word = (word << 1) | (costs[i] > TETRA_SOFT_NEUTRAL ? 1u : 0u);
+    }
+    return tetra_rm3014_decode(word, pdu) >= 0;
+}
+
+/* A normal burst: control uplink, normal uplink, direct mode, or the trunked downlink NDB. Block 1 and AACH half 1 were
+   captured by the frame sync; the downlink reads AACH half 2 and block 2 here. The AACH and the blocks are descrambled
+   with the network's extended colour code (from the BSCH or --tetra-net), whose colour code the MAC is told. */
 static void
 tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
     const tetra_state_t* const ts = tetra_st(state);
@@ -573,16 +601,30 @@ tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
     }
     tetra_tdma_advance_ndb(state);
 
+    uint8_t aach2[NDB_AACH2_DIBITS];
     uint8_t b2_dibits[NB_BLOCK_DIBITS];
     float b2_soft[NB_BLOCK_DIBITS];
-    skipDibit(opts, state, NDB_AACH2_DIBITS);
+    for (int i = 0; i < NDB_AACH2_DIBITS; i++) {
+        aach2[i] = (uint8_t)get_dibit_and_analog_signal(opts, state, NULL);
+    }
     tetra_read_dibits(opts, state, b2_dibits, b2_soft, NB_BLOCK_DIBITS);
 
-    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, ""};
+    const uint32_t seed = tetra_lfsr_seed_for(state);
+    uint16_t aach = 0;
+    const int aach_read = tetra_ndb_aach(state, aach2, seed, &aach);
+    /* Frame 18 carries no traffic anyway, and its PDU (table 21.83) says nothing about the downlink. */
+    const int no_traffic =
+        aach_read && !tetra_tdma_control_frame(ts) && tetra_access_assign_dl_usage(aach, NULL) != TETRA_DL_TRAFFIC;
+    const tetra_nb_ctx ctx = {seed, tetra_burst_colour(state), 0, "", no_traffic};
     tetra_nb_subtype(state, &ctx, state->tetra_sync.nts2 ? "NTS2" : "NTS1");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");
-    TETRA_LOG_PAYLOAD(ts, " [TETRA NDB  NTS%d  pol=%d rot=%d]", state->tetra_sync.nts2 ? 2 : 1,
-                      (int)state->tetra_sync.polarity, (int)(state->tetra_sync.phase_rot & 3));
+    char aach_text[16] = "?";
+    if (aach_read) {
+        DSD_SNPRINTF(aach_text, sizeof aach_text, "%u/%u/%u", (unsigned)(aach >> 12), (unsigned)((aach >> 6) & 0x3Fu),
+                     (unsigned)(aach & 0x3Fu));
+    }
+    TETRA_LOG_PAYLOAD(ts, " [TETRA NDB  NTS%d  pol=%d rot=%d  AACH %s]", state->tetra_sync.nts2 ? 2 : 1,
+                      (int)state->tetra_sync.polarity, (int)(state->tetra_sync.phase_rot & 3), aach_text);
 
     tetra_nb_decode(opts, state, &ctx, b2_dibits, b2_soft);
     tetra_block1_consumed(state);
@@ -800,7 +842,7 @@ tetra_sb_block2(dsd_opts* opts, dsd_state* state, const uint8_t* dibits, const f
         return;
     }
     uint16_t block[NB_BLOCK_BITS];
-    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, ""};
+    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "", 0};
     tetra_expand_dibits(state, dibits, soft, SB_BKN2_DIBITS, block);
     (void)tetra_nb_half(opts, state, &ctx, block, "BNCH");
 }

@@ -63,6 +63,11 @@ typedef struct {
     float b1_soft[108];
     uint8_t b1_valid;
     uint8_t b1_soft_valid;
+    /* aach1_dibuf: the 7 hard dibits of a TMO downlink normal burst's AACH half 1, bb(1) to bb(14) right before its
+     * training sequence (EN 300 392-2 table 9.7), captured with block 1.
+     * aach1_valid: 1 when aach1_dibuf holds them; 0 for a burst with no AACH (uplink, direct mode). */
+    uint8_t aach1_dibuf[7];
+    uint8_t aach1_valid;
     uint8_t polarity;
     uint8_t nts2;
     /* How many 90° slicer steps to undo before FEC. 0 keeps the historical

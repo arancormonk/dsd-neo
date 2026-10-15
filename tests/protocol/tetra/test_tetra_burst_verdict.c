@@ -67,6 +67,7 @@ enum {
     BSCH_DIBITS = 60,
     SB_BB_DIBITS = 15,
     BLOCK_DIBITS = 108,
+    AACH1_DIBITS = 7,
     NDB_AACH2_DIBITS = 8,
 };
 
@@ -236,36 +237,65 @@ sync_burst(session* s, const uint8_t* bsch, const uint8_t* block2) {
     return dsd_dispatch_handle_tetra(s->opts, s->state);
 }
 
-/* A normal downlink burst with two half-slot blocks: block 1 as the frame sync captured it, then block 2. */
+/* A normal downlink burst, NTS2 with two half-slot blocks or NTS1 with one full-slot channel: block 1 and AACH half 1
+ * as the frame sync captured them, then AACH half 2 and block 2. @p aach is the 15 AACH dibits (encode_aach()), or
+ * NULL for an AACH the frame sync did not capture. */
 static dsd_frame_verdict
-nts2_burst(session* s, const uint8_t* block1, const uint8_t* block2) {
+ndb_burst(session* s, int nts2, const uint8_t* aach, const uint8_t* block1, const uint8_t* block2) {
     uint8_t tail[NDB_AACH2_DIBITS + BLOCK_DIBITS] = {0};
+    if (aach) {
+        DSD_MEMCPY(tail, aach + AACH1_DIBITS, NDB_AACH2_DIBITS);
+        DSD_MEMCPY(s->state->tetra_sync.aach1_dibuf, aach, AACH1_DIBITS);
+    }
+    s->state->tetra_sync.aach1_valid = aach != NULL;
     DSD_MEMCPY(tail + NDB_AACH2_DIBITS, block2, BLOCK_DIBITS);
     feed(s, tail, (int)sizeof tail);
     DSD_MEMCPY(s->state->tetra_sync.b1_dibuf, block1, BLOCK_DIBITS);
     s->state->tetra_sync.b1_valid = 1;
     s->state->tetra_sync.b1_soft_valid = 0;
-    s->state->tetra_sync.nts2 = 1;
+    s->state->tetra_sync.nts2 = (uint8_t)(nts2 != 0);
     s->state->tetra_sync.cb = 0;
     s->state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
     s->state->synctype = DSD_SYNC_TETRA_NDB_POS;
     return dsd_dispatch_handle_tetra(s->opts, s->state);
 }
 
-/* A normal downlink burst carrying one full-slot channel: block 1 as the frame sync captured it, then block 2. */
+static dsd_frame_verdict
+nts2_burst(session* s, const uint8_t* block1, const uint8_t* block2) {
+    return ndb_burst(s, 1, NULL, block1, block2);
+}
+
 static dsd_frame_verdict
 nts1_burst(session* s, const uint8_t* block1, const uint8_t* block2) {
-    uint8_t tail[NDB_AACH2_DIBITS + BLOCK_DIBITS] = {0};
-    DSD_MEMCPY(tail + NDB_AACH2_DIBITS, block2, BLOCK_DIBITS);
-    feed(s, tail, (int)sizeof tail);
-    DSD_MEMCPY(s->state->tetra_sync.b1_dibuf, block1, BLOCK_DIBITS);
-    s->state->tetra_sync.b1_valid = 1;
-    s->state->tetra_sync.b1_soft_valid = 0;
-    s->state->tetra_sync.nts2 = 0;
-    s->state->tetra_sync.cb = 0;
-    s->state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
-    s->state->synctype = DSD_SYNC_TETRA_NDB_POS;
-    return dsd_dispatch_handle_tetra(s->opts, s->state);
+    return ndb_burst(s, 0, NULL, block1, block2);
+}
+
+/* What @p count all-zero bits scrambled with @p seed send (EN 300 392-2 clause 8.2.5): the scrambling sequence, as
+ * dibits. */
+static void
+scrambled_zeros(uint32_t seed, int count, uint8_t* dibits) {
+    enum { MAX_BITS = 432 };
+
+    assert(count <= MAX_BITS && count % 2 == 0);
+    const uint8_t zeros[MAX_BITS] = {0};
+    uint16_t pn[MAX_BITS];
+    tetra_hard_bits_to_soft(zeros, pn, count);
+    tetra_descramble_soft(pn, count, seed);
+    for (size_t i = 0; i < (size_t)count / 2U; i++) {
+        dibits[i] = (uint8_t)(((pn[2U * i] == 0xFFFFU ? 1U : 0U) << 1) | (pn[(2U * i) + 1U] == 0xFFFFU ? 1U : 0U));
+    }
+}
+
+/* The AACH carrying ACCESS-ASSIGN @p pdu (EN 300 392-2 clause 8.3.1.1): its (30,14) Reed-Muller codeword with the bits
+ * of @p error flipped, scrambled with @p seed; 15 dibits, half 1's 7 then half 2's 8. */
+static void
+encode_aach(uint16_t pdu, uint32_t error, uint32_t seed, uint8_t* dibits) {
+    const uint32_t word = tetra_rm3014_encode(pdu) ^ error;
+    uint8_t pn[AACH1_DIBITS + NDB_AACH2_DIBITS];
+    scrambled_zeros(seed, 30, pn);
+    for (int i = 0; i < AACH1_DIBITS + NDB_AACH2_DIBITS; i++) {
+        dibits[i] = (uint8_t)(((word >> (28 - (2 * i))) & 3U) ^ pn[i]);
+    }
 }
 
 /* Noise: a synchronisation burst whose BSCH fails its CRC proves nothing, and with no network known its block 2 cannot
@@ -808,6 +838,66 @@ test_frame_18_tries_no_speech(void) {
     session_close(&s);
 }
 
+/* The AACH tells a normal downlink burst's traffic from its signalling (EN 300 392-2 clauses 21.4.7.2 and 23.5.6: TCH
+ * and STCH are sent under a traffic usage marker). A block of all-zero bits fails the signalling CRC yet decodes as
+ * speech with no mismatch, as a near-empty signalling block between a call's talkers does once noise breaks its CRC.
+ * It is decoded as speech, full-slot on NTS1 and half-slot after a failed first half on NTS2, when the AACH names a
+ * traffic usage marker or cannot be read (four bit errors), and not when it says control or unallocated. */
+static void
+test_aach_tells_traffic_from_signalling(void) {
+    session s = session_open();
+    s.opts->payload = 1;
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->tdma_valid && ts->net_known);
+    uint8_t full[2 * BLOCK_DIBITS];
+    uint8_t half[BLOCK_DIBITS];
+    scrambled_zeros(ts->lfsr_seed, 432, full);
+    scrambled_zeros(ts->lfsr_seed, 216, half);
+
+    /* PDUs (header, field 1, field 2): traffic 51 as a call's timeslot sends it, assigned control as it sends between
+     * the talkers (tests/protocol/tetra/test_tetra_aach.c). */
+    static const struct {
+        uint16_t pdu;
+        uint32_t error;
+        int speech;
+    } cases[] = {
+        {0x3CF3U, 0U, 1},          /* 11, 51, 51: downlink traffic */
+        {0x2CC9U, 0x7U, 1},        /* 10, 51, 9: downlink traffic, three bit errors corrected */
+        {0x2049U, 0U, 0},          /* 10, 1, 9: assigned control */
+        {0x2049U, 0x20000101U, 0}, /* the same with three bit errors corrected */
+        {0x0249U, 0U, 0},          /* 00, 9, 9: common control */
+        {0x1009U, 0U, 0},          /* 01, 0, 9: unallocated */
+        {0x10C9U, 0U, 0},          /* 01, 3, 9: common and assigned control */
+        {0x2049U, 0x0F000000U, 1}, /* four bit errors: no codeword within 3 bits, so the AACH says nothing */
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        for (int nts2 = 0; nts2 < 2; nts2++) {
+            uint8_t aach[AACH1_DIBITS + NDB_AACH2_DIBITS];
+            encode_aach(cases[i].pdu, cases[i].error, ts->lfsr_seed, aach);
+            /* Frame 5: a frame that may carry traffic, read in the slot the clock is at. */
+            ts->fn = 5;
+            s.state->symbolcnt = ts->tdma_slot_start + TETRA_TDMA_NDB_SYNC_SYMBOL;
+            dsd_test_capture_stderr cap;
+            char out[8192];
+            assert(dsd_test_capture_stderr_begin(&cap, "tetra_aach_err") == 0);
+            const dsd_frame_verdict verdict =
+                nts2 ? ndb_burst(&s, 1, aach, half, half) : ndb_burst(&s, 0, aach, full, full + BLOCK_DIBITS);
+            assert(dsd_test_capture_stderr_end(&cap) == 0);
+            assert(dsd_test_capture_stderr_read(&cap, out, sizeof out) == 0);
+            const int tried = strstr(out, nts2 ? "[TETRA TCH/H]" : "[TETRA TCH/FS]") != NULL;
+            assert(tried == cases[i].speech);
+            assert((verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN) == cases[i].speech);
+        }
+    }
+    session_close(&s);
+}
+
 /* A channel allocation in the first half of a normal burst moves the receiver: the second half was sent on the carrier
  * left, so it is not decoded, and nothing in it counts for the traffic carrier. */
 static void
@@ -997,6 +1087,7 @@ main(void) {
     test_retune_leaves_the_rest_of_the_burst();
     test_burst_entry_settles();
     test_frame_18_tries_no_speech();
+    test_aach_tells_traffic_from_signalling();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;
 }

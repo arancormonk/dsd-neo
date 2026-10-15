@@ -99,6 +99,17 @@ int tetra_speech_half_decode(const uint16_t* deinterleaved, uint8_t* out_bits, i
  *  Returns 1 when the CRC passes. */
 int tetra_sch_hu_decode(const uint16_t* type4, uint8_t* out_bits);
 
+/** The shortened (30,14) Reed-Muller code of the AACH (EN 300 392-2 clause 8.2.3.2): the 14 type-1 bits of @p info,
+ *  b1(1) the most significant, to 30 type-2 bits, b2(1) bit 29 of the result. The code is systematic: b2(1) to b2(14)
+ *  are the type-1 bits. */
+uint32_t tetra_rm3014_encode(uint16_t info);
+
+/** Decode 30 received type-2 bits laid out as tetra_rm3014_encode() returns them. With a codeword within 3 bits (the
+ *  code's minimum distance is 8, so there is at most one), stores its 14 type-1 bits in @p info (may be NULL) and
+ *  returns the number of bits corrected, 0 to 3; otherwise, or with a bit above bit 29 set, returns -1 and leaves
+ *  @p info alone. */
+int tetra_rm3014_decode(uint32_t received, uint16_t* info);
+
 #ifdef __cplusplus
 }
 #endif
