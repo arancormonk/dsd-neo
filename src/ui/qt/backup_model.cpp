@@ -280,11 +280,19 @@ class Inspection {
         QByteArray sealed;
         const bool read = copied == DecoderHost::DocumentCopied && read_sealed(m_work.copyPath, &sealed);
         QFile::remove(m_work.copyPath);
+        // Only a document that could not be read is the file's fault (Io); writing the job's copy of it, or reading
+        // that copy back, is this phone's.
         if (copied == DecoderHost::DocumentTooLarge) {
             return error_name(BackupError::TooLarge);
         }
-        if (!read) {
+        if (copied == DecoderHost::DocumentLocalFailed) {
+            return error_name(BackupError::StagingFailed);
+        }
+        if (copied != DecoderHost::DocumentCopied) {
             return error_name(BackupError::Io);
+        }
+        if (!read) {
+            return error_name(BackupError::StagingFailed);
         }
         if (cancelled()) {
             return QString();
@@ -298,7 +306,7 @@ class Inspection {
             status = DSD_BACKUP_ERR_AUTH;
         }
         m_work.passphrase->wipe();
-        return status == DSD_BACKUP_OK ? QString() : error_name(backup::backup_error_from_seal_status(status));
+        return status == DSD_BACKUP_OK ? QString() : error_name(backup::backup_error_from_open_status(status));
     }
 
     /** Validate the archive for this data root, and require room to stage and later apply it. */

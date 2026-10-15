@@ -142,6 +142,8 @@ class FakeHost : public dsd_qt::DecoderHost {
   public:
     int quitCalls = 0;
     bool busyEngine = false;
+    /** When set, copyDocumentToFile() answers it (after the gate) without copying anything. */
+    int forcedCopy = -1;
 
     bool
     isRunning() const override {
@@ -195,6 +197,9 @@ class FakeHost : public dsd_qt::DecoderHost {
             if (m_aborts != generation) {
                 return DocumentFailed;
             }
+        }
+        if (forcedCopy >= 0) {
+            return forcedCopy;
         }
         return DecoderHost::copyDocumentToFile(reference, destPath, maxBytes);
     }
@@ -959,8 +964,25 @@ test_errors(FakeHost& host, const QString& document, const QString& scratch) {
                                                                     && cache_entries().isEmpty());
     }
 
-    // This phone, not the document: no place to copy it to, or to stage it in, is StagingFailed, never the document
-    // read failure (Io) the screen blames the file for.
+    // This phone, not the document: no place to copy it to, or to stage it in, a copy it could not write or read
+    // back, is StagingFailed, never the document read failure (Io) the screen blames the file for.
+    const struct {
+        int copy;
+        const char* error;
+        const char* what;
+    } copies[] = {
+        {dsd_qt::DecoderHost::DocumentLocalFailed, "StagingFailed", "a copy this phone could not write"},
+        {dsd_qt::DecoderHost::DocumentCopied, "StagingFailed", "a copy reported but not readable back"},
+        {dsd_qt::DecoderHost::DocumentFailed, "Io", "a document that could not be read"},
+    };
+
+    for (const auto& c : copies) {
+        host.forcedCopy = c.copy;
+        const QVariantMap copied = inspect(model, results, document);
+        host.forcedCopy = -1;
+        expect(QStringLiteral("%1 → %2 (got %3)").arg(c.what, c.error, copied.value("error").toString()),
+               !copied.value("ok").toBool() && copied.value("error") == c.error);
+    }
     const QString cache = cache_dir();
     expect("the cache folder is the isolated one", cache.contains(QLatin1String(kRootMarker)));
     if (cache.contains(QLatin1String(kRootMarker))) {

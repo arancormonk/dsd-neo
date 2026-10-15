@@ -74,8 +74,12 @@ class DecoderHost : public QObject {
     };
     Q_ENUM(LocalDeviceFailureKind)
 
-    /** @brief copyDocumentToFile() results. */
-    enum DocumentCopy { DocumentCopied = 0, DocumentTooLarge = 1, DocumentFailed = 2 };
+    /**
+     * @brief copyDocumentToFile() results. DocumentFailed: the document could not be read (or the copy was aborted);
+     * DocumentLocalFailed: it could, but this device could not write the copy (its destination could not be cleared,
+     * opened, written or committed).
+     */
+    enum DocumentCopy { DocumentCopied = 0, DocumentTooLarge = 1, DocumentFailed = 2, DocumentLocalFailed = 3 };
 
     explicit DecoderHost(QObject* parent = nullptr);
     ~DecoderHost() override;
@@ -109,7 +113,8 @@ class DecoderHost : public QObject {
      * @brief Copy a picked document to @p destPath (written private, through QSaveFile).
      *
      * The base host takes a file:// URL or a plain absolute path. A source larger than @p maxBytes gives
-     * DocumentTooLarge; any failure leaves no file at @p destPath. The destination's directory must exist.
+     * DocumentTooLarge, and a destination that cannot be written DocumentLocalFailed; any failure leaves no file at
+     * @p destPath. The destination's directory must exist.
      *
      * @return A DocumentCopy value.
      */

@@ -88,7 +88,8 @@ replace_destination(const QDir& dir, const QString& replacePath) {
  * the same reason, not taken from the source's reported size.
  *
  * @param abort Optional; checked before every chunk. Once raised the copy fails.
- * @return A DecoderHost::DocumentCopy value; any failure cancels @p out.
+ * @return A DecoderHost::DocumentCopy value (a failed write to @p out is DocumentLocalFailed); any failure cancels
+ *         @p out.
  */
 int
 copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes, const std::atomic<bool>* abort = nullptr) {
@@ -114,7 +115,7 @@ copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes, const std
         }
         if (out.write(chunk.constData(), n) != n) {
             out.cancelWriting();
-            return DecoderHost::DocumentFailed;
+            return DecoderHost::DocumentLocalFailed;
         }
     }
 }
@@ -171,16 +172,17 @@ DecoderHost::copyDocumentToFile(const QString& reference, const QString& destPat
         return DocumentTooLarge;
     }
     // QSaveFile writes beside the destination and renames on commit, so no
-    // failure, cap included, can leave a partial file there.
+    // failure, cap included, can leave a partial file there. Every failure on
+    // that side is this device's, not the document's.
     QSaveFile out(destPath);
     if (!open_private(out)) {
-        return DocumentFailed;
+        return DocumentLocalFailed;
     }
     const int copied = copy_stream_capped(source, out, maxBytes, &m_documentTransfersAborted);
     if (copied != DocumentCopied) {
         return copied;
     }
-    return out.commit() ? DocumentCopied : DocumentFailed;
+    return out.commit() ? DocumentCopied : DocumentLocalFailed;
 }
 
 bool

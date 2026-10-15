@@ -55,6 +55,14 @@ backup_error_name(BackupError error) {
 }
 
 BackupError
+backup_error_from_open_status(int status) {
+    if (status == DSD_BACKUP_ERR_ARGS || status == DSD_BACKUP_ERR_INTERNAL) {
+        return BackupError::StagingFailed;
+    }
+    return backup_error_from_seal_status(status);
+}
+
+BackupError
 backup_error_from_seal_status(int status) {
     switch (status) {
         case DSD_BACKUP_OK: return BackupError::None;

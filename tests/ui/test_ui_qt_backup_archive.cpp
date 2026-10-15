@@ -1462,6 +1462,17 @@ test_passphrases() {
                                  && backup_error_from_seal_status(DSD_BACKUP_ERR_PARAMS) == BackupError::Damaged
                                  && backup_error_from_seal_status(DSD_BACKUP_ERR_INTERNAL) == BackupError::Io
                                  && backup_error_from_seal_status(DSD_BACKUP_OK) == BackupError::None);
+    // A restore's open: past a parsed header, an argument or OpenSSL failure is this phone's, not the file's.
+    using dsd_qt::backup::backup_error_from_open_status;
+    expect("open status mapping",
+           backup_error_from_open_status(DSD_BACKUP_ERR_INTERNAL) == BackupError::StagingFailed
+               && backup_error_from_open_status(DSD_BACKUP_ERR_ARGS) == BackupError::StagingFailed
+               && backup_error_from_open_status(DSD_BACKUP_ERR_AUTH) == BackupError::WrongPassphrase
+               && backup_error_from_open_status(DSD_BACKUP_ERR_FORMAT) == BackupError::NotBackup
+               && backup_error_from_open_status(DSD_BACKUP_ERR_VERSION) == BackupError::NewerVersion
+               && backup_error_from_open_status(DSD_BACKUP_ERR_PARAMS) == BackupError::Damaged
+               && backup_error_from_open_status(DSD_BACKUP_ERR_TOO_LARGE) == BackupError::TooLarge
+               && backup_error_from_open_status(DSD_BACKUP_OK) == BackupError::None);
     expect("error names", dsd_qt::backup::backup_error_name(BackupError::WrongPassphrase) == "WrongPassphrase"
                               && dsd_qt::backup::backup_error_name(BackupError::SessionActive) == "SessionActive");
     expect("a file that changed during an export has its own name, not an I/O failure",
@@ -1513,6 +1524,24 @@ test_host_document_copies() {
     expect("opaque reference fails",
            host.copyDocumentToFile("content://x/y", failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
     expect("failure leaves no destination", !QFileInfo::exists(failed));
+    // A destination this device cannot write is its own failure, not the document's.
+    const QString nowhere = dir.filePath("no-such-dir/copy.bin");
+    expect("a destination that cannot be opened is a local failure",
+           host.copyDocumentToFile(source, nowhere, payload.size()) == dsd_qt::DecoderHost::DocumentLocalFailed
+               && !QFileInfo::exists(nowhere));
+    const QString locked = dir.filePath("locked");
+    expect("a locked directory",
+           QDir().mkpath(locked) && QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+    QFile probe(locked + "/probe");
+    if (probe.open(QIODevice::WriteOnly)) {
+        DSD_FPRINTF(stderr, "note: directory permissions are not enforced here; locked-destination case skipped\n");
+    } else {
+        expect("a destination in a directory it cannot write to is a local failure",
+               host.copyDocumentToFile(source, locked + "/copy.bin", payload.size())
+                       == dsd_qt::DecoderHost::DocumentLocalFailed
+                   && !QFileInfo::exists(locked + "/copy.bin"));
+    }
+    QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
 
     const QString saved = dir.filePath("saved.dsdbak");
     expect("copy to a file:// document",

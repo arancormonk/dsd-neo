@@ -90,6 +90,13 @@ QString backup_error_name(BackupError error);
  */
 BackupError backup_error_from_seal_status(int status);
 
+/**
+ * The BackupError a restore reports for a backup_open() status: backup_error_from_seal_status(), except ARGS and
+ * INTERNAL. The open reaches those only once the header has parsed, so they are this phone's crypto library or memory
+ * failing, not the file: StagingFailed. (An empty passphrase, the other ARGS, is the caller's to tell apart.)
+ */
+BackupError backup_error_from_open_status(int status);
+
 /** What a typed path field holds. */
 enum class PathKind {
     File,       /**< A carried file under the data root's imports/, or empty. */
