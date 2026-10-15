@@ -1,0 +1,671 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+
+import QtQuick
+import QtQuick.Dialogs
+import QtQuick.Window
+
+// Issue #580: export this phone's setup to a passphrase-encrypted file, and
+// restore one. Main owns the single instance both Settings screens use.
+//
+// Every path runs between backup.setFlowActive(true) and (false), the system
+// pickers included, so Main can hold auto-start and USB resumes for the whole
+// flow. `step` names what is on screen; a reply that does not belong to the
+// current step (one that lands after a cancel) is ignored.
+Item {
+    id: flow
+    objectName: "backupFlow"
+
+    // "" when idle, else one of: exportPassphrase, encrypting, exportPicker,
+    // saving, restorePicker, unlock, checking, confirm, closing.
+    property string step: ""
+    readonly property bool active: step.length > 0
+    // The last result, shown under the Settings card's rows.
+    property string notice: ""
+    property bool noticeProblem: false
+    // The picked document, passed to the model exactly as the picker gave it.
+    property string reference: ""
+    property var notIncluded: []
+
+    // Entering a restore: Main drops a start still waiting on USB access.
+    signal restoreBegun
+
+    function beginExport() {
+        if (active)
+            return;
+        start("exportPassphrase");
+        passphraseField.text = "";
+        confirmField.text = "";
+        showPassphrases.checked = false;
+        passphraseSheet.open();
+        Qt.callLater(focusField, passphraseField);
+    }
+
+    function beginRestore() {
+        if (!restoreOpen())
+            return;
+        start("restorePicker");
+        restoreBegun();
+        openPicker.open();
+    }
+
+    // The restore past its picker, for a document already chosen.
+    function restoreFromReference(ref) {
+        if (!restoreOpen())
+            return;
+        start("unlock");
+        restoreBegun();
+        showUnlock(ref);
+    }
+
+    // Settings' "Cancel restore": drop a restore that waits for the next start.
+    function cancelPendingRestore() {
+        if (active)
+            return;
+        var result = backup.discardRestore();
+        if (result.ok)
+            setNotice(qsTr("Restore cancelled."), false);
+        else if (result.discarded)
+            setNotice(qsTr("Restore cancelled. Its leftover files are removed the next time DSD-neo opens."), false);
+        else
+            setNotice(qsTr("Couldn't cancel the restore. It still finishes when DSD-neo opens again."), true);
+    }
+
+    function restoreOpen() {
+        return !active && backup.restoreAllowed && !backup.restorePending;
+    }
+
+    function start(first) {
+        setNotice("", false);
+        reference = "";
+        notIncluded = [];
+        step = first;
+        backup.setFlowActive(true);
+    }
+
+    // Drop the field's focus (and the keyboard) before the sheet goes, so no
+    // focused field outlives the sheet it sat in.
+    function closeSheet(sheet) {
+        if (!sheet.visible)
+            return;
+        Navigation.clearInput(flow.Window.window);
+        sheet.visible = false;
+    }
+
+    // The end of every path but the closing one: whatever the flow shows goes.
+    function finish(text, problem) {
+        step = "";
+        closeSheet(passphraseSheet);
+        closeSheet(unlockSheet);
+        closeSheet(savingSheet);
+        closeSheet(confirmRestore);
+        if (savePicker.visible)
+            savePicker.close();
+        if (openPicker.visible)
+            openPicker.close();
+        passphraseField.text = "";
+        confirmField.text = "";
+        unlockField.text = "";
+        reference = "";
+        notIncluded = [];
+        setNotice(text, problem);
+        backup.setFlowActive(false);
+    }
+
+    function setNotice(text, problem) {
+        notice = text;
+        noticeProblem = problem;
+        announce(text);
+    }
+
+    function announce(text) {
+        if (text.length && typeof Accessible.announce === "function")
+            Accessible.announce(text);
+    }
+
+    function focusField(field) {
+        if (field.visible && field.enabled)
+            field.input.forceActiveFocus();
+    }
+
+    // Characters as the model counts them: code points after NFC.
+    function characters(text) {
+        var normal = text.normalize("NFC");
+        var count = 0;
+        for (var i = 0; i < normal.length; ++i) {
+            var unit = normal.charCodeAt(i);
+            if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < normal.length) {
+                var next = normal.charCodeAt(i + 1);
+                if (next >= 0xDC00 && next <= 0xDFFF)
+                    ++i;
+            }
+            ++count;
+        }
+        return count;
+    }
+
+    function tooShortText() {
+        return qsTr("Use at least %1 characters.").arg(backup.minPassphraseLength);
+    }
+
+    // One message per model error name. `action` picks the wording where the
+    // same name means different things: prepare, save, inspect or commit.
+    function errorText(name, action) {
+        switch (name) {
+        case "WrongPassphrase":
+            return qsTr("Wrong passphrase, or the file is damaged.");
+        case "NotBackup":
+            return qsTr("This isn't a DSD-neo backup.");
+        case "NewerVersion":
+            return qsTr("This backup was made by a newer DSD-neo. Update first.");
+        case "TooLarge":
+            return action === "prepare" ? qsTr("Your setup is too large for one backup.") : qsTr("This file is too large to be a DSD-neo backup.");
+        case "Damaged":
+            return qsTr("The backup is damaged.");
+        case "NoSpace":
+            return qsTr("Not enough storage to restore. Free some space and try again.");
+        case "SessionActive":
+            return qsTr("Stop listening before restoring.");
+        case "PassphraseTooShort":
+            return tooShortText();
+        case "Busy":
+            return qsTr("Another backup task is still running. Try again in a moment.");
+        case "RestorePending":
+            return qsTr("A restore is already waiting. Close DSD-neo and open it again to finish it, or cancel it in Settings.");
+        }
+        // Io, and any name this screen does not know yet.
+        if (action === "prepare")
+            return qsTr("Couldn't create the backup. Free some storage and try again.");
+        if (action === "save")
+            return qsTr("Couldn't save the backup there. Try again, or choose another place.");
+        if (action === "commit")
+            return qsTr("Couldn't start the restore. Try again.");
+        return qsTr("Couldn't read that file. Choose it again, or copy it to this phone first.");
+    }
+
+    // ---- export ----
+
+    function submitExport() {
+        if (step !== "exportPassphrase")
+            return;
+        var first = passphraseField.text;
+        exportError.text = "";
+        if (characters(first) < backup.minPassphraseLength) {
+            passphraseField.error = tooShortText();
+            announce(passphraseField.error);
+            focusField(passphraseField);
+            return;
+        }
+        if (first.normalize("NFC") !== confirmField.text.normalize("NFC")) {
+            confirmField.error = qsTr("The passphrases don't match.");
+            announce(confirmField.error);
+            focusField(confirmField);
+            return;
+        }
+        step = "encrypting";
+        backup.prepareExport(first);
+    }
+
+    function cancelExport() {
+        if (step === "encrypting")
+            backup.cancel();
+        else if (step !== "exportPassphrase")
+            return;
+        finish("", false);
+    }
+
+    function exportPrepared(result) {
+        if (step !== "encrypting")
+            return;
+        if (!result.ok) {
+            step = "exportPassphrase";
+            if (result.error === "PassphraseTooShort") {
+                passphraseField.error = errorText(result.error, "prepare");
+                announce(passphraseField.error);
+            } else {
+                exportError.text = errorText(result.error, "prepare");
+                announce(exportError.text);
+            }
+            return;
+        }
+        notIncluded = result.notIncluded || [];
+        step = "exportPicker";
+        closeSheet(passphraseSheet);
+        passphraseField.text = "";
+        confirmField.text = "";
+        savePicker.selectedFile = backup.suggestedFileName();
+        savePicker.open();
+    }
+
+    function savePicked(ref) {
+        if (step !== "exportPicker")
+            return;
+        step = "saving";
+        savingSheet.open();
+        backup.saveExport(ref);
+    }
+
+    function savePickCancelled() {
+        if (step !== "exportPicker")
+            return;
+        backup.discardExport();
+        finish("", false);
+    }
+
+    function exportFinished(result) {
+        if (step !== "saving")
+            return;
+        if (!result.ok) {
+            finish(errorText(result.error, "save"), true);
+            return;
+        }
+        finish(savedText(result.notIncluded || notIncluded), false);
+    }
+
+    // The backup leaves out what it cannot carry; name the first few.
+    function savedText(items) {
+        if (!items || !items.length)
+            return qsTr("Backup saved.");
+        var shown = items.slice(0, 5);
+        var text = qsTr("Backup saved. Not included:") + "\n" + shown.join("\n");
+        if (items.length > shown.length)
+            text += "\n" + qsTr("and %1 more").arg(items.length - shown.length);
+        return text;
+    }
+
+    // ---- restore ----
+
+    function showUnlock(ref) {
+        reference = ref;
+        unlockField.text = "";
+        unlockField.error = "";
+        unlockError.text = "";
+        showUnlockPassphrase.checked = false;
+        unlockSheet.open();
+        Qt.callLater(focusField, unlockField);
+    }
+
+    function restorePicked(ref) {
+        if (step !== "restorePicker")
+            return;
+        step = "unlock";
+        showUnlock(ref);
+    }
+
+    function restorePickCancelled() {
+        if (step !== "restorePicker")
+            return;
+        finish("", false);
+    }
+
+    function submitUnlock() {
+        if (step !== "unlock")
+            return;
+        unlockError.text = "";
+        if (!unlockField.text.length) {
+            unlockField.error = qsTr("Enter the passphrase.");
+            announce(unlockField.error);
+            focusField(unlockField);
+            return;
+        }
+        step = "checking";
+        backup.inspectRestore(reference, unlockField.text);
+    }
+
+    function cancelUnlock() {
+        if (step === "checking")
+            backup.cancel();
+        else if (step !== "unlock")
+            return;
+        finish("", false);
+    }
+
+    function inspected(result) {
+        if (step !== "checking")
+            return;
+        if (!result.ok) {
+            step = "unlock";
+            if (result.error === "WrongPassphrase") {
+                unlockField.text = "";
+                unlockField.error = errorText(result.error, "inspect");
+                announce(unlockField.error);
+                focusField(unlockField);
+            } else {
+                unlockError.text = errorText(result.error, "inspect");
+                announce(unlockError.text);
+            }
+            return;
+        }
+        step = "confirm";
+        closeSheet(unlockSheet);
+        unlockField.text = "";
+        confirmRestore.message = restoreQuestion(result.summary || ({}));
+        confirmRestore.open();
+    }
+
+    function count(value) {
+        var n = Number(value);
+        return n > 0 ? Math.floor(n) : 0;
+    }
+
+    // The confirmation names what goes and what stays. The version comes from
+    // the file, so it is inserted last, where no later arg() can rewrite it.
+    function restoreQuestion(summary) {
+        var day = count(summary.createdAt) > 0 ? Qt.formatDate(new Date(count(summary.createdAt) * 1000), "MMM d, yyyy") : "";
+        var version = String(summary.app || "");
+        var source = day.length && version.length ? qsTr("the backup from %1 (DSD-neo %2)").arg(day).arg(version) : day.length ? qsTr("the backup from %1").arg(day) : version.length ? qsTr("the backup (DSD-neo %1)").arg(version) : qsTr("the backup");
+        var question = qsTr("Replace this phone's saved systems (%1), scan lists (%2), imported files (%3), decryption profiles (%4), search ranges and settings with %5? Call history and recordings on this phone are kept.").arg(count(summary.systems)).arg(count(summary.scanLists)).arg(count(summary.libraryFiles)).arg(count(summary.profiles)).arg(source);
+        var notes = [];
+        var replays = count(summary.recordingsToChoose);
+        if (replays === 1)
+            notes.push(qsTr("1 replay system will need its recording chosen again."));
+        else if (replays > 1)
+            notes.push(qsTr("%1 replay systems will need their recording chosen again.").arg(replays));
+        var extra = count(summary.systemsWithExtraArgs);
+        if (extra === 1)
+            notes.push(qsTr("1 system carries extra decoder options."));
+        else if (extra > 1)
+            notes.push(qsTr("%1 systems carry extra decoder options.").arg(extra));
+        if (summary.appExtraArgs === true)
+            notes.push(qsTr("Your settings carry extra decoder arguments."));
+        var parts = [question];
+        if (notes.length)
+            parts.push(notes.join(" "));
+        parts.push(qsTr("DSD-neo will close; open it again to finish."));
+        return parts.join("\n\n");
+    }
+
+    function commit() {
+        if (step !== "confirm")
+            return;
+        var result = backup.commitRestore();
+        if (result.ok && result.quitting) {
+            // DSD-neo is closing: the flow stays active, holding auto-start,
+            // until the process goes.
+            step = "closing";
+            closingSheet.open();
+            return;
+        }
+        if (result.ok) {
+            // The host could not close the app; the card says what is waiting.
+            finish("", false);
+            return;
+        }
+        // Nothing half-done should wait for the next start.
+        backup.discardRestore();
+        finish(errorText(result.error, "commit"), true);
+    }
+
+    function declineRestore() {
+        if (step !== "confirm")
+            return;
+        var result = backup.discardRestore();
+        if (result.discarded)
+            finish("", false);
+        else
+            finish(qsTr("Couldn't cancel the restore. It still finishes when DSD-neo opens again."), true);
+    }
+
+    Connections {
+        target: backup
+        function onExportPrepared(result) {
+            flow.exportPrepared(result);
+        }
+        function onExportFinished(result) {
+            flow.exportFinished(result);
+        }
+        function onInspectFinished(result) {
+            flow.inspected(result);
+        }
+    }
+
+    FileDialog {
+        id: savePicker
+        objectName: "backupSavePicker"
+        fileMode: FileDialog.SaveFile
+        // Android takes the new document's MIME type from the first filter; an
+        // extension it does not know becomes application/octet-stream.
+        nameFilters: [qsTr("DSD-neo backup") + " (*.dsdbak)"]
+        defaultSuffix: "dsdbak"
+        onAccepted: flow.savePicked(selectedFile.toString())
+        onRejected: flow.savePickCancelled()
+    }
+
+    // No filter: providers label files freely, and the model identifies a
+    // backup by its content, never by its name.
+    FileDialog {
+        id: openPicker
+        objectName: "backupOpenPicker"
+        fileMode: FileDialog.OpenFile
+        nameFilters: []
+        onAccepted: flow.restorePicked(selectedFile.toString())
+        onRejected: flow.restorePickCancelled()
+    }
+
+    ModalSheet {
+        id: passphraseSheet
+        objectName: "backupPassphraseSheet"
+        accessibleName: qsTr("Encrypt backup")
+        dismissHandler: function () {
+            flow.cancelExport();
+        }
+
+        Text {
+            width: parent.width
+            text: qsTr("Encrypt backup")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(17)
+            font.weight: Font.Bold
+            color: Theme.textPrimary
+        }
+        Text {
+            width: parent.width
+            text: qsTr("Includes your settings, saved systems, scan lists, imported files, decryption profiles with their keys, and search ranges. Call history and recordings stay on this phone.")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
+            color: Theme.textSecondary
+        }
+        Text {
+            objectName: "backupExportWarning"
+            width: parent.width
+            text: qsTr("Holds your keys. Without this passphrase the backup can't be restored. There is no recovery.")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
+            font.weight: Font.DemiBold
+            color: Theme.alert
+        }
+        PlexTextField {
+            id: passphraseField
+            objectName: "backupPassphraseField"
+            width: parent.width
+            label: qsTr("Passphrase")
+            hint: qsTr("At least %1 characters").arg(backup.minPassphraseLength)
+            echoMode: showPassphrases.checked ? TextInput.Normal : TextInput.Password
+            inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase | (showPassphrases.checked ? Qt.ImhNone : Qt.ImhHiddenText)
+            enabled: flow.step === "exportPassphrase"
+            nextField: confirmField
+            onTextChanged: {
+                error = "";
+                confirmField.error = "";
+            }
+        }
+        PlexTextField {
+            id: confirmField
+            objectName: "backupConfirmField"
+            width: parent.width
+            label: qsTr("Confirm passphrase")
+            echoMode: showPassphrases.checked ? TextInput.Normal : TextInput.Password
+            inputMethodHints: passphraseField.inputMethodHints
+            enabled: flow.step === "exportPassphrase"
+            onTextChanged: error = ""
+            onAccepted: flow.submitExport()
+        }
+        PlexCheckBox {
+            id: showPassphrases
+            objectName: "backupShowPassphrases"
+            text: qsTr("Show passphrases")
+            enabled: flow.step === "exportPassphrase"
+        }
+        Text {
+            id: exportError
+            objectName: "backupExportError"
+            width: parent.width
+            visible: text.length > 0
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
+            color: Theme.alert
+            Accessible.role: Accessible.AlertMessage
+            Accessible.name: text
+        }
+        GradientButton {
+            objectName: "backupEncryptButton"
+            width: parent.width
+            text: flow.step === "encrypting" ? qsTr("Encrypting…") : qsTr("Encrypt")
+            enabled: flow.step === "exportPassphrase"
+            onClicked: flow.submitExport()
+        }
+        OutlineButton {
+            objectName: "backupExportCancel"
+            width: parent.width
+            text: qsTr("Cancel")
+            onClicked: flow.cancelExport()
+        }
+    }
+
+    // Saving cannot be stopped part way, so this sheet offers no way out.
+    ModalSheet {
+        id: savingSheet
+        objectName: "backupSavingSheet"
+        accessibleName: qsTr("Saving…")
+        dismissHandler: function () {}
+
+        Text {
+            width: parent.width
+            text: qsTr("Saving…")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(17)
+            font.weight: Font.Bold
+            color: Theme.textPrimary
+        }
+        Text {
+            width: parent.width
+            text: qsTr("Keep DSD-neo open until the backup is saved.")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
+            color: Theme.textSecondary
+        }
+    }
+
+    ModalSheet {
+        id: unlockSheet
+        objectName: "backupUnlockSheet"
+        accessibleName: qsTr("Unlock backup")
+        dismissHandler: function () {
+            flow.cancelUnlock();
+        }
+
+        Text {
+            width: parent.width
+            text: qsTr("Unlock backup")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(17)
+            font.weight: Font.Bold
+            color: Theme.textPrimary
+        }
+        Text {
+            width: parent.width
+            text: qsTr("Enter the passphrase this backup was made with.")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
+            color: Theme.textSecondary
+        }
+        PlexTextField {
+            id: unlockField
+            objectName: "backupUnlockField"
+            width: parent.width
+            label: qsTr("Passphrase")
+            echoMode: showUnlockPassphrase.checked ? TextInput.Normal : TextInput.Password
+            inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase | (showUnlockPassphrase.checked ? Qt.ImhNone : Qt.ImhHiddenText)
+            enabled: flow.step === "unlock"
+            onTextChanged: error = ""
+            onAccepted: flow.submitUnlock()
+        }
+        PlexCheckBox {
+            id: showUnlockPassphrase
+            objectName: "backupShowUnlockPassphrase"
+            text: qsTr("Show passphrase")
+            enabled: flow.step === "unlock"
+        }
+        Text {
+            id: unlockError
+            objectName: "backupUnlockError"
+            width: parent.width
+            visible: text.length > 0
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
+            color: Theme.alert
+            Accessible.role: Accessible.AlertMessage
+            Accessible.name: text
+        }
+        GradientButton {
+            objectName: "backupUnlockButton"
+            width: parent.width
+            text: flow.step === "checking" ? qsTr("Checking backup…") : qsTr("Unlock")
+            enabled: flow.step === "unlock"
+            onClicked: flow.submitUnlock()
+        }
+        OutlineButton {
+            objectName: "backupUnlockCancel"
+            width: parent.width
+            text: qsTr("Cancel")
+            onClicked: flow.cancelUnlock()
+        }
+    }
+
+    ConfirmDialog {
+        id: confirmRestore
+        objectName: "backupConfirmRestore"
+        title: qsTr("Replace your setup?")
+        confirmText: qsTr("Replace and close")
+        destructive: true
+        onConfirmed: flow.commit()
+        onCancelled: flow.declineRestore()
+    }
+
+    // The restore is committed and DSD-neo is on its way out: nothing to undo here.
+    ModalSheet {
+        id: closingSheet
+        objectName: "backupClosingSheet"
+        accessibleName: qsTr("Closing DSD-neo…")
+        dismissHandler: function () {}
+
+        Text {
+            width: parent.width
+            text: qsTr("Closing DSD-neo…")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(17)
+            font.weight: Font.Bold
+            color: Theme.textPrimary
+        }
+        Text {
+            width: parent.width
+            text: qsTr("Open it again to finish restoring your backup.")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
+            color: Theme.textSecondary
+        }
+    }
+}

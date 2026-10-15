@@ -1,0 +1,788 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+
+import QtQuick
+import QtQuick.Dialogs
+import QtTest
+import "../../../src/ui/qt/qml" as Ui
+
+// Issue #580: the Settings Backup card and the one backup flow Main owns for
+// both Settings instances. `backup` is the recording fake in
+// qml_test_context.h; a case drives its results through testContext and reads
+// back what the screens asked for.
+Item {
+    width: 420
+    height: 900
+    Loader {
+        id: appLoader
+        anchors.fill: parent
+    }
+
+    TestCase {
+        name: "SettingsBackup"
+        when: windowShown
+        property var app: null
+        property var flow: null
+        property var settings: null
+        property int usbRow: -1
+        property bool savedAutoStart: false
+        property bool savedOnboarding: false
+        readonly property string pass: "correct horse battery"
+        readonly property string pickedReference: "content://com.example.documents/document/primary%3ABackups%2Fphone.dsdbak"
+        readonly property var fullSummary: ({
+                createdAt: 1760000000,
+                app: "1.4.0",
+                systems: 3,
+                scanLists: 2,
+                libraryFiles: 5,
+                profiles: 1,
+                ranges: 2,
+                avoids: 4,
+                recordingsToChoose: 2,
+                systemsWithExtraArgs: 1,
+                appExtraArgs: false,
+                notIncluded: []
+            })
+
+        function init() {
+            testContext.useLifecycleHost(true);
+            testContext.resetBackup();
+            savedAutoStart = prefs.autoStartOnAttach;
+            savedOnboarding = prefs.onboardingDone;
+            prefs.onboardingDone = true;
+            appLoader.source = uiDir + "/Main.qml";
+            app = appLoader.item;
+            verify(app !== null);
+            app.currentTab = 2;
+            settings = findChild(app, "idleSettingsScreen");
+            flow = findChild(app, "backupFlow");
+            verify(settings !== null);
+            verify(flow !== null);
+            // Keys and taps go to the active window, and Main is its own.
+            app.requestActivate();
+            tryCompare(app, "active", true);
+            tryVerify(function () {
+                return settings.visible && settings.opacity > 0.9;
+            });
+        }
+
+        function cleanup() {
+            // Close what a case left open before Main goes, so no field keeps focus through teardown.
+            Ui.Navigation.clearInput(app);
+            for (var modal of Ui.Navigation.modals.slice())
+                modal.visible = false;
+            appLoader.source = "";
+            app = null;
+            flow = null;
+            settings = null;
+            testContext.resetBackup();
+            testContext.setScanTestUsb(false, false);
+            testContext.setLifecyclePhase(0);
+            if (usbRow >= 0)
+                savedSystems.remove(usbRow);
+            usbRow = -1;
+            prefs.autoStartOnAttach = savedAutoStart;
+            prefs.onboardingDone = savedOnboarding;
+            prefs.lastStartedKind = "";
+            prefs.lastStartedUid = "";
+            testContext.useLifecycleHost(false);
+        }
+
+        // ---- helpers ----
+
+        function calls(name) {
+            return testContext.backupCalls().filter(function (call) {
+                return call.name === name;
+            });
+        }
+        function lastFlowActive() {
+            var list = calls("setFlowActive");
+            return list.length ? list[list.length - 1].args[0] : undefined;
+        }
+        function part(name) {
+            var found = findChild(flow, name);
+            verify(found !== null, name);
+            return found;
+        }
+        function count(item, name) {
+            var n = item.objectName === name ? 1 : 0;
+            for (var child of item.children || [])
+                n += count(child, name);
+            return n;
+        }
+        // Accessible names of the buttons a surface offers right now.
+        function buttons(item) {
+            var names = [];
+            for (var child of item.children || []) {
+                if (!child.visible)
+                    continue;
+                if (child.Accessible.role === Accessible.Button)
+                    names.push(child.Accessible.name);
+                names = names.concat(buttons(child));
+            }
+            return names;
+        }
+        function typePassphrases(first, second) {
+            part("backupPassphraseField").text = first;
+            part("backupConfirmField").text = second;
+        }
+        function openExport() {
+            findChild(settings, "settingsBackupExportRow").activate();
+            tryCompare(part("backupPassphraseSheet"), "visible", true);
+        }
+        function encrypt() {
+            openExport();
+            typePassphrases(pass, pass);
+            part("backupEncryptButton").activate();
+            compare(calls("prepareExport").length, 1);
+        }
+        function toSavePicker(notIncluded) {
+            encrypt();
+            verify(testContext.emitBackup("exportPrepared", {ok: true, error: "", summary: {}, notIncluded: notIncluded || []}));
+            var picker = part("backupSavePicker");
+            tryCompare(picker, "visible", true);
+            return picker;
+        }
+        // The non-native dialog the offscreen run gets stays open after a bare
+        // accepted(), and closing it then reports rejected too: the flow has to
+        // ignore that once the pick has moved it on.
+        function pick(picker, reference) {
+            picker.selectedFile = reference;
+            picker.accepted();
+            picker.close();
+        }
+        function toUnlock() {
+            flow.restoreFromReference(pickedReference);
+            tryCompare(part("backupUnlockSheet"), "visible", true);
+        }
+        function unlock() {
+            toUnlock();
+            part("backupUnlockField").text = pass;
+            part("backupUnlockButton").activate();
+            compare(calls("inspectRestore").length, 1);
+        }
+        function toConfirm(summary) {
+            unlock();
+            verify(testContext.emitBackup("inspectFinished", {ok: true, error: "", summary: summary || fullSummary}));
+            var confirm = part("backupConfirmRestore");
+            tryCompare(confirm, "visible", true);
+            return confirm;
+        }
+        function armUsbStart() {
+            usbRow = savedSystems.count;
+            savedSystems.add({name: "Backup USB", sourceType: "usb", freqMhz: "851.5"});
+            testContext.setScanTestUsb(true, false);
+            app.startSystem(usbRow);
+            verify(app.awaitingUsbAccess);
+            verify(app.pendingStart !== null);
+        }
+        function dismissBy(sheet, method) {
+            if (method === "back")
+                verify(Ui.Navigation.back(app), "Back consumes the sheet");
+            else if (method === "host")
+                decoderHost.backRequested();
+            else if (method === "escape")
+                keyClick(Qt.Key_Escape);
+            else
+                mouseClick(sheet, 2, 2);
+        }
+        function notice(screen) {
+            return findChild(screen || settings, "settingsBackupNotice");
+        }
+
+        // ---- the Settings card ----
+
+        function verifyCard(screen) {
+            var header = findChild(screen, "settingsBackupHeader");
+            verify(header !== null);
+            compare(header.text, "Backup");
+            var exportRow = findChild(screen, "settingsBackupExportRow");
+            compare(exportRow.title, "Export backup");
+            compare(exportRow.subtitle, "Encrypted file with your settings, systems, scan lists, imported files and keys");
+            var restoreRow = findChild(screen, "settingsBackupRestoreRow");
+            compare(restoreRow.title, "Restore from backup");
+            compare(restoreRow.subtitle, "Replaces your setup on this phone");
+            verify(restoreRow.enabled);
+            verify(exportRow.height >= Ui.Theme.minimumTouchSize);
+            verify(restoreRow.height >= Ui.Theme.minimumTouchSize);
+            // The card sits right before About & support.
+            verify(header.mapToItem(screen, 0, 0).y < findChild(screen, "settingsSupportHeader").mapToItem(screen, 0, 0).y);
+        }
+
+        function test_card_in_both_settings_instances() {
+            compare(count(app.contentItem, "backupFlow"), 1, "one flow serves both Settings screens");
+            verifyCard(settings);
+            openExport();
+            compare(flow.step, "exportPassphrase");
+            part("backupExportCancel").activate();
+            tryCompare(part("backupPassphraseSheet"), "visible", false);
+            compare(backup.flowActive, false);
+
+            testContext.setLifecyclePhase(2);
+            tryCompare(app, "monitorMode", true);
+            app.sessionDestination = "settings";
+            var session = findChild(app, "sessionSettingsScreen");
+            tryVerify(function () {
+                return session.visible;
+            });
+            verifyCard(session);
+            findChild(session, "settingsBackupExportRow").activate();
+            tryCompare(part("backupPassphraseSheet"), "visible", true);
+            compare(flow.step, "exportPassphrase");
+            verify(backup.flowActive);
+            part("backupExportCancel").activate();
+            tryCompare(part("backupPassphraseSheet"), "visible", false);
+            compare(lastFlowActive(), false);
+            app.sessionDestination = "";
+        }
+
+        function test_restore_row_follows_restore_allowed() {
+            var row = findChild(settings, "settingsBackupRestoreRow");
+            verify(testContext.setBackup("restoreAllowed", false));
+            compare(row.enabled, false);
+            compare(row.subtitle, "Stop listening to restore");
+            compare(row.showCaret, false);
+            row.activate();
+            flow.beginRestore();
+            compare(flow.step, "");
+            compare(calls("setFlowActive").length, 0);
+            compare(part("backupOpenPicker").visible, false);
+            verify(testContext.setBackup("restoreAllowed", true));
+            verify(row.enabled);
+            compare(row.subtitle, "Replaces your setup on this phone");
+        }
+
+        function test_export_focus_returns_to_its_row() {
+            var row = findChild(settings, "settingsBackupExportRow");
+            row.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            var sheet = part("backupPassphraseSheet");
+            tryCompare(sheet, "visible", true);
+            tryCompare(part("backupPassphraseField").input, "activeFocus", true);
+            compare(part("backupPassphraseField").input.echoMode, TextInput.Password);
+            verify(part("backupPassphraseField").input.Accessible.passwordEdit);
+            keyClick(Qt.Key_Escape);
+            tryCompare(sheet, "visible", false);
+            tryCompare(row, "activeFocus", true);
+            compare(lastFlowActive(), false);
+        }
+
+        // ---- export ----
+
+        function test_export_passphrase_rules_data() {
+            return [
+                {tag: "empty", first: "", second: "", field: "backupPassphraseField", error: "Use at least 8 characters."},
+                {tag: "seven characters", first: "seven77", second: "seven77", field: "backupPassphraseField", error: "Use at least 8 characters."},
+                // Eight UTF-16 units but four characters: counted the way the model counts.
+                {tag: "surrogate pairs", first: "😀😀😀😀", second: "😀😀😀😀", field: "backupPassphraseField", error: "Use at least 8 characters."},
+                // Eight units that normalize to seven characters.
+                {tag: "decomposed accent", first: "abcdefé", second: "abcdefé", field: "backupPassphraseField", error: "Use at least 8 characters."},
+                {tag: "mismatch", first: "correct horse battery", second: "correct horse battery!", field: "backupConfirmField", error: "The passphrases don't match."}
+            ];
+        }
+
+        function test_export_passphrase_rules(data) {
+            openExport();
+            typePassphrases(data.first, data.second);
+            part("backupEncryptButton").activate();
+            compare(part(data.field).error, data.error);
+            compare(calls("prepareExport").length, 0);
+            verify(part("backupPassphraseSheet").visible);
+            compare(flow.step, "exportPassphrase");
+            // Editing clears the message, and a good pair encrypts.
+            typePassphrases(pass, pass);
+            compare(part(data.field).error, "");
+            part("backupEncryptButton").activate();
+            compare(calls("prepareExport").length, 1);
+            compare(calls("prepareExport")[0].args[0], pass);
+        }
+
+        function test_show_passphrases_reveals_both_fields() {
+            openExport();
+            var show = part("backupShowPassphrases");
+            compare(show.checked, false);
+            show.toggle();
+            compare(part("backupPassphraseField").input.echoMode, TextInput.Normal);
+            compare(part("backupConfirmField").input.echoMode, TextInput.Normal);
+            show.toggle();
+            compare(part("backupPassphraseField").input.echoMode, TextInput.Password);
+            compare(part("backupConfirmField").input.echoMode, TextInput.Password);
+            // Reopening starts hidden again.
+            show.toggle();
+            part("backupExportCancel").activate();
+            openExport();
+            compare(part("backupShowPassphrases").checked, false);
+            compare(part("backupPassphraseField").input.echoMode, TextInput.Password);
+        }
+
+        function test_export_saves_to_the_picked_document() {
+            openExport();
+            var sheet = part("backupPassphraseSheet");
+            compare(sheet.accessibleName, "Encrypt backup");
+            verify(part("backupExportWarning").text.indexOf("There is no recovery.") >= 0);
+            typePassphrases(pass, pass);
+            var button = part("backupEncryptButton");
+            button.activate();
+            compare(calls("prepareExport")[0].args[0], pass);
+            compare(button.text, "Encrypting…");
+            verify(!button.enabled);
+            verify(!part("backupPassphraseField").enabled);
+            verify(backup.flowActive);
+
+            verify(testContext.emitBackup("exportPrepared", {ok: true, error: "", summary: {}, notIncluded: ["Imported file old.csv"]}));
+            tryCompare(sheet, "visible", false);
+            compare(part("backupPassphraseField").text, "");
+            compare(part("backupConfirmField").text, "");
+            var picker = part("backupSavePicker");
+            verify(picker.visible);
+            compare(picker.fileMode, FileDialog.SaveFile);
+            compare(picker.selectedFile.toString(), "dsd-neo-backup-2026-10-14.dsdbak");
+            // One name filter: Android turns its unknown extension into application/octet-stream.
+            compare(picker.nameFilters.length, 1);
+            verify(picker.nameFilters[0].indexOf("(*.dsdbak)") > 0);
+            compare(flow.step, "exportPicker");
+            // No sheet is up while the picker is: flowActive alone holds auto-start.
+            compare(Ui.Navigation.modals.length, 0);
+            verify(backup.flowActive);
+            verify(uiController.autoStartBlocked);
+
+            pick(picker, pickedReference);
+            compare(calls("saveExport").length, 1);
+            compare(calls("saveExport")[0].args[0], pickedReference);
+            compare(calls("discardExport").length, 0);
+            var saving = part("backupSavingSheet");
+            tryCompare(saving, "visible", true);
+            // Saving offers no way out.
+            for (var method of ["back", "host", "scrim"]) {
+                dismissBy(saving, method);
+                verify(saving.visible, method);
+            }
+            compare(buttons(saving), []);
+            compare(calls("cancel").length, 0);
+            compare(flow.step, "saving");
+
+            verify(testContext.emitBackup("exportFinished", {ok: true, error: "", summary: {}, notIncluded: ["Imported file old.csv"]}));
+            tryCompare(saving, "visible", false);
+            compare(lastFlowActive(), false);
+            verify(!backup.flowActive);
+            compare(flow.step, "");
+            var line = notice();
+            verify(line.visible);
+            compare(line.text.indexOf("Backup saved."), 0);
+            verify(line.text.indexOf("Imported file old.csv") > 0);
+            compare(line.textFormat, Text.PlainText);
+            compare(line.color, Ui.Theme.textSecondary);
+            compare(notice(findChild(app, "sessionSettingsScreen")).text, line.text);
+        }
+
+        function test_export_lists_at_most_a_few_missing_items() {
+            var missing = [];
+            for (var i = 1; i <= 9; ++i)
+                missing.push("Imported file " + i + ".csv");
+            pick(toSavePicker(missing), pickedReference);
+            verify(testContext.emitBackup("exportFinished", {ok: true, error: "", summary: {}, notIncluded: missing}));
+            var text = notice().text;
+            verify(text.indexOf("Imported file 1.csv") > 0);
+            verify(text.indexOf("Imported file 9.csv") < 0);
+            verify(text.indexOf("4 more") > 0, text);
+        }
+
+        function test_export_picker_cancel_discards() {
+            var picker = toSavePicker();
+            picker.reject();
+            compare(calls("discardExport").length, 1);
+            compare(calls("saveExport").length, 0);
+            compare(lastFlowActive(), false);
+            compare(flow.step, "");
+            compare(notice().text, "");
+        }
+
+        function test_cancel_while_busy_data() {
+            return [
+                {tag: "encrypting by button", step: "encrypt", method: "button"},
+                {tag: "encrypting by Back", step: "encrypt", method: "back"},
+                {tag: "encrypting by scrim", step: "encrypt", method: "scrim"},
+                {tag: "checking by button", step: "inspect", method: "button"},
+                {tag: "checking by host Back", step: "inspect", method: "host"},
+                {tag: "checking by scrim", step: "inspect", method: "scrim"}
+            ];
+        }
+
+        function test_cancel_while_busy(data) {
+            var exporting = data.step === "encrypt";
+            if (exporting)
+                encrypt();
+            else
+                unlock();
+            var sheet = part(exporting ? "backupPassphraseSheet" : "backupUnlockSheet");
+            if (data.method === "button")
+                part(exporting ? "backupExportCancel" : "backupUnlockCancel").activate();
+            else
+                dismissBy(sheet, data.method);
+            tryCompare(sheet, "visible", false);
+            compare(calls("cancel").length, 1);
+            compare(lastFlowActive(), false);
+            compare(flow.step, "");
+            // The model drops a cancelled job's result; a late one changes nothing here either.
+            if (exporting) {
+                testContext.emitBackup("exportPrepared", {ok: true, error: "", summary: {}, notIncluded: []});
+                verify(!part("backupSavePicker").visible);
+            } else {
+                testContext.emitBackup("inspectFinished", {ok: true, error: "", summary: fullSummary});
+                verify(!part("backupConfirmRestore").visible);
+            }
+            compare(calls("commitRestore").length, 0);
+            compare(calls("saveExport").length, 0);
+            compare(lastFlowActive(), false);
+        }
+
+        function test_export_prepare_errors_stay_in_the_sheet_data() {
+            return [
+                {tag: "PassphraseTooShort", field: "backupPassphraseField", text: "Use at least 8 characters."},
+                {tag: "Io", field: "", text: "Couldn't create the backup. Free some storage and try again."},
+                {tag: "TooLarge", field: "", text: "Your setup is too large for one backup."},
+                {tag: "Busy", field: "", text: "Another backup task is still running. Try again in a moment."}
+            ];
+        }
+
+        function test_export_prepare_errors_stay_in_the_sheet(data) {
+            encrypt();
+            verify(testContext.emitBackup("exportPrepared", {ok: false, error: data.tag, summary: {}, notIncluded: []}));
+            var sheet = part("backupPassphraseSheet");
+            verify(sheet.visible);
+            compare(flow.step, "exportPassphrase");
+            compare(part("backupEncryptButton").text, "Encrypt");
+            verify(part("backupEncryptButton").enabled);
+            verify(!part("backupSavePicker").visible);
+            if (data.field.length)
+                compare(part(data.field).error, data.text);
+            else
+                compare(part("backupExportError").text, data.text);
+            compare(part("backupExportError").Accessible.role, Accessible.AlertMessage);
+            verify(backup.flowActive);
+        }
+
+        function test_export_save_error_lands_in_the_card() {
+            pick(toSavePicker(), pickedReference);
+            verify(testContext.emitBackup("exportFinished", {ok: false, error: "Io", summary: {}, notIncluded: []}));
+            tryCompare(part("backupSavingSheet"), "visible", false);
+            compare(lastFlowActive(), false);
+            compare(notice().text, "Couldn't save the backup there. Try again, or choose another place.");
+            compare(notice().color, Ui.Theme.alert);
+        }
+
+        // ---- restore ----
+
+        function test_restore_picks_any_file_then_unlocks() {
+            findChild(settings, "settingsBackupRestoreRow").activate();
+            var picker = part("backupOpenPicker");
+            tryCompare(picker, "visible", true);
+            compare(picker.fileMode, FileDialog.OpenFile);
+            compare(picker.nameFilters.length, 0);
+            compare(flow.step, "restorePicker");
+            compare(Ui.Navigation.modals.length, 0);
+            verify(backup.flowActive);
+            verify(uiController.autoStartBlocked);
+            // Any name: the model checks the content, never the name.
+            var path = testContext.writeFixtureCsv("holiday-photos.txt", "DSDNEOBK");
+            verify(path.length > 0);
+            var reference = "file://" + path;
+            pick(picker, reference);
+            var sheet = part("backupUnlockSheet");
+            tryCompare(sheet, "visible", true);
+            compare(sheet.accessibleName, "Unlock backup");
+            compare(flow.step, "unlock");
+            compare(calls("inspectRestore").length, 0);
+            compare(part("backupUnlockField").input.echoMode, TextInput.Password);
+            part("backupUnlockField").text = pass;
+            var button = part("backupUnlockButton");
+            button.activate();
+            var inspect = calls("inspectRestore");
+            compare(inspect.length, 1);
+            compare(inspect[0].args[0], reference);
+            compare(inspect[0].args[1], pass);
+            compare(button.text, "Checking backup…");
+            verify(!button.enabled);
+            verify(!part("backupUnlockField").enabled);
+            verify(backup.flowActive);
+        }
+
+        function test_restore_picker_cancel_ends_the_flow() {
+            findChild(settings, "settingsBackupRestoreRow").activate();
+            tryCompare(part("backupOpenPicker"), "visible", true);
+            part("backupOpenPicker").reject();
+            compare(flow.step, "");
+            compare(lastFlowActive(), false);
+            var names = testContext.backupCalls().map(function (call) {
+                return call.name;
+            });
+            compare(names, ["setFlowActive", "setFlowActive"]);
+        }
+
+        function test_unlock_asks_for_a_passphrase() {
+            toUnlock();
+            // The sheet opens ready to type into.
+            tryCompare(part("backupUnlockField").input, "activeFocus", true);
+            verify(part("backupUnlockField").input.Accessible.passwordEdit);
+            part("backupUnlockButton").activate();
+            compare(part("backupUnlockField").error, "Enter the passphrase.");
+            compare(calls("inspectRestore").length, 0);
+            part("backupUnlockField").text = "x";
+            compare(part("backupUnlockField").error, "");
+        }
+
+        function test_inspect_errors_stay_in_the_sheet_data() {
+            return [
+                {tag: "WrongPassphrase", field: true, text: "Wrong passphrase, or the file is damaged."},
+                {tag: "NotBackup", text: "This isn't a DSD-neo backup."},
+                {tag: "NewerVersion", text: "This backup was made by a newer DSD-neo. Update first."},
+                {tag: "TooLarge", text: "This file is too large to be a DSD-neo backup."},
+                {tag: "Damaged", text: "The backup is damaged."},
+                {tag: "NoSpace", text: "Not enough storage to restore. Free some space and try again."},
+                {tag: "SessionActive", text: "Stop listening before restoring."},
+                {tag: "RestorePending", text: "A restore is already waiting. Close DSD-neo and open it again to finish it, or cancel it in Settings."},
+                {tag: "Busy", text: "Another backup task is still running. Try again in a moment."},
+                {tag: "Io", text: "Couldn't read that file. Choose it again, or copy it to this phone first."}
+            ];
+        }
+
+        function test_inspect_errors_stay_in_the_sheet(data) {
+            unlock();
+            verify(testContext.emitBackup("inspectFinished", {ok: false, error: data.tag, summary: {}}));
+            var sheet = part("backupUnlockSheet");
+            verify(sheet.visible);
+            compare(flow.step, "unlock");
+            verify(!part("backupConfirmRestore").visible);
+            var button = part("backupUnlockButton");
+            compare(button.text, "Unlock");
+            verify(button.enabled);
+            var field = part("backupUnlockField");
+            var error = part("backupUnlockError");
+            compare(field.error, data.field ? data.text : "");
+            compare(error.text, data.field ? "" : data.text);
+            compare(error.Accessible.role, Accessible.AlertMessage);
+            if (data.field)
+                compare(field.text, "");
+            verify(backup.flowActive);
+            // Nothing was staged, so leaving discards nothing.
+            part("backupUnlockCancel").activate();
+            tryCompare(sheet, "visible", false);
+            compare(calls("discardRestore").length, 0);
+            compare(lastFlowActive(), false);
+        }
+
+        function test_confirm_message_data() {
+            var day = Qt.formatDate(new Date(1760000000 * 1000), "MMM d, yyyy");
+            var head = "Replace this phone's saved systems (3), scan lists (2), imported files (5), decryption profiles (1), search ranges and settings with the backup from " + day + " (DSD-neo 1.4.0)? Call history and recordings on this phone are kept.";
+            var close = "DSD-neo will close; open it again to finish.";
+            return [
+                {tag: "every note", summary: fullSummary, has: [head, "2 replay systems will need their recording chosen again.", "1 system carries extra decoder options.", close], lacks: ["Your settings carry"]},
+                {tag: "no notes", summary: Object.assign({}, fullSummary, {recordingsToChoose: 0, systemsWithExtraArgs: 0}), has: [head, close], lacks: ["replay system", "extra decoder"]},
+                {tag: "singular and plural", summary: Object.assign({}, fullSummary, {recordingsToChoose: 1, systemsWithExtraArgs: 4}), has: ["1 replay system will need its recording chosen again.", "4 systems carry extra decoder options.", close], lacks: []},
+                {tag: "settings arguments", summary: Object.assign({}, fullSummary, {appExtraArgs: true}), has: ["Your settings carry extra decoder arguments.", close], lacks: []},
+                {tag: "no date or version", summary: Object.assign({}, fullSummary, {createdAt: 0, app: ""}), has: ["search ranges and settings with the backup? Call history", close], lacks: ["DSD-neo 1.4.0"]}
+            ];
+        }
+
+        function test_confirm_message(data) {
+            var confirm = toConfirm(data.summary);
+            compare(part("backupUnlockSheet").visible, false);
+            compare(part("backupUnlockField").text, "");
+            compare(confirm.title, "Replace your setup?");
+            compare(confirm.confirmText, "Replace and close");
+            verify(confirm.destructive);
+            compare(findChild(confirm, "confirmActionButton").border.color, Ui.Theme.magenta);
+            for (var text of data.has)
+                verify(confirm.message.indexOf(text) >= 0, "missing: " + text + " in " + confirm.message);
+            for (var absent of data.lacks)
+                verify(confirm.message.indexOf(absent) < 0, "unexpected: " + absent);
+            // The close sentence ends the message.
+            compare(confirm.message.lastIndexOf("DSD-neo will close; open it again to finish."), confirm.message.length - "DSD-neo will close; open it again to finish.".length);
+            compare(calls("commitRestore").length, 0);
+            verify(backup.flowActive);
+        }
+
+        function test_backup_text_stays_plain() {
+            var confirm = toConfirm(Object.assign({}, fullSummary, {app: "<b>9.9</b> %1"}));
+            verify(confirm.message.indexOf("(DSD-neo <b>9.9</b> %1)") >= 0, confirm.message);
+        }
+
+        function test_confirm_commits_and_closes() {
+            testContext.setBackupReply("commitRestore", {ok: true, quitting: true, error: ""});
+            var confirm = toConfirm();
+            findChild(confirm, "confirmActionButton").activate();
+            compare(calls("commitRestore").length, 1);
+            compare(calls("discardRestore").length, 0);
+            tryCompare(confirm, "visible", false);
+            var closing = part("backupClosingSheet");
+            tryCompare(closing, "visible", true);
+            compare(closing.accessibleName, "Closing DSD-neo…");
+            // DSD-neo is going away: nothing leaves the sheet, and auto-start stays held.
+            for (var method of ["back", "host", "scrim"]) {
+                dismissBy(closing, method);
+                verify(closing.visible, method);
+            }
+            compare(buttons(closing), []);
+            verify(backup.flowActive);
+            verify(uiController.autoStartBlocked);
+            compare(backup.restorePending, false);
+        }
+
+        function test_commit_without_quitting_waits_for_a_reopen() {
+            var confirm = toConfirm();
+            findChild(confirm, "confirmActionButton").activate();
+            tryCompare(confirm, "visible", false);
+            verify(!part("backupClosingSheet").visible);
+            verify(backup.restorePending);
+            compare(lastFlowActive(), false);
+            compare(flow.step, "");
+            var line = findChild(settings, "settingsBackupPendingNotice");
+            tryCompare(line, "visible", true);
+            compare(line.text, "Restore is ready. Close DSD-neo and open it again to finish.");
+            compare(line.color, Ui.Theme.alert);
+            var restoreRow = findChild(settings, "settingsBackupRestoreRow");
+            verify(!restoreRow.enabled, "a waiting restore keeps the row shut");
+            compare(restoreRow.subtitle, "A restore is waiting to finish");
+            var cancel = findChild(settings, "settingsBackupCancelRestore");
+            verify(cancel.visible);
+            compare(cancel.text, "Cancel restore");
+            verify(cancel.height >= Ui.Theme.minimumTouchSize);
+            cancel.activate();
+            compare(calls("discardRestore").length, 1);
+            verify(!backup.restorePending);
+            tryCompare(line, "visible", false);
+            verify(!cancel.visible);
+            compare(notice().text, "Restore cancelled.");
+            compare(notice().color, Ui.Theme.textSecondary);
+            verify(restoreRow.enabled);
+        }
+
+        function test_cancel_restore_outcomes_data() {
+            return [
+                {tag: "kept", reply: {ok: false, discarded: false, error: "Io"}, pending: true, text: "Couldn't cancel the restore. It still finishes when DSD-neo opens again.", problem: true},
+                {tag: "left files", reply: {ok: false, discarded: true, error: "Io"}, pending: false, text: "Restore cancelled. Its leftover files are removed the next time DSD-neo opens.", problem: false}
+            ];
+        }
+
+        function test_cancel_restore_outcomes(data) {
+            verify(testContext.setBackup("restorePending", true));
+            testContext.setBackupReply("discardRestore", data.reply);
+            findChild(settings, "settingsBackupCancelRestore").activate();
+            compare(calls("discardRestore").length, 1);
+            compare(backup.restorePending, data.pending);
+            compare(notice().text, data.text);
+            compare(notice().color, data.problem ? Ui.Theme.alert : Ui.Theme.textSecondary);
+        }
+
+        function test_cancel_at_confirm_discards_data() {
+            return [{tag: "Cancel", method: "button"}, {tag: "Back", method: "back"}, {tag: "host Back", method: "host"}, {tag: "scrim", method: "scrim"}];
+        }
+
+        function test_cancel_at_confirm_discards(data) {
+            var confirm = toConfirm();
+            if (data.method === "button")
+                findChild(confirm, "confirmCancelButton").activate();
+            else
+                dismissBy(confirm, data.method);
+            tryCompare(confirm, "visible", false);
+            compare(calls("discardRestore").length, 1);
+            compare(calls("commitRestore").length, 0);
+            compare(lastFlowActive(), false);
+            compare(flow.step, "");
+            compare(notice().text, "");
+        }
+
+        function test_refused_commit_data() {
+            return [
+                {tag: "SessionActive", text: "Stop listening before restoring."},
+                {tag: "Busy", text: "Another backup task is still running. Try again in a moment."},
+                {tag: "Io", text: "Couldn't start the restore. Try again."}
+            ];
+        }
+
+        function test_refused_commit(data) {
+            testContext.setBackupReply("commitRestore", {ok: false, quitting: false, error: data.tag});
+            var confirm = toConfirm();
+            findChild(confirm, "confirmActionButton").activate();
+            tryCompare(confirm, "visible", false);
+            compare(calls("commitRestore").length, 1);
+            // The unpacked backup is dropped so nothing half-done waits for the next start.
+            compare(calls("discardRestore").length, 1);
+            verify(!part("backupClosingSheet").visible);
+            compare(lastFlowActive(), false);
+            compare(notice().text, data.text);
+            compare(notice().color, Ui.Theme.alert);
+        }
+
+        // ---- the restore flow and USB starts ----
+
+        function test_usb_grant_during_restore_data() {
+            return [{tag: "picker", step: "picker"}, {tag: "unlock sheet", step: "unlock"}, {tag: "confirmation", step: "confirm"}];
+        }
+
+        function test_usb_grant_during_restore(data) {
+            armUsbStart();
+            app.pendingRestart = {uid: savedSystems.get(usbRow).uid};
+            if (data.step === "picker") {
+                findChild(settings, "settingsBackupRestoreRow").activate();
+                tryCompare(part("backupOpenPicker"), "visible", true);
+            } else if (data.step === "unlock") {
+                toUnlock();
+            } else {
+                toConfirm();
+            }
+            // Entering the restore dropped the start waiting on USB access and the pending restart.
+            compare(app.pendingStart, null);
+            compare(app.pendingStartRow, -1);
+            compare(app.awaitingUsbAccess, false);
+            compare(app.pendingRestart, null);
+            verify(uiController.autoStartBlocked);
+            // A wait armed meanwhile is refused by the grant rather than resumed.
+            app.pendingStart = savedSystems.get(usbRow);
+            app.pendingStartRow = usbRow;
+            app.awaitingUsbAccess = true;
+            testContext.setScanTestUsb(true, true);
+            compare(decoderHost.sessionState, 0);
+            compare(app.pendingStart, null);
+            compare(app.awaitingUsbAccess, false);
+            verify(backup.flowActive);
+        }
+
+        function test_usb_grant_during_export_picker() {
+            armUsbStart();
+            toSavePicker();
+            testContext.setScanTestUsb(true, true);
+            compare(decoderHost.sessionState, 0);
+            compare(app.pendingStart, null);
+            compare(app.awaitingUsbAccess, false);
+            // After the flow, a grant starts as before.
+            part("backupSavePicker").reject();
+            compare(lastFlowActive(), false);
+            testContext.setScanTestUsb(true, false);
+            app.startSystem(usbRow);
+            verify(app.awaitingUsbAccess);
+            testContext.setScanTestUsb(true, true);
+            compare(decoderHost.sessionState, 1);
+        }
+
+        function test_attach_during_picker_starts_nothing() {
+            usbRow = savedSystems.count;
+            savedSystems.add({name: "Attached USB", sourceType: "usb", freqMhz: "851.5"});
+            prefs.autoStartOnAttach = true;
+            prefs.lastStartedKind = "saved";
+            prefs.lastStartedUid = savedSystems.get(usbRow).uid;
+            testContext.setScanTestUsb(true, true);
+            tryCompare(uiController, "autoStartBlocked", false);
+            findChild(settings, "settingsBackupRestoreRow").activate();
+            tryCompare(part("backupOpenPicker"), "visible", true);
+            verify(uiController.autoStartBlocked);
+            testContext.emitLocalDeviceAttached();
+            compare(decoderHost.sessionState, 0);
+            part("backupOpenPicker").reject();
+            tryCompare(uiController, "autoStartBlocked", false);
+            // Positive control: with the flow over, an attachment starts.
+            testContext.emitLocalDeviceAttached();
+            compare(decoderHost.sessionState, 1);
+        }
+    }
+}

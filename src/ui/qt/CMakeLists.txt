@@ -78,6 +78,7 @@ qt_add_resources(
         qml/DecryptionProfileSelector.qml
         qml/DecryptionApplyFlow.qml
         qml/FailureCard.qml
+        qml/BackupFlow.qml
         qml/CsvImportFlow.qml
         qml/HistoryDetailSheet.qml
         qml/PlexComboBox.qml
@@ -237,4 +238,5 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_network_sheet.qml" # WP-F2
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_wizard_encryption.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_key_sheet.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_settings_backup.qml"
 )
