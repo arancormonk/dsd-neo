@@ -20,6 +20,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -194,6 +195,14 @@ p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* st
     (void)opts;
     (void)state;
     g_seed_count++;
+}
+
+/* The validated-control helper (issue #703) is the SM's; this harness keeps its activity semantics. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    p25_sm_note_cc_activity(state);
 }
 
 static p25_sm_ctx_t g_sm_ctx;

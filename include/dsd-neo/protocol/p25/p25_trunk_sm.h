@@ -343,6 +343,20 @@ void p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25
 void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief Note a validated P25 control block at its decode boundary (issue #703).
+ *
+ * Records control-channel activity (p25_sm_note_cc_activity(): the P25 owner and the decode stamps) and, with
+ * trunking on, establishes the control channel from the tuner that carried the block when none is known yet
+ * (p25_sm_seed_cc_from_current_tuner_if_unknown()). Running here rather than in a later tick keeps a retune queued
+ * behind the block from lending its frequency to this evidence. Call it only for a TSBK, MBT or LCCH MAC whose CRC
+ * passed.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ */
+void p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief Select a new control channel during single-system P25 trunk following.
  *
  * Owns the watchdog guard; call on the decoder thread without holding it.

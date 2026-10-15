@@ -16,7 +16,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
@@ -437,7 +436,7 @@ p25p2_xcch_validate_sacch_crc(dsd_opts* opts, dsd_state* state, const int payloa
         }
 
         if (err == 0) {
-            p25_sm_note_cc_activity(state);
+            p25_sm_note_validated_cc(opts, state);
         }
     }
 

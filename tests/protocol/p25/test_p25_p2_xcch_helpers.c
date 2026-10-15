@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
@@ -546,6 +547,14 @@ static void
 seed_playout(dsd_state* state, int slot, int frames) {
     state->p25p2_playout.slot[slot].open = 1U;
     state->p25p2_playout.slot[slot].count = (uint8_t)frames;
+}
+
+/* The validated-control helper (issue #703) is the SM's; this harness keeps its activity semantics. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    p25_sm_note_cc_activity(state);
 }
 
 #include "../../../src/protocol/p25/phase2/p25p2_xcch.c"

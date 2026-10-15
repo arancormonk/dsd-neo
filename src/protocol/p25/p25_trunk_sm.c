@@ -16,6 +16,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -322,6 +323,17 @@ p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* st
         state->trunk_lcn_freq[0] = freq;
     }
     p25_sm_diagf((dsd_opts*)opts, state, NULL, "cc_seed", "source=current-tuner freq=%ld", freq);
+}
+
+void
+p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    p25_sm_note_cc_activity(state);
+    if (opts && opts->trunk_enable == 1) {
+        p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
+    }
 }
 
 static int
