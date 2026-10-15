@@ -37,11 +37,20 @@ static int tune_pending, buffered, defer, failed, live = 1, ready, cancelled, by
 static int observed = 1;
 static int family, gain_value = 123, gain_auto, autogain = 1;
 static uint64_t now_ms = 1000;
+/* Independent of the decode clock: the capture can arrive while its timestamp is being read. */
+static uint64_t realtime_ms = 1000000;
+static uint64_t capture_read_advance_ms;
+static uint64_t capture_ahead_ms;
 static uint64_t tuner_owner;
 /* How long ago the radio input delivered its latest samples. */
 static uint64_t stalled_ms;
 /* State snapshots published to frontends, and the carrier boundaries run when the latest was. */
 static int snapshots, snapshot_boundary;
+
+uint64_t
+test_dsd_realtime_mono_ms(void) {
+    return realtime_ms;
+}
 
 static void
 count_snapshot(const dsd_state* state) {
@@ -84,7 +93,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 52);
+    assert(owner >= 42 && owner <= 53);
     if (defer) {
         --defer;
         return 1;
@@ -123,7 +132,8 @@ rtl_signal_capture_get(dsd_signal_capture* out) {
 
 uint64_t
 rtl_signal_capture_last_ms(void) {
-    return dsd_realtime_mono_ms() - stalled_ms;
+    realtime_ms += capture_read_advance_ms;
+    return dsd_realtime_mono_ms() + capture_ahead_ms - stalled_ms;
 }
 
 int
@@ -558,6 +568,40 @@ test_restore_retune_carries_family(dsd_opts* o, dsd_state* s, dsd_signal_search_
     o->analog_nfm_bandwidth_hz = 0;
 }
 
+/* Fresh input never trips the stall timeout when its timestamp advances during the read. The timeout uses real
+   time, independently of the decode clock, and still rejects samples strictly older than ten seconds. */
+static void
+test_capture_freshness(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    config->session_id = 53;
+    live = 1;
+    capture_read_advance_ms = 1;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    assert(status.phase == DSD_SEARCH_HELD && !status.hit.ended);
+
+    capture_read_advance_ms = 0;
+    capture_ahead_ms = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_HELD && !status.hit.ended);
+    capture_ahead_ms = 0;
+    stalled_ms = 10000;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_HELD && !status.hit.ended);
+    stalled_ms = 10001;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && status.hit.ended);
+    assert(strcmp(status.message, "The radio input stopped delivering samples") == 0);
+    stalled_ms = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -718,6 +762,7 @@ main(void) {
     test_error_is_a_carrier_boundary(o, s, &config);
     test_auto_baseline_dispatches_dmr(o, s, &config);
     test_restore_retune_carries_family(o, s, &config);
+    test_capture_freshness(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

@@ -790,7 +790,10 @@ search_capture_ready(search_coord* c, dsd_signal_capture* capture) {
         }
         return 0;
     }
-    if (dsd_realtime_mono_ms() - rtl_signal_capture_last_ms() > 10000) {
+    /* Snapshot the producer's stamp before reading now: a capture arriving between reads must not underflow its age. */
+    const uint64_t last_capture_ms = rtl_signal_capture_last_ms();
+    const uint64_t now = dsd_realtime_mono_ms();
+    if (now >= last_capture_ms && now - last_capture_ms > 10000) {
         search_error(c, "The radio input stopped delivering samples");
         return 0;
     }
