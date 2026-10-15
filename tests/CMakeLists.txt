@@ -10264,6 +10264,16 @@ target_include_directories(
 )
 add_test(NAME DMR_CSBK_HELPERS COMMAND dsd-neo_test_dmr_csbk_helpers)
 
+add_executable(
+    dsd-neo_test_dmr_mass_registration
+    protocol/dmr/test_dmr_mass_registration.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_mass_registration
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_MASS_REGISTRATION COMMAND dsd-neo_test_dmr_mass_registration)
+
 add_executable(dsd-neo_test_dmr_r34_noise protocol/dmr/test_dmr_r34_noise.c)
 target_include_directories(
     dsd-neo_test_dmr_r34_noise
@@ -17111,7 +17121,7 @@ if(DSD_HAS_RADIO)
     )
     target_compile_definitions(
         dsd-neo_test_engine_signal_search
-        PRIVATE USE_RADIO
+        PRIVATE USE_RADIO dsd_realtime_mono_ms=test_dsd_realtime_mono_ms
     )
     target_link_libraries(
         dsd-neo_test_engine_signal_search

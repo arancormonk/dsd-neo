@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/channel_scan.h>
@@ -8,6 +10,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* Action-only tests have no tuner; exercise the production scoped-settings teardown. Nothing is asked of a monitor. */
 int
@@ -41,14 +44,19 @@ dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_state* 
     return 0;
 }
 
-/* Nor a trunk scan holding a configured tuner gain (issue #518 follow-up): the gain service writes dsd_opts as it does
-   with no scan. ENGINE_TRUNK_SCAN and APP_COMMAND_QUEUE drive the coordinator's. */
+/* Model the gain coordinator's three outcomes from the fixture's published scan state. UI_MENU_SERVICES exercises
+   no scan, a target override, and an inherited gain; ENGINE_TRUNK_SCAN and APP_COMMAND_QUEUE drive the real owner. */
 int
 dsd_engine_trunk_scan_set_configured_gain(dsd_opts* opts, dsd_state* state, int gain) {
-    (void)opts;
-    (void)state;
-    (void)gain;
-    return -1;
+    if (!opts || !state || state->trunk_scan_target_count == 0) {
+        return -1;
+    }
+    state->trunk_scan_configured_gain = (int16_t)gain;
+    if (state->trunk_scan_gain_override) {
+        return 0;
+    }
+    opts->rtl_gain_value = gain;
+    return 1;
 }
 
 int

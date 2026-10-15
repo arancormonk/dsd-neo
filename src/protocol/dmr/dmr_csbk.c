@@ -38,8 +38,8 @@
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <inttypes.h>
 #include <math.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1514,10 +1514,12 @@ static void
 dmr_cspdu_pf0_c_bcast_handle_mass_reg(const dmr_cspdu_pf0_c_bcast_fields* f) {
     uint8_t reg_window = (uint8_t)convert_bits_into_output(&f->bpbits1[5], 4);
     uint8_t aloha_mask = (uint8_t)convert_bits_into_output(&f->bpbits1[9], 5);
-    uint8_t reg_address = (uint8_t)convert_bits_into_output(&f->bpbits2[16], 8);
+    /* ETSI TS 102 361-4 Table 7.76 assigns the entire 24-bit BParms2 field to the address. */
+    const uint32_t reg_address = f->bparms2;
 
     DSD_FPRINTF(stderr, "\n");
-    DSD_FPRINTF(stderr, " Reg Window: %X; Aloha Mask: %02X; Target: %d; ", reg_window, aloha_mask, reg_address);
+    DSD_FPRINTF(stderr, " Reg Window: %X; Aloha Mask: %02X; Target: %" PRIu32 "; ", reg_window, aloha_mask,
+                reg_address);
     dmr_gateway_identifier(0, reg_address);
 }
 

@@ -11,6 +11,14 @@ Its manual hardware benchmark is deliberately outside CTest: automatic tests nev
 claim an attached SDR. Report acquisition, measurement/identification, UI and transport
 latency separately; desktop synthetic tests do not establish Android screen-off performance.
 
+`ENGINE_SIGNAL_SEARCH` controls the real-time millisecond clock independently of the decode clock. Its capture
+timestamp advances during a read to reproduce the producer/consumer ordering that must not declare fresh input
+stalled; it also covers a timestamp ahead of now and the ten-second stall boundary without sleeps.
+
+`UI_MENU_SERVICES` models all three gain-coordinator results: no scan, a target overriding the configured gain, and
+an inherited gain applied immediately. It checks the saved default, the effective gain and whether a receiver
+restart is needed; the shared scan stub uses the fixture's published scan fields to select each result.
+
 The CTest suite includes focused tests for:
 
 - runtime configuration, CLI parsing, rings, hooks, shutdown, and telemetry
@@ -34,6 +42,11 @@ ctest --preset dev-debug --output-on-failure
 ```
 
 ### Data-event CRC integrity
+
+`DMR_MASS_REGISTRATION` sends C_BCAST MassReg PDUs through the real decoder and checks the printed 24-bit target,
+including zero, both byte boundaries, mixed high bytes, and the full-width gateway identifier. The field follows
+[ETSI TS 102 361-4 V1.11.1](https://www.etsi.org/deliver/etsi_ts/102300_102399/10236104/01.11.01_60/ts_10236104v011101p.pdf),
+Table 7.76. CRC-failed and uncorrectable PDUs print no target, including with relaxed CRC enabled.
 
 `DMR_EVENT_CRC` exercises real header, assembler, application decoder, history and event-file paths:
 strict rejection, marked relaxed recovery, header-chain failures, encrypted notices, UDT text detail

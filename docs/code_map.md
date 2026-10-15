@@ -58,8 +58,9 @@ Generated (do not edit/commit):
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
     digital transmission keeps the decoder in its synced-frame loop. A stalled input
-    cannot hold a visit: while a search owns the tuner (`rtl_signal_search_owner()`; the
-    orchestrator's read carries no decoder state), a live radio read that finds no
+    cannot hold a visit: the stall check snapshots the producer's last-sample timestamp before reading the real-time
+    clock, and guards the subtraction so a newer sample cannot wrap its age into a false timeout. While a search owns
+    the tuner (`rtl_signal_search_owner()`; the orchestrator's read carries no decoder state), a live radio read that finds no
     samples for 100 ms gives up, and every RTL symbol reader (FSK discriminator, monitor,
     CQPSK symbol rate) records that as `dsd_state::input_interrupted` instead of ending
     the session. `getSymbol()` checks a recorded interruption before its every-64-symbol

@@ -1636,6 +1636,45 @@ test_airspy_input_analog_width(void) {
 }
 
 static int
+test_rtl_gain_scan_contracts(void) {
+    int rc = 0;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(state);
+        free(opts);
+        return 1;
+    }
+    /* The coordinator returns -1 with no scan, 0 while a target overrides the gain, and 1 when it applies now. */
+    for (int outcome = -1; outcome <= 1; ++outcome) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        reset_rtl_restart_stubs();
+        g_rtl_create_result = g_rtl_start_result = 0;
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->rtl_gain_value = 7;
+        state->trunk_scan_target_count = outcome < 0 ? 0 : 1;
+        state->trunk_scan_gain_override = outcome == 0;
+        state->trunk_scan_configured_gain = 20;
+
+        rc |= expect_int("gain service accepts the edit", svc_rtl_set_gain(opts, state, 99), 0);
+        rc |= expect_int("gain service keeps a target override", opts->rtl_gain_value, outcome == 0 ? 7 : 49);
+        rc |= expect_int("gain service stores the clamped scan default", state->trunk_scan_configured_gain,
+                         outcome < 0 ? 20 : 49);
+        rc |= expect_int("only an effective gain restarts the receiver", g_rtl_create_calls, outcome != 0);
+        rc |= expect_int("only an effective gain starts the replacement", g_rtl_start_calls, outcome != 0);
+        rc |= expect_int("shadowed gain leaves no pending restart", opts->rtl_needs_restart, 0);
+        rc |= expect_int("gain service releases the guard", g_p25_tick_guard_depth, 0);
+        rc |= expect_int("gain service never nests the restart guard", g_p25_tick_guard_errors, 0);
+        rc |= expect_int("gain restart holds the guard", g_rtl_lifecycle_outside_guard, 0);
+    }
+    reset_rtl_restart_stubs();
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
 test_rtl_service_option_contracts(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -2796,6 +2835,7 @@ main(void) {
     rc |= test_describe_start_failure();
     rc |= test_describe_monitor_return_refusal();
     rc |= test_airspy_input_analog_width();
+    rc |= test_rtl_gain_scan_contracts();
     rc |= test_rtl_service_option_contracts();
     rc |= test_nfm_bandwidth_services();
     rc |= test_rtl_bandwidth_holds_the_analog_width_in_force();
