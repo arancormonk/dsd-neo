@@ -210,7 +210,7 @@ test_p25_vc_acquisition_hooks(void) {
     state.min = -3.0f;
     state.max = 3.0f;
     g_vc_sync_hook_calls = 0;
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_vc_sync = fake_p25_sm_vc_sync,
     });
 
@@ -231,7 +231,7 @@ test_p25_vc_acquisition_hooks(void) {
     g_vc_no_sync_hook_order = 0;
     g_no_carrier_hook_order = 0;
     g_hook_order = 0;
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
         .no_carrier = fake_no_carrier,
     });
@@ -259,7 +259,7 @@ test_p25_vc_acquisition_hooks(void) {
     g_release_hook_order = 0;
     g_no_carrier_hook_order = 0;
     g_hook_order = 0;
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_release = fake_p25_sm_release,
         .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
         .no_carrier = fake_no_carrier,
@@ -276,7 +276,7 @@ test_p25_vc_acquisition_hooks(void) {
     assert(g_vc_no_sync_hook_order < g_release_hook_order);
     assert(g_release_hook_order < g_no_carrier_hook_order);
 
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
 }
 
 static void
@@ -3308,7 +3308,7 @@ test_p25_trunk_tick_recency(void) {
     state.lastsynctype = DSD_SYNC_P25P1_POS;
     g_frame_sync_tick_calls = 0;
     dsd_frame_sync_test_reset_p25_trunk_tick_state();
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_try_tick = fake_p25_sm_try_tick,
     });
 
@@ -3327,7 +3327,7 @@ test_p25_trunk_tick_recency(void) {
     frame_sync_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)106);
     assert(g_frame_sync_tick_calls == 3);
 
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
 }
 #endif
 

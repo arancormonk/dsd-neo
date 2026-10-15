@@ -86,7 +86,7 @@ hook_scan_visit_should_yield(const dsd_opts* opts, dsd_state* state) {
 
 static void
 test_empty_hooks_are_noops(dsd_opts* opts, dsd_state* state) {
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
     reset_counters();
 
     dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
@@ -118,7 +118,7 @@ test_installed_hooks_forward_args(dsd_opts* opts, dsd_state* state) {
         .no_carrier = hook_no_carrier,
         .scan_visit_should_yield = hook_scan_visit_should_yield,
     };
-    dsd_frame_sync_hooks_set(hooks);
+    dsd_frame_sync_hooks_set(&hooks);
     reset_counters();
     g_yield_requested = 0;
     assert(dsd_frame_sync_hook_scan_visit_should_yield(opts, state) == 0);
@@ -160,7 +160,7 @@ test_installed_hooks_forward_args(dsd_opts* opts, dsd_state* state) {
 
 static void
 test_partial_reinstall_replaces_table(dsd_opts* opts, dsd_state* state) {
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_try_tick = hook_try_tick,
         .no_carrier = hook_no_carrier,
     });
@@ -184,6 +184,22 @@ test_partial_reinstall_replaces_table(dsd_opts* opts, dsd_state* state) {
     assert(g_last_state == state);
 }
 
+/* The table installed is a copy of the caller's, and NULL clears an installed table. */
+static void
+test_set_copies_and_null_clears(dsd_opts* opts, dsd_state* state) {
+    dsd_frame_sync_hooks hooks = {.p25_sm_try_tick = hook_try_tick};
+    dsd_frame_sync_hooks_set(&hooks);
+    hooks.p25_sm_try_tick = NULL;
+    reset_counters();
+    dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
+    assert(g_try_tick_calls == 1);
+
+    dsd_frame_sync_hooks_set(NULL);
+    reset_counters();
+    dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
+    assert(g_try_tick_calls == 0);
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)(uintptr_t)0x1234U;
@@ -192,8 +208,9 @@ main(void) {
     test_empty_hooks_are_noops(opts, state);
     test_installed_hooks_forward_args(opts, state);
     test_partial_reinstall_replaces_table(opts, state);
+    test_set_copies_and_null_clears(opts, state);
 
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
     return 0;
 }
 

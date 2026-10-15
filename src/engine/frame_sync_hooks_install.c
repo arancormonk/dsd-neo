@@ -84,5 +84,5 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.scan_visit_should_yield = scan_visit_should_yield_from_frame;
     hooks.signal_search_should_yield = dsd_engine_signal_search_should_yield;
     hooks.replay_retune = dsd_engine_leave_replay_carrier;
-    dsd_frame_sync_hooks_set(hooks);
+    dsd_frame_sync_hooks_set(&hooks);
 }

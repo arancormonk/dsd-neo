@@ -250,7 +250,7 @@ cleanup(dsd_scan_row_profile* row) {
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_app_frontend_runtime_stop();
     dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
     dsd_trunk_tuning_requests_reset();
