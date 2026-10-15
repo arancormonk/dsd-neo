@@ -1181,6 +1181,10 @@ struct dsd_state {
     uint8_t dmr_confidence_voice_open[2];
     uint8_t dmr_confidence_voice_count[2];
     uint8_t dmr_confidence_mismatch_count;
+    /* Decode-clock seconds DMR content last passed the colour-code confidence gate (dmr_confidence.c), 0 never. Written
+       only from processFrame() under the P25 SM tick guard and never cleared, not even by a carrier boundary: a startup
+       control-channel hunt restarts its window from it (issue #703). */
+    double dmr_confidence_lock_m;
     unsigned int PI;
     unsigned int PI_ok;
     unsigned int LCSS;
@@ -2359,6 +2363,15 @@ int dsd_state_trunk_lcn_next_unavoided(const dsd_state* state, int from);
  * a per-target map was imported.
  */
 int dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * Whether a single-system trunked session may hunt its channel map for a control channel it has never decoded
+ * (issue #703): trunking on outside -Y and --trunk-scan, off any granted voice channel, no input switch pending its
+ * carrier boundary, not an I/Q replay (which defers every retune), a tuner the trunking hooks move (an RTL-family
+ * input or rigctl), a user channel map with a nonzero row, and no protocol proven yet (owner unknown). Which machine
+ * hunts is decided by the caller.
+ */
+int dsd_state_trunk_cold_start_eligible(const dsd_opts* opts, const dsd_state* state);
 
 static inline int
 dsd_state_minmax_window_size(int requested) {

@@ -25,6 +25,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -432,6 +433,27 @@ dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* sta
         return 0;
     }
     return (state->lcn_freq_count > 1) ? 1 : 0;
+}
+
+int
+dsd_state_trunk_cold_start_eligible(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable != 1 || opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1
+        || opts->trunk_is_tuned != 0 || state->input_boundary != 0 || dsd_opts_input_is_iq_replay(opts)) {
+        return 0;
+    }
+    if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    if (state->trunk_recovery_protocol != (int)DSD_TRUNK_RECOVERY_UNKNOWN
+        || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        return 0;
+    }
+    for (int i = 0; i < state->lcn_freq_count; i++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, i) > 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 typedef struct {

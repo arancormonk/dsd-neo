@@ -5424,6 +5424,19 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_core_trunk_cold_start
+    test_support/scan_group_stubs.c
+    core/test_core_trunk_cold_start.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+)
+target_include_directories(
+    dsd-neo_test_core_trunk_cold_start
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_trunk_cold_start PRIVATE dsd-neo_runtime)
+add_test(NAME CORE_TRUNK_COLD_START COMMAND dsd-neo_test_core_trunk_cold_start)
+
+add_executable(
     dsd-neo_test_core_talkgroup_policy
     core/test_core_talkgroup_policy.c
 )
