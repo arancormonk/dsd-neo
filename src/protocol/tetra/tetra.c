@@ -96,7 +96,7 @@ enum {
 static uint32_t
 tetra_lfsr_seed_for(const dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (ts->net_known) {
+    if (ts && ts->net_known) {
         return ts->lfsr_seed;
     }
     return tetra_compute_scramb_seed(0u, 0u, 0u);
@@ -107,7 +107,7 @@ tetra_lfsr_seed_for(const dsd_state* state) {
 static int
 tetra_burst_colour(const dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    return ts->net_known ? (int)(ts->colour & 0x3Fu) : 0;
+    return (ts && ts->net_known) ? (int)(ts->colour & 0x3Fu) : 0;
 }
 
 /* Expand @p count dibits into 2 * @p count soft costs after undoing the slicer phase step and polarity @p inverted. An
@@ -292,7 +292,8 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
         return;
     }
     tetra_mac_parse_schd(decoded, len, ctx->cc, opts, state);
-    if (tetra_st_peek(state)->uplink) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (ts && ts->uplink) {
         tetra_confirm_note_uplink_signalling(state);
     } else {
         tetra_confirm_note_signalling(state);
@@ -646,7 +647,8 @@ tetra_dmo_presence(dsd_state* state, tetra_dmo_sync_s_t* s, const uint8_t* sch_s
    on the carrier; tetra_dmo_apply_sync() stops the TDMA clock. */
 static void
 tetra_enter_dmo(dsd_opts* opts, dsd_state* state) {
-    if (tetra_st_peek(state)->dmo) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts || ts->dmo) {
         return;
     }
     tetra_mac_forget_fragments(state);
@@ -974,10 +976,10 @@ tetra_pub_channels(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_pu
 
 void
 tetra_publish(dsd_state* state) {
-    if (!state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts) {
         return;
     }
-    const tetra_state_t* const ts = tetra_st_peek(state);
     dsd_tetra_publication* const pub = &state->tetra_pub;
     /* Nothing reads as decoded until a block has passed its CRC: a sync word alone is weak enough for noise. */
     pub->mode = ts->decode_ok != 0 ? tetra_pub_mode(state, ts) : DSD_TETRA_MODE_NONE;

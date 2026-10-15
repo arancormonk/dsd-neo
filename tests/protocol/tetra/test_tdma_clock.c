@@ -95,7 +95,7 @@ ndb_at(dsd_state* st, uint32_t slot_start, uint32_t slots, uint32_t jitter) {
 static int
 clock_is(const dsd_state* st, uint8_t tn, uint8_t fn, uint8_t mn) {
     const tetra_state_t* ts = tetra_st_peek(st);
-    return ts->tdma_valid && ts->tn == tn && ts->fn == fn && ts->mn == mn;
+    return ts && ts->tdma_valid && ts->tn == tn && ts->fn == fn && ts->mn == mn;
 }
 
 static void
