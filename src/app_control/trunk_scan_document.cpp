@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#ifdef DSD_NEO_TEST_HOOKS
+#include <atomic>
 #include "trunk_scan_document_internal.h"
+#endif
 
 #include <algorithm>
-#include <atomic>
 #include <climits>
 #include <cstdio>
 #include <cstring>
@@ -24,9 +26,11 @@
 #include <vector>
 
 namespace {
-/* Test probes (trunk_scan_document_internal.h): counts only. */
+#ifdef DSD_NEO_TEST_HOOKS
+/* Test probes (trunk_scan_document_internal.h): counts only, and only in test builds. */
 std::atomic<unsigned> g_channel_inspections{0};
 std::atomic<unsigned> g_file_validations{0};
+#endif
 
 struct Bytes {
     Bytes() = default;
@@ -380,7 +384,9 @@ safeReplacement(const char* path) {
 
 int
 validateReference(const Reference& ref) {
+#ifdef DSD_NEO_TEST_HOOKS
     g_file_validations.fetch_add(1U, std::memory_order_relaxed);
+#endif
     dsd_csv_validation stats{};
     switch (ref.kind) {
         case DSD_APP_SCAN_FILE_CHANNEL: return dsd_csv_validate_chan_file(ref.resolved.c_str(), &stats);
@@ -435,7 +441,9 @@ validateCompleteReference(const Reference& ref, Validated& seen, char* err, size
     if (ref.kind == DSD_APP_SCAN_FILE_CHANNEL) {
         Document channel;
         char detail[256] = {};
+#ifdef DSD_NEO_TEST_HOOKS
         g_channel_inspections.fetch_add(1U, std::memory_order_relaxed);
+#endif
         if (inspectDocument(ref.resolved.c_str(), nullptr, true, channel, detail, sizeof detail)) {
             if (err && size) {
                 DSD_SNPRINTF(err, size, "row %u chan_csv: %s", ref.row, detail);
@@ -626,6 +634,7 @@ dsd_app_trunk_scan_validate_bundle(const char* path, int* count, uint32_t* first
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
 extern "C" void
 dsd_app_trunk_scan_test_reset_counts(void) {
     g_channel_inspections.store(0U, std::memory_order_relaxed);
@@ -641,3 +650,4 @@ extern "C" unsigned
 dsd_app_trunk_scan_test_file_validations(void) {
     return g_file_validations.load(std::memory_order_relaxed);
 }
+#endif

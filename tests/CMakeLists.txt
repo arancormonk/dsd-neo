@@ -16184,10 +16184,12 @@ if(DSD_HAS_RADIO)
     )
 endif()
 
-# The validation facade must exercise the real CSV parser and its cleanup path.
+# The validation facade must exercise the real CSV parser and its cleanup path. The document inspector is built in
+# with its test probes (DSD_NEO_TEST_HOOKS), which production builds leave out.
 add_executable(
     dsd-neo_test_app_control_trunk_scan_validate
     ui/test_app_control_trunk_scan_validate.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/trunk_scan_document.cpp
 )
 target_link_libraries(
     dsd-neo_test_app_control_trunk_scan_validate
@@ -16195,7 +16197,9 @@ target_link_libraries(
 )
 target_compile_definitions(
     dsd-neo_test_app_control_trunk_scan_validate
-    PRIVATE "DSD_NEO_TEST_EXAMPLES_DIR=\"${PROJECT_SOURCE_DIR}/examples\""
+    PRIVATE
+        "DSD_NEO_TEST_EXAMPLES_DIR=\"${PROJECT_SOURCE_DIR}/examples\""
+        DSD_NEO_TEST_HOOKS
 )
 add_test(
     NAME APP_CONTROL_TRUNK_SCAN_VALIDATE
