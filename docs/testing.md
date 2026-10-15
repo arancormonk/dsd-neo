@@ -118,9 +118,10 @@ document copy, with no stubs (a source exactly at the cap and one byte over it a
 stream, read and write errors, and the sticky teardown abort), then `DocumentCopies.kt`, the Android glue around it,
 against a `ContentResolver` stub that plays the document providers: the declared size refused before the open and the
 counted cap when the size is unknown, wrong or its lookup fails, `wt` then `w`, the trim after every save (a provider
-that ignores the `t` included) and the sync before close, a pipe neither trimmed nor synced, the delete after a failure
-once open and never before, and the abort cancelling a held size lookup, a held read open and a held write open (with no
-`w` retry), skipping the delete, and refusing later transfers without a provider call.
+that ignores the `t` included) and the sync before close, a pipe neither trimmed nor synced, a failure once open
+closing the document with an error (a pipe's write failure included) and deleting it, never before, and the abort
+cancelling a held size lookup, a held read open and a held write open (with no `w` retry), skipping the delete, and
+refusing later transfers without a provider call.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
 late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the
@@ -2207,10 +2208,10 @@ watch the incremental collector again, set `QV4_GC_TIMELIMIT` to a slice length 
 
 The backup suites (`UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY`, `UI_QT_BACKUP_MODEL`; issue #580) build their
 configurations through the real models in storage that `dsd_test_qt_isolate_paths()`
-(`tests/test_support/qt_test_paths.h`) makes disposable, and they delete whole trees. `UI_QT_BACKUP_APPLY` and
-`UI_QT_BACKUP_MODEL` check that `AppDataLocation` is the isolated root they named before touching anything, and remove
-trees only through one guard (`remove_tree()`) that refuses a path that is not clean, absolute, and at or below that
-root; the apply suite removes single entries through the same rules (`remove_file()`). An unguarded removal of an
+(`tests/test_support/qt_test_paths.h`) makes disposable, and they delete whole trees. All three check that
+`AppDataLocation` is the isolated root they named before touching anything, and remove trees only through one guard
+(`remove_tree()`) that refuses a path that is not clean, absolute, and at or below that root; the apply and archive
+suites remove single entries through the same rules (`remove_file()`). An unguarded removal of an
 empty path, which `QDir` reads as the working directory, deletes `build/<preset>/tests`, so keep new tree removals
 behind such a guard. `UI_QT_BACKUP_APPLY` drives the startup apply through `ApplyEnv` (`src/ui/qt/backup_apply.h`):
 `engineBusy` and `freeBytes` stand in for the host and the volume, and `fault` is asked before every named step, so a
@@ -2220,7 +2221,9 @@ run's tree (file bytes, symlink targets, directories and settings), or against t
 had finished. The cases that need a read-only file or directory print a `note:` and skip where permissions are not
 enforced (root). `UI_QT_BACKUP_MODEL` holds a job on the worker at a gate in its fake host's document copy, and
 `test_recorder_parity()` compares `BackupModel`'s meta-object with the QML fixture's fake
-(`tests/ui/qml_backup_recorder.h`), so the QML tests cannot drift from the model.
+(`tests/ui/qml_backup_recorder.h`), so the QML tests cannot drift from the model. It runs each step with stderr captured
+so the libraries' expected log lines stay quiet, but its own `FAIL:` and `note:` lines go straight to the real stderr,
+so a step that crashes or hangs still shows them.
 
 #### Build-time constants that gate a branch
 

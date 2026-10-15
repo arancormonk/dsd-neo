@@ -5431,7 +5431,9 @@ Qt Quick frontend (`src/ui/qt`):
     a path must join it. The export (worker-safe; only `backup_take_snapshot()` reads app state, on the UI thread)
     repairs rows the way the loaders would, clears every `Recording`, strips each profile's `compiled`, `runtimeRef`
     and `pastRuntimeRefs`, carries only regular non-symlink files under the data root's `imports/` (an owned bundle
-    whole), clears any other reference and lists it in `notIncluded`, then parses its own output as a self-check.
+    whole), clears any other reference and lists it in `notIncluded`, then parses its own output as a self-check. A
+    carried file that changes between the export's two reads (a session appends to its talkgroup lists) fails it with
+    `BackupError::SourceChanged`, not `Io`.
     `backup_parse_archive()` is pure and treats the archive as untrusted: size caps (64 MiB sealed, 4096 files, 32 MiB
     a file, 4096 rows a store, 4 MiB manifest), a sha256 per file, archive paths under `imports/` with case- and
     NFC-folded duplicates refused, store shapes and identities, settings filtered to `AppPrefs::portableKeys()`; it
@@ -5446,28 +5448,34 @@ Qt Quick frontend (`src/ui/qt`):
     points (`backup_passphrase_ok()`); the byte and normalized copies the backup code makes are wiped, the strings
     QML hands it cannot be.
   - Staging and apply (`backup_apply.h`, `backup_stage.cpp`, `backup_apply.cpp`, module-private
-    `backup_apply_fs.{h,cpp}`): `stage_restore()` writes `restore-staging-<job>/` (files, stores, settings, avoids and
-    a manifest, each file 0600) and dry-run validates each library file with `ImportedFilesModel::validate()`;
+    `backup_apply_fs.{h,cpp}`): `stage_restore()` takes the data root its caller read (the model passes the UI thread's
+    reading to its worker) and writes `restore-staging-<job>/` (files, stores, settings, avoids and a manifest, each
+    file 0600). It dry-run validates each library file with `ImportedFilesModel::validate()`; a row that fails (a
+    channel map whose companions this phone refuses, say) is left out, not the whole backup: its file and its bundle's
+    files are not staged, every typed reference to them is cleared, and the staged summary counts it out and lists
+    "<name>: couldn't be read on this phone" in `notIncluded`. Only structural problems refuse a staging.
     `promote_staging()` renames it to `restore-pending/`, and `commit_pending()` writes `COMMITTED` (the manifest's
-    sha256). `ui_load()` calls `apply_pending_restore()` as its first statement, before any model reads a store, so
-    restored stores go through the loaders and migrations like any start's; its `engineBusy` is
-    `DecoderHost::engineBusy()`. The apply writes an undo journal (`restore-pending/journal/`, `COMPLETE` last) of the
-    old managed set: the five stores and the avoid file, the files under `imports/` a store's `File` value names
-    (never one a `Recording` names), the owned bundle directories library rows claim (the first claim of a folded
-    name), and everything under `decryption/` and `scan_lists/`. Only those are deleted. An incoming file whose
-    destination holds anything else takes a free name (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory
-    `dir (n)`) and the stores' references follow; file contents are never rewritten, so a plain channel map beside its
-    bundle (it names companions `bundles/<id>/…`) points at the old id if its bundle had to move. A crash re-runs to the
-    same end state, and an I/O failure rolls back byte for byte (pruned empty directories excepted). Outcomes are
-    `Applied`, `Failed` (nothing changed), `Deferred` (engine busy or storage short; kept) and `Stuck` (neither
-    finishing nor undoing worked; kept); `backup-restore-result.json` records the applied, failed and stuck ones.
-    `discard_pending()` refuses once the journal is complete (`pending_apply_started()`). `detail::DataRoot` is the
-    only writer, deleter and renamer: it refuses a path outside the data root or one with a symlink or junction among
-    its existing components, and removes trees without following links. Documented limits: a resumed apply (journal
-    complete) that finds the engine busy is Deferred, and that session runs on the half-applied configuration, whose
-    edits the next roll forward can overwrite; a corrupt complete journal is Stuck at every start and cannot be
-    discarded; a store file that is a symlink fails every restore (`QSaveFile` writes through a link, so the models'
-    own saves never replace it). `ApplyEnv` injects the engine check, free space and a fault per named step.
+    sha256); every check reads only a regular `COMMITTED` file as the marker, as the apply does. `ui_load()` calls
+    `apply_pending_restore()` as its first statement, before any model reads a store, so restored stores go through the
+    loaders and migrations like any start's; its `engineBusy` is `DecoderHost::engineBusy()`. The apply writes an undo
+    journal (`restore-pending/journal/`, `COMPLETE` last) of the old managed set: the five stores and the avoid file,
+    the files under `imports/` a store's `File` value names (never one a `Recording` names), the owned bundle
+    directories library rows claim (the first claim of a folded name), and everything under `decryption/` and
+    `scan_lists/`. Only those are deleted. An incoming file whose destination holds anything else takes a free name
+    (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory `dir (n)`) and the stores' references follow. File
+    contents are never rewritten, so a bundle whose row keeps its file outside it (a plain channel map beside its bundle
+    names companions `bundles/<id>/…`) never moves: when an entry the old setup does not own holds its place, the apply
+    fails before any change ("A folder left by an earlier import is in the way of a restored channel map…"). A crash
+    re-runs to the same end state, and an I/O failure rolls back byte for byte (pruned empty directories excepted).
+    Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine busy or storage short; kept) and `Stuck`
+    (neither finishing nor undoing worked; kept); `backup-restore-result.json` records the applied, failed and stuck
+    ones. `discard_pending()` refuses once the journal is complete (`pending_apply_started()`). `detail::DataRoot` is
+    the only writer, deleter and renamer: it refuses a path outside the data root or one with a symlink or junction
+    among its existing components, and removes trees without following links. Documented limits: a resumed apply
+    (journal complete) that finds the engine busy is Deferred, and that session runs on the half-applied configuration,
+    whose edits the next roll forward can overwrite; a corrupt complete journal is Stuck at every start and cannot be
+    discarded; a store file that is a symlink fails every restore (`QSaveFile` writes through a link, so the models' own
+    saves never replace it). `ApplyEnv` injects the engine check, free space and a fault per named step.
   - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`. One low-priority worker thread (a `QThreadPool` of
     one) runs each job; work and replies cross through two queues under one `std::mutex`, and a job's files are its own
     (`<CacheLocation>/backup/<job>.dsdbak` or `.in`, `restore-staging-<job>/`), so a cancelled job removes only them
@@ -5476,29 +5484,40 @@ Qt Quick frontend (`src/ui/qt`):
     `DecoderHost::copyFileToDocument()`; `inspectRestore()` copies the document with `copyDocumentToFile()` (capped at
     64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and stages, and the UI thread promotes.
     `commitRestore()` refuses while a job runs, a session is on screen or `engineBusy()`, commits, and asks `quitApp()`
-    once. `restorePending` follows the committed stage on disk, and `discardRestore()` reports `RestoreInProgress` once
-    the apply has started. `startupOutcome` is this start's `ApplyResult`, else the result file until acknowledged. The
-    destructor calls `abortDocumentTransfers()` while a job may be on the worker, then waits for it. Production seals
-    with `dsd_backup_kdf_params_default()`.
+    once; a refused commit leaves the stage as it was. `restorePending` follows the committed stage on disk, and
+    `restoreCancellable` (pending, no complete journal) with it; `discardRestore()` reports `RestoreInProgress` once the
+    apply has started. The inspection reports the staged summary, so the confirmation sees left-out rows.
+    `startupOutcome` is this start's `ApplyResult`, else the result file until acknowledged, and carries the restored
+    backup's `notIncluded` lines. The destructor calls `abortDocumentTransfers()` while a job may be on the worker, then
+    waits for it. Production seals with `dsd_backup_kdf_params_default()`.
   - QML: one `BackupFlow.qml` in `Main.qml` (z 22, above the scan layers) serves both Settings instances through
     `exportBackupRequested()`, `restoreBackupRequested()` and `cancelRestoreRequested()`. `backup.flowActive` (set for
-    the flow's whole length, kept while the app closes) joins `autoStartBlocked`, a USB grant that lands while it is
-    set starts nothing, and entering a restore drops pending starts (`dropPendingStarts()`). Settings' Backup card
-    gates the Restore row on `restoreAllowed` and `!restorePending`. `BackupResultCard.qml` on Home shows
-    `startupOutcome` and matches the `BackupApply` reason strings of `backup_apply.cpp` through `qsTranslate()`, so a
-    change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
+    the flow's whole length, kept while the app closes) joins `autoStartBlocked`, a USB grant that lands while it is set
+    starts nothing, and entering a restore drops pending starts (`dropPendingStarts()`). An unlock error about the file
+    (not a backup, newer, too large, damaged, unreadable) swaps Unlock for "Choose another file", which reopens the
+    picker inside the same flow. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
+    (`ConfirmDialog.closeOnConfirm: false`, its `error` line) for a retry; only Cancel discards. Settings' Backup card
+    gates the Restore row on `restoreAllowed` and `!restorePending`, and it and the Home card offer "Cancel
+    restore"/"Discard restore" only while `restoreCancellable`, else `Util.restorePartWayText()`. The confirmation, the
+    export result and the Home card list `notIncluded` through `Util.notIncludedText()`. `BackupResultCard.qml` on Home
+    shows `startupOutcome` and matches the `BackupApply` reason strings of `backup_apply.cpp` through `qsTranslate()`,
+    so a change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
   - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or
     device-local (onboarding, the notification explanation and the last location fix are device-local), with
     `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
     any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is
     kept, and `configuration()` refuses it ("Open this decryption profile and save it again."). `-fp` (ProVoice)
     reads as `mixed` in `Util.js` `decryptionProtocol()`, `session_args_profile_compatible()` and the legacy key
-    migration. `json_store_root()` is the data root every store path builds on.
-  - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback),
-    `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's `tests/ui/qml_backup_recorder.h`),
-    `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`, `tst_util_decryption_protocol.qml`),
-    `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`), `UI_QT_ANDROID_HOST`,
-    `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`.
+    migration. `json_store_root()` is the data root every store path builds on. A file-source system without its
+    recording, as every restored replay system arrives, is refused before it starts
+    (`SessionArgsError::RecordingMissing`, start category `recording-missing`), checked after AM's source rule (AM needs
+    a radio whatever the file) and before TETRA's, so it never runs `-i ""` and is never told to choose a radio.
+  - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback; two
+    restores in a row), `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's
+    `tests/ui/qml_backup_recorder.h`), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,
+    `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
+    `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
+    `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
@@ -5882,8 +5901,9 @@ thread, which the rest of the interface never is.
   side refuses a provider-declared size over the cap before opening, counts the cap while copying
   (`DocumentTransfer.kt`), writes a temp file beside the destination and renames it; a stale destination is removed
   first, and `DocumentCopied` counts only when the file is there. A save opens the document `wt`, else `w`; a file
-  (not a provider's pipe) is cut back to the copy's length and synced, and a save that fails once the document is open
-  deletes it.
+  (not a provider's pipe) is cut back to the copy's length and synced. A save that fails once the document is open
+  closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather than a short
+  document, and deletes it; only a whole save closes normally.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.

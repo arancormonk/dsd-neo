@@ -115,7 +115,9 @@ uploads do not follow redirects; configure the final trusted endpoint directly.
 
 The Qt/Android app can export its configuration, saved radio keys included, as
 a passphrase-encrypted backup file written where the user chooses
-(`android/README.md`, "Backup and restore"; `<dsd-neo/crypto/backup_seal.h>`):
+(`android/README.md`, "Backup and restore"; `<dsd-neo/crypto/backup_seal.h>`).
+Only that exported file is encrypted; the configuration at rest in the app's
+private storage is not:
 
 - The key is scrypt (N = 2^16, r = 8, p = 2, about 64 MiB) over the
   NFC-normalized UTF-8 passphrase and a random 16-byte salt. The archive is

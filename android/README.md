@@ -205,8 +205,8 @@ key files, band plans, source ID lists, trunk scan targets, and the companion fi
 profiles with their keys, Signal search ranges and permanent avoids, and your settings, including the app-wide Extra
 decoder arguments and the RadioReference username and application-key override.
 
-It leaves on the phone: call history, recordings (replay files), Signal search's detection history, diagnostics, the
-last location fix and first-run state. The RadioReference password is never saved, so it is never in a backup.
+It does not carry: call history, recordings (replay files), Signal search's detection history, diagnostics, the last
+location fix and first-run state. The RadioReference password is never saved, so it is never in a backup.
 Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again. A
 file that a saved system, scan list or profile names outside DSD-neo's imported files cannot be carried: the export
 leaves that reference out and lists it under **Not included** on the Settings card.
@@ -216,21 +216,28 @@ leaves that reference out and lists it under **Not included** on the Settings ca
 **Export backup** works while listening too. Type a passphrase of at least 8 characters twice (**Show passphrases**
 reveals both fields), then **Encrypt**. Android's save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak`;
 keep DSD-neo open until Settings reads **Backup saved.** The passphrase is the only way to open the backup. DSD-neo
-keeps no copy of it, and a forgotten passphrase cannot be recovered or reset.
+keeps no copy of it, and a forgotten passphrase cannot be recovered or reset. A running session keeps adding to its
+talkgroup lists; if a file changes while the backup is being made, the export stops with **Your setup changed while the
+backup was being made. Try again.**
 
 ### Restoring
 
 **Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop
 listening to restore** until then). Pick the file in Android's file picker (DSD-neo checks the file's contents, not its
 name) and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or
-the file is damaged.**). DSD-neo checks the whole backup before it changes anything, then asks **Replace your setup?**
-with the backup's date, app version and counts, how many replay systems will need their recording chosen again, and how
-many systems carry extra decoder options.
+the file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
+damaged, or unreadable), **Choose another file** opens the picker again. DSD-neo checks the whole backup before it
+changes anything. An imported file this phone cannot read (a channel map whose companion files it refuses, say) is left
+out of the restore rather than refusing the whole backup; whatever named it loses that reference. Then it asks **Replace
+your setup?** with the backup's date, app version and counts, how many replay systems will need their recording chosen
+again, how many systems carry extra decoder options, and what is **Not included** (what the export could not carry, and
+files left out on this phone).
 
-**Replace and close** closes DSD-neo. Open it again: the restore is applied before anything is loaded, and Home shows
-the result until you **Dismiss** it:
+**Replace and close** closes DSD-neo. If DSD-neo is still stopping a session, the confirmation says so and stays open:
+confirm again in a moment, or **Cancel** to drop the restore. Open DSD-neo again: the restore is applied before
+anything is loaded, and Home shows the result until you **Dismiss** it:
 
-- **Backup restored**, with what the phone now has.
+- **Backup restored**, with what the phone now has and what was not included.
 - **Restore not applied. Nothing was changed.** Your previous setup is intact.
 - The decoder was busy, or there was not enough free storage: the restore waits for the next start, and **Discard
   restore** drops it instead.
@@ -238,16 +245,16 @@ the result until you **Dismiss** it:
   some storage and reopen DSD-neo.
 
 While a confirmed restore waits (DSD-neo could not close itself, or the restore was put off or could not finish),
-Settings → Backup shows **Restore is ready** with **Cancel restore**. Neither that button nor **Discard restore** can
-stop a restore that has already started changing files; DSD-neo says so, and reopening it finishes or undoes that
-restore.
+Settings → Backup shows **Restore is ready** with **Cancel restore**. Once a restore has started changing files, nothing
+can stop it: neither **Cancel restore** nor **Discard restore** is offered, Settings and Home say the restore is
+part-way through, and reopening DSD-neo finishes or undoes it.
 
 A backup never carries recordings, so each replay system arrives without its file: open it with Edit and choose the
-recording again. A restore replaces the old setup as a whole: its saved systems, scan lists, decryption profiles,
-settings, Signal search ranges and permanent avoids, and the imported files it used (generated scan-list CSVs and
-compiled decryption files are made again). It never deletes a recording or any other file the old setup did not use.
-When such a file holds a name an incoming file needs, the incoming file takes a free name instead (`group (1).csv`) and
-the restored lists point to it.
+recording again (until then, starting it says its recording is missing). A restore replaces the old setup as a whole:
+its saved systems, scan lists, decryption profiles, settings, Signal search ranges and permanent avoids, and the
+imported files it used (generated scan-list CSVs and compiled decryption files are made again). It never deletes a
+recording or any other file the old setup did not use. When such a file holds a name an incoming file needs, the
+incoming file takes a free name instead (`group (1).csv`) and the restored lists point to it.
 
 **Restore only backups you made or trust.** A backup carries every setting, and extra decoder options run exactly as
 typed: a crafted backup could, for example, send decoded audio to someone else's server. The confirmation therefore
@@ -263,8 +270,8 @@ Limits:
   included** when you export.
 - The file is encrypted with AES-256-GCM under a key that scrypt derives from the passphrase (N = 2^16, r = 8, p = 2,
   about 64 MiB of memory per attempt). That slows guessing; it cannot protect a short or common passphrase.
-- One backup holds at most 64 MiB: up to 4096 files of up to 32 MiB each, and up to 4096 entries of each kind (saved
-  systems, scan lists, imported files, profiles, ranges).
+- The sealed backup file is at most 64 MiB. Inside it: up to 4096 files of up to 32 MiB each, and up to 4096 entries
+  of each kind (saved systems, scan lists, imported files, profiles, ranges).
 - Google Drive has not been tested as a place to save or restore: it cannot be exercised on the test emulators. If it
   fails, save the backup to the phone first, or copy it there before restoring.
 - If DSD-neo reopens while its decoder is still running in the background, a confirmed restore waits for a start
@@ -274,6 +281,12 @@ Limits:
 - If a part-way restore's undo record is damaged (only tampering or storage corruption can do that), every start says
   the restore couldn't finish and nothing can cancel it. The way out is to clear DSD-neo's storage in Android's app
   settings, which erases all of its data, and then restore the backup again.
+- A channel map you updated with companion files keeps its own file beside the folder of companions and names that
+  folder in its contents, which a restore never rewrites, so the folder cannot take a free name. If a folder of the
+  same name, left by an earlier import, is already on the phone, the restore fails, changing nothing (**A folder left
+  by an earlier import is in the way of a restored channel map.**). Clearing DSD-neo's storage in Android's app
+  settings removes that folder, along with all of DSD-neo's data (call history and recordings included); then restore
+  the backup again.
 - A restore always fails, changing nothing, while one of DSD-neo's own list files is a symbolic link. DSD-neo never
   makes one; only something with access to its private storage (root, or `adb` on a debuggable build) can, and
   clearing DSD-neo's storage removes it.
