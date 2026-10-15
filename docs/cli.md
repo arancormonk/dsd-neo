@@ -24,7 +24,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
   `--api-token-file <path>` (one line of 1..255 bytes; a file that cannot be read is an error). See
   [docs/api.md](api.md).
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
-- Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `--dmr-tg-key-csv <file>`, `--dmr-force-algid <hex>`, `--tetra-key mcc,mnc,<hex>`, `--show-keys`, `-4`, `-0`, `-3`
+- Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `--dmr-tg-key-csv <file>`, `--dmr-force-algid <hex>`, `--tetra-key mcc,mnc,<hex>[,teaN]`, `--tetra-key mcc,mnc,<hex>,la=N,cc=N,carrier=N`, `--show-keys`, `-4`, `-0`, `-3`
 - Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`, `--rdio-mode off|dirwatch|api|both`
 
 ## Quick Start
@@ -497,7 +497,8 @@ Notes
   priority and preemption rows and the tune controls decide; while it follows one, only that call's timeslots play,
   once its signalling has been decoded on the traffic carrier (direct mode speech always plays). Without `-T` one
   timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target
-  type. Air-encrypted speech decrypts with `--tetra-key` (see Keys & Privacy).
+  type. Air-encrypted speech decrypts with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of one channel
+  (see Keys & Privacy).
 
 Notes
 
@@ -1605,8 +1606,8 @@ is delayed.
     they do not readmit the supergroup's grants.
   - TETRA needs no probe: the D-SETUP and D-TX GRANTED say whether a call is end-to-end encrypted, and the MAC header
     whether it is air interface encrypted. A voice call the listener cannot decrypt (end-to-end encryption, or air
-    encryption without a usable `--tetra-key`) is locked out instead of followed, and a followed call that turns out
-    so is left.
+    encryption without a `--tetra-key` for the carrier the call is on: an 80-bit key covers every carrier, a TEA1
+    reduced key its own) is locked out instead of followed, and a followed call that turns out so is left.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode), the FM passband the peer is asked for wherever it
@@ -1850,16 +1851,32 @@ Out-of-range decimal keys are rejected without changing the installed key.
 - Baofeng AP PC5 key override (hex): `--dmr-baofeng-pc5 <hex>` (32 or 64 hex chars)
 - Connect Systems EE72 key override (hex): `--dmr-csi-ee72 <hex>` (18 hex chars)
 - Vertex ALG `0x07` key->keystream map CSV: `--dmr-vertex-ks-csv <file>` (`key_hex,bits:hex[:offset[:step]]`)
-- TETRA air interface cipher key: `--tetra-key mcc,mnc,<20 hex digits>` loads the 80-bit cipher key of one network:
-  the SCK of a security class 2 cell or the CCK of a class 3 cell, never a derived encryption cipher key (ECK).
-  Keys for at most four networks are held; another key for the same network replaces it. It decrypts trunked mode
-  speech of calls whose MAC signalling is air encrypted, once the network's algorithm (TEA1, TEA2 or TEA3) has been
-  decoded from its key management signalling; end-to-end encryption and direct mode encryption are never decrypted.
+- TETRA air interface cipher key: `--tetra-key mcc,mnc,<20 hex digits>[,tea1|tea2|tea3]` loads the 80-bit cipher key
+  of one network: the SCK of a security class 2 cell or the CCK of a class 3 cell, never a derived encryption cipher
+  key (ECK). Another 80-bit key for the same network replaces it. It decrypts trunked mode speech of calls whose MAC
+  signalling is air encrypted; end-to-end encryption and direct mode encryption are never decrypted. A network does
+  not broadcast its algorithm, so name it: a key that names `tea1`, `tea2` or `tea3` (either case) always runs that
+  algorithm. A key that names none runs the network's algorithm only once its signalling (a D-OTAR SCK or GCK Provide,
+  or the ciphering parameters of a D-LOCATION UPDATE COMMAND or REJECT) has named exactly one of TEA1-TEA3, and not
+  while it has named two or more: a network may support several algorithms (EN 300 392-7 clause 6.3.1). TEA4 has no
+  key stream generator here.
   The key stream generator takes the ECK that TB5 derives from the cipher key with the carrier number, location area
   and colour code of the carrier being received (EN 300 392-7 clause 6.3.2.2): the followed call's carrier while
   trunking (`-T`), otherwise the carrier whose downlink frequency is exactly the tuned frequency of an RTL-SDR or I/Q
   replay input, on the control channel too (a secondary carrier broadcasts the main carrier's SYSINFO as well). Until
   the carrier number, a SYSINFO's location area and a BSCH's colour code are known, nothing is decrypted.
+- TETRA TEA1 reduced key: `--tetra-key mcc,mnc,<8 hex digits>,la=N,cc=N,carrier=N` loads TEA1's 32-bit key register
+  (the reduced ECK) of one channel: TEA1 compresses the ECK into that register before it generates anything, so the
+  register alone sets the key stream, and since TB5 made that ECK from the channel's location area (0-16383), colour
+  code (0-63) and carrier number (0-4095), it decrypts that channel only. It runs TEA1 whatever the network's
+  signalling named, and on its channel it is preferred over the network's 80-bit key. It decrypts the traffic
+  encrypted under the cipher key it came from (in a class 2 cell the SCK every terminal uses; in a class 3 cell one
+  CCK or group key, not the DCK of individual traffic) until that key changes. Another reduced key for the same
+  channel replaces it; each carrier of a cell needs its own. The Network row of Call Info and of the Qt/Android
+  monitor reads `MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654` once the location area and the carrier being
+  received are known, every field the key is bound to, and the Security row names the key that applies there
+  (`TEA1 reduced key`, `TEA2 key`).
+- At most 16 TETRA keys of both kinds are held. A refused `--tetra-key` names the grammar, never the key.
 - Kenwood 15‑bit scrambler (decimal): `-9 <dec>`
 - Anytone 16‑bit BP (hex): `-A <hex>`
 - Generic keystream (length:hexbytes, optional frame align): `-S <bits:hex[:offset[:step]]>` (e.g., `-S 49:123456789ABC80`, `-S 168:<hex>:0:49`)
