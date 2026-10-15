@@ -68,11 +68,49 @@ using dsd_qt::backup::BackupError;
 
 int g_failures = 0;
 
+/** The isolated data root's name starts with this, as main() sets the application name. */
+constexpr char kRootMarker[] = "dsd-neo-backup-archive-";
+
 void
 expect(const char* what, bool ok) {
     if (!ok) {
         DSD_FPRINTF(stderr, "FAIL: %s\n", what);
         g_failures++;
+    }
+}
+
+/**
+ * Whether this test may remove @p path: a clean absolute path equal to the isolated data root (unless
+ * @p strictlyBelow) or below it, the root itself clean, absolute, not "/" and named for this test. Anything else, an
+ * empty path (the working directory) above all, is refused and counted as a failure.
+ */
+bool
+removable(const QString& path, bool strictlyBelow) {
+    const QString base = dsd_qt::json_store_root();
+    const bool baseOk = base.size() > 1 && QDir::isAbsolutePath(base) && QDir::cleanPath(base) == base
+                        && base.contains(QLatin1String(kRootMarker));
+    const bool pathOk = !path.isEmpty() && QDir::isAbsolutePath(path) && QDir::cleanPath(path) == path
+                        && ((!strictlyBelow && path == base) || path.startsWith(base + QLatin1Char('/')));
+    if (!(baseOk && pathOk)) {
+        DSD_FPRINTF(stderr, "FAIL: only the isolated data root is removed: '%s'\n", qUtf8Printable(path));
+        g_failures++;
+    }
+    return baseOk && pathOk;
+}
+
+/** The one way this test removes a directory tree (see removable()). */
+void
+remove_tree(const QString& path) {
+    if (removable(path, false)) {
+        QDir(path).removeRecursively();
+    }
+}
+
+/** The one way this test removes a single file or symlink, never followed, strictly below the isolated root. */
+void
+remove_file(const QString& path) {
+    if (removable(path, true)) {
+        QFile::remove(path);
     }
 }
 
@@ -655,11 +693,11 @@ test_sanitize() {
     expect("recording cleared", parsed.stores.value("saved_systems.json").at(1).toObject().value("filePath") == "");
     expect("symlink to an import cleared",
            parsed.stores.value("scan_lists.json").at(0).toObject().value("srcCsvPath") == "");
-    QFile::remove(snapshot.root + "/imports/linked.csv");
-    QFile::remove(snapshot.root + "/imports/internal-link.csv");
-    QFile::remove(setup.staged);
-    QFile::remove(setup.absoluteMap);
-    QDir(setup.notOwned).removeRecursively();
+    remove_file(snapshot.root + "/imports/linked.csv");
+    remove_file(snapshot.root + "/imports/internal-link.csv");
+    remove_file(setup.staged);
+    remove_file(setup.absoluteMap);
+    remove_tree(setup.notOwned);
 }
 
 /* Stores a model would repair or prune as it loads them: the export repairs and prunes the same way, so the backup
@@ -751,8 +789,8 @@ test_export_repairs() {
     expect("a file outside its own bundle is carried without one",
            mismatchedRow >= 0 && outLibrary.at(mismatchedRow).toObject().value("bundleRoot") == ""
                && lists(built.summary.notIncluded, "mismatched.csv: companion files"));
-    QDir(snapshot.root + "/imports/bundles/stray-bundle").removeRecursively();
-    QDir(other).removeRecursively();
+    remove_tree(snapshot.root + "/imports/bundles/stray-bundle");
+    remove_tree(other);
 }
 
 /* A row whose file lies in another row's bundle is dropped; the bundle it names of its own is not carried either, since
@@ -787,7 +825,7 @@ test_export_drops_foreign_bundle(const Fixture& f) {
         carried = carried || file.path.startsWith("imports/bundles/foreign-bundle/");
     }
     expect("the dropped row's own bundle is not carried", !carried);
-    QDir(own).removeRecursively();
+    remove_tree(own);
 }
 
 /* The export answers the same folded question: a row whose file sits in a case variant of another row's bundle is
@@ -831,7 +869,7 @@ test_export_folded_bundle_paths(const Fixture& f) {
     const int outRow = row_where(outLibrary, "path", variant);
     expect("that row keeps no bundle", outRow >= 0 && outLibrary.at(outRow).toObject().value("bundleRoot") == ""
                                            && lists(built.summary.notIncluded, chanName + ": companion files"));
-    QDir(snapshot.root + "/imports/Bundles").removeRecursively();
+    remove_tree(snapshot.root + "/imports/Bundles");
 }
 
 void
@@ -862,7 +900,7 @@ test_build_caps_and_cancel() {
     oversized.stores.insert("saved_systems.json", systems);
     expect("oversized file is too large",
            dsd_qt::backup::backup_build_archive(oversized, nullptr).error == BackupError::TooLarge);
-    QFile::remove(big);
+    remove_file(big);
 }
 
 void
@@ -1492,11 +1530,15 @@ main(int argc, char** argv) {
     /* Isolated, disposable storage - nothing this test writes may touch a real profile (same arrangement as
      * test_ui_qt_persistence). */
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
-    QCoreApplication::setApplicationName(
-        QStringLiteral("dsd-neo-backup-archive-%1").arg(QCoreApplication::applicationPid()));
+    QCoreApplication::setApplicationName(QLatin1String(kRootMarker)
+                                         + QString::number(QCoreApplication::applicationPid()));
     dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir(dataDir).removeRecursively();
+    if (dataDir != dsd_qt::json_store_root()) {
+        DSD_FPRINTF(stderr, "the data root is not the app data directory\n");
+        return 1;
+    }
+    remove_tree(dataDir);
     QDir().mkpath(dataDir);
 
     test_json_store_root();
@@ -1529,7 +1571,7 @@ main(int argc, char** argv) {
     }
     dsd_app_signal_search_store_close();
 
-    QDir(dataDir).removeRecursively();
+    remove_tree(dataDir);
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;
