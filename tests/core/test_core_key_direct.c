@@ -33,7 +33,6 @@ check(int ok, const char* label) {
     }
 }
 
-#ifdef DSD_NEO_TEST_ARGV_FREE_WRAP
 /* Whether two TETRA air key tables hold the same keys, field by field: dsd_tetra_air_key has padding bytes. */
 static int
 tetra_air_keys_equal(const dsd_tetra_air_key* a, const dsd_tetra_air_key* b) {
@@ -46,6 +45,7 @@ tetra_air_keys_equal(const dsd_tetra_air_key* a, const dsd_tetra_air_key* b) {
     return 1;
 }
 
+#ifdef DSD_NEO_TEST_ARGV_FREE_WRAP
 static void* watched_argv[8];
 static size_t watched_sizes[8];
 static int watched_frees;
