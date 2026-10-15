@@ -325,13 +325,19 @@ settle(BackupModel& model) {
 /** "Backup restore applied at start" lines seen, one per apply. */
 int g_appliedLines = 0;
 
-/** Whether @p line is one the libraries print while this test runs: a key file loaded, a restore applied. */
+/**
+ * Whether @p line is one the libraries print while this test runs: a key file loaded, a restore applied, a staging
+ * refused for want of a directory (test_errors() makes the data root read-only).
+ */
 bool
 expected_log_line(const QByteArray& line) {
     static const QRegularExpression loaded(
         QStringLiteral("^NOTICE: Loaded \\d+ of \\d+ entries \\(hex file\\) from '.*'\\.$"));
     if (line == "Backup restore applied at start") {
         ++g_appliedLines;
+        return true;
+    }
+    if (line == "Backup restore could not be staged: no staging directory") {
         return true;
     }
     return loaded.match(QString::fromUtf8(line)).hasMatch();
@@ -951,6 +957,32 @@ test_errors(FakeHost& host, const QString& document, const QString& scratch) {
                                                                     && staging_dirs().isEmpty()
                                                                     && cache_entries().isEmpty());
     }
+
+    // This phone, not the document: no place to copy it to, or to stage it in, is StagingFailed, never the document
+    // read failure (Io) the screen blames the file for.
+    const QString cache = cache_dir();
+    expect("the cache folder is the isolated one", cache.contains(QLatin1String(kRootMarker)));
+    if (cache.contains(QLatin1String(kRootMarker))) {
+        expect("a file where the cache folder goes", QDir(cache).removeRecursively() && write_file(cache, "x"));
+        QVariantMap blocked = inspect(model, results, document);
+        expect("no cache folder → StagingFailed",
+               !blocked.value("ok").toBool() && blocked.value("error") == "StagingFailed");
+        expect("remove the blocking file", QFile::remove(cache) && QDir().mkpath(cache));
+    }
+    const QString dataRoot = root();
+    QFile::setPermissions(dataRoot, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+    QFile probe(dataRoot + "/probe");
+    if (probe.open(QIODevice::WriteOnly)) {
+        probe.close();
+        QFile::remove(probe.fileName());
+        say("note: directory permissions are not enforced; staging failure case skipped");
+    } else {
+        const QVariantMap unstaged = inspect(model, results, document);
+        expect("a data root staging cannot write to → StagingFailed",
+               !unstaged.value("ok").toBool() && unstaged.value("error") == "StagingFailed");
+    }
+    QFile::setPermissions(dataRoot, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    expect("a staging failure leaves nothing", staging_dirs().isEmpty() && !dsd_qt::backup::pending_exists());
 
     model.setFreeBytes([](const QString&) { return qint64{1024}; });
     QVariantMap result = inspect(model, results, document);

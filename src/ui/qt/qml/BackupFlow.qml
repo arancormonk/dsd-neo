@@ -186,6 +186,9 @@ Item {
             return tooShortText();
         case "Busy":
             return qsTr("Another backup task is still running. Try again in a moment.");
+        case "StagingFailed":
+            // This phone, not the file: the same file can be tried again.
+            return qsTr("Couldn't prepare the restore on this phone. Free some storage and try again.");
         case "SourceChanged":
             // A session appends to its lists while it listens.
             return qsTr("Your setup changed while the backup was being made. Try again.");

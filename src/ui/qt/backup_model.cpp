@@ -305,6 +305,9 @@ class Inspection {
     QString
     parse() {
         m_parsed = backup::backup_parse_archive(m_archive, m_work.root);
+        if (m_parsed.error == BackupError::Io) {
+            return error_name(BackupError::StagingFailed); // this phone's data root, not the file
+        }
         if (m_parsed.error != BackupError::None) {
             return error_name(m_parsed.error);
         }
@@ -323,7 +326,7 @@ class Inspection {
         if (backup::stage_restore(m_work.root, m_parsed, m_archive, m_work.stagingDir, &error, &m_staged)) {
             return QString();
         }
-        return error.isEmpty() ? error_name(BackupError::Io) : error;
+        return error.isEmpty() ? error_name(BackupError::StagingFailed) : error;
     }
 
     InspectWork m_work;
@@ -467,7 +470,7 @@ BackupModel::inspectRestore(const QString& reference, const QString& passphrase)
     } else if (backup::pending_committed()) {
         refusal = QLatin1String(kRestorePending);
     } else if (m_host == nullptr || dir.isEmpty() || stagingDir.isEmpty() || !QDir().mkpath(dir)) {
-        refusal = error_name(BackupError::Io);
+        refusal = error_name(BackupError::StagingFailed); // no cache or staging place on this phone
     }
     if (!refusal.isEmpty()) {
         refuse(&BackupModel::inspectFinished, QStringLiteral("inspectRestore"), refusal);
@@ -793,7 +796,8 @@ BackupModel::onInspected(const Job& job, const QVariantMap& result) {
     QVariantMap report = result;
     if (report.value(QStringLiteral("ok")).toBool() && !backup::promote_staging(job.path)) {
         backup::discard_staging(job.path);
-        report = result_map(backup::pending_committed() ? QLatin1String(kRestorePending) : error_name(BackupError::Io));
+        report = result_map(backup::pending_committed() ? QLatin1String(kRestorePending)
+                                                        : error_name(BackupError::StagingFailed));
     }
     setLastResult(QStringLiteral("inspectRestore"), report);
     endJob();

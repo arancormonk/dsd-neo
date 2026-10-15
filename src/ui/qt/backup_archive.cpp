@@ -49,6 +49,7 @@ backup_error_name(BackupError error) {
         case BackupError::SessionActive: return QStringLiteral("SessionActive");
         case BackupError::Io: return QStringLiteral("Io");
         case BackupError::SourceChanged: return QStringLiteral("SourceChanged");
+        case BackupError::StagingFailed: return QStringLiteral("StagingFailed");
     }
     return QStringLiteral("Io");
 }

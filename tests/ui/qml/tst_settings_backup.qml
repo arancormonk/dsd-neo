@@ -594,7 +594,9 @@ Item {
                 {tag: "SessionActive", text: "Stop listening before restoring."},
                 {tag: "RestorePending", text: "A restore is already waiting. Cancel it in Settings → Backup, or close and reopen DSD-neo to finish it."},
                 {tag: "Busy", text: "Another backup task is still running. Try again in a moment."},
-                {tag: "Io", file: true, text: "Couldn't read that file. Choose it again, or copy it to this phone first."}
+                {tag: "Io", file: true, text: "Couldn't read that file. Choose it again, or copy it to this phone first."},
+                // This phone, not the file: the same file can be tried again.
+                {tag: "StagingFailed", text: "Couldn't prepare the restore on this phone. Free some storage and try again."}
             ];
         }
 

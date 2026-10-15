@@ -73,7 +73,7 @@ class Stager {
             error = dropUnreadableRows();
         }
         if (error == BackupError::None && !(writeStores() && writePrefs() && writeAvoids() && writeManifest())) {
-            error = fail(BackupError::Io, QStringLiteral("a staged file could not be written"));
+            error = fail(BackupError::StagingFailed, QStringLiteral("a staged file could not be written"));
         }
         return error;
     }
@@ -134,7 +134,7 @@ class Stager {
                 return fail(BackupError::Damaged, QStringLiteral("a file does not match its sha256"));
             }
             if (!writeEntry(QStringLiteral("files/") + file.path, bytes)) {
-                return fail(BackupError::Io, QStringLiteral("a staged file could not be written"));
+                return fail(BackupError::StagingFailed, QStringLiteral("a staged file could not be written"));
             }
         }
         return BackupError::None;
@@ -179,7 +179,7 @@ class Stager {
             }
             m_stores.insert(library, kept);
             if (!leaveOut(failed, kept)) {
-                return fail(BackupError::Io, QStringLiteral("a staged file could not be removed"));
+                return fail(BackupError::StagingFailed, QStringLiteral("a staged file could not be removed"));
             }
         }
         m_summary.libraryFiles = static_cast<int>(m_stores.value(library).size());
@@ -334,7 +334,7 @@ stage_restore(const QString& dataRoot, const ParseResult& parsed, const QByteArr
     QString detail = QStringLiteral("the backup did not parse");
     if (result == BackupError::None) {
         if (!staging_dir_ok(root, stagingDir) || !root.removeTree(stagingDir) || !root.makeDirs(stagingDir)) {
-            result = BackupError::Io;
+            result = BackupError::StagingFailed;
             detail = QStringLiteral("no staging directory");
         } else {
             Stager stager(root, parsed, archive, stagingDir);

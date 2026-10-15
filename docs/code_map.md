@@ -5486,7 +5486,9 @@ Qt Quick frontend (`src/ui/qt`):
     `commitRestore()` refuses while a job runs, a session is on screen or `engineBusy()`, commits, and asks `quitApp()`
     once; a refused commit leaves the stage as it was. `restorePending` follows the committed stage on disk, and
     `restoreCancellable` (pending, no complete journal) with it; `discardRestore()` reports `RestoreInProgress` once the
-    apply has started. The inspection reports the staged summary, so the confirmation sees left-out rows.
+    apply has started. The inspection reports the staged summary, so the confirmation sees left-out rows; its `Io`
+    means only that the picked document could not be read, while a cache, staging or promotion failure on this phone
+    is `StagingFailed` (the screen offers the same file again, not another one).
     `startupOutcome` is this start's `ApplyResult`, else the result file until acknowledged, and carries the restored
     backup's `notIncluded` lines. The destructor calls `abortDocumentTransfers()` while a job may be on the worker, then
     waits for it. Production seals with `dsd_backup_kdf_params_default()`.

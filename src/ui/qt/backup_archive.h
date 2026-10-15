@@ -75,7 +75,9 @@ enum class BackupError {
     SessionActive,
     Io,
     /** A carried file changed while the export read it (a session appends to its talkgroup lists, say). */
-    SourceChanged
+    SourceChanged,
+    /** A restore could not be prepared on this phone (its cache, staging or promotion failed), whatever the file. */
+    StagingFailed
 };
 
 /** The enumerator's name ("None", "NotBackup", …), for result maps handed to QML. */

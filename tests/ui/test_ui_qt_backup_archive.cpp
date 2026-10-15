@@ -1466,6 +1466,8 @@ test_passphrases() {
                               && dsd_qt::backup::backup_error_name(BackupError::SessionActive) == "SessionActive");
     expect("a file that changed during an export has its own name, not an I/O failure",
            dsd_qt::backup::backup_error_name(BackupError::SourceChanged) == "SourceChanged");
+    expect("a restore this phone could not prepare has its own name, not an I/O failure",
+           dsd_qt::backup::backup_error_name(BackupError::StagingFailed) == "StagingFailed");
 }
 
 void

@@ -953,9 +953,10 @@ test_staging_validates_library_files(TestHost& host, const Backup& b) {
     expect("a failed parse is refused", !dsd_qt::backup::stage_restore(root(), failed, b.archive, dir, &error));
     expect("a staging dir outside the root is refused",
            !dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, scratch.filePath("restore-staging-x"), &error)
-               && error == "Io" && !QFileInfo::exists(scratch.filePath("restore-staging-x")));
+               && error == "StagingFailed" && !QFileInfo::exists(scratch.filePath("restore-staging-x")));
     expect("a directory that is not a staging dir is refused",
-           !dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, at("imports"), &error) && error == "Io");
+           !dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, at("imports"), &error)
+               && error == "StagingFailed");
 }
 
 /** Staging works on the data root its caller read (a worker gets the UI thread's), not on a later reading. */
