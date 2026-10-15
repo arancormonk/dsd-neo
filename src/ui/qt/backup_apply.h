@@ -22,8 +22,9 @@
  *
  * The apply is all-or-nothing. Before its first change it writes an undo journal (`restore-pending/journal/`) of the
  * old configuration: the five stores and the avoid list, every file under imports/ a store names (a recording never
- * counts), every owned bundle directory a library row claims, and everything under decryption/ and scan_lists/. Only
- * those files are ever deleted; any other file whose name an incoming file would take is kept and the incoming file
+ * counts), every owned bundle directory a library row claims, and the files the app generates under decryption/ and
+ * scan_lists/ (compiled profile key files, scan-list CSVs; anything else there is kept). Only those files are ever
+ * deleted; any other file whose name an incoming file would take is kept and the incoming file
  * gets a free name instead, its references following. A crash re-runs to the same end state; an I/O failure rolls
  * back. Every write, delete and rename goes through one check that refuses a path outside the data root or one with
  * a symlink (or junction) among its existing components below the root.

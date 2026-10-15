@@ -28,6 +28,7 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStandardPaths>
 #include <QString>
@@ -146,6 +147,23 @@ QString
 relative(const QString& path) {
     return path.mid(root().size() + 1);
 }
+
+/**
+ * Whether @p name is a file the app generates under decryption/ or scan_lists/, written out here apart from the
+ * apply's own rule: a compiled profile's key file, or a scan list's CSV.
+ */
+bool
+generated(const QString& name) {
+    static const QRegularExpression pattern(QStringLiteral(
+        "^decryption/[A-Za-z0-9_-]+/[0-9a-f-]{36}\\.(hex|dec|map)\\.csv$|^scan_lists/[A-Za-z0-9_-]+\\.csv$"));
+    return pattern.match(name).hasMatch();
+}
+
+/** Files under decryption/ and scan_lists/ the app never generates, which every apply keeps byte-identical. */
+const char* const kUnknownBesideGenerated[] = {
+    "scan_lists/notes.txt", "scan_lists/sub/list.csv",      "scan_lists/Not a list.csv",
+    "decryption/stray.wav", "decryption/managed/notes.txt", "decryption/managed/0123abcd-not-a-uuid.hex.csv",
+};
 
 QString
 pending(const QString& relativePath = QString()) {
@@ -608,6 +626,11 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
     }
     add_not_owned_row(old);
     expect("generated scan list file", write_file(at("scan_lists/old.csv"), "id,type\n"));
+    // Beside what the app generates there, files it never does: someone else's, so every apply keeps them.
+    for (const char* name : kUnknownBesideGenerated) {
+        expect(QStringLiteral("unknown file %1").arg(QLatin1String(name)),
+               write_file(at(QLatin1String(name)), QByteArray("not generated: ") + name + '\n'));
+    }
     expect("unknown files",
            write_file(at("imports/notes.txt"), "notes\n") && write_file(at("imports/.staged-left"), "left over\n")
                && write_file(at("diagnostics/log.txt"), "log\n") && write_file(at("unknown.dat"), "unknown\n"));
@@ -638,6 +661,9 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
                            "imports/.staged-left",
                            "diagnostics/log.txt",
                            "unknown.dat"};
+    for (const char* name : kUnknownBesideGenerated) {
+        old.kept.append(QLatin1String(name));
+    }
     old.tree = capture();
     expect("the unclean recording spelling is stored as written",
            old.tree.files.value("saved_systems.json").contains("imports/sub/../both2.csv"));
@@ -1148,8 +1174,16 @@ check_applied_content(const Backup& b, const Old& old) {
     const Tree got = capture();
     expect("a clean apply leaves exactly the backup and the kept files",
            same_tree(got, expected_applied(b, old), false, {kResultFile}));
-    expect("decryption/ and scan_lists/ are gone",
-           !QFileInfo::exists(at("decryption")) && !QFileInfo::exists(at("scan_lists")));
+    bool generatedLeft = false;
+    for (const QString& name : got.files.keys()) {
+        generatedLeft = generatedLeft || generated(name);
+    }
+    expect("every generated file in decryption/ and scan_lists/ is gone", !generatedLeft);
+    expect("what the app never generated there is kept, with its directories",
+           read_file(at("scan_lists/notes.txt")) == "not generated: scan_lists/notes.txt\n"
+               && read_file(at("decryption/managed/notes.txt")) == "not generated: decryption/managed/notes.txt\n"
+               && QFileInfo(at("scan_lists/sub")).isDir());
+    expect("a directory that held only generated files goes", !QFileInfo::exists(at("decryption/old-only")));
     expect("the newer bundle revision is gone", !QFileInfo::exists(old.newRevision));
     expect("the old-only library file is gone", !QFileInfo::exists(old.extraLibrary));
     expect("a non-owned bundle keeps everything but its row's file",
@@ -2066,7 +2100,7 @@ test_two_restores_in_a_row(const Backup& b, const Old& old, const Tree& restored
     QSet<QString> expected = written;
     for (auto it = restoredA.files.cbegin(); it != restoredA.files.cend(); ++it) {
         const QString& name = it.key();
-        if (name.startsWith("decryption/") || name.startsWith("scan_lists/")
+        if (generated(name)
             || QStringList{"saved_systems.json", "scan_lists.json", "imported_files.json", "decryption_profiles.json",
                            "signal-search-ranges.json", kAvoidsFile}
                    .contains(name)) {

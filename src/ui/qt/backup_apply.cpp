@@ -25,6 +25,7 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStorageInfo>
 #include <QStringList>
@@ -204,6 +205,21 @@ ancestors(const QString& path) {
     return out;
 }
 
+/**
+ * Whether @p relative names a file the app generates, the only files of decryption/ and scan_lists/ that count as
+ * configuration: a compiled profile's key file, decryption/<uid>/<uuid>.(hex|dec|map).csv (DecryptionProfilesModel's
+ * ProfileCompiler, a uid its validId() accepts), or a scan list's CSV, scan_lists/<uid>.csv (ScanListStarter, the same
+ * uid rule). Anything else there is someone else's and survives a restore.
+ */
+bool
+generated_file(const QString& relative) {
+    static const QRegularExpression pattern(
+        QStringLiteral("^(decryption/[A-Za-z0-9_-]{1,63}/"
+                       "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(hex|dec|map)\\.csv"
+                       "|scan_lists/[A-Za-z0-9_-]{1,63}\\.csv)$"));
+    return pattern.match(relative).hasMatch();
+}
+
 /** The native avoid store's own format (signal_search_store.cpp save_avoids()): "[a,b]\n", "[]\n" when empty. */
 QByteArray
 native_avoids(const QList<quint32>& avoids) {
@@ -319,7 +335,8 @@ class StagingReader {
 /**
  * The old configuration, positively identified from the live stores: the six store files, every regular file under
  * imports/ a File value names, every owned bundle root a library row claims (first claim of a folded name only), and
- * the regular files under decryption/ and scan_lists/. Nothing reached through a symlink counts.
+ * the files under decryption/ and scan_lists/ the app generates (generated_file()). Nothing reached through a symlink
+ * counts.
  */
 class LiveScan {
   public:
@@ -339,8 +356,8 @@ class LiveScan {
         for (const QString& store : backup_store_names()) {
             scanStore(store);
         }
-        addTree(QStringLiteral("decryption"));
-        addTree(QStringLiteral("scan_lists"));
+        addTree(QStringLiteral("decryption"), generated_file);
+        addTree(QStringLiteral("scan_lists"), generated_file);
         // A file a live recording names is a recording, whatever else names it and however the recording spells it.
         // (A store file is always replaced, so it stays.)
         const QStringList stores = six_store_files();
@@ -373,8 +390,9 @@ class LiveScan {
         return true;
     }
 
+    /** The regular files below @p relative, every one or only those @p owned accepts. */
     void
-    addTree(const QString& relative) {
+    addTree(const QString& relative, bool (*owned)(const QString&) = nullptr) {
         const QFileInfo info(m_root.at(relative));
         if (!is_real_dir(info.filePath()) || info.canonicalFilePath() != m_canonical + QLatin1Char('/') + relative) {
             return;
@@ -382,7 +400,10 @@ class LiveScan {
         QDirIterator it(info.filePath(), QDir::Files | QDir::Hidden | QDir::System | QDir::NoSymLinks,
                         QDirIterator::Subdirectories);
         while (it.hasNext()) {
-            add(it.next().mid(m_root.path().size() + 1));
+            const QString file = it.next().mid(m_root.path().size() + 1);
+            if (owned == nullptr || owned(file)) {
+                add(file);
+            }
         }
     }
 
@@ -1020,9 +1041,9 @@ class Applier {
             m_root.pruneEmptyDirs(m_root.at(root));
         }
         status = step("forward.generated", [this] {
-            // Their files were part of the old set; what is left is not ours and stays.
-            m_root.pruneEmptyDirs(m_root.at(QStringLiteral("decryption")));
-            m_root.pruneEmptyDirs(m_root.at(QStringLiteral("scan_lists")));
+            // Their generated files were part of the old set; a directory that held one goes once it is empty, and
+            // whatever else is there is not ours and stays, with the directories it is in.
+            pruneGeneratedDirs();
             return true;
         });
         if (status == Status::Ok) {
@@ -1044,6 +1065,25 @@ class Applier {
             status = step("forward.prefs", [this] { return AppPrefs::replacePortable(m_staging.prefs); });
         }
         return status;
+    }
+
+    /** Remove the directories that held the old set's generated files once they are empty, deepest first. */
+    void
+    pruneGeneratedDirs() const {
+        QSet<QString> dirs;
+        for (const Listed& file : m_journal.files) {
+            if (generated_file(file.path)) {
+                for (const QString& dir : ancestors(file.path)) {
+                    dirs.insert(dir);
+                }
+            }
+        }
+        QStringList deepestFirst(dirs.cbegin(), dirs.cend());
+        std::sort(deepestFirst.begin(), deepestFirst.end(),
+                  [](const QString& a, const QString& b) { return a.size() > b.size(); });
+        for (const QString& dir : deepestFirst) {
+            m_root.removeEmptyDir(m_root.at(dir));
+        }
     }
 
     ApplyResult

@@ -5463,15 +5463,16 @@ Qt Quick frontend (`src/ui/qt`):
     `DecoderHost::engineBusy()`. The apply writes an undo journal (`restore-pending/journal/`, `COMPLETE` last) of the
     old managed set: the five stores and the avoid file, the files under `imports/` a store's `File` value names (never
     one a `Recording` names), the owned bundle directories library rows claim (the first claim of a folded name), and
-    everything under `decryption/` and `scan_lists/`. Only those are deleted. An incoming file whose destination holds
-    anything else takes a free name (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory `dir (n)`) and the stores'
-    references follow. File contents are never rewritten, so a bundle whose row keeps its file outside it (a plain
-    channel map beside its bundle names companions `bundles/<id>/…`) never moves: when an entry the old setup does not
-    own holds its place, the apply fails before any change ("A folder left by an earlier import is in the way of a
-    restored channel map…"). A crash re-runs to the same end state, and an I/O failure rolls back byte for byte (pruned
-    empty directories excepted). Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine busy or storage
-    short; kept) and `Stuck` (neither finishing nor undoing worked; kept); `backup-restore-result.json` records the
-    applied, failed and stuck ones. `discard_pending()` refuses once the journal is complete
+    the files the app generates under `decryption/` (`<uid>/<uuid>.(hex|dec|map).csv`) and `scan_lists/` (`<uid>.csv`);
+    anything else there is kept, with the directories it is in. Only those are deleted. An incoming file whose
+    destination holds anything else takes a free name (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory `dir
+    (n)`) and the stores' references follow. File contents are never rewritten, so a bundle whose row keeps its file
+    outside it (a plain channel map beside its bundle names companions `bundles/<id>/…`) never moves: when an entry the
+    old setup does not own holds its place, the apply fails before any change ("A folder left by an earlier import is in
+    the way of a restored channel map…"). A crash re-runs to the same end state, and an I/O failure rolls back byte for
+    byte (pruned empty directories excepted). Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine
+    busy or storage short; kept) and `Stuck` (neither finishing nor undoing worked; kept); `backup-restore-result.json`
+    records the applied, failed and stuck ones. `discard_pending()` refuses once the journal is complete
     (`pending_apply_started()`). `detail::DataRoot` is the only writer, deleter and renamer: it refuses a path outside
     the data root or one with a symlink or junction among its existing components, and removes trees without following
     links. Documented limits: a resumed apply (journal complete) that finds the engine busy is Deferred, and that
