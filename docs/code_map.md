@@ -5453,29 +5453,32 @@ Qt Quick frontend (`src/ui/qt`):
     file 0600). It dry-run validates each library file with `ImportedFilesModel::validate()`; a row that fails (a
     channel map whose companions this phone refuses, say) is left out, not the whole backup: its file and its bundle's
     files are not staged, every typed reference to them is cleared, and the staged summary counts it out and lists
-    "<name>: couldn't be read on this phone" in `notIncluded`. Only structural problems refuse a staging.
-    `promote_staging()` renames it to `restore-pending/`, and `commit_pending()` writes `COMMITTED` (the manifest's
-    sha256); every check reads only a regular `COMMITTED` file as the marker, as the apply does. `ui_load()` calls
-    `apply_pending_restore()` as its first statement, before any model reads a store, so restored stores go through the
-    loaders and migrations like any start's; its `engineBusy` is `DecoderHost::engineBusy()`. The apply writes an undo
-    journal (`restore-pending/journal/`, `COMPLETE` last) of the old managed set: the five stores and the avoid file,
-    the files under `imports/` a store's `File` value names (never one a `Recording` names), the owned bundle
-    directories library rows claim (the first claim of a folded name), and everything under `decryption/` and
-    `scan_lists/`. Only those are deleted. An incoming file whose destination holds anything else takes a free name
-    (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory `dir (n)`) and the stores' references follow. File
-    contents are never rewritten, so a bundle whose row keeps its file outside it (a plain channel map beside its bundle
-    names companions `bundles/<id>/…`) never moves: when an entry the old setup does not own holds its place, the apply
-    fails before any change ("A folder left by an earlier import is in the way of a restored channel map…"). A crash
-    re-runs to the same end state, and an I/O failure rolls back byte for byte (pruned empty directories excepted).
-    Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine busy or storage short; kept) and `Stuck`
-    (neither finishing nor undoing worked; kept); `backup-restore-result.json` records the applied, failed and stuck
-    ones. `discard_pending()` refuses once the journal is complete (`pending_apply_started()`). `detail::DataRoot` is
-    the only writer, deleter and renamer: it refuses a path outside the data root or one with a symlink or junction
-    among its existing components, and removes trees without following links. Documented limits: a resumed apply
-    (journal complete) that finds the engine busy is Deferred, and that session runs on the half-applied configuration,
-    whose edits the next roll forward can overwrite; a corrupt complete journal is Stuck at every start and cannot be
-    discarded; a store file that is a symlink fails every restore (`QSaveFile` writes through a link, so the models' own
-    saves never replace it). `ApplyEnv` injects the engine check, free space and a fault per named step.
+    "<name>: couldn't be read on this phone" in `notIncluded`. Only structural problems refuse a staging. The dry runs
+    stop as soon as the job is cancelled (`stage_restore()`'s `proceed`), and are bounded: rows the app writes never
+    name each other's files, so a library still losing rows on its third pass (a crafted chain) is refused as `Damaged`,
+    at most three dry runs a row. `promote_staging()` renames it to `restore-pending/`, and `commit_pending()` writes
+    `COMMITTED` (the manifest's sha256); every check reads only a regular `COMMITTED` file as the marker, as the apply
+    does. `ui_load()` calls `apply_pending_restore()` as its first statement, before any model reads a store, so
+    restored stores go through the loaders and migrations like any start's; its `engineBusy` is
+    `DecoderHost::engineBusy()`. The apply writes an undo journal (`restore-pending/journal/`, `COMPLETE` last) of the
+    old managed set: the five stores and the avoid file, the files under `imports/` a store's `File` value names (never
+    one a `Recording` names), the owned bundle directories library rows claim (the first claim of a folded name), and
+    everything under `decryption/` and `scan_lists/`. Only those are deleted. An incoming file whose destination holds
+    anything else takes a free name (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory `dir (n)`) and the stores'
+    references follow. File contents are never rewritten, so a bundle whose row keeps its file outside it (a plain
+    channel map beside its bundle names companions `bundles/<id>/…`) never moves: when an entry the old setup does not
+    own holds its place, the apply fails before any change ("A folder left by an earlier import is in the way of a
+    restored channel map…"). A crash re-runs to the same end state, and an I/O failure rolls back byte for byte (pruned
+    empty directories excepted). Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine busy or storage
+    short; kept) and `Stuck` (neither finishing nor undoing worked; kept); `backup-restore-result.json` records the
+    applied, failed and stuck ones. `discard_pending()` refuses once the journal is complete
+    (`pending_apply_started()`). `detail::DataRoot` is the only writer, deleter and renamer: it refuses a path outside
+    the data root or one with a symlink or junction among its existing components, and removes trees without following
+    links. Documented limits: a resumed apply (journal complete) that finds the engine busy is Deferred, and that
+    session runs on the half-applied configuration, whose edits the next roll forward can overwrite; a corrupt complete
+    journal is Stuck at every start and cannot be discarded; a store file that is a symlink fails every restore
+    (`QSaveFile` writes through a link, so the models' own saves never replace it). `ApplyEnv` injects the engine check,
+    free space and a fault per named step.
   - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`. One low-priority worker thread (a `QThreadPool` of
     one) runs each job; work and replies cross through two queues under one `std::mutex`, and a job's files are its own
     (`<CacheLocation>/backup/<job>.dsdbak` or `.in`, `restore-staging-<job>/`), so a cancelled job removes only them

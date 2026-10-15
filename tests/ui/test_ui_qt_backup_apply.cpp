@@ -959,6 +959,100 @@ test_staging_validates_library_files(TestHost& host, const Backup& b) {
                && error == "StagingFailed");
 }
 
+/** A staging asked to stop stops at once, before the next dry run, and leaves nothing. */
+void
+test_staging_stops_when_asked(const Backup& b) {
+    put_back(Tree());
+    const QString dir = dsd_qt::backup::staging_dir_for_job("stopped");
+    int asked = 0;
+    QString error = "unset";
+    const bool staged = dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, dir, &error, nullptr,
+                                                      [&asked]() { return ++asked < 3; });
+    expect("a staging asked to stop stops, reporting no refusal", !staged && error.isEmpty());
+    expect("it stops at the first question answered no", asked == 3);
+    expect("a stopped staging leaves nothing", !QFileInfo::exists(dir));
+    asked = 0;
+    expect("a staging stopped before its files writes none",
+           !dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, dir, &error, nullptr,
+                                          [&asked]() {
+                                              ++asked;
+                                              return false;
+                                          })
+               && asked == 1 && !QFileInfo::exists(dir));
+}
+
+/** A backup whose @p length channel maps each name the previous map's key list (the first a missing one), and an
+    independent talkgroup list: exported and parsed, as only a crafted backup can be. */
+struct Chain {
+    QByteArray archive;
+    dsd_qt::backup::ParseResult parsed;
+};
+
+Chain
+make_chain(int length) {
+    put_back(Tree());
+    QJsonArray library;
+    bool written = true;
+    for (int i = 0; i < length; ++i) {
+        const QString dir = at(QStringLiteral("imports/bundles/chain%1").arg(i));
+        const QByteArray keys =
+            i == 0 ? QByteArray("missing.csv") : QStringLiteral("../chain%1/keys.csv").arg(i - 1).toUtf8();
+        written =
+            written && write_file(dir + "/keys.csv", "keyid,value\n02,ABCDE\n")
+            && write_file(dir + "/map.csv", "channel,frequency_hz,mode,keys_hex_csv\n1,461000000,dmr," + keys + "\n");
+        library.append(QJsonObject{{"name", QStringLiteral("Chain %1").arg(i)},
+                                   {"path", dir + "/map.csv"},
+                                   {"type", "chan"},
+                                   {"bundleRoot", dir}});
+    }
+    written = written && write_file(at("imports/groups.csv"), "TG,Mode,Name\n7,A,Kept\n");
+    library.append(
+        QJsonObject{{"name", "Kept"}, {"path", at("imports/groups.csv")}, {"type", "group"}, {"bundleRoot", ""}});
+    expect("write the chained library", written && dsd_qt::json_store_save_array("imported_files.json", library));
+    Chain chain;
+    const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
+    chain.archive = built.archive;
+    chain.parsed = dsd_qt::backup::backup_parse_archive(chain.archive, root());
+    expect("the chained backup builds and parses",
+           built.error == BackupError::None && chain.parsed.error == BackupError::None
+               && chain.parsed.stores.value("imported_files.json").size() == length + 1);
+    return chain;
+}
+
+/**
+ * Rows that fail each other in a chain cost a bounded number of dry runs: a short chain is left out row by row, a
+ * long one is refused as damaged after three passes instead of one pass per link.
+ */
+void
+test_library_chain_is_bounded() {
+    QString error;
+    dsd_qt::backup::Summary staged;
+    int dryRuns = 0;
+    const auto count = [&dryRuns]() {
+        ++dryRuns;
+        return true;
+    };
+    const Chain shortChain = make_chain(2);
+    const QString dir = dsd_qt::backup::staging_dir_for_job("chain");
+    expect("a two-link chain is left out link by link",
+           dsd_qt::backup::stage_restore(root(), shortChain.parsed, shortChain.archive, dir, &error, &staged, count)
+               && staged.libraryFiles == 1 && staged.notIncluded.contains("Chain 0: couldn't be read on this phone")
+               && staged.notIncluded.contains("Chain 1: couldn't be read on this phone"));
+    // One question before the files, then three passes: three rows, two, one.
+    expect(QStringLiteral("a two-link chain takes three passes (%1 questions)").arg(dryRuns), dryRuns == 1 + 3 + 2 + 1);
+    remove_tree(dir);
+
+    const int length = 40;
+    const Chain longChain = make_chain(length);
+    dryRuns = 0;
+    expect("a long chain is refused as damaged",
+           !dsd_qt::backup::stage_restore(root(), longChain.parsed, longChain.archive, dir, &error, &staged, count)
+               && error == "Damaged" && !QFileInfo::exists(dir));
+    expect(
+        QStringLiteral("a long chain costs at most three dry runs a row (%1 for %2 rows)").arg(dryRuns).arg(length + 1),
+        dryRuns <= 1 + 3 * (length + 1));
+}
+
 /** Staging works on the data root its caller read (a worker gets the UI thread's), not on a later reading. */
 void
 test_staging_takes_the_callers_root(const Backup& b) {
@@ -2049,6 +2143,8 @@ main(int argc, char** argv) {
         test_staging_layout(backup);
         test_staging_validates_library_files(host, backup);
         test_staging_takes_the_callers_root(backup);
+        test_staging_stops_when_asked(backup);
+        test_library_chain_is_bounded();
         test_promote_commit_discard(backup, old);
         const Tree reference = test_clean_apply(host, backup, old);
         test_crash_at_every_step(backup, old, reference);

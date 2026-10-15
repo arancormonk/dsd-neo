@@ -29,6 +29,7 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/runtime/log.h>
+#include <functional>
 #include <qflags.h>
 #include <utility>
 #include "backup_apply_fs.h"
@@ -43,6 +44,8 @@ namespace {
 using namespace detail;
 
 constexpr qint64 kMaxResultBytes = 1024LL * 1024;
+/** Most dry-run passes over a restored library; see Stager::dropUnreadableRows(). */
+constexpr int kMaxLibraryPasses = 3;
 
 /** Whether @p dir is `<root>/restore-staging-<job id>`. */
 bool
@@ -59,23 +62,32 @@ pending_dir(const DataRoot& root) {
 /** Writes one parse result into a staging directory and lists every file it wrote. */
 class Stager {
   public:
-    Stager(const DataRoot& root, const ParseResult& parsed, const QByteArray& archive, const QString& dir)
-        : m_root(root), m_parsed(parsed), m_archive(archive), m_dir(dir), m_stores(parsed.stores),
+    Stager(const DataRoot& root, const ParseResult& parsed, const QByteArray& archive, const QString& dir,
+           const std::function<bool()>& proceed)
+        : m_root(root), m_parsed(parsed), m_archive(archive), m_dir(dir), m_proceed(proceed), m_stores(parsed.stores),
           m_summary(parsed.summary) {}
 
+    /** None with stopped() set when the caller asked to stop; nothing more is written then. */
     BackupError
     run() {
         BackupError error = checkTarget();
-        if (error == BackupError::None) {
+        if (error == BackupError::None && proceed()) {
             error = writeFiles();
         }
-        if (error == BackupError::None) {
+        if (error == BackupError::None && !stopped()) {
             error = dropUnreadableRows();
         }
-        if (error == BackupError::None && !(writeStores() && writePrefs() && writeAvoids() && writeManifest())) {
+        if (error == BackupError::None && !stopped()
+            && !(writeStores() && writePrefs() && writeAvoids() && writeManifest())) {
             error = fail(BackupError::StagingFailed, QStringLiteral("a staged file could not be written"));
         }
         return error;
+    }
+
+    /** Whether the caller asked to stop. */
+    bool
+    stopped() const {
+        return m_stopped;
     }
 
     const QString&
@@ -94,6 +106,15 @@ class Stager {
     fail(BackupError error, const QString& detail) {
         m_detail = detail;
         return error;
+    }
+
+    /** Whether the caller still wants the staging; asked before each dry run, the costly step. */
+    bool
+    proceed() {
+        if (!m_stopped && m_proceed && !m_proceed()) {
+            m_stopped = true;
+        }
+        return !m_stopped;
     }
 
     /** Every path the stores name must belong to this data root's imports/, as a parse for it rebased them. */
@@ -158,15 +179,23 @@ class Stager {
      * The library's own dry run on each staged library file, so a restored library never holds one it cannot use. A
      * row whose file does not load here (a channel map whose companions this phone refuses, say) is left out, the way
      * an export leaves out what it cannot carry: its staged files go, every typed reference to them is cleared, and
-     * the summary lists it. Dropping files can only fail other rows, so the rest are checked again until none fails.
+     * the summary lists it. Dropping files can fail other rows, so the rest are checked again until none fails.
+     *
+     * A row the app writes names only files of its own (its file, its bundle), so leaving rows out fails no other one
+     * and a second pass finds nothing. Only a backup made to chain rows into each other keeps losing rows, and each
+     * pass costs a dry run per row: a library still losing rows on its kMaxLibraryPasses-th pass is refused as
+     * damaged, which bounds the work at kMaxLibraryPasses dry runs a row.
      */
     BackupError
     dropUnreadableRows() {
         const QString library = QLatin1String(kImportedFilesStore);
-        for (;;) {
+        for (int pass = 1;; ++pass) {
             QJsonArray kept;
             QList<QJsonObject> failed;
             for (const auto& value : m_stores.value(library)) {
+                if (!proceed()) {
+                    return BackupError::None;
+                }
                 const QJsonObject row = value.toObject();
                 if (readable(row)) {
                     kept.append(value);
@@ -176,6 +205,9 @@ class Stager {
             }
             if (failed.isEmpty()) {
                 break;
+            }
+            if (pass == kMaxLibraryPasses) {
+                return fail(BackupError::Damaged, QStringLiteral("library files that fail each other in a chain"));
             }
             m_stores.insert(library, kept);
             if (!leaveOut(failed, kept)) {
@@ -300,6 +332,8 @@ class Stager {
     const ParseResult& m_parsed;
     const QByteArray& m_archive;
     QString m_dir;
+    const std::function<bool()>& m_proceed;
+    bool m_stopped = false;
     QMap<QString, QJsonArray> m_stores; // the parse's stores, less the rows left out
     Summary m_summary;
     QJsonArray m_files;
@@ -328,7 +362,7 @@ staging_dir_for_job(const QString& jobId) {
 
 bool
 stage_restore(const QString& dataRoot, const ParseResult& parsed, const QByteArray& archive, const QString& stagingDir,
-              QString* error, Summary* summary) {
+              QString* error, Summary* summary, const std::function<bool()>& proceed) {
     const DataRoot root(dataRoot);
     BackupError result = parsed.error;
     QString detail = QStringLiteral("the backup did not parse");
@@ -337,9 +371,17 @@ stage_restore(const QString& dataRoot, const ParseResult& parsed, const QByteArr
             result = BackupError::StagingFailed;
             detail = QStringLiteral("no staging directory");
         } else {
-            Stager stager(root, parsed, archive, stagingDir);
+            Stager stager(root, parsed, archive, stagingDir, proceed);
             result = stager.run();
             detail = stager.detail();
+            if (stager.stopped()) {
+                // Asked to stop: no refusal to log or report, and nothing left behind.
+                root.removeTree(stagingDir);
+                if (error != nullptr) {
+                    error->clear();
+                }
+                return false;
+            }
             if (result == BackupError::None && summary != nullptr) {
                 *summary = stager.summary();
             }

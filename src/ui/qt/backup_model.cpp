@@ -322,9 +322,14 @@ class Inspection {
     QString
     stage() {
         QString error;
-        // The staging's summary: the parse's, less any library row this phone cannot read.
-        if (backup::stage_restore(m_work.root, m_parsed, m_archive, m_work.stagingDir, &error, &m_staged)) {
+        // The staging's summary: the parse's, less any library row this phone cannot read. A cancel stops the staging
+        // between dry runs, so teardown never waits on a long library.
+        if (backup::stage_restore(m_work.root, m_parsed, m_archive, m_work.stagingDir, &error, &m_staged,
+                                  [this]() { return !cancelled(); })) {
             return QString();
+        }
+        if (cancelled()) {
+            return QString(); // the result is dropped and the job's staging directory removed on the UI thread
         }
         return error.isEmpty() ? error_name(BackupError::StagingFailed) : error;
     }
