@@ -36,6 +36,7 @@ private class FakeResolver : ContentResolver() {
         var refusesWt = false
         var ignoresT = false
         var refusesWrites = false
+        var writesFail = false
         var pipe = false
         var holdsQuery = false
         var holdsOpen = false
@@ -104,7 +105,9 @@ private class FakeResolver : ContentResolver() {
             throw IllegalArgumentException("unsupported mode $mode")
         }
         val truncate = mode == "wt" && !document.ignoresT
-        return ParcelFileDescriptor(document.file, mode, truncate, document.pipe).also { descriptors[uri.toString()] = it }
+        // A descriptor opened read-only makes every write fail, as a provider's broken pipe or full disk does.
+        return ParcelFileDescriptor(document.file, if (document.writesFail) "r" else mode, truncate, document.pipe)
+            .also { descriptors[uri.toString()] = it }
     }
 
     override fun deleteDocument(uri: Uri): Boolean {
@@ -223,6 +226,8 @@ private fun aSaveReplacesTheDocumentAndSyncsIt() {
     check(resolver.calls == listOf("open wt $uri")) { "wt is asked first: ${resolver.calls}" }
     check(Os.synced.size == synced + 1) { "a saved file is synced before it is closed" }
     check(resolver.deleted.isEmpty()) { "a good save is not deleted" }
+    val descriptor = resolver.descriptors.getValue(uri)
+    check(descriptor.closed && descriptor.closedWithError == null) { "a good save closes the document normally" }
 }
 
 private fun aProviderThatRefusesWtIsWrittenWithWAndTrimmed() {
@@ -262,11 +267,25 @@ private fun aFailedSyncFailsTheSaveAndDeletesTheDocument() {
         val (resolver, uri, saved) = save(old = 0, bytes(10)) {}
         check(!saved) { "a save whose sync fails fails" }
         check(resolver.deleted == listOf(uri)) { "a save that failed once open is deleted" }
+        check(resolver.descriptors.getValue(uri).closedWithError != null) {
+            "a save that failed once open closes the document with an error"
+        }
         val (failing, failingUri, failingSaved) = save(old = 0, bytes(10)) { deleteFails = true }
         check(!failingSaved && "delete $failingUri" in failing.calls) { "a delete the provider refuses is only logged" }
     } finally {
         Os.fsyncHook = {}
     }
+}
+
+private fun aFailedWriteIntoAPipeTellsTheProvider() {
+    val (resolver, uri, saved) = save(old = 0, bytes(3 * DocumentTransfer.CHUNK_BYTES)) { pipe = true; writesFail = true }
+    check(!saved) { "a save whose writes fail fails" }
+    val descriptor = resolver.descriptors.getValue(uri)
+    check(descriptor.closed) { "the failed document is closed" }
+    check(!descriptor.closedWithError.isNullOrEmpty()) {
+        "a provider reading a pipe learns the save failed, rather than taking a short document for a whole one"
+    }
+    check(resolver.deleted == listOf(uri)) { "the partial document is deleted too" }
 }
 
 private fun aSaveThatNeverOpensLeavesTheDocumentAlone() {
@@ -356,10 +375,11 @@ fun main() {
         aProviderThatIgnoresTheTIsTrimmedToo()
         aPipeIsNeitherTrimmedNorSynced()
         aFailedSyncFailsTheSaveAndDeletesTheDocument()
+        aFailedWriteIntoAPipeTellsTheProvider()
         aSaveThatNeverOpensLeavesTheDocumentAlone()
         anAbortCancelsHeldProviderCallsAndRefusesNewOnes()
     } finally {
         scratch.deleteRecursively()
     }
-    println("PASS: document copies size, open, trim, sync, delete and cancel through the provider as specified")
+    println("PASS: document copies size, open, trim, sync, report failures, delete and cancel through the provider as specified")
 }

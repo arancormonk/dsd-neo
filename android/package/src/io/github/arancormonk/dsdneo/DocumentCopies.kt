@@ -15,7 +15,9 @@ import android.provider.OpenableColumns
 import android.system.Os
 import android.util.Log
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 
 /**
  * The backup's document copies (#580): the Android half that DecoderHostAndroid calls over JNI.
@@ -110,7 +112,9 @@ object DocumentCopies {
      *
      * The document is opened in mode "wt", or in "w" where a provider refuses "wt". After every save, a file is cut
      * back to the copy's length (some providers accept "wt" but ignore the t, and "w" never truncates) and synced
-     * before it is closed. A sync that fails fails the save.
+     * before it is closed. A sync that fails fails the save. A save that fails once the document is open closes it
+     * with closeWithError(), so a provider reading the other end of a pipe or socket sees the failure instead of a
+     * short document that looks complete.
      *
      * A failure once the document is open deletes it, best effort, so a partial backup never looks like a good one. A
      * failure before then leaves the document as it was: it may be an older backup the user picked to replace. After
@@ -126,11 +130,7 @@ object DocumentCopies {
             File(sourcePath).inputStream().use { input ->
                 val document = openForReplace(resolver, uri, signal)
                 opened = true
-                ParcelFileDescriptor.AutoCloseOutputStream(document).use { output ->
-                    val copied = DocumentTransfer.copyCapped(input, output, Long.MAX_VALUE)
-                    output.flush()
-                    settle(document, copied)
-                }
+                writeAndClose(document, input)
             }
             true
         } catch (e: Exception) {
@@ -142,6 +142,27 @@ object DocumentCopies {
         } finally {
             end(signal)
         }
+    }
+
+    /**
+     * Copy [input] into [document], settle it and close it: normally once it is whole, else with closeWithError() and
+     * the failure rethrown. The descriptor is closed exactly once, here, so no stream owns it.
+     */
+    private fun writeAndClose(document: ParcelFileDescriptor, input: InputStream) {
+        try {
+            val output = FileOutputStream(document.fileDescriptor)
+            val copied = DocumentTransfer.copyCapped(input, output, Long.MAX_VALUE)
+            output.flush()
+            settle(document, copied)
+        } catch (e: Exception) {
+            try {
+                document.closeWithError("the backup could not be written: ${e.javaClass.simpleName}")
+            } catch (closing: IOException) {
+                Log.w(TAG, "could not report a failed write to the document provider", closing)
+            }
+            throw e
+        }
+        document.close()
     }
 
     /** The size the provider reports for [uri], or null when it reports none. A cancelled lookup propagates. */
