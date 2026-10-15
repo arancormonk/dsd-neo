@@ -185,7 +185,7 @@ DataRoot::removeLink(const QString& location) const {
         return false;
     }
     // QFile::remove() unlinks a symlink; a directory symlink or junction on Windows needs rmdir, which removes the
-    // link and leaves its location alone.
+    // link and leaves its target alone.
     if (!QFile::remove(location) && info.isDir()) {
         QDir().rmdir(location);
     }
