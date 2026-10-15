@@ -5433,7 +5433,10 @@ target_include_directories(
     dsd-neo_test_core_trunk_cold_start
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_core_trunk_cold_start PRIVATE dsd-neo_runtime)
+target_link_libraries(
+    dsd-neo_test_core_trunk_cold_start
+    PRIVATE dsd-neo_runtime
+)
 add_test(NAME CORE_TRUNK_COLD_START COMMAND dsd-neo_test_core_trunk_cold_start)
 
 add_executable(
@@ -10965,6 +10968,18 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_p25_sm_core PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_CORE COMMAND dsd-neo_test_p25_sm_core)
+
+# P25 SM startup control-channel hunt (issue #703)
+add_executable(
+    dsd-neo_test_p25_sm_cold_start
+    protocol/p25/test_p25_sm_cold_start.c
+)
+target_include_directories(
+    dsd-neo_test_p25_sm_cold_start
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_p25_sm_cold_start PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_SM_COLD_START COMMAND dsd-neo_test_p25_sm_cold_start)
 
 # P25 SM Phase 2 grant gating on decoded WACN/SYSID/NAC
 add_executable(

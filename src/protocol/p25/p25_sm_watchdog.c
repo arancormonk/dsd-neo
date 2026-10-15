@@ -52,11 +52,14 @@ p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (p25_sm_tick_guard_try_enter()) {
-        if (dsd_trunk_p25_recovery_allowed(opts, state)) {
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        /* A startup control-channel hunt is the decoder thread's (p25_sm_cold_start_tick_locked(), issue #703), which
+           also ends it once validated control has named an owner: this tick never touches it. */
+        if (!ctx->cold_start_hunt && dsd_trunk_p25_recovery_allowed(opts, state)) {
             /* Only one tick runs at a time across all callers. */
             atomic_store(&g_p25_sm_in_tick, 1);
             // Drive the high-level trunk SM tick
-            p25_sm_tick_ctx(p25_sm_get_ctx(), opts, state);
+            p25_sm_tick_ctx(ctx, opts, state);
             atomic_store(&g_p25_sm_in_tick, 0);
         }
         p25_sm_tick_guard_leave();

@@ -281,6 +281,14 @@ typedef struct {
     int cc_reacquire_attempted;  // 1 after the one-shot soft recovery check for this acquisition
     p25_sm_cc_acquisition_origin_e cc_acquisition_origin; // Origin of pending decoded-CC acquisition
 
+    // Startup control-channel hunt (issue #703): a single-system session whose start frequency yields no validated
+    // control within the grace window walks its channel map with the ordinary hunt. Decoder thread only
+    // (p25_sm_cold_start_tick_locked()); the watchdog never ticks a machine whose cold_start_hunt is set.
+    double t_cold_start_armed_m; // Monotonic time the startup window opened; 0 while unarmed
+    int cold_start_hunt;         // 1 while a hunt the startup window started runs and no owner is named
+    int cold_start_park_pending; // 0 none; 1 park keeping the window, 2 park unarmed, once settled
+    long cold_start_probe_hz;    // Last startup probe tuned (OK or pending); 0 after a park or operator move
+
     // Statistics (for debugging/UI)
     uint32_t tune_count;
     uint32_t release_count;
@@ -355,6 +363,41 @@ void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_stat
  * @param state Decoder state.
  */
 void p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Run the startup control-channel hunt for one decoder-thread pass (issue #703).
+ *
+ * Arms the startup window while the machine is IDLE in an eligible session (dsd_state_trunk_cold_start_eligible())
+ * whose startup P25 hunts (recovery admitted, or dsd_trunk_p25_cold_start_presumed()); once the window, measured
+ * from the later of its opening and the last validated DMR content (dsd_state::dmr_confidence_lock_m), exceeds the
+ * CC grace it starts the ordinary map hunt, and while that hunt runs it ticks the machine and ends or parks it (spec
+ * of #703: ends in place once validated control names an owner, parks only once the tuning layer is settled). The
+ * caller holds the P25 SM tick guard; the watchdog never calls this.
+ *
+ * @param ctx State machine context.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ */
+void p25_sm_cold_start_tick_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Note an operator move of the receiver during the startup window or hunt (issue #703).
+ *
+ * Restarts the startup window at the move; a running startup hunt is marked to park keeping that window once the
+ * tuning layer is settled. No-op outside the startup state. The caller holds the P25 SM tick guard.
+ *
+ * @param ctx State machine context.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ */
+void p25_sm_cold_start_note_retune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state);
+
+/** @brief Return 1 while the startup window is armed or a startup hunt runs (issue #703). */
+int p25_sm_cold_start_active(const p25_sm_ctx_t* ctx);
+
+/** @brief Return 1 while the decoder's startup tick has work: the window armed or a hunt running, or an IDLE machine
+ *  whose window the next tick arms (issue #703). Decoder thread, under the P25 SM tick guard. */
+int p25_sm_cold_start_due(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Select a new control channel during single-system P25 trunk following.
