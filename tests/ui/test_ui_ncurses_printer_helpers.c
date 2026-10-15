@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
@@ -3311,8 +3312,77 @@ test_scan_timing_row_real_cursor(void) {
 }
 #endif
 
+/* A TMO downlink control channel as the TETRA decoder publishes it: network known, SYSINFO and an allocation seen. */
+static void
+tetra_publish_control_channel(dsd_state* state) {
+    dsd_tetra_publication* const pub = &state->tetra_pub;
+    pub->mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    pub->net_known = 1U;
+    pub->mcc = 262U;
+    pub->mnc = 1001U;
+    pub->colour = 25U;
+    pub->air_encryption = DSD_TETRA_AIR_ENC_CLEAR;
+    pub->cc_known = 1U;
+    pub->cc_carrier = 321U;
+    pub->cc_freq_hz = 392012500U;
+}
+
+/* The TETRA rows come from the shared view, from the snapshot alone: no protocol call, no environment. They show only
+   while the TETRA preset runs and the publication holds a working mode, and a terminal without UTF-8 gets ASCII. */
+static void
+test_tetra_rows_follow_the_view(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    ui_tetra_lines lines;
+
+    tetra_publish_control_channel(state);
+    assert(ui_format_tetra_lines(opts, state, &lines) == 0); /* not the TETRA preset */
+    opts->frame_tetra = 1;
+    g_unicode_stub = 1;
+    assert(ui_format_tetra_lines(opts, state, &lines) == 3);
+    assert(strcmp(lines.text[0], "TETRA: TMO downlink \xC2\xB7 clear") == 0);
+    assert(strcmp(lines.text[1], "Network: MCC 262 \xC2\xB7 MNC 1001 \xC2\xB7 CC 25") == 0);
+    assert(strcmp(lines.text[2], "Control: carrier 321 \xC2\xB7 392.0125 MHz") == 0);
+
+    opts->trunk_enable = 1;
+    state->tetra_pub.trunk_state = DSD_TETRA_TRUNK_ON_TRAFFIC;
+    state->tetra_pub.traffic_valid = 1U;
+    state->tetra_pub.traffic_carrier = 654U;
+    state->tetra_pub.traffic_slots = 0x0AU; /* timeslots 1 and 3 */
+    state->tetra_pub.traffic_freq_hz = 392125000U;
+    state->tetra_pub.mm_status_valid = 1U;
+    state->tetra_pub.mm_status_code = 7U;
+    state->tetra_pub.codec_status = DSD_TETRA_CODEC_MISSING;
+    g_unicode_stub = 0;
+    assert(ui_format_tetra_lines(opts, state, &lines) == 7);
+    assert(strcmp(lines.text[0], "TETRA: TMO downlink - clear") == 0);
+    assert(strcmp(lines.text[1], "Network: MCC 262 - MNC 1001 - CC 25") == 0);
+    assert(strcmp(lines.text[2], "Trunk: traffic channel") == 0);
+    assert(strcmp(lines.text[3], "Control: carrier 321 - 392.0125 MHz") == 0);
+    assert(strcmp(lines.text[4], "Traffic: carrier 654 - TS 1,3 - 392.1250 MHz") == 0);
+    assert(strcmp(lines.text[5], "MM status: 7 - MS frequency bands request") == 0);
+    assert(strcmp(lines.text[6], "Codec: missing") == 0);
+
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_starts_with("| TETRA: TMO downlink - clear\n| Network: ");
+
+    state->tetra_pub.mode = DSD_TETRA_MODE_NONE; /* reset: nothing decoded yet */
+    assert(ui_format_tetra_lines(opts, state, &lines) == 0);
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_equals("");
+
+    g_unicode_stub = 1;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_tetra_rows_follow_the_view();
     test_voice_average_units();
     test_source_alias_rendering();
     test_input_source_helpers();

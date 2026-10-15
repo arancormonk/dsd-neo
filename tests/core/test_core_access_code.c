@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +66,7 @@ reset_sources(dsd_state* state) {
     state->nxdn_last_ran = (unsigned int)-1;
     state->nxdn_last_ran_stand_in = 0U;
     state->dpmr_color_code = -1;
+    dsd_tetra_publication_reset(&state->tetra_pub);
 }
 
 static int
@@ -86,6 +88,10 @@ test_kind_for_every_family(void) {
     rc |= expect_kind("M17 LSF", DSD_SYNC_M17_LSF_POS, DSD_ACCESS_CODE_CAN);
     rc |= expect_kind("M17 stream", DSD_SYNC_M17_STR_NEG, DSD_ACCESS_CODE_CAN);
     rc |= expect_kind("M17 packet", DSD_SYNC_M17_PKT_POS, DSD_ACCESS_CODE_CAN);
+    rc |= expect_kind("TETRA NDB", DSD_SYNC_TETRA_NDB_POS, DSD_ACCESS_CODE_COLOR_CODE);
+    rc |= expect_kind("TETRA NDB-", DSD_SYNC_TETRA_NDB_NEG, DSD_ACCESS_CODE_COLOR_CODE);
+    rc |= expect_kind("TETRA SB", DSD_SYNC_TETRA_SB_POS, DSD_ACCESS_CODE_COLOR_CODE);
+    rc |= expect_kind("TETRA SB-", DSD_SYNC_TETRA_SB_NEG, DSD_ACCESS_CODE_COLOR_CODE);
     rc |= expect_kind("D-STAR voice", DSD_SYNC_DSTAR_VOICE_POS, DSD_ACCESS_CODE_NONE);
     rc |= expect_kind("D-STAR header", DSD_SYNC_DSTAR_HD_NEG, DSD_ACCESS_CODE_NONE);
     rc |= expect_kind("YSF", DSD_SYNC_YSF_POS, DSD_ACCESS_CODE_NONE);
@@ -219,6 +225,27 @@ test_m17_can(dsd_state* state) {
     return rc;
 }
 
+/* TETRA's colour code is the publication's while it describes a trunked mode carrier whose network identity is known:
+ * a direct mode carrier has none. */
+static int
+test_tetra_colour_code(dsd_state* state) {
+    int rc = 0;
+    reset_sources(state);
+    rc |= expect_none("TETRA nothing decoded", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    state->tetra_pub.colour = 25U;
+    rc |= expect_none("TETRA network unknown", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
+    state->tetra_pub.net_known = 1U;
+    rc |= expect_code("TETRA CC 25", state, DSD_SYNC_TETRA_SB_NEG, 0U, 0U, 1, DSD_ACCESS_CODE_COLOR_CODE, 25U);
+    state->tetra_pub.colour = 0U;
+    rc |= expect_code("TETRA CC 0", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U, 1, DSD_ACCESS_CODE_COLOR_CODE, 0U);
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_UPLINK;
+    rc |= expect_code("TETRA uplink", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U, 1, DSD_ACCESS_CODE_COLOR_CODE, 0U);
+    state->tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
+    rc |= expect_none("TETRA direct mode", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
+    return rc;
+}
+
 /* Protocols with no access code report none even with every source holding a valid value. */
 static int
 test_codeless_protocols(dsd_state* state) {
@@ -267,6 +294,7 @@ main(void) {
     rc |= test_nxdn_stand_ins_are_not_rans(state);
     rc |= test_dpmr_colour_code(state);
     rc |= test_m17_can(state);
+    rc |= test_tetra_colour_code(state);
     rc |= test_codeless_protocols(state);
     rc |= test_null_inputs();
     dsd_state_ext_free_all(state);

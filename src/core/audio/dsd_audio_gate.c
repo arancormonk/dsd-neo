@@ -484,10 +484,23 @@ dsd_audio_group_gate_decision(const dsd_opts* opts, const dsd_state* state, cons
     return rc;
 }
 
+// The gate's verdict on @p call (NULL: a group call on @p policy_tg with no known source): 1 when the talkgroup policy
+// mutes it. A hold decides the talkgroup policy, never encryption or the slot switches a caller folds into its own mute
+// (issue #655): a matching hold passes the policy.
+static int
+dsd_audio_group_gate_mutes(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call, uint32_t ota_tg,
+                           uint32_t policy_tg) {
+    dsd_tg_policy_decision decision;
+    if (dsd_audio_group_gate_decision(opts, state, call, ota_tg, policy_tg, &decision) != 0) {
+        return 0;
+    }
+    return !dsd_audio_hold_overrides_policy(&decision)
+           && (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
+}
+
 static int
 dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, unsigned long tg, int enc_in,
                           int* enc_out) {
-    dsd_tg_policy_decision decision;
     uint32_t ota_tg = (uint32_t)tg;
     uint32_t policy_tg = 0;
 
@@ -495,8 +508,7 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
         return -1;
     }
 
-    // A hold decides the talkgroup policy, never encryption or the slot switches the caller folded into @p enc_in
-    // (issue #655): a matching hold passes the policy, and the slot keeps the mute it came in with.
+    // The slot keeps the mute @p enc_in brought in; the policy only adds one.
     int enc = (enc_in != 0) ? 1 : 0;
     if (slot >= 0 && slot <= 1) {
         policy_tg = dsd_audio_p25_policy_target_for_slot(state, slot, ota_tg);
@@ -506,14 +518,28 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
 
     dsd_call_snapshot call;
     const int have_call = dsd_audio_call_for_target(state, slot, ota_tg, policy_tg, &call);
-    if (dsd_audio_group_gate_decision(opts, state, have_call ? &call : NULL, ota_tg, policy_tg, &decision) == 0) {
-        if (!dsd_audio_hold_overrides_policy(&decision)
-            && (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u)) {
-            enc = 1;
-        }
+    if (dsd_audio_group_gate_mutes(opts, state, have_call ? &call : NULL, ota_tg, policy_tg)) {
+        enc = 1;
     }
 
     *enc_out = enc;
+    return 0;
+}
+
+int
+dsd_audio_group_gate_call(const dsd_opts* opts, const dsd_state* state, int private_call, uint32_t target,
+                          uint32_t source, int enc_in, int* enc_out) {
+    if (!opts || !state || !enc_out) {
+        return -1;
+    }
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    call.phase = DSD_CALL_PHASE_ACTIVE;
+    call.kind = private_call ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
+    call.ota_target_id = target;
+    call.policy_target_id = target;
+    call.ota_source_id = source;
+    *enc_out = (enc_in != 0 || dsd_audio_group_gate_mutes(opts, state, &call, target, target)) ? 1 : 0;
     return 0;
 }
 

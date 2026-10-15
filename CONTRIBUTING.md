@@ -51,6 +51,11 @@ pull request explains why an exception is appropriate.
   radio keys, and machine-specific configuration are not committed.
 - Vendored third-party code stays under `src/third_party/`, keeps upstream
   license notices, and is documented in dependency records.
+- Do not add ETSI EN 300 395-2 ACELP sources, objects, patches of those
+  sources, or a downloader for them. TETRA speech audio comes from a codec
+  library the user names with `--tetra-codec`. The top-level CMake build does
+  not compile one. Build `tools/tetra/acelp_adapter/` locally with your own
+  `-DETSI_TETRA_C_CODE` path. See `tools/tetra/README.md`.
 - Workflow, dependency, packaging, release, parser, decoder, crypto, radio IO,
   and security changes receive extra review.
 - Static-analysis suppressions are narrow and explain why the local exception is
@@ -152,3 +157,5 @@ Risky or broad changes should receive a second human review before merge.
 PFFFT sources are downloaded at a fixed revision instead of edited in-tree.
 Use `tools/update_pffft.py` for manual updates and follow the validation and
 offline-build instructions in [dependency management](docs/dependencies.md#pinned-pffft-source).
+TETRA_crypto sources are handled the same way with `tools/update_tetra_crypto.py`;
+see [its section](docs/dependencies.md#pinned-tetra_crypto-source).

@@ -267,7 +267,7 @@ static const decode_mode_name_map_t k_decode_mode_names[] = {
     {DSDCFG_MODE_NXDN96, "nxdn96"}, {DSDCFG_MODE_X2TDMA, "x2tdma"},     {DSDCFG_MODE_YSF, "ysf"},
     {DSDCFG_MODE_DSTAR, "dstar"},   {DSDCFG_MODE_EDACS_PV, "edacs_pv"}, {DSDCFG_MODE_DPMR, "dpmr"},
     {DSDCFG_MODE_M17, "m17"},       {DSDCFG_MODE_TDMA, "tdma"},         {DSDCFG_MODE_ANALOG, "analog"},
-    {DSDCFG_MODE_AM, "am"},
+    {DSDCFG_MODE_AM, "am"},         {DSDCFG_MODE_TETRA, "tetra"},
 };
 
 /* Read-only compatibility spellings are translated directly to the current decode-mode enum. Canonical config
@@ -401,9 +401,7 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     int sql = cfg->rtl_sql;
     int vol = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
 
-    if (!dsd_analog_rtl_dsp_bw_is_selectable(bw)) {
-        bw = 48;
-    }
+    bw = dsd_analog_rtl_dsp_bw_or_default(bw);
 
     opts->rtl_gain_value = gain;
     opts->rtlsdr_ppm_error = ppm;
@@ -1544,9 +1542,13 @@ apply_output_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* @p stage_mode: the preset is staged for an apply that can still be put back (dsd_stage_user_config_to_opts()), whose
+   caller commits it. */
 static void
-apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
-    if (cfg->has_mode) {
+apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state, int stage_mode) {
+    if (cfg->has_mode && stage_mode) {
+        (void)dsd_stage_decode_mode_preset(cfg->decode_mode, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
+    } else if (cfg->has_mode) {
         (void)dsd_apply_decode_mode_preset(cfg->decode_mode, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
     }
     if (cfg->has_dmr_mono && !(cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_DMR_MONO)) {
@@ -1812,16 +1814,15 @@ apply_file_input_symbol_timing(const dsdneoUserConfig* cfg, const dsd_opts* opts
     }
 
     int effective_input_rate = dsd_opts_effective_input_rate(opts);
-    if (cfg->has_mode) {
-        dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, effective_input_rate, state);
-    } else {
+    /* A [mode] without a decode key ran no preset (DSDCFG_MODE_UNSET): the session's own timing is rescaled. */
+    if (!cfg->has_mode || dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, effective_input_rate, state) != 0) {
         dsd_state_rescale_symbol_timing(state, old_effective_input_rate, effective_input_rate);
     }
 }
 
 static void
 dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state,
-                                   int apply_file_input_rate_now) {
+                                   int apply_file_input_rate_now, int stage_mode) {
     if (!cfg || !opts || !state) {
         return;
     }
@@ -1829,7 +1830,7 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
     const int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
     apply_input_config(cfg, opts, apply_file_input_rate_now);
     apply_output_config(cfg, opts);
-    apply_mode_config(cfg, opts, state);
+    apply_mode_config(cfg, opts, state, stage_mode);
     apply_demod_config(cfg, opts, state);
     apply_trunking_config(cfg, opts);
     apply_radioreference_config(cfg, opts);
@@ -1844,12 +1845,17 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
 
 void
 dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
-    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 1);
+    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 1, 0);
+}
+
+void
+dsd_stage_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
+    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 1, 1);
 }
 
 void
 dsd_apply_user_config_to_opts_pre_cli(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
-    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 0);
+    dsd_apply_user_config_to_opts_impl(cfg, opts, state, 0, 0);
 }
 
 void

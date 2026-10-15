@@ -6,13 +6,24 @@
 #
 # Usage:
 #   cmake -DREPO_DIR=<repo> -DSOURCE_DIR=<android/package> -DSTAGE_DIR=<out> \
-#         -DPFFFT_LICENSE_DIR=<build>/pffft-licenses -P cmake/stage_android_package.cmake
+#         -DPFFFT_LICENSE_DIR=<build>/pffft-licenses \
+#         -DTETRA_CRYPTO_LICENSE_DIR=<build>/tetra_crypto-licenses \
+#         -P cmake/stage_android_package.cmake
 #
 # Run as a build step rather than at configure time so edits to android/package/ reach the
 # APK without re-running CMake. file(COPY) and configure_file(COPYONLY) both skip files
 # that are already current, so a no-op build does not make Gradle repackage.
 
-foreach(_required IN ITEMS REPO_DIR SOURCE_DIR STAGE_DIR PFFFT_LICENSE_DIR)
+foreach(
+    _required
+    IN
+    ITEMS
+        REPO_DIR
+        SOURCE_DIR
+        STAGE_DIR
+        PFFFT_LICENSE_DIR
+        TETRA_CRYPTO_LICENSE_DIR
+)
     if(NOT DEFINED ${_required})
         message(
             FATAL_ERROR
@@ -44,6 +55,7 @@ file(
     COPY
         "${PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
         "${PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
+        "${TETRA_CRYPTO_LICENSE_DIR}/tetra_crypto-LICENSE.txt"
     DESTINATION "${_doc_dir}/licenses"
 )
 

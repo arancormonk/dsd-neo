@@ -346,13 +346,15 @@ frame is waited for, as before.
 ### Decoder mode
 
 **Decoder -> Mode** opens a picker of the decode presets — Auto, P25 (Phase 1 + 2), P25 Phase 1, P25 Phase 2, DMR,
-DMR (single slot), NXDN48, NXDN96, X2-TDMA, YSF, D-STAR, EDACS / ProVoice, dPMR, M17, Analog, AM — and switches which
-protocols are decoded without restarting, the same way the CLI `-f` presets do at startup. The row reads the live
+DMR (single slot), NXDN48, NXDN96, X2-TDMA, YSF, D-STAR, EDACS / ProVoice, dPMR, M17, TETRA, Analog, AM — and switches
+which protocols are decoded without restarting, the same way the CLI `-f` presets do at startup. The row reads the live
 preset back (`Mode... [P25 Phase 1]`), and the footer toasts `Decoding <mode>` once the change has applied.
 
 AM (`-fM`) needs an I/Q radio input. On a PCM input the picker's AM row reads `AM (needs an I/Q radio input)`, and
 choosing it sends nothing: the footer gives the reason
-(`AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`). A running AM session
+(`AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`). TETRA (`-fT`) needs an
+I/Q radio input or a symbol capture: elsewhere its row reads `TETRA (needs an I/Q radio input)` and choosing it gives
+its reason the same way. A running AM session
 whose input is switched to a PCM one falls back to Analog, and the footer says why. **Input -> AM bandwidth...
 [default]**, right after `NFM bandwidth...` below `Squelch...`, sets the AM channel-filter width (5000..20000 Hz, 0 for
 the 6000 default) as **NFM bandwidth...** sets the NFM one (below): offered on a radio input while AM is the configured
@@ -502,6 +504,10 @@ when the scanner leaves or the channel map changes) and are never saved. On audi
 rows' chooser is titled `NFM passband` or `AM passband`, and their `This channel` prompt (`NFM passband Hz on this
 channel (8000..25000)`) opens on the passband the row runs: its own width, the configured one it follows, or `-B`
 standing in for an unset NFM width. See [Live per-channel edits](trunk-scan.md#runtime-behavior).
+
+`DSP bandwidth...` prompts with the selectable bandwidths (4, 6, 8, 12, 16, 24, 48 or 72 kHz; 72 is TETRA's) and snaps
+another value to the nearest of them, the narrower of two as near. On an Airspy it refuses 72 kHz, since no Airspy
+sample rate halves to it.
 
 `DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
 `-fA` (or `-fM`, reading `Analog: AM ...;`) the line also shows the analog channel width in force beside it, `Analog:
@@ -856,6 +862,25 @@ nothing; an earlier edit still waiting to apply is applied all the same. The row
 Config > Save writes: while a scan row with its own policy is on air the row keeps it, and the status line says so
 (`Default tone filter -> allow 100.0 Hz; this channel overrides it (block 67.0 Hz)`). The row is always there; set to a
 list policy on a session where nothing detects tones, the log says once that it has no effect.
+
+Under the TETRA preset (`-fT`), once a block has decoded, Call Info shows what the Qt/Android monitor shows: the
+working mode with the air encryption, the network (its colour code in decimal, as the call history names one), where
+call following stands while trunking is on, the control and traffic channels, the last MM status and the speech
+codec's health, each line only once the decoder has something for it, and under them the latest decoded messages:
+
+```text
+| TETRA: TMO downlink · encrypted (TEA2)
+| Network: MCC 262 · MNC 1001 · CC 25
+| Trunk: traffic channel
+| Control: carrier 321 · 392.0125 MHz
+| Traffic: carrier 654 · TS 1,3 · 392.1250 MHz
+| Codec: ready · 18 frames · 2 errors
+| TETRA messages
+| SDS ...
+```
+
+A terminal without UTF-8 gets ` - ` between the parts. Message text from the air is shown without control
+characters, and cut on a character boundary at the screen's width.
 
 ## Compact View
 

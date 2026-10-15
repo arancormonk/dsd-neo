@@ -59,6 +59,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -76,6 +77,7 @@
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -3045,6 +3047,18 @@ hand_p25_sm_to_cc(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_r
     LOG_DEBUG("P25 SM CC handoff declined (source=%s result=%d)\n", source ? source : "unknown", (int)tune_result);
 }
 
+/* The TETRA trunking state machine likewise, once a manual tune moved the receiver and the calls were ended
+   (reset_call_tracking()): it lets go of the call it follows, which its next tick would otherwise release again with a
+   return of its own, and of a tune or return of its own still in flight (tetra_sm_owns_return(); a return in flight
+   leaves it resting on the control channel, or IDLE when trunking was off as it was asked for), whose failure would
+   otherwise put that call and its voice channel back onto the carrier the operator chose. */
+static void
+hand_tetra_sm_over(const dsd_opts* opts, dsd_state* state) {
+    if (tetra_sm_get_state(state) != TETRA_SM_IDLE || tetra_sm_owns_return(state)) {
+        tetra_sm_on_external_cc_return(opts, state);
+    }
+}
+
 /* Whether the P25 SM owns this trunk. When it does, the tune, the decoder resets and
  * the SM handoff run under the watchdog guard as one step, like every other CC
  * retune (p25_sm_select_control_channel(), the no-carrier return): a watchdog tick
@@ -3087,6 +3101,7 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
     if (p25_live) {
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "return-to-cc");
     }
+    hand_tetra_sm_over(opts, state);
     LOG_INFO("User Activated Return to CC\n");
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -3126,6 +3141,10 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     }
 
     reset_call_tracking(opts, state, 1);
+    if (cc_freq != 0) {
+        /* Before the no-carrier pass, which would tick a machine that still owns the return. */
+        hand_tetra_sm_over(opts, state);
+    }
     if (opts->trunk_enable == 1) {
         dsd_engine_no_carrier_locked(opts, state);
         state->trunk_cc_freq = cc_freq;
@@ -3171,6 +3190,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
            (issue #575). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     }
+    hand_tetra_sm_over(opts, state);
     LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);
@@ -3225,6 +3245,7 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
            (issue #575). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     }
+    hand_tetra_sm_over(opts, state);
     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
     state->lcn_freq_roll = next + 1;
     dsd_scan_row_keys_apply(state, next);
@@ -3573,8 +3594,9 @@ cfg_file_runtime_apply_wav_input(dsd_opts* opts, dsd_state* state, const dsdneoU
         (raw_sample_rate > 0 && active_sample_rate != raw_sample_rate) ? raw_sample_rate : 0;
 
     int active_effective_input_rate = dsd_opts_effective_input_rate(opts);
-    if (cfg->has_mode) {
-        dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, active_effective_input_rate, state);
+    /* A [mode] without a decode key ran no preset (DSDCFG_MODE_UNSET): the session's own timing is rescaled. */
+    if (cfg->has_mode
+        && dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, active_effective_input_rate, state) == 0) {
         dsd_audio_rescale_symbol_timing(state, active_effective_input_rate, active_effective_input_rate);
         return;
     }
@@ -3592,8 +3614,7 @@ cfg_file_runtime_apply_live_input(const dsd_opts* opts, dsd_state* state, const 
         old_runtime_input_rate = 48000;
     }
 
-    if (cfg->has_mode) {
-        dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, old_runtime_input_rate, state);
+    if (cfg->has_mode && dsd_apply_decode_mode_symbol_timing(cfg->decode_mode, old_runtime_input_rate, state) == 0) {
         return;
     }
     restore_symbol_timing_snapshot(state, old_samples_per_symbol, old_symbol_center, old_jitter);
@@ -4696,14 +4717,14 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
                               dsdneoUserDecodeMode* out_mode) {
     int32_t requested = 0;
     DSD_MEMCPY(&requested, c->data, sizeof requested);
-    if (requested < 0 || requested > (int32_t)DSDCFG_MODE_AM) {
+    if (requested < 0 || requested > (int32_t)DSDCFG_MODE_TETRA) {
         ui_set_toast(state, 4, "Decode mode not available");
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     *out_mode = (dsdneoUserDecodeMode)requested;
     if (!dsd_decode_mode_runs_on_input(*out_mode, opts)) {
-        /* AM on a PCM input (issue #524): the audio arrives demodulated. */
-        ui_set_toast(state, 5, "Refused: %s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
+        /* AM (issue #524) or TETRA on a PCM input: the audio arrives demodulated. */
+        ui_set_toast(state, 5, "Refused: %s", dsd_decode_mode_needs_iq_text(*out_mode));
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     if (*out_mode != DSDCFG_MODE_AUTO && dsd_infer_decode_mode_preset(opts) == *out_mode) {
@@ -4733,10 +4754,23 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
  */
 static dsd_scan_settings g_analog_entry_staged;
 
+/* The follow state a trunking state machine shares with the engine, which ending the calls clears
+   (reset_call_tracking()): whether a voice channel is followed, and its frequencies. */
+typedef struct {
+    int trunk_is_tuned;
+    long p25_vc_freq[2];
+    long trunk_vc_freq[2];
+} ui_follow_state;
+
+static ui_follow_state g_analog_entry_staged_follow;
+
 static struct {
     int armed;
     int kind; /* the dsd_analog_demod the switch is onto */
+    /* A mode change off TETRA waits for the switch to settle before it leaves TETRA (ui_commit_mode_change()). */
+    int commit_tetra;
     dsd_scan_settings before;
+    ui_follow_state before_follow; /* the follow state before the switch, as `before` is its settings */
     dsd_scan_settings after;
     int has_between[2];           /* by dsd_analog_demod */
     dsd_scan_settings between[2]; /* the settings the last superseded switch onto that kind left */
@@ -4745,6 +4779,30 @@ static struct {
 static void
 ui_stage_analog_entry(const dsd_opts* opts, const dsd_state* state) {
     dsd_scan_settings_capture(opts, state, &g_analog_entry_staged);
+    ui_follow_state* const f = &g_analog_entry_staged_follow;
+    f->trunk_is_tuned = opts->trunk_is_tuned;
+    DSD_MEMCPY(f->p25_vc_freq, state->p25_vc_freq, sizeof f->p25_vc_freq);
+    DSD_MEMCPY(f->trunk_vc_freq, state->trunk_vc_freq, sizeof f->trunk_vc_freq);
+}
+
+/*
+ * A refused switch put a TETRA session back (ui_revert_analog_entry()), whose state the commit kept for it
+ * (ui_commit_mode_change()): the switch, or the revert, ended the calls and with them cleared the follow state the
+ * TETRA trunking state machine shares (reset_call_tracking()), and the machine's next tick would take that for another
+ * owner releasing the receiver (a tuner hand-back) and drop the call without a tune, the receiver left on its traffic
+ * channel. When the machine still follows the call -- nothing moved the receiver meanwhile, as a carrier boundary
+ * abandons it -- the follow state from before the switch comes back with the session. Only a TETRA session: the other
+ * modes' machines are not kept across a switch.
+ */
+static void
+ui_restore_tetra_follow(dsd_opts* opts, dsd_state* state) {
+    if (g_analog_entry.before.frame_tetra != 1 || opts->frame_tetra != 1 || !tetra_sm_followed(state, NULL)) {
+        return;
+    }
+    const ui_follow_state* const f = &g_analog_entry.before_follow;
+    opts->trunk_is_tuned = f->trunk_is_tuned;
+    DSD_MEMCPY(state->p25_vc_freq, f->p25_vc_freq, sizeof state->p25_vc_freq);
+    DSD_MEMCPY(state->trunk_vc_freq, f->trunk_vc_freq, sizeof state->trunk_vc_freq);
 }
 
 /* The configured channel widths of @p now over @p settings. */
@@ -4778,6 +4836,53 @@ ui_analog_entry_keep_unpublished(dsd_scan_settings* settings, const dsd_scan_set
 #undef UI_KEEP_UNPUBLISHED
 }
 
+/* Whether the settings @p now (with a scan row's scope suspended) are still the ones the armed switch left, but for
+   what moves without a switch of its own: the channel widths, which a width command sets on its own
+   (DSD_APP_CMD_NFM_BANDWIDTH_SET), even in the same drain, and the settings no receive profile carries
+   (ui_analog_entry_keep_unpublished()). Only then does a refusal of the switch put the settings from before it back
+   (ui_revert_analog_entry()). dsd_scan_settings_equal() compares the width of the analog kind the switch left. */
+static int
+ui_analog_entry_unmoved(const dsd_scan_settings* now) {
+    dsd_scan_settings after = g_analog_entry.after;
+    ui_analog_entry_keep_widths(&after, now);
+    ui_analog_entry_keep_unpublished(&after, now, NULL);
+    return dsd_scan_settings_equal(now, &after, 0);
+}
+
+/*
+ * The commit of a mode change (dsd_decode_mode_commit_tetra(): TETRA is left when the settings in force run no TETRA
+ * decoder). A switch from TETRA onto the analog monitor, or between its kinds, stays armed until the front end takes or
+ * refuses its request (ui_arm_analog_entry(), ui_settle_receive_requests()), and a refusal where the request lands
+ * puts the session back on TETRA (ui_revert_analog_entry()), which has to find the TETRA state whole: its network,
+ * call, encryption and codec context, which no setting carries. So while a switch from TETRA is armed with the
+ * settings it left still in force, the commit waits for it to settle (ui_analog_entry_settled()); a command that moved
+ * the settings on from it, onto another mode, commits at once.
+ */
+static void
+ui_commit_mode_change(dsd_opts* opts, dsd_state* state) {
+    if (g_analog_entry.armed && g_analog_entry.before.frame_tetra == 1) {
+        dsd_scan_settings now;
+        dsd_scan_settings_capture(opts, state, &now);
+        if (ui_analog_entry_unmoved(&now)) {
+            g_analog_entry.commit_tetra = 1;
+            return;
+        }
+    }
+    g_analog_entry.commit_tetra = 0;
+    dsd_decode_mode_commit_tetra(opts, state);
+}
+
+/* The armed switch has settled (taken, refused or dropped): nothing can put the settings from before it back any more,
+   so a mode change that waited for it commits now, on the settings it leaves in force (ui_commit_mode_change()). */
+static void
+ui_analog_entry_settled(dsd_opts* opts, dsd_state* state) {
+    g_analog_entry.armed = 0;
+    if (g_analog_entry.commit_tetra) {
+        g_analog_entry.commit_tetra = 0;
+        dsd_decode_mode_commit_tetra(opts, state);
+    }
+}
+
 /* The configured options now run the analog family where they did not (@p was_analog_family), or another analog kind
    than @p was_kind: note the switch while a running RTL front end has it to make. One that supersedes a switch still
    armed keeps that switch's settings from before it (g_analog_entry). The channel widths are configuration a width
@@ -4798,6 +4903,7 @@ ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog
         g_analog_entry.has_between[g_analog_entry.kind] = 1;
     } else if (!supersedes) {
         g_analog_entry.before = g_analog_entry_staged;
+        g_analog_entry.before_follow = g_analog_entry_staged_follow;
         g_analog_entry.has_between[DSD_ANALOG_DEMOD_FM] = 0;
         g_analog_entry.has_between[DSD_ANALOG_DEMOD_AM] = 0;
     }
@@ -5025,13 +5131,8 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     const int scoped = dsd_scan_mode_suspend(opts, state);
     dsd_scan_settings now;
     dsd_scan_settings_capture(opts, state, &now);
-    /* The channel widths are configuration a width command sets on its own (DSD_APP_CMD_NFM_BANDWIDTH_SET), not part of
-       the switch: one set after the switch, even in the same drain, does not mean the settings moved on, and the
-       revert keeps it (dsd_scan_settings_equal() compares the width of the analog kind the switch left). */
-    dsd_scan_settings after = g_analog_entry.after;
-    ui_analog_entry_keep_widths(&after, &now);
-    ui_analog_entry_keep_unpublished(&after, &now, NULL);
-    const int reverted = dsd_scan_settings_equal(&now, &after, 0);
+    /* A width set after the switch does not mean the settings moved on, and the revert keeps it. */
+    const int reverted = ui_analog_entry_unmoved(&now);
     if (reverted) {
         dsd_scan_settings back = *ui_analog_entry_rollback(kept);
         ui_analog_entry_keep_widths(&back, &now);
@@ -5086,6 +5187,11 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     if (refused_at_once) {
         ui_settle_leave_revert_refused_at_once(opts, state, kept);
     }
+    if (reverted) {
+        ui_restore_tetra_follow(opts, state);
+    }
+    /* A mode change off TETRA that waited for the switch finds the TETRA session back, or the settings moved on. */
+    ui_analog_entry_settled(opts, state);
     return reverted;
 }
 
@@ -5144,6 +5250,22 @@ decode_mode_drop_old_analog_block(const dsd_opts* opts, dsd_state* state, int wa
     if (analog != was_analog || (analog && opts->analog_demod != was_kind)) {
         dsd_symbol_analog_block_reset(state);
     }
+}
+
+/* The toast a mode change that took posts. TETRA switched on where the DSP rate is no multiple of 18 kHz is kept, but
+   decodes nothing until the rate changes, so the toast says so and the log names the fix in full
+   (svc_tetra_rate_advice()). */
+static void
+decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
+        char advice[DSD_TETRA_RATE_ADVICE_MAX];
+        (void)svc_tetra_rate_advice(opts, state, 0, advice, sizeof advice);
+        LOG_WARN("WARNING: %s.\n", advice);
+        ui_set_toast(state, 8, "Decoding TETRA: %s", brief);
+        return;
+    }
+    ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(mode));
 }
 
 /**
@@ -5217,7 +5339,8 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 0;
     opts->mod_cli_lock = 0;
-    if (dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
+    /* Staged: the commit below, once nothing can put the session back, leaves TETRA (dsd_stage_decode_mode_preset()). */
+    if (dsd_stage_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
         opts->mod_cli_lock = mod_locks[0];
         opts->mod_p25p2_c4fm = mod_locks[1];
         opts->mod_p25p2_profile_lock = mod_locks[2];
@@ -5248,8 +5371,12 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        above) puts the decoder back as it was; one refused where it lands is
        put back by the next drain. */
     ui_arm_analog_entry(opts, state, was_analog_family, was_kind);
-    if (decode_mode_republish(opts, state, mode) != 0
-        && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL)) {
+    const int put_back = decode_mode_republish(opts, state, mode) != 0
+                         && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL);
+    /* The mode change commits: one that stands leaves TETRA unless it is TETRA, once a switch the front end has still
+       to take or refuse has settled, and one put back finds the TETRA session it left whole. */
+    ui_commit_mode_change(opts, state);
+    if (put_back) {
         return UI_CMD_APPLY_FAILED;
     }
     /* The decoder was hunting for a different protocol a moment ago: its
@@ -5259,7 +5386,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         reset_call_tracking(opts, state, 1);
     }
-    ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(mode));
+    decode_mode_toast_applied(opts, state, mode);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -5296,7 +5423,7 @@ rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_appl
        would run dsd_apply_decode_mode_preset() and republish a symbol profile for
        "no mode". Neither producer can emit it today; the guard is what keeps that
        true. */
-    if (p->decode_mode <= (int32_t)DSDCFG_MODE_UNSET || p->decode_mode > (int32_t)DSDCFG_MODE_AM
+    if (p->decode_mode <= (int32_t)DSDCFG_MODE_UNSET || p->decode_mode > (int32_t)DSDCFG_MODE_TETRA
         || !dsd_decode_mode_runs_on_input((dsdneoUserDecodeMode)p->decode_mode, opts)) {
         ui_set_toast(state, 4, "Failed: RR import -> decode mode");
         return UI_CMD_APPLY_FAILED;
@@ -6772,7 +6899,7 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
            is only copied when the stream opens, so a reopen for it alone runs at the rate the Airspy runs now, which
            the running front end holds the configured width the stream opens on to, changed or not (issue #578). */
         const int bw_khz = cfg_reopen_rtl_bw_khz(opts, cfg);
-        const int next_bw_khz = dsd_analog_rtl_dsp_bw_is_selectable(bw_khz) ? bw_khz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+        const int next_bw_khz = dsd_analog_airspy_dsp_bw_or_default(bw_khz);
         const int next_volume = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
         if (!svc_airspy_settings_reopen(&opts->airspy, &cfg->airspy, opts->rtl_dsp_bw_khz, next_bw_khz,
                                         opts->rtl_volume_multiplier, next_volume)) {
@@ -7101,9 +7228,9 @@ static int g_cfg_row_refusal_reported;
    it is noted for the resume (g_cfg_row_refusal_reported), which then puts back neither the mode the session had
    (ui_revert_analog_entry()) nor the width from before a config that set the one the row runs (issue #578). */
 static void
-ui_cfg_note_refused_row(int radio_rc) {
+ui_cfg_note_refused_row(dsd_opts* opts, dsd_state* state, int radio_rc) {
     if (radio_rc > 0) {
-        g_analog_entry.armed = 0;
+        ui_analog_entry_settled(opts, state);
         g_cfg_row_refusal_reported = 1;
     }
 }
@@ -7164,7 +7291,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     ui_cfg_rollback rollback;
     ui_cfg_capture_rollback(opts, state, &rollback);
 #endif
-    dsd_apply_user_config_to_opts(&cfg, opts, state);
+    dsd_stage_user_config_to_opts(&cfg, opts, state);
     /* A [mode] preset carries an audio layout too, but the session's output streams were opened with the layout in
        force then, which the backend fixes for their life: the session's layout is kept, as decode_mode_apply_value()
        keeps it for DSD_APP_CMD_DECODE_MODE_SET. Put back before anything below opens or reopens an output (a changed
@@ -7189,8 +7316,15 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
     /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
     reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, &old_rx);
+    /* The apply commits here, past everything above that can put the session back: a [mode] that stands leaves TETRA
+       unless it is TETRA, once a switch onto the monitor the front end has still to take or refuse has settled, and
+       one put back (a reopen that failed, a switch onto the monitor refused at once) finds the TETRA session whole
+       (dsd_stage_user_config_to_opts()). */
+    if (cfg.has_mode) {
+        ui_commit_mode_change(opts, state);
+    }
 #ifdef USE_RADIO
-    ui_cfg_note_refused_row(radio_rc);
+    ui_cfg_note_refused_row(opts, state, radio_rc);
     if (radio_rc != 0) {
         return UI_CMD_APPLY_FAILED;
     }
@@ -7491,6 +7625,30 @@ apply_cmd_fall_back_from_am_on_pcm(dsd_opts* opts, dsd_state* state, const struc
     ui_set_toast(state, 6, "Decoding Analog: %s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
 }
 
+/* Whether the last command left the configured TETRA preset on an input that cannot carry it, already said. */
+static int g_tetra_on_pcm_noted;
+
+/*
+ * TETRA decodes from an I/Q radio input or a symbol capture only (dsd_decode_mode_runs_on_input()). A command that leaves
+ * the configured TETRA preset on another (a live input switch to Pulse, a WAV file, TCP or UDP audio, or a config that
+ * moves the input there) keeps the mode, which has no Analog to fall back to as AM has, but says once that nothing will
+ * decode until the input changes. Checked after every command, like apply_cmd_fall_back_from_am_on_pcm().
+ */
+static void
+apply_cmd_note_tetra_on_pcm(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || dsd_scan_mode_configured_preset_exact(opts, state) != DSDCFG_MODE_TETRA
+        || dsd_decode_mode_runs_on_input(DSDCFG_MODE_TETRA, opts)) {
+        g_tetra_on_pcm_noted = 0;
+        return;
+    }
+    if (g_tetra_on_pcm_noted) {
+        return;
+    }
+    g_tetra_on_pcm_noted = 1;
+    LOG_WARN("WARNING: %s. Nothing decodes on this input.\n", DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT);
+    ui_set_toast(state, 6, "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+}
+
 /* The configured width of each analog kind (dsd_scan_mode_configured_analog_width()). */
 static ui_analog_widths
 ui_configured_analog_widths(const dsd_opts* opts, const dsd_state* state) {
@@ -7681,6 +7839,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
         return UI_CMD_APPLY_FAILED;
     }
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);
+    apply_cmd_note_tetra_on_pcm(opts, state);
     const int rigctl_refused = apply_cmd_follow_rigctl_passband(opts, state, &rigctl_before, &widths_before, guarded);
     ui_warn_tone_filter_unreached(opts, state, &tone_before);
     return rigctl_refused ? UI_CMD_APPLY_FAILED : result;
@@ -7823,7 +7982,7 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
     svc_monitor_refusal refusal = {0};
     const int outcome = svc_take_monitor_request_outcome(opts, state, &refusal);
     if (outcome == SVC_MONITOR_REQUEST_TAKEN) {
-        g_analog_entry.armed = 0; /* the front end took the switch, or a request made after it */
+        ui_analog_entry_settled(opts, state); /* the front end took the switch, or a request made after it */
         return;
     }
     /* Nothing outstanding, still pending, or superseded before the front end took it: an armed switch stays armed. */
@@ -7848,10 +8007,10 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
             changed = ui_settle_refused_scan_leave(opts, state, &refusal);
         }
     } else if (refusal.scan_leave) {
-        g_analog_entry.armed = 0; /* the front end runs the analog family of the kind the switch was onto */
+        ui_analog_entry_settled(opts, state); /* the front end runs the analog family of the kind the switch was onto */
         changed = ui_settle_refused_scan_leave(opts, state, &refusal);
     } else {
-        g_analog_entry.armed = 0;
+        ui_analog_entry_settled(opts, state);
         const int kept_hz = refusal.kept_width_hz;
         if (dsd_app_analog_width_setting_hz(opts, refusal.kind) == refusal.width_hz && kept_hz != refusal.width_hz) {
             /* The width has not changed again since. */

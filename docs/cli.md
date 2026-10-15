@@ -24,7 +24,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
   `--api-token-file <path>` (one line of 1..255 bytes; a file that cannot be read is an error). See
   [docs/api.md](api.md).
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
-- Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `--dmr-tg-key-csv <file>`, `--dmr-force-algid <hex>`, `--show-keys`, `-4`, `-0`, `-3`
+- Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `--dmr-tg-key-csv <file>`, `--dmr-force-algid <hex>`, `--tetra-key mcc,mnc,<hex>`, `--show-keys`, `-4`, `-0`, `-3`
 - Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`, `--rdio-mode off|dirwatch|api|both`
 
 ## Quick Start
@@ -147,6 +147,10 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
   to protect the screen, and warns before opening the UI if payload logging is enabled without a redirect.
   Already-redirected stderr is preserved; `--frontend none -Z` leaves console payload output visible.
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
+- Under `-fT` the terminal frontend (`-N`) shows the TETRA working mode, network, call following,
+  control and traffic channels, MM status and codec health in Call Info, as the Qt/Android monitor does.
+  TETRA calls, short data and status messages go to the call and event history like every protocol's.
+  Per-frame diagnostics remain on stderr and can be captured with `2> tetra.log`.
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
 - `-O` List PulseAudio input sources and output sinks
 - The terminal input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
@@ -459,6 +463,41 @@ Notes
   - Custom AFS bit splits: `-fh344`, `-fH434`
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
 - dPMR: `-fm`
+- TETRA: `-fT`. Like every `-f` selector it is replaced by a later one (`-fT -fp` decodes ProVoice alone). TETRA's
+  pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, so
+  it decodes only at a DSP rate that is a multiple of 18 kHz. `-fT` therefore sets the DSP bandwidth to 72 kHz
+  (4 samples per symbol), as `-fe` sets 24 kHz; a bandwidth field in the `-i` spec still names another, and a Qt
+  TETRA system without its own bandwidth uses 72 kHz too. A stream that opens
+  TETRA at another rate warns once, with the fix for its input (`TETRA needs a DSP rate that is a multiple of 18 kHz,
+  not 48 kHz: set the DSP bandwidth to 72 kHz (-i rtl:dev:freq:gain:ppm:72)`): a SoapySDR device runs 72 kHz only
+  where it delivers 1.152 MS/s, no Airspy sample rate halves to a multiple of 18 kHz, and an I/Q replay keeps its
+  capture's rate. A switch to TETRA at run time keeps the mode and says the same in its toast (`Decoding TETRA: DSP rate
+  48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz`).
+  TETRA reads its symbols from an I/Q radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`) or from a symbol
+  capture of them (`-c` writes one; `-i capture.bin`, `.raw` or `.sym` replays it; a float symbol file, `.raw` or
+  `.sym`, holds them as the CQPSK demodulator recovered them, outer levels ±3 and inner ±1, and TETRA reads them as
+  they are, where the other modes scale a float symbol file by 10000): discriminator audio has lost the
+  phase steps of its pi/4-DQPSK, so `-fT` on a PCM input (Pulse, a WAV file, stdin, TCP or UDP audio) stops at startup
+  with `-fT: TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated
+  audio`, as `-fM` does. A config whose `[mode] decode = tetra` meets such an input keeps the mode and logs that nothing
+  decodes there. A switch to TETRA on one (terminal picker, Qt chip, API) is refused with that reason; the terminal
+  picker's entry reads `TETRA (needs an I/Q radio input)` there and the Qt setup wizard greys its chip out (it offers it
+  for a `.bin` capture). A running TETRA session whose input moves to a PCM one keeps the mode, and a toast says once
+  that nothing decodes there.
+  Speech plays only through a TETRA speech codec library the user supplies:
+  `--tetra-codec <file>` names its shared library (`.so`, `.dylib` or `.dll`), opened by that path, relative to the
+  working directory when it is not absolute. dsd-neo loads it when the first TETRA speech frame needs decoding and
+  refuses, with one error, a library of another interface version or one missing a function; decoding carries on
+  without audio. Without `--tetra-codec` TETRA decodes as usual and plays no speech. A speech burst plays once its
+  CRC has passed; later bursts whose CRC fails are concealed by the codec, and a run of them ends the speech until the
+  next good burst. The interface, and building a library from the ETSI reference code, are in `tools/tetra/README.md`.
+  With `-T` the decoder follows a call's traffic channel off a TETRA control channel, once a block whose CRC passed
+  has been decoded on the carrier it is on, and returns `-t` seconds after the call's speech ends, or 4 seconds after
+  the tune when no speech follows. It follows a call whose D-SETUP named its called party, as the group list, `-I`,
+  priority and preemption rows and the tune controls decide; while it follows one, only that call's timeslots play,
+  once its signalling has been decoded on the traffic carrier (direct mode speech always plays). Without `-T` one
+  timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target
+  type. Air-encrypted speech decrypts with `--tetra-key` (see Keys & Privacy).
 
 Notes
 
@@ -630,6 +669,7 @@ rate), and the filter within its 288 taps. For an RTL-SDR or rtl_tcp input the D
 
 | DSP bandwidth (`bw`, `rtl_bw_khz`) | Widest channel it filters | NFM widths that fit | AM widths that fit |
 | --- | --- | --- | --- |
+| 72 kHz | 63.6 kHz | all, 8 to 25 kHz | all, 5 to 20 kHz |
 | 48 kHz (default) | 42 kHz | all, 8 to 25 kHz | all, 5 to 20 kHz |
 | 24 kHz | 20.4 kHz | 8 to 20.4 kHz | all, 5 to 20 kHz |
 | 16 kHz | 13.2 kHz | 8 to 13.2 kHz | 5 to 13.2 kHz |
@@ -639,7 +679,7 @@ rate), and the filter within its 288 taps. For an RTL-SDR or rtl_tcp input the D
 
 A width the DSP rate cannot filter is refused with the width, the rate, the widest width that rate filters and the
 DSP bandwidths that would fit, for example `NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width
-it fits is 20.4 kHz); set the RTL DSP bandwidth to 48 kHz`. For RTL-SDR and rtl_tcp inputs this happens at startup,
+it fits is 20.4 kHz); set the RTL DSP bandwidth to 48 or 72 kHz`. For RTL-SDR and rtl_tcp inputs this happens at startup,
 from the input spec alone, before the input looks for its device. The other radio inputs are checked when the stream
 starts, against the rate actually delivered, and a width that rate cannot filter stops the stream from starting; the
 fix it names follows what sets that rate:
@@ -662,7 +702,7 @@ fix it names follows what sets that rate:
 A refusal while running (the terminal row, the Radio sheet, a loaded config, a switch to Analog) is a short message
 that names the width, the rate, the widest width it filters and the fix, and the full text goes to the log. On an
 RTL-SDR or rtl_tcp input the fix is a DSP bandwidth: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use
-a 48 kHz DSP bandwidth`. On a running SoapySDR, Airspy or I/Q replay stream the message names the demod rate the
+a 48 or 72 kHz DSP bandwidth`. On a running SoapySDR, Airspy or I/Q replay stream the message names the demod rate the
 stream runs at and the fix above for that input: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise
 the DSP bandwidth or narrow the NFM width` on a device, `...; narrow the NFM width` on a replay. A DSP bandwidth
 refused for the width in use says to narrow the width first, or, at 4, 6 or 8 kHz, where no NFM width fits, to leave
@@ -677,7 +717,7 @@ the first, or the first when it did. An AM or NFM width changed just before such
 took, goes back to the width the front end runs when the moved rate cannot filter it; after a scan stop, the rate a
 row left may filter neither, and the width of the mode put back is then settled as for a refused scan stop (the decode
 mode row under When changes apply). AM refusals read the same way with AM's values (`AM 20 kHz does not fit the 16 kHz
-DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth`),
+DSP rate (max 13.2 kHz); use a 24, 48 or 72 kHz DSP bandwidth`),
 and a DSP bandwidth that filters no AM width at all says to keep a wider one (`DSP BW 6 kHz cannot filter AM 6 kHz
 (max 4.2 kHz); no AM width fits it; keep a wider DSP bandwidth`), since narrowing cannot help and AM has no unset
 default that runs without its filter.
@@ -971,7 +1011,7 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   since AM always runs its channel filter; `DSD_NEO_CHANNEL_LPF=0` therefore refuses AM. An RTL-SDR or rtl_tcp input's
   rate is its DSP bandwidth, so a width it cannot filter is refused at startup before the device opens, and without a
   dongle plugged in: `AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz);
-  set the RTL DSP bandwidth to 24 or 48 kHz`, and a non-zero exit (`-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz
+  set the RTL DSP bandwidth to 24, 48 or 72 kHz`, and a non-zero exit (`-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz
   20000`; `-fM` alone at a 6 kHz DSP bandwidth likewise). The interactive setup's AM entry is held to the same rule:
   after an RTL-SDR or rtl_tcp source at a 4 or 6 kHz DSP bandwidth (or one the configured AM width does not fit) it
   prints that text and asks for the decode mode again. The other radio inputs are checked when the stream starts,
@@ -1547,7 +1587,7 @@ is delayed.
 - CSV formats and examples: `docs/csv-formats.md` and `examples/`
 - Use group list as allow/whitelist: `-W`
 - Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout`
-  enable key-aware encryption lockout (P25, DMR, NXDN), `--enc-follow` follow encrypted grants without lockout
+  enable key-aware encryption lockout (P25, DMR, NXDN, TETRA), `--enc-follow` follow encrypted grants without lockout
   (default)
   - With `--enc-lockout`, otherwise allowed P25 voice grants whose encryption is set or not yet known are tuned briefly
     as silent classification probes. Voice is not decoded, played, recorded, or streamed during classification.
@@ -1563,6 +1603,10 @@ is delayed.
     erased, so toggling back to `--enc-lockout` does not owe a fresh probe per target.
   - A locked P25 supergroup stays locked for the whole patch: its member talkgroups are not locked themselves, but
     they do not readmit the supergroup's grants.
+  - TETRA needs no probe: the D-SETUP and D-TX GRANTED say whether a call is end-to-end encrypted, and the MAC header
+    whether it is air interface encrypted. A voice call the listener cannot decrypt (end-to-end encryption, or air
+    encryption without a usable `--tetra-key`) is locked out instead of followed, and a followed call that turns out
+    so is left.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode), the FM passband the peer is asked for wherever it
@@ -1640,10 +1684,12 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
   is one whole word: `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no` (any case). A value or trailing option it cannot
   read is ignored with a warning and leaves the bias tee as it was; the startup `RTL #N:` line ends in `BIAS=on` when
-  it is on.
+  it is on. 72 kHz is TETRA's bandwidth: it gives `-fT` a whole 4 samples per symbol at 18 ksym/s. The other modes run
+  best at the 48 kHz default: at 72 kHz their channel filter would need more taps than it has, and runs its wider fixed
+  prototype instead.
 - A `sql` value that is neither a number, `auto[+N]` nor `noise[+N]` leaves the squelch as it was rather than switching
   it off. A
   disabled squelch is reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP
@@ -1804,6 +1850,16 @@ Out-of-range decimal keys are rejected without changing the installed key.
 - Baofeng AP PC5 key override (hex): `--dmr-baofeng-pc5 <hex>` (32 or 64 hex chars)
 - Connect Systems EE72 key override (hex): `--dmr-csi-ee72 <hex>` (18 hex chars)
 - Vertex ALG `0x07` key->keystream map CSV: `--dmr-vertex-ks-csv <file>` (`key_hex,bits:hex[:offset[:step]]`)
+- TETRA air interface cipher key: `--tetra-key mcc,mnc,<20 hex digits>` loads the 80-bit cipher key of one network:
+  the SCK of a security class 2 cell or the CCK of a class 3 cell, never a derived encryption cipher key (ECK).
+  Keys for at most four networks are held; another key for the same network replaces it. It decrypts trunked mode
+  speech of calls whose MAC signalling is air encrypted, once the network's algorithm (TEA1, TEA2 or TEA3) has been
+  decoded from its key management signalling; end-to-end encryption and direct mode encryption are never decrypted.
+  The key stream generator takes the ECK that TB5 derives from the cipher key with the carrier number, location area
+  and colour code of the carrier being received (EN 300 392-7 clause 6.3.2.2): the followed call's carrier while
+  trunking (`-T`), otherwise the carrier whose downlink frequency is exactly the tuned frequency of an RTL-SDR or I/Q
+  replay input, on the control channel too (a secondary carrier broadcasts the main carrier's SYSINFO as well). Until
+  the carrier number, a SYSINFO's location area and a BSCH's colour code are known, nothing is decrypted.
 - Kenwood 15‑bit scrambler (decimal): `-9 <dec>`
 - Anytone 16‑bit BP (hex): `-A <hex>`
 - Generic keystream (length:hexbytes, optional frame align): `-S <bits:hex[:offset[:step]]>` (e.g., `-S 49:123456789ABC80`, `-S 168:<hex>:0:49`)

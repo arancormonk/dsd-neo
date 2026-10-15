@@ -126,18 +126,21 @@ git clean -q -fdx
 mkdir -p cmake tools
 printf 'pin\n' > tools/ci-dependency-pins.env
 printf 'module\n' > cmake/Pffft.cmake
+printf 'module\n' > cmake/TetraCrypto.cmake
+printf 'tool\n' > tools/update_tetra_crypto.py
 git add -A
-git commit -q -m 'FFT pins'
+git commit -q -m 'FFT and TEA pins'
 pins_head=$(git rev-parse HEAD)
 bash "$SCRIPT" --base "$base" --head "$pins_head" --out-dir "$WORK/pins" > /dev/null
-for path in tools/ci-dependency-pins.env cmake/Pffft.cmake; do
+for path in tools/ci-dependency-pins.env cmake/Pffft.cmake cmake/TetraCrypto.cmake tools/update_tetra_crypto.py; do
   grep -qx "$path" "$WORK/pins/dependency_scan_targets.txt" || fail "pin input omitted: $path"
 done
-git rm -q cmake/Pffft.cmake
-git commit -q -m 'remove FFT integration'
+git rm -q cmake/Pffft.cmake cmake/TetraCrypto.cmake
+git commit -q -m 'remove FFT and TEA integration'
 bash "$SCRIPT" --base "$pins_head" --head HEAD --out-dir "$WORK/deleted" > /dev/null
 grep -qx 'cmake/Pffft.cmake' "$WORK/deleted/dependency_scan_targets.txt" || fail 'deleted FFT input omitted'
-echo 'PASS FFT changes and deletions trigger dependency scanning'
+grep -qx 'cmake/TetraCrypto.cmake' "$WORK/deleted/dependency_scan_targets.txt" || fail 'deleted TEA input omitted'
+echo 'PASS FFT and TEA changes and deletions trigger dependency scanning'
 git checkout -q -f --detach "$base"
 git clean -q -fdx
 
@@ -158,7 +161,7 @@ expect_full_scan() {
 printf 'int edited;\n' > src/core/base.c
 git commit -q -am 'ordinary source change'
 expect_full_scan "an ordinary source change keeps the analysis to the changed files" "$base" 0
-for path in tools/ci-dependency-pins.env cmake/Pffft.cmake src/third_party/ezpwd/rs \
+for path in tools/ci-dependency-pins.env cmake/Pffft.cmake cmake/TetraCrypto.cmake src/third_party/ezpwd/rs \
   android/third_party/libusb/libusb.h android/third_party/librtlsdr/rtl-sdr.h \
   android/third_party/libairspy/airspy.h; do
   git checkout -q -f --detach "$base"

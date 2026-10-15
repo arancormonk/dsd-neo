@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 #include <mbelib-neo/mbelib.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "../../src/app_control/commands_internal.h"
@@ -30,6 +31,18 @@ check(int ok, const char* label) {
         DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         ++failures;
     }
+}
+
+/* Whether two TETRA air key tables hold the same keys, field by field: dsd_tetra_air_key has padding bytes. */
+static int
+tetra_air_keys_equal(const dsd_tetra_air_key* a, const dsd_tetra_air_key* b) {
+    for (int i = 0; i < DSD_TETRA_AIR_KEY_SLOTS; i++) {
+        if (a[i].loaded != b[i].loaded || a[i].mcc != b[i].mcc || a[i].mnc != b[i].mnc
+            || memcmp(a[i].key, b[i].key, sizeof a[i].key) != 0) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 #ifdef DSD_NEO_TEST_ARGV_FREE_WRAP
@@ -307,6 +320,101 @@ test_m17_key_widths(void) {
     }
 }
 
+/* TETRA air keys (--tetra-key mcc,mnc,key): parsed strictly, filed one per network, kept by other direct keys, carried
+ * by the key set and wiped with the other keys. */
+static void
+test_tetra_air_keys(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    static const uint8_t want[10] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A};
+    seed(&opts, &state);
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,0102030405060708090A", DSD_KEY_APPLY_OVERLAY)
+              == DSD_KEY_DIRECT_OK,
+          "TETRA key accepted");
+    const dsd_tetra_air_key* k = &state.tetra_air_keys[0];
+    check(k->loaded && k->mcc == 262 && k->mnc == 1001 && memcmp(k->key, want, sizeof want) == 0,
+          "TETRA key filed under its network");
+
+    static const char* const bad[] = {
+        "1024,1,00000000000000000000",
+        "1,16384,00000000000000000000",
+        "1,1,000000000000000000000",
+        "1,1,0000000000000000000",
+        "1,1,0000000000000000000G",
+        "-1,1,00000000000000000000",
+        "1,1",
+        "1,1,00000000000000000000,1",
+        "",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, bad[i], DSD_KEY_APPLY_OVERLAY) != DSD_KEY_DIRECT_OK,
+              "malformed TETRA key refused");
+    }
+    check(state.tetra_air_keys[0].loaded && state.tetra_air_keys[1].loaded == 0, "refusals leave the table alone");
+
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,FFFFFFFFFFFFFFFFFFFF", DSD_KEY_APPLY_OVERLAY)
+              == DSD_KEY_DIRECT_OK,
+          "same network replaced");
+    check(state.tetra_air_keys[0].key[0] == 0xFF && state.tetra_air_keys[1].loaded == 0,
+          "replacement, not a duplicate");
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1002,00000000000000000001", DSD_KEY_APPLY_OVERLAY)
+                  == DSD_KEY_DIRECT_OK
+              && dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1003,00000000000000000002",
+                                      DSD_KEY_APPLY_OVERLAY)
+                     == DSD_KEY_DIRECT_OK
+              && dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1004,00000000000000000003",
+                                      DSD_KEY_APPLY_OVERLAY)
+                     == DSD_KEY_DIRECT_OK,
+          "four networks fit");
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1005,00000000000000000004", DSD_KEY_APPLY_OVERLAY)
+              == DSD_KEY_DIRECT_INVALID_ARGUMENT,
+          "a fifth network is refused");
+    check(state.tetra_air_keys[0].mnc == 1001 && state.tetra_air_keys[0].key[0] == 0xFF,
+          "the refused fifth network evicts nothing");
+
+    char hex10[11] = "0123456789";
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_HEX, hex10, DSD_KEY_APPLY_OVERLAY) == DSD_KEY_DIRECT_OK,
+          "a hex key applies after TETRA keys");
+    check(state.tetra_air_keys[0].loaded && state.tetra_air_keys[3].mnc == 1004, "a hex key keeps the TETRA keys");
+
+    dsd_key_set captured = {0};
+    dsd_key_set again = {0};
+    check(dsd_key_set_capture(&captured, &state) == 0, "key set captures TETRA keys");
+    static dsd_state other;
+    static dsd_opts other_opts;
+    seed(&other_opts, &other);
+    dsd_key_set_install(&other, &captured);
+    check(tetra_air_keys_equal(other.tetra_air_keys, state.tetra_air_keys), "install carries TETRA keys");
+    check(dsd_key_set_capture(&again, &other) == 0 && dsd_key_set_equal(&captured, &again), "TETRA keys compare equal");
+    other.tetra_air_keys[2].key[9] ^= 1U;
+    dsd_key_set_free(&again);
+    check(dsd_key_set_capture(&again, &other) == 0 && !dsd_key_set_equal(&captured, &again),
+          "a different TETRA key compares unequal");
+    dsd_key_set_free(&again);
+    dsd_key_set_free(&captured);
+    freeState(&other);
+
+    char name[] = "test";
+    char flag[] = "--tetra-key";
+    char value[] = "1,2,00000000000000000005";
+    char* argv[] = {name, flag, value, NULL};
+    freeState(&state);
+    seed(&opts, &state);
+    check(state.tetra_air_keys[0].loaded == 0, "initState clears TETRA keys");
+    check(dsd_parse_args(3, argv, &opts, &state, NULL, NULL) == DSD_PARSE_CONTINUE && state.tetra_air_keys[0].loaded
+              && state.tetra_air_keys[0].mcc == 1 && state.tetra_air_keys[0].key[9] == 5,
+          "CLI --tetra-key loads the key");
+    char bad_value[] = "1,2,5";
+    char* bad_argv[] = {name, flag, bad_value, NULL};
+    static dsd_state bad_state;
+    static dsd_opts bad_opts;
+    seed(&bad_opts, &bad_state);
+    check(dsd_parse_args(3, bad_argv, &bad_opts, &bad_state, NULL, NULL) == DSD_PARSE_ERROR,
+          "CLI --tetra-key refuses a short key");
+    freeState(&bad_state);
+    freeState(&state);
+}
+
 static void
 test_retained_decryption_request(void) {
     static dsd_state state;
@@ -374,6 +482,7 @@ main(void) {
     bootstrap_snapshot_secrets();
     zero_key_voice();
     presence_follows_material();
+    test_tetra_air_keys();
     static dsd_state state;
     static dsd_opts opts;
     const int types[] = {0, 1, 1, 1, 2, 3};

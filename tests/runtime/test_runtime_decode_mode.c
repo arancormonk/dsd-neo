@@ -8,9 +8,13 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -264,7 +268,7 @@ test_cli_preset_mapping_and_guards(void) {
         {'a', DSDCFG_MODE_AUTO},   {'A', DSDCFG_MODE_ANALOG}, {'d', DSDCFG_MODE_DSTAR}, {'x', DSDCFG_MODE_X2TDMA},
         {'t', DSDCFG_MODE_TDMA},   {'1', DSDCFG_MODE_P25P1},  {'2', DSDCFG_MODE_P25P2}, {'s', DSDCFG_MODE_DMR},
         {'i', DSDCFG_MODE_NXDN48}, {'n', DSDCFG_MODE_NXDN96}, {'y', DSDCFG_MODE_YSF},   {'m', DSDCFG_MODE_DPMR},
-        {'z', DSDCFG_MODE_M17},    {'M', DSDCFG_MODE_AM},
+        {'z', DSDCFG_MODE_M17},    {'M', DSDCFG_MODE_AM},     {'T', DSDCFG_MODE_TETRA},
     };
 
     dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
@@ -428,12 +432,18 @@ test_symbol_timing_and_inference(void) {
         {1u << 7, DSDCFG_MODE_DPMR},   {1u << 10, DSDCFG_MODE_M17},
     };
 
-    dsd_apply_decode_mode_symbol_timing(DSDCFG_MODE_DMR, 96000, NULL);
+    if (dsd_apply_decode_mode_symbol_timing(DSDCFG_MODE_DMR, 96000, NULL) != -1) {
+        DSD_FPRINTF(stderr, "symbol timing without a state should be refused\n");
+        return 1;
+    }
 
     for (size_t i = 0; i < sizeof timing_cases / sizeof timing_cases[0]; i++) {
         static dsd_state state;
         DSD_MEMSET(&state, 0, sizeof state);
-        dsd_apply_decode_mode_symbol_timing(timing_cases[i].mode, 96000, &state);
+        if (dsd_apply_decode_mode_symbol_timing(timing_cases[i].mode, 96000, &state) != 0) {
+            DSD_FPRINTF(stderr, "timing mode %d refused\n", (int)timing_cases[i].mode);
+            return 1;
+        }
         if (state.samplesPerSymbol != timing_cases[i].expected_sps
             || state.symbolCenter != timing_cases[i].expected_center || state.jitter != -1) {
             DSD_FPRINTF(stderr, "timing mode %d mismatch sps=%d center=%d jitter=%d\n", (int)timing_cases[i].mode,
@@ -447,6 +457,16 @@ test_symbol_timing_and_inference(void) {
     dsd_apply_decode_mode_symbol_timing(DSDCFG_MODE_DMR, 48000, &state);
     if (state.samplesPerSymbol != 10 || state.symbolCenter != 4) {
         DSD_FPRINTF(stderr, "48000 timing should keep base DMR timing\n");
+        return 1;
+    }
+    /* No preset ran for DSDCFG_MODE_UNSET (a [mode] without a decode key), so it has no preset timing: the session's
+       own stays. */
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    if (dsd_apply_decode_mode_symbol_timing(DSDCFG_MODE_UNSET, 96000, &state) != -1 || state.samplesPerSymbol != 8
+        || state.symbolCenter != 3) {
+        DSD_FPRINTF(stderr, "an unset mode should leave the symbol timing alone: sps=%d center=%d\n",
+                    state.samplesPerSymbol, state.symbolCenter);
         return 1;
     }
 
@@ -778,6 +798,160 @@ test_am_input_rules(void) {
     return 0;
 }
 
+/* TETRA reads its pi/4-DQPSK symbols from an I/Q radio input's CQPSK demodulator, or from a symbol capture of them; on
+ * any other input (Pulse, a WAV file, stdin, TCP or UDP audio) the audio arrives demodulated and is refused, before the
+ * input opens (from its spec) and after (from its type). AM and TETRA name their reasons; the other modes run anywhere. */
+static int
+test_tetra_input_rules(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    static const int runs[] = {AUDIO_IN_RTL, AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT};
+    static const int refused[] = {AUDIO_IN_PULSE, AUDIO_IN_WAV, AUDIO_IN_STDIN, AUDIO_IN_TCP, AUDIO_IN_UDP};
+    for (size_t i = 0; i < sizeof runs / sizeof runs[0]; i++) {
+        opts.audio_in_type = runs[i];
+        if (!dsd_decode_mode_runs_on_input(DSDCFG_MODE_TETRA, &opts)) {
+            DSD_FPRINTF(stderr, "TETRA should run on input type %d\n", runs[i]);
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        opts.audio_in_type = refused[i];
+        if (dsd_decode_mode_runs_on_input(DSDCFG_MODE_TETRA, &opts)) {
+            DSD_FPRINTF(stderr, "TETRA should not run on input type %d\n", refused[i]);
+            return 1;
+        }
+    }
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    if (dsd_decode_mode_runs_on_input(DSDCFG_MODE_AM, &opts)) {
+        DSD_FPRINTF(stderr, "AM should not run on a symbol capture\n");
+        return 1;
+    }
+
+    static const char* const spec_runs[] = {
+        "rtl:0:420.1M:22:0:72", "rtltcp:127.0.0.1:1234", "soapy:driver=x", "airspy",
+        "iqreplay:/tmp/x.iq",   "/tmp/cap.bin",          "cap.raw",        "cap.sym",
+        "a.b/cap.bin"};
+    static const char* const spec_refused[] = {"pulse", "/tmp/a.wav",        "-",     "tcp:127.0.0.1:7355", "udp",
+                                               "",      "/tmp/cap.binx.wav", "cap.bi"};
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    for (size_t i = 0; i < sizeof spec_runs / sizeof spec_runs[0]; i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", spec_runs[i]);
+        if (!dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_TETRA, &opts)) {
+            DSD_FPRINTF(stderr, "TETRA should run on spec %s\n", spec_runs[i]);
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof spec_refused / sizeof spec_refused[0]; i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", spec_refused[i]);
+        if (dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_TETRA, &opts)) {
+            DSD_FPRINTF(stderr, "TETRA should not run on spec '%s'\n", spec_refused[i]);
+            return 1;
+        }
+    }
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "/tmp/cap.bin");
+    if (dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_AM, &opts)
+        || !dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_DMR, &opts)) {
+        DSD_FPRINTF(stderr, "AM should not run on a symbol capture spec, DMR should\n");
+        return 1;
+    }
+    if (dsd_decode_mode_runs_on_input(DSDCFG_MODE_TETRA, NULL)
+        || dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_TETRA, NULL)) {
+        DSD_FPRINTF(stderr, "no options should not run TETRA\n");
+        return 1;
+    }
+    if (strcmp(dsd_decode_mode_needs_iq_text(DSDCFG_MODE_AM), DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT) != 0
+        || strcmp(dsd_decode_mode_needs_iq_text(DSDCFG_MODE_TETRA), DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT) != 0
+        || dsd_decode_mode_needs_iq_text(DSDCFG_MODE_DMR) != NULL) {
+        DSD_FPRINTF(stderr, "the I/Q reasons are AM's and TETRA's only\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* TETRA's symbols are timed at a whole number of samples per symbol, so only a DSP rate that is a multiple of 18 kHz runs
+ * it. Elsewhere the advice names the rate and the fix for the input in force, in a full form for the log and a brief one
+ * a toast holds. */
+static int
+expect_tetra_advice(const char* label, const dsd_opts* opts, int rate_hz, int brief, const char* want) {
+    char out[DSD_TETRA_RATE_ADVICE_MAX];
+    const int rc = dsd_tetra_dsp_rate_advice(opts, rate_hz, brief, out, sizeof out);
+    if (rc != (want[0] ? 1 : 0) || strcmp(out, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: rc=%d \"%s\", want \"%s\"\n", label, rc, out, want);
+        return 1;
+    }
+    if (brief && strlen(out) >= DSD_TETRA_RATE_ADVICE_BRIEF_MAX) {
+        DSD_FPRINTF(stderr, "%s: the brief text is %zu characters\n", label, strlen(out));
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_tetra_rate_rules(void) {
+    int rc = 0;
+    static const int runs[] = {18000, 54000, 72000, 144000};
+    static const int stalls[] = {0, -18000, 24000, 48000, 50000, 62500, 78125, 93750, 96000};
+    for (size_t i = 0; i < sizeof runs / sizeof runs[0]; i++) {
+        if (!dsd_tetra_dsp_rate_runs(runs[i])) {
+            DSD_FPRINTF(stderr, "TETRA should run at %d Hz\n", runs[i]);
+            rc = 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof stalls / sizeof stalls[0]; i++) {
+        if (dsd_tetra_dsp_rate_runs(stalls[i])) {
+            DSD_FPRINTF(stderr, "TETRA should not run at %d Hz\n", stalls[i]);
+            rc = 1;
+        }
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:420.1M:30:0:48");
+    rc |= expect_tetra_advice(
+        "rtl at 48 kHz", &opts, 48000, 0,
+        "TETRA needs a DSP rate that is a multiple of 18 kHz, not 48 kHz: set the DSP bandwidth to 72 "
+        "kHz (-i rtl:dev:freq:gain:ppm:72)");
+    rc |= expect_tetra_advice("rtl at 48 kHz, brief", &opts, 48000, 1,
+                              "DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
+    rc |= expect_tetra_advice("rtl at 72 kHz", &opts, 72000, 0, "");
+    rc |= expect_tetra_advice("rate not known yet", &opts, 0, 0, "");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    rc |= expect_tetra_advice(
+        "rtl_tcp at 24 kHz", &opts, 24000, 0,
+        "TETRA needs a DSP rate that is a multiple of 18 kHz, not 24 kHz: set the DSP bandwidth to 72 "
+        "kHz (-i rtltcp:host:port:freq:gain:ppm:72)");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=sdrplay");
+    rc |= expect_tetra_advice(
+        "SoapySDR at 62.5 kHz", &opts, 62500, 0,
+        "TETRA needs a DSP rate that is a multiple of 18 kHz, not 62.5 kHz: set the DSP bandwidth to "
+        "72 kHz (-i soapy:args:freq:gain:ppm:72), which needs a device that delivers 1.152 MS/s");
+    rc |= expect_tetra_advice("SoapySDR, brief", &opts, 62500, 1,
+                              "DSP rate 62.5 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:serial=0123456789abcdef");
+    rc |= expect_tetra_advice(
+        "Airspy at 78.125 kHz", &opts, 78125, 0,
+        "TETRA needs a DSP rate that is a multiple of 18 kHz, not 78.125 kHz: no Airspy sample rate "
+        "halves to one; use an RTL-SDR at a 72 kHz DSP bandwidth (-i rtl:dev:freq:gain:ppm:72)");
+    rc |= expect_tetra_advice("Airspy, brief", &opts, 93750, 1,
+                              "DSP rate 93.75 kHz is no multiple of 18 kHz, and no Airspy rate is one");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:/tmp/tetra.iq.json");
+    rc |=
+        expect_tetra_advice("replay at 50 kHz", &opts, 50000, 0,
+                            "TETRA needs a DSP rate that is a multiple of 18 kHz, not 50 kHz: an I/Q replay keeps its "
+                            "capture's rate; capture TETRA at a 72 kHz DSP bandwidth");
+    rc |= expect_tetra_advice("replay, brief", &opts, 50000, 1,
+                              "DSP rate 50 kHz is no multiple of 18 kHz, and a replay keeps its capture's rate");
+    rc |= expect_tetra_advice("no options read as an RTL-SDR", NULL, 48000, 1,
+                              "DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
+    char tiny[1];
+    if (dsd_tetra_dsp_rate_advice(&opts, 48000, 0, NULL, 8U) != -1
+        || dsd_tetra_dsp_rate_advice(&opts, 48000, 0, tiny, 0U) != -1) {
+        DSD_FPRINTF(stderr, "a missing buffer should be refused\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 /*
  * The menu's mode picker and the label that reads the mode back both come from
  * this table; every preset needs a name and nothing outside the enum may crash.
@@ -805,6 +979,7 @@ test_display_names(void) {
         {DSDCFG_MODE_M17, "M17"},
         {DSDCFG_MODE_ANALOG, "Analog"},
         {DSDCFG_MODE_AM, "AM"},
+        {DSDCFG_MODE_TETRA, "TETRA"},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -815,8 +990,8 @@ test_display_names(void) {
             return 1;
         }
     }
-    /* Every enumerator between UNSET and the last preset (AM) is covered by the table above. */
-    for (int m = (int)DSDCFG_MODE_UNSET; m <= (int)DSDCFG_MODE_AM; m++) {
+    /* Every enumerator between UNSET and the last preset (TETRA) is covered by the table above. */
+    for (int m = (int)DSDCFG_MODE_UNSET; m <= (int)DSDCFG_MODE_TETRA; m++) {
         if (strcmp(dsd_decode_mode_display_name((dsdneoUserDecodeMode)m), "Unknown") == 0) {
             DSD_FPRINTF(stderr, "mode %d has no display name\n", m);
             return 1;
@@ -830,10 +1005,103 @@ test_display_names(void) {
     return 0;
 }
 
+/* Leaving the TETRA preset drops what the TETRA decoder published for the frontends (bumping its generation), as it
+   drops the decoder's state; staying on TETRA keeps it. */
+static int
+test_leaving_tetra_clears_its_publication(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    int rc = 0;
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0
+        || opts->frame_tetra != 1) {
+        DSD_FPRINTF(stderr, "TETRA preset did not enable the TETRA decoder\n");
+        rc = 1;
+    }
+    state->tetra_pub.generation = 4U;
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    state->tetra_pub.mcc = 262U;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0
+        || state->tetra_pub.mode != DSD_TETRA_MODE_TMO_DOWNLINK || state->tetra_pub.generation != 4U) {
+        DSD_FPRINTF(stderr, "re-applying TETRA should keep its publication\n");
+        rc = 1;
+    }
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0
+        || opts->frame_tetra != 0 || state->tetra_pub.mode != DSD_TETRA_MODE_NONE || state->tetra_pub.mcc != 0U
+        || state->tetra_pub.generation != 5U) {
+        DSD_FPRINTF(stderr, "leaving TETRA should clear its publication: mode %u generation %u\n",
+                    (unsigned)state->tetra_pub.mode, (unsigned)state->tetra_pub.generation);
+        rc = 1;
+    }
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int g_tetra_ext_cleanups;
+
+static void
+count_tetra_ext_cleanup(void* ptr) {
+    g_tetra_ext_cleanups++;
+    free(ptr);
+}
+
+/* A mode no preset implements (UNSET, which a config's [mode] without a decode key passes) is refused before anything
+   changes: a TETRA session keeps its decoder flag, its state extension, the burst the frame sync captured for it and
+   its publication. */
+static int
+test_refused_mode_keeps_tetra(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    int* ext = (int*)calloc(1U, sizeof(int));
+    int rc = 0;
+    if (!opts || !state || !ext) {
+        free(ext);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0
+        || dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, ext, count_tetra_ext_cleanup) != 0) {
+        DSD_FPRINTF(stderr, "TETRA session setup failed\n");
+        free(ext);
+        dsd_state_ext_free_all(state);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    g_tetra_ext_cleanups = 0;
+    state->tetra_sync.polarity = 1;
+    state->tetra_pub.generation = 4U;
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_UNSET, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state) != -1) {
+        DSD_FPRINTF(stderr, "an unset mode should be refused\n");
+        rc = 1;
+    }
+    if (opts->frame_tetra != 1 || dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) != ext
+        || g_tetra_ext_cleanups != 0 || state->tetra_sync.polarity != 1
+        || state->tetra_pub.mode != DSD_TETRA_MODE_TMO_DOWNLINK || state->tetra_pub.generation != 4U) {
+        DSD_FPRINTF(stderr, "a refused mode changed the TETRA session: frame_tetra %d cleanups %d\n", opts->frame_tetra,
+                    g_tetra_ext_cleanups);
+        rc = 1;
+    }
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_display_names();
+    rc |= test_leaving_tetra_clears_its_publication();
+    rc |= test_refused_mode_keeps_tetra();
     rc |= test_auto_profile_differences();
     rc |= test_p25p2_prefers_qpsk();
     rc |= test_dmr_prefers_gfsk();
@@ -847,6 +1115,8 @@ main(void) {
     rc |= test_analog_demod_follows_the_preset();
     rc |= test_am_preset();
     rc |= test_am_input_rules();
+    rc |= test_tetra_rate_rules();
+    rc |= test_tetra_input_rules();
     return rc;
 }
 

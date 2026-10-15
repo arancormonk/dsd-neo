@@ -195,6 +195,28 @@ validate_analog_tone_list_entry(const dsdcfg_schema_entry_t* entry, const char* 
     return 1;
 }
 
+/* rtl_bw_khz takes a selectable DSP bandwidth, not any value in the schema's range: applying the config runs any other
+   at the 48 kHz default (dsd_analog_rtl_dsp_bw_or_default()), so the warning names the list and what runs instead. Text
+   that is no integer is left to the schema walk's integer check. */
+static int
+validate_rtl_bw_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
+                      const char* diag_section, const char* diag_key) {
+    int khz = 0;
+    if (strcmp(entry->section, "input") != 0 || strcmp(entry->key, "rtl_bw_khz") != 0
+        || user_config_parse_int_value(val, &khz) != 0) {
+        return 0;
+    }
+    if (!dsd_analog_rtl_dsp_bw_is_selectable(khz)) {
+        char list[64];
+        char msg[160];
+        (void)dsd_analog_rtl_dsp_bw_list(DSD_ANALOG_RTL_DSP_BW_MAX_KHZ, list, sizeof list);
+        DSD_SNPRINTF(msg, sizeof msg, "Value %d is not a DSP bandwidth (%s kHz); %d kHz is used", khz, list,
+                     DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, line_num, diag_section, diag_key, msg);
+    }
+    return 1;
+}
+
 static void
 validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
                      const char* diag_section, const char* diag_key) {
@@ -202,7 +224,8 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
         return;
     }
     if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)
-        || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)) {
+        || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)
+        || validate_rtl_bw_entry(entry, val, diags, line_num, diag_section, diag_key)) {
         return;
     }
     if (strcmp(entry->section, "input") == 0 && strncmp(entry->key, "airspy_", 7) == 0) {
@@ -438,7 +461,7 @@ validate_composed_scan_max_visit_ms(const dsdneoUserConfig* cfg, const char* sec
 static int
 validate_configured_rtl_bw_khz(int bw) {
     /* What applying the config leaves in force: an unset or unsupported value is the 48 kHz default. */
-    return dsd_analog_rtl_dsp_bw_is_selectable(bw) ? bw : 48;
+    return dsd_analog_rtl_dsp_bw_or_default(bw);
 }
 
 /* Whether startup builds an RTL-SDR or rtl_tcp input with rtl_bw_khz (it takes rtl_freq, and a host for rtl_tcp). */

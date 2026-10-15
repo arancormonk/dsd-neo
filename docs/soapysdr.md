@@ -117,7 +117,9 @@ Optional tuning keys (also shared with RTL/RTL-TCP):
 - `rtl_freq`
 - `rtl_gain`
 - `rtl_ppm`
-- `rtl_bw_khz`
+- `rtl_bw_khz` (4, 6, 8, 12, 16, 24, 48 or 72 kHz; 72 is TETRA's, for which DSD-neo asks the device for 1,152,000 Hz.
+  A device whose rate grid has no such rate runs at the first rate its decimation reaches at or above 72 kHz, which a
+  fixed grid rarely makes a multiple of 18 kHz; TETRA then warns at stream start)
 - `rtl_sql`
 - `rtl_volume` (monitor/non-symbol gain)
 

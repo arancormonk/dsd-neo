@@ -251,7 +251,7 @@ dependency_scan_targets=()
 
 for p in "${changed_paths[@]}"; do
   case "$p" in
-    .github/dependabot.yml | .github/requirements/* | vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh | tools/ci-dependency-pins.env | cmake/Pffft.cmake | tools/update_pffft.py | tools/update_aur_pffft.py | tools/pffft_metadata.py | CMakeLists.txt)
+    .github/dependabot.yml | .github/requirements/* | vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh | tools/ci-dependency-pins.env | cmake/Pffft.cmake | tools/update_pffft.py | tools/update_aur_pffft.py | tools/pffft_metadata.py | cmake/TetraCrypto.cmake | tools/update_tetra_crypto.py | tools/update_aur_tetra_crypto.py | tools/tetra_crypto_metadata.py | CMakeLists.txt)
       dependency_scan_targets+=("$p")
       ;;
   esac
@@ -261,7 +261,7 @@ for p in "${changed_paths[@]}"; do
   # The per-TU analyzers then take the whole tree, as on push. Matched before the
   # vendored snapshots are dropped below.
   case "$p" in
-    tools/ci-dependency-pins.env | cmake/Pffft.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
+    tools/ci-dependency-pins.env | cmake/Pffft.cmake | cmake/TetraCrypto.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
       analysis_full_scan=1
       ;;
   esac

@@ -156,8 +156,9 @@ jobs:
           Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md $docDir -ErrorAction SilentlyContinue
           Copy-Item -Force 'src/third_party/ezpwd/lesser.txt' (Join-Path $licenseDir 'ezpwd-LGPL-2.1-or-later.txt') -ErrorAction SilentlyContinue
           Copy-Item -Force 'build/win-msvc-release/pffft-licenses/pffft-LICENSE.txt','build/win-msvc-release/pffft-licenses/pffft-NOTICES.txt' $licenseDir -ErrorAction Stop
+          Copy-Item -Force 'build/win-msvc-release/tetra_crypto-licenses/tetra_crypto-LICENSE.txt' $licenseDir -ErrorAction Stop
           Copy-Item -Force 'android/third_party/libairspy/LICENSE' (Join-Path $licenseDir 'libairspy-LICENSE.txt') -ErrorAction Stop
-          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/libairspy-LICENSE.txt')
+          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt')
           foreach ($f in $required) {
             $p = Join-Path $docDir $f
             if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
@@ -242,15 +243,17 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Record pinned PFFFT in SBOM
+      - name: Record pinned PFFFT and TETRA_crypto in SBOM
         shell: bash
         env:
           SBOM_PATH: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           fi
 
       - name: Upload enriched SBOM

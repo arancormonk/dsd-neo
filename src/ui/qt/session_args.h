@@ -69,12 +69,14 @@ enum class SessionArgsError {
     /* Issue #524: an AM system (-fM) on a source whose audio arrives already demodulated (network or file). */
     AmNeedsRadio,
     /* Issue #524: an AM system on a USB or rtl_tcp radio whose DSP bandwidth cannot filter the AM channel. */
-    AmBandwidth
+    AmBandwidth,
+    /* A TETRA system (-fT) on a source that is neither a radio nor a symbol capture file: its audio arrives demodulated. */
+    TetraNeedsIq
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::AmBandwidth;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::TetraNeedsIq;
 
 /** ASCII whitespace removed, optional 0x stripped, uppercase hex. QString copies
  * cannot promise erasure; never expose returned key text in diagnostics. */
@@ -103,6 +105,9 @@ bool session_args_freq_valid(const QString& freqMhz);
  */
 bool session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz);
 
+/** @brief The DSP bandwidths, in kHz, that filter the 6 kHz AM channel: "8, 12, 16, 24, 48 or 72". */
+QString session_args_am_bandwidth_choices();
+
 /**
  * @brief The CLI-shaped argv for @p system, or an empty list with @p error set.
  *
@@ -129,7 +134,8 @@ class SessionArgsBuilder : public QObject {
 
     /**
      * @brief Validate one saved-system field map without returning key-bearing argv.
-     * @return {"ok": bool, "error": category, "errorText": sentence}.
+     * @return {"ok": bool, "error": category, "errorText": sentence}, and for "am-bandwidth" "bandwidthChoices":
+     *         session_args_am_bandwidth_choices().
      */
     Q_INVOKABLE QVariantMap build(const QVariantMap& system) const;
     /** Resolve retained keys and start entirely in C++; adds a non-secret "started" boolean. */

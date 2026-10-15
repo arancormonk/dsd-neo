@@ -596,6 +596,8 @@ rules:
         # The project-owned pffft wrapper. The two spectrum producers go through it
         # and are deliberately not listed here.
         - /src/io/radio/rtl_fft_cache.h
+        # The project-owned TETRA_crypto wrapper; TETRA code calls <dsd-neo/crypto/tetra_tea.h>.
+        - /src/crypto/tetra_tea.c
         - /tests/protocol/p25/test_p25_p2_rs28_limits.cpp
     pattern-either:
       - pattern: '#include "src/third_party/..."'
@@ -606,6 +608,12 @@ rules:
       - pattern: '#include <pffft.h>'
       - pattern: '#include "pffft/..."'
       - pattern: '#include <pffft/...>'
+      - pattern: '#include "tea1.h"'
+      - pattern: '#include <tea1.h>'
+      - pattern: '#include "tea2.h"'
+      - pattern: '#include <tea2.h>'
+      - pattern: '#include "tea3.h"'
+      - pattern: '#include <tea3.h>'
 
   # Every clock read names its domain. The decode clock (dsd_decode_*) serves
   # decode decisions and decoded-output timestamps and follows the capture

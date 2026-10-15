@@ -1896,6 +1896,37 @@ main(void) {
     assert(state->samplesPerSymbol == 5);
     assert(state->symbolCenter == 2);
 
+    /* TETRA runs pi/4-DQPSK at 18000 sym/s, and its rf_mod is the QPSK family's, which on its own reads as P25 CQPSK:
+     * its sync decides, the sync just lost (lastsynctype) included. A P25 alias another protocol left must not bring
+     * P25 timing to it. */
+    for (int pass = 0; pass < 2; pass++) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        opts->trunk_enable = 1;
+        opts->trunk_is_tuned = 1;
+        opts->audio_in_type = AUDIO_IN_PULSE;
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = 1;
+
+        state->p25_cc_freq = 380012500;
+        state->trunk_cc_freq = 380012500;
+        state->p25_cc_is_tdma = 2;
+        state->synctype = pass == 0 ? DSD_SYNC_TETRA_SB_POS : DSD_SYNC_NONE;
+        state->lastsynctype = DSD_SYNC_TETRA_NDB_NEG;
+        state->samplesPerSymbol = 3;
+        state->symbolCenter = 1;
+        state->rf_mod = 1;
+        state->sps_hunt_counter = 5;
+
+        g_setfreq_calls = 0;
+        assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+        assert(g_setfreq_calls == 1);
+        assert(state->rf_mod == 1);
+        assert(state->samplesPerSymbol == 3);
+        assert(state->symbolCenter == 1);
+        assert(state->sps_hunt_counter == 5);
+    }
+
     /* A parked non-P25 trunk-scan target that has not synced yet reads as P25 by synctype alone
      * (DSD_SYNC_P25P1_POS is 0), so the coordinator's own target type is the authority. */
     DSD_MEMSET(opts, 0, sizeof(*opts));

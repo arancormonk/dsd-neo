@@ -19,8 +19,8 @@ dsd_frame_sync_hook_scan_visit_should_yield(const dsd_opts* opts, dsd_state* sta
 }
 
 void
-dsd_frame_sync_hooks_set(dsd_frame_sync_hooks hooks) {
-    g_frame_sync_hooks = hooks;
+dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks) {
+    g_frame_sync_hooks = hooks ? *hooks : (dsd_frame_sync_hooks){0};
 }
 
 void

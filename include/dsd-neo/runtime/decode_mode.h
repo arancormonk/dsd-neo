@@ -50,7 +50,9 @@ typedef enum DSD_ATTR_PACKED {
 int dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode);
 
 /**
- * @brief Apply a decode preset to opts/state.
+ * @brief Apply a decode preset to opts/state: dsd_stage_decode_mode_preset() and its commit at once.
+ *
+ * Every preset other than TETRA leaves the TETRA decoder (dsd_decode_mode_leave_tetra()).
  *
  * @param mode Decode mode preset.
  * @param profile Caller profile controlling preset semantics.
@@ -62,17 +64,52 @@ int dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfi
                                  dsd_state* state);
 
 /**
+ * @brief Leave the TETRA decoder: turn it off (dsd_opts::frame_tetra) and drop what it decoded, its state extension,
+ * the burst the frame sync last captured for it and what it published for the frontends.
+ *
+ * Every preset other than TETRA leaves it as it applies (dsd_apply_decode_mode_preset()). A selector that sets the
+ * decoder flags itself, as the CLI's -fp, -fh, -fH, -fe, -fE, -fZ, -fB, -fP and -fU do, leaves it here, so the last
+ * selector replaces TETRA rather than running beside it. NULL arguments do nothing.
+ */
+void dsd_decode_mode_leave_tetra(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Stage a decode preset over opts/state, for a transition that may still be put back before it commits.
+ *
+ * Writes every setting dsd_apply_decode_mode_preset() does, the TETRA decoder flag (dsd_opts::frame_tetra) turned off
+ * for a mode other than TETRA included, but leaves what the TETRA decoder holds, so that settings captured before and
+ * put back after (a typed scan row staged for its tune, a mode change the front end refuses at once) bring a TETRA
+ * session back whole. The transition's commit drops it when the settings in force run no TETRA decoder
+ * (dsd_decode_mode_commit_tetra()).
+ *
+ * @return 0 on success, -1 for invalid args or a mode no preset implements (nothing changes then).
+ */
+int dsd_stage_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
+                                 dsd_state* state);
+
+/**
+ * @brief The commit of a decode-mode transition staged with dsd_stage_decode_mode_preset(): when the settings in force
+ * run no TETRA decoder, leave it (dsd_decode_mode_leave_tetra()); a transition put back to TETRA keeps the session.
+ * NULL arguments do nothing.
+ */
+void dsd_decode_mode_commit_tetra(dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief Rebuild preset symbol timing for a decode mode at a target PCM rate.
  *
  * Starts from the preset's canonical 48 kHz timing and rescales it to the
  * provided effective PCM rate. This is used when a mode preset is combined
  * with non-48 kHz file/socket input so the slicer starts with the correct SPS.
+ * A mode no preset implements (DSDCFG_MODE_UNSET, which a config's [mode]
+ * without a decode key carries) ran no preset, so it has no preset timing
+ * either: the state is left as it is, and the caller keeps the session's own.
  *
  * @param mode Decode mode preset.
  * @param effective_input_rate_hz Effective PCM rate after any staged upsample.
  * @param state Decoder state receiving `samplesPerSymbol` and `symbolCenter`.
+ * @return 0 when the timing was rebuilt; -1, changing nothing, for a NULL @p state or a mode no preset implements.
  */
-void dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_input_rate_hz, dsd_state* state);
+int dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_input_rate_hz, dsd_state* state);
 
 /**
  * @brief The symbol profile a decode mode runs on.
@@ -87,7 +124,7 @@ void dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effectiv
  * is not always where @c dsd_apply_decode_mode_symbol_timing() starts a mode off.
  */
 typedef struct {
-    int symbol_rate_hz;                                 /**< 2400, 4800, 6000 or 9600. */
+    int symbol_rate_hz;                                 /**< 2400, 4800, 6000, 9600 or 18000. */
     int levels;                                         /**< 2 or 4. */
     dsd_frame_sync_sps_profile_index sps_profile_index; /**< Hunt profile carrying this mode. */
 } dsd_decode_mode_profile;
@@ -163,6 +200,16 @@ const char* dsd_decode_mode_display_name(dsdneoUserDecodeMode mode);
 #define DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT                                                                               \
     "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA"
 
+/** @brief Why TETRA is refused on an input that delivers already demodulated audio. */
+#define DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT                                                                            \
+    "TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from demodulated audio"
+
+/**
+ * @brief Why @p mode cannot run on an input that delivers demodulated audio: DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT for AM,
+ * DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT for TETRA, NULL for every mode that runs on any input.
+ */
+const char* dsd_decode_mode_needs_iq_text(dsdneoUserDecodeMode mode);
+
 /**
  * @brief Whether the open input delivers I/Q the radio front end demodulates.
  *
@@ -192,13 +239,22 @@ int dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts);
 /**
  * @brief Whether @p mode can run on the open input @p opts name (dsd_decode_mode_input_is_iq()).
  *
- * AM needs an I/Q radio input; every other preset runs on any input (the Analog preset monitors PCM audio as it
- * arrives, whatever demodulated it). Before the engine opens the input, ask dsd_decode_mode_input_spec_is_iq().
+ * AM needs an I/Q radio input. TETRA needs one too, or a symbol capture (a .bin, .raw or .sym file), which carries the
+ * symbols an I/Q radio input's CQPSK demodulator recovered: discriminator audio has lost the phase steps its
+ * pi/4-DQPSK carries. Every other preset runs on any input (the Analog preset monitors PCM audio as it arrives,
+ * whatever demodulated it). Before the engine opens the input, ask dsd_decode_mode_runs_on_input_spec().
  *
- * @return 1 when it can, 0 when the caller must refuse it (or fall back to Analog) with
- *         DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT.
+ * @return 1 when it can, 0 when the caller must refuse it (or fall back) with dsd_decode_mode_needs_iq_text().
  */
 int dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts);
+
+/**
+ * @brief dsd_decode_mode_runs_on_input() for the input @p opts name, before the engine opens it.
+ *
+ * I/Q is dsd_decode_mode_input_spec_is_iq(); a symbol capture is a file whose name ends in .bin, .raw or .sym, as
+ * openAudioInDevice() dispatches it (dsd_audio_path_input_kind()).
+ */
+int dsd_decode_mode_runs_on_input_spec(dsdneoUserDecodeMode mode, const dsd_opts* opts);
 
 /** @brief The log notice for dsd_decode_mode_keep_saved_am() turning autosave off, which its callers log. */
 #define DSD_DECODE_MODE_KEEP_SAVED_AM_NOTICE "Autosave disabled for this session so the saved decode = am is kept"

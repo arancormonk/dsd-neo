@@ -1329,6 +1329,7 @@ add_custom_target(
 )
 
 include(cmake/Pffft.cmake)
+include(cmake/TetraCrypto.cmake)
 
 # Install license/notice files with binaries
 install(
@@ -1344,6 +1345,10 @@ install(
     FILES
         "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
         "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+)
+install(
+    FILES "${DSD_TETRA_CRYPTO_LICENSE_DIR}/tetra_crypto-LICENSE.txt"
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
 )
 if(DSD_HAS_AIRSPY)

@@ -50,7 +50,7 @@ head_sha=$(git rev-parse -q --verify HEAD 2> /dev/null || true)
 analysis_full_scan=0
 is_dependency_input() {
   case "$1" in
-    tools/ci-dependency-pins.env | cmake/Pffft.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
+    tools/ci-dependency-pins.env | cmake/Pffft.cmake | cmake/TetraCrypto.cmake | src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*)
       return 0
       ;;
   esac
@@ -179,7 +179,7 @@ for p in "${changed_paths[@]}"; do
   esac
 
   case "$p" in
-    .github/dependabot.yml | .github/requirements/* | vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh | tools/ci-dependency-pins.env | cmake/Pffft.cmake | tools/update_pffft.py | tools/update_aur_pffft.py | tools/pffft_metadata.py | CMakeLists.txt)
+    .github/dependabot.yml | .github/requirements/* | vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh | tools/ci-dependency-pins.env | cmake/Pffft.cmake | tools/update_pffft.py | tools/update_aur_pffft.py | tools/pffft_metadata.py | cmake/TetraCrypto.cmake | tools/update_tetra_crypto.py | tools/update_aur_tetra_crypto.py | tools/tetra_crypto_metadata.py | CMakeLists.txt)
       dependency_scan_targets+=("$p")
       ;;
   esac

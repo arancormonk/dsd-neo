@@ -189,10 +189,12 @@ set +e
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     "${CMAKE_ARGS[@]}" || exit $?
-  pffft_source_dir=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$BUILD_DIR/CMakeCache.txt")
-  if [[ -n "$pffft_source_dir" ]]; then
-    SCAN_ARGS+=(--exclude "$pffft_source_dir")
-  fi
+  for dependency in DSD_PFFFT_SOURCE_DIR DSD_TETRA_CRYPTO_SOURCE_DIR; do
+    dependency_source_dir=$(sed -n "s/^$dependency:INTERNAL=//p" "$BUILD_DIR/CMakeCache.txt")
+    if [[ -n "$dependency_source_dir" ]]; then
+      SCAN_ARGS+=(--exclude "$dependency_source_dir")
+    fi
+  done
   echo ""
   echo "Building under scan-build ..."
   scan-build "${SCAN_ARGS[@]}" "${BUILD_CMD[@]}"

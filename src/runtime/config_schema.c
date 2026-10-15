@@ -11,10 +11,15 @@
  */
 
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
+
+/* A numeric default as the schema's text: the value of the macro, not its name. */
+#define DSDCFG_SCHEMA_STR_(x) #x
+#define DSDCFG_SCHEMA_STR(x)  DSDCFG_SCHEMA_STR_(x)
 
 static const dsdcfg_schema_entry_t s_schema[] = {
     /* [input] section */
@@ -25,7 +30,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"input", "rtl_freq", "RTL-SDR frequency (supports K/M/G suffix)", "851.375M", NULL, DSDCFG_TYPE_FREQ, 0, 0},
     {"input", "rtl_gain", "RTL-SDR gain in dB (0 for AGC)", "0", NULL, DSDCFG_TYPE_INT, 0, 49},
     {"input", "rtl_ppm", "RTL-SDR frequency correction in PPM", "0", NULL, DSDCFG_TYPE_INT, -1000, 1000},
-    {"input", "rtl_bw_khz", "RTL-SDR DSP bandwidth in kHz", "48", NULL, DSDCFG_TYPE_INT, 4, 48},
+    {"input", "rtl_bw_khz", "RTL-SDR DSP bandwidth in kHz", DSDCFG_SCHEMA_STR(DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ), NULL,
+     DSDCFG_TYPE_INT, 4, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ},
     {"input", "rtl_sql", "Squelch level in dB (0 to disable); radio and audio inputs", "0", NULL, DSDCFG_TYPE_INT, -120,
      0},
     {"input", "rtl_sql_mode",
@@ -81,8 +87,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
 
     /* [mode] section */
     {"mode", "decode", "Decode mode preset", "auto",
-     "auto|p25p1|p25p2|dmr|dmr_mono|nxdn48|nxdn96|x2tdma|ysf|dstar|edacs_pv|dpmr|m17|tdma|analog|am", DSDCFG_TYPE_ENUM,
-     0, 0},
+     "auto|p25p1|p25p2|dmr|dmr_mono|nxdn48|nxdn96|x2tdma|ysf|dstar|edacs_pv|dpmr|m17|tdma|analog|am|tetra",
+     DSDCFG_TYPE_ENUM, 0, 0},
     {"mode", "dmr_mono", "Enable the DMR single-slot mono decoder without changing the decode preset", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
     {"mode", "dmr_lrrp_ports", "Extra UDP ports decoded as DMR LRRP, comma-separated (at most 8)", "", NULL,

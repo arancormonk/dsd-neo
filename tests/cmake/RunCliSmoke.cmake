@@ -56,7 +56,7 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "")
     set(_want_output_regex
-        "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the RTL DSP bandwidth to 48 kHz"
+        "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the RTL DSP bandwidth to 48 or 72 kHz"
     )
     set(_forbid_output_regex "radio stream")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused-rtl")
@@ -80,7 +80,7 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused-rtl")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "")
     set(_want_output_regex
-        "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the RTL DSP bandwidth to 48 kHz"
+        "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the RTL DSP bandwidth to 48 or 72 kHz"
     )
     set(_forbid_output_regex
         "radio stream|RTL Input:|device[(]s[)]|No supported devices|RTL-SDR input"
@@ -145,7 +145,7 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "am-width-rate-refused")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "")
     set(_want_output_regex
-        "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate [(]the largest width it fits is 13[.]2 kHz[)]; set the RTL DSP bandwidth to 24 or 48 kHz"
+        "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate [(]the largest width it fits is 13[.]2 kHz[)]; set the RTL DSP bandwidth to 24, 48 or 72 kHz"
     )
     set(_forbid_output_regex "radio stream")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "am-width-rate-refused-rtl")
@@ -169,7 +169,7 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "am-width-rate-refused-rtl")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "")
     set(_want_output_regex
-        "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate [(]the largest width it fits is 13[.]2 kHz[)]; set the RTL DSP bandwidth to 24 or 48 kHz"
+        "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate [(]the largest width it fits is 13[.]2 kHz[)]; set the RTL DSP bandwidth to 24, 48 or 72 kHz"
     )
     set(_forbid_output_regex
         "radio stream|RTL Input:|device[(]s[)]|No supported devices|RTL-SDR input"
@@ -190,7 +190,7 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "am-default-rate-refused")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "")
     set(_want_output_regex
-        "AM bandwidth 6 kHz does not fit the 6 kHz DSP rate [(]the largest width it fits is 4[.]2 kHz[)]; set the RTL DSP bandwidth to 8, 12, 16, 24 or 48 kHz"
+        "AM bandwidth 6 kHz does not fit the 6 kHz DSP rate [(]the largest width it fits is 4[.]2 kHz[)]; set the RTL DSP bandwidth to 8, 12, 16, 24, 48 or 72 kHz"
     )
     set(_forbid_output_regex "radio stream")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "am-width-fits-low-rate")

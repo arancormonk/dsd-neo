@@ -187,6 +187,14 @@ qt_add_resources(
         "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
 )
 
+qt_add_resources(
+    dsd-neo_ui_qt
+    "dsd_neo_tetra_crypto_notices"
+    PREFIX "/dsdneo/notices"
+    BASE "${DSD_TETRA_CRYPTO_LICENSE_DIR}"
+    FILES "${DSD_TETRA_CRYPTO_LICENSE_DIR}/tetra_crypto-LICENSE.txt"
+)
+
 # Qt's unprefixed `signals`/`slots`/`emit` macros collide with project C headers
 # (dsd_call_state_snapshot has a `slots` member). Use the Q_-prefixed spellings.
 target_compile_definitions(dsd-neo_ui_qt PUBLIC QT_NO_KEYWORDS)

@@ -42,7 +42,8 @@ This project is an active work in progress as we decouple from the upstream fork
 - A performance‑enhanced fork of [lwvmobile/dsd-fme](https://github.com/lwvmobile/dsd-fme), which is a fork of [szechyjs/dsd](https://github.com/szechyjs/dsd)
 - Modularized fork with clear boundaries: `runtime`, `platform`, `dsp`, `io`, `engine`, `fec`, `crypto`, `protocol`, `core`, plus `ui` and a CLI app.
 - Protocol coverage: DMR, dPMR, D‑STAR, NXDN, P25 Phase 1/2, X2‑TDMA, EDACS, ProVoice, M17
-  (RF/UDP LSF, stream, packet, BERT), YSF.
+  (RF/UDP LSF, stream, packet, BERT), YSF, TETRA (trunked downlink and direct mode; speech through a codec library
+  the user supplies with `--tetra-codec`).
 - Requires [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) 2.3 or newer for IMBE/AMBE vocoder primitives.
 - Public headers live under `include/dsd-neo/...` and are included as `#include <dsd-neo/<module>/<header>>`.
 
@@ -134,6 +135,7 @@ Requirements
   - Required: libsndfile; OpenSSL 3.x libcrypto; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
   - Optional: librtlsdr (RTL‑SDR support; 2.0.3 or newer for RTL‑SDR Blog V4/V4L dongles), SoapySDR >= 0.8.1 (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl >= 7.56.0 (rdio API uploads), expat 2.x (RadioReference import), PortAudio on non-Windows builds, help2man (man page generation).
   - Vocoder: mbelib-neo 2.3+ (`mbe-neo` CMake package) is required.
+  - TETRA speech is not a build dependency. At runtime, `--tetra-codec <file>` names a speech codec library the user supplies. The ETSI ACELP sources stay on the developer's machine; see `tools/tetra/README.md`.
 
 OS package hints
 
@@ -476,10 +478,10 @@ Quick examples
 - IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR, RTL‑TCP, SoapySDR), IQ capture/replay, network audio (TCP/UDP PCM and M17 UDP), and control (UDP/rigctl/serial).
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.
 - Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES, ECDSA, and helpers.
-- Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
+- Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF, TETRA.
 - UI: `src/ui/terminal` (ncurses frontend, target `dsd-neo_ui_terminal`), `src/ui/qt` (Qt Quick frontend, target `dsd-neo_ui_qt`, option `DSD_ENABLE_QT_UI`).
 - Android app: `android/` — Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr for USB‑OTG dongles.
-- Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), pinned PFFFT fork via `cmake/Pffft.cmake` (STATIC target `dsd-neo_pffft`).
+- Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), pinned PFFFT fork via `cmake/Pffft.cmake` (STATIC target `dsd-neo_pffft`), pinned TETRA_crypto TEA1/2/3 keystream generators via `cmake/TetraCrypto.cmake` (STATIC target `dsd-neo_tetra_crypto`).
 
 ## Tooling
 
@@ -546,3 +548,13 @@ DSD-neo. For offline packaging, provide
 `-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft`; see
 [dependency management](docs/dependencies.md#pinned-pffft-source) for checksums,
 manual updates, scalar builds and AUR packaging. No PFFFT runtime package is needed.
+
+### TETRA crypto source acquisition
+
+The build also downloads a pinned, checksum-verified TETRA_crypto revision and
+compiles its TEA1/TEA2/TEA3 keystream generators into DSD-neo. For offline
+packaging, provide
+`-DFETCHCONTENT_SOURCE_DIR_DSD_TETRA_CRYPTO=/absolute/path/to/TETRA_crypto`; see
+[dependency management](docs/dependencies.md#pinned-tetra_crypto-source) for
+checksums, manual updates and AUR packaging. No TETRA crypto runtime package is
+needed.

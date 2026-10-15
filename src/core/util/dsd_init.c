@@ -167,6 +167,17 @@ init_opts_squelch_defaults(dsd_opts* opts) {
     opts->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
 }
 
+/* TETRA off, with no uplink decoding and no network identity preset (--tetra-uplink, --tetra-net). */
+static void
+init_opts_tetra_defaults(dsd_opts* opts) {
+    opts->frame_tetra = 0;
+    opts->tetra_uplink = 0;
+    opts->tetra_net_preset = 0;
+    opts->tetra_net_mcc = 0;
+    opts->tetra_net_mnc = 0;
+    opts->tetra_net_colour = 0;
+}
+
 static void
 init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->dmr_stereo_wav = 0;  //flag for per call dmr stereo wav recordings
@@ -221,8 +232,8 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->input_volume_multiplier = 1;
     opts->rtl_udp_port = 0; // external RTL retune control is disabled by default
     DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", "127.0.0.1");
-    opts->rtl_dsp_bw_khz = 48;  // DSP baseband kHz (4,6,8,12,16,24,48). Not tuner IF BW.
-    opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
+    opts->rtl_dsp_bw_khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ; // DSP baseband kHz (a selectable one). Not tuner IF BW.
+    opts->rtlsdr_ppm_error = 0;                               //initialize ppm with 0 value;
     opts->rtlsdr_center_freq =
         850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
     dsd_airspy_config_defaults(&opts->airspy);
@@ -479,6 +490,7 @@ initOpts(dsd_opts* opts) {
     init_opts_display_and_audio_defaults(opts);
     init_opts_output_defaults(opts);
     init_opts_decoder_and_input_defaults(opts);
+    init_opts_tetra_defaults(opts);
     init_opts_squelch_defaults(opts);
     init_opts_runtime_and_network_defaults(opts);
     init_opts_trunking_and_filter_defaults(opts);
@@ -1179,6 +1191,7 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     //multi-key array
     DSD_MEMSET(state->rkey_array, 0, sizeof(state->rkey_array));
     DSD_MEMSET(state->rkey_array_loaded, 0, sizeof(state->rkey_array_loaded));
+    DSD_MEMSET(state->tetra_air_keys, 0, sizeof(state->tetra_air_keys));
     state->keyloader = 0; //keyloader off
 
     //Remus DMR End Call Alert Beep

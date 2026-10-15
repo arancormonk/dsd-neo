@@ -28,6 +28,7 @@
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <limits.h>
 #include <math.h>
@@ -79,7 +80,14 @@ opts_digital_mode_count(const dsd_opts* opts) {
            + opts_flag_is_set(opts->frame_nxdn48) + opts_flag_is_set(opts->frame_nxdn96)
            + opts_flag_is_set(opts->frame_x2tdma) + opts_flag_is_set(opts->frame_ysf)
            + opts_flag_is_set(opts->frame_dstar) + opts_flag_is_set(opts->frame_dpmr)
-           + opts_flag_is_set(opts->frame_m17);
+           + opts_flag_is_set(opts->frame_m17) + opts_flag_is_set(opts->frame_tetra);
+}
+
+/* TETRA's 25 kHz pi/4-DQPSK channel runs CQPSK symbols at 18 ksym/s on the wide channel filter; every P25-specific
+   CQPSK rule (the 4800 sym/s control-channel default and the P25 CQPSK channel filter) leaves it alone. */
+static int
+opts_tetra_only(const dsd_opts* opts) {
+    return opts && opts->frame_tetra == 1 && opts_digital_mode_count(opts) == 1;
 }
 
 static int
@@ -123,6 +131,9 @@ opts_symbol_rate_hz(const dsd_opts* opts) {
         return 4800;
     }
     int digital_count = opts_digital_mode_count(opts);
+    if (opts->frame_tetra == 1 && digital_count == 1) {
+        return 18000;
+    }
     if (opts->frame_provoice == 1 && digital_count == 1) {
         return 9600;
     }
@@ -525,7 +536,7 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
     }
     demod->channel_lpf_enable = channel_lpf ? 1 : 0;
     demod->channel_lpf_profile = profile;
-    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
+    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && !opts_tetra_only(opts)) {
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
     demod->analog_family = 0;
@@ -919,6 +930,38 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
     output->rate = target;
 }
 
+/* The symbol rate and level count the timing SPS is derived for. */
+static void
+rtl_demod_ted_symbol_profile(const struct demod_state* demod, const dsd_opts* opts, int preserve_active_profile,
+                             int* out_rate, int* out_levels) {
+    int sym_rate;
+    if (preserve_active_profile) {
+        /* Retunes keep whatever the SPS hunt, the trunking engine, or the operator last published
+         * through rtl_stream_set_symbol_profile(); only the timing SPS follows the new rate. The
+         * option flags cannot answer this: with more than one rate class enabled they always say
+         * 4800/4, which would drag a run parked on 2400/4 (NXDN48, dPMR) or 9600/2 (ProVoice) off
+         * its profile on every hop. Fall back to the option-derived default only when no profile
+         * has been established yet. */
+        sym_rate = demod->symbol_rate_hz > 0 ? demod->symbol_rate_hz : opts_symbol_rate_hz(opts);
+        *out_rate = sym_rate;
+        *out_levels = (demod->symbol_levels == 2 || demod->symbol_levels == 4)
+                          ? demod->symbol_levels
+                          : opts_symbol_levels_for_rate(opts, sym_rate);
+        return;
+    }
+    /* When only P25P2/X2-TDMA is enabled (without P25P1), use 6000 sym/s.
+     * When mod_qpsk is set for P25P1 CQPSK/LSM, use 4800 sym/s.
+     * When both P25P1 and P25P2 are enabled (trunking mode), default to
+     * P25P1 rate (4800) since CC is typically encountered first; the trunk
+     * state machine will override via ted_sps_override when tuning to P25P2 VC. */
+    sym_rate = opts_symbol_rate_hz(opts);
+    if (opts && !opts_tetra_only(opts) && opts->mod_qpsk == 1 && sym_rate != 6000) {
+        sym_rate = 4800;
+    }
+    *out_rate = sym_rate;
+    *out_levels = opts_symbol_levels_for_rate(opts, sym_rate);
+}
+
 /**
  * @brief Refresh timing SPS after capture/output rate changes.
  *
@@ -942,29 +985,7 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     int Fs_cx = rtl_demod_resolve_complex_rate(demod, output);
     int sym_rate;
     int sym_levels;
-    if (preserve_active_profile) {
-        /* Retunes keep whatever the SPS hunt, the trunking engine, or the operator last published
-         * through rtl_stream_set_symbol_profile(); only the timing SPS follows the new rate. The
-         * option flags cannot answer this: with more than one rate class enabled they always say
-         * 4800/4, which would drag a run parked on 2400/4 (NXDN48, dPMR) or 9600/2 (ProVoice) off
-         * its profile on every hop. Fall back to the option-derived default only when no profile
-         * has been established yet. */
-        sym_rate = demod->symbol_rate_hz > 0 ? demod->symbol_rate_hz : opts_symbol_rate_hz(opts);
-        sym_levels = (demod->symbol_levels == 2 || demod->symbol_levels == 4)
-                         ? demod->symbol_levels
-                         : opts_symbol_levels_for_rate(opts, sym_rate);
-    } else {
-        /* When only P25P2/X2-TDMA is enabled (without P25P1), use 6000 sym/s.
-         * When mod_qpsk is set for P25P1 CQPSK/LSM, use 4800 sym/s.
-         * When both P25P1 and P25P2 are enabled (trunking mode), default to
-         * P25P1 rate (4800) since CC is typically encountered first; the trunk
-         * state machine will override via ted_sps_override when tuning to P25P2 VC. */
-        sym_rate = opts_symbol_rate_hz(opts);
-        if (opts && opts->mod_qpsk == 1 && sym_rate != 6000) {
-            sym_rate = 4800;
-        }
-        sym_levels = opts_symbol_levels_for_rate(opts, sym_rate);
-    }
+    rtl_demod_ted_symbol_profile(demod, opts, preserve_active_profile, &sym_rate, &sym_levels);
     if (Fs_cx < (sym_rate * 2)) {
         LOG_WARN("WARNING: CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx,
                  sym_rate);
@@ -984,7 +1005,10 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     } else {
         demod->ted_sps = sps;
     }
-    if (demod->cqpsk_enable) {
+    /* CQPSK runs the P25 CQPSK channel filter except on TETRA's 18 ksym/s profile, which runs WIDE
+       (dsd_rtl_channel_profile_for()). The profile settled on above decides, not the options: a retune keeps the active
+       profile, and the options a stream opened with still describe the mode it opened in after a live switch to TETRA. */
+    if (demod->cqpsk_enable && sym_rate != DSD_TETRA_SYMBOL_RATE_HZ) {
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
     fsk_modem_apply_config(demod);

@@ -24,6 +24,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
@@ -736,6 +737,25 @@ watchdog_event_format_p25_sysid(char* out, size_t cap, const uint32_t sys_id[5],
     }
 }
 
+// TETRA's trunked mode identity is the network the BSCH names (MCC in sys_id1, MNC in sys_id2) and the cell's colour
+// code, the row's access code; a direct mode call (sys_id3 1) belongs to no network the decoder knows.
+static void
+watchdog_event_format_tetra_sysid(char* out, size_t cap, const uint32_t sys_id[3], uint8_t access_code_kind,
+                                  uint16_t access_code) {
+    if (sys_id[2] == 1U) {
+        DSD_SNPRINTF(out, cap, "%s", "TETRA_DMO");
+        return;
+    }
+    char cc_buf[12];
+    const char* cc_text = watchdog_event_code_text(
+        cc_buf, sizeof cc_buf, access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, access_code, 0);
+    if (sys_id[0] != 0U || sys_id[1] != 0U) {
+        DSD_SNPRINTF(out, cap, "TETRA_%u_%u_CC_%s", (unsigned)sys_id[0], (unsigned)sys_id[1], cc_text);
+    } else {
+        DSD_SNPRINTF(out, cap, "TETRA_CC_%s", cc_text);
+    }
+}
+
 // M17's CAN rides in the call's service options, which the row's access code holds once they were observed.
 static void
 watchdog_event_format_m17_sysid(char* out, size_t cap, uint8_t access_code_kind, uint16_t access_code) {
@@ -804,7 +824,7 @@ watchdog_event_crypto_rank(const Event_History* item) {
 }
 
 // Rebuilds the system identity string of a row whose identity names its access code -- dPMR and M17 from its merged
-// access code, DMR, NXDN and P25 from that and its merged ids -- and returns 1; 0 for any other protocol.
+// access code, DMR, NXDN, P25 and TETRA from that and its merged ids -- and returns 1; 0 for any other protocol.
 static int
 watchdog_event_rebuild_code_sysid(Event_History* row) {
     if (DSD_SYNC_IS_P25(row->systype)) {
@@ -831,6 +851,12 @@ watchdog_event_rebuild_code_sysid(Event_History* row) {
     if (DSD_SYNC_IS_DPMR(row->systype)) {
         watchdog_event_format_dpmr_sysid(row->sysid_string, sizeof(row->sysid_string), row->access_code_kind,
                                          row->access_code);
+        return 1;
+    }
+    if (DSD_SYNC_IS_TETRA(row->systype)) {
+        const uint32_t sys_id[3] = {row->sys_id1, row->sys_id2, row->sys_id3};
+        watchdog_event_format_tetra_sysid(row->sysid_string, sizeof(row->sysid_string), sys_id, row->access_code_kind,
+                                          row->access_code);
         return 1;
     }
     return 0;
@@ -1481,15 +1507,36 @@ watchdog_event_current_apply_m17(const dsd_state* state, watchdog_event_current_
     (void)state;
 }
 
+// The network of the TETRA carrier the call is on, from the TETRA publication: a direct mode carrier (EN 300 396-3)
+// marks sys_id3 instead.
+static void
+watchdog_event_current_apply_tetra(const dsd_state* state, watchdog_event_current_ctx* ctx) {
+    const dsd_tetra_publication* const pub = &state->tetra_pub;
+    /* None of the P25 identities the base context starts from describe a TETRA carrier. */
+    ctx->sys_id1 = 0U;
+    ctx->sys_id2 = 0U;
+    ctx->sys_id3 = 0U;
+    ctx->sys_id4 = 0U;
+    ctx->sys_id5 = 0U;
+    if (pub->mode >= DSD_TETRA_MODE_DMO_DIRECT && pub->mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
+        ctx->sys_id3 = 1U;
+        return;
+    }
+    if (pub->net_known != 0U) {
+        ctx->sys_id1 = pub->mcc;
+        ctx->sys_id2 = pub->mnc;
+    }
+}
+
 static void
 watchdog_event_current_apply_dstar(const dsd_state* state, watchdog_event_current_ctx* ctx) {
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "DSTAR");
     (void)state;
 }
 
-// Run after watchdog_event_current_load_tuning(): the DMR, NXDN, P25, M17 and dPMR identities name the row's access code,
-// so the string a merge rebuilds from the merged row (watchdog_event_rebuild_code_sysid()) and the event line agree
-// with it.
+// Run after watchdog_event_current_load_tuning(): the DMR, NXDN, P25, M17, dPMR and TETRA identities name the row's
+// access code, so the string a merge rebuilds from the merged row (watchdog_event_rebuild_code_sysid()) and the event
+// line agree with it.
 static void
 watchdog_event_current_apply_code_identity(watchdog_event_current_ctx* ctx) {
     if (DSD_SYNC_IS_DMR(ctx->protocol)) {
@@ -1508,6 +1555,10 @@ watchdog_event_current_apply_code_identity(watchdog_event_current_ctx* ctx) {
     } else if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
         watchdog_event_format_dpmr_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->access_code_kind,
                                          ctx->access_code);
+    } else if (DSD_SYNC_IS_TETRA(ctx->protocol)) {
+        const uint32_t sys_id[3] = {ctx->sys_id1, ctx->sys_id2, ctx->sys_id3};
+        watchdog_event_format_tetra_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), sys_id, ctx->access_code_kind,
+                                          ctx->access_code);
     }
 }
 
@@ -1558,6 +1609,10 @@ watchdog_event_current_apply_protocol_metadata(dsd_state* state, Event_History* 
 
     if (DSD_SYNC_IS_EDACS(ctx->protocol)) {
         watchdog_event_current_apply_edacs(state, ctx);
+    }
+
+    if (DSD_SYNC_IS_TETRA(ctx->protocol)) {
+        watchdog_event_current_apply_tetra(state, ctx);
     }
 }
 
@@ -1972,6 +2027,43 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
     watchdog_event_append_call_kind(ctx, event_string, event_size);
 }
 
+// TETRA: the called party (GSSI or ISSI) and the talker, the colour code (trunked mode), the carrier number and
+// frequency of the traffic channel, and whether the call is encrypted or carries circuit mode data (the basic service
+// information of EN 300 392-2 table 14.35 in the service options).
+static void
+watchdog_event_current_build_event_tetra(const watchdog_event_current_ctx* ctx, const char* datestr,
+                                         const char* timestr, const char* sys_string, char* event_string,
+                                         size_t event_size) {
+    if (ctx->sys_id3 == 1U) {
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s DMO TGT: %08u; SRC: %08u; ", datestr, timestr, sys_string,
+                     (unsigned)ctx->target_id, (unsigned)ctx->source_id);
+    } else {
+        char cc_buf[12];
+        const char* cc = watchdog_event_code_text(
+            cc_buf, sizeof cc_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, ctx->access_code, 1);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %08u; CC: %s; ", datestr, timestr, sys_string,
+                     (unsigned)ctx->target_id, (unsigned)ctx->source_id, cc);
+    }
+    char ch_str[96];
+    ch_str[0] = '\0';
+    if (ctx->channel != 0U && ctx->freq_hz > 0) {
+        DSD_SNPRINTF(ch_str, sizeof(ch_str), "CARRIER: %u; FREQ: %.6lf MHz; ", ctx->channel,
+                     (double)ctx->freq_hz / 1000000.0);
+    } else if (ctx->freq_hz > 0) {
+        DSD_SNPRINTF(ch_str, sizeof(ch_str), "FREQ: %.6lf MHz; ", (double)ctx->freq_hz / 1000000.0);
+    }
+    if (ch_str[0] != '\0') {
+        watchdog_event_str_append(event_string, event_size, ch_str);
+    }
+    if (ctx->enc) {
+        watchdog_event_str_append(event_string, event_size, "ENC; ");
+    }
+    if (ctx->kind == DSD_CALL_KIND_DATA) {
+        watchdog_event_str_append(event_string, event_size, "Data; ");
+    }
+    watchdog_event_append_call_kind(ctx, event_string, event_size);
+}
+
 // The scan channel a row was heard on, folded into the protocol token every builder renders
 // third: "2026-04-30 00:00:00 [Fire Dispatch] P25p1 TGT: ...". Done here rather than in the eight
 // builders so there is one place it can be wrong, and done after the timestamp so the 20-character
@@ -2053,6 +2145,8 @@ watchdog_event_current_build_event_string(const watchdog_event_current_ctx* ctx,
         watchdog_event_current_build_event_x2tdma(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
         watchdog_event_current_build_event_nxdn(ctx, datestr, timestr, sys, event_string, event_size);
+    } else if (DSD_SYNC_IS_TETRA(ctx->protocol)) {
+        watchdog_event_current_build_event_tetra(ctx, datestr, timestr, sys, event_string, event_size);
     }
     // A fresh string carries no marker yet.
     watchdog_event_mark_crc(event_string, event_size, 0U, ctx->crc_invalid);

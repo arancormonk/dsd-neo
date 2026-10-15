@@ -98,6 +98,19 @@ dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts) {
     return opts && (strncmp(opts->audio_in_dev, "rtl:", 4) == 0 || strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0);
 }
 
+/* TETRA's pre-open rule as the runtime has it (RUNTIME_DECODE_MODE tests it): an I/Q spec, or a symbol capture file. */
+int
+dsd_decode_mode_runs_on_input_spec(dsdneoUserDecodeMode mode, const dsd_opts* opts) {
+    if (mode != DSDCFG_MODE_TETRA) {
+        return 1;
+    }
+    const char* ext = opts ? strrchr(opts->audio_in_dev, '.') : NULL;
+    const int symbols = ext && (strcmp(ext, ".bin") == 0 || strcmp(ext, ".raw") == 0 || strcmp(ext, ".sym") == 0);
+    return opts
+           && (strncmp(opts->audio_in_dev, "rtl:", 4) == 0 || strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0
+               || symbols);
+}
+
 void
 dsd_bootstrap_choose_audio_input(dsd_opts* opts) {
     ++g_audio_input_calls;
@@ -262,6 +275,83 @@ test_pulse_defaults_apply_decode_and_ncurses(void) {
     return rc;
 }
 
+/* The wizard's last entry, 16, is TETRA; the entries before it keep their numbers. TETRA needs an I/Q source or a
+ * symbol capture file: on an RTL-SDR or a .bin capture it is taken, and on PulseAudio it is refused with the reason
+ * and asked again, here answered with DMR. */
+static int
+test_tetra_entry_selects_tetra(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("2\n420.1M\n0\n22\n0\n72\n0\n1\n16\nn\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("tetra-rtl-audio-in", opts.audio_in_dev, "rtl:0:420.1M:22:0:72:0:1");
+    rc |= expect_int("tetra-decode-mode", g_last_decode_mode, DSDCFG_MODE_TETRA);
+    rc |= expect_int("tetra-decode-profile", g_last_decode_profile, DSD_DECODE_PRESET_PROFILE_INTERACTIVE);
+    rc |= expect_int("tetra-dmo-trunking-off", opts.trunk_enable, 0);
+    rc |= expect_int("tetra-dmo-frontend-answered", opts.frontend_kind, DSD_FRONTEND_NONE);
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("4\ntetra.bin\n\n16\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("tetra-symbol-capture-audio-in", opts.audio_in_dev, "tetra.bin");
+    rc |= expect_int("tetra-symbol-capture-decode-mode", g_last_decode_mode, DSDCFG_MODE_TETRA);
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("\n16\n4\n\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_int("pulse-tetra-refused-then-dmr", g_last_decode_mode, DSDCFG_MODE_DMR);
+    return rc;
+}
+
+/* TETRA is a trunked system (TMO) as well as direct mode (DMO): on an RTL-SDR or rtl_tcp source the wizard asks
+ * whether it is trunked, as for the other trunk-capable entries, with No the default for direct mode; a Yes turns call
+ * following on and takes the group list the follow policy reads. */
+static int
+test_tetra_entry_asks_about_trunking(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    const char* input = "3\n"
+                        "host.example\n"
+                        "2345\n"
+                        "420.1M\n"
+                        "22\n"
+                        "0\n"
+                        "72\n"
+                        "0\n"
+                        "1\n"
+                        "16\n"
+                        "y\n"
+                        "\n"
+                        "group.csv\n"
+                        "n\n"
+                        "n\n"
+                        "n\n"
+                        "n\n";
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.scanner_mode = 1;
+    rc |= with_stdin_text(input, dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("tetra-trunk-audio-in", opts.audio_in_dev, "rtltcp:host.example:2345:420.1M:22:0:72:0:1");
+    rc |= expect_int("tetra-trunk-decode-mode", g_last_decode_mode, DSDCFG_MODE_TETRA);
+    rc |= expect_int("tetra-trunk-enable", opts.trunk_enable, 1);
+    rc |= expect_int("tetra-trunk-clears-scanner", opts.scanner_mode, 0);
+    rc |= expect_int("tetra-trunk-channel-import-skipped", g_chan_import_calls, 0);
+    rc |= expect_str("tetra-trunk-group-file", opts.group_in_file, "group.csv");
+    rc |= expect_int("tetra-trunk-group-import", g_group_import_calls, 1);
+    rc |= expect_int("tetra-trunk-allow-list-off", opts.trunk_use_allow_list, 0);
+    rc |= expect_int("tetra-trunk-frontend-answered", opts.frontend_kind, DSD_FRONTEND_NONE);
+    return rc;
+}
+
 static int
 test_rtltcp_trunking_imports_group_allow_list_and_null_output(void) {
     int rc = 0;
@@ -365,7 +455,8 @@ test_am_entry_needs_an_iq_source(void) {
 /* AM's channel has to fit the DSP bandwidth the source runs at (issue #524), which startup holds it to before the device
  * opens. At 4 or 6 kHz no AM width fits, so the pick is refused and asked again, here answered with Analog; at 8 kHz
  * the 6 kHz default fits. A configured AM width is held the same way, and a bandwidth startup does not run (5) runs at
- * 48 kHz, where AM fits. The bandwidth the wizard read stays in the options with the spec it wrote. */
+ * 48 kHz, where AM fits. The bandwidth the wizard read stays in the options with the spec it wrote: 72 kHz among them,
+ * and the prompt holds a larger figure to it. */
 typedef struct {
     const char* tag;
     const char* script;
@@ -384,6 +475,9 @@ test_am_entry_needs_a_dsp_bandwidth_that_fits(void) {
          DSDCFG_MODE_ANALOG},
         {"rtl-16k-10k-width-taken", "2\n118.1M\n0\n22\n0\n16\n0\n1\n15\nn\nn\nn\n", 10000, 16, DSDCFG_MODE_AM},
         {"rtl-unsupported-5k-runs-at-48k", "2\n118.1M\n0\n22\n0\n5\n0\n1\n15\nn\nn\nn\n", 0, 48, DSDCFG_MODE_AM},
+        /* 72 kHz (TETRA's) is offered and kept; a figure past it is held to it. */
+        {"rtl-72k-taken", "2\n118.1M\n0\n22\n0\n72\n0\n1\n15\nn\nn\nn\n", 0, 72, DSDCFG_MODE_AM},
+        {"rtltcp-100k-held-to-72k", "3\n\n\n118.1M\n22\n0\n100\n0\n1\n15\nn\nn\nn\n", 0, 72, DSDCFG_MODE_AM},
     };
     int rc = 0;
     static dsd_opts opts;
@@ -672,6 +766,8 @@ main(void) {
     rc |= test_missing_config_initializes_runtime_config();
 #if !defined(_WIN32)
     rc |= test_pulse_defaults_apply_decode_and_ncurses();
+    rc |= test_tetra_entry_selects_tetra();
+    rc |= test_tetra_entry_asks_about_trunking();
     rc |= test_rtltcp_trunking_imports_group_allow_list_and_null_output();
     rc |= test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv();
     rc |= test_am_entry_needs_an_iq_source();

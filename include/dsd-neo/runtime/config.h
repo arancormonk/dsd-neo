@@ -534,7 +534,8 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_MODE_TDMA,
     DSDCFG_MODE_ANALOG,
     DSDCFG_MODE_DMR_MONO,
-    DSDCFG_MODE_AM /* 16: the analog monitor with the AM envelope detector (IQ radio inputs only; issue #524) */
+    DSDCFG_MODE_AM,   /* 16: the analog monitor with the AM envelope detector (IQ radio inputs only; issue #524) */
+    DSDCFG_MODE_TETRA /* 17: TETRA (pi/4-DQPSK, 18 ksym/s) */
 } dsdneoUserDecodeMode;
 
 typedef enum DSD_ATTR_PACKED {
@@ -789,6 +790,18 @@ int dsd_user_config_apply_key(dsdneoUserConfig* cfg, const char* section, const 
  * @param state Decoder state to mutate.
  */
 void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief dsd_apply_user_config_to_opts() for an apply that can still be put back: its [mode] preset is staged
+ * (dsd_stage_decode_mode_preset()), so what the TETRA decoder holds stays until the caller commits the apply with
+ * dsd_decode_mode_commit_tetra(). A runtime config apply that rolls the session back (a reopen that fails, a switch
+ * onto the analog monitor the front end refuses at once) thus goes back to a TETRA session whole.
+ *
+ * @param cfg User config to apply.
+ * @param opts Decoder options to mutate.
+ * @param state Decoder state to mutate.
+ */
+void dsd_stage_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief The radio input spec the config's [input] sets, without applying anything.

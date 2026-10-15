@@ -143,14 +143,16 @@ if [[ $STRICT -eq 0 ]]; then
   ARGS+=(-i -1)
 fi
 
-# Honor a local PFFFT checkout even when it lives inside the source tree.
+# Honor local PFFFT and TETRA_crypto checkouts even when they live inside the source tree.
 analysis_cache="${DSD_ANALYSIS_BUILD_DIR:-build/dev-debug}/CMakeCache.txt"
 if [[ -f "$analysis_cache" ]]; then
-  pffft_source=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$analysis_cache")
-  if [[ -n "$pffft_source" ]]; then
-    pffft_relative="${pffft_source#"$ROOT_DIR/"}"
-    ARGS+=(-x "$pffft_source/*" -x "$pffft_relative/*" -x "./$pffft_relative/*")
-  fi
+  for dependency in DSD_PFFFT_SOURCE_DIR DSD_TETRA_CRYPTO_SOURCE_DIR; do
+    dependency_source=$(sed -n "s/^$dependency:INTERNAL=//p" "$analysis_cache")
+    if [[ -n "$dependency_source" ]]; then
+      dependency_relative="${dependency_source#"$ROOT_DIR/"}"
+      ARGS+=(-x "$dependency_source/*" -x "$dependency_relative/*" -x "./$dependency_relative/*")
+    fi
+  done
 fi
 
 set +e

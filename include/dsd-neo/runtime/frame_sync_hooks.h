@@ -38,7 +38,8 @@ typedef struct {
 
 int dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_state* state);
 
-void dsd_frame_sync_hooks_set(dsd_frame_sync_hooks hooks);
+/** Install a copy of @p hooks; NULL clears every slot. */
+void dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks);
 
 void dsd_frame_sync_hook_p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_hook_p25_sm_release(dsd_opts* opts, dsd_state* state);

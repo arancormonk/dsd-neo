@@ -292,7 +292,7 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_freq` | FREQ | RTL-SDR frequency; saving during trunking or scanning records the accepted tune target, not the startup frequency | `851.375M` |
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB; `0` is AGC, which a save writes and a load applies like any other gain (an omitted key keeps the gain running). Loading a config applies its gain even when its `[input]` is otherwise the input that runs: the input restarts on the new gain at the frequency and DSP bandwidth it runs (a SoapySDR `[input]` too, whose spec names no gain; its own frequency and bandwidth wait for an `[input]` that reopens the device) | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
-| `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
+| `rtl_bw_khz` | INT (4, 6, 8, 12, 16, 24, 48 or 72) | DSP bandwidth (72 for TETRA); `--validate-config` warns about any other value, which runs at the default | `48` |
 | `rtl_sql` | INT (-120-0) | Squelch threshold in dB; `0` switches squelch off (a disabled squelch is saved as `0`; the unset default is -110 dB, saved as `-110`). The default a scan row's `--squelch-db` overrides and every row without one inherits; a save during a row override writes this default, not the row's value. Under `rtl_sql_mode = auto` or `noise` it is kept as the level a switch back to `level` returns to. The three squelch keys are read and written under the audio sources too (`pulse`, `file`, `tcp`, `udp`): a save writes them (off as `rtl_sql = 0`), and a load applies them only when the section sets one, so a config saved before audio input had a squelch leaves the running one alone, and an `rtl_sql` left in such a section by hand now applies | `0` |
 | `rtl_sql_mode` | ENUM (`level`, `auto`, `noise`) | `level` gates on `rtl_sql`; `auto` is the [auto squelch](cli.md#auto-squelch---squelch-auto), which opens `rtl_sql_margin_db` over the noise floor the demodulator learns on each analog channel; `noise` is the [noise squelch](cli.md#noise-squelch---squelch-noise), which opens an FM channel at `rtl_sql_margin_db` of quieting (as auto on AM). Auto runs on radio inputs; noise runs on radio inputs and, from a reference it learns, on audio input ([noise squelch on audio input](cli.md#noise-squelch-on-audio-input)). Both are off on digital channels. Written only when it is not `level`; `--squelch` and a spec's `sql` field win over it | `level` |
 | `rtl_sql_margin_db` | INT (3-30) | The auto squelch's margin over the learned noise floor, or the noise squelch's quieting, in dB; written with `rtl_sql_mode = auto` or `noise` | `10` |
@@ -622,7 +622,12 @@ Output format:
 The `decode` key in `[mode]` configures the frame types and modulation.
 Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `dmr_mono`, `nxdn48`,
 `nxdn96`, `x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`,
-`analog`, `am`. `dmr_mono` selects the same single-slot decoder as CLI `-fr`.
+`analog`, `am`, `tetra`. `dmr_mono` selects the same single-slot decoder as
+CLI `-fr`, and `tetra` the TETRA decoder of CLI `-fT` (`--tetra-net` and
+`--tetra-uplink` stay command-line options). TETRA needs an I/Q radio input at
+a DSP rate that is a multiple of 18 kHz (`rtl_bw_khz = 72` on an RTL-SDR), or
+a symbol capture; on a PCM input `tetra` stays the mode and the session logs
+that nothing decodes there.
 `am` is native AM (CLI `-fM`), which needs an I/Q radio input: RTL-SDR,
 rtl_tcp, SoapySDR, Airspy or an I/Q replay. On a PCM input the session logs
 `AM demodulation needs an IQ radio input; monitor externally demodulated AM

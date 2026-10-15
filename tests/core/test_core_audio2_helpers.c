@@ -2520,6 +2520,52 @@ test_decoded_pcm16_plays_settled_frames(void) {
     return rc;
 }
 
+/* A decoder under talkgroup policy that settled the record policy against its call (TETRA) plays the frames through
+   dsd_audio_play_decoded_pcm16_record() with record 0, and neither the static nor the per-call WAV takes them; with
+   record 1 both do, as dsd_audio_play_decoded_pcm16() has them. */
+static int
+test_decoded_pcm16_unrecorded_frames_play_without_recording(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    static short pcm[DECODED_PCM_SAMPLES];
+    static short history[4096];
+    for (size_t i = 0; i < DECODED_PCM_SAMPLES; i++) {
+        pcm[i] = (short)((int)(i * 5U) - 700);
+    }
+    int rc = 0;
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->slot1_on = 1;
+    opts->pulse_digi_out_channels = 1;
+    opts->wav_out_f = (SNDFILE*)opts;
+    g_audio_write_channels = 1;
+    for (int per_call = 0; per_call <= 1; per_call++) {
+        opts->static_wav_file = per_call ? 0 : 1;
+        opts->dmr_stereo_wav = per_call ? 1 : 0;
+        for (int record = 0; record <= 1; record++) {
+            state->audio_out_buf_p = history + 100;
+            state->aout_max_buf_p = state->aout_max_buf;
+            state->audio_out_idx = 160;
+            reset_sink_capture();
+            reset_gate_capture();
+            g_write_voice_calls = 0;
+            dsd_audio_play_decoded_pcm16_record(opts, state, pcm, DECODED_PCM_SAMPLES, record);
+            rc |= expect_int("unrecorded decoded pcm still plays", g_udp_blast_calls, 2);
+            rc |= expect_int("static wav takes recorded frames only", g_sf_write_short_calls,
+                             (!per_call && record) ? 2 : 0);
+            rc |= expect_int("per-call wav takes recorded frames only", g_write_voice_calls,
+                             (per_call && record) ? 2 : 0);
+        }
+    }
+    reset_gate_capture();
+    g_audio_write_channels = 2;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2555,5 +2601,6 @@ main(void) {
     rc |= test_fdma_mixers_stamp_what_they_play();
     rc |= test_mixers_stamp_only_what_an_output_takes();
     rc |= test_decoded_pcm16_plays_settled_frames();
+    rc |= test_decoded_pcm16_unrecorded_frames_play_without_recording();
     return rc;
 }

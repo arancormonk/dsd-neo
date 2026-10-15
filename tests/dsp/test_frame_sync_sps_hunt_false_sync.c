@@ -818,7 +818,7 @@ test_budget_exit_runs_the_no_sync_hooks(void) {
     g_vc_no_sync_order = 0;
     g_release_order = 0;
     g_no_carrier_order = 0;
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_release = fake_p25_sm_release,
         .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
         .no_carrier = fake_no_carrier,
@@ -834,7 +834,7 @@ test_budget_exit_runs_the_no_sync_hooks(void) {
         .configure = configure_tuned_vc_past_hangtime,
     };
     const HuntResult r = drive_hunt(&tc);
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
 
     /* The profile the engine tuned is still the profile in force. */
     assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
@@ -860,7 +860,7 @@ test_an_interrupted_read_returns_at_once_and_counts_nothing(void) {
     g_vc_no_sync_order = 0;
     g_release_order = 0;
     g_no_carrier_order = 0;
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_release = fake_p25_sm_release,
         .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
         .no_carrier = fake_no_carrier,
@@ -879,7 +879,7 @@ test_an_interrupted_read_returns_at_once_and_counts_nothing(void) {
     assert(state.sps_hunt_idx == idx && state.samplesPerSymbol == sps);
     assert(g_vc_no_sync_order == 0 && g_release_order == 0 && g_no_carrier_order == 0);
 
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
     g_interrupt_at_read = 0;
     state.input_interrupted = 0;
 }

@@ -7,7 +7,8 @@
  * Protocol-generic noCarrier() trunk return matrix.
  *
  * Covers non-P25 trunk sync families that share the generic return path rather
- * than the P25 trunk state machine helper.
+ * than the P25 trunk state machine helper, and TETRA, whose state machine owns
+ * the return from the call it follows, so the generic path leaves it alone.
  */
 
 #include <dsd-neo/core/call_state.h>
@@ -16,6 +17,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -24,11 +26,9 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-#if defined(__GNUC__) && !defined(__cplusplus)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmissing-prototypes"
-#endif
+#include "tetra_calls.h"
+#include "tetra_confirm.h"
+#include "tetra_state.h"
 
 typedef struct {
     const char* name;
@@ -66,6 +66,37 @@ static void
 clear_return_to_cc_guard(void) {
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     g_return_to_cc_calls = 0;
+}
+
+static int g_tetra_ted_sps = -1;
+
+/* The engine's tune hook as far as the TETRA state machine sees it: an accepted voice-channel tune. */
+static dsd_trunk_tune_result
+tetra_tune_accepted(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
+    g_tetra_ted_sps = ted_sps;
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* Put the real TETRA state machine on the traffic channel the fixture describes: a control channel some CRC-passed
+ * block proved, and a followed grant. Without a control channel to return to, the fixture loses it afterwards. */
+static int
+tetra_follow_traffic(dsd_opts* opts, dsd_state* state) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_request = tetra_tune_accepted;
+    dsd_trunk_tuning_hooks_set(hooks);
+    const long cc = state->trunk_cc_freq;
+    state->trunk_cc_freq = GENERIC_TRUNK_CC_HZ;
+    tetra_sm_on_cc_sync(opts, state);
+    tetra_confirm_note_signalling(state);
+    const tetra_sm_grant grant = {GENERIC_TRUNK_VC_HZ, 40U, 8U, 0x321U};
+    g_tetra_ted_sps = -1;
+    const int followed = tetra_sm_on_grant(opts, state, &grant);
+    state->trunk_cc_freq = cc;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    return followed == 1 && g_tetra_ted_sps == 0 && tetra_sm_get_state(state) == TETRA_SM_TUNED;
 }
 
 static int
@@ -119,6 +150,18 @@ setup_generic_fixture(dsd_opts** opts_out, dsd_state** state_out, const generic_
     opts->trunk_hangtime = 1.0f;
     opts->trunk_is_tuned = 1;
     opts->audio_in_type = AUDIO_IN_PULSE;
+    state->trunk_cc_freq = with_cc ? GENERIC_TRUNK_CC_HZ : 0L;
+    if (DSD_SYNC_IS_TETRA(test_case->synctype)) {
+        opts->frame_tetra = 1;
+        if (!tetra_follow_traffic(opts, state)) {
+            DSD_FPRINTF(stderr, "FAIL protocol=%s scenario=%s check=TETRA follows the traffic channel\n",
+                        test_case->name, scenario);
+            free_test_runtime(opts, state);
+            *opts_out = NULL;
+            *state_out = NULL;
+            return 1;
+        }
+    }
 
     state->synctype = test_case->synctype;
     state->lastsynctype = test_case->synctype;
@@ -141,6 +184,20 @@ setup_generic_fixture(dsd_opts** opts_out, dsd_state** state_out, const generic_
     state->p25_p2_audio_allowed[1] = 1;
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
+    if (DSD_SYNC_IS_TETRA(test_case->synctype)) {
+        /* The followed call's record: a group call on timeslot 1 of carrier 40, transmitting. */
+        tetra_call_event setup;
+        DSD_MEMSET(&setup, 0, sizeof setup);
+        setup.kind = TETRA_CALL_EV_SETUP;
+        setup.call_id = 0x321U;
+        setup.basic_service = 0x04U;
+        tetra_calls_on_event(NULL, state, &setup, NULL);
+        tetra_call_t* const call = tetra_calls_find(state, 0x321U);
+        call->phase = TETRA_CALL_TX_GRANTED;
+        call->alloc.timeslots = 8;
+        call->alloc.carrier = 40;
+        call->alloc.freq_hz = GENERIC_TRUNK_VC_HZ;
+    }
     const dsd_call_observation observation = {
         .protocol = test_case->synctype,
         .slot = 0U,
@@ -203,6 +260,10 @@ run_recent_vc_case(const generic_return_case* test_case) {
     rc |= expect_true(test_case->name, "recent-vc", "p25 slot and audio aliases cleared",
                       p25_p2_voice_aliases_cleared(state));
     rc |= expect_true(test_case->name, "recent-vc", "carrier loss ended canonical call", canonical_call_ended(state));
+    if (DSD_SYNC_IS_TETRA(test_case->synctype)) {
+        rc |= expect_true(test_case->name, "recent-vc", "TETRA SM keeps the followed call",
+                          tetra_sm_get_state(state) == TETRA_SM_TUNED);
+    }
 
     free_test_runtime(opts, state);
     return rc;
@@ -261,6 +322,40 @@ run_stale_vc_without_cc_case(const generic_return_case* test_case) {
     rc |= expect_true(test_case->name, "stale-vc-without-cc", "p25 slot and audio aliases cleared",
                       p25_p2_voice_aliases_cleared(state));
 
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The TETRA state machine owns the return from the call it follows (tetra_sm_owns_return()): its grant timeout and
+ * the hangtime after the last speech decide, so a no-carrier pass two seconds after the follow's last reception, past
+ * the generic one-second hangtime but within the four-second grant timeout, takes no return of its own and does not
+ * drop the follow, with a control channel known or without one. The pass still ends the canonical call on the lost
+ * carrier and forgets its decoding; ENGINE_TETRA_TRUNK runs the machine's own return at its deadline. */
+static int
+run_tetra_owner_case(const generic_return_case* test_case, int with_cc) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    const char* scenario = with_cc ? "tetra-owner-with-cc" : "tetra-owner-without-cc";
+    int rc = setup_generic_fixture(&opts, &state, test_case, scenario, 0, with_cc);
+    if (rc != 0) {
+        return rc;
+    }
+    state->last_vc_sync_time = time(NULL) - 2;
+    install_return_to_cc_guard();
+
+    noCarrier(opts, state);
+
+    rc |= expect_true(test_case->name, scenario, "no return taken", g_return_to_cc_calls == 0);
+    rc |= expect_true(test_case->name, scenario, "tuned flag kept", opts->trunk_is_tuned == 1);
+    rc |= expect_true(test_case->name, scenario, "traffic channel kept",
+                      state->trunk_vc_freq[0] == GENERIC_TRUNK_VC_HZ && state->trunk_vc_freq[1] == GENERIC_TRUNK_VC_HZ);
+    rc |= expect_true(test_case->name, scenario, "control channel kept",
+                      state->trunk_cc_freq == (with_cc ? GENERIC_TRUNK_CC_HZ : 0L));
+    rc |= expect_true(test_case->name, scenario, "TETRA SM keeps the followed call",
+                      tetra_sm_get_state(state) == TETRA_SM_TUNED && tetra_calls_followed(state) != NULL);
+    rc |= expect_true(test_case->name, scenario, "carrier loss ended canonical call", canonical_call_ended(state));
+
+    clear_return_to_cc_guard();
     free_test_runtime(opts, state);
     return rc;
 }
@@ -391,6 +486,11 @@ main(void) {
         {"x2tdma-voice-pos", DSD_SYNC_X2TDMA_VOICE_POS},
         {"x2tdma-data-neg", DSD_SYNC_X2TDMA_DATA_NEG},
     };
+    static const generic_return_case tetra_cases[] = {
+        {"tetra-ndb-pos", DSD_SYNC_TETRA_NDB_POS},
+        {"tetra-sb-neg", DSD_SYNC_TETRA_SB_NEG},
+        {"tetra-ndb-neg", DSD_SYNC_TETRA_NDB_NEG},
+    };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         rc |= run_recent_vc_case(&cases[i]);
@@ -399,6 +499,11 @@ main(void) {
         rc |= run_stale_vc_with_matching_p25_cc_alias_case(&cases[i]);
         rc |= run_sync_source_case(&cases[i], 1);
         rc |= run_sync_source_case(&cases[i], 0);
+    }
+    for (size_t i = 0; i < sizeof(tetra_cases) / sizeof(tetra_cases[0]); i++) {
+        rc |= run_recent_vc_case(&tetra_cases[i]);
+        rc |= run_tetra_owner_case(&tetra_cases[i], 1);
+        rc |= run_tetra_owner_case(&tetra_cases[i], 0);
     }
 
     rc |= run_mapped_rest_channel_case(&(generic_return_case){"dmr-rest", DSD_SYNC_DMR_BS_VOICE_POS});
@@ -411,7 +516,3 @@ main(void) {
     }
     return rc;
 }
-
-#if defined(__GNUC__) && !defined(__cplusplus)
-#pragma GCC diagnostic pop
-#endif

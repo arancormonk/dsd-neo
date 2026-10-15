@@ -268,10 +268,10 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   channel keeps the opening centre, as before, so replay decoding is unchanged.
 - Event timelines currently require a constant sample rate through the capture. Metadata with event sample-rate changes is
   rejected until segment-rate replay is supported.
-- Replay converts `cu8`, and `cf32` captured as the driver delivered it (`capture_stage: "post_driver_cf32_pre_ring"`).
-  `--iq-replay` refuses any other capture when it opens it, naming the sample format and stage, and `dsd-neo` exits with
-  status 1: a `cs16` sidecar, or a `cf32` one stamped with another stage. `--iq-info` still describes such a capture and
-  reports `Replay compatible: no`.
+- Replay converts `cu8`, `cf32` captured as the driver delivered it (`capture_stage: "post_driver_cf32_pre_ring"`),
+  and little-endian `cs16` stamped `post_mute_pre_widen`. `--iq-replay` refuses any other capture when it opens it,
+  naming the sample format and stage, and `dsd-neo` exits with status 1: a `cf32` or `cs16` sidecar stamped with
+  another stage. `--iq-info` still describes such a capture and reports `Replay compatible: no`.
 - Direct `-i iqreplay:...` is intentionally rejected; use `--iq-replay <path>`.
 - Replay currently feeds the RTL radio path and reuses existing demod processing/state handling.
 - `base_decimation` is capped at 1024 (10 half-band passes); metadata requesting more is rejected.
@@ -288,6 +288,8 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - `--iq-capture-format cf32` is only valid when the active backend stream is native `cf32` (for example Soapy CF32).
 - Soapy drivers that only provide `CS16` can be used for live decode, but are not currently accepted by the IQ capture
   CLI.
-- The metadata parser and public sample-format helpers recognize `cs16` metadata with 4-byte sample alignment, but live
-  capture and replay accept only `cu8` and `cf32`; `--iq-replay` refuses a `cs16` sidecar at open (Operational Limits).
+- The metadata parser and public sample-format helpers recognize `cs16` metadata with 4-byte sample alignment. Replay
+  converts little-endian interleaved `cs16` captured at `post_mute_pre_widen` to the same normalized float IQ stream
+  the Soapy CS16 backend produces; `--iq-replay` refuses a `cs16` sidecar at any other capture stage at open
+  (Operational Limits). Live IQ capture still accepts only `cu8` and `cf32`.
 - If requested capture format does not match the active backend stream format, startup fails with a clear error.

@@ -137,7 +137,17 @@ interactive_choose_input_source(void) {
    channel to it (interactive_am_refused()). */
 static int
 interactive_dsp_bw_khz(int bw) {
-    return dsd_analog_rtl_dsp_bw_is_selectable(bw) ? bw : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+    return dsd_analog_rtl_dsp_bw_or_default(bw);
+}
+
+/* The DSP bandwidth question, naming the selectable bandwidths (dsd_analog_rtl_dsp_bw_list()). */
+static int
+prompt_dsp_bw_khz(void) {
+    char list[64];
+    char question[96];
+    (void)dsd_analog_rtl_dsp_bw_list(DSD_ANALOG_RTL_DSP_BW_MAX_KHZ, list, sizeof list);
+    DSD_SNPRINTF(question, sizeof question, "DSP bandwidth (kHz: %s)", list);
+    return prompt_int(question, DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ, 4, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ);
 }
 
 static void
@@ -153,7 +163,7 @@ interactive_configure_rtl_input(dsd_opts* opts, int* src) {
     int dev = prompt_int("RTL device index", 0, 0, 255);
     int gain = prompt_int("RTL gain (dB)", 22, 0, 60);
     int ppm = prompt_int("PPM error", 0, -200, 200);
-    int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
+    int bw = prompt_dsp_bw_khz();
     int sql = prompt_int("Squelch (0=off; negative dB ok via CLI later)", 0, -1000, 100000);
     int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm, bw,
@@ -179,7 +189,7 @@ interactive_configure_rtltcp_input(dsd_opts* opts) {
     }
     int gain = prompt_int("RTL gain (dB)", 22, 0, 60);
     int ppm = prompt_int("PPM error", 0, -200, 200);
-    int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
+    int bw = prompt_dsp_bw_khz();
     int sql = prompt_int("Squelch (0=off)", 0, -1000, 100000);
     int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d:%s:%d:%d:%d:%d:%d", host, port, freq,
@@ -238,7 +248,9 @@ interactive_configure_input_source(dsd_opts* opts, dsd_state* state, int* src) {
    (dsd_decode_mode_input_spec_is_iq()) applied to the input it has just configured: of its sources only RTL-SDR and
    rtl_tcp do (an RTL-SDR choice on a build without RTL-SDR support falls back to PulseAudio); PulseAudio, files and
    network audio arrive demodulated. */
-#define INTERACTIVE_MODE_AM 15
+#define INTERACTIVE_MODE_AM    15
+/* The wizard's last entry. */
+#define INTERACTIVE_MODE_TETRA 16
 
 static int
 interactive_prompt_decode_mode(void) {
@@ -258,7 +270,8 @@ interactive_prompt_decode_mode(void) {
     DSD_FPRINTF(stderr, " 13) P25 + DMR (TDMA)\n");
     DSD_FPRINTF(stderr, " 14) Analog monitor (passive)\n");
     DSD_FPRINTF(stderr, " 15) AM receiver (IQ inputs)\n");
-    return prompt_int("Selection", 1, 1, INTERACTIVE_MODE_AM);
+    DSD_FPRINTF(stderr, " 16) TETRA (pi/4-DQPSK, 18 kHz)\n");
+    return prompt_int("Selection", 1, 1, INTERACTIVE_MODE_TETRA);
 }
 
 /* Why AM cannot run on the source the wizard configured, written to @p err; 0 when it can. Beyond the I/Q, its channel
@@ -277,13 +290,28 @@ interactive_am_refused(const dsd_opts* opts, char* err, size_t err_size) {
     return dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, width_hz, rate_hz, err, err_size) != 0;
 }
 
-/* AM the configured source cannot run is refused with the reason and asked again (end of input answers with the
+/* Why the wizard's @p mode cannot run on the source it configured, written to @p err; 0 when it can. AM is held to the
+   I/Q and the DSP bandwidth (interactive_am_refused()); TETRA needs an I/Q radio input or a symbol capture file, since
+   its pi/4-DQPSK symbols cannot be read from demodulated audio (dsd_decode_mode_runs_on_input_spec()). */
+static int
+interactive_mode_refused(int mode, const dsd_opts* opts, char* err, size_t err_size) {
+    if (mode == INTERACTIVE_MODE_AM) {
+        return interactive_am_refused(opts, err, err_size);
+    }
+    if (mode == INTERACTIVE_MODE_TETRA && !dsd_decode_mode_runs_on_input_spec(DSDCFG_MODE_TETRA, opts)) {
+        DSD_SNPRINTF(err, err_size, "%s", DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT);
+        return 1;
+    }
+    return 0;
+}
+
+/* A mode the configured source cannot run is refused with the reason and asked again (end of input answers with the
    default). */
 static int
 interactive_choose_decode_mode(const dsd_opts* opts) {
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     int mode = interactive_prompt_decode_mode();
-    while (mode == INTERACTIVE_MODE_AM && interactive_am_refused(opts, err, sizeof err)) {
+    while (interactive_mode_refused(mode, opts, err, sizeof err)) {
         DSD_FPRINTF(stderr, "%s.\n", err);
         mode = interactive_prompt_decode_mode();
     }
@@ -292,22 +320,25 @@ interactive_choose_decode_mode(const dsd_opts* opts) {
 
 /* The wizard's menu numbers, in menu order (0 is not an entry). A table, so a new entry adds a row. */
 static const dsdneoUserDecodeMode k_interactive_menu_modes[] = {
-    DSDCFG_MODE_UNSET, DSDCFG_MODE_AUTO,   DSDCFG_MODE_P25P1,    DSDCFG_MODE_P25P2,
-    DSDCFG_MODE_DMR,   DSDCFG_MODE_NXDN48, DSDCFG_MODE_NXDN96,   DSDCFG_MODE_X2TDMA,
-    DSDCFG_MODE_YSF,   DSDCFG_MODE_DSTAR,  DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,
-    DSDCFG_MODE_M17,   DSDCFG_MODE_TDMA,   DSDCFG_MODE_ANALOG,   DSDCFG_MODE_AM,
+    DSDCFG_MODE_UNSET,    DSDCFG_MODE_AUTO,   DSDCFG_MODE_P25P1,  DSDCFG_MODE_P25P2, DSDCFG_MODE_DMR,
+    DSDCFG_MODE_NXDN48,   DSDCFG_MODE_NXDN96, DSDCFG_MODE_X2TDMA, DSDCFG_MODE_YSF,   DSDCFG_MODE_DSTAR,
+    DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,   DSDCFG_MODE_M17,    DSDCFG_MODE_TDMA,  DSDCFG_MODE_ANALOG,
+    DSDCFG_MODE_AM,       DSDCFG_MODE_TETRA,
 };
-_Static_assert(sizeof k_interactive_menu_modes / sizeof k_interactive_menu_modes[0] == INTERACTIVE_MODE_AM + 1,
+_Static_assert(sizeof k_interactive_menu_modes / sizeof k_interactive_menu_modes[0] == INTERACTIVE_MODE_TETRA + 1,
                "every wizard entry maps to a decode mode");
 
 static dsdneoUserDecodeMode
 interactive_mode_to_decode_mode(int mode) {
-    if (mode < 1 || mode > INTERACTIVE_MODE_AM) {
+    if (mode < 1 || mode > INTERACTIVE_MODE_TETRA) {
         return DSDCFG_MODE_UNSET;
     }
     return k_interactive_menu_modes[mode];
 }
 
+/* The entries that can follow calls off a control channel. TETRA is one: -fT decodes a trunked (TMO) network, whose
+   call following needs the trunking answer, as well as direct mode (DMO), which is not trunked and keeps the
+   question's default, No. */
 static int
 interactive_mode_supports_trunk(int mode) {
     switch (mode) {
@@ -318,7 +349,8 @@ interactive_mode_supports_trunk(int mode) {
         case 5:
         case 6:
         case 10:
-        case 13: return 1;
+        case 13:
+        case INTERACTIVE_MODE_TETRA: return 1;
         default: return 0;
     }
 }

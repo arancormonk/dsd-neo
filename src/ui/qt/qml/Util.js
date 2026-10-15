@@ -31,9 +31,10 @@ var DECODE_MODES = [
         // grant would tune and stay permanently mute. -ft keeps the P25p1
         // control channel plus both voice phases.
         // trunked: an explicit P25 pick almost certainly means a trunked
-        // system, so the wizard suggests turning call-following on. Only these
-        // two chips carry it — DMR and NXDN trunk too, but conventional use is
-        // common enough there that neither answer is a safe suggestion.
+        // system, so the wizard suggests turning call-following on. Only the
+        // two P25 chips carry it — DMR, NXDN and TETRA trunk too, but
+        // conventional use (TETRA's direct mode) is common enough there that
+        // neither answer is a safe suggestion.
         label: "P25", short: "P25", flag: "-ft", trunked: true,
         hint: "Standard P25 — most statewide and county digital systems."
     },
@@ -68,6 +69,17 @@ var DECODE_MODES = [
         hint: "M17 — open-source ham digital voice."
     },
     {
+        // No `trunked`: -fT decodes a trunked (TMO) network and direct mode
+        // (DMO) alike, and DMO is not trunked. With call-following on, the
+        // decoder keeps speech off any channel it has not tuned to for a call,
+        // so suggesting it would leave a DMO channel silent with no error to
+        // explain it; on a TMO control channel the user turns it on.
+        // iqOrSymbols: its pi/4-DQPSK symbols come from a radio's I/Q, or from
+        // a symbol capture (.bin) of them; demodulated audio has lost them.
+        label: "TETRA", short: "TETRA", flag: "-fT", iqOrSymbols: true,
+        hint: "TETRA — trunked networks (TMO) and direct mode (DMO). Needs a USB or rtl_tcp radio at a 72 kHz bandwidth, or a symbol capture."
+    },
+    {
         // -fA is the analog monitor. On a radio it receives narrowband FM through
         // the NFM channel filter, whose width the Radio sheet sets (issue #525).
         label: "NFM — analog FM", short: "NFM", flag: "-fA",
@@ -90,6 +102,24 @@ function decodeFlagNeedsRadio(flag) {
             return true
     }
     return false
+}
+
+// Whether a decode flag is a chip only a radio source or a symbol capture file
+// can run (iqOrSymbols: TETRA).
+function decodeFlagNeedsIqOrSymbols(flag) {
+    for (var i = 0; i < DECODE_MODES.length; i++) {
+        if (DECODE_MODES[i].iqOrSymbols === true && DECODE_MODES[i].flag === flag)
+            return true
+    }
+    return false
+}
+
+// Whether a file path opens as a symbol capture, as the engine dispatches a
+// file: the last "." of the whole path starts ".bin", ".raw" or ".sym".
+function isSymbolCapture(path) {
+    var dot = path.lastIndexOf(".")
+    var extension = dot >= 0 ? path.substring(dot, dot + 4) : ""
+    return extension === ".bin" || extension === ".raw" || extension === ".sym"
 }
 
 // The NFM channel widths the Radio sheet steps through, in Hz: the full RF

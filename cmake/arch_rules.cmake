@@ -271,6 +271,24 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             "${_ARCH_RULES_LINE}"
         )
 
+        # Shared libraries load through dsd-neo/platform/dynlib.h, so the loader's flags,
+        # its search rules and its error reporting live in src/platform/dynlib_posix.c
+        # (and dynlib_win32.c) alone.
+        if(_ARCH_RULES_HEADER STREQUAL "dlfcn.h")
+            if(NOT _ARCH_RULES_REL STREQUAL "src/platform/dynlib_posix.c")
+                message(
+                    SEND_ERROR
+                    "ARCH_RULES: ${_ARCH_RULES_REL}: load shared libraries through dsd-neo/platform/dynlib.h, not <dlfcn.h>"
+                )
+                math(
+                    EXPR
+                    _ARCH_RULES_VIOLATIONS
+                    "${_ARCH_RULES_VIOLATIONS} + 1"
+                )
+            endif()
+            continue()
+        endif()
+
         # audio_error_internal.h defines the audio backends' last-error store with
         # internal linkage, so an including translation unit gets its own private copy
         # rather than a link error. src/platform/CMakeLists.txt compiles exactly one of

@@ -136,14 +136,54 @@ int dsd_analog_width_realizable(int width_hz, int rate_hz);
 /** @brief Largest width realizable at @p rate_hz in Hz, or 0 when no width fits that rate. */
 int dsd_analog_width_max_for_rate(int rate_hz);
 
+/** @brief The RTL DSP bandwidth an unset or unsupported rtl_bw_khz (or spec bandwidth field) runs at, in kHz. */
+#define DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ 48
 /** @brief The widest selectable RTL DSP bandwidth, in kHz. */
-#define DSD_ANALOG_RTL_DSP_BW_MAX_KHZ 48
-
-/** @brief Return 1 when @p khz is a selectable RTL DSP bandwidth (rtl_bw_khz): 4, 6, 8, 12, 16, 24 or 48 kHz. */
-int dsd_analog_rtl_dsp_bw_is_selectable(int khz);
+#define DSD_ANALOG_RTL_DSP_BW_MAX_KHZ     72
+/**
+ * @brief The widest DSP bandwidth an Airspy input takes, in kHz.
+ *
+ * An Airspy delivers 2.5, 3, 6 or 10 MS/s, which the half-band cascade halves down to the first rate at or above the
+ * DSP bandwidth: 78.125 kHz or 93.75 kHz for both 48 and 72 kHz. No Airspy rate halves to 72 kHz, or to any multiple
+ * of the 18 kHz TETRA symbol rate, so 72 kHz is refused there rather than promised.
+ */
+#define DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ  48
 
 /**
- * @brief List the selectable RTL DSP bandwidths that filter @p width_hz, in kHz: "48", "24 or 48", "16, 24 or 48".
+ * @brief Return 1 when @p khz is a selectable RTL DSP bandwidth (rtl_bw_khz): 4, 6, 8, 12, 16, 24, 48 or 72 kHz.
+ *
+ * This is the one list of DSP bandwidths: the input specs, the config, the terminal menu, the setup wizards, the Qt
+ * session and the app-control commands all read it through the helpers below.
+ */
+int dsd_analog_rtl_dsp_bw_is_selectable(int khz);
+
+/** @brief @p khz when it is a selectable RTL DSP bandwidth, otherwise DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ. */
+int dsd_analog_rtl_dsp_bw_or_default(int khz);
+
+/** @brief Return 1 when an Airspy input takes @p khz: a selectable one up to DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ. */
+int dsd_analog_airspy_dsp_bw_is_selectable(int khz);
+
+/** @brief @p khz when an Airspy input takes it, otherwise DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ. */
+int dsd_analog_airspy_dsp_bw_or_default(int khz);
+
+/**
+ * @brief The selectable RTL DSP bandwidth nearest @p khz among those up to @p max_khz; the narrower of two as near.
+ *
+ * @return The bandwidth in kHz, or 0 when no selectable bandwidth is at most @p max_khz.
+ */
+int dsd_analog_rtl_dsp_bw_nearest(int khz, int max_khz);
+
+/**
+ * @brief List the selectable RTL DSP bandwidths up to @p max_khz, in kHz: "4, 6, 8, 12, 16, 24, 48 or 72".
+ *
+ * @p out is empty when none is that narrow; a short buffer truncates and stays terminated.
+ *
+ * @return 0 on success, -1 on a NULL or empty buffer.
+ */
+int dsd_analog_rtl_dsp_bw_list(int max_khz, char* out, size_t out_size);
+
+/**
+ * @brief List the selectable RTL DSP bandwidths that filter @p width_hz, in kHz: "48 or 72", "24, 48 or 72".
  *
  * The list dsd_analog_width_check() names as the fix. @p out is empty when no bandwidth fits.
  *
@@ -187,7 +227,8 @@ int dsd_analog_width_check_at(int kind, int width_hz, int rate_hz, int source, c
 /**
  * @brief The fix a refusal names for a width @p rate_hz cannot filter, where @p source sets that rate.
  *
- * - DSD_ANALOG_RATE_RTL_BW: the RTL DSP bandwidths that would fit ("set the RTL DSP bandwidth to 24 or 48 kHz").
+ * - DSD_ANALOG_RATE_RTL_BW: the RTL DSP bandwidths that would fit ("set the RTL DSP bandwidth to 24, 48 or 72
+ *   kHz").
  * - DSD_ANALOG_RATE_DEVICE: "raise the DSP bandwidth or narrow the NFM width"; where the rate filters no width of the
  *   kind, raising the DSP bandwidth, and where it is past what the channel filter's taps cover, lowering it.
  * - DSD_ANALOG_RATE_CAPTURE: "narrow the NFM width", or where the rate filters no width of the kind, that none fits.

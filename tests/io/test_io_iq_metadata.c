@@ -1538,16 +1538,27 @@ typedef struct {
     const char* named[2]; /* what a refusal's error names */
 } replay_format_case;
 
-/* Issue #572: replay converts cu8 at either capture stage, and cf32 only as the driver delivered it, before the input
- * ring (replay_convert_block_to_f32() in rtl_device.cpp). The open refuses any other format and stage, naming them,
- * where it used to open a capture whose every chunk the reader then dropped. --iq-info still describes such a
- * capture, and reports it as not replay compatible. */
+/* Issue #572: replay converts cu8 at either capture stage, cf32 only as the driver delivered it, before the input
+ * ring, and cs16 only at the cu8 stage (replay_convert_block_to_f32() in rtl_device.cpp). The open refuses any other
+ * format and stage, naming them, where it used to open a capture whose every chunk the reader then dropped. --iq-info
+ * still describes such a capture, and reports it as not replay compatible. */
 static int
 test_replay_open_refuses_formats_it_cannot_convert(void) {
-    static const char* const files[] = {"capture.iq",   "cs16.iq.json",           "cf32_cu8_stage.iq.json",
-                                        "cf32.iq.json", "cu8_cf32_stage.iq.json", NULL};
+    static const char* const files[] = {"capture.iq",
+                                        "cs16.iq.json",
+                                        "cs16_cf32_stage.iq.json",
+                                        "cf32_cu8_stage.iq.json",
+                                        "cf32.iq.json",
+                                        "cu8_cf32_stage.iq.json",
+                                        NULL};
     static const replay_format_case cases[] = {
-        {"cs16.iq.json", "cs16", "little", "post_mute_pre_widen", DSD_IQ_ERR_UNSUPPORTED_FMT, {"cs16", NULL}},
+        {"cs16.iq.json", "cs16", "little", "post_mute_pre_widen", DSD_IQ_OK, {NULL, NULL}},
+        {"cs16_cf32_stage.iq.json",
+         "cs16",
+         "little",
+         "post_driver_cf32_pre_ring",
+         DSD_IQ_ERR_UNSUPPORTED_FMT,
+         {"cs16", "post_driver_cf32_pre_ring"}},
         {"cf32_cu8_stage.iq.json",
          "cf32",
          "little",

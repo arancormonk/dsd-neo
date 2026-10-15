@@ -396,10 +396,80 @@ test_spec_squelch_grammar(void) {
     return rc;
 }
 
+/* The bandwidth field takes the selectable DSP bandwidths, 72 kHz (TETRA's) among them, and reads anything else as the
+   48 kHz default, in rtl:, rtltcp: and soapy: specs alike. */
+static int
+test_spec_bandwidth_field(void) {
+    static const struct {
+        const char* token;
+        int want_khz;
+    } cases[] = {
+        {"4", 4},   {"24", 24}, {"48", 48}, {"72", 72},  {"5", 48},
+        {"54", 48}, {"96", 48}, {"0", 48},  {"-72", 48}, {"", 48},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const int got = dsd_rtl_spec_bw_khz_or_default(cases[i].token);
+        if (got != cases[i].want_khz) {
+            DSD_FPRINTF(stderr, "bandwidth field \"%s\": got %d, want %d\n", cases[i].token, got, cases[i].want_khz);
+            rc = 1;
+        }
+    }
+    if (dsd_rtl_spec_bw_khz_or_default(NULL) != 48) {
+        DSD_FPRINTF(stderr, "bandwidth field NULL: want 48\n");
+        rc = 1;
+    }
+
+    static const char* const specs[] = {"rtl:0:420.1M:30:0:72:0:2", "rtltcp:127.0.0.1:1234:420.1M:30:0:72:0:2"};
+    for (size_t i = 0; i < sizeof specs / sizeof specs[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", specs[i]);
+        if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtl_dsp_bw_khz != 72) {
+            DSD_FPRINTF(stderr, "%s: bw=%d, want 72\n", specs[i], opts->rtl_dsp_bw_khz);
+            rc = 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", specs[i]);
+        /* The same spec at an unsupported bandwidth runs at the default. */
+        char* field = strstr(opts->audio_in_dev, ":72:");
+        if (field) {
+            field[1] = '6';
+            field[2] = '0';
+        }
+        if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtl_dsp_bw_khz != 48) {
+            DSD_FPRINTF(stderr, "%s at 60: bw=%d, want 48\n", specs[i], opts->rtl_dsp_bw_khz);
+            rc = 1;
+        }
+        free(opts);
+    }
+
+    dsd_opts* soapy = alloc_seeded_opts();
+    if (!soapy) {
+        return 1;
+    }
+    DSD_SNPRINTF(soapy->audio_in_dev, sizeof soapy->audio_in_dev, "%s", "soapy:driver=rtlsdr:420.1M:30:0:72:0:2");
+    int applied = 0;
+    if (dsd_normalize_soapy_input_spec(soapy, &applied) != 0 || applied != 1 || soapy->rtl_dsp_bw_khz != 72) {
+        DSD_FPRINTF(stderr, "soapy at 72: applied=%d bw=%d\n", applied, soapy->rtl_dsp_bw_khz);
+        rc = 1;
+    }
+    DSD_SNPRINTF(soapy->audio_in_dev, sizeof soapy->audio_in_dev, "%s", "soapy:driver=rtlsdr:420.1M:30:0:60:0:2");
+    if (dsd_normalize_soapy_input_spec(soapy, &applied) != 0 || applied != 1 || soapy->rtl_dsp_bw_khz != 48) {
+        DSD_FPRINTF(stderr, "soapy at 60: applied=%d bw=%d\n", applied, soapy->rtl_dsp_bw_khz);
+        rc = 1;
+    }
+    free(soapy);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_spec_squelch_grammar();
+    rc |= test_spec_bandwidth_field();
     rc |= test_non_soapy_noop();
     rc |= test_soapy_args_only_noop();
     rc |= test_soapy_args_with_full_tuning();

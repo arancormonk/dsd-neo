@@ -21,6 +21,7 @@
 #include <dsd-neo/platform/sndfile_fwd.h>
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -159,6 +160,16 @@ void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
  */
 void dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count);
 
+/**
+ * @brief dsd_audio_play_decoded_pcm16() for a decoder under talkgroup policy that settled the record policy as well
+ * (TETRA, through dsd_audio_record_policy_gate_slot()).
+ *
+ * With @p record nonzero it is dsd_audio_play_decoded_pcm16(). With @p record 0 the frames play the same way, but
+ * neither the per-call nor the static WAV takes them: a call whose talkgroup allows audio but not recording.
+ */
+void dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count,
+                                         int record);
+
 /** @brief Apply the manual analog gain (`-n`, 0..100% as 0x..5x) to a short buffer: the M17 encoder's fixed input gain.
  *  The analog monitor's gain stage is dsd_analog_audio_process_f() (<dsd-neo/dsp/analog_audio.h>). */
 void analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len); // manual gain for analog paths
@@ -258,6 +269,16 @@ int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsi
 /** @brief Talkgroup/whitelist/TG-hold gating for dual/slot mix (enc flags 0=unmuted,1=muted). */
 int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
+/**
+ * @brief The talkgroup gate of dsd_audio_group_gate_mono() for a call that is not published: a private call
+ * (@p private_call) is judged on both its parties, @p source and @p target, a group call on @p target and its
+ * @p source, as the gate judges a published call of that kind with those identities (enc flags 0=unmuted,1=muted).
+ *
+ * For a decoder that chooses between calls before it publishes one: TETRA's four timeslots share canonical slot 0, and
+ * only speech the policy lets play may hold the receiver on its timeslot.
+ */
+int dsd_audio_group_gate_call(const dsd_opts* opts, const dsd_state* state, int private_call, uint32_t target,
+                              uint32_t source, int enc_in, int* enc_out);
 /**
  * @brief Mono per-call WAV gate: the vocoder's verdict on the current slot's frame (dsd_state::mbe_slot_muted) and
  * the TG/allow-list/TG-hold policy. Called by the vocoder after it judged the frame.

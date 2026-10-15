@@ -56,31 +56,19 @@ compact_copy_terminator_tail_or_stop(int start, int argc, char** argv, int* out_
 }
 
 static const char* const k_skip_exact_no_arg[] = {
-    "--airspy-list",
-    "--auto-ppm",
-    "--rtltcp-autotune",
-    "--iq-loop",
-    "--rdio-api-delete-after-upload",
-    "--enc-lockout",
-    "--enc-follow",
-    "--tg-lockout-session",
-    "--tg-lockout-persist",
-    "--no-config",
-    "--print-config",
-    "--interactive-setup",
-    "--dump-config-template",
-    "--strict-config",
-    "--list-profiles",
-    "--no-force-key",
-    "--no-decryption-keys",
-    "--dmr-tg-key-clear",
-    "--strict-crc",
-    "--no-scan-voice-only",
-    "--dmr-debug-burst",
-    "--dmr-debug-unsynced",
-    "--show-keys",
-    "--scan-voice-only",
-    "--no-tone-filter",
+    "--airspy-list",        "--auto-ppm",
+    "--rtltcp-autotune",    "--iq-loop",
+    "--tetra-uplink",       "--rdio-api-delete-after-upload",
+    "--enc-lockout",        "--enc-follow",
+    "--tg-lockout-session", "--tg-lockout-persist",
+    "--no-config",          "--print-config",
+    "--interactive-setup",  "--dump-config-template",
+    "--strict-config",      "--list-profiles",
+    "--no-force-key",       "--no-decryption-keys",
+    "--dmr-tg-key-clear",   "--strict-crc",
+    "--no-scan-voice-only", "--dmr-debug-burst",
+    "--dmr-debug-unsynced", "--show-keys",
+    "--scan-voice-only",    "--no-tone-filter",
 };
 
 static const char* const k_skip_exact_next_any[] = {
@@ -151,12 +139,13 @@ static const char* const k_skip_exact_next_any[] = {
    and must not reach getopt; see dsd_cli_option_takes_free_value()). */
 static const char* const k_skip_exact_next_nonnull[] = {
     "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format",
-    "--iq-replay",  "--iq-replay-rate",    "--iq-info",
+    "--iq-replay",  "--iq-replay-rate",    "--iq-info",           "--tetra-codec",
 };
 
 static const char* const k_skip_exact_next_nonopt[] = {
-    "--lrrp-extra-port", "--rtl-udp-control", "--rtl-udp-control-bind", "--config", "--validate-config", "--api",
-    "--api-bind",
+    "--lrrp-extra-port", "--rtl-udp-control", "--rtl-udp-control-bind",
+    "--config",          "--validate-config", "--api",
+    "--api-bind",        "--tetra-net",       "--tetra-key",
 };
 
 static const char* const k_skip_prefix[] = {
@@ -186,6 +175,9 @@ static const char* const k_skip_prefix[] = {
     "--iq-replay=",
     "--iq-replay-rate=",
     "--iq-info=",
+    "--tetra-net=",
+    "--tetra-key=",
+    "--tetra-codec=",
     "--dmr-baofeng-pc5=",
     "--dmr-csi-ee72=",
     "--dmr-vertex-ks-csv=",

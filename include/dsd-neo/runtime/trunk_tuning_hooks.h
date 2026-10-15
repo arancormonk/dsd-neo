@@ -131,6 +131,21 @@ void dsd_trunk_tuning_request_mark_ready(uint64_t request_id);
  */
 void dsd_trunk_tuning_request_complete(uint64_t request_id, dsd_trunk_tune_result result);
 
+/**
+ * @brief Let go of a tune transition whose owner keeps nothing staged for it any more.
+ *
+ * An owner that drops the state it staged for a request in flight (a protocol state machine starting over, handing
+ * the tuner over, or freed with its decoder state by a decode-mode change) hands the request's terminal cleanup to
+ * this layer, which outlives every owner. A request the backend has not answered stays in flight: the frame gate
+ * keeps waiting for it, and a successful completion still advances the generation as the tuner boundary. A failure,
+ * already published or published later, has nothing left to roll back and is retired as rolled back at once, so it
+ * does not keep the frame gate closed while trunking stays on (a safety gate inherited from bounded-history recovery
+ * stays closed, as for any rolled-back failure). Stale and duplicate request IDs are ignored.
+ *
+ * @param request_id Request ID returned by dsd_trunk_tuning_request_begin().
+ */
+void dsd_trunk_tuning_request_disown(uint64_t request_id);
+
 /** @brief Return the newest unresolved request ID (in flight or awaiting recovery), or zero when ready. */
 uint64_t dsd_trunk_tuning_pending_request(void);
 

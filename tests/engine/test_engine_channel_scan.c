@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
@@ -321,6 +322,75 @@ test_option_commit_boundary(void) {
     free(state);
     free(opts);
     tunes = reset_count = 0;
+}
+
+static int tetra_ext_cleanups;
+
+static void
+count_tetra_ext_cleanup(void* ptr) {
+    tetra_ext_cleanups++;
+    free(ptr);
+}
+
+/* What a TETRA session holds, there as planted: its decoder flag, its state extension, the burst the frame sync
+ * captured for it and its publication. */
+static int
+tetra_session_whole(const dsd_opts* opts, const dsd_state* state, const void* ext) {
+    return opts->frame_tetra == 1 && dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) == ext
+           && tetra_ext_cleanups == 0 && state->tetra_sync.polarity == 1
+           && state->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK;
+}
+
+/* A TETRA session's typed row that fails before it commits, its tune refused at once or failed in flight, goes back
+ * to the TETRA session whole: the row is staged for its tune (dsd_scan_mode_prepare()) without leaving TETRA. The row
+ * that commits leaves TETRA as its preset does, and the end of the scan brings the configured TETRA decoder back. */
+static void
+test_tetra_session_survives_a_failed_row(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    int* ext = (int*)calloc(1, sizeof(int));
+    assert(opts && state && ext);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->pulse_digi_out_channels = 1;
+    opts->pulse_digi_rate_out = 8000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    assert(dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, ext, count_tetra_ext_cleanup) == 0);
+    tetra_ext_cleanups = 0;
+    state->tetra_sync.polarity = 1;
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    state->lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(state, 0) = 150000000;
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    expected_nxdn = 0;
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(dsd_engine_channel_scan_step(opts, state) == -1);
+    assert(tetra_session_whole(opts, state, ext));
+
+    state->lcn_freq_roll = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tetra_session_whole(opts, state, ext));
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(!dsd_engine_channel_scan_pending(opts, state));
+    assert(tetra_session_whole(opts, state, ext));
+
+    state->lcn_freq_roll = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(opts->frame_tetra == 0 && opts->frame_dmr == 1);
+    assert(dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) == NULL && tetra_ext_cleanups == 1);
+    assert(state->tetra_sync.polarity == 0 && state->tetra_pub.mode == DSD_TETRA_MODE_NONE);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->frame_tetra == 1 && opts->frame_dmr == 0);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+    dsd_trunk_tuning_requests_reset();
 }
 
 /* Rows that carry options but declare no mode still belong to the typed scanner: the legacy
@@ -1875,7 +1945,7 @@ test_nfm_row_warnings_once_per_row(void) {
     assert(strstr(g_analog_warning_rows[1], "until then it is skipped at every visit"));
     /* The fix is the one the input allows (issue #525's wording): an RTL-SDR's DSP bandwidth is its rate, a SoapySDR or
        Airspy device's capture rate only follows the DSP bandwidth, and an I/Q replay's is fixed. */
-    assert(strstr(g_analog_warning_rows[1], "set the RTL DSP bandwidth to 24 or 48 kHz"));
+    assert(strstr(g_analog_warning_rows[1], "set the RTL DSP bandwidth to 24, 48 or 72 kHz"));
     g_nfm_warning_input_dev = "soapy:driver=airspy";
     assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
     assert(strstr(g_analog_warning_rows[1], "raise the DSP bandwidth or narrow the NFM width"));
@@ -1974,8 +2044,9 @@ test_nfm_row_warnings_for_the_configured_width(void) {
     assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit"));
     assert(strstr(g_analog_warning_rows[2], "Scan channel 2 (150.000000 MHz): it sets no NFM width of its own, and the "
                                             "configured NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate"));
-    assert(strstr(g_analog_warning_rows[2], "set the RTL DSP bandwidth to 24 or 48 kHz; until then it is skipped at "
-                                            "every visit"));
+    assert(strstr(g_analog_warning_rows[2],
+                  "set the RTL DSP bandwidth to 24, 48 or 72 kHz; until then it is skipped at "
+                  "every visit"));
     assert(strstr(g_analog_warning_rows[3], "Scan channel 4 (150.000000 MHz): it sets no NFM width of its own"));
     assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 2 more: NFM 20 kHz does "
                                  "not fit the 16 kHz DSP rate")
@@ -2475,6 +2546,7 @@ main(void) {
     test_leave_keeps_the_rows_recorded_landing();
     test_leave_family_switch_drops_partial_analog_block();
     test_option_commit_boundary();
+    test_tetra_session_survives_a_failed_row();
     test_option_only_rows_and_policy_edits();
     test_row_max_visit_override_and_inherit();
     test_row_squelch_threshold_off_inherit();

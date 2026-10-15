@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 
+#include <QByteArray>
 #include <QChar>
 #include <QLatin1String>
 #include <QList>
@@ -23,7 +24,9 @@
 #include <QVariant>
 #include <Qt>
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 
 #include "app_prefs.h"
 
@@ -93,23 +96,13 @@ resolve_hangtime(const QVariantMap& system, const SessionArgPrefs& prefs, double
     return ok && std::isfinite(seconds) && seconds >= 0.0 && seconds <= 30.0;
 }
 
-/** @brief Snap the shared bandwidth preference to Airspy's supported DSP widths. */
+/** @brief Snap the shared bandwidth preference to the DSP bandwidths an Airspy takes (the narrower of two as near). */
 int
 airspy_bandwidth(int requested) {
     if (requested <= 0) {
-        return 48;
+        return DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
     }
-    int nearest = 4;
-    int nearest_distance = requested > nearest ? requested - nearest : nearest - requested;
-    for (const int candidate : {6, 8, 12, 16, 24, 48}) {
-        const int distance = requested > candidate ? requested - candidate : candidate - requested;
-        // Prefer the lower width when the request is exactly between two choices.
-        if (distance < nearest_distance) {
-            nearest = candidate;
-            nearest_distance = distance;
-        }
-    }
-    return nearest;
+    return dsd_analog_rtl_dsp_bw_nearest(requested, DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ);
 }
 
 /** @brief Append "-i <spec>" for the system's source type. */
@@ -414,10 +407,17 @@ session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz) {
         return true;
     }
     /* The engine reads the spec's bandwidth field this way: a value it does not run is the 48 kHz default. */
-    const int khz = dsd_analog_rtl_dsp_bw_is_selectable(bandwidthKhz) ? bandwidthKhz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+    const int khz = dsd_analog_rtl_dsp_bw_or_default(bandwidthKhz);
     return dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM), khz * 1000,
                                   nullptr, 0U)
            == 0;
+}
+
+QString
+session_args_am_bandwidth_choices() {
+    char fits[64];
+    (void)dsd_analog_width_fitting_rtl_bandwidths(dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM), fits, sizeof fits);
+    return QString::fromUtf8(fits);
 }
 
 QString
@@ -499,9 +499,12 @@ constexpr SessionArgsErrorText k_error_texts[] = {
                                      "Remove prohibited options and write each short option separately."},
     {SessionArgsError::AmNeedsRadio, "AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio "
                                      "arrives already demodulated. Choose a radio source, or another decode mode."},
+    /* %1: session_args_am_bandwidth_choices(). */
     {SessionArgsError::AmBandwidth, "AM needs a bandwidth of 8 kHz or more: its 6 kHz channel does not fit a "
-                                    "narrower one. Set the bandwidth to 8, 12, 16, 24 or 48 kHz, or choose another "
-                                    "decode mode."},
+                                    "narrower one. Set the bandwidth to %1 kHz, or choose another decode mode."},
+    {SessionArgsError::TetraNeedsIq, "TETRA needs a radio source (USB, Airspy or rtl_tcp) or a symbol capture (.bin) "
+                                     "file: network audio and audio files arrive already demodulated. Choose a radio "
+                                     "source, or another decode mode."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -529,7 +532,8 @@ session_args_error_text(SessionArgsError error) {
     if (error == SessionArgsError::None || index >= k_error_text_count) {
         return QString();
     }
-    return QString::fromUtf8(k_error_texts[index].text);
+    const QString text = QString::fromUtf8(k_error_texts[index].text);
+    return error == SessionArgsError::AmBandwidth ? text.arg(session_args_am_bandwidth_choices()) : text;
 }
 
 bool
@@ -585,11 +589,12 @@ append_profile_args(QStringList& args, const QVariantMap& system) {
     }
 }
 
-/* Whether a saved decode flag selects the AM preset (-fM, issue #524), alone or among other tokens. */
+/* Whether a saved decode flag selects the preset @p flag names (-fM for AM, issue #524; -fT for TETRA), alone or among
+   other tokens. */
 static bool
-decode_flag_names_am(const QString& decodeFlag) {
+decode_flag_names(const QString& decodeFlag, const QString& flag) {
     static const QRegularExpression whitespace(QStringLiteral("\\s+"));
-    return decodeFlag.split(whitespace, Qt::SkipEmptyParts).contains(QStringLiteral("-fM"));
+    return decodeFlag.split(whitespace, Qt::SkipEmptyParts).contains(flag);
 }
 
 static bool
@@ -597,23 +602,38 @@ is_radio_source(const QString& source) {
     return source == QLatin1String("usb") || source == QLatin1String("airspy") || source == QLatin1String("rtltcp");
 }
 
-/* The DSP bandwidth, in kHz, a system's radio spec carries: its own override, or the app-wide default. */
+/* The DSP bandwidth, in kHz, a system's radio spec carries: its own override, else 72 kHz for TETRA, which runs only
+   at a multiple of 18 kHz (as -fT takes it on the command line), else the app-wide default. */
 static int
 session_args_bandwidth_khz(const QVariantMap& system, const SessionArgPrefs& prefs) {
     const int bwOverride = system.value(QStringLiteral("bandwidthKhz"), -1).toInt();
-    return bwOverride > 0 ? bwOverride : prefs.bandwidthKhz;
+    if (bwOverride > 0) {
+        return bwOverride;
+    }
+    return decode_flag_names(system.value(QStringLiteral("decodeFlag")).toString(), QStringLiteral("-fT"))
+               ? DSD_TETRA_DSP_BW_KHZ
+               : prefs.bandwidthKhz;
 }
 
 /* What the source allows. A radio source needs a frequency it can tune. Issue #524: -fM demodulates AM from the radio's
    I/Q, and the engine refuses it on audio that arrives already demodulated; the wizard keeps the pair from being saved,
    and a system saved before that fails here with a reason rather than at engine startup. The same holds for an AM
-   channel the radio's DSP bandwidth cannot filter (session_args_am_fits_bandwidth()). */
+   channel the radio's DSP bandwidth cannot filter (session_args_am_fits_bandwidth()), and for -fT, whose symbols the
+   engine reads from a radio's I/Q or a symbol capture file only (dsd_opts_audio_in_dev_is_symbol_capture()). */
 static SessionArgsError
 session_args_source_error(const QVariantMap& system, const QString& sourceType, int bandwidthKhz,
                           const QString& freqMhz) {
-    const bool am = decode_flag_names_am(system.value(QStringLiteral("decodeFlag")).toString());
+    const QString decodeFlag = system.value(QStringLiteral("decodeFlag")).toString();
+    const bool am = decode_flag_names(decodeFlag, QStringLiteral("-fM"));
     if (!is_radio_source(sourceType)) {
-        return am ? SessionArgsError::AmNeedsRadio : SessionArgsError::None;
+        if (am) {
+            return SessionArgsError::AmNeedsRadio;
+        }
+        const QByteArray path = system.value(QStringLiteral("filePath")).toString().toUtf8();
+        const bool symbols =
+            sourceType == QLatin1String("file") && dsd_opts_audio_in_dev_is_symbol_capture(path.constData());
+        return decode_flag_names(decodeFlag, QStringLiteral("-fT")) && !symbols ? SessionArgsError::TetraNeedsIq
+                                                                                : SessionArgsError::None;
     }
     if (!session_args_freq_valid(freqMhz)) {
         return SessionArgsError::Frequency;
@@ -759,9 +779,13 @@ validationResult(SessionArgsError error) {
                                            : error == SessionArgsError::UnsafeOption ? QStringLiteral("unsafe-option")
                                            : error == SessionArgsError::AmNeedsRadio ? QStringLiteral("am-needs-radio")
                                            : error == SessionArgsError::AmBandwidth  ? QStringLiteral("am-bandwidth")
+                                           : error == SessionArgsError::TetraNeedsIq ? QStringLiteral("tetra-needs-iq")
                                            : error == SessionArgsError::None         ? QString()
                                                                                      : QStringLiteral("encryption"));
     result.insert(QStringLiteral("errorText"), session_args_error_text(error));
+    if (error == SessionArgsError::AmBandwidth) {
+        result.insert(QStringLiteral("bandwidthChoices"), session_args_am_bandwidth_choices());
+    }
     return result;
 }
 

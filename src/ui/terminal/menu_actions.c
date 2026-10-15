@@ -2020,7 +2020,12 @@ rtl_set_ppm(void* v) {
 void
 rtl_set_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("DSP Bandwidth kHz (4,6,8,12,16,24,48)", c->opts->rtl_dsp_bw_khz, cb_rtl_bw, c);
+    /* The prompt keeps the title pointer while it is open, so the text lives in static storage. */
+    static char title[96];
+    char list[64];
+    (void)dsd_analog_rtl_dsp_bw_list(DSD_ANALOG_RTL_DSP_BW_MAX_KHZ, list, sizeof list);
+    DSD_SNPRINTF(title, sizeof title, "DSP Bandwidth kHz (%s)", list);
+    ui_prompt_open_int_async(title, c->opts->rtl_dsp_bw_khz, cb_rtl_bw, c);
 }
 
 void
@@ -2182,8 +2187,9 @@ act_lockout_slot2(void* v) {
 // ---- Decoder mode ----
 
 /* Picker order: the catch-all first, then the P25 family, DMR, and the rest
-   roughly by how often they are asked for. The names come from the runtime so
-   the picker and the label that reads the mode back cannot disagree. */
+   roughly by how often they are asked for, the digital modes before the analog
+   monitor. The names come from the runtime so the picker and the label that
+   reads the mode back cannot disagree. */
 static const dsdneoUserDecodeMode k_decode_mode_choices[] = {
     DSDCFG_MODE_AUTO,
     DSDCFG_MODE_TDMA,
@@ -2199,21 +2205,42 @@ static const dsdneoUserDecodeMode k_decode_mode_choices[] = {
     DSDCFG_MODE_EDACS_PV,
     DSDCFG_MODE_DPMR,
     DSDCFG_MODE_M17,
+    /* TETRA and AM need an I/Q radio input (TETRA a symbol capture too): see k_decode_mode_input_bound. */
+    DSDCFG_MODE_TETRA,
     DSDCFG_MODE_ANALOG,
-    /* AM needs an I/Q radio input: see g_decode_mode_am_offered. */
     DSDCFG_MODE_AM,
 };
 #define DECODE_MODE_CHOICE_COUNT (sizeof k_decode_mode_choices / sizeof k_decode_mode_choices[0])
 /* Filled once: every entry is a pointer into the runtime's own static name table,
-   so there is nothing to refresh between opens but the AM row's. */
+   so there is nothing to refresh between opens but the input-bound rows'. */
 static const char* g_decode_mode_labels[DECODE_MODE_CHOICE_COUNT];
 static int g_decode_mode_labels_ready;
-/* Issue #524: whether the picker last opened on an input that runs AM, an I/Q radio input (the input type alone, as
-   dsd_decode_mode_input_is_iq() reads an open input). On any other input the AM row stays, so no row moves, but it
-   is shown disabled with the reason, and choosing it repeats the reason instead of sending a command the decoder
-   would refuse. With no options snapshot yet the command decides. */
-static int g_decode_mode_am_offered = 1;
-static const char k_decode_mode_am_disabled_label[] = "AM (needs an I/Q radio input)";
+
+/* The modes that run on some inputs only (dsd_decode_mode_runs_on_input(); AM since issue #524). On an input that cannot
+   run one, its row stays, so no row moves, but it is shown disabled with the reason, and choosing it repeats the reason
+   instead of sending a command the decoder would refuse. With no options snapshot yet the command decides. */
+static const struct {
+    dsdneoUserDecodeMode mode;
+    const char* disabled_label;
+} k_decode_mode_input_bound[] = {
+    {DSDCFG_MODE_TETRA, "TETRA (needs an I/Q radio input)"},
+    {DSDCFG_MODE_AM, "AM (needs an I/Q radio input)"},
+};
+
+#define DECODE_MODE_INPUT_BOUND_COUNT (sizeof k_decode_mode_input_bound / sizeof k_decode_mode_input_bound[0])
+/* Whether the picker last opened on an input that cannot run each k_decode_mode_input_bound mode. */
+static int g_decode_mode_input_bound_refused[DECODE_MODE_INPUT_BOUND_COUNT];
+
+/* Whether @p mode is offered on the input the picker last opened on. */
+static int
+decode_mode_offered(dsdneoUserDecodeMode mode) {
+    for (size_t i = 0; i < DECODE_MODE_INPUT_BOUND_COUNT; i++) {
+        if (k_decode_mode_input_bound[i].mode == mode) {
+            return !g_decode_mode_input_bound_refused[i];
+        }
+    }
+    return 1;
+}
 
 static int
 decode_mode_choice_index(dsdneoUserDecodeMode mode) {
@@ -2231,8 +2258,8 @@ chooser_done_decode_mode(void* u, int sel) {
     if (sel < 0 || sel >= (int)DECODE_MODE_CHOICE_COUNT) {
         return;
     }
-    if (k_decode_mode_choices[sel] == DSDCFG_MODE_AM && !g_decode_mode_am_offered) {
-        ui_statusf("%s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
+    if (!decode_mode_offered(k_decode_mode_choices[sel])) {
+        ui_statusf("%s", dsd_decode_mode_needs_iq_text(k_decode_mode_choices[sel]));
         return;
     }
     /* The command toasts "Decoding <mode>" itself once it has applied. */
@@ -2257,9 +2284,13 @@ act_decode_mode(void* v) {
     const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
     const dsdneoUserDecodeMode now =
         opts_snapshot ? dsd_scan_mode_configured_preset(opts_snapshot, snapshot) : DSDCFG_MODE_AUTO;
-    g_decode_mode_am_offered = !opts_snapshot || dsd_opts_input_is_radio(opts_snapshot);
-    g_decode_mode_labels[decode_mode_choice_index(DSDCFG_MODE_AM)] =
-        g_decode_mode_am_offered ? dsd_decode_mode_display_name(DSDCFG_MODE_AM) : k_decode_mode_am_disabled_label;
+    for (size_t i = 0; i < DECODE_MODE_INPUT_BOUND_COUNT; i++) {
+        const dsdneoUserDecodeMode mode = k_decode_mode_input_bound[i].mode;
+        g_decode_mode_input_bound_refused[i] = opts_snapshot && !dsd_decode_mode_runs_on_input(mode, opts_snapshot);
+        g_decode_mode_labels[decode_mode_choice_index(mode)] = g_decode_mode_input_bound_refused[i]
+                                                                   ? k_decode_mode_input_bound[i].disabled_label
+                                                                   : dsd_decode_mode_display_name(mode);
+    }
     ui_chooser_start_at("Decoder mode", g_decode_mode_labels, (int)DECODE_MODE_CHOICE_COUNT,
                         decode_mode_choice_index(now), chooser_done_decode_mode, NULL);
 }

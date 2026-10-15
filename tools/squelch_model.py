@@ -32,7 +32,7 @@ Everything comes from the repository, not from invented numbers:
     not, and no channel filter at all where the channel LPF is off (rate_in below 20 kHz, or
     DSD_NEO_CHANNEL_LPF=0). With post_downsample above 1 the plan designed at the demod rate runs
     at rate_out x post_downsample; every window and lag here is at that pre-post-decimation rate.
-  - DSP rates: the RTL DSP bandwidths (4, 6, 8, 12, 16, 24, 48 kHz), the rates a fixed-grid device
+  - DSP rates: the RTL DSP bandwidths (4, 6, 8, 12, 16, 24, 48, 72 kHz), the rates a fixed-grid device
     forces (rtl_choose_passes_for_actual_rate() on 2.5, 6 and 2 MS/s captures: Airspy R2, Airspy
     Mini, RX-888/SDDC), and I/Q replay chains (the fixtures' 48 kHz, the squelch captures' native
     39,062 Hz, a 125 kHz capture past the analog tap capacity, and post_downsample 2 and 4).
@@ -120,7 +120,7 @@ LPF_DEFAULT_ENABLE_RATE_IN_HZ = 20000  # demod_channel_lpf_default_enable()
 
 NFM_WIDTHS_HZ = (8000, 10000, 12500, 16000, 20000, 25000)
 AM_WIDTHS_HZ = (5000, 6000, 8000, 12500, 20000)
-RTL_DSP_BW_KHZ = (4, 6, 8, 12, 16, 24, 48)
+RTL_DSP_BW_KHZ = (4, 6, 8, 12, 16, 24, 48, 72)  # dsd_analog_rtl_dsp_bw_is_selectable()
 # Fixed-grid device capture rates (Airspy R2 2.5/10 MS/s give the same chain; Airspy Mini 3/6 MS/s; RX-888/SDDC 2/4/8).
 DEVICE_CAPTURES_HZ = {"airspy": 2500000, "airspy-mini": 6000000, "sddc": 2000000}
 MAX_DOWNSAMPLE_PASSES = 10  # kMaxDownsamplePasses

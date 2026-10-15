@@ -43,6 +43,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -983,6 +984,22 @@ svc_rtl_stream_running(const dsd_opts* opts, const dsd_state* state) {
 }
 
 #endif
+
+int
+svc_tetra_rate_advice(const dsd_opts* opts, const dsd_state* state, int brief, char* out, size_t out_size) {
+    int rate_hz = 0;
+#ifdef USE_RADIO
+    if (opts) {
+        rate_hz = svc_rtl_stream_running(opts, state) ? rtl_stream_get_request_rate_hz() : 0;
+        if (rate_hz <= 0) {
+            rate_hz = svc_rtl_bw_dsp_rate_hz(opts, opts->rtl_dsp_bw_khz);
+        }
+    }
+#else
+    (void)state;
+#endif
+    return dsd_tetra_dsp_rate_advice(opts, rate_hz, brief, out, out_size);
+}
 
 int
 svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size) {
@@ -2004,8 +2021,14 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
     if (!opts || !state) {
         return -1;
     }
-    if (!dsd_analog_rtl_dsp_bw_is_selectable(khz)) {
-        khz = 48;
+    khz = dsd_analog_rtl_dsp_bw_or_default(khz);
+    if (!dsd_analog_airspy_dsp_bw_is_selectable(khz) && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        /* The Airspy would run at the rate it runs at 48 kHz (DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ): say so instead of
+           storing a bandwidth its stream start then replaces. */
+        svc_why(why, why_size,
+                "an Airspy cannot run a %d kHz DSP bandwidth: no Airspy sample rate halves to it; use %d kHz or less",
+                khz, DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ);
+        return -1;
     }
     if (!svc_rtl_bandwidth_fits_analog_width(opts, state, khz, why, why_size)) {
         return -1;

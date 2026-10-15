@@ -33,6 +33,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
@@ -54,6 +55,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -67,6 +69,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
@@ -89,6 +92,8 @@
 
 #include <dsd-neo/core/audio_input_switch.h>
 #include "../../src/app_control/commands_internal.h"
+#include "../../src/protocol/tetra/tetra_confirm.h"
+#include "../../src/protocol/tetra/tetra_state.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -2464,6 +2469,112 @@ test_decode_mode_change_clears_received_tone(void) {
     return rc;
 }
 
+/* DECODE_MODE_SET takes every preset through TETRA, the last (17), and refuses the value past it with nothing
+   changed. Leaving TETRA drops what its decoder published for the frontends. */
+static int
+test_decode_mode_set_reaches_tetra(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    /* A symbol capture: TETRA reads its symbols there, as from an I/Q radio input. */
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    rc |= expect_int("tetra mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tetra mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tetra preset applied", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+    rc |= expect_int("tetra decoder on", opts.frame_tetra, 1);
+    rc |= expect_int("tetra toast", strstr(state.ui_msg, "Decoding TETRA") != NULL, 1);
+
+    state.tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("past tetra queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA + 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("past tetra drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("past tetra refused", strstr(state.ui_msg, "Decode mode not available") != NULL, 1);
+    rc |= expect_int("past tetra keeps tetra", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+    rc |= expect_int("past tetra keeps the publication", state.tetra_pub.mode, DSD_TETRA_MODE_TMO_DOWNLINK);
+
+    /* No mode at all (DSDCFG_MODE_UNSET, 0) is refused the same way, the TETRA decoder left running. */
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("unset mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_UNSET),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("unset mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("unset mode refused", strstr(state.ui_msg, "Decode mode not available") != NULL, 1);
+    rc |= expect_int("unset mode keeps the tetra decoder", opts.frame_tetra, 1);
+    rc |= expect_int("unset mode keeps the publication", state.tetra_pub.mode, DSD_TETRA_MODE_TMO_DOWNLINK);
+
+    rc |= expect_int("dmr mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("leaving tetra turns its decoder off", opts.frame_tetra, 0);
+    rc |= expect_int("leaving tetra clears its publication", state.tetra_pub.mode, DSD_TETRA_MODE_NONE);
+    freeState(&state);
+    return rc;
+}
+
+/* TETRA's pi/4-DQPSK symbols cannot be read from demodulated audio: DECODE_MODE_SET refuses TETRA on a PCM input with
+   the reason and changes nothing, as it refuses AM. A command that leaves the configured TETRA preset on PCM input (an
+   input switch) keeps the mode but says once that nothing decodes there. */
+static int
+test_decode_mode_set_refuses_tetra_on_pcm(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |=
+        expect_int("pcm tetra queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pcm tetra drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("pcm tetra refused", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 0);
+    rc |= expect_int("pcm tetra decoder stays off", opts.frame_tetra, 0);
+    rc |=
+        expect_str("pcm tetra says why", state.ui_msg,
+                   "Refused: TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read "
+                   "from demodulated audio");
+
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    rc |= expect_int("symbol tetra queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("symbol tetra drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("symbol tetra taken", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+
+    /* The input moves to PCM under TETRA: the next command keeps the mode and says so, once. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.ui_msg[0] = '\0';
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    rc |= expect_int("tetra on pcm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tetra on pcm kept", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+    rc |= expect_str("tetra on pcm says so", state.ui_msg,
+                     "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+    state.ui_msg[0] = '\0';
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    rc |= expect_int("tetra on pcm drained again", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tetra on pcm says it once", state.ui_msg[0] == '\0', 1);
+    /* Back on a symbol capture and off again: said again. */
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.ui_msg[0] = '\0';
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("tetra on pcm said again", state.ui_msg,
+                     "TETRA decodes nothing here: it needs an IQ radio input or a symbol capture");
+    (void)post_empty(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    freeState(&state);
+    return rc;
+}
+
 /* Issue #527: how many times one drained command said the configured tone filter has no effect. */
 static int
 tone_filter_warnings_from(dsd_opts* opts, dsd_state* state, int id, const void* payload, size_t size, int value) {
@@ -3351,6 +3462,59 @@ test_failed_config_reopen_stages_no_file_rate(void) {
     (void)remove("voice.wav");
     (void)remove("voice.pcm");
     rc |= expect_int("staged rate temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
+    return rc;
+}
+
+/* A runtime config with a [mode] but no decode key (DSDCFG_MODE_UNSET) runs no preset, so applying it to a file session
+   keeps the session's own symbol timing (here 8 samples a symbol) rather than a preset's, through the configured rate
+   (48 kHz) and back to the 44.1 kHz the file's header plays it at. */
+static int
+test_config_without_decode_keeps_file_timing(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_config_unset_timing") != 0) {
+        return expect_true("unset timing temp directory", 0);
+    }
+    rc |= write_pcm16_wav("voice.wav", 44100U, 8U);
+    init_test_context(&opts, &state);
+    (void)post_string(DSD_APP_CMD_INPUT_WAV_SET, "voice.wav");
+    rc |= expect_int("unset timing: wav drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("unset timing: the wav plays at its header rate", dsd_opts_effective_input_rate(&opts), 44100);
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_UNSET;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_FILE;
+    cfg.file_sample_rate = 48000;
+    DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", "voice.wav");
+    rc |= expect_true("unset timing: config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("unset timing: config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("unset timing: the wav plays on", opts.audio_in_dev, "voice.wav");
+    rc |= expect_int("unset timing: at its header rate", dsd_opts_effective_input_rate(&opts), 44100);
+    rc |= expect_int("unset timing: the session's timing stays", state.samplesPerSymbol, 8);
+
+    closeAudioInDevice(&opts);
+    freeState(&state);
+
+    /* A live input session staging the config's file for a later open keeps its timing the same way. */
+    init_test_context(&opts, &state);
+    const int live_input = opts.audio_in_type;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    cfg.file_sample_rate = 44100;
+    rc |= expect_true("unset timing: live config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("unset timing: live config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("unset timing: the live input stays", opts.audio_in_type, live_input);
+    rc |= expect_int("unset timing: the live session's timing stays", state.samplesPerSymbol, 8);
+    freeState(&state);
+    (void)remove("voice.wav");
+    rc |= expect_int("unset timing temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
     return rc;
 }
 
@@ -5104,6 +5268,177 @@ test_return_cc_keeps_the_dmr_decode_gate(void) {
     g_dmr_burst_handler_armed = 0;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     freeState(&state);
+    return rc;
+}
+
+static dsd_trunk_tune_result g_tetra_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+static uint64_t g_tetra_tune_request = 0U;
+
+static dsd_trunk_tune_result
+tetra_tune_accepted(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)state;
+    (void)ted_sps;
+    g_tetra_tune_request = request_id;
+    opts->trunk_is_tuned = 1;
+    return freq > 0 ? g_tetra_tune_result : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+/* The real TETRA trunking state machine on a traffic channel: a control channel a CRC-passed block proved, and a
+   followed grant, its tune ending with @p result. */
+static int
+tetra_follow_a_call(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result result) {
+    opts->frame_tetra = 1;
+    opts->trunk_enable = 1;
+    state->trunk_cc_freq = 380012500L;
+    tetra_sm_on_cc_sync(opts, state);
+    tetra_confirm_note_signalling(state);
+    g_tetra_tune_result = result;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tetra_tune_accepted});
+    const tetra_sm_grant grant = {390012500L, 40U, 0x4U, 0x123U};
+    const int followed = tetra_sm_on_grant(opts, state, &grant);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    return followed == 1 && tetra_sm_get_state(state) == TETRA_SM_TUNED;
+}
+
+/* A manual return to the control channel hands the TETRA trunking state machine over as it does P25's: the followed
+   call goes, with no return of the machine's own, so its next tick finds nothing to release. A decode-mode change
+   drops the TETRA state, and with it a tune it had in flight, which could otherwise hold the frame gate shut. */
+static int
+test_return_cc_and_mode_change_hand_tetra_over(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    rc |= expect_true("TETRA follows a call before the return",
+                      tetra_follow_a_call(&opts, &state, DSD_TRUNK_TUNE_RESULT_OK));
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("TETRA return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("TETRA return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("TETRA return-to-CC tunes the control channel", g_io_control_tune_calls, 1);
+    rc |= expect_true("TETRA return-to-CC parks the state machine on the control channel",
+                      tetra_sm_get_state(&state) == TETRA_SM_ON_CC && !tetra_sm_followed(&state, NULL));
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    dsd_trunk_tuning_requests_reset();
+    rc |= expect_true("TETRA follows a call before the mode change",
+                      tetra_follow_a_call(&opts, &state, DSD_TRUNK_TUNE_RESULT_PENDING));
+    dsd_trunk_tuning_request_publish(g_tetra_tune_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("the failed tune holds the gate", dsd_trunk_tuning_pending_request() == g_tetra_tune_request);
+    rc |=
+        expect_int("mode change queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("leaving TETRA drops its state machine",
+                      tetra_sm_get_state(&state) == TETRA_SM_IDLE && !tetra_sm_followed(&state, NULL));
+    rc |= expect_true("leaving TETRA retires its tune in flight", dsd_trunk_tuning_pending_request() == 0U);
+    rc |= expect_int("leaving TETRA keeps its publication cleared", state.tetra_pub.trunk_state, DSD_TETRA_TRUNK_IDLE);
+    freeState(&state);
+    dsd_trunk_tuning_requests_reset();
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+static uint64_t g_tetra_return_request = 0U;
+
+/* The engine's return in flight (dsd_engine_return_to_cc_request()): accepted, the shared tuning state released at
+   once, its tune not answered yet. */
+static dsd_trunk_tune_result
+tetra_return_in_flight(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    g_tetra_return_request = request_id;
+    opts->trunk_is_tuned = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    return DSD_TRUNK_TUNE_RESULT_PENDING;
+}
+
+/* A followed TETRA call let go of with its return to the control channel in flight, released over the air; with
+   @p trunking_off only once trunking is on again after a while off, which kept the receiver on the call's channel: the
+   tick and a release with trunking off ask for no return. */
+static int
+tetra_return_a_call_in_flight(dsd_opts* opts, dsd_state* state, int trunking_off) {
+    if (!tetra_follow_a_call(opts, state, DSD_TRUNK_TUNE_RESULT_OK)) {
+        return 0;
+    }
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.return_to_cc_request = tetra_return_in_flight});
+    g_tetra_return_request = 0U;
+    int held = 1;
+    if (trunking_off) {
+        opts->trunk_enable = 0;
+        tetra_sm_tick(opts, state);
+        tetra_sm_on_release(opts, state, 0x123U);
+        held = g_tetra_return_request == 0U && tetra_sm_get_state(state) == TETRA_SM_TUNED;
+        opts->trunk_enable = 1;
+    }
+    tetra_sm_on_release(opts, state, 0x123U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    return held && g_tetra_return_request != 0U && tetra_sm_owns_return(state) && !tetra_sm_followed(state, NULL)
+           && tetra_sm_get_state(state) == TETRA_SM_ON_CC;
+}
+
+/* Every manual tune that moves the receiver under trunking hands the TETRA trunking state machine over as Return to CC
+   does, a return of its own still in flight included: Return to CC (also one asked for once trunking is on again after
+   a while off, which asked for none), a skip or lockout returning to the control channel, and a control channel
+   candidate or channel cycle. The request failing later then puts nothing back on the operator's carrier: no follow
+   of the call left, no claim on the shared tuning state. */
+static int
+test_manual_tunes_hand_a_tetra_return_over(void) {
+    enum { CASE_RETURN, CASE_RETURN_AFTER_OFF, CASE_SKIP, CASE_LOCKOUT, CASE_CANDIDATE, CASE_CHANNEL };
+
+    static const char* const names[] = {
+        "return-to-CC", "return-to-CC, trunking was off", "skip", "lockout", "candidate cycle", "channel cycle"};
+    static const int commands[] = {DSD_APP_CMD_RETURN_CC,    DSD_APP_CMD_RETURN_CC,     DSD_APP_CMD_SKIP_SLOT,
+                                   DSD_APP_CMD_LOCKOUT_SLOT, DSD_APP_CMD_CHANNEL_CYCLE, DSD_APP_CMD_CHANNEL_CYCLE};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    char tag[96];
+    for (int k = CASE_RETURN; k <= CASE_CHANNEL; k++) {
+        init_test_context(&opts, &state);
+        dsd_trunk_tuning_requests_reset();
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the return is in flight", names[k]);
+        rc |= expect_true(tag, tetra_return_a_call_in_flight(&opts, &state, k == CASE_RETURN_AFTER_OFF));
+        if (k == CASE_SKIP || k == CASE_LOCKOUT) {
+            const dsd_call_observation call = {.protocol = DSD_SYNC_TETRA_NDB_POS,
+                                               .slot = 0,
+                                               .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                               .ota_target_id = 0x100U,
+                                               .policy_target_id = 0x100U,
+                                               .ota_source_id = 0x2222U,
+                                               .observed_m = dsd_decode_now_mono_s()};
+            rc |= expect_true("TETRA call seeded", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        } else if (k == CASE_CANDIDATE) {
+            opts.audio_in_type = AUDIO_IN_RTL; /* a cycle needs a tuner */
+            opts.p25_prefer_candidates = 1;
+            (void)dsd_trunk_cc_candidates_add(&state, 381012500L, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+        } else if (k == CASE_CHANNEL) {
+            opts.audio_in_type = AUDIO_IN_RTL;
+            state.lcn_freq_count = 2;
+            state.trunk_lcn_freq[0] = 382012500L;
+            state.trunk_lcn_freq[1] = 383012500L;
+        }
+        const int submitted = k == CASE_SKIP || k == CASE_LOCKOUT ? dsd_app_command_set_u8(commands[k], 0U)
+                                                                  : dsd_app_command_action(commands[k]);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: queued", names[k]);
+        rc |= expect_true(tag, submitted > 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: drained", names[k]);
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: tunes the receiver", names[k]);
+        rc |= expect_int(tag, g_io_control_tune_calls, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: hands the return in flight over", names[k]);
+        rc |= expect_true(tag, !tetra_sm_owns_return(&state));
+        dsd_trunk_tuning_request_publish(g_tetra_return_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        tetra_sm_tick(&opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the failed return puts no call back", names[k]);
+        rc |= expect_true(tag, tetra_sm_get_state(&state) != TETRA_SM_TUNED && !tetra_sm_followed(&state, NULL));
+        DSD_SNPRINTF(tag, sizeof tag, "%s: nor the shared tuning state", names[k]);
+        rc |= expect_true(tag, opts.trunk_is_tuned == 0 && state.trunk_vc_freq[0] == 0 && state.p25_vc_freq[0] == 0);
+        freeState(&state);
+    }
+    dsd_trunk_tuning_requests_reset();
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
 }
 
@@ -9342,6 +9677,63 @@ reset_rx_family_wrap(void) {
 }
 
 /*
+ * TETRA times its symbols at a whole number of samples per symbol: switched on where the DSP rate is no multiple of
+ * 18 kHz, the mode is kept but its toast says the rate is wrong and how to change it, and the log names the fix in
+ * full. The rate is the running stream's, else an RTL-SDR's DSP bandwidth; at 72 kHz the toast is the usual one.
+ */
+static int
+test_decode_mode_set_tetra_names_an_unusable_rate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:420.1M:30:0:48");
+    opts.rtl_dsp_bw_khz = 48;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_rx_family_wrap();
+    g_fake_request_rate_hz = 48000;
+    rc |= expect_int("tetra at 48 kHz queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tetra at 48 kHz drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tetra at 48 kHz is kept", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+    rc |= expect_str("tetra at 48 kHz names the rate and the fix", state.ui_msg,
+                     "Decoding TETRA: DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
+
+    /* The running stream's rate, which a device forced: an Airspy at 78.125 kHz has no DSP bandwidth to suggest. */
+    rc |= expect_int("dmr between", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr between drained", dsd_app_drain_cmds(&opts, &state), 1);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    g_fake_request_rate_hz = 78125;
+    rc |= expect_int("tetra on an airspy queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tetra on an airspy drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("tetra on an airspy says no rate fits", state.ui_msg,
+                     "Decoding TETRA: DSP rate 78.125 kHz is no multiple of 18 kHz, and no Airspy rate is one");
+
+    /* With no stream running, an RTL-SDR's DSP bandwidth is the rate: 72 kHz runs TETRA. */
+    rc |= expect_int("dmr again", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr again drained", dsd_app_drain_cmds(&opts, &state), 1);
+    state.rtl_ctx = NULL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:420.1M:30:0:72");
+    opts.rtl_dsp_bw_khz = 72;
+    g_fake_request_rate_hz = 0;
+    rc |= expect_int("tetra at 72 kHz queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tetra at 72 kHz drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("tetra at 72 kHz is the usual toast", state.ui_msg, "Decoding TETRA");
+    reset_rx_family_wrap();
+    freeState(&state);
+    return rc;
+}
+
+/*
  * DECODE_MODE_SET Analog on a live digital RTL session has to move the front end
  * onto the analog family (it used to publish nothing for analog, leaving the RTL
  * stream on the old digital demodulator) and open the monitor's raw sink. Going
@@ -10280,9 +10672,9 @@ test_nfm_bandwidth_set_applies_live_and_refuses(void) {
     rc |= submit_nfm_width(&opts, &state, 25000, "nfm 25000");
     rc |= expect_int("nfm 25000 keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("nfm 25000 not requested", g_analog_req_calls, 0);
-    rc |=
-        expect_toast("nfm 25000 toast", &state,
-                     "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    rc |= expect_toast(
+        "nfm 25000 toast", &state,
+        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
     rc |= expect_received_tone_kept("nfm 25000 keeps the received tone", &state, seeded);
     /* Refused for a reason the rate does not explain (DSD_NEO_CHANNEL_LPF=0, say): the front end logged it. */
     rc |= submit_nfm_width(&opts, &state, 20000, "nfm 20000 refused");
@@ -10327,9 +10719,9 @@ test_nfm_bandwidth_set_applies_live_and_refuses(void) {
     rc |= submit_nfm_width(&opts, &state, 25000, "nfm no stream");
     rc |= expect_int("nfm no stream keeps the width", opts.analog_nfm_bandwidth_hz, 20000);
     rc |= expect_int("nfm no stream asks no front end", g_analog_check_calls, 0);
-    rc |=
-        expect_toast("nfm no stream toast", &state,
-                     "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    rc |= expect_toast(
+        "nfm no stream toast", &state,
+        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
 
     /* A digital session does not use the width: only its range is checked, and the front end is not asked. */
@@ -11012,8 +11404,9 @@ test_config_apply_holds_nfm_width_to_the_front_end(void) {
     rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_ANALOG, 25000, "cfg nfm 25000");
     rc |= expect_int("cfg nfm 25000 not applied", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("cfg nfm 25000 not requested", g_analog_req_calls, 0);
-    rc |= expect_toast("cfg nfm 25000 toast", &state,
-                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz");
+    rc |= expect_toast(
+        "cfg nfm 25000 toast", &state,
+        "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz");
     rc |= expect_received_tone_kept("cfg nfm 25000 keeps the received tone", &state, seeded);
     /* A [mode] without a decode key applies no preset, so the session stays on the monitor and the width is held the
        same way: it is not a move onto a digital decoder that leaves the width unused. */
@@ -11024,8 +11417,9 @@ test_config_apply_holds_nfm_width_to_the_front_end(void) {
     rc |= expect_int("cfg nfm 25000 no decode: front end asked", g_analog_check_width_hz, 25000);
     rc |= expect_int("cfg nfm 25000 no decode: not applied", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("cfg nfm 25000 no decode: not requested", g_analog_req_calls, 0);
-    rc |= expect_toast("cfg nfm 25000 no decode toast", &state,
-                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz");
+    rc |= expect_toast(
+        "cfg nfm 25000 no decode toast", &state,
+        "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz");
     g_analog_check_result = 0;
 
     /* The same width again is not a change: nothing to ask or request. */
@@ -11311,9 +11705,10 @@ test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth(void) {
     rc |= expect_str("cfg 48->16: input unchanged", opts.audio_in_dev, dev_before);
     rc |= expect_int("cfg 48->16: stream kept", state.rtl_ctx == (RtlSdrContext*)fake_ctx, 1);
     rc |= expect_int("cfg 48->16: front end not asked", g_analog_check_calls, 0);
-    rc |= expect_toast("cfg 48->16 toast", &state,
-                       "Config not applied: NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 "
-                       "kHz DSP bandwidth");
+    rc |= expect_toast(
+        "cfg 48->16 toast", &state,
+        "Config not applied: NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 "
+        "kHz DSP bandwidth");
 
     /* The default keeps its historical rule at any rate: nothing to hold. */
     opts.analog_nfm_bandwidth_hz = 0;
@@ -11348,9 +11743,10 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
     reset_rx_family_wrap();
     rc |= submit_config_rtl_bw(&opts, &state, 20, -1, "cfg rtl_bw_khz 20");
     rc |= expect_int("cfg rtl_bw_khz 20: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_toast("cfg rtl_bw_khz 20 toast", &state,
-                       "Config not applied: NFM 20 kHz does not fit the 20 kHz DSP rate (max 16.8 kHz); use a 24 or 48 "
-                       "kHz DSP bandwidth");
+    rc |= expect_toast(
+        "cfg rtl_bw_khz 20 toast", &state,
+        "Config not applied: NFM 20 kHz does not fit the 20 kHz DSP rate (max 16.8 kHz); use a 24, 48 or 72 "
+        "kHz DSP bandwidth");
     /* The loader keeps any integer for rtl_bw_khz (its range only warns). One too large for a rate in Hz is held as
        the saturated rate, which no width fits, rather than overflowing into a negative one, and the refusal names the
        setting rather than a DSP rate built from it. So does one above every selectable bandwidth that no width fits
@@ -11358,12 +11754,13 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
     rc |= submit_config_rtl_bw(&opts, &state, 3000000, -1, "cfg rtl_bw_khz 3000000");
     rc |= expect_int("cfg rtl_bw_khz 3000000: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
     rc |= expect_toast("cfg rtl_bw_khz 3000000 toast", &state,
-                       "Config not applied: rtl_bw_khz 3000000 is not a DSP bandwidth; use a 24 or 48 kHz DSP "
+                       "Config not applied: rtl_bw_khz 3000000 is not a DSP bandwidth; use a 24, 48 or 72 kHz DSP "
                        "bandwidth");
     rc |= submit_config_rtl_bw(&opts, &state, 200, -1, "cfg rtl_bw_khz 200");
     rc |= expect_int("cfg rtl_bw_khz 200: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_toast("cfg rtl_bw_khz 200 toast", &state,
-                       "Config not applied: rtl_bw_khz 200 is not a DSP bandwidth; use a 24 or 48 kHz DSP bandwidth");
+    rc |=
+        expect_toast("cfg rtl_bw_khz 200 toast", &state,
+                     "Config not applied: rtl_bw_khz 200 is not a DSP bandwidth; use a 24, 48 or 72 kHz DSP bandwidth");
 
     /* An Airspy running an explicit 25 kHz at its forced rate; a config moving to an RTL-SDR at the same 24 kHz
        rtl_bw_khz value would reopen at 24 kHz, which cannot filter it. */
@@ -11374,9 +11771,10 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
     rc |= submit_config_rtl_bw(&opts, &state, 24, -1, "cfg airspy to rtl");
     rc |= expect_str("cfg airspy to rtl: input unchanged", opts.audio_in_dev, "airspy");
     rc |= expect_int("cfg airspy to rtl: front end not asked", g_analog_check_calls, 0);
-    rc |= expect_toast("cfg airspy to rtl toast", &state,
-                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz "
-                       "DSP bandwidth");
+    rc |= expect_toast(
+        "cfg airspy to rtl toast", &state,
+        "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz "
+        "DSP bandwidth");
 
     /* rtl_tcp at the host and port in use, no rtl_freq: nothing reopens, so the rtl_bw_khz it carries moves nothing. */
     opts.rtl_dsp_bw_khz = 48;
@@ -13136,9 +13534,10 @@ expect_back_on_dmr(const char* label, const dsd_opts* opts, const dsd_state* sta
     rc |= expect_int(label, opts->frame_dmr, 1);
     rc |= expect_int(label, dsd_infer_decode_mode_preset(opts) == DSDCFG_MODE_DMR, 1);
     rc |= expect_int(label, opts->mod_cli_lock, 1);
-    rc |= expect_toast(label, state,
-                       "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 "
-                       "kHz DSP bandwidth");
+    rc |=
+        expect_toast(label, state,
+                     "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 "
+                     "kHz DSP bandwidth");
     return rc;
 }
 
@@ -13229,6 +13628,376 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
+    return rc;
+}
+
+static int g_tetra_ext_cleanups;
+
+static void
+count_tetra_ext_cleanup(void* ptr) {
+    g_tetra_ext_cleanups++;
+    free(ptr);
+}
+
+/* A TETRA state extension of the session's own, which only these tests free (count_tetra_ext_cleanup()): zeroed, as the
+   TETRA code that reads it in place finds a state of a session that follows nothing. */
+static tetra_state_t*
+new_tetra_ext(void) {
+    return (tetra_state_t*)calloc(1U, sizeof(tetra_state_t));
+}
+
+/* A TETRA session on an RTL front end at TETRA's 72 kHz DSP rate, holding what a TETRA decoder holds: its state
+   extension (@p ext, which the session owns from here on and frees through count_tetra_ext_cleanup(), or which is freed
+   here when the session cannot be set up), the burst the frame sync captured and its publication. */
+static int
+init_tetra_session_on_rtl(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, tetra_state_t* ext) {
+    init_decode_mode_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:420.1M:0:0:72");
+    opts->rtl_dsp_bw_khz = 72;
+    state->rtl_ctx = fake_ctx;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA);
+    (void)dsd_app_drain_cmds(opts, state);
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    g_fake_analog_family = 0;
+    if (!ext) {
+        return 0;
+    }
+    if (opts->frame_tetra != 1
+        || dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, ext, count_tetra_ext_cleanup) != 0) {
+        free(ext);
+        return 0;
+    }
+    g_tetra_ext_cleanups = 0;
+    state->tetra_sync.polarity = 1;
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    return 1;
+}
+
+/* The TETRA session init_tetra_session_on_rtl() set up, still whole: its state extension @p ext, never cleaned up, the
+   burst the frame sync captured and its publication. */
+static int
+tetra_session_kept(const dsd_state* state, const tetra_state_t* ext) {
+    return dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) == ext && g_tetra_ext_cleanups == 0
+           && state->tetra_sync.polarity == 1 && state->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK;
+}
+
+/* ... and left, as every preset other than TETRA leaves it: all of it dropped, once. */
+static int
+tetra_session_left(const dsd_state* state) {
+    return dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) == NULL && g_tetra_ext_cleanups == 1
+           && state->tetra_sync.polarity == 0 && state->tetra_pub.mode == DSD_TETRA_MODE_NONE;
+}
+
+/*
+ * A TETRA session's switch onto Analog that the front end refuses by its request (a retune moved the rate between the
+ * check and the request) goes back to TETRA whole, from DECODE_MODE_SET and from a config's [mode] alike: the mode
+ * change is staged (dsd_stage_decode_mode_preset()) and commits only once nothing put it back, so the decoder flag, the
+ * TETRA state extension, the burst the frame sync captured and the publication all stay. A switch that stands leaves
+ * TETRA at its commit, once the front end has taken it, as every preset other than TETRA does.
+ */
+static int
+test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const via[] = {"mode set", "config"};
+    char tag[96];
+    int rc = 0;
+    for (int config = 0; config <= 1; config++) {
+        tetra_state_t* ext = new_tetra_ext();
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: TETRA session", via[config]);
+        if (!init_tetra_session_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx, ext)) {
+            rc |= expect_true(tag, 0);
+            state.rtl_ctx = NULL;
+            freeState(&state);
+            continue;
+        }
+        g_analog_req_result = -1;
+        if (config) {
+            rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra config: refused");
+        } else {
+            rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra mode set: refused");
+        }
+        g_analog_req_result = 0;
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: refused, back on TETRA", via[config]);
+        rc |= expect_true(tag, opts.frame_tetra == 1 && opts.analog_only == 0
+                                   && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA);
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: refused, the TETRA session whole", via[config]);
+        rc |= expect_true(tag, tetra_session_kept(&state, ext));
+        if (config) {
+            rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra config: taken");
+        } else {
+            rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "tetra mode set: taken");
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: queued, the TETRA session kept", via[config]);
+        rc |= expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0 && tetra_session_kept(&state, ext));
+        demod_thread_lands(0);
+        g_fake_analog_family = 1;
+        (void)dsd_app_drain_cmds(&opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "tetra %s: taken, TETRA left", via[config]);
+        rc |= expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0 && tetra_session_left(&state));
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
+/* A switch from TETRA onto the analog monitor, or onto AM, the front end has queued and not yet taken (@p mode, from
+   DECODE_MODE_SET or a config's [mode] as @p config says), or NULL when the TETRA session could not be set up. */
+static tetra_state_t*
+tetra_switch_queued(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, dsdneoUserDecodeMode mode, int config,
+                    const char* label) {
+    tetra_state_t* ext = new_tetra_ext();
+    if (!init_tetra_session_on_rtl(opts, state, fake_ctx, ext)) {
+        return NULL;
+    }
+    if (config) {
+        (void)submit_config_mode(opts, state, mode, label);
+    } else {
+        (void)submit_decode_mode(opts, state, mode, label);
+    }
+    return ext;
+}
+
+/*
+ * A switch from TETRA onto Analog or AM that a running RTL stream has queued commits once the front end takes it, not
+ * when the command that asked for it returns: until then the demod thread can still refuse it where it lands (a
+ * retune lowered the DSP rate after the check), and the next drain puts the session back on TETRA
+ * (ui_revert_analog_entry()), which finds its state extension, the burst the frame sync captured and the publication
+ * as they were, from DECODE_MODE_SET and from a config's [mode] alike. A second switch made over the queued one (onto
+ * the other analog kind) waits with it, and is put back to TETRA the same way; a switch onto a digital mode made over
+ * it commits at once, leaving TETRA, and the refusal of the analog switch it moved on from puts nothing back.
+ */
+static int
+test_queued_switch_off_tetra_commits_once_taken(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const via[] = {"mode set", "config"};
+    static const dsdneoUserDecodeMode modes[] = {DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM};
+    char tag[112];
+    int rc = 0;
+    for (int config = 0; config <= 1; config++) {
+        for (size_t m = 0; m < sizeof modes / sizeof modes[0]; m++) {
+            const char* const name = dsd_decode_mode_display_name(modes[m]);
+            DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: TETRA session", via[config], name);
+            tetra_state_t* ext = tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, modes[m], config, tag);
+            rc |= expect_true(tag, ext != NULL);
+            if (ext) {
+                DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: switched, the TETRA session kept", via[config], name);
+                rc |=
+                    expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0 && tetra_session_kept(&state, ext));
+                (void)dsd_app_drain_cmds(&opts, &state);
+                DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: still kept while queued", via[config], name);
+                rc |= expect_true(tag, opts.analog_only == 1 && tetra_session_kept(&state, ext));
+                demod_thread_refuses_analog_keeping(0, 0);
+                (void)dsd_app_drain_cmds(&opts, &state);
+                DSD_SNPRINTF(tag, sizeof tag, "queued %s %s: refused where it landed, back on TETRA whole", via[config],
+                             name);
+                rc |= expect_true(tag, opts.frame_tetra == 1 && opts.analog_only == 0
+                                           && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA
+                                           && tetra_session_kept(&state, ext));
+            }
+            state.rtl_ctx = NULL;
+            freeState(&state);
+        }
+    }
+
+    /* Onto Analog and then AM over it, both queued: the refusal puts the session back on TETRA whole. */
+    tetra_state_t* ext =
+        tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, DSDCFG_MODE_ANALOG, 0, "superseded");
+    rc |= expect_true("superseded: TETRA session", ext != NULL);
+    if (ext) {
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "superseded: AM over it");
+        rc |= expect_true("superseded: both queued, the TETRA session kept",
+                          opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM
+                              && tetra_session_kept(&state, ext));
+        demod_thread_refuses_analog_keeping(0, 0);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_true("superseded: refused, back on TETRA whole",
+                          opts.frame_tetra == 1 && opts.analog_only == 0 && tetra_session_kept(&state, ext));
+    }
+    state.rtl_ctx = NULL;
+    freeState(&state);
+
+    /* Under a scan row that inherits the configured TETRA mode the switch reaches the front end with the row's resume,
+       after the command's commit point: refused by that request, or where it landed, it finds the TETRA session whole,
+       the row still running. */
+    for (int at_once = 1; at_once >= 0; at_once--) {
+        const char* const how = at_once ? "under a row, at once" : "under a row, where it landed";
+        ext = new_tetra_ext();
+        const int ok = init_tetra_session_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx, ext);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: TETRA session on an inherited row", how);
+        rc |= expect_true(tag, ok && dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_INHERIT) == 0
+                                   && dsd_scan_mode_options(&opts, &state, NULL) == 0 && opts.frame_tetra == 1
+                                   && tetra_session_kept(&state, ext));
+        if (ok) {
+            reset_rx_family_wrap();
+            g_analog_req_result = at_once ? -1 : 0;
+            (void)submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, how);
+            g_analog_req_result = 0;
+            if (!at_once) {
+                DSD_SNPRINTF(tag, sizeof tag, "%s: queued, the TETRA session kept", how);
+                rc |= expect_true(tag, opts.analog_only == 1 && tetra_session_kept(&state, ext));
+                demod_thread_refuses_analog_keeping(0, 0);
+                (void)dsd_app_drain_cmds(&opts, &state);
+            }
+            DSD_SNPRINTF(tag, sizeof tag, "%s: back on TETRA whole, the row still running", how);
+            rc |= expect_true(tag, opts.frame_tetra == 1 && opts.analog_only == 0
+                                       && dsd_scan_mode_configured_preset(&opts, &state) == DSDCFG_MODE_TETRA
+                                       && dsd_scan_mode_configured_view(&state) != NULL
+                                       && tetra_session_kept(&state, ext));
+            dsd_scan_mode_leave(&opts, &state);
+        }
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+
+    /* Onto Analog, then DMR over it: DMR commits at once and leaves TETRA, and the analog switch's refusal puts nothing
+       back. */
+    ext = tetra_switch_queued(&opts, &state, (RtlSdrContext*)fake_ctx, DSDCFG_MODE_ANALOG, 0, "moved on");
+    rc |= expect_true("moved on: TETRA session", ext != NULL);
+    if (ext) {
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "moved on: DMR over it");
+        rc |= expect_true("moved on: DMR leaves TETRA at once",
+                          opts.frame_dmr == 1 && opts.frame_tetra == 0 && tetra_session_left(&state));
+        demod_thread_refuses_analog_keeping(0, 0);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_true("moved on: DMR stays, TETRA stays left",
+                          dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR && opts.frame_tetra == 0
+                              && tetra_session_left(&state));
+    }
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    reset_rx_family_wrap();
+    return rc;
+}
+
+enum { TETRA_FOLLOWED_HZ = 390012500 };
+
+/* A TETRA session on an RTL front end whose real trunking state machine follows a call on a traffic channel, with the
+   shared follow state the engine's tune hook leaves (dsd_engine_update_vc_tune_state()). */
+static int
+init_tetra_follow_on_rtl(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx) {
+    (void)init_tetra_session_on_rtl(opts, state, fake_ctx, NULL);
+    dsd_trunk_tuning_requests_reset();
+    if (opts->frame_tetra != 1 || !tetra_follow_a_call(opts, state, DSD_TRUNK_TUNE_RESULT_OK)) {
+        return 0;
+    }
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = TETRA_FOLLOWED_HZ;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = TETRA_FOLLOWED_HZ;
+    return opts->trunk_is_tuned == 1;
+}
+
+/* The follow init_tetra_follow_on_rtl() set up, whole: the state machine on the call, and the shared follow state. */
+static int
+tetra_follow_kept(const dsd_opts* opts, const dsd_state* state) {
+    return tetra_sm_get_state(state) == TETRA_SM_TUNED && tetra_sm_followed(state, NULL) && opts->trunk_is_tuned == 1
+           && state->trunk_vc_freq[0] == TETRA_FOLLOWED_HZ && state->trunk_vc_freq[1] == TETRA_FOLLOWED_HZ
+           && state->p25_vc_freq[0] == TETRA_FOLLOWED_HZ && state->p25_vc_freq[1] == TETRA_FOLLOWED_HZ;
+}
+
+/*
+ * A TETRA follow that a switch onto Analog or AM interrupts, which the front end then refuses, at once or where it
+ * lands, goes on once the session is back on TETRA, from DECODE_MODE_SET and from a config's [mode] alike: the switch
+ * cleared the shared follow state (trunk_is_tuned and the voice channel frequencies, reset_call_tracking()) with the
+ * calls it ended, and the refusal puts it back with the TETRA state the commit kept, so the state machine's next tick
+ * does not take the follow for one another owner released and drop it while the receiver stays on its traffic channel.
+ * Nothing is put back when the state machine let go of the call meanwhile (a carrier boundary abandons it), nor when
+ * the switch stands.
+ */
+static int
+test_refused_switch_off_tetra_keeps_the_follow(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const via[] = {"mode set", "config"};
+    static const dsdneoUserDecodeMode modes[] = {DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM};
+    char tag[112];
+    int rc = 0;
+    for (int config = 0; config <= 1; config++) {
+        for (size_t m = 0; m < sizeof modes / sizeof modes[0]; m++) {
+            for (int at_once = 0; at_once <= 1; at_once++) {
+                const char* const name = dsd_decode_mode_display_name(modes[m]);
+                const char* const how = at_once ? "at once" : "where it landed";
+                DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: TETRA follows a call", via[config], name, how);
+                rc |= expect_true(tag, init_tetra_follow_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx));
+                g_analog_req_result = at_once ? -1 : 0;
+                if (config) {
+                    (void)submit_config_mode(&opts, &state, modes[m], tag);
+                } else {
+                    (void)submit_decode_mode(&opts, &state, modes[m], tag);
+                }
+                g_analog_req_result = 0;
+                if (!at_once) {
+                    DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: queued", via[config], name, how);
+                    rc |= expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0);
+                    if (!config) {
+                        DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: the calls ended, the follow state cleared",
+                                     via[config], name, how);
+                        rc |= expect_true(tag, opts.trunk_is_tuned == 0 && state.trunk_vc_freq[0] == 0
+                                                   && state.p25_vc_freq[0] == 0);
+                    }
+                    demod_thread_refuses_analog_keeping(0, 0);
+                    (void)dsd_app_drain_cmds(&opts, &state);
+                }
+                DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: refused, back on TETRA following the call", via[config],
+                             name, how);
+                rc |= expect_true(tag, opts.frame_tetra == 1 && opts.analog_only == 0
+                                           && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA
+                                           && tetra_follow_kept(&opts, &state));
+                tetra_sm_tick(&opts, &state);
+                DSD_SNPRINTF(tag, sizeof tag, "follow %s %s %s: the next tick keeps the call", via[config], name, how);
+                rc |= expect_true(tag, tetra_follow_kept(&opts, &state));
+                state.rtl_ctx = NULL;
+                freeState(&state);
+            }
+        }
+    }
+
+    /* Onto Analog, then AM over it, both queued: the refusal puts the follow back from before the first. */
+    rc |= expect_true("follow superseded: TETRA follows a call",
+                      init_tetra_follow_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx));
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "follow superseded: Analog");
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "follow superseded: AM over it");
+    demod_thread_refuses_analog_keeping(0, 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("follow superseded: refused, back on TETRA following the call",
+                      opts.frame_tetra == 1 && opts.analog_only == 0 && tetra_follow_kept(&opts, &state));
+    state.rtl_ctx = NULL;
+    freeState(&state);
+
+    /* A carrier boundary while the switch was queued abandoned the follow: the refusal puts none of it back. */
+    rc |= expect_true("follow abandoned: TETRA follows a call",
+                      init_tetra_follow_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx));
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "follow abandoned: Analog");
+    tetra_sm_abandon_carrier(&opts, &state);
+    demod_thread_refuses_analog_keeping(0, 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("follow abandoned: back on TETRA, no follow put back",
+                      opts.frame_tetra == 1 && tetra_sm_get_state(&state) != TETRA_SM_TUNED && opts.trunk_is_tuned == 0
+                          && state.trunk_vc_freq[0] == 0 && state.p25_vc_freq[0] == 0);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+
+    /* A switch that stands leaves TETRA, and its follow, as before. */
+    rc |= expect_true("follow left: TETRA follows a call",
+                      init_tetra_follow_on_rtl(&opts, &state, (RtlSdrContext*)fake_ctx));
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "follow left: Analog");
+    demod_thread_lands(0);
+    g_fake_analog_family = 1;
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("follow left: taken, TETRA and its follow left",
+                      opts.analog_only == 1 && opts.frame_tetra == 0
+                          && dsd_state_ext_get(&state, DSD_STATE_EXT_PROTO_TETRA) == NULL && opts.trunk_is_tuned == 0
+                          && state.trunk_vc_freq[0] == 0 && state.p25_vc_freq[0] == 0);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    dsd_trunk_tuning_requests_reset();
+    reset_rx_family_wrap();
     return rc;
 }
 
@@ -13565,7 +14334,7 @@ test_refused_switch_between_fm_and_am_puts_the_mode_back(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] =
-        "Failed: AM -> AM 15 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth";
+        "Failed: AM -> AM 15 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 kHz DSP bandwidth";
     int rc = 0;
     init_nfm_session_with_am_width(&opts, &state, (RtlSdrContext*)fake_ctx, 15000);
 
@@ -13668,7 +14437,7 @@ test_refused_switch_after_an_unpublished_toggle_puts_the_mode_back(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] =
-        "Failed: AM -> AM 15 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth";
+        "Failed: AM -> AM 15 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 kHz DSP bandwidth";
     int rc = 0;
     for (size_t i = 0; i < sizeof k_unpublished_toggles / sizeof k_unpublished_toggles[0]; i++) {
         char label[128];
@@ -13752,7 +14521,7 @@ test_refused_switch_after_a_pending_switch_puts_the_running_mode_back(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] = "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use "
-                                    "a 24 or 48 kHz DSP bandwidth";
+                                    "a 24, 48 or 72 kHz DSP bandwidth";
     int rc = 0;
 
     /* DMR -> AM -> Analog in two drains, the last refused where it landed: the front end stayed digital. */
@@ -13889,7 +14658,7 @@ test_refused_switch_after_a_taken_switch_puts_the_running_mode_back(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] = "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use "
-                                    "a 24 or 48 kHz DSP bandwidth";
+                                    "a 24, 48 or 72 kHz DSP bandwidth";
     int rc = 0;
 
     /* Taken between the two commands of one drain; the second refused where it landed. */
@@ -13941,7 +14710,7 @@ test_refused_switch_after_a_width_change_holds_the_width(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     static const char k_refusal[] = "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use "
-                                    "a 24 or 48 kHz DSP bandwidth";
+                                    "a 24, 48 or 72 kHz DSP bandwidth";
     static const int32_t k_widths[2] = {20000, 10000};
     int rc = 0;
     for (int i = 0; i < 2; i++) {
@@ -14594,9 +15363,10 @@ test_config_apply_holds_a_scan_row_width_to_a_reopen(void) {
     rc |= expect_int("row reopen 24->16: rate kept", opts.rtl_dsp_bw_khz, 24);
     rc |= expect_str("row reopen 24->16: input unchanged", opts.audio_in_dev, dev_before);
     rc |= expect_int("row reopen 24->16: stream kept", state.rtl_ctx == (RtlSdrContext*)fake_ctx, 1);
-    rc |= expect_toast("row reopen 24->16 toast", &state,
-                       "Config not applied: NFM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 "
-                       "kHz DSP bandwidth");
+    rc |= expect_toast(
+        "row reopen 24->16 toast", &state,
+        "Config not applied: NFM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 "
+        "kHz DSP bandwidth");
     rc |= expect_int("row reopen 24->16: the row keeps its width",
                      dsd_scan_mode_active(&state) == DSD_SCAN_MODE_NFM && opts.analog_nfm_bandwidth_hz == 20000, 1);
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
@@ -16127,9 +16897,9 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     rc |= expect_int("airspy to rtl drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_str("airspy to rtl: input unchanged", opts.audio_in_dev, "airspy");
     rc |= expect_int("airspy to rtl: nothing reopened", g_config_rtl_creates, 0);
-    rc |=
-        expect_toast("airspy to rtl toast", &state,
-                     "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    rc |= expect_toast(
+        "airspy to rtl toast", &state,
+        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
 
     /* PCM input: the switch opens the RTL-SDR the "pulse" device string becomes on an RTL input. A refused switch
        keeps the input, and with it the tone received on it (issue #522). */
@@ -16145,7 +16915,7 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     rc |= expect_int("pcm to rtl: still PCM", opts.audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_int("pcm to rtl: nothing opened", g_config_rtl_creates, 0);
     rc |= expect_toast("pcm to rtl toast", &state,
-                       "Refused: NFM 16 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); use a 24 or 48 kHz DSP "
+                       "Refused: NFM 16 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); use a 24, 48 or 72 kHz DSP "
                        "bandwidth");
     rc |= expect_received_tone_kept("pcm to rtl refused: received tone kept", &state, seeded);
 
@@ -16200,9 +16970,9 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     rc |= expect_int("row width to rtl drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("row width to rtl: still PCM", opts.audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_int("row width to rtl: nothing opened", g_config_rtl_creates, 0);
-    rc |=
-        expect_toast("row width to rtl toast", &state,
-                     "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    rc |= expect_toast(
+        "row width to rtl toast", &state,
+        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
     /* The same row at a 48 kHz DSP bandwidth opens. */
     opts.rtl_dsp_bw_khz = 48;
     (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
@@ -17267,12 +18037,12 @@ test_am_refused_on_pcm_input(void) {
     rc |= expect_int("pcm analog drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("pcm analog applied", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
 
-    /* AM is the last preset id: one past it is not a mode. */
+    /* TETRA is the last preset id: one past it is not a mode. */
     state.ui_msg[0] = '\0';
-    rc |= expect_int("past-am queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_AM + 1),
+    rc |= expect_int("past-last queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_TETRA + 1),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("past-am drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("past-am refused", strstr(state.ui_msg, "Decode mode not available") != NULL, 1);
+    rc |= expect_int("past-last drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("past-last refused", strstr(state.ui_msg, "Decode mode not available") != NULL, 1);
     freeState(&state);
     return rc;
 }
@@ -17557,6 +18327,7 @@ main(void) {
     rc |= test_nfm_bandwidth_set_under_a_width_row();
     rc |= test_refused_width_under_a_scan_row_keeps_the_configured_width();
     rc |= test_refused_row_width_request_puts_the_edit_back();
+    rc |= test_decode_mode_set_tetra_names_an_unusable_rate();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_width_under_scan_rows();
@@ -17605,6 +18376,9 @@ main(void) {
     rc |= test_refused_leave_off_the_monitor_reverts_a_switch_between_kinds();
     rc |= test_refused_leave_revert_refused_gets_the_leave_policy();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
+    rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
+    rc |= test_queued_switch_off_tetra_commits_once_taken();
+    rc |= test_refused_switch_off_tetra_keeps_the_follow();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();
     rc |= test_refused_switch_onto_analog_retimes_the_mode();
@@ -17680,6 +18454,8 @@ main(void) {
     rc |= test_compact_visualizer_toast();
     rc |= test_modulation_and_decode_mode_setters();
     rc |= test_decode_mode_change_clears_received_tone();
+    rc |= test_decode_mode_set_reaches_tetra();
+    rc |= test_decode_mode_set_refuses_tetra_on_pcm();
     rc |= test_tone_filter_warns_when_a_command_leaves_it_unheard();
     rc |= test_tone_filter_warns_when_a_channel_map_leaves_it_unheard();
     rc |= test_tone_filter_set_edits_the_configured_policy();
@@ -17697,6 +18473,7 @@ main(void) {
     rc |= test_config_apply_input_change_clears_received_tone();
     rc |= test_config_apply_mode_change_clears_received_tone();
     rc |= test_failed_config_reopen_stages_no_file_rate();
+    rc |= test_config_without_decode_keeps_file_timing();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_config_apply_pulse_device_is_a_new_stream();
     rc |= test_tcp_connect_clears_received_tone();
@@ -17735,6 +18512,8 @@ main(void) {
     rc |= test_trunked_tune_away_flushes_the_followed_tail_first();
 #endif
     rc |= test_return_cc_keeps_the_dmr_decode_gate();
+    rc |= test_return_cc_and_mode_change_hand_tetra_over();
+    rc |= test_manual_tunes_hand_a_tetra_return_over();
     rc |= test_scan_row_keys_commands();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP

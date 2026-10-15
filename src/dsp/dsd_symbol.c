@@ -167,8 +167,22 @@ probe_symbol_replay_format(dsd_opts* opts, dsd_state* state) {
 #define SYMBOL_FILE_MAGNITUDE_MASK  0x7FFFFFFFu
 /* A soft record holds the decoder's own symbol: below 2^31. */
 #define SYMBOL_FILE_SOFT_LIMIT_BITS 0x4F000000u
-/* A float symbol file is scaled by 10000 on the way in: below 2^17, as 2^17 * 10000 is below 2^31. */
+/* A float symbol file is scaled by at most SYMBOL_FILE_FLT_SCALE on the way in: below 2^17, as 2^17 * 10000 is below
+ * 2^31. */
 #define SYMBOL_FILE_FLT_LIMIT_BITS  0x48000000u
+
+/* A float symbol file holds symbols at their nominal levels, outer +-3 and inner +-1; a TETRA one holds those an I/Q
+ * input's CQPSK demodulator recovered. The slicers that track the symbol levels read them in the sample domain of PCM
+ * input, 10000 times larger. TETRA's frame-sync slicer has fixed thresholds in the symbol domain (0 and +-2,
+ * frame_sync_slice_cqpsk_dibit()), where the RTL front end's symbols and a soft capture's are too, so a TETRA session
+ * reads a float symbol file's symbols as they are: scaled, both inner levels would slice as outer ones and no training
+ * sequence would match. */
+#define SYMBOL_FILE_FLT_SCALE       10000.0f
+
+static float
+symbol_file_flt_scale(const dsd_opts* opts) {
+    return opts->frame_tetra == 1 ? 1.0f : SYMBOL_FILE_FLT_SCALE;
+}
 
 static int
 symbol_file_bits_in_range(uint32_t bits, uint32_t limit_bits) {
@@ -2751,7 +2765,7 @@ symbol_process_symbol_flt_input(dsd_opts* opts, dsd_state* state, float* symbol_
     }
     float float_symbol = 0.0f;
     DSD_MEMCPY(&float_symbol, &raw_symbol, sizeof(float_symbol));
-    *symbol_out = float_symbol * 10000.0f;
+    *symbol_out = float_symbol * symbol_file_flt_scale(opts);
     return 1;
 }
 

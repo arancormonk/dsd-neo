@@ -42,6 +42,121 @@ reset(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state, 0, sizeof(*state));
 }
 
+static void
+test_tetra_soft_history_capture(void) {
+    /* The history outlives the call as the state does: the state keeps its address. */
+    static dsd_state state;
+    static float history[16];
+    float captured[5] = {0};
+    DSD_MEMSET(&state, 0, sizeof(state));
+    for (int i = 0; i < 16; i++) {
+        history[i] = (float)(100 + i);
+    }
+    state.symbol_history = history;
+    state.symbol_history_size = 16;
+    state.symbol_history_head = 2; /* newest is history[1], after wrap */
+    state.symbol_history_count = 16;
+
+    assert(dsd_frame_sync_test_capture_tetra_soft(&state, captured, 5, 3) == 1);
+    /* Eight-symbol window is history[10..15,0..1]; payload is its first five. */
+    for (int i = 0; i < 5; i++) {
+        assert(fabsf(captured[i] - (float)(110 + i)) < 1e-6F);
+    }
+
+    state.symbol_history_count = 7;
+    assert(dsd_frame_sync_test_capture_tetra_soft(&state, captured, 5, 3) == 0);
+    assert(dsd_frame_sync_test_capture_tetra_soft(NULL, captured, 5, 3) == 0);
+    assert(dsd_frame_sync_test_capture_tetra_soft(&state, NULL, 5, 3) == 0);
+}
+
+static void
+test_tetra_inverted_sync_patterns_flip_only_dibit_msb(void) {
+    const char* normal[] = {TETRA_NDB_NTS_SYNC, TETRA_SB_SSB_SYNC};
+    const char* inverted[] = {INV_TETRA_NDB_NTS_SYNC, INV_TETRA_SB_SSB_SYNC};
+    for (size_t pattern = 0; pattern < sizeof(normal) / sizeof(normal[0]); pattern++) {
+        assert(strlen(normal[pattern]) == strlen(inverted[pattern]));
+        for (size_t i = 0; normal[pattern][i] != '\0'; i++) {
+            const int expected = (normal[pattern][i] - '0') ^ 2;
+            assert(inverted[pattern][i] == (char)('0' + expected));
+        }
+    }
+}
+
+/* Pseudo-random data dibits for the TETRA burst windows. */
+static void
+tetra_data_dibits(char* out, int count, uint32_t* seed) {
+    for (int i = 0; i < count; i++) {
+        *seed = (*seed * 1103515245u) + 12345u;
+        out[i] = (char)('0' + ((*seed >> 16) & 3u));
+    }
+}
+
+static int
+tetra_block1_is(const dsd_state* state, const char* expected, int count) {
+    for (int i = 0; i < count; i++) {
+        if (state->tetra_sync.b1_dibuf[i] != (uint8_t)(expected[i] - '0')) {
+            return 0;
+        }
+    }
+    return state->tetra_sync.b1_valid == 1;
+}
+
+/* The control uplink burst's training sequence holds NTS1 two symbols before its end (TETRA_CB_SYNC[2..12], EN 300
+ * 392-2 clause 9.4.4.3.2). With --tetra-uplink a control burst locks as one at the end of its training, not as a normal
+ * burst two symbols earlier. An uplink normal burst locks two symbols after its training, once they show it is no
+ * control burst, and hands them to the decoder as the first two dibits of block 2. The downlink normal burst still
+ * locks at the end of its training. */
+static void
+test_tetra_uplink_control_burst_is_not_a_normal_burst(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->frame_tetra = 1;
+    opts->tetra_uplink = 1;
+    char stream[160];
+    uint32_t seed = 7u;
+
+    /* A control burst: data, its 42-dibit block 1 and its 15-dibit training sequence. */
+    tetra_data_dibits(stream, 112, &seed);
+    DSD_MEMCPY(stream + 112, TETRA_CB_SYNC, 15);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 125) == DSD_SYNC_NONE);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 127) == DSD_SYNC_TETRA_NDB_POS);
+    assert(state->tetra_sync.cb == 1 && state->tetra_sync.b2_lead_count == 0);
+    assert(tetra_block1_is(state, stream + 70, 42));
+
+    /* Inverted, it locks with the negative synctype, which tells the decoder its polarity; the carrier's polarity is the
+     * decoder's to set once the burst's SCH/HU passed its CRC. */
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    DSD_MEMCPY(stream + 112, INV_TETRA_CB_SYNC, 15);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 127) == DSD_SYNC_TETRA_NDB_NEG);
+    assert(state->tetra_sync.cb == 1 && state->tetra_sync.polarity == 0
+           && state->lastsynctype == DSD_SYNC_TETRA_NDB_NEG);
+
+    /* An uplink normal burst: block 1, NTS1, then two dibits of block 2 that complete no control burst. */
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    tetra_data_dibits(stream, 118, &seed);
+    DSD_MEMCPY(stream + 118, TETRA_NDB_NTS_SYNC, 11);
+    stream[129] = '1';
+    stream[130] = '2';
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 129) == DSD_SYNC_NONE);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 131) == DSD_SYNC_TETRA_NDB_POS);
+    assert(state->tetra_sync.cb == 0 && state->tetra_sync.nts2 == 0);
+    assert(tetra_block1_is(state, stream + 10, 108));
+    assert(state->tetra_sync.b2_lead_count == 2 && state->tetra_sync.b2_lead_dibits[0] == 1
+           && state->tetra_sync.b2_lead_dibits[1] == 2);
+
+    /* The downlink normal burst: block 1, AACH half 1, NTS1; nothing of block 2 is read yet. */
+    opts->tetra_uplink = 0;
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    tetra_data_dibits(stream, 125, &seed);
+    DSD_MEMCPY(stream + 125, TETRA_NDB_NTS_SYNC, 11);
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 136) == DSD_SYNC_TETRA_NDB_POS);
+    assert(state->tetra_sync.cb == 0 && state->tetra_sync.b2_lead_count == 0);
+    assert(tetra_block1_is(state, stream + 10, 108));
+    free(state);
+    free(opts);
+}
+
 static int g_vc_sync_hook_calls;
 static int g_vc_no_sync_hook_calls;
 static int g_release_hook_calls;
@@ -95,7 +210,7 @@ test_p25_vc_acquisition_hooks(void) {
     state.min = -3.0f;
     state.max = 3.0f;
     g_vc_sync_hook_calls = 0;
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_vc_sync = fake_p25_sm_vc_sync,
     });
 
@@ -116,7 +231,7 @@ test_p25_vc_acquisition_hooks(void) {
     g_vc_no_sync_hook_order = 0;
     g_no_carrier_hook_order = 0;
     g_hook_order = 0;
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
         .no_carrier = fake_no_carrier,
     });
@@ -144,7 +259,7 @@ test_p25_vc_acquisition_hooks(void) {
     g_release_hook_order = 0;
     g_no_carrier_hook_order = 0;
     g_hook_order = 0;
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_release = fake_p25_sm_release,
         .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
         .no_carrier = fake_no_carrier,
@@ -161,7 +276,7 @@ test_p25_vc_acquisition_hooks(void) {
     assert(g_vc_no_sync_hook_order < g_release_hook_order);
     assert(g_release_hook_order < g_no_carrier_hook_order);
 
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
 }
 
 static void
@@ -169,10 +284,10 @@ test_sps_hunt_skips_disabled_protocol_rates(void) {
     static dsd_opts opts;
     static dsd_state state;
 
-    static const int expected_rates[] = {4800, 2400, 9600, 6000, 4800};
-    static const int expected_levels[] = {4, 4, 2, 4, 2};
-    assert(dsd_frame_sync_test_sps_hunt_profile_count() == 5);
-    for (int i = 0; i < 5; i++) {
+    static const int expected_rates[] = {4800, 2400, 9600, 6000, 4800, 18000};
+    static const int expected_levels[] = {4, 4, 2, 4, 2, 4};
+    assert(dsd_frame_sync_test_sps_hunt_profile_count() == 6);
+    for (int i = 0; i < 6; i++) {
         assert(dsd_frame_sync_test_sps_hunt_profile_rate(i) == expected_rates[i]);
         assert(dsd_frame_sync_test_sps_hunt_profile_levels(i) == expected_levels[i]);
     }
@@ -205,6 +320,17 @@ test_sps_hunt_skips_disabled_protocol_rates(void) {
     reset(&opts, &state);
     state.sps_hunt_idx = 2;
     assert(frame_sync_sps_hunt_next_index(&opts, &state) == 2);
+
+    /* TETRA's 18 ksym/s profile is the only candidate under -fT, so the hunt stays on it, and it is never a candidate
+     * for any other protocol. */
+    reset(&opts, &state);
+    opts.frame_tetra = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+    reset(&opts, &state);
+    opts.frame_p25p2 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
 }
 
 static void
@@ -2002,16 +2128,24 @@ test_decode_mode_profiles_agree_with_the_sps_hunt_table(void) {
      * they share a preset symbol timing but not a symbol rate. */
     assert(dsd_decode_mode_profile_for(DSDCFG_MODE_NXDN48).symbol_rate_hz == 2400);
     assert(dsd_decode_mode_profile_for(DSDCFG_MODE_NXDN96).symbol_rate_hz == 4800);
+    const dsd_decode_mode_profile tetra = dsd_decode_mode_profile_for(DSDCFG_MODE_TETRA);
+    assert(tetra.symbol_rate_hz == 18000);
+    assert(tetra.levels == 4);
+    assert(tetra.sps_profile_index == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+    assert(dsd_rtl_channel_profile_for(NULL, tetra.symbol_rate_hz, tetra.levels, 1)
+           == DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE);
 
     /* AUTO's whole promise is that the hunt may visit every profile, and a config file selects
      * the same AUTO the command line does. The profile argument decides audio layout, never the
-     * decoder set, so every candidate must be reachable from the config path too. */
+     * decoder set, so every candidate must be reachable from the config path too. TETRA is the
+     * exception: it runs on its own 72 kHz baseband, so only -fT selects its profile. */
     for (int profile_index = 0; profile_index < dsd_frame_sync_test_sps_hunt_profile_count(); profile_index++) {
         static dsd_opts opts;
         static dsd_state state;
         reset(&opts, &state);
         assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CONFIG, &opts, &state) == 0);
-        assert(dsd_frame_sync_test_sps_hunt_profile_has_candidate(&opts, profile_index) == 1);
+        const int want = profile_index == DSD_FRAME_SYNC_SPS_PROFILE_18000_4 ? 0 : 1;
+        assert(dsd_frame_sync_test_sps_hunt_profile_has_candidate(&opts, profile_index) == want);
     }
 }
 
@@ -3174,7 +3308,7 @@ test_p25_trunk_tick_recency(void) {
     state.lastsynctype = DSD_SYNC_P25P1_POS;
     g_frame_sync_tick_calls = 0;
     dsd_frame_sync_test_reset_p25_trunk_tick_state();
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
         .p25_sm_try_tick = fake_p25_sm_try_tick,
     });
 
@@ -3193,7 +3327,7 @@ test_p25_trunk_tick_recency(void) {
     frame_sync_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)106);
     assert(g_frame_sync_tick_calls == 3);
 
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
 }
 #endif
 
@@ -3270,6 +3404,9 @@ test_scan_class_matchers_and_no_sync(void) {
 
 int
 main(void) {
+    test_tetra_soft_history_capture();
+    test_tetra_inverted_sync_patterns_flip_only_dibit_msb();
+    test_tetra_uplink_control_burst_is_not_a_normal_burst();
     test_scan_class_matchers_and_no_sync();
     test_p25_vc_acquisition_hooks();
     test_sps_hunt_skips_disabled_protocol_rates();

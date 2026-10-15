@@ -204,7 +204,7 @@ and crypto, not RF reception or demodulator sensitivity.
 ### Full-chain modulation decode tests
 
 The `DECODE_IQ_*` cases (CTest label `iq-decode`) are end-to-end regression
-tests for every supported modulation. Each replays a short cu8 I/Q fixture from
+tests for every supported modulation. Each replays a short I/Q fixture from
 `tests/fixtures/iq` through `--iq-replay`, which drives the complete chain:
 decimation, filtering, discriminator/CQPSK timing recovery, symbol slicing,
 frame sync, and the protocol layer. Unlike `.bin` symbol-capture replay, which
@@ -260,7 +260,41 @@ stay robust rather than borderline. Sources that exist only as FM
 discriminator audio are integrated back into complex baseband (FM demodulation
 is invertible), so those fixtures exercise the same code path but carry none of
 the original RF impairments. Where a genuine off-air I/Q recording exists (P25
-C4FM/CQPSK, NXDN48/96, dPMR) it is used directly.
+C4FM/CQPSK, NXDN48/96, dPMR, TETRA) it is used directly. The TETRA SCBS
+fixture preserves the Apache-2.0 upstream 50 kHz CS16 capture byte-for-byte and
+also commits a deterministic 54 kHz derivative because the current CQPSK path
+requires an integer samples-per-symbol rate. `DECODE_IQ_TETRA_REAL_AIR_SCBS`
+asserts the independently reported MCC 250, MNC 13 and colour code `0x2C`.
+`DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC` replays a second unmodified Apache-2.0
+CS16 capture recorded during control-channel reacquisition at about 10 dB
+in-channel SNR. It requires at least 15 clean MCC 250/MNC 13/colour `0x2C`
+BSCH results from the two-second recording; the current run recovered 26 from
+30 synchronized bursts. A deterministic complex conjugate of this capture
+retains its noise, fading and ISI while reversing all differential phase steps;
+`DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC_INVERTED` also recovers 26 identities and
+requires at least 15. `tools/tetra/prepare_real_air_fixture.py` verifies the raw
+SCBS, resampled, marginal, and inverted hashes; the adjacent provenance file
+records the source commits, transforms, and parameters.
+
+The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) repeat one
+sequence 100 times at 54 kHz: a synchronisation burst with a CRC-valid BSCH (MCC 460, MNC 4242, colour code 17), a
+normal downlink burst whose two SCH/HD half slots carry SYSINFO and a MAC-RESOURCE channel allocation, and a full-slot
+TCH/S burst whose class-2 CRC passes. `DECODE_IQ_TETRA_BSCH`, `_SYSINFO`, `_CHANNEL_ALLOCATION` and `_TCH_FS` assert
+each on the clean replay; the `_INVERTED` (complex conjugate: every dibit XOR 2 and the negative sync words),
+`_CFO_AWGN` (300 Hz offset at 14 dB SNR), `_TWO_RAY` (a second path one sample later at -6.9 dB),
+`_CLOCK_100PPM` and `_CLOCK_MINUS_100PPM` (sample-clock error) variants repeat all four, and `_SNR6` (the same offset
+and noise at 6 dB) the three signalling cases. The TCH/FS cases require the speech CRC on at least 90 of the 100
+bursts, and on the clean and inverted replays every burst with no re-encode mismatch. `tetra_bsch_synth_72k` carries
+25 of the same sequences at the 72 kHz DSP bandwidth `-fT` runs an RTL-SDR at (4 samples per symbol):
+`DECODE_IQ_TETRA_BSCH_72K` requires 24 BSCH decodes and no rate warning, and `DECODE_IQ_TETRA_TCH_FS_72K` 24 TCH/FS
+bursts with the CRC passing and none failing. `DECODE_IQ_TETRA_BAD_CRC_REJECT`
+and `DECODE_IQ_TETRA_BAD_CRC_CFO_AWGN_REJECT` replay a BSCH with one protected bit flipped: the burst must sync and
+no network identity may be published. `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY` (`tests/iq_float_symbol_replay_check.cmake`)
+captures the clean replay's symbols (`-c`), writes them as a float symbol file (`dsd-neo_test_symbol_capture_to_float`)
+and replays that with `-i symbols.raw`: it must decode as many BSCHs as the I/Q replay, at least 90 of the 100 (all of
+them here), which a float symbol file scaled into the PCM sample domain loses (TETRA's frame-sync slicer has fixed
+thresholds in the symbol domain). These are deterministic
+regression boundaries, not receiver-sensitivity claims.
 
 `provoice` is the sigidwiki ProVoice clip, one 3.5 s transmission (issue #588). Unlike the other audio sources it was
 recorded from a receiver's de-emphasized audio rather than from its discriminator: its 9600 baud clock line is there,
@@ -1227,6 +1261,11 @@ per start with the onset anywhere in a word; `<dsd-neo/dsp/analog_rx.h>` sets it
 
 Known gaps and caveats:
 
+- **TETRA** replays are synthetic apart from two off-air control-channel captures, so no replay covers a real
+  traffic channel, direct mode or a retune to follow a call; following runs against stand-in tuning hooks in
+  `TETRA_TRUNK_SM`, `ENGINE_TETRA_TRUNK` and `TETRA_CALLS` ([TETRA protocol tests](#tetra-protocol-tests)). Speech
+  plays only through a codec library the user builds, so CI drives the speech path with a test codec, and
+  `TETRA_ACELP_REFERENCE` pins the recovered speech bits rather than audio. The uplink is not decoded.
 - **X2-TDMA** has no usable public sample and is untested here.
 - **dPMR** decodes only what its CCH CRC-7 verifies (issue #407), so the `dpmr` off-air capture publishes nothing:
   it carries no recoverable CCH, which is why the CRC was thought to be broken. `DECODE_IQ_DPMR_MARGINAL` pins that
@@ -1261,6 +1300,32 @@ Known gaps and caveats:
   registered `-fA` case fails on that warning (`NOT_EXPECTED`); `tools/replay_ab.sh` leaves such repeats out (its
   `off_path` column). An AM case on this excerpt (`-fM`) carries the same guard.
 
+
+### TETRA protocol tests
+
+`ctest --preset dev-debug -L tetra --output-on-failure` runs them. Signalling blocks are built field by field from the
+ETSI tables (`tests/protocol/tetra/tetra_test_pdu.h`), so a test states the PDU it sends rather than a hex string,
+except where a published vector is the point. Tests that need time run on the decode clock's TEST source.
+
+| Case | What it pins |
+| --- | --- |
+| `TETRA_BITS` | The bounded bit reader: MSB-first reads, a read past the end fails and keeps failing, type-2 presence bits and type-3/4 element chains (EN 300 392-2 clauses 14.7, 18.4). |
+| `TETRA_AIR_CHAIN_VECTOR`, `TETRA_REAL_AIR_BIT_TRACE` | Fixed BSCH and SYSINFO type-5 vectors through descrambling, deinterleaving, depuncturing, Viterbi and CRC, kept out of the fixture generator so a generator and decoder cannot agree on a wrong order (deinterleaving before descrambling fails the CRC); a CRC-decoded off-air BNCH; BSCH and SYSINFO parsing against a [published Osmocom real-air decode](https://lists.osmocom.org/hyperkitty/list/tetra@lists.osmocom.org/thread/6DN55M2TG23RWBDOLGJYJPNQB337C4H6/) (MCC 293, MNC 7, colour code 3, 393.7125 MHz). |
+| `TETRA_RCPC_MAP`, `TETRA_DEPUNCTURE_REGRESSION`, `TETRA_SCH_HU` | Every RCPC puncturing scheme against its clause (EN 300 392-2 8.2.3.1, EN 300 395-2 5.4.3.2), a round trip through the production coding chain, and the SCH/HU coding loop. |
+| `TETRA_SPEECH_CHANNEL`, `TETRA_SPEECH_REORDER`, `TETRA_ACELP_REFERENCE` | The speech channel decoder against an encoder written from EN 300 395-2 clause 5, CRC and parity bit included (a wrong parity bit fails it; random blocks are almost never speech); type-1 bits to speech frames (tables 4 to 6); telive's GPL-3.0 "Hello Tetra" sample decoded to the 8,220 bits the ETSI reference decoder produces, with every class-2 CRC passing (`tests/fixtures/tetra/acelp/PROVENANCE.md`). |
+| `TETRA_BURST_VERDICT` | Whole bursts through the dispatch handler: PROFILE_PROVEN for a burst that decoded a CRC-passed block and UNPRODUCTIVE otherwise, the synchronisation burst's BNCH decoded with the scrambling its BSCH just set, a failed signalling CRC dropping the timeslot's partial TM-SDU, and the MAC given the network's colour code. |
+| `TETRA_TDMA_CLOCK` | The BSCH sets TN, FN and MN as sent (1-based); normal bursts advance the clock by the slots counted since, wrapping FN 18 to 1 and MN 60 to 1 and counting hyperframes, so the EN 300 392-7 initial value is never 0. |
+| `TETRA_MAC_STATE`, `TETRA_MAC_PDUS`, `TETRA_MAC_FRAGMENTS` | The downlink MAC and basic-link LLC of EN 300 392-2 clauses 21 and 23: PDUs bounded by their length indication, several PDUs per block, fill bits, the Null PDU, encrypted TM-SDUs left unparsed, the LLC FCS against the CRC-32/BZIP2 check value and an annex C long division, MAC-D-BLCK, ACCESS-DEFINE and SYSINFO through their decoders; TM-SDU reconstruction per timeslot with its guards and the N.203 limit. |
+| `TETRA_MLE_CMCE`, `TETRA_MLE_PDUS`, `TETRA_CMCE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_D_TX_GRANTED_CHAN` | MLE routing and the CMCE, SDS, SNDCP and MLE protocol decoders against their tables (clauses 14, 18, 28, 29): a PDU that does not fit, or ends without its O-bit or terminating M-bit, acts on nothing; SDS text with unpaired surrogates and C1 controls made safe; concatenated SDS reassembled per session and timed out on the decode clock. |
+| `TETRA_SDS_REFERENCE_MAC` | A published 272-bit MAC PDU from smarek/kaitai-tetra-sds (Apache-2.0) through the MAC, LLC, MLE and CMCE into the event history as a data notice: message reference 32, text `Ahoj`. |
+| `TETRA_MM_DISPATCH` | MM PDUs (EN 300 392-2 clause 16, EN 300 392-7 annex A) through `tetra_mm_decode()`, with frozen hexadecimal PDUs for tables A.4, A.26, A.30a and A.31, and the carrier-number-to-frequency calculation. |
+| `TETRA_DMO` | Direct mode (EN 300 396-2 to -5): each DM PDU read with its own layout, the DM colour code, and the security class of the current call; SCH/S and SCH/H vectors from a real 851.0125 MHz call. |
+| `TETRA_AIR`, `TETRA_CRYPTO` | The EN 300 392-7 initial value, the encryption cipher key TB5 derives for the carrier being received (Midnight Blue's published TB5 vectors), the key stream segments of full- and half-slot speech (table 6.4) and the published TEA1, TEA2 and TEA3 vectors. |
+| `TETRA_CALLS` | Call records by call identifier, channel allocations attached to the call they came with or to the addressed party's, the followed call chosen by talkgroup policy and the encryption lockout, and the followed, heard and direct mode calls published as canonical calls from their signalling and speech. |
+| `TETRA_TRUNK_SM`, `ENGINE_TETRA_TRUNK` | The trunking state machine per session: CRC evidence before a grant is followed, tunes the backend completes at once, completes later or fails, the grant timeout and the hangtime after speech, releases by call identifier; the engine's tick, the carrier boundary that drops a followed call without tuning, and the no-carrier pass that forgets the carrier's evidence. |
+| `TETRA_VOICE_GATE` | The followed call's timeslots on its settled carrier once its signalling proved it there; one heard timeslot at a time when not trunking, held only by speech that plays (muted speech shows its call and gives way); direct mode always; the call each burst belongs to and its encryption class. |
+| `TETRA_VOICE_PIPELINE`, `TETRA_VOICE_CODEC`, `PLATFORM_DYNLIB` | The speech path against a test codec library (`tests/protocol/tetra/tetra_test_codec.c`) built as a shared library and loaded through `--tetra-codec` as a user's would be, its samples saying which decode made them: speech starts at a CRC-passed burst, bad frames after it are concealed until a run of four ends it, a stolen half slot's frame is concealed ahead of its speech frame, 240-sample frames leave the output whole 160-sample blocks with the rest carried, a carrier-boundary reset drops the carry and restarts the codec, air-encrypted speech is decrypted at the right key stream bits once it is back in speech frame order, speech starts over at another call or another talker, and the channel, timeslot, encryption, talkgroup and record gates hold back what they should. The libraries dsd-neo cannot use (none named, no file, another interface version, a missing function, no decoder, failing decodes) give one log line each and no audio; `PLATFORM_DYNLIB` runs the loader underneath over the same libraries. |
+| `TETRA_PUBLICATION`, `APP_CONTROL_TETRA_VIEW`, `TETRA_FMT_HELPERS` | What the decoder publishes for the frontends (nothing before a block decoded, the timeslot bitmap TN1 first, no key, cleared with the state), the rows every frontend shows from it, and the encryption-mode and MM status names. |
 
 ### MBE capture checks (issue #661)
 
@@ -1559,7 +1624,10 @@ forcing the legacy filter on at the 8 kHz RTL rate, misses 1.1% of 6 dB carriers
 model does not cover spurs or adjacent channels: a steady tone inside the channel is a carrier to the coherence test,
 and with these thresholds a birdie from -12 dB (widest plans) to -3.6 dB (narrowest) against the noise reads as one.
 `python3 tools/squelch_model.py` reproduces the report (`build/squelch_model/report.md`) in about 25 minutes on 8
-workers; `--quick` takes about a minute.
+workers; `--quick` takes about a minute. The 72 kHz RTL DSP bandwidth, selectable since TETRA needs it, came after that
+run, and the model now plans it too (an SDDC at 2 MS/s then runs 125 kHz): `--quick` counts 448 combinations, 270 that
+run and 210 carrier plans, and the scheme the squelch uses (`norm/40ms/cdb` in the report) passes all 210, as it passes
+all 196 of a `--quick` run without 72 kHz.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (design gate)
 
@@ -1637,7 +1705,7 @@ channel rate: EDACS converts what it reads to 48 kHz (issue #633). For the encod
 | Case | What it pins |
 | --- | --- |
 | `M17_STATE_DISPATCH` output-format case | Both payloads (two 160-sample codec frames at 3200, one 320-sample frame at 1600) play as two 160-frame blocks in each format: s16 or f32, mono or stereo, on UDP and, through the `dsd_audio_write` wrap (GNU and Clang off Apple), on a local stream. The wrap copies frames x channels samples as a backend reads them, so under ASan a short buffer is a report; on a two-channel stream both channels carry the decoded frame at full level. Every f32 sample equals the chained s16 sample / 32768, and the device receives those same s16 samples under `-y`. `-g 3` triples the samples `-g 1` passes through in both formats. The existing UDP, mute and stamp cases now count 1600's two blocks and stage into initialised output buffers. |
-| `CORE_AUDIO2_HELPERS` decoded-PCM case | `dsd_audio_play_decoded_pcm16()` against gates stubbed to mute: a forced talkgroup mute, a blocked record policy and a stale NXDN cipher with no key never mute a settled frame in any format, channel count or sink; a stale X2 slot cannot select slot 2 for M17; a 330-sample buffer runs the slot 0 chain and short staging exactly twice; the slot 1 switch and the mute still apply; the static WAV records what slot 1 plays in both formats and the per-call WAV every frame; a state with no output history plays nothing; the public mixers keep the policy verdict. |
+| `CORE_AUDIO2_HELPERS` decoded-PCM case | `dsd_audio_play_decoded_pcm16()` against gates stubbed to mute: a forced talkgroup mute, a blocked record policy and a stale NXDN cipher with no key never mute a settled frame in any format, channel count or sink; a stale X2 slot cannot select slot 2 for M17; a 330-sample buffer runs the slot 0 chain and short staging exactly twice; the slot 1 switch and the mute still apply; the static WAV records what slot 1 plays in both formats and the per-call WAV every frame; a state with no output history plays nothing; the public mixers keep the policy verdict; `dsd_audio_play_decoded_pcm16_record()` with record 0 still plays but writes neither WAV. |
 | `RUNTIME_CLI_PARSE` encoder-rate cases | `-fZ` opens the digital output at 8 kHz mono; `-fB` and `-fP` keep 48 kHz. Explicit `-8` survives every supported manual selector in either argument order, including after an analog preset. |
 | `M17_STATE_DISPATCH` IP bounds cases | Every truncated stream/control prefix uses an exact-sized allocation and leaves state untouched; a valid MPKT shorter than a stream frame reads only its own header. A sender-shaped 52-byte text-metadata packet retains its final nonzero application byte, with only the two CRC bytes excluded from the payload. ASan checks those bounds. |
 | `DECODE_IQ_M17_VOICE_OUTPUT` (Codec2 builds) | The M17 fixture on stdout: `-fz` whole s16 frames, `-fz -y` twice its bytes, `-fa` twice, `-fa -y` four times; `-g 1` and `-g 50` differ. |

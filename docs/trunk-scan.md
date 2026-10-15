@@ -646,6 +646,8 @@ no symbol profile is applied over the monitor. Everything below applies to both 
 - Phase 1 P25 decode captures are available for replay verification; a replay checks decoding, not live target
   rotation or conventional activity holds. P25 conventional target holds have not been verified on air, and
   Phase 2 conventional parking remains untested on air.
+- TETRA is not a target type. A TETRA site is followed on its own with `-fT -T`: its trunking state machine belongs to
+  the session, not to a target, and no target snapshot carries it.
 - There is one active receiver. Traffic on targets that are not currently parked can be missed.
 - Group policy is global across all scan targets.
 - Target CSV files are simple comma-delimited files, not full RFC 4180 CSV.

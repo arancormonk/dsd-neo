@@ -25,6 +25,7 @@
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
+#include <dsd-neo/app_control/tetra_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/events.h>
@@ -3442,6 +3443,64 @@ ui_render_call_info_channel_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n");
 }
 
+/* The TETRA rows: the shared app-control view's text, as the Qt/Android monitor shows it. */
+enum { UI_TETRA_LINE_MAX = 7, UI_TETRA_LINE_SIZE = DSD_APP_TETRA_TEXT_SIZE + 16 };
+
+typedef struct {
+    char text[UI_TETRA_LINE_MAX][UI_TETRA_LINE_SIZE];
+    int count;
+} ui_tetra_lines;
+
+/* ASCII-only text on a terminal without UTF-8, the same answer dsd_unicode_or_ascii() gives every other row. */
+static unsigned
+ui_tetra_view_flags(void) {
+    static const char k_utf8[] = "utf8";
+    return dsd_unicode_or_ascii(k_utf8, "ascii") == k_utf8 ? 0U : (unsigned)DSD_APP_TETRA_ASCII;
+}
+
+static void
+ui_tetra_line_add(ui_tetra_lines* lines, int shown, const char* label, const char* text) {
+    if (!shown || lines->count >= UI_TETRA_LINE_MAX) {
+        return;
+    }
+    DSD_SNPRINTF(lines->text[lines->count], sizeof lines->text[lines->count], "%s: %s", label, text);
+    lines->count++;
+}
+
+/* Fill @p lines with the TETRA rows, without the "| " each is printed after. Pure, for the goldens. Returns how many
+   there are: none unless TETRA decoding runs and a block has decoded. */
+static int
+ui_format_tetra_lines(const dsd_opts* opts, const dsd_state* state, ui_tetra_lines* lines) {
+    lines->count = 0;
+    dsd_app_tetra view;
+    if (dsd_app_tetra_view(opts, state, ui_tetra_view_flags(), &view) != 1) {
+        return 0;
+    }
+    ui_tetra_line_add(lines, 1, "TETRA", view.mode_text);
+    ui_tetra_line_add(lines, view.network_known, "Network", view.network_text);
+    ui_tetra_line_add(lines, view.trunk_visible, "Trunk", view.trunk_text);
+    ui_tetra_line_add(lines, view.control_known, "Control", view.control_text);
+    ui_tetra_line_add(lines, view.traffic_known, "Traffic", view.traffic_text);
+    ui_tetra_line_add(lines, view.mm_status_known, "MM status", view.mm_status_text);
+    ui_tetra_line_add(lines, view.codec_known, "Codec", view.codec_text);
+    return lines->count;
+}
+
+static void
+ui_render_call_info_tetra(const dsd_opts* opts, const dsd_state* state) {
+    ui_tetra_lines lines;
+    if (ui_format_tetra_lines(opts, state, &lines) <= 0) {
+        return;
+    }
+    for (int i = 0; i < lines.count; i++) {
+        printw("| ");
+        attron(COLOR_PAIR(4));
+        printw("%s", lines.text[i]);
+        ui_restore_call_info_color(state);
+        printw("\n");
+    }
+}
+
 /* The received sub-audible tone or code (issues #522, #523) without its newline: the shared
    app-control view's text, so the terminal and the Qt/Android row say the same thing. Pure,
    for the goldens: @p now_m is the caller's monotonic clock, which ages the publication of an
@@ -3551,6 +3610,8 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_render_call_info_edacs(opts, state);
 
     ui_render_call_info_patches(state);
+
+    ui_render_call_info_tetra(opts, state);
 
     // Bottom border for Call Info section
     ui_print_hr();

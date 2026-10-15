@@ -33,6 +33,7 @@
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
+#include <dsd-neo/app_control/tetra_view.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
@@ -330,7 +331,8 @@ MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
            && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot && controlEquals(other)
            && scanTimingEquals(other) && rxToneEquals(other) && rx_tone_configured_text == other.rx_tone_configured_text
-           && toneFilterEquals(other) && toneFilterSettingEquals(other) && ui_message == other.ui_message;
+           && toneFilterEquals(other) && toneFilterSettingEquals(other) && tetraEquals(other)
+           && ui_message == other.ui_message;
 }
 
 void
@@ -350,6 +352,7 @@ MetricsModel::publish(const View& next) {
     const bool rxToneConfiguredMoved = next.rx_tone_configured_text != m_view.rx_tone_configured_text;
     const bool toneFilterMoved = !next.toneFilterEquals(m_view);
     const bool toneFilterSettingMoved = !next.toneFilterSettingEquals(m_view);
+    const bool tetraMoved = !next.tetraEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
     m_view = next;
     if (siteMoved) {
@@ -377,6 +380,9 @@ MetricsModel::publish(const View& next) {
         Q_EMIT scanTimingChanged();
     }
     emitRxToneSignals(rxToneMoved, rxToneConfiguredMoved, toneFilterMoved, toneFilterSettingMoved);
+    if (tetraMoved) {
+        Q_EMIT tetraChanged();
+    }
     if (messageMoved) {
         Q_EMIT uiMessageChanged();
     }
@@ -494,6 +500,32 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
     next.scan_visit_ms = view.show_visit != 0U ? static_cast<int>(view.visit_ms) : 0;
     next.scan_visit_live = view.visit_live != 0U;
     next.scan_visit_remaining_ds = static_cast<int>(view.visit_remaining_ms / 100U);
+}
+
+/**
+ * @brief The TETRA rows: the shared app-control view's text, as the terminal's Call Info lines read it.
+ *
+ * Read from the held snapshot's publication alone, never from the decoder's TETRA state. The view decides when the
+ * rows show (the TETRA preset, once a block has decoded) and spells every value; only the row labels are translated,
+ * in QML.
+ */
+void
+MetricsModel::fillTetraView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    dsd_app_tetra view;
+    if (dsd_app_tetra_view(opts_snapshot, snapshot, 0U, &view) != 1) {
+        return;
+    }
+    next.tetra_visible = true;
+    next.tetra_mode_text = QString::fromUtf8(view.mode_text);
+    next.tetra_encrypted = view.encrypted != 0U;
+    next.tetra_network_text = QString::fromUtf8(view.network_text);
+    next.tetra_trunk_text = QString::fromUtf8(view.trunk_text);
+    next.tetra_on_traffic = view.on_traffic != 0U;
+    next.tetra_control_text = QString::fromUtf8(view.control_text);
+    next.tetra_traffic_text = QString::fromUtf8(view.traffic_text);
+    next.tetra_mm_status_text = QString::fromUtf8(view.mm_status_text);
+    next.tetra_codec_text = QString::fromUtf8(view.codec_text);
+    next.tetra_codec_fault = view.codec_fault != 0U;
 }
 
 /**
@@ -1137,6 +1169,17 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     fillQualityView(next, snapshot);
     fillSiteView(next, snapshot);
 
+    fillControlViews(next, opts_snapshot, snapshot, now_m);
+
+    fillUiMessage(next, snapshot);
+
+    publish(next);
+    notifyDecodeNow();
+}
+
+void
+MetricsModel::fillControlViews(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
+                               double now_m) const {
     /* Engine truth for the monitor's toggle buttons. The engine owns both states
      * — commands only enqueue a request — and on Android the service outlives the
      * Activity, so a relaunched UI must read where they actually stand rather than
@@ -1150,11 +1193,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * in real time. */
     fillScanTimingView(next, opts_snapshot, snapshot, now_m);
     fillRxToneView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
-
-    fillUiMessage(next, snapshot);
-
-    publish(next);
-    notifyDecodeNow();
+    fillTetraView(next, opts_snapshot, snapshot);
 }
 
 qlonglong

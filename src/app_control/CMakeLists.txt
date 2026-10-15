@@ -33,6 +33,7 @@ target_sources(
         squelch_view.c
         symbol_profile.c
         tcp_audio_connect.c
+        tetra_view.c
         telemetry_hooks_install.c
         telemetry_observers.c
         ui_history.c
@@ -65,6 +66,7 @@ target_link_libraries(
         dsd-neo_io_radio
         dsd-neo_proto_dmr
         dsd-neo_proto_p25
+        dsd-neo_proto_tetra
         dsd-neo_crypto
         dsd-neo_warnings
 )

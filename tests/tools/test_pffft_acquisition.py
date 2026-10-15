@@ -46,9 +46,12 @@ def main():
         configure(args.cmake, source, online, "-DFETCHCONTENT_FULLY_DISCONNECTED=ON")
         local = work / "pffft source without git"
         shutil.copytree(online / "_deps/dsd_pffft-src", local)
+        # Offline configure also needs the other fetched source.
+        tea = work / "tetra_crypto source without git"
+        shutil.copytree(online / "_deps/dsd_tetra_crypto-src", tea)
         offline = work / "offline"
         configure(args.cmake, source, offline, f"-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT={local}",
-                  "-DFETCHCONTENT_FULLY_DISCONNECTED=ON")
+                  f"-DFETCHCONTENT_SOURCE_DIR_DSD_TETRA_CRYPTO={tea}", "-DFETCHCONTENT_FULLY_DISCONNECTED=ON")
         subprocess.run([args.cmake, "--build", str(offline), "--target", "dsd-neo_pffft", "-j", "4"], check=True,
                        stdout=subprocess.DEVNULL, timeout=240)
         configure(args.cmake, source, work / "missing", "-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/no/pffft/here",

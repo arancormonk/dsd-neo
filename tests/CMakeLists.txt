@@ -341,6 +341,7 @@ function(dsd_neo_link_dsp_test target_name)
             "$<TARGET_LINKER_FILE:dsd-neo_runtime>"
             "$<TARGET_LINKER_FILE:dsd-neo_io_iq>"
             "$<TARGET_LINKER_FILE:dsd-neo_platform>"
+            "$<TARGET_LINKER_FILE:dsd-neo_proto_tetra>"
         )
         target_link_options(
             ${target_name}
@@ -367,6 +368,7 @@ function(dsd_neo_link_dsp_test target_name)
             dsd-neo_runtime
             dsd-neo_io_iq
             dsd-neo_platform
+            dsd-neo_proto_tetra
         )
         if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
             target_link_libraries(
@@ -375,7 +377,11 @@ function(dsd_neo_link_dsp_test target_name)
             )
         endif()
     else()
-        target_link_libraries(${target_name} PRIVATE dsd-neo_dsp)
+        target_link_libraries(
+            ${target_name}
+            PRIVATE dsd-neo_dsp "$<TARGET_LINKER_FILE:dsd-neo_proto_tetra>"
+        )
+        add_dependencies(${target_name} dsd-neo_proto_tetra)
     endif()
     target_link_libraries(
         ${target_name}
@@ -1395,6 +1401,19 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_des PRIVATE dsd-neo_crypto)
 
 add_test(NAME DES COMMAND dsd-neo_test_des)
+
+# TEA wrapper over the fetched TETRA_crypto sources (cmake/TetraCrypto.cmake).
+add_executable(dsd-neo_test_tetra_crypto crypto/test_tetra_crypto.c)
+target_include_directories(
+    dsd-neo_test_tetra_crypto
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_tetra_crypto
+    PRIVATE dsd-neo_crypto dsd-neo_warnings
+)
+add_test(NAME TETRA_CRYPTO COMMAND dsd-neo_test_tetra_crypto)
+set_tests_properties(TETRA_CRYPTO PROPERTIES LABELS "tetra")
 
 add_executable(dsd-neo_test_pc4_tyt crypto/test_pc4_tyt.c)
 target_include_directories(
@@ -2929,16 +2948,18 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
     )
 
-    # The shared scan-timing, squelch and received-tone views come in as sources rather than
-    # stubs: the Scan Timing, SQL and Rx tone goldens are only worth anything if they run through
-    # the real display rules.
+    # The shared scan-timing, squelch, received-tone and TETRA views come in as sources rather
+    # than stubs: the Scan Timing, SQL, Rx tone and TETRA goldens are only worth anything if they
+    # run through the real display rules.
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
@@ -2979,6 +3000,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_callbacks
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
@@ -3688,6 +3710,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_metrics_model
         ui/test_ui_qt_metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
@@ -3695,6 +3718,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -5783,6 +5807,8 @@ set(_DSD_RUNTIME_CLI_PARSE_LIBS
     dsd-neo_proto_provoice
     dsd-neo_proto_x2tdma
     dsd-neo_proto_ysf
+    dsd-neo_proto_tetra
+    dsd-neo_crypto
 )
 
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
@@ -6033,7 +6059,9 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_generic_trunk_return_matrix
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(
@@ -6060,6 +6088,39 @@ add_test(
     NAME ENGINE_GENERIC_TRUNK_RETURN_MATRIX
     COMMAND dsd-neo_test_engine_generic_trunk_return_matrix
 )
+
+# The engine's side of TETRA trunking with the real state machine: its tick, the carrier boundary and the no-carrier
+# pass.
+add_executable(dsd-neo_test_engine_tetra_trunk engine/test_engine_tetra_trunk.c)
+target_include_directories(
+    dsd-neo_test_engine_tetra_trunk
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_tetra_trunk
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_tetra_trunk
+        PRIVATE
+            dsd-neo_engine
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME ENGINE_TETRA_TRUNK COMMAND dsd-neo_test_engine_tetra_trunk)
+set_tests_properties(ENGINE_TETRA_TRUNK PROPERTIES LABELS "tetra")
 
 add_executable(
     dsd-neo_test_engine_cleanup_audio
@@ -6344,6 +6405,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -11038,6 +11100,258 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_edacs_grant_policy PRIVATE dsd-neo_core)
 add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 
+# TETRA protocol tests: test_<name>.c builds dsd-neo_test_tetra_<name> and runs as TETRA_<NAME> (a leading "tetra_"
+# dropped from the CTest name).
+set(_dsd_tetra_test_sources
+    acelp_reference
+    tetra_bits
+    air_chain_vector
+    d_tx_granted_chan
+    depuncture_regression
+    mac_fragments
+    mac_pdus
+    mac_state
+    mle_cmce
+    mle_pdus
+    cmce_pdus
+    sds_pdus
+    mm_dispatch
+    rcpc_map
+    real_air_bit_trace
+    sds_reference_mac
+    tdma_clock
+    tetra_fmt_helpers
+    tetra_speech_reorder
+    tetra_dmo
+    tetra_air
+    tetra_speech_channel
+    tetra_sch_hu
+    tetra_trunk_sm
+    tetra_publication
+    tetra_voice_gate
+    tetra_calls
+)
+
+foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
+    set(_dsd_tetra_target "dsd-neo_test_tetra_${_dsd_tetra_test}")
+    add_executable(
+        "${_dsd_tetra_target}"
+        "protocol/tetra/test_${_dsd_tetra_test}.c"
+    )
+    target_include_directories(
+        "${_dsd_tetra_target}"
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+    )
+    target_link_libraries(
+        "${_dsd_tetra_target}"
+        PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support
+    )
+    string(REGEX REPLACE "^tetra_" "" _dsd_tetra_test_name "${_dsd_tetra_test}")
+    string(TOUPPER "${_dsd_tetra_test_name}" _dsd_tetra_test_name)
+    add_test(
+        NAME "TETRA_${_dsd_tetra_test_name}"
+        COMMAND "${_dsd_tetra_target}"
+    )
+    set_tests_properties(
+        "TETRA_${_dsd_tetra_test_name}"
+        PROPERTIES LABELS "protocol;tetra"
+    )
+endforeach()
+
+target_compile_definitions(
+    dsd-neo_test_tetra_acelp_reference
+    PRIVATE
+        TETRA_ACELP_SAMPLE="${PROJECT_SOURCE_DIR}/tests/fixtures/tetra/acelp/hello_tetra.acelp"
+        TETRA_ACELP_REFERENCE="${PROJECT_SOURCE_DIR}/tests/fixtures/tetra/acelp/hello_tetra.codec"
+)
+unset(_dsd_tetra_target)
+unset(_dsd_tetra_test)
+unset(_dsd_tetra_test_name)
+unset(_dsd_tetra_test_sources)
+
+# The TETRA rows every frontend shows, read from a snapshot of the decoder's publication.
+add_executable(
+    dsd-neo_test_app_control_tetra_view
+    ui/test_app_control_tetra_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_tetra_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_tetra_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_TETRA_VIEW
+    COMMAND dsd-neo_test_app_control_tetra_view
+)
+set_tests_properties(APP_CONTROL_TETRA_VIEW PROPERTIES LABELS "tetra")
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_tetra_view
+  HEADERS_PUBLIC_APP_CONTROL_TETRA_VIEW
+  dsd-neo/app_control/tetra_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_tetra_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_TETRA_VIEW_CXX
+  dsd-neo/app_control/tetra_view.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_tetra_publication
+  HEADERS_PUBLIC_CORE_TETRA_PUBLICATION
+  dsd-neo/core/tetra_publication.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_tetra_publication_cxx
+  HEADERS_PUBLIC_CORE_TETRA_PUBLICATION_CXX
+  dsd-neo/core/tetra_publication.h
+  CXX
+)
+
+# A stand-in for the TETRA speech codec library (--tetra-codec), built as a shared library the way a user's codec is:
+# the voice tests load it through the platform loader and read the PCM it makes off the digital voice output. Each
+# sample says which decode made it. The variants break the codec interface the ways a wrong library would.
+set(_dsd_tetra_codec_variants
+    good
+    wrong_abi
+    missing_symbol
+    no_create
+    fail_decode
+)
+set(_dsd_tetra_codec_definitions)
+foreach(_dsd_tetra_codec_variant IN LISTS _dsd_tetra_codec_variants)
+    set(_dsd_tetra_codec_target
+        "dsd-neo_test_tetra_codec_${_dsd_tetra_codec_variant}"
+    )
+    string(TOUPPER "${_dsd_tetra_codec_variant}" _dsd_tetra_codec_macro)
+    add_library(
+        "${_dsd_tetra_codec_target}"
+        SHARED
+        protocol/tetra/tetra_test_codec.c
+    )
+    target_include_directories(
+        "${_dsd_tetra_codec_target}"
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(
+        "${_dsd_tetra_codec_target}"
+        PRIVATE "TETRA_TEST_CODEC_${_dsd_tetra_codec_macro}=1"
+    )
+    target_link_libraries("${_dsd_tetra_codec_target}" PRIVATE dsd-neo_warnings)
+    list(
+        APPEND _dsd_tetra_codec_definitions
+        "TETRA_TEST_CODEC_${_dsd_tetra_codec_macro}=\"$<TARGET_FILE:${_dsd_tetra_codec_target}>\""
+    )
+endforeach()
+
+foreach(_dsd_tetra_voice_test IN ITEMS voice_pipeline voice_codec)
+    set(_dsd_tetra_target "dsd-neo_test_tetra_${_dsd_tetra_voice_test}")
+    add_executable(
+        "${_dsd_tetra_target}"
+        "protocol/tetra/test_tetra_${_dsd_tetra_voice_test}.c"
+    )
+    target_include_directories(
+        "${_dsd_tetra_target}"
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+    )
+    target_compile_definitions(
+        "${_dsd_tetra_target}"
+        PRIVATE ${_dsd_tetra_codec_definitions}
+    )
+    # initState() and the audio output reach the codecs and sinks ${LIBS} carries; dsd-neo_core goes ahead of them so
+    # an --as-needed link still finds its codec2 calls.
+    target_link_libraries(
+        "${_dsd_tetra_target}"
+        PRIVATE
+            dsd-neo_proto_tetra
+            dsd-neo_core
+            dsd-neo_fec
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    foreach(_dsd_tetra_codec_variant IN LISTS _dsd_tetra_codec_variants)
+        add_dependencies(
+            "${_dsd_tetra_target}"
+            "dsd-neo_test_tetra_codec_${_dsd_tetra_codec_variant}"
+        )
+    endforeach()
+    string(TOUPPER "${_dsd_tetra_voice_test}" _dsd_tetra_test_name)
+    add_test(
+        NAME "TETRA_${_dsd_tetra_test_name}"
+        COMMAND "${_dsd_tetra_target}"
+    )
+    set_tests_properties(
+        "TETRA_${_dsd_tetra_test_name}"
+        PROPERTIES LABELS "protocol;tetra;audio"
+    )
+endforeach()
+
+# Whole bursts through the dispatch handler, their symbols read from a symbol file: the verdict, the synchronisation
+# burst's block 2, the CRC failures the MAC is told about and the colour code it is given.
+add_executable(
+    dsd-neo_test_tetra_burst_verdict
+    protocol/tetra/test_tetra_burst_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_tetra.c
+)
+target_include_directories(
+    dsd-neo_test_tetra_burst_verdict
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+)
+target_link_libraries(
+    dsd-neo_test_tetra_burst_verdict
+    PRIVATE
+        dsd-neo_proto_tetra
+        dsd-neo_core
+        dsd-neo_fec
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(NAME TETRA_BURST_VERDICT COMMAND dsd-neo_test_tetra_burst_verdict)
+set_tests_properties(TETRA_BURST_VERDICT PROPERTIES LABELS "protocol;tetra")
+
+# The run-time library loader the codec goes through (src/platform/dynlib_*.c), over the same test libraries.
+add_executable(dsd-neo_test_platform_dynlib platform/test_platform_dynlib.c)
+target_include_directories(
+    dsd-neo_test_platform_dynlib
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_platform_dynlib
+    PRIVATE ${_dsd_tetra_codec_definitions}
+)
+target_link_libraries(
+    dsd-neo_test_platform_dynlib
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
+add_dependencies(
+    dsd-neo_test_platform_dynlib
+    dsd-neo_test_tetra_codec_good
+    dsd-neo_test_tetra_codec_missing_symbol
+)
+add_test(NAME PLATFORM_DYNLIB COMMAND dsd-neo_test_platform_dynlib)
+set_tests_properties(PLATFORM_DYNLIB PROPERTIES LABELS "platform;tetra")
+unset(_dsd_tetra_codec_definitions)
+unset(_dsd_tetra_codec_macro)
+unset(_dsd_tetra_codec_target)
+unset(_dsd_tetra_codec_variant)
+unset(_dsd_tetra_codec_variants)
+unset(_dsd_tetra_target)
+unset(_dsd_tetra_test_name)
+unset(_dsd_tetra_voice_test)
+
 # This matrix drives eot_cc(); it must not call real skipDibit from the unit-test fixture.
 # The local-output wrap counts the analog blocks EDACS writes there (issue #574).
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
@@ -12862,7 +13176,7 @@ unset(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS)
 # ---------------------------------------------------------------------------
 # Full-chain modulation decode regression tests
 #
-# Each fixture is a short cu8 I/Q capture replayed through --iq-replay, which
+# Each fixture is a short cu8 or cs16 I/Q capture replayed through --iq-replay, which
 # drives the complete chain: decimation, filtering, discriminator/CQPSK timing,
 # symbol slicing, frame sync, and the protocol layer. Assertions match decoded
 # payload fields rather than sync counts so that a silent framing or protocol
@@ -12885,8 +13199,12 @@ if(DSD_HAS_RADIO)
     # cases where decoding the payload is only half the property.
     function(dsd_neo_add_iq_decode_test test_name fixture mode expected)
         set(_not_expected_arg)
+        set(_min_matches_arg)
         if(ARGC GREATER 4)
             set(_not_expected_arg "-DNOT_EXPECTED=${ARGV4}")
+        endif()
+        if(ARGC GREATER 5)
+            set(_min_matches_arg "-DMIN_MATCHES=${ARGV5}")
         endif()
         add_test(
             NAME ${test_name}
@@ -12894,7 +13212,8 @@ if(DSD_HAS_RADIO)
                 ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
                 "-DMODE=${mode}"
                 "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
-                "-DEXPECTED=${expected}" ${_not_expected_arg} -P
+                "-DEXPECTED=${expected}" ${_not_expected_arg}
+                ${_min_matches_arg} -P
                 "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
         )
         set_tests_properties(
@@ -13079,6 +13398,298 @@ if(DSD_HAS_RADIO)
         dpmr_synth
         -fm
         "Src=7654321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH
+        tetra_bsch_synth
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    # The MAC lines name the colour code the blocks were descrambled with: the
+    # network's, which this fixture's BSCH sets to 17 (0x11).
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO
+        tetra_bsch_synth
+        -fT
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION
+        tetra_bsch_synth
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    # Each of the fixture's 100 TCH/FS bursts carries its class-2 CRC (EN 300 395-2 clause 5.5.1): the clean
+    # replays decode every one with the CRC passing and the burst re-encoding exactly; the impaired ones below must
+    # still pass the CRC on at least 90.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS
+        tetra_bsch_synth
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok  mismatches=0"
+        "crc=bad"
+        90
+    )
+    # The same bursts at the 72 kHz RTL DSP bandwidth, 4 samples per symbol (tetra_bsch_synth_72k, 25 of each):
+    # TETRA decodes at the rate an RTL-SDR runs it at, with no warning that the rate is unusable, and every
+    # TCH/FS class-2 CRC passes.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_72K
+        tetra_bsch_synth_72k
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+        "TETRA needs a DSP rate"
+        24
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_72K
+        tetra_bsch_synth_72k
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        "crc=bad"
+        24
+    )
+    # Apache-2.0 real-air SCBS capture from GopherTrunk, deterministically
+    # resampled from its preserved 50 kHz source to 54 kHz (3 samples/symbol).
+    # The identity was independently checked upstream with a commercial
+    # receiver and SDR++; this breaks the generator/decoder feedback loop.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_SCBS
+        tetra_scbs_real_air_54k
+        -fT
+        "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+    )
+    # Airspy on_cc_sync_loss recording from the same network: ~10 dB
+    # in-channel SNR with visibly ISI-smeared pi/4-DQPSK. Require sustained
+    # recovery, not one lucky CRC, from the unmodified 144 kHz CS16 bytes.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC
+        tetra_cc_marginal_real_air_144k
+        -fT
+        "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+        ""
+        15
+    )
+    # Deterministic complex conjugation reverses the polarity of every phase
+    # transition while preserving the public capture's noise, fading and ISI.
+    # Require the same sustained identity recovery through the inverted sync
+    # and payload-normalization path.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC_INVERTED
+        tetra_cc_marginal_real_air_144k_inverted
+        -fT
+        "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+        ""
+        15
+    )
+    # Complex-conjugated IQ reverses every differential phase step. Require
+    # protected payloads after negative-polarity synchronization and dibit-MSB
+    # normalization in both the BSCH and NDB paths.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_INVERTED
+        tetra_bsch_inverted
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_INVERTED
+        tetra_bsch_inverted
+        -fT
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_INVERTED
+        tetra_bsch_inverted
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_INVERTED
+        tetra_bsch_inverted
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok  mismatches=0"
+        "crc=bad"
+        90
+    )
+    # Deterministic 300 Hz carrier error plus 14 dB complex-AWGN SNR. These
+    # assertions prove acquisition and protected control decoding through the
+    # real CQPSK timing/carrier recovery path under a repeatable impairment.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_CFO_AWGN
+        tetra_bsch_cfo_awgn
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_CFO_AWGN
+        tetra_bsch_cfo_awgn
+        -fT
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_CFO_AWGN
+        tetra_bsch_cfo_awgn
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_CFO_AWGN
+        tetra_bsch_cfo_awgn
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        ""
+        90
+    )
+    # The same 300 Hz CFO and noise realization as the 14 dB case at 6 dB SNR:
+    # the CRC-protected control messages must still decode.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_SNR6
+        tetra_bsch_cfo_awgn_snr6
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_SNR6
+        tetra_bsch_cfo_awgn_snr6
+        -fT
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_SNR6
+        tetra_bsch_cfo_awgn_snr6
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    # One-sample (18.5 us) delayed echo at -6.9 dB with a 3 Hz differential
+    # carrier and 2.2 rad phase. This creates time-varying frequency-selective
+    # fading across the repeated burst sequence rather than stationary AWGN.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_TWO_RAY
+        tetra_bsch_two_ray
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_TWO_RAY
+        tetra_bsch_two_ray
+        -fT
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_TWO_RAY
+        tetra_bsch_two_ray
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_TWO_RAY
+        tetra_bsch_two_ray
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        ""
+        90
+    )
+    # A +100 ppm transmitter/receiver sample-clock mismatch accumulates timing
+    # drift across the repeated bursts and exercises continuous timing recovery.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_CLOCK_100PPM
+        tetra_bsch_clock_100ppm
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_CLOCK_100PPM
+        tetra_bsch_clock_100ppm
+        -fT
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_CLOCK_100PPM
+        tetra_bsch_clock_100ppm
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_CLOCK_100PPM
+        tetra_bsch_clock_100ppm
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        ""
+        90
+    )
+    # Repeat in the opposite direction; a slow source lengthens the waveform
+    # and makes the timing loop walk across symbol boundaries in reverse.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_CLOCK_MINUS_100PPM
+        tetra_bsch_clock_minus_100ppm
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_CLOCK_MINUS_100PPM
+        tetra_bsch_clock_minus_100ppm
+        -fT
+        "\\[TETRA SYSINFO\\] CC=17  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_CLOCK_MINUS_100PPM
+        tetra_bsch_clock_minus_100ppm
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=17 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_CLOCK_MINUS_100PPM
+        tetra_bsch_clock_minus_100ppm
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
+        ""
+        90
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_TETRA_BAD_CRC_REJECT
+        tetra_bsch_bad_crc
+        -fT
+        "\\+TETRA SB"
+        "\\[TETRA BSCH\\]"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_TETRA_BAD_CRC_CFO_AWGN_REJECT
+        tetra_bsch_bad_crc_cfo_awgn
+        -fT
+        "\\+TETRA SB"
+        "\\[TETRA BSCH\\]"
+    )
+    # A float symbol file (.raw) of the symbols the I/Q replay recovered: tests/iq_float_symbol_replay_check.cmake
+    # captures them (-c), writes them as floats (dsd-neo_test_symbol_capture_to_float) and replays that (-i), which must
+    # decode as many BSCHs as the I/Q replay does, at least 90 of the fixture's 100: TETRA's frame-sync slicer cuts a
+    # float symbol file's symbols at the thresholds of the CQPSK domain they hold, as it cuts the RTL front end's.
+    add_executable(
+        dsd-neo_test_symbol_capture_to_float
+        dsp/symbol_capture_to_float.c
+    )
+    target_include_directories(
+        dsd-neo_test_symbol_capture_to_float
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_symbol_capture_to_float
+        PRIVATE dsd-neo_platform
+    )
+    add_test(
+        NAME DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DCONVERT_BIN=$<TARGET_FILE:dsd-neo_test_symbol_capture_to_float>"
+            "-DMODE=-fT"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_bsch_synth.iq.json"
+            "-DEXPECTED=\\[TETRA BSCH\\] MCC=460 MNC=4242"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/float_symbol_replay/DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY"
+            "-DMIN_MATCHES=90" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_float_symbol_replay_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY
+        PROPERTIES LABELS "iq-decode" TIMEOUT 240
     )
     # The off-air dpmr capture, which carries no recoverable CCH: its Hamming syndromes
     # sit at the random rate and its 4FSK eye is closed, so the Src=1601621 this case
@@ -15588,6 +16199,12 @@ if(Python3_Interpreter_FOUND)
         COMMAND
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pffft_metadata.py
+    )
+    add_test(
+        NAME TOOLS_TETRA_CRYPTO_METADATA
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tetra_crypto_metadata.py
     )
     add_test(
         NAME TOOLS_RELEASE_SBOM_FILENAMES

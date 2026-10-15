@@ -38,6 +38,17 @@ typedef struct {
     uint8_t loaded;
 } dsd_key_set_entry;
 
+/** Networks a session can hold TETRA air-interface keys for. */
+enum { DSD_TETRA_AIR_KEY_SLOTS = 4 };
+
+/** An operator TEA1/TEA2/TEA3 air-interface key for one TETRA network (`--tetra-key mcc,mnc,key`). */
+typedef struct {
+    uint8_t loaded;
+    uint16_t mcc; /**< 10-bit Mobile Country Code */
+    uint16_t mnc; /**< 14-bit Mobile Network Code */
+    uint8_t key[10];
+} dsd_tetra_air_key;
+
 /**
  * The scalar key slots that per-call activation and the keyloader-gated resets
  * write beside the keyring. Mirrors the `dsd_state` field types exactly so the
@@ -62,6 +73,7 @@ typedef struct {
     int aes_key_loaded[2];
     uint8_t aes_key_segments[2];
     uint8_t aes_key[32];
+    dsd_tetra_air_key tetra_air_keys[DSD_TETRA_AIR_KEY_SLOTS];
 } dsd_key_scalars;
 
 typedef struct {
@@ -106,7 +118,8 @@ typedef enum {
     DSD_KEY_TYPE_RC4 = 2,
     DSD_KEY_TYPE_SCRAMBLER = 3,
     DSD_KEY_TYPE_M17_SCRAMBLER = 4,
-    DSD_KEY_TYPE_M17_AES = 5
+    DSD_KEY_TYPE_M17_AES = 5,
+    DSD_KEY_TYPE_TETRA_AIR = 6, /**< "mcc,mnc,key": decimal MCC (0-1023) and MNC (0-16383), 20 hex digits */
 } dsd_key_type;
 
 typedef enum { DSD_KEY_APPLY_OVERLAY, DSD_KEY_APPLY_REPLACE } dsd_key_apply_mode;

@@ -586,7 +586,8 @@ jobs:
           cp -f LICENSE COPYRIGHT THIRD_PARTY.md "$DOCDIR/"
           cp -f src/third_party/ezpwd/lesser.txt "$DOCDIR/licenses/ezpwd-LGPL-2.1-or-later.txt"
           cp -f build/dev-release/pffft-licenses/pffft-{LICENSE,NOTICES}.txt "$DOCDIR/licenses/"
-          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt; do
+          cp -f build/dev-release/tetra_crypto-licenses/tetra_crypto-LICENSE.txt "$DOCDIR/licenses/"
+          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt; do
             if [ ! -f "$DOCDIR/$f" ]; then
               echo "ERROR: missing required license file $f in $DOCDIR" >&2
               exit 1
@@ -866,15 +867,17 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Record pinned PFFFT in SBOM
+      - name: Record pinned PFFFT and TETRA_crypto in SBOM
         shell: bash
         env:
           SBOM_PATH: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           fi
 
       - name: Upload enriched SBOM

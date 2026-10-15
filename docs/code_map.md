@@ -544,7 +544,7 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - Path: `src/platform`, `include/dsd-neo/platform`
 - Target: `dsd-neo_platform`
 - Responsibilities: cross-platform primitives (audio backend, sockets, threading, timing, filesystem/curses
-  compatibility)
+  compatibility, run-time library loading)
   - Directory listing: `dsd_dir_list()` in `include/dsd-neo/platform/file_compat.h`, implemented once per
     platform in `file_compat_posix.c` and `file_compat_win32.c`
   - Private file opens: `dsd_fopen_private()` creates a written file owner-only; `dsd_fopen_private_ex()` also says
@@ -608,6 +608,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
     so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
     timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
+  - Run-time libraries: `dsd_dynlib_open()`/`dsd_dynlib_symbol()`/`dsd_dynlib_close()` in
+    `include/dsd-neo/platform/dynlib.h` load a user-supplied shared library (the TETRA speech codec,
+    `--tetra-codec`): `dlopen(RTLD_NOW | RTLD_LOCAL)` in `dynlib_posix.c` (linked with `${CMAKE_DL_LIBS}`),
+    `LoadLibraryExW()` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` in `dynlib_win32.c`
+    on the full path (UTF-8, else the ANSI code page). A bare file name means the working directory, never the loader's
+    search path; only these two files include `<dlfcn.h>` for it. Test: `PLATFORM_DYNLIB`
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
     `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
     object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
@@ -636,10 +642,11 @@ constants, and Clang also folds an integer bit test on a float it computed or re
   `bound_rotate90_cf32_to_f32_phase()` (`include/dsd-neo/dsp/simd_widen.h`, SIMD with runtime AVX2 dispatch), which
   turn any component that is NaN, infinite or at least 2^60 into 0, and soft symbol files in `src/dsp/dsd_symbol.c` --
   and the Costas and Gardner loops check each sample where they load it (`src/dsp/costas.cpp`).
-- Arithmetic whose exact rounding is a contract keeps it explicitly: the decode clock's `ns / 1e9` (`decode_clock.c`
-  is IEEE), the fallback decimator's block-split-invariant running sum (`#pragma clang fp reassociate(off)`), and the
-  auto and noise squelches' window sums, which must not depend on where a block starts (`squelch_floor.c`,
-  `nfm_noise_squelch.c`, `noise_squelch_bank.c` and `pcm_noise_squelch.c` are IEEE).
+- Arithmetic whose exact rounding is a contract keeps it explicitly: the decode clock's `ns / 1e9` (`decode_clock.c` is
+  IEEE) and a trunk tune's completion stamp, compared with it (`trunk_tuning_hooks.c` is IEEE), the fallback decimator's
+  block-split-invariant running sum (`#pragma clang fp reassociate(off)`), and the auto and noise squelches' window
+  sums, which must not depend on where a block starts (`squelch_floor.c`, `nfm_noise_squelch.c`, `noise_squelch_bank.c`
+  and `pcm_noise_squelch.c` are IEEE).
 - Tests that feed NaN or infinity, or check results with `std::isnan()`, compile their own sources with IEEE
   semantics (the block near the top of `tests/CMakeLists.txt`), leaving the code under test on the build's flags.
 
@@ -769,7 +776,9 @@ suite runs under this compiler.
   since a Phase 1 NID of 0x000/0xFFF leaves `nac` 0 beside a stale `p2_cc`), and `p2_cc` only while `p2_cc_verified`
   says this carrier proved it (see Protocols), NXDN `nxdn_last_ran` < 64 unless `nxdn_last_ran_stand_in` marks it as a
   value the terminal shows where the RAN goes but that is none (an IDAS area bit or site type, DCR's fixed 7; see
-  Protocols), dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once the call has service metadata.
+  Protocols), dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once the call has service metadata,
+  TETRA the 6-bit colour code of `tetra_pub` once a CRC-passed block gave a trunked mode and the network is known
+  (direct mode has none).
   `watchdog_event_current_load_tuning()` in `dsd_events.c` applies two per-row rules on every voice render, against the
   staged row: the frequency is the call's own `frequency_hz` whenever it has one, else the staged value, else -- only on
   an ACTIVE render outside `--playfiles` -- `dsd_opts_tuned_freq_hz()`, so the tuner is pinned at the epoch's first
@@ -880,6 +889,26 @@ suite runs under this compiler.
   and receive policy ask instead. UNAVAILABLE means detection is on but the input rate is one the front end cannot
   use; `carrier_open` is still kept there (issue #526), and on the AM monitor, where no detection runs and `tone_state`
   stays INACTIVE (issue #524).
+- API note: `dsd_state::tetra_pub` (`dsd_tetra_publication` in `<dsd-neo/core/tetra_publication.h>`, which `state.h`
+  includes) is what the TETRA decoder shows every frontend. Its working state lives in its state extension, which no
+  snapshot copies; at the end of every burst `tetra_publish()` (`src/protocol/tetra/tetra.c`, from
+  `tetra_frame_leave()`) copies into the publication the working mode (TMO downlink, uplink or control uplink, DMO
+  direct or through a DM-REP, DM-GATE or both), taken only once a block passed its CRC, the network (MCC, MNC, 6-bit
+  colour code), the air-interface encryption and the network's TEA (1..4, 0 unknown; never a key), where call following
+  stands, the SYSINFO main carrier and its frequency, the channel allocation's carrier, timeslot bitmap (bit 3 is
+  timeslot 1, as the Timeslot assigned field carries it) and frequency, the last D-MM STATUS, and the speech codec's
+  status (`dsd_tetra_codec_status`: unknown, ready, missing, load failed, decode errors) with its frame and error
+  counts. The network, the SYSINFO main carrier, the traffic channel and the D-MM STATUS are a trunked network's, so a
+  direct mode carrier publishes none of them, though the TETRA state keeps the network identity for the trunked carrier
+  the session goes back to: a retune from a TMO cell to a DMO carrier shows no network of that cell beside the DMO
+  mode, as it shows no TEA, colour code or channel rows. A synchronisation burst that sets the mode or the network publishes at once (`tetra_bsch_parse()`,
+  `tetra_dmo_apply_sync()`): the calls and notices the rest of its burst emits read the carrier's colour code from the
+  publication (`dsd_access_code_current()`), so they carry the cell or direct mode channel they were decoded on, not the
+  last burst's. Integers only, so it rides the `vertex_ks_count..ui_msg` snapshot range, pinned by a `_Static_assert` in
+  `ui_snapshot.c`. `dsd_tetra_publication_reset()` clears it and bumps its `generation`: a preset other than TETRA does
+  when it commits (`dsd_apply_decode_mode_preset()`, `dsd_decode_mode_commit_tetra()`), and so does `tetra_state_reset()` with the state it drops. TETRA calls, short data
+  and status messages reach the frontends as canonical calls and event history notices (TETRA "Calls" below), not
+  through the publication. Tests: `TETRA_PUBLICATION`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `RUNTIME_DECODE_MODE`.
 - API note: `<dsd-neo/core/analog_tone.h>` (issue #527) holds the receive policy's types only: `dsd_tone_filter_mode`
   (off, allow, block) and `dsd_tone_set`, a bounded bitmask (one bit per standard CTCSS tone; one per standard DCS code
   and polarity, as written) that copies by value into `dsd_opts::analog_tone_filter` / `analog_tone_set`, the scan
@@ -975,7 +1004,10 @@ suite runs under this compiler.
   reverse mute, a loaded key and a talkgroup hold cannot make that frame audible or recordable. Muted slots stage
   silence in `s_l`/`s_r` and retire their fresh-media marks, so a mixer cannot replay an earlier frame. A talkgroup
   hold decides policy and the effective slot preference only: `dsd_audio_group_gate_*()` and the SS3 hold helper
-  preserve the incoming mute, the user's slot switches and stored preference. MBE capture saves each frame after
+  preserve the incoming mute, the user's slot switches and stored preference. `dsd_audio_group_gate_call()` is the
+  same talkgroup gate for a call that is not published yet, judged on the kind and identities it will carry (a private
+  call on both parties, a group call on its target and source), for a decoder that chooses between calls before it
+  publishes one: TETRA's timeslots share canonical slot 0 (`CORE_AUDIO_GROUP_GATE`). MBE capture saves each frame after
   its own verdict and before staging (issue #661). The vocoder no longer writes `dmr_encL/R`; NXDN retains its own
   classification there for lockout. P25 Phase 2 playout snapshots the P25 rule and actual staged-media provenance
   per frame, so a queued muted frame remains silent.
@@ -1002,8 +1034,11 @@ suite runs under this compiler.
   agree. Public mixer callers retain their protocol and policy verdicts. A trailing partial frame is dropped, and
   a state without the output history `initState()` allocates plays nothing. The M17 stream encoder (`-fZ`) opens the
   decoded monitor at 8 kHz; explicit `-8` selects its separate 48 kHz baseband monitor whether before or after the
-  mode selector. Leaving an analog preset clears monitoring it enabled implicitly. Tests: `CORE_AUDIO2_HELPERS`,
-  `M17_STATE_DISPATCH`, `RUNTIME_CLI_PARSE`, `DECODE_IQ_M17_VOICE_OUTPUT`.
+  mode selector. Leaving an analog preset clears monitoring it enabled implicitly. A decoder under talkgroup policy
+  that settles the record policy too (TETRA speech, `dsd_audio_record_policy_gate_slot()`) calls
+  `dsd_audio_play_decoded_pcm16_record()`: with `record` 0 its frames play but neither WAV takes them. Tests:
+  `CORE_AUDIO2_HELPERS`, `M17_STATE_DISPATCH`, `RUNTIME_CLI_PARSE`, `DECODE_IQ_M17_VOICE_OUTPUT`,
+  `TETRA_VOICE_PIPELINE`.
 - Invariant (P25 Phase 2 voice playout, `<dsd-neo/core/p25p2_playout.h>`, `src/core/audio/p25p2_playout.c`, issue
   #651): both output formats play P25 Phase 2 voice through one staging and one mixer. The frame decoder queues each
   frame its decode gate admits on the slot's queue right after the vocoder (`dsd_p25p2_playout_stage()`): the slot's
@@ -1363,8 +1398,12 @@ suite runs under this compiler.
     width is accepted only when it is in range, width/2 + 600 Hz stays within 0.45 × the DSP rate, and the Blackman
     tap count fits the 288-tap analog capacity; the refusal names the width, the rate, the largest width that rate
     fits and the RTL DSP bandwidths that would fit (`dsd_analog_width_fitting_rtl_bandwidths()`, which the short
-    refusals reuse; `dsd_analog_rtl_dsp_bw_is_selectable()` is the list of selectable DSP bandwidths that the services,
-    config apply and validation share). `dsd_analog_width_check_at()` words a rate refusal for what sets the rate
+    refusals reuse). It holds the one list of selectable DSP bandwidths (4, 6, 8, 12, 16, 24, 48 and 72 kHz; 72 is
+    TETRA's): `dsd_analog_rtl_dsp_bw_is_selectable()`, `_or_default()` (the 48 kHz default,
+    `DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ`), `_nearest()` and `_list()`, which the input specs, the config schema, apply and
+    validation, the services, the terminal menu, the interactive setup and the Qt session read rather than a copy;
+    `dsd_analog_airspy_dsp_bw_is_selectable()` caps it at `DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ` (48), since no Airspy
+    sample rate halves to 72 kHz. `dsd_analog_width_check_at()` words a rate refusal for what sets the rate
     (`dsd_analog_rate_source`, fix text from `dsd_analog_width_rate_fix()`): the RTL DSP bandwidth, a SoapySDR or Airspy
     device (whose capture rate is halved down to the first rate at or above the DSP bandwidth: raise the DSP bandwidth or
     narrow the width) or an I/Q replay's capture (narrow the width); where the rate filters no width of the kind it
@@ -1520,7 +1559,29 @@ suite runs under this compiler.
     left by 11) and `RUNTIME_ANALOG_TONES` pins the published reference words, the golden alias table for all 104 codes
     and the two spellings of every signal.
   - Decode presets (`include/dsd-neo/runtime/decode_mode.h`, `src/runtime/decode_mode.c`): the `-f` selector map is
-    a table (`k_cli_presets`), and AM (`DSDCFG_MODE_AM` = 16, `-fM`, issue #524) is the last preset: the analog monitor
+    a table (`k_cli_presets`), and so are the presets (`k_decode_mode_presets`): `dsd_apply_decode_mode_preset()` looks
+    the mode up before it changes anything, so a mode no preset implements (`DSDCFG_MODE_UNSET`, which a config's
+    `[mode]` without a `decode` key and DECODE_MODE_SET 0 pass) changes nothing, a TETRA session's decoder and state
+    included. A transition that can still be put back stages its preset (`dsd_stage_decode_mode_preset()`: every
+    setting, `frame_tetra` off for a mode other than TETRA, but the TETRA state extension, `tetra_sync` and `tetra_pub`
+    left) and commits once nothing can put it back (`dsd_decode_mode_commit_tetra()`: TETRA is left when the settings
+    in force run no TETRA decoder); `dsd_apply_decode_mode_preset()` is both at once. DECODE_MODE_SET commits after a
+    switch onto the monitor the front end refused at once was put back, and a runtime config apply
+    (`dsd_stage_user_config_to_opts()`) after its reopen and receive-family rollbacks, so a TETRA session they put back
+    is whole (`APP_COMMAND_QUEUE`). A switch from TETRA onto the monitor or AM that a running RTL stream queued (under a
+    scan row, the one the row's resume makes) commits once it settles (`ui_commit_mode_change()` in
+    `app_command_queue.c`): while the switch is armed with the settings it left still in force, a refusal where its
+    request lands can still put the session back (`ui_revert_analog_entry()`), so the commit waits for the front end to
+    take the request, refuse it, or the switch to be dropped (`ui_analog_entry_settled()`); a command that moves the
+    settings on to another mode commits at once. A refusal that puts a TETRA session back puts back as well the follow
+    state its trunking state machine shares, which ending the calls cleared (`reset_call_tracking()`: `trunk_is_tuned`
+    and the voice channel frequencies, as the first switch found them), while the machine still follows the call
+    (`ui_restore_tetra_follow()`; a carrier boundary meanwhile abandoned it), so its next tick does not drop the call as
+    one another owner released, the receiver left on its traffic channel. `dsd_apply_decode_mode_symbol_timing()` refuses a mode no preset
+    implements the same way (it has no preset timing), and the config paths that call it for a file input
+    (`apply_file_input_symbol_timing()` in `config_user.cpp`, `cfg_file_runtime_apply_*()` in `app_command_queue.c`)
+    then rescale or keep the session's own timing
+    (`RUNTIME_DECODE_MODE`, `RUNTIME_CONFIG_USER`, `APP_COMMAND_QUEUE`). AM (`DSDCFG_MODE_AM` = 16, `-fM`, issue #524) is the last preset: the analog monitor
     with `analog_demod` AM, read back as AM by `dsd_infer_decode_mode_preset()`. AM needs an I/Q radio input, one rule
     for two phases: before the engine opens the input, `dsd_decode_mode_input_spec_is_iq()` reads the spec (an rtl,
     rtltcp, soapy, airspy or iqreplay one, or the RTL input type `--iq-replay` sets while the options are parsed) for
@@ -1536,6 +1597,34 @@ suite runs under this compiler.
     default, saved only when explicit; the section is always saved). Tests: `RUNTIME_DECODE_MODE`,
     `RUNTIME_CLI_PARSE`, `RUNTIME_CONFIG_USER`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`,
     `RUNTIME_BOOTSTRAP_INTERACTIVE`.
+    TETRA (`DSDCFG_MODE_TETRA` = 17, `-fT`) follows AM and shares its input rule, with one more input it runs on: a
+    symbol capture (`.bin`, `.raw` or `.sym`), which carries the symbols an I/Q input's CQPSK demodulator recovered
+    (`dsd_decode_mode_runs_on_input()`, `dsd_decode_mode_runs_on_input_spec()`, `DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT`
+    through `dsd_decode_mode_needs_iq_text()`). The CLI stops on `-fT` with a PCM input, a config's `decode = tetra`
+    there keeps the mode with a warning, DECODE_MODE_SET refuses it, and the terminal picker labels it `TETRA (needs an
+    I/Q radio input)`. Every preset other than TETRA leaves the TETRA decoder (`dsd_decode_mode_leave_tetra()`:
+    `frame_tetra` off, the TETRA state extension, `tetra_sync` and `tetra_pub` dropped), and so do the `-f` selectors
+    the CLI handles itself (`-fp`, `-fh`, `-fH`, `-fe`, `-fE`, `-fZ`, `-fB`, `-fP`, `-fU`), so the last `-f` selector
+    replaces TETRA rather than running beside it. A typed `-Y` row leaves TETRA when it commits (`dsd_scan_mode_enter()`,
+    `dsd_scan_mode_resume()`), not when `dsd_scan_mode_prepare()` stages it for its tune, so a row whose preparation or
+    tune fails before the commit goes back to the TETRA session whole (`RUNTIME_SCAN_MODE`, `ENGINE_CHANNEL_SCAN`);
+    `dsd_scan_settings` carries `frame_tetra` with the other frame flags, so an inherited row and the end of the scan
+    bring the configured TETRA decoder back (`RUNTIME_SCAN_MODE`). TETRA follows calls of a trunked (TMO) network and
+    decodes direct mode (DMO), which is not trunked, so every place that offers trunking offers it for TETRA with no
+    answer assumed: the setup wizard asks its trunking question for TETRA on an RTL-SDR or rtl_tcp source as for the
+    other trunk-capable entries, No by default (`interactive_mode_supports_trunk()`, `RUNTIME_BOOTSTRAP_INTERACTIVE`),
+    the Qt wizard's Trunking switch is there for every chip and the TETRA chip does not suggest it (`Util.js`
+    `suggestsTrunking()`), and the terminal menu's Trunking row, `[trunking] enabled` and `-T` take it whatever the
+    mode. On the RTL front end its 18 ksym/s profile runs CQPSK timing on the WIDE
+    channel filter (`dsd_rtl_channel_profile_for()`), and a retune keeps the active profile with its filter
+    (`rtl_demod_maybe_refresh_ted_sps_after_rate_change()`): the options a stream opened with in another mode do not
+    narrow a live switch to TETRA onto the P25 CQPSK filter (`IO_RTL_DEMOD_CONFIG`). Its rate rule lives in
+    `include/dsd-neo/runtime/tetra_rate.h` (`src/runtime/tetra_rate.c`): TETRA runs only at a DSP rate that is a
+    multiple of its 18 ksym/s (`dsd_tetra_dsp_rate_runs()`), so `-fT` and a Qt TETRA system without a bandwidth of its
+    own take `DSD_TETRA_DSP_BW_KHZ` (72), and `dsd_tetra_dsp_rate_advice()` words the stream-start warning
+    (`src/io/radio/rtl_sdr_fm.cpp`) and the mode-change toast for a rate that cannot work, with the fix for what sets
+    the rate. Tests: `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`,
+    `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -1630,7 +1719,11 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   (`src/app_control/app_command_queue.c`)
 
 Retune requests use a sibling table, `include/dsd-neo/runtime/trunk_tuning_hooks.h`, whose implementations the engine
-installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_install.c`.
+installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_install.c`. The correlated request records
+(`src/runtime/trunk_tuning_hooks.c`) outlive every owner: an owner that drops what it staged for a request in flight
+(the TETRA state machine, whose state a decode-mode change frees) disowns it (`dsd_trunk_tuning_request_disown()`),
+which leaves an unanswered request in flight, its success the tuner boundary, and retires its failure at once, since
+nothing is left to roll back (`RUNTIME_TRUNK_TUNING_HOOKS`, `ENGINE_TETRA_TRUNK`).
 
 ## App-Control
 
@@ -2313,6 +2406,18 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `_LONG`) for a caller that shows one at a time; the view is built on it. The public header names the kinds through
   `core/access_code.h` only, never `state.h`. The Qt call history's `accessCode`/`accessCodeText` roles come from it,
   each formatting only its own text. Test: `APP_CONTROL_ACCESS_CODE_VIEW`.
+  `include/dsd-neo/app_control/tetra_view.h` and `src/app_control/tetra_view.c` turn a snapshot of
+  `dsd_state::tetra_pub` into the TETRA rows every frontend shows: `dsd_app_tetra_view()` makes them visible while the
+  options run the TETRA preset (`frame_tetra`) and the publication has a working mode, and writes the mode line with
+  the air encryption (`TMO downlink · encrypted (TEA2)`, `DMO direct · clear`), the network (`MCC 262 · MNC 1001 · CC
+  25`: the colour code through `dsd_app_access_code_format()`, in decimal as the call history names one), where call
+  following stands (`control channel`, `traffic channel`, `idle`, only with trunking on and on a TMO downlink), the
+  control and traffic channels (`carrier 654 · TS 1,3 · 392.1250 MHz`, a frequency to five decimals with a trailing
+  zero dropped, as Qt's `Util.mhzText()` writes one), the MM status (`7 · MS frequency bands request`) and the codec's
+  health (`ready · 18 frames · 2 errors`, `missing`, `failed to load`, `decode errors`), with flags for colour
+  (`encrypted`, `on_traffic`, `codec_fault`) so no frontend compares words. `DSD_APP_TETRA_ASCII` swaps the ` · `
+  separator for ` - ` on a terminal without UTF-8. Tests: `APP_CONTROL_TETRA_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
+  `UI_QT_METRICS_MODEL`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -3887,6 +3992,12 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - `dmr_mi.c` / `<dsd-neo/crypto/dmr_keystream.h>` own RC4 MI advancement and the pure DMR AES
   `dmr_aes_expand_iv()` helper. The live protocol wrapper `LFSR128d()` retains slot-state updates and logging;
   MBE playback uses the same expansion without those side effects.
+- `tetra_tea.c` / `<dsd-neo/crypto/tetra_tea.h>` wrap the pinned TETRA_crypto TEA1/2/3 keystream generators
+  (`dsd-neo_tetra_crypto`, see Third-Party) and pack the EN 300 392-7 clause 6.3.2.1 frame-number IV themselves,
+  returning 0 for an out-of-range slot, frame, multiframe or direction. `tetra_tea_derive_eck()` is TB5 (clauses
+  4.2.7 and 6.3.2.2): the encryption cipher key the generators take, from a cipher key (SCK or CCK) and the carrier
+  number, location area and colour code, pinned by TETRA_crypto's four TB5 vectors (`TETRA_CRYPTO`). It is the only
+  file that includes the upstream headers.
 - Build files: `src/crypto/CMakeLists.txt`
 
 ## Protocols
@@ -3895,7 +4006,7 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - Targets (one per protocol):
   - `dsd-neo_proto_dmr`, `dsd-neo_proto_dpmr`, `dsd-neo_proto_dstar`, `dsd-neo_proto_nxdn`, `dsd-neo_proto_p25`
     (phase1/phase2), `dsd-neo_proto_m17`, `dsd-neo_proto_x2tdma`, `dsd-neo_proto_edacs`, `dsd-neo_proto_provoice`,
-    `dsd-neo_proto_ysf`
+    `dsd-neo_proto_ysf`, `dsd-neo_proto_tetra`
 
 Notes:
 
@@ -4320,6 +4431,560 @@ Private per-protocol modules worth knowing about:
   and leaves the call's classification alone, rather than playing a scrambled call's first undecodable halves as
   clear.
 
+- `src/protocol/tetra/tetra_confirm.{c,h}` — the same module for TETRA, whose 22-bit normal-burst training sequence
+  receiver noise matches under the frame sync's eight hypotheses. A burst proves itself with a block whose CRC passed:
+  a BSCH, SCH/HD, SCH/F, STCH or BNCH block (the CRC-16 of EN 300 392-2 clause 8.2.3.3), direct-mode or uplink
+  signalling, or a speech frame that passes its CRC and re-encodes like speech. `processTetraFrame()` and
+  `processTetraSBFrame()` return it and `dsd_dispatch_handle_tetra()` maps it to `PROFILE_PROVEN` or `UNPRODUCTIVE`.
+  The carrier's evidence (CRC-passed BSCH and MAC blocks, and the followed call's signalling) gates trunking and
+  speech; see TETRA below. The engine clears it with the carrier through `tetra_confirm_reset()`, exported in
+  `<dsd-neo/protocol/tetra/tetra.h>`.
+
+### TETRA
+
+#### Burst sync
+
+The frame sync (`frame_sync_try_tetra()` in `src/dsp/dsd_frame_sync.c`) locks a TETRA burst at the end of its training
+sequence and captures block 1 from its history into `dsd_state::tetra_sync`. On the uplink (`--tetra-uplink`) normal
+training sequence 1 is also dibits 2..12 of the control burst's extended training sequence (EN 300 392-2 clause
+9.4.4.3.3), so there the control burst is tried first and a normal burst's training is matched two symbols back, once
+those two symbols showed it ends no control burst; they are block 2's first two dibits, which the decoder takes before
+it reads on (`b2_lead_count`, `tetra_read_block2()` in `tetra.c`). Off the uplink the normal burst locks at its training
+as before. Every downlink burst runs the TDMA clock to its own slot on the symbol count before its blocks are decoded: a
+normal burst at its training sequence (`tetra_tdma_advance_ndb()`), a synchronisation burst at its BSCH, which sets the
+clock when its CRC passes and otherwise only runs it (`tetra_sb_bsch()`), so block 2 of a burst whose BSCH failed is not
+decoded as the last burst's timeslot. Normal bursts cannot tell the signal's polarity (NTS2 is NTS1 inverted), so the
+carrier's polarity (`tetra_sync.polarity`) comes from a synchronisation burst's training, which the frame sync latches,
+and on the uplink from a control burst: its extended training sequence is no other training sequence inverted, so its
+synctype's sign is its polarity, its SCH/HU is decoded with it, and once that CRC passed the decoder makes it the
+carrier's (`tetra_uplink_process_cb()`); one that fails changes nothing, since a normal-polarity NTS2 burst can match
+the inverted extended training sequence. That SCH/HU also proves a trunked mode uplink, which no BSCH comes to say there:
+like a BSCH of a trunked system code on the downlink, it ends direct mode (`tetra_dmo_leave()`: the mode, the DM colour
+code, its protection and the direct mode call with its canonical call), so the normal bursts after it are NUBs again
+and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA's symbols at fixed thresholds of the CQPSK
+symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`), where the RTL front end and a soft symbol capture give them;
+a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads it as it is
+(`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled by 10000
+into the PCM sample domain; scaled, both inner levels would slice as outer ones. Tests: `FRAME_SYNC_INTERNAL_HELPERS`,
+`TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`, `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`.
+
+#### Signalling decoders
+
+Each downlink signalling PDU family has a pure decoder that reads one PDU into a struct the caller provides and returns
+1 only when the whole PDU, optional elements included, was there and well formed; it keeps nothing and acts on nothing.
+All are module-private: `tetra_mac_resource_decode()` and `tetra_mac_broadcast_decode()` (the MAC-RESOURCE header with
+its address, SYSINFO with its D-MLE-SYSINFO, ACCESS-DEFINE; `src/protocol/tetra/tetra_mac_pdu.h`), `tetra_mle_decode()`
+(the MLE protocol PDUs, the D-CALL RESTORE of a D-RESTORE-ACK included), `tetra_sds_decode()` (D-STATUS and D-SDS-DATA:
+the SDS-TL header, the text, a concatenation part's control fields but not its reassembly) and `tetra_sndcp_decode()`
+(the SN-PDU header; all three in `tetra_mle_pdu.h`), and `tetra_mm_decode()` (the MM PDUs of EN 300 392-2 clause 16 and
+EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd()`, `tetra_mle_dispatch()`,
+`tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the summary line, the call event,
+the notice, the SDS reassembly, the KSG an SCK or GCK Provide names. Of signalling, `tetra_state_t` keeps only what the
+decoder reads back: the cell's main carrier, band, offset and location area, the hyperframe number, the encryption mode
+of the last addressed MAC-RESOURCE, the reassembly contexts (one message each, keyed by its reference, its transport
+and its sender's TETRA subscriber identity: the SSI with the network a calling party of type 2 names in its extension
+and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44) and the D-MM
+STATUS the frontends show. What a BSCH of
+another cell or network forgets is decided in one place (`bsch_identity_change()` in `tetra_bsch.c`, before the new
+identity is taken, so what ends carries the network it was decoded on). The SYSINFO part belongs to the cell: a BSCH
+naming another MCC, MNC or colour code (`bsch_forget_cell()`) drops it with the TDMA clock, the partial TM-SDUs (a
+TM-SDU is rebuilt on one cell's control channel, whatever the colour code of a later fragment), the channels the last
+cell allocated to the calls and the event labels it assigned (`tetra_calls_forget_cell()`; the records stay), and `trunk_cc_freq`
+when that SYSINFO set it, so an allocation decoded before the new cell's SYSINFO resolves to no frequency and nothing
+is followed until it names its control channel; `tetra_forget_carrier()` keeps it, since another carrier of the same
+cell shares it. The cells of a network may share a colour code, so a SYSINFO naming another main carrier (the cell's,
+clause 21.4.4.1) or another location area than the cell's known one is another cell too, which forgets the same before
+the SYSINFO is taken (`tetra_bsch_sysinfo_cell()`, from `apply_sysinfo()` in `tetra_mac.c`). Another cell is also another carrier, whatever the engine saw (a radio retuned outside the decoder),
+so what the last carrier's speech left goes as at a carrier boundary: its timeslots' signalling encryption, the heard
+timeslot with the heard or anonymous canonical call (`tetra_calls_forget_trunked_carrier()`), the speech in progress,
+the followed call's proof on the carrier, and the encryption mode the last cell's signalling showed. A DSB that puts a
+trunked carrier in direct mode (`tetra_enter_dmo()` in `tetra.c`) forgets the same of the trunked carrier, its partial
+TM-SDUs too, and stops the TDMA clock; a BSCH of a trunked system code or an uplink SCH/HU that ends direct mode
+forgets the direct mode channel's (`tetra_dmo_leave()`). A BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
+SSI is a party of the current network and the call identifiers are the SwMI's (EN 300 392-2 clause 14.2.3), so the
+call records end, with the state machine's follow of their identifiers, the heard call and the speech in progress
+(`tetra_calls_forget_calls()`), and so do the concatenated short data being reassembled
+(`tetra_mle_forget_reassembly()`) and the D-MM STATUS the frontends show. Another cell of the same network keeps them; the call records end there only when
+its SYSINFO names another location area, whose call identifiers may differ (clause 14.2.3,
+`tetra_calls_note_location_area()`). Retunes within the cell, to a traffic carrier and back, keep all of it. Nothing
+here tunes: a followed call of the last network is followed on as a channel without a call record until the grant
+timeout or the hangtime ends it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per
+timeslot, the one the TDMA clock gives its first fragment: before the clock is set (a new carrier before its BSCH) a
+first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). It is dropped
+after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
+the timeslot that went by undecoded count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot
+join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
+`TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases, the sender's identity, the reassembly
+a network change drops),
+`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot),
+`TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
+network, cell and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a cell or network change starts
+over).
+
+#### Trunking
+
+`src/protocol/tetra/tetra_trunk_sm.c` behind `include/dsd-neo/protocol/tetra/tetra_trunk_sm.h` follows at most one
+traffic channel off a TETRA control channel (the MCCH, EN 300 392-2 clause 9.4.2.1), with three states: IDLE (not
+trunking, or no control channel known), ON_CC and TUNED (on the followed channel, a tune in flight included). Its state
+is `tetra_state_t::sm` in the session's TETRA state extension (`DSD_STATE_EXT_PROTO_TETRA`), so two sessions never share
+it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk scan never runs it.
+
+- Grants. The call records decide what to follow (Calls below: talkgroup policy, hold, preemption, the encryption
+  lockout) and hand the state machine a `tetra_sm_grant`: downlink frequency, carrier number, timeslot bitmap (table
+  21.80: bit 3 is timeslot 1) and CMCE call identifier (0 when the allocation carried none). `tetra_sm_on_grant()`
+  follows it only with trunking on, a control channel known (`state->trunk_cc_freq`, which a SYSINFO with a valid main
+  carrier sets before calling `tetra_sm_on_cc_sync()`), a frequency, no tune in flight, and a CRC-passed downlink BSCH
+  or MAC block decoded on the carrier the receiver is on before the block that carried the grant
+  (`tetra_confirm_downlink_proven()`: `tetra.c` notes a block only after the MAC acted on it; the uplink's SCH/HU and
+  MAC blocks prove its carrier for publication, `tetra_confirm_carrier_proven()`, but no control channel, and carry no
+  grant). A grant for the followed
+  call is ignored, a call identifier arriving after a header-only allocation is adopted, and a grant on the carrier the
+  receiver is on (`tetra_sm_receiver_freq()`: the followed channel while TUNED, else the tuned frequency,
+  `dsd_opts_tuned_freq_hz()`, none while a request is in flight; not the SYSINFO main carrier `trunk_cc_freq`, which a
+  secondary carrier broadcasts too, so a session started there tunes to a grant on the main carrier; the calls module
+  reads the carrier being received by the same rule, `tetra_calls_carrier()`) is followed without a retune; the grant
+  itself then
+  proves the call on that carrier (`tetra_confirm_note_followed_call()`). Every other grant tunes through
+  `dsd_trunk_tuning_hook_tune_to_freq()` with `ted_sps` 0: a TETRA traffic carrier keeps the control channel's symbol
+  rate, and `dsd_engine_cc_is_p25()` (`trunk_tuning.c`) answers 0 for TETRA syncs, before looking at `rf_mod`, whose
+  QPSK value would otherwise read as P25 CQPSK.
+- Releases. `tetra_sm_on_release()` releases only the followed call: its call identifier must match (a release of
+  the followed call, a "go to the MCCH" allocation to it, its channel allocated to a call the state machine does not
+  follow, or its turning undecryptable; see Calls). A traffic timeslot of the control
+  channel's carrier, or a release with no control channel to go to, stops following without a tune; anything else
+  returns through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared, so no P25 alias or its symbol
+  profile comes along. A return the backend refuses or defers keeps the call, and the next tick tries again. With
+  trunking off nothing returns (`sm_release()`): the engine's return tunes nothing without trunking
+  (`dsd_engine_return_to_cc_request()`) yet answers OK, so a return asked for then would report the receiver back on
+  the control channel while it stays on the traffic channel.
+- Timers. Liveness never depends on CMCE call state, which one missed release would leave stuck. Speech of the
+  followed call (`tetra_calls_on_speech()`, for each burst the follow gate let through with a speech frame whose CRC
+  passed) calls `tetra_sm_note_voice()` with the timeslot the TDMA clock gives it: that stamps
+  `last_vc_sync_time(_m)`, and while TUNED it restarts the hangtime when the timeslot is a followed one (not 0, a
+  timeslot the decoder cannot place, which may be any timeslot's). Other heard speech stamps `last_vc_sync_time(_m)` only. The tick returns `opts->trunk_hangtime` seconds after
+  speech ends (the first gap of `TETRA_SM_SPEECH_GAP_S`, longer than a frame 18 gap), and after
+  `TETRA_SM_GRANT_TIMEOUT_S` (4 s, DMR's default; no option) when no speech followed the tune. It drops the call
+  without a tune when another owner released the shared tuning state (`opts->trunk_is_tuned` cleared: a tuner
+  hand-back, the stale-follow cleanup), and drops ON_CC to IDLE once trunking is off or no control channel is known.
+  Trunking turned off while tuned (the trunk toggle clears `trunk_enable` alone) leaves the receiver on the followed
+  channel, as DMR's and P25's machines leave it, which do not tick then (`dsd_trunk_*_recovery_allowed()`): the machine
+  keeps the channel, its shared tuning state and its timers, and lets go of the call (`sm_hold_untrunked()`, no call
+  record, as `tetra_sm_retire_call()` leaves it), so what the receiver decodes there is decoded as on any carrier with
+  trunking off: the record ages, its signalling publishes it only as the heard call, and the follow gate's proof goes.
+  With trunking on again the hangtime or the grant timeout returns from the channel.
+- Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
+  (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
+  proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`).
+  Until the backend answers, the request is the backend's, however long that takes: nothing times it out locally (as
+  with P25's tunes), so the frame gate stays closed and the backend's completion is the tuner boundary. It is settled
+  once it is answered -- a completion commits, a failure restores the rollback first and completes the request after,
+  so the frame gate opens onto restored state (`trunk_tuning_hooks.h`) -- at one point per burst: the burst's entry,
+  before any of its blocks (`tetra_burst_enter()` in `tetra.c`, `tetra_sm_settle()`, for every burst `processTetraFrame()`
+  and `processTetraSBFrame()` take: the trunked downlink's normal and synchronisation bursts with both their blocks,
+  the uplink's normal and control bursts, direct mode's), and the tick between bursts. Nothing inside a burst settles:
+  the state machine's entry points the burst's PDUs and speech reach (`tetra_sm_on_grant()`, `tetra_sm_on_release()`,
+  `tetra_sm_on_cc_sync()`) take a request answered during the burst as still in flight (`sm_settle_at_entry()`), and
+  so do the call records' (`tetra_calls_on_addressed()`, `tetra_calls_on_event()`, `tetra_calls_on_allocation()`, the
+  fragments a MAC-END completes, the voice gate), so every PDU and speech frame of a burst is judged against one
+  state machine, the one its entry left, and the answer is taken at the next burst. A request a PDU of the burst
+  itself starts is in flight for the rest of the burst too, and no grant is handed over while one is
+  (`call_consider()`). Outside a burst (the engine, the frontends' commands) an entry point settles as the tick does.
+  A known limit: a completion the backend publishes after the engine's last tick (`dsd_engine_tetra_trunk_tick_locked()`
+  in `live_scanner_process_synced_frames()`) but before the next burst's capture lets that burst, captured on the new
+  carrier, through the engine's tune-generation gate (`frame_tune_generation`) while the state machine has not yet
+  taken the completion. The burst's entry settle then commits the tune, moves the carrier evidence epoch, and drops the
+  burst as one captured on the carrier left: the first burst on the new carrier is lost, one burst, and decoding
+  resumes with the next. This is accepted because every burst is decoded against the state machine of one carrier, and
+  telling a burst captured on the new carrier from one captured on the old needs the tune generation the burst was
+  captured under, which the burst decoder is not given.
+  `tetra_sm_init()`, the external return, the carrier abandon and the TETRA state's own cleanup (a decode-mode change
+  drops the extension) let go of a request they find (`tetra_sm_disown_pending()`), and hand its terminal cleanup to
+  the runtime trunk-tuning layer, which outlives the TETRA state (`dsd_trunk_tuning_request_disown()`): one the
+  backend has not answered stays the backend's, so the frame gate waits for it and its completion still publishes the
+  tuner boundary, and its failure, answered before or after, is retired at once with nothing to put back, so it does
+  not hold the frame gate shut while trunking stays on, whether the session is still on TETRA, in another mode or back
+  on TETRA with a new state machine that knows nothing of it.
+- The carrier. The receiver's carrier changes when a tune completes, not when it is asked for: then
+  `tetra_forget_carrier()` (`tetra.c`) drops the carrier's CRC evidence, the partial TM-SDUs
+  (`tetra_mac_forget_fragments()`), the TDMA clock (`tetra_tdma_stop()`), which counts symbols a retune may have
+  dropped, the speech in progress (`tetra_voice_reset()`), and the direct mode call on the channel with its DM colour
+  code, seed and protection (`tetra_dmo_forget_carrier()`, `tetra_calls_forget_carrier()`), so the next carrier's normal
+  bursts are not descrambled with them and its calls and speech are not classified by them, and direct mode itself: the
+  next carrier is trunked until its own DSB says otherwise, since no DNB decodes before that DSB gives its colour code
+  anyway, and an uplink session, whose carriers have no BSCH, decodes its NUBs at once; the frame sync is told to look
+  for block 1 behind AACH half 1 again (`tetra_sync.block1_follows_training`). A tune or return completed when a burst
+  begins (answered since the last burst or tick, and settled at the burst's entry) leaves that burst, captured on the
+  carrier left, to that carrier: it is dropped whole, its symbols read and none of its blocks decoded
+  (`tetra_confirm_burst_begin_captured()`: stale from its start; `tetra_nb_decode()`, `tetra_uplink_process_cb()`,
+  `tetra_process_sb()`). A tune completed inside a burst (a grant in its first block) leaves the rest of that
+  burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops parsing the block and the
+  normal-burst decoder skips the second half, and nothing the burst decoded counts for the new carrier, though the
+  burst's verdict still does. Nothing here frees or replaces the state extension: the MAC holds its `tetra_state_t`
+  pointer across these calls, so every reset clears fields.
+- Leaving a call (`sm_unfollow()`) ends its canonical call as a teardown and clears its talkgroup-policy route
+  (`tetra_calls_unfollowed()`; with NULL options after the engine ended the canonical calls itself). Its call record
+  stays until its release or its ageing; the follow gate reads only the state machine, so no stale record gates a
+  later timeslot.
+- Engine. `dsd_engine_tetra_trunk_tick_locked()` (`engine.c`) runs `tetra_sm_tick()` in a TETRA session (`-fT`)
+  outside trunk scan, from `live_scanner_main_loop()` under the P25 SM tick guard, at every pass and after every frame,
+  withheld ones included, since a TETRA carrier syncs on every burst and the synced-frames loop may never hand back.
+  The decoders never tick it. `tetra_sm_init()` runs at engine start. `carrier_boundary_release_followed()` abandons
+  the machine without tuning (`tetra_sm_abandon_carrier()`) whenever it owns the return (`tetra_sm_owns_return()`), not
+  only while TUNED: a return of its own in flight rests it on the control channel with `trunk_is_tuned` already
+  released, and that request failing later would put the call left back onto the operator's carrier;
+  `carrier_boundary_forget_evidence()` clears the
+  evidence (`tetra_confirm_reset()`), and `dsd_engine_forget_carrier_decoding()` and the no-carrier reset
+  (`no_carrier_reset_decode_state()`) forget the carrier (`tetra_forget_carrier()`). While the machine owns the return
+  (`tetra_sm_owns_return()`: TUNED, a tune in flight and a grant still waiting for its first speech included, or a
+  return of its own in flight), the no-carrier pass ticks it instead of running the generic recovery
+  (`no_carrier_tick_tetra_owner()`, as `no_carrier_tick_dmr_owner()` does for an active DMR machine): the generic
+  return reads `last_vc_sync_time` against the hangtime alone, so with `-t 1` it would end a grant its four-second
+  timeout still keeps, or drop the follow where no control channel is known. Otherwise `no_carrier_finish_cc_return()`
+  reconciles an accepted return (`tetra_sm_on_external_cc_return()`: ON_CC, no tune); when it cleared the voice state
+  without a return (the P25 helper failed, or no control channel) a TUNED machine drops its call where the receiver
+  is; a return that failed or was deferred never gets there and leaves the call. Every manual tune in
+  `app_command_queue.c` that moves the receiver under trunking (Return to CC, a skip or lockout returning to the
+  control channel, a control channel candidate or channel cycle) hands the machine over the same way once the calls
+  are ended (`hand_tetra_sm_over()`), a tune or return of its own in flight included, so the request failing later
+  puts nothing back.
+- Synctypes. `DSD_SYNC_IS_TRUNKABLE` includes TETRA, which offers the Qt "Follow this system" control on a TETRA
+  carrier; direct mode shares the sync words, and there the state machine finds no control channel and follows
+  nothing. `DSD_SYNC_IS_INVERTED` includes the negative TETRA syncs.
+
+Tests: `TETRA_TRUNK_SM` (the state machine per session against stand-in tuning hooks), `ENGINE_TETRA_TRUNK` (the
+engine tick, the carrier boundary, a return in flight included, a decode-mode change with a request in flight, trunking
+turned off while tuned against the engine's own return, and the no-carrier pass with the real machine, which returns
+at its own deadlines and settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
+real machine's follow to it, with and without a control channel),
+`ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC and the other
+manual tunes, a return in flight included, decode-mode change, a refused switch off TETRA that keeps the follow), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
+CRCs and given the colour code, a retune inside a burst, the settle at a burst's entry and the burst it drops whole;
+and, at compile time, the TETRA syncs in the two synctype
+macros), `TETRA_MAC_STATE`, `TETRA_CALLS` (grants through the call records against stand-in tuning hooks).
+
+#### Calls
+
+`src/protocol/tetra/tetra_calls.{c,h}` (module-private) hold the CMCE calls the downlink signals, decide which one to
+follow, and publish the canonical call; `tetra_voice_gate.{c,h}` decide which speech is heard and which call it
+belongs to. The MCCH signals the calls of every carrier and timeslot of a cell, several at once, so nothing here is a
+single "current call".
+
+- Records. Up to `TETRA_CALLS_MAX` (8) `tetra_call_t` in `tetra_state_t::calls`, keyed by the 14-bit call identifier
+  every call PDU of EN 300 392-2 clause 14.7.1 carries. The MLE turns each CRC-passed call PDU into a `tetra_call_event`
+  (`tetra_calls_on_event()`): D-SETUP is the only PDU that makes a record (its MAC address is the called party, its
+  calling party and basic service the rest); every other PDU updates the record it names and nothing when there is none,
+  and D-RELEASE / D-DISCONNECT end it. A D-SETUP naming another called party, another calling party or another kind of
+  call under a known identifier, or a D-INFO or D-CALL RESTORE renaming another call to it, is a new call taking the
+  identifier of one whose release went unheard: a call keeps its parties, which a late-entry D-SETUP repeats. A calling
+  party is its SSI in its network (`setup_names_another_caller()`): one of type 2 names its network in its extension,
+  one of type 1, or the D-CONNECT address a record takes for one, is of the current network (EN 300 392-2 clause
+  14.2.3, tables 14.43 and 14.44), so the same SSI of another network is another party, and a party not known on
+  either side is no change. Both end a call the same way (`call_end()`): its canonical call ends, its record goes and,
+  when it was the followed call, the state machine lets go of it (`tetra_sm_on_release()`), so a new call under the
+  identifier meets the talkgroup policy like any other and is named by its own parties, never the old call's talker.
+  Every record that leaves the table, a release, an identifier taken, ageing or eviction, ends its canonical call and
+  lets go of its identifier (`calls_drop()`), the heard speech's included (`calls_forget_heard_call()`: not trunking, a
+  call given the identifier is the heard call only once its own speech is heard): while the state machine cannot let
+  go (the return refused or
+  deferred, a tune in flight, or a return in flight that would put the call back if it failed) it follows the channel
+  but no call record (`tetra_sm_retire_call()`, the rollback included): `tetra_sm_followed_call_id()` reports none, the
+  followed call's proof goes, and no PDU, rename, allocation or speech of a call given the identifier counts as the
+  followed call's or takes the followed call's grant path, until the grant timeout or hangtime gives up following or a
+  grant the policy allows follows the new call as a call of its own. D-INFO and D-CALL RESTORE may rename a call: the
+  state machine takes the followed one's new identifier as it is (`tetra_sm_on_call_renamed()`), in what a tune in
+  flight would put back too, not as a grant to admit, since the first block decoded on a new traffic carrier can
+  rename it before anything proved that carrier, and no timer starts over; it stays one canonical call. D-TX GRANTED / D-TX INTERRUPT give
+  the transmitting party (or the addressed one when granted) and their encryption control the end-to-end flag; D-TX
+  CEASED ends the transmission. The records belong to the network and location area they were made in: a BSCH of
+  another network or a SYSINFO of another location area ends them all (`tetra_calls_forget_calls()`, Signalling
+  decoders above). What a record holds of a cell goes with the cell: a channel allocation names a carrier number and
+  timeslots of the cell that made it (clause 21.5.2), and an event label or usage marker is valid on one channel of one
+  cell (clauses 23.4.1.2.3, 23.5.5), so another cell of the network keeps the records but not their channels and labels
+  (`tetra_calls_forget_cell()`): no speech on a channel the last cell allocated is a record's, and no PDU addressed by a
+  label it assigned attaches to one, until the new cell allocates the call a channel of its own. A full table evicts the least recently heard record that is not followed;
+  `tetra_calls_tick()` (from `tetra_sm_tick()`) drops records nothing named for `TETRA_CALL_IDLE_S` (30 s) on the decode
+  clock. The followed record never ages: the state machine's hangtime ends it. A record's air encryption is the
+  encryption mode of the MAC-RESOURCE that allocated its channel, learnt from the clear address (a USSI, SMI or event
+  label: an encrypted PDU's SSI is an encrypted short identity, clause 4.2.6) when that allocation is ciphertext (EN 300
+  392-7 clause 6.5.1), in the MAC-RESOURCE or in the MAC-END of a TM-SDU encrypted from its first fragment, which the
+  call's canonical call takes at once (`calls_sync_published()`); end-to-end encryption
+  never overwrites it, and the cell-wide `enc_mode` is for display only.
+- Allocations. The MAC hands the MLE a `tetra_mac_sdu` with the PDU's address and channel allocation. A call PDU in
+  the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
+  (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label assigned to
+  one of them on this channel; usage markers are noted) and never tunes. A "go to the MCCH" allocation (timeslots 0000,
+  table 21.87) of the followed call releases it, and retires the call either way (`tetra_sm_retire_call()`, the
+  rollback of a tune or return in flight included): where the release cannot be made (a tune in flight for the rest
+  of the burst, the call's own reallocation's included, or the return refused or deferred) the state machine follows
+  the channel without the call, and a request in flight that fails puts the channel back without it, so nothing of
+  the channel the call left plays as its; an allocation to a party no record holds goes nowhere.
+- Channel exclusivity. The downlink of a traffic channel carries one call's traffic at a time, under one downlink
+  traffic usage marker, and an MS whose call's downlink carries another's leaves the channel (EN 300 392-2 clauses
+  23.5.5, 23.5.6.1.1 c)). So an allocation takes its channel from every other record, in the one place a record's
+  allocation is set (`call_attach()`, whatever carried it: D-SETUP, D-CONNECT, D-INFO, D-CALL RESTORE, D-TX GRANTED or
+  an addressed MAC-RESOURCE; `calls_take_channel()`): a record whose allocation assigns the downlink of a timeslot of
+  the same carrier (of the same frequency where both are known) holds no channel from there, whether the new call is
+  followed, allowed or blocked, its canonical call ends, it is not the heard call, and the state machine follows its
+  identifier no more (`tetra_sm_retire_call()`, a tune in flight's rollback included). The uplink and downlink of a
+  timeslot may be allocated to two calls (clause 23.5.5), so an allocation of the uplink alone takes nothing, and
+  neither does one the decoder cannot place ("go to the MCCH"; a ciphertext one attaches to no record). When the
+  followed channel is taken (the followed call's record lost it, or the allocation names the followed channel itself,
+  which a record moved elsewhere or a follow without a call record still holds), the call followed there is over: the
+  state machine follows the new call there without a retune when the policy follows it, as no call holds the channel
+  to take over, and otherwise lets go of the channel at once as for a "go to the MCCH" allocation, returning to the
+  control channel, as P25's machine leaves a voice channel whose new call the policy rejects; where it cannot (the
+  return refused or deferred, a tune in flight) it follows the channel without a call, where no speech plays as the
+  followed call's or renews the hangtime, until the hangtime or the grant timeout gives up (`calls_leave_taken_channel()`).
+- Event labels. An event label stands for one party in place of its address on one MAC channel of one cell (EN 300
+  392-2 clause 23.4.1.2.3); a record holds the label of a party of its call and the channel it is valid on
+  (`tetra_label_channel`: an allocated channel by its carrier number and timeslots, which names that channel of the
+  cell wherever the receiver is, or the channel the assignment came on, by the carrier the receiver was on then,
+  `tetra_confirm_carrier_epoch()`, and the timeslot the TDMA clock gave). Its whole lifecycle is one section of
+  `tetra_calls.c`, run once per delivered PDU (`calls_label_delivered()`), with the cell and the record:
+  - Assignment. An SSI or SMI + event label address (types 101, 111) gives its party the label when its PDU is
+    delivered (clause 23.4.1.2.3.1): a fragmented TM-SDU at its MAC-END, never at its first fragment, and an encrypted
+    PDU as a clear one, the MAC delivering its clear address (`deliver_encrypted()`), in which an SSI is an encrypted
+    short identity that names no party (EN 300 392-7 clause 4.2.6). It is valid on the channel the PDU allocates, else
+    the one it came on. A PDU addressed by the label (type 010) is the holder's only on that channel
+    (`calls_label_here()`): the carrier being received (`tetra_calls_carrier()`) for an allocated channel, the same
+    carrier epoch for the other, and an overlapping timeslot when both are known.
+  - Reuse. On one channel a label stands for one party, so an assignment takes the number from every record of
+    another party whose label is bound to a channel that meets the new one (`label_bind()`, `label_channels_meet()`:
+    the same carrier, overlapping timeslots), whether or not a record holds the party it went to; the same number held
+    on another carrier or timeslot is another label and stays.
+  - KEEP (all ones). The party's current label stays valid after the channel change its PDU makes (clause
+    23.4.1.2.3.0): with an allocation its binding moves to the allocated channel, the value kept, taking the number
+    there from others as an assignment does; without one nothing changes.
+  - Withdrawal (all zeros). The party's label goes.
+  - A channel the decoder cannot tell: a "go to the control channel" allocation (the MCCH or a common SCCH) or a
+    ciphertext one, and a received carrier whose number is not known. An assignment or KEEP to it binds none, the
+    party's label goes, and so does the number of every other party, since it may be any of their channels.
+  - Channel reallocation without KEEP. An allocation to the party (by its SSI, or by the label itself) moves its call,
+    not its label: the label is valid on the channel left and no other, so its binding stays there and no PDU of the
+    new channel addressed by it is the party's. A stale binding left on a channel the party left can only matter if
+    the SwMI gives that number there to another party without the decoder hearing the assignment, which takes it.
+  - Expiry (T.201) is not modelled: the decoder could only time it from the PDUs it happened to decode, and the SwMI
+    uses an expired number again only by assigning it, which takes it from the old holder. The label lives as long as
+    its record, which ends at its release, at an identifier taken, at eviction, or after `TETRA_CALL_IDLE_S` with no
+    PDU or speech naming it, taking the label with it.
+  - Cell change. Another cell (a BSCH or SYSINFO, `tetra_calls_forget_cell()`) drops every label.
+  - Carrier boundary or retune. A label bound to the carrier the receiver was on applies there no more (the carrier
+    epoch moved, and no reassignment there was heard while away); one bound to an allocated carrier number still names
+    that channel of the cell, so the call followed onto it keeps it.
+- Following. Trunking on, an allocation that came with a call PDU, of a call whose D-SETUP named its called party, on
+  a downlink phase-modulation channel with a frequency, is judged: encrypted calls not followed lock out
+  (`dsd_enc_lockout_note()`) a voice call the listener cannot decrypt (end-to-end encrypted, or air encrypted without
+  a usable key: network, location area, TEA1..TEA3 and a loaded cipher key) and release a call it can;
+  `dsd_tg_policy_evaluate_group_call()` / `_private_call()` decide `tune_allowed`; while another call is followed, a
+  held talkgroup takes over a call of another one, else `dsd_tg_policy_should_preempt()` (route: carrier, any
+  timeslot). `tetra_sm_on_grant()` then follows it and the route is noted active. A header-only allocation, one to an
+  unknown party or one of a call without a called party never tunes. A followed call that turns undecryptable (its
+  encryption control, an encrypted allocation to its party, its basic service, or its speech) while encrypted calls
+  are not followed is locked out and left (`call_followed_excluded()`), and its own reallocation is not followed: a
+  return refused or deferred keeps the receiver where it is, never on the call's new channel. CRC-passed
+  signalling of the followed call, or an addressed MAC-RESOURCE to its party, proves it on the carrier
+  (`tetra_confirm_note_followed_call()`).
+- Speech. Frame 18 is the control frame of a trunked mode carrier, signalling only (EN 300 392-2 clause 19.4.3.1: traffic
+  takes frames 1 to 17, and 17 speech bursts of 60 ms fill the 1.02 s multiframe), so a burst the TDMA clock places in
+  frame 18 is never speech (`tetra_tdma_control_frame()`): its signalling block failing its CRC, the burst decoder does
+  not try it as full-slot or half-slot speech (`tetra_nb_nts1()`, `tetra_nb_nts2()`), so no chance speech CRC proves the
+  burst, and the voice gate hears nothing of it (`tetra_voice_gate()`), so no frame 18 is concealed into 60 ms of audio
+  the air never sent, and the speech in progress goes on in frame 1. Direct mode and the uplink run no such clock, and
+  a clock left from an earlier BSCH does not place their bursts either. Trunking on, only the followed call's timeslots play, once its tune settled and its signalling proved it on
+  the carrier, while its record does not place it elsewhere (an allocation no call PDU took, which never tunes, or a
+  reallocation whose tune failed moves it off the channel the receiver stays on, which the SwMI may give any call next;
+  `voice_record_on()`) and no other call was allocated its channel (Channel exclusivity above: the state machine let
+  go of it then), and only as the TDMA clock places the burst: a retune stops the clock until the carrier's next BSCH, and
+  a burst it cannot place may be any timeslot's, another call's included, so none plays even when addressed signalling
+  proved the call sooner. Not trunking, one timeslot is heard at a time, the first with speech that plays, until that
+  speech stops for `TETRA_CALL_SPEECH_END_S` (`tetra_voice_hold()`, `tetra_calls_t::held`), and on the downlink only a
+  timeslot the clock places: a burst it cannot place could be the held timeslot's or any other's (the uplink has no
+  BSCH, so nothing places its bursts and its speech is heard as it comes). Whether a burst plays is judged before its
+  call is published (`tetra_voice_audible()`): its encryption class under the user's encrypted-audio and reverse mutes,
+  and the talkgroup policy on the identities its canonical call will carry (`tetra_calls_speech_muted()`, through
+  `dsd_audio_group_gate_call()`). Speech that does not play holds nothing and renews no hold, so a blocked or
+  undecryptable call never keeps one that plays off the receiver: it shows its call on canonical slot 0 while no other
+  timeslot's speech is shown, so two muted calls do not take the slot from each other at every burst, gives way to
+  speech that plays, and a held timeslot whose call turns muted holds the receiver only until
+  `TETRA_CALL_SPEECH_END_S` after its last speech that played. Its speech belongs to the record whose traffic channel
+  is that timeslot of the frequency the receiver is on (`tetra_calls_on_timeslot()`, by `tetra_sm_receiver_freq()`: the
+  channel the state machine holds once trunking was turned off while following, whatever the input reports as tuned),
+  else to no record, whose air encryption is
+  then the last addressed MAC-RESOURCE's on its timeslot or carrier. Direct mode is never held by these gates. The call
+  gives the talkgroup (its canonical call's kind, target and source: `tetra_calls_target()`, or the direct mode
+  destination) and the encryption class: end-to-
+  end and direct mode encryption are never decrypted; air encryption is when `tetra_air_decrypt_voice()` applies a key
+  stream from the encryption cipher key TB5 derives with the carrier being received (`tetra_calls_carrier()`: the
+  followed call's carrier, else the carrier whose frequency is exactly the one the receiver is on,
+  `tetra_sm_receiver_freq()`, on the control channel too, which may be a secondary carrier that broadcasts the main
+  carrier's SYSINFO), the SYSINFO location area and the BSCH colour code. The encryption sits above the channel coding (EN
+  300 392-7 clause 6.1) and the sensitivity-class order is part of that coding (EN 300 395-2 clause 5.2), so the key
+  stream applies after `tetra_voice_reorder_full()` / `_half()`, to the speech frame bits in codec order (table 6.4: a
+  full slot's frame A takes KSS(0..136) and frame B KSS(137..273), a half slot's frame KSS(216..352)). Only the
+  encrypted values (2 and 3) of the encryption mode element are encrypted; 1 is reserved. The speech in progress (the
+  codec's decoder state, the speech's integrity and its unplayed samples) belongs to one transmission: a burst of speech
+  of another kind, call identifier or target, on another timeslot (each a traffic channel of its own, EN 300 392-2
+  clause 9.4.2.2; speech no record names has no other identity), of another transmitting party (the call's talker, which D-TX GRANTED and
+  D-TX INTERRUPT name, or the direct mode source; a party not known on either side is no change, as for the canonical
+  call), or the first after a TETRA canonical call ended (`tetra_calls_t::ends`: a release, D-TX CEASED, a grant that
+  names no talker where one was known, the state machine leaving the call, another call published, the call records
+  forgotten), or the first after the heard speech
+  stopped for `TETRA_CALL_SPEECH_END_S`, published or not (`calls_tick_heard()`), or the first that comes
+  `TETRA_CALL_SPEECH_END_S` or more after the last burst of the speech with a good frame (`tetra_voice_t::last_good_m`),
+  in every mode, the followed call's and direct mode's included, whose call goes on across the pause (the D-TX
+  CEASED, D-TX GRANTED or DMAC-SYNC between two transmissions may go unheard), or the first after a grant that
+  follows D-TX CEASED (`tetra_voice_transmission_started()`: the trail of speech after D-TX CEASED, whose talker is
+  no longer known, is the last transmission's), starts over (`voice_bind()` in
+  `tetra_voice.c`), so nothing of one transmission plays under the next one's record policy and no bad opening frame is
+  concealed with another call's, timeslot's or talker's codec state; the call identifier and the timeslot tell two
+  transmissions apart at the second's first burst, which publishes nothing when its CRC fails. The kind tells direct
+  mode from trunked mode; downlink or uplink is the session's (`--tetra-uplink`). A D-INFO or D-CALL RESTORE renaming the call keeps
+  its speech (`tetra_voice_call_renamed()`).
+- Canonical calls. Slot 0, the TETRA synctype as protocol. The followed call publishes from its CRC-passed signalling
+  once the carrier is proven and its tune settled, until its transmission ceased: a group call's called group as
+  target and its talker as source; an individual call's talker (the calling party while none is named) as source and
+  its other party as target (`tetra_calls_target()`: the calling party while the called one talks), as DMR and P25 name
+  a unit-to-unit transmission, so the talkgroup policy's private-call audio and record gates judge both parties
+  whoever transmits; carrier and frequency, basic service as service options, priority, and its crypto class. Not trunking, the
+  heard call publishes from its speech and then its signalling, and speech no record names publishes an anonymous call
+  on a proven carrier (a CRC-16 signalling block of it, `tetra_confirm_carrier_proven()`: on the uplink, which has no
+  BSCH, its SCH/HU or MAC blocks), one call per timeslot (`speech_anonymous()`: each timeslot is a traffic channel of its own, EN
+  300 392-2 clause 9.4.2.2), so when the heard timeslot moves, the speech of the new one ends the last one's anonymous
+  call and publishes its own, with its own epoch, media and crypto class. A grant is the SwMI's floor decision, never sent unsolicited (EN 300 392-2 clause 14.5.1.2.1),
+  so one that names no talker where the last named one is the next transmission with its D-TX CEASED unheard: the
+  last talker's canonical call ends and the next one publishes without a talker. Once published, a call follows its record: whatever a CRC-passed PDU, its allocation, an
+  allocation addressed to the call's party or a MAC header changes of it (its parties, basic service, traffic channel or
+  encryption) is observed at once (`calls_sync_published()`), on a carrier no block proved yet too, since the call was
+  published before and the PDU passed its CRC; only publication itself waits for the proof. A reallocation of the
+  followed call to another carrier moves its canonical call there when its tune completes
+  (`tetra_calls_followed_moved()`), and not while it is in flight; a grant of another call that took the receiver from
+  the followed one ends the call left as a teardown when its tune completes, and the new call publishes once it proves
+  itself on its carrier. What changes a carried call's crypto class without
+  any PDU of it (a cipher key loaded, the network's KSG learnt, or the timeslot's signalling encryption that classifies
+  anonymous speech) reaches it with its next speech (`calls_reclassify()`). Speech marks the media
+  (`dsd_call_state_update_media()`). D-TX CEASED and releases end the call
+  as terminators, the state machine leaving it as a teardown, the heard speech stopping as a sync loss. Direct mode
+  (`tetra_calls_dmo_pdu()`, EN 300 396-3) publishes the call on the channel from DM-SETUP, DM-SETUP PRES, DM-CONNECT
+  ACK, DM-OCCUPIED and DM-GSETUP with what its security class leaves clear (DM-2-B hides the destination, DM-2-C every
+  identity), ends it at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT and DM-GRELEASE, after `TETRA_CALL_DMO_IDLE_S`
+  without a PDU or speech of it, and when the channel's traffic is another transmission's (`dmo_tx_seq`,
+  `dmo_call_of_transmission()`): a transmission keeps its source and class, so one of another class is another call
+  even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way, and a
+  DM-2-C one after a DM-2-A or DM-2-B one, which encrypt the air interface too). A call
+  its set-up announced before any transmission began (DM-SETUP PRES, whose calling party's DM-CONNECT ACK starts the
+  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its source as its own. The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
+  `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
+  family.
+- Direct mode protection (`tetra_dmo.c`, `tetra_state_t::dmo_crypt`, `tetra_dmo_call_crypt()`) is that of the traffic
+  on the channel, which the DMAC-SYNC carrying a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED sets (EN 300 396-3 clause
+  8.5.3); any other message's security class is its own. There is no direct mode decryption, so only CLEAR speech is
+  audible, and protection fails closed: a DMAC-SYNC whose message went unread (its SCH/H failed its CRC or was
+  skipped, or DM-2-C hides the message type) may be the message that sets it, so an encrypted SCH/S security class
+  seals the traffic (`dmo_apply_unread()`; DM-2-C drops the colour code too, which it derives from the encrypted short
+  identity, clause 8.2.4), whatever an earlier clear call left, and a DM-1 one opens nothing. A transmission keeps the
+  class its DM-SETUP or DM-CONNECT ACK gave (`dmo_tx_crypt`, and the SCH/S security class itself, `dmo_tx_aie`: DM-2-A,
+  DM-2-B and DM-2-C all encrypt the air interface, but are three classes), which its DM-OCCUPIED shall repeat (clause
+  8.5.3): one that agrees confirms it, opening what an unread DMAC-SYNC sealed, one that contradicts it leaves the more
+  closed of the two (`dmo_apply_setup()`), and a set-up from another source or of another class, like a DM-2-C
+  DMAC-SYNC after a transmission of any other class, DM-2-A and DM-2-B included, starts the next transmission
+  (`dmo_tx_seq`), so a DM-2-C one, which names no one, never goes on with the last one's source and destination. An
+  unread DM-2-A or DM-2-B DMAC-SYNC only seals: its transmission's next DMAC-SYNC, whose addresses those classes leave
+  clear, says whose it is. The canonical direct mode
+  call takes a protection that no call PDU republishes at once (`tetra_calls_dmo_protection()`). The protection and the
+  DM colour code belong to one traffic transmission (clauses 8.2.4, 8.5.3) and end with it
+  (`tetra_dmo_transmission_over()`): at DM-TX CEASED, DM-RELEASE or DM-DISCONNECT, in a DMAC-SYNC or on the STCH in a
+  DMAC-DATA (one under DM-2-C, whose message type is unread, ends nothing: a DMAC-DATA's security class is its own
+  message's), and when the call is idle for `TETRA_CALL_DMO_IDLE_S`, so a next transmission is never descrambled or
+  classified by the last one's.
+- Notices. D-SDS-DATA becomes a data notice with its text as the message, D-STATUS and MM D-ENABLE / D-DISABLE
+  control notices, once the carrier is proven (`tetra_calls_notice()`); direct mode short data becomes a data notice,
+  a repeat within 10 s not again: a repeat is the same message (`tetra_dmo_sds_key`: message type, source,
+  destination, short data type, user data length, and the whole DM-SDU, its first 64 bits of user data and the digest
+  of every element the parser read but an FCS that ends them, `tetra_dmo_sync_h_t::sdu_digest`: over that FCS too the
+  CRC would be its residue, the same for every message whose FCS is right), so a pre-coded status and user data of the
+  same value, or two long messages that share their first 64 bits, with an FCS or without, are two notices. Its DM-SDU's FCS, when the FCS flag says it has one, is tested first (EN 300 396-3
+  clauses 6.3.4 and 9.7.10, annex B: the CRC of `tetra_llc_fcs32()` over the DM-SDU elements before it; the parser
+  records the verdict, `tetra_dmo_sync_h_t::fcs_state`): short data whose FCS fails, or whose DM-SDU the block ends in
+  before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does
+  not stand in for it. Cell reselection is not noted: it concerns one MS at a time.
+
+Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, the followed call's in the
+first block on its carrier included, identifier reuse, another calling party or its network included, a released,
+renamed-over or aged followed identifier, a released, reused or evicted heard identifier, ageing,
+canonical calls and notices in trunked and direct mode, direct mode short data whose FCS fails and what repeats it,
+an individual call's two parties, speech publication, the receiving carrier (on a secondary carrier's control
+channel too), the speech of a channel held with trunking off, what a record change, a MAC header's
+encryption and a reallocation do to the published call, a direct mode call idling out, direct mode transmissions of
+another security class, an anonymous call per timeslot, the last cell's channels and event labels a BSCH or SYSINFO
+of another cell drops, an event label's party and channel, an assignment at its PDU's delivery and in an encrypted
+PDU, a label number reused on another channel, a label kept across a channel change, one left by a reallocation and
+by its record's ageing, the call trunking turned off lets go of, a channel allocated to another call: blocked or
+allowed, taken from the followed call, from a followed record moved elsewhere, from a failing tune's rollback and
+from the heard call, by every kind of allocation, and none taken by another timeslot, carrier or direction or by "go
+to the control channel"; an allocation, a "go to the MCCH" and an encrypted reallocation judged after a failed tune
+of the same block; a tune answered during a burst, which no PDU of it takes and which no label of the carrier left
+resolves to the call on the new one; one burst, one state machine; "go to the MCCH" during the call's own tune),
+`TETRA_DMO` (the
+DM-SDU's FCS and digest, an unread
+DMAC-SYNC's protection, a DMAC-DATA that ends the transmission, the security class a transmission keeps),
+`TETRA_PUBLICATION` (no trunked network on a direct mode carrier), `TETRA_VOICE_GATE`,
+`TETRA_VOICE_PIPELINE` (direct mode with trunking on, the followed timeslot, end-to-end encryption, talkgroups, an
+individual call's speech judged by both parties, muted speech that holds no timeslot, the
+derived key stream, the speech starting over at call boundaries, another call identifier, another timeslot, another
+cell or network, a stop of the heard speech and a pause in the followed or direct mode call's, and going on across a
+rename, the crypto class speech gives the published call, frame 18 that plays nothing), `TETRA_BURST_VERDICT` (the modes a BSCH, an SCH/HU, a DSB and a carrier
+boundary leave and enter, an unread DMAC-SYNC that seals the traffic, a frame 18 burst not tried as speech, the uplink
+signalling that proves its carrier for publication but admits no grant), `TETRA_AIR`, `TETRA_CRYPTO` (TB5), `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
+
+#### State and its boundaries
+
+What each part of the TETRA decoder state belongs to, what sets it, and what forgets it. A boundary the engine sees (a
+manual tune, a source or input switch, a scan step, the no-carrier pass) and one the state machine makes (a tune or
+return completed, a hand-over) forget the carrier (`tetra_forget_carrier()`); a boundary only the air tells (a BSCH of
+another cell or network, a DSB on a trunked carrier, a trunked burst on a direct mode one) is handled where it is
+decoded, so the decoder forgets the same whatever moved the receiver.
+
+| State (in `tetra_state_t` unless named) | Belongs to | Set by | Forgotten at |
+|---|---|---|---|
+| Direct mode (`dmo`, `dmo_comm_type`) | the carrier | a DSB (`tetra_dmo_apply_sync()`) | a CRC-passed BSCH of a trunked system code or uplink SCH/HU (`tetra_dmo_leave()`), a carrier boundary |
+| DM colour code (`dmo_dcc_valid`, `dmo_dcc_seed`, `dmo_since_sync`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED, or of a fragmented DM-SDS | its end (`tetra_dmo_transmission_over()`: DM-TX CEASED, DM-RELEASE or DM-DISCONNECT in a DMAC-SYNC or DMAC-DATA, the call idle `TETRA_CALL_DMO_IDLE_S`), DM-2-C, a DMAC-SYNC with no source address, 200 DNBs without a DMAC-SYNC, leaving direct mode, a carrier boundary |
+| Direct mode protection (`dmo_crypt`; the set-up's `dmo_tx_crypt`, `dmo_tx_aie`, `dmo_tx_seed`) and the transmission (`dmo_tx_seq`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP or DM-CONNECT ACK, or of a DM-OCCUPIED when the set-up went unheard; a set-up of another source or security class, and a DM-2-C DMAC-SYNC in a transmission of another class, start the next; a DM-OCCUPIED that contradicts the set-up and an unread DM-2-A or DM-2-B DMAC-SYNC only seal it | as the colour code (UNKNOWN, sealed) |
+| Direct mode call (`calls.dmo`) and its canonical call | the channel's call | DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, a DM-2-C DMAC-SYNC | its end PDUs, idling out, leaving direct mode, a carrier boundary (the engine ends the canonical call) |
+| Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session; published only on a trunked carrier (`tetra_pub_network()`) | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
+| Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell; its control channel published only on a trunked carrier | SYSINFO, addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`), a SYSINFO of another main carrier or location area (`tetra_bsch_sysinfo_cell()`) |
+| TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`); a burst it places in frame 18 is no speech | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
+| Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
+| Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
+| A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `label_chan`, `usage_marker`) | the cell (a label: one channel of it, the allocated one or the one its assignment came on; Calls, "Event labels") | an allocation (`call_attach()`), an SSI + event label or usage marker assignment at its PDU's delivery; a label's channel also a KEEP with an allocation | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`); the allocation also another call's allocation of a timeslot of its downlink (`calls_take_channel()`: one call per traffic channel, EN 300 392-2 clauses 23.5.5, 23.5.6.1.1); a label also its assignment to another party on a channel that meets its own, its withdrawal (label 0), an assignment or KEEP to a channel the decoder cannot tell, and, assigned without an allocation, a carrier boundary or retune (it applies there no more) |
+| D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
+| Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
+| Carrier evidence (`confirm`: `carrier_blocks` for publication, `signalling_blocks`, downlink only, for grants) | the carrier | CRC-passed blocks (an uplink SCH/HU or MAC block counts for publication only) | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
+| Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return, its channel allocated to a call it does not follow (it moves to one it does); a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return |
+| Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; a grant after D-TX CEASED; the heard speech stopping; a pause of `TETRA_CALL_SPEECH_END_S` in it, in every mode; another cell; a carrier boundary |
+| Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst's training, a CRC-passed SCH/HU | the next of them |
+
+What each decoded event does:
+
+| Event | Leaves | Enters / sets |
+|---|---|---|
+| CRC-passed BSCH, same cell | direct mode | the TDMA clock |
+| CRC-passed BSCH, another cell | direct mode; the cell, the clock, the partial TM-SDUs, the records' channel allocations and event labels, the timeslot speech context, the speech in progress, the followed call's proof | the new cell's identity and clock |
+| CRC-passed BSCH, another network | as another cell, and the call records with the follow of their identifiers, the SDS reassembly, the D-MM STATUS shown | the new network |
+| BSCH that fails | nothing | runs the clock to its slot |
+| CRC-passed SCH/HU (uplink) | direct mode | the carrier's polarity, its evidence for publication |
+| DSB (CRC-passed SCH/S, DMO system code) | the trunked carrier's TM-SDUs, timeslot speech context and followed call's proof (`tetra_enter_dmo()`), the TDMA clock | direct mode; with its SCH/H, the colour code, protection and call its message sets; without it, an encrypted SCH/S seals the traffic; a presence signal or a SYNC PDU type not read (managed direct mode, reserved types) only direct mode |
+| DMAC-DATA (CRC-passed DNB block) | at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT the transmission's colour code and protection | the call it names; its own security class is its message's only |
+| SYSINFO of another main carrier (a cell sharing the colour code) | as a BSCH of another cell | the new cell's SYSINFO |
+| SYSINFO of another location area | as a BSCH of another cell, and the call records | the new area |
+| Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress, the timeslot speech context, direct mode with its colour code, protection and call, and with the evidence's epoch the event labels assigned on the carrier | trunked mode, block 1 behind AACH half 1 |
+| Decode-mode change off TETRA (committed) | the whole TETRA state with its tune in flight disowned, the frame sync capture and the publication (`dsd_decode_mode_leave_tetra()`) | nothing |
+
+A DSB whose SCH/S fails is not told from noise on its training sequence and changes nothing; sealing at every such
+burst would mute clear direct mode calls at every false sync. The uplink has no TDMA clock, so its speech has no
+timeslot: one transmission's speech ends where the heard speech stops (`TETRA_CALL_SPEECH_END_S`). Direct mode is
+decoded as one channel: in frequency efficient mode, two calls on channels A and B of one carrier (EN 300 396-2 clause
+3.1; the SCH/S channel usage), their DSBs take the channel from each other, one colour code and protection at a time.
+
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 
 ## Third‑Party
@@ -4327,6 +4992,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Paths:
   - `src/third_party/ezpwd` — Target: `dsd-neo_ezpwd` (INTERFACE; headers included via `src/third_party` path)
   - `cmake/Pffft.cmake` — Target: `dsd-neo_pffft` (STATIC; pinned fork sources for spectrum/diagnostics; accessed only through `src/io/radio/rtl_fft_cache.h`)
+  - `cmake/TetraCrypto.cmake` — Target: `dsd-neo_tetra_crypto` (STATIC; pinned TETRA_crypto TEA1/2/3 keystream generators, linked privately into `dsd-neo_crypto`; accessed only through `src/crypto/tetra_tea.c`)
 - Build files: `src/third_party/CMakeLists.txt` and subdirectory `CMakeLists.txt` files
 
 ## UI
@@ -4679,6 +5345,17 @@ Qt Quick frontend (`src/ui/qt`):
   nor the trunk-scan targets, so on a scan that mixes `nfm` rows or `nfm-conventional` targets with other modes it is
   reachable while one of those is on air; the terminal row is always shown. Tests: `UI_QT_METRICS_MODEL`,
   `UI_QT_CONTROLLER`, `UI_QT_QML_CALL_LISTS` (`tst_tone_filter_sheet.qml`, `tst_monitor_rx_tone.qml`).
+- TETRA: `MetricsModel` publishes the `tetra*` group (`tetraVisible`, `tetraModeText`, `tetraEncrypted`,
+  `tetraNetworkText`, `tetraTrunkText`, `tetraOnTraffic`, `tetraControlText`, `tetraTrafficText`, `tetraMmStatusText`,
+  `tetraCodecText`, `tetraCodecFault`) on its own `tetraChanged` signal, filled in `fillTetraView()` from
+  `app_control/tetra_view` over the snapshot `refresh()` is handed, so no Qt source includes a protocol header.
+  `qml/MonitorScreen.qml` shows the rows (`monitorTetra`, `monitorTetraChannels`, `monitorTetraMmStatus`,
+  `monitorTetraCodec`) only while `tetraVisible`, each part only while its text is set, coloured from the flags
+  (magenta for encryption, cyan on a traffic channel, the alert colour for a codec fault). The terminal shows the same
+  view as Call Info lines (`TETRA:`, `Network:`, `Trunk:`, `Control:`, `Traffic:`, `MM status:`, `Codec:`,
+  `ui_format_tetra_lines()`), with no protocol call and no environment variable. The TETRA decode chip (`-fT`, `qml/Util.js`) carries no `trunked` suggestion: it covers
+  direct mode too, whose speech call following would mute. Tests: `UI_QT_METRICS_MODEL` (`test_tetra_rows()`),
+  `UI_QT_QML_CALL_LISTS` (`tst_monitor_tetra.qml`, `tst_wizard_decode_chip.qml`), `UI_NCURSES_PRINTER_HELPERS`.
 - `dsd_app_lead_slot()` in `app_control/call_view.c` selects the earliest exact start among identified active
   calls for the Monitor hero, its quality row and the Android notification. Later calls on the other slot do not
   displace it. Exact ties prefer the lower slot; when no call is active, the lowest ended slot wins. An earlier

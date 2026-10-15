@@ -222,6 +222,20 @@ class MetricsModel : public QObject {
        back, never a row's. Configuration, so its own signal, and kept across a stop like rxToneConfiguredText. */
     Q_PROPERTY(int toneFilterConfiguredMode READ toneFilterConfiguredMode NOTIFY toneFilterSettingChanged)
     Q_PROPERTY(QString toneFilterConfiguredList READ toneFilterConfiguredList NOTIFY toneFilterSettingChanged)
+    /* The TETRA rows, from the shared app-control view (app_control/tetra_view.h), which the terminal's Call Info
+       lines share: on screen only under the TETRA preset once a block has decoded. Every text is "" when its row has
+       nothing to show. */
+    Q_PROPERTY(bool tetraVisible READ tetraVisible NOTIFY tetraChanged)
+    Q_PROPERTY(QString tetraModeText READ tetraModeText NOTIFY tetraChanged)
+    Q_PROPERTY(bool tetraEncrypted READ tetraEncrypted NOTIFY tetraChanged)
+    Q_PROPERTY(QString tetraNetworkText READ tetraNetworkText NOTIFY tetraChanged)
+    Q_PROPERTY(QString tetraTrunkText READ tetraTrunkText NOTIFY tetraChanged)
+    Q_PROPERTY(bool tetraOnTraffic READ tetraOnTraffic NOTIFY tetraChanged)
+    Q_PROPERTY(QString tetraControlText READ tetraControlText NOTIFY tetraChanged)
+    Q_PROPERTY(QString tetraTrafficText READ tetraTrafficText NOTIFY tetraChanged)
+    Q_PROPERTY(QString tetraMmStatusText READ tetraMmStatusText NOTIFY tetraChanged)
+    Q_PROPERTY(QString tetraCodecText READ tetraCodecText NOTIFY tetraChanged)
+    Q_PROPERTY(bool tetraCodecFault READ tetraCodecFault NOTIFY tetraChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -1359,6 +1373,72 @@ class MetricsModel : public QObject {
         return m_view.scan_visit_remaining_ds;
     }
 
+    /** @brief Whether the TETRA rows belong on screen: the TETRA preset runs and a block has decoded. */
+    bool
+    tetraVisible() const {
+        return m_view.tetra_visible;
+    }
+
+    /** @brief "TMO downlink · encrypted (TEA2)", "DMO direct · clear". */
+    const QString&
+    tetraModeText() const {
+        return m_view.tetra_mode_text;
+    }
+
+    /** @brief The air interface is encrypted. */
+    bool
+    tetraEncrypted() const {
+        return m_view.tetra_encrypted;
+    }
+
+    /** @brief "MCC 262 · MNC 1001 · CC 25"; empty until the network is known. */
+    const QString&
+    tetraNetworkText() const {
+        return m_view.tetra_network_text;
+    }
+
+    /** @brief Where call following stands ("control channel", "traffic channel", "idle"); empty when not trunking. */
+    const QString&
+    tetraTrunkText() const {
+        return m_view.tetra_trunk_text;
+    }
+
+    /** @brief Call following has tuned a traffic channel. */
+    bool
+    tetraOnTraffic() const {
+        return m_view.tetra_on_traffic;
+    }
+
+    /** @brief The main carrier SYSINFO names, "carrier 321 · 392.0125 MHz"; empty until one is decoded. */
+    const QString&
+    tetraControlText() const {
+        return m_view.tetra_control_text;
+    }
+
+    /** @brief The allocated traffic channel, "carrier 654 · TS 1,3 · 392.1250 MHz"; empty without one. */
+    const QString&
+    tetraTrafficText() const {
+        return m_view.tetra_traffic_text;
+    }
+
+    /** @brief The last D-MM STATUS, "7 · MS frequency bands request"; empty until one is decoded. */
+    const QString&
+    tetraMmStatusText() const {
+        return m_view.tetra_mm_status_text;
+    }
+
+    /** @brief The speech codec's health, "ready · 18 frames · 2 errors"; empty before any speech. */
+    const QString&
+    tetraCodecText() const {
+        return m_view.tetra_codec_text;
+    }
+
+    /** @brief No codec, one that failed to load, or one whose last frames failed. */
+    bool
+    tetraCodecFault() const {
+        return m_view.tetra_codec_fault;
+    }
+
     /**
      * @brief Whether the received-tone row belongs on screen (#522).
      *
@@ -1713,6 +1793,7 @@ class MetricsModel : public QObject {
     void rxToneConfiguredTextChanged();
     void toneFilterChanged();
     void toneFilterSettingChanged();
+    void tetraChanged();
     void uiMessageChanged();
     void decodeNowMsChanged();
 
@@ -1868,6 +1949,14 @@ class MetricsModel : public QObject {
         /* #527: the live editor -- reachable, shadowed by a row -- and the configured policy it opens on. */
         int tone_filter_configured_mode = 0;
         QString tone_filter_configured_list;
+        /* The TETRA rows, copied from the app-control view. */
+        QString tetra_mode_text;
+        QString tetra_network_text;
+        QString tetra_trunk_text;
+        QString tetra_control_text;
+        QString tetra_traffic_text;
+        QString tetra_mm_status_text;
+        QString tetra_codec_text;
         /* #518: the scan row on air for the "this channel" editors. */
         QString scan_row_label;
         QString scan_row_key;
@@ -1926,6 +2015,10 @@ class MetricsModel : public QObject {
         bool tone_filter_row_override = false;
         bool scan_row_active = false;
         bool scan_row_synced = false;
+        bool tetra_visible = false;
+        bool tetra_encrypted = false;
+        bool tetra_on_traffic = false;
+        bool tetra_codec_fault = false;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
@@ -2004,6 +2097,17 @@ class MetricsModel : public QObject {
                    && rx_tone_dcs_alias_code == other.rx_tone_dcs_alias_code
                    && rx_tone_dcs_alias_inverted == other.rx_tone_dcs_alias_inverted
                    && rx_tone_carrier == other.rx_tone_carrier;
+        }
+
+        /* The TETRA rows, on their own signal. */
+        bool
+        tetraEquals(const View& other) const {
+            return tetra_visible == other.tetra_visible && tetra_mode_text == other.tetra_mode_text
+                   && tetra_encrypted == other.tetra_encrypted && tetra_network_text == other.tetra_network_text
+                   && tetra_trunk_text == other.tetra_trunk_text && tetra_on_traffic == other.tetra_on_traffic
+                   && tetra_control_text == other.tetra_control_text && tetra_traffic_text == other.tetra_traffic_text
+                   && tetra_mm_status_text == other.tetra_mm_status_text && tetra_codec_text == other.tetra_codec_text
+                   && tetra_codec_fault == other.tetra_codec_fault;
         }
 
         bool
@@ -2121,6 +2225,11 @@ class MetricsModel : public QObject {
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The received sub-audible tone and the configured tone policy (#522). */
     void fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
+    /** @brief The TETRA rows from the shared app-control view. */
+    static void fillTetraView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief The control views refresh() reads after the call lines, against their decode reading @p now_m: the
+     * listening and scan controls, the scan timing, the received tone and the TETRA rows. */
+    void fillControlViews(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The tuner gain readout: "auto", the gain in dB, or a dash when the tuner reports none. */
     static QString tunerGainText(const dsd_frontend_metrics& metrics);
     /** @brief The engine's command acknowledgement until its expiry stamp; arms m_messageTimer for that expiry. */

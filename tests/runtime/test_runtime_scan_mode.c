@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -1624,8 +1625,107 @@ test_gfsk_target_timed_for_its_fsk_landing(void) {
     free(o);
 }
 
+/* A TETRA session (-fT) whose conventional scan visits a typed row, which clears frame_tetra, decodes TETRA again on an
+ * inherited row and once the scan ends: frame_tetra is a decoder flag like the others, captured, restored and compared
+ * with them. */
+static void
+test_tetra_session_survives_typed_rows(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->pulse_digi_out_channels = 1;
+    o->pulse_digi_rate_out = 8000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0);
+    dsd_scan_settings baseline;
+    dsd_scan_settings_capture(o, s, &baseline);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->frame_tetra == 0 && o->frame_dmr == 1);
+    assert(dsd_scan_mode_configured_preset(o, s) == DSDCFG_MODE_TETRA);
+    dsd_scan_settings dmr_row;
+    dsd_scan_settings_capture(o, s, &dmr_row);
+    assert(!dsd_scan_settings_equal(&baseline, &dmr_row, 0));
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_INHERIT) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    dsd_scan_mode_leave(o, s);
+    dsd_scan_settings restored;
+    dsd_scan_settings_capture(o, s, &restored);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0 && settings_identical(&baseline, &restored));
+
+    /* Only frame_tetra differs: another decoder set, which re-acquires. */
+    o->frame_tetra = 0;
+    dsd_scan_settings without;
+    dsd_scan_settings_capture(o, s, &without);
+    assert(!dsd_scan_settings_equal(&baseline, &without, 0));
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+static int g_tetra_ext_cleanups;
+
+static void
+count_tetra_ext_cleanup(void* ptr) {
+    g_tetra_ext_cleanups++;
+    free(ptr);
+}
+
+/* A typed row staged for its tune (dsd_scan_mode_prepare(), as channel_scan_start_row() stages it before preparation
+ * steps and a tune that can still fail) leaves the TETRA session whole: the staged settings run no TETRA decoder, but
+ * the session keeps its decoder flag, its state extension, the burst the frame sync captured for it and its
+ * publication until the row commits (dsd_scan_mode_enter()), which leaves TETRA as the row's preset does. A transition
+ * that fails before its commit therefore goes back to the TETRA session as it was. */
+static void
+test_tetra_session_survives_row_staging(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    int* ext = (int*)calloc(1, sizeof(int));
+    assert(o && s && ext);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->pulse_digi_out_channels = 1;
+    o->pulse_digi_rate_out = 8000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    assert(dsd_state_ext_set(s, DSD_STATE_EXT_PROTO_TETRA, ext, count_tetra_ext_cleanup) == 0);
+    g_tetra_ext_cleanups = 0;
+    s->tetra_sync.polarity = 1;
+    s->tetra_pub.generation = 4U;
+    s->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+
+    dsd_scan_settings staged;
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_DMR, NULL, &staged) == 0);
+    assert(staged.frame_tetra == 0 && staged.frame_dmr == 1);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0);
+    assert(dsd_state_ext_get(s, DSD_STATE_EXT_PROTO_TETRA) == ext && g_tetra_ext_cleanups == 0);
+    assert(s->tetra_sync.polarity == 1 && s->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK
+           && s->tetra_pub.generation == 4U);
+
+    /* The commit: the row runs, TETRA is left. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->frame_tetra == 0 && o->frame_dmr == 1);
+    assert(dsd_state_ext_get(s, DSD_STATE_EXT_PROTO_TETRA) == NULL && g_tetra_ext_cleanups == 1);
+    assert(s->tetra_sync.polarity == 0 && s->tetra_pub.mode == DSD_TETRA_MODE_NONE && s->tetra_pub.generation == 5U);
+    dsd_scan_mode_leave(o, s);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
+    test_tetra_session_survives_typed_rows();
+    test_tetra_session_survives_row_staging();
     test_nfm_class_names();
     test_configured_nfm_width_edit();
     test_configured_am_width_edit();
@@ -1747,12 +1847,14 @@ main(void) {
     assert(dsd_scan_mode_parse("NXDN", &parsed) == -1);
     assert(dsd_scan_mode_parse("analog", &parsed) == -1);
     assert(dsd_scan_mode_parse("p25p1", &parsed) == -1);
-    /* AUTO may be captured on any hunt profile. Leaving a typed row must
-     * publish the restored clock and slicer levels, not AUTO's starting preset. */
+    /* AUTO may be captured on any of its hunt profiles (every one but TETRA's 18 ksym/s profile, which only -fT
+     * selects). Leaving a typed row must publish the restored clock and slicer levels, not AUTO's starting preset. */
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
     const int profile_rates[] = {4800, 2400, 9600, 6000, 4800};
     const int profile_levels[] = {4, 4, 2, 4, 2};
-    for (int i = 0; i < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; i++) {
+    _Static_assert(sizeof profile_rates / sizeof profile_rates[0] == DSD_FRAME_SYNC_SPS_PROFILE_18000_4,
+                   "every hunt profile before TETRA's is an AUTO profile");
+    for (int i = 0; i < DSD_FRAME_SYNC_SPS_PROFILE_18000_4; i++) {
         s->sps_hunt_idx = i;
         s->samplesPerSymbol = 48000 / profile_rates[i];
         s->symbolCenter = dsd_opts_symbol_center(s->samplesPerSymbol);

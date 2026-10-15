@@ -388,7 +388,7 @@ jobs:
               cmake --install build/appimage --prefix AppDir/usr
 
               docdir="AppDir/usr/share/doc/dsd-neo"
-              required=(LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/libairspy-LICENSE.txt)
+              required=(LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt licenses/libairspy-LICENSE.txt)
               for f in "${required[@]}"; do
                 if [ ! -f "$docdir/$f" ]; then
                   echo "ERROR: missing required license file: $docdir/$f" >&2
@@ -512,15 +512,17 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Record pinned PFFFT in SBOM
+      - name: Record pinned PFFFT and TETRA_crypto in SBOM
         shell: bash
         env:
           SBOM_PATH: ${{ steps.names.outputs.OUT }}.spdx.json
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
+            python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
           fi
 
       - name: Upload enriched SBOM

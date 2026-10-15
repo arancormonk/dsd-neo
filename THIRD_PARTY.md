@@ -8,6 +8,10 @@ for file-specific license/provenance details.
 
 - **ezpwd Reed-Solomon** (`src/third_party/ezpwd`, target `dsd-neo_ezpwd`; Hard Consulting Corporation; vendored from https://github.com/arancormonk/ezpwd-reed-solomon) - GPL-3.0-or-later; `rs_base` is LGPL-2.1-or-later (per upstream notice). LGPL text: `src/third_party/ezpwd/lesser.txt` (installed as `share/doc/dsd-neo/licenses/ezpwd-LGPL-2.1-or-later.txt`).
 - **PFFFT** (target `dsd-neo_pffft`; Julien Pommier and contributors, based on FFTPACKv4 by Dr Paul Swarztrauber/NCAR) — downloaded from <https://github.com/arancormonk/pffft> at the immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. The BSD-like license and compiled backend notices are installed as `share/doc/dsd-neo/licenses/pffft-LICENSE.txt` and `pffft-NOTICES.txt`. See `docs/dependencies.md` for offline builds and updates.
+- **TETRA_crypto** (target `dsd-neo_tetra_crypto`; Copyright 2023 Midnight Blue) — the TEA1, TEA2 and TEA3 keystream
+  generators (`tea1.c`, `tea2.c`, `tea3.c`), downloaded from <https://github.com/MidnightBlueLabs/TETRA_crypto> at the
+  immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. Apache-2.0; the license text is installed as
+  `share/doc/dsd-neo/licenses/tetra_crypto-LICENSE.txt`. See `docs/dependencies.md` for offline builds and updates.
 - **Tiny AES** (`src/crypto/crypt-aes.c`) - Unlicense/public domain; original upstream https://github.com/kokke/tiny-AES-c.
 - **librtlsdr** (`android/third_party/librtlsdr`; osmocom, https://gitea.osmocom.org/sdr/rtl-sdr) - GPL-2.0-or-later;
   license text `android/third_party/librtlsdr/COPYING`. Trimmed v2.0.3 snapshot (library sources only) built into the
@@ -76,9 +80,30 @@ for file-specific license/provenance details.
     channel contributed by the reporter of [issue #348](https://github.com/arancormonk/dsd-neo/issues/348)
     for regression testing (short excerpt of off-air control-channel signalling, no voice content; the source
     file has no stable URL, so `tools/build_iq_fixtures.py` pins its SHA-256 under `LOCAL_SOURCES`).
+  - `tetra_scbs_real_air_50k.cs16` and `tetra_cc_marginal_real_air_144k.iq` are unmodified TETRA SCBS
+    control-channel captures from
+    [MattCheramie/GopherTrunk](https://github.com/MattCheramie/GopherTrunk), Apache License 2.0. The paired
+    `tetra_scbs_real_air_54k.iq` is this project's deterministic integer-arithmetic resample for the 18 ksym/s
+    decoder path, and `tetra_cc_marginal_real_air_144k_inverted.iq` is the deterministic complex conjugate used
+    to verify negative-polarity recovery with the real capture's impairments. Source commit, hashes, published capture parameters, expected cell identity, and reproduction
+    command are recorded in `tests/fixtures/iq/tetra_scbs_real_air.PROVENANCE.md`; the upstream license text is
+    `tests/fixtures/iq/tetra_scbs_real_air.APACHE-2.0.txt`.
+  - `tests/fixtures/tetra/acelp/hello_tetra.acelp` and its decoder-input reference
+    `hello_tetra.codec` come from the GPL-3.0 `sq5bpf/telive` test sample. Exact source,
+    decoder, license, and hashes are recorded in the adjacent `PROVENANCE.md`.
+  - The frozen `Ahoj` SDS-TRANSFER vector in `tests/protocol/tetra/test_mle_cmce.c` derives its 64-bit SDS user
+    field and expected decoded values from the example output published by
+    [itds-consulting/tetra-multiframe-sds](https://github.com/itds-consulting/tetra-multiframe-sds), GPL-3.0.
+    This project supplies the minimal CMCE/MLE envelope used by the regression test.
+  - The complete 272-bit MAC-to-SDS `Ahoj` vector in
+    `tests/protocol/tetra/test_sds_reference_mac.c` is `sample2.text` from
+    [smarek/kaitai-tetra-sds](https://github.com/smarek/kaitai-tetra-sds), Apache License 2.0, pinned at
+    commit `33f9fe3647e23e5a344cd96bfc6555531815e6bd` and blob
+    `70e397d01cfc6e95eef97afac6961214ad9037c9`.
 
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
-license texts currently include the ezpwd and pinned PFFFT notices under `share/doc/dsd-neo/licenses/`, plus the
-IBM Plex font notice for builds that bundle the Qt frontend and the librtlsdr/libusb notices for the Android package.
+license texts currently include the ezpwd, pinned PFFFT and pinned TETRA_crypto notices under
+`share/doc/dsd-neo/licenses/`, plus the IBM Plex font notice for builds that bundle the Qt frontend and the
+librtlsdr/libusb notices for the Android package.
 
 Native Airspy support links libairspy (BSD-3-Clause for `airspy.c`, `airspy.h`, and `airspy_commands.h`; MIT for `filters.h` and `iqconverter_*`), from https://github.com/airspy/airspyone_host. Android library sources, Windows overlay builds, and AppImage builds are pinned to `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`; the upstream notice, prefixed with the copyright lines from the source headers, is retained in `android/third_party/libairspy/LICENSE` and distributed as `licenses/libairspy-LICENSE.txt`.

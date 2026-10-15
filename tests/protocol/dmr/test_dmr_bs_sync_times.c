@@ -912,7 +912,7 @@ test_continuous_voice_yields_at_burst_boundary(void) {
     /* Adjacent slots carry different payloads so the stuck-dibit guard stays open. */
     g_dibits[144U + 12U + 16U] = 2U;
     g_continuous_voice = 1;
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){.scan_visit_should_yield = yield_after_one_second});
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.scan_visit_should_yield = yield_after_one_second});
     dmrBS(&opts, &state);
     assert(g_dibit_index >= 4800U && g_dibit_index < 4800U + 144U);
     assert(g_dibit_index % 144U == 0U);
@@ -921,7 +921,7 @@ test_continuous_voice_yields_at_burst_boundary(void) {
     assert(g_confidence_reset_calls == 1U);
     assert(g_refresh_error_calls == 0U);
     assert(state.dmr_stereo == 0);
-    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    dsd_frame_sync_hooks_set(NULL);
     g_continuous_voice = 0;
 }
 

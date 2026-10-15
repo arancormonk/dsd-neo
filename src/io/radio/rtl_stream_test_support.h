@@ -187,6 +187,13 @@ int rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* 
                                       size_t* output_count, int* out_phase);
 
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
+/* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
+   device open to force another rate. Returns 0, -1 on bad arguments, -2 while a device is open. */
+int rtl_stream_test_capture_plan(int dsp_bw_hz, uint32_t* out_capture_rate_hz, int* out_passes, int* out_rate_out_hz);
+/* The stream start's DSP rate warnings at @p dsp_rate_hz; returns 1 when it warned that TETRA cannot run there. */
+int rtl_stream_test_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz);
+/* Forget the rate the last TETRA rate warning named, so the next one warns again. */
+void rtl_stream_test_reset_tetra_rate_warning(void);
 int rtl_stream_test_digital_resample_chain(int output_kind, int rate_out_hz, int resamp_target_hz, int symbol_rate_hz,
                                            int digital_resample_mode, int capture_rate_device_forced,
                                            unsigned int* out_rate_hz, int* out_resamp_enabled);

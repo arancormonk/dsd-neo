@@ -206,8 +206,8 @@ struct dsd_opts {
     int rtl_udp_port;
     /* Control/telemetry API (docs/api.md) listening port; 0 disables the server. */
     int api_port;
-    /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24,48). Influences capture rate planning.
-       Not the hardware tuner IF bandwidth. */
+    /* Base DSP bandwidth for RTL path in kHz (dsd_analog_rtl_dsp_bw_is_selectable(): 4, 6, 8, 12, 16, 24, 48 or 72).
+       Influences capture rate planning. Not the hardware tuner IF bandwidth. */
     int rtl_dsp_bw_khz;
     int rtl_bias_tee;       /* 1 to enable RTL-SDR bias tee (if supported) */
     int soapy_bandwidth_hz; /* -1=profile/default, 0=driver automatic, >0 explicit Soapy hardware bandwidth */
@@ -271,6 +271,13 @@ struct dsd_opts {
     int inverted_ysf;
     int frame_m17;
     int inverted_m17;
+    int frame_tetra;  /**< 1 = attempt TETRA NDB sync detection */
+    int tetra_uplink; /**< 1 with --tetra-uplink: normal bursts are uplink NUBs; control uplink bursts are sought. */
+    int tetra_net_preset; /**< 1 when --tetra-net gave the network identity below, used until a BSCH supplies one. */
+    uint16_t tetra_net_mcc;
+    uint16_t tetra_net_mnc;
+    uint8_t tetra_net_colour;
+    char tetra_codec_path[1024]; /**< --tetra-codec: the TETRA speech codec library; empty for none (no TETRA audio). */
     int call_alert;
 
     // rigctl / sockets / streaming
@@ -457,7 +464,7 @@ dsd_opts_has_digital_decode_mode(const dsd_opts* opts) {
     }
     return opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
            || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
-           || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1;
+           || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1 || opts->frame_tetra == 1;
 }
 
 /**
@@ -708,6 +715,20 @@ dsd_opts_audio_in_dev_is_udp_spec(const char* dev) {
 static inline int
 dsd_opts_audio_in_dev_is_m17udp_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "m17udp", "m17udp:");
+}
+
+/**
+ * Whether @p dev names a symbol capture file, as openAudioInDevice() dispatches a file (dsd_audio_path_input_kind()): the
+ * last '.' of the whole name starts ".bin" (dibits), ".raw" or ".sym" (float symbols).
+ */
+static inline int
+dsd_opts_audio_in_dev_is_symbol_capture(const char* dev) {
+    const char* extension = dev ? strrchr(dev, '.') : NULL;
+    return (extension
+            && (strncmp(extension, ".bin", 4) == 0 || strncmp(extension, ".raw", 4) == 0
+                || strncmp(extension, ".sym", 4) == 0))
+               ? 1
+               : 0;
 }
 
 /** Whether @p dev names a radio input: an RTL-SDR, rtl_tcp, Airspy, SoapySDR or I/Q replay spec. */

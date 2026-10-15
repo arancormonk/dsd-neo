@@ -70,6 +70,8 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
@@ -1517,7 +1519,8 @@ no_carrier_p25_frames_enabled(const dsd_opts* opts) {
 
 static int
 no_carrier_generic_trunk_synctype(int synctype) {
-    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)) {
+    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)
+        || DSD_SYNC_IS_TETRA(synctype)) {
         return 1;
     }
     return DSD_SYNC_IS_X2TDMA(synctype) ? 1 : 0;
@@ -1910,6 +1913,43 @@ no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
     return active;
 }
 
+/* The TETRA state machine owns the return from the call it follows, and from a return of its own in flight
+   (tetra_sm_owns_return()): its tick times a grant out after TETRA_SM_GRANT_TIMEOUT_S without speech and a call after
+   the hangtime that follows its last speech. The generic recovery below reads last_vc_sync_time against the hangtime
+   alone, so it would take the receiver back from a grant still waiting for its first speech, or drop it where no
+   control channel is known; while the machine owns the return the pass ticks it instead, as it ticks an active DMR
+   state machine, under the tick guard the decode loop runs it under (dsd_engine_tetra_trunk_tick_locked()). */
+static int
+no_carrier_tick_tetra_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
+    if (opts->frame_tetra != 1 || opts->trunk_scan_enabled == 1 || opts->trunk_enable != 1
+        || !tetra_sm_owns_return(state)) {
+        return 0;
+    }
+    if (!guard_held && !p25_sm_tick_guard_try_enter()) {
+        return 1;
+    }
+    dsd_engine_tetra_trunk_tick_locked(opts, state);
+    if (!guard_held) {
+        p25_sm_tick_guard_leave();
+    }
+    return 1;
+}
+
+/* The TETRA state machine's part in a no-carrier return. An accepted return moved the receiver to the control channel,
+   which it reconciles to without tuning. Without one the voice state was cleared where the receiver is (the P25 helper
+   failed, or there is no control channel to return to): a followed call is dropped there, without tuning either. A
+   return that failed or was deferred never reaches here and keeps the call for the next pass. */
+static void
+no_carrier_hand_tetra_over(dsd_opts* opts, dsd_state* state, int accepted_cc_return) {
+    if (accepted_cc_return) {
+        if (tetra_sm_get_state(state) != TETRA_SM_IDLE) {
+            tetra_sm_on_external_cc_return(opts, state);
+        }
+    } else if (tetra_sm_get_state(state) == TETRA_SM_TUNED) {
+        tetra_sm_abandon_carrier(opts, state);
+    }
+}
+
 static void
 no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accepted_cc_return,
                             int clear_failed_helper_state, int clear_unreturnable_voice_state, uint64_t request_id) {
@@ -1923,6 +1963,7 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
         if (accepted_cc_return && dsd_trunk_dmr_recovery_allowed(opts, state)) {
             dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, request_id);
         }
+        no_carrier_hand_tetra_over(opts, state, accepted_cc_return);
         (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;
     }
@@ -1930,7 +1971,7 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
 
 static void
 no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now, int guard_held) {
-    if (no_carrier_tick_dmr_owner(opts, state, guard_held)) {
+    if (no_carrier_tick_dmr_owner(opts, state, guard_held) || no_carrier_tick_tetra_owner(opts, state, guard_held)) {
         return;
     }
     if (!no_carrier_is_cc_return_due(opts, state, now)) {
@@ -2027,6 +2068,9 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     /* Same rule for ProVoice: a frame proves nothing on its own, so the streak that does
      * cannot span the dead channel that brought us here (issue #421). */
     provoice_confirm_reset(state);
+    /* And for TETRA: the CRC evidence for the carrier, the partial TM-SDUs, the TDMA clock (which counts symbols the
+     * dead channel did not send) and the speech in progress. */
+    tetra_forget_carrier(state);
     /* And for what a decoded P25p1 NID vouches for: the benefit of the doubt it lends the
      * failures around it is evidence about a live transmission, so it cannot outlast the
      * carrier that produced it (issue #400). p25_p1_validated_rf_mod is deliberately not
@@ -2437,13 +2481,19 @@ carrier_boundary_takes_guard(dsd_carrier_boundary_kind kind) {
    policy allows. The shared release then drops trunk_is_tuned and the voice channel frequencies, so
    dsd_opts_trunk_vc_followed() stamps no frequency of the assignment left behind. The caller holds the P25 SM tick
    guard whenever a state machine can be ticking (carrier_boundary_takes_guard()), so the inspection below and the
-   teardown run inside the same hold as the watchdog's writes. */
+   teardown run inside the same hold as the watchdog's writes.
+
+   The TETRA state machine is let go of whenever it owns the return (tetra_sm_owns_return()), not only while TUNED: a
+   return of its own in flight left it resting on the control channel with trunk_is_tuned already released, yet a
+   failure of that request would put the call it left back, with its voice channel, onto the operator's carrier, and
+   its hangtime would then return to the old control channel. */
 static void
 carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind) {
     /* Trunk scan hands its carriers back itself. */
     const int release_machines = carrier_boundary_takes_guard(kind) && opts->trunk_scan_enabled != 1;
     int p25_tuned = 0;
     int dmr_tuned = 0;
+    int tetra_owned = 0;
     p25_sm_ctx_t* p25 = NULL;
     dmr_sm_ctx_t* dmr = NULL;
     if (release_machines) {
@@ -2451,8 +2501,9 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
         dmr = dmr_sm_get_ctx();
         p25_tuned = p25_sm_get_state(p25) == P25_SM_TUNED;
         dmr_tuned = dmr->state == DMR_SM_TUNED;
+        tetra_owned = tetra_sm_owns_return(state);
     }
-    if (opts->trunk_is_tuned != 1 && !p25_tuned && !dmr_tuned) {
+    if (opts->trunk_is_tuned != 1 && !p25_tuned && !dmr_tuned && !tetra_owned) {
         return;
     }
     if (p25_tuned) {
@@ -2460,6 +2511,9 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
     }
     if (dmr_tuned) {
         dmr_sm_abandon_carrier(dmr, opts, state, "carrier-boundary");
+    }
+    if (tetra_owned) {
+        tetra_sm_abandon_carrier(opts, state);
     }
     dsd_engine_release_tuned_call_state(opts, state);
 }
@@ -2477,6 +2531,7 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     dstar_confirm_reset(state);
     m17_confirm_reset(state);
     provoice_confirm_reset(state);
+    tetra_confirm_reset(state);
     state->ysf_fich_confirmed = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
@@ -2553,6 +2608,9 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     no_carrier_close_mbe_outputs_if_needed(opts, state);
     // Nor does the digital voice high-pass's memory (issue #653).
     dsd_voice_hpf_reset(state, -1);
+    // Nor TETRA decoding: its partial TM-SDUs, its TDMA clock and its speech in progress (the codec's decoder state, the
+    // speech's integrity and its unplayed samples).
+    tetra_forget_carrier(state);
 }
 
 void
@@ -2925,6 +2983,9 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
              * field, so the skip has to stamp it itself. */
             state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
         }
+        /* A TETRA carrier syncs on every burst, so this loop may never hand back to the outer one: the TETRA state
+         * machine settles its tune and runs its hangtime here too, withheld frames included. */
+        dsd_engine_tetra_trunk_tick_locked(opts, state);
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
         if (dsd_engine_signal_search_should_yield(opts, state)) {
@@ -3043,6 +3104,13 @@ dsd_engine_end_input_boundary(dsd_opts* opts, dsd_state* state) {
     dsd_symbol_matched_filter_reset(state);
 }
 
+void
+dsd_engine_tetra_trunk_tick_locked(dsd_opts* opts, dsd_state* state) {
+    if (opts && state && opts->frame_tetra == 1 && opts->trunk_scan_enabled != 1) {
+        tetra_sm_tick(opts, state);
+    }
+}
+
 static void
 live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     dsd_engine_slicer_threshold_cache threshold_cache;
@@ -3068,6 +3136,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
                 dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
             }
+            dsd_engine_tetra_trunk_tick_locked(opts, state);
             p25_sm_tick_guard_leave();
         }
         dsd_trunk_scan_hook_tick(opts, state);
@@ -3398,6 +3467,7 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
 
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
     dmr_sm_init(opts, state);
+    tetra_sm_init(opts, state);
 
     if (opts->resume > 0) {
         openSerial(opts, state);

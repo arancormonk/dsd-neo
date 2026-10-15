@@ -17,8 +17,10 @@
 #include <stdint.h>
 #include <string.h>
 
-/* RTL DSP bandwidths a user can select (rtl_bw_khz), in kHz, ascending. */
-static const int kRtlDspBandwidthsKhz[] = {4, 6, 8, 12, 16, 24, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ};
+/* RTL DSP bandwidths a user can select (rtl_bw_khz), in kHz, ascending. 72 kHz gives TETRA's pi/4-DQPSK at 36 kbit/s
+   (18 ksym/s, EN 300 392-2 clause 5.3) a whole 4 samples per symbol; no narrower bandwidth is a multiple of 18 kHz. */
+static const int kRtlDspBandwidthsKhz[] = {
+    4, 6, 8, 12, 16, 24, DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ};
 
 enum { kRtlDspBandwidthCount = (int)(sizeof kRtlDspBandwidthsKhz / sizeof kRtlDspBandwidthsKhz[0]) };
 
@@ -223,27 +225,77 @@ dsd_analog_rtl_dsp_bw_is_selectable(int khz) {
 }
 
 int
+dsd_analog_rtl_dsp_bw_or_default(int khz) {
+    return dsd_analog_rtl_dsp_bw_is_selectable(khz) ? khz : DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
+}
+
+int
+dsd_analog_airspy_dsp_bw_is_selectable(int khz) {
+    return (dsd_analog_rtl_dsp_bw_is_selectable(khz) && khz <= DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ) ? 1 : 0;
+}
+
+int
+dsd_analog_airspy_dsp_bw_or_default(int khz) {
+    return dsd_analog_airspy_dsp_bw_is_selectable(khz) ? khz : DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
+}
+
+int
+dsd_analog_rtl_dsp_bw_nearest(int khz, int max_khz) {
+    int best = 0;
+    int64_t best_distance = INT64_MAX;
+    for (int i = 0; i < kRtlDspBandwidthCount && kRtlDspBandwidthsKhz[i] <= max_khz; i++) {
+        const int64_t distance = (int64_t)khz - (int64_t)kRtlDspBandwidthsKhz[i];
+        const int64_t magnitude = distance < 0 ? -distance : distance;
+        /* Strictly nearer only: of two as near, the narrower (earlier) one stays. */
+        if (magnitude < best_distance) {
+            best_distance = magnitude;
+            best = kRtlDspBandwidthsKhz[i];
+        }
+    }
+    return best;
+}
+
+/* "a, b or c" of @p count kHz values into @p out, truncated (and terminated) at its size. */
+static void
+analog_join_khz_list(const int* khz, int count, char* out, size_t out_size) {
+    out[0] = '\0';
+    size_t used = 0U;
+    for (int i = 0; i < count && used < out_size; i++) {
+        const char* sep = (i == 0) ? "" : ((i + 1 == count) ? " or " : ", ");
+        const int n = DSD_SNPRINTF(out + used, out_size - used, "%s%d", sep, khz[i]);
+        if (n < 0) {
+            break;
+        }
+        used += (size_t)n;
+    }
+}
+
+int
+dsd_analog_rtl_dsp_bw_list(int max_khz, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    int count = 0;
+    while (count < kRtlDspBandwidthCount && kRtlDspBandwidthsKhz[count] <= max_khz) {
+        count++;
+    }
+    analog_join_khz_list(kRtlDspBandwidthsKhz, count, out, out_size);
+    return 0;
+}
+
+int
 dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
         return -1;
     }
-    int fitting[kRtlDspBandwidthCount];
+    int fitting[kRtlDspBandwidthCount] = {0};
     int count = 0;
     for (int i = 0; i < kRtlDspBandwidthCount; i++) {
         if (dsd_analog_width_realizable(width_hz, kRtlDspBandwidthsKhz[i] * 1000)) {
             fitting[count++] = kRtlDspBandwidthsKhz[i];
         }
     }
-    out[0] = '\0';
-    size_t used = 0U;
-    for (int i = 0; i < count && used < out_size; i++) {
-        const char* sep = (i == 0) ? "" : ((i + 1 == count) ? " or " : ", ");
-        const int n = DSD_SNPRINTF(out + used, out_size - used, "%s%d", sep, fitting[i]);
-        if (n < 0) {
-            break;
-        }
-        used += (size_t)n;
-    }
+    analog_join_khz_list(fitting, count, out, out_size);
     return 0;
 }
 

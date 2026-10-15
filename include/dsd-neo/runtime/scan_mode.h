@@ -86,6 +86,8 @@ typedef struct {
     int frame_provoice;
     int frame_ysf;
     int frame_m17;
+    /** dsd_opts::frame_tetra: a typed row's preset clears it, so the configured TETRA decoder comes back with the rest. */
+    int frame_tetra;
     int mod_c4fm;
     int mod_qpsk;
     int mod_gfsk;

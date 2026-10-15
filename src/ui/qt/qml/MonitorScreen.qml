@@ -913,6 +913,185 @@ Item {
                 }
             }
 
+            // The TETRA rows, from app-control's tetra_view, which the terminal's
+            // Call Info lines share: the working mode with the air encryption,
+            // the network (its colour code in decimal, as the call history names
+            // one), where call following stands, the control and traffic
+            // channels, the last MM status and the speech codec's health. Shown
+            // only under the TETRA preset once a block has decoded, each part
+            // only once the decoder has something for it. Cyan for signal
+            // readings and magenta for encryption, as on the rows around it, and
+            // the alert colour for a codec that cannot play speech. Flows, as the
+            // rows below are, so a long reading moves under its label on a narrow
+            // phone rather than running off it.
+            Flow {
+                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                objectName: "monitorTetra"
+
+                width: parent.width
+                spacing: 5
+                visible: metrics.tetraVisible
+
+                Text {
+                    text: qsTr("TETRA")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorTetraMode"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    text: metrics.tetraModeText
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: metrics.tetraEncrypted ? Theme.magenta : Theme.cyan
+                }
+
+                Text {
+                    objectName: "monitorTetraNetwork"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    visible: text.length > 0
+                    text: metrics.tetraNetworkText
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSecondary
+                }
+            }
+
+            // Each label and its reading are children of the Flow, so a long
+            // reading moves under its label rather than off the body.
+            Flow {
+                objectName: "monitorTetraChannels"
+
+                width: parent.width
+                spacing: 5
+                visible: metrics.tetraVisible && (metrics.tetraTrunkText.length > 0
+                                                  || metrics.tetraControlText.length > 0
+                                                  || metrics.tetraTrafficText.length > 0)
+
+                Text {
+                    visible: metrics.tetraTrunkText.length > 0
+                    text: qsTr("TRUNK")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorTetraTrunk"
+
+                    visible: text.length > 0
+                    text: metrics.tetraTrunkText
+                    textFormat: Text.PlainText
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: metrics.tetraOnTraffic ? Theme.cyan : Theme.textSubdued
+                }
+
+                Text {
+                    visible: metrics.tetraControlText.length > 0
+                    text: qsTr("CONTROL")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorTetraControl"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    visible: text.length > 0
+                    text: metrics.tetraControlText
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSecondary
+                }
+
+                Text {
+                    visible: metrics.tetraTrafficText.length > 0
+                    text: qsTr("TRAFFIC")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorTetraTraffic"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    visible: text.length > 0
+                    text: metrics.tetraTrafficText
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSecondary
+                }
+            }
+
+            Flow {
+                objectName: "monitorTetraMmStatus"
+
+                width: parent.width
+                spacing: 5
+                visible: metrics.tetraVisible && metrics.tetraMmStatusText.length > 0
+
+                Text {
+                    text: qsTr("MM STATUS")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorTetraMmStatusValue"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    text: metrics.tetraMmStatusText
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSecondary
+                }
+            }
+
+            Flow {
+                objectName: "monitorTetraCodec"
+
+                width: parent.width
+                spacing: 5
+                visible: metrics.tetraVisible && metrics.tetraCodecText.length > 0
+
+                Text {
+                    text: qsTr("CODEC")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorTetraCodecValue"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    text: metrics.tetraCodecText
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: metrics.tetraCodecFault ? Theme.alert : Theme.cyan
+                }
+            }
+
             // Why an empty log can still be a working decoder. On an almost entirely
             // encrypted site the control channel decodes, every grant is declined and
             // no call is ever logged, which is indistinguishable from a decoder that

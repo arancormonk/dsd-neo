@@ -58,6 +58,7 @@
 #include <dsd-neo/runtime/rt_sched.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <iterator>
@@ -7222,10 +7223,34 @@ stream_open_reset_auto_ppm_state(const dsd_opts* opts) {
     g_auto_ppm_cooldown.store(0, std::memory_order_relaxed);
 }
 
-static void
-stream_open_warn_low_dsp_bw(const dsd_opts* opts) {
+/* The DSP rate the last TETRA rate warning named (stream_open_warn_tetra_dsp_rate()), 0 for none. */
+static int g_tetra_rate_warned_hz = 0;
+
+/* TETRA's symbol timing needs a DSP rate that is a multiple of 18 kHz (dsd_tetra_dsp_rate_runs()); at any other
+   it decodes nothing, so a stream that opens TETRA there says why and what to change. Logged once per rate: a reopen
+   at the rate already named stays quiet. */
+static int
+stream_open_warn_tetra_dsp_rate(const dsd_opts* opts, int dsp_rate_hz) {
+    char advice[DSD_TETRA_RATE_ADVICE_MAX];
+    if (opts->frame_tetra != 1 || dsd_tetra_dsp_rate_advice(opts, dsp_rate_hz, 0, advice, sizeof advice) != 1
+        || g_tetra_rate_warned_hz == dsp_rate_hz) {
+        return 0;
+    }
+    g_tetra_rate_warned_hz = dsp_rate_hz;
+    LOG_WARN("WARNING: %s.\n", advice);
+    return 1;
+}
+
+/* Called once the rate chain is final: the low-bandwidth warnings read the requested DSP bandwidth, and TETRA's the
+   rate the chain delivers (@p dsp_rate_hz), which a SoapySDR or Airspy device can force away from the request and an
+   I/Q replay takes from its capture. Returns 1 when it warned about TETRA's rate. */
+static int
+stream_open_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz) {
     if (!opts) {
-        return;
+        return 0;
+    }
+    if (stream_open_warn_tetra_dsp_rate(opts, dsp_rate_hz)) {
+        return 1;
     }
     if (opts_has_12k5_or_cqpsk_bw_mode(opts) && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 16) {
         static int warned_16 = 0;
@@ -7237,7 +7262,7 @@ stream_open_warn_low_dsp_bw(const dsd_opts* opts) {
                 "to keep the modulation off the filter skirt.\n",
                 opts->rtl_dsp_bw_khz);
         }
-        return;
+        return 0;
     }
     if ((opts->frame_dmr == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) && opts->rtl_dsp_bw_khz > 0
         && opts->rtl_dsp_bw_khz < 24) {
@@ -7249,6 +7274,7 @@ stream_open_warn_low_dsp_bw(const dsd_opts* opts) {
                      opts->rtl_dsp_bw_khz);
         }
     }
+    return 0;
 }
 
 /* FNV-1a of the input spec: the device part of the auto squelch's floor context. */
@@ -8040,7 +8066,6 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     stream_open_reset_auto_ppm_state(opts);
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000;
-    stream_open_warn_low_dsp_bw(opts);
     if (stream_open_init_pipeline(opts, rtl_dsp_bw_hz) != 0) {
         return -1;
     }
@@ -8092,7 +8117,11 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     stream_open_note_ppm_capability();
     stream_open_apply_requested_ppm(opts);
 
-    return stream_open_finalize_rate_chain(source_kind, opts, replay_cfg, replay_cfg_loaded);
+    if (stream_open_finalize_rate_chain(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
+        return -1;
+    }
+    (void)stream_open_warn_low_dsp_bw(opts, demod.rate_out);
+    return 0;
 }
 
 static int
@@ -12200,6 +12229,40 @@ rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_o
 extern "C" int
 rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz) {
     return rtl_choose_passes_for_actual_rate(actual_rate_hz, rate_in_hz);
+}
+
+extern "C" int
+rtl_stream_test_capture_plan(int dsp_bw_hz, uint32_t* out_capture_rate_hz, int* out_passes, int* out_rate_out_hz) {
+    if (dsp_bw_hz <= 0 || !out_capture_rate_hz || !out_passes || !out_rate_out_hz) {
+        return -1;
+    }
+    if (rtl_device_handle != NULL) {
+        /* An open device could force its own rate; the plan asked for here is the one the request alone makes. */
+        return -2;
+    }
+    const CaptureSettingsSnapshot outer = capture_settings_snapshot();
+    const int outer_rate_in = demod.rate_in;
+    const int outer_post_downsample = demod.post_downsample;
+    demod.rate_in = dsp_bw_hz;
+    demod.post_downsample = 1;
+    optimal_settings(851375000, demod.rate_in);
+    *out_capture_rate_hz = load_dongle_rate();
+    *out_passes = demod.downsample_passes;
+    *out_rate_out_hz = demod.rate_out;
+    restore_capture_settings(&outer);
+    demod.rate_in = outer_rate_in;
+    demod.post_downsample = outer_post_downsample;
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz) {
+    return stream_open_warn_low_dsp_bw(opts, dsp_rate_hz);
+}
+
+extern "C" void
+rtl_stream_test_reset_tetra_rate_warning(void) {
+    g_tetra_rate_warned_hz = 0;
 }
 
 extern "C" int

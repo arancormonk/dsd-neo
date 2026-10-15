@@ -45,7 +45,7 @@ Item {
         // and labels do not.
         readonly property var everyLabel: [
             "Auto — P25/DMR/YSF", "P25", "P25 Simulcast", "DMR", "NXDN48",
-            "NXDN96", "D-STAR", "YSF", "M17", "NFM — analog FM", "AM",
+            "NXDN96", "D-STAR", "YSF", "M17", "TETRA", "NFM — analog FM", "AM",
             "P25 LSM", "DMR Scan", "P25 Scan", "P25 LSM Scan",
             "NXDN48 Scan", "NXDN96 Scan", "EDACS", "EDACS EA"]
 
@@ -72,6 +72,46 @@ Item {
                     "a composite chip must not appear for a catalog flag")
             verify(tc.chipFor("P25 Simulcast") !== null,
                    "the catalog must be intact for an ordinary flag")
+        }
+
+        // TETRA covers trunked (TMO) and direct mode (DMO) alike, so like DMR
+        // and NXDN its pick answers for itself: picked on the 800 MHz prefill,
+        // it suggests no call-following, which would leave DMO speech muted.
+        function test_01b_tetra_is_a_catalog_mode_that_suggests_no_trunking() {
+            compare(tc.wizard.trunking, true, "the 800 MHz prefill suggests trunking before the pick")
+            tc.wizard.pickDecodeFlag("-fT")
+            compare(tc.selectedLabels(), ["TETRA"])
+            compare(tc.chipFor("TETRA").modelData.flag, "-fT")
+            verify(tc.chipFor("TETRA").modelData.trunked !== true)
+            compare(tc.wizard.trunking, false, "picking TETRA suggested call-following")
+        }
+
+        // TETRA's symbols come from a radio's I/Q or a symbol capture of them:
+        // its chip is greyed out on network audio and on an audio file, with
+        // the I/Q note saying why, and offered for a .bin capture. A source
+        // change that cannot run it drops the pick back to Auto.
+        function test_01c_tetra_needs_a_radio_or_a_symbol_capture() {
+            var chip = tc.chipFor("TETRA")
+            var note = findChild(tc.wizard, "wizardDecodeIqNote")
+            verify(chip !== null && note !== null)
+            verify(chip.enabled, "the TETRA chip is disabled on a radio source")
+            tc.wizard.pickDecodeFlag("-fT")
+            tc.wizard.sourceType = "tcp"
+            tc.wizard.dropRadioOnlyDecodeFlag()
+            verify(!chip.enabled, "the TETRA chip is offered for TCP audio")
+            compare(tc.wizard.decodeFlag, "", "TETRA stays picked on TCP audio")
+            verify(note.text.indexOf("TETRA one or a symbol capture") > 0, "the note does not name TETRA's reason")
+            tc.wizard.sourceType = "file"
+            tc.wizard.fileText = "/tmp/capture.wav"
+            verify(!chip.enabled, "the TETRA chip is offered for an audio file")
+            tc.wizard.fileText = "/tmp/capture.bin"
+            verify(chip.enabled, "the TETRA chip is refused for a symbol capture")
+            tc.wizard.pickDecodeFlag("-fT")
+            verify(tc.wizard.decodeFlagRunsHere("-fT"))
+            tc.wizard.fileText = ""
+            tc.wizard.sourceType = "usb"
+            verify(chip.enabled)
+            tc.wizard.pickDecodeFlag("")
         }
 
         // The simulcast import. "-mq -^" is what dsd_rr_decode_flag() answers
@@ -217,7 +257,7 @@ Item {
                 tc.wizard.bwText = "6"
                 verify(!tc.wizard.stepValid(), "AM at a 6 kHz bandwidth passes step 1")
                 verify(note.visible, "the refusal is not shown")
-                verify(note.text.indexOf("Set the bandwidth to 8, 12, 16, 24 or 48 kHz") > 0, "the note names no fix")
+                verify(note.text.indexOf("Set the bandwidth to 8, 12, 16, 24, 48 or 72 kHz") > 0, "the note names no fix")
                 tc.wizard.bwText = "4"
                 verify(!tc.wizard.stepValid(), "AM at a 4 kHz bandwidth passes step 1")
                 tc.wizard.bwText = "8"

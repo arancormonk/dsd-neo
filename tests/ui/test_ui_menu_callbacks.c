@@ -958,6 +958,20 @@ test_gain_rtl_and_env_callbacks(void) {
     cb_rtl_bw(&ctx, 1, 13);
     rc |= expect_int("rtl bw command", g_cmd.id, DSD_APP_CMD_RTL_SET_BW);
     rc |= expect_int("rtl bw nearest", cmd_i32(), 12);
+    rc |= expect_str("rtl bw snap names the list", g_status,
+                     "RTL BW adjusted to 12 kHz (allowed: 4, 6, 8, 12, 16, 24, 48 or 72)");
+
+    /* 72 kHz (TETRA's) is kept; a value past it snaps to it, and halfway to 48 the narrower one wins. */
+    reset_capture();
+    cb_rtl_bw(&ctx, 1, 72);
+    rc |= expect_int("rtl bw 72 kept", cmd_i32(), 72);
+    rc |= expect_str("rtl bw 72 applying", g_status, "Applying RTL BW: 72 kHz");
+    reset_capture();
+    cb_rtl_bw(&ctx, 1, 200);
+    rc |= expect_int("rtl bw 200 snaps to 72", cmd_i32(), 72);
+    reset_capture();
+    cb_rtl_bw(&ctx, 1, 60);
+    rc |= expect_int("rtl bw 60 snaps to 48", cmd_i32(), 48);
 
     reset_capture();
     cb_rtl_sql(&ctx, 1, -42.5);

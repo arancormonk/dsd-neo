@@ -393,10 +393,30 @@ dsd_infer_decode_mode_preset(const dsd_opts* opts) {
    lets the test see which preset landed on which row. */
 const char*
 dsd_decode_mode_display_name(dsdneoUserDecodeMode mode) {
-    static const char* const names[] = {"m0", "m1",  "m2",  "m3",  "m4",  "m5",  "m6",  "m7", "m8",
-                                        "m9", "m10", "m11", "m12", "m13", "m14", "m15", "m16"};
+    static const char* const names[] = {"m0", "m1",  "m2",  "m3",  "m4",  "m5",  "m6",  "m7",  "m8",
+                                        "m9", "m10", "m11", "m12", "m13", "m14", "m15", "m16", "m17"};
     const int i = (int)mode;
     return (i >= 0 && i < (int)(sizeof names / sizeof names[0])) ? names[i] : "m?";
+}
+
+/* The input rules the picker greys its rows by, as the runtime has them (dsd_decode_mode_runs_on_input()): AM needs an
+   I/Q radio input, TETRA one or a symbol capture. */
+int
+dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts) {
+    const int iq = opts && opts->audio_in_type == AUDIO_IN_RTL;
+    const int symbols =
+        opts && (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT);
+    if (mode == DSDCFG_MODE_AM) {
+        return iq;
+    }
+    return mode == DSDCFG_MODE_TETRA ? (iq || symbols) : 1;
+}
+
+const char*
+dsd_decode_mode_needs_iq_text(dsdneoUserDecodeMode mode) {
+    return mode == DSDCFG_MODE_AM      ? DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT
+           : mode == DSDCFG_MODE_TETRA ? DSD_DECODE_MODE_TETRA_NEEDS_IQ_TEXT
+                                       : NULL;
 }
 
 void ui_statusf(const char* fmt, ...) DSD_ATTR_FORMAT(printf, 1, 2);
@@ -1966,12 +1986,13 @@ test_signal_chain_rows(void) {
     reset_capture();
     act_decode_mode(NULL);
     rc |= expect_str("decode mode chooser title", g_chooser.title, "Decoder mode");
-    rc |= expect_int("decode mode chooser count", g_chooser.n, 16);
+    rc |= expect_int("decode mode chooser count", g_chooser.n, 17);
     rc |= expect_str("decode mode first row is auto", g_chooser.labels[0], "m1");
     rc |= expect_str("decode mode second row is p25 both phases", g_chooser.labels[1], "m13");
     rc |= expect_str("decode mode fifth row is dmr", g_chooser.labels[4], "m4");
-    rc |= expect_str("decode mode analog row", g_chooser.labels[14], "m14");
-    rc |= expect_str("decode mode last row is AM, after analog", g_chooser.labels[15], "m16");
+    rc |= expect_str("decode mode TETRA row, after M17", g_chooser.labels[14], "m17");
+    rc |= expect_str("decode mode analog row", g_chooser.labels[15], "m14");
+    rc |= expect_str("decode mode last row is AM, after analog", g_chooser.labels[16], "m16");
     rc |= expect_int("decode mode opens without posting", g_cmd.calls, 0);
     g_chooser.on_done(g_chooser.user, 4);
     rc |= expect_int("decode mode set command", g_cmd.id, DSD_APP_CMD_DECODE_MODE_SET);
@@ -1981,11 +2002,16 @@ test_signal_chain_rows(void) {
     act_decode_mode(NULL);
     g_chooser.on_done(g_chooser.user, -1);
     rc |= expect_int("decode mode cancel posts nothing", g_cmd.calls, 0);
-    g_chooser.on_done(g_chooser.user, 16);
+    g_chooser.on_done(g_chooser.user, 17);
     rc |= expect_int("decode mode out-of-range posts nothing", g_cmd.calls, 0);
-    g_chooser.on_done(g_chooser.user, 15);
+    g_chooser.on_done(g_chooser.user, 16);
     rc |= expect_int("decode mode AM posts AM", g_cmd.id == DSD_APP_CMD_DECODE_MODE_SET && cmd_i32() == DSDCFG_MODE_AM,
                      1);
+    reset_capture();
+    act_decode_mode(NULL);
+    g_chooser.on_done(g_chooser.user, 14);
+    rc |= expect_int("decode mode TETRA posts TETRA",
+                     g_cmd.id == DSD_APP_CMD_DECODE_MODE_SET && cmd_i32() == DSDCFG_MODE_TETRA, 1);
 
     /* The picker opens on the mode in effect. Row 0 is Auto, and Auto is the one
        choice the command layer never treats as a no-op, so opening there turned a
@@ -2004,6 +2030,11 @@ test_signal_chain_rows(void) {
     g_infer_mode = DSDCFG_MODE_AUTO;
     act_decode_mode(&mode_ctx);
     rc |= expect_int("decode mode opens on auto when auto is live", g_chooser.initial_sel, 0);
+    reset_capture();
+    g_infer_mode = DSDCFG_MODE_TETRA;
+    act_decode_mode(&mode_ctx);
+    rc |= expect_int("decode mode opens on TETRA when TETRA is live", g_chooser.initial_sel, 14);
+    g_infer_mode = DSDCFG_MODE_AUTO;
 
     /* Issue #524: on an input that is not an I/Q radio (the snapshot's input type) the AM row keeps its place but
      * says why it is off, and choosing it repeats the reason instead of posting a command the decoder would refuse.
@@ -2011,22 +2042,44 @@ test_signal_chain_rows(void) {
     reset_capture();
     dsd_test_scan_labels_input_type(AUDIO_IN_PULSE);
     act_decode_mode(&mode_ctx);
-    rc |= expect_int("decode mode on pcm keeps every row", g_chooser.n, 16);
-    rc |= expect_str("decode mode on pcm says why AM is off", g_chooser.labels[15], "AM (needs an I/Q radio input)");
-    g_chooser.on_done(g_chooser.user, 15);
+    rc |= expect_int("decode mode on pcm keeps every row", g_chooser.n, 17);
+    rc |= expect_str("decode mode on pcm says why AM is off", g_chooser.labels[16], "AM (needs an I/Q radio input)");
+    g_chooser.on_done(g_chooser.user, 16);
     rc |= expect_int("decode mode on pcm AM posts nothing", g_cmd.calls, 0);
     rc |= expect_str("decode mode on pcm AM gives the reason", g_status,
                      "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA");
-    g_chooser.on_done(g_chooser.user, 14);
+    g_chooser.on_done(g_chooser.user, 15);
     rc |= expect_int("decode mode on pcm analog still posts",
                      g_cmd.id == DSD_APP_CMD_DECODE_MODE_SET && cmd_i32() == 14, 1);
+    /* TETRA likewise: its pi/4-DQPSK symbols cannot be read from demodulated audio. A symbol capture carries them. */
+    reset_capture();
+    act_decode_mode(&mode_ctx);
+    rc |= expect_str("decode mode on pcm says why TETRA is off", g_chooser.labels[14],
+                     "TETRA (needs an I/Q radio input)");
+    g_chooser.on_done(g_chooser.user, 14);
+    rc |= expect_int("decode mode on pcm TETRA posts nothing", g_cmd.calls, 0);
+    rc |= expect_str("decode mode on pcm TETRA gives the reason", g_status,
+                     "TETRA needs an IQ radio input or a symbol capture: its pi/4-DQPSK symbols cannot be read from "
+                     "demodulated audio");
+    reset_capture();
+    dsd_test_scan_labels_input_type(AUDIO_IN_SYMBOL_BIN);
+    act_decode_mode(&mode_ctx);
+    rc |= expect_str("decode mode on a symbol capture offers TETRA", g_chooser.labels[14], "m17");
+    rc |= expect_str("decode mode on a symbol capture keeps AM off", g_chooser.labels[16],
+                     "AM (needs an I/Q radio input)");
     reset_capture();
     dsd_test_scan_labels_input_type(AUDIO_IN_RTL);
     act_decode_mode(&mode_ctx);
-    rc |= expect_str("decode mode on a radio offers AM", g_chooser.labels[15], "m16");
-    g_chooser.on_done(g_chooser.user, 15);
+    rc |= expect_str("decode mode on a radio offers AM", g_chooser.labels[16], "m16");
+    rc |= expect_str("decode mode on a radio offers TETRA", g_chooser.labels[14], "m17");
+    g_chooser.on_done(g_chooser.user, 16);
     rc |= expect_int("decode mode on a radio AM posts AM",
                      g_cmd.id == DSD_APP_CMD_DECODE_MODE_SET && cmd_i32() == DSDCFG_MODE_AM, 1);
+    reset_capture();
+    act_decode_mode(&mode_ctx);
+    g_chooser.on_done(g_chooser.user, 14);
+    rc |= expect_int("decode mode on a radio TETRA posts TETRA",
+                     g_cmd.id == DSD_APP_CMD_DECODE_MODE_SET && cmd_i32() == DSDCFG_MODE_TETRA, 1);
     dsd_test_scan_labels_input_type(AUDIO_IN_PULSE);
 
     return rc;

@@ -184,12 +184,20 @@ Item {
                     sentence: "“First” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it."
                 },
                 {
+                    tag: "tetra-needs-iq",
+                    fields: {
+                        sourceType: "tcp",
+                        decodeFlag: "-fT"
+                    },
+                    sentence: "“First” decodes TETRA, which needs a radio source or a symbol capture (.bin): network audio and audio files arrive already demodulated. Edit the source to correct it."
+                },
+                {
                     tag: "am-bandwidth",
                     fields: {
                         decodeFlag: "-fM",
                         bandwidthKhz: 6
                     },
-                    sentence: "“First” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to 8, 12, 16, 24 or 48 kHz."
+                    sentence: "“First” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to 8, 12, 16, 24, 48 or 72 kHz."
                 }
             ];
         }
@@ -212,7 +220,7 @@ Item {
             });
             app.startSystem(0);
             prefs.bandwidthKhz = saved;
-            compare(app.startError, "“First” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to 8, 12, 16, 24 or 48 kHz.");
+            compare(app.startError, "“First” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to 8, 12, 16, 24, 48 or 72 kHz.");
             compare(decoderHost.running, false);
         }
         function test_only_initialized_session_updates_recency() {

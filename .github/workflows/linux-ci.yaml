@@ -1068,11 +1068,12 @@ jobs:
           echo "pkgver=$new_pkgver" >> "$GITHUB_OUTPUT"
           echo "Computed pkgver from $ref ($(git rev-parse --short=7 "$ref")): $new_pkgver"
 
-      - name: Prepare pinned PFFFT source for AUR
+      - name: Prepare pinned PFFFT and TETRA_crypto sources for AUR
         if: steps.aur_up.outputs.available == 'true'
         run: |
-          git show origin/main:tools/ci-dependency-pins.env > "$RUNNER_TEMP/aur-pffft-pins.env"
-          python3 tools/update_aur_pffft.py --pins "$RUNNER_TEMP/aur-pffft-pins.env" aur-package/PKGBUILD
+          git show origin/main:tools/ci-dependency-pins.env > "$RUNNER_TEMP/aur-pins.env"
+          python3 tools/update_aur_pffft.py --pins "$RUNNER_TEMP/aur-pins.env" aur-package/PKGBUILD
+          python3 tools/update_aur_tetra_crypto.py --pins "$RUNNER_TEMP/aur-pins.env" aur-package/PKGBUILD
 
       - name: Validate AUR VCS metadata
         if: steps.aur_up.outputs.available == 'true'
@@ -1306,9 +1307,11 @@ jobs:
           }
           PKGBUILD
 
-      - name: Prepare pinned PFFFT source for AUR
+      - name: Prepare pinned PFFFT and TETRA_crypto sources for AUR
         if: steps.aur_up.outputs.available == 'true'
-        run: python3 tools/update_aur_pffft.py aur-package/PKGBUILD
+        run: |
+          python3 tools/update_aur_pffft.py aur-package/PKGBUILD
+          python3 tools/update_aur_tetra_crypto.py aur-package/PKGBUILD
 
       - name: Check if update needed
         id: check
@@ -1747,6 +1750,8 @@ jobs:
             source tools/ci-dependency-pins.env
             tools/fetch-pinned-git.sh https://github.com/arancormonk/pffft "$PFFFT_SHA" /tmp/dsd-pffft
             export DSD_PFFFT_SOURCE_DIR=/tmp/dsd-pffft
+            tools/fetch-pinned-git.sh https://github.com/MidnightBlueLabs/TETRA_crypto "$TETRA_CRYPTO_SHA" /tmp/dsd-tetra-crypto
+            export DSD_TETRA_CRYPTO_SOURCE_DIR=/tmp/dsd-tetra-crypto
             if [[ "$1" == "changed" ]]; then
               mapfile -t files < .ci/changed-files/cppcheck_sources.txt
               tools/cppcheck.sh --strict -- "${files[@]}"

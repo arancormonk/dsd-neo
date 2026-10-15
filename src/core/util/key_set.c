@@ -73,6 +73,7 @@ dsd_key_state_secure_wipe(dsd_state* state) {
     DSD_SECURE_ZERO(state->A2, sizeof(state->A2));
     DSD_SECURE_ZERO(state->A3, sizeof(state->A3));
     DSD_SECURE_ZERO(state->A4, sizeof(state->A4));
+    DSD_SECURE_ZERO(state->tetra_air_keys, sizeof(state->tetra_air_keys));
 }
 
 static void
@@ -95,6 +96,7 @@ key_scalars_capture(dsd_key_scalars* out, const dsd_state* state) {
     DSD_MEMCPY(out->aes_key_loaded, state->aes_key_loaded, sizeof(out->aes_key_loaded));
     DSD_MEMCPY(out->aes_key_segments, state->aes_key_segments, sizeof(out->aes_key_segments));
     DSD_MEMCPY(out->aes_key, state->aes_key, sizeof(out->aes_key));
+    DSD_MEMCPY(out->tetra_air_keys, state->tetra_air_keys, sizeof(out->tetra_air_keys));
 }
 
 static void
@@ -117,6 +119,7 @@ key_scalars_install(dsd_state* state, const dsd_key_scalars* in) {
     DSD_MEMCPY(state->aes_key_loaded, in->aes_key_loaded, sizeof(state->aes_key_loaded));
     DSD_MEMCPY(state->aes_key_segments, in->aes_key_segments, sizeof(state->aes_key_segments));
     DSD_MEMCPY(state->aes_key, in->aes_key, sizeof(state->aes_key));
+    DSD_MEMCPY(state->tetra_air_keys, in->tetra_air_keys, sizeof(state->tetra_air_keys));
 }
 
 int
@@ -240,6 +243,18 @@ key_scalars_equal(const dsd_key_scalars* a, const dsd_key_scalars* b) {
     for (size_t i = 0; i < sizeof(a->aes_key); i++) {
         if (a->aes_key[i] != b->aes_key[i]) {
             return 0;
+        }
+    }
+    for (size_t i = 0; i < DSD_TETRA_AIR_KEY_SLOTS; i++) {
+        const dsd_tetra_air_key* x = &a->tetra_air_keys[i];
+        const dsd_tetra_air_key* y = &b->tetra_air_keys[i];
+        if (x->loaded != y->loaded || x->mcc != y->mcc || x->mnc != y->mnc) {
+            return 0;
+        }
+        for (size_t k = 0; k < sizeof(x->key); k++) {
+            if (x->key[k] != y->key[k]) {
+                return 0;
+            }
         }
     }
     return 1;
@@ -542,6 +557,38 @@ key_set_parse_rc4(dsd_key_set* parsed, const char* text) {
     return result;
 }
 
+/* "mcc,mnc,key": a decimal 10-bit MCC and 14-bit MNC, then exactly 20 hex digits. The parsed key goes in slot 0;
+ * key_scalars_merge_tetra_air() files it under its network. */
+static dsd_key_direct_result
+key_set_parse_tetra_air(dsd_key_scalars* scalars, const char* text) {
+    char buf[64];
+    dsd_key_direct_result rc = DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    dsd_tetra_air_key parsed = {0};
+    const size_t len = strlen(text);
+    if (len >= sizeof(buf)) {
+        return rc;
+    }
+    DSD_MEMCPY(buf, text, len + 1U);
+    char* const mnc_text = strchr(buf, ',');
+    char* const key_text = mnc_text ? strchr(mnc_text + 1, ',') : NULL;
+    if (key_text) {
+        *mnc_text = '\0';
+        *key_text = '\0';
+        if (dsd_parse_uint16_strict(buf, 10, 0x3FFU, &parsed.mcc) == 0
+            && dsd_parse_uint16_strict(mnc_text + 1, 10, 0x3FFFU, &parsed.mnc) == 0) {
+            rc = DSD_KEY_DIRECT_INVALID_HEX;
+            if (dsd_parse_hex_bytes_exact(key_text + 1, strlen(key_text + 1), parsed.key, sizeof(parsed.key)) == 0) {
+                parsed.loaded = 1;
+                scalars->tetra_air_keys[0] = parsed;
+                rc = DSD_KEY_DIRECT_OK;
+            }
+        }
+    }
+    DSD_SECURE_ZERO(buf, sizeof(buf));
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    return rc;
+}
+
 static dsd_key_direct_result
 key_set_parse_typed_direct(dsd_key_set* parsed, dsd_key_type type, const char* text) {
     if (!text) {
@@ -567,6 +614,8 @@ key_set_parse_typed_direct(dsd_key_set* parsed, dsd_key_type type, const char* t
         }
     } else if (type == DSD_KEY_TYPE_RC4) {
         result = key_set_parse_rc4(parsed, text);
+    } else if (type == DSD_KEY_TYPE_TETRA_AIR) {
+        result = key_set_parse_tetra_air(&parsed->scalars, text);
     } else {
         result = DSD_KEY_DIRECT_INVALID_ARGUMENT;
     }
@@ -589,6 +638,28 @@ dsd_key_set_load_typed(dsd_key_set* out, dsd_key_type type, const char* text) {
     return rc;
 }
 
+/* File the parsed TETRA key under its network: replace that network's key, else take a free slot. Returns -1 when
+ * all slots hold other networks. */
+static int
+key_scalars_merge_tetra_air(dsd_key_scalars* target, const dsd_tetra_air_key* key) {
+    dsd_tetra_air_key* free_slot = NULL;
+    for (size_t i = 0; i < DSD_TETRA_AIR_KEY_SLOTS; i++) {
+        dsd_tetra_air_key* slot = &target->tetra_air_keys[i];
+        if (slot->loaded && slot->mcc == key->mcc && slot->mnc == key->mnc) {
+            *slot = *key;
+            return 0;
+        }
+        if (!slot->loaded && free_slot == NULL) {
+            free_slot = slot;
+        }
+    }
+    if (free_slot == NULL) {
+        return -1;
+    }
+    *free_slot = *key;
+    return 0;
+}
+
 static void
 key_scalars_overlay_direct(dsd_key_scalars* target, const dsd_key_scalars* parsed, dsd_key_type type) {
     if (type == DSD_KEY_TYPE_BASIC) {
@@ -608,6 +679,7 @@ key_scalars_overlay_direct(dsd_key_scalars* target, const dsd_key_scalars* parse
         overlay.RR = target->RR;
         overlay.basic_key_present = target->basic_key_present;
         DSD_MEMCPY(overlay.scalar_key_present, target->scalar_key_present, sizeof overlay.scalar_key_present);
+        DSD_MEMCPY(overlay.tetra_air_keys, target->tetra_air_keys, sizeof overlay.tetra_air_keys);
         *target = overlay;
         DSD_SECURE_ZERO(&overlay, sizeof overlay);
     }
@@ -619,20 +691,30 @@ dsd_key_apply_direct(dsd_state* state, dsd_key_type key_type, const char* text, 
         return DSD_KEY_DIRECT_INVALID_ARGUMENT;
     }
     dsd_key_set parsed = {0};
-    const dsd_key_direct_result result = key_set_parse_typed_direct(&parsed, key_type, text);
+    dsd_key_direct_result result = key_set_parse_typed_direct(&parsed, key_type, text);
     if (result == DSD_KEY_DIRECT_OK) {
-        state->key_profile_ref[0] = '\0';
-        if (mode == DSD_KEY_APPLY_REPLACE) {
-            dsd_key_set_install(state, &parsed);
-        } else {
-            dsd_key_scalars overlay = {0};
+        dsd_key_scalars overlay = {0};
+        if (mode == DSD_KEY_APPLY_OVERLAY) {
             key_scalars_capture(&overlay, state);
-            key_scalars_overlay_direct(&overlay, &parsed.scalars, key_type);
-            key_scalars_install(state, &overlay);
-            DSD_SECURE_ZERO(&overlay, sizeof overlay);
+            if (key_type == DSD_KEY_TYPE_TETRA_AIR) {
+                if (key_scalars_merge_tetra_air(&overlay, &parsed.scalars.tetra_air_keys[0]) != 0) {
+                    result = DSD_KEY_DIRECT_INVALID_ARGUMENT;
+                }
+            } else {
+                key_scalars_overlay_direct(&overlay, &parsed.scalars, key_type);
+            }
         }
-        state->keyloader = 0;
-        state->payload_keyid = state->payload_keyidR = 0;
+        if (result == DSD_KEY_DIRECT_OK) {
+            state->key_profile_ref[0] = '\0';
+            if (mode == DSD_KEY_APPLY_REPLACE) {
+                dsd_key_set_install(state, &parsed);
+            } else {
+                key_scalars_install(state, &overlay);
+            }
+            state->keyloader = 0;
+            state->payload_keyid = state->payload_keyidR = 0;
+        }
+        DSD_SECURE_ZERO(&overlay, sizeof overlay);
     }
     dsd_key_set_free(&parsed);
     return result;
