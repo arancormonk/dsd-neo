@@ -1297,7 +1297,8 @@ app_produced_decode_flags(TestHost& host) {
     // The wizard's decode chips (qml/Util.js DECODE_MODES), the older saves it still labels (LEGACY_DECODE_LABELS), the
     // "-f1 -mq" chip saved_systems_model.cpp migrates on load, and a scan list's frequency entries
     // (scan_list_targets.cpp resolveSystem()): QML and file-local code a test cannot call, so listed here.
-    QStringList flags{"", "-ft", "-mq", "-fs", "-fi", "-fn", "-fd", "-fy", "-fz", "-fA", "-fM", "-f1", "-f1 -mq"};
+    QStringList flags{"",    "-ft", "-mq", "-fs", "-fi", "-fn", "-fd",
+                      "-fy", "-fz", "-fT", "-fA", "-fM", "-f1", "-f1 -mq"};
     // The RadioReference generator, through the function the import calls, for every protocol and answer.
     for (int protocol = 0; protocol < DSD_RR_PROTO_UNSUPPORTED; ++protocol) {
         for (int bits = 0; bits < 8; ++bits) {
@@ -1330,6 +1331,8 @@ test_decode_flag_standard(TestHost& host) {
         expect(qPrintable(QStringLiteral("producer writes '%1'").arg(QLatin1String(sample))),
                produced.contains(QLatin1String(sample)));
     }
+    expect("the TETRA chip's -fT is standard",
+           produced.contains(QLatin1String("-fT")) && dsd_qt::decode_flag_is_standard(QLatin1String("-fT")));
     for (const QString& flag : produced) {
         expect(qPrintable(QStringLiteral("app-produced flag is standard: '%1'").arg(flag)),
                dsd_qt::decode_flag_is_standard(flag) && dsd_qt::decode_flag_is_standard(" " + flag + "\t"));
@@ -1354,9 +1357,9 @@ test_decode_flag_counts(const QByteArray& archive) {
                                                     dsd_qt::json_store_root())
             .summary.systemsWithExtraArgs;
     };
-    expect("an app-produced flag adds no extra options", restored("-fs") == 1 && restored("-mq") == 1
-                                                             && restored("") == 1 && restored("-fs -Y") == 1
-                                                             && restored("-mq -^") == 1 && restored("-fE") == 1);
+    expect("an app-produced flag adds no extra options",
+           restored("-fs") == 1 && restored("-mq") == 1 && restored("") == 1 && restored("-fs -Y") == 1
+               && restored("-mq -^") == 1 && restored("-fE") == 1 && restored("-fT") == 1);
     expect("a flag carrying arguments counts", restored("-fs -w /sdcard/x.wav") == 2);
     expect("a flag carrying an unknown switch counts", restored("-fs -Y --rdio-api-key k") == 2);
     expect("an unmapped selector counts", restored("-fq") == 2);

@@ -61,7 +61,7 @@ decode_mode_for_flag(const QString& flag) {
  *
  * The allowlist is what the producers write, read from their code:
  * - the wizard's decode chips (qml/Util.js DECODE_MODES): -ft -mq -fs -fi -fn
- *   -fd -fy -fz -fA -fM; the older saves it still labels (LEGACY_DECODE_LABELS)
+ *   -fd -fy -fz -fT -fA -fM; the older saves it still labels (LEGACY_DECODE_LABELS)
  *   and the "-f1 -mq" chip saved_systems_model.cpp migrates on load: -f1;
  * - a scan list's frequency entries (scan_list_targets.cpp resolveSystem()):
  *   -ft -fs -fi -fn -fA -fM;
@@ -74,8 +74,9 @@ decode_mode_for_flag(const QString& flag) {
  */
 inline bool
 decode_flag_token_is_standard(const QString& token) {
-    static const char* const kProducedTokens[] = {"-fa", "-fA", "-fM", "-fd", "-ft", "-f1", "-fs", "-fi", "-fn", "-fy",
-                                                  "-fm", "-fz", "-fh", "-fH", "-fe", "-fE", "-fp", "-mq", "-^",  "-Y"};
+    static const char* const kProducedTokens[] = {"-fa", "-fA", "-fM", "-fd", "-ft", "-f1", "-fs",
+                                                  "-fi", "-fn", "-fy", "-fm", "-fz", "-fT", "-fh",
+                                                  "-fH", "-fe", "-fE", "-fp", "-mq", "-^",  "-Y"};
     for (const char* produced : kProducedTokens) {
         if (token == QLatin1String(produced)) {
             return true;
