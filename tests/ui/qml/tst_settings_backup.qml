@@ -632,7 +632,9 @@ Item {
                 compare(choose.text, "Choose another file");
                 compare(buttons(sheet), ["Choose another file", "Cancel"]);
                 tryCompare(choose, "activeFocus", true);
-                // Nor can the passphrase be typed, revealed or submitted (the keyboard's Enter, or its IME action).
+                // Nor is the passphrase offered: the field and its toggle step aside, and the keyboard's Enter (or
+                // its IME action) submits nothing.
+                verify(!field.visible && !toggle.visible);
                 verify(!field.enabled && !toggle.enabled);
                 field.accepted();
                 flow.submitUnlock();
@@ -641,11 +643,17 @@ Item {
                 compare(error.text, data.text);
                 compare(field.error, "");
                 verify(choose.visible && !button.visible);
+                // What a screen reader and the keyboard meet: the error, then the way on, then Cancel.
+                compare(buttons(sheet), ["Choose another file", "Cancel"]);
+                var cancel = part("backupUnlockCancel");
+                tryVerify(function () {
+                    return error.y < choose.y && choose.y < cancel.y;
+                }, 2000, "the error, then Choose another file, then Cancel");
             } else {
                 // A retry can work: Unlock stays, back in the field.
                 verify(button.visible && button.enabled);
                 verify(!choose.visible);
-                verify(field.enabled && toggle.enabled);
+                verify(field.visible && toggle.visible && field.enabled && toggle.enabled);
                 tryCompare(field.input, "activeFocus", true);
             }
             verify(backup.flowActive);
@@ -658,6 +666,9 @@ Item {
 
         function test_choose_another_file() {
             unlock();
+            // Where the passphrase row and Unlock sit before the file turns out to be the problem.
+            var fieldY = part("backupUnlockField").y;
+            var unlockY = part("backupUnlockButton").y;
             verify(testContext.emitBackup("inspectFinished", {ok: false, error: "NotBackup", summary: {}}));
             var sheet = part("backupUnlockSheet");
             part("backupChooseFileButton").activate();
@@ -675,10 +686,15 @@ Item {
             var other = "file://" + path;
             pick(picker, other);
             tryCompare(sheet, "visible", true);
+            // The sheet comes back as it first opened: nothing moves into place after it shows.
+            verify(part("backupUnlockField").visible && part("backupShowUnlockPassphrase").visible);
+            compare(part("backupUnlockField").y, fieldY);
+            compare(part("backupUnlockButton").y, unlockY);
             compare(flow.step, "unlock");
             compare(part("backupUnlockError").text, "");
             verify(part("backupUnlockButton").visible && part("backupUnlockButton").enabled);
             verify(!part("backupChooseFileButton").visible);
+            verify(part("backupUnlockField").visible && part("backupShowUnlockPassphrase").visible);
             verify(part("backupUnlockField").enabled && part("backupShowUnlockPassphrase").enabled);
             part("backupUnlockField").text = pass;
             part("backupUnlockButton").activate();

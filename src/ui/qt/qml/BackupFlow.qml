@@ -642,10 +642,14 @@ Item {
             font.pixelSize: Theme.fontSize(13)
             color: Theme.textSecondary
         }
+        // Once the file itself is the problem no passphrase can help: the field
+        // and its toggle step aside, leaving the error, "Choose another file"
+        // and Cancel. A new pick opens the sheet with them back in place.
         PlexTextField {
             id: unlockField
             objectName: "backupUnlockField"
             width: parent.width
+            visible: !flow.fileProblem
             label: qsTr("Passphrase")
             echoMode: showUnlockPassphrase.checked ? TextInput.Normal : TextInput.Password
             inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase | (showUnlockPassphrase.checked ? Qt.ImhNone : Qt.ImhHiddenText)
@@ -656,6 +660,7 @@ Item {
         PlexCheckBox {
             id: showUnlockPassphrase
             objectName: "backupShowUnlockPassphrase"
+            visible: !flow.fileProblem
             text: qsTr("Show passphrase")
             enabled: flow.step === "unlock" && !flow.fileProblem
         }
