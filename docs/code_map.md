@@ -642,10 +642,11 @@ constants, and Clang also folds an integer bit test on a float it computed or re
   `bound_rotate90_cf32_to_f32_phase()` (`include/dsd-neo/dsp/simd_widen.h`, SIMD with runtime AVX2 dispatch), which
   turn any component that is NaN, infinite or at least 2^60 into 0, and soft symbol files in `src/dsp/dsd_symbol.c` --
   and the Costas and Gardner loops check each sample where they load it (`src/dsp/costas.cpp`).
-- Arithmetic whose exact rounding is a contract keeps it explicitly: the decode clock's `ns / 1e9` (`decode_clock.c`
-  is IEEE), the fallback decimator's block-split-invariant running sum (`#pragma clang fp reassociate(off)`), and the
-  auto and noise squelches' window sums, which must not depend on where a block starts (`squelch_floor.c`,
-  `nfm_noise_squelch.c`, `noise_squelch_bank.c` and `pcm_noise_squelch.c` are IEEE).
+- Arithmetic whose exact rounding is a contract keeps it explicitly: the decode clock's `ns / 1e9` (`decode_clock.c` is
+  IEEE) and a trunk tune's completion stamp, compared with it (`trunk_tuning_hooks.c` is IEEE), the fallback decimator's
+  block-split-invariant running sum (`#pragma clang fp reassociate(off)`), and the auto and noise squelches' window
+  sums, which must not depend on where a block starts (`squelch_floor.c`, `nfm_noise_squelch.c`, `noise_squelch_bank.c`
+  and `pcm_noise_squelch.c` are IEEE).
 - Tests that feed NaN or infinity, or check results with `std::isnan()`, compile their own sources with IEEE
   semantics (the block near the top of `tests/CMakeLists.txt`), leaving the code under test on the build's flags.
 

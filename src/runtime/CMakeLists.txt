@@ -73,15 +73,19 @@ target_sources(
 
 # The decode clock's nanosecond-to-second conversions must stay correctly rounded
 # divisions: fast-math turns `ns / 1e9` into a multiply by an inexact 1e-9, which
-# puts every seconds stamp a rounding step off. It is not on a per-sample path.
+# puts every seconds stamp a rounding step off. A trunk tune's completion stamp is
+# a decode-clock stamp compared with dsd_decode_now_mono_s(), so it converts the
+# same way. Neither is on a per-sample path.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         decode_clock.c
+        trunk_tuning_hooks.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
 elseif(MSVC)
     set_source_files_properties(
         decode_clock.c
+        trunk_tuning_hooks.c
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()

@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -352,6 +353,18 @@ main(void) {
     dsd_trunk_tuning_retire_failed_requests();
     assert(dsd_trunk_tuning_pending_request() == 0U);
     assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+
+    // A completion is stamped on the decode clock and read back in the clock's own seconds: four seconds of decode
+    // time after it, four seconds have elapsed, whatever floating-point mode the build uses.
+    dsd_decode_clock_use_test(UINT64_C(1001000000000));
+    const uint64_t stamped_request = dsd_trunk_tuning_request_begin();
+    assert(stamped_request != 0U);
+    dsd_trunk_tuning_request_publish(stamped_request, DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_trunk_tuning_request_complete(stamped_request, DSD_TRUNK_TUNE_RESULT_OK);
+    double completed_m = 0.0;
+    assert(dsd_trunk_tuning_request_status(stamped_request, &completed_m) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_decode_clock_test_set_ns(UINT64_C(1005000000000));
+    assert(dsd_decode_now_mono_s() - completed_m >= 4.0);
 
     assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_OK));
     assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_PENDING));
