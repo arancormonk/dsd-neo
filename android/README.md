@@ -278,9 +278,9 @@ Limits:
   without a running decoder. If that restore had already started changing files (it was interrupted, or could not
   finish), the setup you use meanwhile is partly restored, and changes you make to it can be overwritten when the
   restore completes.
-- If a part-way restore's undo record is damaged (only tampering or storage corruption can do that), every start says
-  the restore couldn't finish and nothing can cancel it. The way out is to clear DSD-neo's storage in Android's app
-  settings, which erases all of its data, and then restore the backup again.
+- If a part-way restore's undo record is damaged (only tampering or storage corruption can do that, and the settings it
+  keeps are checked too), every start says the restore couldn't finish and nothing can cancel it. The way out is to
+  clear DSD-neo's storage in Android's app settings, which erases all of its data, and then restore the backup again.
 - A channel map you updated with companion files keeps its own file beside the folder of companions and names that
   folder in its contents, which a restore never rewrites, so the folder cannot take a free name. If a folder of the
   same name, left by an earlier import, is already on the phone, the restore fails, changing nothing (**A folder left

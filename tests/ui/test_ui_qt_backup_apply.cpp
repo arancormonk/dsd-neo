@@ -1850,6 +1850,38 @@ test_unreadable_journal(const Backup& b, const Old& old) {
     expect("an unreadable journal keeps everything", dsd_qt::backup::pending_committed());
 }
 
+/**
+ * The settings a rollback restores come from the journal only when it recorded them: a journal prefs.json that does
+ * not match the journal's manifest, or is no JSON object, leaves the restore Stuck and the live settings untouched,
+ * even when the staging no longer verifies and the start would otherwise roll back ("Nothing was changed").
+ */
+void
+test_journal_prefs_are_checked(const Backup& b, const Old& old) {
+    const QList<QPair<const char*, QByteArray>> damaged{
+        {"an empty object", "{}"}, {"not JSON", "not json"}, {"an array", "[]"}, {"truncated", ""}};
+    for (const auto& damage : damaged) {
+        prepare(b, old);
+        Faults crash;
+        crash.crashStep = "forward.files";
+        crash.crashCall = 2;
+        apply(&crash);
+        const QString what = QStringLiteral("journal prefs %1").arg(QLatin1String(damage.first));
+        const QVariantMap before = dsd_qt::AppPrefs::readPortable();
+        expect(what + ": the old settings are live", as_strings(before) == as_strings(old.tree.prefs));
+        QByteArray prefs = read_file(pending("journal/prefs.json"));
+        prefs = QString::fromLatin1(damage.first) == QLatin1String("truncated") ? prefs.left(prefs.size() / 2)
+                                                                                : damage.second;
+        expect(what + ": damaged", write_file(pending("journal/prefs.json"), prefs));
+        expect(what + ": the staging no longer verifies",
+               write_file(pending("files/" + b.parsed.files.last().path), "changed"));
+        const ApplyResult result = apply();
+        expect(what + ": Stuck", result.outcome == ApplyOutcome::Stuck);
+        expect(what + ": the settings are untouched",
+               as_strings(dsd_qt::AppPrefs::readPortable()) == as_strings(before));
+        expect(what + ": everything is kept for the next start", dsd_qt::backup::pending_committed());
+    }
+}
+
 /** Symlinks to an outside file and an outside directory inside @p dir. */
 bool
 add_links(const QString& dir, const QString& outside) {
@@ -2200,6 +2232,7 @@ main(int argc, char** argv) {
         test_old_file_where_a_directory_goes(backup, old);
         test_journal_problems(backup, old);
         test_unreadable_journal(backup, old);
+        test_journal_prefs_are_checked(backup, old);
         test_links_inside_removed_trees(backup, old, reference);
         test_journal_leftover(backup, old);
         test_empty_avoids(host, backup, old);

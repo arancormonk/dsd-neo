@@ -131,6 +131,7 @@ struct Journal {
     QMap<QString, QString> bundles;      // staged bundle root → the fresh one it was moved to
     QStringList createdDirs;             // directories the roll forward may create
     QVariantMap prefs;
+    QString prefsSha256; // of journal/prefs.json, so a rollback never restores settings it cannot trust
 };
 
 QStringList
@@ -915,7 +916,8 @@ class Applier {
                            {QStringLiteral("ownedRoots"), QJsonArray::fromStringList(m_journal.ownedRoots)},
                            {QStringLiteral("destinations"), map_json(m_journal.destinations)},
                            {QStringLiteral("bundles"), map_json(m_journal.bundles)},
-                           {QStringLiteral("createdDirs"), QJsonArray::fromStringList(m_journal.createdDirs)}});
+                           {QStringLiteral("createdDirs"), QJsonArray::fromStringList(m_journal.createdDirs)},
+                           {QStringLiteral("prefsSha256"), m_journal.prefsSha256}});
     }
 
     Status
@@ -944,10 +946,10 @@ class Applier {
         }
         if (status == Status::Ok) {
             m_journal.prefs = AppPrefs::readPortable();
-            status = step("journal.prefs", [this] {
-                return m_root.writeFile(m_journalDir + QStringLiteral("/prefs.json"),
-                                        json_bytes(QJsonObject::fromVariantMap(m_journal.prefs)));
-            });
+            const QByteArray prefs = json_bytes(QJsonObject::fromVariantMap(m_journal.prefs));
+            m_journal.prefsSha256 = sha256_hex(prefs);
+            status = step("journal.prefs",
+                          [&] { return m_root.writeFile(m_journalDir + QStringLiteral("/prefs.json"), prefs); });
         }
         const QByteArray manifest = journalManifest();
         if (status == Status::Ok) {
@@ -987,7 +989,17 @@ class Applier {
         m_journal.destinations = json_map(object.value(QLatin1String("destinations")));
         m_journal.bundles = json_map(object.value(QLatin1String("bundles")));
         m_journal.createdDirs = string_list(object.value(QLatin1String("createdDirs")));
-        m_journal.prefs = QJsonDocument::fromJson(prefs).object().toVariantMap();
+        // The settings a rollback would restore must be the ones the journal recorded: a prefs.json that does not match
+        // the manifest's hash, or is not one JSON object, leaves the journal unreadable (Stuck), never an empty map
+        // that would clear the old settings.
+        m_journal.prefsSha256 = object.value(QLatin1String("prefsSha256")).toString();
+        QJsonParseError prefsError{};
+        const QJsonDocument prefsDocument = QJsonDocument::fromJson(prefs, &prefsError);
+        if (!is_sha256_hex(m_journal.prefsSha256) || sha256_hex(prefs) != m_journal.prefsSha256
+            || prefsError.error != QJsonParseError::NoError || !prefsDocument.isObject()) {
+            return false;
+        }
+        m_journal.prefs = prefsDocument.object().toVariantMap();
         const QStringList paths =
             m_journal.destinations.values() + m_journal.bundles.values() + m_journal.ownedRoots + m_journal.createdDirs;
         return std::all_of(paths.cbegin(), paths.cend(), clean_relative);
