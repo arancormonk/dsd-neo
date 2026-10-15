@@ -18,8 +18,8 @@
  *    commitRestore() marks it confirmed and asks the host to quit, so it applies at the next start.
  *
  * cancel() drops the running job: its result is never reported and its side effects stay inside its own cache file or
- * staging directory, which the model removes. Saving an export into a document is not cancellable. The model never trusts a
- * document's name: a restore identifies its files by the sealed header alone.
+ * staging directory, which the model removes. Saving an export into a document is not cancellable. The model never
+ * trusts a document's name: a restore identifies its files by the sealed header alone.
  *
  * Result maps carry `ok` (bool) and `error`, empty on success, else a backup_error_name() ("NotBackup",
  * "NewerVersion", "WrongPassphrase", "TooLarge", "Damaged", "NoSpace", "SessionActive", "Io", "SourceChanged": a file

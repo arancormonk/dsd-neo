@@ -13,7 +13,8 @@
  * that teardown stops a document copy instead of waiting for it, that a restore an earlier start left committed shows
  * as waiting (and one whose apply is part-way through cannot be discarded), and that the QML tests' stand-in carries
  * the model's exact surface. The log lines the libraries print are captured and checked, so a clean run prints only
- * "OK"; this test's own FAIL and note lines are printed as they happen. Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
+ * "OK"; this test's own FAIL and note lines are printed as they happen. Registered only when the Qt frontend is
+ * enabled (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
 #include <QChar>

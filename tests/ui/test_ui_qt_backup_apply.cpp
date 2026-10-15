@@ -1958,7 +1958,9 @@ struct Beside {
     QString map, bundle;
 };
 
-/** A plain channel map updated in place with companions keeps its file in imports/ and names them by the bundle's id. */
+/**
+ * A plain channel map updated in place with companions keeps its file in imports/ and names them by the bundle's id.
+ */
 Beside
 make_beside(TestHost& host) {
     Beside beside;

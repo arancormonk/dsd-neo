@@ -419,7 +419,10 @@ class Builder {
                            {QStringLiteral("notIncluded"), QJsonArray::fromStringList(m_notIncluded)}};
     }
 
-    /** Pass two: read a carried file straight into its place in @p archive, checking it did not change since pass one. */
+    /**
+     * Pass two: read a carried file straight into its place in @p archive, checking it did not change since pass
+     * one.
+     */
     bool
     fillFile(const QJsonObject& entry, QByteArray* archive) {
         const QString relative = entry.value(QLatin1String("path")).toString();

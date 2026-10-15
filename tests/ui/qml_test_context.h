@@ -1772,7 +1772,10 @@ class Setup : public QObject {
         }
     }
 
-    /** @brief Set one `backup` property (busy, flowActive, restorePending, startupOutcome, lastResult). */
+    /**
+     * @brief Set one `backup` property (busy, flowActive, restorePending, restoreCancellable, startupOutcome,
+     * lastResult); restorePending sets restoreCancellable alike (see BackupRecorder::setState()).
+     */
     Q_INVOKABLE bool
     setBackup(const QString& key, const QVariant& value) {
         return m_backup != nullptr && m_backup->setState(key, value);

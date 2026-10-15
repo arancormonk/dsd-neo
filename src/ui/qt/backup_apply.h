@@ -90,12 +90,14 @@ bool discard_pending();
 /** Whether `restore-pending/` exists. */
 bool pending_exists();
 
-/** Whether `restore-pending/` exists and is committed: its COMMITTED marker is a regular file, as the apply reads it. */
+/**
+ * Whether `restore-pending/` exists and is committed: its COMMITTED marker is a regular file, as the apply reads it.
+ */
 bool pending_committed();
 
 /**
- * Whether the apply has started on the committed `restore-pending/` (its journal is complete): only the apply may finish
- * or undo it, so discard_pending() refuses it.
+ * Whether the apply has started on the committed `restore-pending/` (its journal is complete): only the apply may
+ * finish or undo it, so discard_pending() refuses it.
  */
 bool pending_apply_started();
 
