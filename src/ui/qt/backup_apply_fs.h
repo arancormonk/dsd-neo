@@ -56,7 +56,11 @@ bool hash_file(const QString& path, QString* sha256, qint64* size);
 /** The data root (json_store_root()) and the contained operations on it. */
 class DataRoot {
   public:
+    /** json_store_root(), as it reads now. */
     DataRoot();
+
+    /** @p root, a data root the caller read (a worker takes the one the UI thread read). */
+    explicit DataRoot(const QString& root);
 
     /** A usable root: non-empty, absolute. */
     bool valid() const;

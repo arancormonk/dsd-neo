@@ -7,8 +7,7 @@
  * snapshot, the paths, the host, its own copy of the passphrase. On the worker it touches only its own cache file and
  * staging directory, through calls that hold no shared mutable state: the archive and staging functions, the host's
  * document copies, and ImportedFilesModel::validate() inside stage_restore() (each CSV validator parses into its own
- * heap state). stage_restore() also reads json_store_root(), a QStandardPaths read that CallHistoryModel's save worker
- * already makes off the UI thread.
+ * heap state). The data root is read once, on the UI thread, and handed to the parse and the staging.
  *
  * Work goes to the worker and replies come back through two queues behind one std::mutex, and a capture-free queued
  * call tells the UI thread to drain the replies. A reply for a job that is no longer the current one is dropped there,
@@ -319,7 +318,7 @@ class Inspection {
     QString
     stage() {
         QString error;
-        if (backup::stage_restore(m_parsed, m_archive, m_work.stagingDir, &error)) {
+        if (backup::stage_restore(m_work.root, m_parsed, m_archive, m_work.stagingDir, &error)) {
             return QString();
         }
         return error.isEmpty() ? error_name(BackupError::Io) : error;

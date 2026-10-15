@@ -52,15 +52,17 @@ constexpr int kStagingVersion = 1;
 QString staging_dir_for_job(const QString& jobId);
 
 /**
- * Stage @p parsed (a successful backup_parse_archive() against json_store_root()) with the file bytes of @p archive
- * into @p stagingDir, a staging_dir_for_job() directory; an existing one is replaced. Each library row's staged file is
- * dry-run validated the way the library validates an import (ImportedFilesModel::validate()).
+ * Stage @p parsed (a successful backup_parse_archive() against @p dataRoot) with the file bytes of @p archive into
+ * @p stagingDir, a staging_dir_for_job() directory of that root; an existing one is replaced. Each library row's staged
+ * file is dry-run validated the way the library validates an import (ImportedFilesModel::validate()).
  *
+ * @param dataRoot json_store_root(), read by the caller: a worker passes the value the UI thread read.
  * @param error On failure, the backup_error_name(): "Damaged" when the backup holds a library file its type cannot
  *              parse (or the parse result does not belong to this data root), "Io" when writing failed.
  * @return true when everything is staged; on failure nothing is left at @p stagingDir.
  */
-bool stage_restore(const ParseResult& parsed, const QByteArray& archive, const QString& stagingDir, QString* error);
+bool stage_restore(const QString& dataRoot, const ParseResult& parsed, const QByteArray& archive,
+                   const QString& stagingDir, QString* error);
 
 /** Rename @p stagingDir to `<root>/restore-pending`, replacing an uncommitted one; never a committed one. */
 bool promote_staging(const QString& stagingDir);

@@ -103,10 +103,9 @@ hash_file(const QString& path, QString* sha256, qint64* size) {
     return n == 0;
 }
 
-DataRoot::DataRoot() {
-    const QString root = json_store_root();
-    m_root = root.isEmpty() ? QString() : QDir::cleanPath(root);
-}
+DataRoot::DataRoot() : DataRoot(json_store_root()) {}
+
+DataRoot::DataRoot(const QString& root) : m_root(root.isEmpty() ? QString() : QDir::cleanPath(root)) {}
 
 bool
 DataRoot::valid() const {

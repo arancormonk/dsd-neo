@@ -217,8 +217,9 @@ staging_dir_for_job(const QString& jobId) {
 }
 
 bool
-stage_restore(const ParseResult& parsed, const QByteArray& archive, const QString& stagingDir, QString* error) {
-    const DataRoot root;
+stage_restore(const QString& dataRoot, const ParseResult& parsed, const QByteArray& archive, const QString& stagingDir,
+              QString* error) {
+    const DataRoot root(dataRoot);
     BackupError result = parsed.error;
     QString detail = QStringLiteral("the backup did not parse");
     if (result == BackupError::None) {

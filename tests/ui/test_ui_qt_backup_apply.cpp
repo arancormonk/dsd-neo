@@ -744,8 +744,8 @@ stage_over(const dsd_qt::backup::ParseResult& parsed, const QByteArray& archive,
     put_back(tree);
     const QString dir = dsd_qt::backup::staging_dir_for_job("job-1");
     QString error;
-    const bool ok = dsd_qt::backup::stage_restore(parsed, archive, dir, &error) && dsd_qt::backup::promote_staging(dir)
-                    && dsd_qt::backup::commit_pending();
+    const bool ok = dsd_qt::backup::stage_restore(root(), parsed, archive, dir, &error)
+                    && dsd_qt::backup::promote_staging(dir) && dsd_qt::backup::commit_pending();
     expect("stage, promote and commit", ok);
     return ok;
 }
@@ -785,7 +785,8 @@ test_staging_layout(const Backup& b) {
 
     const QString dir = dsd_qt::backup::staging_dir_for_job("layout");
     QString error;
-    expect("stage succeeds", dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error) && error.isEmpty());
+    expect("stage succeeds",
+           dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, dir, &error) && error.isEmpty());
     bool filesOk = true;
     for (const auto& file : b.parsed.files) {
         filesOk = filesOk && read_file(dir + "/files/" + file.path) == b.archive.mid(file.offset, file.size);
@@ -826,7 +827,7 @@ test_staging_layout(const Backup& b) {
     onDisk.remove("manifest.json");
     expect("the manifest lists every staged file", listed == onDisk);
     expect("every staged file is private", privateFiles);
-    expect("restaging replaces the directory", dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error));
+    expect("restaging replaces the directory", dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, dir, &error));
     remove_tree(dir);
 }
 
@@ -882,29 +883,50 @@ test_staging_validates_library_files(const Backup& b) {
         dsd_qt::backup::backup_parse_archive(with_file_bytes(b.archive, relative(b.targets), notTargets), root());
     expect("the broken archive parses", broken.error == BackupError::None);
     QString error;
-    expect(
-        "a library file its type cannot parse is refused",
-        !dsd_qt::backup::stage_restore(broken, with_file_bytes(b.archive, relative(b.targets), notTargets), dir, &error)
-            && error == "Damaged");
+    expect("a library file its type cannot parse is refused",
+           !dsd_qt::backup::stage_restore(root(), broken, with_file_bytes(b.archive, relative(b.targets), notTargets),
+                                          dir, &error)
+               && error == "Damaged");
     expect("a refused stage leaves nothing", !QFileInfo::exists(dir));
 
     const QByteArray emptyArchive = with_file_bytes(b.archive, relative(b.groups), emptyGroups);
     const auto empty = dsd_qt::backup::backup_parse_archive(emptyArchive, root());
     expect("a library file with no usable row is staged as the library keeps it",
-           dsd_qt::backup::stage_restore(empty, emptyArchive, dir, &error));
+           dsd_qt::backup::stage_restore(root(), empty, emptyArchive, dir, &error));
     remove_tree(dir);
 
     const auto elsewhere = dsd_qt::backup::backup_parse_archive(b.archive, "/restore/elsewhere");
-    expect("a parse for another data root is refused", !dsd_qt::backup::stage_restore(elsewhere, b.archive, dir, &error)
-                                                           && error == "Damaged" && !QFileInfo::exists(dir));
+    expect("a parse for another data root is refused",
+           !dsd_qt::backup::stage_restore(root(), elsewhere, b.archive, dir, &error) && error == "Damaged"
+               && !QFileInfo::exists(dir));
     dsd_qt::backup::ParseResult failed;
     failed.error = BackupError::Damaged;
-    expect("a failed parse is refused", !dsd_qt::backup::stage_restore(failed, b.archive, dir, &error));
+    expect("a failed parse is refused", !dsd_qt::backup::stage_restore(root(), failed, b.archive, dir, &error));
     expect("a staging dir outside the root is refused",
-           !dsd_qt::backup::stage_restore(b.parsed, b.archive, scratch.filePath("restore-staging-x"), &error)
+           !dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, scratch.filePath("restore-staging-x"), &error)
                && error == "Io" && !QFileInfo::exists(scratch.filePath("restore-staging-x")));
     expect("a directory that is not a staging dir is refused",
-           !dsd_qt::backup::stage_restore(b.parsed, b.archive, at("imports"), &error) && error == "Io");
+           !dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, at("imports"), &error) && error == "Io");
+}
+
+/** Staging works on the data root its caller read (a worker gets the UI thread's), not on a later reading. */
+void
+test_staging_takes_the_callers_root(const Backup& b) {
+    QTemporaryDir other;
+    const QString otherRoot = QDir::cleanPath(other.path());
+    const auto parsed = dsd_qt::backup::backup_parse_archive(b.archive, otherRoot);
+    expect("the backup parses for another root", parsed.error == BackupError::None);
+    const QString dir = otherRoot + "/restore-staging-caller";
+    QString error;
+    expect("a parse for the caller's root stages into it",
+           dsd_qt::backup::stage_restore(otherRoot, parsed, b.archive, dir, &error) && error.isEmpty()
+               && QFileInfo(dir + "/manifest.json").isFile());
+    expect("nothing is staged in the current root",
+           QDir(root()).entryList({"restore-staging-*"}, QDir::AllEntries | QDir::Hidden).isEmpty());
+    const QString here = dsd_qt::backup::staging_dir_for_job("caller");
+    expect("the same parse is refused for the current root",
+           !dsd_qt::backup::stage_restore(root(), parsed, b.archive, here, &error) && error == "Damaged"
+               && !QFileInfo::exists(here));
 }
 
 void
@@ -918,12 +940,12 @@ test_promote_commit_discard(const Backup& b, const Old& old) {
     expect("discard without a pending restore succeeds", dsd_qt::backup::discard_pending());
     expect("promote a missing staging dir fails", !dsd_qt::backup::promote_staging(first));
 
-    expect("stage first", dsd_qt::backup::stage_restore(b.parsed, b.archive, first, &error));
+    expect("stage first", dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, first, &error));
     expect("promote first", dsd_qt::backup::promote_staging(first) && !QFileInfo::exists(first));
     expect("pending, not committed", dsd_qt::backup::pending_exists() && !dsd_qt::backup::pending_committed());
     QJsonObject manifest = read_json_object(pending("manifest.json"));
     manifest.insert("marker", "second");
-    expect("stage second", dsd_qt::backup::stage_restore(b.parsed, b.archive, second, &error)
+    expect("stage second", dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, second, &error)
                                && write_file(second + "/manifest.json", QJsonDocument(manifest).toJson()));
     expect("promote replaces an uncommitted restore", dsd_qt::backup::promote_staging(second));
     expect("the second stage is pending", read_json_object(pending("manifest.json")).value("marker") == "second");
@@ -932,7 +954,7 @@ test_promote_commit_discard(const Backup& b, const Old& old) {
     expect("COMMITTED holds the manifest's sha256",
            read_file(pending("COMMITTED")) == sha256_hex(read_file(pending("manifest.json"))).toLatin1());
     expect("committing again succeeds", dsd_qt::backup::commit_pending());
-    expect("stage third", dsd_qt::backup::stage_restore(b.parsed, b.archive, first, &error));
+    expect("stage third", dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, first, &error));
     expect("promote never replaces a committed restore", !dsd_qt::backup::promote_staging(first));
     expect("the committed restore is untouched", read_json_object(pending("manifest.json")).value("marker") == "second"
                                                      && dsd_qt::backup::pending_committed()
@@ -940,7 +962,7 @@ test_promote_commit_discard(const Backup& b, const Old& old) {
 
     // The sweep removes leftover staging directories and leaves a symlink of that name alone.
     QTemporaryDir outside;
-    expect("leftover staging", dsd_qt::backup::stage_restore(b.parsed, b.archive, second, &error)
+    expect("leftover staging", dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, second, &error)
                                    && QFileInfo(first).isDir() && write_file(at("restore-staging-loose"), "x")
                                    && write_file(outside.filePath("keep.txt"), "keep")
                                    && QFile::link(outside.path(), at("restore-staging-link")));
@@ -1381,8 +1403,8 @@ test_unmarked_pending(const Backup& b, const Old& old) {
     put_back(old.tree);
     const QString dir = dsd_qt::backup::staging_dir_for_job("unmarked");
     QString error;
-    expect("stage and promote",
-           dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error) && dsd_qt::backup::promote_staging(dir));
+    expect("stage and promote", dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, dir, &error)
+                                    && dsd_qt::backup::promote_staging(dir));
     const ApplyResult result = apply();
     expect("an unmarked restore is removed", result.outcome == ApplyOutcome::None && !dsd_qt::backup::pending_exists());
     expect("an unmarked restore changes nothing", same_tree(capture(), old.tree, true));
@@ -1501,10 +1523,10 @@ test_marker_must_be_a_file(const Backup& b, const Old& old) {
     put_back(old.tree);
     QString error;
     const QString dir = dsd_qt::backup::staging_dir_for_job("unmarked");
-    expect("a stage whose marker is a directory", dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error)
-                                                      && dsd_qt::backup::promote_staging(dir)
-                                                      && QDir().mkdir(pending("COMMITTED")));
-    expect("a newer stage replaces it", dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error)
+    expect("a stage whose marker is a directory",
+           dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, dir, &error)
+               && dsd_qt::backup::promote_staging(dir) && QDir().mkdir(pending("COMMITTED")));
+    expect("a newer stage replaces it", dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, dir, &error)
                                             && dsd_qt::backup::promote_staging(dir)
                                             && !QFileInfo::exists(pending("COMMITTED")));
     expect("discard it", dsd_qt::backup::discard_pending());
@@ -1677,8 +1699,8 @@ test_links_inside_removed_trees(const Backup& b, const Old& old, const Tree& ref
         return;
     }
     const auto stagePending = [&]() {
-        return dsd_qt::backup::stage_restore(b.parsed, b.archive, dir, &error) && dsd_qt::backup::promote_staging(dir)
-               && add_links(pending("files/imports"), outside);
+        return dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, dir, &error)
+               && dsd_qt::backup::promote_staging(dir) && add_links(pending("files/imports"), outside);
     };
     expect("an unmarked restore holding links", stagePending());
     expect("an unmarked restore holding links is removed",
@@ -1691,20 +1713,21 @@ test_links_inside_removed_trees(const Backup& b, const Old& old, const Tree& ref
     untouched("discard");
 
     expect("a restore to replace holding links", stagePending());
-    expect("a restore holding links is replaced", dsd_qt::backup::stage_restore(b.parsed, b.archive, other, &error)
-                                                      && dsd_qt::backup::promote_staging(other)
-                                                      && !QFileInfo::exists(pending("files/imports/to-dir")));
+    expect("a restore holding links is replaced",
+           dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, other, &error)
+               && dsd_qt::backup::promote_staging(other) && !QFileInfo::exists(pending("files/imports/to-dir")));
     untouched("promote");
     expect("discard the replacement", dsd_qt::backup::discard_pending());
 
     expect("a stale staging dir holding links",
-           dsd_qt::backup::stage_restore(b.parsed, b.archive, other, &error) && add_links(other + "/files", outside));
+           dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, other, &error)
+               && add_links(other + "/files", outside));
     dsd_qt::backup::sweep_stale_staging();
     expect("the sweep removes a staging dir holding links", !QFileInfo::exists(other));
-    expect("a staging dir holding links",
-           dsd_qt::backup::stage_restore(b.parsed, b.archive, other, &error) && add_links(other + "/files", outside));
+    expect("a staging dir holding links", dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, other, &error)
+                                              && add_links(other + "/files", outside));
     expect("restaging over a staging dir holding links",
-           dsd_qt::backup::stage_restore(b.parsed, b.archive, other, &error)
+           dsd_qt::backup::stage_restore(root(), b.parsed, b.archive, other, &error)
                && !QFileInfo::exists(other + "/files/to-dir"));
     remove_tree(other);
     untouched("staging");
@@ -1768,7 +1791,7 @@ test_empty_avoids(TestHost& host, const Backup& b, const Old& old) {
     parsed.avoids.clear();
     const QString dir = dsd_qt::backup::staging_dir_for_job("empty");
     QString error;
-    expect("stage an empty avoid list", dsd_qt::backup::stage_restore(parsed, b.archive, dir, &error)
+    expect("stage an empty avoid list", dsd_qt::backup::stage_restore(root(), parsed, b.archive, dir, &error)
                                             && dsd_qt::backup::promote_staging(dir)
                                             && dsd_qt::backup::commit_pending());
     expect("apply it", apply().outcome == ApplyOutcome::Applied);
@@ -1975,6 +1998,7 @@ main(int argc, char** argv) {
         const Old old = make_old(host, backup, external.path());
         test_staging_layout(backup);
         test_staging_validates_library_files(backup);
+        test_staging_takes_the_callers_root(backup);
         test_promote_commit_discard(backup, old);
         const Tree reference = test_clean_apply(host, backup, old);
         test_crash_at_every_step(backup, old, reference);
