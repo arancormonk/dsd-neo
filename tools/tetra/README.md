@@ -49,4 +49,7 @@ are described in `docs/dependencies.md` ("Pinned TETRA_crypto source").
 `prepare_real_air_fixture.py` reproduces the derived TETRA real-air fixtures
 in `tests/fixtures/iq` from the preserved upstream captures and checks every
 input and output hash; `tests/fixtures/iq/tetra_scbs_real_air.PROVENANCE.md`
-records the sources.
+records the sources. The real-air call fixture, `tetra_call_real_air_72k`, is an
+excerpt of a Signal Identification Wiki recording and is cut by
+`tools/build_iq_fixtures.py --only tetra_call_real_air_72k` like the other wiki
+fixtures (`docs/testing.md`).

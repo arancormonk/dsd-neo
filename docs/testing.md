@@ -230,7 +230,8 @@ Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control an
 voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
 voice, DMR Tier III control (including a CSBK-only RAS control channel replayed
 with `-F`, colour code 0 — regression coverage for issue #348), NXDN48, NXDN96,
-dPMR, D-STAR, YSF, EDACS, ProVoice, and M17, plus the received CTCSS tone and DCS code on synthetic
+dPMR, D-STAR, YSF, EDACS, ProVoice, M17, and TETRA (control channel, call control and speech), plus the received
+CTCSS tone and DCS code on synthetic
 analog NFM under `-fA` (see "Received tone (CTCSS) on the analog monitor" and "Received code
 (DCS) on the analog monitor" below). The analog FM
 monitor's audio has its own cases, which score the audio rather than a log line; see
@@ -275,6 +276,21 @@ retains its noise, fading and ISI while reversing all differential phase steps;
 requires at least 15. `tools/tetra/prepare_real_air_fixture.py` verifies the raw
 SCBS, resampled, marginal, and inverted hashes; the adjacent provenance file
 records the source commits, transforms, and parameters.
+
+Both of those captures are control channels. `tetra_call_real_air_72k` is the real-air traffic: 6.5 seconds of the
+Signal Identification Wiki's `TETRA_IQ.zip`, a 48 kHz recording of one downlink carrier of another network (MCC 228,
+MNC 8889, colour code 1, main carrier 1068 at 426.7 MHz) with a cleartext group call on timeslot 2.
+`tools/build_iq_fixtures.py` (`TETRA_EXCERPTS`) cuts it where the floor passes from one talker to the next and
+resamples it to 72 kHz, the rate `-fT` runs an RTL-SDR at; the recording's carrier offset, about +343 Hz, is kept for
+the receiver to recover. The wiki gives no frequency, so the sidecar is tuned to carrier 1068, where the call's
+allocation sends the call: a call's speech is its own only on the carrier its allocation names, and
+`DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT` requires the replay to publish the group call, talkgroup 100601 from SSI 100702 on
+426.7 MHz, to its event history (`-J`, through `iq_decode_check.cmake`'s `EVENT_EXPECTED`). The other
+`DECODE_IQ_TETRA_REAL_AIR_CALL_*` cases assert at least 200 BSCH identities (`_BSCH`; the
+replay decodes 232), the main carrier in SYSINFO, the call's channel allocation, its D-SETUP from SSI 100701,
+D-TX-CEASED and D-TX-GRANTED to SSI 100702, and at least 40 TCH/S bursts whose class-2 CRC passes (`_TCH_FS`; the
+replay decodes 48, all of the speech in the excerpt, and none fails). This fixture's margin is ±20 counts of added
+noise rather than ±45: the excerpt carries each call-control PDU twice, and at ±30 one copy of some is lost.
 
 The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) repeat one
 sequence 100 times at 54 kHz: a synchronisation burst with a CRC-valid BSCH (MCC 460, MNC 4242, colour code 17), a
