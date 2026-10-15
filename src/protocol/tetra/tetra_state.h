@@ -232,6 +232,19 @@ typedef struct {
     uint8_t bits[TETRA_MAC_TM_SDU_MAX_BITS]; /* one bit per byte */
 } tetra_mac_fragment;
 
+/* Networks whose air interface algorithm evidence is kept: room for every network an air key can be loaded for
+ * (DSD_TETRA_AIR_KEY_SLOTS), whose evidence is never evicted, and four more (tetra_air.c). */
+#define TETRA_AIR_KSG_NETS 20
+
+/** The KSG numbers one network's signalling named (tetra_state_t::air_ksg). */
+typedef struct {
+    uint32_t seq;  /* when the entry was made: the oldest keyless entry is the one a full cache replaces */
+    uint16_t mcc;  /* 10-bit MCC */
+    uint16_t mnc;  /* 14-bit MNC */
+    uint16_t mask; /* bit k: KSG number k was named (0..3 standard, 8..15 proprietary; 4..7 are reserved) */
+    uint8_t valid; /* the entry holds a network */
+} tetra_air_ksg_net;
+
 typedef struct tetra_state {
     /* The speech path: codec library, speech integrity and PCM carry (tetra_voice.c). */
     tetra_voice_t voice;
@@ -284,6 +297,11 @@ typedef struct tetra_state {
     /* Bursts and blocks whose CRC passed; TETRA reads as decoded once one did (tetra_publish()). */
     uint32_t decode_ok;
 
+    /* The frequency the receiver was tuned to when the last burst began (dsd_opts_tuned_freq_hz(); 0 off a radio
+     * input), set by tetra_frame_enter() and cleared by tetra_forget_carrier(): what tetra_calls_rx_carrier() reads the
+     * carrier being received from where no options are at hand. */
+    long rx_tuned_hz;
+
     /* TDMA clock (EN 300 392-2 clause 7.3), set by a BSCH and run by tetra_tdma_follow(): while tdma_valid, the slot
      * that started at symbol count tdma_slot_start is timeslot tn 1..4 of frame fn 1..18 of multiframe mn 1..60. The
      * hyperframe number is the SYSINFO value from a block whose CCK flag is clear, counted on by the clock at each
@@ -296,12 +314,12 @@ typedef struct tetra_state {
     uint8_t fn;
     uint8_t mn;
 
-    /* The KSG number (0..3, EN 300 392-7 table A.73) a D-OTAR SCK or GCK Provide named for a network, for up to four
-     * networks keyed by MCC/MNC (tetra_air.c). The operator air keys live in the key set (dsd_state::tetra_air_keys). */
-    uint16_t air_ksg_mcc[4];
-    uint16_t air_ksg_mnc[4];
-    uint8_t air_ksg_valid[4];
-    uint8_t air_ksg[4];
+    /* The KSG numbers (EN 300 392-7 table A.73) the network's CRC-passed signalling named -- a D-OTAR SCK or GCK
+     * Provide, the ciphering parameters of a D-LOCATION UPDATE COMMAND or REJECT -- per network keyed by MCC/MNC, for
+     * the session (tetra_air.c); air_ksg_seq numbers the entries in the order they were made. The operator air keys
+     * live in the key set (dsd_state::tetra_air_keys). */
+    tetra_air_ksg_net air_ksg[TETRA_AIR_KSG_NETS];
+    uint32_t air_ksg_seq;
 
     /* Direct mode (EN 300 396-2, EN 300 396-3), set by tetra_dmo_apply_sync(); all of it is the carrier's, forgotten with
      * it (tetra_dmo_forget_carrier()).

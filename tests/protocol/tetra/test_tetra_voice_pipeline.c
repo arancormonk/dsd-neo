@@ -487,6 +487,55 @@ test_air_key_stream_positions(void) {
     fixture_close(&f);
 }
 
+/* A TEA1 reduced key decrypts the speech of the channel it was found on, from its register and without TB5: the
+ * anonymous speech of carrier 321 plays decrypted and its call is decryptable. On carrier 322 the same key decrypts
+ * nothing: the speech is muted and its call stays pending. */
+static void
+test_reduced_key_speech(void) {
+    static const uint32_t k_register = 0x67757D92u;
+    for (int other_carrier = 0; other_carrier <= 1; other_carrier++) {
+        fixture f;
+        expect(fixture_open(&f) == 0, "reduced: fixture");
+        air_encrypted_call(&f, 0);
+        tetra_confirm_note_signalling(f.state);
+        expect(dsd_key_apply_direct(f.state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,67757D92,la=77,cc=9,carrier=321",
+                                    DSD_KEY_APPLY_OVERLAY)
+                   == DSD_KEY_DIRECT_OK,
+               "reduced: the key of carrier 321 loads");
+        tetra_state_t* ts = tetra_st(f.state);
+        f.opts->rtlsdr_center_freq = AIR_CARRIER_HZ + (other_carrier ? 25000u : 0u);
+        ts->rx_tuned_hz = (long)f.opts->rtlsdr_center_freq;
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof(call));
+        if (other_carrier) {
+            expect(played_by_burst(&f) == 0, "reduced: carrier 322's speech is muted");
+            expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+                   "reduced: and its call pending");
+            fixture_close(&f);
+            continue;
+        }
+        uint8_t full[TETRA_SPEECH_FULL_BITS];
+        uint8_t frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+        uint8_t ks[35];
+        burst_bits(full, TETRA_SPEECH_FULL_BITS, 7U);
+        tetra_voice_reorder_full(full, frames);
+        tetra_tea1_keystream_reduced(k_register, tetra_air_build_iv(ts->tn, ts->fn, ts->mn, ts->hyperframe, 0), ks,
+                                     (int)sizeof(ks));
+        for (int i = 0; i < 2 * DSD_TETRA_CODEC_FRAME_BITS; i++) {
+            frames[i] = (uint8_t)((frames[i] ^ (ks[i / 8] >> (7 - (i % 8)))) & 1u);
+        }
+        tetra_voice_full_slot(f.opts, f.state, full, 1);
+        const played_frame want[] = {
+            {1, 0, frames},
+            {2, 0, frames + DSD_TETRA_CODEC_FRAME_BITS},
+        };
+        expect_output(&f, 0, want, 2, 2 * FRAME, "reduced: carrier 321's speech, decrypted from the register");
+        expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE,
+               "reduced: and its call decryptable");
+        fixture_close(&f);
+    }
+}
+
 static void
 test_talkgroup_gate(void) {
     fixture f;
@@ -1303,6 +1352,7 @@ main(void) {
     test_follow_gate();
     test_encryption_gate();
     test_air_key_stream_positions();
+    test_reduced_key_speech();
     test_talkgroup_gate();
     test_record_gate();
     test_call_boundary_resets_speech();

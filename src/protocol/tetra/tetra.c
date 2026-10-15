@@ -898,6 +898,7 @@ tetra_frame_enter(const dsd_opts* opts, dsd_state* state) {
         return NULL;
     }
     ts->uplink = (uint8_t)(opts->tetra_uplink != 0);
+    ts->rx_tuned_hz = (long)dsd_opts_tuned_freq_hz(opts);
     ts->log_payload = (uint8_t)(opts->payload == 1);
     int verbose = opts->verbose > 0 ? opts->verbose : 0;
     if (verbose > 255) {
@@ -1083,9 +1084,11 @@ processTetraSBFrame(dsd_opts* opts, dsd_state* state) {
 void
 tetra_forget_carrier(dsd_state* state) {
     /* A session that never decoded TETRA has nothing to forget, and gets no TETRA state for it. */
-    if (!tetra_st_existing(state)) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
         return;
     }
+    ts->rx_tuned_hz = 0;
     tetra_confirm_reset(state);
     tetra_mac_forget_fragments(state);
     tetra_tdma_stop(state);

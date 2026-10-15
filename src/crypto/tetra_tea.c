@@ -46,6 +46,16 @@ tetra_tea_keystream(int alg, const uint8_t key[10], uint32_t iv, uint8_t* out, i
     DSD_SECURE_ZERO(key_copy, sizeof(key_copy));
 }
 
+void
+tetra_tea1_keystream_reduced(uint32_t key_register, uint32_t iv, uint8_t* out, int nbytes) {
+    if (!out || nbytes <= 0) {
+        DSD_SECURE_ZERO(&key_register, sizeof(key_register));
+        return;
+    }
+    tea1_inner(tea1_expand_iv(iv), key_register, (uint32_t)nbytes, out);
+    DSD_SECURE_ZERO(&key_register, sizeof(key_register));
+}
+
 /* Append the low @p bits bits of @p value to @p mask at bit @p *pos, most significant first. */
 static void
 tetra_tb5_put(uint8_t* mask, int* pos, uint32_t value, int bits) {

@@ -394,8 +394,9 @@ carrier_of_frequency(const tetra_state_t* ts, long freq_hz, uint16_t* carrier) {
     return 1;
 }
 
-int
-tetra_calls_carrier(const dsd_opts* opts, const dsd_state* state, uint16_t* carrier) {
+/* The carrier being received when the receiver is tuned to @p tuned_hz and follows no call (tetra_calls_carrier()). */
+static int
+calls_carrier_at(const dsd_state* state, long tuned_hz, uint16_t* carrier) {
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (!ts || !carrier || ts->dmo || ts->sm.pending_request_id != 0U) {
         return 0;
@@ -405,19 +406,45 @@ tetra_calls_carrier(const dsd_opts* opts, const dsd_state* state, uint16_t* carr
         *carrier = g.carrier;
         return 1;
     }
-    return carrier_of_frequency(ts, tetra_sm_receiver_freq(opts, state), carrier);
+    return carrier_of_frequency(ts, tuned_hz, carrier);
 }
 
-/* Air interface encryption a key stream here undoes: an encrypted mode, not the reserved one, under a usable key. */
+int
+tetra_calls_carrier(const dsd_opts* opts, const dsd_state* state, uint16_t* carrier) {
+    return calls_carrier_at(state, tetra_sm_receiver_freq(opts, state), carrier);
+}
+
+int
+tetra_calls_rx_carrier(const dsd_state* state, uint16_t* carrier) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return ts && calls_carrier_at(state, ts->rx_tuned_hz, carrier);
+}
+
+/* The carrier being received (tetra_calls_rx_carrier()), or -1 when it is not known. */
 static int
-air_decryptable(const dsd_state* state, uint8_t air_enc) {
-    return tetra_enc_mode_encrypted(air_enc) && tetra_air_key_usable(state);
+rx_carrier(const dsd_state* state) {
+    uint16_t carrier = 0;
+    return tetra_calls_rx_carrier(state, &carrier) ? (int)carrier : -1;
+}
+
+/* The carrier @p c's speech is on: its allocated channel's, else the carrier being received; -1 when not known. */
+static int
+call_carrier(const dsd_state* state, const tetra_call_t* c) {
+    return c->alloc.timeslots != 0u ? (int)c->alloc.carrier : rx_carrier(state);
+}
+
+/* Air interface encryption a key stream here undoes on @p carrier (-1 unknown): an encrypted mode, not the reserved
+ * one, under a key for that carrier (tetra_air_key_usable_on(): a TEA1 reduced key decrypts its own channel only). */
+static int
+air_decryptable(const dsd_state* state, uint8_t air_enc, int carrier) {
+    return tetra_enc_mode_encrypted(air_enc) && tetra_air_key_usable_on(state, carrier);
 }
 
 /* Speech of @p c the listener cannot decrypt: end-to-end encrypted, or air encrypted without a key stream for it. */
 static int
 call_undecryptable(const dsd_state* state, const tetra_call_t* c) {
-    return c->e2ee || (c->air_enc != TETRA_ENC_MODE_NONE && !air_decryptable(state, c->air_enc));
+    return c->e2ee
+           || (c->air_enc != TETRA_ENC_MODE_NONE && !air_decryptable(state, c->air_enc, call_carrier(state, c)));
 }
 
 static uint32_t
@@ -472,16 +499,16 @@ call_kind(const tetra_call_t* c) {
 }
 
 /* End-to-end encryption (@p sealed) is never decrypted here; air interface encryption is when a key stream can be
- * made. */
+ * made for @p carrier (-1 unknown). */
 static dsd_call_crypto_state
-crypto_state(const dsd_state* state, int sealed, uint8_t air_enc) {
+crypto_state(const dsd_state* state, int sealed, uint8_t air_enc, int carrier) {
     if (sealed) {
         return DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
     }
     if (air_enc == TETRA_ENC_MODE_NONE) {
         return DSD_CALL_CRYPTO_CLEAR;
     }
-    return air_decryptable(state, air_enc) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    return air_decryptable(state, air_enc, carrier) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
 }
 
 /* End what canonical slot 0 carries for TETRA, when it is still an active TETRA call: an ended one keeps the reason
@@ -569,7 +596,8 @@ calls_publish_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const te
     o.service_options = c->basic_service;
     o.priority = c->priority;
     o.has_service_metadata = (uint8_t)((c->flags & TETRA_CALL_F_SETUP_SEEN) != 0u);
-    calls_publish(opts, state, ts, &o, crypto_state(state, c->e2ee, c->air_enc), TETRA_PUB_CALL, c->call_id);
+    calls_publish(opts, state, ts, &o, crypto_state(state, c->e2ee, c->air_enc, call_carrier(state, c)), TETRA_PUB_CALL,
+                  c->call_id);
 }
 
 /* The followed call, once its tune has settled and while a transmission is not known to have ceased, publishes on
@@ -1560,7 +1588,7 @@ speech_of_record(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetr
         }
     } else {
         /* A cipher key loaded, or the network's KSG learnt, since: no PDU of the call says so, its speech does. */
-        calls_reclassify(opts, state, crypto_state(state, c->e2ee, c->air_enc));
+        calls_reclassify(opts, state, crypto_state(state, c->e2ee, c->air_enc, call_carrier(state, c)));
     }
     return calls_carrying(state, ts, TETRA_PUB_CALL, c->call_id);
 }
@@ -1588,7 +1616,7 @@ speech_anonymous(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetr
     if (!tetra_confirm_carrier_proven(state)) {
         return 0;
     }
-    const dsd_call_crypto_state crypto = crypto_state(state, sp->sealed, sp->air_enc);
+    const dsd_call_crypto_state crypto = crypto_state(state, sp->sealed, sp->air_enc, rx_carrier(state));
     if (!calls_carrying(state, ts, TETRA_PUB_ANON, sp->tn)) {
         dsd_call_observation o;
         DSD_MEMSET(&o, 0, sizeof o);

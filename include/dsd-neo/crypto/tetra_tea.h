@@ -10,6 +10,12 @@
 /* alg is the KSG number: 0 TEA1, 1 TEA2, 2 TEA3. Other values do nothing. */
 void tetra_tea_keystream(int alg, const uint8_t key[10], uint32_t iv, uint8_t* out, int nbytes);
 
+/* TEA1 from its 32-bit key register instead of an 80-bit ECK. TEA1 compresses the ECK into that register before it
+ * generates anything, so the register (the reduced ECK) determines the key stream alone; as it comes from the ECK, it
+ * belongs to the one carrier, location area and colour code TB5 derived that ECK for. A NULL out or a length below 1
+ * does nothing. */
+void tetra_tea1_keystream_reduced(uint32_t key_register, uint32_t iv, uint8_t* out, int nbytes);
+
 /* EN 300 392-7 clause 6.3.2.1. Out-of-range slot, frame, multiframe or direction returns 0. */
 uint32_t tetra_tea_build_iv(uint8_t tn, uint8_t fn, uint8_t mn, uint16_t hn, uint8_t dir);
 

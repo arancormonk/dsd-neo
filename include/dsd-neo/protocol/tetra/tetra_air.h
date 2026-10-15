@@ -4,10 +4,13 @@
  * @brief TETRA trunked mode (TMO) air interface decryption of speech with an operator key.
  *
  * TMO air interface encryption (EN 300 392-7 clause 6) runs a TEA key stream generator from an initial value built of
- * the slot, frame, multiframe and hyperframe numbers. The algorithm (KSG number) comes from D-OTAR SCK/GCK Provide;
- * the 80-bit cipher key (SCK or CCK) is loaded by the operator into dsd_state::tetra_air_keys per network, and the
- * generator takes the encryption cipher key TB5 derives from it with the carrier number, location area and colour
- * code of the carrier being received (clause 6.3.2.2). Sealed OTAR keys are never unwrapped.
+ * the slot, frame, multiframe and hyperframe numbers. The operator loads keys into dsd_state::tetra_air_keys: an 80-bit
+ * cipher key (SCK or CCK) of a network, from which TB5 derives the encryption cipher key of the carrier being received
+ * with its carrier number, location area and colour code (clause 6.3.2.2); or a TEA1 reduced key -- the 32-bit register
+ * TEA1 compresses that ECK into -- of one channel, which needs neither TB5 nor the compression and decrypts that
+ * channel only. A key may name its algorithm; one that does not runs the algorithm the network's signalling named
+ * (KSG evidence: D-OTAR SCK/GCK Provide, the ciphering parameters of D-LOCATION UPDATE COMMAND and REJECT), and only
+ * while that signalling named one: a SwMI may support several (clause 6.3.1). Sealed OTAR keys are never unwrapped.
  *
  * Direct mode air interface encryption (EN 300 396-6) is a different scheme: its key stream generator is named in the
  * DMAC-SYNC and starts from the time variant parameter there, not from the TMO frame numbering, with a static cipher
@@ -33,10 +36,15 @@ extern "C" {
 #define TETRA_AIR_KSS_TCH_S      0
 #define TETRA_AIR_KSS_TCH_S_HALF 216
 
-/* Remember KSG number 0..3 (TEA1..TEA4, EN 300 392-7 table 6.2) for this network. Returns 1 when stored. */
+/* Note that CRC-passed signalling named KSG number @p ksg (EN 300 392-7 table 6.2: 0..3 TEA1..TEA4, 8..15
+ * proprietary) for this network. The evidence of a network an air key is loaded for is never evicted; a full cache
+ * replaces the oldest keyless network's. Returns 1 when stored, 0 for a reserved KSG (4..7) or a full cache. */
 int tetra_air_ksg_remember(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t ksg);
 
-/* Returns 0..3, or -1 when this network has no remembered algorithm. */
+/* The KSG numbers the network's signalling named: bit k for KSG k; 0 for none. */
+uint16_t tetra_air_ksg_seen(const dsd_state* state, uint16_t mcc, uint16_t mnc);
+
+/* The network's one algorithm: the KSG number its signalling named, or -1 when it named none or more than one. */
 int tetra_air_ksg_lookup(const dsd_state* state, uint16_t mcc, uint16_t mnc);
 
 /* "TEA1".."TEA4", or NULL when ksg is outside 0..3. */
@@ -46,14 +54,21 @@ const char* tetra_air_ksg_name(int ksg);
  * bits of the hyperframe number hn are used; dir is 0 downlink, 1 uplink. Returns 0 when a field is out of range. */
 uint32_t tetra_air_build_iv(uint8_t tn, uint8_t fn, uint8_t mn, uint16_t hn, uint8_t dir);
 
-/* 1 when trunked mode speech of this network could be decrypted: the network identity and its location area are known,
- * its KSG is TEA1..TEA3 and a cipher key is loaded for it. */
-int tetra_air_key_usable(const dsd_state* state);
+/* The key that decrypts trunked mode speech on @p carrier (0..4095, or -1 when the carrier is not known) of the cell
+ * being received, once its network identity and location area are known: a TEA1 reduced key of that channel (MCC, MNC,
+ * location area, colour code, carrier), else the network's 80-bit key with the algorithm it names, else with the
+ * network's one TEA1..TEA3 (tetra_air_ksg_lookup()). An unknown carrier takes no reduced key. Returns 1 and sets
+ * @p kind (DSD_TETRA_AIR_KEY_*) and @p tea (1..3 for TEA1..TEA3), either may be NULL; 0 when no key applies. The TDMA
+ * clock is not asked: a key stays usable while a retune has it down. */
+int tetra_air_key_for_carrier(const dsd_state* state, int carrier, uint8_t* kind, uint8_t* tea);
+
+/* 1 when tetra_air_key_for_carrier() finds a key for @p carrier. */
+int tetra_air_key_usable_on(const dsd_state* state, int carrier);
 
 /* XOR the speech bits of a call whose air interface encryption mode is enc_mode (TETRA_ENC_MODE_*, from the
  * MAC-RESOURCE PDUs of the call) with the key stream when this is trunked mode, enc_mode is an encrypted one, the
- * network KSG is TEA1..TEA3, a cipher key is loaded, the carrier number (opts may be NULL; see tetra_calls_carrier()),
- * location area and colour code TB5 needs are known, and the hyperframe and TDMA clock are known. The uplink carries
+ * carrier number (opts may be NULL; see tetra_calls_carrier()) is known, a key applies to it
+ * (tetra_air_key_for_carrier()), and the hyperframe and TDMA clock are known. The uplink carries
  * no BSCH, so its clock is never set and uplink speech stays as received. ks_bit_offset is the first key stream bit for
  * this speech fragment (TETRA_AIR_KSS_*). Returns 1 when the bits were decrypted, 0 when they are unchanged. */
 int tetra_air_decrypt_voice(const dsd_opts* opts, const dsd_state* state, uint8_t enc_mode, uint8_t* bits, int nbits,
