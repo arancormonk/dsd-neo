@@ -262,7 +262,7 @@ list — RadioReference adds rows over time.
 
 | System | Decode flag | Channel map |
 |---|---|---|
-| P25, standard | `-ft -^` | Yes — it is the control-channel hunt list |
+| P25, standard | `-ft -^` | Yes — it is the control-channel hunt list, after a loss and at session start ([Startup control-channel hunt](cli.md#startup-control-channel-hunt)) |
 | P25, simulcast (LSM) | `-mq -^` | Yes |
 | DMR Connect Plus | `-fs` | Yes, LCN-keyed, with a `999,<cc>` seed row |
 | DMR Capacity Plus / Hytera XPT | `-fs` | Yes, LSN-paired (`2n-1`, `2n`) |
@@ -281,7 +281,8 @@ Two things the preview will warn about rather than silently paper over:
 
 - **The P25 channel map's first column is a placeholder.** RadioReference publishes a small
   sequential index per site, not the 16-bit `(iden << 12) | chan` identifier the decoder looks up,
-  so the map's *frequency ordering* is what makes it useful (it is the hunt rotation) while the
+  so the map's *frequency ordering* is what makes it useful (it is the hunt rotation, including when a session starts on a
+  quiet control channel) while the
   channel numbers themselves are inert. They are purged within seconds of control-channel lock,
   when the site's first `IDEN_UP` invalidates that band's slots.
 - **Custom band plans are not carried.** When RadioReference publishes one the preview says so.

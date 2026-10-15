@@ -1692,7 +1692,8 @@ waits on a silent source.
 DSP frame-sync code may need to trigger protocol-specific actions (for example, trunking state machine ticks) without
 depending directly on protocol headers. The runtime provides a small hook table in
 `include/dsd-neo/runtime/frame_sync_hooks.h`; the engine installs the concrete implementations at startup in
-`src/engine/frame_sync_hooks_install.c`.
+`src/engine/frame_sync_hooks_install.c`. `decoder_ticks_due` tells a silent-input wait that decoder-thread trunking
+timers are due (issue #703); the engine's answer reads the state machines under the P25 SM tick guard.
 
 ### Trunk Scan Hooks (Protocol/App-Control → Runtime ← Engine)
 
@@ -1723,12 +1724,30 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   active target, clear avoids, advance now); answers "unavailable" when trunk scan is not installed
   (`src/app_control/app_command_queue.c`)
 
+Recovery ownership lives beside these hooks. `dsd_trunk_p25_recovery_allowed()` / `dsd_trunk_dmr_recovery_allowed()`
+admit a validated owner (`dsd_state::trunk_recovery_protocol`), or, with none yet, a frame set that decodes only that
+protocol's trunk. `dsd_trunk_p25_cold_start_presumed()` names the protocol that runs the startup control-channel hunt
+of a session no protocol has proven yet: P25 for a frame set with P25 and without NXDN48, NXDN96 and ProVoice (`-ft`,
+the default set, `-1`, `-2`); it grants no recovery ownership (issue #703, `RUNTIME_TRUNK_SCAN_HOOKS`).
+
 Retune requests use a sibling table, `include/dsd-neo/runtime/trunk_tuning_hooks.h`, whose implementations the engine
 installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_install.c`. The correlated request records
 (`src/runtime/trunk_tuning_hooks.c`) outlive every owner: an owner that drops what it staged for a request in flight
 (the TETRA state machine, whose state a decode-mode change frees) disowns it (`dsd_trunk_tuning_request_disown()`),
 which leaves an unanswered request in flight, its success the tuner boundary, and retires its failure at once, since
-nothing is left to roll back (`RUNTIME_TRUNK_TUNING_HOOKS`, `ENGINE_TETRA_TRUNK`).
+nothing is left to roll back (`RUNTIME_TRUNK_TUNING_HOOKS`, `ENGINE_TETRA_TRUNK`). Every commit of an input
+replacement (`dsd_engine_note_input_replaced()`, under the P25 SM tick guard with the replacement), and every start
+of a radio stream on another device (the `DSD_CARRIER_BOUNDARY_SOURCE` carrier boundary), resets the request
+records (`dsd_trunk_tuning_requests_reset()`, as the start of a run does): the replaced device's requests can no longer
+gate the new input's frames, and a tune recovery gives the new device before the engine reaches the switch's boundary
+is kept. When no tune owner is active the engine retires failures through
+`dsd_engine_retire_inactive_tune_failures()`, which first reconciles `opts->rtlsdr_center_freq` with the RTL stream's
+applied frequency when the newest unresolved request failed, so a frequency an asynchronous retune staged but never
+reached is not read as the receiver's. It retires only through the request it inspected
+(`dsd_trunk_tuning_retire_failed_requests_through()`): while the newest is in flight only older failures go, and one
+that fails after the read waits for the next pass. The synced-frames loop then gates with
+`dsd_trunk_tuning_frame_is_current()`, never with `dsd_trunk_tuning_frame_is_dispatchable()`, whose retirement does not
+reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`).
 
 ## App-Control
 
@@ -2509,7 +2528,10 @@ nothing is left to roll back (`RUNTIME_TRUNK_TUNING_HOOKS`, `ENGINE_TETRA_TRUNK`
 - Silent inputs and input ends in `dsd_symbol.c` (issue #634). A frame-sync hunt read (`getSymbol()` without sync)
   waits on a UDP input in 100 ms slices (`udp_read_sample_wait` in the network-audio hooks); once the silence has lasted
   a stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`, the gap the analog receiver already takes for a boundary) and the
-  runtime's controls-pending query reports a queued command, it leaves with no sample and sets
+  runtime's controls-pending query reports a queued command, or decoder-thread trunking timers are due
+  (`dsd_frame_sync_hook_decoder_ticks_due()`: a startup control-channel hunt armed, running or due to arm
+  (`p25_sm_cold_start_due()`, `dmr_sm_cold_start_due()`; with trunking turned off too, until the tick that lets it
+  go), or DMR recovery under way, issue #703), it leaves with no sample and sets
   `dsd_state::input_interrupted`, which `getFrameSync()` checks after each read and returns on at once, with no SPS hunt
   step and no no-sync hooks. A shorter gap, frame decoding, or no queued command keeps waiting. The M17 TCP reconnect
   gives up the same way between attempts, which connect within a bound to the address the connection was made to
@@ -4073,6 +4095,51 @@ do, also when the request completed inside the call. A learned CC type identifie
 (`DSD_STATE_EXT_PROTO_P25_CC_SELECTION`) retains the site-specific cache requirement across no-carrier resets,
 while network band plans and user settings survive.
 
+Startup control-channel hunt (issue #703). A single-system trunked session whose start frequency yields no validated
+control within the CC grace walks its channel map with the ordinary hunts.
+- Eligibility: `dsd_state_trunk_cold_start_eligible()` (core): trunking on outside `-Y` and `--trunk-scan`, not on a
+  granted voice channel, no input switch pending (`input_boundary`), not an I/Q replay
+  (`dsd_opts_input_is_iq_replay()`), a tuner the trunking hooks move (RTL family or rigctl), a user channel map with a
+  nonzero row, and no owner yet. P25 runs it when recovery is admitted or `dsd_trunk_p25_cold_start_presumed()`
+  holds; DMR when its recovery is admitted.
+- Thread: decoder thread only, under the P25 SM tick guard: `p25_sm_cold_start_tick_locked()` and DMR's own tick from
+  the engine's outer loop and, while the owner is unknown or a machine is armed or hunting, between frames in
+  `live_scanner_process_synced_frames()`. The watchdog never ticks a P25 machine whose `cold_start_hunt` is set; the
+  decoder's next startup tick ends one whose owner validated control has named. The end of an input switch
+  (`dsd_engine_end_input_boundary()`) runs that tick too, so the new input's windows are armed before its first read,
+  and a silent UDP input's wait gives way while a machine is due to arm (a session that became eligible after its
+  pass's tick, or whose tick found the guard busy). Arming never happens in `p25_sm_tick_ctx()`.
+- Window: armed in `IDLE` (a machine that leaves `IDLE` other than for its startup hunt drops it), it runs from the
+  later of its opening and `dsd_state::dmr_confidence_lock_m` (validated DMR content; raw sync never holds it); the
+  hunt starts when it exceeds the CC grace (P25 `--p25-cc-grace`, DMR 6 s).
+- Hunt: `try_next_cc()` (P25) or `dmr_cc_hunt()` (DMR) unchanged, 2 s probes included (too short for the SPS and
+  modulation hunt to reach a CQPSK trial: a simulcast system needs `-mq`, as a RadioReference import writes); a P25
+  startup probe restores `trunk_cc_freq` after each probe tune, as DMR probes do, and records `cold_start_probe_hz`. With no other eligible row, DMR probes the row
+  it last probed again when that tune never completed (a failed or expired probe: only a success retires the failure
+  that gates every frame), and listens on one the radio is on (`dmr_cc_next_mapped_candidate()`).
+- Ending: validated control naming an owner ends the hunt in place (the owner's ordinary recovery follows; DMR hunts
+  only after a confirmed control channel; a grant either machine followed meanwhile stands, and only the startup
+  bookkeeping ends). Trunking off or an input switch parks it at once. Lost eligibility or
+  admission, an operator move (`p25_sm_cold_start_note_retune()` / `dmr_sm_cold_start_note_retune()`, from the
+  carrier boundary's guard-holding kinds and the trunked cycles) or an unexpired window at a decision point parks it
+  only once `dsd_trunk_tuning_pending_request()` is 0: a probe in flight is resolved first, any other tune in flight is
+  waited for, and only a failure is replaced, by a settle tune to the frequency the decoder's tuner options name,
+  tracked like a probe (DMR's through `cc_tune_request_id`, so its 5 s deadline fails one the backend never answers, as
+  it fails a probe). A settle tune carries no symbol profile (`ted_sps` 0): it keeps the receive profile in force, which
+  a mode change may have chosen. The hunt never disowns or completes a request. Before an owner is proven, `-ft`'s
+  frequency entry stays an operator move even after a raw P25 sync: `manual_frequency_selects_p25_cc()` does not route
+  it to `p25_sm_select_control_channel()`, whose acquisition no admitted recovery would time out and whose control
+  channel nothing has validated. Under `-1`/`-2`, whose P25 recovery is admitted, the entry stays the P25 manual
+  control-channel selection: it supersedes the startup hunt, and the ordinary recovery hunts the map if it is dead.
+- Provenance: `p25_sm_note_validated_cc()` (TSBK FEC counters, outbound MBT, LCCH MAC) notes the activity and, with
+  trunking on, establishes `p25_cc_freq` from the tuner at the decode boundary; when that tuner query fails, the same
+  boundary uses the probe the tuner completed (`cold_start_probe_hz`), with the type the sync names
+  (`p25_sm_seed_cc_at()`, as the tuner seed), before a handler of the same block (a grant) can end the probe's
+  acquisition. Ending a hunt in place on a P25 owner does the same if the probe's tune was still
+  unresolved there.
+- Tests: `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`, `P25_SM_COLD_START`, `P25_MBT_DECODE`,
+  `ENGINE_DMR_CC_RECOVERY`, `ENGINE_COLD_START_HUNT`, `APP_COMMAND_QUEUE`, `DMR_CONFIDENCE_GATE`.
+
 P25 Phase 2 voice dispatch (`src/protocol/p25/phase2/p25p2_frame.c`, issue #651). A `processP2()` window is four
 timeslots, 700 dibits after a 20-dibit sync, 180 dibits each. `p2_scramble_offset` is the superframe timeslot (mod 12)
 of window timeslot 0 and `ts_counter` (0-3) indexes the window, so a timeslot's pair is
@@ -4363,7 +4430,9 @@ Key public headers (selection):
 Private per-protocol modules worth knowing about:
 
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
-  before DMR decodes or unmutes it.
+  before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
+  decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
+  validated content (issue #703).
 - `src/protocol/dmr/dmr_enc_class.c` — per-slot privacy-bit hysteresis, and each slot's vendor late-entry mode
   (`dsd_state::dmr_le_vendor[]`, `DMR_LE_VENDOR_*` in `<dsd-neo/protocol/dmr/dmr.h>`, issue #657). A CRC-verified
   Kirisun PI or LC, or a checksum-verified Hytera Enhanced PI or LC, sets the slot's mode for its call; it is cleared

@@ -169,7 +169,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--p25-min-follow-dwell <s>` minimum follow dwell after first voice
 - `--p25-grant-voice-timeout <s>` max seconds from grant to voice before returning
 - `--p25-mac-hold <s>` keep MAC activity eligible for audio for this many seconds after the last MAC
-- `--p25-cc-grace <s>` CC hunt grace window; delay hunting for a new control channel by this many seconds after loss
+- `--p25-cc-grace <s>` CC hunt grace window; delay hunting for a new control channel by this many seconds after loss,
+  and at session start (see [Startup control-channel hunt](#startup-control-channel-hunt))
 - `--p25-force-release-extra <s>` safety‑net extra seconds beyond hangtime
 - `--p25-force-release-margin <s>` safety‑net hard margin seconds beyond extra
 - `--p25-p1-err-hold-pct <pct>` P25p1 IMBE error percentage threshold to extend hang
@@ -1682,6 +1683,34 @@ A failed or deferred request leaves the previous channel and calls intact; retry
 receive the configured CC acquisition grace after hardware completion. If completion fails, hunting retries the
 selected channel. Old site candidates are discarded; disk candidates require a freshly learned site and its own
 cache file. Direct frequency changes are disabled during `--trunk-scan`, whose target list controls tuning.
+
+### Startup control-channel hunt
+
+A single-system trunked session (`-T` with a channel map, not `-Y` or `--trunk-scan`) that starts on a frequency with
+no live control channel searches the channel map for one. If no control message that passed its CRC check arrives
+within the grace window (P25 `--p25-cc-grace`, default 5 s; DMR 6 s), the receiver tries the map's rows in file order,
+about two seconds each, and stays on the first one whose control passes the check. List every control-channel
+frequency in the map: the start frequency is retried only if the map lists it, which a RadioReference import always
+does.
+
+- The search needs a tuner the decoder controls: an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or rigctl. An I/Q
+  replay never searches.
+- P25 searches under `-1`, `-2`, `-ft` and the default decoder set (`-mq` included); DMR under `-fs` and `-fr`. A
+  P25-driven search also finds a DMR control channel: the first validated DMR control message hands the session to
+  DMR. `-fa` does not search at startup.
+- A simulcast (LSM/CQPSK) P25 system needs `-mq`, which a RadioReference import sets for such sites: each row gets
+  about two seconds, too short for the automatic modulation search to reach CQPSK on a control channel the session has
+  not decoded yet.
+- DMR content that passed the colour-code check (a call on a Hytera XPT repeater, say) restarts the window, so the
+  search never leaves it mid-call. Sync alone, which noise can produce, never holds the search.
+- A frequency entry, **Next channel** (`L`), a radio configuration change, a RadioReference apply or an input switch
+  restarts the window on the new frequency.
+- Nothing is shown or used as the control channel until a searched frequency passes the CRC check, and the saved
+  system is not changed. Once validated control names the system, the search ends there; losing that control channel
+  later uses the ordinary hunt (DMR hunts only after it has confirmed a control channel, as before).
+- The search runs on the decoder's own pass, so it needs an input that keeps delivering samples. RTL-family inputs
+  always do, and a silent UDP stream gives way to it after a short pause; a TCP audio stream with rigctl that stops
+  sending pauses it until audio resumes.
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
