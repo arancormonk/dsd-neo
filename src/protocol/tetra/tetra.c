@@ -19,6 +19,7 @@
 
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -898,6 +899,7 @@ tetra_frame_enter(const dsd_opts* opts, dsd_state* state) {
         return NULL;
     }
     ts->uplink = (uint8_t)(opts->tetra_uplink != 0);
+    ts->rx_tuned_hz = (long)dsd_opts_tuned_freq_hz(opts);
     ts->log_payload = (uint8_t)(opts->payload == 1);
     int verbose = opts->verbose > 0 ? opts->verbose : 0;
     if (verbose > 255) {
@@ -974,9 +976,17 @@ tetra_pub_hz(long hz) {
     return (hz > 0L && hz <= DSD_TRUNK_FREQ_MAX_HZ) ? (uint32_t)hz : 0U;
 }
 
-/* The trunked network identity and its air-interface encryption: the network's TEA comes from the KSG an OTAR named
- * for it. A direct mode carrier belongs to no trunked network (EN 300 396-3: its colour code is the source's, clause
- * 8.2.4), so the identity the session keeps from the last BSCH or --tetra-net is not published there. */
+/* The KSG of the direct mode transmission in progress, from the DMAC-SYNC that set it up, as a KSG mask. */
+static uint16_t
+tetra_pub_dmo_ksg(const tetra_state_t* ts) {
+    const int keyed = ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN && ts->dmo_tx_aie != TETRA_DMO_AIE_DM1;
+    return keyed ? (uint16_t)(1u << (ts->dmo_tx_ksg & 0xFu)) : 0U;
+}
+
+/* The trunked network identity and its air-interface encryption: the algorithms its signalling named
+ * (tetra_air_ksg_seen()). A direct mode carrier belongs to no trunked network (EN 300 396-3: its colour code is the
+ * source's, clause 8.2.4), so the identity the session keeps from the last BSCH or --tetra-net is not published there;
+ * its algorithm is the transmission's. */
 static void
 tetra_pub_network(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_publication* pub) {
     const int trunked = ts->net_known && !ts->dmo;
@@ -985,8 +995,63 @@ tetra_pub_network(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_pub
     pub->mnc = trunked ? ts->mnc : 0U;
     pub->colour = trunked ? (uint8_t)(ts->colour & 0x3Fu) : 0U;
     pub->air_encryption = tetra_pub_air_encryption(ts);
-    const int ksg = trunked ? tetra_air_ksg_lookup(state, ts->mcc, ts->mnc) : -1;
-    pub->tea = (ksg >= 0 && ksg < DSD_TETRA_TEA_MAX) ? (uint8_t)(ksg + 1) : 0U;
+    if (ts->dmo) {
+        pub->ksg_mask = tetra_pub_dmo_ksg(ts);
+    } else {
+        pub->ksg_mask = trunked ? tetra_air_ksg_seen(state, ts->mcc, ts->mnc) : 0U;
+    }
+}
+
+/* The carrier being received and the air key that applies there (tetra_air_key_for_carrier()): trunked mode only. */
+static void
+tetra_pub_key(const dsd_state* state, int trunked, dsd_tetra_publication* pub) {
+    uint16_t carrier = 0;
+    pub->rx_carrier_known = (uint8_t)(trunked && tetra_calls_rx_carrier(state, &carrier));
+    pub->rx_carrier = pub->rx_carrier_known ? (uint16_t)(carrier & 0xFFFu) : 0U;
+    uint8_t kind = 0;
+    uint8_t tea = 0;
+    const int keyed =
+        trunked && tetra_air_key_for_carrier(state, pub->rx_carrier_known ? (int)carrier : -1, &kind, &tea);
+    pub->key_kind = (uint8_t)DSD_TETRA_KEY_NONE;
+    if (keyed) {
+        pub->key_kind =
+            (uint8_t)(kind == DSD_TETRA_AIR_KEY_TEA1_REDUCED ? DSD_TETRA_KEY_TEA1_REDUCED : DSD_TETRA_KEY_CK);
+    }
+    pub->key_tea = keyed ? tea : 0U;
+}
+
+/* The cell's security as its SYSINFO broadcasts it, its location area, the carrier being received and the air key
+ * that applies there: trunked mode only. */
+static void
+tetra_pub_cell_security(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_publication* pub) {
+    const int trunked = ts->net_known && !ts->dmo;
+    const int sec = trunked && ts->sec_valid;
+    pub->la_known = (uint8_t)(trunked && ts->sysinfo_known);
+    pub->la = pub->la_known ? (uint16_t)(ts->la & 0x3FFFu) : 0U;
+    tetra_pub_key(state, trunked, pub);
+    pub->aie = (uint8_t)DSD_TETRA_AIE_UNKNOWN;
+    if (trunked && ts->aie_known) {
+        pub->aie = (uint8_t)(ts->aie_available ? DSD_TETRA_AIE_AVAILABLE : DSD_TETRA_AIE_UNAVAILABLE);
+    }
+    pub->sec_known = (uint8_t)sec;
+    pub->sec_auth = sec ? ts->sec.auth : 0U;
+    pub->sec_class1 = sec ? ts->sec.class1 : 0U;
+    pub->sec_class3 = sec ? ts->sec.class3 : 0U;
+    pub->sec_sckn = sec ? ts->sec.sckn : 0U;
+}
+
+/* The security class and SCK number of the direct mode transmission in progress. */
+static void
+tetra_pub_dmo_security(const tetra_state_t* ts, dsd_tetra_publication* pub) {
+    static const uint8_t k_classes[4] = {
+        [TETRA_DMO_AIE_DM1] = DSD_TETRA_DMO_CLASS_DM1,
+        [TETRA_DMO_AIE_DM2C] = DSD_TETRA_DMO_CLASS_DM2C,
+        [TETRA_DMO_AIE_DM2A] = DSD_TETRA_DMO_CLASS_DM2A,
+        [TETRA_DMO_AIE_DM2B] = DSD_TETRA_DMO_CLASS_DM2B,
+    };
+    const int tx = ts->dmo && ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN;
+    pub->dmo_class = tx ? k_classes[ts->dmo_tx_aie & 3u] : (uint8_t)DSD_TETRA_DMO_CLASS_UNKNOWN;
+    pub->dmo_sckn = (tx && ts->dmo_tx_aie != TETRA_DMO_AIE_DM1) ? (uint8_t)((ts->dmo_tx_key_number & 0x1Fu) + 1u) : 0U;
 }
 
 /* Call following, the SYSINFO main carrier and the traffic channel: the followed call's, else the channel last
@@ -1026,6 +1091,8 @@ tetra_publish(dsd_state* state) {
     /* Nothing reads as decoded until a block has passed its CRC: a sync word alone is weak enough for noise. */
     pub->mode = ts->decode_ok != 0 ? tetra_pub_mode(state, ts) : DSD_TETRA_MODE_NONE;
     tetra_pub_network(state, ts, pub);
+    tetra_pub_cell_security(state, ts, pub);
+    tetra_pub_dmo_security(ts, pub);
     tetra_pub_channels(state, ts, pub);
     /* The D-MM STATUS is the trunked network's to its MSs (EN 300 392-2 clause 16.9.2.5). */
     pub->mm_status_valid = (uint8_t)(ts->mm_status_valid != 0 && !ts->dmo);
@@ -1083,9 +1150,11 @@ processTetraSBFrame(dsd_opts* opts, dsd_state* state) {
 void
 tetra_forget_carrier(dsd_state* state) {
     /* A session that never decoded TETRA has nothing to forget, and gets no TETRA state for it. */
-    if (!tetra_st_existing(state)) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
         return;
     }
+    ts->rx_tuned_hz = 0;
     tetra_confirm_reset(state);
     tetra_mac_forget_fragments(state);
     tetra_tdma_stop(state);

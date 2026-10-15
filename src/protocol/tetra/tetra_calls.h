@@ -165,6 +165,13 @@ void tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_
  */
 int tetra_calls_carrier(const dsd_opts* opts, const dsd_state* state, uint16_t* carrier);
 
+/**
+ * @brief tetra_calls_carrier() for the paths that have no options (the publication, the call crypto class): the same
+ * answer, from the frequency the receiver was tuned to at the start of the last burst (tetra_state_t::rx_tuned_hz).
+ * A tune that is in flight, completed or rolled back since is answered from the state machine, as there.
+ */
+int tetra_calls_rx_carrier(const dsd_state* state, uint16_t* carrier);
+
 /** @brief The record of call @p call_id, or NULL. */
 tetra_call_t* tetra_calls_find(dsd_state* state, uint16_t call_id);
 

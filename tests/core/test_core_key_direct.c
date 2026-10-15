@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../../src/app_control/commands_internal.h"
+#include "test_support.h"
 
 static int failures;
 
@@ -37,7 +38,8 @@ check(int ok, const char* label) {
 static int
 tetra_air_keys_equal(const dsd_tetra_air_key* a, const dsd_tetra_air_key* b) {
     for (int i = 0; i < DSD_TETRA_AIR_KEY_SLOTS; i++) {
-        if (a[i].loaded != b[i].loaded || a[i].mcc != b[i].mcc || a[i].mnc != b[i].mnc
+        if (a[i].loaded != b[i].loaded || a[i].kind != b[i].kind || a[i].alg != b[i].alg || a[i].mcc != b[i].mcc
+            || a[i].mnc != b[i].mnc || a[i].la != b[i].la || a[i].cc != b[i].cc || a[i].carrier != b[i].carrier
             || memcmp(a[i].key, b[i].key, sizeof a[i].key) != 0) {
             return 0;
         }
@@ -320,8 +322,9 @@ test_m17_key_widths(void) {
     }
 }
 
-/* TETRA air keys (--tetra-key mcc,mnc,key): parsed strictly, filed one per network, kept by other direct keys, carried
- * by the key set and wiped with the other keys. */
+/* TETRA air keys (--tetra-key mcc,mnc,key[,teaN] or mcc,mnc,<reduced key>,la=,cc=,carrier=): parsed strictly, an
+ * 80-bit key filed one per network and a TEA1 reduced key one per channel, kept by other direct keys, carried by the key
+ * set and wiped with the other keys. */
 static void
 test_tetra_air_keys(void) {
     static dsd_state state;
@@ -334,6 +337,7 @@ test_tetra_air_keys(void) {
     const dsd_tetra_air_key* k = &state.tetra_air_keys[0];
     check(k->loaded && k->mcc == 262 && k->mnc == 1001 && memcmp(k->key, want, sizeof want) == 0,
           "TETRA key filed under its network");
+    check(k->kind == DSD_TETRA_AIR_KEY_CK && k->alg == 0U, "an 80-bit key that names no algorithm");
 
     static const char* const bad[] = {
         "1024,1,00000000000000000000",
@@ -345,6 +349,29 @@ test_tetra_air_keys(void) {
         "1,1",
         "1,1,00000000000000000000,1",
         "",
+        /* The algorithm an 80-bit key may name: TEA1 to TEA3, nothing else, and only there. */
+        "1,1,00000000000000000000,tea4",
+        "1,1,00000000000000000000,tea0",
+        "1,1,00000000000000000000,tea",
+        "1,1,00000000000000000000,tea12",
+        "1,1,00000000000000000000,tea1,",
+        "1,1,00000000000000000000,",
+        "1,1,00000000,tea1",
+        /* A reduced key is 8 hex digits and needs its whole channel, in order. */
+        "1,1,00000000",
+        "1,1,0000000,la=1,cc=1,carrier=1",
+        "1,1,000000000,la=1,cc=1,carrier=1",
+        "1,1,0000000G,la=1,cc=1,carrier=1",
+        "1,1,00000000,la=1,cc=1",
+        "1,1,00000000,cc=1,la=1,carrier=1",
+        "1,1,00000000,la=16384,cc=1,carrier=1",
+        "1,1,00000000,la=1,cc=64,carrier=1",
+        "1,1,00000000,la=1,cc=1,carrier=4096",
+        "1,1,00000000,la=-1,cc=1,carrier=1",
+        "1,1,00000000,la=,cc=1,carrier=1",
+        "1,1,00000000,LA=1,cc=1,carrier=1",
+        "1,1,00000000,la=1,cc=1,carrier=1,tea1",
+        "1,1,00000000000000000000,la=1,cc=1,carrier=1",
     };
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
         check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, bad[i], DSD_KEY_APPLY_OVERLAY) != DSD_KEY_DIRECT_OK,
@@ -366,11 +393,76 @@ test_tetra_air_keys(void) {
                                       DSD_KEY_APPLY_OVERLAY)
                      == DSD_KEY_DIRECT_OK,
           "four networks fit");
+
+    /* An 80-bit key that names its algorithm, in either case; naming another replaces the network's key. */
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1002,00000000000000000011,TEA2",
+                               DSD_KEY_APPLY_OVERLAY)
+                  == DSD_KEY_DIRECT_OK
+              && state.tetra_air_keys[1].mnc == 1002 && state.tetra_air_keys[1].alg == 2U
+              && state.tetra_air_keys[1].kind == DSD_TETRA_AIR_KEY_CK && state.tetra_air_keys[1].key[9] == 0x11,
+          "an 80-bit key names TEA2 and replaces the network's key");
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1002,00000000000000000011,tea3",
+                               DSD_KEY_APPLY_OVERLAY)
+                  == DSD_KEY_DIRECT_OK
+              && state.tetra_air_keys[1].alg == 3U && state.tetra_air_keys[4].loaded == 0,
+          "an 80-bit key names TEA3");
+
+    /* A TEA1 reduced key: its register big-endian in the first four bytes, filed per channel beside the network's
+     * 80-bit key; all-zero is a register like any other. */
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,1A2b3C4d,la=4097,cc=25,carrier=654",
+                               DSD_KEY_APPLY_OVERLAY)
+              == DSD_KEY_DIRECT_OK,
+          "a reduced key loads");
+    const dsd_tetra_air_key* r = &state.tetra_air_keys[4];
+    static const uint8_t want_reduced[10] = {0x1A, 0x2B, 0x3C, 0x4D, 0, 0, 0, 0, 0, 0};
+    check(r->loaded && r->kind == DSD_TETRA_AIR_KEY_TEA1_REDUCED && r->alg == 1U && r->mcc == 262 && r->mnc == 1001
+              && r->la == 4097 && r->cc == 25 && r->carrier == 654 && memcmp(r->key, want_reduced, 10) == 0,
+          "the reduced key is TEA1 for its channel, register big-endian");
+    check(state.tetra_air_keys[0].loaded && state.tetra_air_keys[0].kind == DSD_TETRA_AIR_KEY_CK
+              && state.tetra_air_keys[0].mnc == 1001,
+          "the network's 80-bit key stays beside it");
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,00000000,la=4097,cc=25,carrier=654",
+                               DSD_KEY_APPLY_OVERLAY)
+                  == DSD_KEY_DIRECT_OK
+              && r->key[0] == 0 && r->key[3] == 0 && state.tetra_air_keys[5].loaded == 0,
+          "the same channel's reduced key is replaced, all-zero accepted");
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,00000001,la=4097,cc=25,carrier=655",
+                               DSD_KEY_APPLY_OVERLAY)
+                  == DSD_KEY_DIRECT_OK
+              && state.tetra_air_keys[5].carrier == 655 && state.tetra_air_keys[4].carrier == 654,
+          "another carrier is another reduced key");
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,00000002,la=4098,cc=25,carrier=654",
+                               DSD_KEY_APPLY_OVERLAY)
+                  == DSD_KEY_DIRECT_OK
+              && dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,00000003,la=4097,cc=26,carrier=654",
+                                      DSD_KEY_APPLY_OVERLAY)
+                     == DSD_KEY_DIRECT_OK
+              && state.tetra_air_keys[6].la == 4098 && state.tetra_air_keys[7].cc == 26,
+          "another location area or colour code is another reduced key");
+
+    /* Sixteen keys in all. */
+    char spec[64];
+    for (unsigned mnc = 2000U; mnc < 2008U; mnc++) {
+        DSD_SNPRINTF(spec, sizeof spec, "262,%u,00000000000000000004", mnc);
+        check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, spec, DSD_KEY_APPLY_OVERLAY) == DSD_KEY_DIRECT_OK,
+              "keys fill the table");
+    }
+    check(state.tetra_air_keys[DSD_TETRA_AIR_KEY_SLOTS - 1].loaded && DSD_TETRA_AIR_KEY_SLOTS == 16,
+          "sixteen keys fit");
     check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1005,00000000000000000004", DSD_KEY_APPLY_OVERLAY)
               == DSD_KEY_DIRECT_INVALID_ARGUMENT,
-          "a fifth network is refused");
+          "a seventeenth key is refused");
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,00000004,la=1,cc=1,carrier=1",
+                               DSD_KEY_APPLY_OVERLAY)
+              == DSD_KEY_DIRECT_INVALID_ARGUMENT,
+          "and so is a seventeenth reduced key");
     check(state.tetra_air_keys[0].mnc == 1001 && state.tetra_air_keys[0].key[0] == 0xFF,
-          "the refused fifth network evicts nothing");
+          "the refused key evicts nothing");
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_TETRA_AIR, "262,1001,00000005,la=4097,cc=25,carrier=654",
+                               DSD_KEY_APPLY_OVERLAY)
+                  == DSD_KEY_DIRECT_OK
+              && r->key[3] == 0x05,
+          "a full table still replaces a key it holds");
 
     char hex10[11] = "0123456789";
     check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_HEX, hex10, DSD_KEY_APPLY_OVERLAY) == DSD_KEY_DIRECT_OK,
@@ -413,6 +505,65 @@ test_tetra_air_keys(void) {
           "CLI --tetra-key refuses a short key");
     freeState(&bad_state);
     freeState(&state);
+
+    /* Both new forms through the command line, the = spelling too. */
+    char named[] = "1,2,00000000000000000005,tea2";
+    char reduced[] = "--tetra-key=1,2,DEADBEEF,la=3,cc=4,carrier=5";
+    char* new_argv[] = {name, flag, named, reduced, NULL};
+    seed(&opts, &state);
+    check(dsd_parse_args(4, new_argv, &opts, &state, NULL, NULL) == DSD_PARSE_CONTINUE
+              && state.tetra_air_keys[0].alg == 2U && state.tetra_air_keys[1].kind == DSD_TETRA_AIR_KEY_TEA1_REDUCED
+              && state.tetra_air_keys[1].key[0] == 0xDE && state.tetra_air_keys[1].carrier == 5,
+          "CLI --tetra-key takes a named algorithm and a reduced key");
+    freeState(&state);
+}
+
+/* What --tetra-key prints for each argument it takes, refused or loaded: @p argc arguments after the program name. */
+static int
+tetra_key_cli_output(char** args, int argc, char* out, size_t out_size) {
+    static dsd_state state;
+    static dsd_opts opts;
+    char name[] = "test";
+    char* argv[8] = {name};
+    for (int i = 0; i < argc && i < 7; i++) {
+        argv[i + 1] = args[i];
+    }
+    seed(&opts, &state);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "tetra_key_cli") != 0) {
+        freeState(&state);
+        return -1;
+    }
+    const int rc = dsd_parse_args(argc + 1, argv, &opts, &state, NULL, NULL);
+    (void)dsd_test_capture_stderr_end(&cap);
+    freeState(&state);
+    return dsd_test_capture_stderr_read(&cap, out, out_size) == 0 ? rc : -1;
+}
+
+/* A refused --tetra-key names the grammar and its limits, never the key it was given; a loaded one prints nothing of
+ * it either. */
+static void
+test_tetra_air_key_output(void) {
+    static char out[4096];
+    char flag[] = "--tetra-key";
+    char bad_reduced[] = "1,2,DEADBEEF,la=3,cc=64,carrier=5";
+    char* refused[] = {flag, bad_reduced};
+    check(tetra_key_cli_output(refused, 2, out, sizeof out) == DSD_PARSE_ERROR, "a bad reduced key is refused");
+    check(strstr(out, "--tetra-key requires") != NULL && strstr(out, "la=") != NULL && strstr(out, "16 keys") != NULL,
+          "the refusal names both forms and the table size");
+    check(strstr(out, "DEADBEEF") == NULL && strstr(out, "deadbeef") == NULL, "the refusal never echoes the key");
+
+    char bad_ck[] = "1,2,0123456789ABCDEF0123,tea4";
+    char* refused_ck[] = {flag, bad_ck};
+    check(tetra_key_cli_output(refused_ck, 2, out, sizeof out) == DSD_PARSE_ERROR && strstr(out, "0123456789") == NULL,
+          "a refused 80-bit key is not echoed");
+
+    char good_reduced[] = "1,2,CAFEF00D,la=3,cc=4,carrier=5";
+    char good_ck[] = "1,2,0123456789ABCDEF0123,tea2";
+    char* loaded[] = {flag, good_reduced, flag, good_ck};
+    check(tetra_key_cli_output(loaded, 4, out, sizeof out) == DSD_PARSE_CONTINUE, "both forms load");
+    check(strstr(out, "CAFEF00D") == NULL && strstr(out, "cafef00d") == NULL && strstr(out, "0123456789") == NULL,
+          "loading prints no key");
 }
 
 static void
@@ -483,6 +634,7 @@ main(void) {
     zero_key_voice();
     presence_follows_material();
     test_tetra_air_keys();
+    test_tetra_air_key_output();
     static dsd_state state;
     static dsd_opts opts;
     const int types[] = {0, 1, 1, 1, 2, 3};

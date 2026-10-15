@@ -797,10 +797,46 @@ mm_decode_lu_command(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
     return mm_read_address_tail(r, &c->address);
 }
 
+/* " ksg=TEA2 class=2 sckn=3" for the ciphering parameters (EN 300 392-7 table A.46: KSG number, security class 0 for
+ * class 2 and 1 for class 3, then the SCK number of a class 2 cell), "" with cipher control off. */
+static void
+mm_cipher_detail(uint8_t control, uint16_t params, char* out, size_t cap) {
+    out[0] = '\0';
+    if (!control) {
+        return;
+    }
+    const uint8_t ksg = (uint8_t)((params >> 6) & 0xFu);
+    const int class3 = (params >> 5) & 1u;
+    const char* const tea = tetra_air_ksg_name(ksg);
+    char sckn[16] = "";
+    if (!class3) {
+        DSD_SNPRINTF(sckn, sizeof sckn, " sckn=%u", (unsigned)(params & 0x1Fu) + 1U);
+    }
+    if (tea) {
+        DSD_SNPRINTF(out, cap, " ksg=%s class=%d%s", tea, class3 ? 3 : 2, sckn);
+    } else {
+        DSD_SNPRINTF(out, cap, " ksg=%u class=%d%s", (unsigned)ksg, class3 ? 3 : 2, sckn);
+    }
+}
+
+/* The ciphering parameters of a D-LOCATION UPDATE COMMAND or REJECT name the algorithm the serving SwMI uses with the
+ * MS (EN 300 392-7 clauses 6.6.2.1 and 6.7.4), so it is evidence for the network being received; the address
+ * extension there is the MS's MNI. */
+static void
+mm_cipher_remember_ksg(const mm_ctx* ctx, uint8_t control, uint16_t params) {
+    if (control && ctx->ts->net_known && !ctx->ts->dmo) {
+        (void)tetra_air_ksg_remember(ctx->state, ctx->ts->mcc, ctx->ts->mnc, (uint8_t)((params >> 6) & 0xFu));
+    }
+}
+
 static void
 mm_report_lu_command(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
-    DSD_FPRINTF(stderr, "[TETRA MM D-LU-COMMAND] CC=%d group_report=%u cipher=%u\n", ctx->cc,
-                (unsigned)pdu->lu_command.group_report, (unsigned)pdu->lu_command.cipher_control);
+    const tetra_mm_lu_command_t* const c = &pdu->lu_command;
+    char cipher[40];
+    mm_cipher_detail(c->cipher_control, c->cipher_params, cipher, sizeof cipher);
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-COMMAND] CC=%d group_report=%u cipher=%u%s\n", ctx->cc,
+                (unsigned)c->group_report, (unsigned)c->cipher_control, cipher);
+    mm_cipher_remember_ksg(ctx, c->cipher_control, c->cipher_params);
 }
 
 /* Table 16.13 D-LOCATION UPDATE REJECT. */
@@ -816,8 +852,11 @@ mm_decode_lu_reject(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
 static void
 mm_report_lu_reject(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     const tetra_mm_lu_reject_t* const rej = &pdu->lu_reject;
-    DSD_FPRINTF(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u\n", ctx->cc, (unsigned)rej->type,
-                (unsigned)rej->cause, (unsigned)rej->cipher_control);
+    char cipher[40];
+    mm_cipher_detail(rej->cipher_control, rej->cipher_params, cipher, sizeof cipher);
+    DSD_FPRINTF(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u%s\n", ctx->cc, (unsigned)rej->type,
+                (unsigned)rej->cause, (unsigned)rej->cipher_control, cipher);
+    mm_cipher_remember_ksg(ctx, rej->cipher_control, rej->cipher_params);
 }
 
 /* Table 16.14 D-LOCATION UPDATE PROCEEDING: the (V)ASSI and the MNI are both type 1 elements. */

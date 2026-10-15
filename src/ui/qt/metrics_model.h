@@ -229,6 +229,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString tetraModeText READ tetraModeText NOTIFY tetraChanged)
     Q_PROPERTY(bool tetraEncrypted READ tetraEncrypted NOTIFY tetraChanged)
     Q_PROPERTY(QString tetraNetworkText READ tetraNetworkText NOTIFY tetraChanged)
+    Q_PROPERTY(QString tetraSecurityText READ tetraSecurityText NOTIFY tetraChanged)
     Q_PROPERTY(QString tetraTrunkText READ tetraTrunkText NOTIFY tetraChanged)
     Q_PROPERTY(bool tetraOnTraffic READ tetraOnTraffic NOTIFY tetraChanged)
     Q_PROPERTY(QString tetraControlText READ tetraControlText NOTIFY tetraChanged)
@@ -1391,10 +1392,16 @@ class MetricsModel : public QObject {
         return m_view.tetra_encrypted;
     }
 
-    /** @brief "MCC 262 · MNC 1001 · CC 25"; empty until the network is known. */
+    /** @brief "MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654"; empty until the network is known. */
     const QString&
     tetraNetworkText() const {
         return m_view.tetra_network_text;
+    }
+
+    /** @brief "class 2 · SCKN 3 · authentication · TEA1 reduced key", "DM-2-A · SCKN 5"; empty while unknown. */
+    const QString&
+    tetraSecurityText() const {
+        return m_view.tetra_security_text;
     }
 
     /** @brief Where call following stands ("control channel", "traffic channel", "idle"); empty when not trunking. */
@@ -1952,6 +1959,7 @@ class MetricsModel : public QObject {
         /* The TETRA rows, copied from the app-control view. */
         QString tetra_mode_text;
         QString tetra_network_text;
+        QString tetra_security_text;
         QString tetra_trunk_text;
         QString tetra_control_text;
         QString tetra_traffic_text;
@@ -2104,8 +2112,9 @@ class MetricsModel : public QObject {
         tetraEquals(const View& other) const {
             return tetra_visible == other.tetra_visible && tetra_mode_text == other.tetra_mode_text
                    && tetra_encrypted == other.tetra_encrypted && tetra_network_text == other.tetra_network_text
-                   && tetra_trunk_text == other.tetra_trunk_text && tetra_on_traffic == other.tetra_on_traffic
-                   && tetra_control_text == other.tetra_control_text && tetra_traffic_text == other.tetra_traffic_text
+                   && tetra_security_text == other.tetra_security_text && tetra_trunk_text == other.tetra_trunk_text
+                   && tetra_on_traffic == other.tetra_on_traffic && tetra_control_text == other.tetra_control_text
+                   && tetra_traffic_text == other.tetra_traffic_text
                    && tetra_mm_status_text == other.tetra_mm_status_text && tetra_codec_text == other.tetra_codec_text
                    && tetra_codec_fault == other.tetra_codec_fault;
         }

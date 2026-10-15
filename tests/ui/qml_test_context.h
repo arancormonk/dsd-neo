@@ -2593,6 +2593,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("tetraModeText")] = QString();
         metrics[QStringLiteral("tetraEncrypted")] = false;
         metrics[QStringLiteral("tetraNetworkText")] = QString();
+        metrics[QStringLiteral("tetraSecurityText")] = QString();
         metrics[QStringLiteral("tetraTrunkText")] = QString();
         metrics[QStringLiteral("tetraOnTraffic")] = false;
         metrics[QStringLiteral("tetraControlText")] = QString();

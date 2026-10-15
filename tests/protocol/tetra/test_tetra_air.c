@@ -47,10 +47,10 @@ ks_eq(int alg, uint32_t iv, const uint8_t key[10], const uint8_t expect[10]) {
     return memcmp(out, expect, 10) == 0;
 }
 
-/* Network 86/28 with KSG TEA1, an all-zero cipher key, colour code COLOUR and location area LA, on carrier CARRIER, and
- * the clock at TN 1, FN 1, MN 1 of hyperframe 0. */
+/* Network 86/28 with colour code COLOUR and location area LA, on carrier CARRIER, the clock at TN 1, FN 1, MN 1 of
+ * hyperframe 0, and the network's signalling naming KSG @p ksg (none when negative). */
 static dsd_state*
-new_encrypted_state(void) {
+new_cell_state(int ksg) {
     dsd_state* st = (dsd_state*)calloc(1, sizeof(dsd_state));
     tetra_state_t* ts = tetra_st(st);
     ts->net_known = 1;
@@ -66,7 +66,16 @@ new_encrypted_state(void) {
     ts->tn = 1;
     ts->fn = 1;
     ts->mn = 1;
-    tetra_air_ksg_remember(st, 86, 28, 0);
+    if (ksg >= 0) {
+        tetra_air_ksg_remember(st, 86, 28, (uint8_t)ksg);
+    }
+    return st;
+}
+
+/* The cell of new_cell_state() with KSG TEA1 and an all-zero cipher key. */
+static dsd_state*
+new_encrypted_state(void) {
+    dsd_state* st = new_cell_state(0);
     (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,00000000000000000000", DSD_KEY_APPLY_OVERLAY);
     return st;
 }
@@ -138,6 +147,8 @@ test_preconditions(void) {
     CHECK(tetra_air_decrypt_voice(g_opts, st, mode, bits, 8, 0) == 0, "encrypted voice without a KSG is unchanged");
     tetra_air_ksg_remember(st, 86, 28, 3);
     CHECK(tetra_air_decrypt_voice(g_opts, st, mode, bits, 8, 0) == 0, "TEA4 is named but not decrypted");
+    /* A session whose signalling named TEA1 alone: TEA4 and TEA1 would be two algorithms (test_key_choice()). */
+    DSD_MEMSET(tetra_st(st)->air_ksg, 0, sizeof(tetra_st(st)->air_ksg));
     tetra_air_ksg_remember(st, 86, 28, 0);
     CHECK(tetra_air_ksg_lookup(st, 86, 28) == 0 && tetra_air_ksg_lookup(st, 86, 29) == -1,
           "a KSG is remembered per network");
@@ -175,9 +186,9 @@ test_preconditions(void) {
     mode = TETRA_ENC_MODE_EVEN;
     tetra_st(st)->sysinfo_known = 0;
     CHECK(tetra_air_decrypt_voice(g_opts, st, mode, bits, 8, 0) == 0 && bits[0] == 1, "no location area, no ECK");
-    CHECK(!tetra_air_key_usable(st), "nor is the key usable without it");
+    CHECK(!tetra_air_key_usable_on(st, (int)CARRIER), "nor is the key usable without it");
     tetra_st(st)->sysinfo_known = 1;
-    CHECK(tetra_air_key_usable(st), "the key is usable with it");
+    CHECK(tetra_air_key_usable_on(st, (int)CARRIER), "the key is usable with it");
     g_opts->rtlsdr_center_freq = CARRIER_HZ + 1u;
     CHECK(tetra_air_decrypt_voice(g_opts, st, mode, bits, 8, 0) == 0 && bits[0] == 1,
           "a tuned frequency that is no carrier gives no carrier number");
@@ -269,6 +280,168 @@ test_cipher_key(void) {
     free_state(st);
 }
 
+/* @p nbits zero speech bits decrypted from KSS(0) on the carrier g_opts is tuned to, compared with the key stream
+ * @p ks: 1 when every bit is the key stream bit, 0 when not or when nothing was decrypted. */
+static int
+decrypts_to(dsd_state* st, const uint8_t* ks, int nbits) {
+    uint8_t bits[137];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    if (tetra_air_decrypt_voice(g_opts, st, TETRA_ENC_MODE_EVEN, bits, nbits, TETRA_AIR_KSS_TCH_S) != 1) {
+        return 0;
+    }
+    for (int i = 0; i < nbits; i++) {
+        if (bits[i] != ((ks[i / 8] >> (7 - (i % 8))) & 1u)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The key stream an 80-bit key gives under KSG @p ksg on @p carrier of the test cell, from TN 1, FN 1, MN 1. */
+static void
+ck_stream(int ksg, const uint8_t ck[10], uint16_t carrier, uint8_t* ks, int nbytes) {
+    uint8_t eck[10];
+    tetra_tea_derive_eck(carrier, LA, COLOUR, ck, eck);
+    tetra_tea_keystream(ksg, eck, tetra_air_build_iv(1, 1, 1, 0, 0), ks, nbytes);
+}
+
+/* The network's algorithm is what its signalling named: every KSG it named is kept, and one is the network's only while
+ * it is the only one. Reserved KSG numbers are refused; proprietary ones are kept but never decrypted. */
+static void
+test_ksg_evidence(void) {
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(dsd_state));
+    printf("[KSG evidence]\n");
+    CHECK(tetra_air_ksg_seen(st, 86, 28) == 0U && tetra_air_ksg_lookup(st, 86, 28) == -1, "nothing named yet");
+    CHECK(tetra_air_ksg_remember(st, 86, 28, 0) == 1 && tetra_air_ksg_lookup(st, 86, 28) == 0, "TEA1 named");
+    CHECK(tetra_air_ksg_remember(st, 86, 28, 0) == 1 && tetra_air_ksg_lookup(st, 86, 28) == 0, "named again");
+    CHECK(tetra_air_ksg_remember(st, 86, 28, 1) == 1 && tetra_air_ksg_lookup(st, 86, 28) == -1
+              && tetra_air_ksg_seen(st, 86, 28) == 0x0003U,
+          "TEA1 and TEA2 both named: no single algorithm");
+    CHECK(tetra_air_ksg_remember(st, 86, 28, 5) == 0 && tetra_air_ksg_seen(st, 86, 28) == 0x0003U,
+          "a reserved KSG is refused");
+    CHECK(tetra_air_ksg_remember(st, 86, 29, 9) == 1 && tetra_air_ksg_seen(st, 86, 29) == 0x0200U
+              && tetra_air_ksg_lookup(st, 86, 29) == 9,
+          "a proprietary KSG is kept for its own network");
+    CHECK(tetra_air_ksg_remember(st, 86, 30, 16) == 0, "a KSG wider than four bits is refused");
+    free_state(st);
+}
+
+/* Twenty networks of evidence: the evidence of a network an air key is loaded for is never evicted, so observations of
+ * other networks (a foreign OTAR) cannot erase it, nor turn its two algorithms back into one. */
+static void
+test_ksg_evidence_cache(void) {
+    char spec[48];
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(dsd_state));
+    printf("[KSG evidence cache]\n");
+    for (unsigned mnc = 100U; mnc < 116U; mnc++) {
+        DSD_SNPRINTF(spec, sizeof spec, "1,%u,00000000000000000000", mnc);
+        (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, spec, DSD_KEY_APPLY_OVERLAY);
+        (void)tetra_air_ksg_remember(st, 1, (uint16_t)mnc, 1);
+    }
+    (void)tetra_air_ksg_remember(st, 1, 100, 2);
+    for (unsigned mnc = 200U; mnc < 230U; mnc++) {
+        CHECK(tetra_air_ksg_remember(st, 2, (uint16_t)mnc, 0) == 1, "a keyless network's KSG is kept");
+    }
+    int kept = 1;
+    for (unsigned mnc = 101U; mnc < 116U; mnc++) {
+        kept = kept && tetra_air_ksg_lookup(st, 1, (uint16_t)mnc) == 1;
+    }
+    CHECK(kept, "every keyed network keeps its evidence");
+    CHECK(tetra_air_ksg_seen(st, 1, 100) == 0x0006U && tetra_air_ksg_lookup(st, 1, 100) == -1,
+          "and a keyed network's two algorithms stay two");
+    CHECK(tetra_air_ksg_lookup(st, 2, 229) == 0 && tetra_air_ksg_lookup(st, 2, 226) == 0
+              && tetra_air_ksg_lookup(st, 2, 225) == -1,
+          "keyless networks take the four other entries, the oldest evicted first");
+    free_state(st);
+}
+
+/* Which key decrypts which speech (D3): a key that names its algorithm runs it whatever the network named; one that
+ * names none runs the network's single TEA1-TEA3; a TEA1 reduced key decrypts only on its own channel, where it is
+ * preferred over the network's 80-bit key. */
+static void
+test_key_choice(void) {
+    static const uint8_t ck[10] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xAA, 0xBB};
+    uint8_t ks_tea1[18];
+    uint8_t ks_tea2[18];
+    uint8_t ks_tea2_next[18];
+    uint8_t ks_reduced[18];
+    const uint32_t iv = tetra_air_build_iv(1, 1, 1, 0, 0);
+    ck_stream(0, ck, CARRIER, ks_tea1, (int)sizeof ks_tea1);
+    ck_stream(1, ck, CARRIER, ks_tea2, (int)sizeof ks_tea2);
+    ck_stream(1, ck, CARRIER + 1u, ks_tea2_next, (int)sizeof ks_tea2_next);
+    tetra_tea1_keystream_reduced(0x67757D92u, iv, ks_reduced, (int)sizeof ks_reduced);
+
+    printf("[which key decrypts]\n");
+    dsd_state* st = new_encrypted_state();
+    DSD_SECURE_ZERO(st->tetra_air_keys, sizeof(st->tetra_air_keys));
+    (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,0123456789ABCDEFAABB", DSD_KEY_APPLY_OVERLAY);
+    CHECK(decrypts_to(st, ks_tea1, 137), "a key naming no algorithm runs the network's TEA1");
+    (void)tetra_air_ksg_remember(st, 86, 28, 1);
+    CHECK(!decrypts_to(st, ks_tea1, 137) && !decrypts_to(st, ks_tea2, 137)
+              && !tetra_air_key_usable_on(st, (int)CARRIER),
+          "nor anything once the network named two algorithms");
+    (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,0123456789ABCDEFAABB,tea2", DSD_KEY_APPLY_OVERLAY);
+    CHECK(decrypts_to(st, ks_tea2, 137) && tetra_air_key_usable_on(st, (int)CARRIER), "a key naming TEA2 runs TEA2");
+    free_state(st);
+
+    st = new_encrypted_state();
+    DSD_SECURE_ZERO(st->tetra_air_keys, sizeof(st->tetra_air_keys));
+    (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,0123456789ABCDEFAABB,TEA2", DSD_KEY_APPLY_OVERLAY);
+    CHECK(decrypts_to(st, ks_tea2, 137), "a key's own TEA2 wins over the network's TEA1");
+    free_state(st);
+
+    st = new_cell_state(3);
+    (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,0123456789ABCDEFAABB", DSD_KEY_APPLY_OVERLAY);
+    CHECK(!tetra_air_key_usable_on(st, (int)CARRIER), "a key naming none cannot run a TEA4 network");
+    free_state(st);
+
+    /* A TEA1 reduced key of carrier 700 in location area 0x1DCC (7628), colour code 5. */
+    st = new_encrypted_state();
+    DSD_SECURE_ZERO(st->tetra_air_keys, sizeof(st->tetra_air_keys));
+    CHECK(dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,67757D92,la=7628,cc=5,carrier=700",
+                               DSD_KEY_APPLY_OVERLAY)
+              == DSD_KEY_DIRECT_OK,
+          "a reduced key loads for carrier 700");
+    CHECK(decrypts_to(st, ks_reduced, 137), "it decrypts carrier 700 with TEA1 from its register");
+    CHECK(tetra_air_key_usable_on(st, (int)CARRIER) && !tetra_air_key_usable_on(st, (int)CARRIER + 1)
+              && !tetra_air_key_usable_on(st, -1),
+          "it is usable on its carrier only, not on an unknown one");
+    g_opts->rtlsdr_center_freq = CARRIER_HZ + 25000u;
+    CHECK(!decrypts_to(st, ks_reduced, 137), "the next carrier is not decrypted");
+    g_opts->rtlsdr_center_freq = CARRIER_HZ;
+    tetra_st(st)->la = LA + 1u;
+    CHECK(!decrypts_to(st, ks_reduced, 137) && !tetra_air_key_usable_on(st, (int)CARRIER),
+          "another location area is another channel");
+    tetra_st(st)->la = LA;
+    tetra_st(st)->colour = COLOUR + 1u;
+    CHECK(!decrypts_to(st, ks_reduced, 137), "another colour code is another channel");
+    tetra_st(st)->colour = COLOUR;
+    (void)tetra_air_ksg_remember(st, 86, 28, 1);
+    CHECK(decrypts_to(st, ks_reduced, 137), "the network naming TEA2 too does not stop a reduced key");
+    tetra_st(st)->tdma_valid = 0;
+    CHECK(tetra_air_key_usable_on(st, (int)CARRIER) && !decrypts_to(st, ks_reduced, 137),
+          "without a clock the key stays usable but nothing decrypts until there is an IV");
+    tetra_st(st)->tdma_valid = 1;
+
+    /* Beside the network's 80-bit TEA2 key, loaded after the reduced key and before it. */
+    (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,0123456789ABCDEFAABB,tea2", DSD_KEY_APPLY_OVERLAY);
+    CHECK(decrypts_to(st, ks_reduced, 137), "the reduced key is preferred on its channel");
+    g_opts->rtlsdr_center_freq = CARRIER_HZ + 25000u;
+    CHECK(decrypts_to(st, ks_tea2_next, 137), "and the 80-bit key decrypts the other carriers");
+    g_opts->rtlsdr_center_freq = CARRIER_HZ;
+    free_state(st);
+    st = new_encrypted_state();
+    DSD_SECURE_ZERO(st->tetra_air_keys, sizeof(st->tetra_air_keys));
+    (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,0123456789ABCDEFAABB,tea2", DSD_KEY_APPLY_OVERLAY);
+    (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, "86,28,67757D92,la=7628,cc=5,carrier=700",
+                               DSD_KEY_APPLY_OVERLAY);
+    CHECK(decrypts_to(st, ks_reduced, 137), "whichever was loaded first");
+    CHECK(tetra_air_key_usable_on(st, -1), "the 80-bit key answers for an unknown carrier");
+    tetra_st(st)->dmo = 1;
+    CHECK(!tetra_air_key_usable_on(st, (int)CARRIER), "no key applies in direct mode");
+    free_state(st);
+}
+
 int
 main(void) {
     printf("TETRA air interface\n");
@@ -282,6 +455,9 @@ main(void) {
     test_preconditions();
     test_kss_allocation();
     test_cipher_key();
+    test_ksg_evidence();
+    test_ksg_evidence_cache();
+    test_key_choice();
     free(g_opts);
     printf("%s\n", g_fail ? "FAILED" : "ALL TESTS PASSED");
     return g_fail ? 1 : 0;

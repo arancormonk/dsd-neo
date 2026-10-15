@@ -38,15 +38,31 @@ typedef struct {
     uint8_t loaded;
 } dsd_key_set_entry;
 
-/** Networks a session can hold TETRA air-interface keys for. */
-enum { DSD_TETRA_AIR_KEY_SLOTS = 4 };
+/** TETRA air-interface keys a session can hold, of both kinds together. */
+enum { DSD_TETRA_AIR_KEY_SLOTS = 16 };
 
-/** An operator TEA1/TEA2/TEA3 air-interface key for one TETRA network (`--tetra-key mcc,mnc,key`). */
+/** What a TETRA air-interface key is (dsd_tetra_air_key::kind). */
+enum {
+    DSD_TETRA_AIR_KEY_CK = 0,           /**< An 80-bit cipher key (SCK or CCK) of a whole network. */
+    DSD_TETRA_AIR_KEY_TEA1_REDUCED = 1, /**< TEA1's 32-bit key register (the reduced ECK) of one channel. */
+};
+
+/**
+ * An operator TEA1/TEA2/TEA3 air-interface key (`--tetra-key`): an 80-bit cipher key of one network
+ * (`mcc,mnc,key[,teaN]`), or a TEA1 reduced key of one channel (`mcc,mnc,key,la=,cc=,carrier=`). TB5 binds the ECK, and
+ * so TEA1's register, to the carrier number, location area and colour code (EN 300 392-7 clause 6.3.2.2), so a reduced
+ * key belongs to that channel only.
+ */
 typedef struct {
     uint8_t loaded;
-    uint16_t mcc; /**< 10-bit Mobile Country Code */
-    uint16_t mnc; /**< 14-bit Mobile Network Code */
-    uint8_t key[10];
+    uint8_t kind;     /**< DSD_TETRA_AIR_KEY_* */
+    uint8_t alg;      /**< The algorithm the key names: 0 none (network signalling decides), 1..3 TEA1..TEA3. */
+    uint8_t cc;       /**< Reduced key: the 6-bit colour code of its channel. */
+    uint16_t mcc;     /**< 10-bit Mobile Country Code */
+    uint16_t mnc;     /**< 14-bit Mobile Network Code */
+    uint16_t la;      /**< Reduced key: the 14-bit location area of its channel. */
+    uint16_t carrier; /**< Reduced key: the 12-bit carrier number of its channel. */
+    uint8_t key[10];  /**< The 80-bit key; a reduced key's register big-endian in key[0..3], the rest zero. */
 } dsd_tetra_air_key;
 
 /**
@@ -119,7 +135,9 @@ typedef enum {
     DSD_KEY_TYPE_SCRAMBLER = 3,
     DSD_KEY_TYPE_M17_SCRAMBLER = 4,
     DSD_KEY_TYPE_M17_AES = 5,
-    DSD_KEY_TYPE_TETRA_AIR = 6, /**< "mcc,mnc,key": decimal MCC (0-1023) and MNC (0-16383), 20 hex digits */
+    /** "mcc,mnc,key[,tea1|tea2|tea3]": decimal MCC (0-1023) and MNC (0-16383), 20 hex digits; or a TEA1 reduced key,
+        "mcc,mnc,key,la=N,cc=N,carrier=N": 8 hex digits, then LA 0-16383, CC 0-63 and carrier 0-4095. */
+    DSD_KEY_TYPE_TETRA_AIR = 6,
 } dsd_key_type;
 
 typedef enum { DSD_KEY_APPLY_OVERLAY, DSD_KEY_APPLY_REPLACE } dsd_key_apply_mode;

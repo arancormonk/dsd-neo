@@ -230,6 +230,21 @@ key_scalar_slot_equal(const dsd_key_scalars* a, const dsd_key_scalars* b, size_t
            && a->aes_key_segments[slot] == b->aes_key_segments[slot];
 }
 
+/* Field by field: dsd_tetra_air_key has padding bytes. */
+static int
+key_tetra_air_equal(const dsd_tetra_air_key* x, const dsd_tetra_air_key* y) {
+    if (x->loaded != y->loaded || x->kind != y->kind || x->alg != y->alg || x->mcc != y->mcc || x->mnc != y->mnc
+        || x->la != y->la || x->cc != y->cc || x->carrier != y->carrier) {
+        return 0;
+    }
+    for (size_t k = 0; k < sizeof(x->key); k++) {
+        if (x->key[k] != y->key[k]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int
 key_scalars_equal(const dsd_key_scalars* a, const dsd_key_scalars* b) {
     if (!key_scalar_words_equal(a, b)) {
@@ -246,15 +261,8 @@ key_scalars_equal(const dsd_key_scalars* a, const dsd_key_scalars* b) {
         }
     }
     for (size_t i = 0; i < DSD_TETRA_AIR_KEY_SLOTS; i++) {
-        const dsd_tetra_air_key* x = &a->tetra_air_keys[i];
-        const dsd_tetra_air_key* y = &b->tetra_air_keys[i];
-        if (x->loaded != y->loaded || x->mcc != y->mcc || x->mnc != y->mnc) {
+        if (!key_tetra_air_equal(&a->tetra_air_keys[i], &b->tetra_air_keys[i])) {
             return 0;
-        }
-        for (size_t k = 0; k < sizeof(x->key); k++) {
-            if (x->key[k] != y->key[k]) {
-                return 0;
-            }
         }
     }
     return 1;
@@ -557,11 +565,100 @@ key_set_parse_rc4(dsd_key_set* parsed, const char* text) {
     return result;
 }
 
-/* "mcc,mnc,key": a decimal 10-bit MCC and 14-bit MNC, then exactly 20 hex digits. The parsed key goes in slot 0;
- * key_scalars_merge_tetra_air() files it under its network. */
+/* The algorithm field of "mcc,mnc,key,teaN": tea1, tea2 or tea3 in either case, as 1..3; 0 for anything else. */
+static uint8_t
+key_parse_tetra_alg(const char* text) {
+    if (strlen(text) != 4U) {
+        return 0U;
+    }
+    for (size_t i = 0; i < 3U; i++) {
+        if ((text[i] | 0x20) != "tea"[i]) {
+            return 0U;
+        }
+    }
+    return (text[3] >= '1' && text[3] <= '3') ? (uint8_t)(text[3] - '0') : 0U;
+}
+
+/* "name=<decimal at most max>", exactly that name. Returns 0 on success. */
+static int
+key_parse_tetra_qualifier(const char* text, const char* name, uint16_t max, uint16_t* out) {
+    const size_t name_len = strlen(name);
+    if (strncmp(text, name, name_len) != 0 || text[name_len] != '=') {
+        return -1;
+    }
+    return dsd_parse_uint16_strict(text + name_len + 1U, 10, max, out);
+}
+
+/* The channel of a TEA1 reduced key: "la=N", "cc=N" and "carrier=N", in that order (TB5's location area, colour code and
+ * carrier number). Returns 0 on success. */
+static int
+key_parse_tetra_channel(char* const* field, dsd_tetra_air_key* key) {
+    uint16_t cc = 0;
+    if (key_parse_tetra_qualifier(field[0], "la", 0x3FFFU, &key->la) != 0
+        || key_parse_tetra_qualifier(field[1], "cc", 0x3FU, &cc) != 0
+        || key_parse_tetra_qualifier(field[2], "carrier", 0xFFFU, &key->carrier) != 0) {
+        return -1;
+    }
+    key->cc = (uint8_t)cc;
+    return 0;
+}
+
+enum { KEY_TETRA_FIELDS_MAX = 6 };
+
+/* Split @p buf at its commas into at most KEY_TETRA_FIELDS_MAX fields. Returns the count, or -1 for more. */
+static int
+key_split_tetra_fields(char* buf, char** field) {
+    int count = 0;
+    char* at = buf;
+    for (;;) {
+        if (count == KEY_TETRA_FIELDS_MAX) {
+            return -1;
+        }
+        field[count++] = at;
+        char* const comma = strchr(at, ',');
+        if (!comma) {
+            return count;
+        }
+        *comma = '\0';
+        at = comma + 1;
+    }
+}
+
+/* The key fields after "mcc,mnc,": 20 hex digits, optionally naming TEA1-TEA3; or the 8 hex digits of a TEA1 reduced key
+ * and its channel. */
+static dsd_key_direct_result
+key_parse_tetra_key(char* const* field, int extra, dsd_tetra_air_key* key) {
+    const size_t digits = strlen(field[0]);
+    if (digits == 8U && extra == 3) {
+        key->kind = DSD_TETRA_AIR_KEY_TEA1_REDUCED;
+        key->alg = 1U;
+        if (key_parse_tetra_channel(field + 1, key) != 0) {
+            return DSD_KEY_DIRECT_INVALID_ARGUMENT;
+        }
+        return dsd_parse_hex_bytes_exact(field[0], digits, key->key, 4U) == 0 ? DSD_KEY_DIRECT_OK
+                                                                              : DSD_KEY_DIRECT_INVALID_HEX;
+    }
+    if (digits != 20U || extra > 1) {
+        return digits == 20U || digits == 8U ? DSD_KEY_DIRECT_INVALID_ARGUMENT : DSD_KEY_DIRECT_INVALID_HEX;
+    }
+    key->kind = DSD_TETRA_AIR_KEY_CK;
+    if (extra == 1) {
+        key->alg = key_parse_tetra_alg(field[1]);
+        if (key->alg == 0U) {
+            return DSD_KEY_DIRECT_INVALID_ARGUMENT;
+        }
+    }
+    return dsd_parse_hex_bytes_exact(field[0], digits, key->key, sizeof key->key) == 0 ? DSD_KEY_DIRECT_OK
+                                                                                       : DSD_KEY_DIRECT_INVALID_HEX;
+}
+
+/* "mcc,mnc,key[,tea1|tea2|tea3]" or "mcc,mnc,key,la=N,cc=N,carrier=N" (dsd_tetra_air_key): a decimal 10-bit MCC and
+ * 14-bit MNC, then 20 hex digits of an 80-bit key, or 8 of a TEA1 reduced key with its channel. The parsed key goes in
+ * slot 0; key_scalars_merge_tetra_air() files it. */
 static dsd_key_direct_result
 key_set_parse_tetra_air(dsd_key_scalars* scalars, const char* text) {
     char buf[64];
+    char* field[KEY_TETRA_FIELDS_MAX];
     dsd_key_direct_result rc = DSD_KEY_DIRECT_INVALID_ARGUMENT;
     dsd_tetra_air_key parsed = {0};
     const size_t len = strlen(text);
@@ -569,19 +666,13 @@ key_set_parse_tetra_air(dsd_key_scalars* scalars, const char* text) {
         return rc;
     }
     DSD_MEMCPY(buf, text, len + 1U);
-    char* const mnc_text = strchr(buf, ',');
-    char* const key_text = mnc_text ? strchr(mnc_text + 1, ',') : NULL;
-    if (key_text) {
-        *mnc_text = '\0';
-        *key_text = '\0';
-        if (dsd_parse_uint16_strict(buf, 10, 0x3FFU, &parsed.mcc) == 0
-            && dsd_parse_uint16_strict(mnc_text + 1, 10, 0x3FFFU, &parsed.mnc) == 0) {
-            rc = DSD_KEY_DIRECT_INVALID_HEX;
-            if (dsd_parse_hex_bytes_exact(key_text + 1, strlen(key_text + 1), parsed.key, sizeof(parsed.key)) == 0) {
-                parsed.loaded = 1;
-                scalars->tetra_air_keys[0] = parsed;
-                rc = DSD_KEY_DIRECT_OK;
-            }
+    const int count = key_split_tetra_fields(buf, field);
+    if (count >= 3 && dsd_parse_uint16_strict(field[0], 10, 0x3FFU, &parsed.mcc) == 0
+        && dsd_parse_uint16_strict(field[1], 10, 0x3FFFU, &parsed.mnc) == 0) {
+        rc = key_parse_tetra_key(field + 2, count - 3, &parsed);
+        if (rc == DSD_KEY_DIRECT_OK) {
+            parsed.loaded = 1;
+            scalars->tetra_air_keys[0] = parsed;
         }
     }
     DSD_SECURE_ZERO(buf, sizeof(buf));
@@ -638,14 +729,25 @@ dsd_key_set_load_typed(dsd_key_set* out, dsd_key_type type, const char* text) {
     return rc;
 }
 
-/* File the parsed TETRA key under its network: replace that network's key, else take a free slot. Returns -1 when
- * all slots hold other networks. */
+/* Whether @p slot holds the key @p key replaces: an 80-bit key of the same network, or a reduced key of the same
+ * channel. */
+static int
+key_tetra_air_same(const dsd_tetra_air_key* slot, const dsd_tetra_air_key* key) {
+    if (!slot->loaded || slot->kind != key->kind || slot->mcc != key->mcc || slot->mnc != key->mnc) {
+        return 0;
+    }
+    return key->kind != DSD_TETRA_AIR_KEY_TEA1_REDUCED
+           || (slot->la == key->la && slot->cc == key->cc && slot->carrier == key->carrier);
+}
+
+/* File the parsed TETRA key: replace the key it stands for (key_tetra_air_same()), else take a free slot. Returns -1
+ * when all slots hold other keys. */
 static int
 key_scalars_merge_tetra_air(dsd_key_scalars* target, const dsd_tetra_air_key* key) {
     dsd_tetra_air_key* free_slot = NULL;
     for (size_t i = 0; i < DSD_TETRA_AIR_KEY_SLOTS; i++) {
         dsd_tetra_air_key* slot = &target->tetra_air_keys[i];
-        if (slot->loaded && slot->mcc == key->mcc && slot->mnc == key->mnc) {
+        if (key_tetra_air_same(slot, key)) {
             *slot = *key;
             return 0;
         }

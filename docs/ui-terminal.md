@@ -864,13 +864,19 @@ Config > Save writes: while a scan row with its own policy is on air the row kee
 list policy on a session where nothing detects tones, the log says once that it has no effect.
 
 Under the TETRA preset (`-fT`), once a block has decoded, Call Info shows what the Qt/Android monitor shows: the
-working mode with the air encryption, the network (its colour code in decimal, as the call history names one), where
-call following stands while trunking is on, the control and traffic channels, the last MM status and the speech
-codec's health, each line only once the decoder has something for it, and under them the latest decoded messages:
+working mode with the air encryption and every algorithm the network's signalling named (a network does not broadcast
+its algorithm: it shows only once a D-OTAR, a D-LOCATION UPDATE COMMAND or REJECT, or in direct mode the DMAC-SYNC of
+the transmission, named one), the network (its colour code in decimal, as the call history names one, with the
+location area and the carrier being received once known: the fields a TEA1 reduced key is bound to), the security the
+cell broadcasts (its security class or classes, SCKN and authentication, or `no air encryption`) with the loaded key
+that applies to the carrier being received, or in direct mode the transmission's security class, where call following
+stands while trunking is on, the control and traffic channels, the last MM status and the speech codec's health, each
+line only once the decoder has something for it, and under them the latest decoded messages:
 
 ```text
-| TETRA: TMO downlink · encrypted (TEA2)
-| Network: MCC 262 · MNC 1001 · CC 25
+| TETRA: TMO downlink · encrypted (TEA1)
+| Network: MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654
+| Security: class 2 · SCKN 3 · authentication · TEA1 reduced key
 | Trunk: traffic channel
 | Control: carrier 321 · 392.0125 MHz
 | Traffic: carrier 654 · TS 1,3 · 392.1250 MHz

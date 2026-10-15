@@ -272,10 +272,28 @@ main(void) {
     state->tetra_pub.mcc = 262U;
     state->tetra_pub.traffic_slots = 0x0AU;
     state->tetra_pub.codec_frames = 18U;
+    state->tetra_pub.ksg_mask = 0x0003U;
+    state->tetra_pub.la_known = 1U;
+    state->tetra_pub.la = 4097U;
+    state->tetra_pub.rx_carrier_known = 1U;
+    state->tetra_pub.rx_carrier = 654U;
+    state->tetra_pub.key_kind = DSD_TETRA_KEY_TEA1_REDUCED;
+    state->tetra_pub.key_tea = 1U;
+    state->tetra_pub.aie = DSD_TETRA_AIE_AVAILABLE;
+    state->tetra_pub.sec_known = 1U;
+    state->tetra_pub.sec_sckn = 3U;
+    state->tetra_pub.dmo_sckn = 5U;
+    /* The air keys the publication only names the kind of never ride the snapshot themselves. */
+    state->tetra_air_keys[0].loaded = 1U;
+    state->tetra_air_keys[0].key[0] = 0xA5U;
     dsd_app_telemetry_publish_snapshot(state);
     state->tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
     state->tetra_pub.mcc = 1U;
     state->tetra_pub.codec_frames = 99U;
+    state->tetra_pub.ksg_mask = 0U;
+    state->tetra_pub.rx_carrier = 1U;
+    state->tetra_pub.key_kind = DSD_TETRA_KEY_NONE;
+    state->tetra_pub.sec_sckn = 9U;
     observation.ota_source_id = 999U;
     observation.observed_m = 2.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 1);
@@ -297,6 +315,12 @@ main(void) {
     assert(snap->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK && snap->tetra_pub.net_known == 1U);
     assert(snap->tetra_pub.mcc == 262U && snap->tetra_pub.traffic_slots == 0x0AU
            && snap->tetra_pub.codec_frames == 18U);
+    assert(snap->tetra_pub.ksg_mask == 0x0003U && snap->tetra_pub.la_known == 1U && snap->tetra_pub.la == 4097U);
+    assert(snap->tetra_pub.rx_carrier_known == 1U && snap->tetra_pub.rx_carrier == 654U);
+    assert(snap->tetra_pub.key_kind == DSD_TETRA_KEY_TEA1_REDUCED && snap->tetra_pub.key_tea == 1U);
+    assert(snap->tetra_pub.aie == DSD_TETRA_AIE_AVAILABLE && snap->tetra_pub.sec_known == 1U
+           && snap->tetra_pub.sec_sckn == 3U && snap->tetra_pub.dmo_sckn == 5U);
+    assert(snap->tetra_air_keys[0].loaded == 0U && snap->tetra_air_keys[0].key[0] == 0U);
     assert_slot_tail(snap, 123U, 456U);
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
     /* A shared pointer would let the next reserve() on either side realloc the other's

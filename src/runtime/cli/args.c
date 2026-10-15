@@ -1250,7 +1250,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             const char* spec = argv[i][11] == '=' ? argv[i] + 12 : NULL;                                               \
             if (spec == NULL) {                                                                                        \
                 if (i + 1 >= argc) {                                                                                   \
-                    LOG_ERROR("--tetra-key requires mcc,mnc and 20 hex digits\n");                                     \
+                    LOG_ERROR("--tetra-key requires a key (see --help)\n");                                            \
                     cli_set_exit_rc(out_exit_rc, 1);                                                                   \
                     return DSD_PARSE_ERROR;                                                                            \
                 }                                                                                                      \
@@ -1258,8 +1258,9 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             if (dsd_key_apply_direct(state, DSD_KEY_TYPE_TETRA_AIR, spec, DSD_KEY_APPLY_OVERLAY)                       \
                 != DSD_KEY_DIRECT_OK) {                                                                                \
-                LOG_ERROR("--tetra-key requires mcc,mnc and 20 hex digits (MCC 0-1023, MNC 0-16383; keys for at most " \
-                          "four networks)\n");                                                                         \
+                LOG_ERROR("--tetra-key requires mcc,mnc,<20 hex digits>[,tea1|tea2|tea3] or a TEA1 reduced key, "      \
+                          "mcc,mnc,<8 hex digits>,la=N,cc=N,carrier=N (MCC 0-1023, MNC 0-16383, LA 0-16383, CC 0-63, " \
+                          "carrier 0-4095; at most 16 keys)\n");                                                       \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \

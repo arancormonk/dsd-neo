@@ -13,6 +13,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -800,6 +801,44 @@ test_header_encryption_reaches_the_call(void) {
     tetra_mac_parse_schd(b.bits, b.n, 1, s.opts, s.state);
     assert(dsd_enc_lockout_entry_active(s.state, 0x100u, 1) && g_returns == 1 && followed_call(s.state) == -1);
     session_close(&s);
+}
+
+/* A TEA1 reduced key decrypts one channel (EN 300 392-7 clause 6.3.2.2: TB5 binds the key register to the carrier,
+ * location area and colour code): the call it decides is the one allocated that carrier. While encrypted calls are not
+ * followed, a followed call that turns air encrypted on carrier 120 stays followed, decryptable, with a reduced key for
+ * carrier 120; with one for carrier 121 only, it is locked out and left. */
+static void
+test_reduced_key_decides_its_carrier(void) {
+    for (int keyed_carrier = 120; keyed_carrier <= 121; keyed_carrier++) {
+        session s = session_open();
+        session_history(&s);
+        s.opts->trunk_tune_enc_calls = 0;
+        tetra_state_t* const ts = tetra_st(s.state);
+        ts->sysinfo_known = 1U;
+        ts->la = 77U;
+        char spec[64];
+        DSD_SNPRINTF(spec, sizeof spec, "262,1001,0A0B0C0D,la=77,cc=25,carrier=%d", keyed_carrier);
+        assert(dsd_key_apply_direct(s.state, DSD_KEY_TYPE_TETRA_AIR, spec, DSD_KEY_APPLY_OVERLAY) == DSD_KEY_DIRECT_OK);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        assert(followed_call(s.state) == 0x0A && g_returns == 0);
+        ttb_block b = {0};
+        const int start = ttb_resource(&b, TETRA_ENC_MODE_EVEN, TETRA_MAC_ADDR_USSI, 0x100u);
+        ttb_resource_flags(&b, 1);
+        ttb_put(&b, 0x2A5u, 30);
+        ttb_close_resource(&b, start);
+        ttb_finish(&b, TTB_SCH_F_BITS, -1);
+        tetra_mac_parse_schd(b.bits, b.n, 1, s.opts, s.state);
+        assert(tetra_calls_peek(s.state, 0x0A)->air_enc == TETRA_ENC_MODE_EVEN);
+        if (keyed_carrier == 120) {
+            const dsd_call_snapshot call = canonical(s.state);
+            assert(!dsd_enc_lockout_entry_active(s.state, 0x100u, 1) && g_returns == 0
+                   && followed_call(s.state) == 0x0A);
+            assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+        } else {
+            assert(dsd_enc_lockout_entry_active(s.state, 0x100u, 1) && g_returns == 1 && followed_call(s.state) == -1);
+        }
+        session_close(&s);
+    }
 }
 
 /* A fragmented TM-SDU encrypted from its first fragment carries its channel allocation, ciphertext too, in its MAC-END
@@ -3144,6 +3183,7 @@ main(void) {
     test_hold_takes_over();
     test_priority_preemption();
     test_followed_call_turns_encrypted();
+    test_reduced_key_decides_its_carrier();
     test_followed_call_renamed();
     test_followed_call_renamed_first_on_its_carrier();
     test_setup_reusing_followed_id();

@@ -113,6 +113,38 @@ test_keystream(void) {
           "the generator writes exactly the requested bytes");
 }
 
+/* TEA1 from its 32-bit key register, the reduced ECK: the published TEA1 vectors again, from the register TETRA_crypto's
+ * tea1_init_key_register() builds for their keys (all-zero -> 0xC24E273B, A798..A029 -> 0x67757D92). */
+static void
+test_tea1_reduced(void) {
+    static const uint8_t tea1_zero_ks[10] = {0xd3, 0x3f, 0xd8, 0xa6, 0x05, 0xa0, 0xa1, 0xbb, 0x90, 0x23};
+    static const uint8_t tea1_ks[10] = {0x1d, 0xec, 0x9c, 0x7e, 0xc6, 0x22, 0x3d, 0x87, 0xc2, 0xcc};
+    uint8_t out[10];
+    uint8_t untouched[10];
+
+    DSD_MEMSET(out, 0, sizeof(out));
+    tetra_tea1_keystream_reduced(0xC24E273Bu, 0x11111111u, out, (int)sizeof(out));
+    check(memcmp(out, tea1_zero_ks, sizeof(out)) == 0, "TEA1 zero key vector from its reduced key");
+    DSD_MEMSET(out, 0, sizeof(out));
+    tetra_tea1_keystream_reduced(0x67757D92u, 0x01234567u, out, (int)sizeof(out));
+    check(memcmp(out, tea1_ks, sizeof(out)) == 0, "TEA1 keyed vector from its reduced key");
+
+    /* Register 0 is a key like any other. */
+    DSD_MEMSET(untouched, 0x5A, sizeof(untouched));
+    DSD_MEMCPY(out, untouched, sizeof(out));
+    tetra_tea1_keystream_reduced(0u, 0x01234567u, out, (int)sizeof(out));
+    check(memcmp(out, untouched, sizeof(out)) != 0, "a zero reduced key makes a key stream");
+
+    DSD_MEMCPY(out, untouched, sizeof(out));
+    tetra_tea1_keystream_reduced(0x67757D92u, 0x01234567u, out, 0);
+    tetra_tea1_keystream_reduced(0x67757D92u, 0x01234567u, out, -4);
+    tetra_tea1_keystream_reduced(0x67757D92u, 0x01234567u, NULL, (int)sizeof(out));
+    check(memcmp(out, untouched, sizeof(out)) == 0, "an empty length or no output writes nothing");
+    tetra_tea1_keystream_reduced(0x67757D92u, 0x01234567u, out, 4);
+    check(memcmp(out, tea1_ks, 4) == 0 && memcmp(out + 4, untouched + 4, sizeof(out) - 4) == 0,
+          "the reduced generator writes exactly the requested bytes");
+}
+
 /* TB5 (EN 300 392-7 clause 6.3.2.2): the four cases of TETRA_crypto's tests (Apache-2.0). */
 static void
 test_tb5(void) {
@@ -177,6 +209,7 @@ int
 main(void) {
     test_iv_packing();
     test_keystream();
+    test_tea1_reduced();
     test_tb5();
     if (g_fail != 0) {
         DSD_FPRINTF(stderr, "%d TETRA crypto check(s) failed\n", g_fail);

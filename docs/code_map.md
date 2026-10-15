@@ -895,14 +895,18 @@ suite runs under this compiler.
   snapshot copies; at the end of every burst `tetra_publish()` (`src/protocol/tetra/tetra.c`, from
   `tetra_frame_leave()`) copies into the publication the working mode (TMO downlink, uplink or control uplink, DMO
   direct or through a DM-REP, DM-GATE or both), taken only once a block passed its CRC, the network (MCC, MNC, 6-bit
-  colour code), the air-interface encryption and the network's TEA (1..4, 0 unknown; never a key), where call following
-  stands, the SYSINFO main carrier and its frequency, the channel allocation's carrier, timeslot bitmap (bit 3 is
+  colour code), the air-interface encryption and every algorithm signalling named (`ksg_mask`, bit k for KSG k: the
+  network's KSG evidence in trunked mode, the transmission's DMAC-SYNC KSG in direct mode), the cell's broadcast
+  security (`aie` from the BS service details; `sec_known`, `sec_auth`, `sec_class1`, `sec_class3`, `sec_sckn` from the
+  extended services broadcast), its location area, the carrier being received (`tetra_calls_rx_carrier()`) and which
+  kind of air key applies there with its TEA (`key_kind`, `key_tea`, from `tetra_air_key_for_carrier()`; never a key),
+  in direct mode the transmission's security class and SCKN (`dmo_class`, `dmo_sckn`), where call following stands, the SYSINFO main carrier and its frequency, the channel allocation's carrier, timeslot bitmap (bit 3 is
   timeslot 1, as the Timeslot assigned field carries it) and frequency, the last D-MM STATUS, and the speech codec's
   status (`dsd_tetra_codec_status`: unknown, ready, missing, load failed, decode errors) with its frame and error
   counts. The network, the SYSINFO main carrier, the traffic channel and the D-MM STATUS are a trunked network's, so a
   direct mode carrier publishes none of them, though the TETRA state keeps the network identity for the trunked carrier
   the session goes back to: a retune from a TMO cell to a DMO carrier shows no network of that cell beside the DMO
-  mode, as it shows no TEA, colour code or channel rows. A synchronisation burst that sets the mode or the network publishes at once (`tetra_bsch_parse()`,
+  mode, as it shows no colour code, cell security, carrier or channel rows. A synchronisation burst that sets the mode or the network publishes at once (`tetra_bsch_parse()`,
   `tetra_dmo_apply_sync()`): the calls and notices the rest of its burst emits read the carrier's colour code from the
   publication (`dsd_access_code_current()`), so they carry the cell or direct mode channel they were decoded on, not the
   last burst's. Integers only, so it rides the `vertex_ks_count..ui_msg` snapshot range, pinned by a `_Static_assert` in
@@ -2410,8 +2414,13 @@ nothing is left to roll back (`RUNTIME_TRUNK_TUNING_HOOKS`, `ENGINE_TETRA_TRUNK`
   `include/dsd-neo/app_control/tetra_view.h` and `src/app_control/tetra_view.c` turn a snapshot of
   `dsd_state::tetra_pub` into the TETRA rows every frontend shows: `dsd_app_tetra_view()` makes them visible while the
   options run the TETRA preset (`frame_tetra`) and the publication has a working mode, and writes the mode line with
-  the air encryption (`TMO downlink · encrypted (TEA2)`, `DMO direct · clear`), the network (`MCC 262 · MNC 1001 · CC
-  25`: the colour code through `dsd_app_access_code_format()`, in decimal as the call history names one), where call
+  the air encryption and every algorithm signalling named, whatever the last PDU's encryption (`TMO downlink ·
+  encrypted (TEA2)`, `TMO downlink · clear · TEA1/TEA2`, `DMO direct · clear`, a proprietary KSG as `proprietary KSG
+  9`, as many as fit), the network (`MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654`: the colour code through
+  `dsd_app_access_code_format()`, in decimal as the call history names one, the location area and the carrier being
+  received once known, the fields a TEA1 reduced key is bound to), the security row (`class 2 · SCKN 3 ·
+  authentication · TEA1 reduced key`, `classes 1 and 3`, `no air encryption`; the class bits only while the BS service
+  details offer air encryption, EN 300 392-7 table A.104 note 1; direct mode `DM-2-A · SCKN 5`), where call
   following stands (`control channel`, `traffic channel`, `idle`, only with trunking on and on a TMO downlink), the
   control and traffic channels (`carrier 654 · TS 1,3 · 392.1250 MHz`, a frequency to five decimals with a trailing
   zero dropped, as Qt's `Util.mhzText()` writes one), the MM status (`7 · MS frequency bands request`) and the codec's
@@ -3997,8 +4006,10 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   (`dsd-neo_tetra_crypto`, see Third-Party) and pack the EN 300 392-7 clause 6.3.2.1 frame-number IV themselves,
   returning 0 for an out-of-range slot, frame, multiframe or direction. `tetra_tea_derive_eck()` is TB5 (clauses
   4.2.7 and 6.3.2.2): the encryption cipher key the generators take, from a cipher key (SCK or CCK) and the carrier
-  number, location area and colour code, pinned by TETRA_crypto's four TB5 vectors (`TETRA_CRYPTO`). It is the only
-  file that includes the upstream headers.
+  number, location area and colour code, pinned by TETRA_crypto's four TB5 vectors (`TETRA_CRYPTO`).
+  `tetra_tea1_keystream_reduced()` runs TEA1 from its 32-bit key register (the reduced ECK) instead of an ECK: the
+  register TEA1 compresses the ECK into before it generates anything, which belongs to the one channel TB5 made that ECK
+  for. It is the only file that includes the upstream headers.
 - `backup_seal.c` / `<dsd-neo/crypto/backup_seal.h>` seal and open passphrase-protected backups (scrypt + AES-256-GCM,
   issue #580). The 64-byte header is the GCM AAD. Seal and open both accept only log2(N) 14..17, r 8 and p 1..4, so an
   untrusted file cannot demand more scrypt memory than that. `dsd_backup_open()` wipes its output on any failure:
@@ -4490,8 +4501,13 @@ the SDS-TL header, the text, a concatenation part's control fields but not its r
 (the SN-PDU header; all three in `tetra_mle_pdu.h`), and `tetra_mm_decode()` (the MM PDUs of EN 300 392-2 clause 16 and
 EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd()`, `tetra_mle_dispatch()`,
 `tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the summary line, the call event,
-the notice, the SDS reassembly, the KSG an SCK or GCK Provide names. Of signalling, `tetra_state_t` keeps only what the
-decoder reads back: the cell's main carrier, band, offset and location area, the hyperframe number, the encryption mode
+the notice, the SDS reassembly, the KSG an SCK or GCK Provide names, and the KSG the ciphering parameters of a
+D-LOCATION UPDATE COMMAND or REJECT name for the serving network (not the MS's network of its address extension). Of
+signalling, `tetra_state_t` keeps only what the decoder reads back: the cell's main carrier, band, offset and location
+area with its broadcast security (the extended services broadcast's security information, EN 300 392-7 table A.104, and
+the BS service details' air interface encryption bit, each kept until the next SYSINFO that carries it), the KSG
+evidence (`air_ksg`: per network, the set of KSG numbers its signalling named; `tetra_air.c`), the hyperframe number,
+the encryption mode
 of the last addressed MAC-RESOURCE, the reassembly contexts (one message each, keyed by its reference, its transport
 and its sender's TETRA subscriber identity: the SSI with the network a calling party of type 2 names in its extension
 and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44) and the D-MM
@@ -4785,7 +4801,8 @@ single "current call".
 - Following. Trunking on, an allocation that came with a call PDU, of a call whose D-SETUP named its called party, on
   a downlink phase-modulation channel with a frequency, is judged: encrypted calls not followed lock out
   (`dsd_enc_lockout_note()`) a voice call the listener cannot decrypt (end-to-end encrypted, or air encrypted without
-  a usable key: network, location area, TEA1..TEA3 and a loaded cipher key) and release a call it can;
+  a key for the carrier it is on, `tetra_air_key_usable_on()`: its allocated carrier, else the carrier being received;
+  an 80-bit key covers every carrier, a TEA1 reduced key its own) and release a call it can;
   `dsd_tg_policy_evaluate_group_call()` / `_private_call()` decide `tune_allowed`; while another call is followed, a
   held talkgroup takes over a call of another one, else `dsd_tg_policy_should_preempt()` (route: carrier, any
   timeslot). `tetra_sm_on_grant()` then follows it and the route is noted active. A header-only allocation, one to an
@@ -4832,7 +4849,11 @@ single "current call".
   gives the talkgroup (its canonical call's kind, target and source: `tetra_calls_target()`, or the direct mode
   destination) and the encryption class: end-to-
   end and direct mode encryption are never decrypted; air encryption is when `tetra_air_decrypt_voice()` applies a key
-  stream from the encryption cipher key TB5 derives with the carrier being received (`tetra_calls_carrier()`: the
+  stream. Which key (`tetra_air_key_for_carrier()`, `tetra_air.c`): a TEA1 reduced key of exactly this channel (MCC,
+  MNC, location area, colour code, carrier), which runs TEA1 from its register with no TB5; else the network's 80-bit
+  key with the algorithm it names, else with the one TEA1..TEA3 the network's signalling named (none while it named two
+  or more: a SwMI may support several, EN 300 392-7 clause 6.3.1), from the encryption cipher key TB5 derives with the
+  carrier being received (`tetra_calls_carrier()`: the
   followed call's carrier, else the carrier whose frequency is exactly the one the receiver is on,
   `tetra_sm_receiver_freq()`, on the control channel too, which may be a secondary carrier that broadcasts the main
   carrier's SYSINFO), the SYSINFO location area and the BSCH colour code. The encryption sits above the channel coding (EN
@@ -4969,10 +4990,12 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 |---|---|---|---|
 | Direct mode (`dmo`, `dmo_comm_type`) | the carrier | a DSB (`tetra_dmo_apply_sync()`) | a CRC-passed BSCH of a trunked system code or uplink SCH/HU (`tetra_dmo_leave()`), a carrier boundary |
 | DM colour code (`dmo_dcc_valid`, `dmo_dcc_seed`, `dmo_since_sync`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED, or of a fragmented DM-SDS | its end (`tetra_dmo_transmission_over()`: DM-TX CEASED, DM-RELEASE or DM-DISCONNECT in a DMAC-SYNC or DMAC-DATA, the call idle `TETRA_CALL_DMO_IDLE_S`), DM-2-C, a DMAC-SYNC with no source address, 200 DNBs without a DMAC-SYNC, leaving direct mode, a carrier boundary |
-| Direct mode protection (`dmo_crypt`; the set-up's `dmo_tx_crypt`, `dmo_tx_aie`, `dmo_tx_seed`) and the transmission (`dmo_tx_seq`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP or DM-CONNECT ACK, or of a DM-OCCUPIED when the set-up went unheard; a set-up of another source or security class, and a DM-2-C DMAC-SYNC in a transmission of another class, start the next; a DM-OCCUPIED that contradicts the set-up and an unread DM-2-A or DM-2-B DMAC-SYNC only seal it | as the colour code (UNKNOWN, sealed) |
+| Direct mode protection (`dmo_crypt`; the set-up's `dmo_tx_crypt`, `dmo_tx_aie`, `dmo_tx_seed`, and the KSG and key number of the DMAC-SYNC that started it, `dmo_tx_ksg`, `dmo_tx_key_number`, which the call transaction keeps, EN 300 396-6 clause 5.2) and the transmission (`dmo_tx_seq`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP or DM-CONNECT ACK, or of a DM-OCCUPIED when the set-up went unheard; a set-up of another source or security class, and a DM-2-C DMAC-SYNC in a transmission of another class, start the next; a DM-OCCUPIED that contradicts the set-up and an unread DM-2-A or DM-2-B DMAC-SYNC only seal it | as the colour code (UNKNOWN, sealed) |
 | Direct mode call (`calls.dmo`) and its canonical call | the channel's call | DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, a DM-2-C DMAC-SYNC | its end PDUs, idling out, leaving direct mode, a carrier boundary (the engine ends the canonical call) |
 | Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session; published only on a trunked carrier (`tetra_pub_network()`) | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
-| Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell; its control channel published only on a trunked carrier | SYSINFO, addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`), a SYSINFO of another main carrier or location area (`tetra_bsch_sysinfo_cell()`) |
+| KSG evidence (`air_ksg`: per network, the KSG numbers its signalling named) | the session, per network | a complete D-OTAR SCK or GCK Provide, D-LOCATION UPDATE COMMAND or REJECT with cipher control on | a full cache (20 networks) replacing the oldest network no air key is loaded for; never a keyed network's |
+| Tuned frequency (`rx_tuned_hz`), which `tetra_calls_rx_carrier()` reads the carrier being received from without options | the receiver | every burst (`tetra_frame_enter()`) | a carrier boundary |
+| Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`, security `sec`/`sec_valid` and `aie_known`/`aie_available`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell; its control channel and security published only on a trunked carrier | SYSINFO (the security from one with the extended services broadcast, the AIE bit from one with its D-MLE-SYSINFO), addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`), a SYSINFO of another main carrier or location area (`tetra_bsch_sysinfo_cell()`) |
 | TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`); a burst it places in frame 18 is no speech | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
 | Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |

@@ -232,6 +232,33 @@ typedef struct {
     uint8_t bits[TETRA_MAC_TM_SDU_MAX_BITS]; /* one bit per byte */
 } tetra_mac_fragment;
 
+/** The security information a cell broadcasts in its SYSINFO extended services broadcast (EN 300 392-7 table A.104,
+ * EN 300 392-2 table 21.67). Elements a note of table A.104 voids read zero. */
+typedef struct {
+    uint8_t auth;          /* authentication required on this cell */
+    uint8_t class1;        /* security class 1 MSs supported */
+    uint8_t class3;        /* 1: security class 3 MSs supported; 0: class 2 */
+    uint8_t sckn;          /* class 2: the SCK number, 1..32; 0 in a class 3 cell */
+    uint8_t dck_initial;   /* class 3: DCK retrieval during initial cell selection */
+    uint8_t dck_reselect;  /* class 3: DCK retrieval during cell re-selection */
+    uint8_t linked_gck;    /* class 3 with GCK supported: linked GCK crypto-periods */
+    uint8_t short_gck_vn;  /* with linked GCK crypto-periods: the 2 low bits of their GCK-VN */
+    uint8_t gck_supported; /* GCK supported on this cell */
+} tetra_cell_security;
+
+/* Networks whose air interface algorithm evidence is kept: room for every network an air key can be loaded for
+ * (DSD_TETRA_AIR_KEY_SLOTS), whose evidence is never evicted, and four more (tetra_air.c). */
+#define TETRA_AIR_KSG_NETS 20
+
+/** The KSG numbers one network's signalling named (tetra_state_t::air_ksg). */
+typedef struct {
+    uint32_t seq;  /* when the entry was made: the oldest keyless entry is the one a full cache replaces */
+    uint16_t mcc;  /* 10-bit MCC */
+    uint16_t mnc;  /* 14-bit MNC */
+    uint16_t mask; /* bit k: KSG number k was named (0..3 standard, 8..15 proprietary; 4..7 are reserved) */
+    uint8_t valid; /* the entry holds a network */
+} tetra_air_ksg_net;
+
 typedef struct tetra_state {
     /* The speech path: codec library, speech integrity and PCM carry (tetra_voice.c). */
     tetra_voice_t voice;
@@ -261,6 +288,14 @@ typedef struct tetra_state {
     long dl_carrier_hz;
     uint32_t frames_sysinfo;
     uint16_t sysinfo_main_carrier;
+    /* The cell's broadcast security: sec from the last SYSINFO with the extended services broadcast (sec_valid once
+     * one was decoded; the optional field alternates with others, EN 300 392-7 clause 6.2.0.0), and whether the BS
+     * service details of the last D-MLE-SYSINFO offer air interface encryption (aie_available, aie_known once one was
+     * decoded). Cell properties: bsch_forget_cell() clears them, a retune within the cell keeps them. */
+    tetra_cell_security sec;
+    uint8_t sec_valid;
+    uint8_t aie_known;
+    uint8_t aie_available;
     uint16_t la;
     uint8_t freq_band;
     uint8_t freq_offset;
@@ -284,6 +319,11 @@ typedef struct tetra_state {
     /* Bursts and blocks whose CRC passed; TETRA reads as decoded once one did (tetra_publish()). */
     uint32_t decode_ok;
 
+    /* The frequency the receiver was tuned to when the last burst began (dsd_opts_tuned_freq_hz(); 0 off a radio
+     * input), set by tetra_frame_enter() and cleared by tetra_forget_carrier(): what tetra_calls_rx_carrier() reads the
+     * carrier being received from where no options are at hand. */
+    long rx_tuned_hz;
+
     /* TDMA clock (EN 300 392-2 clause 7.3), set by a BSCH and run by tetra_tdma_follow(): while tdma_valid, the slot
      * that started at symbol count tdma_slot_start is timeslot tn 1..4 of frame fn 1..18 of multiframe mn 1..60. The
      * hyperframe number is the SYSINFO value from a block whose CCK flag is clear, counted on by the clock at each
@@ -296,12 +336,12 @@ typedef struct tetra_state {
     uint8_t fn;
     uint8_t mn;
 
-    /* The KSG number (0..3, EN 300 392-7 table A.73) a D-OTAR SCK or GCK Provide named for a network, for up to four
-     * networks keyed by MCC/MNC (tetra_air.c). The operator air keys live in the key set (dsd_state::tetra_air_keys). */
-    uint16_t air_ksg_mcc[4];
-    uint16_t air_ksg_mnc[4];
-    uint8_t air_ksg_valid[4];
-    uint8_t air_ksg[4];
+    /* The KSG numbers (EN 300 392-7 table A.73) the network's CRC-passed signalling named -- a D-OTAR SCK or GCK
+     * Provide, the ciphering parameters of a D-LOCATION UPDATE COMMAND or REJECT -- per network keyed by MCC/MNC, for
+     * the session (tetra_air.c); air_ksg_seq numbers the entries in the order they were made. The operator air keys
+     * live in the key set (dsd_state::tetra_air_keys). */
+    tetra_air_ksg_net air_ksg[TETRA_AIR_KSG_NETS];
+    uint32_t air_ksg_seq;
 
     /* Direct mode (EN 300 396-2, EN 300 396-3), set by tetra_dmo_apply_sync(); all of it is the carrier's, forgotten with
      * it (tetra_dmo_forget_carrier()).
@@ -316,7 +356,10 @@ typedef struct tetra_state {
      * dmo_tx_aie:     the security class (TETRA_DMO_AIE_*) of that set-up's SCH/S, which the transmission keeps
      *                 (clause 8.5.3): DM-2-A, DM-2-B and DM-2-C are all TETRA_DMO_CRYPT_AIR, but each a transmission of
      *                 its own; valid while dmo_tx_crypt is not UNKNOWN.
-     * dmo_tx_seed:    the DM colour code seed of that transmission's source, 0 when none is known.
+     * dmo_tx_ksg, dmo_tx_key_number: the KSG number and encryption key number (SCK dmo_tx_key_number + 1) of the
+ *                 DMAC-SYNC that set it up, when its class is not DM-1 (EN 300 396-3 clauses 9.3.7 and 9.3.14; the
+ *                 ciphering parameters do not change within a call transaction, EN 300 396-6 clause 5.2); 0 otherwise.
+ * dmo_tx_seed:    the DM colour code seed of that transmission's source, 0 when none is known.
      * dmo_tx_seq:     counts the transmissions started: the direct mode call canonical slot 0 shows is of one of them.
      * dmo_since_sync: DNBs processed since the last DMAC-SYNC (colour code staleness). */
     uint32_t dmo_dcc_seed;
@@ -329,6 +372,8 @@ typedef struct tetra_state {
     uint8_t dmo_crypt;
     uint8_t dmo_tx_crypt;
     uint8_t dmo_tx_aie;
+    uint8_t dmo_tx_ksg;
+    uint8_t dmo_tx_key_number;
 
     /* The status downlink of the last complete D-MM STATUS (EN 300 392-2 table 16.3), for the frontends; mm_status_valid
      * once one was decoded (tetra_mm.c). */

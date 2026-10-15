@@ -103,9 +103,10 @@ call_elements(bitw* w, uint32_t prio, uint32_t e2ee, uint32_t group) {
     put(w, 2, 0);
 }
 
-/* DMAC-SYNC SCH/S (table 21), direct, channel A, slot 1, frame 3, with the given air interface encryption state. */
+/* DMAC-SYNC SCH/S (table 21), direct, channel A, slot 1, frame 3, with the given air interface encryption state and,
+ * when encrypted, KSG number @p ksg and encryption key number @p key_number (SCK key_number + 1). */
 static void
-sync_s(bitw* w, uint32_t enc) {
+sync_s_keyed(bitw* w, uint32_t enc, uint32_t ksg, uint32_t key_number) {
     bw_reset(w);
     put(w, 4, 0xD);
     put(w, 2, 0);
@@ -118,9 +119,15 @@ sync_s(bitw* w, uint32_t enc) {
     if (enc != 0u) {
         put(w, 29, 0x1234567u); /* time variant parameter */
         put(w, 1, 0);
-        put(w, 4, 1); /* KSG number */
-        put(w, 5, 7); /* SCK 8 */
+        put(w, 4, ksg);
+        put(w, 5, key_number);
     }
+}
+
+/* sync_s_keyed() with KSG 1 (TEA2) and SCK 8. */
+static void
+sync_s(bitw* w, uint32_t enc) {
+    sync_s_keyed(w, enc, 1, 7);
 }
 
 /* SCH/S of a DSB: system code 1101, DMAC-SYNC, direct MS-MS, channel A, slot 1, frame 3, no encryption. */
@@ -482,6 +489,69 @@ build_rep_presence(bitw* ps, bitw* ph) {
     put(ph, 3, 4);
     put(ph, 1, 0);
     put(ph, 4, 0); /* open repeater */
+}
+
+/* Apply a DSB carrying @p msg under security class @p enc with KSG @p ksg and key number @p key_number. */
+static void
+apply_keyed_sync(dsd_state* st, uint32_t enc, int msg, uint32_t ksg, uint32_t key_number) {
+    bitw ws;
+    bitw wh;
+    tetra_dmo_sync_s_t s;
+    tetra_dmo_sync_h_t h;
+    sync_s_keyed(&ws, enc, ksg, key_number);
+    (void)tetra_dmo_parse_sync_s(ws.bits, &s);
+    sync_h_header(&wh, msg);
+    call_elements(&wh, 0, 0, 1);
+    (void)tetra_dmo_parse_sync_h(wh.bits, 0, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
+}
+
+/* The algorithm and key of a direct mode transmission are those of the DMAC-SYNC that set it up: the ciphering
+ * parameters do not change within a call transaction (EN 300 396-6 clause 5.2), while a KSG number describes only the
+ * message it comes with (EN 300 396-3 clause 9.3.14). So a DMAC-SYNC that goes on with the transmission, a clear
+ * DM-PREEMPT inside it and a presence signal leave them; a new transmission takes its own; its end forgets them. */
+static void
+test_transmission_algorithm(void) {
+    printf("[the transmission's algorithm and key]\n");
+    dsd_state* st = new_state();
+    tetra_state_t* ts = tetra_st(st);
+    apply_keyed_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_SETUP, 1, 4);
+    CHECK(ts->dmo_tx_ksg == 1 && ts->dmo_tx_key_number == 4, "a DM-2-A set-up names TEA2 and SCK 5");
+    apply_keyed_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_OCCUPIED, 2, 9);
+    CHECK(ts->dmo_tx_ksg == 1 && ts->dmo_tx_key_number == 4, "a DM-OCCUPIED going on with it leaves them");
+    apply_keyed_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_PREEMPT, 0, 0);
+    CHECK(ts->dmo_tx_ksg == 1 && ts->dmo_tx_key_number == 4 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR,
+          "so does a clear DM-PREEMPT inside the transmission");
+    bitw ps;
+    bitw ph;
+    tetra_dmo_sync_s_t pres_s;
+    build_rep_presence(&ps, &ph);
+    (void)tetra_dmo_parse_sync_s(ps.bits, &pres_s);
+    tetra_dmo_apply_sync(st, &pres_s, NULL);
+    CHECK(ts->dmo_tx_ksg == 1 && ts->dmo_tx_key_number == 4, "and a presence signal");
+
+    bitw w2c;
+    tetra_dmo_sync_s_t s2c;
+    sync_s_keyed(&w2c, TETRA_DMO_AIE_DM2C, 2, 30);
+    (void)tetra_dmo_parse_sync_s(w2c.bits, &s2c);
+    tetra_dmo_apply_sync(st, &s2c, NULL);
+    CHECK(ts->dmo_tx_aie == TETRA_DMO_AIE_DM2C && ts->dmo_tx_ksg == 2 && ts->dmo_tx_key_number == 30,
+          "an unread DM-2-C DMAC-SYNC starts a transmission with its own TEA3 and SCK 31");
+    tetra_dmo_transmission_over(st);
+    CHECK(ts->dmo_tx_ksg == 0 && ts->dmo_tx_key_number == 0, "the end of the transmission forgets them");
+
+    apply_keyed_sync(st, TETRA_DMO_AIE_DM2B, TETRA_DMO_MSG_SETUP, 3, 1);
+    CHECK(ts->dmo_tx_ksg == 3 && ts->dmo_tx_key_number == 1, "a DM-2-B set-up names TEA4");
+    apply_keyed_sync(st, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_SETUP, 0, 0);
+    CHECK(ts->dmo_tx_aie == TETRA_DMO_AIE_DM1 && ts->dmo_tx_ksg == 0 && ts->dmo_tx_key_number == 0,
+          "a clear set-up starts a transmission with no algorithm");
+    apply_keyed_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_SETUP, 1, 4);
+    tetra_dmo_forget_carrier(st);
+    CHECK(ts->dmo_tx_ksg == 0 && ts->dmo_tx_key_number == 0, "a carrier boundary forgets them");
+    apply_keyed_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_SETUP, 1, 4);
+    tetra_dmo_leave(NULL, st);
+    CHECK(ts->dmo_tx_ksg == 0 && ts->dmo_tx_key_number == 0, "and so does leaving direct mode");
+    free_state(st);
 }
 
 static void
@@ -1192,6 +1262,7 @@ main(void) {
     test_security_classes();
     test_occupied_keeps_the_setup_class();
     test_repeater_presence();
+    test_transmission_algorithm();
     test_gateway();
     test_call_control_elements();
     test_gateway_messages();
