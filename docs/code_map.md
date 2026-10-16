@@ -5866,7 +5866,7 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 External dependencies (resolved via CMake):
 
 - Required: OpenSSL 3.x libcrypto; LibSndFile; an audio backend (PulseAudio by default, PortAudio on Windows); MBE
-  vocoder (`mbe-neo` 2.3+).
+  vocoder (`mbe-neo` 2.5+).
 - Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
 - Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl >= 7.56.0.
 

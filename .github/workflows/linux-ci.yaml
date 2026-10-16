@@ -1272,7 +1272,7 @@ jobs:
           url="https://github.com/arancormonk/dsd-neo"
           license=('GPL-3.0-or-later')
           depends=(
-              'mbelib-neo>=2.3'
+              'mbelib-neo>=2.5'
               'mbelib-neo<3'
               'libsndfile'
               'openssl'
