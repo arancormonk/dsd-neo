@@ -51,8 +51,13 @@ static int visits;
 /* The transmitter's amplitude, and whether a carrier holds the visit open. */
 static double level = 0.3;
 static int carrier_open;
-/* While set, the realtime clock is fixed at a base the scene advances; the tap still stamps its blocks with the
-   system clock, so a scene keeps its advance below the coordinator's 10-second stall bound. */
+
+/* While set, the realtime clock is fixed at a base the scene advances. The tap still stamps its blocks with the system
+   clock, which the coordinator's capture-age check (10 s) compares with this one: the base starts SCENE_CLOCK_LEAD_MS
+   behind the system clock, and a scene's bounded loops advance it by at most SCENE_MAX_ADVANCE_MS, so this clock never
+   reaches a stamp and the check never reads a false stall, however slowly the scene runs. */
+enum { SCENE_CLOCK_LEAD_MS = 10000, SCENE_MAX_ADVANCE_MS = 9460 };
+
 static int scene_clock;
 static uint64_t scene_base_ms, scene_offset_ms;
 /* Statuses published while listening: a live level shown after the scene stopped the tap from refreshing it. */
@@ -367,14 +372,15 @@ live_strength_scene(dsd_opts* o, dsd_state* s, uint64_t session, int yield_path,
     level = 0.3;
     DSD_MEMSET(&status, 0, sizeof(status));
     scene_clock = 1;
-    scene_base_ms = dsd_realtime_mono_ms();
+    const uint64_t system_ms = dsd_realtime_mono_ms();
+    scene_base_ms = system_ms > SCENE_CLOCK_LEAD_MS ? system_ms - SCENE_CLOCK_LEAD_MS : 0;
     scene_offset_ms = 0;
     carrier_open = !yield_path;
     capture.capture_hz = start + RATE / 4;
     feed();
     search_start_range(o, s, session, start, yield_path ? 1 : 0);
     for (int step = 0;
-         step < 4000 && !(status.hit.hit_id && !status.hit.ended && status.phase >= DSD_SEARCH_IDENTIFYING); ++step) {
+         step < 400 && !(status.hit.hit_id && !status.hit.ended && status.phase >= DSD_SEARCH_IDENTIFYING); ++step) {
         (void)dsd_engine_signal_search_tick(o, s);
         assert(status.phase != DSD_SEARCH_ERROR);
         scene_step(0);
@@ -421,11 +427,14 @@ live_strength_scene(dsd_opts* o, dsd_state* s, uint64_t session, int yield_path,
 
     /* The visit ends (the carrier closes, or the confirmed transmission stops): the level goes with it. */
     carrier_open = 0;
-    for (int step = 0; step < 400 && status.phase != DSD_SEARCH_TUNING; ++step) {
+    for (int step = 0; step < 200 && status.phase != DSD_SEARCH_TUNING; ++step) {
         (void)dsd_engine_signal_search_tick(o, s);
         scene_step(0);
     }
     assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && !status.live_power_valid);
+    /* Landing (2 s), three level changes (0.8 s each), the withdrawal (1.76 s), the failures that follow (1.5 s), the
+       recovery (0.8 s) and the visit's end (1 s) are each bounded. */
+    assert(scene_offset_ms <= SCENE_MAX_ADVANCE_MS);
     dsd_engine_signal_search_shutdown(o, s);
     assert(!dsd_engine_signal_search_active(s));
     scene_clock = 0;

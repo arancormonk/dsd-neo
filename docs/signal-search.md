@@ -61,9 +61,9 @@ needs the receiver's Fs/4 offset tuning, which keeps the landed channel away fro
 hardware DC; inputs without it show only the detection level. A steady transmitter
 reads steady: on a constant-level FM carrier successive readings differ by a few
 hundredths of a dB, so the displayed tenth of a dB often does not change, while a
-change in the signal's level shows within about a second. The level is measured
-after the receiver's gain, so with automatic tuner gain the receiver's own gain
-control can take up part of a level change. When the receiver cannot measure the
+change in the signal's level shows within about a second. On a paced loopback
+rtl_tcp source, 6, 12 and 18 dB steps in the transmitter's level each showed at
+the next reading, on NFM, digital-identification and decoded DMR visits. When the receiver cannot measure the
 channel for about two seconds (the capture keeps changing, drops samples or clips),
 the screen stops showing **Now** and shows only the detection level until a fresh
 measurement arrives; a visit's live level also ends with the visit.
