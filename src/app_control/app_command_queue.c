@@ -5337,10 +5337,15 @@ typedef struct {
     int resampled;
 } decode_mode_replan;
 
-/* The receive profile a mode change found (issue #701): the settings the staged preset replaced, and the requested
-   DSP bandwidth, which no preset sets but which the profile a refused re-plan puts back holds all the same. */
+/* What a mode change found (issue #701), for a refused re-plan to put every field the staged preset wrote back: the
+   receive profile (dsd_scan_settings), the audio layout the session's sink was opened with and EDACS's mode and ESK
+   mask, which presets also write and dsd_scan_settings leaves out, and the requested DSP bandwidth, which no preset
+   sets but which the profile a refused re-plan puts back holds all the same. */
 typedef struct {
     const dsd_scan_settings* settings;
+    int audio_channels;
+    int audio_rate;
+    ui_cfg_mode_extras extras;
     int bw_khz;
     int bw_source;
 } decode_mode_profile_before;
@@ -5349,6 +5354,9 @@ static void
 decode_mode_restore_profile(dsd_opts* opts, dsd_state* state, void* ctx) {
     const decode_mode_profile_before* before = (const decode_mode_profile_before*)ctx;
     dsd_scan_settings_restore(before->settings, opts, state);
+    opts->pulse_digi_out_channels = before->audio_channels;
+    opts->pulse_digi_rate_out = before->audio_rate;
+    ui_cfg_restore_mode_extras(opts, state, &before->extras);
     dsd_opts_set_rtl_dsp_bw(opts, before->bw_khz, before->bw_source);
 }
 
@@ -5361,7 +5369,8 @@ decode_mode_restore_profile(dsd_opts* opts, dsd_state* state, void* ctx) {
  * (ui_radio_start_failed_locked()). Returns UI_CMD_APPLY_UNHANDLED for the change to go on, else its result.
  */
 static int
-decode_mode_replan_replay(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, decode_mode_replan* out) {
+decode_mode_replan_replay(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode,
+                          decode_mode_profile_before* before, decode_mode_replan* out) {
     DSD_MEMSET(out, 0, sizeof *out);
     if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
         return UI_CMD_APPLY_UNHANDLED;
@@ -5370,13 +5379,12 @@ decode_mode_replan_replay(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode
     if (take_guard) {
         p25_sm_tick_guard_enter();
     }
-    decode_mode_profile_before before = {&g_analog_entry_staged, opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source};
     ui_radio_input input_before;
     ui_capture_radio_input(opts, state, &input_before);
     char reason[96];
     DSD_SNPRINTF(reason, sizeof reason, "the %s decoder", dsd_decode_mode_display_name(mode));
     char why[128];
-    const int replan = svc_rtl_replay_replan_locked(opts, state, reason, decode_mode_restore_profile, &before,
+    const int replan = svc_rtl_replay_replan_locked(opts, state, reason, decode_mode_restore_profile, before,
                                                     &out->dsp_rate_hz, &out->resampled, why, sizeof why);
     int capture_stopped = 0;
     int refused = 0;
@@ -5474,6 +5482,12 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        bootstrap against BS voice and nothing at all against MS voice. */
     const int audio_channels = opts->pulse_digi_out_channels;
     const int audio_rate = opts->pulse_digi_rate_out;
+#ifdef USE_RADIO
+    /* A refused replay re-plan puts back everything the preset staged (decode_mode_restore_profile()). */
+    decode_mode_profile_before replay_before = {&g_analog_entry_staged, audio_channels,         audio_rate, {0},
+                                                opts->rtl_dsp_bw_khz,   opts->rtl_dsp_bw_source};
+    ui_cfg_capture_mode_extras(opts, state, &replay_before.extras);
+#endif
     const int was_analog = opts->analog_only != 0;
     const int was_analog_family = dsd_opts_is_analog_family(opts);
     const int was_kind = opts->analog_demod;
@@ -5521,7 +5535,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     /* A replay's rate follows the mode (issue #701): reopened at the chain the new mode plans before its profile is
        timed and published at that rate. */
     decode_mode_replan replan;
-    const int replan_rc = decode_mode_replan_replay(opts, state, mode, &replan);
+    const int replan_rc = decode_mode_replan_replay(opts, state, mode, &replay_before, &replan);
     if (replan_rc != UI_CMD_APPLY_UNHANDLED) {
         return replan_rc;
     }

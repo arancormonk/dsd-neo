@@ -10098,6 +10098,32 @@ test_replay_mode_change_replans(void) {
     return rc;
 }
 
+/* What a decode preset stages beyond the receive profile dsd_scan_settings holds: the audio layout (the stereo 48 kHz
+   output this session opened its sink with) and EDACS's mode and ESK mask. */
+typedef struct {
+    int audio_channels;
+    int audio_rate;
+    int ea_mode;
+    int esk_mask;
+} preset_side_fields;
+
+static void
+stereo_session_with_edacs_state(dsd_opts* opts, dsd_state* state) {
+    opts->pulse_digi_out_channels = 2;
+    opts->pulse_digi_rate_out = 48000;
+    state->ea_mode = 1;
+    state->esk_mask = 0xA0;
+}
+
+static int
+expect_preset_side_fields_back(const char* label, const dsd_opts* opts, const dsd_state* state) {
+    const preset_side_fields want = {2, 48000, 1, 0xA0};
+    const preset_side_fields got = {opts->pulse_digi_out_channels, opts->pulse_digi_rate_out, state->ea_mode,
+                                    state->esk_mask};
+    return expect_true(label, got.audio_channels == want.audio_channels && got.audio_rate == want.audio_rate
+                                  && got.ea_mode == want.ea_mode && got.esk_mask == want.esk_mask);
+}
+
 /*
  * A re-plan that cannot go ahead leaves the session as it was. A TETRA plan the planner refuses stops nothing: the whole
  * receive profile (decoders, modulation, symbol timing, the bandwidth request) goes back and the toast names the rate
@@ -10117,12 +10143,14 @@ test_replay_refused_replan_restores_the_profile(void) {
     init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
     g_fake_replay.refuse_tetra = 1;
     g_fake_request_rate_hz = 48000;
+    stereo_session_with_edacs_state(&opts, &state);
     dsd_scan_settings_capture(&opts, &state, &before);
     rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA, "refused tetra");
     dsd_scan_settings_capture(&opts, &state, &after);
     rc |= expect_int("refused tetra: nothing reopened", g_config_rtl_creates, 0);
     rc |= expect_int("refused tetra: the profile is back", dsd_scan_settings_equal(&before, &after, 1), 1);
     rc |= expect_int("refused tetra: no TETRA decoder", opts.frame_tetra, 0);
+    rc |= expect_preset_side_fields_back("refused tetra: the audio layout is back", &opts, &state);
     rc |= expect_true("refused tetra: the request is back",
                       opts.rtl_dsp_bw_khz == 48 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
     rc |= expect_str("refused tetra: toast", state.ui_msg,
@@ -10133,9 +10161,11 @@ test_replay_refused_replan_restores_the_profile(void) {
 
     init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
     g_config_rtl_fail_starts = 1;
+    stereo_session_with_edacs_state(&opts, &state);
     dsd_scan_settings_capture(&opts, &state, &before);
     rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA,
                                "tetra start fails");
+    rc |= expect_preset_side_fields_back("tetra start fails: the audio layout is back", &opts, &state);
     dsd_scan_settings_capture(&opts, &state, &after);
     rc |= expect_int("tetra start fails: two starts", g_config_rtl_creates, 2);
     rc |= expect_int("tetra start fails: the first had TETRA", g_fake_replay_creates[0].frame_tetra, 1);
@@ -10154,9 +10184,11 @@ test_replay_refused_replan_restores_the_profile(void) {
 
     init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 24, DSD_RTL_DSP_BW_SOURCE_PRESET);
     g_config_rtl_fail_starts = 2;
+    stereo_session_with_edacs_state(&opts, &state);
     dsd_scan_settings_capture(&opts, &state, &before);
     rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA,
                                "tetra recovery fails");
+    rc |= expect_preset_side_fields_back("tetra recovery fails: the audio layout is back", &opts, &state);
     dsd_scan_settings_capture(&opts, &state, &after);
     rc |= expect_int("tetra recovery fails: three starts", g_config_rtl_creates, 3);
     rc |= expect_resumed_at_checkpoint("tetra recovery fails: the recovery resumed first", 1);
@@ -10171,6 +10203,20 @@ test_replay_refused_replan_restores_the_profile(void) {
                      (int)DSD_DECODE_CLOCK_SYSTEM);
     rc |= expect_toast("tetra recovery fails: toast", &state, "Failed: ");
     rc |= expect_int("tetra recovery fails: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    /* EDACS/ProVoice refused: its preset also clears the EDACS mode and ESK mask, which come back with the rest. */
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    g_fake_replay.refuse_all = 1;
+    stereo_session_with_edacs_state(&opts, &state);
+    dsd_scan_settings_capture(&opts, &state, &before);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_EDACS_PV,
+                               "refused edacs");
+    dsd_scan_settings_capture(&opts, &state, &after);
+    rc |= expect_int("refused edacs: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_int("refused edacs: the profile is back", dsd_scan_settings_equal(&before, &after, 1), 1);
+    rc |= expect_preset_side_fields_back("refused edacs: the audio layout and EDACS state are back", &opts, &state);
+    rc |= expect_int("refused edacs: failed", dsd_app_command_test_last_failed(), 1);
     freeState(&state);
 
     reset_rx_family_wrap();
