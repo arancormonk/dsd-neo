@@ -3475,7 +3475,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     direct control-channel return) skips a repeat of the frequency it last sent, and so does its RTL twin
     (`no_carrier_tune_rtl_if_needed()`). Both caches hold only until the trunk tuning hooks issue another request
     (`dsd_trunk_tuning_last_request()`): a grant or a control-channel hunt moves the radio without writing them, and a
-    return to the cached frequency after it must be sent (`ENGINE_NO_CARRIER_RESET`). The rigctl cache holds for one connection:
+    return to the cached frequency after it must be sent (`ENGINE_NO_CARRIER_RESET`). An accepted direct return records
+    the control channel in `opts->rtlsdr_center_freq`, as a hook tune does, so a control message decoded next is not
+    attributed to the voice channel. The rigctl cache holds for one connection:
     `dsd_engine_rigctl_tune_cache_forget()` (`trunk_tuning.h`) empties it when rigctl reconnects (issue #589), since the
     new connection's peer, another one or the same one restarted, was sent nothing. The leg keeps no copy of the `-B` it
     sent (issue #621): it asks for `-B` at every step, strictly as always (through the capturing call on audio input,
@@ -4282,7 +4284,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   `NXDN_CONFIRM_WEAK_OBSERVES` frames running (`nxdn_confirm_scch_confirmed()`: the gate's own SCCH streak, which other
   channels neither extend nor break; not a confirmation left by a CAC, a SACCH or another carrier), on a control or a
   followed voice channel: owner named, hunt ended (a RadioReference apply's `rr_apply_reacquire()` calls
-  `nxdn_cc_hunt_note_system_replaced()`, which forgets that and an NXDN owner for the new system),
+  `nxdn_cc_hunt_note_system_replaced()`, which forgets that and an NXDN owner for the new system; the apply also drops a
+  P25 or DMR owner its decode mode no longer decodes),
   any CAC-confirmed control channel forgotten, so a Type-D site never hunts afterwards (an idle, silent Type-D site at
   start is walked like a dead one until confirmed traffic holds the window). Tests: `NXDN_CC_HUNT`,
   `ENGINE_COLD_START_HUNT`, `NXDN_CONFIRM`, `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`.

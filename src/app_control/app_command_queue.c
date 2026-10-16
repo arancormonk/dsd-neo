@@ -5820,6 +5820,12 @@ static void
 rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_cc_candidates_reset(state);
     nxdn_cc_hunt_note_system_replaced(state);
+    /* An owner the new decode mode no longer decodes proves nothing about the new system and would keep its startup
+       hunt from running (P25 or DMR before an NXDN import, say). */
+    if ((state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_P25 && !opts->frame_p25p1 && !opts->frame_p25p2)
+        || (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_DMR && !opts->frame_dmr)) {
+        state->trunk_recovery_protocol = (int)DSD_TRUNK_RECOVERY_UNKNOWN;
+    }
     state->last_cc_sync_time = 0;
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;

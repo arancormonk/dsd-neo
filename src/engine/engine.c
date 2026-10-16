@@ -2028,6 +2028,11 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
                    && no_carrier_apply_direct_cc_return(opts, state, cc, p25_helper_attempted)) {
             no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
             accepted_cc_return = 1;
+            if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
+                /* The tuner frequency the decoder reads, as a tune through the trunk tuning hooks records it: left on
+                   the voice channel, a control message decoded next would be attributed there. */
+                opts->rtlsdr_center_freq = (uint32_t)cc;
+            }
             state->edacs_tuned_lcn = -1;
             state->last_cc_sync_time = now;
             state->last_cc_sync_time_m = dsd_decode_now_mono_s();

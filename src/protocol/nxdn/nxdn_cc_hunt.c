@@ -333,7 +333,8 @@ nxdn_cc_hunt_probe(nxdn_cc_hunt_ctx* ctx, dsd_opts* opts, dsd_state* state, doub
     }
     if (freq == ctx->rx_freq_hz && freq == ctx->probe_freq_hz
         && dsd_trunk_tuning_frame_is_current(ctx->rx_generation)) {
-        return; // the only row, and the radio is on it: keep listening without resetting demodulation
+        ctx->attempt_hz = freq; // a visit all the same: the next decision moves on
+        return;                 // the radio is on it: keep listening without resetting demodulation
     }
     if (!nxdn_cc_hunt_tune(ctx, opts, state, freq, now_m)) {
         nxdn_cc_hunt_log(opts, "cc-probe-deferred-or-failed");

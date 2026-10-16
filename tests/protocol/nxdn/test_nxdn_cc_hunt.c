@@ -394,6 +394,22 @@ test_refused_anchor(void) {
     expect("refused anchor: the map is still walked", saw_c && saw_a, 1);
 }
 
+/* The receiver stays on the control channel when the first alternate is refused: visiting it without a retune still
+   counts, so the hunt goes on to the next row. */
+static void
+test_refused_alternate_on_anchor(void) {
+    session();
+    tick_at(0.0);
+    nxdn_cc_hunt_note_control(g_opts, g_state); // A
+    g_refuse_hz = ROW_B;
+    run_until(0.0, 16.5);
+    int saw_c = 0;
+    for (int i = 0; i < g_tune_count && i < 64; i++) {
+        saw_c |= g_tunes[i] == ROW_C;
+    }
+    expect("refused alternate: the next row is probed", saw_c, 1);
+}
+
 /* A CAC whose frequency the tuner cannot name still proves a Type-C control channel: losing it hunts the map. */
 static void
 test_cac_without_frequency(void) {
@@ -583,6 +599,7 @@ main(void) {
     test_system_replaced();
     test_superseded_probe_attribution();
     test_refused_anchor();
+    test_refused_alternate_on_anchor();
     test_late_completion_dwell();
     test_operator_move_resets_evidence();
     test_frame_sets();

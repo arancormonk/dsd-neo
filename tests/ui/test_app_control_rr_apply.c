@@ -635,6 +635,39 @@ test_apply_tune_forgets_the_carrier_codes(void) {
 }
 #endif
 
+/* An import drops a recovery owner its decode mode no longer decodes (P25 or DMR before an IDAS import), so the new
+   system's startup hunt can run; an owner the new mode still decodes stays. */
+static int
+test_apply_drops_an_owner_the_mode_cannot_decode(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    const int owners[] = {DSD_TRUNK_RECOVERY_P25, DSD_TRUNK_RECOVERY_DMR};
+    for (size_t i = 0; i < sizeof owners / sizeof owners[0]; i++) {
+        init_test_context(&opts, &state);
+        DSD_MEMSET(&p, 0, sizeof p);
+        p.decode_mode = (int32_t)DSDCFG_MODE_NXDN48;
+        p.trunking = 1U;
+        state.trunk_recovery_protocol = owners[i];
+        rc |= expect_int("nxdn import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("nxdn import drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("an owner NXDN mode cannot decode is dropped", state.trunk_recovery_protocol,
+                         DSD_TRUNK_RECOVERY_UNKNOWN);
+        freeState(&state);
+    }
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.decode_mode = (int32_t)DSDCFG_MODE_DMR;
+    p.trunking = 1U;
+    state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_DMR;
+    rc |= expect_int("dmr import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("an owner the mode decodes stays", state.trunk_recovery_protocol, DSD_TRUNK_RECOVERY_DMR);
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -649,6 +682,7 @@ main(void) {
     rc |= test_apply_refusals();
     rc |= test_apply_am_bounds();
     rc |= test_rr_account_set();
+    rc |= test_apply_drops_an_owner_the_mode_cannot_decode();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_apply_requests_the_tune();
     rc |= test_apply_tune_forgets_the_carrier_codes();

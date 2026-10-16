@@ -982,6 +982,37 @@ test_direct_return_after_hook_tune(void) {
     return rc;
 }
 
+/* An NXDN call's hangtime return on an RTL input tunes the stream directly: the tuner frequency the decoder reads
+   moves to the control channel with it, or the next CAC would be attributed to the voice channel. */
+static int
+test_direct_rtl_return_records_the_tuner_frequency(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->frame_nxdn48 = 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    opts->rtlsdr_center_freq = 942112500U; // the voice channel a grant followed
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = 942137500L;
+    state->p25_cc_freq = 942137500L;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->last_vc_sync_time = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("the direct RTL return moved the stream", g_rtl_tune_calls == 1);
+    rc |= expect_true("and the decoder's tuner frequency", opts->rtlsdr_center_freq == 942137500U);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A DMR rest channel left from before an operator move onto an NXDN system never replaces the NXDN control channel a
    CAC validated since; with no owner it still applies, as before. */
 static int
@@ -6525,6 +6556,7 @@ main(void) {
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_direct_return_after_hook_tune();
     rc |= test_stale_dmr_rest_channel_under_nxdn_owner();
+    rc |= test_direct_rtl_return_records_the_tuner_frequency();
     rc |= test_dmr_explicit_return_destination();
     rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
     rc |= test_fsk_reacquire_cooldown_runs_across_a_replay_leave();
