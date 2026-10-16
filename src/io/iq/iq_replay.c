@@ -2897,8 +2897,14 @@ dsd_iq_info_print_wav(const dsd_iq_replay_config* cfg, const char* display_path,
             DSD_FPRINTF(err, "WARNING: the WAV header was never finalized (an interrupted recording); the data runs to "
                              "the end of the file\n");
         }
-        const uint64_t avail = actual_file_size > w->data_offset ? actual_file_size - w->data_offset : 0U;
-        const uint64_t raw = (w->unfinalized || w->declared_data_bytes > avail) ? avail : w->declared_data_bytes;
+        if (w->container_clamped) {
+            DSD_FPRINTF(err,
+                        "WARNING: the WAV data chunk declares %" PRIu64 " bytes but its %s container ends %" PRIu64
+                        " bytes into it (a writer inconsistency); the data stops there\n",
+                        w->declared_data_bytes, dsd_iq_wav_container_name(w->container),
+                        w->container_end > w->data_offset ? w->container_end - w->data_offset : 0U);
+        }
+        const uint64_t raw = dsd_iq_wav_data_bytes_in_file(w, actual_file_size, NULL);
         if (raw % (uint64_t)w->block_align != 0U) {
             DSD_FPRINTF(err, "WARNING: the data ends inside a frame; its last %" PRIu64 " byte(s) are not replayed\n",
                         raw % (uint64_t)w->block_align);

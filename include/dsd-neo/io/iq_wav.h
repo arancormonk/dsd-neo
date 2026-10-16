@@ -76,6 +76,11 @@ typedef struct {
     uint64_t frames;               /**< effective_data_bytes / block_align */
     int truncated;                 /**< the header declares more data than the file holds */
     int unfinalized;               /**< the header was never finalized: the data runs to the end of the file */
+    uint64_t container_end;        /**< where the container ends (8 + its RIFF or ds64 size); UINT64_MAX when the
+                                        container runs to the end of the file (an unfinalized RIFF, or a RIFF size of 0,
+                                        0xFFFFFFFF or past the file) */
+    int container_clamped;         /**< the data chunk declares more than its container holds: a writer inconsistency;
+                                        the data stops at the container's end */
     uint64_t center_frequency_hz;  /**< 0 when unknown */
     dsd_iq_wav_source center_source;
     char start_utc[DSD_IQ_WAV_START_UTC_SIZE]; /**< YYYY-MM-DDTHH:MM:SSZ, empty when unknown */
@@ -98,8 +103,9 @@ int dsd_iq_wav_sniff(const void* head, size_t len);
  * 32/64-bit IEEE float, as plain or EXTENSIBLE fmt chunks. The centre frequency comes from an auxi chunk, else from
  * the file name (dsd_iq_wav_center_from_name()); the start time likewise (dsd_iq_wav_start_from_name()). A header
  * that was never finalized (a RIFF whose data size is 0 or 0xFFFFFFFF in a container whose size is 0, 0xFFFFFFFF or
- * past the file, with data as its last chunk) runs to the end of the file. A data chunk that declares nothing is
- * refused.
+ * past the file, with data as its last chunk) runs to the end of the file. Otherwise the data stops at the
+ * container's end when it declares more than that (container_clamped, a writer inconsistency). A data chunk that
+ * declares nothing is refused.
  *
  * @param path         The file.
  * @param out          [out] Set only on success.
@@ -110,12 +116,25 @@ int dsd_iq_wav_sniff(const void* head, size_t len);
 int dsd_iq_wav_read_info(const char* path, dsd_iq_wav_info* out, char* err_buf, size_t err_buf_size);
 
 /**
- * @brief The whole frames a recording holds for a file of @p file_size bytes.
+ * @brief The data bytes a recording holds for a file of @p file_size bytes, whole frames or not.
+ *
+ * The declared data size, cut at the container's end (dsd_iq_wav_info::container_end) and at the end of the file. An
+ * unfinalized header runs to the end of the file.
+ *
+ * @param info          A dsd_iq_wav_read_info() result.
+ * @param file_size     The file's size now.
+ * @param out_truncated [out] Set when the file ends before that data does. May be NULL.
+ * @return The bytes, 0 for a NULL @p info.
+ */
+uint64_t dsd_iq_wav_data_bytes_in_file(const dsd_iq_wav_info* info, uint64_t file_size, int* out_truncated);
+
+/**
+ * @brief The whole frames a recording holds for a file of @p file_size bytes (dsd_iq_wav_data_bytes_in_file()).
  *
  * @param info          A dsd_iq_wav_read_info() result.
  * @param file_size     The file's size now.
  * @param out_frames    [out] The whole frames.
- * @param out_truncated [out] Set when the header declares more than the file holds. May be NULL.
+ * @param out_truncated [out] Set when the file ends before the data the header gives does. May be NULL.
  * @return DSD_IQ_OK or DSD_IQ_ERR_INVALID_ARG.
  */
 int dsd_iq_wav_frames_in_file(const dsd_iq_wav_info* info, uint64_t file_size, uint64_t* out_frames,

@@ -9,3 +9,4 @@ Seeds for `dsd_iq_wav_read_info` and the replay reader over a WAV I/Q recording 
 - `unfinalized.wav`: a streaming RIFF whose RIFF and data sizes were never written.
 - `rf64.wav`: RF64 with `ds64` sizes and a trailing `LIST` chunk after the data.
 - `fmt_after_data_u8.wav`: 8-bit PCM with `fmt` after `data`.
+- `riff_ends_inside_data.wav`: a RIFF whose size ends the container 4 bytes into a data chunk that declares more.

@@ -419,6 +419,7 @@ typedef struct {
     const char* path;
     uint64_t file_size;
     uint64_t walk_end;
+    uint64_t container_end; /* 8 + the RIFF or ds64 size; UINT64_MAX for a RIFF that runs to the end of the file */
     int rf64;
     int riff_open; /* a RIFF whose size is 0, 0xFFFFFFFF or past the file */
     uint64_t ds64_data_size;
@@ -544,7 +545,8 @@ wav_read_ds64(wav_walk* w, char* err_buf, size_t err_buf_size) {
     }
     const uint64_t riff_size = le64(body);
     w->ds64_data_size = le64(body + 8);
-    w->walk_end = (riff_size <= UINT64_MAX - 8U && 8U + riff_size < w->file_size) ? 8U + riff_size : w->file_size;
+    w->container_end = riff_size <= UINT64_MAX - 8U ? 8U + riff_size : UINT64_MAX;
+    w->walk_end = w->container_end < w->file_size ? w->container_end : w->file_size;
     return DSD_IQ_OK;
 }
 
@@ -709,18 +711,35 @@ wav_parse_fmt(const wav_walk* w, dsd_iq_wav_info* info, char* err_buf, size_t er
     return DSD_IQ_OK;
 }
 
+/* The data bytes the header gives: the declared size, cut at the container's end; unbounded when unfinalized. */
+static uint64_t
+wav_header_data_bytes(const dsd_iq_wav_info* info) {
+    uint64_t limit = info->unfinalized ? UINT64_MAX : info->declared_data_bytes;
+    const uint64_t in_container =
+        info->container_end > info->data_offset ? info->container_end - info->data_offset : 0U;
+    return in_container < limit ? in_container : limit;
+}
+
+uint64_t
+dsd_iq_wav_data_bytes_in_file(const dsd_iq_wav_info* info, uint64_t file_size, int* out_truncated) {
+    if (!info) {
+        return 0;
+    }
+    const uint64_t avail = file_size > info->data_offset ? file_size - info->data_offset : 0U;
+    const uint64_t limit = wav_header_data_bytes(info);
+    if (out_truncated) {
+        *out_truncated = !info->unfinalized && limit > avail;
+    }
+    return limit < avail ? limit : avail;
+}
+
 int
 dsd_iq_wav_frames_in_file(const dsd_iq_wav_info* info, uint64_t file_size, uint64_t* out_frames, int* out_truncated) {
     if (!info || !out_frames || info->block_align == 0U) {
         return DSD_IQ_ERR_INVALID_ARG;
     }
-    const uint64_t avail = file_size > info->data_offset ? file_size - info->data_offset : 0U;
-    uint64_t raw = avail;
     int truncated = 0;
-    if (!info->unfinalized) {
-        raw = info->declared_data_bytes < avail ? info->declared_data_bytes : avail;
-        truncated = info->declared_data_bytes > avail;
-    }
+    const uint64_t raw = dsd_iq_wav_data_bytes_in_file(info, file_size, &truncated);
     *out_frames = raw / info->block_align;
     if (out_truncated) {
         *out_truncated = truncated;
@@ -767,9 +786,11 @@ wav_read_header(wav_walk* w, dsd_iq_wav_info* info, char* err_buf, size_t err_bu
         const uint32_t riff_size = le32(head + 4);
         if (riff_size == 0U || riff_size == 0xFFFFFFFFU || 8U + (uint64_t)riff_size > w->file_size) {
             w->riff_open = 1;
+            w->container_end = UINT64_MAX;
             w->walk_end = w->file_size;
         } else {
-            w->walk_end = 8U + (uint64_t)riff_size;
+            w->container_end = 8U + (uint64_t)riff_size;
+            w->walk_end = w->container_end;
         }
         return DSD_IQ_OK;
     }
@@ -828,6 +849,9 @@ dsd_iq_wav_read_info(const char* path, dsd_iq_wav_info* out, char* err_buf, size
     info.data_offset = w.data_offset;
     info.declared_data_bytes = w.declared_data_bytes;
     info.unfinalized = w.unfinalized;
+    info.container_end = w.container_end;
+    info.container_clamped =
+        !w.unfinalized && (w.container_end <= w.data_offset || w.container_end - w.data_offset < w.declared_data_bytes);
     (void)dsd_iq_wav_frames_in_file(&info, w.file_size, &info.frames, &info.truncated);
     if (info.frames == 0U) {
         wav_set_error(err_buf, err_buf_size, "WAV '%s': the data chunk holds no whole I/Q frame", path);

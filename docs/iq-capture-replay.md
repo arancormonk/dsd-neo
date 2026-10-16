@@ -112,7 +112,8 @@ stamped from bytes accepted rather than bytes written, offsets past the end of a
 For a WAV recording it reports the container, the sample encoding and channel order, the sample rate, the centre
 frequency and start time with where each came from (`auxi chunk`, `file name`, or `unknown`), the data offset and
 bytes, the duration, the rate chain the replay would run at the default 48 kHz and at TETRA's 72 kHz, and whether it
-replays, with warnings for a truncated or unfinalized header, a partial last frame, and an ignored sidecar.
+replays, with warnings for a truncated or unfinalized header, a data chunk that runs past its container's end, a
+partial last frame, and an ignored sidecar.
 
 Replay uses `min(data_bytes, actual_file_size)` rounded down to sample alignment after metadata is finalized. If an
 interrupted capture never finalized metadata (`data_bytes == 0`), replay falls back to the actual file size and still
@@ -174,6 +175,9 @@ Headers a recording program did not finish:
   frame to the end of the file. The replay logs a warning, and `--iq-info` reports `unfinalized header`.
 - A header that declares more data than the file holds (a copy cut short) replays the whole frames the file has, with
   a warning. A partial frame at the end is not replayed.
+- A finished header whose `data` chunk declares more than its container holds (a RIFF or `ds64` size that ends the
+  container inside the data, a writer inconsistency) replays only the data inside the container, with a warning; bytes
+  past the container's end are not samples, even when the file holds them.
 - A `data` chunk that declares no data in a finished header is refused (`the data chunk is empty (no I/Q frames)`).
 
 Large files: sizes and offsets are 64-bit on every platform, Windows included, so recordings past 2 GiB replay. Past

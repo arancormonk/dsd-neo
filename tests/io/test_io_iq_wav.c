@@ -1563,6 +1563,103 @@ test_iq_info(void) {
     return rc;
 }
 
+/* ---- Container end ----------------------------------------------------------------------------------------------- */
+
+/* A data chunk that declares more than its container holds: the data stops at the container's end (a writer
+ * inconsistency, which --iq-info warns about), not at the end of the file. */
+static int
+test_container_end(void) {
+    /* RIFF ends at byte 48; data starts at 44 and declares 4096 bytes, all of which the file holds. */
+    wav_bytes b;
+    DSD_MEMSET(&b, 0, sizeof(b));
+    wb_riff_header(&b);
+    wb_fmt(&b, 1, 2, 48000, 16);
+    wb_data_header(&b, 4096U);
+    wb_s16_frames(&b, 1024U, 0);
+    wb_set_u32(&b, 4, 40U);
+    int rc = expect_int("riff end write", write_wav("riff_end.wav", &b), 0);
+    wb_free(&b);
+    dsd_iq_wav_info info;
+    char err[512] = {0};
+    rc |= expect_int("riff end info", dsd_iq_wav_read_info(tpath("riff_end.wav"), &info, err, sizeof(err)), DSD_IQ_OK);
+    rc |= expect_u64("riff end data offset", info.data_offset, 44U);
+    rc |= expect_u64("riff end container end", info.container_end, 48U);
+    rc |= expect_u64("riff end frames", info.frames, 1U);
+    rc |= expect_int("riff end clamped", info.container_clamped, 1);
+    rc |= expect_int("riff end not truncated", info.truncated, 0);
+    size_t n = 0;
+    dsd_iq_replay_config cfg;
+    float* f = replay_floats("riff_end.wav", 4096U, &n, &cfg);
+    if (!f) {
+        return 1;
+    }
+    rc |= expect_u64("riff end replayed floats", n, 2U);
+    rc |= check_s16_ramp("riff end samples", f, n, 0);
+    free(f);
+    uint64_t effective = 0;
+    int mismatch = 1;
+    rc |= expect_int("riff end measure", dsd_iq_replay_measure(&cfg, 44U + 4096U, &effective, &mismatch), DSD_IQ_OK);
+    rc |= expect_u64("riff end measure bytes", effective, 8U);
+    rc |= expect_int("riff end measure mismatch", mismatch, 0);
+    dsd_iq_replay_config_clear(&cfg);
+    rc |= run_iq_info("riff_end.wav", NULL);
+    rc |= expect_contains("riff end info data", g_info_out,
+                          "  Data bytes:          4096 (header), 4 (whole frames in the file)\n");
+    rc |= expect_contains("riff end info warn", g_info_err,
+                          "WARNING: the WAV data chunk declares 4096 bytes but its RIFF container ends 4 bytes into "
+                          "it (a writer inconsistency); the data stops there\n");
+    rc |= expect_true("riff end info not truncated", strstr(g_info_err, "truncated") == NULL);
+
+    /* RF64: ds64 says 10 frames of data, its riffSize ends the container 5 frames in. */
+    DSD_MEMSET(&b, 0, sizeof(b));
+    wb_id(&b, "RF64");
+    wb_u32(&b, 0xFFFFFFFFU);
+    wb_id(&b, "WAVE");
+    wb_id(&b, "ds64");
+    wb_u32(&b, 28);
+    wb_u64(&b, 4U + 36U + 24U + 8U + 20U); /* riffSize: WAVE, ds64, fmt, data header, 5 frames */
+    wb_u64(&b, 40);                        /* dataSize: 10 frames */
+    wb_u64(&b, 10);
+    wb_u32(&b, 0);
+    wb_fmt(&b, 1, 2, 96000, 16);
+    wb_data_header(&b, 0xFFFFFFFFU);
+    wb_s16_frames(&b, 10, 0);
+    rc |= expect_int("rf64 end write", write_wav("rf64_end.wav", &b), 0);
+    wb_free(&b);
+    rc |= expect_int("rf64 end info", dsd_iq_wav_read_info(tpath("rf64_end.wav"), &info, err, sizeof(err)), DSD_IQ_OK);
+    rc |= expect_u64("rf64 end declared", info.declared_data_bytes, 40U);
+    rc |= expect_u64("rf64 end frames", info.frames, 5U);
+    rc |= expect_int("rf64 end clamped", info.container_clamped, 1);
+    rc |= expect_int("rf64 end not truncated", info.truncated, 0);
+    f = replay_floats("rf64_end.wav", 4096U, &n, NULL);
+    if (!f) {
+        return 1;
+    }
+    rc |= expect_u64("rf64 end replayed floats", n, 10U);
+    rc |= check_s16_ramp("rf64 end samples", f, n, 0);
+    free(f);
+    rc |= run_iq_info("rf64_end.wav", NULL);
+    rc |= expect_contains("rf64 end info warn", g_info_err,
+                          "WARNING: the WAV data chunk declares 40 bytes but its RF64 container ends 20 bytes into it "
+                          "(a writer inconsistency); the data stops there\n");
+
+    /* A container past the end of the file clamps nothing: the file ends first (a truncated recording). */
+    DSD_MEMSET(&b, 0, sizeof(b));
+    wb_riff_header(&b);
+    wb_fmt(&b, 1, 2, 48000, 16);
+    wb_data_header(&b, 400U);
+    wb_s16_frames(&b, 100U, 0);
+    wb_finish_riff(&b);
+    rc |= expect_int("riff past eof write", write_file(tpath("riff_past_eof.wav"), b.p, b.len - 200U), 0);
+    wb_free(&b);
+    rc |= expect_int("riff past eof info", dsd_iq_wav_read_info(tpath("riff_past_eof.wav"), &info, err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_u64("riff past eof frames", info.frames, 50U);
+    rc |= expect_int("riff past eof not clamped", info.container_clamped, 0);
+    rc |= expect_int("riff past eof truncated", info.truncated, 1);
+    return rc;
+}
+
 static int
 test_sniff(void) {
     int rc = 0;
@@ -1599,6 +1696,7 @@ main(void) {
     rc |= test_center_and_start_sources();
     rc |= test_sidecar_beside_wav();
     rc |= test_iq_info();
+    rc |= test_container_end();
     rc |= test_large_unfinalized();
 
     const char* files[sizeof(g_made) / sizeof(g_made[0]) + 1U];

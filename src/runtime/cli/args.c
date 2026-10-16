@@ -832,6 +832,12 @@ cli_log_iq_replay_wav_summary(const dsd_iq_replay_config* cfg, uint64_t effectiv
         LOG_WARN("IQ replay: the WAV header was never finalized (an interrupted recording); replaying to the end of "
                  "the file.\n");
     }
+    if (w->container_clamped) {
+        LOG_WARN("IQ replay: the WAV data chunk declares %" PRIu64 " bytes but its %s container ends %" PRIu64
+                 " bytes into it (a writer inconsistency); replaying only the data inside the container.\n",
+                 w->declared_data_bytes, dsd_iq_wav_container_name(w->container),
+                 w->container_end > w->data_offset ? w->container_end - w->data_offset : 0U);
+    }
 }
 #endif
 

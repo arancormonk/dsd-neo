@@ -3512,8 +3512,10 @@ Key public headers:
     source to a whole complex sample. `dsd_iq_wav_read_info()` decides the container's extent before it walks the
     chunks (RF64/BW64 from `ds64`, which must come first; a RIFF whose size is 0, 0xFFFFFFFF or past the file runs to
     the file's end, and a `data` chunk sized 0 or 0xFFFFFFFF as its last chunk is then unfinalized: whole frames to
-    EOF), tries a chunk's pad byte first and the unpadded position only where the padded one is no chunk header, and
-    caps the walk at `DSD_IQ_WAV_MAX_CHUNKS`. Centre: the `auxi` chunk's, else `dsd_iq_wav_center_from_name()`, else 0;
+    EOF; otherwise the data stops at `min(declared, container end, file)`, and a container that ends inside the
+    declared data sets `container_clamped`, a warning in `--iq-info` and the CLI summary), tries a chunk's pad byte
+    first and the unpadded position only where the padded one is no chunk header, and caps the walk at
+    `DSD_IQ_WAV_MAX_CHUNKS`. Centre: the `auxi` chunk's, else `dsd_iq_wav_center_from_name()`, else 0;
     start: the `auxi` SYSTEMTIME taken as UTC (a year below 1601 is none), else `dsd_iq_wav_start_from_name()`.
     `dsd_iq_wav_frames_to_cf32()` scales u8 as cu8 widening does ((x - 127.5) / 127.5) and classifies f64 before it
     narrows it (NaN to 0, infinities and magnitudes past `DSD_IQ_WAV_F64_CLAMP` clamped). `--iq-info` has a WAV branch
