@@ -12,6 +12,22 @@ Item {
     // Main sets this while the search stops for a handoff (Explore here, a
     // saved system): the screen says so and takes no input until it closes.
     property bool leaving: false
+    // Its controls are disabled meanwhile, so the screen itself holds focus
+    // and passes Back on to Main, which cancels the handoff.
+    onLeavingChanged: {
+        if (leaving)
+            forceActiveFocus();
+    }
+    Keys.onEscapePressed: function (event) {
+        event.accepted = leaving;
+        if (leaving)
+            backRequested();
+    }
+    Keys.onBackPressed: function (event) {
+        event.accepted = leaving;
+        if (leaving)
+            backRequested();
+    }
     // Main binds this to its failure text (connection, USB access and
     // configuration failures). Never assigned here: an assignment would replace
     // that binding, and no later failure would reach this screen, which covers
@@ -340,7 +356,10 @@ Item {
                 objectName: "searchMessage"
                 width: parent.width
                 visible: text.length > 0
-                text: [screen.localFailure, screen.failure].filter(function (s) { return s.length > 0; }).join("\n") || screen.status.message || (searchModel ? searchModel.error : "")
+                // This screen's own refusal comes first and never hides what
+                // the search says now: the host's failure, else the search's
+                // message or the model's error.
+                text: [screen.localFailure, screen.failure || screen.status.message || (searchModel ? searchModel.error : "")].filter(function (s) { return s.length > 0; }).join("\n")
                 color: Theme.textPrimary
                 wrapMode: Text.Wrap
                 font.family: Theme.sans

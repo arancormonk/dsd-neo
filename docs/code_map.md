@@ -5354,10 +5354,13 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   `{kind: "saved", uid}`): it abandons the search's start and runs the request through
   `pendingRestart` (marked `leaveSearch`) once the host is Idle, stopping it from Starting,
   Running or Failed. Until then `leavingSearch` keeps the search screen the root (its
-  `leaving` state reads "Stopping the search…" and disables its controls); Back, Escape and
-  the site chooser's any-input cancel are ignored, `finishPendingRestart()` closes the
-  screen just before starting the request, and a stop ending in Failed closes it and clears
-  the flag. A saved request is checked (`savedStartRefusal()`) before the stop, the refusal
+  `leaving` state reads "Stopping the search…", disables its controls and holds focus so
+  Escape/Back reach Main). Back cancels the handoff (`requestBack()` clears it and returns),
+  so a stop that hangs past the engine's restore timeouts cannot lock the screen; the
+  site chooser's any-input cancel is ignored while it runs, and `startSystem()`/
+  `restartSite()` refuse by state before cancelling, so a USB attachment's start cannot
+  drop it. `finishPendingRestart()` closes the screen just before starting the request, and
+  a stop ending in Failed closes it and clears the flag. A saved request is checked (`savedStartRefusal()`) before the stop, the refusal
   shown in the screen's `localFailure`, and again in `finishPendingRestart()`, which shows
   the refusal (an avoided site no longer declines silently) and records the system as
   `attemptedSource` so Home's Retry asks again and Edit opens it. Explore here (`exploreHereSystem()`) is
@@ -5416,8 +5419,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   Main binds the screen's `failure` to its own failure text, and the screen never assigns
   it: an assignment would drop the binding, and a connection, USB-access or configuration
   failure after Start or Resume would never reach the screen that covers Home's banner.
-  The screen's own `arm()` refusals live in `localFailure`, shown beside the host's failure
-  until the next attempt or Back (`tst_signal_search.qml`, `tst_main_session_tools.qml`).
+  The screen's own refusals (`arm()`, a refused handoff) live in `localFailure` until the
+  next attempt or Back, shown first and never hiding what follows it: the host's failure,
+  else the search's message or the model's error (`tst_signal_search.qml`,
+  `tst_main_session_tools.qml`, `tst_signal_search_handoff.qml`).
   `KnownFrequencyIndex` caches saved frequencies and referenced CSVs, rebuilding on model
   or file changes; Signal search, Spectrum and Live Exploring look up labels without
   reading files during rendering. Exact matches win, nearest matches use half the smaller

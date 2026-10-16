@@ -321,10 +321,13 @@ Item {
             var refusal = "“Warehouse” is avoided. Remove the avoid in its site list to start it.";
             compare(findChild(screen(), "searchMessage").text, refusal);
             compare(app.startError, "", "the refusal is the screen's, not a start failure for Home");
-            // A later search message is not hidden by it once the screen is left.
-            screen().localFailure = "";
+            // What the search says afterwards shows too, after the refusal.
             searchStub.status = Object.assign({}, searchStub.status, {message: "The avoid list is full"});
-            compare(findChild(screen(), "searchMessage").text, "The avoid list is full");
+            compare(findChild(screen(), "searchMessage").text, refusal + "\nThe avoid list is full");
+            searchStub.status = Object.assign({}, searchStub.status, {message: ""});
+            searchStub.error = "The decoder did not accept this action.";
+            compare(findChild(screen(), "searchMessage").text, refusal + "\nThe decoder did not accept this action.");
+            searchStub.error = "";
             // Avoided while the search stops.
             savedSystems.setAvoidSite(savedSystems.rowForUid(uid), false);
             testContext.setDelayedStop(true);
@@ -353,7 +356,7 @@ Item {
             app.wizardOpen = false;
         }
         // Handing off from a running search keeps the search screen as the root
-        // while it stops, says so, and takes no Back; the handoff then runs.
+        // while it stops and says so; stray input does not drop the handoff.
         function test_running_handoff_keeps_the_search_screen_while_stopping() {
             enterState(2);
             testContext.setDelayedStop(true);
@@ -369,9 +372,7 @@ Item {
                 verify(!findChild(screen(), "searchStop").enabled && !findChild(screen(), "searchStartPause").enabled, "the footer takes no input");
                 verify(!findChild(screen(), "searchMore").enabled && !findChild(screen(), "searchHold").enabled, "nor do the Now actions");
                 verify(!findChild(screen(), "searchBack").enabled);
-                // Back is ignored until the decoder is idle: the handoff stands.
-                app.requestBack();
-                keyClick(Qt.Key_Escape);
+                // A tap (the site chooser cancels a waiting restart on any input) leaves it.
                 mouseClick(screen(), screen().width / 2, screen().height / 2);
                 verify(app.pendingRestart !== null && app.leavingSearch);
                 compare(Ui.Navigation.rootSurfaces[0], screen());
@@ -388,6 +389,54 @@ Item {
                 if (entry.state === 3)
                     compare(entry.root, screen(), "the root while stopping");
             }
+        }
+        // A stop that never finishes cannot lock the screen: Back cancels the
+        // handoff, the search screen stays with its controls, and reaching Idle
+        // starts nothing. The next Back follows the session's usual policy.
+        function test_back_cancels_a_stalled_handoff_data() {
+            return [{tag: "back", key: false}, {tag: "escape", key: true}];
+        }
+        function test_back_cancels_a_stalled_handoff(data) {
+            enterState(2);
+            testContext.setDelayedStop(true);
+            var system = app.sessionSystem;
+            screen().exploreDetection(detection);
+            compare(decoderHost.sessionState, 3);
+            verify(app.leavingSearch);
+            verify(!findChild(screen(), "searchStop").enabled);
+            if (data.key)
+                keyClick(Qt.Key_Escape);
+            else
+                app.requestBack();
+            verify(!app.leavingSearch, "Back cancels the handoff");
+            compare(app.pendingRestart, null);
+            verify(app.signalSearchOpen);
+            compare(Ui.Navigation.rootSurfaces[0], screen(), "the search screen stays the root");
+            verify(findChild(screen(), "searchStop").enabled && findChild(screen(), "searchBack").enabled, "its controls are back");
+            verify(findChild(screen(), "searchScroll").enabled);
+            verify(findChild(screen(), "searchIdentification").text !== "Stopping the search…");
+            testContext.setDelayedStop(false);
+            testContext.setLifecyclePhase(0);
+            wait(10);
+            compare(decoderHost.sessionState, 0, "nothing starts");
+            compare(app.sessionSystem, system);
+        }
+        // A start request that cannot run while the search stops (a USB
+        // attachment's auto-start, a site restart) leaves the handoff alone.
+        function test_refused_starts_keep_a_stopping_handoff() {
+            var uid = addWarehouse();
+            enterState(2);
+            testContext.setDelayedStop(true);
+            screen().exploreDetection(detection);
+            compare(decoderHost.sessionState, 3);
+            app.startSystem(savedSystems.rowForUid(uid));
+            app.restartSite(uid);
+            testContext.emitLocalDeviceAttached();
+            verify(app.leavingSearch && app.pendingRestart !== null, "the handoff stands");
+            testContext.setDelayedStop(false);
+            testContext.setLifecyclePhase(0);
+            tryCompare(decoderHost, "sessionState", 1);
+            compare(app.sessionSystem.name, "Exploring");
         }
         // A search that fails to stop hands off nothing: the screen closes onto
         // Home's failure card and the flag clears.

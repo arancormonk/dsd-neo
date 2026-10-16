@@ -171,15 +171,21 @@ from noise. That carrier is monitored as NFM with the display above.
   session. The search's own start is cancelled first (a USB permission granted
   afterwards cannot turn the new session into a search), then the running
   search stops. Until it has, the screen stays and reads **Stopping the
-  search…**; its controls and Back do nothing in that moment, so the handoff
-  cannot be dropped by accident. Once the decoder is idle the screen closes and
-  the new session starts. If the search fails to stop, nothing starts and Home
-  shows the failure.
+  search…**, with its controls set aside; a stray tap does not drop the
+  handoff. A slow stop keeps that state as long as the engine's own restore
+  timeouts allow. **Back** cancels the handoff: the search screen and its
+  controls come back while the session finishes stopping, nothing new starts,
+  and a second Back works as usual. Once the decoder is idle the screen closes
+  and the new session starts. If the search fails to stop, nothing starts and
+  Home shows the failure.
   Explore here tunes the detection's frequency with its receive mode, gain and
   receiver settings, on the receiver attached now, and does not change where
   Explore resumes from Home, even through a USB permission request. A saved
   system starts as saved (keys, decoder and trunking). A system whose site is
-  avoided is refused with a message on the search screen, and nothing stops. If
+  avoided is refused with a message on the search screen, and nothing stops.
+  Like a refused **Start search**, the message stays until the next start,
+  Resume or leaving the screen, and what the search reports meanwhile (a full
+  avoid list, for example) shows below it. If
   it became avoided while the search stopped, Home shows the refusal: **Retry**
   asks again and **Edit** opens that system. If Android recreates the Activity during the
   handoff, the reopened app finds the search stopped and starts nothing.

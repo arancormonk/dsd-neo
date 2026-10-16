@@ -109,13 +109,15 @@ Window {
     }
     // Set while Signal search waits for its session to stop before a handoff
     // (leaveSearchFor()). The search screen stays the root until the decoder is
-    // idle, says it is stopping, and takes no Back: the stop is brief, and a
-    // Back that dropped the handoff would end on Home with nothing started.
+    // idle and says it is stopping. Back cancels the handoff, back to that
+    // screen and its controls, so a stop that never finishes cannot lock it.
     property bool leavingSearch: false
     function restartSite(uid) {
-        cancelPendingRestart();
+        // Refused before cancelling: a restart that cannot run leaves a
+        // handoff already waiting alone.
         if (decoderHost.sessionState !== 2 || savedSystems.rowForUid(uid) < 0)
             return;
+        cancelPendingRestart();
         pendingStart = null;
         pendingStartRow = -1;
         pendingStartRemember = true;
@@ -312,8 +314,10 @@ Window {
     property int currentTab: 0
     property string sessionDestination: ""
     function requestBack() {
-        if (leavingSearch)
+        if (leavingSearch) {
+            cancelPendingRestart();
             return;
+        }
         cancelPendingRestart();
         if (Navigation.back(mainRoot))
             return;
@@ -647,9 +651,11 @@ Window {
     }
 
     function startSystem(row) {
-        cancelPendingRestart();
+        // Refused before cancelling, as restartSite() is: a USB attachment
+        // while a handoff stops must not drop it.
         if (row < 0 || (decoderHost.sessionState !== 0 && decoderHost.sessionState !== 4))
             return;
+        cancelPendingRestart();
         var sys = savedSystems.get(row);
         if (sys)
             mainRoot.startWithMap(sys, row, false);
