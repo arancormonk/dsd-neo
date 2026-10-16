@@ -1258,6 +1258,7 @@ struct dsd_state {
         [2][24 * 128]; //unified pdu 'superframe' //[slot][byte] -- increased capacity to 127(+1) full rate blocks
     uint8_t cap_plus_csbk_bits[2][12 * 8 * 8]; //CSBK Cap+ FL initial and appended block bit storage, by slot
     uint8_t cap_plus_block_num[2];             //received block number storage -- per timeslot
+    uint8_t cap_plus_csbk_crc_invalid[2];      //DSD_CRC_* flags of every fragment in cap_plus_csbk_bits, by slot
     // Per-block CRC verdict on confirmed data: 1 good, 0 failed, DMR_DATA_BLOCK_CRC_RAS (2) a confirmed block whose
     // CRC9 failed but the RAS heuristic accepted under -F. Block 0 is the header and only ever holds 0 or 1.
     uint8_t data_block_crc_valid[2][127];

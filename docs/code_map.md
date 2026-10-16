@@ -4533,6 +4533,23 @@ Key public headers (selection):
 
 Private per-protocol modules worth knowing about:
 
+- Capacity Plus identity (`dmr_flco.c`, `dmr_csbk.c`, `dmr_trunk_sm.c`). Cap+ talkgroups are 8-bit (1..255) and
+  radio IDs 16-bit. The FID 0x10 FLCO 0x04 group voice LC carries the talkgroup at bits 40..47, a 5-bit rest LSN at
+  51..55 and the radio at 56..71 in every LC type (header, embedded, terminator); bits 24..39 are not part of the
+  talkgroup. FLCO 0x07, the private call header, has no published layout and keeps its standard 24-bit target, with
+  the 16-bit source and 4-bit rest LSN read from the header only. A rest LSN outside 1..16 announces none. The 0x3E
+  channel status reads its rest LSN as 5 bits (19..23) and decodes each active LSN's ID in the parser, one byte per
+  active group LSN and one 16-bit word per active private LSN, so which LSNs the display window shows never moves an
+  offset. Cap+ follows a call already in progress on that status alone, outside the DMR SM grant path, so the voice
+  LC header has usually gone by. When it tunes, `dmr_cspdu_cap_plus_3e_seed_carrier()` hands the SM the group each
+  slot of the followed carrier is carrying (`dmr_sm_capplus_seed_arm()`, with the fragments' accumulated CRC flags in
+  `cap_plus_csbk_crc_invalid[]`). At voice sync the seed names the slot's call only when that call is the vocoder's
+  identity-less epoch, opened after the status. It never opens, forks or reopens an epoch, so an LC always wins. It
+  is used once, and dropped by a terminator on the slot, by a later status showing the LSN idle or on another group,
+  by a later tune (the tuning generation, read before the follow tune: the seed belongs to the next completion), by
+  a receiver frequency other than the one the follow tune left (an operator retune moves no generation), after
+  `DMR_CAPPLUS_SEED_WINDOW_S`, and under single-slot decoding. Group calls only: a bank-two private ID's layout is
+  inferred from bank one's, not published. Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as

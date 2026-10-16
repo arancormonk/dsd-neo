@@ -705,6 +705,78 @@ main(void) {
     rc |= expect_true("cap+ 3e idle rest channel becomes CC", cap_st.trunk_cc_freq == 852000000L);
     rc |= expect_true("cap+ 3e idle rest channel does not tune VC", g_result_tune_to_freq_calls == 0);
     rc |= expect_true("cap+ 3e idle rest channel still brands", strcmp(cap_st.dmr_branding_sub, "Cap+ ") == 0);
+
+    // Each active LSN's talkgroup is where the banks put it, whichever LSNs the status window shows: with only LSN 13
+    // active and the rest on 13 the window starts at LSN 13, and bank two's bitmap byte (32..39) precedes its talkgroup.
+    init_env(&cap_opts, &cap_st);
+    cap_opts.trunk_tune_group_calls = 0;
+    cap_st.last_vc_sync_time = time(NULL) - 10;
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = 0x3EU;
+    bytes[1] = 0x10U;
+    write_bits_u32(bits, 16U, 3U, 2U);
+    write_bits_u32(bits, 19U, 13U, 5U);
+    write_bits_u32(bits, 32U, 0x08U, 8U); // bank two: LSN 13
+    write_bits_u32(bits, 40U, 109U, 8U);
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    rc |=
+        expect_true("cap+ 3e window start 13 reads LSN 13's talkgroup",
+                    recent_activity_matches(&cap_st, 13U, DSD_CALL_KIND_GROUP_VOICE, 109U, 0U, 13U, "LSN:13 TG:109;"));
+
+    // A zero talkgroup byte still belongs to its LSN: the next LSN's talkgroup is the byte after it.
+    init_env(&cap_opts, &cap_st);
+    cap_opts.trunk_tune_group_calls = 0;
+    cap_st.last_vc_sync_time = time(NULL) - 10;
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = 0x3EU;
+    bytes[1] = 0x10U;
+    write_bits_u32(bits, 16U, 3U, 2U);
+    write_bits_u32(bits, 19U, 1U, 5U);
+    write_bits_u32(bits, 24U, 0x60U, 8U); // LSNs 2 and 3
+    write_bits_u32(bits, 32U, 0U, 8U);
+    write_bits_u32(bits, 40U, 214U, 8U);
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("cap+ 3e zero talkgroup keeps the next LSN aligned",
+                      recent_activity_matches(&cap_st, 3U, DSD_CALL_KIND_GROUP_VOICE, 214U, 0U, 3U, "LSN:3 TG:214;"));
+
+    // Bank-two private IDs follow bank two's flag and bitmap bytes, as bank one's do. Trunking off: decoded, not
+    // followed.
+    init_env(&cap_opts, &cap_st);
+    cap_opts.trunk_enable = 0;
+    cap_st.last_vc_sync_time = time(NULL) - 10;
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = 0x3EU;
+    bytes[1] = 0x10U;
+    write_bits_u32(bits, 16U, 2U, 2U); // initial block: status bits 0..79
+    write_bits_u32(bits, 19U, 1U, 5U);
+    write_bits_u32(bits, 40U, 0x80U, 8U); // bank one private flag
+    write_bits_u32(bits, 48U, 0x40U, 8U); // LSN 2
+    write_bits_u32(bits, 56U, 4242U, 16U);
+    write_bits_u32(bits, 72U, 0x80U, 8U); // bank two private flag
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    DSD_MEMSET(bits, 0, 256);
+    write_bits_u32(bits, 16U, 1U, 2U); // final block: its bits 24..79 are status bits 80..135
+    write_bits_u32(bits, 19U, 1U, 5U);
+    write_bits_u32(bits, 24U, 0x20U, 8U); // bank two bitmap: LSN 11
+    write_bits_u32(bits, 32U, 5151U, 16U);
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("cap+ 3e bank-one private ID", recent_activity_matches(&cap_st, 2U, DSD_CALL_KIND_PRIVATE_VOICE,
+                                                                             4242U, 0U, 2U, "LSN:2 PC:4242;"));
+    rc |= expect_true("cap+ 3e bank-two private ID", recent_activity_matches(&cap_st, 11U, DSD_CALL_KIND_PRIVATE_VOICE,
+                                                                             5151U, 0U, 11U, "LSN:11 PC:5151;"));
+
+    // The status's rest LSN is five bits: LSN 16 is reachable, and the rest channel is followed there.
+    init_env(&cap_opts, &cap_st);
+    cap_st.trunk_cc_freq = 851000000L;
+    cap_st.trunk_chan_map[16] = 852500000L;
+    cap_st.last_vc_sync_time = time(NULL) - 10;
+    build_cap_plus_3e_single_idle(bits, bytes, 0U);
+    write_bits_u32(bits, 19U, 16U, 5U);
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("cap+ 3e rest LSN 16", cap_st.dmr_rest_channel == 16 && cap_st.trunk_cc_freq == 852500000L);
     install_trunk_tuning_hooks();
 
     static dsd_opts con_opts;

@@ -740,8 +740,133 @@ update_voice_sync_state(dmr_sm_ctx_t* ctx, dsd_state* state, int slot, double no
     }
 }
 
+/* ============================================================================
+ * Capacity Plus channel-status identity
+ * ============================================================================ */
+
+void
+dmr_sm_capplus_seed_arm(dmr_sm_ctx_t* ctx, int slot, uint32_t tg, int lsn, long freq_hz, uint32_t receiver_hz,
+                        uint8_t crc_flags, uint64_t generation_before_tune) {
+    if (!ctx || !ctx->initialized || slot < 0 || slot > 1) {
+        return;
+    }
+    dmr_sm_capplus_seed_t* seed = &ctx->capplus_seed[slot];
+    DSD_MEMSET(seed, 0, sizeof(*seed));
+    if (tg == 0U || freq_hz <= 0) {
+        return;
+    }
+    seed->armed = 1;
+    seed->tg = tg;
+    seed->lsn = lsn;
+    seed->freq_hz = freq_hz;
+    seed->receiver_hz = receiver_hz;
+    seed->crc_flags = crc_flags;
+    seed->armed_m = dsd_decode_now_mono_s();
+    // A tune accepted as PENDING completes later, so the generation read after the request may or may not include it
+    // yet. Read before, the completion this seed belongs to is exactly the next one.
+    seed->generation = generation_before_tune + 1U;
+}
+
+void
+dmr_sm_capplus_seed_clear(dmr_sm_ctx_t* ctx, int slot) {
+    if (!ctx) {
+        return;
+    }
+    for (int s = 0; s < 2; s++) {
+        if (slot < 0 || slot == s) {
+            DSD_MEMSET(&ctx->capplus_seed[s], 0, sizeof(ctx->capplus_seed[s]));
+        }
+    }
+}
+
+void
+dmr_sm_capplus_seed_reconcile(dmr_sm_ctx_t* ctx, int slot, int lsn, uint32_t tg) {
+    if (!ctx || slot < 0 || slot > 1) {
+        return;
+    }
+    const dmr_sm_capplus_seed_t* seed = &ctx->capplus_seed[slot];
+    if (seed->armed && seed->lsn == lsn && seed->tg != tg) {
+        dmr_sm_capplus_seed_clear(ctx, slot);
+    }
+}
+
+/* Whether the seed still describes the carrier the decoder is on. Neither check alone suffices: a manual retune moves
+ * the receiver without a tuning generation (request_manual_tune() goes straight to io_control), and a trunk-scan
+ * rotation can come back to the same frequency for another target. -1: never will, drop it; 0: not yet (the tune is
+ * still completing); 1: current. */
+static int
+dmr_sm_capplus_seed_current(const dmr_sm_capplus_seed_t* seed, const dsd_opts* opts, double now_m) {
+    if (now_m - seed->armed_m > DMR_CAPPLUS_SEED_WINDOW_S || now_m < seed->armed_m) {
+        return -1;
+    }
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    if (generation < seed->generation) {
+        return 0;
+    }
+    if (!dsd_trunk_tuning_frame_is_current(seed->generation)) {
+        return -1;
+    }
+    return (opts->rtlsdr_center_freq == seed->receiver_hz) ? 1 : -1;
+}
+
+// The vocoder's identity-less epoch for this transmission: DMR, opened after the status (an older one would be a call
+// from before the follow tune), and named by nothing yet.
+static int
+dmr_sm_capplus_call_is_unnamed_since(const dsd_call_snapshot* call, double armed_m) {
+    return DSD_SYNC_IS_DMR(call->protocol) && call->started_m >= armed_m && call->ota_target_id == 0U
+           && call->policy_target_id == 0U && call->ota_source_id == 0U && call->target_text[0] == '\0'
+           && call->source_text[0] == '\0';
+}
+
+/* Name the slot's call from the channel status that sent Cap+ here, only while no voice LC has. The vocoder opens an
+ * identity-less epoch on the first voice frame; this specializes that epoch and nothing else. It never opens one (a
+ * superframe later the slot either carries such an epoch or an LC has named the call), never contradicts an LC, and
+ * never reopens an ended call, which the canonical layer may still heal. One use, whatever the outcome: once the slot
+ * has a named or a seeded call, the status has said all it can. */
 static void
-handle_voice_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot) {
+dmr_sm_capplus_seed_apply(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, double now_m) {
+    const dmr_sm_capplus_seed_t* seed = &ctx->capplus_seed[slot];
+    if (!seed->armed || !opts || !state) {
+        return;
+    }
+    // Single-slot decoding folds both slots' LCs onto slot 0, so a per-slot status cannot be matched to it.
+    const int single_slot = state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && state->dmr_stereo == 0);
+    const int current = single_slot ? -1 : dmr_sm_capplus_seed_current(seed, opts, now_m);
+    if (current < 0) {
+        dmr_sm_capplus_seed_clear(ctx, slot);
+        return;
+    }
+    if (current == 0) {
+        return;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return;
+    }
+    const dmr_sm_capplus_seed_t used = *seed;
+    dmr_sm_capplus_seed_clear(ctx, slot);
+    if (!dmr_sm_capplus_call_is_unnamed_since(&call, used.armed_m)) {
+        return;
+    }
+    const dsd_call_observation observation = {
+        .protocol = call.protocol,
+        .slot = (uint8_t)slot,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = used.tg,
+        .policy_target_id = used.tg,
+        .channel = (uint32_t)used.lsn,
+        .frequency_hz = used.freq_hz,
+        .observed_m = now_m,
+    };
+    const uint8_t saved_crc_invalid = state->event_crc_invalid[slot];
+    state->event_crc_invalid[slot] = (uint8_t)(saved_crc_invalid | used.crc_flags);
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    state->event_crc_invalid[slot] = saved_crc_invalid;
+}
+
+static void
+handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
     if (!ctx) {
         return;
     }
@@ -781,6 +906,7 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int
             ctx->vc_identity_published = 1;
         }
     }
+    dmr_sm_capplus_seed_apply(ctx, opts, state, s, now_m);
 
     sm_log(opts, "voice-sync");
 }
