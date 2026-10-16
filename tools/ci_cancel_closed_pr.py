@@ -13,6 +13,9 @@ ACTIVE_STATUSES = ("queued", "in_progress", "pending", "waiting", "requested")
 
 
 def timestamp(value):
+    # Python before 3.11 accepts ISO offsets, but not GitHub's trailing Z.
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
     return datetime.datetime.fromisoformat(value)
 
 

@@ -2524,8 +2524,10 @@ Existing runs from before the change are not retroactively budgeted.
 | `ci-control` | closed-PR cleanup and release metadata creation |
 
 Release metadata has a separate slot from publishers that wait for it, so those
-waits cannot block the job that satisfies them. Matrix `max-parallel` limits also
-keep one run from occupying every backend/analysis slot at once. Retune the
+waits cannot block the job that satisfies them. All six backend matrix entries
+may enter their fixed slots: a smaller matrix limit counted entries waiting on
+Android/Qt against the limit and left other backend slots idle in the first
+live run. The shared groups still enforce the same 18-runner budget. Retune the
 assignments using job queue and execution times; the fixed groups can leave a
 slot idle while another has a queue. `tools/check_ci_concurrency.py`, run by
 `tools/workflow_lint.sh`, rejects unbudgeted runner jobs, variable per-ref slots,

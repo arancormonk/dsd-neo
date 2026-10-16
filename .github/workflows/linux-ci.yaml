@@ -51,7 +51,9 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 3
+      # Each variant already has a fixed worker slot. Admit all six so entries
+      # waiting on Android/Qt do not keep other, available slots idle.
+      max-parallel: 6
       matrix:
         include:
           - variant: both
