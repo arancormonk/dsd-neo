@@ -1186,6 +1186,9 @@ struct dsd_state {
        only from processFrame() under the P25 SM tick guard and never cleared, not even by a carrier boundary: a startup
        control-channel hunt restarts its window from it (issue #703). */
     double dmr_confidence_lock_m;
+    /* Decode-clock seconds an NXDN frame's own CRCs last confirmed its transmission (nxdn_confirm_end_frame()), 0
+       never. Decoder thread only, never cleared: the NXDN control-channel hunt restarts its window from it. */
+    double nxdn_confirm_lock_m;
     unsigned int PI;
     unsigned int PI_ok;
     unsigned int LCSS;
@@ -2374,6 +2377,13 @@ int dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state*
  * hunts is decided by the caller.
  */
 int dsd_state_trunk_cold_start_eligible(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * Whether a single-system trunked NXDN session may hunt its channel map for a control channel: every condition of
+ * dsd_state_trunk_cold_start_eligible() except the owner, which may be unknown (a startup hunt) or NXDN (recovery of
+ * a lost control channel). Whether NXDN may own the trunk is the caller's (dsd_trunk_nxdn_recovery_allowed()).
+ */
+int dsd_state_trunk_nxdn_hunt_eligible(const dsd_opts* opts, const dsd_state* state);
 
 static inline int
 dsd_state_minmax_window_size(int requested) {

@@ -87,10 +87,12 @@ typedef enum {
     DSD_TRUNK_RECOVERY_UNKNOWN = 0,
     DSD_TRUNK_RECOVERY_P25,
     DSD_TRUNK_RECOVERY_DMR,
+    DSD_TRUNK_RECOVERY_NXDN,
 } dsd_trunk_recovery_protocol;
 
 /** Publish validated protocol evidence under the decoder/SM guard (or while stopped).
- * Only P25/DMR control or grant evidence transfers ownership. Other protocol decodes,
+ * Only P25/DMR control or grant evidence, and NXDN control (a CRC-good CAC or a confirmed Type-D SCCH), transfers
+ * ownership. Other protocol decodes,
  * raw sync detection and no-carrier resets must not change this retained owner. */
 void dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_protocol protocol);
 
@@ -100,6 +102,9 @@ void dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_proto
  * sync, modulation or CC hints written outside that guard by frame acquisition. */
 int dsd_trunk_p25_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
 int dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
+/** NXDN control-channel recovery (src/protocol/nxdn/nxdn_cc_hunt.c): trunking on, neither -Y nor --trunk-scan, NXDN48
+ * or NXDN96 decoded, and a validated NXDN owner or, with none yet, a frame set without P25, DMR or ProVoice. */
+int dsd_trunk_nxdn_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
 
 /** Whether P25 runs the startup control-channel hunt of a single-system trunked session that no protocol has proven
  * yet (issue #703): trunking on, neither -Y nor --trunk-scan, no validated owner, P25 decoded, and none of NXDN48,

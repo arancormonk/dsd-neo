@@ -79,6 +79,19 @@ dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state) {
                && !opts->frame_nxdn48 && !opts->frame_nxdn96 && !opts->frame_provoice);
 }
 
+int
+dsd_trunk_nxdn_recovery_allowed(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable != 1 || opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1) {
+        return 0;
+    }
+    if (!opts->frame_nxdn48 && !opts->frame_nxdn96) {
+        return 0;
+    }
+    return state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_NXDN
+           || (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN && !opts->frame_p25p1 && !opts->frame_p25p2
+               && !opts->frame_dmr && !opts->frame_provoice);
+}
+
 void
 dsd_trunk_scan_hooks_set(const dsd_trunk_scan_hooks* hooks) {
     g_trunk_scan_hooks = hooks ? *hooks : (dsd_trunk_scan_hooks){0};

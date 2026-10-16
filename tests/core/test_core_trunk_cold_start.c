@@ -111,6 +111,46 @@ test_channel_map(void) {
     assert(eligible());
 }
 
+/* The NXDN hunt shares every session condition and also runs under a proven NXDN owner, to recover a lost control
+   channel; the startup predicate stays owner-unknown only. */
+static void
+test_nxdn_hunt(void) {
+    baseline();
+    assert(dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    g_state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN;
+    assert(dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    assert(!eligible());
+    g_state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_P25;
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    g_state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_DMR;
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    baseline();
+    g_state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN;
+    g_opts->trunk_is_tuned = 1;
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    g_opts->trunk_is_tuned = 0;
+    g_opts->scanner_mode = 1;
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    g_opts->scanner_mode = 0;
+    g_opts->trunk_scan_enabled = 1;
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    g_opts->trunk_scan_enabled = 0;
+    g_state->input_boundary = 1;
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    g_state->input_boundary = 0;
+    g_opts->chan_in_file[0] = '\0';
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    baseline();
+    g_state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN;
+    DSD_SNPRINTF(g_opts->audio_in_dev, sizeof(g_opts->audio_in_dev), "%s", "iqreplay:capture.cu8");
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    baseline();
+    g_opts->audio_in_type = AUDIO_IN_TCP;
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, g_state));
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(NULL, g_state));
+    assert(!dsd_state_trunk_nxdn_hunt_eligible(g_opts, NULL));
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1, sizeof(*g_opts));
@@ -120,6 +160,7 @@ main(void) {
     test_tuner();
     test_owner();
     test_channel_map();
+    test_nxdn_hunt();
     assert(!dsd_state_trunk_cold_start_eligible(NULL, g_state));
     assert(!dsd_state_trunk_cold_start_eligible(g_opts, NULL));
     dsd_state_trunk_lcn_free(g_state);
