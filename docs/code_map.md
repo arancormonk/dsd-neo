@@ -3489,6 +3489,28 @@ Key public headers:
     rule for both containers (used by the open, `--iq-info` and the CLI); `dsd_iq_replay_seek()` moves either kind of
     source to a whole complex sample. Tests: `IO_IQ_WAV`,
     `FUZZ_IO_IQ_WAV`
+  - Replay rate plan (issue #701): `dsd_iq_replay_plan_rate()` picks the chain a replay runs for the mode's DSP rate
+    and `dsd_iq_replay_apply_rate_plan()` writes it into the config (`dsp_input_rate_hz`, base, post, demod;
+    `sample_rate_hz` stays the capture's rate for pacing, media time, chunking and events). A sidecar with no explicit
+    bandwidth request keeps its recorded chain unless TETRA's 18 kHz requirement fails on its CQPSK rate (dsp input /
+    base, post 1); otherwise the capture decimates by 2^k when it is D x 2^k, else it is resampled to the largest
+    D x 2^k at or below its rate (or up to D). Stream open (`stream_open_plan_replay_rate()`) plans at every start and
+    refuses a start whose plan fails; the replay device resamples with `dsd_iq_resampler` (protected band 0.45 x D) in
+    the reader thread only when `dsp_input_rate_hz` differs from the capture's, clears it at a RETUNE, RESET, MUTE and
+    loop rewind, hands event callbacks the DSP input rate, and counts pacing and media time in capture samples
+    (`dsd_iq_replay_chunk_bytes_for()` keeps a resampled chunk within one live transfer). A replay with no known centre
+    (a WAV with none) opens and loops: stream open skips the frequency check for a replay, and
+    `controller_finalize_dsp_chain()` runs the DSP half of `controller_finalize_rate_chain()` without a centre.
+    Tests: `IO_IQ_REPLAY_RATE_PLAN`, `IO_RTL_REPLAY_RESAMPLE`, the `DECODE_IQ_TETRA_WAV_*` and
+    `DECODE_IQ_TETRA_REAL_AIR_SCBS_50K` cases (WAVs made in the build tree by `dsd-neo_test_iq_wav_fixture_tool`)
+  - Requested bandwidth provenance: `dsd_opts::rtl_dsp_bw_khz` is the requested DSP bandwidth and
+    `rtl_dsp_bw_source` says where it came from (`DSD_RTL_DSP_BW_SOURCE_DEFAULT`, `_EXPLICIT`, `_PRESET`). Writers set
+    both (`dsd_opts_set_rtl_dsp_bw()`): mode presets in `args.c` (PRESET); input spec bandwidth fields
+    (`input_spec.c`, `airspy_config.c`), the INI `[rtl]` bandwidth at startup (`config_user.cpp`) and on a runtime
+    config apply, the interactive bootstrap, and `svc_rtl_set_bandwidth_locked()` (EXPLICIT). Snapshots put both back
+    (`ui_capture_radio_input()`/`ui_restore_radio_input()`, the config rollback's live-gain path,
+    `svc_airspy_tuning`). A replay no longer writes its recorded bandwidth into opts: only an EXPLICIT request beats
+    `recorded_dsp_bw_khz` as the plan's target, so a mode preset (`-fT`) keeps a sidecar's recorded chain.
 
 Notes:
 

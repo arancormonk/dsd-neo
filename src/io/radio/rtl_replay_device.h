@@ -70,4 +70,9 @@ struct rtl_replay_eof_state {
 struct rtl_device* rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, struct input_ring_state* input_ring,
                                                const struct rtl_replay_eof_state* eof_state);
 
+/* A replay resampled to its DSP input rate (issue #701): the capture's rate, the resampler's L/M and its ratio error.
+ * Returns 1 for a resampled replay, 0 for one that runs at its capture's rate or any other device. */
+int rtl_device_replay_resample_info(const struct rtl_device* dev, uint32_t* out_capture_hz, int* out_l, int* out_m,
+                                    double* out_ppm);
+
 #endif /* DSD_NEO_IO_RADIO_RTL_REPLAY_DEVICE_H */

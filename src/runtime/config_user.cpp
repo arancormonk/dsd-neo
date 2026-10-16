@@ -406,6 +406,9 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     opts->rtl_gain_value = gain;
     opts->rtlsdr_ppm_error = ppm;
     opts->rtl_dsp_bw_khz = bw;
+    if (cfg->rtl_bw_khz) {
+        opts->rtl_dsp_bw_source = DSD_RTL_DSP_BW_SOURCE_EXPLICIT;
+    }
     /* rtl_sql is the level under every mode, kept for a switch back from auto or noise. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)sql);
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;

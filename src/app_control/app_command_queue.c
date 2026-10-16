@@ -1373,6 +1373,7 @@ typedef struct {
     int rtl_dev_index;
     uint32_t rtlsdr_center_freq;
     int rtl_dsp_bw_khz;
+    int rtl_dsp_bw_source;
     int rtl_gain_value;
     int rtlsdr_ppm_error;
     int rtl_auto_ppm;
@@ -1413,6 +1414,7 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
     out->tuned_freq_hz = dsd_opts_tuned_freq_hz(opts);
     out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
+    out->rtl_dsp_bw_source = opts->rtl_dsp_bw_source;
     out->rtl_gain_value = opts->rtl_gain_value;
     out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
     out->rtl_auto_ppm = opts->rtl_auto_ppm;
@@ -1443,7 +1445,7 @@ ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     opts->rtltcp_portno = in->rtltcp_portno;
     opts->rtl_dev_index = in->rtl_dev_index;
     opts->rtlsdr_center_freq = in->rtlsdr_center_freq;
-    opts->rtl_dsp_bw_khz = in->rtl_dsp_bw_khz;
+    dsd_opts_set_rtl_dsp_bw(opts, in->rtl_dsp_bw_khz, in->rtl_dsp_bw_source);
     opts->rtl_gain_value = in->rtl_gain_value;
     opts->rtlsdr_ppm_error = in->rtlsdr_ppm_error;
     opts->rtl_auto_ppm = in->rtl_auto_ppm;
@@ -3350,7 +3352,7 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
         }
     }
     if (cfg->rtl_bw_khz) {
-        opts->rtl_dsp_bw_khz = cfg->rtl_bw_khz;
+        dsd_opts_set_rtl_dsp_bw(opts, cfg->rtl_bw_khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     }
     /* rtl_sql is the same setting the CLI `sql` field carries, so it converts the
      * same way: negative is decibels, 0 is off. Storing the raw integer put a
@@ -3418,7 +3420,7 @@ apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
        (cfg_radio_reopen() calls this restart one at the running rate). A SoapySDR config's own frequency and
        bandwidth, which its spec cannot carry, wait for an [input] that reopens the device. */
     opts->rtlsdr_center_freq = before->input.rtlsdr_center_freq;
-    opts->rtl_dsp_bw_khz = before->input.rtl_dsp_bw_khz;
+    dsd_opts_set_rtl_dsp_bw(opts, before->input.rtl_dsp_bw_khz, before->input.rtl_dsp_bw_source);
     if (!dsd_user_config_rtl_gain_is_set(cfg) || cfg->input_source == DSDCFG_INPUT_AIRSPY) {
         return 0;
     }
@@ -3800,7 +3802,8 @@ apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
     opts->airspy = in->airspy;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", in->audio_in_dev);
     const svc_airspy_tuning tuning = {in->rtlsdr_center_freq,    in->rtl_dsp_bw_khz,   in->rtl_squelch_level,
-                                      in->rtl_volume_multiplier, in->rtl_squelch_mode, in->rtl_squelch_margin_db};
+                                      in->rtl_volume_multiplier, in->rtl_squelch_mode, in->rtl_squelch_margin_db,
+                                      in->rtl_dsp_bw_source};
     int rc = 0;
     if (!state->rtl_ctx
         || svc_airspy_settings_reopen(&in->airspy, &cfg->airspy, tuning.bandwidth, opts->rtl_dsp_bw_khz, tuning.volume,

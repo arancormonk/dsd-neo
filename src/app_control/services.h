@@ -891,6 +891,8 @@ typedef struct {
        are a level squelch. */
     int squelch_mode;
     int squelch_margin_db;
+    /* Where the bandwidth came from (dsd_opts::rtl_dsp_bw_source), put back with it. */
+    int bandwidth_source;
 } svc_airspy_tuning;
 
 /** Apply native settings and shared tuning together; restore prior tuning on failure.

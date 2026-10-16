@@ -1344,7 +1344,8 @@ test_locked_restarts(void) {
         opts.iq_capture_requested = 1;
         dsd_airspy_config next = opts.airspy;
         next.sample_rate = 2500000;
-        const svc_airspy_tuning tuning = {851000000, 12, 0.0, 2, DSD_SQUELCH_MODE_LEVEL, 0};
+        const svc_airspy_tuning tuning = {
+            851000000, 12, 0.0, 2, DSD_SQUELCH_MODE_LEVEL, 0, DSD_RTL_DSP_BW_SOURCE_DEFAULT};
         const int result = locked ? svc_airspy_apply_config_locked(&opts, &state, &next, &tuning)
                                   : svc_airspy_apply_config(&opts, &state, &next, &tuning);
         rc |= expect_int("Airspy reopen reports start failure", result, -1);

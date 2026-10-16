@@ -233,7 +233,8 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rtl_udp_port = 0; // external RTL retune control is disabled by default
     DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", "127.0.0.1");
     opts->rtl_dsp_bw_khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ; // DSP baseband kHz (a selectable one). Not tuner IF BW.
-    opts->rtlsdr_ppm_error = 0;                               //initialize ppm with 0 value;
+    opts->rtl_dsp_bw_source = DSD_RTL_DSP_BW_SOURCE_DEFAULT;
+    opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
     opts->rtlsdr_center_freq =
         850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
     dsd_airspy_config_defaults(&opts->airspy);

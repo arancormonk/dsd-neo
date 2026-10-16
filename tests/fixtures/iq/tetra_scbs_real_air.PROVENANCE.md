@@ -30,6 +30,15 @@ python tools/tetra/prepare_real_air_fixture.py \
   --output tests/fixtures/iq/tetra_scbs_real_air_54k.iq --verify
 ```
 
+`tetra_scbs_real_air_50k.cs16.json` is a hand-written sidecar, this
+project's own, that replays the unmodified 50 kHz capture as published: little-endian
+CS16 at the `post_mute_pre_widen` stage, 50 kHz, centre 467.913 MHz, a recorded
+50 kHz DSP bandwidth with no decimation, and `capture_started_utc` "unknown" (upstream
+gives no timestamp). The capture's bytes are not changed. A TETRA replay resamples it
+to 72 kHz ahead of the demodulator (issue #701), which
+`DECODE_IQ_TETRA_REAL_AIR_SCBS_50K` checks for the same identity with no rate
+warning; the dev-debug build decodes 51 identities from it.
+
 `tetra_cc_marginal_real_air_144k.iq` is a second unmodified Apache-2.0
 capture from the same upstream repository, added by commit
 [`0f9192caf36fcc2226975007f459713ed752199a`](https://github.com/MattCheramie/GopherTrunk/commit/0f9192caf36fcc2226975007f459713ed752199a).

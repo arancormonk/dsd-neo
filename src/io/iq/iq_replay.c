@@ -805,7 +805,9 @@ validate_replay_semantics(const dsd_iq_replay_config* cfg, char* err_buf, size_t
         set_error(err_buf, err_buf_size, "demod_rate_hz must be > 0");
         return DSD_IQ_ERR_RATE_CHAIN;
     }
-    uint64_t derived = (uint64_t)cfg->sample_rate_hz / (uint64_t)cfg->base_decimation / (uint64_t)cfg->post_downsample;
+    /* The chain runs from the rate the demodulator takes: the capture's, or the one a rate plan resamples it to. */
+    uint64_t derived = (uint64_t)dsd_iq_replay_dsp_input_rate_hz(cfg) / (uint64_t)cfg->base_decimation
+                       / (uint64_t)cfg->post_downsample;
     if (derived != cfg->demod_rate_hz) {
         set_error(err_buf, err_buf_size,
                   "demod_rate_hz (%u) inconsistent with sample_rate/base_decimation/post_downsample",
@@ -2067,6 +2069,154 @@ dsd_iq_replay_chunk_bytes(dsd_iq_sample_format format, uint32_t sample_rate_hz) 
     return (size_t)samples * align;
 }
 
+size_t
+dsd_iq_replay_chunk_bytes_for(dsd_iq_sample_format format, uint32_t capture_hz, uint32_t dsp_in_hz) {
+    if (capture_hz == dsp_in_hz) {
+        return dsd_iq_replay_chunk_bytes(format, capture_hz);
+    }
+    const size_t align = dsd_iq_sample_format_alignment_bytes(format);
+    if (align == 0U || capture_hz == 0U || dsp_in_hz == 0U) {
+        return 0U;
+    }
+    uint64_t samples = DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES;
+    const uint64_t span =
+        ((uint64_t)capture_hz * DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES) / DSD_IQ_REPLAY_CHUNK_REFERENCE_RATE_HZ;
+    const uint64_t resampled = ((uint64_t)(DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES - 1U) * capture_hz) / dsp_in_hz;
+    if (span < samples) {
+        samples = span;
+    }
+    if (resampled < samples) {
+        samples = resampled;
+    }
+    if (samples == 0U) {
+        samples = 1U;
+    }
+    return (size_t)samples * align;
+}
+
+uint32_t
+dsd_iq_replay_dsp_input_rate_hz(const dsd_iq_replay_config* cfg) {
+    if (!cfg) {
+        return 0U;
+    }
+    return cfg->dsp_input_rate_hz != 0U ? cfg->dsp_input_rate_hz : cfg->sample_rate_hz;
+}
+
+static int
+is_power_of_two_u32(uint32_t v) {
+    return v != 0U && (v & (v - 1U)) == 0U;
+}
+
+static void
+rate_plan_fill(dsd_iq_replay_rate_plan* plan, uint32_t capture_hz, uint32_t dsp_in_hz, uint32_t base, uint32_t post,
+               uint32_t target_hz, int kept) {
+    DSD_MEMSET(plan, 0, sizeof(*plan));
+    plan->capture_rate_hz = capture_hz;
+    plan->dsp_input_rate_hz = dsp_in_hz;
+    plan->base_decimation = base;
+    plan->post_downsample = post;
+    plan->demod_rate_hz = dsp_in_hz / base / post;
+    plan->target_dsp_hz = kept ? 0U : target_hz;
+    plan->kept_recorded = kept ? 1 : 0;
+    plan->resample = dsp_in_hz != capture_hz ? 1 : 0;
+}
+
+/* KEEP (dsd_iq_replay_plan_rate()): 1 when the sidecar's recorded chain runs as captured, with @p plan filled. A TETRA
+ * chain that misses the requirement only through a power-of-two post_downsample is folded into the half-band chain. */
+static int
+rate_plan_keep(const dsd_iq_replay_config* cfg, uint32_t required_hz, dsd_iq_replay_rate_plan* plan) {
+    const uint32_t fs = cfg->sample_rate_hz;
+    const uint32_t base = cfg->base_decimation;
+    const uint32_t post = cfg->post_downsample;
+    if (!is_power_of_two_u32(base) || base > DSD_IQ_REPLAY_MAX_BASE_DECIMATION || post == 0U || cfg->demod_rate_hz == 0U
+        || fs / base / post != cfg->demod_rate_hz) {
+        return 0;
+    }
+    /* The CQPSK path runs at fs / base: it skips post_downsample. */
+    if (required_hz == 0U || (post == 1U && ((fs / base) % required_hz) == 0U)) {
+        rate_plan_fill(plan, fs, fs, base, post, 0U, 1);
+        return 1;
+    }
+    const uint64_t folded = (uint64_t)base * post;
+    if (post > 1U && is_power_of_two_u32(post) && folded <= DSD_IQ_REPLAY_MAX_BASE_DECIMATION
+        && ((fs / (uint32_t)folded) % required_hz) == 0U) {
+        rate_plan_fill(plan, fs, fs, (uint32_t)folded, 1U, (uint32_t)(fs / folded), 0);
+        return 1;
+    }
+    return 0;
+}
+
+int
+dsd_iq_replay_plan_rate(const dsd_iq_replay_config* cfg, uint32_t target_dsp_hz, uint32_t cqpsk_required_multiple_hz,
+                        int explicit_target, dsd_iq_replay_rate_plan* out_plan, char* err_buf, size_t err_buf_size) {
+    if (!cfg || !out_plan) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    const uint32_t fs = cfg->sample_rate_hz;
+    dsd_iq_replay_rate_plan plan;
+    if (!explicit_target && cfg->container == DSD_IQ_REPLAY_CONTAINER_SIDECAR
+        && rate_plan_keep(cfg, cqpsk_required_multiple_hz, &plan)) {
+        *out_plan = plan;
+        return DSD_IQ_OK;
+    }
+    const uint32_t d = target_dsp_hz;
+    if (d == 0U) {
+        set_error(err_buf, err_buf_size, "no DSP target rate to plan the replay for");
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    if (fs < DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ) {
+        set_error(err_buf, err_buf_size, "the capture's rate (%u Hz) is below the %u Hz a replay can resample",
+                  (unsigned)fs, (unsigned)DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ);
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    for (uint32_t k = 0U; k <= DSD_IQ_REPLAY_MAX_PLAN_PASSES; k++) {
+        if ((uint64_t)d << k == (uint64_t)fs) {
+            rate_plan_fill(&plan, fs, fs, 1U << k, 1U, d, 0);
+            *out_plan = plan;
+            return DSD_IQ_OK;
+        }
+    }
+    uint64_t r = d;
+    uint32_t k = 0U;
+    if (fs < d) {
+        if ((uint64_t)d > (uint64_t)fs * DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO) {
+            set_error(err_buf, err_buf_size,
+                      "the capture's rate (%u Hz) would need more than a %ux upsample to reach the %u Hz DSP rate",
+                      (unsigned)fs, (unsigned)DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO, (unsigned)d);
+            return DSD_IQ_ERR_RATE_CHAIN;
+        }
+    } else {
+        while (k < DSD_IQ_REPLAY_MAX_PLAN_PASSES && ((uint64_t)d << (k + 1U)) <= (uint64_t)fs) {
+            k++;
+        }
+        r = (uint64_t)d << k;
+        if ((uint64_t)fs >= 2U * r) {
+            set_error(err_buf, err_buf_size,
+                      "the capture's rate (%u Hz) is too fast to resample to the %u Hz DSP rate (more than a %u x 2 "
+                      "decimation)",
+                      (unsigned)fs, (unsigned)d, (unsigned)(1U << DSD_IQ_REPLAY_MAX_PLAN_PASSES));
+            return DSD_IQ_ERR_RATE_CHAIN;
+        }
+    }
+    rate_plan_fill(&plan, fs, (uint32_t)r, 1U << k, 1U, d, 0);
+    *out_plan = plan;
+    return DSD_IQ_OK;
+}
+
+int
+dsd_iq_replay_apply_rate_plan(dsd_iq_replay_config* cfg, const dsd_iq_replay_rate_plan* plan) {
+    if (!cfg || !plan || plan->capture_rate_hz == 0U || plan->capture_rate_hz != cfg->sample_rate_hz
+        || plan->dsp_input_rate_hz == 0U || plan->base_decimation == 0U || plan->post_downsample == 0U
+        || plan->demod_rate_hz == 0U) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    cfg->dsp_input_rate_hz = plan->dsp_input_rate_hz;
+    cfg->base_decimation = plan->base_decimation;
+    cfg->post_downsample = plan->post_downsample;
+    cfg->demod_rate_hz = plan->demod_rate_hz;
+    return DSD_IQ_OK;
+}
+
 double
 dsd_iq_replay_estimate_duration_seconds(uint64_t data_bytes, dsd_iq_sample_format format, uint32_t sample_rate_hz) {
     if (sample_rate_hz == 0) {
@@ -2618,6 +2768,27 @@ dsd_iq_info_print_warnings(const dsd_iq_replay_config* cfg, uint64_t actual_file
 }
 
 /* --iq-info for a WAV recording (issue #701). */
+/* How a WAV at its rate reaches @p target_hz: "resampled to R Hz, decimated by N", "decimated by N", "as recorded", or
+ * why it cannot. */
+static void
+info_describe_wav_plan(const dsd_iq_replay_config* cfg, uint32_t target_hz, uint32_t required_hz, char* out,
+                       size_t out_size) {
+    dsd_iq_replay_rate_plan plan;
+    char err[160] = {0};
+    if (dsd_iq_replay_plan_rate(cfg, target_hz, required_hz, 0, &plan, err, sizeof(err)) != DSD_IQ_OK) {
+        DSD_SNPRINTF(out, out_size, "refused (%s)", err);
+        return;
+    }
+    if (plan.resample) {
+        DSD_SNPRINTF(out, out_size, "resampled to %u Hz, decimated by %u", (unsigned)plan.dsp_input_rate_hz,
+                     (unsigned)plan.base_decimation);
+    } else if (plan.base_decimation > 1U) {
+        DSD_SNPRINTF(out, out_size, "decimated by %u", (unsigned)plan.base_decimation);
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s", "as recorded");
+    }
+}
+
 static int
 dsd_iq_info_print_wav(const dsd_iq_replay_config* cfg, const char* display_path, uint64_t actual_file_size, FILE* out,
                       FILE* err) {
@@ -2658,7 +2829,14 @@ dsd_iq_info_print_wav(const dsd_iq_replay_config* cfg, const char* display_path,
                     w->declared_data_bytes, frames * (uint64_t)w->block_align);
     }
     DSD_FPRINTF(out, "  Duration:            ~%.2f s (%" PRIu64 " frames)\n", dur, frames);
-    DSD_FPRINTF(out, "  Rate chain:          replays at the recording's rate, %u Hz\n", cfg->sample_rate_hz);
+    /* The chain follows the DSP rate the decode mode runs (dsd_iq_replay_plan_rate()): the default 48 kHz, and TETRA's
+       72 kHz, as examples. */
+    char at48[96];
+    char at72[96];
+    info_describe_wav_plan(cfg, 48000U, 0U, at48, sizeof(at48));
+    info_describe_wav_plan(cfg, 72000U, 18000U, at72, sizeof(at72));
+    DSD_FPRINTF(out, "  Rate chain:          follows the DSP rate the mode runs; at 48 kHz %s, at TETRA's 72 kHz %s\n",
+                at48, at72);
     DSD_FPRINTF(out, "  Replay compatible:   %s\n", effective > 0U ? "yes" : "no");
 
     if (err) {

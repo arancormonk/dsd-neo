@@ -12251,6 +12251,30 @@ target_compile_definitions(
 )
 add_test(NAME IO_IQ_METADATA COMMAND dsd-neo_test_io_iq_metadata)
 
+# The replay rate plan (issue #701): KEEP over every committed fixture sidecar, TETRA's post fold, the general rule's
+# examples and limits, and the chunk rule for a resampled capture.
+add_executable(
+    dsd-neo_test_io_iq_replay_rate_plan
+    io/test_io_iq_replay_rate_plan.c
+)
+target_include_directories(
+    dsd-neo_test_io_iq_replay_rate_plan
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_io_iq_replay_rate_plan
+    PRIVATE dsd-neo_io_iq dsd-neo_platform
+)
+target_compile_definitions(
+    dsd-neo_test_io_iq_replay_rate_plan
+    PRIVATE
+        "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+)
+add_test(
+    NAME IO_IQ_REPLAY_RATE_PLAN
+    COMMAND dsd-neo_test_io_iq_replay_rate_plan
+)
+
 # WAV I/Q recordings (issue #701): the parser, the replay reader's cf32 conversion and partial reads, seeking, the
 # centre and start time sources, --iq-info, and a sidecar beside a WAV.
 add_executable(dsd-neo_test_io_iq_wav io/test_io_iq_wav.c)
@@ -12949,6 +12973,42 @@ if(DSD_HAS_RADIO)
     add_test(
         NAME IO_RTL_REPLAY_CHUNKING
         COMMAND dsd-neo_test_io_rtl_replay_chunking
+    )
+
+    # Replay resampling (issue #701): a 48 kHz capture with MUTEs, a RETUNE and a RESET under TETRA runs from 72 kHz,
+    # each block is the unresampled replay's block resampled (the resampler starting over at every event), media time and
+    # the input level follow the raw capture, fast, realtime and short reads agree, and a WAV with no centre loops with
+    # every pass the same.
+    add_executable(
+        dsd-neo_test_io_rtl_replay_resample
+        io/test_io_rtl_replay_resample.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_replay_resample
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_replay_resample
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_dsp
+            dsd-neo_core
+            dsd-neo_platform
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_replay_resample
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_REPLAY_RESAMPLE
+        COMMAND dsd-neo_test_io_rtl_replay_resample
     )
 
     add_executable(
@@ -13780,6 +13840,175 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT
         PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
+    # WAV I/Q replay and replay resampling (issue #701). dsd-neo_test_iq_wav_fixture_tool writes the WAV recordings
+    # (tests/io/iq_wav_fixture_tool.c) into the build tree from the committed fixtures; IQ_WAV_FIXTURES makes them once
+    # for every case that replays one.
+    add_executable(dsd-neo_test_iq_wav_fixture_tool io/iq_wav_fixture_tool.c)
+    target_include_directories(
+        dsd-neo_test_iq_wav_fixture_tool
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_iq_wav_fixture_tool
+        PRIVATE dsd-neo_platform dsd-neo_core
+    )
+    if(NOT MSVC)
+        target_link_libraries(dsd-neo_test_iq_wav_fixture_tool PRIVATE m)
+    endif()
+    set(_dsd_iq_wav_dir "${CMAKE_CURRENT_BINARY_DIR}/iq_wav_fixtures")
+    add_test(
+        NAME IQ_WAV_FIXTURES
+        COMMAND
+            dsd-neo_test_iq_wav_fixture_tool "${_DSD_NEO_IQ_FIXTURE_DIR}"
+            "${_dsd_iq_wav_dir}"
+    )
+    set_tests_properties(
+        IQ_WAV_FIXTURES
+        PROPERTIES FIXTURES_SETUP IQ_WAV_FIXTURES LABELS "iq-decode" TIMEOUT 120
+    )
+
+    # The unmodified 50 kHz source of tetra_scbs_real_air_54k, under a hand-written sidecar: TETRA cannot time its
+    # symbols at 50 kHz, so the replay resamples it to 72 kHz. It decodes 51 identities in the dev-debug build.
+    add_test(
+        NAME DECODE_IQ_TETRA_REAL_AIR_SCBS_50K
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_scbs_real_air_50k.cs16.json"
+            "-DEXPECTED=\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+            -DMIN_MATCHES=25
+            "-DEXPECTED2=Rate chain: capture=50000 Hz resampled to 72000 Hz"
+            "-DNOT_EXPECTED=TETRA needs a DSP rate" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    # (a): the same capture as a 24-bit WAV with a meta chunk, an odd LIST chunk and an auxi chunk naming its centre
+    # and start; --iq-info describes it.
+    add_test(
+        NAME DECODE_IQ_TETRA_WAV_SCBS_S24
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_dsd_iq_wav_dir}/scbs_s24/tetra_scbs_50k_s24.wav"
+            "-DEXPECTED=\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+            -DMIN_MATCHES=25
+            "-DEXPECTED2=Rate chain: capture=50000 Hz resampled to 72000 Hz"
+            "-DEXPECTED3=IQ replay: WAV RIFF, 2-channel PCM 24-bit, 50000 Hz, ~1.5 s, centre 467.913000 MHz \\(auxi chunk\\)"
+            "-DNOT_EXPECTED=TETRA needs a DSP rate|Please specify a frequency|CLIP"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    add_test(
+        NAME IQ_INFO_WAV_SCBS
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DMODE=--iq-info \"${_dsd_iq_wav_dir}/scbs_s24/tetra_scbs_50k_s24.wav\""
+            "-DFIXTURE=${_dsd_iq_wav_dir}/scbs_s24/tetra_scbs_50k_s24.wav"
+            "-DEXPECTED=Format: +WAV I/Q recording \\(RIFF container\\).*Sample encoding: +PCM 24-bit, 2 channels: I then Q.*Sample rate: +50000 Hz.*Center frequency: +467\\.913000 MHz \\(auxi chunk\\).*Start time: +2026-10-15T12:34:56Z \\(auxi chunk\\).*Duration: +~1\\.50 s \\(75000 frames\\).*at TETRA's 72 kHz resampled to 72000 Hz.*Replay compatible: +yes"
+            "-DNOT_EXPECTED=WARNING" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    # (c): a 2.304 MS/s recording reaches TETRA's 72 kHz through the half-band chain alone: no resampling.
+    add_test(
+        NAME DECODE_IQ_TETRA_WAV_POW2
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_dsd_iq_wav_dir}/pow2/tetra_bsch_2304k.wav"
+            "-DEXPECTED=\\[TETRA BSCH\\] MCC=460 MNC=4242" -DMIN_MATCHES=24
+            "-DEXPECTED2=Rate chain: capture=2304000 Hz, base_decim=32, post=1 -> demod=72000 Hz"
+            "-DNOT_EXPECTED=TETRA needs a DSP rate|resampled to|resampling the"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    # (b): the issue's recording: 2-channel 24-bit PCM at 48254 Hz with a 1016-byte meta chunk, no centre anywhere,
+    # and a hand-written cf32 sidecar beside it that the WAV's header overrides. The replay resamples it to 72 kHz
+    # and decodes the call as the 72 kHz fixture does: 232 identities, the D-SETUP twice and 48 TCH/S bursts whose
+    # class-2 CRC passes (dev-debug), with no rate warning, no frequency refusal and no clipping.
+    add_test(
+        NAME DECODE_IQ_TETRA_WAV_CALL_48254
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fT -Z"
+            "-DFIXTURE=${_dsd_iq_wav_dir}/call_48254/tetra.wav"
+            "-DEXPECTED=\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
+            -DMIN_MATCHES=200
+            "-DEXPECTED2=\\[TETRA CMCE D-SETUP\\] CC=1 call=113 timeout=0 circuit=0 enc=0 com=1 service=0 grant=1 request=0 priority=1 calling_SSI=100701"
+            -DMIN_MATCHES2=2
+            "-DEXPECTED3=\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok"
+            -DMIN_MATCHES3=40
+            "-DNOT_EXPECTED=TETRA needs a DSP rate|Please specify a frequency|CLIP"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    # The same recording opened by its sidecar: the replay names the sidecar it ignores.
+    add_test(
+        NAME DECODE_IQ_TETRA_WAV_SIDECAR_NOTICE
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_dsd_iq_wav_dir}/call_48254/tetra.wav.json"
+            "-DEXPECTED=IQ replay: '[^']*tetra\\.wav' is a WAV file: its header gives the format and rate \\(2-channel PCM 24-bit, 48254 Hz\\), so the sidecar '[^']*tetra\\.wav\\.json' is ignored"
+            "-DEXPECTED2=\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
+            -DMIN_MATCHES2=200 "-DNOT_EXPECTED=TETRA needs a DSP rate|CLIP" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    # (b'): the same samples with an auxi chunk naming the carrier's centre (426.7 MHz): the call is published to the
+    # event history as DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT's 72 kHz fixture publishes it.
+    add_test(
+        NAME DECODE_IQ_TETRA_WAV_CALL_EVENT
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_dsd_iq_wav_dir}/call_known_centre/tetra_call.wav"
+            "-DEXPECTED=\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
+            "-DEVENT_EXPECTED=TETRA TGT: 00100601. SRC: 00100702. CC: 01. CARRIER: 1068. FREQ: 426\\.700000 MHz. Group."
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_TETRA_WAV_CALL_EVENT"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    # An 8-bit unsigned WAV holding a cu8 fixture's bytes unchanged decodes exactly as the cu8 sidecar replay: the
+    # conversion has the cu8 path's 127.5 centre, so no DC line.
+    add_test(
+        NAME DECODE_IQ_TETRA_WAV_U8_MATCHES_CU8
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fT -Z"
+            "-DFIXTURE=${_dsd_iq_wav_dir}/u8/tetra_bsch_72k_u8.wav"
+            "-DREFERENCE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_bsch_synth_72k.iq.json"
+            "-DLINE_REGEX=.*\\[TETRA" -DMIN_LINES=100
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_match/DECODE_IQ_TETRA_WAV_U8_MATCHES_CU8"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_match_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_REAL_AIR_SCBS_50K
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_WAV_SCBS_S24
+        IQ_INFO_WAV_SCBS
+        DECODE_IQ_TETRA_WAV_POW2
+        DECODE_IQ_TETRA_WAV_CALL_48254
+        DECODE_IQ_TETRA_WAV_SIDECAR_NOTICE
+        DECODE_IQ_TETRA_WAV_CALL_EVENT
+        DECODE_IQ_TETRA_WAV_U8_MATCHES_CU8
+        PROPERTIES
+            LABELS "iq-decode"
+            TIMEOUT 120
+            FIXTURES_REQUIRED IQ_WAV_FIXTURES
+    )
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    # (b) under --iq-loop: a recording with no known centre loops, and every pass decodes the same: every pass after
+    # the first line for line, and the first, from a cold decoder, at most 2 fewer of each count (231 identities to
+    # the later passes' 232 in dev-debug, the first burst going to synchronisation).
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME DECODE_IQ_TETRA_WAV_UNKNOWN_CENTRE_LOOP
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/iq_loop_passes_check.py
+                --dsd-bin $<TARGET_FILE:dsd-neo> --fixture
+                ${_dsd_iq_wav_dir}/call_48254/tetra.wav --mode "-fT -Z" --passes
+                3 --count "\\[TETRA BSCH\\] MCC=228" --count "crc=ok"
+                --min-count 40 --first-pass-slack 2 --timeout 100
+        )
+        set_tests_properties(
+            DECODE_IQ_TETRA_WAV_UNKNOWN_CENTRE_LOOP
+            PROPERTIES
+                LABELS "iq-decode"
+                TIMEOUT 120
+                FIXTURES_REQUIRED IQ_WAV_FIXTURES
+        )
+    endif()
+
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_REAL_AIR_CALL_BSCH
         tetra_call_real_air_72k

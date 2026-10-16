@@ -1697,7 +1697,7 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
 static void
 svc_airspy_restore_tuning(dsd_opts* opts, const svc_airspy_tuning* tuning) {
     opts->rtlsdr_center_freq = tuning->frequency;
-    opts->rtl_dsp_bw_khz = tuning->bandwidth;
+    dsd_opts_set_rtl_dsp_bw(opts, tuning->bandwidth, tuning->bandwidth_source);
     opts->rtl_squelch_level = tuning->squelch;
     opts->rtl_squelch_mode = tuning->squelch_mode;
     opts->rtl_squelch_margin_db = tuning->squelch_margin_db;
@@ -1838,7 +1838,8 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
         return -1;
     }
     const svc_airspy_tuning tuning = {opts->rtlsdr_center_freq,    opts->rtl_dsp_bw_khz,   opts->rtl_squelch_level,
-                                      opts->rtl_volume_multiplier, opts->rtl_squelch_mode, opts->rtl_squelch_margin_db};
+                                      opts->rtl_volume_multiplier, opts->rtl_squelch_mode, opts->rtl_squelch_margin_db,
+                                      opts->rtl_dsp_bw_source};
     return svc_airspy_apply_config_impl(opts, state, config, &tuning, 0, out_capture_stopped);
 }
 
@@ -2033,7 +2034,7 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
     if (!svc_rtl_bandwidth_fits_analog_width(opts, state, khz, why, why_size)) {
         return -1;
     }
-    opts->rtl_dsp_bw_khz = khz;
+    dsd_opts_set_rtl_dsp_bw(opts, khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     /* Tuner bandwidth change requires reopen */
     opts->rtl_needs_restart = 1;
     if (opts->audio_in_type == AUDIO_IN_RTL) {

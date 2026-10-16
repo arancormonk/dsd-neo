@@ -4986,6 +4986,14 @@ controller_refresh_analog_channel_for_rate(DemodRetuneResetReason reset_reason, 
  * or a controller retune's), whose demod reset leaves the filters on a centre no external landing chose. */
 static std::atomic<uint32_t> g_external_retune_freq_hz{0U};
 
+/* The DSP half of controller_finalize_rate_chain(): everything that follows the rate chain rather than the centre. An
+ * I/Q replay with no known centre (a WAV with neither an auxi chunk nor a frequency in its name, issue #701) runs only
+ * this half, so its demodulator is still finalized for the rate it opens at. */
+static int controller_finalize_dsp_chain(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
+                                         int mark_reconfigure, DemodRetuneResetReason reset_reason,
+                                         uint32_t previous_center_freq_hz, int previous_rate_out_hz,
+                                         const RtlRetuneProfile* retune_profile);
+
 /* Returns 1 when @p retune_profile asked for an analog channel the demod rate the retune landed on cannot run: the
  * profile is refused (rtl_stream_apply_retune_profile()) and the front end keeps its receive profile, so the retune
  * reports failed. */
@@ -5003,6 +5011,15 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
        #572). Every stream open runs this finalize, and a controller retune runs it under the reconfigure gate an
        external landing takes, so the two never interleave. */
     g_external_retune_freq_hz.store(0U, std::memory_order_release);
+    return controller_finalize_dsp_chain(s, opts, center_freq_hz, mark_reconfigure, reset_reason,
+                                         previous_center_freq_hz, previous_rate_out_hz, retune_profile);
+}
+
+static int
+controller_finalize_dsp_chain(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
+                              int mark_reconfigure, DemodRetuneResetReason reset_reason,
+                              uint32_t previous_center_freq_hz, int previous_rate_out_hz,
+                              const RtlRetuneProfile* retune_profile) {
     /* Retunes keep the symbol profile the front end is on; only the timing SPS follows the new
      * output rate. Re-deriving it from the option flags here would snap a multi-protocol run back
      * to 4800/4 on every hop, discarding whatever the SPS hunt is parked on. */
@@ -5432,7 +5449,10 @@ rtl_replay_on_loop_restart(const dsd_iq_replay_config* cfg, void* user) {
     replay_wait_for_input_purge_applied(purge_mark);
     g_replay_loop_restart_last_frequency_hz.store(controller.last_applied_freq_hz.load(std::memory_order_acquire),
                                                   std::memory_order_release);
-    g_replay_loop_restart_count.fetch_add(1U, std::memory_order_acq_rel);
+    const uint32_t restarts = g_replay_loop_restart_count.fetch_add(1U, std::memory_order_acq_rel) + 1U;
+    /* The decoder has read every output of the pass that ended (an idle boundary), so what it logs after this line
+       is the next pass's. */
+    LOG_INFO("IQ replay: --iq-loop rewound to the start of the capture (pass %u).\n", (unsigned)restarts + 1U);
 }
 
 /* Resampler and TED SPS helpers are implemented in rtl_demod_config.cpp. */
@@ -5552,13 +5572,16 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
         passes++;
     }
 
-    store_dongle_rate(cfg->sample_rate_hz);
+    /* The chain runs from the rate the demodulator takes: the capture's, or the one the reader resamples it to
+       (issue #701). Pacing and media time stay on the capture's rate in the replay reader. */
+    const uint32_t dsp_in_hz = dsd_iq_replay_dsp_input_rate_hz(cfg);
+    store_dongle_rate(dsp_in_hz);
     uint32_t capture_freq_hz = (uint32_t)((cfg->capture_center_frequency_hz > 0) ? cfg->capture_center_frequency_hz
                                                                                  : cfg->center_frequency_hz);
     store_dongle_frequency(capture_freq_hz);
     demod.downsample_passes = passes;
     demod.post_downsample = (int)cfg->post_downsample;
-    demod.rate_in = (int)(cfg->sample_rate_hz / cfg->base_decimation);
+    demod.rate_in = (int)(dsp_in_hz / cfg->base_decimation);
     if (demod.rate_in < 1) {
         demod.rate_in = 1;
     }
@@ -5577,7 +5600,13 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
 
     uint32_t center_hz =
         (uint32_t)((cfg->center_frequency_hz > 0) ? cfg->center_frequency_hz : cfg->capture_center_frequency_hz);
-    controller_finalize_rate_chain(s, opts, center_hz, 0, DemodRetuneResetReason::FreshStream, 0U, 0, NULL);
+    if (center_hz != 0U) {
+        controller_finalize_rate_chain(s, opts, center_hz, 0, DemodRetuneResetReason::FreshStream, 0U, 0, NULL);
+    } else {
+        /* A capture with no known centre: nothing tunes, but the demodulator is finalized for its rate all the same. */
+        g_external_retune_freq_hz.store(0U, std::memory_order_release);
+        (void)controller_finalize_dsp_chain(s, opts, 0U, 0, DemodRetuneResetReason::FreshStream, 0U, 0, NULL);
+    }
     s->cold_start_ready.store(1, std::memory_order_release);
     return 0;
 }
@@ -7164,10 +7193,59 @@ replay_config_check_tuner_frequencies(const dsd_iq_replay_config* cfg) {
     return 0;
 }
 
+/* The DSP rate a replay is planned for (issue #701), and whether it was asked for: the requested bandwidth when a user
+ * or a config asked for one, otherwise the bandwidth the sidecar recorded (a WAV records none: the request, a mode
+ * preset or the default). A mode preset does not beat a recorded bandwidth, as the capture's chain is what the replay
+ * reproduces. TETRA times its symbols only at a multiple of 18 kHz: a target that is not one becomes TETRA's 72 kHz. */
+static uint32_t
+stream_open_replay_target_hz(const dsd_opts* opts, const dsd_iq_replay_config* cfg, int* out_explicit) {
+    const int explicit_target = opts->rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT ? 1 : 0;
+    int khz = opts->rtl_dsp_bw_khz;
+    if (!explicit_target && cfg->recorded_dsp_bw_khz > 0) {
+        khz = cfg->recorded_dsp_bw_khz;
+    }
+    if (khz <= 0) {
+        khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
+    }
+    uint32_t target_hz = (uint32_t)khz * 1000U;
+    if (opts->frame_tetra == 1 && !dsd_tetra_dsp_rate_runs((int)target_hz)) {
+        target_hz = (uint32_t)DSD_TETRA_DSP_BW_KHZ * 1000U;
+    }
+    *out_explicit = explicit_target;
+    return target_hz;
+}
+
+/* Plan the replay's rate chain for the mode about to run (dsd_iq_replay_plan_rate()) and write it into @p replay_cfg.
+ * @p out_dsp_bw_hz gets the DSP bandwidth the stream runs: the recorded one for a chain kept as captured, the planned
+ * target otherwise. The requested bandwidth in opts stays as it was asked for. */
+static int
+stream_open_plan_replay_rate(const dsd_opts* opts, dsd_iq_replay_config* replay_cfg, int* out_dsp_bw_hz) {
+    int explicit_target = 0;
+    const uint32_t target_hz = stream_open_replay_target_hz(opts, replay_cfg, &explicit_target);
+    const uint32_t required_hz = opts->frame_tetra == 1 ? (uint32_t)DSD_TETRA_SYMBOL_RATE_HZ : 0U;
+    dsd_iq_replay_rate_plan plan;
+    char err_buf[256] = {0};
+    if (dsd_iq_replay_plan_rate(replay_cfg, target_hz, required_hz, explicit_target, &plan, err_buf, sizeof(err_buf))
+            != DSD_IQ_OK
+        || dsd_iq_replay_apply_rate_plan(replay_cfg, &plan) != DSD_IQ_OK) {
+        LOG_ERROR("IQ replay: '%s' cannot run at the %u Hz DSP rate%s: %s.\n", replay_cfg->metadata_path,
+                  (unsigned)target_hz, opts->frame_tetra == 1 ? " TETRA needs" : "",
+                  err_buf[0] ? err_buf : "no rate chain reaches it");
+        return -1;
+    }
+    if (plan.kept_recorded) {
+        /* As captured: the recorded bandwidth, or the request when the sidecar recorded none. */
+        *out_dsp_bw_hz = replay_cfg->recorded_dsp_bw_khz > 0 ? replay_cfg->recorded_dsp_bw_khz * 1000 : 0;
+    } else {
+        *out_dsp_bw_hz = (int)plan.target_dsp_hz;
+    }
+    return 0;
+}
+
 static int
 stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, dsd_iq_replay_config* replay_cfg,
-                                  int* replay_cfg_loaded) {
-    if (!opts || !replay_cfg || !replay_cfg_loaded) {
+                                  int* replay_cfg_loaded, int* out_dsp_bw_hz) {
+    if (!opts || !replay_cfg || !replay_cfg_loaded || !out_dsp_bw_hz) {
         return -1;
     }
     *replay_cfg_loaded = 0;
@@ -7198,10 +7276,8 @@ stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, d
     if (replay_cfg->tuner_gain_tenth_db > 0) {
         opts->rtl_gain_value = replay_cfg->tuner_gain_tenth_db / 10;
     }
-    if (replay_cfg->rtl_dsp_bw_khz > 0) {
-        opts->rtl_dsp_bw_khz = replay_cfg->rtl_dsp_bw_khz;
-    }
-    return 0;
+    /* The recorded bandwidth stays in replay_cfg: it seeds the plan's target, and opts keeps the request. */
+    return stream_open_plan_replay_rate(opts, replay_cfg, out_dsp_bw_hz);
 }
 
 static void
@@ -7335,8 +7411,10 @@ stream_open_enable_default_autogain(const dsd_opts* opts, RadioSourceKind source
 }
 
 static int
-stream_open_validate_scan_inputs(void) {
-    if (controller.freq_len == 0) {
+stream_open_validate_scan_inputs(RadioSourceKind source_kind) {
+    /* An I/Q replay tunes nothing: its capture may not record a centre (a WAV with no auxi chunk and none in its name,
+       issue #701), and it runs all the same. */
+    if (controller.freq_len == 0 && source_kind != RADIO_SOURCE_IQ_REPLAY) {
         LOG_ERROR("Please specify a frequency.\n");
         return -1;
     }
@@ -7852,14 +7930,27 @@ stream_open_log_rate_chain_summary(void) {
     unsigned int demod_hz = (unsigned int)demod.rate_out;
     unsigned int out_hz =
         demod.resamp_enabled && demod.resamp_target_hz > 0 ? (unsigned int)demod.resamp_target_hz : demod_hz;
-    if (demod.resamp_enabled) {
-        LOG_INFO("Rate chain: capture=%u Hz, base_decim=%d, post=%d -> demod=%u Hz; resampler L/M=%d/%d -> output=%u "
-                 "Hz.\n",
-                 capture_hz, base_decim, post, demod_hz, demod.resamp_L, demod.resamp_M, out_hz);
+    /* A replay resampled ahead of the half-band chain (issue #701) names the capture's rate and the one the chain runs
+       from. */
+    char capture_text[128];
+    uint32_t replay_capture_hz = 0U;
+    int replay_l = 0;
+    int replay_m = 0;
+    double replay_ppm = 0.0;
+    if (rtl_device_replay_resample_info(rtl_device_handle, &replay_capture_hz, &replay_l, &replay_m, &replay_ppm)) {
+        DSD_SNPRINTF(capture_text, sizeof capture_text, "%u Hz resampled to %u Hz (L/M=%d/%d, %+.2f ppm)",
+                     (unsigned)replay_capture_hz, capture_hz, replay_l, replay_m, replay_ppm);
     } else {
-        LOG_INFO("Rate chain: capture=%u Hz, base_decim=%d, post=%d -> demod=%u Hz; resampler bypassed -> output=%u "
+        DSD_SNPRINTF(capture_text, sizeof capture_text, "%u Hz", capture_hz);
+    }
+    if (demod.resamp_enabled) {
+        LOG_INFO("Rate chain: capture=%s, base_decim=%d, post=%d -> demod=%u Hz; resampler L/M=%d/%d -> output=%u "
                  "Hz.\n",
-                 capture_hz, base_decim, post, demod_hz, out_hz);
+                 capture_text, base_decim, post, demod_hz, demod.resamp_L, demod.resamp_M, out_hz);
+    } else {
+        LOG_INFO("Rate chain: capture=%s, base_decim=%d, post=%d -> demod=%u Hz; resampler bypassed -> output=%u "
+                 "Hz.\n",
+                 capture_text, base_decim, post, demod_hz, out_hz);
     }
     if (out_hz > 0) {
         int sps_p25p1 = (int)((out_hz + 2400) / 4800);
@@ -8062,10 +8153,13 @@ stream_open_finalize_rate_chain(RadioSourceKind source_kind, const dsd_opts* opt
 
 static int
 stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind,
-                                     const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded) {
+                                     const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded,
+                                     int replay_dsp_bw_hz) {
     stream_open_reset_auto_ppm_state(opts);
 
-    rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000;
+    /* A replay runs the bandwidth its rate plan settled on (stream_open_plan_replay_rate()); opts keeps the request. */
+    rtl_dsp_bw_hz = (source_kind == RADIO_SOURCE_IQ_REPLAY && replay_dsp_bw_hz > 0) ? replay_dsp_bw_hz
+                                                                                    : opts->rtl_dsp_bw_khz * 1000;
     if (stream_open_init_pipeline(opts, rtl_dsp_bw_hz) != 0) {
         return -1;
     }
@@ -8074,7 +8168,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (!output.rate) {
         output.rate = demod.rate_out;
     }
-    if (stream_open_validate_scan_inputs() != 0) {
+    if (stream_open_validate_scan_inputs(source_kind) != 0) {
         return -1;
     }
     if (controller.freq_len > 1) {
@@ -8169,6 +8263,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 
     dsd_iq_replay_config replay_cfg = {};
     int replay_cfg_loaded = 0;
+    int replay_dsp_bw_hz = 0;
 
     struct ReplayConfigCleanup {
         dsd_iq_replay_config* cfg;
@@ -8182,10 +8277,11 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         }
     } replay_cfg_cleanup = {&replay_cfg, &replay_cfg_loaded};
 
-    if (stream_open_prepare_replay_config(opts, source_kind, &replay_cfg, &replay_cfg_loaded) != 0) {
+    if (stream_open_prepare_replay_config(opts, source_kind, &replay_cfg, &replay_cfg_loaded, &replay_dsp_bw_hz) != 0) {
         return -1;
     }
-    if (stream_open_configure_pipeline_state(opts, source_kind, &replay_cfg, replay_cfg_loaded) != 0) {
+    if (stream_open_configure_pipeline_state(opts, source_kind, &replay_cfg, replay_cfg_loaded, replay_dsp_bw_hz)
+        != 0) {
         // g_stream exists once stream_open_init_pipeline() succeeded, so every later
         // failure (device open, ring resize, initial tuner programming) leaves rings,
         // primitives and possibly an open device behind. Tear them down here; the
@@ -13171,6 +13267,7 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_out_written = g_stream->replay_out_written.load(std::memory_order_acquire);
     out_state->replay_out_acked = g_stream->replay_out_acked.load(std::memory_order_acquire);
     out_state->replay_output_truncated = g_stream->replay_output_truncated.load(std::memory_order_acquire);
+    out_state->dongle_rate_hz = load_dongle_rate();
     return 0;
 }
 

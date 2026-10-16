@@ -85,7 +85,9 @@ typedef struct {
      * metadata_path names the path the replay was opened by (the WAV, or a sidecar whose data_file is the WAV). */
     dsd_iq_replay_container container;
     dsd_iq_wav_info wav; /* container == DSD_IQ_REPLAY_CONTAINER_WAV */
-    /* The complex rate the demodulator takes. 0 means sample_rate_hz, the capture's own rate. */
+    /* The complex rate the demodulator takes. 0 means sample_rate_hz, the capture's own rate. A replay's rate plan
+     * (dsd_iq_replay_apply_rate_plan()) sets it; base_decimation, post_downsample and demod_rate_hz then describe the
+     * chain from it, not from sample_rate_hz. */
     uint32_t dsp_input_rate_hz;
     /* The DSP bandwidth the capture recorded (the sidecar's rtl_dsp_bw_khz), as read; 0 for a WAV. */
     int recorded_dsp_bw_khz;
@@ -194,6 +196,76 @@ int dsd_iq_replay_validate_effective_bytes_for_replay(uint64_t effective_bytes, 
  * @return The chunk in bytes, or 0 for a sample rate of 0 or a format with no sample size.
  */
 size_t dsd_iq_replay_chunk_bytes(dsd_iq_sample_format format, uint32_t sample_rate_hz);
+
+/* The rate plan's limits (issue #701): the slowest capture a replay resamples, the most it upsamples one, and how far
+ * a replay's decimation may run past the rate the plan resamples to. */
+#define DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ 8000U
+#define DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO  9U
+/* The longest half-band chain the plan picks, 2^10 (DSD_IQ_REPLAY_MAX_BASE_DECIMATION). */
+#define DSD_IQ_REPLAY_MAX_PLAN_PASSES     10U
+
+/** The rate chain a replay runs (dsd_iq_replay_plan_rate()). */
+typedef struct {
+    uint32_t capture_rate_hz;   /**< Fs: the capture's own rate, which paces the replay */
+    uint32_t dsp_input_rate_hz; /**< R: the complex rate the demodulator takes; Fs, or the rate Fs is resampled to */
+    uint32_t base_decimation;   /**< R / demod (x post_downsample): the half-band chain's decimation, a power of two */
+    uint32_t post_downsample;
+    uint32_t demod_rate_hz;
+    uint32_t target_dsp_hz; /**< D: the DSP rate the plan was asked for (0 when the recorded chain was kept) */
+    int kept_recorded;      /**< the sidecar's recorded chain runs as it was captured */
+    int resample;           /**< dsp_input_rate_hz differs from capture_rate_hz */
+} dsd_iq_replay_rate_plan;
+
+/**
+ * @brief The complex rate the replay of @p cfg hands the demodulator: dsp_input_rate_hz, or the capture's rate when
+ *        that is 0.
+ */
+uint32_t dsd_iq_replay_dsp_input_rate_hz(const dsd_iq_replay_config* cfg);
+
+/**
+ * @brief Plan the rate chain a replay of @p cfg runs to reach @p target_dsp_hz (issue #701).
+ *
+ * - KEEP: a sidecar capture with no explicit request (@p explicit_target 0) keeps the chain it recorded when the mode
+ *   has no rate requirement (@p cqpsk_required_multiple_hz 0), or when its post_downsample is 1 and the rate the CQPSK
+ *   path runs at (dsp input / base_decimation; CQPSK skips post_downsample) is a multiple of the requirement. A
+ *   recorded chain that misses the requirement only through a power-of-two post_downsample folds it into
+ *   base_decimation when that reaches a multiple.
+ * - Otherwise (a WAV, an explicit request, or a recorded chain the mode cannot run), with D = @p target_dsp_hz: a
+ *   capture at D x 2^k (k up to 10) decimates by 2^k with no resampling; any other is resampled to R = D x 2^k, the
+ *   largest at or below the capture's rate (R = D when the capture is slower than D), and decimated by 2^k, with
+ *   post_downsample 1 and the demodulator at D.
+ *
+ * Refused: a capture below DSD_IQ_REPLAY_MIN_CAPTURE_RATE_HZ, an upsample past DSD_IQ_REPLAY_MAX_UPSAMPLE_RATIO, a
+ * capture 2 x 2^10 x D or faster (the resampler would decimate by 2 or more), and a target of 0.
+ *
+ * @param out_plan [out] The plan; set only on success.
+ * @return DSD_IQ_OK, DSD_IQ_ERR_RATE_CHAIN with the reason in @p err_buf, or DSD_IQ_ERR_INVALID_ARG.
+ */
+int dsd_iq_replay_plan_rate(const dsd_iq_replay_config* cfg, uint32_t target_dsp_hz,
+                            uint32_t cqpsk_required_multiple_hz, int explicit_target, dsd_iq_replay_rate_plan* out_plan,
+                            char* err_buf, size_t err_buf_size);
+
+/**
+ * @brief Write @p plan's chain into @p cfg: dsp_input_rate_hz, base_decimation, post_downsample and demod_rate_hz.
+ *
+ * sample_rate_hz stays the capture's rate: pacing, media time, chunking and event offsets follow the capture.
+ *
+ * @return DSD_IQ_OK, or DSD_IQ_ERR_INVALID_ARG for a NULL argument or a plan made for another capture rate.
+ */
+int dsd_iq_replay_apply_rate_plan(dsd_iq_replay_config* cfg, const dsd_iq_replay_rate_plan* plan);
+
+/**
+ * @brief Capture bytes the replay reader reads as one chunk when the capture at @p capture_hz is resampled to
+ *        @p dsp_in_hz.
+ *
+ * At equal rates, exactly dsd_iq_replay_chunk_bytes(). Otherwise min(DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES, capture_hz x
+ * DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES / DSD_IQ_REPLAY_CHUNK_REFERENCE_RATE_HZ, floor((DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES - 1)
+ * x capture_hz / dsp_in_hz)) complex samples, at least one: the chunk spans no longer than a live transfer, and what
+ * it resamples to still fits one (issue #626).
+ *
+ * @return The chunk in bytes, or 0 for a rate of 0 or a format with no sample size.
+ */
+size_t dsd_iq_replay_chunk_bytes_for(dsd_iq_sample_format format, uint32_t capture_hz, uint32_t dsp_in_hz);
 
 /**
  * @brief Estimate capture duration from bytes and sample rate.

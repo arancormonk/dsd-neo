@@ -156,6 +156,7 @@ typedef struct {
     int bw;
     dsd_squelch_setting squelch;
     int volume;
+    int bw_set; /* the spec carries a bandwidth field */
 } airspy_tuning;
 
 /* The DSP bandwidth an Airspy runs @p bw at: @p bw when it is a selectable one an Airspy takes, otherwise the default,
@@ -178,6 +179,7 @@ airspy_dsp_bandwidth(int bw) {
 static void
 parse_airspy_bandwidth(const char* text, airspy_tuning* tuning) {
     int bw = 0;
+    tuning->bw_set = 1;
     if (dsd_parse_int_strict(text, 10, INT_MIN, INT_MAX, &bw) != 0) {
         LOG_WARN("Airspy bandwidth '%s' is unsupported; using %d kHz.\n", text, DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ);
         tuning->bw = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
@@ -263,7 +265,7 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     DSD_SNPRINTF(spec, sizeof spec, "%s", opts->audio_in_dev);
     char* tail = strchr(spec, ':');
     airspy_tuning tuning = {opts->rtlsdr_center_freq, opts->rtl_dsp_bw_khz, dsd_squelch_setting_of_opts(opts),
-                            opts->rtl_volume_multiplier};
+                            opts->rtl_volume_multiplier, 0};
     if (tail) {
         ++tail;
         if (strncmp(tail, "serial=", 7) == 0) {
@@ -296,6 +298,9 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     opts->rtlsdr_center_freq = tuning.hz;
     /* A spec without a bandwidth field runs the one in force, which another input may have taken (72 kHz). */
     opts->rtl_dsp_bw_khz = airspy_dsp_bandwidth(tuning.bw);
+    if (tuning.bw_set) {
+        opts->rtl_dsp_bw_source = DSD_RTL_DSP_BW_SOURCE_EXPLICIT;
+    }
     /* --squelch wins over the spec's field. */
     if (!opts->rtl_squelch_cli_set) {
         dsd_squelch_setting_store(opts, &tuning.squelch);

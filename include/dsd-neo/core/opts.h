@@ -209,6 +209,10 @@ struct dsd_opts {
     /* Base DSP bandwidth for RTL path in kHz (dsd_analog_rtl_dsp_bw_is_selectable(): 4, 6, 8, 12, 16, 24, 48 or 72).
        Influences capture rate planning. Not the hardware tuner IF bandwidth. */
     int rtl_dsp_bw_khz;
+    /* Where rtl_dsp_bw_khz came from (enum dsd_rtl_dsp_bw_source). Every writer of rtl_dsp_bw_khz sets it, and every
+       snapshot that puts rtl_dsp_bw_khz back puts it back too. An I/Q replay's rate plan reads it: only an explicit
+       request beats the bandwidth a sidecar recorded (issue #701). */
+    int rtl_dsp_bw_source;
     int rtl_bias_tee;       /* 1 to enable RTL-SDR bias tee (if supported) */
     int soapy_bandwidth_hz; /* -1=profile/default, 0=driver automatic, >0 explicit Soapy hardware bandwidth */
     /* Digital FSK stream resampling: 0=auto (only for non-integer SPS), 1=on, 2=off.
@@ -450,6 +454,23 @@ enum DSD_ATTR_PACKED {
     DSD_IQ_REPLAY_RATE_FAST = 0,
     DSD_IQ_REPLAY_RATE_REALTIME = 1,
 };
+
+/** Where dsd_opts::rtl_dsp_bw_khz came from (dsd_opts::rtl_dsp_bw_source). */
+enum dsd_rtl_dsp_bw_source {
+    DSD_RTL_DSP_BW_SOURCE_DEFAULT = 0,  ///< the built-in default: nothing set it
+    DSD_RTL_DSP_BW_SOURCE_EXPLICIT = 1, ///< asked for: an input spec's field, an INI [rtl] bandwidth, a menu or API set
+    DSD_RTL_DSP_BW_SOURCE_PRESET = 2,   ///< a decode mode's preset (-fT, -fe, -fp ...)
+};
+
+/** Set the requested RTL DSP bandwidth and where it came from, together. */
+static inline void
+dsd_opts_set_rtl_dsp_bw(dsd_opts* opts, int khz, int source) {
+    if (!opts) {
+        return;
+    }
+    opts->rtl_dsp_bw_khz = khz;
+    opts->rtl_dsp_bw_source = source;
+}
 
 enum DSD_ATTR_PACKED {
     DSD_OPTS_INPUT_UPSAMPLE_STAGING_CAP =

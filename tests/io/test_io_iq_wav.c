@@ -1513,7 +1513,9 @@ test_iq_info(void) {
     rc |= expect_contains("info", text, "  Data offset:         1068 bytes\n");
     rc |= expect_contains("info", text, "  Data bytes:          300 (header), 300 (whole frames in the file)\n");
     rc |= expect_contains("info", text, "  Duration:            ~0.00 s (50 frames)\n");
-    rc |= expect_contains("info", text, "  Rate chain:          replays at the recording's rate, 48254 Hz\n");
+    rc |= expect_contains("info", text,
+                          "  Rate chain:          follows the DSP rate the mode runs; at 48 kHz resampled to 48000 Hz, "
+                          "decimated by 1, at TETRA's 72 kHz resampled to 72000 Hz, decimated by 1\n");
     rc |= expect_contains("info", text, "  Replay compatible:   yes\n");
     char want[2048];
     DSD_SNPRINTF(want, sizeof(want),

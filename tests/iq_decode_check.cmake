@@ -7,8 +7,10 @@
 # first payload match pass silently.
 #
 # Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED; optional NOT_EXPECTED,
-# MIN_MATCHES (minimum number of non-overlapping EXPECTED matches) and
-# EVENT_EXPECTED with WORK_DIR (a regex the run's event history must match).
+# MIN_MATCHES (minimum number of non-overlapping EXPECTED matches),
+# EXPECTED2/MIN_MATCHES2 and EXPECTED3/MIN_MATCHES3 (further payloads the same
+# run must print, at least as often; a MIN_MATCHESn of its own defaults to 1),
+# and EVENT_EXPECTED with WORK_DIR (a regex the run's event history must match).
 foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "iq_decode_check: missing -D${_var}")
@@ -78,6 +80,28 @@ if(DEFINED MIN_MATCHES AND NOT "${MIN_MATCHES}" STREQUAL "")
         )
     endif()
 endif()
+
+foreach(_n 2 3)
+    if(DEFINED EXPECTED${_n} AND NOT "${EXPECTED${_n}}" STREQUAL "")
+        set(_min 1)
+        if(DEFINED MIN_MATCHES${_n} AND NOT "${MIN_MATCHES${_n}}" STREQUAL "")
+            if(NOT "${MIN_MATCHES${_n}}" MATCHES "^[1-9][0-9]*$")
+                message(
+                    FATAL_ERROR
+                    "iq_decode_check: MIN_MATCHES${_n} must be a positive integer"
+                )
+            endif()
+            set(_min "${MIN_MATCHES${_n}}")
+        endif()
+        dsd_test_count_regex_matches(_count "${EXPECTED${_n}}" "${_all}")
+        if(_count LESS _min)
+            message(
+                FATAL_ERROR
+                "iq_decode_check: payload /${EXPECTED${_n}}/ matched ${_count} times, expected at least ${_min}\n${_all}"
+            )
+        endif()
+    endif()
+endforeach()
 
 # Optional -DNOT_EXPECTED: a regex that must be absent. Reject cases pair it with an
 # EXPECTED line proving the run happened, so an empty run cannot pass by printing nothing.

@@ -88,7 +88,9 @@ for file-specific license/provenance details.
     [MattCheramie/GopherTrunk](https://github.com/MattCheramie/GopherTrunk), Apache License 2.0. The paired
     `tetra_scbs_real_air_54k.iq` is this project's deterministic integer-arithmetic resample for the 18 ksym/s
     decoder path, and `tetra_cc_marginal_real_air_144k_inverted.iq` is the deterministic complex conjugate used
-    to verify negative-polarity recovery with the real capture's impairments. Source commit, hashes, published capture parameters, expected cell identity, and reproduction
+    to verify negative-polarity recovery with the real capture's impairments. `tetra_scbs_real_air_50k.cs16.json` is
+    this project's hand-written sidecar that replays the unmodified 50 kHz capture (the replay resamples it). Source
+    commit, hashes, published capture parameters, expected cell identity, and reproduction
     command are recorded in `tests/fixtures/iq/tetra_scbs_real_air.PROVENANCE.md`; the upstream license text is
     `tests/fixtures/iq/tetra_scbs_real_air.APACHE-2.0.txt`.
   - `tests/fixtures/tetra/acelp/hello_tetra.acelp` and its decoder-input reference

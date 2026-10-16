@@ -2016,9 +2016,6 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
     if (replay_cfg.tuner_gain_tenth_db > 0) {                                                                          \
         opts->rtl_gain_value = replay_cfg.tuner_gain_tenth_db / 10;                                                    \
     }                                                                                                                  \
-    if (replay_cfg.rtl_dsp_bw_khz > 0) {                                                                               \
-        opts->rtl_dsp_bw_khz = replay_cfg.rtl_dsp_bw_khz;                                                              \
-    }                                                                                                                  \
     opts->audio_in_type = AUDIO_IN_RTL;                                                                                \
     if (cli_set_iqreplay_audio_dev(opts, opts->iq_replay_path) != 0) {                                                 \
         LOG_ERROR("--iq-replay path is too long\n");                                                                   \
@@ -3076,7 +3073,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                     case 'T':                                                                                          \
                         /* As -fe takes 24 kHz: TETRA runs only at a multiple of 18 kHz. A bandwidth field in      \
                            the -i spec, applied when the input opens, still names another. */                          \
-                        opts->rtl_dsp_bw_khz = DSD_TETRA_DSP_BW_KHZ;                                                   \
+                        dsd_opts_set_rtl_dsp_bw(opts, DSD_TETRA_DSP_BW_KHZ, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                         LOG_INFO("NOTICE: Decoding only TETRA frames at a %d kHz DSP bandwidth.\n",                    \
                                  DSD_TETRA_DSP_BW_KHZ);                                                                \
                         break;                                                                                         \
@@ -3109,7 +3106,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
                 LOG_INFO("NOTICE: Decoding only ProVoice frames.\n");                                                  \
                 LOG_INFO("NOTICE: EDACS Analog Voice Channels are Experimental.\n");                                   \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
@@ -3167,7 +3164,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                     LOG_INFO("NOTICE: AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits,                    \
                              state->edacs_f_bits, state->edacs_s_bits);                                                \
                 }                                                                                                      \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
@@ -3225,7 +3222,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                     LOG_INFO("NOTICE: AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits,                    \
                              state->edacs_f_bits, state->edacs_s_bits);                                                \
                 }                                                                                                      \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
@@ -3258,7 +3255,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
                 LOG_INFO("NOTICE: Decoding EDACS EA/ProVoice frames.\n");                                              \
                 LOG_INFO("NOTICE: EDACS Analog Voice Channels are Experimental.\n");                                   \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
@@ -3291,7 +3288,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
                 LOG_INFO("NOTICE: Decoding EDACS EA/ProVoice w/ ESK frames.\n");                                       \
                 LOG_INFO("NOTICE: EDACS Analog Voice Channels are Experimental.\n");                                   \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
