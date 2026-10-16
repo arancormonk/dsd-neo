@@ -57,6 +57,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -3197,6 +3198,7 @@ cycle_rearms_cold_start_window(dsd_opts* opts, dsd_state* state, int p25_live) {
         p25_sm_tick_guard_leave();
     }
     dmr_sm_cold_start_note_retune(dmr_sm_get_ctx(), opts, state);
+    nxdn_cc_hunt_note_retune(opts, state);
 }
 
 static int

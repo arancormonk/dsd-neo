@@ -63,6 +63,7 @@
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -2672,6 +2673,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
         /* An operator move restarts a startup control-channel window on the new carrier (issue #703). */
         p25_sm_cold_start_note_retune(p25_sm_get_ctx(), opts, state);
         dmr_sm_cold_start_note_retune(dmr_sm_get_ctx(), opts, state);
+        nxdn_cc_hunt_note_retune(opts, state);
     }
     if (take_guard) {
         p25_sm_tick_guard_leave();
@@ -3008,6 +3010,7 @@ dsd_engine_cold_start_tick_locked(dsd_opts* opts, dsd_state* state) {
     }
     p25_sm_cold_start_tick_locked(p25_sm_get_ctx(), opts, state);
     dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
+    nxdn_cc_hunt_tick_locked(opts, state);
 }
 
 /* One synced frame, under the P25 SM tick guard: dispatched, or withheld while the retune generation says it is stale,
@@ -3037,7 +3040,7 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     /* So may a stream of syncs that never validate: a startup control-channel hunt runs between frames too, until
        an owner is named and nothing is armed or hunting (issue #703). */
     if (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN || p25_sm_cold_start_active(p25_sm_get_ctx())
-        || dmr_sm_cold_start_active(dmr_sm_get_ctx())) {
+        || dmr_sm_cold_start_active(dmr_sm_get_ctx()) || nxdn_cc_hunt_active(state)) {
         dsd_engine_cold_start_tick_locked(opts, state);
     }
     return frame_dispatchable;
