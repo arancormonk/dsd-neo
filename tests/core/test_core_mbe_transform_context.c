@@ -748,9 +748,11 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     return rc;
 }
 
-/* Replay one .amb record of @p bits whose error byte is @p err; returns the frame's status markers in @p status. */
+/* Replay @p count records of @p bits whose error byte is @p err from a file of @p cookie; returns the last frame's
+   status markers in @p status. */
 static int
-replay_amb_record(const char* bits, unsigned char err, char* status, size_t status_size) {
+replay_ambe_records(const char cookie[4], int count, const char* bits, unsigned char err, char* status,
+                    size_t status_size, int want_type) {
     char path[1024];
     int fd = create_playback_temp(path, sizeof path, "mbe_play_amb_err");
     if (fd < 0) {
@@ -766,7 +768,10 @@ replay_amb_record(const char* bits, unsigned char err, char* status, size_t stat
     for (int i = 0; i < 48; i++) {
         record[1 + (i / 8)] |= (unsigned char)((bits[i] & 1) << (7 - (i % 8)));
     }
-    int rc = (fwrite(".amb", 1, 4, f) == 4 && fwrite(record, 1, sizeof record, f) == sizeof record) ? 0 : 1;
+    int rc = fwrite(cookie, 1, 4, f) == 4 ? 0 : 1;
+    for (int i = 0; i < count && rc == 0; i++) {
+        rc = fwrite(record, 1, sizeof record, f) == sizeof record ? 0 : 1;
+    }
     rc |= fclose(f) != 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -782,7 +787,7 @@ replay_amb_record(const char* bits, unsigned char err, char* status, size_t stat
     state.optind = 1;
     char* argv[] = {"dsd-neo", path};
     playMbeFiles(&opts, &state, 2, argv);
-    rc |= expect_eq_int("amb-record-type", state.mbe_file_type, 1);
+    rc |= expect_eq_int("ambe-record-type", state.mbe_file_type, want_type);
     DSD_SNPRINTF(status, status_size, "%s", state.err_str);
     (void)remove(path);
     return rc;
@@ -803,11 +808,26 @@ test_play_amb_record_repeats_as_live(void) {
         tone_bits[12 + i] = (char)((18 >> (7 - i)) & 1); /* tone ID 18 in U1[0..7] */
     }
     char status[96];
-    rc |= replay_amb_record(tone_bits, (unsigned char)(DSD_MBE_AMB_ERR_FLAG | (4U << DSD_MBE_AMB_ERR_C0_SHIFT) | 4U),
-                            status, sizeof status);
+    rc |= replay_ambe_records(".amb", 1, tone_bits,
+                              (unsigned char)(DSD_MBE_AMB_ERR_FLAG | (4U << DSD_MBE_AMB_ERR_C0_SHIFT) | 4U), status,
+                              sizeof status, 1);
     rc |= expect_eq_int("amb-c0-tone-repeats", strchr(status, 'R') != NULL, 1);
-    rc |= replay_amb_record(tone_bits, 4U, status, sizeof status);
+    rc |= replay_ambe_records(".amb", 1, tone_bits, 4U, status, sizeof status, 1);
     rc |= expect_eq_int("amb-legacy-tone-plays", strchr(status, 'R') != NULL, 0);
+    return rc;
+}
+
+/* D-STAR voice is decoded with soft decisions, under which mbelib does not mute AMBE 2400 on its error rate, so a long
+   .dmb run of corrected frames (3 errors each) replays unmuted, as it played live. */
+static int
+test_play_dmb_records_as_soft_input(void) {
+    char voice_bits[49] = {0};
+    for (int i = 0; i < 49; i++) {
+        voice_bits[i] = (char)(((i * 7) + 3) & 1);
+    }
+    char status[96];
+    int rc = replay_ambe_records(".dmb", 40, voice_bits, 3U, status, sizeof status, 2);
+    rc |= expect_eq_int("dmb-soft-not-muted", strchr(status, 'M') != NULL, 0);
     return rc;
 }
 
@@ -6491,6 +6511,7 @@ main(void) {
     rc |= test_imbe_changed_strips_c0_c4_context();
     rc |= test_transformed_frame_keeps_c0_repeat_rule();
     rc |= test_play_amb_record_repeats_as_live();
+    rc |= test_play_dmb_records_as_soft_input();
     rc |= test_keyring_tracks_aes_segment_metadata();
     rc |= test_process_mbe_frame_p25p1_suppresses_tail_erasure_hard();
     rc |= test_process_mbe_frame_p25p1_suppresses_tail_erasure_soft();

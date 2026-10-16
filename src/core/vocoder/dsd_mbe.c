@@ -365,6 +365,9 @@ decode_ambe_file_frame(dsd_state* state, char ambe_d[49], char file_err_str[260]
         ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp, state->prev_mp,
                                        state->prev_mp_enhanced);
     } else if (state->mbe_file_type == 2) {
+        /* D-STAR voice is decoded with soft decisions (processMbeFrameSoft()), which keeps mbelib from muting AMBE 2400
+           on its error rate; a .dmb record replays the same way. */
+        result.flags |= MBE_PROCESS_FLAG_SOFT_INPUT;
         file_err_str[0] = '\0';
         ret = mbe_processAmbe2400Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp, state->prev_mp,
                                        state->prev_mp_enhanced);

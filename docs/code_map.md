@@ -698,7 +698,9 @@ suite runs under this compiler.
   `.amb` capture records pack the C0 and total error counts behind `DSD_MBE_AMB_ERR_FLAG` (`saveAmbe2450Data()`,
   `<dsd-neo/core/file_io.h>`); `-r` replay restores the C0 count as C0 context and the total for mbelib's error rate
   (`readAmbe2450Data()`, `dsd_state::mbe_file_c0_valid`, `decode_ambe_file_frame()`). A byte without the flag (older
-  captures, other tools) is a total and replays with no C0 context, as before. `.imb` and `.dmb` records keep the total.
+  captures, other tools) is a total and replays with no C0 context, as before. `.imb` and `.dmb` records keep the total;
+  a `.dmb` record replays as soft input, as live D-STAR voice decodes, so mbelib does not mute AMBE 2400 on its error
+  rate where the live decode played.
   Keystream reads are bounded by what was generated: P25 Phase 1 by ALG ID (DES/TDEA 224 octets, DES-XL 213, AES 15
   blocks = 240; a superframe reads up to octet 228), the slot path by `dmr_voice_stream_apply_frame49()`'s
   `ks_bit_count` and the DES helper (DES and AES 1152 bits, Hytera Enhanced 1080, Kirisun 1008). A frame past the end is

@@ -1380,6 +1380,8 @@ typedef struct {
 static int
 capture_and_replay(int frames, int c0_flips, int c1_flips, int want_c0, int want_total, vocoder_end* live,
                    vocoder_end* replay) {
+    DSD_MEMSET(live, 0, sizeof(*live));
+    DSD_MEMSET(replay, 0, sizeof(*replay));
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_crypto_scope_capture");
     if (fd < 0) {
