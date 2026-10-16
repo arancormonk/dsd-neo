@@ -369,11 +369,14 @@ test_return_completion_without_ticks(void) {
     session();
     tick_at(0.0);
     nxdn_cc_hunt_note_control(g_opts, g_state); // A
+    g_opts->trunk_is_tuned = 1;                 // a followed call drops the window
+    tick_at(0.5);
     g_freq_mode = FAKE_PENDING;
     uint64_t foreign = 0U;
     clock_at(1.0);
-    (void)dsd_trunk_tuning_hook_tune_to_freq(g_opts, g_state, ROW_A, 0, &foreign);
-    tick_at(1.0);
+    (void)dsd_trunk_tuning_hook_tune_to_freq(g_opts, g_state, ROW_A, 0, &foreign); // its DISC return
+    g_opts->trunk_is_tuned = 0;
+    tick_at(1.0); // the tick that re-arms the window
     clock_at(5.0);
     dsd_trunk_tuning_request_complete(foreign, DSD_TRUNK_TUNE_RESULT_OK);
     const int tunes = g_tune_count;
@@ -536,11 +539,13 @@ test_carrier_evidence_reset(void) {
     g_state->nxdn_confirmed = 1;
     g_state->nxdn_confirm_weak_streak = 1;
     g_state->nxdn_sacch_frame_segcrc[0] = 0;
+    g_state->nxdn_last_ran = 5U;
     run_until(5.9, 6.5);
     expect("evidence: probe", g_tune_count, 1);
     expect("evidence: confirmation reset", g_state->nxdn_confirmed, 0);
     expect("evidence: weak streak reset", g_state->nxdn_confirm_weak_streak, 0);
     expect("evidence: SACCH assembly reset", g_state->nxdn_sacch_frame_segcrc[0], 1);
+    expect("evidence: RAN forgotten", g_state->nxdn_last_ran == (unsigned)-1, 1);
 }
 
 /* A probe whose tune is unresolved is never credited; the deadline fails it and the hunt moves on. */

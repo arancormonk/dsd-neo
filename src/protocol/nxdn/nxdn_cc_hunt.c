@@ -115,11 +115,13 @@ nxdn_cc_hunt_attributed_frequency(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts) {
 }
 
 /* A hunt tune lands on another carrier: what the last one proved must not carry over, or a weak streak or a sticky
-   confirmation would let one short CRC on the new frequency pass for a confirmed transmission. The durable
-   nxdn_confirm_lock_m stays. */
+   confirmation would let one short CRC on the new frequency pass for a confirmed transmission, and its RAN would name
+   the new one's calls. The durable nxdn_confirm_lock_m stays. */
 static void
 nxdn_cc_hunt_reset_carrier_evidence(dsd_state* state) {
     nxdn_confirm_reset(state);
+    state->nxdn_last_ran = (unsigned)-1; // a call confirmed before its SACCH names a RAN must not take the last one's
+    state->nxdn_last_ran_stand_in = 0U;
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
 }
@@ -405,6 +407,7 @@ nxdn_cc_hunt_tick_locked(dsd_opts* opts, dsd_state* state) {
     }
     if (ctx->armed_m <= 0.0) {
         ctx->armed_m = now_m;
+        (void)nxdn_cc_hunt_follow_foreign_tune(ctx, now_m); // a return already in flight when the window re-arms
         return;
     }
     if (nxdn_cc_hunt_follow_foreign_tune(ctx, now_m)) {
