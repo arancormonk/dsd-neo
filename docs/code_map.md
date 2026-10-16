@@ -57,7 +57,9 @@ Generated (do not edit/commit):
     voice frame is read, and Stop restores the session's own flags (`ENGINE_SIGNAL_SEARCH`).
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
-    digital transmission keeps the decoder in its synced-frame loop. A stalled input
+    digital transmission keeps the decoder in its synced-frame loop. A live strength that no
+    accepted measurement has refreshed for three intervals and a retry (1.75 s), and every
+    ended visit, publishes no live level (`ENGINE_SIGNAL_SEARCH_SCENE`). A stalled input
     cannot hold a visit: the stall check snapshots the producer's last-sample timestamp before reading the real-time
     clock, and guards the subtraction so a newer sample cannot wrap its age into a false timeout. While a search owns
     the tuner (`rtl_signal_search_owner()`; the orchestrator's read carries no decoder state), a live radio read that finds no

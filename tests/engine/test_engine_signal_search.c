@@ -375,6 +375,25 @@ test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_s
     assert(status.live_power_valid && status.live_power_dbfs > -40.5f && status.live_power_dbfs < -39.5f);
     assert(status.hit.power_dbfs > -30.5f && status.hit.power_dbfs < -29.5f); // detection-time power is kept apart
 
+    // A level no accepted measurement refreshes is withdrawn three intervals and a retry after it was measured: here
+    // the capture stops being the landed tune, so nothing is measured. A fresh measurement shows a level again.
+    const dsd_signal_capture landed = capture;
+    capture.capture_offset_hz += 5000;
+    const dsd_signal_measure_request measured = request;
+    realtime_ms += 1749;
+    tick(o, s);
+    assert(status.live_power_valid && request.request_id == measured.request_id);
+    realtime_ms += 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.live_power_valid);
+    capture = landed;
+    realtime_ms += 250;
+    tick(o, s);
+    assert(request.request_id != measured.request_id && !status.live_power_valid);
+    ready = 2;
+    tick(o, s);
+    assert(status.live_power_valid && status.live_power_dbfs > -40.5f && status.live_power_dbfs < -39.5f);
+
     // A session avoid can be lifted by frequency, without a hit; lifting a missing one is harmless.
     const uint32_t avoided = status.hit.frequency_hz;
     act(o, s, DSD_SEARCH_ACTION_AVOID);

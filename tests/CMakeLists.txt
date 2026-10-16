@@ -17573,7 +17573,7 @@ if(DSD_HAS_RADIO)
     )
     target_compile_definitions(
         dsd-neo_test_engine_signal_search_scene
-        PRIVATE USE_RADIO
+        PRIVATE USE_RADIO dsd_realtime_mono_ms=test_dsd_realtime_mono_ms
     )
     target_link_libraries(
         dsd-neo_test_engine_signal_search_scene

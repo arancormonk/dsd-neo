@@ -58,7 +58,15 @@ listening tune is still pending. While listening, the screen also shows the
 channel's current RF level (**Now … dBFS**), measured on the same detector scale
 roughly four times a second; history keeps the detection-time level. Live level
 needs the receiver's Fs/4 offset tuning, which keeps the landed channel away from
-hardware DC; inputs without it show only the detection level.
+hardware DC; inputs without it show only the detection level. A steady transmitter
+reads steady: on a constant-level FM carrier successive readings differ by a few
+hundredths of a dB, so the displayed tenth of a dB often does not change, while a
+change in the signal's level shows within about a second. The level is measured
+after the receiver's gain, so with automatic tuner gain the receiver's own gain
+control can take up part of a level change. When the receiver cannot measure the
+channel for about two seconds (the capture keeps changing, drops samples or clips),
+the screen stops showing **Now** and shows only the detection level until a fresh
+measurement arrives; a visit's live level also ends with the visit.
 
 Analog monitoring starts its quiet timing only once the monitor has read the
 landed channel. A receiver that is still preparing its listening squelch (the NFM
@@ -335,7 +343,12 @@ next stream publishes its own. A coordinator regression runs
 the real detector and tap on synthetic capture I/Q over three passes at six capture
 alignments and checks that only the transmitter's channel is ever visited; it also
 starts a search on a tap a stopped stream has emptied, which waits for the first
-block and then plans its first span from it. Coordinator
+block and then plans its first span from it. On the same tap, an NFM visit serviced
+by the main loop and a digitally confirmed visit serviced only by the in-frame yield
+check each follow 12 dB and 6 dB level changes in the live strength within three
+intervals, withdraw a level the tap stops refreshing (a producer drop with every
+block, or clipped samples) within three intervals and a retry, show a fresh level
+once measurements succeed again, and publish no level for an ended visit. Coordinator
 tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,

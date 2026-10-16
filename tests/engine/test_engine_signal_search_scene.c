@@ -7,7 +7,9 @@
    16 kHz windows, fed as capture-rate I/Q for whatever the coordinator tunes. Over several passes and capture
    alignments, the transmitter's own channel is the only one ever visited: the empty channels its sidebands and the
    windows' leakage reach are never tuned. A search started on a tap that a stopped stream has emptied waits for the
-   next stream's first block. */
+   next stream's first block. While listening (an NFM visit through the main-loop tick, a digitally confirmed one through
+   the in-frame yield check alone), the live strength follows the transmitter's level, and a level the tap stops
+   refreshing (drops or clipping) is withdrawn within a bound, then returns once measurements succeed again. */
 
 #include <assert.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -32,6 +34,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/* The coordinator reads this realtime clock (dsd_realtime_mono_ms is mapped here): the system clock, or a test clock
+   that a listening scene advances with its blocks. */
+#undef dsd_realtime_mono_ms
+uint64_t dsd_realtime_mono_ms(void);
+
 enum { RATE = 1536000, BLOCK = 8192, TRANSMITTER = 163012500 };
 
 static dsd_signal_capture capture = {RATE, 0, 1, RATE / 4, RATE / 4, 0, 0};
@@ -41,12 +48,33 @@ static int tune_pending, gain_value = 123, gain_auto, autogain = 1;
 static uint64_t now_ms = 1000, last_hit;
 static uint32_t visited[64];
 static int visits;
+/* The transmitter's amplitude, and whether a carrier holds the visit open. */
+static double level = 0.3;
+static int carrier_open;
+/* While set, the realtime clock is fixed at a base the scene advances; the tap still stamps its blocks with the
+   system clock, so a scene keeps its advance below the coordinator's 10-second stall bound. */
+static int scene_clock;
+static uint64_t scene_base_ms, scene_offset_ms;
+/* Statuses published while listening: a live level shown after the scene stopped the tap from refreshing it. */
+static int track_stale;
+static uint64_t stale_after_ms;
+static int stale_shown;
+
+uint64_t
+test_dsd_realtime_mono_ms(void) {
+    return scene_clock ? scene_base_ms + scene_offset_ms : dsd_realtime_mono_ms();
+}
 
 static void
 observer(const dsd_signal_search_status* s, const dsd_signal_search_hit* h, void* ctx) {
     (void)h;
     (void)ctx;
     status = *s;
+    if (track_stale && s->live_power_valid && test_dsd_realtime_mono_ms() >= stale_after_ms) {
+        ++stale_shown;
+    }
+    /* An ended visit has no current level. */
+    assert(!(s->hit.ended && s->live_power_valid));
     if (s->hit.hit_id && s->hit.hit_id != last_hit) {
         last_hit = s->hit.hit_id;
         assert(visits < 64);
@@ -151,12 +179,12 @@ dsd_audio_ensure_digital_output(dsd_opts* opts) {
     return 0;
 }
 
-/* No carrier holds a visit open: each ends quiet once the monitor has judged it. */
+/* Unless a scene opens it, no carrier holds a visit open: each ends quiet once the monitor has judged it. */
 int
 dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
-    return 0;
+    return carrier_open;
 }
 
 int
@@ -181,8 +209,8 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int cle
     (void)clear;
 }
 
-/* One block of the scene as the current capture sees it: the transmitter (2.5 kHz deviation, 1 kHz tone) over a low
-   noise floor, continuous across blocks. */
+/* One block of the scene as the current capture sees it: the transmitter (2.5 kHz deviation, 1 kHz tone, amplitude
+   @c level) over a low noise floor, continuous across blocks. */
 static void
 feed(void) {
     static float iq[2 * BLOCK];
@@ -199,15 +227,15 @@ feed(void) {
             rng = rng * 1664525u + 1013904223u;
             noise[q] = ((double)rng / UINT32_MAX - 0.5) * 0.002;
         }
-        iq[2 * i] = (float)(0.3 * cos(phase) + noise[0]);
-        iq[2 * i + 1] = (float)(0.3 * sin(phase) + noise[1]);
+        iq[2 * i] = (float)(level * cos(phase) + noise[0]);
+        iq[2 * i + 1] = (float)(level * sin(phase) + noise[1]);
     }
     rtl_signal_measure_feed(iq, BLOCK, &capture);
 }
 
-/* A session over 50 kHz of 5 kHz channels from @p start. */
+/* A session over 50 kHz of 5 kHz channels from @p start; @p digital as dsd_signal_search_range's. */
 static void
-search_start(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
+search_start_range(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start, int digital) {
     dsd_signal_search_config config;
     DSD_MEMSET(&config, 0, sizeof(config));
     config.session_id = session;
@@ -217,10 +245,15 @@ search_start(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
     config.ranges[0].end_hz = start + 50000;
     config.ranges[0].step_num = 5000;
     config.ranges[0].bandwidth_hz = 16000;
-    config.ranges[0].digital = 0;
+    config.ranges[0].digital = digital;
     config.ranges[0].max_visit_ms = 0;
     char error[192];
     assert(dsd_engine_signal_search_start(o, s, &config, observer, NULL, error, sizeof(error)) == 0);
+}
+
+static void
+search_start(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
+    search_start_range(o, s, session, start, 0);
 }
 
 /* A stopped stream leaves the tap empty (rtl_signal_measure_reset()). A search started on the next stream before that
@@ -278,6 +311,126 @@ search_from(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
     }
 }
 
+/* One scene step: a tune the coordinator queued lands with fresh samples, the next block arrives (@p drops counts a
+   producer drop with it) and both clocks advance by about its duration. */
+static void
+scene_step(int drops) {
+    if (tune_pending) {
+        tune_pending = 0;
+        ++generation;
+        capture.generation = generation;
+        capture.capture_hz = target + RATE / 4;
+    }
+    capture.drops += (uint64_t)drops;
+    feed();
+    now_ms += 5;
+    scene_offset_ms += 5;
+    dsd_decode_clock_test_set_ns(now_ms * 1000000);
+}
+
+/* Listening services the live strength from the main-loop tick (@p yield_path 0) or, for a digitally confirmed
+   transmission that keeps the decoder in its synced-frame loop, from the in-frame yield check alone. */
+static void
+listen_step(dsd_opts* o, dsd_state* s, int yield_path, int drops) {
+    if (yield_path) {
+        assert(!dsd_engine_signal_search_should_yield(o, s));
+        /* Validated frames keep the confirmed visit active. */
+        if (now_ms % 100 == 0) {
+            dsd_engine_signal_search_evidence(s, "DMR", 0, 0, NULL);
+        }
+    } else {
+        (void)dsd_engine_signal_search_tick(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    scene_step(drops);
+}
+
+/* Listens until a live strength within @p tolerance of @p expected is published; fails after @p bound_ms. */
+static float
+live_reaches(dsd_opts* o, dsd_state* s, int yield_path, float expected, float tolerance, uint64_t bound_ms) {
+    const uint64_t until = scene_offset_ms + bound_ms;
+    while (!(status.live_power_valid && fabsf(status.live_power_dbfs - expected) <= tolerance)) {
+        assert(scene_offset_ms < until);
+        listen_step(o, s, yield_path, 0);
+    }
+    return status.live_power_dbfs;
+}
+
+/* A landed listening visit to the transmitter whose live strength follows level changes, is withdrawn once the tap
+   stops refreshing it (@p clip: clipped samples, otherwise a producer drop with every block), returns afterwards, and
+   ends with the visit. */
+static void
+live_strength_scene(dsd_opts* o, dsd_state* s, uint64_t session, int yield_path, int clip) {
+    const uint32_t start = 162987500;
+    visits = 0;
+    last_hit = 0;
+    level = 0.3;
+    DSD_MEMSET(&status, 0, sizeof(status));
+    scene_clock = 1;
+    scene_base_ms = dsd_realtime_mono_ms();
+    scene_offset_ms = 0;
+    carrier_open = !yield_path;
+    capture.capture_hz = start + RATE / 4;
+    feed();
+    search_start_range(o, s, session, start, yield_path ? 1 : 0);
+    for (int step = 0;
+         step < 4000 && !(status.hit.hit_id && !status.hit.ended && status.phase >= DSD_SEARCH_IDENTIFYING); ++step) {
+        (void)dsd_engine_signal_search_tick(o, s);
+        assert(status.phase != DSD_SEARCH_ERROR);
+        scene_step(0);
+    }
+    assert(status.hit.frequency_hz == TRANSMITTER);
+    if (yield_path) {
+        assert(status.phase == DSD_SEARCH_IDENTIFYING);
+        dsd_engine_signal_search_evidence(s, "DMR", 0, 0, NULL);
+        assert(status.hit.confirmed);
+    }
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.live_power_valid);
+
+    /* The first reading, then a 12 dB fade and a 6 dB rise, each reached within three intervals and a measurement. */
+    const float first = live_reaches(o, s, yield_path, -10.5f, 1.0f, 800);
+    level = 0.3 * pow(10.0, -12.0 / 20.0);
+    (void)live_reaches(o, s, yield_path, first - 12.0f, 0.3f, 800);
+    level = 0.3 * pow(10.0, -6.0 / 20.0);
+    (void)live_reaches(o, s, yield_path, first - 6.0f, 0.3f, 800);
+
+    /* The tap stops refreshing the level: it stays shown through single failures, then is withdrawn (and published)
+       once three intervals and a retry have passed since the last accepted measurement, and is not shown again while
+       the failures last. */
+    const uint64_t failing = scene_offset_ms;
+    if (clip) {
+        level = 1.2;
+    }
+    while (status.live_power_valid) {
+        assert(scene_offset_ms <= failing + 1750 + 10);
+        listen_step(o, s, yield_path, clip ? 0 : 1);
+    }
+    assert(scene_offset_ms >= failing + 1750 - 300);
+    track_stale = 1;
+    stale_shown = 0;
+    stale_after_ms = test_dsd_realtime_mono_ms();
+    for (int step = 0; step < 300; ++step) {
+        listen_step(o, s, yield_path, clip ? 0 : 1);
+    }
+    assert(!stale_shown && !status.live_power_valid);
+    track_stale = 0;
+
+    /* Measurements succeed again: a fresh level returns. */
+    level = 0.3;
+    (void)live_reaches(o, s, yield_path, first, 0.3f, 800);
+
+    /* The visit ends (the carrier closes, or the confirmed transmission stops): the level goes with it. */
+    carrier_open = 0;
+    for (int step = 0; step < 400 && status.phase != DSD_SEARCH_TUNING; ++step) {
+        (void)dsd_engine_signal_search_tick(o, s);
+        scene_step(0);
+    }
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && !status.live_power_valid);
+    dsd_engine_signal_search_shutdown(o, s);
+    assert(!dsd_engine_signal_search_active(s));
+    scene_clock = 0;
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -295,6 +448,8 @@ main(void) {
     for (uint32_t shift = 0; shift < 6; ++shift) {
         search_from(o, s, 42 + shift, 162987500 - 5000 * shift);
     }
+    live_strength_scene(o, s, 50, 0, 0);
+    live_strength_scene(o, s, 51, 1, 1);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

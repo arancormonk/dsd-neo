@@ -43,7 +43,9 @@ enum {
     SEARCH_ANALOG_VERDICT_MAX_MS = 3000,
     /* Live strength while listening: one measurement this often; longer after a geometry that cannot be measured. */
     SEARCH_LIVE_INTERVAL_MS = 250,
-    SEARCH_LIVE_RETRY_MS = 1000
+    SEARCH_LIVE_RETRY_MS = 1000,
+    /* A live strength no accepted measurement has refreshed for three intervals and a retry is no current level. */
+    SEARCH_LIVE_STALE_MS = 3 * SEARCH_LIVE_INTERVAL_MS + SEARCH_LIVE_RETRY_MS
 };
 
 typedef struct {
@@ -72,6 +74,8 @@ typedef struct {
     int report_pending;
     int live_measuring;
     uint64_t live_request, live_next;
+    /* When the shown live strength was measured. */
+    uint64_t live_accepted;
 #endif
 } search_coord;
 
@@ -107,6 +111,8 @@ static void
 search_end_hit(search_coord* c) {
     if (c->status.hit.hit_id && !c->status.hit.ended) {
         c->status.hit.ended = 1;
+        /* An ended visit has no current level. */
+        c->status.live_power_valid = 0;
         c->status.hit.ended_ms = (uint64_t)(dsd_decode_now_realtime_s() * 1000);
         search_publish(c, 1);
     }
@@ -498,10 +504,16 @@ dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, 
 /* The landed channel's own RF power while listening, measured by the capture-rate detector on the same dBFS scale as
    the detection. Only a capture that is the landed tune is measured; a report is accepted for its own request. Both the
    main-loop tick and the in-frame yield check service it: a continuous digital transmission keeps the decoder in its
-   synced-frame loop, where only the latter runs. */
+   synced-frame loop, where only the latter runs. A level that no accepted measurement has refreshed for
+   SEARCH_LIVE_STALE_MS (the capture keeps changing, its samples clip, or the channel cannot be measured) is withdrawn
+   and published, so a frontend never shows an old level as the current one. */
 static void
 search_live_strength(search_coord* c) {
     const uint64_t now = dsd_realtime_mono_ms();
+    if (c->status.live_power_valid && now - c->live_accepted >= SEARCH_LIVE_STALE_MS) {
+        c->status.live_power_valid = 0;
+        search_publish(c, 0);
+    }
     if (c->live_measuring) {
         dsd_signal_measure_report report;
         const int rc = rtl_signal_measure_get(&report);
@@ -515,6 +527,7 @@ search_live_strength(search_coord* c) {
             if (report.candidates[0].valid) {
                 c->status.live_power_dbfs = report.candidates[0].power_dbfs;
                 c->status.live_power_valid = 1;
+                c->live_accepted = now;
                 search_publish(c, 0);
             } else {
                 c->live_next = now + SEARCH_LIVE_RETRY_MS;
