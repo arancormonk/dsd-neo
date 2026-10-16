@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_confirm.h"
 
 #define ROW_A 451000000L
 #define ROW_B 452000000L
@@ -46,6 +47,7 @@ static long g_radio_hz;
 static int g_queries;
 static uint64_t g_now_ns;
 static uint64_t g_last_cc_request;
+static long g_refuse_hz; // the tuner refuses this frequency
 
 static void
 expect(const char* label, long got, long want) {
@@ -61,7 +63,7 @@ fake_tune(enum fake_mode mode, dsd_state* state, long freq) {
         g_tunes[g_tune_count] = freq;
     }
     g_tune_count++;
-    if (mode == FAKE_FAIL) {
+    if (mode == FAKE_FAIL || (g_refuse_hz != 0 && freq == g_refuse_hz)) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     g_radio_hz = freq;
@@ -90,6 +92,28 @@ fake_query(const dsd_opts* opts) {
     (void)opts;
     g_queries++;
     return g_radio_hz;
+}
+
+/* One NXDN frame through the confirmation gate: a CRC-good SCCH (weak), a CRC-good SACCH (weak), or SCCH beside a
+   CRC-good FACCH3 (strong); a Type-D hook call where the SCCH decodes. */
+enum frame_kind { FRAME_SCCH = 0, FRAME_SACCH, FRAME_SCCH_FACCH3 };
+
+static void
+nxdn_frame(enum frame_kind kind) {
+    nxdn_confirm_begin_frame(g_state);
+    if (kind == FRAME_SACCH) {
+        nxdn_confirm_note_evidence(g_state, NXDN_EVIDENCE_WEAK);
+    } else {
+        nxdn_confirm_note_evidence(g_state, NXDN_EVIDENCE_WEAK);
+        nxdn_confirm_note_scch(g_state);
+        if (nxdn_confirm_is_confirmed(g_state)) {
+            nxdn_cc_hunt_note_type_d(g_opts, g_state);
+        }
+        if (kind == FRAME_SCCH_FACCH3) {
+            nxdn_confirm_note_evidence(g_state, NXDN_EVIDENCE_STRONG);
+        }
+    }
+    nxdn_confirm_end_frame(g_state);
 }
 
 static void
@@ -136,6 +160,7 @@ session(void) {
     g_freq_mode = FAKE_OK;
     g_tune_count = 0;
     g_queries = 0;
+    g_refuse_hz = 0;
     dsd_trunk_tuning_requests_reset();
     clock_at(0.0);
 }
@@ -242,12 +267,10 @@ test_type_d(void) {
     tick_at(0.0);
     run_until(0.0, 6.5);
     expect("type-d: hunting", g_tune_count, 1);
-    g_state->nxdn_confirm_weak_streak = 1; // borrowed confirmation: this SCCH alone
-    g_state->nxdn_confirmed = 1;
-    nxdn_cc_hunt_note_type_d(g_opts, g_state);
+    g_state->nxdn_confirmed = 1; // borrowed confirmation: this SCCH alone
+    nxdn_frame(FRAME_SCCH);
     expect("type-d: one SCCH names nobody", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_UNKNOWN);
-    g_state->nxdn_confirm_weak_streak = 2; // the SCCH's own run confirms it
-    nxdn_cc_hunt_note_type_d(g_opts, g_state);
+    nxdn_frame(FRAME_SCCH); // the SCCH's own run confirms it
     expect("type-d: owner", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_NXDN);
     expect("type-d: inactive", nxdn_cc_hunt_active(g_state), 0);
     run_until(6.5, 40.0);
@@ -258,8 +281,8 @@ test_type_d(void) {
     tick_at(0.0);
     nxdn_cc_hunt_note_control(g_opts, g_state); // a Type-C control channel
     nxdn_cc_hunt_note_retune(g_opts, g_state);  // the operator moves to a Type-D system
-    g_state->nxdn_confirm_weak_streak = 2;
-    nxdn_cc_hunt_note_type_d(g_opts, g_state);
+    nxdn_frame(FRAME_SCCH);
+    nxdn_frame(FRAME_SCCH);
     run_until(0.0, 40.0);
     expect("type-d after type-c: never hunts", g_tune_count, 0);
 }
@@ -271,12 +294,73 @@ test_type_d_on_voice_channel(void) {
     session();
     tick_at(0.0);
     g_opts->trunk_is_tuned = 1;
-    g_state->nxdn_confirm_weak_streak = 2;
-    nxdn_cc_hunt_note_type_d(g_opts, g_state);
+    nxdn_frame(FRAME_SCCH);
+    nxdn_frame(FRAME_SCCH);
     expect("type-d voice: owner", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_NXDN);
     g_opts->trunk_is_tuned = 0;
     run_until(0.0, 30.0);
     expect("type-d voice: never hunts", g_tune_count, 0);
+}
+
+/* Type-D needs SCCHs in frames running: a SACCH's short CRC neither starts nor extends their run (a Type-C call's SACCH
+   then one noise SCCH), and a CRC-good FACCH3 beside an SCCH does not break it. */
+static void
+test_type_d_scch_run(void) {
+    session();
+    tick_at(0.0);
+    nxdn_cc_hunt_note_control(g_opts, g_state); // Type-C
+    nxdn_frame(FRAME_SACCH);
+    nxdn_frame(FRAME_SCCH);
+    expect("scch run: SACCH then one SCCH is no Type-D site", nxdn_cc_hunt_due(g_opts, g_state), 1);
+    nxdn_frame(FRAME_SACCH);
+    nxdn_frame(FRAME_SCCH);
+    run_until(0.0, 6.5);
+    expect("scch run: Type-C recovery still hunts", g_tune_count, 1);
+
+    session();
+    tick_at(0.0);
+    nxdn_frame(FRAME_SCCH_FACCH3);
+    nxdn_frame(FRAME_SCCH_FACCH3);
+    expect("scch run: SCCH beside FACCH3 names the owner", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_NXDN);
+
+    /* No hunt context yet (-fa before validated control): an operator cycle still drops the first carrier's SCCH. */
+    session();
+    g_opts->frame_p25p1 = g_opts->frame_p25p2 = g_opts->frame_dmr = g_opts->frame_provoice = 1;
+    nxdn_frame(FRAME_SCCH);
+    nxdn_cc_hunt_note_retune(g_opts, g_state);
+    nxdn_frame(FRAME_SCCH);
+    expect("scch run: a cycle breaks the run", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_UNKNOWN);
+}
+
+/* A tuner query that fails is not repeated per CAC: once per tuning generation, as a successful one. */
+static void
+test_failed_query_cached(void) {
+    session();
+    g_radio_hz = 0;
+    tick_at(0.0);
+    for (int i = 0; i < 10; i++) {
+        nxdn_cc_hunt_note_control(g_opts, g_state);
+    }
+    expect("failed query: asked once", g_queries, 1);
+}
+
+/* A post-loss hunt whose old control channel the tuner refuses moves on through the map. */
+static void
+test_refused_anchor(void) {
+    session();
+    tick_at(0.0);
+    run_until(0.0, 8.5);                        // probes A, B
+    nxdn_cc_hunt_note_control(g_opts, g_state); // B confirmed
+    g_refuse_hz = ROW_B;
+    run_until(8.5, 22.5);
+    // C, B (refused), A, B (refused), C, ...: every other row is still probed, not B forever.
+    int saw_c = 0;
+    int saw_a = 0;
+    for (int i = 2; i < g_tune_count && i < 64; i++) {
+        saw_c |= g_tunes[i] == ROW_C;
+        saw_a |= g_tunes[i] == ROW_A;
+    }
+    expect("refused anchor: the map is still walked", saw_c && saw_a, 1);
 }
 
 /* A CAC whose frequency the tuner cannot name still proves a Type-C control channel: losing it hunts the map. */
@@ -463,6 +547,9 @@ main(void) {
     test_type_d();
     test_type_d_on_voice_channel();
     test_cac_without_frequency();
+    test_type_d_scch_run();
+    test_failed_query_cached();
+    test_refused_anchor();
     test_late_completion_dwell();
     test_operator_move_resets_evidence();
     test_frame_sets();

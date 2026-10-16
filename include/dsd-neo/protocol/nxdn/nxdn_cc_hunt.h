@@ -56,7 +56,8 @@ void nxdn_cc_hunt_note_control(const dsd_opts* opts, dsd_state* state);
 /**
  * @brief A Type-D SCCH confirmed the transmission: names NXDN the owner and ends a hunt where it is.
  *
- * Only an SCCH whose own run of short CRCs reached NXDN_CONFIRM_WEAK_OBSERVES counts, on a control or a voice channel.
+ * Only SCCHs of NXDN_CONFIRM_WEAK_OBSERVES frames running count (nxdn_confirm_scch_confirmed()), on a control or a
+ * voice channel.
  *
  * A Type-D site has no continuous control channel, so a control channel a CAC confirmed earlier is forgotten and no
  * hunt arms afterwards.

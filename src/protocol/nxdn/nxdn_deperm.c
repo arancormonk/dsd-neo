@@ -1440,6 +1440,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
 
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+        nxdn_confirm_note_scch(state);
         NXDN_decode_scch(opts, state, trellis_buf, direction);
     }
 

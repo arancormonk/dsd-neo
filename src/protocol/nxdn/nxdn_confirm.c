@@ -21,6 +21,8 @@ nxdn_confirm_reset(dsd_state* state) {
     state->nxdn_confirmed = 0;
     state->nxdn_confirm_weak_streak = 0;
     state->nxdn_confirm_frame_evidence = 0;
+    state->nxdn_confirm_scch_streak = 0;
+    state->nxdn_confirm_frame_scch = 0;
 }
 
 void
@@ -29,6 +31,23 @@ nxdn_confirm_begin_frame(dsd_state* state) {
         return;
     }
     state->nxdn_confirm_frame_evidence = 0;
+    state->nxdn_confirm_frame_scch = 0;
+}
+
+void
+nxdn_confirm_note_scch(dsd_state* state) {
+    if (!state || state->nxdn_confirm_frame_scch) {
+        return;
+    }
+    state->nxdn_confirm_frame_scch = 1;
+    if (state->nxdn_confirm_scch_streak < 0xFFU) {
+        state->nxdn_confirm_scch_streak++;
+    }
+}
+
+int
+nxdn_confirm_scch_confirmed(const dsd_state* state) {
+    return state && state->nxdn_confirm_scch_streak >= NXDN_CONFIRM_WEAK_OBSERVES;
 }
 
 void
@@ -59,6 +78,9 @@ void
 nxdn_confirm_end_frame(dsd_state* state) {
     if (!state) {
         return;
+    }
+    if (!state->nxdn_confirm_frame_scch) {
+        state->nxdn_confirm_scch_streak = 0;
     }
     if (state->nxdn_confirm_frame_evidence == 0) {
         state->nxdn_confirm_weak_streak = 0;

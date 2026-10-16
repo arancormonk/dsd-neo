@@ -36,6 +36,8 @@ typedef struct {
     uint64_t rx_generation;
     long probe_freq_hz; // last probe or settle tune (in flight or completed)
     long rx_freq_hz;    // frequency attributed to the receiver at rx_generation; 0 unknown
+    long attempt_hz;    // last frequency a hunt tune was asked for, accepted or not
+    int rx_valid;       // rx_freq_hz answers for rx_generation, a failed tuner query (0) included
     long cc_freq_hz;    // the control channel a CAC confirmed last; 0 none
     int cc_confirmed;   // a CAC confirmed cc_freq_hz (Type-C); a post-loss hunt needs it
     int hunting;
@@ -94,15 +96,16 @@ nxdn_cc_hunt_tuner_frequency(const dsd_opts* opts) {
 static long
 nxdn_cc_hunt_attributed_frequency(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts) {
     const uint64_t generation = dsd_trunk_tuning_generation();
-    if (ctx->rx_freq_hz > 0 && ctx->rx_generation == generation) {
+    if (ctx->rx_valid && ctx->rx_generation == generation) {
         return ctx->rx_freq_hz;
     }
+    /* A failed query is kept too: rigctl answers synchronously, and a peer that refuses or times out on every query
+       must not cost one per CAC. */
     const long freq = nxdn_cc_hunt_tuner_frequency(opts);
-    if (freq > 0) {
-        ctx->rx_freq_hz = freq;
-        ctx->rx_generation = generation;
-    }
-    return freq;
+    ctx->rx_freq_hz = freq > 0 ? freq : 0;
+    ctx->rx_generation = generation;
+    ctx->rx_valid = 1;
+    return ctx->rx_freq_hz;
 }
 
 /* A hunt tune lands on another carrier: what the last one proved must not carry over, or a weak streak or a sticky
@@ -121,6 +124,7 @@ static int
 nxdn_cc_hunt_tune(nxdn_cc_hunt_ctx* ctx, dsd_opts* opts, dsd_state* state, long freq, double now_m) {
     const long trunk_cc_before = state->trunk_cc_freq;
     const long p25_cc_before = state->p25_cc_freq;
+    ctx->attempt_hz = freq;
     uint64_t request_id = 0U;
     const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0, &request_id);
     state->trunk_cc_freq = trunk_cc_before;
@@ -131,6 +135,7 @@ nxdn_cc_hunt_tune(nxdn_cc_hunt_ctx* ctx, dsd_opts* opts, dsd_state* state, long 
     nxdn_cc_hunt_reset_carrier_evidence(state);
     ctx->probe_freq_hz = freq;
     ctx->rx_freq_hz = 0;
+    ctx->rx_valid = 0;
     ctx->tune_request_id = request_id;
     ctx->tune_deadline_m = now_m + NXDN_CC_HUNT_TUNE_TIMEOUT_S;
     return 1;
@@ -152,13 +157,17 @@ nxdn_cc_hunt_resolve(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts, double now_m) 
         }
         /* Frames stay gated until a replacement tune succeeds; a late completion cannot resurrect it. */
         dsd_trunk_tuning_request_publish(ctx->tune_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
-        result = DSD_TRUNK_TUNE_RESULT_FAILED;
-        nxdn_cc_hunt_log(opts, "cc-tune-timeout");
+        // A completion that won the race stands: the request's own status says which.
+        result = dsd_trunk_tuning_request_status(ctx->tune_request_id, &completed_m);
+        if (result != DSD_TRUNK_TUNE_RESULT_OK) {
+            nxdn_cc_hunt_log(opts, "cc-tune-timeout");
+        }
     }
     ctx->tune_request_id = 0U;
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
         ctx->rx_freq_hz = ctx->probe_freq_hz;
         ctx->rx_generation = dsd_trunk_tuning_generation();
+        ctx->rx_valid = 1;
         if (ctx->hunting) {
             ctx->retry_after_m = (completed_m > 0.0 ? completed_m : now_m) + NXDN_CC_HUNT_PROBE_S;
         }
@@ -204,7 +213,9 @@ nxdn_cc_hunt_park_now(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts, int keep_wind
     ctx->park_pending = 0;
     ctx->tune_request_id = 0U;
     ctx->probe_freq_hz = 0;
+    ctx->attempt_hz = 0;
     ctx->rx_freq_hz = 0;
+    ctx->rx_valid = 0;
     ctx->retry_after_m = 0.0;
     nxdn_cc_hunt_log(opts, reason);
 }
@@ -298,11 +309,12 @@ nxdn_cc_hunt_next_mapped(nxdn_cc_hunt_ctx* ctx, const dsd_state* state) {
 }
 
 /* After a control channel a CAC confirmed, it is revisited between alternate rows, so one that recovers does not
-   wait for the whole map. */
+   wait for the whole map. The last attempt decides, accepted or not, so an anchor the tuner refuses does not hold the
+   hunt on itself. */
 static long
 nxdn_cc_hunt_next_candidate(nxdn_cc_hunt_ctx* ctx, const dsd_state* state) {
     const long anchor = ctx->cc_confirmed ? ctx->cc_freq_hz : 0;
-    if (anchor > 0 && ctx->probe_freq_hz != anchor && nxdn_cc_hunt_map_has_frequency(state, anchor)) {
+    if (anchor > 0 && ctx->attempt_hz != anchor && nxdn_cc_hunt_map_has_frequency(state, anchor)) {
         return anchor;
     }
     return nxdn_cc_hunt_next_mapped(ctx, state);
@@ -394,7 +406,8 @@ nxdn_cc_hunt_note_control(const dsd_opts* opts, dsd_state* state) {
     ctx->armed_m = now_m;
     ctx->cc_confirmed = 1; // with no frequency the map is still hunted, without an anchor
     if (freq > 0) {
-        ctx->probe_freq_hz = freq;
+        ctx->probe_freq_hz = freq; // the receiver is there: a hunt after its loss starts with the next row
+        ctx->attempt_hz = freq;
         ctx->cc_freq_hz = freq;
         state->p25_cc_freq = freq;
         state->trunk_cc_freq = freq;
@@ -413,7 +426,7 @@ nxdn_cc_hunt_note_type_d(const dsd_opts* opts, dsd_state* state) {
        The SCCH's own run of short CRCs must confirm it: a confirmation left from a CAC or another carrier must not
        turn a Type-C session's recovery off on one noise frame. */
     if (!opts || !state || opts->trunk_enable != 1 || opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1
-        || state->nxdn_confirm_weak_streak < NXDN_CONFIRM_WEAK_OBSERVES) {
+        || !nxdn_confirm_scch_confirmed(state)) {
         return;
     }
     nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_get(state);
@@ -436,13 +449,17 @@ nxdn_cc_hunt_note_type_d(const dsd_opts* opts, dsd_state* state) {
 void
 nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    if (!state) {
+        return;
+    }
+    nxdn_cc_hunt_reset_carrier_evidence(state); // a trunked channel cycle crosses no carrier boundary
     nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_peek(state);
     if (!ctx) {
         return;
     }
-    nxdn_cc_hunt_reset_carrier_evidence(state); // a trunked channel cycle crosses no carrier boundary
     const double now_m = dsd_decode_now_mono_s();
     ctx->rx_freq_hz = 0;
+    ctx->rx_valid = 0;
     if (ctx->hunting) {
         ctx->armed_m = now_m;
         ctx->park_pending = 1;

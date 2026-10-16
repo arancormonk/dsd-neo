@@ -1162,10 +1162,15 @@ struct dsd_state {
      * the RAN, the call record. See issue #398.
      * nxdn_confirmed: this transmission has produced CRC-verified content.
      * nxdn_confirm_weak_streak: consecutive frames carrying only short-CRC evidence.
-     * nxdn_confirm_frame_evidence: strongest nxdn_evidence seen since begin_frame(). */
+     * nxdn_confirm_frame_evidence: strongest nxdn_evidence seen since begin_frame().
+     * nxdn_confirm_scch_streak: consecutive frames carrying a CRC-good SCCH, whatever else they carried; the Type-D
+     * site test of the control-channel hunt reads it (nxdn_confirm_note_scch()).
+     * nxdn_confirm_frame_scch: this frame carried one. */
     uint8_t nxdn_confirmed;
     uint8_t nxdn_confirm_weak_streak;
     uint8_t nxdn_confirm_frame_evidence;
+    uint8_t nxdn_confirm_scch_streak;
+    uint8_t nxdn_confirm_frame_scch;
 
     NxdnElementsContent_t NxdnElementsContent;
 

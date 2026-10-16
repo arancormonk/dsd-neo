@@ -4274,12 +4274,14 @@ control within the CC grace walks its channel map with the ordinary hunts.
   (`nxdn_confirm_reset()`, SACCH assemblies), so a weak streak or sticky confirmation never crosses carriers, and
   restores both control-channel aliases. `nxdn_handle_cac()` calls `nxdn_cc_hunt_note_control()` on every CRC-good CAC,
   before element decode: an unresolved probe is not credited; otherwise the frequency (the completed probe, else one
-  tuner query per tuning generation, forgotten at an operator move) becomes `p25_cc_freq`/`trunk_cc_freq`, NXDN is
+  tuner query per tuning generation, a failed one included, forgotten at an operator move) becomes `p25_cc_freq`/`trunk_cc_freq`, NXDN is
   named the owner and the post-loss window re-armed; a CAC whose frequency no tuner names still proves a Type-C control
-  channel, and its loss hunts the map without an anchor. A post-loss hunt revisits that control channel between other rows.
-  The confirmed branch of `nxdn_scch_prepare_type_d()` calls `nxdn_cc_hunt_note_type_d()`, which counts only an SCCH
-  whose own weak streak reached `NXDN_CONFIRM_WEAK_OBSERVES` (not a confirmation left by a CAC or another carrier), on a
-  control or a followed voice channel: owner named, hunt ended,
+  channel, and its loss hunts the map without an anchor. A post-loss hunt revisits that control channel between other rows, judged by the last attempt, so one the tuner
+  refuses does not hold the hunt.
+  The confirmed branch of `nxdn_scch_prepare_type_d()` calls `nxdn_cc_hunt_note_type_d()`, which counts only SCCHs in
+  `NXDN_CONFIRM_WEAK_OBSERVES` frames running (`nxdn_confirm_scch_confirmed()`: the gate's own SCCH streak, which other
+  channels neither extend nor break; not a confirmation left by a CAC, a SACCH or another carrier), on a control or a
+  followed voice channel: owner named, hunt ended,
   any CAC-confirmed control channel forgotten, so a Type-D site never hunts afterwards (an idle, silent Type-D site at
   start is walked like a dead one until confirmed traffic holds the window). Tests: `NXDN_CC_HUNT`,
   `ENGINE_COLD_START_HUNT`, `NXDN_CONFIRM`, `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`.
