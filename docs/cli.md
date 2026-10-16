@@ -279,6 +279,8 @@ Windows console runs:
   none of whose frames may be recorded leaves no file. Each file holds one protocol's frames in one record format,
   named by its 4-byte header and extension: `.imb` (IMBE: P25 Phase 1, ProVoice, YSF full rate), `.amb` (AMBE 2450:
   DMR, P25 Phase 2, NXDN, dPMR, X2-TDMA, YSF V/D1 and V/D2) or `.dmb` (D-STAR AMBE 2400); `-r` plays them back.
+  Each record starts with an error byte: the frame's C0 error count in an `.amb` record, which `-r` uses to repeat the
+  frames the live decode repeated (4, uncorrectable), and the frame's total error count in `.imb` and `.dmb` records.
   Files are capture segments: a frame of another protocol or format, a call end the protocol signals, a lost
   carrier, a retune and a trunk-scan switch each end the open capture, and the next frame starts another. Two-slot
   protocols write one file per slot (`_S1`, `_S2`); X2-TDMA writes both slots into one. Each frame is saved by its

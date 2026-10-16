@@ -90,50 +90,34 @@ saveImbe4400Data(dsd_opts* opts, const dsd_state* state, const char* imbe_d) {
     }
 }
 
-void
-saveAmbe2450Data(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
-    int i, j, k;
-    unsigned char b;
-    unsigned char err;
-
-    err = (unsigned char)state->errs2;
-    fputc(err, opts->mbe_out_f);
-
-    k = 0;
-    for (i = 0; i < 6; i++) {
-        b = 0;
-        for (j = 0; j < 8; j++) {
-            b = b << 1;
-            b = b + ambe_d[k];
+/* One AMBE record: the error byte, six packed bytes, then the final bit. */
+static void
+save_ambe_record(FILE* f, int errors, const char* ambe_d) {
+    fputc((unsigned char)(errors < 0 ? 0 : errors), f);
+    int k = 0;
+    for (int i = 0; i < 6; i++) {
+        unsigned char b = 0;
+        for (int j = 0; j < 8; j++) {
+            b = (unsigned char)((b << 1) + ambe_d[k]);
             k++;
         }
-        fputc(b, opts->mbe_out_f);
+        fputc(b, f);
     }
-    b = ambe_d[48];
-    fputc(b, opts->mbe_out_f);
+    fputc((unsigned char)ambe_d[48], f);
+}
+
+/* An AMBE 2450 record's error byte is the frame's C0 error count (state->errs): replay restores it as C0 context, so
+   the frame repeats as it did live (4, uncorrectable). mbelib-neo 2.5's totals count parity bits, and replaying one
+   through mbelib's no-context rule (more than 3) would repeat frames the channel decoder corrected. A capture written
+   with totals keeps its threshold: 4 or more repeats either way. */
+void
+saveAmbe2450Data(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
+    save_ambe_record(opts->mbe_out_f, state->errs, ambe_d);
 }
 
 void
 saveAmbe2450DataR(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
-    int i, j, k;
-    unsigned char b;
-    unsigned char err;
-
-    err = (unsigned char)state->errs2R;
-    fputc(err, opts->mbe_out_fR);
-
-    k = 0;
-    for (i = 0; i < 6; i++) {
-        b = 0;
-        for (j = 0; j < 8; j++) {
-            b = b << 1;
-            b = b + ambe_d[k];
-            k++;
-        }
-        fputc(b, opts->mbe_out_fR);
-    }
-    b = ambe_d[48];
-    fputc(b, opts->mbe_out_fR);
+    save_ambe_record(opts->mbe_out_fR, state->errsR, ambe_d);
 }
 
 static int
@@ -825,6 +809,10 @@ dsd_mbe_out_write(dsd_opts* opts, dsd_state* state, int slot, dsd_mbe_out_format
     }
     if (format == DSD_MBE_OUT_FORMAT_IMBE) {
         saveImbe4400Data(opts, state, bits);
+    } else if (format == DSD_MBE_OUT_FORMAT_DSTAR) {
+        /* D-STAR's AMBE 2400 replay reads the total too (its tone rule), so a .dmb record keeps it. */
+        save_ambe_record(slot == 1 ? opts->mbe_out_fR : opts->mbe_out_f, slot == 1 ? state->errs2R : state->errs2,
+                         bits);
     } else if (slot == 1) {
         saveAmbe2450DataR(opts, state, bits);
     } else {

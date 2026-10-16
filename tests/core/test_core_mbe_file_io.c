@@ -575,8 +575,11 @@ test_ambe_save_read_roundtrip_and_slot2(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    state.errs2 = 0x44;
-    state.errs2R = 0x55;
+    /* The record carries the C0 error count (errs), not the total (errs2). */
+    state.errs = 0x44;
+    state.errs2 = 0x66;
+    state.errsR = 0x55;
+    state.errs2R = 0x77;
     set_bits_from_bytes(ambe_bits, payload, sizeof payload);
     ambe_bits[48] = 1;
 
@@ -2274,6 +2277,8 @@ test_mbe_out_write_creates_slot_files_and_closes(void) {
             state.errs2 = kBinaryProbeImbe[0];
         } else {
             binary_probe_ambe_bits(bits);
+            /* An .amb record carries the C0 count (errs), a .dmb record the total (errs2). */
+            state.errs = kBinaryProbeFrame[0];
             state.errs2 = kBinaryProbeFrame[0];
         }
         dsd_mbe_out_write(&opts, &state, 0, slot1_cases[i].format, bits);
@@ -2311,7 +2316,7 @@ test_mbe_out_write_creates_slot_files_and_closes(void) {
 
     char probe_bits[49];
     binary_probe_ambe_bits(probe_bits);
-    state.errs2R = kBinaryProbeFrame[0];
+    state.errsR = kBinaryProbeFrame[0];
     dsd_mbe_out_write(&opts, &state, 1, DSD_MBE_OUT_FORMAT_AMBE, probe_bits);
     rc |= expect_int("slot2 open flag", opts.mbe_outR, 1);
     rc |= expect_true("slot2 file handle opened", opts.mbe_out_fR != NULL);

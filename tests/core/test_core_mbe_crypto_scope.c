@@ -1368,6 +1368,60 @@ test_nxdn_cipher23_session_exhaustion(void) {
     return rc;
 }
 
+/* Fully corrected AMBE 2450 frames (one C0 and three C1 bit errors: 4 in all with mbelib-neo 2.5's counts) captured
+   live with -d replay with -r as they played live: the record's error byte is the C0 count, which replay restores as
+   C0 context, so no frame repeats and the replay is not muted. */
+static int
+test_amb_capture_replays_corrected_frames(void) {
+    enum { FRAMES = 6 };
+
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_crypto_scope_capture");
+    if (fd < 0) {
+        return 1;
+    }
+    FILE* f = dsd_test_fdopen(fd, "wb");
+    if (f == NULL) {
+        (void)dsd_close(fd);
+        (void)remove(path);
+        return 1;
+    }
+    reset_state(DSD_SYNC_DMR_BS_VOICE_POS, 0);
+    g_opts.mbe_out_f = f;
+    int rc = (fwrite(".amb", 1, 4, f) == 4) ? 0 : 1;
+    for (int i = 0; i < FRAMES && rc == 0; i++) {
+        char fr[4][24];
+        if (mbe_encodeAmbe3600x2450Frame(g_ambe_d[i], fr) < 0) {
+            rc = 1;
+            break;
+        }
+        fr[0][0] ^= 1;
+        fr[1][0] ^= 1;
+        fr[1][1] ^= 1;
+        fr[1][2] ^= 1;
+        processMbeFrame(&g_opts, &g_state, DSD_VOICE_PROTOCOL_DMR, NULL, fr, NULL);
+        rc |= expect_int("capture frame c0 errors", g_state.errs, 1);
+        rc |= expect_int("capture frame total errors", g_state.errs2, 4);
+        rc |= expect_int("capture frame plays live", g_state.cur_mp->repeatCount, 0);
+    }
+    if (fclose(f) != 0) {
+        rc = 1;
+    }
+    g_opts.mbe_out_f = NULL;
+
+    reset_state(DSD_SYNC_NONE, 0);
+    g_state.optind = 1;
+    char* argv[] = {"dsd-neo", path};
+    playMbeFiles(&g_opts, &g_state, 2, argv);
+    rc |= expect_int("replayed frames do not repeat", g_state.cur_mp->repeatCount, 0);
+    if (strchr(g_state.err_str, 'R') != NULL) {
+        DSD_FPRINTF(stderr, "replayed frame repeated (%s)\n", g_state.err_str);
+        rc = 1;
+    }
+    (void)remove(path);
+    return rc;
+}
+
 /* Raw .amb/.dmb playback: DMR basic privacy (-b) is an AMBE+2 transform and never touches D-STAR's AMBE 2400 frames. */
 static int
 play_file_audio(const char cookie[4], unsigned long long basic_key, float audio[160]) {
@@ -1446,6 +1500,7 @@ main(void) {
     rc |= test_dmr_des_frames_match_reference();
     rc |= test_dmr_rc4_decrypts_three_c0_errors();
     rc |= test_dmr_rc4_corrected_frames_are_not_repeated();
+    rc |= test_amb_capture_replays_corrected_frames();
     rc |= test_p25p2_aes_does_not_skip_dmr_silence_patterns();
     rc |= test_nxdn_cipher23_session_exhaustion();
     rc |= test_keystream_muted_frame_stages_silence();

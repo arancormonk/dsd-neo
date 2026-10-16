@@ -650,6 +650,7 @@ create_mbe_playback_file(char* path, size_t path_size, const char cookie[4],
     DSD_MEMSET(&opts, 0, sizeof(opts));
     pass_through_voice_chain(&opts);
     DSD_MEMSET(&state, 0, sizeof(state));
+    state.errs = errs2;
     state.errs2 = errs2;
     opts.mbe_out_f = f;
 
@@ -744,6 +745,51 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     (void)remove(imbe_path);
     (void)remove(amb_path);
     (void)remove(dmb_path);
+    return rc;
+}
+
+/* An .amb record's error byte is the frame's C0 count, and replay restores it as C0 context, so a replayed frame
+   repeats as it did live: a verified tone frame with 4 (uncorrectable) C0 errors repeats, where mbelib's no-context
+   rule would play it (a verified tone with fewer than 6 errors in all). */
+static int
+test_play_amb_record_repeats_as_live(void) {
+    int rc = 0;
+    char amb_path[1024];
+    char tone_bits[49] = {0};
+    for (int i = 0; i < 6; i++) {
+        tone_bits[i] = 1; /* the tone identifier (TIA-102.BABA-1 7) */
+    }
+    for (int i = 0; i < 8; i++) {
+        tone_bits[12 + i] = (char)((18 >> (7 - i)) & 1); /* tone ID 18 in U1[0..7] */
+    }
+    rc |=
+        create_mbe_playback_file(amb_path, sizeof amb_path, ".amb", saveAmbe2450Data, tone_bits, 4, "mbe_play_amb_c0");
+    if (rc != 0) {
+        return rc;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.optind = 1;
+    char* amb_argv[] = {"dsd-neo", amb_path};
+    playMbeFiles(&opts, &state, 2, amb_argv);
+    rc |= expect_eq_int("amb-c0-type", state.mbe_file_type, 1);
+    rc |= expect_eq_int("amb-c0-errs", state.errs, 4);
+    rc |= expect_eq_int("amb-c0-tone-repeats", strchr(state.err_str, 'R') != NULL, 1);
+
+    mbe_process_result fallback;
+    init_result(&fallback, 4, 0, 0U);
+    rc |= expect_eq_int("amb-no-context-process", process_ambe2450(tone_bits, &fallback) < 0, 0);
+    rc |= expect_eq_int("amb-no-context-plays-tone", result_has_marker(&fallback, 'R'), 0);
+    (void)remove(amb_path);
     return rc;
 }
 
@@ -5393,7 +5439,7 @@ test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio(void) {
         if (first == EOF && ferror(mbe_out)) {
             rc = 1;
         }
-        rc |= expect_eq_int("x2-slot2 saved err byte", first, expected_errs2 & 0xFF);
+        rc |= expect_eq_int("x2-slot2 saved err byte", first, expected_errs & 0xFF);
         int bytes = 0;
         while (fgetc(mbe_out) != EOF) {
             bytes++;
@@ -6426,6 +6472,7 @@ main(void) {
     rc |= test_imbe_unchanged_preserves_c0_c4_context();
     rc |= test_imbe_changed_strips_c0_c4_context();
     rc |= test_transformed_frame_keeps_c0_repeat_rule();
+    rc |= test_play_amb_record_repeats_as_live();
     rc |= test_keyring_tracks_aes_segment_metadata();
     rc |= test_process_mbe_frame_p25p1_suppresses_tail_erasure_hard();
     rc |= test_process_mbe_frame_p25p1_suppresses_tail_erasure_soft();
