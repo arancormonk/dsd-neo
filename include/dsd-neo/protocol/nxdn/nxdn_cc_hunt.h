@@ -73,6 +73,12 @@ void nxdn_cc_hunt_note_type_d(const dsd_opts* opts, dsd_state* state);
 void nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief A fresh tuner reading (a site message's query): the attribution takes it, so the next CAC agrees with the
+ * control channel it anchored, a receiver moved outside the decoder (an external VFO change) included.
+ */
+void nxdn_cc_hunt_note_tuner_frequency(const dsd_state* state, long freq_hz);
+
+/**
  * @brief Forget which frequency the receiver is on: a new rigctl connection's peer (a restarted receiver, say) may sit
  * anywhere, without any tune the decoder made. The next CAC asks the tuner again.
  */

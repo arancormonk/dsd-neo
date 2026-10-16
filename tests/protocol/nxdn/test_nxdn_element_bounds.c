@@ -18,6 +18,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -920,7 +921,9 @@ test_srv_info_anchors_control_channel_from_rigctl(void) {
     state->p25_cc_freq = 851012500L;
     state->trunk_cc_freq = 851012500L;
     state->nxdn_grant_chan = 77U;
-    g_current_rigctl_freq = 855262500L;
+    g_current_rigctl_freq = 851012500L;
+    nxdn_cc_hunt_note_control(opts, state); // a CAC on 851.0125: the hunt attributes the receiver there
+    g_current_rigctl_freq = 855262500L;     // the receiver moved outside the decoder (an external VFO change)
 
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
 
@@ -932,8 +935,11 @@ test_srv_info_anchors_control_channel_from_rigctl(void) {
     rc |= expect_string("srv-info-category", state->nxdn_location_category, "Global");
     rc |= expect_int("srv-info-cc-freq", (int)state->p25_cc_freq, (int)855262500L);
     rc |= expect_int("srv-info-trunk-cc-freq", (int)state->trunk_cc_freq, (int)855262500L);
+    nxdn_cc_hunt_note_control(opts, state); // the next CAC keeps what the site message's query found
+    rc |= expect_int("srv-info-cc-freq-after-cac", (int)state->p25_cc_freq, (int)855262500L);
 
     g_current_rigctl_freq = 0;
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;

@@ -510,6 +510,16 @@ nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state) {
 }
 
 void
+nxdn_cc_hunt_note_tuner_frequency(const dsd_state* state, long freq_hz) {
+    nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_peek(state);
+    if (ctx && freq_hz > 0) {
+        ctx->rx_freq_hz = freq_hz;
+        ctx->rx_generation = dsd_trunk_tuning_generation();
+        ctx->rx_valid = 1;
+    }
+}
+
+void
 nxdn_cc_hunt_forget_attribution(const dsd_state* state) {
     nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_peek(state);
     if (ctx) {

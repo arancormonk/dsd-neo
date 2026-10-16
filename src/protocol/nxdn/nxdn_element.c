@@ -164,6 +164,7 @@ nxdn_anchor_control_channel_from_current_tuner(const dsd_opts* opts, dsd_state* 
     if (ccfreq != 0) {
         state->p25_cc_freq = ccfreq;
         state->trunk_cc_freq = ccfreq;
+        nxdn_cc_hunt_note_tuner_frequency(state, ccfreq);
     }
 }
 
