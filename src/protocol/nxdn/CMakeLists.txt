@@ -8,6 +8,7 @@ target_sources(
         nxdn_confirm.c
         nxdn_convolution.c
         nxdn_crc.c
+        nxdn_data_call.c
         nxdn_dcr_utils.c
         nxdn_descramble.c
         nxdn_deperm.c

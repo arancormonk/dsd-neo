@@ -55,6 +55,7 @@
 #include <time.h>
 #include "nxdn_confirm.h"
 #include "nxdn_crc.h"
+#include "nxdn_internal.h"
 
 typedef void (*nxdn_element_handler_fn)(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                         size_t elements_bits);
@@ -64,7 +65,6 @@ struct nxdn_element_dispatch_entry {
     nxdn_element_handler_fn handler;
 };
 
-static void nxdn_reset_data_call_state(dsd_state* state);
 static void nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex, size_t duplex_sz, char* mode,
                                          size_t mode_sz);
 static void nxdn_print_group_label(const dsd_state* state, uint32_t id);
@@ -538,27 +538,6 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* El
     if (handler != NULL) {
         handler(opts, state, ElementsContent, elements_bits);
     }
-}
-
-static void
-nxdn_reset_data_call_state(dsd_state* state) {
-    if (state == NULL) {
-        return;
-    }
-
-    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-    state->data_header_blocks[0] = 1;
-    state->data_header_padding[0] = 0;
-    state->data_header_format[0] = 0;
-    state->data_header_valid[0] = 0;
-
-    state->payload_algid = 0;
-    state->payload_keyid = 0;
-    state->payload_mi = 0;
-    DSD_MEMSET(state->aes_ivR, 0, sizeof(state->aes_ivR));
-
-    state->dmr_lrrp_source[0] = 0;
-    state->dmr_lrrp_target[0] = 0;
 }
 
 static void

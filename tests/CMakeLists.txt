@@ -2109,6 +2109,7 @@ add_executable(
     dsd-neo_test_nxdn_cc_hunt
     protocol/nxdn/test_nxdn_cc_hunt.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_cc_hunt.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_data_call.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_alias_decode.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_crc.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
