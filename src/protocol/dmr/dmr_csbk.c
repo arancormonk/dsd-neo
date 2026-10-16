@@ -1670,25 +1670,32 @@ dmr_cspdu_cap_plus_handle_3b(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
 typedef struct {
     uint8_t fl;
     uint8_t ts;
-    uint8_t res;
     uint8_t rest_channel;
     uint8_t active_group_count;
     uint8_t bank_one;
     uint8_t bank_two;
     uint8_t ch[24];
     uint8_t pch[24];
+    uint16_t group_tg[16];   // per LSN, as the status carries it: one byte for each active group LSN
+    uint16_t private_tg[16]; // per LSN: one 16-bit ID for each active private/data LSN
     uint16_t decoded_targets[24];
     uint16_t t_tg[24];
     int start;
     int end;
 } dmr_cap_plus_3e_ctx;
 
+// A Cap+ rest LSN names one of the 16 logical slots; anything else announces none.
+static int
+dmr_cap_plus_rest_lsn_valid(int lsn) {
+    return lsn >= 1 && lsn <= 16;
+}
+
 static void
 dmr_cspdu_cap_plus_3e_init_ctx(dmr_cap_plus_3e_ctx* ctx, const uint8_t cs_pdu_bits[]) {
     ctx->fl = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 2);
     ctx->ts = cs_pdu_bits[18];
-    ctx->res = cs_pdu_bits[19];
-    ctx->rest_channel = (uint8_t)convert_bits_into_output(&cs_pdu_bits[20], 4);
+    // Five bits (19..23), as the public Cap+ decoders read it: four would never reach LSN 16.
+    ctx->rest_channel = (uint8_t)convert_bits_into_output(&cs_pdu_bits[19], 5);
     ctx->active_group_count = 0;
     ctx->bank_one = 0;
     ctx->bank_two = 0;
@@ -1696,6 +1703,8 @@ dmr_cspdu_cap_plus_3e_init_ctx(dmr_cap_plus_3e_ctx* ctx, const uint8_t cs_pdu_bi
     ctx->end = 16;
     DSD_MEMSET(ctx->ch, 0, sizeof(ctx->ch));
     DSD_MEMSET(ctx->pch, 0, sizeof(ctx->pch));
+    DSD_MEMSET(ctx->group_tg, 0, sizeof(ctx->group_tg));
+    DSD_MEMSET(ctx->private_tg, 0, sizeof(ctx->private_tg));
     DSD_MEMSET(ctx->decoded_targets, 0, sizeof(ctx->decoded_targets));
     DSD_MEMSET(ctx->t_tg, 0, sizeof(ctx->t_tg));
 }
@@ -1713,12 +1722,15 @@ dmr_cspdu_cap_plus_3e_get_block_num(dsd_state* state, uint8_t ts) {
 static uint8_t
 dmr_cspdu_cap_plus_3e_update_multiblock(dsd_state* state, const uint8_t cs_pdu_bits[], const dmr_cap_plus_3e_ctx* ctx,
                                         uint8_t block_num) {
+    // The assembled status is only as trustworthy as its weakest fragment, so its CRC flags accumulate with it.
+    const uint8_t burst_crc_invalid = state->event_crc_invalid[state->currentslot & 1];
     if (ctx->fl == 2 || ctx->fl == 3) {
         DSD_MEMSET(state->cap_plus_csbk_bits[ctx->ts], 0, sizeof(state->cap_plus_csbk_bits[ctx->ts]));
         for (int i = 0; i < 80; i++) {
             state->cap_plus_csbk_bits[ctx->ts][i] = cs_pdu_bits[i];
         }
         state->cap_plus_block_num[ctx->ts] = 0;
+        state->cap_plus_csbk_crc_invalid[ctx->ts] = burst_crc_invalid;
         return 0;
     }
 
@@ -1726,11 +1738,15 @@ dmr_cspdu_cap_plus_3e_update_multiblock(dsd_state* state, const uint8_t cs_pdu_b
         state->cap_plus_csbk_bits[ctx->ts][i + 80 + (56 * block_num)] = cs_pdu_bits[i + 24];
     }
     state->cap_plus_block_num[ctx->ts]++;
+    state->cap_plus_csbk_crc_invalid[ctx->ts] |= burst_crc_invalid;
     return (uint8_t)(block_num + 1);
 }
 
 static void
 dmr_cspdu_cap_plus_3e_sync_rest(const dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
+    if (!dmr_cap_plus_rest_lsn_valid(ctx->rest_channel)) {
+        return;
+    }
     if (ctx->rest_channel != state->dmr_rest_channel) {
         state->dmr_rest_channel = ctx->rest_channel;
     }
@@ -1741,8 +1757,8 @@ dmr_cspdu_cap_plus_3e_sync_rest(const dsd_opts* opts, dsd_state* state, const dm
 
 static void
 dmr_cspdu_cap_plus_3e_print_header(const dmr_cap_plus_3e_ctx* ctx) {
-    DSD_FPRINTF(stderr, " Capacity Plus Channel Status - FL: %d TS: %d RS: %d - Rest LSN: %d", ctx->fl, ctx->ts,
-                ctx->res, ctx->rest_channel);
+    DSD_FPRINTF(stderr, " Capacity Plus Channel Status - FL: %d TS: %d - Rest LSN: %d", ctx->fl, ctx->ts,
+                ctx->rest_channel);
     if (ctx->fl == 0) {
         DSD_FPRINTF(stderr, " - Appended Block");
     } else if (ctx->fl == 1) {
@@ -1762,6 +1778,8 @@ dmr_cspdu_cap_plus_3e_parse_group_banks(dsd_state* state, dmr_cap_plus_3e_ctx* c
     for (int i = 0; i < 8; i++) {
         ctx->ch[i] = state->cap_plus_csbk_bits[ctx->ts][i + 24];
         if (ctx->ch[i] == 1) {
+            ctx->group_tg[i] = (uint16_t)convert_bits_into_output(
+                &state->cap_plus_csbk_bits[ctx->ts][32 + (ctx->active_group_count * 8)], 8);
             ctx->active_group_count++;
         }
     }
@@ -1776,6 +1794,9 @@ dmr_cspdu_cap_plus_3e_parse_group_banks(dsd_state* state, dmr_cap_plus_3e_ctx* c
     for (int i = 0; i < 8; i++) {
         ctx->ch[i + 8] = state->cap_plus_csbk_bits[ctx->ts][i + 32 + (b2_start * 8)];
         if (ctx->ch[i + 8] == 1) {
+            // Bank two's bitmap byte sits between the two banks' talkgroups.
+            ctx->group_tg[i + 8] = (uint16_t)convert_bits_into_output(
+                &state->cap_plus_csbk_bits[ctx->ts][40 + (ctx->active_group_count * 8)], 8);
             ctx->active_group_count++;
         }
     }
@@ -1800,6 +1821,7 @@ dmr_cspdu_cap_plus_3e_parse_private_bank_one(dsd_state* state, dmr_cap_plus_3e_c
         DSD_FPRINTF(stderr, " LSN %02d:", i + 1);
         uint16_t private_target = (uint16_t)convert_bits_into_output(
             &state->cap_plus_csbk_bits[ctx->ts][56 + (k * 16) + (ctx->active_group_count * 8)], 16);
+        ctx->private_tg[i] = private_target;
         DSD_FPRINTF(stderr, " TGT %d;", private_target);
         k++;
         if (ctx->bank_one == 0) {
@@ -1826,9 +1848,11 @@ dmr_cspdu_cap_plus_3e_parse_private_bank_two(dsd_state* state, dmr_cap_plus_3e_c
         if (ctx->pch[i + 8] != 1) {
             continue;
         }
-        DSD_FPRINTF(stderr, " LSN %02d:", i + 1);
+        DSD_FPRINTF(stderr, " LSN %02d:", i + 9);
+        // Laid out as bank one's: the flag byte, the bitmap byte, then one 16-bit ID per active LSN.
         uint16_t private_target = (uint16_t)convert_bits_into_output(
-            &state->cap_plus_csbk_bits[ctx->ts][64 + (k * 16) + (ctx->active_group_count * 8) + (pd_b2 * 16)], 16);
+            &state->cap_plus_csbk_bits[ctx->ts][72 + (k * 16) + (ctx->active_group_count * 8) + (pd_b2 * 16)], 16);
+        ctx->private_tg[i + 8] = private_target;
         DSD_FPRINTF(stderr, " TGT %d;", private_target);
         k++;
         if (ctx->bank_two == 0) {
@@ -1898,18 +1922,16 @@ dmr_cspdu_cap_plus_3e_emit_row_breaks(int start, int i) {
 }
 
 static void
-dmr_cspdu_cap_plus_3e_render_slot(const dsd_opts* opts, dsd_state* state, dmr_cap_plus_3e_ctx* ctx, int i, int* k,
-                                  int* x, char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE]) {
+dmr_cspdu_cap_plus_3e_render_slot(const dsd_opts* opts, dmr_cap_plus_3e_ctx* ctx, int i,
+                                  char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE]) {
     char cap_active[20];
+    // Read from the parsed banks rather than counted here: which LSNs the window shows must not move the offsets.
     if (ctx->ch[i] == 1) {
-        uint16_t tg = (uint16_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][(*k * 8) + 32], 8);
+        uint16_t tg = ctx->group_tg[i];
         DSD_FPRINTF(stderr, tg ? "%5d;  " : "Group;  ", tg);
         ctx->decoded_targets[i] = tg;
         if (opts->trunk_tune_group_calls == 1) {
             ctx->t_tg[i] = tg;
-        }
-        if (tg != 0) {
-            (*k)++;
         }
         DSD_SNPRINTF(cap_active, sizeof(cap_active), "LSN:%d TG:%d; ", i + 1, tg);
         dsd_append(notice, DSD_RECENT_ACTIVITY_TEXT_SIZE, cap_active);
@@ -1917,15 +1939,11 @@ dmr_cspdu_cap_plus_3e_render_slot(const dsd_opts* opts, dsd_state* state, dmr_ca
     }
 
     if (ctx->pch[i] == 1) {
-        uint16_t tg = (uint16_t)convert_bits_into_output(
-            &state->cap_plus_csbk_bits[ctx->ts][(ctx->active_group_count * 8) + (*x * 16) + 56], 16);
+        uint16_t tg = ctx->private_tg[i];
         DSD_FPRINTF(stderr, tg ? "%5d;  " : " P||D;  ", tg);
         ctx->decoded_targets[i] = tg;
         if (opts->trunk_tune_private_calls == 1) {
             ctx->t_tg[i] = tg;
-        }
-        if (tg != 0) {
-            (*x)++;
         }
         if (opts->trunk_tune_private_calls == 1) {
             DSD_SNPRINTF(cap_active, sizeof(cap_active), "LSN:%d PC:%d; ", i + 1, tg);
@@ -1940,8 +1958,6 @@ dmr_cspdu_cap_plus_3e_render_slot(const dsd_opts* opts, dsd_state* state, dmr_ca
 static void
 dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dmr_cap_plus_3e_ctx* ctx) {
     char notices[17][DSD_RECENT_ACTIVITY_TEXT_SIZE] = {{0}};
-    int k = 0;
-    int x = 0;
 
     DSD_FPRINTF(stderr, "\n  ");
     (void)dsd_recent_activity_clear_all(state);
@@ -1950,12 +1966,9 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
     dmr_cspdu_cap_plus_3e_calc_window(ctx);
 
     for (int i = ctx->start; i < ctx->end; i++) {
-        if (i == 8) {
-            k++;
-        }
         dmr_cspdu_cap_plus_3e_emit_row_breaks(ctx->start, i);
         DSD_FPRINTF(stderr, "LSN %02d: ", i + 1);
-        dmr_cspdu_cap_plus_3e_render_slot(opts, state, ctx, i, &k, &x, notices[i + 1]);
+        dmr_cspdu_cap_plus_3e_render_slot(opts, ctx, i, notices[i + 1]);
     }
     for (int i = 1; i <= 16; i++) {
         if (notices[i][0] != '\0') {
@@ -1973,6 +1986,42 @@ dmr_cspdu_cap_plus_3e_set_branding(dsd_state* state) {
     DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "%s", "Cap+ ");
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%s", "");
+}
+
+// Hand the trunk SM the group each slot of the followed carrier is carrying, as this status names it. Cap+ follows a
+// call already in progress, so its voice LC header has usually gone by; this is what names the call when no LC on
+// the voice channel decodes. Group calls only: a private ID's position past bank one has no public layout.
+static void
+dmr_cspdu_cap_plus_3e_seed_carrier(const dsd_opts* opts, const dsd_state* state, const dmr_cap_plus_3e_ctx* ctx,
+                                   long freq, uint64_t generation_before) {
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    for (int slot = 0; slot < 2; slot++) {
+        uint32_t tg = 0U;
+        int lsn = 0;
+        for (int j = slot; j < 16; j += 2) {
+            if (state->trunk_chan_map[j + 1] == freq && ctx->ch[j] == 1 && ctx->group_tg[j] != 0U) {
+                tg = ctx->group_tg[j];
+                lsn = j + 1;
+                break;
+            }
+        }
+        dmr_sm_capplus_seed_arm(sm, slot, tg, lsn, freq, opts->rtlsdr_center_freq,
+                                state->cap_plus_csbk_crc_invalid[ctx->ts], generation_before);
+    }
+}
+
+// A later status that shows a seeded LSN idle or carrying another group means the call the seed named is gone.
+static void
+dmr_cspdu_cap_plus_3e_reconcile_seeds(const dmr_cap_plus_3e_ctx* ctx) {
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    for (int slot = 0; slot < 2; slot++) {
+        const int lsn = sm->capplus_seed[slot].lsn;
+        if (!sm->capplus_seed[slot].armed || lsn < 1 || lsn > 16) {
+            continue;
+        }
+        const uint32_t tg = (ctx->ch[lsn - 1] == 1) ? ctx->group_tg[lsn - 1] : 0U;
+        dmr_sm_capplus_seed_reconcile(sm, slot, lsn, tg);
+    }
 }
 
 static void
@@ -2001,10 +2050,12 @@ dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dm
 
         const long int grant_freq = state->trunk_chan_map[j + 1];
         const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
+        const uint64_t generation_before = dsd_trunk_tuning_generation();
         dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             break;
         }
+        dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, generation_before);
         if (old_rtl_center_freq != (uint32_t)grant_freq) {
             dmr_reset_blocks(opts, state);
         }
@@ -2032,6 +2083,9 @@ dmr_cspdu_cap_plus_3e_dump_payload(const dsd_opts* opts, dsd_state* state, const
 
 static void
 dmr_cspdu_cap_plus_3e_try_return_to_rest(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
+    if (!dmr_cap_plus_rest_lsn_valid(ctx->rest_channel)) {
+        return;
+    }
     const long rest = state->trunk_chan_map[ctx->rest_channel];
     if (opts->trunk_enable != 1 || rest <= 0) {
         return;
@@ -2076,6 +2130,7 @@ dmr_cspdu_cap_plus_handle_3e(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     int pd_b2 = dmr_cspdu_cap_plus_3e_parse_private_bank_one(state, &ctx);
     dmr_cspdu_cap_plus_3e_parse_private_bank_two(state, &ctx, pd_b2);
     dmr_cspdu_cap_plus_3e_render_activity(opts, state, &ctx);
+    dmr_cspdu_cap_plus_3e_reconcile_seeds(&ctx);
 
     dmr_cspdu_cap_plus_3e_set_branding(state);
     DSD_FPRINTF(stderr, "%s", KNRM);
@@ -2095,6 +2150,7 @@ dmr_cspdu_cap_plus_handle_3e(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     dmr_cspdu_cap_plus_3e_dump_payload(opts, state, &ctx, block_num);
     DSD_MEMSET(state->cap_plus_csbk_bits[ctx.ts], 0, sizeof(state->cap_plus_csbk_bits[ctx.ts]));
     state->cap_plus_block_num[ctx.ts] = 0;
+    state->cap_plus_csbk_crc_invalid[ctx.ts] = 0U;
     dmr_cspdu_cap_plus_3e_try_return_to_rest(opts, state, &ctx);
 }
 

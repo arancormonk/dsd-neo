@@ -70,6 +70,24 @@ typedef struct {
     int tg;               // Current talkgroup for this slot
 } dmr_sm_slot_ctx_t;
 
+/* How long a Capacity Plus channel-status seed waits for the voice it names (decode clock). Matches the status's own
+ * follow gate, which only tunes after two seconds without voice. */
+#define DMR_CAPPLUS_SEED_WINDOW_S 2.0
+
+/* The talkgroup a Capacity Plus channel status named for one slot of the carrier Cap+ just followed it to. Cap+
+ * tunes on the status alone, outside the grant path, so nothing else carries the call's identity until a voice LC
+ * decodes; a call whose LCs all fail would otherwise play with no talkgroup at all. */
+typedef struct {
+    int armed;
+    uint32_t tg;
+    int lsn;
+    long freq_hz;         // the LSN's channel-map frequency, as the call is published with
+    uint32_t receiver_hz; // opts->rtlsdr_center_freq right after the follow tune (the tuner may round it)
+    uint8_t crc_flags;    // DSD_CRC_* flags of every fragment of the status
+    double armed_m;       // decode clock
+    uint64_t generation;  // the tuning generation the arming tune completes into
+} dmr_sm_capplus_seed_t;
+
 /* ============================================================================
  * State Machine Context
  * ============================================================================ */
@@ -122,6 +140,9 @@ typedef struct {
     double hangtime_s;      // Hangtime after voice ends (default 2.0s)
     double grant_timeout_s; // Max wait for voice after grant (default 4.0s)
     double cc_grace_s;      // Confirmed CC loss grace (default 6.0s; probes get 2.0s)
+
+    // Capacity Plus channel-status identity, per slot (index 0 = TS1). Decoder thread only.
+    dmr_sm_capplus_seed_t capplus_seed[2];
 
     // Initialized flag
     int initialized;
@@ -181,6 +202,22 @@ int dmr_sm_cold_start_active(const dmr_sm_ctx_t* ctx);
 /** @brief Return 1 while the decoder's DMR tick has startup work: the window armed or a hunt running, or an IDLE
  *  admitted machine whose window the next tick arms (issue #703). Decoder thread, under the P25 SM tick guard. */
 int dmr_sm_cold_start_due(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Remember the group a Capacity Plus channel status named for @p slot of the carrier it was followed to.
+ *
+ * Called right after the follow tune was accepted, with the tuning generation read BEFORE that tune was requested and
+ * the receiver frequency the tune left in opts->rtlsdr_center_freq. @p tg 0 clears the slot. The seed only ever names
+ * a call whose voice LCs have not: see dmr_sm_emit_voice_sync().
+ */
+void dmr_sm_capplus_seed_arm(dmr_sm_ctx_t* ctx, int slot, uint32_t tg, int lsn, long freq_hz, uint32_t receiver_hz,
+                             uint8_t crc_flags, uint64_t generation_before_tune);
+
+/** @brief Forget the Capacity Plus channel-status seed of @p slot (-1: both). */
+void dmr_sm_capplus_seed_clear(dmr_sm_ctx_t* ctx, int slot);
+
+/** @brief Forget the seed of @p slot unless it still names @p tg on @p lsn, as a later channel status reports it. */
+void dmr_sm_capplus_seed_reconcile(dmr_sm_ctx_t* ctx, int slot, int lsn, uint32_t tg);
 
 /**
  * @brief Get current state machine state.

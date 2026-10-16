@@ -10,6 +10,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -1715,13 +1716,14 @@ test_capacity_plus_rest_channel_and_call_class_are_packed_fields(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
+    // The talkgroup is the byte at 40..47 alone: bits 24..39 (0x1234 here) are not part of it.
     build_regular_flco(bits, 0x04U, 0x10U, 0x00U, 0x123456U, 0xA5BEEFU);
-    write_bits_u64(bits, 52U, 9U, 4U);
+    write_bits_u64(bits, 51U, 9U, 5U);
     write_bits_u64(bits, 56U, 0xBEEFU, 16U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
     assert(irr == 0);
     assert(state.dmr_rest_channel == 9);
-    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 0x123456U, 0xBEEFU);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 0x56U, 0xBEEFU);
 
     irr = 0;
     dsd_state_ext_free_all(&state);
@@ -1734,6 +1736,430 @@ test_capacity_plus_rest_channel_and_call_class_are_packed_fields(void) {
     assert(irr == 0);
     assert(state.dmr_rest_channel == 3);
     assert_call(&state, 1U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_PRIVATE_VOICE, 0x654321U, 0xC0DEU);
+    dsd_state_ext_free_all(&state);
+}
+
+// A Cap+ group voice channel user (FID 0x10, FLCO 0x04) with set bits 24..39, as linked Cap+ sites send them.
+static void
+build_cap_plus_group_lc(uint8_t* bits, uint32_t bits24_39, uint32_t tg, uint32_t rest_lsn, uint32_t radio) {
+    DSD_MEMSET(bits, 0, 80);
+    write_bits_u64(bits, 2U, 0x04U, 6U);
+    write_bits_u64(bits, 8U, 0x10U, 8U);
+    write_bits_u64(bits, 24U, bits24_39, 16U);
+    write_bits_u64(bits, 40U, tg, 8U);
+    write_bits_u64(bits, 48U, 0x7U, 3U);
+    write_bits_u64(bits, 51U, rest_lsn, 5U);
+    write_bits_u64(bits, 56U, radio, 16U);
+}
+
+static void
+cap_plus_state_init(dsd_opts* opts, dsd_state* state, Event_History_I history[2]) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(history, 0, 2U * sizeof(history[0]));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state->event_history_s = history;
+    state->currentslot = 0;
+    state->dmr_rest_channel = -1;
+}
+
+// The reported fault: a talkgroup imported from RadioReference (Cap+ IDs run 1..255) never named the call, because the
+// header's talkgroup was read as bits 24..47.
+static void
+test_capacity_plus_header_names_the_imported_talkgroup(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_tg_policy_entry row;
+
+    cap_plus_state_init(&opts, &state, history);
+    assert(dsd_tg_policy_make_exact_entry(109U, "A", "Ops 109", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    assert(dsd_tg_policy_append_exact(&state, &row) == 0);
+
+    build_cap_plus_group_lc(bits, 0x2A01U, 109U, 3U, 4321U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 109U, 4321U);
+    const Event_History* staged = &history[0].Event_History_Items[0];
+    assert(staged->target_id == 109U);
+    assert(strcmp(staged->t_name, "Ops 109") == 0);
+    dsd_state_ext_free_all(&state);
+}
+
+// Cap+ follows calls already in progress, so the embedded LC usually supplies the identity. It carries the header's
+// layout, and a header and an embedded LC of one transmission must not disagree (which forks the call).
+static void
+test_capacity_plus_embedded_lc_matches_header_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // Late entry: the embedded LC alone names the call.
+    cap_plus_state_init(&opts, &state, history);
+    build_cap_plus_group_lc(bits, 0x2A01U, 214U, 5U, 0xBEEFU);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 214U, 0xBEEFU);
+    assert(state.dmr_rest_channel == 5);
+    dsd_state_ext_free_all(&state);
+
+    // Header first, then the embedded LCs of the same transmission: one epoch throughout.
+    cap_plus_state_init(&opts, &state, history);
+    build_cap_plus_group_lc(bits, 0x2A01U, 214U, 5U, 0xBEEFU);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    const uint64_t epoch = call.epoch;
+    for (int i = 0; i < 3; i++) {
+        irr = 0;
+        build_cap_plus_group_lc(bits, 0x2A01U, 214U, 5U, 0xBEEFU);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+        assert(irr == 0);
+    }
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch == epoch);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 214U, 0xBEEFU);
+    dsd_state_ext_free_all(&state);
+}
+
+// The rest LSN is five bits: LSN 16 is reachable, and 0 announces no rest channel rather than LSN 0.
+static void
+test_capacity_plus_rest_lsn_spans_sixteen_slots(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    cap_plus_state_init(&opts, &state, history);
+    build_cap_plus_group_lc(bits, 0U, 90U, 16U, 1001U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert(state.dmr_rest_channel == 16);
+
+    irr = 0;
+    build_cap_plus_group_lc(bits, 0U, 90U, 0U, 1001U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert(state.dmr_rest_channel == 16);
+    dsd_state_ext_free_all(&state);
+}
+
+// ---- Capacity Plus channel-status identity: the status that sends Cap+ to a carrier names the calls on it ----
+
+#define CAPPLUS_CC_FREQ   851000000L
+#define CAPPLUS_VC_FREQ   853000000L
+#define CAPPLUS_OTHER_VC  852000000L
+#define CAPPLUS_T0_NS     5000000000000ULL
+#define CAPPLUS_FRAME_NS  60000000ULL
+#define CAPPLUS_TG_SLOT0  109U
+#define CAPPLUS_TG_SLOT1  110U
+#define CAPPLUS_LSN_SLOT0 3
+#define CAPPLUS_LSN_SLOT1 4
+
+static dsd_trunk_tune_result s_capplus_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+static uint64_t s_capplus_tune_request = 0U;
+static uint64_t s_capplus_clock_ns = CAPPLUS_T0_NS;
+
+static dsd_trunk_tune_result
+capplus_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)state;
+    (void)ted_sps;
+    s_capplus_tune_request = request_id;
+    opts->rtlsdr_center_freq = (uint32_t)freq;
+    opts->trunk_is_tuned = 1;
+    return s_capplus_tune_result;
+}
+
+static void
+capplus_clock_advance(uint64_t ns) {
+    s_capplus_clock_ns += ns;
+    dsd_decode_clock_test_set_ns(s_capplus_clock_ns);
+}
+
+// A Cap+ site whose LSNs 3 and 4 are the two slots of the 853 MHz carrier, parked on its 851 MHz rest channel.
+static void
+capplus_follow_env(dsd_opts* opts, dsd_state* state, Event_History_I history[2]) {
+    cap_plus_state_init(opts, state, history);
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_enc_calls = 1;
+    opts->rtlsdr_center_freq = (uint32_t)CAPPLUS_CC_FREQ;
+    state->dmr_stereo = 1;
+    state->trunk_cc_freq = CAPPLUS_CC_FREQ;
+    state->trunk_chan_map[1] = CAPPLUS_CC_FREQ;
+    state->trunk_chan_map[2] = CAPPLUS_CC_FREQ;
+    state->trunk_chan_map[CAPPLUS_LSN_SLOT0] = CAPPLUS_VC_FREQ;
+    state->trunk_chan_map[CAPPLUS_LSN_SLOT1] = CAPPLUS_VC_FREQ;
+    state->trunk_chan_map[5] = CAPPLUS_OTHER_VC;
+    state->trunk_chan_map[6] = CAPPLUS_OTHER_VC;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    s_capplus_clock_ns = CAPPLUS_T0_NS;
+    dsd_decode_clock_use_test(s_capplus_clock_ns);
+    dsd_trunk_tuning_requests_reset();
+    s_capplus_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    s_capplus_tune_request = 0U;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = capplus_tune_to_freq,
+        .tune_to_cc_request = capplus_tune_to_freq,
+    });
+    dmr_sm_init(opts, state);
+}
+
+static void
+capplus_env_done(dsd_state* state) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(state);
+}
+
+// Single-block channel status (FL 3, TS1 bank) with rest LSN 1 and group calls on the given LSNs (0 = none).
+static void
+capplus_run_status(dsd_opts* opts, dsd_state* state, int lsn_a, uint32_t tg_a, int lsn_b, uint32_t tg_b) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 0x3EU;
+    bytes[1] = 0x10U;
+    write_bits_u64(bits, 16U, 3U, 2U);
+    write_bits_u64(bits, 19U, 1U, 5U);
+    size_t pos = 32U;
+    for (int lsn = 1; lsn <= 8; lsn++) {
+        const uint32_t tg = (lsn == lsn_a) ? tg_a : (lsn == lsn_b) ? tg_b : 0U;
+        if (tg != 0U) {
+            bits[24U + (size_t)(lsn - 1)] = 1U;
+            write_bits_u64(bits, pos, tg, 8U);
+            pos += 8U;
+        }
+    }
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+}
+
+// What the vocoder does on a voice frame no LC has named: open an identity-less epoch.
+static void
+capplus_anonymous_voice(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_VOICE,
+        .observed_m = dsd_decode_now_mono_s(),
+    };
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        (void)dsd_call_state_observe(state, &media_mark, DSD_CALL_BOUNDARY_BEGIN);
+        dsd_event_sync_slot(opts, state, slot);
+    }
+}
+
+// One voice superframe on @p slot: the sync burst, then the frames the vocoder marks.
+static void
+capplus_voice_superframe(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    capplus_clock_advance(CAPPLUS_FRAME_NS);
+    dmr_sm_emit_voice_sync(opts, state, slot);
+    capplus_anonymous_voice(opts, state, slot);
+    capplus_clock_advance(CAPPLUS_FRAME_NS);
+    dmr_sm_emit_voice_sync(opts, state, slot);
+}
+
+static uint64_t
+capplus_call_target(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return UINT64_MAX;
+    }
+    return call.ota_target_id;
+}
+
+// The review's case: Cap+ tunes on the status into calls in progress, no LC on the carrier decodes, and the calls still
+// show their talkgroups -- both slots of the carrier, by name.
+static void
+test_capacity_plus_status_names_calls_no_lc_named(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    dsd_tg_policy_entry row;
+
+    capplus_follow_env(&opts, &state, history);
+    assert(dsd_tg_policy_make_exact_entry(CAPPLUS_TG_SLOT0, "A", "Ops 109", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    assert(dsd_tg_policy_append_exact(&state, &row) == 0);
+    capplus_run_status(&opts, &state, CAPPLUS_LSN_SLOT0, CAPPLUS_TG_SLOT0, CAPPLUS_LSN_SLOT1, CAPPLUS_TG_SLOT1);
+    assert(opts.rtlsdr_center_freq == (uint32_t)CAPPLUS_VC_FREQ);
+
+    capplus_voice_superframe(&opts, &state, 0U);
+    capplus_voice_superframe(&opts, &state, 1U);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.kind == DSD_CALL_KIND_GROUP_VOICE);
+    assert(call.ota_target_id == CAPPLUS_TG_SLOT0);
+    assert(call.channel == (uint32_t)CAPPLUS_LSN_SLOT0);
+    assert(capplus_call_target(&state, 1U) == CAPPLUS_TG_SLOT1);
+    const Event_History* staged = &history[0].Event_History_Items[0];
+    assert(staged->target_id == CAPPLUS_TG_SLOT0);
+    assert(strcmp(staged->t_name, "Ops 109") == 0);
+    capplus_env_done(&state);
+}
+
+// A voice LC's identity always wins: the seed names only a call no LC has.
+static void
+test_capacity_plus_status_seed_yields_to_lc_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    capplus_follow_env(&opts, &state, history);
+    capplus_run_status(&opts, &state, CAPPLUS_LSN_SLOT0, CAPPLUS_TG_SLOT0, CAPPLUS_LSN_SLOT1, CAPPLUS_TG_SLOT1);
+    capplus_clock_advance(CAPPLUS_FRAME_NS);
+    state.currentslot = 0;
+    build_cap_plus_group_lc(bits, 0U, 214U, 1U, 4321U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+
+    capplus_voice_superframe(&opts, &state, 0U);
+    capplus_voice_superframe(&opts, &state, 1U);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 214U, 4321U);
+    assert(capplus_call_target(&state, 1U) == CAPPLUS_TG_SLOT1); // control: the other slot is seeded
+    capplus_env_done(&state);
+}
+
+// A seed belongs to the tune that armed it and the call the status named; once either is gone it names nothing. Each
+// case keeps slot 1 as the control that the same status does name its call.
+static void
+test_capacity_plus_status_seed_expires_with_its_carrier(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    for (int scenario = 0; scenario < 5; scenario++) {
+        capplus_follow_env(&opts, &state, history);
+        capplus_run_status(&opts, &state, CAPPLUS_LSN_SLOT0, CAPPLUS_TG_SLOT0, CAPPLUS_LSN_SLOT1, CAPPLUS_TG_SLOT1);
+        capplus_voice_superframe(&opts, &state, 1U);
+        assert(capplus_call_target(&state, 1U) == CAPPLUS_TG_SLOT1);
+
+        switch (scenario) {
+            case 0: // a later tune moved the receiver (trunk scan, the DMR SM, a return to rest)
+                dsd_trunk_tuning_generation_advance();
+                break;
+            case 1: // an operator retune: no tuning generation, only the receiver frequency moves
+                opts.rtlsdr_center_freq = (uint32_t)CAPPLUS_OTHER_VC;
+                break;
+            case 2: // no voice within the window
+                capplus_clock_advance((uint64_t)((DMR_CAPPLUS_SEED_WINDOW_S + 0.2) * 1e9));
+                break;
+            case 3: // the call ended (terminator) before its voice was heard here
+                state.currentslot = 0;
+                irr = 0;
+                build_cap_plus_group_lc(bits, 0U, CAPPLUS_TG_SLOT0, 1U, 4321U);
+                write_bits_u64(bits, 2U, 0x00U, 6U);
+                write_bits_u64(bits, 8U, 0x00U, 8U);
+                dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+                break;
+            default: // a later status, heard while voice runs, shows the LSN carrying another group
+                state.last_vc_sync_time = dsd_decode_time();
+                capplus_run_status(&opts, &state, CAPPLUS_LSN_SLOT0, 77U, CAPPLUS_LSN_SLOT1, CAPPLUS_TG_SLOT1);
+                break;
+        }
+        capplus_voice_superframe(&opts, &state, 0U);
+        assert(capplus_call_target(&state, 0U) == 0U);
+        capplus_env_done(&state);
+    }
+}
+
+// A follow tune accepted as PENDING: the seed waits for that tune to complete, then names the call.
+static void
+test_capacity_plus_status_seed_waits_for_pending_tune(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+
+    capplus_follow_env(&opts, &state, history);
+    s_capplus_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    capplus_run_status(&opts, &state, CAPPLUS_LSN_SLOT0, CAPPLUS_TG_SLOT0, 0, 0U);
+    assert(s_capplus_tune_request != 0U);
+    capplus_voice_superframe(&opts, &state, 0U);
+    assert(capplus_call_target(&state, 0U) == 0U);
+
+    dsd_trunk_tuning_request_publish(s_capplus_tune_request, DSD_TRUNK_TUNE_RESULT_OK);
+    capplus_voice_superframe(&opts, &state, 0U);
+    assert(capplus_call_target(&state, 0U) == CAPPLUS_TG_SLOT0);
+    capplus_env_done(&state);
+}
+
+// The status is only as trustworthy as its weakest fragment: a RAS-accepted initial block marks the call it names.
+static void
+test_capacity_plus_status_seed_carries_fragment_provenance(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[256];
+    uint8_t bytes[48];
+
+    capplus_follow_env(&opts, &state, history);
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 0x3EU;
+    bytes[1] = 0x10U;
+    write_bits_u64(bits, 16U, 2U, 2U); // initial block
+    write_bits_u64(bits, 19U, 1U, 5U);
+    bits[24U + (size_t)(CAPPLUS_LSN_SLOT0 - 1)] = 1U;
+    write_bits_u64(bits, 32U, CAPPLUS_TG_SLOT0, 8U);
+    state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    state.event_crc_invalid[0] = 0U;
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits_u64(bits, 16U, 1U, 2U); // final block, CRC clean
+    write_bits_u64(bits, 19U, 1U, 5U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+
+    capplus_voice_superframe(&opts, &state, 0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.ota_target_id == CAPPLUS_TG_SLOT0);
+    assert((call.crc_invalid & DSD_CRC_RAS_UNVERIFIED) != 0U);
+    capplus_env_done(&state);
+}
+
+// A verified Cap+ terminator still teaches the rest channel, and it ends the call without opening another.
+static void
+test_capacity_plus_terminator_reports_rest_lsn_and_ends_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    cap_plus_state_init(&opts, &state, history);
+    build_cap_plus_group_lc(bits, 0x2A01U, 109U, 3U, 4321U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    const uint64_t epoch = call.epoch;
+
+    irr = 0;
+    build_cap_plus_group_lc(bits, 0x2A01U, 109U, 16U, 4321U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert(state.dmr_rest_channel == 16);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch == epoch);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.ota_target_id == 109U);
     dsd_state_ext_free_all(&state);
 }
 
@@ -3034,6 +3460,15 @@ main(void) {
     test_hytera_flco_scan_hook_uses_final_call_type();
     test_td_lc_resets_slot_call_privacy_and_alias_state();
     test_capacity_plus_rest_channel_and_call_class_are_packed_fields();
+    test_capacity_plus_header_names_the_imported_talkgroup();
+    test_capacity_plus_embedded_lc_matches_header_identity();
+    test_capacity_plus_rest_lsn_spans_sixteen_slots();
+    test_capacity_plus_terminator_reports_rest_lsn_and_ends_call();
+    test_capacity_plus_status_names_calls_no_lc_named();
+    test_capacity_plus_status_seed_yields_to_lc_identity();
+    test_capacity_plus_status_seed_expires_with_its_carrier();
+    test_capacity_plus_status_seed_waits_for_pending_tune();
+    test_capacity_plus_status_seed_carries_fragment_provenance();
     test_hytera_xpt_alert_records_free_lcn_and_targets();
     test_cach_single_fragment_throttle_and_reject_paths();
     test_cach_single_fragment_labels_cover_known_and_reserved_codes();

@@ -2334,6 +2334,7 @@ no_carrier_reset_dmr_misc_state(dsd_state* state) {
     DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
     DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
+    DSD_MEMSET(state->cap_plus_csbk_crc_invalid, 0, sizeof(state->cap_plus_csbk_crc_invalid));
     DSD_MEMSET(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));
     DSD_MEMSET(state->dmr_embedded_signalling, 0, sizeof(state->dmr_embedded_signalling));
     DSD_MEMSET(state->late_entry_mi_fragment, 0, sizeof(state->late_entry_mi_fragment));

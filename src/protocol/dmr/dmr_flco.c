@@ -318,12 +318,33 @@ dmr_flco_handle_embedded_gps(dmr_flco_ctx* ctx) {
     }
 }
 
+// A rest LSN names one of the 16 Cap+ logical slots; anything else (0 included) announces none, so the last known
+// rest channel stands.
+static int
+dmr_flco_cap_plus_rest_lsn(uint32_t lsn) {
+    return (lsn >= 1U && lsn <= 16U) ? (int)lsn : -1;
+}
+
+// Motorola Capacity Plus voice channel users (FID 0x10). FLCO 0x04 is the group call: an 8-bit talkgroup at bits
+// 40..47, a 5-bit rest LSN at 51..55 and a 16-bit radio ID at 56..71, with bits 24..39 not part of the talkgroup
+// (the public Cap+ decoders read it this way, and the channel-status CSBK carries the same 8-bit group IDs). Cap+
+// talkgroups run 1..255, so reading bits 24..47 as a standard 24-bit target named a talkgroup no group list holds
+// whenever bits 24..39 were set. Every LC type carries this layout: Cap+ follows calls already in progress, so the
+// embedded LC usually supplies the identity, and it must match the header's. FLCO 0x07, the private call header,
+// has no published layout; its standard target, 16-bit source and 4-bit rest LSN are kept as they were.
 static void
 dmr_flco_handle_cap_plus(dmr_flco_ctx* ctx) {
-    if (ctx->type == 1 && ctx->fid == 0x10 && (ctx->flco == 0x04 || ctx->flco == 0x07)) {
+    if (ctx->fid != 0x10 || ctx->protected_lc) {
+        return;
+    }
+    if (ctx->flco == 0x04) {
         ctx->is_cap_plus = 1;
-        (void)convert_bits_into_output(&ctx->lc_bits[48], 4);
-        ctx->restchannel = (int)convert_bits_into_output(&ctx->lc_bits[52], 4);
+        ctx->target = (uint32_t)convert_bits_into_output(&ctx->lc_bits[40], 8);
+        ctx->restchannel = dmr_flco_cap_plus_rest_lsn((uint32_t)convert_bits_into_output(&ctx->lc_bits[51], 5));
+        ctx->source = (uint32_t)convert_bits_into_output(&ctx->lc_bits[56], 16);
+    } else if (ctx->type == 1 && ctx->flco == 0x07) {
+        ctx->is_cap_plus = 1;
+        ctx->restchannel = dmr_flco_cap_plus_rest_lsn((uint32_t)convert_bits_into_output(&ctx->lc_bits[52], 4));
         ctx->source = (uint32_t)convert_bits_into_output(&ctx->lc_bits[56], 16);
     }
 }
@@ -917,6 +938,8 @@ dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
     }
     const int ended = dsd_call_state_end_ex(ctx->state, ctx->slot, 0.0,
                                             verified ? DSD_CALL_END_TERMINATOR : DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    // Whatever call a Capacity Plus channel status named for this slot has ended with it.
+    dmr_sm_capplus_seed_clear(dmr_sm_get_ctx(), (int)ctx->slot);
     if (ended > 0) {
         dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
     }

@@ -180,7 +180,9 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   move announcement can select the next control/rest channel.
   A busy Capacity Plus rest announcement is followed when no call owns the tuner, including when advertised
   calls are blocked by policy. A followed call retains the tuner through its hangtime even when a status
-  announces no busy channels; its eventual return uses the announced rest channel.
+  announces no busy channels; its eventual return uses the announced rest channel. A followed Capacity Plus call
+  shows the talkgroup the status named for its slot until a voice LC names it, so a call whose LCs never decode
+  still shows its talkgroup; an LC that names another talkgroup replaces it.
   XPT free-channel hops do not start dedicated control-channel acquisition.
   DMR state-machine logs at verbosity 1 or higher identify `cc-lost`, `cc-probe`, `cc-listen`, `decoded-cc`,
   and failed tunes. `decoded-cc` is logged on acquisition even when the SM was already in its CC state.

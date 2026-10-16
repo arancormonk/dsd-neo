@@ -1848,6 +1848,7 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
     DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
+    DSD_MEMSET(state->cap_plus_csbk_crc_invalid, 0, sizeof(state->cap_plus_csbk_crc_invalid));
     DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
     DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
     DSD_MEMSET(state->data_header_format, 7, sizeof(state->data_header_format));
