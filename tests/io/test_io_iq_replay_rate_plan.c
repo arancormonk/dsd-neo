@@ -47,38 +47,44 @@ expect_true(const char* label, int cond) {
     return 0;
 }
 
-static dsd_iq_replay_config
+/* The helpers build their config in this scratch copy; each is passed straight to one expect_*() call, which copies
+   it before planning. */
+static dsd_iq_replay_config g_cfg;
+
+static const dsd_iq_replay_config*
 sidecar_cfg(uint32_t rate_hz, uint32_t base, uint32_t post, int bw_khz) {
-    dsd_iq_replay_config cfg;
-    DSD_MEMSET(&cfg, 0, sizeof(cfg));
-    cfg.container = DSD_IQ_REPLAY_CONTAINER_SIDECAR;
-    cfg.format = DSD_IQ_FORMAT_CU8;
-    cfg.sample_rate_hz = rate_hz;
-    cfg.base_decimation = base;
-    cfg.post_downsample = post;
-    cfg.demod_rate_hz = rate_hz / base / post;
-    cfg.rtl_dsp_bw_khz = bw_khz;
-    cfg.recorded_dsp_bw_khz = bw_khz;
+    dsd_iq_replay_config* cfg = &g_cfg;
+    DSD_MEMSET(cfg, 0, sizeof(*cfg));
+    cfg->container = DSD_IQ_REPLAY_CONTAINER_SIDECAR;
+    cfg->format = DSD_IQ_FORMAT_CU8;
+    cfg->sample_rate_hz = rate_hz;
+    cfg->base_decimation = base;
+    cfg->post_downsample = post;
+    cfg->demod_rate_hz = rate_hz / base / post;
+    cfg->rtl_dsp_bw_khz = bw_khz;
+    cfg->recorded_dsp_bw_khz = bw_khz;
     return cfg;
 }
 
-static dsd_iq_replay_config
+static const dsd_iq_replay_config*
 wav_cfg(uint32_t rate_hz) {
-    dsd_iq_replay_config cfg;
-    DSD_MEMSET(&cfg, 0, sizeof(cfg));
-    cfg.container = DSD_IQ_REPLAY_CONTAINER_WAV;
-    cfg.format = DSD_IQ_FORMAT_CF32;
-    cfg.sample_rate_hz = rate_hz;
-    cfg.base_decimation = 1U;
-    cfg.post_downsample = 1U;
-    cfg.demod_rate_hz = rate_hz;
+    dsd_iq_replay_config* cfg = &g_cfg;
+    DSD_MEMSET(cfg, 0, sizeof(*cfg));
+    cfg->container = DSD_IQ_REPLAY_CONTAINER_WAV;
+    cfg->format = DSD_IQ_FORMAT_CF32;
+    cfg->sample_rate_hz = rate_hz;
+    cfg->base_decimation = 1U;
+    cfg->post_downsample = 1U;
+    cfg->demod_rate_hz = rate_hz;
     return cfg;
 }
 
 /* The plan @p cfg gets, and that applying it leaves a chain that is consistent from its DSP input rate. */
 static int
-expect_plan(const char* label, dsd_iq_replay_config cfg, uint32_t target_hz, uint32_t required_hz, int explicit_target,
-            uint32_t want_dsp_in, uint32_t want_base, uint32_t want_post, uint32_t want_demod, int want_kept) {
+expect_plan(const char* label, const dsd_iq_replay_config* cfg_in, uint32_t target_hz, uint32_t required_hz,
+            int explicit_target, uint32_t want_dsp_in, uint32_t want_base, uint32_t want_post, uint32_t want_demod,
+            int want_kept) {
+    dsd_iq_replay_config cfg = *cfg_in;
     dsd_iq_replay_rate_plan plan;
     DSD_MEMSET(&plan, 0, sizeof(plan));
     char err[256] = {0};
@@ -121,8 +127,9 @@ expect_plan(const char* label, dsd_iq_replay_config cfg, uint32_t target_hz, uin
 }
 
 static int
-expect_refused(const char* label, dsd_iq_replay_config cfg, uint32_t target_hz, uint32_t required_hz,
+expect_refused(const char* label, const dsd_iq_replay_config* cfg_in, uint32_t target_hz, uint32_t required_hz,
                int explicit_target, const char* want_reason) {
+    dsd_iq_replay_config cfg = *cfg_in;
     dsd_iq_replay_rate_plan plan;
     DSD_MEMSET(&plan, 0, sizeof(plan));
     char err[256] = {0};
@@ -179,17 +186,17 @@ check_fixture(const char* name, void* user) {
     char label[512];
     /* No requirement: the recorded chain, whatever the target. */
     DSD_SNPRINTF(label, sizeof(label), "fixture %s keeps its chain", name);
-    walk->rc |= expect_plan(label, cfg, bw_hz, 0U, 0, rate, base, post, demod, 1);
+    walk->rc |= expect_plan(label, &cfg, bw_hz, 0U, 0, rate, base, post, demod, 1);
     DSD_SNPRINTF(label, sizeof(label), "fixture %s keeps its chain under a 72 kHz default", name);
-    walk->rc |= expect_plan(label, cfg, 72000U, 0U, 0, rate, base, post, demod, 1);
+    walk->rc |= expect_plan(label, &cfg, 72000U, 0U, 0, rate, base, post, demod, 1);
     /* TETRA's 18 kHz: kept where the CQPSK rate meets it. */
     if (strncmp(name, "tetra_", 6) == 0) {
         DSD_SNPRINTF(label, sizeof(label), "fixture %s under TETRA", name);
         if (post == 1U && ((rate / base) % 18000U) == 0U) {
-            walk->rc |= expect_plan(label, cfg, 72000U, 18000U, 0, rate, base, post, demod, 1);
+            walk->rc |= expect_plan(label, &cfg, 72000U, 18000U, 0, rate, base, post, demod, 1);
         } else {
             /* The 50 kHz source capture: only resampling reaches a TETRA rate. */
-            walk->rc |= expect_plan(label, cfg, 72000U, 18000U, 0, 72000U, 1U, 1U, 72000U, 0);
+            walk->rc |= expect_plan(label, &cfg, 72000U, 18000U, 0, 72000U, 1U, 1U, 72000U, 0);
             walk->tetra_resampled++;
         }
     }
@@ -274,13 +281,13 @@ test_refusals(void) {
     char err[64];
     rc |= expect_true("NULL config refused",
                       dsd_iq_replay_plan_rate(NULL, 48000U, 0U, 0, &plan, err, sizeof(err)) == DSD_IQ_ERR_INVALID_ARG);
-    dsd_iq_replay_config cfg = wav_cfg(48000U);
+    dsd_iq_replay_config cfg = *wav_cfg(48000U);
     rc |= expect_true("NULL plan refused",
                       dsd_iq_replay_plan_rate(&cfg, 48000U, 0U, 0, NULL, err, sizeof(err)) == DSD_IQ_ERR_INVALID_ARG);
     DSD_MEMSET(&plan, 0, sizeof(plan));
     rc |= expect_true("apply refuses an empty plan", dsd_iq_replay_apply_rate_plan(&cfg, &plan) != DSD_IQ_OK);
     rc |= expect_true("plan 48 kHz", dsd_iq_replay_plan_rate(&cfg, 48000U, 0U, 0, &plan, err, sizeof(err)) == 0);
-    dsd_iq_replay_config other = wav_cfg(96000U);
+    dsd_iq_replay_config other = *wav_cfg(96000U);
     rc |= expect_true("apply refuses a plan made for another capture rate",
                       dsd_iq_replay_apply_rate_plan(&other, &plan) == DSD_IQ_ERR_INVALID_ARG);
     return rc;
@@ -289,7 +296,7 @@ test_refusals(void) {
 static int
 test_dsp_input_rate(void) {
     int rc = 0;
-    dsd_iq_replay_config cfg = wav_cfg(48254U);
+    dsd_iq_replay_config cfg = *wav_cfg(48254U);
     rc |= expect_u32("dsp input rate 0 reads as the capture rate", dsd_iq_replay_dsp_input_rate_hz(&cfg), 48254U);
     cfg.dsp_input_rate_hz = 72000U;
     rc |= expect_u32("dsp input rate set", dsd_iq_replay_dsp_input_rate_hz(&cfg), 72000U);

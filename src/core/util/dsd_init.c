@@ -191,9 +191,8 @@ init_opts_radio_input_defaults(dsd_opts* opts) {
     DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", "127.0.0.1");
     opts->rtl_dsp_bw_khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ; // DSP baseband kHz (a selectable one). Not tuner IF BW.
     opts->rtl_dsp_bw_source = DSD_RTL_DSP_BW_SOURCE_DEFAULT;
-    opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
-    opts->rtlsdr_center_freq =
-        850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
+    opts->rtlsdr_ppm_error = 0;           // no frequency correction until one is set
+    opts->rtlsdr_center_freq = 850000000; // an initial tune, so a channel map user needs nothing beyond -i rtl
     dsd_airspy_config_defaults(&opts->airspy);
     DSD_MEMSET(&opts->airspy_info, 0, sizeof opts->airspy_info);
     opts->airspy_list = 0;

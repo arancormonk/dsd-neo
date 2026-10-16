@@ -72,7 +72,9 @@ dsd_test_grow_sparse(int fd, int64_t size) {
     }
     /* A filesystem without sparse files allocates the whole size: give the space back and skip. */
     if ((int64_t)st.st_blocks * 512 >= size) {
-        (void)ftruncate(fd, 0);
+        if (ftruncate(fd, 0) != 0) {
+            /* Skip either way: a failed shrink leaves only the test's own temp file large. */
+        }
         errno = ENOSPC;
         return -1;
     }

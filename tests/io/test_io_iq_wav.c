@@ -14,7 +14,6 @@
 #include <dsd-neo/io/iq_wav.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <errno.h>
-#include <float.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
@@ -531,12 +530,24 @@ test_every_encoding(void) {
 /* f64 is classified before it is narrowed: NaN becomes 0, infinities and anything past 1e6 are clamped. */
 static int
 test_f64_extremes(void) {
-    const double values[8] = {DBL_MAX, -DBL_MAX, INFINITY, -INFINITY, NAN, 1e6, -2e6, 0.25};
+    /* As bit patterns: a fast-math build may not name an infinity or a NaN in source. DBL_MAX, -DBL_MAX, +inf, -inf,
+       a quiet NaN, then the finite 1e6, -2e6 and 0.25. */
+    const double finite[3] = {1e6, -2e6, 0.25};
+    uint64_t bits64[8] = {0x7FEFFFFFFFFFFFFFULL,
+                          0xFFEFFFFFFFFFFFFFULL,
+                          0x7FF0000000000000ULL,
+                          0xFFF0000000000000ULL,
+                          0x7FF8000000000000ULL,
+                          0,
+                          0,
+                          0};
+    for (size_t i = 0; i < 3U; i++) {
+        DSD_MEMCPY(&bits64[5U + i], &finite[i], sizeof(bits64[0]));
+    }
     const double want[8] = {1e6, -1e6, 1e6, -1e6, 0.0, 1e6, -1e6, 0.25};
-    uint8_t raw[sizeof(values)];
+    uint8_t raw[sizeof(bits64)];
     for (size_t i = 0; i < 8U; i++) {
-        uint64_t u = 0;
-        DSD_MEMCPY(&u, &values[i], sizeof(u));
+        const uint64_t u = bits64[i];
         for (int k = 0; k < 8; k++) {
             raw[i * 8U + (size_t)k] = (uint8_t)(u >> (8 * k));
         }
