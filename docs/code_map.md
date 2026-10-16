@@ -3567,9 +3567,15 @@ Key public headers:
     callback and resumes the previous chain from the same checkpoint, and a recovery that fails too takes the caller's
     start-failure path. Callers: `RTL_SET_BW` on a replay, `decode_mode_apply_value()` (`decode_mode_replan_replay()`,
     TETRA on and off) and a config apply (`apply_cfg_replay_replan()`: `[mode]`, and an RTL-family `[input]`
-    `rtl_bw_khz` for the replay it leaves running). A replay's analog-width refusals name the DSP bandwidths that fit,
-    and TETRA's capture advice only a refused re-plan. Tests: `APP_COMMAND_QUEUE` (`test_replay_*`),
-    `RUNTIME_CONFIG_APPLY`.
+    `rtl_bw_khz` for the replay it leaves running). A refused or failed mode switch's restore puts back everything the
+    staged preset wrote (`decode_mode_restore_profile()`: the receive settings, the audio layout and the `[mode]`
+    extras). A config's gain restarts no replay (`apply_cfg_rtl_live_gain()`), so a config's one reopen is the
+    re-plan's. Checks made before a change hold an analog width to the rate the replay will run at
+    (`svc_replay_planned_rate_hz()` over `rtl_stream_replay_replan_check_request()`, then
+    `svc_check_analog_bandwidth_at_rate()`): a config's preflight (`CFG_REOPEN_AT_REPLAY_RATE`), `RTL_SET_BW`
+    (`svc_rtl_bandwidth_fits_analog_width()`) and a switch to Analog or AM (`ui_check_mode_receive_profile()`). A
+    replay's analog-width refusals name the DSP bandwidths that fit, and TETRA's capture advice only a refused re-plan.
+    Tests: `APP_COMMAND_QUEUE` (`test_replay_*`), `RUNTIME_CONFIG_APPLY`.
 
 Notes:
 

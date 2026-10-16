@@ -302,6 +302,23 @@ typedef enum rtl_stream_replan_verdict {
 int rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
                                    size_t why_size);
 
+/** What a replay's rate chain follows (issue #701): the DSP bandwidth request and whether the TETRA decoder runs. */
+typedef struct rtl_stream_replay_request {
+    int dsp_bw_khz;    /**< dsd_opts::rtl_dsp_bw_khz */
+    int dsp_bw_source; /**< dsd_opts::rtl_dsp_bw_source (a DSD_RTL_DSP_BW_SOURCE_* value) */
+    int frame_tetra;   /**< 1 when the TETRA decoder runs */
+} rtl_stream_replay_request;
+
+/**
+ * @brief rtl_stream_replay_replan_check() for a request a change has not yet put in @p opts: the chain the running
+ *        replay @p opts names would run for @p req, so a check made before anything changes (a config's preflight, a
+ *        bandwidth or mode command's width check) holds a width to the rate the replay will run at. Decoder thread.
+ *
+ * @return An rtl_stream_replan_verdict; RTL_STREAM_REPLAN_NO_REPLAY for a NULL @p req.
+ */
+int rtl_stream_replay_replan_check_request(const dsd_opts* opts, const rtl_stream_replay_request* req,
+                                           uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size);
+
 /**
  * @brief Where the last I/Q replay stream stopped (issue #701): the reader's position after the last capture chunk it
  *        handed the demodulator, for the next start to resume from (dsd_opts::iq_replay_resume). Decoder thread.

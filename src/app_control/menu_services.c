@@ -44,6 +44,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/tetra_rate.h>
+#include <limits.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -984,6 +985,19 @@ svc_rtl_stream_running(const dsd_opts* opts, const dsd_state* state) {
     return opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx;
 }
 
+int
+svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source, int frame_tetra) {
+    if (!opts || !dsd_opts_input_is_iq_replay(opts) || !svc_rtl_stream_running(opts, state)) {
+        return 0;
+    }
+    const rtl_stream_replay_request req = {bw_khz, bw_source, frame_tetra ? 1 : 0};
+    uint32_t rate_hz = 0U;
+    if (rtl_stream_replay_replan_check_request(opts, &req, &rate_hz, NULL, NULL, 0U) != RTL_STREAM_REPLAN_DIFFERS) {
+        return 0;
+    }
+    return rate_hz > (uint32_t)INT_MAX ? INT_MAX : (int)rate_hz;
+}
+
 #endif
 
 int
@@ -1244,6 +1258,18 @@ svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz, ch
         svc_why(why, why_size, "%s", text);
         LOG_WARN("%s.\n", text);
         return -1;
+    }
+    return svc_analog_width_fits_rtl_rate(kind, held_hz, rate_hz, why, why_size) ? 0 : -1;
+}
+
+int
+svc_check_analog_bandwidth_at_rate(int kind, int width_hz, int rate_hz, char* why, size_t why_size) {
+    if (svc_check_analog_bandwidth_at_device_rate(kind, width_hz, why, why_size) != 0) {
+        return -1;
+    }
+    const int held_hz = svc_analog_held_width_hz(kind, width_hz);
+    if (held_hz == 0) {
+        return 0;
     }
     return svc_analog_width_fits_rtl_rate(kind, held_hz, rate_hz, why, why_size) ? 0 : -1;
 }
@@ -2024,13 +2050,11 @@ svc_rtl_bw_width_fix(int kind, int max_hz, int row, char* fix, size_t fix_size) 
    width is a scan row's own (--nfm-bandwidth-hz or --am-bandwidth-hz), which the width controls do not edit: the toast
    names the row, and the only fix is the bandwidth. */
 static int
-svc_rtl_bandwidth_fits_width(const dsd_opts* opts, int kind, int configured_hz, int row, int khz, char* why,
-                             size_t why_size) {
+svc_rtl_bandwidth_fits_width(int kind, int configured_hz, int row, int khz, int rate_hz, char* why, size_t why_size) {
     const int width_hz = svc_analog_held_width_hz(kind, configured_hz);
     if (width_hz > 0 && !svc_analog_width_env_allows(kind, configured_hz, why, why_size)) {
         return 0; /* the reopen's start would refuse the width at any rate */
     }
-    const int rate_hz = svc_rtl_bw_dsp_rate_hz(opts, khz);
     if (width_hz <= 0 || rate_hz <= 0 || dsd_analog_width_realizable(width_hz, rate_hz)) {
         return 1;
     }
@@ -2065,13 +2089,19 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
     int kind = DSD_ANALOG_DEMOD_FM;
     int configured_hz = 0;
     (void)svc_configured_analog_width(opts, state, &kind, &configured_hz);
-    if (!svc_rtl_bandwidth_fits_width(opts, kind, configured_hz, 0, khz, why, why_size)) {
+    /* The rate the bandwidth gives: an RTL-SDR or rtl_tcp input's DSP bandwidth, or the rate a running I/Q replay
+       re-plans to for it (issue #701). */
+    int rate_hz = svc_rtl_bw_dsp_rate_hz(opts, khz);
+    if (rate_hz <= 0) {
+        rate_hz = svc_replay_planned_rate_hz(opts, state, khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT, opts->frame_tetra == 1);
+    }
+    if (!svc_rtl_bandwidth_fits_width(kind, configured_hz, 0, khz, rate_hz, why, why_size)) {
         return 0;
     }
     for (int row_kind = DSD_ANALOG_DEMOD_FM; row_kind <= DSD_ANALOG_DEMOD_AM; row_kind++) {
         if (svc_scan_width_beside_preset(opts, state, kind, row_kind)
-            && !svc_rtl_bandwidth_fits_width(
-                opts, row_kind, dsd_scan_mode_configured_analog_width(opts, state, row_kind), 0, khz, why, why_size)) {
+            && !svc_rtl_bandwidth_fits_width(row_kind, dsd_scan_mode_configured_analog_width(opts, state, row_kind), 0,
+                                             khz, rate_hz, why, why_size)) {
             return 0;
         }
     }
@@ -2082,8 +2112,8 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
     }
     /* A row without a width of its own runs the configured one (on a digital session, where the configured preset holds
        none): the width's own fix applies to it. */
-    return svc_rtl_bandwidth_fits_width(opts, opts->analog_demod, in_force_hz,
-                                        svc_row_sets_width(state, opts->analog_demod), khz, why, why_size);
+    return svc_rtl_bandwidth_fits_width(opts->analog_demod, in_force_hz, svc_row_sets_width(state, opts->analog_demod),
+                                        khz, rate_hz, why, why_size);
 }
 
 /* The requested DSP bandwidth a refused replay re-plan puts back. */

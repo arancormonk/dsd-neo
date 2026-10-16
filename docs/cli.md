@@ -416,7 +416,8 @@ Notes
 - A DSP bandwidth change, a decode mode switch that needs another rate (TETRA's), or a loaded config whose `[mode]` or
   `rtl_bw_khz` does, re-plans a running replay and reopens it where it stopped: the replay resumes about a chunk
   later (a few ms of capture are skipped), and the decode clock stays on the capture. A change no chain can run is
-  refused and the replay keeps running.
+  refused and the replay keeps running. An analog width is held to the rate the new chain runs at, and a config's
+  gain reopens nothing (a replay plays its capture's gain).
 - A capture that cannot be read to its end (an I/O error partway, or a data file cut short while it replays) ends the
   replay after the samples already read, as its end would, and `dsd-neo` exits with status 1.
 - Retuned captures with v2 replay event timelines can be replayed. Older retuned captures without an event timeline are

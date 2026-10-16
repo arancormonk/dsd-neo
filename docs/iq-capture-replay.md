@@ -271,7 +271,14 @@ During a replay, a change that plans another chain reopens the replay at the new
   `[input]` `rtl_bw_khz`.
 
 A change that plans the chain already running reopens nothing: a DSP bandwidth chosen while TETRA runs at 72 kHz is
-stored and takes effect when the mode leaves TETRA.
+stored and takes effect when the mode leaves TETRA. A config's gain reopens nothing either, since a replay plays the
+gain its capture recorded: a config with a gain and an `rtl_bw_khz` reopens the replay once, for the re-plan, where it
+stopped.
+
+An analog channel width beside the change is held to the rate the new chain runs at, not the one running: a config
+that sets a 48 kHz `rtl_bw_khz` and a 25 kHz NFM width on a replay running at 24 kHz applies. Under a 25 kHz NFM width,
+a config, DSP bandwidth row or `RTL_SET_BW` that narrows a 48 kHz replay to 24 kHz is refused before anything reopens,
+and so is a switch from TETRA back to the Analog monitor whose chain returns to 24 kHz.
 
 The resume is approximate. The stopped replay's reader leaves the position of the last capture chunk it handed the
 demodulator, and the reopened replay starts there, on the centre the last `RETUNE` before it set. What was still in

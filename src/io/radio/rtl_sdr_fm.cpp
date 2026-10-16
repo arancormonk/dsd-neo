@@ -7212,9 +7212,9 @@ static int g_replay_last_checkpoint_valid = 0;
  * preset or the default). A mode preset does not beat a recorded bandwidth, as the capture's chain is what the replay
  * reproduces. TETRA times its symbols only at a multiple of 18 kHz: a target that is not one becomes TETRA's 72 kHz. */
 static uint32_t
-stream_open_replay_target_hz(const dsd_opts* opts, const dsd_iq_replay_config* cfg, int* out_explicit) {
-    const int explicit_target = opts->rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT ? 1 : 0;
-    int khz = opts->rtl_dsp_bw_khz;
+stream_open_replay_target_hz(const rtl_stream_replay_request* req, const dsd_iq_replay_config* cfg, int* out_explicit) {
+    const int explicit_target = req->dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT ? 1 : 0;
+    int khz = req->dsp_bw_khz;
     if (!explicit_target && cfg->recorded_dsp_bw_khz > 0) {
         khz = cfg->recorded_dsp_bw_khz;
     }
@@ -7222,21 +7222,32 @@ stream_open_replay_target_hz(const dsd_opts* opts, const dsd_iq_replay_config* c
         khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ;
     }
     uint32_t target_hz = (uint32_t)khz * 1000U;
-    if (opts->frame_tetra == 1 && !dsd_tetra_dsp_rate_runs((int)target_hz)) {
+    if (req->frame_tetra == 1 && !dsd_tetra_dsp_rate_runs((int)target_hz)) {
         target_hz = (uint32_t)DSD_TETRA_DSP_BW_KHZ * 1000U;
     }
     *out_explicit = explicit_target;
     return target_hz;
 }
 
-/* The rate chain a replay of @p replay_cfg runs under @p opts (dsd_iq_replay_plan_rate()): DSD_IQ_OK with @p out_plan
- * and @p out_target_hz, or the planner's error with the reason in @p err_buf. */
+/* The request @p opts holds: its DSP bandwidth request and whether the TETRA decoder runs. */
+static rtl_stream_replay_request
+stream_replay_request_of(const dsd_opts* opts) {
+    rtl_stream_replay_request req;
+    req.dsp_bw_khz = opts->rtl_dsp_bw_khz;
+    req.dsp_bw_source = opts->rtl_dsp_bw_source;
+    req.frame_tetra = opts->frame_tetra == 1 ? 1 : 0;
+    return req;
+}
+
+/* The rate chain a replay of @p replay_cfg runs for @p req (dsd_iq_replay_plan_rate()): DSD_IQ_OK with @p out_plan and
+ * @p out_target_hz, or the planner's error with the reason in @p err_buf. */
 static int
-stream_plan_replay_rate(const dsd_opts* opts, const dsd_iq_replay_config* replay_cfg, dsd_iq_replay_rate_plan* out_plan,
-                        uint32_t* out_target_hz, char* err_buf, size_t err_buf_size) {
+stream_plan_replay_rate(const rtl_stream_replay_request* req, const dsd_iq_replay_config* replay_cfg,
+                        dsd_iq_replay_rate_plan* out_plan, uint32_t* out_target_hz, char* err_buf,
+                        size_t err_buf_size) {
     int explicit_target = 0;
-    const uint32_t target_hz = stream_open_replay_target_hz(opts, replay_cfg, &explicit_target);
-    const uint32_t required_hz = opts->frame_tetra == 1 ? (uint32_t)DSD_TETRA_SYMBOL_RATE_HZ : 0U;
+    const uint32_t target_hz = stream_open_replay_target_hz(req, replay_cfg, &explicit_target);
+    const uint32_t required_hz = req->frame_tetra == 1 ? (uint32_t)DSD_TETRA_SYMBOL_RATE_HZ : 0U;
     *out_target_hz = target_hz;
     return dsd_iq_replay_plan_rate(replay_cfg, target_hz, required_hz, explicit_target, out_plan, err_buf,
                                    err_buf_size);
@@ -7250,7 +7261,8 @@ stream_open_plan_replay_rate(const dsd_opts* opts, dsd_iq_replay_config* replay_
     uint32_t target_hz = 0U;
     dsd_iq_replay_rate_plan plan;
     char err_buf[256] = {0};
-    if (stream_plan_replay_rate(opts, replay_cfg, &plan, &target_hz, err_buf, sizeof(err_buf)) != DSD_IQ_OK
+    const rtl_stream_replay_request req = stream_replay_request_of(opts);
+    if (stream_plan_replay_rate(&req, replay_cfg, &plan, &target_hz, err_buf, sizeof(err_buf)) != DSD_IQ_OK
         || dsd_iq_replay_apply_rate_plan(replay_cfg, &plan) != DSD_IQ_OK) {
         LOG_ERROR("IQ replay: '%s' cannot run at the %u Hz DSP rate%s: %s.\n", replay_cfg->metadata_path,
                   (unsigned)target_hz, opts->frame_tetra == 1 ? " TETRA needs" : "",
@@ -8448,6 +8460,16 @@ rtl_stream_replay_checkpoint(dsd_iq_replay_checkpoint* out) {
 extern "C" int
 rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
                                size_t why_size) {
+    if (!opts) {
+        return rtl_stream_replay_replan_check_request(opts, NULL, out_dsp_rate_hz, out_resampled, why, why_size);
+    }
+    const rtl_stream_replay_request req = stream_replay_request_of(opts);
+    return rtl_stream_replay_replan_check_request(opts, &req, out_dsp_rate_hz, out_resampled, why, why_size);
+}
+
+extern "C" int
+rtl_stream_replay_replan_check_request(const dsd_opts* opts, const rtl_stream_replay_request* req,
+                                       uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size) {
     if (why && why_size > 0U) {
         why[0] = '\0';
     }
@@ -8457,8 +8479,8 @@ rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, 
     if (out_resampled) {
         *out_resampled = 0;
     }
-    const char* path = radio_source_replay_path(opts);
-    if (!opts || !path || path[0] == '\0' || !g_replay_plan_in_force.valid || !stream_is_replay_active()) {
+    const char* path = opts ? radio_source_replay_path(opts) : NULL;
+    if (!opts || !req || !path || path[0] == '\0' || !g_replay_plan_in_force.valid || !stream_is_replay_active()) {
         return RTL_STREAM_REPLAN_NO_REPLAY;
     }
     dsd_iq_replay_config cfg;
@@ -8472,7 +8494,7 @@ rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, 
     }
     dsd_iq_replay_rate_plan plan;
     uint32_t target_hz = 0U;
-    const int rc = stream_plan_replay_rate(opts, &cfg, &plan, &target_hz, err, sizeof(err));
+    const int rc = stream_plan_replay_rate(req, &cfg, &plan, &target_hz, err, sizeof(err));
     dsd_iq_replay_config_clear(&cfg);
     if (rc != DSD_IQ_OK) {
         if (why && why_size > 0U) {

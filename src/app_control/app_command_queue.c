@@ -3421,6 +3421,14 @@ apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
        bandwidth, which its spec cannot carry, wait for an [input] that reopens the device. */
     opts->rtlsdr_center_freq = before->input.rtlsdr_center_freq;
     dsd_opts_set_rtl_dsp_bw(opts, before->input.rtl_dsp_bw_khz, before->input.rtl_dsp_bw_source);
+    /* An I/Q replay plays the gain its capture recorded (its open sets it), so a new gain reopens nothing: a restart
+       would rewind the replay to its first sample and put decode time back on the system clock. A bandwidth request
+       or a mode the replay's rate follows goes to its re-plan (apply_cfg_replay_replan()), which reopens it once,
+       where it stopped (issue #701). */
+    if (dsd_opts_input_is_iq_replay(opts)) {
+        opts->rtl_gain_value = before->input.rtl_gain_value;
+        return 0;
+    }
     if (!dsd_user_config_rtl_gain_is_set(cfg) || cfg->input_source == DSDCFG_INPUT_AIRSPY) {
         return 0;
     }
@@ -5302,15 +5310,28 @@ ui_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdn
     }
     /* The Analog preset selects NFM and AM the AM detector, each keeping the configured width of its kind
        (dsd_apply_decode_mode_preset()). */
+    int kind = -1;
+    int width_hz = 0;
     if (mode == DSDCFG_MODE_AM && opts->m17encoder != 1) {
-        return svc_check_analog_bandwidth(opts, state, DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz, why,
-                                          why_size);
+        kind = DSD_ANALOG_DEMOD_AM;
+        width_hz = opts->analog_am_bandwidth_hz;
+    } else if (mode == DSDCFG_MODE_ANALOG && opts->m17encoder != 1 && opts->analog_nfm_bandwidth_hz > 0) {
+        kind = DSD_ANALOG_DEMOD_FM;
+        width_hz = opts->analog_nfm_bandwidth_hz;
     }
-    if (mode == DSDCFG_MODE_ANALOG && opts->m17encoder != 1 && opts->analog_nfm_bandwidth_hz > 0) {
-        return svc_check_analog_bandwidth(opts, state, DSD_ANALOG_DEMOD_FM, opts->analog_nfm_bandwidth_hz, why,
-                                          why_size);
+    if (kind < 0) {
+        return svc_check_mode_receive_profile(opts, state, mode);
     }
-    return svc_check_mode_receive_profile(opts, state, mode);
+#ifdef USE_RADIO
+    /* A running replay the change re-plans (leaving TETRA's rate, issue #701) runs the width at the rate the request
+       plans, not the one it runs. */
+    const int replay_rate_hz =
+        svc_replay_planned_rate_hz(opts, state, opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, 0);
+    if (replay_rate_hz > 0) {
+        return svc_check_analog_bandwidth_at_rate(kind, width_hz, replay_rate_hz, why, why_size);
+    }
+#endif
+    return svc_check_analog_bandwidth(opts, state, kind, width_hz, why, why_size);
 }
 
 /* The analog monitor block the decoder has part-collected holds the old family's samples (a digital session collects
@@ -7051,7 +7072,36 @@ typedef enum {
     CFG_REOPEN_AT_DEVICE_RATE,  /* a SoapySDR or Airspy device, at the rate the device delivers */
     CFG_REOPEN_AT_RUNNING_RATE, /* the running device at the rate it runs now: an Airspy for its monitor volume
                                    alone, or any device for a new gain under the same spec */
+    CFG_REOPEN_AT_REPLAY_RATE,  /* a running I/Q replay the config leaves running, re-planned at the rate its new DSP
+                                   bandwidth request or decode mode plans (cfg_replay_rate_hz(), issue #701) */
 } cfg_reopen_kind;
+
+/*
+ * The DSP rate a running I/Q replay the config leaves running re-plans to (apply_cfg_replay_replan(), issue #701): for
+ * the bandwidth request an RTL-family [input]'s rtl_bw_khz makes, and whether the [mode] runs TETRA. 0 when no replay
+ * runs, the config keeps the chain it runs, or no chain reaches it (the apply's re-plan refuses that, with the
+ * planner's reason).
+ */
+static int
+cfg_replay_rate_hz(const dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
+#ifdef USE_RADIO
+    int bw_khz = opts->rtl_dsp_bw_khz;
+    int bw_source = opts->rtl_dsp_bw_source;
+    if (cfg_uses_rtl_runtime(cfg) && cfg->rtl_bw_khz) {
+        bw_khz = dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz);
+        bw_source = DSD_RTL_DSP_BW_SOURCE_EXPLICIT;
+    }
+    const int frame_tetra = (cfg->has_mode && cfg->decode_mode != DSDCFG_MODE_UNSET)
+                                ? cfg->decode_mode == DSDCFG_MODE_TETRA
+                                : opts->frame_tetra == 1;
+    return svc_replay_planned_rate_hz(opts, state, bw_khz, bw_source, frame_tetra);
+#else
+    (void)opts;
+    (void)state;
+    (void)cfg;
+    return 0;
+#endif
+}
 
 /*
  * A running RTL-family input (an RTL-SDR, rtl_tcp, SoapySDR or Airspy one) is reopened when the config's [input]
@@ -7108,9 +7158,13 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
     }
     /* A config that builds no spec (an [input] without rtl_freq, say) leaves the running one, as one that builds the
        same spec does: either way the input restarts for a new gain alone, at the rate it runs
-       (apply_cfg_rtl_live_gain()). */
+       (apply_cfg_rtl_live_gain()). An I/Q replay never restarts for a gain: it reopens, where it stopped, only when
+       the config re-plans its rate (apply_cfg_replay_replan()). */
     if (dsd_user_config_radio_input_spec(cfg, opts, spec, sizeof spec) != 0
         || strncmp(spec, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
+        if (dsd_opts_input_is_iq_replay(opts)) {
+            return cfg_replay_rate_hz(opts, state, cfg) > 0 ? CFG_REOPEN_AT_REPLAY_RATE : CFG_REOPEN_NONE;
+        }
         return cfg_gain_restarts_running_input(opts, state, cfg) ? CFG_REOPEN_AT_RUNNING_RATE : CFG_REOPEN_NONE;
     }
     return (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP)
@@ -7127,11 +7181,17 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
  * and the fix.
  */
 static int
-cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int kind, int reopen_bw_khz, int width_hz) {
+cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int kind, int reopen_bw_khz, int reopen_rate_hz,
+                       int width_hz) {
     char why[128];
-    const int rc = (reopen_bw_khz > 0)
-                       ? svc_check_analog_bandwidth_for_rtl_bw(kind, width_hz, reopen_bw_khz, why, sizeof why)
-                       : svc_check_analog_bandwidth(opts, state, kind, width_hz, why, sizeof why);
+    int rc = 0;
+    if (reopen_rate_hz > 0) {
+        rc = svc_check_analog_bandwidth_at_rate(kind, width_hz, reopen_rate_hz, why, sizeof why);
+    } else if (reopen_bw_khz > 0) {
+        rc = svc_check_analog_bandwidth_for_rtl_bw(kind, width_hz, reopen_bw_khz, why, sizeof why);
+    } else {
+        rc = svc_check_analog_bandwidth(opts, state, kind, width_hz, why, sizeof why);
+    }
     if (rc == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
@@ -7161,6 +7221,9 @@ cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUse
                                                    sizeof why);
     } else if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
         rc = svc_check_analog_bandwidth_at_device_rate(kind, row->channel_bw_hz, why, sizeof why);
+    } else if (reopen == CFG_REOPEN_AT_REPLAY_RATE) {
+        rc = svc_check_analog_bandwidth_at_rate(kind, row->channel_bw_hz, cfg_replay_rate_hz(opts, state, cfg), why,
+                                                sizeof why);
     }
     if (rc == 0) {
         return UI_CMD_APPLY_COMPLETED;
@@ -7191,8 +7254,11 @@ cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneo
         return UI_CMD_APPLY_FAILED;
     }
     const int reopen_bw_khz = (reopen == CFG_REOPEN_AT_RTL_BW) ? cfg_reopen_rtl_bw_khz(opts, cfg) : 0;
-    const int holds = width_hz != dsd_app_analog_width_setting_hz(opts, kind) || reopen_bw_khz > 0 || opens_anew;
-    return holds ? cfg_check_analog_width(opts, state, kind, reopen_bw_khz, width_hz) : UI_CMD_APPLY_COMPLETED;
+    const int reopen_rate_hz = (reopen == CFG_REOPEN_AT_REPLAY_RATE) ? cfg_replay_rate_hz(opts, state, cfg) : 0;
+    const int holds = width_hz != dsd_app_analog_width_setting_hz(opts, kind) || reopen_bw_khz > 0 || reopen_rate_hz > 0
+                      || opens_anew;
+    return holds ? cfg_check_analog_width(opts, state, kind, reopen_bw_khz, reopen_rate_hz, width_hz)
+                 : UI_CMD_APPLY_COMPLETED;
 }
 
 /*

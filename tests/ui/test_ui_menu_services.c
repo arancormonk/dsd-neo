@@ -620,6 +620,18 @@ rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, 
 }
 
 int
+rtl_stream_replay_replan_check_request(const dsd_opts* opts, const rtl_stream_replay_request* req,
+                                       uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size) {
+    (void)opts;
+    (void)req;
+    (void)out_dsp_rate_hz;
+    (void)out_resampled;
+    (void)why;
+    (void)why_size;
+    return RTL_STREAM_REPLAN_NO_REPLAY;
+}
+
+int
 rtl_stream_replay_checkpoint(dsd_iq_replay_checkpoint* out) {
     (void)out;
     return -1;

@@ -448,6 +448,19 @@ int svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz
 int svc_check_analog_bandwidth_at_device_rate(int kind, int width_hz, char* why, size_t why_size);
 
 /**
+ * @brief Check a channel width of analog @p kind against DSP rate @p rate_hz a change is about to run (issue #701): the
+ * rate a running I/Q replay re-plans to (svc_replay_planned_rate_hz()), where the running stream's rate says nothing
+ * about the rate the width will run at.
+ *
+ * The rules every rate shares (svc_check_analog_bandwidth_at_device_rate()), then an explicit width, or the AM default,
+ * must fit @p rate_hz; a refusal is reported and logged as svc_check_analog_bandwidth() reports one, with the DSP
+ * bandwidth as the fix. The unset NFM default (0) and @p rate_hz <= 0 are never refused for a rate.
+ *
+ * @return 0 when the width may be applied, -1 otherwise (reason in @p why, may be NULL).
+ */
+int svc_check_analog_bandwidth_at_rate(int kind, int width_hz, int rate_hz, char* why, size_t why_size);
+
+/**
  * @brief A short reason the front end refused a channel width of analog @p kind (@p width_hz: 0 for the kind's
  * default), for a toast.
  *
@@ -814,6 +827,21 @@ int svc_check_started_stream_analog(const dsd_opts* opts, int kind, int width_hz
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** Restart without acquiring; caller holds the P25 SM tick guard. */
 int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief The DSP rate a running I/Q replay will run at for a DSP bandwidth request of @p bw_khz from @p bw_source with
+ *        the TETRA decoder on or off (@p frame_tetra), when that request re-plans it (issue #701). Decoder thread.
+ *
+ * For a check made before a change puts the request in force (a config's preflight, RTL_SET_BW's and a mode change's
+ * width checks): a width the change leaves in force is held to this rate, not the running stream's.
+ *
+ * @return The rate in Hz when the input in force is a replay with a stream running and the request plans a chain other
+ *         than the one it runs (rtl_stream_replay_replan_check_request()); 0 otherwise: no replay runs, it keeps its
+ *         chain (the running stream's rate holds), or no chain reaches the request (the re-plan refuses it, with the
+ *         planner's reason).
+ */
+int svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source,
+                               int frame_tetra);
 
 /** What svc_rtl_replay_replan_locked() did (issue #701). */
 typedef enum {
