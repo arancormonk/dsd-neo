@@ -20,6 +20,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
@@ -7195,6 +7196,7 @@ replay_config_check_tuner_frequencies(const dsd_iq_replay_config* cfg) {
 
 /* The rate chain the running replay was planned to (issue #701), for rtl_stream_replay_replan_check(), and where the
  * last replay stream stopped, for rtl_stream_replay_checkpoint(). Decoder thread: the stream opens and stops there. */
+namespace {
 struct ReplayPlanInForce {
     int valid;
     uint32_t dsp_input_rate_hz;
@@ -7202,6 +7204,7 @@ struct ReplayPlanInForce {
     uint32_t post_downsample;
     uint32_t demod_rate_hz;
 };
+} // namespace
 
 static ReplayPlanInForce g_replay_plan_in_force = {};
 static dsd_iq_replay_checkpoint g_replay_last_checkpoint = {};
@@ -7283,6 +7286,32 @@ stream_open_plan_replay_rate(const dsd_opts* opts, dsd_iq_replay_config* replay_
     return 0;
 }
 
+/* How the options play the replay: looped or not, at the capture's pace or as fast as it decodes, and, for a run-time
+ * re-plan (issue #701), from where the stopped stream left it, on the centre a RETUNE before that point moved the
+ * capture to. 0, or -1 for a checkpoint the capture does not hold. */
+static int
+stream_open_replay_play_options(const dsd_opts* opts, const char* replay_path, dsd_iq_replay_config* replay_cfg) {
+    replay_cfg->loop = opts->iq_replay_loop ? 1 : 0;
+    replay_cfg->realtime = (opts->iq_replay_rate_mode == DSD_IQ_REPLAY_RATE_REALTIME) ? 1 : 0;
+    if (!opts->iq_replay_resume_pending) {
+        return 0;
+    }
+    char err_buf[256];
+    uint64_t center_hz = 0U;
+    uint64_t capture_center_hz = 0U;
+    if (dsd_iq_replay_resume_check(replay_cfg, &opts->iq_replay_resume, &center_hz, &capture_center_hz, err_buf,
+                                   sizeof(err_buf))
+        != DSD_IQ_OK) {
+        LOG_ERROR("IQ replay: cannot resume '%s': %s.\n", replay_path, err_buf);
+        return -1;
+    }
+    replay_cfg->resume = 1;
+    replay_cfg->resume_at = opts->iq_replay_resume;
+    replay_cfg->center_frequency_hz = center_hz;
+    replay_cfg->capture_center_frequency_hz = capture_center_hz;
+    return 0;
+}
+
 static int
 stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, dsd_iq_replay_config* replay_cfg,
                                   int* replay_cfg_loaded, int* out_dsp_bw_hz) {
@@ -7307,23 +7336,8 @@ stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, d
     /* From here the parsed metadata may own allocations (its event list), so the caller clears it whether or not the
        replay goes on to start. */
     *replay_cfg_loaded = 1;
-    replay_cfg->loop = opts->iq_replay_loop ? 1 : 0;
-    replay_cfg->realtime = (opts->iq_replay_rate_mode == DSD_IQ_REPLAY_RATE_REALTIME) ? 1 : 0;
-    if (opts->iq_replay_resume_pending) {
-        /* A run-time re-plan reopens the replay where the stopped stream left it (issue #701), on the centre a RETUNE
-           before that point moved the capture to. */
-        uint64_t center_hz = 0U;
-        uint64_t capture_center_hz = 0U;
-        if (dsd_iq_replay_resume_check(replay_cfg, &opts->iq_replay_resume, &center_hz, &capture_center_hz, err_buf,
-                                       sizeof(err_buf))
-            != DSD_IQ_OK) {
-            LOG_ERROR("IQ replay: cannot resume '%s': %s.\n", replay_path, err_buf);
-            return -1;
-        }
-        replay_cfg->resume = 1;
-        replay_cfg->resume_at = opts->iq_replay_resume;
-        replay_cfg->center_frequency_hz = center_hz;
-        replay_cfg->capture_center_frequency_hz = capture_center_hz;
+    if (stream_open_replay_play_options(opts, replay_path, replay_cfg) != 0) {
+        return -1;
     }
     if (replay_config_check_tuner_frequencies(replay_cfg) != 0) {
         return -1;
@@ -8208,6 +8222,28 @@ stream_open_finalize_rate_chain(RadioSourceKind source_kind, const dsd_opts* opt
     return 0;
 }
 
+/* An Airspy's native rate, read once its device is open, and an input ring with the default ring's time capacity at
+ * that rate. */
+static int
+stream_open_size_airspy_input(dsd_opts* opts) {
+    if (rtl_device_airspy_info(rtl_device_handle, &opts->airspy_info) != 0) {
+        return -1;
+    }
+    /* Preserve the default ring's time capacity at higher native rates. */
+    size_t capacity = (size_t)MAXIMUM_BUF_LENGTH * 8U;
+    uint64_t needed = ((uint64_t)capacity * opts->airspy_info.sample_rate + 3199999U) / 3200000U;
+    while (capacity < needed) {
+        capacity *= 2;
+    }
+    input_ring_destroy(&input_ring);
+    if (input_ring_init(&input_ring, capacity) != 0) {
+        return -1;
+    }
+    input_ring_enable_space_notify(&input_ring, 0);
+    dongle.centered_iq = 1;
+    return 0;
+}
+
 static int
 stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind,
                                      const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded,
@@ -8237,22 +8273,8 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (stream_open_open_device(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
         return -1;
     }
-    if (source_kind == RADIO_SOURCE_AIRSPY) {
-        if (rtl_device_airspy_info(rtl_device_handle, &opts->airspy_info) != 0) {
-            return -1;
-        }
-        /* Preserve the default ring's time capacity at higher native rates. */
-        size_t capacity = (size_t)MAXIMUM_BUF_LENGTH * 8U;
-        uint64_t needed = ((uint64_t)capacity * opts->airspy_info.sample_rate + 3199999U) / 3200000U;
-        while (capacity < needed) {
-            capacity *= 2;
-        }
-        input_ring_destroy(&input_ring);
-        if (input_ring_init(&input_ring, capacity) != 0) {
-            return -1;
-        }
-        input_ring_enable_space_notify(&input_ring, 0);
-        dongle.centered_iq = 1;
+    if (source_kind == RADIO_SOURCE_AIRSPY && stream_open_size_airspy_input(opts) != 0) {
+        return -1;
     }
     if (stream_open_validate_device_capture_rate(source_kind) != 0) {
         return -1;
@@ -8467,22 +8489,10 @@ rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, 
     return rtl_stream_replay_replan_check_request(opts, &req, out_dsp_rate_hz, out_resampled, why, why_size);
 }
 
-extern "C" int
-rtl_stream_replay_replan_check_request(const dsd_opts* opts, const rtl_stream_replay_request* req,
-                                       uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size) {
-    if (why && why_size > 0U) {
-        why[0] = '\0';
-    }
-    if (out_dsp_rate_hz) {
-        *out_dsp_rate_hz = 0U;
-    }
-    if (out_resampled) {
-        *out_resampled = 0;
-    }
-    const char* path = opts ? radio_source_replay_path(opts) : NULL;
-    if (!opts || !req || !path || path[0] == '\0' || !g_replay_plan_in_force.valid || !stream_is_replay_active()) {
-        return RTL_STREAM_REPLAN_NO_REPLAY;
-    }
+/* The rate plan @p req gives the replay of @p path, its metadata read afresh. 0, or -1 with the reason in @p why. */
+static int
+stream_replay_plan_for_request(const char* path, const rtl_stream_replay_request* req, dsd_iq_replay_rate_plan* plan,
+                               char* why, size_t why_size) {
     dsd_iq_replay_config cfg;
     DSD_MEMSET(&cfg, 0, sizeof(cfg));
     char err[256] = {0};
@@ -8490,29 +8500,55 @@ rtl_stream_replay_replan_check_request(const dsd_opts* opts, const rtl_stream_re
         if (why && why_size > 0U) {
             DSD_SNPRINTF(why, why_size, "%s", err[0] ? err : "its metadata cannot be read");
         }
-        return RTL_STREAM_REPLAN_REFUSED;
+        return -1;
     }
-    dsd_iq_replay_rate_plan plan;
     uint32_t target_hz = 0U;
-    const int rc = stream_plan_replay_rate(req, &cfg, &plan, &target_hz, err, sizeof(err));
+    const int rc = stream_plan_replay_rate(req, &cfg, plan, &target_hz, err, sizeof(err));
     dsd_iq_replay_config_clear(&cfg);
     if (rc != DSD_IQ_OK) {
         if (why && why_size > 0U) {
             DSD_SNPRINTF(why, why_size, "%s", err[0] ? err : "no rate chain reaches it");
         }
-        return RTL_STREAM_REPLAN_REFUSED;
+        return -1;
+    }
+    return 0;
+}
+
+/* Whether @p plan is the chain the running replay was planned to. */
+static int
+replay_plan_is_in_force(const dsd_iq_replay_rate_plan* plan) {
+    const ReplayPlanInForce& now = g_replay_plan_in_force;
+    return plan->dsp_input_rate_hz == now.dsp_input_rate_hz && plan->base_decimation == now.base_decimation
+           && plan->post_downsample == now.post_downsample && plan->demod_rate_hz == now.demod_rate_hz;
+}
+
+extern "C" int
+rtl_stream_replay_replan_check_request(const dsd_opts* opts, const rtl_stream_replay_request* req,
+                                       uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    uint32_t dsp_rate_hz = 0U;
+    int resampled = 0;
+    int verdict = RTL_STREAM_REPLAN_NO_REPLAY;
+    const char* path = opts ? radio_source_replay_path(opts) : NULL;
+    dsd_iq_replay_rate_plan plan;
+    if (!opts || !req || !path || path[0] == '\0' || !g_replay_plan_in_force.valid || !stream_is_replay_active()) {
+        verdict = RTL_STREAM_REPLAN_NO_REPLAY;
+    } else if (stream_replay_plan_for_request(path, req, &plan, why, why_size) != 0) {
+        verdict = RTL_STREAM_REPLAN_REFUSED;
+    } else {
+        dsp_rate_hz = plan.demod_rate_hz * plan.post_downsample;
+        resampled = plan.resample;
+        verdict = replay_plan_is_in_force(&plan) ? RTL_STREAM_REPLAN_SAME : RTL_STREAM_REPLAN_DIFFERS;
     }
     if (out_dsp_rate_hz) {
-        *out_dsp_rate_hz = plan.demod_rate_hz * plan.post_downsample;
+        *out_dsp_rate_hz = dsp_rate_hz;
     }
     if (out_resampled) {
-        *out_resampled = plan.resample;
+        *out_resampled = resampled;
     }
-    const ReplayPlanInForce& now = g_replay_plan_in_force;
-    return (plan.dsp_input_rate_hz == now.dsp_input_rate_hz && plan.base_decimation == now.base_decimation
-            && plan.post_downsample == now.post_downsample && plan.demod_rate_hz == now.demod_rate_hz)
-               ? RTL_STREAM_REPLAN_SAME
-               : RTL_STREAM_REPLAN_DIFFERS;
+    return verdict;
 }
 
 /* Real monotonic ms: auto-PPM trains the device against live SNR, stamped by demod_now_ms() on the same clock. */

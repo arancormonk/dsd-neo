@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/threading.h>
 

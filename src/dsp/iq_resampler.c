@@ -115,16 +115,9 @@ iq_resampler_design_bank(float* bank, int L, int T, double in_hz, double pass_hz
     }
 }
 
-int
-dsd_iq_resampler_configure(dsd_iq_resampler* r, int in_hz, int out_hz, int protect_hz, size_t max_in_complex) {
-    if (!r) {
-        return DSD_IQ_RESAMPLER_ERR_ARGS;
-    }
-    iq_resampler_release(r);
-    if (in_hz <= 0 || out_hz <= 0 || protect_hz <= 0 || max_in_complex == 0U
-        || max_in_complex > (size_t)INT32_MAX / 4U) {
-        return DSD_IQ_RESAMPLER_ERR_ARGS;
-    }
+/* The L/M ratio for @p in_hz to @p out_hz, refused when it misses the exact ratio by more than the ppm limit. */
+static int
+iq_resampler_pick_ratio(int in_hz, int out_hz, int* out_l, int* out_m) {
     int L = 1;
     int M = 1;
     if (dsd_rate_converter_ratio(in_hz, out_hz, &L, &M) == DSD_RATE_CONVERTER_UNSUPPORTED) {
@@ -134,16 +127,15 @@ dsd_iq_resampler_configure(dsd_iq_resampler* r, int in_hz, int out_hz, int prote
     if (fabs(ppm) > DSD_IQ_RESAMPLER_MAX_PPM) {
         return DSD_IQ_RESAMPLER_ERR_RATIO;
     }
+    *out_l = L;
+    *out_m = M;
+    return DSD_IQ_RESAMPLER_OK;
+}
 
-    /* The edges: see the header. */
-    const double in = (double)in_hz;
-    const double protect = (double)protect_hz;
-    const double pass = fmin(protect, DSD_IQ_RESAMPLER_MAX_PASS_FRACTION * in);
-    const double stop = fmin(in - pass, (double)out_hz - protect);
-    if (!(stop > pass)) {
-        return DSD_IQ_RESAMPLER_ERR_BAND;
-    }
-
+/* The taps per phase (a multiple of 4) a Kaiser filter with edges @p pass and @p stop needs at the L-times rate of
+   @p in, refused past the per-phase and whole-bank limits. */
+static int
+iq_resampler_pick_taps(double in, int L, double pass, double stop, int* out_taps) {
     /* Kaiser: order (A - 7.95) / (2.285 x transition in radians per sample), at the L-times rate. */
     const double fh = in * (double)L;
     const double order = (IQ_RESAMPLER_DESIGN_DB - 7.95) / (2.285 * 2.0 * kIqResamplerPi * (stop - pass) / fh);
@@ -158,6 +150,41 @@ dsd_iq_resampler_configure(dsd_iq_resampler* r, int in_hz, int out_hz, int prote
     }
     if (T > DSD_IQ_RESAMPLER_MAX_TAPS_PER_PHASE || (int64_t)L * (int64_t)T > (int64_t)DSD_IQ_RESAMPLER_MAX_BANK_TAPS) {
         return DSD_IQ_RESAMPLER_ERR_TAPS;
+    }
+    *out_taps = T;
+    return DSD_IQ_RESAMPLER_OK;
+}
+
+int
+dsd_iq_resampler_configure(dsd_iq_resampler* r, int in_hz, int out_hz, int protect_hz, size_t max_in_complex) {
+    if (!r) {
+        return DSD_IQ_RESAMPLER_ERR_ARGS;
+    }
+    iq_resampler_release(r);
+    if (in_hz <= 0 || out_hz <= 0 || protect_hz <= 0 || max_in_complex == 0U
+        || max_in_complex > (size_t)INT32_MAX / 4U) {
+        return DSD_IQ_RESAMPLER_ERR_ARGS;
+    }
+    int L = 1;
+    int M = 1;
+    const int ratio_rc = iq_resampler_pick_ratio(in_hz, out_hz, &L, &M);
+    if (ratio_rc != DSD_IQ_RESAMPLER_OK) {
+        return ratio_rc;
+    }
+
+    /* The edges: see the header. */
+    const double in = (double)in_hz;
+    const double protect = (double)protect_hz;
+    const double pass = fmin(protect, DSD_IQ_RESAMPLER_MAX_PASS_FRACTION * in);
+    const double stop = fmin(in - pass, (double)out_hz - protect);
+    if (!(stop > pass)) {
+        return DSD_IQ_RESAMPLER_ERR_BAND;
+    }
+
+    int T = 0;
+    const int taps_rc = iq_resampler_pick_taps(in, L, pass, stop, &T);
+    if (taps_rc != DSD_IQ_RESAMPLER_OK) {
+        return taps_rc;
     }
     const double beta = 0.1102 * (IQ_RESAMPLER_DESIGN_DB - 8.7);
 

@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/input_failure.h>
 
@@ -1915,6 +1916,18 @@ struct replay_thread_io_state {
 
 static replay_step replay_handle_empty_read(struct rtl_device* s, replay_thread_io_state* io);
 
+/* Whether every position and count the reader keeps has its storage. */
+static inline int
+replay_thread_io_counters_valid(const replay_thread_io_state* io) {
+    if (!io->complex_written || !io->data_offset || !io->event_cursor || !io->start_ns) {
+        return 0;
+    }
+    if (!io->timeline_samples || !io->chunk_sequence || !io->pass_start_sequence || !io->loop_pass) {
+        return 0;
+    }
+    return 1;
+}
+
 static inline int
 replay_thread_process_inputs_valid(const struct rtl_device* s, const uint8_t* raw_block, const float* f32_block,
                                    const replay_thread_io_state* io) {
@@ -1924,13 +1937,7 @@ replay_thread_process_inputs_valid(const struct rtl_device* s, const uint8_t* ra
     if (!io || !io->phase || !io->have_carry || !io->carry_byte) {
         return 0;
     }
-    if (!io->complex_written || !io->data_offset || !io->event_cursor || !io->start_ns) {
-        return 0;
-    }
-    if (!io->timeline_samples || !io->chunk_sequence || !io->pass_start_sequence || !io->loop_pass) {
-        return 0;
-    }
-    return 1;
+    return replay_thread_io_counters_valid(io);
 }
 
 /* The reader's position now that the demodulator has the capture up to it: what a run-time re-plan resumes from
@@ -2001,6 +2008,38 @@ replay_thread_read_or_handle_empty(struct rtl_device* s, uint8_t* raw_block, siz
     return REPLAY_STEP_CONTINUE;
 }
 
+/* Submit @p float_count converted floats of the capture (replay_submit_whole_chunk()): as they are, or, for a
+ * resampled replay, what the resampler makes of them. */
+static replay_step
+replay_thread_submit_converted(struct rtl_device* s, const float* f32_block, size_t float_count,
+                               replay_thread_io_state* io, struct rtl_replay_chunk_meta* chunk) {
+    const uint64_t capture_complex = (uint64_t)float_count / 2U;
+    if (!s->replay_resampler) {
+        if (replay_submit_whole_chunk(s, f32_block, float_count, capture_complex, io, chunk) != 0) {
+            return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
+        }
+        return REPLAY_STEP_CONTINUE;
+    }
+    /* Resampled (issue #701): the demod takes the chunk at the DSP input rate; pacing and media time count the capture
+       samples read. */
+    const int resampled = dsd_iq_resampler_process(s->replay_resampler, f32_block, (size_t)capture_complex,
+                                                   io->rs_block, io->rs_cap_complex);
+    if (resampled < 0) {
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayConvertFailureRc);
+    }
+    if (resampled == 0) {
+        /* Too few samples for an output yet: they are in the resampler's history, and their capture time passes. */
+        *io->complex_written += capture_complex;
+        *io->timeline_samples += capture_complex;
+        replay_commit_checkpoint(s, io);
+        return REPLAY_STEP_CONTINUE;
+    }
+    if (replay_submit_whole_chunk(s, io->rs_block, (size_t)resampled * 2U, capture_complex, io, chunk) != 0) {
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
+    }
+    return REPLAY_STEP_CONTINUE;
+}
+
 static replay_step
 replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw_block_bytes, float* f32_block,
                             replay_thread_io_state* io) {
@@ -2067,31 +2106,7 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
         chunk.have_input_level = 1;
         chunk.input_level = input_level;
     }
-    const uint64_t capture_complex = (uint64_t)produced / 2U;
-    if (!s->replay_resampler) {
-        if (replay_submit_whole_chunk(s, f32_block, (size_t)produced, capture_complex, io, &chunk) != 0) {
-            return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
-        }
-        return REPLAY_STEP_CONTINUE;
-    }
-    /* Resampled (issue #701): the demod takes the chunk at the DSP input rate; pacing and media time count the capture
-       samples read. */
-    const int resampled = dsd_iq_resampler_process(s->replay_resampler, f32_block, (size_t)capture_complex,
-                                                   io->rs_block, io->rs_cap_complex);
-    if (resampled < 0) {
-        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayConvertFailureRc);
-    }
-    if (resampled == 0) {
-        /* Too few samples for an output yet: they are in the resampler's history, and their capture time passes. */
-        *io->complex_written += capture_complex;
-        *io->timeline_samples += capture_complex;
-        replay_commit_checkpoint(s, io);
-        return REPLAY_STEP_CONTINUE;
-    }
-    if (replay_submit_whole_chunk(s, io->rs_block, (size_t)resampled * 2U, capture_complex, io, &chunk) != 0) {
-        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
-    }
-    return REPLAY_STEP_CONTINUE;
+    return replay_thread_submit_converted(s, f32_block, (size_t)produced, io, &chunk);
 }
 
 static int
@@ -2683,6 +2698,25 @@ replay_raw_block_bytes(const struct rtl_device* s) {
     return samples * align;
 }
 
+/* A run-time re-plan's resume (issue #701): the open sought the capture to the checkpoint, rounded down to a whole
+ * sample. The media timeline and the event cursor go on from it, and the realtime schedule is rebased so its next
+ * deadline is now. A pass resumed past its start has handed the demod chunks already, so its end rewinds under
+ * --iq-loop. */
+static void
+replay_thread_resume_position(const struct rtl_device* s, const replay_thread_io_state* io) {
+    const dsd_iq_replay_checkpoint* at = &s->replay_cfg.resume_at;
+    const size_t align = dsd_iq_sample_format_alignment_bytes(s->replay_cfg.format);
+    *io->data_offset = align > 0U ? at->data_offset - at->data_offset % (uint64_t)align : at->data_offset;
+    *io->event_cursor = at->event_index;
+    *io->timeline_samples = at->timeline_samples;
+    *io->complex_written = at->pass_samples;
+    *io->loop_pass = at->loop_pass;
+    *io->phase = (int)(at->fs4_phase & 3);
+    const uint64_t elapsed_ns = replay_media_ns(s, *io->complex_written);
+    *io->start_ns = *io->start_ns > elapsed_ns ? *io->start_ns - elapsed_ns : 0U;
+    *io->pass_start_sequence = *io->data_offset > 0U ? UINT64_MAX : 0U;
+}
+
 /* Read the capture into the input ring until the reader has to stop, and say why it stopped. Each chunk, and so each
  * demod block, is at most one live transfer (dsd_iq_replay_chunk_bytes(), issue #626). */
 static replay_step
@@ -2719,22 +2753,12 @@ replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
     uint32_t loop_pass = 0;
     int realtime = s->replay_cfg.realtime ? 1 : 0;
     s->replay_deferred_read_rc = DSD_IQ_OK;
+    replay_thread_io_state io_base = {
+        &phase,        &have_carry, &carry_byte,       &complex_written, &data_offset,
+        &event_cursor, &start_ns,   &timeline_samples, &chunk_sequence,  &pass_start_sequence,
+        &loop_pass,    realtime,    DSD_IQ_OK,         rs_block,         rs_cap_complex};
     if (s->replay_cfg.resume) {
-        /* A run-time re-plan's resume (issue #701): the open sought the capture to the checkpoint, rounded down to a
-           whole sample. The media timeline and the event cursor go on from it, and the realtime schedule is rebased so
-           its next deadline is now. A pass resumed past its start has handed the demod chunks already, so its end
-           rewinds under --iq-loop. */
-        const dsd_iq_replay_checkpoint* at = &s->replay_cfg.resume_at;
-        const size_t align = dsd_iq_sample_format_alignment_bytes(s->replay_cfg.format);
-        data_offset = align > 0U ? at->data_offset - at->data_offset % (uint64_t)align : at->data_offset;
-        event_cursor = at->event_index;
-        timeline_samples = at->timeline_samples;
-        complex_written = at->pass_samples;
-        loop_pass = at->loop_pass;
-        phase = (int)(at->fs4_phase & 3);
-        const uint64_t elapsed_ns = replay_media_ns(s, complex_written);
-        start_ns = start_ns > elapsed_ns ? start_ns - elapsed_ns : 0U;
-        pass_start_sequence = data_offset > 0U ? UINT64_MAX : 0U;
+        replay_thread_resume_position(s, &io_base);
     }
 
     while (step == REPLAY_STEP_CONTINUE) {
@@ -2742,10 +2766,7 @@ replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
             step = REPLAY_STEP_STOP;
             break;
         }
-        replay_thread_io_state io = {
-            &phase,        &have_carry, &carry_byte,       &complex_written, &data_offset,
-            &event_cursor, &start_ns,   &timeline_samples, &chunk_sequence,  &pass_start_sequence,
-            &loop_pass,    realtime,    DSD_IQ_OK,         rs_block,         rs_cap_complex};
+        replay_thread_io_state io = io_base; /* a failure_rc of its own for each chunk */
         step = replay_thread_process_block(s, raw_block, raw_block_bytes, f32_block, &io);
         if (step == REPLAY_STEP_FAILED) {
             *out_failure_rc = io.failure_rc;

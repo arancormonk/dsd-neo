@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_wav.h>
@@ -2217,16 +2218,11 @@ dsd_iq_replay_apply_rate_plan(dsd_iq_replay_config* cfg, const dsd_iq_replay_rat
     return DSD_IQ_OK;
 }
 
-int
-dsd_iq_replay_resume_check(const dsd_iq_replay_config* cfg, const dsd_iq_replay_checkpoint* ckpt, uint64_t* out_center,
-                           uint64_t* out_capture_center, char* err_buf, size_t err_buf_size) {
-    if (err_buf && err_buf_size > 0U) {
-        err_buf[0] = '\0';
-    }
-    if (!cfg || !ckpt) {
-        set_error(err_buf, err_buf_size, "no replay or checkpoint to resume");
-        return DSD_IQ_ERR_INVALID_ARG;
-    }
+/* Whether checkpoint @p ckpt fits the replay @p cfg: an fs/4 phase of 0 to 3, and an event index that falls where its
+   data offset does among the capture's events. */
+static int
+resume_checkpoint_fits(const dsd_iq_replay_config* cfg, const dsd_iq_replay_checkpoint* ckpt, char* err_buf,
+                       size_t err_buf_size) {
     if (ckpt->fs4_phase < 0 || ckpt->fs4_phase > 3) {
         set_error(err_buf, err_buf_size, "the checkpoint's fs/4 phase %d is not 0 to 3", (int)ckpt->fs4_phase);
         return DSD_IQ_ERR_INVALID_ARG;
@@ -2241,6 +2237,23 @@ dsd_iq_replay_resume_check(const dsd_iq_replay_config* cfg, const dsd_iq_replay_
         set_error(err_buf, err_buf_size, "the checkpoint at byte %" PRIu64 " does not fall before event %u",
                   ckpt->data_offset, (unsigned)ckpt->event_index);
         return DSD_IQ_ERR_INVALID_ARG;
+    }
+    return DSD_IQ_OK;
+}
+
+int
+dsd_iq_replay_resume_check(const dsd_iq_replay_config* cfg, const dsd_iq_replay_checkpoint* ckpt, uint64_t* out_center,
+                           uint64_t* out_capture_center, char* err_buf, size_t err_buf_size) {
+    if (err_buf && err_buf_size > 0U) {
+        err_buf[0] = '\0';
+    }
+    if (!cfg || !ckpt) {
+        set_error(err_buf, err_buf_size, "no replay or checkpoint to resume");
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    const int fits = resume_checkpoint_fits(cfg, ckpt, err_buf, err_buf_size);
+    if (fits != DSD_IQ_OK) {
+        return fits;
     }
     uint64_t center = cfg->center_frequency_hz;
     uint64_t capture_center = cfg->capture_center_frequency_hz;
@@ -2287,14 +2300,25 @@ replay_sniff_file(const char* path) {
     return dsd_iq_wav_sniff(head, n);
 }
 
+/* Whether @p type is a whole JSON value on its own: a string, number, true, false or null. */
+static int
+json_token_is_scalar(json_token_type type) {
+    switch (type) {
+        case JTOK_STRING:
+        case JTOK_NUMBER_INT:
+        case JTOK_NUMBER_FLOAT:
+        case JTOK_TRUE:
+        case JTOK_FALSE:
+        case JTOK_NULL: return 1;
+        default: return 0;
+    }
+}
+
 /* Skip one JSON value whose first token is @p tok. 0, or -1 for malformed JSON. */
 static int
 prepass_skip_value(json_tokenizer* tk, json_token tok) {
     if (tok.type != JTOK_LBRACE && tok.type != JTOK_LBRACKET) {
-        return (tok.type == JTOK_STRING || tok.type == JTOK_NUMBER_INT || tok.type == JTOK_NUMBER_FLOAT
-                || tok.type == JTOK_TRUE || tok.type == JTOK_FALSE || tok.type == JTOK_NULL)
-                   ? 0
-                   : -1;
+        return json_token_is_scalar(tok.type) ? 0 : -1;
     }
     unsigned depth = 1;
     while (depth > 0U) {
@@ -2834,6 +2858,53 @@ info_describe_wav_plan(const dsd_iq_replay_config* cfg, uint32_t target_hz, uint
     return 1;
 }
 
+/* The warnings dsd_iq_info_print_wav() writes to @p err about a WAV whose header and file disagree. */
+static void
+info_print_wav_warnings(const dsd_iq_replay_config* cfg, uint64_t actual_file_size, int truncated, FILE* err) {
+    const dsd_iq_wav_info* w = &cfg->wav;
+    if (truncated) {
+        DSD_FPRINTF(err,
+                    "WARNING: the WAV header declares %" PRIu64 " data bytes but the file holds %" PRIu64
+                    " (a truncated recording)\n",
+                    w->declared_data_bytes, actual_file_size > w->data_offset ? actual_file_size - w->data_offset : 0U);
+    }
+    if (w->unfinalized) {
+        DSD_FPRINTF(err, "WARNING: the WAV header was never finalized (an interrupted recording); the data runs to "
+                         "the end of the file\n");
+    }
+    if (w->container_clamped) {
+        DSD_FPRINTF(err,
+                    "WARNING: the WAV data chunk declares %" PRIu64 " bytes but its %s container ends %" PRIu64
+                    " bytes into it (a writer inconsistency); the data stops there\n",
+                    w->declared_data_bytes, dsd_iq_wav_container_name(w->container),
+                    w->container_end > w->data_offset ? w->container_end - w->data_offset : 0U);
+    }
+    const uint64_t raw = dsd_iq_wav_data_bytes_in_file(w, actual_file_size, NULL);
+    if (raw % (uint64_t)w->block_align != 0U) {
+        DSD_FPRINTF(err, "WARNING: the data ends inside a frame; its last %" PRIu64 " byte(s) are not replayed\n",
+                    raw % (uint64_t)w->block_align);
+    }
+    if (cfg->open_notice[0] != '\0') {
+        DSD_FPRINTF(err, "WARNING: %s\n", cfg->open_notice);
+    }
+}
+
+/* The WAV's centre frequency and start time lines, with where each came from. */
+static void
+info_print_wav_origin(const dsd_iq_wav_info* w, FILE* out) {
+    if (w->center_source != DSD_IQ_WAV_FROM_NONE) {
+        DSD_FPRINTF(out, "  Center frequency:    %.6f MHz (%s)\n", (double)w->center_frequency_hz / 1000000.0,
+                    dsd_iq_wav_source_name(w->center_source));
+    } else {
+        DSD_FPRINTF(out, "  Center frequency:    unknown (no auxi chunk, none in the file name)\n");
+    }
+    if (w->start_source != DSD_IQ_WAV_FROM_NONE) {
+        DSD_FPRINTF(out, "  Start time:          %s (%s)\n", w->start_utc, dsd_iq_wav_source_name(w->start_source));
+    } else {
+        DSD_FPRINTF(out, "  Start time:          unknown (no auxi chunk, none in the file name)\n");
+    }
+}
+
 static int
 dsd_iq_info_print_wav(const dsd_iq_replay_config* cfg, const char* display_path, uint64_t actual_file_size, FILE* out,
                       FILE* err) {
@@ -2852,17 +2923,7 @@ dsd_iq_info_print_wav(const dsd_iq_replay_config* cfg, const char* display_path,
                 dsd_iq_wav_container_name(w->container));
     DSD_FPRINTF(out, "  Sample encoding:     %s, 2 channels: I then Q\n", dsd_iq_wav_encoding_name(w->encoding));
     DSD_FPRINTF(out, "  Sample rate:         %u Hz\n", cfg->sample_rate_hz);
-    if (w->center_source != DSD_IQ_WAV_FROM_NONE) {
-        DSD_FPRINTF(out, "  Center frequency:    %.6f MHz (%s)\n", (double)w->center_frequency_hz / 1000000.0,
-                    dsd_iq_wav_source_name(w->center_source));
-    } else {
-        DSD_FPRINTF(out, "  Center frequency:    unknown (no auxi chunk, none in the file name)\n");
-    }
-    if (w->start_source != DSD_IQ_WAV_FROM_NONE) {
-        DSD_FPRINTF(out, "  Start time:          %s (%s)\n", w->start_utc, dsd_iq_wav_source_name(w->start_source));
-    } else {
-        DSD_FPRINTF(out, "  Start time:          unknown (no auxi chunk, none in the file name)\n");
-    }
+    info_print_wav_origin(w, out);
     DSD_FPRINTF(out, "  Data file:           %s\n", cfg->data_path);
     DSD_FPRINTF(out, "  Data offset:         %" PRIu64 " bytes\n", w->data_offset);
     if (w->unfinalized) {
@@ -2886,32 +2947,7 @@ dsd_iq_info_print_wav(const dsd_iq_replay_config* cfg, const char* display_path,
     DSD_FPRINTF(out, "  Replay compatible:   %s\n", (effective > 0U && plans) ? "yes" : "no");
 
     if (err) {
-        if (truncated) {
-            DSD_FPRINTF(err,
-                        "WARNING: the WAV header declares %" PRIu64 " data bytes but the file holds %" PRIu64
-                        " (a truncated recording)\n",
-                        w->declared_data_bytes,
-                        actual_file_size > w->data_offset ? actual_file_size - w->data_offset : 0U);
-        }
-        if (w->unfinalized) {
-            DSD_FPRINTF(err, "WARNING: the WAV header was never finalized (an interrupted recording); the data runs to "
-                             "the end of the file\n");
-        }
-        if (w->container_clamped) {
-            DSD_FPRINTF(err,
-                        "WARNING: the WAV data chunk declares %" PRIu64 " bytes but its %s container ends %" PRIu64
-                        " bytes into it (a writer inconsistency); the data stops there\n",
-                        w->declared_data_bytes, dsd_iq_wav_container_name(w->container),
-                        w->container_end > w->data_offset ? w->container_end - w->data_offset : 0U);
-        }
-        const uint64_t raw = dsd_iq_wav_data_bytes_in_file(w, actual_file_size, NULL);
-        if (raw % (uint64_t)w->block_align != 0U) {
-            DSD_FPRINTF(err, "WARNING: the data ends inside a frame; its last %" PRIu64 " byte(s) are not replayed\n",
-                        raw % (uint64_t)w->block_align);
-        }
-        if (cfg->open_notice[0] != '\0') {
-            DSD_FPRINTF(err, "WARNING: %s\n", cfg->open_notice);
-        }
+        info_print_wav_warnings(cfg, actual_file_size, truncated, err);
     }
     return DSD_IQ_OK;
 }

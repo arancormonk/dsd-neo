@@ -20,7 +20,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/platform/platform.h"
-#include "dsd-neo/platform/posix_compat.h"
 
 static void wav_set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 3, 4);
 
@@ -125,6 +124,57 @@ wav_f64_to_f32(const uint8_t* p) {
     return (float)value;
 }
 
+static void
+wav_u8_to_f32(const uint8_t* p, size_t n, float* dst) {
+    /* The cu8 widen's form (widen_u8_to_f32_bias127()), so a u8 recording carries no DC line. */
+    const float inv = 1.0f / 127.5f;
+    for (size_t i = 0; i < n; i++) {
+        dst[i] = ((float)p[i] - 127.5f) * inv;
+    }
+}
+
+static void
+wav_s16_to_f32(const uint8_t* p, size_t n, float* dst) {
+    const float inv = 1.0f / 32768.0f;
+    for (size_t i = 0; i < n; i++) {
+        dst[i] = (float)(int16_t)le16(p + i * 2U) * inv;
+    }
+}
+
+static void
+wav_s24_to_f32(const uint8_t* p, size_t n, float* dst) {
+    const float inv = 1.0f / 8388608.0f;
+    for (size_t i = 0; i < n; i++) {
+        const uint8_t* s = p + i * 3U;
+        uint32_t u = (uint32_t)s[0] | ((uint32_t)s[1] << 8) | ((uint32_t)s[2] << 16);
+        int32_t v = (u & 0x800000U) ? (int32_t)(u | 0xFF000000U) : (int32_t)u;
+        dst[i] = (float)v * inv;
+    }
+}
+
+static void
+wav_s32_to_f32(const uint8_t* p, size_t n, float* dst) {
+    const float inv = 1.0f / 2147483648.0f;
+    for (size_t i = 0; i < n; i++) {
+        dst[i] = (float)(int32_t)le32(p + i * 4U) * inv;
+    }
+}
+
+static void
+wav_f32_to_f32(const uint8_t* p, size_t n, float* dst) {
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t bits = le32(p + i * 4U);
+        DSD_MEMCPY(&dst[i], &bits, sizeof(float));
+    }
+}
+
+static void
+wav_f64_samples_to_f32(const uint8_t* p, size_t n, float* dst) {
+    for (size_t i = 0; i < n; i++) {
+        dst[i] = wav_f64_to_f32(p + i * 8U);
+    }
+}
+
 void
 dsd_iq_wav_frames_to_cf32(dsd_iq_wav_encoding encoding, const void* src, size_t frames, float* dst) {
     if (!src || !dst || frames == 0U) {
@@ -133,51 +183,12 @@ dsd_iq_wav_frames_to_cf32(dsd_iq_wav_encoding encoding, const void* src, size_t 
     const uint8_t* p = (const uint8_t*)src;
     const size_t n = frames * 2U;
     switch (encoding) {
-        case DSD_IQ_WAV_ENC_U8: {
-            /* The cu8 widen's form (widen_u8_to_f32_bias127()), so a u8 recording carries no DC line. */
-            const float inv = 1.0f / 127.5f;
-            for (size_t i = 0; i < n; i++) {
-                dst[i] = ((float)p[i] - 127.5f) * inv;
-            }
-            break;
-        }
-        case DSD_IQ_WAV_ENC_S16: {
-            const float inv = 1.0f / 32768.0f;
-            for (size_t i = 0; i < n; i++) {
-                dst[i] = (float)(int16_t)le16(p + i * 2U) * inv;
-            }
-            break;
-        }
-        case DSD_IQ_WAV_ENC_S24: {
-            const float inv = 1.0f / 8388608.0f;
-            for (size_t i = 0; i < n; i++) {
-                const uint8_t* s = p + i * 3U;
-                uint32_t u = (uint32_t)s[0] | ((uint32_t)s[1] << 8) | ((uint32_t)s[2] << 16);
-                int32_t v = (u & 0x800000U) ? (int32_t)(u | 0xFF000000U) : (int32_t)u;
-                dst[i] = (float)v * inv;
-            }
-            break;
-        }
-        case DSD_IQ_WAV_ENC_S32: {
-            const float inv = 1.0f / 2147483648.0f;
-            for (size_t i = 0; i < n; i++) {
-                dst[i] = (float)(int32_t)le32(p + i * 4U) * inv;
-            }
-            break;
-        }
-        case DSD_IQ_WAV_ENC_F32: {
-            for (size_t i = 0; i < n; i++) {
-                const uint32_t bits = le32(p + i * 4U);
-                DSD_MEMCPY(&dst[i], &bits, sizeof(float));
-            }
-            break;
-        }
-        case DSD_IQ_WAV_ENC_F64: {
-            for (size_t i = 0; i < n; i++) {
-                dst[i] = wav_f64_to_f32(p + i * 8U);
-            }
-            break;
-        }
+        case DSD_IQ_WAV_ENC_U8: wav_u8_to_f32(p, n, dst); break;
+        case DSD_IQ_WAV_ENC_S16: wav_s16_to_f32(p, n, dst); break;
+        case DSD_IQ_WAV_ENC_S24: wav_s24_to_f32(p, n, dst); break;
+        case DSD_IQ_WAV_ENC_S32: wav_s32_to_f32(p, n, dst); break;
+        case DSD_IQ_WAV_ENC_F32: wav_f32_to_f32(p, n, dst); break;
+        case DSD_IQ_WAV_ENC_F64: wav_f64_samples_to_f32(p, n, dst); break;
         default: DSD_MEMSET(dst, 0, n * sizeof(float)); break;
     }
 }
@@ -249,10 +260,11 @@ is_digit(char c) {
     return c >= '0' && c <= '9';
 }
 
-/* `<n>[.<f>](Hz|kHz|MHz)` as a whole number of hertz. */
+/* The decimal digits of @p tok from *@p pos (up to @p len) as @p out_value, *@p pos past them. 0 when there are none
+   or the value overflows. */
 static int
-parse_freq_token(const char* tok, size_t len, uint64_t* out_hz) {
-    size_t i = 0;
+parse_whole_digits(const char* tok, size_t len, size_t* pos, uint64_t* out_value) {
+    size_t i = *pos;
     uint64_t whole = 0;
     size_t whole_digits = 0;
     while (i < len && is_digit(tok[i])) {
@@ -265,6 +277,61 @@ parse_freq_token(const char* tok, size_t len, uint64_t* out_hz) {
         i++;
     }
     if (whole_digits == 0U) {
+        return 0;
+    }
+    *pos = i;
+    *out_value = whole;
+    return 1;
+}
+
+/* The decimals a frequency unit ("Hz", "kHz", "MHz", any case) scales by, in @p decimals. 0 for any other unit. */
+static int
+freq_unit_decimals(const char* unit, size_t unit_len, unsigned* decimals) {
+    if (unit_len == 2U && ascii_lower((unsigned char)unit[0]) == 'h' && ascii_lower((unsigned char)unit[1]) == 'z') {
+        *decimals = 0;
+        return 1;
+    }
+    if (unit_len != 3U || ascii_lower((unsigned char)unit[1]) != 'h' || ascii_lower((unsigned char)unit[2]) != 'z') {
+        return 0;
+    }
+    const int prefix = ascii_lower((unsigned char)unit[0]);
+    if (prefix == 'k') {
+        *decimals = 3;
+        return 1;
+    }
+    if (prefix == 'm') {
+        *decimals = 6;
+        return 1;
+    }
+    return 0;
+}
+
+/* A fraction's @p frac_len digits as hertz at @p decimals, in @p out_hz. The digits past the unit's decimals must be
+   0: the value is a whole number of hertz. */
+static int
+freq_fraction_hz(const char* frac, size_t frac_len, unsigned decimals, uint64_t* out_hz) {
+    uint64_t frac_hz = 0;
+    for (size_t k = 0; k < frac_len; k++) {
+        const uint64_t d = (uint64_t)(frac[k] - '0');
+        if (k < decimals) {
+            frac_hz = frac_hz * 10U + d;
+        } else if (d != 0U) {
+            return 0;
+        }
+    }
+    for (size_t k = frac_len; k < decimals; k++) {
+        frac_hz *= 10U;
+    }
+    *out_hz = frac_hz;
+    return 1;
+}
+
+/* `<n>[.<f>](Hz|kHz|MHz)` as a whole number of hertz. */
+static int
+parse_freq_token(const char* tok, size_t len, uint64_t* out_hz) {
+    size_t i = 0;
+    uint64_t whole = 0;
+    if (!parse_whole_digits(tok, len, &i, &whole)) {
         return 0;
     }
     const char* frac = NULL;
@@ -280,21 +347,8 @@ parse_freq_token(const char* tok, size_t len, uint64_t* out_hz) {
             return 0;
         }
     }
-    const size_t unit_len = len - i;
     unsigned decimals = 0;
-    if (unit_len == 2U && ascii_lower((unsigned char)tok[i]) == 'h' && ascii_lower((unsigned char)tok[i + 1U]) == 'z') {
-        decimals = 0;
-    } else if (unit_len == 3U && ascii_lower((unsigned char)tok[i + 1U]) == 'h'
-               && ascii_lower((unsigned char)tok[i + 2U]) == 'z') {
-        const int prefix = ascii_lower((unsigned char)tok[i]);
-        if (prefix == 'k') {
-            decimals = 3;
-        } else if (prefix == 'm') {
-            decimals = 6;
-        } else {
-            return 0;
-        }
-    } else {
+    if (!freq_unit_decimals(tok + i, len - i, &decimals)) {
         return 0;
     }
     uint64_t scale = 1;
@@ -304,21 +358,9 @@ parse_freq_token(const char* tok, size_t len, uint64_t* out_hz) {
     if (whole > UINT64_MAX / scale) {
         return 0;
     }
-    uint64_t hz = whole * scale;
-    /* The fraction's digits past the unit's decimals must be 0: the value is a whole number of hertz. */
+    const uint64_t hz = whole * scale;
     uint64_t frac_hz = 0;
-    for (size_t k = 0; k < frac_len; k++) {
-        const uint64_t d = (uint64_t)(frac[k] - '0');
-        if (k < decimals) {
-            frac_hz = frac_hz * 10U + d;
-        } else if (d != 0U) {
-            return 0;
-        }
-    }
-    for (size_t k = frac_len; k < decimals; k++) {
-        frac_hz *= 10U;
-    }
-    if (hz > UINT64_MAX - frac_hz) {
+    if (!freq_fraction_hz(frac, frac_len, decimals, &frac_hz) || hz > UINT64_MAX - frac_hz) {
         return 0;
     }
     *out_hz = hz + frac_hz;
@@ -567,6 +609,38 @@ wav_next_chunk(const wav_walk* w, uint64_t next, uint64_t size) {
     return padded;
 }
 
+/* The first fmt chunk, at @p body with header size @p size32: its first 40 bytes, kept for wav_parse_fmt(). */
+static int
+wav_take_fmt(wav_walk* w, uint64_t body, uint32_t size32, char* err_buf, size_t err_buf_size) {
+    if (w->have_fmt) {
+        return DSD_IQ_OK;
+    }
+    w->fmt_size = size32;
+    DSD_MEMSET(w->fmt, 0, sizeof(w->fmt));
+    const size_t n = size32 < sizeof(w->fmt) ? (size_t)size32 : sizeof(w->fmt);
+    if (n < 16U || read_at(w->fp, body, w->fmt, n) != 0) {
+        wav_set_error(err_buf, err_buf_size, "WAV '%s': the fmt chunk is too short (%u bytes)", w->path,
+                      (unsigned)size32);
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    w->have_fmt = 1;
+    return DSD_IQ_OK;
+}
+
+/* A finished walk's verdict: it must have found a fmt chunk and a data chunk. */
+static int
+wav_walk_found_chunks(const wav_walk* w, char* err_buf, size_t err_buf_size) {
+    if (!w->have_fmt) {
+        wav_set_error(err_buf, err_buf_size, "WAV '%s': no fmt chunk", w->path);
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    if (!w->have_data) {
+        wav_set_error(err_buf, err_buf_size, "WAV '%s': no data chunk", w->path);
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    return DSD_IQ_OK;
+}
+
 static int
 wav_walk_chunks(wav_walk* w, char* err_buf, size_t err_buf_size) {
     uint64_t pos = 12;
@@ -583,16 +657,9 @@ wav_walk_chunks(wav_walk* w, char* err_buf, size_t err_buf_size) {
         uint64_t step = size32;
         int stop = 0;
         if (id_is(hdr, "fmt ")) {
-            if (!w->have_fmt) {
-                w->fmt_size = size32;
-                DSD_MEMSET(w->fmt, 0, sizeof(w->fmt));
-                const size_t n = size32 < sizeof(w->fmt) ? (size_t)size32 : sizeof(w->fmt);
-                if (n < 16U || read_at(w->fp, body, w->fmt, n) != 0) {
-                    wav_set_error(err_buf, err_buf_size, "WAV '%s': the fmt chunk is too short (%u bytes)", w->path,
-                                  (unsigned)size32);
-                    return DSD_IQ_ERR_INVALID_META;
-                }
-                w->have_fmt = 1;
+            const int rc = wav_take_fmt(w, body, size32, err_buf, err_buf_size);
+            if (rc != DSD_IQ_OK) {
+                return rc;
             }
         } else if (id_is(hdr, "data")) {
             if (w->have_data) {
@@ -611,79 +678,79 @@ wav_walk_chunks(wav_walk* w, char* err_buf, size_t err_buf_size) {
         }
         pos = wav_next_chunk(w, next, step);
     }
-    if (!w->have_fmt) {
-        wav_set_error(err_buf, err_buf_size, "WAV '%s': no fmt chunk", w->path);
-        return DSD_IQ_ERR_INVALID_META;
-    }
-    if (!w->have_data) {
-        wav_set_error(err_buf, err_buf_size, "WAV '%s': no data chunk", w->path);
-        return DSD_IQ_ERR_INVALID_META;
-    }
-    return DSD_IQ_OK;
+    return wav_walk_found_chunks(w, err_buf, err_buf_size);
 }
 
 /* KSDATAFORMAT_SUBTYPE_PCM and _IEEE_FLOAT after their first two bytes (the format tag). */
 static const uint8_t kSubformatGuidTail[14] = {0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80,
                                                0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71};
 
+/* WAVE_FORMAT_EXTENSIBLE: the subformat's tag in *@p tag and its valid bits in *@p valid_bits, for a @p bits-bit
+   container. */
 static int
-wav_parse_fmt(const wav_walk* w, dsd_iq_wav_info* info, char* err_buf, size_t err_buf_size) {
+wav_fmt_extensible(const wav_walk* w, uint16_t bits, uint16_t* tag, uint16_t* valid_bits, char* err_buf,
+                   size_t err_buf_size) {
     const uint8_t* f = w->fmt;
-    uint16_t tag = le16(f);
-    const uint16_t channels = le16(f + 2);
-    const uint32_t rate = le32(f + 4);
-    const uint16_t block_align = le16(f + 12);
-    const uint16_t bits = le16(f + 14);
-    uint16_t valid_bits = bits;
-    info->format_tag = tag;
-    if (tag == 0xFFFEU) {
-        if (w->fmt_size < 40U || le16(f + 16) < 22U) {
-            wav_set_error(err_buf, err_buf_size, "WAV '%s': the EXTENSIBLE fmt chunk is too short", w->path);
-            return DSD_IQ_ERR_INVALID_META;
-        }
-        valid_bits = le16(f + 18);
-        const uint16_t sub = le16(f + 24);
-        if ((sub != 1U && sub != 3U) || memcmp(f + 26, kSubformatGuidTail, sizeof(kSubformatGuidTail)) != 0) {
-            wav_set_error(err_buf, err_buf_size,
-                          "WAV '%s': unsupported EXTENSIBLE subformat (replay reads PCM and IEEE float)", w->path);
-            return DSD_IQ_ERR_UNSUPPORTED_FMT;
-        }
-        if (valid_bits == 0U || valid_bits > bits) {
-            wav_set_error(err_buf, err_buf_size, "WAV '%s': %u valid bits in a %u-bit sample", w->path,
-                          (unsigned)valid_bits, (unsigned)bits);
-            return DSD_IQ_ERR_INVALID_META;
-        }
-        tag = sub;
+    if (w->fmt_size < 40U || le16(f + 16) < 22U) {
+        wav_set_error(err_buf, err_buf_size, "WAV '%s': the EXTENSIBLE fmt chunk is too short", w->path);
+        return DSD_IQ_ERR_INVALID_META;
     }
+    *valid_bits = le16(f + 18);
+    const uint16_t sub = le16(f + 24);
+    if ((sub != 1U && sub != 3U) || memcmp(f + 26, kSubformatGuidTail, sizeof(kSubformatGuidTail)) != 0) {
+        wav_set_error(err_buf, err_buf_size,
+                      "WAV '%s': unsupported EXTENSIBLE subformat (replay reads PCM and IEEE float)", w->path);
+        return DSD_IQ_ERR_UNSUPPORTED_FMT;
+    }
+    if (*valid_bits == 0U || *valid_bits > bits) {
+        wav_set_error(err_buf, err_buf_size, "WAV '%s': %u valid bits in a %u-bit sample", w->path,
+                      (unsigned)*valid_bits, (unsigned)bits);
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    *tag = sub;
+    return DSD_IQ_OK;
+}
+
+/* The sample encoding of format tag @p tag (PCM or IEEE float) at @p bits bits, in @p info. */
+static int
+wav_fmt_encoding(const wav_walk* w, uint16_t tag, uint16_t bits, dsd_iq_wav_info* info, char* err_buf,
+                 size_t err_buf_size) {
     if (tag == 1U) {
         switch (bits) {
-            case 8: info->encoding = DSD_IQ_WAV_ENC_U8; break;
-            case 16: info->encoding = DSD_IQ_WAV_ENC_S16; break;
-            case 24: info->encoding = DSD_IQ_WAV_ENC_S24; break;
-            case 32: info->encoding = DSD_IQ_WAV_ENC_S32; break;
+            case 8: info->encoding = DSD_IQ_WAV_ENC_U8; return DSD_IQ_OK;
+            case 16: info->encoding = DSD_IQ_WAV_ENC_S16; return DSD_IQ_OK;
+            case 24: info->encoding = DSD_IQ_WAV_ENC_S24; return DSD_IQ_OK;
+            case 32: info->encoding = DSD_IQ_WAV_ENC_S32; return DSD_IQ_OK;
             default:
                 wav_set_error(err_buf, err_buf_size,
                               "WAV '%s': unsupported PCM sample size %u bits (replay reads 8, 16, 24 and 32)", w->path,
                               (unsigned)bits);
                 return DSD_IQ_ERR_UNSUPPORTED_FMT;
         }
-    } else if (tag == 3U) {
+    }
+    if (tag == 3U) {
         if (bits == 32U) {
             info->encoding = DSD_IQ_WAV_ENC_F32;
-        } else if (bits == 64U) {
-            info->encoding = DSD_IQ_WAV_ENC_F64;
-        } else {
-            wav_set_error(err_buf, err_buf_size,
-                          "WAV '%s': unsupported float sample size %u bits (replay reads 32 and 64)", w->path,
-                          (unsigned)bits);
-            return DSD_IQ_ERR_UNSUPPORTED_FMT;
+            return DSD_IQ_OK;
         }
-    } else {
-        wav_set_error(err_buf, err_buf_size,
-                      "WAV '%s': unsupported format tag 0x%04X (replay reads PCM, IEEE float and EXTENSIBLE)", w->path,
-                      (unsigned)tag);
+        if (bits == 64U) {
+            info->encoding = DSD_IQ_WAV_ENC_F64;
+            return DSD_IQ_OK;
+        }
+        wav_set_error(err_buf, err_buf_size, "WAV '%s': unsupported float sample size %u bits (replay reads 32 and 64)",
+                      w->path, (unsigned)bits);
         return DSD_IQ_ERR_UNSUPPORTED_FMT;
     }
+    wav_set_error(err_buf, err_buf_size,
+                  "WAV '%s': unsupported format tag 0x%04X (replay reads PCM, IEEE float and EXTENSIBLE)", w->path,
+                  (unsigned)tag);
+    return DSD_IQ_ERR_UNSUPPORTED_FMT;
+}
+
+/* The frame layout I/Q replay reads: 2 channels of @p bits bits in a @p block_align-byte frame, at a rate above 0. */
+static int
+wav_fmt_layout(const wav_walk* w, uint16_t channels, uint16_t bits, uint16_t block_align, uint32_t rate, char* err_buf,
+               size_t err_buf_size) {
     if (channels == 1U) {
         wav_set_error(err_buf, err_buf_size,
                       "WAV '%s' has 1 channel: I/Q replay needs 2 (I, then Q); decode an audio WAV with -i '%s'",
@@ -703,6 +770,32 @@ wav_parse_fmt(const wav_walk* w, dsd_iq_wav_info* info, char* err_buf, size_t er
     if (rate == 0U) {
         wav_set_error(err_buf, err_buf_size, "WAV '%s': the sample rate is 0", w->path);
         return DSD_IQ_ERR_INVALID_META;
+    }
+    return DSD_IQ_OK;
+}
+
+static int
+wav_parse_fmt(const wav_walk* w, dsd_iq_wav_info* info, char* err_buf, size_t err_buf_size) {
+    const uint8_t* f = w->fmt;
+    uint16_t tag = le16(f);
+    const uint16_t channels = le16(f + 2);
+    const uint32_t rate = le32(f + 4);
+    const uint16_t block_align = le16(f + 12);
+    const uint16_t bits = le16(f + 14);
+    uint16_t valid_bits = bits;
+    info->format_tag = tag;
+    int rc = DSD_IQ_OK;
+    if (tag == 0xFFFEU) {
+        rc = wav_fmt_extensible(w, bits, &tag, &valid_bits, err_buf, err_buf_size);
+    }
+    if (rc == DSD_IQ_OK) {
+        rc = wav_fmt_encoding(w, tag, bits, info, err_buf, err_buf_size);
+    }
+    if (rc == DSD_IQ_OK) {
+        rc = wav_fmt_layout(w, channels, bits, block_align, rate, err_buf, err_buf_size);
+    }
+    if (rc != DSD_IQ_OK) {
+        return rc;
     }
     info->bits_per_sample = bits;
     info->valid_bits = valid_bits;
