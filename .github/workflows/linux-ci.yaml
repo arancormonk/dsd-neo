@@ -959,6 +959,10 @@ jobs:
 
   update-aur-git:
     name: Update AUR package (git)
+    # Main and tag runs publish the same package; serialize across refs.
+    concurrency:
+      group: aur-dsd-neo-git
+      cancel-in-progress: false
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
@@ -1061,7 +1065,7 @@ jobs:
         if: steps.aur_up.outputs.available == 'true'
         run: |
           aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
-          GIT_SSH_COMMAND="$aur_ssh_command" git clone ssh://aur@aur.archlinux.org/dsd-neo-git.git aur-package
+          GIT_SSH_COMMAND="$aur_ssh_command" git clone --branch master ssh://aur@aur.archlinux.org/dsd-neo-git.git aur-package
           git config --global --add safe.directory "$GITHUB_WORKSPACE/aur-package"
 
       - name: Compute new pkgver
@@ -1168,6 +1172,10 @@ jobs:
 
   update-aur-release:
     name: Update AUR package (release)
+    # Release tags also share one AUR package repository.
+    concurrency:
+      group: aur-dsd-neo
+      cancel-in-progress: false
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
@@ -1260,7 +1268,7 @@ jobs:
         if: steps.aur_up.outputs.available == 'true'
         run: |
           aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
-          GIT_SSH_COMMAND="$aur_ssh_command" git clone ssh://aur@aur.archlinux.org/dsd-neo.git aur-package
+          GIT_SSH_COMMAND="$aur_ssh_command" git clone --branch master ssh://aur@aur.archlinux.org/dsd-neo.git aur-package
           git config --global --add safe.directory "$GITHUB_WORKSPACE/aur-package"
 
       - name: Compute release metadata
