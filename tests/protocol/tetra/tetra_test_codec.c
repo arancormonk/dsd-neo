@@ -9,6 +9,7 @@
  * was a bad frame and one input bit (tetra_test_codec.h). The variants fail the ways the real decoder could.
  */
 
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <stdint.h>
 #include <stdlib.h>
 

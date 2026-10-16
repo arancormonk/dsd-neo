@@ -30,7 +30,7 @@
 #include "tetra_test_codec.h"
 #include "tetra_voice_state.h"
 
-#define MAX_OUT (16U * TETRA_VOICE_FRAME_SAMPLES)
+#define MAX_OUT ((size_t)16 * TETRA_VOICE_FRAME_SAMPLES)
 
 static int g_fail = 0;
 
@@ -207,7 +207,7 @@ test_mbelib_decoder_plays_the_speech(void) {
     const int good[] = {0, 0};
     expect(reference_decode(again, good, 2, want) == 0, "mbelib: reference decode after reset");
     const size_t m = fixture_output(&f, out, MAX_OUT);
-    expect(m == n + (2U * TETRA_VOICE_FRAME_SAMPLES), "mbelib: after reset both frames play");
+    expect(m == n + ((size_t)2 * TETRA_VOICE_FRAME_SAMPLES), "mbelib: after reset both frames play");
     expect(m > n && memcmp(out + n, want, (m - n) * sizeof(int16_t)) == 0,
            "mbelib: after reset the speech decodes from a reset decoder");
     fixture_close(&f);

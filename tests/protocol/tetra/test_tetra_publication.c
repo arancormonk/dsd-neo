@@ -15,7 +15,6 @@
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
-#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "tetra_state.h"

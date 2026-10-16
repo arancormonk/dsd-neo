@@ -16,7 +16,6 @@
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
 
 #include <dsd-neo/core/voice_chain.h>
-#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
