@@ -21,12 +21,12 @@
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "nxdn_confirm.h"
 
 #define ROW_A 451000000L
 #define ROW_B 452000000L
@@ -106,8 +106,10 @@ tick_at(double seconds) {
 /* Tick every 100 ms through (from, to]. */
 static void
 run_until(double from, double to) {
-    for (double t = from + 0.1; t <= to + 1e-9; t += 0.1) {
-        tick_at(t);
+    const long first = lround(from * 10.0) + 1L;
+    const long last = lround(to * 10.0);
+    for (long tenth = first; tenth <= last; tenth++) {
+        tick_at((double)tenth / 10.0);
     }
 }
 
@@ -216,9 +218,9 @@ static void
 test_content_holds(void) {
     session();
     tick_at(0.0);
-    for (double t = 0.1; t <= 15.0 + 1e-9; t += 0.1) {
+    for (long tenth = 1; tenth <= 150; tenth++) {
         g_state->nxdn_confirm_lock_m = dsd_decode_now_mono_s();
-        tick_at(t);
+        tick_at((double)tenth / 10.0);
     }
     expect("content: no probe while content keeps coming", g_tune_count, 0);
     run_until(15.0, 21.5);
