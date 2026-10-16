@@ -629,8 +629,8 @@ An Android application cannot open `/dev/bus/usb` nodes, so librtlsdr cannot
 enumerate or open a dongle the way it does everywhere else. The descriptor is
 obtained in Java and injected:
 
-1. `UsbSourceManager.kt` matches an attached device against the RTL2832U
-   vendor/product table, requests permission if it does not already have it, calls
+1. `UsbSourceManager.kt` matches an attached device against the RTL2832U and Airspy
+   vendor/product table (`UsbReceiverKind.kt`), requests permission if it does not already have it, calls
    `UsbManager.openDevice()` and takes `UsbDeviceConnection.getFileDescriptor()`.
 2. That descriptor goes to `DsdNative.nativeSetUsbFd(fd)` →
    `rtl_device_set_preopened_fd()` (`src/io/radio/rtl_device.cpp`).
@@ -687,7 +687,13 @@ configure time rather than at link time or on the device.
 Attaching a listed dongle launches the app through the manifest's
 `USB_DEVICE_ATTACHED` filter, which is the only way Android grants device
 permission without a prompt. `res/xml/device_filter.xml` holds the same ids as the
-Kotlin table; add rebadged dongles to both.
+Kotlin table in `UsbReceiverKind.kt`; add rebadged dongles to both.
+
+Before any permission is asked, `UsbSourceManager.attachedSource()` reads the kind of
+receiver plugged in (`usb`, `airspy`, `both`, or empty) from `UsbManager.deviceList`,
+which needs no permission, counting only devices in that table. The host polls it into
+`DecoderHost::attachedDeviceSource`, and Explore and Signal search start on the
+attached kind when the remembered USB kind is not plugged in.
 
 ## Auto-start on USB attachment
 

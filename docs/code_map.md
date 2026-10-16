@@ -5314,7 +5314,19 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   avoid lists only when their store revisions move. Back delegates to Main's session
   policy; a search a coordinator owns (`status.owned`) is a navigation root so its controls
   remain accessible after Activity recreation. Range edits apply on paused restart.
-  Home's `onSignalSearch` seeds the source fields only when it opens the screen, so a screen
+  Home's `onSignalSearch` seeds the source fields (`Main.seedSignalSearch()`) only when it
+  opens the screen: `AppPrefs` `search/sourceType`/`search/host`/`search/port` (written by
+  **Start search** before the start, portable in the backup), else the `explore/*` answer,
+  else `usb`. Every Explore and search entry (Home's direct Explore start, Explore setup's
+  `reset()` before it captures its dirty baseline, the unconfigured first run, failure edit,
+  search seeding, and the Home Explore card's label) resolves the remembered kind through
+  `Main.effectiveSource()` over `Util.effectiveSource()`, the one place the rule lives:
+  rtl_tcp is kept; a remembered USB kind not attached while exactly the other kind is
+  (`DecoderHost::attachedDeviceSource`: `usb`, `airspy`, `both` or empty; empty on desktop)
+  becomes the attached kind; `both` or nothing keeps it. Android polls
+  `UsbSourceManager.attachedSource()` (permission-free `UsbManager.deviceList`, classified
+  by the pure `UsbReceiverKind`, whose id table `isKnown()`/`sourceOf()` share, so hubs and
+  other devices never count) with the USB record. A screen
   reopened over an owned search never had them seeded: while an owned search runs, its
   `sourceType`/`host`/`port` follow `MetricsModel::radioSource`, the receiver in the
   decoder's options snapshot named as the Qt start path names it (`usb`, `airspy`, or

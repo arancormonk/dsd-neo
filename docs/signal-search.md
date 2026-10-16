@@ -9,6 +9,15 @@ Search measures RF power across the radio's capture bandwidth without drawing a
 spectrum. It visits strong candidates to identify and monitor them, then continues
 through the remaining candidates and ranges.
 
+Signal search opens on the radio the last search started on, else the one Explore
+last used, else a USB dongle. On Android, a remembered RTL-SDR dongle opens as the
+Airspy when only an Airspy is plugged in, and the reverse; with both kinds or
+neither plugged in, the remembered radio stays selected, and an RTL-TCP server is
+never replaced. Explore's start, its setup screen and the radio named on its Home
+card follow the same rule. **Start search** remembers the radio it starts on
+separately from Explore, so a search never changes where Explore resumes; both
+travel with a settings backup.
+
 RF strength does not measure distance. Antenna, gain, propagation and other
 transmitters affect discovery. This is not hardware Close Call capture, and crowded
 RF conditions can mask weaker signals. A short burst may end before a listening

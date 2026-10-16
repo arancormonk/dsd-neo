@@ -54,6 +54,10 @@ Item {
     signal explore
     signal signalSearch
     signal exploreSetup
+    // The receiver a tap on the Explore card starts on. Main binds it to the
+    // remembered radio resolved against what is plugged in, so the card states
+    // what the tap will do.
+    property string exploreSource: prefs.exploreSourceType
 
     // Re-derives "Heard n minutes ago" once a minute so rows do not go stale.
     property int heardTick: 0
@@ -431,7 +435,7 @@ Item {
                     onClicked: screen.exploreSetup()
                     z: 2
                 }
-                readonly property string sourceLabel: prefs.exploreSourceType === "rtltcp" ? qsTr("RTL-TCP") : qsTr("USB dongle")
+                readonly property string sourceLabel: screen.exploreSource === "rtltcp" ? qsTr("RTL-TCP") : screen.exploreSource === "airspy" ? qsTr("Airspy") : qsTr("USB dongle")
                 readonly property bool configured: prefs.exploreSourceType.length > 0
 
                 Column {

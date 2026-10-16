@@ -4377,7 +4377,11 @@ if(DSD_ENABLE_QT_UI)
                 ENVIRONMENT
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
         )
-        foreach(_case IN ITEMS settings_layout licenses_screen signal_search)
+        foreach(
+            _case
+            IN
+            ITEMS settings_layout licenses_screen signal_search receiver_choice
+        )
             string(TOUPPER "${_case}" _case_upper)
             add_test(
                 NAME UI_QT_QML_${_case_upper}
@@ -16899,11 +16903,19 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             document_transfer
     )
+    add_test(
+        NAME ANDROID_USB_RECEIVER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            usb_receiver
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
         ANDROID_SCREEN_POLICY_JVM
         ANDROID_DOCUMENT_TRANSFER_JVM
+        ANDROID_USB_RECEIVER_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

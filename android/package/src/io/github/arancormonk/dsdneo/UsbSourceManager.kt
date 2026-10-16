@@ -43,26 +43,6 @@ object UsbSourceManager {
     /** How long to wait for a permission broadcast before assuming it was lost. */
     private const val REQUEST_TIMEOUT_MS = 60000L
 
-    /**
-     * RTL2832U vendor/product ids, the same set librtlsdr recognises. Kept in sync
-     * with `res/xml/device_filter.xml`, which drives the attach intent filter.
-     */
-    private val KNOWN_IDS: Set<Int> = intArrayOf(
-        0x1d5060a1, // Airspy R2 / Mini
-        0x0bda2832, 0x0bda2838,
-        0x04136680, 0x04136f0f,
-        0x0458707f,
-        0x0ccd00a9, 0x0ccd00b3, 0x0ccd00b4, 0x0ccd00b5, 0x0ccd00b7, 0x0ccd00b8,
-        0x0ccd00b9, 0x0ccd00c0, 0x0ccd00c6, 0x0ccd00d3, 0x0ccd00d7, 0x0ccd00e0,
-        0x15545020,
-        0x15f40131, 0x15f40133,
-        0x185b0620, 0x185b0650, 0x185b0680,
-        0x1b80d393, 0x1b80d394, 0x1b80d395, 0x1b80d397, 0x1b80d398, 0x1b80d39d,
-        0x1b80d3a4, 0x1b80d3a8, 0x1b80d3af, 0x1b80d3b0,
-        0x1d191101, 0x1d191102, 0x1d191103, 0x1d191104,
-        0x1f4da803, 0x1f4db803, 0x1f4dc803, 0x1f4dd286, 0x1f4dd803,
-    ).toHashSet()
-
     private val lock = Any()
     private var connection: UsbDeviceConnection? = null
     private var attachedName: String? = null
@@ -165,6 +145,19 @@ object UsbSourceManager {
     fun deviceStatus(): String = synchronized(lock) {
         JSONObject().put("ready", connection != null).put("text", status)
             .put("kind", failureKind).put("name", deviceLabel).put("source", connectedSource).put("serial", connectedSerial).toString()
+    }
+
+    /**
+     * The kind of receiver attached right now, for the UI's existing poll: "usb", "airspy", "both" or empty.
+     *
+     * Reads the bus, not the permission state: listing devices needs no permission, so this answers before any
+     * prompt, and the UI can start on the receiver that is actually plugged in.
+     */
+    @JvmStatic
+    fun attachedSource(): String {
+        val context = synchronized(lock) { attachmentContext } ?: return ""
+        val manager = context.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return ""
+        return UsbReceiverKind.attachedKind(manager.deviceList.values.map { it.vendorId to it.productId })
     }
 
     /** Retained attach edge for the UI's existing poll, independent of permission. */
@@ -450,10 +443,6 @@ object UsbSourceManager {
         }
     }
 
-    // Deliberately id-only. Matching on "has a vendor-specific interface" would drag
-    // in hubs, ddocks and audio devices, and handing librtlsdr one of those
-    // descriptors is worse than not finding a dongle at all. An unlisted rebadge
-    // belongs in this table and in res/xml/device_filter.xml, not in a loose match.
     private fun serialOf(device: UsbDevice): String = try {
         device.serialNumber?.takeLast(16) ?: ""
     } catch (_: SecurityException) { "" }
@@ -461,11 +450,10 @@ object UsbSourceManager {
     private fun matchesSerial(device: UsbDevice, serial: String): Boolean =
         serialOf(device).equals(serial, ignoreCase = true)
 
-    private fun sourceOf(device: UsbDevice): String =
-        if (device.vendorId == 0x1d50 && device.productId == 0x60a1) "airspy" else "usb"
+    private fun sourceOf(device: UsbDevice): String = UsbReceiverKind.sourceOf(device.vendorId, device.productId)
 
-    private fun isKnown(device: UsbDevice): Boolean =
-        KNOWN_IDS.contains((device.vendorId shl 16) or device.productId)
+    // See UsbReceiverKind.isKnown: id-only, so hubs and other accessories never count.
+    private fun isKnown(device: UsbDevice): Boolean = UsbReceiverKind.isKnown(device.vendorId, device.productId)
 
     private fun describe(device: UsbDevice): String =
         device.productName ?: String.format("%04x:%04x", device.vendorId, device.productId)

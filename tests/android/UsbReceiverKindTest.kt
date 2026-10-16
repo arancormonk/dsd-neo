@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+package io.github.arancormonk.dsdneo
+
+private val AIRSPY = 0x1d50 to 0x60a1
+private val RTL_2832 = 0x0bda to 0x2832
+private val RTL_2838 = 0x0bda to 0x2838
+private val HUB = 0x1d6b to 0x0002
+private val KEYBOARD = 0x046d to 0xc31c
+// The Airspy's vendor with another product, and another vendor with the Airspy's product: neither is a receiver.
+private val AIRSPY_VENDOR_ONLY = 0x1d50 to 0x5678
+private val AIRSPY_PRODUCT_ONLY = 0x1234 to 0x60a1
+
+private fun expectKind(want: String, devices: List<Pair<Int, Int>>, what: String) {
+    val got = UsbReceiverKind.attachedKind(devices)
+    check(got == want) { "$what: expected \"$want\", got \"$got\"" }
+}
+
+private fun airspyBesideUnrelatedDevicesIsAirspy() {
+    // An Airspy behind a hub, with a keyboard on the same hub: the hub and keyboard are not RTL-SDRs.
+    expectKind(UsbReceiverKind.AIRSPY, listOf(HUB, AIRSPY, KEYBOARD), "Airspy and unrelated devices")
+    expectKind(UsbReceiverKind.AIRSPY, listOf(AIRSPY, AIRSPY_VENDOR_ONLY, AIRSPY_PRODUCT_ONLY), "Airspy and look-alikes")
+}
+
+private fun twoRtlDonglesAreUsb() {
+    expectKind(UsbReceiverKind.RTL, listOf(RTL_2832, RTL_2838), "two RTL dongles")
+    expectKind(UsbReceiverKind.RTL, listOf(RTL_2832, RTL_2832, HUB), "two of one RTL model and a hub")
+}
+
+private fun rtlAndAirspyAreBoth() {
+    expectKind(UsbReceiverKind.BOTH, listOf(RTL_2832, AIRSPY), "RTL and Airspy")
+    expectKind(UsbReceiverKind.BOTH, listOf(HUB, AIRSPY, RTL_2838, AIRSPY), "RTL, two Airspys and a hub")
+}
+
+private fun nothingKnownIsEmpty() {
+    expectKind("", emptyList(), "an empty bus")
+    expectKind("", listOf(HUB, KEYBOARD, AIRSPY_VENDOR_ONLY, AIRSPY_PRODUCT_ONLY), "only unrelated devices")
+}
+
+private fun classificationMatchesTheAccessRequest() {
+    check(UsbReceiverKind.isKnown(AIRSPY.first, AIRSPY.second)) { "the Airspy is a receiver" }
+    check(UsbReceiverKind.isKnown(RTL_2832.first, RTL_2832.second)) { "the RTL2832U is a receiver" }
+    check(!UsbReceiverKind.isKnown(HUB.first, HUB.second)) { "a hub is not a receiver" }
+    check(UsbReceiverKind.sourceOf(AIRSPY.first, AIRSPY.second) == "airspy") { "an Airspy starts as airspy" }
+    check(UsbReceiverKind.sourceOf(RTL_2838.first, RTL_2838.second) == "usb") { "an RTL dongle starts as usb" }
+}
+
+fun main() {
+    airspyBesideUnrelatedDevicesIsAirspy()
+    twoRtlDonglesAreUsb()
+    rtlAndAirspyAreBoth()
+    nothingKnownIsEmpty()
+    classificationMatchesTheAccessRequest()
+    println("UsbReceiverKindTest: OK")
+}

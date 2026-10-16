@@ -59,6 +59,11 @@ enum Key {
     kExploreHost,
     kExplorePort,
     kExploreFreqMhz,
+    // The radio the last signal search started on. Kept apart from the explore keys
+    // so starting a search never rewrites where Explore resumes.
+    kSearchSourceType,
+    kSearchHost,
+    kSearchPort,
     // The last location fix is a short-lived private hint tied to this device.
     kLastLat,
     kLastLon,
@@ -94,6 +99,9 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"explore/host", true},
     {"explore/port", true},
     {"explore/freqMhz", true},
+    {"search/sourceType", true},
+    {"search/host", true},
+    {"search/port", true},
     {"location/lastLat", false},
     {"location/lastLon", false},
     {"location/lastFixAt", false},
@@ -140,21 +148,24 @@ sane_appearance(int mode) {
 }
 
 /**
- * @brief @p type if it is a source that can explore, else empty.
+ * @brief @p type if it is a tuner source Explore and Signal search can start on, else empty.
  *
- * Only the two tuner sources can explore -- a PCM feed or a file has nothing to
- * point anywhere -- so anything else reads as "not chosen yet" and sends the user
- * to the setup sheet rather than starting something that cannot tune. Empty is the
- * honest default: it is what makes the first tap ask.
+ * Only the tuner sources can explore or search -- an RTL-SDR dongle, an Airspy, or
+ * an rtl_tcp server; a PCM feed or a file has nothing to point anywhere -- so
+ * anything else reads as "not chosen yet" and sends the user to the setup sheet
+ * rather than starting something that cannot tune. Empty is the honest default: it
+ * is what makes the first tap ask.
  */
 QString
-sane_explore_source_type(const QString& type) {
-    return (type == QLatin1String("usb") || type == QLatin1String("rtltcp")) ? type : QString();
+sane_tuner_source_type(const QString& type) {
+    return (type == QLatin1String("usb") || type == QLatin1String("airspy") || type == QLatin1String("rtltcp"))
+               ? type
+               : QString();
 }
 
 /** @brief @p port if it is a usable TCP port, else the rtl_tcp default. */
 int
-sane_explore_port(int port) {
+sane_tuner_port(int port) {
     return (port >= 1 && port <= 65535) ? port : 1234;
 }
 
@@ -573,12 +584,12 @@ AppPrefs::setRrAppKey(const QString& key) {
 
 QString
 AppPrefs::exploreSourceType() const {
-    return sane_explore_source_type(m_settings.value(key_name(kExploreSourceType), QString()).toString());
+    return sane_tuner_source_type(m_settings.value(key_name(kExploreSourceType), QString()).toString());
 }
 
 void
 AppPrefs::setExploreSourceType(const QString& type) {
-    const QString next = sane_explore_source_type(type);
+    const QString next = sane_tuner_source_type(type);
     if (next == m_settings.value(key_name(kExploreSourceType), QString()).toString()) {
         return;
     }
@@ -602,12 +613,12 @@ AppPrefs::setExploreHost(const QString& host) {
 
 int
 AppPrefs::explorePort() const {
-    return sane_explore_port(m_settings.value(key_name(kExplorePort), 1234).toInt());
+    return sane_tuner_port(m_settings.value(key_name(kExplorePort), 1234).toInt());
 }
 
 void
 AppPrefs::setExplorePort(int port) {
-    const int next = sane_explore_port(port);
+    const int next = sane_tuner_port(port);
     if (next == m_settings.value(key_name(kExplorePort), 1234).toInt()) {
         return;
     }
@@ -630,6 +641,50 @@ AppPrefs::setExploreFreqMhz(const QString& mhz) {
     }
     m_settings.setValue(key_name(kExploreFreqMhz), mhz);
     Q_EMIT exploreChanged();
+}
+
+QString
+AppPrefs::searchSourceType() const {
+    return sane_tuner_source_type(m_settings.value(key_name(kSearchSourceType), QString()).toString());
+}
+
+void
+AppPrefs::setSearchSourceType(const QString& type) {
+    const QString next = sane_tuner_source_type(type);
+    if (next == m_settings.value(key_name(kSearchSourceType), QString()).toString()) {
+        return;
+    }
+    m_settings.setValue(key_name(kSearchSourceType), next);
+    Q_EMIT searchChanged();
+}
+
+QString
+AppPrefs::searchHost() const {
+    return m_settings.value(key_name(kSearchHost), QString()).toString();
+}
+
+void
+AppPrefs::setSearchHost(const QString& host) {
+    if (host == searchHost()) {
+        return;
+    }
+    m_settings.setValue(key_name(kSearchHost), host);
+    Q_EMIT searchChanged();
+}
+
+int
+AppPrefs::searchPort() const {
+    return sane_tuner_port(m_settings.value(key_name(kSearchPort), 1234).toInt());
+}
+
+void
+AppPrefs::setSearchPort(int port) {
+    const int next = sane_tuner_port(port);
+    if (next == m_settings.value(key_name(kSearchPort), 1234).toInt()) {
+        return;
+    }
+    m_settings.setValue(key_name(kSearchPort), next);
+    Q_EMIT searchChanged();
 }
 
 bool

@@ -228,6 +228,14 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     QString usbStatus;
     int usbFailureKind = 0;
 
+    // The receiver kind plugged in, as the Android host reads it off the bus.
+    QString
+    attachedDeviceSource() const override {
+        return attachedSource;
+    }
+
+    QString attachedSource;
+
     bool usbBrokered = false;
     bool usbReady = false;
     int usbRequests = 0;
@@ -1978,6 +1986,15 @@ class Setup : public QObject {
         Q_EMIT m_lifecycle_host->localDeviceChanged();
     }
 
+    /** @brief Plug in a receiver kind ("usb", "airspy", "both" or empty) on both lifecycle hosts. */
+    Q_INVOKABLE void
+    setAttachedDeviceSource(const QString& source) {
+        for (ImportOnlyHost* host : {m_import_host, m_initializing_host}) {
+            host->attachedSource = source;
+            Q_EMIT host->localDeviceChanged();
+        }
+    }
+
     Q_INVOKABLE int
     dongleRetryRequests() const {
         return m_lifecycle_host->usbRequests;
@@ -2340,6 +2357,10 @@ class Setup : public QObject {
         prefs[QStringLiteral("exploreHost")] = QString();
         prefs[QStringLiteral("explorePort")] = 1234;
         prefs[QStringLiteral("exploreFreqMhz")] = QString();
+        /* Empty too: Signal search then seeds from Explore's answer, else USB. */
+        prefs[QStringLiteral("searchSourceType")] = QString();
+        prefs[QStringLiteral("searchHost")] = QString();
+        prefs[QStringLiteral("searchPort")] = 1234;
         /* RadioReference account: empty on purpose, so the screen's first state
          * is the credentials gate a fresh install shows. This map answers reads
          * only -- it is a plain QVariantMap, not the production AppPrefs, so QML
@@ -2633,6 +2654,8 @@ class Setup : public QObject {
         host[QStringLiteral("screenPolicySupported")] = false;
         host[QStringLiteral("localDeviceBrokered")] = false;
         host[QStringLiteral("localDeviceSource")] = QStringLiteral("usb");
+        /* Nothing plugged in, which is also what a desktop host answers. */
+        host[QStringLiteral("attachedDeviceSource")] = QString();
         host[QStringLiteral("localDeviceSerial")] = QString();
         host[QStringLiteral("localDeviceReady")] = false;
         host[QStringLiteral("localDeviceStatus")] = QString();

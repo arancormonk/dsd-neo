@@ -71,6 +71,12 @@ class AppPrefs : public QObject {
     Q_PROPERTY(QString exploreHost READ exploreHost WRITE setExploreHost NOTIFY exploreChanged)
     Q_PROPERTY(int explorePort READ explorePort WRITE setExplorePort NOTIFY exploreChanged)
     Q_PROPERTY(QString exploreFreqMhz READ exploreFreqMhz WRITE setExploreFreqMhz NOTIFY exploreChanged)
+    /* The radio the last signal search started on, written together when Start
+     * search is pressed. Separate from the explore keys: a search must not move
+     * where Explore resumes, and Explore's start frequency has no meaning here. */
+    Q_PROPERTY(QString searchSourceType READ searchSourceType WRITE setSearchSourceType NOTIFY searchChanged)
+    Q_PROPERTY(QString searchHost READ searchHost WRITE setSearchHost NOTIFY searchChanged)
+    Q_PROPERTY(int searchPort READ searchPort WRITE setSearchPort NOTIFY searchChanged)
 
   public:
     /** @brief Appearance follows the OS by default; see the settings screen. */
@@ -191,8 +197,8 @@ class AppPrefs : public QObject {
     QString rrAppKey() const;
     void setRrAppKey(const QString& key);
 
-    /** @brief "usb" or "rtltcp"; empty until the user has chosen, which is what makes
-     *         the first Explore tap open the setup sheet instead of starting blind. */
+    /** @brief "usb", "airspy" or "rtltcp"; empty until the user has chosen, which is what
+     *         makes the first Explore tap open the setup sheet instead of starting blind. */
     QString exploreSourceType() const;
     void setExploreSourceType(const QString& type);
 
@@ -205,6 +211,16 @@ class AppPrefs : public QObject {
     /** @brief Start frequency in MHz, as text; empty until an explore session has run. */
     QString exploreFreqMhz() const;
     void setExploreFreqMhz(const QString& mhz);
+
+    /** @brief "usb", "airspy" or "rtltcp" as the last search started; empty until one has. */
+    QString searchSourceType() const;
+    void setSearchSourceType(const QString& type);
+
+    QString searchHost() const;
+    void setSearchHost(const QString& host);
+
+    int searchPort() const;
+    void setSearchPort(int port);
 
   Q_SIGNALS:
     void autoStartOnAttachChanged();
@@ -230,6 +246,7 @@ class AppPrefs : public QObject {
     void rrUsernameChanged();
     void rrAppKeyChanged();
     void exploreChanged();
+    void searchChanged();
 
   private:
     void expireLocation() const;

@@ -71,8 +71,7 @@ Window {
         if (!attemptedSource)
             return;
         if (attemptedSource.kind === "explore") {
-            exploreSetup.reset(prefs.exploreSourceType, prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz);
-            exploreSetupOpen = true;
+            openExploreSetup();
         } else {
             var row = attemptedSource.kind === "scan" ? scanLists.rowForUid(attemptedSource.uid) : savedSystems.rowForUid(attemptedSource.uid);
             if (row < 0) {
@@ -663,16 +662,45 @@ Window {
         mainRoot.radioReferenceOpen = true;
     }
 
+    /**
+     * The receiver to start on, given the one remembered: Util.effectiveSource()
+     * over what the host sees plugged in. Every Explore and Signal search entry
+     * goes through here, so a remembered RTL dongle with only an Airspy attached
+     * (or the reverse) starts on the Airspy everywhere, and rtl_tcp stays put.
+     */
+    function effectiveSource(remembered) {
+        return Util.effectiveSource(remembered, String(decoderHost.attachedDeviceSource || ""));
+    }
+
+    /** Open Explore setup on the remembered answer, with the attached receiver resolved before its baseline. */
+    function openExploreSetup() {
+        exploreSetup.reset(mainRoot.effectiveSource(prefs.exploreSourceType), prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz);
+        mainRoot.exploreSetupOpen = true;
+    }
+
     /** Start an explore session from the remembered source and frequency. */
     function startExploring() {
         cancelPendingRestart();
         var source = prefs.exploreSourceType;
         if (source !== "usb" && source !== "airspy" && source !== "rtltcp") {
             // Nothing remembered to start from; ask instead of guessing.
-            mainRoot.exploreSetupOpen = true;
+            mainRoot.openExploreSetup();
             return;
         }
-        mainRoot.startWithMap(mainRoot.exploreSystem(source, prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz), -1, false);
+        mainRoot.startWithMap(mainRoot.exploreSystem(mainRoot.effectiveSource(source), prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz), -1, false);
+    }
+
+    /**
+     * Fill Signal search's receiver when Home opens it: the radio the last search
+     * started on, else Explore's, else a USB dongle, then resolved against what
+     * is attached. The endpoint comes with the answer it belongs to.
+     */
+    function seedSignalSearch() {
+        var fromSearch = prefs.searchSourceType.length > 0;
+        var remembered = fromSearch ? prefs.searchSourceType : prefs.exploreSourceType;
+        signalSearchScreen.sourceType = mainRoot.effectiveSource(remembered) || "usb";
+        signalSearchScreen.host = (fromSearch ? prefs.searchHost : prefs.exploreHost) || "192.168.1.10";
+        signalSearchScreen.port = (fromSearch ? prefs.searchPort : prefs.explorePort) || 1234;
     }
 
     /**
@@ -737,6 +765,7 @@ Window {
         HomeScreen {
             id: homeScreen
             objectName: "homeScreen"
+            exploreSource: mainRoot.effectiveSource(prefs.exploreSourceType)
             failure: ({
                     message: mainRoot.showFailure ? mainRoot.failureMessage() : "",
                     source: mainRoot.sourceLabel(),
@@ -784,15 +813,10 @@ Window {
             }
             onExplore: mainRoot.startExploring()
             onSignalSearch: {
-                signalSearchScreen.sourceType = prefs.exploreSourceType || "usb";
-                signalSearchScreen.host = prefs.exploreHost || "192.168.1.10";
-                signalSearchScreen.port = prefs.explorePort || 1234;
+                mainRoot.seedSignalSearch();
                 mainRoot.signalSearchOpen = true;
             }
-            onExploreSetup: {
-                exploreSetup.reset(prefs.exploreSourceType, prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz);
-                mainRoot.exploreSetupOpen = true;
-            }
+            onExploreSetup: mainRoot.openExploreSetup()
         }
 
         HistoryScreen {
@@ -1052,6 +1076,12 @@ Window {
             decoderHost.stop();
         }
         onStart: function (sourceType, host, port, frequency) {
+            // Remembered before the start, as Explore's answer is: a start that
+            // fails is still the radio the user chose. Its own keys, so a search
+            // never moves where Explore resumes.
+            prefs.searchSourceType = sourceType;
+            prefs.searchHost = host;
+            prefs.searchPort = port;
             var sys = mainRoot.exploreSystem(sourceType, host, port, frequency);
             sys.signalSearch = true;
             sys.name = qsTr("Signal search");

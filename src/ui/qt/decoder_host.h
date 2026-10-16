@@ -30,6 +30,7 @@ class DecoderHost : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString localDeviceSerial READ localDeviceSerial NOTIFY localDeviceChanged)
     Q_PROPERTY(QString localDeviceSource READ localDeviceSource NOTIFY localDeviceChanged)
+    Q_PROPERTY(QString attachedDeviceSource READ attachedDeviceSource NOTIFY localDeviceChanged)
     Q_PROPERTY(bool running READ isRunning NOTIFY runningChanged)
     Q_PROPERTY(bool signalsSessionInitialized READ signalsSessionInitialized CONSTANT)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusTextChanged)
@@ -441,6 +442,20 @@ class DecoderHost : public QObject {
     virtual QString
     localDeviceSource() const {
         return QStringLiteral("usb");
+    }
+
+    /**
+     * @brief The kind of receiver plugged in, before any permission is asked.
+     *
+     * "usb" (RTL-SDR dongles only), "airspy" (Airspys only), "both", or empty when
+     * no supported receiver is attached or the host cannot tell. Unlike
+     * localDeviceSource(), which names the device access was granted for, this
+     * reads the bus, so the UI can start on the receiver actually attached.
+     * Hosts that do not broker USB devices answer empty.
+     */
+    virtual QString
+    attachedDeviceSource() const {
+        return {};
     }
 
     Q_INVOKABLE virtual void

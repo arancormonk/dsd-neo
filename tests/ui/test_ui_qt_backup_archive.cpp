@@ -287,9 +287,13 @@ populate(TestHost& host) {
     dsd_app_signal_search_permanent_avoid(156800000U);
     dsd_app_signal_search_permanent_avoid(162550000U);
 
-    expect("write portable settings",
-           dsd_qt::AppPrefs::replacePortable(
-               {{"decode/extraArgs", "-Z"}, {"rr/username", "scanner"}, {"tuner/gainDb", "30"}}));
+    expect("write portable settings", dsd_qt::AppPrefs::replacePortable({{"decode/extraArgs", "-Z"},
+                                                                         {"rr/username", "scanner"},
+                                                                         {"tuner/gainDb", "30"},
+                                                                         {"explore/sourceType", "airspy"},
+                                                                         {"search/sourceType", "rtltcp"},
+                                                                         {"search/host", "10.0.2.2"},
+                                                                         {"search/port", 1235}}));
     return f;
 }
 
@@ -539,6 +543,11 @@ test_round_trip(const Fixture& f) {
     expect("profiles keep their definitions",
            parsed.stores.value("decryption_profiles.json").at(0).toObject().value("legacyCsvPath") == f.keys);
     expect("prefs equal", parsed.prefs == snapshot.prefs);
+    expect("the remembered radios travel with the backup",
+           parsed.prefs.value("explore/sourceType").toString() == "airspy"
+               && parsed.prefs.value("search/sourceType").toString() == "rtltcp"
+               && parsed.prefs.value("search/host").toString() == "10.0.2.2"
+               && parsed.prefs.value("search/port").toInt() == 1235);
     expect("avoids equal", parsed.avoids == snapshot.avoids);
     check_round_trip_files(parsed, opened, f);
     const auto& p = parsed.summary;

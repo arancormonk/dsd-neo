@@ -167,6 +167,8 @@ SUITES = {
             ),
         ),
     ),
+    # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
+    "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure
     # ScreenWake it answers with, against a PowerManager stub that models reference counting.

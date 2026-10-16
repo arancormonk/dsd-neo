@@ -408,6 +408,92 @@ test_app_prefs(void) {
     expect("no RadioReference password preference exists", reloaded.metaObject()->indexOfProperty("rrPassword") == -1);
 }
 
+QSettings
+prefs_file() {
+    return QSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"),
+                     QStringLiteral("dsd-neo-app"));
+}
+
+void
+clear_prefs_file() {
+    QSettings s = prefs_file();
+    s.clear();
+    s.sync();
+}
+
+/*
+ * The radio Explore and Signal search start on survives a restart for every tuner
+ * source the setup offers. An Airspy used to be stored and read back as empty, so
+ * Explore asked for the radio again every time and Signal search fell back to USB.
+ */
+void
+test_receiver_prefs() {
+    {
+        AppPrefs prefs;
+        int explore = 0;
+        QObject::connect(&prefs, &AppPrefs::exploreChanged, &prefs, [&explore]() { ++explore; });
+        prefs.setExploreSourceType(QStringLiteral("airspy"));
+        expect("an Airspy explore source reads back at once", prefs.exploreSourceType() == QStringLiteral("airspy"));
+        expect("choosing Airspy for exploring notifies", explore == 1);
+    }
+    {
+        AppPrefs reloaded;
+        expect("an Airspy explore source persists", reloaded.exploreSourceType() == QStringLiteral("airspy"));
+        reloaded.setExploreSourceType(QStringLiteral("usb"));
+    }
+
+    /* Signal search remembers its own radio, apart from Explore's. */
+    {
+        AppPrefs prefs;
+        expect("search source starts unchosen", prefs.searchSourceType().isEmpty());
+        expect("search host starts empty", prefs.searchHost().isEmpty());
+        expect("search port defaults to rtl_tcp's", prefs.searchPort() == 1234);
+        const QString exploreSource = prefs.exploreSourceType();
+        const QString exploreHost = prefs.exploreHost();
+        const int explorePort = prefs.explorePort();
+        int search = 0;
+        int explore = 0;
+        QObject::connect(&prefs, &AppPrefs::searchChanged, &prefs, [&search]() { ++search; });
+        QObject::connect(&prefs, &AppPrefs::exploreChanged, &prefs, [&explore]() { ++explore; });
+        prefs.setSearchSourceType(QStringLiteral("udp"));
+        expect("a non-tuner search source reads as unchosen", prefs.searchSourceType().isEmpty());
+        prefs.setSearchPort(0);
+        expect("an out-of-range search port reads as the default", prefs.searchPort() == 1234);
+        search = 0;
+        for (const char* kind : {"usb", "rtltcp", "airspy"}) {
+            prefs.setSearchSourceType(QString::fromLatin1(kind));
+            expect("every tuner source is a search source", prefs.searchSourceType() == QString::fromLatin1(kind));
+        }
+        expect("each search source change notifies once", search == 3);
+        prefs.setSearchSourceType(QStringLiteral("airspy"));
+        expect("an unchanged search source does not notify", search == 3);
+        prefs.setSearchHost(QStringLiteral("10.0.2.2"));
+        prefs.setSearchPort(1235);
+        prefs.setSearchPort(1235);
+        expect("search host and port notify on change only", search == 5);
+        expect("search writes never touch Explore", explore == 0 && prefs.exploreSourceType() == exploreSource
+                                                        && prefs.exploreHost() == exploreHost
+                                                        && prefs.explorePort() == explorePort);
+    }
+    {
+        AppPrefs reloaded;
+        expect("an Airspy search source persists", reloaded.searchSourceType() == QStringLiteral("airspy"));
+        expect("the search host persists", reloaded.searchHost() == QStringLiteral("10.0.2.2"));
+        expect("the search port persists", reloaded.searchPort() == 1235);
+        /* The setter compares with what is stored, so the corrective write lands. */
+        prefs_file().setValue(QStringLiteral("search/sourceType"), QStringLiteral("file"));
+        AppPrefs stale;
+        expect("a stored non-tuner search source reads as unchosen", stale.searchSourceType().isEmpty());
+        stale.setSearchSourceType(QString());
+        AppPrefs corrected;
+        expect("clearing a stored non-tuner search source lands",
+               corrected.searchSourceType().isEmpty()
+                   && prefs_file().value(QStringLiteral("search/sourceType")).toString().isEmpty());
+        corrected.setSearchHost(QString());
+        corrected.setSearchPort(1234);
+    }
+}
+
 void
 test_units_preference() {
     {
@@ -736,19 +822,6 @@ test_foundation_key_type_migration() {
     expect("foundation rc4 type converts", model.get(2).value("encKeyType").toString() == "rc4");
 }
 
-QSettings
-prefs_file() {
-    return QSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"),
-                     QStringLiteral("dsd-neo-app"));
-}
-
-void
-clear_prefs_file() {
-    QSettings s = prefs_file();
-    s.clear();
-    s.sync();
-}
-
 struct PinnedKey {
     const char* property;
     QVariant value; // differs from the default and passes the setter's sanitiser
@@ -790,6 +863,9 @@ test_prefs_key_table(void) {
         {"exploreHost", QStringLiteral("host"), "explore/host"},
         {"explorePort", 4321, "explore/port"},
         {"exploreFreqMhz", QStringLiteral("851.5"), "explore/freqMhz"},
+        {"searchSourceType", QStringLiteral("airspy"), "search/sourceType"},
+        {"searchHost", QStringLiteral("host"), "search/host"},
+        {"searchPort", 4321, "search/port"},
     };
     QStringList covered;
     int writable = 0;
@@ -878,7 +954,10 @@ test_prefs_key_table(void) {
            portable.size() + local.size() == names.size() && !portable.contains(QStringLiteral("ui/onboardingDone"))
                && portable.contains(QStringLiteral("listen/keepAwake"))
                && portable.contains(QStringLiteral("listen/lastStartedUid"))
-               && portable.contains(QStringLiteral("rr/appKey")));
+               && portable.contains(QStringLiteral("rr/appKey"))
+               && portable.contains(QStringLiteral("explore/sourceType"))
+               && portable.contains(QStringLiteral("search/sourceType"))
+               && portable.contains(QStringLiteral("search/host")) && portable.contains(QStringLiteral("search/port")));
 
     const QVariantMap before = AppPrefs::readPortable();
     expect("readPortable returns only portable keys", !before.isEmpty()
@@ -890,6 +969,11 @@ test_prefs_key_table(void) {
     expect("readPortable reads stored values", before.value(QStringLiteral("rr/username")).toString() == "user"
                                                    && before.value(QStringLiteral("tuner/gainDb")).toInt() == 41);
     expect("readPortable omits absent keys", !before.contains(QStringLiteral("listen/keepAwake")));
+    expect("readPortable carries the remembered radios",
+           before.value(QStringLiteral("explore/sourceType")).toString() == "usb"
+               && before.value(QStringLiteral("search/sourceType")).toString() == "airspy"
+               && before.value(QStringLiteral("search/host")).toString() == "host"
+               && before.value(QStringLiteral("search/port")).toInt() == 4321);
 
     file.setValue(QStringLiteral("ui/onboardingDone"), true);
     file.setValue(QStringLiteral("location/lastLat"), 9.0);
@@ -901,6 +985,8 @@ test_prefs_key_table(void) {
     incoming.insert(QStringLiteral("listen/keepAwake"), true);
     incoming.insert(QStringLiteral("ui/onboardingDone"), false);
     incoming.insert(QStringLiteral("not/a/key"), 1);
+    incoming.insert(QStringLiteral("search/sourceType"), QStringLiteral("airspy"));
+    incoming.insert(QStringLiteral("search/port"), 5555);
     expect("replacePortable succeeds", AppPrefs::replacePortable(incoming));
 
     QSettings after = prefs_file();
@@ -919,7 +1005,14 @@ test_prefs_key_table(void) {
     }
     const QVariantMap again = AppPrefs::readPortable();
     expect("readPortable round-trips replacePortable",
-           again.size() == 3 && again.value(QStringLiteral("tuner/gainDb")).toInt() == 42);
+           again.size() == 5 && again.value(QStringLiteral("tuner/gainDb")).toInt() == 42
+               && again.value(QStringLiteral("search/sourceType")).toString() == "airspy"
+               && again.value(QStringLiteral("search/port")).toInt() == 5555);
+    {
+        AppPrefs fresh;
+        expect("a restored search radio reads back", fresh.searchSourceType() == QStringLiteral("airspy")
+                                                         && fresh.searchPort() == 5555 && fresh.searchHost().isEmpty());
+    }
     expect("empty replace clears portable keys",
            AppPrefs::replacePortable(QVariantMap()) && AppPrefs::readPortable().isEmpty());
 }
@@ -949,6 +1042,7 @@ main(int argc, char** argv) {
     test_saved_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();
+    test_receiver_prefs();
     test_screen_policy_prefs();
     test_units_preference();
     test_migration_write_failure();
