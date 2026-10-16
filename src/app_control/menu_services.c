@@ -893,8 +893,8 @@ svc_analog_held_width_hz(int kind, int width_hz) {
 /* "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth": short enough for a
    toast, with both values, the limit and the fix. @p source (dsd_analog_rate_source) says what sets the rate: an
    RTL-SDR or rtl_tcp input's DSP bandwidth, whose fix names the bandwidths that fit; a SoapySDR or Airspy device, whose
-   rate a wider DSP bandwidth raises; or an I/Q replay's capture, which only a narrower width can suit
-   (dsd_analog_width_rate_fix(), which never names narrowing where no width of the kind fits). */
+   rate a wider DSP bandwidth raises; or an I/Q replay, whose rate follows the DSP bandwidth and whose fix names the
+   bandwidths that fit, as for an RTL input. */
 static void
 svc_analog_rate_refusal(int kind, int width_hz, int rate_hz, int source, char* why, size_t why_size) {
     char width[DSD_ANALOG_WIDTH_TEXT_MAX];
@@ -907,7 +907,7 @@ svc_analog_rate_refusal(int kind, int width_hz, int rate_hz, int source, char* w
         /* A replay's rate follows the DSP bandwidth as an RTL-SDR's does: a bandwidth change re-plans it (issue #701). */
         char fits[32];
         (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits, sizeof fits);
-        DSD_SNPRINTF(fix, sizeof fix, "use a %s kHz DSP bandwidth", fits);
+        DSD_SNPRINTF(fix, sizeof fix, "use %s %s kHz DSP bandwidth", fits[0] == '8' ? "an" : "a", fits);
     } else {
         (void)dsd_analog_width_rate_fix(kind, width_hz, rate_hz, source, fix, sizeof fix);
     }

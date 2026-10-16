@@ -2814,14 +2814,14 @@ dsd_iq_info_print_warnings(const dsd_iq_replay_config* cfg, uint64_t actual_file
 /* --iq-info for a WAV recording (issue #701). */
 /* How a WAV at its rate reaches @p target_hz: "resampled to R Hz, decimated by N", "decimated by N", "as recorded", or
  * why it cannot. */
-static void
+static int
 info_describe_wav_plan(const dsd_iq_replay_config* cfg, uint32_t target_hz, uint32_t required_hz, char* out,
                        size_t out_size) {
     dsd_iq_replay_rate_plan plan;
     char err[160] = {0};
     if (dsd_iq_replay_plan_rate(cfg, target_hz, required_hz, 0, &plan, err, sizeof(err)) != DSD_IQ_OK) {
         DSD_SNPRINTF(out, out_size, "refused (%s)", err);
-        return;
+        return 0;
     }
     if (plan.resample) {
         DSD_SNPRINTF(out, out_size, "resampled to %u Hz, decimated by %u", (unsigned)plan.dsp_input_rate_hz,
@@ -2831,6 +2831,7 @@ info_describe_wav_plan(const dsd_iq_replay_config* cfg, uint32_t target_hz, uint
     } else {
         DSD_SNPRINTF(out, out_size, "%s", "as recorded");
     }
+    return 1;
 }
 
 static int
@@ -2877,11 +2878,12 @@ dsd_iq_info_print_wav(const dsd_iq_replay_config* cfg, const char* display_path,
        72 kHz, as examples. */
     char at48[96];
     char at72[96];
-    info_describe_wav_plan(cfg, 48000U, 0U, at48, sizeof(at48));
-    info_describe_wav_plan(cfg, 72000U, 18000U, at72, sizeof(at72));
+    /* Replayable when some DSP rate can be planned for it; a rate no plan reaches is refused by --iq-replay. */
+    const int plans = info_describe_wav_plan(cfg, 48000U, 0U, at48, sizeof(at48))
+                      | info_describe_wav_plan(cfg, 72000U, 18000U, at72, sizeof(at72));
     DSD_FPRINTF(out, "  Rate chain:          follows the DSP rate the mode runs; at 48 kHz %s, at TETRA's 72 kHz %s\n",
                 at48, at72);
-    DSD_FPRINTF(out, "  Replay compatible:   %s\n", effective > 0U ? "yes" : "no");
+    DSD_FPRINTF(out, "  Replay compatible:   %s\n", (effective > 0U && plans) ? "yes" : "no");
 
     if (err) {
         if (truncated) {

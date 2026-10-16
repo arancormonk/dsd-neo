@@ -140,7 +140,7 @@ tone_through(int in_hz, int out_hz, int protect_hz, double f_in, float* out) {
     float* in = make_tone(n_in, (double)in_hz, f_in, 0.5);
     float* y = NULL;
     const int got = in ? run_once(&r, in, n_in, &y) : -1;
-    int ok = got >= (int)(skip + MEASURE_N);
+    int ok = y != NULL && got >= (int)(skip + MEASURE_N);
     if (ok) {
         DSD_MEMCPY(out, y + 2 * skip, (size_t)MEASURE_N * 2 * sizeof(float));
     }

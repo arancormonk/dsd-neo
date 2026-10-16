@@ -1572,9 +1572,10 @@ test_describe_start_failure(void) {
     g_start_refused_width_hz = 0;
     g_start_refused_rate_hz = 7500;
     rc |= expect_int("AM default refusal", svc_describe_start_failure(&opts, why, sizeof why), 1);
-    rc |= expect_str("AM default refusal names its 6 kHz", why,
-                     "AM 6 kHz does not fit the 7.5 kHz DSP rate (max 5.55 kHz); use a 8, 12, 16, 24, 48 or 72 kHz DSP "
-                     "bandwidth");
+    rc |=
+        expect_str("AM default refusal names its 6 kHz", why,
+                   "AM 6 kHz does not fit the 7.5 kHz DSP rate (max 5.55 kHz); use an 8, 12, 16, 24, 48 or 72 kHz DSP "
+                   "bandwidth");
     /* (The DSD_NEO_CHANNEL_LPF=0 text is covered by APP_COMMAND_QUEUE: dsd_setenv() is stubbed here.) */
 
     /* No refusal recorded: the input that did not start, as the stream classifies its device string. */
@@ -2720,7 +2721,7 @@ test_am_bandwidth_services(void) {
     rc |= expect_int("am svc default refused at 6 kHz",
                      svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 0, why, sizeof why), -1);
     rc |= expect_str("am svc default reason", why,
-                     "AM 6 kHz does not fit the 6 kHz DSP rate (max 4.2 kHz); use a 8, 12, 16, 24, 48 or 72 kHz DSP "
+                     "AM 6 kHz does not fit the 6 kHz DSP rate (max 4.2 kHz); use an 8, 12, 16, 24, 48 or 72 kHz DSP "
                      "bandwidth");
     rc |= expect_int("nfm default still passes at 6 kHz",
                      svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 0, why, sizeof why), 0);

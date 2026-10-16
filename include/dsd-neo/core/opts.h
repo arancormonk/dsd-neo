@@ -464,7 +464,7 @@ enum DSD_ATTR_PACKED {
 /** Where dsd_opts::rtl_dsp_bw_khz came from (dsd_opts::rtl_dsp_bw_source). */
 enum dsd_rtl_dsp_bw_source {
     DSD_RTL_DSP_BW_SOURCE_DEFAULT = 0,  ///< the built-in default: nothing set it
-    DSD_RTL_DSP_BW_SOURCE_EXPLICIT = 1, ///< asked for: an input spec's field, an INI [rtl] bandwidth, a menu or API set
+    DSD_RTL_DSP_BW_SOURCE_EXPLICIT = 1, ///< asked for: an input spec's field, INI rtl_bw_khz, a menu or API set
     DSD_RTL_DSP_BW_SOURCE_PRESET = 2,   ///< a decode mode's preset (-fT, -fe, -fp ...)
 };
 

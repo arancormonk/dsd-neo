@@ -1524,6 +1524,21 @@ test_iq_info(void) {
                  tpath("t1.wav"), tpath("t1.wav.json"));
     rc |= expect_contains("info notice", g_info_err, want);
 
+    /* A rate no plan reaches (under 8 kHz) is not replay compatible: --iq-replay refuses it. */
+    wav_bytes slow;
+    DSD_MEMSET(&slow, 0, sizeof(slow));
+    wb_riff_header(&slow);
+    wb_fmt(&slow, 1, 2, 4000, 24);
+    wb_data_header(&slow, 6U * 50U);
+    wb_s24_ramp(&slow, 50U);
+    wb_finish_riff(&slow);
+    rc |= expect_int("slow write", write_wav("slow.wav", &slow), 0);
+    wb_free(&slow);
+    rc |= run_iq_info("slow.wav", NULL);
+    rc |= expect_contains("info slow", g_info_out,
+                          "  Rate chain:          follows the DSP rate the mode runs; at 48 kHz refused");
+    rc |= expect_contains("info slow", g_info_out, "  Replay compatible:   no\n");
+
     /* A truncated recording with part of a frame at its end. */
     rc |= run_iq_info("short.wav", NULL);
     rc |= expect_contains("info truncated", g_info_err,
