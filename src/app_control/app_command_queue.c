@@ -3028,6 +3028,8 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
            hop: io_control does not advance the trunk-tuning generation, and there is no RTL
            stream generation to move, so the tone heard on the old channel goes here. */
         dsd_analog_rx_reset(state);
+        /* Nor does it tell the NXDN control-channel hunt, whose attribution of the receiver it outdates. */
+        nxdn_cc_hunt_note_retune(opts, state);
         return 1;
     }
     LOG_WARN("WARNING: %s tune to %ld Hz was not accepted (result=%d); preserving decoder state\n",

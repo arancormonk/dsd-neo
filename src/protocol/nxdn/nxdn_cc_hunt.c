@@ -34,12 +34,13 @@ typedef struct {
     double tune_deadline_m; // when an unanswered probe or settle tune is failed
     uint64_t tune_request_id;
     uint64_t rx_generation;
-    long probe_freq_hz; // last probe or settle tune (in flight or completed)
-    long rx_freq_hz;    // frequency attributed to the receiver at rx_generation; 0 unknown
-    long attempt_hz;    // last frequency a hunt tune was asked for, accepted or not
-    int rx_valid;       // rx_freq_hz answers for rx_generation, a failed tuner query (0) included
-    long cc_freq_hz;    // the control channel a CAC confirmed last; 0 none
-    int cc_confirmed;   // a CAC confirmed cc_freq_hz (Type-C); a post-loss hunt needs it
+    long probe_freq_hz;          // last probe or settle tune (in flight or completed)
+    long rx_freq_hz;             // frequency attributed to the receiver at rx_generation; 0 unknown
+    long attempt_hz;             // last frequency a hunt tune was asked for, accepted or not
+    int rx_valid;                // rx_freq_hz answers for rx_generation, a failed tuner query (0) included
+    long cc_freq_hz;             // the control channel a CAC confirmed last; 0 none
+    int cc_confirmed;            // a CAC confirmed cc_freq_hz (Type-C); a post-loss hunt needs it
+    uint64_t foreign_request_id; // a tune in flight the hunt does not own, until it resolves
     int hunting;
     int park_pending; // 0 none; 1 park keeping the window, 2 park unarmed, once settled
     int hunt_index;
@@ -70,6 +71,11 @@ nxdn_cc_hunt_get(dsd_state* state) {
     if (dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_NXDN_CC_HUNT, ctx, free) != 0) {
         free(ctx);
         return NULL;
+    }
+    if (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_NXDN) {
+        /* Only this context names NXDN, so an owner without one is a previous run's on a reused state (the engine's
+           cleanup frees the context): what that run proved is gone with it. */
+        state->trunk_recovery_protocol = (int)DSD_TRUNK_RECOVERY_UNKNOWN;
     }
     return ctx;
 }
@@ -176,12 +182,35 @@ nxdn_cc_hunt_resolve(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts, double now_m) 
     return 1;
 }
 
-/* A tune in flight the hunt does not own: a call's return to the control channel, a grant, an operator's tune. */
-static int
+/* A tune in flight the hunt does not own (a call's return to the control channel, a grant, an operator's tune), or 0. */
+static uint64_t
 nxdn_cc_hunt_foreign_tune_in_flight(const nxdn_cc_hunt_ctx* ctx) {
     const uint64_t newest = dsd_trunk_tuning_pending_request();
-    return newest != 0U && newest != ctx->tune_request_id
-           && dsd_trunk_tuning_request_status(newest, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING;
+    return (newest != 0U && newest != ctx->tune_request_id
+            && dsd_trunk_tuning_request_status(newest, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING)
+               ? newest
+               : 0U;
+}
+
+/* The window restarts while a foreign tune is in flight, and at its completion once it lands: the decoder may not tick
+   at all while the stream waits for it. */
+static int
+nxdn_cc_hunt_follow_foreign_tune(nxdn_cc_hunt_ctx* ctx, double now_m) {
+    const uint64_t foreign = nxdn_cc_hunt_foreign_tune_in_flight(ctx);
+    if (foreign != 0U) {
+        ctx->foreign_request_id = foreign;
+        ctx->armed_m = now_m;
+        return 1;
+    }
+    if (ctx->foreign_request_id != 0U) {
+        double completed_m = 0.0;
+        if (dsd_trunk_tuning_request_status(ctx->foreign_request_id, &completed_m) == DSD_TRUNK_TUNE_RESULT_OK
+            && completed_m > ctx->armed_m) {
+            ctx->armed_m = completed_m;
+        }
+        ctx->foreign_request_id = 0U;
+    }
+    return 0;
 }
 
 /* The window runs from the later of its opening and the last NXDN frame whose own CRCs confirmed the transmission:
@@ -374,9 +403,12 @@ nxdn_cc_hunt_tick_locked(dsd_opts* opts, dsd_state* state) {
         ctx->armed_m = 0.0;
         return;
     }
-    if (ctx->armed_m <= 0.0 || nxdn_cc_hunt_foreign_tune_in_flight(ctx)) {
-        ctx->armed_m = now_m; // a return to the control channel restarts the window once it completes
+    if (ctx->armed_m <= 0.0) {
+        ctx->armed_m = now_m;
         return;
+    }
+    if (nxdn_cc_hunt_follow_foreign_tune(ctx, now_m)) {
+        return; // a return to the control channel restarts the window once it completes
     }
     if (!nxdn_cc_hunt_window_expired(ctx, state, now_m)) {
         return;

@@ -363,6 +363,38 @@ test_superseded_probe_attribution(void) {
     expect("superseded: control channel where the operator moved", g_state->p25_cc_freq, ROW_C);
 }
 
+/* A return the decoder could not tick through (the stream waited for it): the window runs from its completion. */
+static void
+test_return_completion_without_ticks(void) {
+    session();
+    tick_at(0.0);
+    nxdn_cc_hunt_note_control(g_opts, g_state); // A
+    g_freq_mode = FAKE_PENDING;
+    uint64_t foreign = 0U;
+    clock_at(1.0);
+    (void)dsd_trunk_tuning_hook_tune_to_freq(g_opts, g_state, ROW_A, 0, &foreign);
+    tick_at(1.0);
+    clock_at(5.0);
+    dsd_trunk_tuning_request_complete(foreign, DSD_TRUNK_TUNE_RESULT_OK);
+    const int tunes = g_tune_count;
+    run_until(7.0, 10.9);
+    expect("unticked return: grace from the completion", g_tune_count, tunes);
+    run_until(10.9, 11.5);
+    expect("unticked return: then the hunt", g_tune_count, tunes + 1);
+}
+
+/* A reused state (a second engine run): an NXDN owner the previous run named has no context behind it, and the new
+   run's dead start is hunted. */
+static void
+test_owner_from_previous_run(void) {
+    session();
+    g_state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN;
+    tick_at(0.0);
+    expect("previous run: owner forgotten", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_UNKNOWN);
+    run_until(0.0, 6.5);
+    expect("previous run: the new start is hunted", g_tune_count, 1);
+}
+
 /* A tuner query that fails is not repeated per CAC: once per tuning generation, as a successful one. */
 static void
 test_failed_query_cached(void) {
@@ -596,6 +628,8 @@ main(void) {
     test_cac_without_frequency();
     test_type_d_scch_run();
     test_failed_query_cached();
+    test_return_completion_without_ticks();
+    test_owner_from_previous_run();
     test_system_replaced();
     test_superseded_probe_attribution();
     test_refused_anchor();

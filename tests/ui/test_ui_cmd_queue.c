@@ -1571,6 +1571,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     state.sps_hunt_counter = 29;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    state.nxdn_confirmed = 1; // the carrier left behind
     rc |= expect_int("generic return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("generic return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -1581,6 +1582,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("generic return-to-CC keeps symbol center", state.symbolCenter, 9);
     rc |= expect_int("generic return-to-CC keeps SPS profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
     rc |= expect_int("generic return-to-CC keeps SPS hunt counter", state.sps_hunt_counter, 29);
+    rc |= expect_int("generic return-to-CC tells the NXDN hunt (the carrier's evidence goes)", state.nxdn_confirmed, 0);
     freeState(&state);
 
     init_test_context(&opts, &state);

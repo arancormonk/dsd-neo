@@ -608,6 +608,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
      * those bail before the frame body is read, so there is no CRC of this frame's own to
      * report however much the transmission has proved before now (#445). */
     int frame_proved = 0;
+    int frame_read = 0; // the body reached the confirmation gate
 
     nxdn_frame_ctx_init(&ctx);
     const uint32_t carrier_seq = state->carrier_seq;
@@ -659,6 +660,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_update_sacch_mode(state, ctx.lich);
     nxdn_decode_control_channels(opts, state, &ctx);
     nxdn_confirm_end_frame(state);
+    frame_read = 1;
     frame_proved = nxdn_confirm_frame_proved(state);
 
     if (nxdn_confirm_is_confirmed(state)) {
@@ -678,6 +680,9 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     }
 
 END:
+    if (!frame_read) {
+        nxdn_confirm_frame_rejected(state);
+    }
     nxdn_finalize_sync_reject(state);
     /* The sticky flag, not this frame's evidence: a confirmed transmission whose current
      * frame happens to carry no CRC still decoded, and reporting it unproductive would let

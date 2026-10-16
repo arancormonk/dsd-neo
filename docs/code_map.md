@@ -4267,10 +4267,13 @@ control within the CC grace walks its channel map with the ordinary hunts.
   others (`nxdn_cc_hunt_tick_locked()` in `dsd_engine_cold_start_tick_locked()`, between frames while
   `nxdn_cc_hunt_due()`, so a window a followed call dropped re-arms after the return, and in the decoder-ticks hook);
   notes on operator moves from the same carrier boundary and cycle sites (`nxdn_cc_hunt_note_retune()`, which also
-  resets the per-carrier NXDN evidence: a trunked cycle crosses no carrier boundary). The window (6 s) runs from the later of its arming
+  resets the per-carrier NXDN evidence: a trunked cycle crosses no carrier boundary; every accepted manual tune of
+  app-control's `request_manual_tune()`, a return to the control channel included, notes it too). The window (6 s) runs from the later of its arming
   and `dsd_state::nxdn_confirm_lock_m` (stamped by `nxdn_confirm_end_frame()` when a frame's own CRCs confirmed the
   transmission, never cleared); it is dropped on a voice channel and restarted while a tune the hunt does not own is in
-  flight, so a DISC return still pending when `trunk_is_tuned` drops starts it at completion. Probes, settle tunes,
+  flight, so a DISC return still pending when `trunk_is_tuned` drops starts it at that tune's completion stamp, even
+  when the decoder could not tick while the stream waited for it. A context created while NXDN is named the owner
+  belongs to a reused state's next run (the engine's cleanup frees the context): the owner goes back to unknown. Probes, settle tunes,
   deadlines and parking follow the DMR startup hunt's rules (a probe's 2 s dwell runs from its tune's completion); each
   hunt tune also resets the per-carrier NXDN evidence
   (`nxdn_confirm_reset()`, SACCH assemblies), so a weak streak or sticky confirmation never crosses carriers, and
@@ -4282,7 +4285,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   refuses does not hold the hunt.
   The confirmed branch of `nxdn_scch_prepare_type_d()` calls `nxdn_cc_hunt_note_type_d()`, which counts only SCCHs in
   `NXDN_CONFIRM_WEAK_OBSERVES` frames running (`nxdn_confirm_scch_confirmed()`: the gate's own SCCH streak, which other
-  channels neither extend nor break; not a confirmation left by a CAC, a SACCH or another carrier), on a control or a
+  channels neither extend nor break, and a frame rejected at its LICH ends, `nxdn_confirm_frame_rejected()`; not a
+  confirmation left by a CAC, a SACCH or another carrier), on a control or a
   followed voice channel: owner named, hunt ended (a RadioReference apply's `rr_apply_reacquire()` calls
   `nxdn_cc_hunt_note_system_replaced()`, which forgets that and an NXDN owner for the new system; the apply also drops a
   P25 or DMR owner its decode mode no longer decodes),

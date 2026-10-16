@@ -500,6 +500,14 @@ test_public_frame_entry_lich_collection(void) {
     rc |= expect_int("frame parity cannot prove the profile", nxdn_frame(&g_opts, &g_state), 1);
     rc |= expect_int("frame parity still consumed lich only", (int)g_dibit_stream_pos, 8);
 
+    /* Nor may it leave an SCCH run standing: the next SCCH would then pass for the second of two frames running and
+       name a Type-D site off two noise frames apart. */
+    reset_state();
+    g_state.nxdn_confirm_scch_streak = 1;
+    prepare_frame_stream(0x01U, 1);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("frame parity ends the SCCH run", g_state.nxdn_confirm_scch_streak, 0);
+
     return rc;
 }
 

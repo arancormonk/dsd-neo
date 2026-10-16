@@ -179,6 +179,32 @@ main(void) {
     expect("a reset keeps the stamp", state->nxdn_confirm_lock_m > 6.999, 1);
     dsd_decode_clock_use_system();
 
+    /* The SCCH run the Type-D site test reads: SCCHs in frames running, which a SACCH frame or a frame rejected at its
+     * LICH ends, and a strong CRC beside an SCCH does not. */
+    nxdn_confirm_reset(state);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+    nxdn_confirm_note_scch(state);
+    nxdn_confirm_end_frame(state);
+    nxdn_confirm_frame_rejected(state);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+    nxdn_confirm_note_scch(state);
+    expect("a rejected frame ends the SCCH run", nxdn_confirm_scch_confirmed(state), 0);
+    nxdn_confirm_end_frame(state);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_scch(state);
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
+    expect("two SCCH frames running confirm, a strong CRC beside", nxdn_confirm_scch_confirmed(state), 1);
+    nxdn_confirm_end_frame(state);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK); // a SACCH
+    nxdn_confirm_end_frame(state);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_scch(state);
+    expect("a SACCH frame ends the SCCH run", nxdn_confirm_scch_confirmed(state), 0);
+    nxdn_confirm_end_frame(state);
+
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     nxdn_confirm_reset(NULL);
     nxdn_confirm_begin_frame(NULL);

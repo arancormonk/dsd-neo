@@ -73,6 +73,9 @@ void nxdn_confirm_end_frame(dsd_state* state);
  */
 void nxdn_confirm_note_scch(dsd_state* state);
 
+/** @brief A frame rejected before its body was decoded (a LICH that failed its checks): it ends the SCCH run. */
+void nxdn_confirm_frame_rejected(dsd_state* state);
+
 /** @brief Whether SCCHs of NXDN_CONFIRM_WEAK_OBSERVES frames running, this one's included, passed their CRC. */
 int nxdn_confirm_scch_confirmed(const dsd_state* state);
 

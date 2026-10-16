@@ -45,6 +45,13 @@ nxdn_confirm_note_scch(dsd_state* state) {
     }
 }
 
+void
+nxdn_confirm_frame_rejected(dsd_state* state) {
+    if (state) {
+        state->nxdn_confirm_scch_streak = 0;
+    }
+}
+
 int
 nxdn_confirm_scch_confirmed(const dsd_state* state) {
     return state && state->nxdn_confirm_scch_streak >= NXDN_CONFIRM_WEAK_OBSERVES;
