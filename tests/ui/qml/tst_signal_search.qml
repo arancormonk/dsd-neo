@@ -60,6 +60,7 @@ Item {
             editor.visible = false;
             loader.item.sessionSource = {};
             loader.item.sourceType = "usb";
+            loader.item.resetView();
         }
         function init() {
             verify(loader.item !== null);
@@ -69,6 +70,7 @@ Item {
             model.sessionAvoids = [];
             model.avoids = [];
             model.status = {phase: 4, session: "17", owned: true, pass: 2, range: 0, channel: 80, count: 801,
+                rangeName: "Local UHF", rangeStartMHz: "450.000", rangeEndMHz: "460.000",
                 hit: {id: "42", session: "17", freqMHz: "463.552100", frequency: 463552100, power: -32.1,
                     noise: -63.2, range: "Local UHF", width: 12500, unresolved: true, ended: false,
                     knownLabel: "Warehouse · 463.5500 MHz", confirmed: false, am: false}};
@@ -429,6 +431,214 @@ Item {
             verify(loader.item.receiving);
             compare(findChild(loader.item, "searchIdentification").text, "Tuning to detection…");
         }
+        // The status line names the range the engine is searching, never the
+        // retained detection's (which can belong to an earlier range), and a
+        // paused range edit changes nothing until Resume.
+        function test_status_line_names_the_running_range() {
+            var line = findChild(loader.item, "searchStatusLine");
+            model.status = Object.assign({}, model.status, {phase: 1, rangeName: "Air band", rangeStartMHz: "118.000", rangeEndMHz: "137.000"});
+            compare(line.text, "Pass 2 · Air band · 118.000–137.000 MHz · channel 81 of 801");
+            compare(findChild(loader.item, "searchIdentification").text, "Searching Air band…");
+            // A detection in range A, then a quiet range B: B is named.
+            model.status = Object.assign({}, model.status, {phase: 1, rangeName: "Marine", rangeStartMHz: "156.000", rangeEndMHz: "162.025", channel: 0, count: 242,
+                hit: Object.assign({}, model.status.hit, {range: "Air band", ended: true})});
+            compare(line.text, "Pass 2 · Marine · 156.000–162.025 MHz · channel 1 of 242");
+            // Paused, an edited range is not what the search runs yet.
+            model.status = Object.assign({}, model.status, {phase: 6});
+            model.saveRange(0, Object.assign({}, model.ranges[0], {name: "Renamed"}));
+            compare(line.text, "Pass 2 · Marine · 156.000–162.025 MHz · channel 1 of 242");
+            compare(findChild(loader.item, "searchIdentification").text, "Paused");
+            model.ranges = [Object.assign({}, model.ranges[0], {name: "Local UHF"})];
+        }
+        // Collapsed while a search runs; opened by hand it stays open through
+        // status updates, until the screen closes or a new session starts.
+        // Paused or idle, the ranges are always open, and opening them does not
+        // take focus.
+        function test_ranges_disclosure() {
+            var screen = loader.item;
+            var toggle = findChild(screen, "searchRangesToggle");
+            var ranges = findChild(screen, "searchRanges");
+            verify(toggle.visible && !ranges.visible, "collapsed while searching");
+            compare(toggle.title, "Search ranges · 1 enabled");
+            compare(toggle.accessibleName, "Show search ranges, 1 enabled");
+            verify(toggle.Accessible.checkable);
+            verify(!toggle.Accessible.checked);
+            verify(toggle.height >= Ui.Theme.minimumTouchSize);
+            toggle.activate();
+            verify(ranges.visible);
+            compare(toggle.accessibleName, "Hide search ranges");
+            verify(toggle.Accessible.checked);
+            model.status = Object.assign({}, model.status, {channel: 81});
+            verify(ranges.visible, "a status update keeps it open");
+            toggle.activate();
+            verify(!ranges.visible);
+            // Paused: forced open, with the edit controls, and focus stays put.
+            var pause = findChild(screen, "searchStartPause");
+            pause.forceActiveFocus();
+            model.status = Object.assign({}, model.status, {phase: 6});
+            verify(ranges.visible && screen.editable);
+            verify(pause.activeFocus, "forced expansion does not move focus");
+            root.forceActiveFocus();
+            verify(!toggle.tapEnabled);
+            compare(toggle.accessibleName, "Search ranges, 1 enabled");
+            model.status = Object.assign({}, model.status, {phase: 1});
+            verify(!ranges.visible, "a Resume returns to the manual state");
+            // A manual expansion resets with a new session and when the screen closes.
+            toggle.activate();
+            verify(ranges.visible);
+            model.status = Object.assign({}, model.status, {session: "18"});
+            verify(!ranges.visible);
+            toggle.activate();
+            verify(ranges.visible);
+            screen.visible = false;
+            screen.visible = true;
+            verify(!ranges.visible);
+            // Idle: open, under its plain heading.
+            screen.sessionActive = false;
+            verify(ranges.visible && !toggle.visible);
+        }
+        function test_recent_detections_show_five_then_more() {
+            var rows = [];
+            for (var i = 0; i < 40; ++i)
+                rows.push({id: String(100 + i), freqMHz: "451.0" + i, power: -40, confirmed: false, ended: true});
+            model.history = rows;
+            var screen = loader.item;
+            function shown() { return findChildren(screen, "searchHistoryRow").filter(function (r) { return r.visible; }).length; }
+            tryCompare(screen, "historyLimit", 5);
+            compare(shown(), 5);
+            var more = findChild(screen, "searchShowMore");
+            verify(more.visible);
+            more.clicked();
+            compare(shown(), 30);
+            more = findChild(screen, "searchShowMore");
+            more.clicked();
+            compare(shown(), 40);
+            verify(!findChild(screen, "searchShowMore").visible);
+            // A new session starts from five again, and so does the next visit.
+            model.status = Object.assign({}, model.status, {session: "18"});
+            compare(shown(), 5);
+            findChild(screen, "searchShowMore").clicked();
+            screen.visible = false;
+            screen.visible = true;
+            compare(shown(), 5);
+            model.history = [];
+        }
+        function buttonLabel(button) {
+            for (var child of button.children) {
+                if (child.text === button.text)
+                    return child;
+            }
+            return null;
+        }
+        function findChildren(item, name) {
+            var found = [];
+            if (!item)
+                return found;
+            if (item.objectName === name)
+                found.push(item);
+            for (var child of item.children)
+                found = found.concat(findChildren(child, name));
+            return found;
+        }
+        // The Now panel's height depends on width and font scale only: every
+        // state and every content extreme below measures the same.
+        function test_now_panel_height_is_steady_data() {
+            return [{tag: "default text", scale: 1.0}, {tag: "largest text", scale: 1.6}];
+        }
+        function test_now_panel_height_is_steady(data) {
+            Ui.Theme.fontScale = data.scale;
+            var screen = loader.item;
+            var panel = findChild(screen, "searchNowPanel");
+            var base = model.status;
+            var hit = base.hit;
+            var long = "Regional interoperability talkgroup band with a very long name";
+            var states = [
+                {tag: "searching", status: {phase: 1, rangeName: "Air band", hit: {}}},
+                {tag: "tuning", status: {phase: 2, hit: {}}},
+                {tag: "tuning to detection", status: {phase: 2}},
+                {tag: "listening", status: {phase: 4}},
+                {tag: "held", status: {phase: 5}},
+                {tag: "paused", status: {phase: 6, hit: Object.assign({}, hit, {ended: true})}},
+                {tag: "long range name", status: {phase: 4, rangeName: long, livePowerValid: true, livePower: -47.2, hit: Object.assign({}, hit, {range: long})}},
+                {tag: "three saved matches", status: {phase: 4, hit: Object.assign({}, hit, {knownNames: ["Warehouse", "Dock security", "Yard"], knownLabel: "Warehouse / Dock security / Yard"})}},
+                {tag: "unresolved", status: {phase: 4, hit: Object.assign({}, hit, {unresolved: true})}},
+                {tag: "longest detail", status: {phase: 4, hit: Object.assign({}, hit, {confirmed: true, protocol: "DMR", access: "CC 15 · Slot 2 · " + long, tone: "CTCSS 250.3 Hz", targetText: "Target " + long, sourceText: "Source " + long})}}
+            ];
+            var heights = [];
+            var hold = findChild(screen, "searchHold");
+            var holdX = -1, holdWidth = -1;
+            for (var st of states) {
+                model.status = Object.assign({}, base, st.status);
+                waitForRendering(panel);
+                heights.push(st.tag + ": " + panel.height);
+                compare(panel.height, findChild(screen, "searchNowPanel").height);
+                if (st.tag === "searching")
+                    var expected = panel.height;
+                compare(panel.height, expected, st.tag + " keeps the panel's height");
+                for (var name of ["searchFrequency", "searchStrength", "searchIdentification", "searchSaved"]) {
+                    var line = findChild(screen, name);
+                    verify(line.lineCount <= 1, name + " stays on one line in " + st.tag);
+                }
+                verify(findChild(screen, "searchDetail").lineCount <= 2, "the detail keeps two lines in " + st.tag);
+                if (screen.receiving) {
+                    if (holdX < 0) {
+                        holdX = hold.x;
+                        holdWidth = hold.width;
+                    }
+                    compare(hold.x, holdX, "Hold and Release Hold share one cell");
+                    compare(hold.width, holdWidth);
+                    for (var cellName of ["searchHold", "searchSkip", "searchAvoidSession", "searchAvoidPermanent", "searchSave"]) {
+                        var label = buttonLabel(findChild(screen, cellName));
+                        verify(!label.truncated, cellName + " shows its whole label in " + st.tag);
+                    }
+                }
+            }
+            var actions = findChild(screen, "searchActions");
+            compare(actions.columns, 2, "a phone is two columns wide");
+            compare(actions.labelLines, data.scale > 1 ? 2 : 1);
+            model.status = Object.assign({}, base, {phase: 1});
+            verify(!findChild(screen, "searchStatusLine").truncated, "the status line wraps onto its second line");
+            verify(actions.y + actions.height <= panel.height);
+            model.status = Object.assign({}, base, {phase: 5});
+            compare(hold.text, "Release Hold");
+            model.status = base;
+        }
+        // Wider, every cell fits the widest label: three equal columns.
+        function test_now_actions_use_three_columns_when_they_fit() {
+            root.width = 900;
+            var actions = findChild(loader.item, "searchActions");
+            tryCompare(actions, "columns", 3);
+            var save = findChild(loader.item, "searchSave");
+            var skip = findChild(loader.item, "searchSkip");
+            compare(save.width, skip.width);
+            verify(actions.widest + 2 * Ui.Theme.cardPadding <= actions.cellWidth);
+        }
+        // Each fresh live measurement marks the cue, even one that reads the same
+        // level; a withdrawn live level hides it and shows the detection level.
+        function test_live_cue_marks_each_measurement() {
+            var cue = findChild(loader.item, "searchLiveCue");
+            var strength = findChild(loader.item, "searchStrength");
+            verify(!cue.visible);
+            model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.21, liveSeq: 1});
+            verify(cue.visible);
+            var marks = cue.marks;
+            model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.21, liveSeq: 2});
+            compare(cue.marks, marks + 1, "a same-value fresh measurement is marked");
+            compare(strength.text, "Now -47.2 dBFS · detected -32.1 dBFS · Local UHF");
+            model.status = Object.assign({}, model.status, {channel: 3});
+            compare(cue.marks, marks + 1, "a status update without a measurement is not");
+            verify(cue.Accessible.ignored);
+            model.status = Object.assign({}, model.status, {livePowerValid: false});
+            verify(!cue.visible, "a withdrawn level hides the cue");
+            compare(strength.text, "-32.1 dBFS · Local UHF");
+            model.status = Object.assign({}, model.status, {liveSeq: 3});
+            compare(cue.marks, marks + 1);
+        }
+        function test_capture_searching() {
+            model.status = Object.assign({}, model.status, {phase: 1, rangeName: "Local UHF", rangeStartMHz: "450.000", rangeEndMHz: "460.000", hit: {}});
+            wait(100);
+            grabImage(root).save("/tmp/dsd-signal-search-searching.png");
+        }
         function test_capture_phone() {
             wait(100);
             var img = grabImage(root);
@@ -437,7 +647,9 @@ Item {
             img.save("/tmp/dsd-signal-search-phone.png");
         }
         function test_capture_large_text() {
-            Ui.Theme.fontScale = 1.4;
+            Ui.Theme.fontScale = 1.6;
+            model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.2, liveSeq: 1,
+                hit: Object.assign({}, model.status.hit, {knownNames: ["Warehouse", "Dock security", "Yard"]})});
             wait(100);
             grabImage(root).save("/tmp/dsd-signal-search-large.png");
             var button = findChild(loader.item, "searchStartPause");

@@ -504,7 +504,18 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
             {QStringLiteral("gain"), h.gain_tenth_db / 10.0},
             {QStringLiteral("gainAuto"), h.gain_auto != 0},
             {QStringLiteral("matches"), matches},
+            {QStringLiteral("knownNames"), labels},
             {QStringLiteral("knownLabel"), labels.join(QStringLiteral(" / "))}};
+}
+
+/* A range bound for the status line: kHz precision at least (118.000), and every digit the bound carries. */
+static QString
+statusMHz(uint32_t hz) {
+    QString text = QString::number(hz / 1e6, 'f', 6);
+    while (text.endsWith(QLatin1Char('0')) && text.indexOf(QLatin1Char('.')) < text.size() - 4) {
+        text.chop(1);
+    }
+    return text;
 }
 
 static QVariantList
@@ -572,10 +583,14 @@ SignalSearchModel::refresh() {
                 {QStringLiteral("session"), QString::number(s.session_id)},
                 {QStringLiteral("pass"), (qulonglong)s.pass},
                 {QStringLiteral("range"), s.range_index},
+                {QStringLiteral("rangeName"), QString::fromUtf8(s.range_name)},
+                {QStringLiteral("rangeStartMHz"), statusMHz(s.range_start_hz)},
+                {QStringLiteral("rangeEndMHz"), statusMHz(s.range_end_hz)},
                 {QStringLiteral("channel"), s.channel_index},
                 {QStringLiteral("count"), s.channel_count},
                 {QStringLiteral("livePowerValid"), s.live_power_valid != 0},
                 {QStringLiteral("livePower"), s.live_power_dbfs},
+                {QStringLiteral("liveSeq"), (qulonglong)s.live_seq},
                 {QStringLiteral("message"), QString::fromUtf8(s.message)},
                 {QStringLiteral("hit"), hitMap(s.hit)}};
     Q_EMIT changed();

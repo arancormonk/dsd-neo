@@ -86,6 +86,12 @@ typedef struct {
     /** Current-channel RF power while listening, on the detector's dBFS scale; detection power stays in hit. */
     int live_power_valid;
     float live_power_dbfs;
+    /** Bumped by every accepted live measurement: a fresh reading of an unchanged level is still a new reading. */
+    uint64_t live_seq;
+    /** The range being searched, from the coordinator's own configuration (a paused edit shows only after Resume).
+     * Never the retained hit's range, which can belong to an earlier range. */
+    char range_name[64];
+    uint32_t range_start_hz, range_end_hz;
     uint64_t measurement_latency_us;
     dsd_signal_search_hit hit;
     char message[192];

@@ -93,7 +93,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 53);
+    assert(owner >= 42 && owner <= 54);
     if (defer) {
         --defer;
         return 1;
@@ -369,11 +369,21 @@ test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_s
     tick(o, s);
     assert(request.count == 1 && request.frequencies[0] == status.hit.frequency_hz);
     assert(request.capture.capture_hz - request.capture.capture_offset_hz == status.hit.frequency_hz);
+    const uint64_t seq_before = status.live_seq;
     ready = 2; // measured, below the detection threshold: strength is still reported
     advance(100);
     tick(o, s);
     assert(status.live_power_valid && status.live_power_dbfs > -40.5f && status.live_power_dbfs < -39.5f);
     assert(status.hit.power_dbfs > -30.5f && status.hit.power_dbfs < -29.5f); // detection-time power is kept apart
+    assert(status.live_seq == seq_before + 1);
+    // The next measurement reads the same level: it is still a fresh reading, and the sequence says so.
+    const float first_level = status.live_power_dbfs;
+    realtime_ms += 250;
+    tick(o, s);
+    ready = 2;
+    tick(o, s);
+    assert(status.live_power_valid && status.live_seq == seq_before + 2);
+    assert(status.live_power_dbfs > first_level - 0.001f && status.live_power_dbfs < first_level + 0.001f);
 
     // A level no accepted measurement refreshes is withdrawn three intervals and a retry after it was measured: here
     // the capture stops being the landed tune, so nothing is measured. A fresh measurement shows a level again.
@@ -386,6 +396,7 @@ test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_s
     realtime_ms += 1;
     tick(o, s);
     assert(status.phase == DSD_SEARCH_LISTENING && !status.live_power_valid);
+    assert(status.live_seq == seq_before + 2); // a withdrawal is no measurement
     capture = landed;
     realtime_ms += 250;
     tick(o, s);
@@ -621,6 +632,65 @@ test_capture_freshness(dsd_opts* o, dsd_state* s, dsd_signal_search_config* conf
     assert(status.phase == DSD_SEARCH_STOPPED);
 }
 
+/* The status names the range being searched, from the coordinator's own configuration: a detection in range A keeps
+   its own range name when the search moves on, and the status shows the quiet range B the search is in now. Edited
+   ranges reach the status only at the Resume that applies them. */
+static void
+test_status_names_running_range(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    dsd_signal_search_config two = *config;
+    two.session_id = 54;
+    two.avoid_count = 0;
+    two.range_count = 2;
+    DSD_SNPRINTF(two.ranges[0].name, sizeof(two.ranges[0].name), "%s", "Air band");
+    two.ranges[0].digital = 0;
+    two.ranges[0].max_visit_ms = 0;
+    two.ranges[1] = two.ranges[0];
+    DSD_SNPRINTF(two.ranges[1].name, sizeof(two.ranges[1].name), "%s", "Marine");
+    two.ranges[1].start_hz = 100100000;
+    two.ranges[1].end_hz = 100125000;
+    assert(dsd_engine_signal_search_start(o, s, &two, observer, NULL, error, sizeof(error)) == 0);
+    // Named from the first publication, before any span is planned.
+    assert(strcmp(status.range_name, "Air band") == 0 && status.range_start_hz == 100000000);
+    assert(status.range_end_hz == 100025000 && status.channel_count == 3);
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && strcmp(status.hit.range_name, "Air band") == 0);
+    tick(o, s); // the monitor's first verdict starts quiet timing
+    advance(500);
+    tick(o, s); // quiet: back to the span
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    land(o, s);
+    ready = 2; // nothing detected in the rest of range A
+    tick(o, s);
+    tick(o, s); // range B's span
+    assert(status.phase == DSD_SEARCH_TUNING && status.range_index == 1);
+    assert(strcmp(status.range_name, "Marine") == 0 && status.range_start_hz == 100100000);
+    assert(status.range_end_hz == 100125000);
+    assert(strcmp(status.hit.range_name, "Air band") == 0); // the retained detection keeps its own range
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING && strcmp(status.range_name, "Marine") == 0);
+
+    // Paused, the ranges are edited; the running range is still B until Resume applies the edit.
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && strcmp(status.range_name, "Marine") == 0);
+    DSD_SNPRINTF(two.ranges[0].name, sizeof(two.ranges[0].name), "%s", "Air band low");
+    two.ranges[0].end_hz = 100012500;
+    tick(o, s);
+    assert(strcmp(status.range_name, "Marine") == 0 && status.range_start_hz == 100100000);
+    assert(dsd_engine_signal_search_start(o, s, &two, observer, NULL, error, sizeof(error)) == 0);
+    assert(status.phase == DSD_SEARCH_SEARCHING && status.range_index == 0);
+    assert(strcmp(status.range_name, "Air band low") == 0 && status.range_start_hz == 100000000);
+    assert(status.range_end_hz == 100012500 && status.channel_count == 2);
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -782,6 +852,7 @@ main(void) {
     test_auto_baseline_dispatches_dmr(o, s, &config);
     test_restore_retune_carries_family(o, s, &config);
     test_capture_freshness(o, s, &config);
+    test_status_names_running_range(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

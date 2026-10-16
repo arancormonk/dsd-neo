@@ -684,6 +684,10 @@ main(int argc, char** argv) {
         searching.owned = 1;
         searching.live_power_valid = 1;
         searching.live_power_dbfs = -42.5f - (float)i;
+        searching.live_seq = 10 + (uint64_t)i;
+        DSD_SNPRINTF(searching.range_name, sizeof(searching.range_name), "%s", "Air band");
+        searching.range_start_hz = 118000000;
+        searching.range_end_hz = 137012500;
         dsd_app_signal_search_publish(&searching, nullptr, nullptr);
         model.refresh();
     }
@@ -692,6 +696,19 @@ main(int argc, char** argv) {
     assert(model.status().value(QStringLiteral("owned")).toBool());
     assert(model.status().value(QStringLiteral("livePowerValid")).toBool());
     assert(std::abs(model.status().value(QStringLiteral("livePower")).toDouble() + 46.5) < 1e-3);
+    // The running range as the engine names it, bounds at kHz precision or finer; and the live measurement count.
+    assert(model.status().value(QStringLiteral("liveSeq")).toULongLong() == 14);
+    assert(model.status().value(QStringLiteral("rangeName")).toString() == QStringLiteral("Air band"));
+    assert(model.status().value(QStringLiteral("rangeStartMHz")).toString() == QStringLiteral("118.000"));
+    assert(model.status().value(QStringLiteral("rangeEndMHz")).toString() == QStringLiteral("137.0125"));
+    // An edit to the stored ranges is not the running range: only the engine's next publication changes it.
+    assert(!model.ranges().isEmpty());
+    QVariantMap renamed = model.ranges().front().toMap();
+    renamed[QStringLiteral("name")] = QStringLiteral("Renamed");
+    assert(model.saveRange(0, renamed).isEmpty());
+    model.refresh();
+    assert(model.ranges().front().toMap().value(QStringLiteral("name")) == QStringLiteral("Renamed"));
+    assert(model.status().value(QStringLiteral("rangeName")).toString() == QStringLiteral("Air band"));
     publish(78, true); // the same record again: coalesced, so the history is unchanged
     model.refresh();
     assert(historySignals == 0 && dsd_app_signal_search_history_revision() == historyRevision);

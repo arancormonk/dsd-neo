@@ -59,7 +59,12 @@ Generated (do not edit/commit):
     loops; the in-frame yield check also services live strength, since a continuous
     digital transmission keeps the decoder in its synced-frame loop. A live strength that no
     accepted measurement has refreshed for three intervals and a retry (1.75 s), and every
-    ended visit, publishes no live level (`ENGINE_SIGNAL_SEARCH_SCENE`). A stalled input
+    ended visit, publishes no live level (`ENGINE_SIGNAL_SEARCH_SCENE`); each accepted
+    measurement bumps `live_seq`, so a frontend tells a fresh reading of an unchanged level
+    from no reading. The status names the range being searched (`range_name`,
+    `range_start_hz`, `range_end_hz`), set from the coordinator's own configuration by
+    `search_select_range()` at start, at each span and at a paused restart, never from the
+    retained hit, whose range can be an earlier one (`ENGINE_SIGNAL_SEARCH`). A stalled input
     cannot hold a visit: the stall check snapshots the producer's last-sample timestamp before reading the real-time
     clock, and guards the subtraction so a newer sample cannot wrap its age into a false timeout. While a search owns
     the tuner (`rtl_signal_search_owner()`; the orchestrator's read carries no decoder state), a live radio read that finds no
@@ -5312,7 +5317,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 - Qt Signal search uses `SignalSearchModel`, `SignalSearchScreen.qml` and
   `SignalSearchRangeEditor.qml`, sharing Theme/Plex controls, source startup and the
-  save-found-system wizard. Native status is copied on a 250 ms timer; history and the
+  save-found-system wizard. While a session runs the screen reads status line, Now panel,
+  five recent detections (Show more adds 25), then the ranges behind an expandable
+  `DisclosureRow` (`expandable`/`expanded`; forced open while paused or idle; a manual
+  expansion and the history limit reset on close and on a new session). The Now panel's
+  height depends on width and font scale only: each line is a fixed-height `Text` sized
+  from `FontMetrics`, and its action grid takes three equal columns when the widest label
+  any cell can show fits, else two, for any cell count (`tst_signal_search.qml`). Its
+  liveness cue marks each new `liveSeq`. Native status is copied on a 250 ms timer; history and the
   avoid lists only when their store revisions move. Back delegates to Main's session
   policy; a search a coordinator owns (`status.owned`) is a navigation root so its controls
   remain accessible after Activity recreation. Range edits apply on paused restart.

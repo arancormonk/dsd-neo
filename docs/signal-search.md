@@ -72,7 +72,32 @@ rtl_tcp source, 6, 12 and 18 dB steps in the transmitter's level each showed at
 the next reading, on NFM, digital-identification and decoded DMR visits. When the receiver cannot measure the
 channel for about two seconds (the capture keeps changing, drops samples or clips),
 the screen stops showing **Now** and shows only the detection level until a fresh
-measurement arrives; a visit's live level also ends with the visit.
+measurement arrives; a visit's live level also ends with the visit. A small dot
+beside **Now** brightens briefly at each fresh measurement, including one that
+reads the same level as the last, so a steady reading is visibly a live one; it
+is hidden while no live level is shown.
+
+While a search runs, the screen is laid out for what is on the air now:
+
+- A status line under the title names the pass, the range being searched with
+  its bounds, and the channel, for example
+  **Pass 2 · Air band · 118.000–137.000 MHz · channel 81 of 801**. It names the
+  range the search is in, not the range of the last detection, and a range
+  edited while paused shows there once **Resume** applies it.
+- The **Now** panel keeps one height for the whole session: frequency, strength,
+  identification, two lines of detail, saved-frequency names and the actions.
+  Lines that do not fit end in an ellipsis, and the full text is available to
+  screen readers. When several saved frequencies match, the panel names two and
+  counts the rest (**Saved: A / B +1**); the detection's history row lists them
+  all. Between detections the panel shows the phase (**Searching Air band…**,
+  **Tuning…**, **Paused**) and keeps the actions' space empty, so nothing below
+  it moves as detections come and go. The actions sit in two columns, or three
+  where every label fits.
+- **Recent detections** shows the five newest; **Show more** adds 25.
+- **Search ranges · 3 enabled** is collapsed; tap it to show the ranges. While
+  paused, or before a search starts, the ranges are always shown with their
+  edit controls. A range list opened by hand stays open until you leave the
+  screen or a new session starts.
 
 Analog monitoring starts its quiet timing only once the monitor has read the
 landed channel. A receiver that is still preparing its listening squelch (the NFM

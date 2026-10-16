@@ -174,6 +174,9 @@ search_select_range(search_coord* c) {
         const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
         if (r->enabled && c->status.channel_index < dsd_signal_search_channel_count(r)) {
             c->status.channel_count = dsd_signal_search_channel_count(r);
+            DSD_SNPRINTF(c->status.range_name, sizeof(c->status.range_name), "%s", r->name);
+            c->status.range_start_hz = r->start_hz;
+            c->status.range_end_hz = r->end_hz;
             return 1;
         }
         ++c->status.range_index;
@@ -410,6 +413,8 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         previous->need_span = 1;
         previous->visit = previous->skip = previous->hold = 0;
         previous->status.phase = DSD_SEARCH_SEARCHING;
+        /* The edited ranges show from this Resume on, not while they were being edited. */
+        (void)search_select_range(previous);
         search_publish(previous, 0);
         return 0;
     }
@@ -448,6 +453,8 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     dsd_signal_search_active_set(dsd_engine_signal_search_active);
     rtl_signal_search_set_owner(c->status.session_id);
     rtl_signal_search_bypass(1);
+    /* The first enabled range: validation guarantees one, so this neither wraps the pass nor fails. */
+    (void)search_select_range(c);
     search_publish(c, 0);
     return 0;
 #endif
@@ -527,6 +534,7 @@ search_live_strength(search_coord* c) {
             if (report.candidates[0].valid) {
                 c->status.live_power_dbfs = report.candidates[0].power_dbfs;
                 c->status.live_power_valid = 1;
+                ++c->status.live_seq;
                 c->live_accepted = now;
                 search_publish(c, 0);
             } else {
