@@ -853,7 +853,7 @@ typedef enum {
 
 /** Put back the receive profile a re-plan's caller found: frame flags, modulation, symbol profile, and the requested
     DSP bandwidth with its source (dsd_opts_set_rtl_dsp_bw()). */
-typedef void (*svc_replay_profile_restore_fn)(dsd_opts* opts, dsd_state* state, void* ctx);
+typedef void (*svc_replay_profile_restore_fn)(dsd_opts* opts, dsd_state* state, const void* ctx);
 
 /**
  * @brief Re-plan a running I/Q replay's rate chain for the decode mode and DSP bandwidth the options now hold, and
@@ -873,8 +873,8 @@ typedef void (*svc_replay_profile_restore_fn)(dsd_opts* opts, dsd_state* state, 
  * @return An svc_replay_replan_result.
  */
 int svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
-                                 svc_replay_profile_restore_fn restore, void* restore_ctx, uint32_t* out_dsp_rate_hz,
-                                 int* out_resampled, char* why, size_t why_size);
+                                 svc_replay_profile_restore_fn restore, const void* restore_ctx,
+                                 uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size);
 /**
  * @brief Start the input the options describe again after the start on the input that replaced it failed, or ran but
  * was undone, without acquiring; caller holds the P25 SM tick guard (issue #578).

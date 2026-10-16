@@ -13,6 +13,7 @@
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -1655,27 +1656,12 @@ svc_rtl_start_replay_at_locked(dsd_opts* opts, dsd_state* state, const dsd_iq_re
     return rc;
 }
 
-int
-svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
-                             svc_replay_profile_restore_fn restore, void* restore_ctx, uint32_t* out_dsp_rate_hz,
-                             int* out_resampled, char* why, size_t why_size) {
-    svc_why(why, why_size, "%s", "");
-    if (!opts || !state || !restore || !dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
-        return SVC_REPLAY_REPLAN_KEPT;
-    }
-    char reason_text[192];
-    const int verdict =
-        rtl_stream_replay_replan_check(opts, out_dsp_rate_hz, out_resampled, reason_text, sizeof reason_text);
-    if (verdict == RTL_STREAM_REPLAN_NO_REPLAY || verdict == RTL_STREAM_REPLAN_SAME) {
-        return SVC_REPLAY_REPLAN_KEPT;
-    }
-    if (verdict == RTL_STREAM_REPLAN_REFUSED) {
-        LOG_WARN("IQ replay: %s needs a rate chain this capture cannot run: %s. The replay keeps its rate.\n",
-                 reason ? reason : "the change", reason_text);
-        restore(opts, state, restore_ctx);
-        svc_why(why, why_size, "%s", reason_text);
-        return SVC_REPLAY_REPLAN_REFUSED;
-    }
+/* Reopen the running replay on the rate chain its options now plan, resuming where it stopped; a chain that does not
+   start puts the profile back (@p restore) and resumes the previous one there. A SVC_REPLAY_REPLAN_* verdict. */
+static int
+svc_rtl_replay_reopen_locked(dsd_opts* opts, dsd_state* state, const char* reason,
+                             svc_replay_profile_restore_fn restore, const void* restore_ctx, char* why,
+                             size_t why_size) {
     svc_rtl_stop_ex_locked(opts, state, 1);
     dsd_iq_replay_checkpoint at;
     const int have_at = rtl_stream_replay_checkpoint(&at) == 0;
@@ -1695,6 +1681,30 @@ svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reaso
     }
     svc_rtl_stop_locked(opts, state);
     return SVC_REPLAY_REPLAN_FAILED;
+}
+
+int
+svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
+                             svc_replay_profile_restore_fn restore, const void* restore_ctx, uint32_t* out_dsp_rate_hz,
+                             int* out_resampled, char* why, size_t why_size) {
+    svc_why(why, why_size, "%s", "");
+    if (!opts || !state || !restore || !dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
+        return SVC_REPLAY_REPLAN_KEPT;
+    }
+    char reason_text[192];
+    const int verdict =
+        rtl_stream_replay_replan_check(opts, out_dsp_rate_hz, out_resampled, reason_text, sizeof reason_text);
+    if (verdict == RTL_STREAM_REPLAN_NO_REPLAY || verdict == RTL_STREAM_REPLAN_SAME) {
+        return SVC_REPLAY_REPLAN_KEPT;
+    }
+    if (verdict == RTL_STREAM_REPLAN_REFUSED) {
+        LOG_WARN("IQ replay: %s needs a rate chain this capture cannot run: %s. The replay keeps its rate.\n",
+                 reason ? reason : "the change", reason_text);
+        restore(opts, state, restore_ctx);
+        svc_why(why, why_size, "%s", reason_text);
+        return SVC_REPLAY_REPLAN_REFUSED;
+    }
+    return svc_rtl_replay_reopen_locked(opts, state, reason, restore, restore_ctx, why, why_size);
 }
 
 /* Turn the I/Q capture off for the rest of the session before a rollback restart (svc_rtl_restart_recovery_locked()),
@@ -2123,7 +2133,7 @@ typedef struct {
 } svc_rtl_bw_request;
 
 static void
-svc_rtl_bw_request_restore(dsd_opts* opts, dsd_state* state, void* ctx) {
+svc_rtl_bw_request_restore(dsd_opts* opts, dsd_state* state, const void* ctx) {
     (void)state;
     const svc_rtl_bw_request* req = (const svc_rtl_bw_request*)ctx;
     dsd_opts_set_rtl_dsp_bw(opts, req->khz, req->source);
@@ -2156,8 +2166,8 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
            stopped. */
         char reason[64];
         DSD_SNPRINTF(reason, sizeof reason, "a %d kHz DSP bandwidth", khz);
-        const int replan = svc_rtl_replay_replan_locked(opts, state, reason, svc_rtl_bw_request_restore, (void*)&before,
-                                                        NULL, NULL, why, why_size);
+        const int replan = svc_rtl_replay_replan_locked(opts, state, reason, svc_rtl_bw_request_restore, &before, NULL,
+                                                        NULL, why, why_size);
         opts->rtl_needs_restart = 0;
         if (replan == SVC_REPLAY_REPLAN_REFUSED) {
             if (why && why_size > 0U && why[0] == '\0') {

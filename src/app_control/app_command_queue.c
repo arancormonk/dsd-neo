@@ -3849,7 +3849,7 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
 /* Put back what a config apply's replay re-plan found (@p ctx, the apply's ui_cfg_rollback): the receive settings and
    the rest of [mode], as a failed reopen puts them back (ui_cfg_settle_reopen()), and the requested DSP bandwidth. */
 static void
-apply_cfg_replay_restore(dsd_opts* opts, dsd_state* state, void* ctx) {
+apply_cfg_replay_restore(dsd_opts* opts, dsd_state* state, const void* ctx) {
     const ui_cfg_rollback* before = (const ui_cfg_rollback*)ctx;
     ui_restore_receive_settings(opts, state, &before->receive);
     ui_cfg_restore_mode_extras(opts, state, &before->mode);
@@ -3874,8 +3874,8 @@ apply_cfg_replay_replan(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
                                 DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     }
     char why[128];
-    const int replan = svc_rtl_replay_replan_locked(opts, state, "the config", apply_cfg_replay_restore, (void*)before,
-                                                    NULL, NULL, why, sizeof why);
+    const int replan = svc_rtl_replay_replan_locked(opts, state, "the config", apply_cfg_replay_restore, before, NULL,
+                                                    NULL, why, sizeof why);
     if (replan == SVC_REPLAY_REPLAN_REFUSED) {
         ui_set_rollback_toast(state, "Config not applied: ", why, 0);
         return -1;
@@ -5372,7 +5372,7 @@ typedef struct {
 } decode_mode_profile_before;
 
 static void
-decode_mode_restore_profile(dsd_opts* opts, dsd_state* state, void* ctx) {
+decode_mode_restore_profile(dsd_opts* opts, dsd_state* state, const void* ctx) {
     const decode_mode_profile_before* before = (const decode_mode_profile_before*)ctx;
     dsd_scan_settings_restore(before->settings, opts, state);
     opts->pulse_digi_out_channels = before->audio_channels;
@@ -5391,7 +5391,7 @@ decode_mode_restore_profile(dsd_opts* opts, dsd_state* state, void* ctx) {
  */
 static int
 decode_mode_replan_replay(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode,
-                          decode_mode_profile_before* before, decode_mode_replan* out) {
+                          const decode_mode_profile_before* before, decode_mode_replan* out) {
     DSD_MEMSET(out, 0, sizeof *out);
     if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
         return UI_CMD_APPLY_UNHANDLED;
@@ -5464,6 +5464,67 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
     ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(mode));
 }
 
+/* Whether the front end takes the analog receive profile @p mode publishes (ui_check_mode_receive_profile()): 0, or
+   -1 with a toast naming why not. */
+static int
+decode_mode_check_receive_profile(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    char why[128];
+    if (ui_check_mode_receive_profile(opts, state, mode, why, sizeof why) == 0) {
+        return 0;
+    }
+    if (why[0] != '\0') {
+        ui_set_toast(state, 5, "Failed: %s -> %s", dsd_decode_mode_display_name(mode), why);
+    } else {
+        ui_set_toast(state, 4, "Failed: %s -> RTL front end refused its channel (see log)",
+                     dsd_decode_mode_display_name(mode));
+    }
+    return -1;
+}
+
+/* Stage @p mode's CLI preset with the modulation locks released. 0, or -1 (locks put back, toast posted) for a mode
+   that is not available. */
+static int
+decode_mode_stage_preset(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    /* Released before the preset runs, not after. The presets skip their whole
+       modulation block under mod_cli_lock (decode_mode_apply_dmr() and siblings),
+       so on a session started with `-mq`/`-mg` the new protocol would keep the old
+       modulation -- and svc_publish_symbol_profile() later reads state->rf_mod, so
+       it would then ask the front end for that modulation's demodulator and channel
+       filter at the new protocol's symbol rate, with the lock still on to stop the
+       SPS hunt correcting it. Choosing a protocol here is a fresh answer to what is
+       on this channel and outranks a `-m` flag from session start; this is the same
+       release ui_apply_modulation() performs for the modulation control.
+
+       Restored if the mode turns out to be unsupported, so a refused command
+       changes nothing -- which is the contract the preset helper itself keeps. */
+    const int mod_locks[3] = {opts->mod_cli_lock, opts->mod_p25p2_c4fm, opts->mod_p25p2_profile_lock};
+    ui_stage_analog_entry(opts, state);
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
+    opts->mod_cli_lock = 0;
+    /* Staged: the mode change's commit, once nothing can put the session back, leaves TETRA
+       (dsd_stage_decode_mode_preset()). */
+    if (dsd_stage_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
+        opts->mod_cli_lock = mod_locks[0];
+        opts->mod_p25p2_c4fm = mod_locks[1];
+        opts->mod_p25p2_profile_lock = mod_locks[2];
+        ui_set_toast(state, 4, "Decode mode not available");
+        return -1;
+    }
+    return 0;
+}
+
+/* The session's sinks were opened for the mode it started in: an analog start has no digital voice stream and a
+   digital one no raw monitor stream. Open whichever the new mode writes to, if it is missing. */
+static void
+decode_mode_ensure_output(dsd_opts* opts) {
+    if (opts->analog_only) {
+        (void)dsd_audio_ensure_analog_output(opts);
+    } else {
+        (void)dsd_audio_ensure_digital_output(opts);
+    }
+}
+
 /**
  * @brief Switch which protocols are decoded, mid-session.
  *
@@ -5514,39 +5575,10 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     const int was_kind = opts->analog_demod;
     /* Asked before anything changes: a front end that would refuse the analog receive profile the new mode publishes
        leaves the session in its mode, instead of an analog decoder on a front end running something else. */
-    char why[128];
-    if (ui_check_mode_receive_profile(opts, state, mode, why, sizeof why) != 0) {
-        if (why[0] != '\0') {
-            ui_set_toast(state, 5, "Failed: %s -> %s", dsd_decode_mode_display_name(mode), why);
-        } else {
-            ui_set_toast(state, 4, "Failed: %s -> RTL front end refused its channel (see log)",
-                         dsd_decode_mode_display_name(mode));
-        }
+    if (decode_mode_check_receive_profile(opts, state, mode) != 0) {
         return UI_CMD_APPLY_FAILED;
     }
-    /* Released before the preset runs, not after. The presets skip their whole
-       modulation block under mod_cli_lock (decode_mode_apply_dmr() and siblings),
-       so on a session started with `-mq`/`-mg` the new protocol would keep the old
-       modulation -- and svc_publish_symbol_profile() below reads state->rf_mod, so
-       it would then ask the front end for that modulation's demodulator and channel
-       filter at the new protocol's symbol rate, with the lock still on to stop the
-       SPS hunt correcting it. Choosing a protocol here is a fresh answer to what is
-       on this channel and outranks a `-m` flag from session start; this is the same
-       release ui_apply_modulation() performs for the modulation control.
-
-       Restored if the mode turns out to be unsupported, so a refused command
-       changes nothing -- which is the contract the preset helper itself keeps. */
-    const int mod_locks[3] = {opts->mod_cli_lock, opts->mod_p25p2_c4fm, opts->mod_p25p2_profile_lock};
-    ui_stage_analog_entry(opts, state);
-    opts->mod_p25p2_c4fm = 0;
-    opts->mod_p25p2_profile_lock = 0;
-    opts->mod_cli_lock = 0;
-    /* Staged: the commit below, once nothing can put the session back, leaves TETRA (dsd_stage_decode_mode_preset()). */
-    if (dsd_stage_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
-        opts->mod_cli_lock = mod_locks[0];
-        opts->mod_p25p2_c4fm = mod_locks[1];
-        opts->mod_p25p2_profile_lock = mod_locks[2];
-        ui_set_toast(state, 4, "Decode mode not available");
+    if (decode_mode_stage_preset(opts, state, mode) != 0) {
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     int replay_reopened = 0;
@@ -5566,13 +5598,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
 #endif
     opts->pulse_digi_out_channels = audio_channels;
     opts->pulse_digi_rate_out = audio_rate;
-    /* The session's sinks were opened for the mode it started in: an analog start has no digital voice stream and
-       a digital one no raw monitor stream. Open whichever the new mode writes to, if it is missing. */
-    if (opts->analog_only) {
-        (void)dsd_audio_ensure_analog_output(opts);
-    } else {
-        (void)dsd_audio_ensure_digital_output(opts);
-    }
+    decode_mode_ensure_output(opts);
     decode_mode_drop_old_analog_block(opts, state, was_analog, was_kind);
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
@@ -7103,6 +7129,20 @@ cfg_replay_rate_hz(const dsd_opts* opts, const dsd_state* state, const dsdneoUse
 #endif
 }
 
+/* A running I/Q replay the config leaves running reopens only when the config re-plans its rate (cfg_replay_rate_hz());
+   a build without radio support runs no replay. */
+static cfg_reopen_kind
+cfg_replay_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
+#ifdef USE_RADIO
+    return cfg_replay_rate_hz(opts, state, cfg) > 0 ? CFG_REOPEN_AT_REPLAY_RATE : CFG_REOPEN_NONE;
+#else
+    (void)opts;
+    (void)state;
+    (void)cfg;
+    return CFG_REOPEN_NONE;
+#endif
+}
+
 /*
  * A running RTL-family input (an RTL-SDR, rtl_tcp, SoapySDR or Airspy one) is reopened when the config's [input]
  * builds a radio input spec other than the one it runs (dsd_user_config_radio_input_spec()): an RTL-SDR or rtl_tcp
@@ -7163,7 +7203,7 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
     if (dsd_user_config_radio_input_spec(cfg, opts, spec, sizeof spec) != 0
         || strncmp(spec, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
         if (dsd_opts_input_is_iq_replay(opts)) {
-            return cfg_replay_rate_hz(opts, state, cfg) > 0 ? CFG_REOPEN_AT_REPLAY_RATE : CFG_REOPEN_NONE;
+            return cfg_replay_reopen(opts, state, cfg);
         }
         return cfg_gain_restarts_running_input(opts, state, cfg) ? CFG_REOPEN_AT_RUNNING_RATE : CFG_REOPEN_NONE;
     }
