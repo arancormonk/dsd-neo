@@ -12,6 +12,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_REPLAY_H_
 
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/io/iq_wav.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -30,6 +31,15 @@ extern "C" {
  * receiver's cadence (issue #626). */
 #define DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES       8192U
 #define DSD_IQ_REPLAY_CHUNK_REFERENCE_RATE_HZ 1536000U
+
+/* Room for dsd_iq_replay_config::open_notice. */
+#define DSD_IQ_REPLAY_NOTICE_SIZE             1024U
+
+/** What a replay reads its capture from. */
+typedef enum {
+    DSD_IQ_REPLAY_CONTAINER_SIDECAR = 0, /**< raw samples described by a dsd-neo-iq JSON sidecar */
+    DSD_IQ_REPLAY_CONTAINER_WAV = 1,     /**< a 2-channel WAV I/Q recording, read as virtual cf32 */
+} dsd_iq_replay_container;
 
 typedef struct {
     uint32_t metadata_version;
@@ -69,12 +79,28 @@ typedef struct {
     dsd_iq_event* events;
     int loop;
     int realtime;
+    /* A WAV recording (issue #701) replays as a virtual cf32 capture at stage post_driver_cf32_pre_ring: format,
+     * sample_rate_hz and the centre come from its header, data_bytes counts its frames as 8-byte cf32 frames (the
+     * reader converts as it reads), and event and byte offsets are in those virtual bytes. data_path names the WAV;
+     * metadata_path names the path the replay was opened by (the WAV, or a sidecar whose data_file is the WAV). */
+    dsd_iq_replay_container container;
+    dsd_iq_wav_info wav; /* container == DSD_IQ_REPLAY_CONTAINER_WAV */
+    /* The complex rate the demodulator takes. 0 means sample_rate_hz, the capture's own rate. */
+    uint32_t dsp_input_rate_hz;
+    /* The DSP bandwidth the capture recorded (the sidecar's rtl_dsp_bw_khz), as read; 0 for a WAV. */
+    int recorded_dsp_bw_khz;
+    /* Something the open wants the user told (a sidecar beside a WAV that the WAV's header overrides), or empty. */
+    char open_notice[DSD_IQ_REPLAY_NOTICE_SIZE];
 } dsd_iq_replay_config;
 
 typedef struct dsd_iq_replay_source dsd_iq_replay_source;
 
 /**
  * @brief Parse replay metadata without opening a data stream.
+ *
+ * @p path is a sidecar, a raw data file with a sidecar beside it, or a WAV I/Q recording. A WAV is recognised by its
+ * header before any sidecar is read, and a sidecar whose data_file is a WAV is ignored apart from that name (its other
+ * fields are not validated): the WAV's header describes the capture, and open_notice says the sidecar was ignored.
  *
  * On success, overwrites @p out_cfg without inspecting its prior contents.
  * Call dsd_iq_replay_config_clear() when done with a successful result. If
@@ -121,6 +147,17 @@ void dsd_iq_replay_config_clear(dsd_iq_replay_config* cfg);
  */
 int dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_t* out_bytes);
 int dsd_iq_replay_rewind(dsd_iq_replay_source* src);
+
+/**
+ * @brief Move the reader to @p capture_byte_offset, rounded down to a whole complex sample.
+ *
+ * The offset is in capture bytes: the data file's bytes for a sidecar capture, the virtual cf32 bytes for a WAV (8 per
+ * frame, as data_bytes counts them). The next read starts there.
+ *
+ * @return DSD_IQ_OK; DSD_IQ_ERR_INVALID_ARG for an offset past the capture's measured bytes or a NULL source;
+ *         DSD_IQ_ERR_IO when the file cannot seek.
+ */
+int dsd_iq_replay_seek(dsd_iq_replay_source* src, uint64_t capture_byte_offset);
 void dsd_iq_replay_close(dsd_iq_replay_source* src);
 
 /**
@@ -128,6 +165,19 @@ void dsd_iq_replay_close(dsd_iq_replay_source* src);
  */
 int dsd_iq_replay_compute_effective_bytes(uint64_t data_bytes, uint64_t actual_file_size, dsd_iq_sample_format format,
                                           uint64_t* out_effective, int* out_size_mismatch);
+
+/**
+ * @brief The capture bytes a replay of @p cfg reads from a data file of @p file_size bytes.
+ *
+ * For a sidecar capture, dsd_iq_replay_compute_effective_bytes() of its data_bytes; @p out_mismatch is set when
+ * data_bytes differs from the file. For a WAV, its whole frames in virtual cf32 bytes (8 per frame); @p out_mismatch
+ * is set when the header declares more data than the file holds (a truncated recording).
+ *
+ * @param out_mismatch May be NULL.
+ * @return DSD_IQ_OK or DSD_IQ_ERR_INVALID_ARG.
+ */
+int dsd_iq_replay_measure(const dsd_iq_replay_config* cfg, uint64_t file_size, uint64_t* out_effective,
+                          int* out_mismatch);
 
 /**
  * @brief Validate effective replay bytes for replay (not info-only paths).

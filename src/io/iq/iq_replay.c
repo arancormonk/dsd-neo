@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/io/iq_wav.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -18,10 +19,29 @@
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/platform/posix_compat.h"
 
+/* A WAV read converts at most this many frames per pass, through 64 KiB of raw bytes and 64 KiB of cf32. */
+#define REPLAY_WAV_SCRATCH_BYTES 65536U
+#define REPLAY_WAV_CF32_FRAMES   8192U
+
 struct dsd_iq_replay_source {
     FILE* fp;
-    uint64_t total_bytes;
-    uint64_t remaining_bytes;
+    uint64_t total_bytes;     /* capture bytes the open measured (virtual cf32 bytes for a WAV) */
+    uint64_t remaining_bytes; /* capture bytes not yet handed to a caller */
+    size_t align;             /* capture bytes of one complex sample */
+    /* WAV recordings: the reader converts frames to cf32 as it reads them. */
+    int wav;
+    dsd_iq_wav_encoding wav_encoding;
+    size_t wav_block_align;
+    uint64_t wav_data_offset;
+    uint64_t wav_total_frames;
+    uint64_t wav_frames_left;    /* whole frames not yet read from the file */
+    uint8_t* wav_raw;            /* REPLAY_WAV_SCRATCH_BYTES */
+    float* wav_cf32;             /* 2 x REPLAY_WAV_CF32_FRAMES */
+    uint8_t wav_raw_pending[16]; /* the start of a frame a short read cut */
+    size_t wav_raw_pending_len;
+    uint8_t wav_out_pending[8]; /* the rest of a converted frame a read smaller than 8 bytes split */
+    size_t wav_out_pending_off;
+    size_t wav_out_pending_len;
 };
 
 static void set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 3, 4);
@@ -1962,6 +1982,7 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         goto fail;
     }
 
+    st.cfg.recorded_dsp_bw_khz = st.cfg.rtl_dsp_bw_khz;
     *out_cfg = st.cfg;
     return DSD_IQ_OK;
 
@@ -1992,6 +2013,31 @@ dsd_iq_replay_compute_effective_bytes(uint64_t data_bytes, uint64_t actual_file_
     *out_effective = raw - (raw % (uint64_t)align);
     if (out_size_mismatch) {
         *out_size_mismatch = mismatch;
+    }
+    return DSD_IQ_OK;
+}
+
+int
+dsd_iq_replay_measure(const dsd_iq_replay_config* cfg, uint64_t file_size, uint64_t* out_effective, int* out_mismatch) {
+    if (!cfg || !out_effective) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (cfg->container != DSD_IQ_REPLAY_CONTAINER_WAV) {
+        return dsd_iq_replay_compute_effective_bytes(cfg->data_bytes, file_size, cfg->format, out_effective,
+                                                     out_mismatch);
+    }
+    uint64_t frames = 0;
+    int truncated = 0;
+    int rc = dsd_iq_wav_frames_in_file(&cfg->wav, file_size, &frames, &truncated);
+    if (rc != DSD_IQ_OK) {
+        return rc;
+    }
+    if (frames > UINT64_MAX / 8U) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    *out_effective = frames * 8U;
+    if (out_mismatch) {
+        *out_mismatch = truncated;
     }
     return DSD_IQ_OK;
 }
@@ -2034,6 +2080,130 @@ dsd_iq_replay_estimate_duration_seconds(uint64_t data_bytes, dsd_iq_sample_forma
     return (double)complex_samples / (double)sample_rate_hz;
 }
 
+/* What @p path's first bytes are (a dsd_iq_wav_sniff_result), or -1 when it cannot be opened as a regular file. */
+static int
+replay_sniff_file(const char* path) {
+    FILE* fp = dsd_fopen_existing_regular_file(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    uint8_t head[DSD_IQ_WAV_SNIFF_BYTES];
+    const size_t n = fread(head, 1, sizeof(head), fp);
+    fclose(fp);
+    return dsd_iq_wav_sniff(head, n);
+}
+
+/* Skip one JSON value whose first token is @p tok. 0, or -1 for malformed JSON. */
+static int
+prepass_skip_value(json_tokenizer* tk, json_token tok) {
+    if (tok.type != JTOK_LBRACE && tok.type != JTOK_LBRACKET) {
+        return (tok.type == JTOK_STRING || tok.type == JTOK_NUMBER_INT || tok.type == JTOK_NUMBER_FLOAT
+                || tok.type == JTOK_TRUE || tok.type == JTOK_FALSE || tok.type == JTOK_NULL)
+                   ? 0
+                   : -1;
+    }
+    unsigned depth = 1;
+    while (depth > 0U) {
+        tok = tokenizer_next(tk);
+        if (tok.type == JTOK_ERROR || tok.type == JTOK_EOF) {
+            return -1;
+        }
+        if (tok.type == JTOK_LBRACE || tok.type == JTOK_LBRACKET) {
+            depth++;
+        } else if (tok.type == JTOK_RBRACE || tok.type == JTOK_RBRACKET) {
+            depth--;
+        }
+    }
+    return 0;
+}
+
+/* The top-level data_file of a sidecar, read before anything else in it is validated. 1 when found. */
+static int
+prepass_data_file(const char* json, size_t json_len, char* out, size_t out_size) {
+    json_tokenizer tk;
+    DSD_MEMSET(&tk, 0, sizeof(tk));
+    tk.src = json;
+    tk.src_len = json_len;
+    if (tokenizer_next(&tk).type != JTOK_LBRACE) {
+        return 0;
+    }
+    for (;;) {
+        json_token key = tokenizer_next(&tk);
+        if (key.type != JTOK_STRING) {
+            return 0;
+        }
+        const int is_data_file = key.str_len == 9U && memcmp(key.str, "data_file", 9U) == 0;
+        if (tokenizer_next(&tk).type != JTOK_COLON) {
+            return 0;
+        }
+        json_token val = tokenizer_next(&tk);
+        if (is_data_file) {
+            return val.type == JTOK_STRING && copy_token_to_buffer(&val, out, out_size, NULL, 0, "data_file", 1) == 0
+                       ? 1
+                       : 0;
+        }
+        if (prepass_skip_value(&tk, val) != 0) {
+            return 0;
+        }
+        json_token delim = tokenizer_next(&tk);
+        if (delim.type != JTOK_COMMA) {
+            return 0;
+        }
+    }
+}
+
+/* The replay config of the WAV recording at @p wav_path, opened by @p opened_path. @p ignored_sidecar names a sidecar
+ * the WAV's header overrides, for the open notice, or is NULL. */
+static int
+replay_wav_config(const char* wav_path, const char* opened_path, const char* ignored_sidecar,
+                  dsd_iq_replay_config* out_cfg, char* err_buf, size_t err_buf_size) {
+    dsd_iq_replay_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    int rc = dsd_iq_wav_read_info(wav_path, &cfg.wav, err_buf, err_buf_size);
+    if (rc != DSD_IQ_OK) {
+        return rc;
+    }
+    rc = copy_string_checked(wav_path, cfg.data_path, sizeof(cfg.data_path), err_buf, err_buf_size, "data path");
+    if (rc == DSD_IQ_OK) {
+        rc = copy_string_checked(opened_path, cfg.metadata_path, sizeof(cfg.metadata_path), err_buf, err_buf_size,
+                                 "metadata path");
+    }
+    if (rc != DSD_IQ_OK) {
+        return rc;
+    }
+    cfg.container = DSD_IQ_REPLAY_CONTAINER_WAV;
+    cfg.metadata_version = 1;
+    cfg.format = DSD_IQ_FORMAT_CF32;
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_driver_cf32_pre_ring");
+    cfg.sample_rate_hz = cfg.wav.sample_rate_hz;
+    cfg.center_frequency_hz = cfg.wav.center_frequency_hz;
+    cfg.capture_center_frequency_hz = cfg.wav.center_frequency_hz;
+    cfg.data_bytes = cfg.wav.frames * 8U;
+    cfg.base_decimation = 1;
+    cfg.post_downsample = 1;
+    cfg.demod_rate_hz = cfg.wav.sample_rate_hz;
+    DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "wav");
+    DSD_SNPRINTF(cfg.capture_started_utc, sizeof(cfg.capture_started_utc), "%s", cfg.wav.start_utc);
+    if (ignored_sidecar) {
+        DSD_SNPRINTF(cfg.open_notice, sizeof(cfg.open_notice),
+                     "'%s' is a WAV file: its header gives the format and rate (2-channel %s, %u Hz), so the sidecar "
+                     "'%s' is ignored",
+                     wav_path, dsd_iq_wav_encoding_name(cfg.wav.encoding), cfg.wav.sample_rate_hz, ignored_sidecar);
+    }
+    rc = validate_replay_semantics(&cfg, err_buf, err_buf_size);
+    if (rc != DSD_IQ_OK) {
+        return rc;
+    }
+    *out_cfg = cfg;
+    return DSD_IQ_OK;
+}
+
+static int
+replay_refuse_rifx(const char* path, char* err_buf, size_t err_buf_size) {
+    set_error(err_buf, err_buf_size, "WAV '%s': big-endian RIFX files are not supported", path);
+    return DSD_IQ_ERR_UNSUPPORTED_FMT;
+}
+
 static int
 replay_read_metadata_internal(const char* path, dsd_iq_replay_config* out_cfg, int reject_retunes, char* err_buf,
                               size_t err_buf_size) {
@@ -2041,9 +2211,33 @@ replay_read_metadata_internal(const char* path, dsd_iq_replay_config* out_cfg, i
         return DSD_IQ_ERR_INVALID_ARG;
     }
 
+    /* A WAV recording describes itself (issue #701): it is recognised before any sidecar is looked for, and a sidecar
+       beside it is only reported as ignored. */
+    int sniff = -1;
+    if (!has_suffix(path, ".json")) {
+        sniff = replay_sniff_file(path);
+        if (sniff == DSD_IQ_WAV_SNIFF_WAV) {
+            char sidecar[2048];
+            char sidecar_err[64];
+            const int have_sidecar =
+                resolve_metadata_path(path, sidecar, sizeof(sidecar), sidecar_err, sizeof(sidecar_err)) == DSD_IQ_OK;
+            return replay_wav_config(path, path, have_sidecar ? sidecar : NULL, out_cfg, err_buf, err_buf_size);
+        }
+        if (sniff == DSD_IQ_WAV_SNIFF_RIFX) {
+            return replay_refuse_rifx(path, err_buf, err_buf_size);
+        }
+    }
+
     char metadata_path[2048];
     int mrc = resolve_metadata_path(path, metadata_path, sizeof(metadata_path), err_buf, err_buf_size);
     if (mrc != DSD_IQ_OK) {
+        if (sniff == DSD_IQ_WAV_SNIFF_NOT_WAV && has_suffix(path, ".wav")) {
+            set_error(err_buf, err_buf_size,
+                      "'%s' is not a WAV file (no RIFF, RF64 or BW64 WAVE header) and has no sidecar (tried '%s.json' "
+                      "and '%s.iq.json')",
+                      path, path, path);
+            return DSD_IQ_ERR_INVALID_META;
+        }
         return mrc;
     }
 
@@ -2052,6 +2246,23 @@ replay_read_metadata_internal(const char* path, dsd_iq_replay_config* out_cfg, i
     int rrc = read_file_all(metadata_path, &json, &json_len, err_buf, err_buf_size);
     if (rrc != DSD_IQ_OK) {
         return rrc;
+    }
+
+    /* A sidecar whose data_file is a WAV: only that name is read, and the WAV's header describes the capture, however
+       wrong the sidecar's other fields are. */
+    char data_file[2048];
+    char data_path[2048];
+    if (prepass_data_file(json, json_len, data_file, sizeof(data_file))
+        && resolve_data_path(metadata_path, data_file, data_path, sizeof(data_path), NULL, 0) == DSD_IQ_OK) {
+        const int data_sniff = replay_sniff_file(data_path);
+        if (data_sniff == DSD_IQ_WAV_SNIFF_WAV) {
+            free(json);
+            return replay_wav_config(data_path, metadata_path, metadata_path, out_cfg, err_buf, err_buf_size);
+        }
+        if (data_sniff == DSD_IQ_WAV_SNIFF_RIFX) {
+            free(json);
+            return replay_refuse_rifx(data_path, err_buf, err_buf_size);
+        }
     }
 
     int prc = parse_metadata_json(metadata_path, json, json_len, out_cfg, reject_retunes, err_buf, err_buf_size);
@@ -2073,6 +2284,101 @@ dsd_iq_replay_read_metadata(const char* path, dsd_iq_replay_config* out_cfg, cha
     }
 
     *out_cfg = cfg;
+    return DSD_IQ_OK;
+}
+
+/* The WAV side of a source whose stream is open: scratch buffers and the reader at the first frame. */
+static int
+replay_source_open_wav(struct dsd_iq_replay_source* src, const dsd_iq_replay_config* cfg, uint64_t effective,
+                       char* err_buf, size_t err_buf_size) {
+    src->wav = 1;
+    src->wav_encoding = cfg->wav.encoding;
+    src->wav_block_align = cfg->wav.block_align;
+    src->wav_data_offset = cfg->wav.data_offset;
+    src->wav_total_frames = effective / 8U;
+    src->wav_frames_left = src->wav_total_frames;
+    if (src->wav_block_align == 0U || src->wav_block_align > sizeof(src->wav_raw_pending)) {
+        set_error(err_buf, err_buf_size, "WAV '%s': unsupported frame size", cfg->data_path);
+        return DSD_IQ_ERR_UNSUPPORTED_FMT;
+    }
+    src->wav_raw = (uint8_t*)malloc(REPLAY_WAV_SCRATCH_BYTES);
+    src->wav_cf32 = (float*)malloc((size_t)REPLAY_WAV_CF32_FRAMES * 2U * sizeof(float));
+    if (!src->wav_raw || !src->wav_cf32) {
+        set_error(err_buf, err_buf_size, "replay source allocation failed");
+        return DSD_IQ_ERR_ALLOC;
+    }
+    if (src->wav_data_offset > (uint64_t)INT64_MAX
+        || dsd_fseek64(src->fp, (int64_t)src->wav_data_offset, SEEK_SET) != 0) {
+        set_error(err_buf, err_buf_size, "failed to seek to the data of '%s': %s", cfg->data_path, strerror(errno));
+        return DSD_IQ_ERR_IO;
+    }
+    return DSD_IQ_OK;
+}
+
+/* Convert the next frames of a WAV into @p out, as dsd_iq_replay_read() describes. A short read hands over the whole
+ * frames it got (the start of a frame it cut stays pending), and the read after it reports the failure. A read
+ * smaller than one 8-byte cf32 frame keeps the rest of that frame for the next read. */
+static int
+replay_read_wav(dsd_iq_replay_source* src, uint8_t* out, size_t max_bytes, size_t* out_bytes) {
+    size_t produced = 0;
+    if (src->wav_out_pending_len > 0U) {
+        const size_t n = max_bytes < src->wav_out_pending_len ? max_bytes : src->wav_out_pending_len;
+        DSD_MEMCPY(out, src->wav_out_pending + src->wav_out_pending_off, n);
+        src->wav_out_pending_off += n;
+        src->wav_out_pending_len -= n;
+        produced += n;
+    }
+    const size_t frames_per_pass_raw = REPLAY_WAV_SCRATCH_BYTES / src->wav_block_align;
+    const size_t frames_per_pass =
+        frames_per_pass_raw < REPLAY_WAV_CF32_FRAMES ? frames_per_pass_raw : REPLAY_WAV_CF32_FRAMES;
+    while (produced < max_bytes && src->wav_frames_left > 0U) {
+        const size_t room = max_bytes - produced;
+        size_t want = room / 8U;
+        const int split = want == 0U;
+        if (split) {
+            want = 1U;
+        }
+        if (want > frames_per_pass) {
+            want = frames_per_pass;
+        }
+        if ((uint64_t)want > src->wav_frames_left) {
+            want = (size_t)src->wav_frames_left;
+        }
+        const size_t need = want * src->wav_block_align;
+        const size_t have = src->wav_raw_pending_len;
+        DSD_MEMCPY(src->wav_raw, src->wav_raw_pending, have);
+        src->wav_raw_pending_len = 0U;
+        const size_t got = have + fread(src->wav_raw + have, 1, need - have, src->fp);
+        const size_t complete = got / src->wav_block_align;
+        const size_t rest = got % src->wav_block_align;
+        if (rest > 0U) {
+            DSD_MEMCPY(src->wav_raw_pending, src->wav_raw + complete * src->wav_block_align, rest);
+            src->wav_raw_pending_len = rest;
+        }
+        if (complete > 0U) {
+            dsd_iq_wav_frames_to_cf32(src->wav_encoding, src->wav_raw, complete, src->wav_cf32);
+            src->wav_frames_left -= complete;
+            if (split) {
+                DSD_MEMCPY(src->wav_out_pending, src->wav_cf32, 8U);
+                DSD_MEMCPY(out + produced, src->wav_out_pending, room);
+                src->wav_out_pending_off = room;
+                src->wav_out_pending_len = 8U - room;
+                produced += room;
+            } else {
+                DSD_MEMCPY(out + produced, src->wav_cf32, complete * 8U);
+                produced += complete * 8U;
+            }
+        }
+        if (complete < want) {
+            /* Frames the open measured are missing: a failed read, or a file cut short after the open. */
+            if (produced == 0U) {
+                return DSD_IQ_ERR_IO;
+            }
+            break;
+        }
+    }
+    src->remaining_bytes -= (uint64_t)produced;
+    *out_bytes = produced;
     return DSD_IQ_OK;
 }
 
@@ -2107,7 +2413,7 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
 
     uint64_t effective = 0;
     int mismatch = 0;
-    rc = dsd_iq_replay_compute_effective_bytes(cfg.data_bytes, actual_size, cfg.format, &effective, &mismatch);
+    rc = dsd_iq_replay_measure(&cfg, actual_size, &effective, &mismatch);
     if (rc != DSD_IQ_OK) {
         set_error(err_buf, err_buf_size, "failed to compute effective replay bytes");
         dsd_iq_replay_config_clear(&cfg);
@@ -2147,6 +2453,15 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
     }
     src->remaining_bytes = effective;
     src->total_bytes = effective;
+    src->align = dsd_iq_sample_format_alignment_bytes(cfg.format);
+    if (cfg.container == DSD_IQ_REPLAY_CONTAINER_WAV) {
+        rc = replay_source_open_wav(src, &cfg, effective, err_buf, err_buf_size);
+        if (rc != DSD_IQ_OK) {
+            dsd_iq_replay_close(src);
+            dsd_iq_replay_config_clear(&cfg);
+            return rc;
+        }
+    }
     *out_cfg = cfg;
     *out = src;
     return DSD_IQ_OK;
@@ -2165,6 +2480,9 @@ dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_
     if ((uint64_t)max_bytes > src->remaining_bytes) {
         max_bytes = (size_t)src->remaining_bytes;
     }
+    if (src->wav) {
+        return replay_read_wav(src, (uint8_t*)out, max_bytes, out_bytes);
+    }
     size_t n = fread(out, 1, max_bytes, src->fp);
     if (n == 0) {
         /* Capture bytes remain: the open measured them, and remaining_bytes counts what is left. A read that gets none
@@ -2180,13 +2498,36 @@ dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_
 
 int
 dsd_iq_replay_rewind(dsd_iq_replay_source* src) {
-    if (!src || !src->fp) {
+    return dsd_iq_replay_seek(src, 0U);
+}
+
+int
+dsd_iq_replay_seek(dsd_iq_replay_source* src, uint64_t capture_byte_offset) {
+    if (!src || !src->fp || src->align == 0U) {
         return DSD_IQ_ERR_INVALID_ARG;
     }
-    if (fseek(src->fp, 0, SEEK_SET) != 0) {
+    const uint64_t aligned = capture_byte_offset - capture_byte_offset % (uint64_t)src->align;
+    if (aligned > src->total_bytes) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    uint64_t file_offset = aligned;
+    if (src->wav) {
+        const uint64_t frame = aligned / 8U;
+        if (frame > (UINT64_MAX - src->wav_data_offset) / (uint64_t)src->wav_block_align) {
+            return DSD_IQ_ERR_INVALID_ARG;
+        }
+        file_offset = src->wav_data_offset + frame * (uint64_t)src->wav_block_align;
+    }
+    if (file_offset > (uint64_t)INT64_MAX || dsd_fseek64(src->fp, (int64_t)file_offset, SEEK_SET) != 0) {
         return DSD_IQ_ERR_IO;
     }
-    src->remaining_bytes = src->total_bytes;
+    src->remaining_bytes = src->total_bytes - aligned;
+    if (src->wav) {
+        src->wav_frames_left = src->wav_total_frames - aligned / 8U;
+        src->wav_raw_pending_len = 0U;
+        src->wav_out_pending_off = 0U;
+        src->wav_out_pending_len = 0U;
+    }
     return DSD_IQ_OK;
 }
 
@@ -2198,6 +2539,8 @@ dsd_iq_replay_close(dsd_iq_replay_source* src) {
     if (src->fp) {
         fclose(src->fp);
     }
+    free(src->wav_raw);
+    free(src->wav_cf32);
     free(src);
 }
 
@@ -2274,11 +2617,83 @@ dsd_iq_info_print_warnings(const dsd_iq_replay_config* cfg, uint64_t actual_file
     }
 }
 
+/* --iq-info for a WAV recording (issue #701). */
+static int
+dsd_iq_info_print_wav(const dsd_iq_replay_config* cfg, const char* display_path, uint64_t actual_file_size, FILE* out,
+                      FILE* err) {
+    const dsd_iq_wav_info* w = &cfg->wav;
+    uint64_t effective = 0;
+    int truncated = 0;
+    int rc = dsd_iq_replay_measure(cfg, actual_file_size, &effective, &truncated);
+    if (rc != DSD_IQ_OK) {
+        return rc;
+    }
+    const uint64_t frames = effective / 8U;
+    const double dur = cfg->sample_rate_hz ? (double)frames / (double)cfg->sample_rate_hz : 0.0;
+
+    DSD_FPRINTF(out, "IQ Capture Info: %s\n", display_path ? display_path : cfg->metadata_path);
+    DSD_FPRINTF(out, "  Format:              WAV I/Q recording (%s container)\n",
+                dsd_iq_wav_container_name(w->container));
+    DSD_FPRINTF(out, "  Sample encoding:     %s, 2 channels: I then Q\n", dsd_iq_wav_encoding_name(w->encoding));
+    DSD_FPRINTF(out, "  Sample rate:         %u Hz\n", cfg->sample_rate_hz);
+    if (w->center_source != DSD_IQ_WAV_FROM_NONE) {
+        DSD_FPRINTF(out, "  Center frequency:    %.6f MHz (%s)\n", (double)w->center_frequency_hz / 1000000.0,
+                    dsd_iq_wav_source_name(w->center_source));
+    } else {
+        DSD_FPRINTF(out, "  Center frequency:    unknown (no auxi chunk, none in the file name)\n");
+    }
+    if (w->start_source != DSD_IQ_WAV_FROM_NONE) {
+        DSD_FPRINTF(out, "  Start time:          %s (%s)\n", w->start_utc, dsd_iq_wav_source_name(w->start_source));
+    } else {
+        DSD_FPRINTF(out, "  Start time:          unknown (no auxi chunk, none in the file name)\n");
+    }
+    DSD_FPRINTF(out, "  Data file:           %s\n", cfg->data_path);
+    DSD_FPRINTF(out, "  Data offset:         %" PRIu64 " bytes\n", w->data_offset);
+    if (w->unfinalized) {
+        DSD_FPRINTF(out,
+                    "  Data bytes:          unfinalized header, %" PRIu64 " (whole frames to the end of the file)\n",
+                    frames * (uint64_t)w->block_align);
+    } else {
+        DSD_FPRINTF(out, "  Data bytes:          %" PRIu64 " (header), %" PRIu64 " (whole frames in the file)\n",
+                    w->declared_data_bytes, frames * (uint64_t)w->block_align);
+    }
+    DSD_FPRINTF(out, "  Duration:            ~%.2f s (%" PRIu64 " frames)\n", dur, frames);
+    DSD_FPRINTF(out, "  Rate chain:          replays at the recording's rate, %u Hz\n", cfg->sample_rate_hz);
+    DSD_FPRINTF(out, "  Replay compatible:   %s\n", effective > 0U ? "yes" : "no");
+
+    if (err) {
+        if (truncated) {
+            DSD_FPRINTF(err,
+                        "WARNING: the WAV header declares %" PRIu64 " data bytes but the file holds %" PRIu64
+                        " (a truncated recording)\n",
+                        w->declared_data_bytes,
+                        actual_file_size > w->data_offset ? actual_file_size - w->data_offset : 0U);
+        }
+        if (w->unfinalized) {
+            DSD_FPRINTF(err, "WARNING: the WAV header was never finalized (an interrupted recording); the data runs to "
+                             "the end of the file\n");
+        }
+        const uint64_t avail = actual_file_size > w->data_offset ? actual_file_size - w->data_offset : 0U;
+        const uint64_t raw = (w->unfinalized || w->declared_data_bytes > avail) ? avail : w->declared_data_bytes;
+        if (raw % (uint64_t)w->block_align != 0U) {
+            DSD_FPRINTF(err, "WARNING: the data ends inside a frame; its last %" PRIu64 " byte(s) are not replayed\n",
+                        raw % (uint64_t)w->block_align);
+        }
+        if (cfg->open_notice[0] != '\0') {
+            DSD_FPRINTF(err, "WARNING: %s\n", cfg->open_notice);
+        }
+    }
+    return DSD_IQ_OK;
+}
+
 int
 dsd_iq_info_print(const dsd_iq_replay_config* cfg, const char* display_path, uint64_t actual_file_size, FILE* out,
                   FILE* err) {
     if (!cfg || !out) {
         return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (cfg->container == DSD_IQ_REPLAY_CONTAINER_WAV) {
+        return dsd_iq_info_print_wav(cfg, display_path, actual_file_size, out, err);
     }
 
     uint64_t effective = 0;

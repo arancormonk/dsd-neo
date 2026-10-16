@@ -2,7 +2,7 @@
 
 # IQ capture/replay metadata and file helpers (no SDR dependency)
 add_library(dsd-neo_io_iq)
-target_sources(dsd-neo_io_iq PRIVATE iq/iq_capture.c iq/iq_replay.c)
+target_sources(dsd-neo_io_iq PRIVATE iq/iq_capture.c iq/iq_replay.c iq/iq_wav.c)
 target_include_directories(
     dsd-neo_io_iq
     PUBLIC ${PROJECT_SOURCE_DIR}/include

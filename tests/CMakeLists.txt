@@ -1303,6 +1303,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/io/iq_replay.h
   C
 )
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_iq_wav
+  HEADERS_PUBLIC_IO_IQ_WAV
+  dsd-neo/io/iq_wav.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_iq_wav_cxx
+  HEADERS_PUBLIC_IO_IQ_WAV_CXX
+  dsd-neo/io/iq_wav.h
+  CXX
+)
 
 set(_iq_capture_replay_combo_src
     "${_DSD_PUBLIC_HEADER_TEST_DIR}/HEADERS_PUBLIC_IO_IQ_CAPTURE_REPLAY_COMBO.c"
@@ -12216,6 +12228,19 @@ target_compile_definitions(
         "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
 )
 add_test(NAME IO_IQ_METADATA COMMAND dsd-neo_test_io_iq_metadata)
+
+# WAV I/Q recordings (issue #701): the parser, the replay reader's cf32 conversion and partial reads, seeking, the
+# centre and start time sources, --iq-info, and a sidecar beside a WAV.
+add_executable(dsd-neo_test_io_iq_wav io/test_io_iq_wav.c)
+target_include_directories(
+    dsd-neo_test_io_iq_wav
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_io_iq_wav
+    PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support
+)
+add_test(NAME IO_IQ_WAV COMMAND dsd-neo_test_io_iq_wav)
 
 add_executable(dsd-neo_test_io_iq_capture_writer io/test_io_iq_capture_writer.c)
 target_include_directories(

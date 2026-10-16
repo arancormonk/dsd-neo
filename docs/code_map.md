@@ -3477,7 +3477,18 @@ Key public headers:
 - UDP audio output: `include/dsd-neo/io/udp_audio.h` (implemented in `src/io/audio_backends/udp_audio.c`)
 - UDP/TCP PCM input: `include/dsd-neo/io/udp_input.h`, `include/dsd-neo/io/tcp_input.h`
 - I/Q capture/replay: `include/dsd-neo/io/iq_capture.h`, `include/dsd-neo/io/iq_replay.h`,
-  `include/dsd-neo/io/iq_types.h`
+  `include/dsd-neo/io/iq_types.h`, `include/dsd-neo/io/iq_wav.h`
+  - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
+    or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
+    sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is
+    validated; a sidecar beside a WAV is ignored and reported in `dsd_iq_replay_config::open_notice`. The config is a
+    virtual cf32 capture (`container == DSD_IQ_REPLAY_CONTAINER_WAV`, stage `post_driver_cf32_pre_ring`, base and
+    post 1, centre from `auxi` or the file name, 0 when unknown): `data_bytes`, seeks and offsets count 8 bytes per
+    frame, and the replay reader converts frames as it reads them, keeping a short read's partial frame and the rest
+    of a frame a read smaller than 8 bytes split for the next read. `dsd_iq_replay_measure()` is the effective-size
+    rule for both containers (used by the open, `--iq-info` and the CLI); `dsd_iq_replay_seek()` moves either kind of
+    source to a whole complex sample. Tests: `IO_IQ_WAV`,
+    `FUZZ_IO_IQ_WAV`
 
 Notes:
 

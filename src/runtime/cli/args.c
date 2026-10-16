@@ -806,6 +806,35 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     return 0;
 }
 
+#ifdef USE_RADIO
+/* What --iq-replay is about to replay when it names a WAV recording (issue #701): its encoding, rate and length, and
+ * its centre with where that came from. */
+static void
+cli_log_iq_replay_wav_summary(const dsd_iq_replay_config* cfg, uint64_t effective_bytes, int truncated) {
+    const dsd_iq_wav_info* w = &cfg->wav;
+    const uint64_t frames = effective_bytes / 8U;
+    const double seconds = cfg->sample_rate_hz ? (double)frames / (double)cfg->sample_rate_hz : 0.0;
+    char centre[96];
+    if (w->center_source != DSD_IQ_WAV_FROM_NONE) {
+        DSD_SNPRINTF(centre, sizeof(centre), "centre %.6f MHz (%s)", (double)w->center_frequency_hz / 1000000.0,
+                     dsd_iq_wav_source_name(w->center_source));
+    } else {
+        DSD_SNPRINTF(centre, sizeof(centre), "%s", "centre unknown (no auxi chunk, none in the file name)");
+    }
+    LOG_INFO("IQ replay: WAV %s, 2-channel %s, %u Hz, ~%.1f s, %s.\n", dsd_iq_wav_container_name(w->container),
+             dsd_iq_wav_encoding_name(w->encoding), cfg->sample_rate_hz, seconds, centre);
+    if (truncated) {
+        LOG_WARN("IQ replay: the WAV header declares %" PRIu64 " data bytes, more than the file holds (a truncated "
+                 "recording); replaying the %" PRIu64 " whole frames present.\n",
+                 w->declared_data_bytes, frames);
+    }
+    if (w->unfinalized) {
+        LOG_WARN("IQ replay: the WAV header was never finalized (an interrupted recording); replaying to the end of "
+                 "the file.\n");
+    }
+}
+#endif
+
 #define DSD_CLI_LOCAL_PATH_MAX 2048
 
 static int
@@ -1951,8 +1980,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
     }                                                                                                                  \
     uint64_t effective_bytes = 0;                                                                                      \
     int size_mismatch = 0;                                                                                             \
-    rc = dsd_iq_replay_compute_effective_bytes(replay_cfg.data_bytes, (uint64_t)st.st_size, replay_cfg.format,         \
-                                               &effective_bytes, &size_mismatch);                                      \
+    rc = dsd_iq_replay_measure(&replay_cfg, (uint64_t)st.st_size, &effective_bytes, &size_mismatch);                   \
     if (rc != DSD_IQ_OK) {                                                                                             \
         LOG_ERROR("--iq-replay: failed to compute effective replay bytes\n");                                          \
         dsd_iq_replay_config_clear(&replay_cfg);                                                                       \
@@ -1966,7 +1994,12 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         cli_set_exit_rc(out_exit_rc, 1);                                                                               \
         return DSD_PARSE_ERROR;                                                                                        \
     }                                                                                                                  \
-    if (size_mismatch) {                                                                                               \
+    if (replay_cfg.open_notice[0] != '\0') {                                                                           \
+        LOG_WARN("IQ replay: %s\n", replay_cfg.open_notice);                                                           \
+    }                                                                                                                  \
+    if (replay_cfg.container == DSD_IQ_REPLAY_CONTAINER_WAV) {                                                         \
+        cli_log_iq_replay_wav_summary(&replay_cfg, effective_bytes, size_mismatch);                                    \
+    } else if (size_mismatch) {                                                                                        \
         LOG_WARN("IQ replay metadata/data size mismatch: metadata=%" PRIu64 " actual=%" PRIu64 "\n",                   \
                  replay_cfg.data_bytes, (uint64_t)st.st_size);                                                         \
     }                                                                                                                  \
