@@ -87,12 +87,16 @@ While a search runs, the screen is laid out for what is on the air now:
   long for the line is shortened so the channel count always shows.
 - The **Now** panel keeps one height for the whole session: frequency, strength,
   identification, two lines of detail, saved-frequency names and the actions.
-  Lines that do not fit end in an ellipsis, and the full text is available to
-  screen readers. When several saved frequencies match, the panel names two and
+  The strength line shows the live and detection levels
+  (**Now -47.2 · detected -32.1 dBFS**, on two lines with the largest text);
+  the range is named in the status line. Other lines that do not fit end in an
+  ellipsis, and the full text is available to screen readers. When several saved frequencies match, the panel names two and
   counts the rest (**Saved: A / B +1**); the detection's history row lists them
   all. Between detections the panel reads **Waiting for a signal**, shows the
   phase (**Searching Air band…**, **Tuning…**, **Paused**) and the hint
-  **Strong signals open here to be identified and monitored.**, and keeps the
+  **Strong signals open here to be identified and monitored.** (while searching,
+  tuning or paused; a stopped or failed search shows only its phase and
+  message), and keeps the
   actions' space empty, so nothing below it moves as detections come and go. The actions sit in two columns, or three
   where every label fits.
 - **Recent detections** shows the five newest; **Show more** adds 25.

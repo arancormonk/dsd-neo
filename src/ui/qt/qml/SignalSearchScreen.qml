@@ -334,8 +334,17 @@ Item {
                         Accessible.name: text
                     }
                     Item {
+                        id: strengthSlot
                         width: parent.width
-                        height: Math.ceil(strengthMetrics.lineSpacing)
+                        // One line, or two where the widest reading would not fit
+                        // one at this width and font scale: a level is never cut
+                        // off, and the height still depends on nothing else.
+                        readonly property real textWidth: width - liveCue.width - 8
+                        readonly property int lines: {
+                            var font = strengthMetrics.font;
+                            return strengthMetrics.advanceWidth(qsTr("Now %1 · detected %2 dBFS").arg("-100.0").arg("-100.0")) <= textWidth ? 1 : 2;
+                        }
+                        height: lines * Math.ceil(strengthMetrics.lineSpacing)
                         // Marks each fresh live measurement: the level of a steady
                         // carrier can read the same for a long time.
                         Rectangle {
@@ -349,7 +358,8 @@ Item {
                             width: 7
                             height: 7
                             radius: 3.5
-                            anchors.verticalCenter: parent.verticalCenter
+                            // Beside the first line, where "Now" is.
+                            y: (Math.ceil(strengthMetrics.lineSpacing) - height) / 2
                             visible: screen.liveShown
                             color: Theme.cyan
                             opacity: 0.4
@@ -365,16 +375,19 @@ Item {
                             // The cue's slot is kept for the whole visit, so the
                             // text does not move as a live level comes and goes.
                             x: screen.receiving ? liveCue.width + 8 : 0
-                            width: parent.width - x
-                            height: parent.height
-                            text: !screen.receiving ? "" : (screen.status.livePowerValid ? qsTr("Now %1 dBFS · detected %2 dBFS").arg(Number(screen.status.livePower).toFixed(1)).arg(Number(screen.hit.power || 0).toFixed(1)) : Number(screen.hit.power || 0).toFixed(1) + qsTr(" dBFS")) + " · " + (screen.hit.range || "")
+                            width: strengthSlot.textWidth
+                            // Both levels, nothing else: the range is in the status
+                            // line and in the accessible description.
+                            text: !screen.receiving ? "" : screen.status.livePowerValid ? (strengthSlot.lines > 1 ? qsTr("Now %1 dBFS\ndetected %2 dBFS") : qsTr("Now %1 · detected %2 dBFS")).arg(Number(screen.status.livePower).toFixed(1)).arg(Number(screen.hit.power || 0).toFixed(1)) : Number(screen.hit.power || 0).toFixed(1) + qsTr(" dBFS")
                             color: Theme.textSecondary
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(14)
-                            verticalAlignment: Text.AlignVCenter
+                            wrapMode: Text.Wrap
+                            maximumLineCount: strengthSlot.lines
                             elide: Text.ElideRight
-                            Accessible.name: text
-                            Accessible.description: text
+                            readonly property string spoken: text.replace("\n", " · ")
+                            Accessible.name: spoken
+                            Accessible.description: spoken.length > 0 && (screen.hit.range || "").length > 0 ? spoken + " · " + screen.hit.range : spoken
                             Accessible.ignored: text.length === 0
                         }
                     }
@@ -398,7 +411,9 @@ Item {
                         Text {
                             objectName: "searchDetail"
                             width: parent.width
-                            text: !screen.receiving ? qsTr("Strong signals open here to be identified and monitored.") : [screen.hit.access || "", screen.hit.tone || "", screen.hit.targetText || (screen.hit.target ? qsTr("Target %1").arg(screen.hit.target) : ""), screen.hit.sourceText || (screen.hit.source ? qsTr("Source %1").arg(screen.hit.source) : "")].filter(function (s) { return s.length > 0; }).join(" · ")
+                            // The hint belongs to a search that is running or paused;
+                            // a stopped or failed one shows only its phase and message.
+                            text: !screen.receiving ? ([1, 2, 6].indexOf(screen.phase) >= 0 ? qsTr("Strong signals open here to be identified and monitored.") : "") : [screen.hit.access || "", screen.hit.tone || "", screen.hit.targetText || (screen.hit.target ? qsTr("Target %1").arg(screen.hit.target) : ""), screen.hit.sourceText || (screen.hit.source ? qsTr("Source %1").arg(screen.hit.source) : "")].filter(function (s) { return s.length > 0; }).join(" · ")
                             color: Theme.textSecondary
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(14)

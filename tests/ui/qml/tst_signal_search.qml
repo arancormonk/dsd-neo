@@ -304,9 +304,11 @@ Item {
         }
         function test_live_strength_is_shown_beside_detection_power() {
             var strength = findChild(loader.item, "searchStrength");
-            compare(strength.text, "-32.1 dBFS · Local UHF");
+            compare(strength.text, "-32.1 dBFS");
+            compare(strength.Accessible.description, "-32.1 dBFS · Local UHF");
             model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.25});
-            compare(strength.text, "Now -47.3 dBFS · detected -32.1 dBFS · Local UHF");
+            compare(strength.text, "Now -47.3 · detected -32.1 dBFS");
+            compare(strength.Accessible.description, "Now -47.3 · detected -32.1 dBFS · Local UHF");
         }
         function test_session_and_permanent_avoids_can_be_lifted_while_searching() {
             model.sessionAvoids = [463550000];
@@ -706,15 +708,50 @@ Item {
             var marks = cue.marks;
             model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.21, liveSeq: 2});
             compare(cue.marks, marks + 1, "a same-value fresh measurement is marked");
-            compare(strength.text, "Now -47.2 dBFS · detected -32.1 dBFS · Local UHF");
+            compare(strength.text, "Now -47.2 · detected -32.1 dBFS");
             model.status = Object.assign({}, model.status, {channel: 3});
             compare(cue.marks, marks + 1, "a status update without a measurement is not");
             verify(cue.Accessible.ignored);
             model.status = Object.assign({}, model.status, {livePowerValid: false});
             verify(!cue.visible, "a withdrawn level hides the cue");
-            compare(strength.text, "-32.1 dBFS · Local UHF");
+            compare(strength.text, "-32.1 dBFS");
+            compare(strength.Accessible.description, "-32.1 dBFS · Local UHF");
             model.status = Object.assign({}, model.status, {liveSeq: 3});
             compare(cue.marks, marks + 1);
+        }
+        // Both levels show whole on a phone up to the largest text, even at
+        // their widest values; the range is left to the status line.
+        function test_strength_line_fits_a_phone_data() {
+            return [{tag: "default text", scale: 1.0}, {tag: "largest text", scale: 1.6}];
+        }
+        function test_strength_line_fits_a_phone(data) {
+            Ui.Theme.fontScale = data.scale;
+            var strength = findChild(loader.item, "searchStrength");
+            model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -100.04, liveSeq: 30,
+                hit: Object.assign({}, model.status.hit, {power: -100.04})});
+            // Two lines at the largest text break between the two levels.
+            compare(strength.text, data.scale > 1 ? "Now -100.0 dBFS\ndetected -100.0 dBFS" : "Now -100.0 · detected -100.0 dBFS");
+            compare(strength.Accessible.name, data.scale > 1 ? "Now -100.0 dBFS · detected -100.0 dBFS" : "Now -100.0 · detected -100.0 dBFS");
+            verify(!strength.truncated, "both levels fit at 411 dp");
+            verify(strength.height <= strength.parent.height + 0.5, "inside its slot");
+            compare(strength.parent.lines, data.scale > 1 ? 2 : 1, "one line, or two at the largest text");
+            model.status = Object.assign({}, model.status, {livePowerValid: false});
+            compare(strength.text, "-100.0 dBFS");
+            verify(!strength.truncated);
+        }
+        // A stopped or failed search shows only its phase and message, not the
+        // hint that strong signals open here.
+        function test_waiting_hint_only_while_searching() {
+            var detail = findChild(loader.item, "searchDetail");
+            var hint = "Strong signals open here to be identified and monitored.";
+            var expected = {0: "", 1: hint, 2: hint, 6: hint, 7: ""};
+            for (var phase of [0, 1, 2, 6, 7]) {
+                model.status = Object.assign({}, model.status, {phase: phase, hit: {}, message: phase === 7 ? "No samples from the radio input" : ""});
+                compare(detail.text, expected[phase], "phase " + phase);
+                compare(detail.Accessible.ignored, expected[phase].length === 0);
+            }
+            compare(findChild(loader.item, "searchIdentification").text, "Search error");
+            compare(findChild(loader.item, "searchMessage").text, "No samples from the radio input");
         }
         // The strength text keeps its place as a live level comes and goes.
         function test_strength_text_does_not_shift() {
