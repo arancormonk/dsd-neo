@@ -8,6 +8,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -63,6 +64,7 @@ svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int
         dsd_socket_close(old_sockfd);
     }
     dsd_engine_rigctl_tune_cache_forget();
+    nxdn_cc_hunt_forget_attribution(state);
     DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", next_host);
     opts->rigctlportno = port;
     opts->rigctl_sockfd = new_sockfd;

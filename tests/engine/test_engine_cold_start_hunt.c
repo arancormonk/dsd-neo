@@ -21,12 +21,14 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -53,6 +55,10 @@ enum scenario {
     SC_MODE_CHANGE_DMR,
     SC_INPUT_SWITCH_PENDING,
     SC_INPUT_SWITCH_NEW_REQUEST,
+    SC_NXDN_OUTER_LOOP,
+    SC_NXDN_SYNCED_LOOP,
+    SC_NXDN_LOST_CC,
+    SC_NXDN_CALL_RETURN,
 };
 
 static enum scenario g_scenario;
@@ -175,11 +181,16 @@ LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) { // NOLINT(mis
     (void)state;
 }
 
-/* Frames decode to nothing, except the one validated P25 control block the named-owner scenario sends on its probe. */
+/* Frames decode to nothing, except the one validated P25 control block the named-owner scenario sends on its probe,
+   and the CRC-good CACs of an NXDN control channel that goes quiet two seconds in. */
 void
 processFrame(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     if (g_scenario == SC_NAMED_BETWEEN_FRAMES && g_tunes == 1 && !g_validated_sent && g_now_ms >= 6000U) {
         p25_sm_note_validated_cc(opts, state);
+        g_validated_sent = 1;
+    }
+    if ((g_scenario == SC_NXDN_LOST_CC || g_scenario == SC_NXDN_CALL_RETURN) && g_now_ms <= 2000U) {
+        nxdn_cc_hunt_note_control(opts, state);
         g_validated_sent = 1;
     }
 }
@@ -278,6 +289,35 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                 return finish();
             }
             return DSD_SYNC_NONE;
+        case SC_NXDN_OUTER_LOOP:
+            if (g_now_ms > 9000U) {
+                return finish();
+            }
+            return DSD_SYNC_NONE;
+        case SC_NXDN_SYNCED_LOOP:
+            // Unvalidated NXDN syncs that never stop: noise passes NXDN's frame sync often.
+            if (g_now_ms > 9000U) {
+                return finish();
+            }
+            return DSD_SYNC_NXDN_POS;
+        case SC_NXDN_LOST_CC:
+            // -fa: CACs name NXDN for two seconds, then only syncs that never validate.
+            if (g_now_ms > 11000U) {
+                return finish();
+            }
+            return DSD_SYNC_NXDN_POS;
+        case SC_NXDN_CALL_RETURN:
+            // -fi: CACs for two seconds, a followed call, its return at 3 s, then syncs that never validate.
+            if (g_now_ms == 2250U) {
+                opts->trunk_is_tuned = 1;
+            }
+            if (g_now_ms == 3000U) {
+                opts->trunk_is_tuned = 0;
+            }
+            if (g_now_ms > 11000U) {
+                return finish();
+            }
+            return DSD_SYNC_NXDN_POS;
         case SC_MODE_CHANGE_DMR:
             if (g_now_ms == 2750U) {
                 g_dmr_armed_seen = dmr_sm_cold_start_active(dmr_sm_get_ctx());
@@ -296,6 +336,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 
+/* Frame sets: 0 -fs, 1 -ft, 2 -fi, 3 -fa. */
 static int
 run_scenario(enum scenario sc, int ft) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -329,8 +370,10 @@ run_scenario(enum scenario sc, int ft) {
     opts->audio_out_type = 9;
     opts->frame_dstar = opts->frame_x2tdma = opts->frame_ysf = opts->frame_m17 = 0;
     opts->frame_nxdn48 = opts->frame_nxdn96 = opts->frame_provoice = opts->frame_dpmr = 0;
-    opts->frame_dmr = 1;
-    opts->frame_p25p1 = opts->frame_p25p2 = ft ? 1 : 0;
+    opts->frame_dmr = ft == 2 ? 0 : 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = (ft == 1 || ft == 3) ? 1 : 0;
+    opts->frame_nxdn48 = (ft == 2 || ft == 3) ? 1 : 0;
+    opts->frame_nxdn96 = opts->frame_provoice = ft == 3 ? 1 : 0;
 
     const int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     expect(rc == 0, "the engine run ends cleanly");
@@ -365,6 +408,26 @@ run_scenario(enum scenario sc, int ft) {
         case SC_INPUT_SWITCH_NEW_REQUEST:
             expect(g_new_device_request != 0U && g_new_request_kept,
                    "a tune the new device was given before the switch's boundary still gates its frames");
+            break;
+        case SC_NXDN_OUTER_LOOP:
+            expect(g_tunes >= 1 && g_first_tune == ROW0_HZ, "an NXDN session hunts a dead start frequency");
+            expect(g_tunes_before_ms > 6000U, "not before NXDN's window ran out");
+            expect(state->trunk_cc_freq == 0 && state->p25_cc_freq == 0, "a probe is no control channel");
+            break;
+        case SC_NXDN_SYNCED_LOOP:
+            expect(g_tunes >= 1 && g_first_tune == ROW0_HZ, "continuous unvalidated NXDN syncs do not starve the hunt");
+            expect(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN, "nor name an owner");
+            break;
+        case SC_NXDN_LOST_CC:
+            expect(g_validated_sent == 1 && state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_NXDN,
+                   "CACs named NXDN the owner");
+            expect(g_tunes >= 1 && g_first_tune == ROW0_HZ && g_tunes_before_ms > 8000U,
+                   "a lost NXDN control channel is hunted between frames once the grace ran out");
+            expect(state->p25_cc_freq == 450000000L, "the return destination stays until a CAC proves another");
+            break;
+        case SC_NXDN_CALL_RETURN:
+            expect(g_tunes >= 1 && g_first_tune == ROW0_HZ && g_tunes_before_ms > 9000U,
+                   "after a call's return, a quiet control channel is hunted between frames once the grace ran out");
             break;
         case SC_MODE_CHANGE_DMR:
             expect(g_dmr_armed_seen == 1, "DMR armed its startup window between frames");
@@ -418,6 +481,10 @@ main(void) {
     run_scenario(SC_INPUT_SWITCH, 1);
     run_scenario(SC_MODE_CHANGE_DMR, 0);
     run_scenario(SC_INPUT_SWITCH_PENDING, 1);
+    run_scenario(SC_NXDN_OUTER_LOOP, 2);
+    run_scenario(SC_NXDN_SYNCED_LOOP, 2);
+    run_scenario(SC_NXDN_LOST_CC, 3);
+    run_scenario(SC_NXDN_CALL_RETURN, 2);
     run_scenario(SC_INPUT_SWITCH_NEW_REQUEST, 1);
     if (g_failures == 0) {
         printf("engine cold start hunt: OK\n");

@@ -66,6 +66,20 @@ void nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence);
  */
 void nxdn_confirm_end_frame(dsd_state* state);
 
+/**
+ * @brief Report a CRC-good SCCH in this frame, besides its weak evidence.
+ *
+ * SCCH frames run their own streak, which other channels neither extend nor break: a frame without one ends it, and so
+ * does a completed tune (a new trunk tuning generation).
+ */
+void nxdn_confirm_note_scch(dsd_state* state);
+
+/** @brief A frame rejected before its body was decoded (a LICH that failed its checks): it ends the SCCH run. */
+void nxdn_confirm_frame_rejected(dsd_state* state);
+
+/** @brief Whether SCCHs of NXDN_CONFIRM_WEAK_OBSERVES frames running, this one's included, passed their CRC. */
+int nxdn_confirm_scch_confirmed(const dsd_state* state);
+
 /** @brief Whether the current transmission has proved itself. */
 int nxdn_confirm_is_confirmed(const dsd_state* state);
 

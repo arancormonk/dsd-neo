@@ -63,6 +63,7 @@
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -130,6 +131,22 @@ static long s_no_carrier_generic_recovery_cc = 0;
 #ifdef USE_RADIO
 static uint32_t s_last_rtl_freq = 0;
 #endif
+/* The newest correlated tune request when the caches above were last checked. A grant, a control-channel hunt or any
+   other tune through the trunk tuning hooks moves the radio without writing them, so one issued since makes both
+   stale: a direct return to a cached frequency must not be skipped while the radio sits on a voice channel. */
+static uint64_t s_legacy_tune_cache_request = 0U;
+
+static void
+legacy_tune_caches_expire_if_stale(void) {
+    const uint64_t newest = dsd_trunk_tuning_last_request();
+    if (newest != s_legacy_tune_cache_request) {
+        s_last_rigctl_freq = -1;
+#ifdef USE_RADIO
+        s_last_rtl_freq = 0;
+#endif
+        s_legacy_tune_cache_request = newest;
+    }
+}
 
 static void
 no_carrier_clear_generic_recovery_tracking(void) {
@@ -1291,6 +1308,7 @@ no_carrier_tune_rigctl_if_needed(const dsd_opts* opts, const dsd_state* state, l
     } else {
         (void)SetModulationKind(opts->rigctl_sockfd, DSD_ANALOG_DEMOD_FM, 0);
     }
+    legacy_tune_caches_expire_if_stale();
     if (freq != s_last_rigctl_freq) {
         if (!SetFreq(opts->rigctl_sockfd, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -1306,6 +1324,7 @@ no_carrier_tune_rtl_if_needed(const dsd_opts* opts, dsd_state* state, uint32_t r
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    legacy_tune_caches_expire_if_stale();
     if (rf != s_last_rtl_freq) {
         int tune_result = rtl_stream_tune(state->rtl_ctx, rf);
         if (tune_result == RTL_STREAM_TUNE_DEFERRED) {
@@ -1491,7 +1510,9 @@ no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t
 
 static int
 no_carrier_has_mapped_dmr_rest_channel(const dsd_state* state) {
-    if (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25 || state->dmr_rest_channel < 0
+    /* A rest channel DMR left behind never overrides a P25 or NXDN control channel validated since. */
+    if (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25
+        || state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_NXDN || state->dmr_rest_channel < 0
         || state->dmr_rest_channel >= DSD_TRUNK_CHAN_MAP_SIZE) {
         return 0;
     }
@@ -1630,6 +1651,7 @@ no_carrier_sync_helper_tune_cache(const dsd_opts* opts, const dsd_state* state, 
     if (cc == 0) {
         return;
     }
+    legacy_tune_caches_expire_if_stale(); // the helper's own request is where the radio goes now
     if (opts->use_rigctl == 1) {
         s_last_rigctl_freq = cc;
     }
@@ -1969,6 +1991,24 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
     }
 }
 
+/* The bookkeeping of a direct control-channel return the tuner accepted. */
+static void
+no_carrier_accept_direct_cc_return(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
+                                   int clear_generic_p25_alias, time_t now) {
+    no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
+    if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
+        /* The tuner frequency the decoder reads, as a tune through the trunk tuning hooks records it: left on the voice
+           channel, a control message decoded next would be attributed there. */
+        opts->rtlsdr_center_freq = (uint32_t)cc;
+    }
+    state->edacs_tuned_lcn = -1;
+    state->last_cc_sync_time = now;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    if (p25_return) {
+        no_carrier_apply_p25_cc_symbolrate(opts, state);
+    }
+}
+
 static void
 no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now, int guard_held) {
     if (no_carrier_tick_dmr_owner(opts, state, guard_held) || no_carrier_tick_tetra_owner(opts, state, guard_held)) {
@@ -2004,14 +2044,8 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
              * voice state intact so the main loop can retry safely. */
         } else if (!generic_helper_attempted
                    && no_carrier_apply_direct_cc_return(opts, state, cc, p25_helper_attempted)) {
-            no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
+            no_carrier_accept_direct_cc_return(opts, state, cc, p25_return, clear_generic_p25_alias, now);
             accepted_cc_return = 1;
-            state->edacs_tuned_lcn = -1;
-            state->last_cc_sync_time = now;
-            state->last_cc_sync_time_m = dsd_decode_now_mono_s();
-            if (p25_return) {
-                no_carrier_apply_p25_cc_symbolrate(opts, state);
-            }
         } else if (p25_helper_attempted
                    && !no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result)) {
             clear_failed_helper_state = 1;
@@ -2672,6 +2706,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
         /* An operator move restarts a startup control-channel window on the new carrier (issue #703). */
         p25_sm_cold_start_note_retune(p25_sm_get_ctx(), opts, state);
         dmr_sm_cold_start_note_retune(dmr_sm_get_ctx(), opts, state);
+        nxdn_cc_hunt_note_retune(opts, state);
     }
     if (take_guard) {
         p25_sm_tick_guard_leave();
@@ -3008,6 +3043,7 @@ dsd_engine_cold_start_tick_locked(dsd_opts* opts, dsd_state* state) {
     }
     p25_sm_cold_start_tick_locked(p25_sm_get_ctx(), opts, state);
     dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
+    nxdn_cc_hunt_tick_locked(opts, state);
 }
 
 /* One synced frame, under the P25 SM tick guard: dispatched, or withheld while the retune generation says it is stale,
@@ -3037,7 +3073,7 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     /* So may a stream of syncs that never validate: a startup control-channel hunt runs between frames too, until
        an owner is named and nothing is armed or hunting (issue #703). */
     if (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN || p25_sm_cold_start_active(p25_sm_get_ctx())
-        || dmr_sm_cold_start_active(dmr_sm_get_ctx())) {
+        || dmr_sm_cold_start_active(dmr_sm_get_ctx()) || nxdn_cc_hunt_due(opts, state)) {
         dsd_engine_cold_start_tick_locked(opts, state);
     }
     return frame_dispatchable;

@@ -435,8 +435,9 @@ dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* sta
     return (state->lcn_freq_count > 1) ? 1 : 0;
 }
 
-int
-dsd_state_trunk_cold_start_eligible(const dsd_opts* opts, const dsd_state* state) {
+/* The hunt conditions shared by every protocol's control-channel hunt, the owner aside. */
+static int
+trunk_hunt_session_eligible(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 1 || opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1
         || opts->trunk_is_tuned != 0 || state->input_boundary != 0 || dsd_opts_input_is_iq_replay(opts)) {
         return 0;
@@ -444,8 +445,7 @@ dsd_state_trunk_cold_start_eligible(const dsd_opts* opts, const dsd_state* state
     if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
         return 0;
     }
-    if (state->trunk_recovery_protocol != (int)DSD_TRUNK_RECOVERY_UNKNOWN
-        || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
+    if (!dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return 0;
     }
     for (int i = 0; i < state->lcn_freq_count; i++) {
@@ -454,6 +454,19 @@ dsd_state_trunk_cold_start_eligible(const dsd_opts* opts, const dsd_state* state
         }
     }
     return 0;
+}
+
+int
+dsd_state_trunk_cold_start_eligible(const dsd_opts* opts, const dsd_state* state) {
+    return trunk_hunt_session_eligible(opts, state)
+           && state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN;
+}
+
+int
+dsd_state_trunk_nxdn_hunt_eligible(const dsd_opts* opts, const dsd_state* state) {
+    return trunk_hunt_session_eligible(opts, state)
+           && (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN
+               || state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_NXDN);
 }
 
 typedef struct {

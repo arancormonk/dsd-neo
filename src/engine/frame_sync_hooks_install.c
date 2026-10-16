@@ -15,6 +15,7 @@
 
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
@@ -87,7 +88,8 @@ engine_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state) {
     }
     const dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
     const int due = p25_sm_cold_start_due(p25_sm_get_ctx(), opts, state) || dmr_sm_cold_start_due(dmr, opts, state)
-                    || (dsd_trunk_dmr_recovery_allowed(opts, state) && dmr_sm_get_state(dmr) != DMR_SM_IDLE);
+                    || (dsd_trunk_dmr_recovery_allowed(opts, state) && dmr_sm_get_state(dmr) != DMR_SM_IDLE)
+                    || nxdn_cc_hunt_due(opts, state);
     p25_sm_tick_guard_leave();
     return due;
 }

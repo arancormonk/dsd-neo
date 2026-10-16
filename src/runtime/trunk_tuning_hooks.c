@@ -146,6 +146,11 @@ dsd_trunk_tuning_generation_advance(void) {
 }
 
 uint64_t
+dsd_trunk_tuning_last_request(void) {
+    return dsd_atomic_u64_load_acquire(&g_trunk_tuning_next_request);
+}
+
+uint64_t
 dsd_trunk_tuning_request_begin(void) {
     uint64_t request_id = 0U;
     do {

@@ -73,6 +73,8 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     DSD_STATE_EXT_PROTO_P25_CC_SELECTION = 26,
     /* TETRA decoder state (src/protocol/tetra/tetra_state.h). Decoder-thread private. */
     DSD_STATE_EXT_PROTO_TETRA = 27,
+    /* NXDN control-channel hunt (src/protocol/nxdn/nxdn_cc_hunt.c). Decoder-thread private. */
+    DSD_STATE_EXT_PROTO_NXDN_CC_HUNT = 28,
 } dsd_state_ext_id;
 
 typedef void (*dsd_state_ext_cleanup_fn)(void*);

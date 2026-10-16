@@ -57,6 +57,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -3027,6 +3028,8 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
            hop: io_control does not advance the trunk-tuning generation, and there is no RTL
            stream generation to move, so the tone heard on the old channel goes here. */
         dsd_analog_rx_reset(state);
+        /* Nor does it tell the NXDN control-channel hunt, whose attribution of the receiver it outdates. */
+        nxdn_cc_hunt_note_retune(opts, state);
         return 1;
     }
     LOG_WARN("WARNING: %s tune to %ld Hz was not accepted (result=%d); preserving decoder state\n",
@@ -3197,6 +3200,7 @@ cycle_rearms_cold_start_window(dsd_opts* opts, dsd_state* state, int p25_live) {
         p25_sm_tick_guard_leave();
     }
     dmr_sm_cold_start_note_retune(dmr_sm_get_ctx(), opts, state);
+    nxdn_cc_hunt_note_retune(opts, state);
 }
 
 static int
@@ -5817,6 +5821,13 @@ rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_pay
 static void
 rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_cc_candidates_reset(state);
+    nxdn_cc_hunt_note_system_replaced(state);
+    /* An owner the new decode mode no longer decodes proves nothing about the new system and would keep its startup
+       hunt from running (P25 or DMR before an NXDN import, say). */
+    if ((state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_P25 && !opts->frame_p25p1 && !opts->frame_p25p2)
+        || (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_DMR && !opts->frame_dmr)) {
+        state->trunk_recovery_protocol = (int)DSD_TRUNK_RECOVERY_UNKNOWN;
+    }
     state->last_cc_sync_time = 0;
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;

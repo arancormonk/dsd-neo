@@ -2080,6 +2080,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_frame.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_frame_routing
@@ -2093,6 +2094,8 @@ add_executable(
     dsd-neo_test_nxdn_confirm
     protocol/nxdn/test_nxdn_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(
@@ -2101,7 +2104,29 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
+target_link_libraries(dsd-neo_test_nxdn_confirm PRIVATE dsd-neo_platform)
 add_test(NAME NXDN_CONFIRM COMMAND dsd-neo_test_nxdn_confirm)
+
+add_executable(
+    dsd-neo_test_nxdn_cc_hunt
+    protocol/nxdn/test_nxdn_cc_hunt.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_cc_hunt.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_data_call.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_alias_decode.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_crc.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_cc_hunt
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_cc_hunt
+    PRIVATE dsd-neo_runtime dsd-neo_core dsd-neo_test_support
+)
+add_test(NAME NXDN_CC_HUNT COMMAND dsd-neo_test_nxdn_cc_hunt)
 
 add_executable(
     dsd-neo_test_nxdn_sync_dispatch

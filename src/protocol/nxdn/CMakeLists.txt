@@ -4,9 +4,11 @@ target_sources(
     dsd-neo_proto_nxdn
     PRIVATE
         nxdn_alias_decode.c
+        nxdn_cc_hunt.c
         nxdn_confirm.c
         nxdn_convolution.c
         nxdn_crc.c
+        nxdn_data_call.c
         nxdn_dcr_utils.c
         nxdn_descramble.c
         nxdn_deperm.c

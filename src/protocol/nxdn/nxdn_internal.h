@@ -30,6 +30,8 @@ int nxdn_dcr_is_sb0_message_type(uint8_t message_type);
 int nxdn_sacch_part_of_frame(uint8_t sf);
 int nxdn_ran_from_trellis(const uint8_t* trellis_buf);
 void nxdn_reset_payload_seed_if_forced(dsd_state* state);
+/* Forget a data call's header, packet assembly, crypto and LRRP identities (nxdn_data_call.c). */
+void nxdn_reset_data_call_state(dsd_state* state);
 void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
 
 void nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,

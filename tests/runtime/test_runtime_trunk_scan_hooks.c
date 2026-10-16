@@ -142,6 +142,54 @@ test_presumptive_startup_owner(void) {
     assert(!dsd_trunk_p25_cold_start_presumed(&opts, NULL));
 }
 
+/* NXDN control-channel recovery: an NXDN frame set without P25, DMR or ProVoice (-fi, -fn) may hunt before any owner,
+   a validated NXDN owner may under any frame set that still decodes NXDN (-fa), and -Y, trunk scan or a frame set
+   without NXDN never may. */
+static void
+test_nxdn_recovery_ownership(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    opts.frame_nxdn48 = 1; // -fi
+    assert(dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
+    opts.frame_nxdn48 = 0;
+    opts.frame_nxdn96 = 1; // -fn
+    assert(dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    opts.frame_nxdn48 = 1; // both rates
+    assert(dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    opts.frame_dstar = opts.frame_ysf = opts.frame_dpmr = 1; // non-trunking protocols beside it do not matter
+    assert(dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = opts.frame_provoice = 1; // -fa: nobody hunts at startup
+    assert(!dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_NXDN); // validated NXDN control
+    assert(dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.frame_nxdn48 = opts.frame_nxdn96 = 0; // a mode change away from NXDN keeps the owner but not the hunt
+    assert(!dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    opts.frame_nxdn48 = 1;
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_P25);
+    assert(!dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_NXDN);
+    opts.scanner_mode = 1;
+    assert(!dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    assert(!dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    opts.trunk_scan_enabled = 0;
+    opts.trunk_enable = 0;
+    assert(!dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    opts.trunk_enable = 1;
+    assert(dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_nxdn_recovery_allowed(NULL, &state));
+    assert(!dsd_trunk_nxdn_recovery_allowed(&opts, NULL));
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -150,6 +198,8 @@ main(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     /* Nothing installed (headless, tests, -Y): the control op reports unavailable. */
+    test_nxdn_recovery_ownership();
+
     dsd_trunk_scan_hooks none = {0};
     dsd_trunk_scan_hooks_set(&none);
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE)
