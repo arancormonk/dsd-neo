@@ -692,6 +692,9 @@ suite runs under this compiler.
   its keys from its VCALL, and the others signal none. The manual `-S` keystream stays on the slot path for every owner.
   DMR RC4 (ALG ID 0x21) decrypts a frame whose C0 the vocoder corrected (fewer than 4 C0 errors as mbelib-neo 2.5
   counts them, TIA-102.BABA-1 5.5) and leaves an uncorrectable one as received; its drop position advances either way.
+  A keystream or scrambler that changes AMBE 2450 parameter bits leaves the decode's C0 context in place
+  (`src/core/mbe_result_context.h`): mbelib-neo repeats such a frame only at 4 C0 errors, as it does clear voice,
+  rather than by its no-context fallback (more than 3 errors in all). IMBE transforms still drop the C0/C4 context.
   Keystream reads are bounded by what was generated: P25 Phase 1 by ALG ID (DES/TDEA 224 octets, DES-XL 213, AES 15
   blocks = 240; a superframe reads up to octet 228), the slot path by `dmr_voice_stream_apply_frame49()`'s
   `ks_bit_count` and the DES helper (DES and AES 1152 bits, Hytera Enhanced 1080, Kirisun 1008). A frame past the end is

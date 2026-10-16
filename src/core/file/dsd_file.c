@@ -1698,8 +1698,6 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         state->debug_audio_errors += state->errs2;
     }
 
-    char decoded_ambe_d[49];
-    DSD_MEMCPY(decoded_ambe_d, ambe_d, sizeof(decoded_ambe_d));
     ks_idx = sdrtrunk_apply_keystream(ambe_d, 49, ks, ks_idx);
 
     //DMRA or P25 KS, skip the left over 7 bits from a byte
@@ -1715,8 +1713,6 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         }
         return ks_idx;
     }
-
-    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, ambe_d, &result);
 
     int process_ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp,
                                                state->prev_mp, state->prev_mp_enhanced);

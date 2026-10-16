@@ -22,17 +22,10 @@ dsd_mbe_bits_changed(const char* before, const char* after, size_t len) {
     return 0;
 }
 
-static inline int
-dsd_mbe_strip_ambe_context_if_changed(const char before[49], const char after[49], mbe_process_result* result) {
-    if (!result || !dsd_mbe_bits_changed(before, after, 49U)) {
-        return 0;
-    }
-
-    result->flags &= ~MBE_PROCESS_FLAG_C0_VALID;
-    result->c0_errors = 0;
-    result->protected_errors = result->total_errors;
-    return 1;
-}
+/* AMBE 2450 keeps its C0 context through a keystream or scrambler: mbelib-neo 2.5 reads it only for the repeat rule
+   (C0 errors of 4, uncorrectable), which counts errors on the received codewords, and a transform of the corrected
+   parameter bits changes none of them. Without it mbelib falls back to repeating frames with more than 3 errors in
+   all, parity bits included, which repeats and mutes encrypted voice that clear voice plays. */
 
 static inline int
 dsd_mbe_strip_imbe_context_if_changed(const char before[88], const char after[88], mbe_process_result* result) {

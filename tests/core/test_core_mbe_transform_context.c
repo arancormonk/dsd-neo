@@ -437,78 +437,8 @@ test_keyring_tracks_aes_segment_metadata(void) {
 }
 
 static int
-test_unchanged_preserves_c0_context(void) {
-    int rc = 0;
-    char before[49] = {0};
-    char after[49] = {0};
-    mbe_process_result result;
-
-    set_ambe2450_b0(before, 42);
-    copy_ambe49(after, before);
-    init_result(&result, 5, 1, MBE_PROCESS_FLAG_C0_VALID | MBE_PROCESS_FLAG_SOFT_INPUT | MBE_PROCESS_FLAG_TONE);
-
-    rc |= expect_eq_int("unchanged-return", dsd_mbe_strip_ambe_context_if_changed(before, after, &result), 0);
-    rc |= expect_flag("unchanged-c0", result.flags, MBE_PROCESS_FLAG_C0_VALID, 1);
-    rc |= expect_flag("unchanged-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
-    rc |= expect_flag("unchanged-tone", result.flags, MBE_PROCESS_FLAG_TONE, 1);
-    rc |= expect_eq_int("unchanged-c0-errors", result.c0_errors, 1);
-    rc |= expect_eq_int("unchanged-protected", result.protected_errors, 4);
-    rc |= expect_eq_int("unchanged-total", result.total_errors, 5);
-
-    return rc;
-}
-
-static int
-test_changed_strips_only_c0_context(void) {
-    int rc = 0;
-    char before[49] = {0};
-    char after[49] = {0};
-    mbe_process_result result;
-
-    set_ambe2450_b0(before, 7);
-    copy_ambe49(after, before);
-    after[48] ^= 1;
-    init_result(&result, 6, 2, MBE_PROCESS_FLAG_C0_VALID | MBE_PROCESS_FLAG_SOFT_INPUT | MBE_PROCESS_FLAG_TONE);
-
-    rc |= expect_eq_int("changed-return", dsd_mbe_strip_ambe_context_if_changed(before, after, &result), 1);
-    rc |= expect_flag("changed-c0", result.flags, MBE_PROCESS_FLAG_C0_VALID, 0);
-    rc |= expect_flag("changed-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
-    rc |= expect_flag("changed-tone", result.flags, MBE_PROCESS_FLAG_TONE, 1);
-    rc |= expect_eq_int("changed-c0-errors", result.c0_errors, 0);
-    rc |= expect_eq_int("changed-protected", result.protected_errors, 6);
-    rc |= expect_eq_int("changed-total", result.total_errors, 6);
-
-    return rc;
-}
-
-static int
-test_changed_without_c0_context_keeps_current_shape(void) {
-    int rc = 0;
-    char before[49] = {0};
-    char after[49] = {0};
-    mbe_process_result result;
-
-    copy_ambe49(after, before);
-    after[0] = 1;
-    init_result(&result, 7, 3, MBE_PROCESS_FLAG_SOFT_INPUT);
-
-    rc |= expect_eq_int("no-c0-return", dsd_mbe_strip_ambe_context_if_changed(before, after, &result), 1);
-    rc |= expect_flag("no-c0-flag", result.flags, MBE_PROCESS_FLAG_C0_VALID, 0);
-    rc |= expect_flag("no-c0-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
-    rc |= expect_eq_int("no-c0-errors", result.c0_errors, 0);
-    rc |= expect_eq_int("no-c0-protected", result.protected_errors, 7);
-    rc |= expect_eq_int("no-c0-total", result.total_errors, 7);
-
-    return rc;
-}
-
-static int
 test_null_result_is_safe(void) {
-    char before[49] = {0};
-    char after[49] = {0};
-    after[1] = 1;
-    return expect_eq_int("null-ambe-result", dsd_mbe_strip_ambe_context_if_changed(before, after, NULL), 0)
-           | expect_eq_int("null-imbe-result", dsd_mbe_strip_imbe_context_if_changed(NULL, NULL, NULL), 0);
+    return expect_eq_int("null-imbe-result", dsd_mbe_strip_imbe_context_if_changed(NULL, NULL, NULL), 0);
 }
 
 static int
@@ -579,26 +509,26 @@ process_ambe2450(char ambe_d[49], mbe_process_result* result) {
     return mbe_processAmbe2450Dataf(out, result, ambe_d, &cur, &prev, &prev_enhanced);
 }
 
+/* A keystream or scrambler changes AMBE 2450 parameter bits but not the errors the channel decoder corrected, so the
+   frame keeps its C0 context: with mbelib-neo 2.5's counts (parity bits included) a corrected frame totals 4 errors
+   from a single C0 and three C1 bit errors, and it repeats only without that context. */
 static int
-test_changed_frame_restores_total_error_repeat_fallback(void) {
+test_transformed_frame_keeps_c0_repeat_rule(void) {
     int rc = 0;
-    char before[49];
-    char after[49];
+    char ambe_d[49];
     mbe_process_result c0_result;
     mbe_process_result fallback_result;
 
-    set_bits_zero(before);
-    set_ambe2450_b0(before, 0);
-    copy_ambe49(after, before);
-    after[4] ^= 1;
+    set_bits_zero(ambe_d);
+    set_ambe2450_b0(ambe_d, 0);
+    ambe_d[4] ^= 1;
 
-    init_result(&c0_result, 4, 0, MBE_PROCESS_FLAG_C0_VALID);
-    rc |= expect_eq_int("c0-process", process_ambe2450(after, &c0_result) < 0, 0);
+    init_result(&c0_result, 4, 1, MBE_PROCESS_FLAG_C0_VALID);
+    rc |= expect_eq_int("c0-process", process_ambe2450(ambe_d, &c0_result) < 0, 0);
     rc |= expect_eq_int("c0-no-repeat", result_has_marker(&c0_result, 'R'), 0);
 
-    init_result(&fallback_result, 4, 0, MBE_PROCESS_FLAG_C0_VALID);
-    rc |= expect_eq_int("fallback-strip", dsd_mbe_strip_ambe_context_if_changed(before, after, &fallback_result), 1);
-    rc |= expect_eq_int("fallback-process", process_ambe2450(after, &fallback_result) < 0, 0);
+    init_result(&fallback_result, 4, 0, 0U);
+    rc |= expect_eq_int("fallback-process", process_ambe2450(ambe_d, &fallback_result) < 0, 0);
     rc |= expect_eq_int("fallback-repeat", result_has_marker(&fallback_result, 'R'), 1);
 
     return rc;
@@ -1765,7 +1695,6 @@ test_process_mbe_frame_nxdn_cipher1_transforms_ambe_payload(void) {
         rc |= expect_eq_int("nxdn-cipher1 transformed",
                             memcmp(expected_ambe_d, decoded_ambe_d, sizeof(expected_ambe_d)) != 0, 1);
 
-        (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
         ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur, &prev, &prev_enhanced);
         store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
@@ -1835,7 +1764,6 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
         rc |= expect_eq_int("nxdn-cipher2 transformed",
                             memcmp(expected_ambe_d, decoded_ambe_d, sizeof(expected_ambe_d)) != 0, 1);
 
-        (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
         ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur, &prev, &prev_enhanced);
         store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
@@ -2726,7 +2654,6 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
         rc |= expect_eq_int("dmr-rc4-left transformed",
                             memcmp(expected_ambe_d, decoded_ambe_d, sizeof(expected_ambe_d)) != 0, 1);
 
-        (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
         ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur, &prev, &prev_enhanced);
         store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
@@ -2777,7 +2704,6 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
         rc |= expect_eq_int("dmr-rc4-right transformed",
                             memcmp(expected_ambe_d, decoded_ambe_d, sizeof(expected_ambe_d)) != 0, 1);
 
-        (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
         mbe_initMbeParms(&cur2, &prev2, &prev_enhanced2);
         ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur2, &prev2, &prev_enhanced2);
         store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
@@ -2837,7 +2763,6 @@ test_process_mbe_frame_mixed_clear_and_bp(void) {
             if (scenario != 0) {
                 rc |= dmr_basic_privacy_apply_frame49(1, expected) != 1;
             }
-            (void)dsd_mbe_strip_ambe_context_if_changed(decoded, expected, &result);
             float expected_audio[160];
             char expected_error[96];
             mbe_initMbeParms(&expected_cur, &expected_prev, &expected_enhanced);
@@ -6497,13 +6422,10 @@ int
 main(void) {
     int rc = 0;
 
-    rc |= test_unchanged_preserves_c0_context();
-    rc |= test_changed_strips_only_c0_context();
-    rc |= test_changed_without_c0_context_keeps_current_shape();
     rc |= test_null_result_is_safe();
     rc |= test_imbe_unchanged_preserves_c0_c4_context();
     rc |= test_imbe_changed_strips_c0_c4_context();
-    rc |= test_changed_frame_restores_total_error_repeat_fallback();
+    rc |= test_transformed_frame_keeps_c0_repeat_rule();
     rc |= test_keyring_tracks_aes_segment_metadata();
     rc |= test_process_mbe_frame_p25p1_suppresses_tail_erasure_hard();
     rc |= test_process_mbe_frame_p25p1_suppresses_tail_erasure_soft();

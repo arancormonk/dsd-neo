@@ -1099,9 +1099,6 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
         return;
     }
 
-    char decoded_ambe_d[49];
-    DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
-
     // YSF V/D Type 1 borrows this decoder and has no cipher: the scrambler and cipher 2/3 are NXDN's, and scrambled
     // dPMR halves', only.
     const int nxdn_crypto =
@@ -1121,8 +1118,6 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
             return;
         }
     }
-
-    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
 
     int process_ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &ambe_result, frame_ctx->ambe_d,
                                                state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
@@ -1735,9 +1730,6 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
         return;
     }
 
-    char decoded_ambe_d[49];
-    DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
-
     // DMR's talkgroup key autoload, privacy, Hytera, Vertex and vendor scramblers are DMR's alone: clear dPMR and P25
     // Phase 2 reach this path too (issue #656).
     const int dmr_owned = frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR;
@@ -1762,7 +1754,6 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
         frame_ctx->slot_keyed[0] = 1;
         frame_ctx->straight_ks[0] = 1;
     }
-    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_left(opts, state, frame_ctx->ambe_d, &ambe_result);
     frame_ctx->capture = MBE_CAPTURE_SLOT_LEFT;
 }
@@ -1778,9 +1769,6 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
                              state->err_strR, sizeof(state->err_strR), NULL);
         return;
     }
-
-    char decoded_ambe_d[49];
-    DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
     const int dmr_owned = frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR;
     if (dmr_owned) {
@@ -1803,7 +1791,6 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
         frame_ctx->slot_keyed[1] = 1;
         frame_ctx->straight_ks[1] = 1;
     }
-    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_right(opts, state, frame_ctx->ambe_d, &ambe_result);
     frame_ctx->capture = MBE_CAPTURE_SLOT_RIGHT;
 }

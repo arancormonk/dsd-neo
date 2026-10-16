@@ -1198,6 +1198,50 @@ test_dmr_rc4_decrypts_three_c0_errors(void) {
     return rc;
 }
 
+/* RC4 voice the channel decoder fully corrected plays as clear voice does: one C0 and three C1 bit errors total 4
+   with mbelib-neo 2.5's counts, parity bits included, and the decrypted frame keeps its C0 context, so it is
+   synthesized, not repeated (and, four in a row, muted). */
+static int
+test_dmr_rc4_corrected_frames_are_not_repeated(void) {
+    enum { FRAMES = 6 };
+
+    static char noisy[FRAMES][4][24];
+    for (int f = 0; f < FRAMES; f++) {
+        if (mbe_encodeAmbe3600x2450Frame(g_ambe_d[f], noisy[f]) < 0) {
+            DSD_FPRINTF(stderr, "dmr rc4 repeat: frame %d does not encode\n", f);
+            return 1;
+        }
+        noisy[f][0][0] ^= 1;
+        noisy[f][1][0] ^= 1;
+        noisy[f][1][1] ^= 1;
+        noisy[f][1][2] ^= 1;
+        char d[49];
+        mbe_process_result result;
+        mbe_initProcessResult(&result);
+        if (mbe_decodeAmbe3600x2450Frame((const char (*)[24])noisy[f], d, &result) < 0 || result.c0_errors != 1
+            || result.total_errors != 4 || memcmp(d, g_ambe_d[f], sizeof(d)) != 0) {
+            DSD_FPRINTF(stderr, "dmr rc4 repeat: frame %d is not (1, 4) and corrected (got %d, %d)\n", f,
+                        result.c0_errors, result.total_errors);
+            return 1;
+        }
+    }
+    int rc = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        reset_state(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+        key_dmr_rc4(&g_state);
+        for (int f = 0; f < FRAMES; f++) {
+            processMbeFrame(&g_opts, &g_state, DSD_VOICE_PROTOCOL_DMR, NULL, noisy[f], NULL);
+            const mbe_parms* cur = slot == 0 ? g_state.cur_mp : g_state.cur_mp2;
+            if (cur->repeatCount != 0 || strchr(g_state.err_str, 'R') != NULL) {
+                DSD_FPRINTF(stderr, "dmr rc4 slot %d frame %d repeated (%s, repeat count %d)\n", slot + 1, f + 1,
+                            g_state.err_str, cur->repeatCount);
+                rc = 1;
+            }
+        }
+    }
+    return rc;
+}
+
 /* P25 Phase 2 ciphertext can coincidentally match either DMR clear-silence pattern. It still needs AES, unlike DMR.
    These hard frames encode F801A99F8CE080 (default silence) and 80000000000080 (zero tail); decoding asserts the
    fixtures independently, without requiring the newer mbelib encoder API at build time. */
@@ -1401,6 +1445,7 @@ main(void) {
     rc |= test_dmr_keystream_read_is_bounded();
     rc |= test_dmr_des_frames_match_reference();
     rc |= test_dmr_rc4_decrypts_three_c0_errors();
+    rc |= test_dmr_rc4_corrected_frames_are_not_repeated();
     rc |= test_p25p2_aes_does_not_skip_dmr_silence_patterns();
     rc |= test_nxdn_cipher23_session_exhaustion();
     rc |= test_keystream_muted_frame_stages_silence();
