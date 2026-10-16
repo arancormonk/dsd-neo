@@ -164,7 +164,8 @@ nxdn_cc_hunt_resolve(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts, double now_m) 
         }
     }
     ctx->tune_request_id = 0U;
-    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
+    if (result == DSD_TRUNK_TUNE_RESULT_OK
+        && ctx->probe_freq_hz > 0) { // an operator move superseded a probe it cleared
         ctx->rx_freq_hz = ctx->probe_freq_hz;
         ctx->rx_generation = dsd_trunk_tuning_generation();
         ctx->rx_valid = 1;
@@ -466,6 +467,20 @@ nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state) {
         ctx->probe_freq_hz = 0;
     } else if (ctx->armed_m > 0.0) {
         ctx->armed_m = now_m;
+    }
+}
+
+void
+nxdn_cc_hunt_note_system_replaced(dsd_state* state) {
+    nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_peek(state);
+    if (ctx) {
+        ctx->cc_confirmed = 0;
+        ctx->cc_freq_hz = 0;
+        ctx->hunt_index = 0;
+    }
+    if (state && state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_NXDN) {
+        // What the old site proved (a Type-C control channel, a Type-D site) says nothing about the new one.
+        state->trunk_recovery_protocol = (int)DSD_TRUNK_RECOVERY_UNKNOWN;
     }
 }
 

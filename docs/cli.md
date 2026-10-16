@@ -1737,7 +1737,8 @@ does.
   it where it is. Under `-fa` this runs once validated NXDN control has named the system. A call's return to the
   control channel restarts the window when its tune completes.
 - An IDAS Type-D site has no dedicated control channel: an SCCH whose CRC repeated (a confirmed transmission) ends a
-  startup search where it is, and no search runs after that. A Type-D site that is idle and silent at session start is
+  startup search where it is, and no search runs after that until a RadioReference apply points the session at another
+  system. A Type-D site that is idle and silent at session start is
   searched like a dead one, until a call's confirmed traffic holds the receiver.
 - A simulcast (LSM/CQPSK) P25 system needs `-mq`, which a RadioReference import sets for such sites: each row gets
   about two seconds, too short for the automatic modulation search to reach CQPSK on a control channel the session has

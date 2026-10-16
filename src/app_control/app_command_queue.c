@@ -5819,6 +5819,7 @@ rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_pay
 static void
 rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_cc_candidates_reset(state);
+    nxdn_cc_hunt_note_system_replaced(state);
     state->last_cc_sync_time = 0;
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;

@@ -4281,7 +4281,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   The confirmed branch of `nxdn_scch_prepare_type_d()` calls `nxdn_cc_hunt_note_type_d()`, which counts only SCCHs in
   `NXDN_CONFIRM_WEAK_OBSERVES` frames running (`nxdn_confirm_scch_confirmed()`: the gate's own SCCH streak, which other
   channels neither extend nor break; not a confirmation left by a CAC, a SACCH or another carrier), on a control or a
-  followed voice channel: owner named, hunt ended,
+  followed voice channel: owner named, hunt ended (a RadioReference apply's `rr_apply_reacquire()` calls
+  `nxdn_cc_hunt_note_system_replaced()`, which forgets that and an NXDN owner for the new system),
   any CAC-confirmed control channel forgotten, so a Type-D site never hunts afterwards (an idle, silent Type-D site at
   start is walked like a dead one until confirmed traffic holds the window). Tests: `NXDN_CC_HUNT`,
   `ENGINE_COLD_START_HUNT`, `NXDN_CONFIRM`, `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`.

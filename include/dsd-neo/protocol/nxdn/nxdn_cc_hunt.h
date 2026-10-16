@@ -72,6 +72,14 @@ void nxdn_cc_hunt_note_type_d(const dsd_opts* opts, dsd_state* state);
  */
 void nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state);
 
+/**
+ * @brief The session was re-pointed at another system (a RadioReference apply).
+ *
+ * Forgets the control channel a CAC confirmed and returns an NXDN owner to unknown, so the new system's start is hunted
+ * whatever the old one was (a Type-D site never hunts once proven).
+ */
+void nxdn_cc_hunt_note_system_replaced(dsd_state* state);
+
 /** @brief Return 1 while the window is armed or a hunt runs. */
 int nxdn_cc_hunt_active(const dsd_state* state);
 

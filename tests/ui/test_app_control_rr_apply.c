@@ -21,6 +21,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -321,6 +322,7 @@ test_apply_dmr_trunked_with_files(void) {
     p.decode_mode = (int32_t)DSDCFG_MODE_DMR;
     p.trunking = 1U;
     payload_files(&p, chan_csv, group_csv);
+    state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN; // the old system was an NXDN (here IDAS Type-D) site
 
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     g_ensure_analog_calls = g_ensure_digital_calls = 0;
@@ -340,6 +342,8 @@ test_apply_dmr_trunked_with_files(void) {
     rc |= expect_int("group policy populated", dsd_tg_policy_has_entries(&state) != 0, 1);
     rc |= expect_int("lcn roll reset", state.lcn_freq_roll, 0);
     rc |= expect_int("cc sync time cleared", (int)state.last_cc_sync_time, 0);
+    rc |=
+        expect_int("an NXDN owner goes with the old system", state.trunk_recovery_protocol, DSD_TRUNK_RECOVERY_UNKNOWN);
 
     remove(chan_csv);
     remove(group_csv);

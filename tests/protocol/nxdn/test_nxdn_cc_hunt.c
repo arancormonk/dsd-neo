@@ -332,6 +332,37 @@ test_type_d_scch_run(void) {
     expect("scch run: a cycle breaks the run", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_UNKNOWN);
 }
 
+/* A RadioReference apply re-points the session at another system: a Type-D site proven before no longer stops the new
+   system's startup hunt. */
+static void
+test_system_replaced(void) {
+    session();
+    tick_at(0.0);
+    nxdn_frame(FRAME_SCCH);
+    nxdn_frame(FRAME_SCCH); // Type-D
+    run_until(0.0, 10.0);
+    expect("replaced: Type-D never hunts", g_tune_count, 0);
+    nxdn_cc_hunt_note_system_replaced(g_state);
+    expect("replaced: owner unknown", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_UNKNOWN);
+    run_until(10.0, 16.5);
+    expect("replaced: the new system's start is hunted", g_tune_count, 1);
+}
+
+/* A probe that completed but was never resolved, then an operator move, then a CAC before the next tick: the CAC is
+   attributed to where the operator put the receiver, not to nothing. */
+static void
+test_superseded_probe_attribution(void) {
+    session();
+    g_cc_mode = FAKE_PENDING;
+    tick_at(0.0);
+    run_until(0.0, 6.5);
+    dsd_trunk_tuning_request_complete(g_last_cc_request, DSD_TRUNK_TUNE_RESULT_OK);
+    nxdn_cc_hunt_note_retune(g_opts, g_state);
+    g_radio_hz = ROW_C;
+    nxdn_cc_hunt_note_control(g_opts, g_state);
+    expect("superseded: control channel where the operator moved", g_state->p25_cc_freq, ROW_C);
+}
+
 /* A tuner query that fails is not repeated per CAC: once per tuning generation, as a successful one. */
 static void
 test_failed_query_cached(void) {
@@ -549,6 +580,8 @@ main(void) {
     test_cac_without_frequency();
     test_type_d_scch_run();
     test_failed_query_cached();
+    test_system_replaced();
+    test_superseded_probe_attribution();
     test_refused_anchor();
     test_late_completion_dwell();
     test_operator_move_resets_evidence();
