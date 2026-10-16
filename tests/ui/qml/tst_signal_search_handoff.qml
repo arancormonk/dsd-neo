@@ -421,8 +421,30 @@ Item {
             compare(decoderHost.sessionState, 0, "nothing starts");
             compare(app.sessionSystem, system);
         }
-        // A start request that cannot run while the search stops (a USB
-        // attachment's auto-start, a site restart) leaves the handoff alone.
+        // Escape on a running search screen is Main's Back, whichever control
+        // has focus; after a cancelled handoff the next Escape is too.
+        function test_escape_on_the_running_screen_is_back() {
+            enterState(2);
+            var hold = findChild(screen(), "searchHold");
+            hold.forceActiveFocus();
+            verify(hold.activeFocus);
+            var calls = decoderHost.backgroundCalls();
+            keyClick(Qt.Key_Escape);
+            compare(decoderHost.backgroundCalls(), calls + 1, "Back's session policy ran");
+            testContext.setLifecyclePhase(2);
+            app.signalSearchOpen = true;
+            testContext.setDelayedStop(true);
+            screen().exploreDetection(detection);
+            verify(app.leavingSearch);
+            keyClick(Qt.Key_Escape);
+            verify(!app.leavingSearch && app.pendingRestart === null, "the first Escape cancels the handoff");
+            calls = decoderHost.backgroundCalls();
+            keyClick(Qt.Key_Escape);
+            compare(decoderHost.backgroundCalls(), calls + 1, "the second Escape is Back again");
+            testContext.setDelayedStop(false);
+        }
+        // A start request that cannot run while the search stops (the start a
+        // USB attachment would make, a site restart) leaves the handoff alone.
         function test_refused_starts_keep_a_stopping_handoff() {
             var uid = addWarehouse();
             enterState(2);
@@ -431,7 +453,6 @@ Item {
             compare(decoderHost.sessionState, 3);
             app.startSystem(savedSystems.rowForUid(uid));
             app.restartSite(uid);
-            testContext.emitLocalDeviceAttached();
             verify(app.leavingSearch && app.pendingRestart !== null, "the handoff stands");
             testContext.setDelayedStop(false);
             testContext.setLifecyclePhase(0);

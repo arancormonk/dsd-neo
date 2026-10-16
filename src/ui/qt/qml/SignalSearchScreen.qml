@@ -10,22 +10,26 @@ Item {
     property var searchModel: null
     property bool sessionActive: false
     // Main sets this while the search stops for a handoff (Explore here, a
-    // saved system): the screen says so and takes no input until it closes.
+    // saved system): the screen says so and its controls are disabled until it
+    // closes; Back cancels the handoff and gives them back.
     property bool leaving: false
-    // Its controls are disabled meanwhile, so the screen itself holds focus
-    // and passes Back on to Main, which cancels the handoff.
+    // With the controls disabled the screen itself holds focus, so Back still
+    // reaches Main.
     onLeavingChanged: {
         if (leaving)
             forceActiveFocus();
     }
+    // While a session runs, Back from anywhere on the screen is Main's session
+    // policy (as requestClose() delegates it); nothing above the screen would
+    // take a key a control left. Idle, the key goes on as before.
     Keys.onEscapePressed: function (event) {
-        event.accepted = leaving;
-        if (leaving)
+        event.accepted = sessionActive || leaving;
+        if (event.accepted)
             backRequested();
     }
     Keys.onBackPressed: function (event) {
-        event.accepted = leaving;
-        if (leaving)
+        event.accepted = sessionActive || leaving;
+        if (event.accepted)
             backRequested();
     }
     // Main binds this to its failure text (connection, USB access and
@@ -33,8 +37,10 @@ Item {
     // that binding, and no later failure would reach this screen, which covers
     // Home's banner.
     property string failure: ""
-    // This screen's own refusal of a Start or Resume (searchModel.arm()), shown
-    // beside the host's failure until the next attempt or until Back closes it.
+    // This screen's own refusal of a Start, Resume (searchModel.arm()) or
+    // handoff, shown first until the next attempt or until Back closes it; the
+    // host's failure, else the search's later message or the model's error,
+    // follows it.
     property string localFailure: ""
     property string sourceType: "usb"
     property string host: ""

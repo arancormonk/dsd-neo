@@ -5350,28 +5350,31 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   permanently or Remove permanent avoid (`avoidPermanently()`: through the decoder thread
   while a search runs, the store directly when none does). The verdicts arrive as the
   status message or the model's error. Leaving for another session is one Main operation,
-  `leaveSearchFor(request)` (`{kind: "explore", system, remember: false}` or
-  `{kind: "saved", uid}`): it abandons the search's start and runs the request through
-  `pendingRestart` (marked `leaveSearch`) once the host is Idle, stopping it from Starting,
-  Running or Failed. Until then `leavingSearch` keeps the search screen the root (its
-  `leaving` state reads "Stopping the search…", disables its controls and holds focus so
-  Escape/Back reach Main). Back cancels the handoff (`requestBack()` clears it and returns),
-  so a stop that hangs past the engine's restore timeouts cannot lock the screen; the
-  site chooser's any-input cancel is ignored while it runs, and `startSystem()`/
-  `restartSite()` refuse by state before cancelling, so a USB attachment's start cannot
-  drop it. `finishPendingRestart()` closes the screen just before starting the request, and
-  a stop ending in Failed closes it and clears the flag. A saved request is checked (`savedStartRefusal()`) before the stop, the refusal
-  shown in the screen's `localFailure`, and again in `finishPendingRestart()`, which shows
-  the refusal (an avoided site no longer declines silently) and records the system as
-  `attemptedSource` so Home's Retry asks again and Edit opens it. Explore here (`exploreHereSystem()`) is
-  `systemForHit()` renamed Exploring, untrunked, on the `effectiveSource()` kind (an
-  Airspy map only stays on an Airspy); `startWithMap(sys, row, scan, options)` records
-  `options.remember` in `attemptedSource` and `pendingStartRemember` (through a USB wait),
-  and only a remembered explore session writes `prefs.exploreFreqMhz` when it ends.
-  `retrySource()` carries the attempted system: a failed search is retried by reopening
-  the screen and running its `startSearch()` (arm, then start), and edited by reopening
-  it (`tst_signal_search_handoff.qml`). Native status is copied on a 250 ms timer; history and the
-  avoid lists only when their store revisions move. Back delegates to Main's session
+  `leaveSearchFor(request)` (`{kind: "explore", system, remember: false}` or `{kind:
+  "saved", uid}`): it abandons the search's start and runs the request through
+  `pendingRestart` (marked `leaveSearch`) once the host is Idle, stopping it from
+  Starting, Running or Failed. Until then `leavingSearch` keeps the search screen the root
+  (its `leaving` state reads "Stopping the search…", disables its controls and holds focus
+  so Escape/Back reach Main). Back cancels the handoff (`requestBack()` clears it and
+  returns), so a stop that hangs past the engine's restore timeouts cannot lock the
+  screen; the site chooser's any-input cancel is ignored while it runs, and
+  `startSystem()`/ `restartSite()` refuse by state before cancelling, so a USB
+  attachment's start cannot drop it. `finishPendingRestart()` closes the screen just
+  before starting the request, and a stop ending in Failed closes it and clears the flag.
+  A saved request is checked (`savedStartRefusal()`) before the stop, the refusal shown in
+  the screen's `localFailure`, and again in `finishPendingRestart()`, which shows the
+  refusal (an avoided site no longer declines silently) and records the system as
+  `attemptedSource` so Home's Retry asks again and Edit opens it. Explore here
+  (`exploreHereSystem()`) is `systemForHit()` renamed Exploring, untrunked, on the
+  `effectiveSource()` kind (an Airspy map only stays on an Airspy); `startWithMap(sys,
+  row, scan, options)` records `options.remember` in `attemptedSource` and
+  `pendingStartRemember` (through a USB wait), and only a remembered explore session
+  writes `prefs.exploreFreqMhz` when it ends. `retrySource()` carries the attempted
+  system: a failed search is retried by reopening the screen and running its
+  `startSearch()` (arm, then start), and edited by reopening it
+  (`tst_signal_search_handoff.qml`).
+  Native status is copied on a 250 ms timer; history and the avoid lists only when their
+  store revisions move. Back delegates to Main's session
   policy; a search a coordinator owns (`status.owned`) is a navigation root so its controls
   remain accessible after Activity recreation. Range edits apply on paused restart.
   Home's `onSignalSearch` seeds the source fields (`Main.seedSignalSearch()`) only when it
