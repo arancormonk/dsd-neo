@@ -4,8 +4,13 @@
 
 import copy
 import importlib.util
+import os
 import pathlib
+import re
+import shutil
 import subprocess
+import tempfile
+import textwrap
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -141,6 +146,65 @@ class BudgetTests(unittest.TestCase):
         ):
             with self.subTest(workflow=invalid), self.assertRaises(ValueError):
                 budget.check_workflow(invalid)
+
+
+class ClassifierDependenciesTests(unittest.TestCase):
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash"), "requires a POSIX Bash runner"
+    )
+    def test_runner_without_ripgrep_installs_it_and_install_errors_fail(self):
+        workflow = (ROOT / ".github/workflows/ci-changes.yml").read_text()
+        setup = re.search(
+            r"      - name: Install classifier dependencies\n        run: \|\n"
+            r"((?:          .+\n)+)",
+            workflow,
+        )
+        self.assertIsNotNone(setup)
+        command = [shutil.which("bash"), "-e", "-c", textwrap.dedent(setup[1])]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            log = directory / "apt.log"
+            env = {
+                **os.environ,
+                "PATH": tmp,
+                "CI_TEST_BIN": tmp,
+                "CI_TEST_APT_LOG": str(log),
+                "CI_TEST_CHMOD": shutil.which("chmod"),
+                "CI_TEST_APT_FAIL": "0",
+            }
+            commands = {
+                "sudo": '#!/bin/sh\nexec "$@"\n',
+                "apt-get": """#!/bin/sh
+[ "$CI_TEST_APT_FAIL" = 0 ] || exit 42
+printf '%s\\n' "$*" >> "$CI_TEST_APT_LOG"
+if [ "$1" = install ]; then
+  printf '#!/bin/sh\\nexit 0\\n' > "$CI_TEST_BIN/rg"
+  "$CI_TEST_CHMOD" +x "$CI_TEST_BIN/rg"
+fi
+""",
+            }
+            for name, content in commands.items():
+                path = directory / name
+                path.write_text(content)
+                path.chmod(0o755)
+            # PATH contains no rg, matching the hosted image that failed. A
+            # second invocation must reuse the tool instead of installing again.
+            subprocess.run(command, env=env, check=True, capture_output=True)
+            self.assertTrue(os.access(directory / "rg", os.X_OK))
+            subprocess.run(command, env=env, check=True, capture_output=True)
+            self.assertEqual(
+                log.read_text().splitlines(),
+                ["update", "install -y --no-install-recommends ripgrep"],
+            )
+            (directory / "rg").unlink()
+            result = subprocess.run(
+                command,
+                env={**env, "CI_TEST_APT_FAIL": "1"},
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 42)
+            self.assertFalse((directory / "rg").exists())
 
 
 class FakeAPI:
