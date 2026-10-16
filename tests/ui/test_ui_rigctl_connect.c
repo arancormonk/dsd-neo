@@ -19,6 +19,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -101,6 +102,14 @@ dsd_engine_rigctl_tune_cache_forget(void) {
     note_call('F');
 }
 
+/* The NXDN control-channel hunt forgets which frequency the receiver is on: the new connection's peer may sit
+   anywhere. */
+void
+nxdn_cc_hunt_forget_attribution(const dsd_state* state) {
+    (void)state;
+    note_call('N');
+}
+
 void
 dsd_engine_rigctl_ask_session_passband(const dsd_opts* opts, const dsd_state* state) {
     note_call('A');
@@ -148,7 +157,7 @@ test_same_endpoint_hands_the_record_over_then_closes(void) {
     seed_opts(&opts, "localhost", 4532, (dsd_socket_t)41, 1);
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "localhost", 4532) == 0);
-    assert(strcmp(g_calls, "CGRXFAg") == 0);
+    assert(strcmp(g_calls, "CGRXFNAg") == 0);
     assert(g_ask_sock == (dsd_socket_t)42 && g_ask_use_rigctl == 1 && g_ask_state == &g_state);
     assert(strcmp(g_connect_host, "localhost") == 0 && g_connect_port == 4532);
     assert(g_rebind_old == (dsd_socket_t)41 && g_rebind_new == (dsd_socket_t)42 && g_rebind_same == 1);
@@ -172,7 +181,7 @@ test_another_endpoint_closes_the_old_socket(void) {
     seed_opts(&opts, "localhost", 4532, (dsd_socket_t)41, 1);
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "10.0.0.2", 4532) == 0);
-    assert(strcmp(g_calls, "CGRXFAg") == 0);
+    assert(strcmp(g_calls, "CGRXFNAg") == 0);
     assert(g_ask_sock == (dsd_socket_t)42 && g_ask_use_rigctl == 1 && g_ask_state == &g_state);
     assert(g_rebind_old == (dsd_socket_t)41 && g_rebind_new == (dsd_socket_t)42 && g_rebind_same == 0);
     assert(g_closed_sock == (dsd_socket_t)41);
@@ -195,7 +204,7 @@ test_first_connection_closes_nothing(void) {
     seed_opts(&opts, "localhost", 4532, DSD_INVALID_SOCKET, 0);
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "localhost", 4532) == 0);
-    assert(strcmp(g_calls, "CGRFAg") == 0);
+    assert(strcmp(g_calls, "CGRFNAg") == 0);
     assert(g_ask_sock == (dsd_socket_t)42 && g_ask_use_rigctl == 1 && g_ask_state == &g_state);
     assert(g_rebind_old == DSD_INVALID_SOCKET && g_rebind_new == (dsd_socket_t)42 && g_rebind_same == 0);
     expect_reconnected(&opts, "localhost", 4532, (dsd_socket_t)42);
@@ -204,14 +213,14 @@ test_first_connection_closes_nothing(void) {
     seed_opts(&opts, "localhost", 4532, (dsd_socket_t)41, 0);
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "localhost", 4532) == 0);
-    assert(strcmp(g_calls, "CGRFAg") == 0 && g_rebind_old == DSD_INVALID_SOCKET);
+    assert(strcmp(g_calls, "CGRFNAg") == 0 && g_rebind_old == DSD_INVALID_SOCKET);
 
     reset_fakes();
     DSD_MEMSET(&opts, 0, sizeof opts);
     opts.use_rigctl = 1;
     g_connect_result = (dsd_socket_t)42;
     assert(svc_rigctl_connect(&opts, &g_state, "localhost", 4532) == 0);
-    assert(strcmp(g_calls, "CGRFAg") == 0 && g_rebind_old == DSD_INVALID_SOCKET);
+    assert(strcmp(g_calls, "CGRFNAg") == 0 && g_rebind_old == DSD_INVALID_SOCKET);
     expect_reconnected(&opts, "localhost", 4532, (dsd_socket_t)42);
 }
 

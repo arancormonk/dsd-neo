@@ -219,6 +219,11 @@ test_attribution_cached(void) {
     nxdn_cc_hunt_note_control(g_opts, g_state);
     expect("cache: requeried after a move", g_queries, 2);
     expect("cache: moved control channel", g_state->p25_cc_freq, ROW_C);
+    nxdn_cc_hunt_forget_attribution(g_state); // a rigctl reconnect: the restarted peer sits on B
+    g_radio_hz = ROW_B;
+    nxdn_cc_hunt_note_control(g_opts, g_state);
+    expect("cache: requeried after a reconnect", g_queries, 3);
+    expect("cache: the reconnected peer's control channel", g_state->p25_cc_freq, ROW_B);
 }
 
 /* A control channel a CAC confirmed goes quiet: after the grace the map is hunted, the old control channel revisited

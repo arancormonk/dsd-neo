@@ -505,6 +505,15 @@ nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state) {
 }
 
 void
+nxdn_cc_hunt_forget_attribution(const dsd_state* state) {
+    nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_peek(state);
+    if (ctx) {
+        ctx->rx_freq_hz = 0;
+        ctx->rx_valid = 0;
+    }
+}
+
+void
 nxdn_cc_hunt_note_system_replaced(dsd_state* state) {
     nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_peek(state);
     if (ctx) {

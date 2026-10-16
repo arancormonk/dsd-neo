@@ -73,6 +73,12 @@ void nxdn_cc_hunt_note_type_d(const dsd_opts* opts, dsd_state* state);
 void nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief Forget which frequency the receiver is on: a new rigctl connection's peer (a restarted receiver, say) may sit
+ * anywhere, without any tune the decoder made. The next CAC asks the tuner again.
+ */
+void nxdn_cc_hunt_forget_attribution(const dsd_state* state);
+
+/**
  * @brief The session was re-pointed at another system (a RadioReference apply).
  *
  * Forgets the control channel a CAC confirmed and returns an NXDN owner to unknown, so the new system's start is hunted

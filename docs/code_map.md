@@ -4280,7 +4280,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   stays, as at every trunked move within the system's map, issue #575), and
   restores both control-channel aliases. `nxdn_handle_cac()` calls `nxdn_cc_hunt_note_control()` on every CRC-good CAC,
   before element decode: an unresolved probe is not credited; otherwise the frequency (the completed probe, else one
-  tuner query per tuning generation, a failed one included, forgotten at an operator move) becomes `p25_cc_freq`/`trunk_cc_freq`, NXDN is
+  tuner query per tuning generation, a failed one included, forgotten at an operator move and at a rigctl reconnect,
+  `nxdn_cc_hunt_forget_attribution()` from `svc_rigctl_connect()`) becomes `p25_cc_freq`/`trunk_cc_freq`, NXDN is
   named the owner and the post-loss window re-armed; a CAC whose frequency no tuner names still proves a Type-C control
   channel, and its loss hunts the map without an anchor. A post-loss hunt revisits that control channel between other rows, judged by the last attempt, so one the tuner
   refuses does not hold the hunt.
