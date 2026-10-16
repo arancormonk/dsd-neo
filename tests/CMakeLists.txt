@@ -553,6 +553,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/dsp/rate_converter.h
   CXX
 )
+# The replay's complex resampler (issue #701).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_iq_resampler
+  HEADERS_PUBLIC_DSP_IQ_RESAMPLER
+  dsd-neo/dsp/iq_resampler.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_iq_resampler_cxx
+  HEADERS_PUBLIC_DSP_IQ_RESAMPLER_CXX
+  dsd-neo/dsp/iq_resampler.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_analog_sink
   HEADERS_PUBLIC_DSP_ANALOG_SINK
@@ -9321,6 +9334,15 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 add_test(NAME DSP_RATE_CONVERTER COMMAND dsd-neo_test_dsp_rate_converter)
+
+# The complex resampler a replay runs ahead of the half-band chain (issue #701).
+add_executable(dsd-neo_test_dsp_iq_resampler dsp/test_dsp_iq_resampler.c)
+target_include_directories(
+    dsd-neo_test_dsp_iq_resampler
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_iq_resampler ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_IQ_RESAMPLER COMMAND dsd-neo_test_dsp_iq_resampler)
 
 add_executable(dsd-neo_test_dsp_firdes dsp/test_dsp_firdes.c)
 target_include_directories(
