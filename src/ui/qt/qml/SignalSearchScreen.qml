@@ -30,7 +30,7 @@ Item {
     readonly property var status: searchModel ? searchModel.status : ({})
     readonly property var hit: status.hit || ({})
     readonly property int phase: status.phase || 0
-    readonly property bool receiving: sessionActive && !!hit.id && hit.id !== "0" && !hit.ended && (phase === 2 || phase === 3 || phase === 4 || phase === 5)
+    readonly property bool receiving: receivingIn(status)
     readonly property bool editable: !sessionActive || phase === 6
     readonly property bool ownedSession: sessionActive && !!status.owned
     signal closed
@@ -105,17 +105,55 @@ Item {
     // The range being searched, as the engine names it from its own
     // configuration: never the retained detection's, which can belong to an
     // earlier range, and a paused edit shows only once Resume applies it.
+    // The range name alone gives way when the line would need more than its
+    // two lines, so the channel count always shows.
     readonly property string statusLine: {
-        var parts = [qsTr("Pass %1").arg(status.pass || 1)];
-        if ((status.rangeName || "").length > 0)
-            parts.push(status.rangeName, qsTr("%1–%2 MHz").arg(status.rangeStartMHz || "").arg(status.rangeEndMHz || ""));
-        parts.push(qsTr("channel %1 of %2").arg((status.channel || 0) + 1).arg(status.count || 0));
-        return parts.join(" · ");
+        var font = statusMetrics.font;
+        var pass = qsTr("Pass %1").arg(status.pass || 1);
+        var channel = qsTr("channel %1 of %2").arg((status.channel || 0) + 1).arg(status.count || 0);
+        var name = status.rangeName || "";
+        if (name.length === 0)
+            return [pass, channel].join(" · ");
+        var bounds = qsTr("%1–%2 MHz").arg(status.rangeStartMHz || "").arg(status.rangeEndMHz || "");
+        var compose = function (n) { return [pass, n, bounds, channel].join(" · "); };
+        var width = statusText.width - 1;
+        if (width <= 0 || wrappedLines(compose(name), width) <= 2)
+            return compose(name);
+        var step = statusMetrics.advanceWidth("M");
+        for (var budget = statusMetrics.advanceWidth(name) - step; budget > 0; budget -= step) {
+            var shorter = statusMetrics.elidedText(name, Qt.ElideRight, budget);
+            if (wrappedLines(compose(shorter), width) <= 2)
+                return compose(shorter);
+        }
+        return compose("…");
+    }
+    /** Lines @p text takes at @p width in the status line's font, wrapped at
+     * spaces as the line wraps it (a word wider than a line breaks anywhere). */
+    function wrappedLines(text, width) {
+        var space = statusMetrics.advanceWidth(" ");
+        var lines = 1, x = 0;
+        for (var word of text.split(" ")) {
+            var w = statusMetrics.advanceWidth(word);
+            if (x > 0 && x + space + w <= width) {
+                x += space + w;
+                continue;
+            }
+            if (x > 0)
+                ++lines;
+            lines += Math.floor(w / width);
+            x = w % width;
+        }
+        return lines;
     }
     // Bumped by every accepted live measurement, so a fresh reading of an
     // unchanged level still marks the cue.
     readonly property var liveSeq: status.liveSeq || 0
     readonly property bool liveShown: receiving && !!status.livePowerValid
+    /** Whether @p s is receiving a detection: its hit is live and the phase is a visit's. */
+    function receivingIn(s) {
+        var h = s.hit || {};
+        return sessionActive && !!h.id && h.id !== "0" && !h.ended && [2, 3, 4, 5].indexOf(s.phase || 0) >= 0;
+    }
     readonly property int enabledRanges: searchModel ? searchModel.ranges.filter(function (r) { return r.enabled; }).length : 0
     // Ranges are setup: collapsed while a search runs, unless opened here;
     // paused or idle, they are what the screen is for and stay open.
@@ -134,13 +172,18 @@ Item {
             resetView();
     }
     onLiveSeqChanged: {
-        // Read from status itself: liveShown may not have caught up with the
-        // update that also brought this measurement.
-        if (receiving && status.livePowerValid)
+        // Read from status itself: `receiving` and liveShown may not have
+        // caught up with an update that brought the hit and its first
+        // measurement together.
+        if (receivingIn(status) && status.livePowerValid)
             liveCue.mark();
     }
     readonly property string phaseLine: [qsTr("Stopped"), (status.rangeName || "").length > 0 ? qsTr("Searching %1…").arg(status.rangeName) : qsTr("Searching…"), qsTr("Tuning…"), qsTr("Trying digital identification…"), qsTr("Listening"), qsTr("Held"), qsTr("Paused"), qsTr("Search error")][phase] || ""
-    readonly property string identificationLine: !receiving ? phaseLine : phase === 2 ? qsTr("Tuning to detection…") : hit.confirmed ? hit.protocol + qsTr(" · confirmed") : phase === 3 || status.identifying ? qsTr("Trying digital identification…") : hit.unresolved ? qsTr("NFM monitoring · digital identification unresolved") : hit.am ? qsTr("AM monitoring") : qsTr("NFM monitoring")
+    // The panel's one identification line is short enough for a phone; the
+    // full phrase is its accessible description.
+    readonly property bool unresolvedShown: receiving && phase !== 2 && !hit.confirmed && !(phase === 3 || status.identifying) && !!hit.unresolved
+    readonly property string identificationLine: !receiving ? phaseLine : phase === 2 ? qsTr("Tuning to detection…") : hit.confirmed ? hit.protocol + qsTr(" · confirmed") : phase === 3 || status.identifying ? qsTr("Trying digital identification…") : hit.unresolved ? qsTr("NFM · digital unresolved") : hit.am ? qsTr("AM monitoring") : qsTr("NFM monitoring")
+    readonly property string identificationFull: unresolvedShown ? qsTr("NFM monitoring · digital identification unresolved") : identificationLine
     readonly property var knownNames: hit.knownNames || ((hit.knownLabel || "").length > 0 ? [hit.knownLabel] : [])
     // The Now panel's actions. "Hold" and "Release Hold" share one cell, so a
     // Hold toggle never reflows the grid; `labels` lists every label a cell can
@@ -183,7 +226,7 @@ Item {
         // for it, so a longer range name or channel count never moves the page.
         Item {
             width: parent.width
-            height: screen.sessionActive ? Math.ceil(2 * statusMetrics.lineSpacing) : statusText.implicitHeight
+            height: screen.sessionActive ? 2 * Math.ceil(statusMetrics.lineSpacing) : statusText.implicitHeight
             Text {
                 id: statusText
                 objectName: "searchStatusLine"
@@ -276,16 +319,19 @@ Item {
                         objectName: "searchFrequency"
                         width: parent.width
                         height: Math.ceil(frequencyMetrics.lineSpacing)
-                        text: screen.receiving ? (screen.hit.freqMHz || "") + " MHz" : ""
-                        color: Theme.textPrimary
-                        font.family: Theme.mono
+                        // Between detections the slot says what it is for, in
+                        // the sans face so it never reads as a frequency.
+                        text: screen.receiving ? (screen.hit.freqMHz || "") + " MHz" : qsTr("Waiting for a signal")
+                        color: screen.receiving ? Theme.textPrimary : Theme.textSecondary
+                        font.family: screen.receiving ? Theme.mono : Theme.sans
                         font.pixelSize: Theme.fontSize(28)
                         // Every digit of a frequency matters: it shrinks to fit
                         // rather than eliding.
                         fontSizeMode: Text.HorizontalFit
                         minimumPixelSize: Theme.fontSize(14)
                         verticalAlignment: Text.AlignVCenter
-                        Accessible.ignored: text.length === 0
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
                     }
                     Item {
                         width: parent.width
@@ -316,7 +362,9 @@ Item {
                         }
                         Text {
                             objectName: "searchStrength"
-                            x: liveCue.visible ? liveCue.width + 8 : 0
+                            // The cue's slot is kept for the whole visit, so the
+                            // text does not move as a live level comes and goes.
+                            x: screen.receiving ? liveCue.width + 8 : 0
                             width: parent.width - x
                             height: parent.height
                             text: !screen.receiving ? "" : (screen.status.livePowerValid ? qsTr("Now %1 dBFS · detected %2 dBFS").arg(Number(screen.status.livePower).toFixed(1)).arg(Number(screen.hit.power || 0).toFixed(1)) : Number(screen.hit.power || 0).toFixed(1) + qsTr(" dBFS")) + " · " + (screen.hit.range || "")
@@ -341,16 +389,16 @@ Item {
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
                         Accessible.name: text
-                        Accessible.description: text
+                        Accessible.description: screen.identificationFull
                         Accessible.ignored: text.length === 0
                     }
                     Item {
                         width: parent.width
-                        height: Math.ceil(2 * detailMetrics.lineSpacing)
+                        height: 2 * Math.ceil(detailMetrics.lineSpacing)
                         Text {
                             objectName: "searchDetail"
                             width: parent.width
-                            text: !screen.receiving ? "" : [screen.hit.access || "", screen.hit.tone || "", screen.hit.targetText || (screen.hit.target ? qsTr("Target %1").arg(screen.hit.target) : ""), screen.hit.sourceText || (screen.hit.source ? qsTr("Source %1").arg(screen.hit.source) : "")].filter(function (s) { return s.length > 0; }).join(" · ")
+                            text: !screen.receiving ? qsTr("Strong signals open here to be identified and monitored.") : [screen.hit.access || "", screen.hit.tone || "", screen.hit.targetText || (screen.hit.target ? qsTr("Target %1").arg(screen.hit.target) : ""), screen.hit.sourceText || (screen.hit.source ? qsTr("Source %1").arg(screen.hit.source) : "")].filter(function (s) { return s.length > 0; }).join(" · ")
                             color: Theme.textSecondary
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(14)
@@ -362,22 +410,43 @@ Item {
                             Accessible.ignored: text.length === 0
                         }
                     }
-                    Text {
-                        objectName: "searchSaved"
+                    // Two names, then how many more: the names elide, the count
+                    // never does. The full list is in the accessible text here
+                    // and in the detection's history row.
+                    Item {
                         width: parent.width
                         height: Math.ceil(detailMetrics.lineSpacing)
-                        // Two names, then how many more: the full list is in the
-                        // accessible text here and in the detection's history row.
-                        text: !screen.receiving || screen.knownNames.length === 0 ? "" : screen.knownNames.length <= 2 ? qsTr("Saved: %1").arg(screen.knownNames.join(" / ")) : qsTr("Saved: %1 / %2 +%3").arg(screen.knownNames[0]).arg(screen.knownNames[1]).arg(screen.knownNames.length - 2)
-                        color: Theme.textSecondary
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(14)
-                        verticalAlignment: Text.AlignVCenter
-                        elide: Text.ElideRight
-                        readonly property string fullText: text.length > 0 ? qsTr("Saved frequency: %1").arg(screen.knownNames.join(", ")) : ""
-                        Accessible.name: fullText
-                        Accessible.description: fullText
-                        Accessible.ignored: text.length === 0
+                        readonly property int more: screen.receiving ? Math.max(0, screen.knownNames.length - 2) : 0
+                        Text {
+                            id: savedNames
+                            objectName: "searchSaved"
+                            width: Math.min(implicitWidth, parent.width - (savedMore.visible ? savedMore.implicitWidth + 4 : 0))
+                            height: parent.height
+                            text: !screen.receiving || screen.knownNames.length === 0 ? "" : qsTr("Saved: %1").arg(screen.knownNames.slice(0, 2).join(" / "))
+                            color: Theme.textSecondary
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(14)
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                            readonly property string fullText: text.length > 0 ? qsTr("Saved frequency: %1").arg(screen.knownNames.join(", ")) : ""
+                            Accessible.name: fullText
+                            Accessible.description: fullText
+                            Accessible.ignored: text.length === 0
+                        }
+                        Text {
+                            id: savedMore
+                            objectName: "searchSavedMore"
+                            x: savedNames.width + 4
+                            height: parent.height
+                            visible: parent.more > 0
+                            text: qsTr("+%1").arg(parent.more)
+                            color: Theme.textSecondary
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(14)
+                            verticalAlignment: Text.AlignVCenter
+                            // Counted in the names' accessible text.
+                            Accessible.ignored: true
+                        }
                     }
                     // A deterministic grid: three equal columns when every cell
                     // fits the widest label any cell can show at this font
@@ -452,6 +521,8 @@ Item {
                     expanded: screen.rangesShown
                     showCaret: !screen.editable
                     tapEnabled: !screen.editable
+                    // Not a control while paused: the heading of the open ranges.
+                    Accessible.role: screen.editable ? Accessible.Heading : Accessible.Button
                     accessibleName: screen.editable ? qsTr("Search ranges, %1 enabled").arg(screen.enabledRanges) : screen.rangesExpanded ? qsTr("Hide search ranges") : qsTr("Show search ranges, %1 enabled").arg(screen.enabledRanges)
                     onTapped: screen.rangesExpanded = !screen.rangesExpanded
                 }

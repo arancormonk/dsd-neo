@@ -293,7 +293,10 @@ Item {
             compare(snapshot.freqMHz, "463.552100");
         }
         function test_unresolved_is_not_analog_confirmation() {
-            compare(findChild(loader.item, "searchIdentification").text, "NFM monitoring · digital identification unresolved");
+            // The panel's short form; the full phrase is the accessible description.
+            var identification = findChild(loader.item, "searchIdentification");
+            compare(identification.text, "NFM · digital unresolved");
+            compare(identification.Accessible.description, "NFM monitoring · digital identification unresolved");
             model.status = Object.assign({}, model.status, {phase: 3});
             compare(findChild(loader.item, "searchIdentification").text, "Trying digital identification…");
             model.status = Object.assign({}, model.status, {phase: 5, identifying: true});
@@ -463,6 +466,7 @@ Item {
             compare(toggle.accessibleName, "Show search ranges, 1 enabled");
             verify(toggle.Accessible.checkable);
             verify(!toggle.Accessible.checked);
+            compare(toggle.Accessible.role, Accessible.Button);
             verify(toggle.height >= Ui.Theme.minimumTouchSize);
             toggle.activate();
             verify(ranges.visible);
@@ -481,6 +485,8 @@ Item {
             root.forceActiveFocus();
             verify(!toggle.tapEnabled);
             compare(toggle.accessibleName, "Search ranges, 1 enabled");
+            compare(toggle.Accessible.role, Accessible.Heading, "paused, the row is the ranges' heading, not a button");
+            verify(!toggle.Accessible.checkable);
             model.status = Object.assign({}, model.status, {phase: 1});
             verify(!ranges.visible, "a Resume returns to the manual state");
             // A manual expansion resets with a new session and when the screen closes.
@@ -575,11 +581,22 @@ Item {
                 if (st.tag === "searching")
                     var expected = panel.height;
                 compare(panel.height, expected, st.tag + " keeps the panel's height");
-                for (var name of ["searchFrequency", "searchStrength", "searchIdentification", "searchSaved"]) {
+                // A frequency never elides, and no line outgrows its slot.
+                verify(!findChild(screen, "searchFrequency").truncated, "the frequency shows whole in " + st.tag);
+                var frequency = findChild(screen, "searchFrequency");
+                verify(frequency.contentWidth <= frequency.width + 0.5, "the frequency fits its slot in " + st.tag);
+                var detail = findChild(screen, "searchDetail");
+                verify(detail.height <= detail.parent.height + 0.5, "the detail keeps its two-line slot in " + st.tag);
+                for (var name of ["searchStrength", "searchIdentification", "searchSaved"]) {
                     var line = findChild(screen, name);
-                    verify(line.lineCount <= 1, name + " stays on one line in " + st.tag);
+                    verify(line.contentHeight <= line.height + 0.5, name + " keeps its one-line slot in " + st.tag);
                 }
-                verify(findChild(screen, "searchDetail").lineCount <= 2, "the detail keeps two lines in " + st.tag);
+                var more = findChild(screen, "searchSavedMore");
+                if (st.tag === "three saved matches") {
+                    verify(more.visible && !more.truncated, "the count of further matches always shows");
+                    compare(more.text, "+1");
+                    verify(more.x + more.width <= more.parent.width + 0.5);
+                }
                 if (screen.receiving) {
                     if (holdX < 0) {
                         holdX = hold.x;
@@ -615,6 +632,71 @@ Item {
         }
         // Each fresh live measurement marks the cue, even one that reads the same
         // level; a withdrawn live level hides it and shows the detection level.
+        // Every identification the panel can show fits one line on a phone at
+        // default text: the verdict is never cut off.
+        function test_identification_fits_a_phone() {
+            var screen = loader.item;
+            var line = findChild(screen, "searchIdentification");
+            var base = model.status;
+            var hit = base.hit;
+            var states = [
+                {phase: 0, hit: {}}, {phase: 1, hit: {}}, {phase: 2, hit: {}}, {phase: 6, hit: {}}, {phase: 7, hit: {}},
+                {phase: 2}, {phase: 3}, {phase: 5, identifying: true},
+                {phase: 4, hit: Object.assign({}, hit, {confirmed: true, protocol: "NXDN48"})},
+                {phase: 4, hit: Object.assign({}, hit, {unresolved: true})},
+                {phase: 4, hit: Object.assign({}, hit, {unresolved: false, am: true})},
+                {phase: 4, hit: Object.assign({}, hit, {unresolved: false, am: false})},
+                {phase: 5, hit: Object.assign({}, hit, {unresolved: true})}
+            ];
+            for (var st of states) {
+                model.status = Object.assign({}, base, st);
+                verify(line.text.length > 0);
+                verify(!line.truncated, "\"" + line.text + "\" fits one line at 411 dp");
+            }
+        }
+        // Between detections the reserved panel teaches what it is for, at the
+        // same height, and reads in order.
+        function test_now_panel_waiting_state() {
+            var screen = loader.item;
+            var panel = findChild(screen, "searchNowPanel");
+            var listening = panel.height;
+            model.status = Object.assign({}, model.status, {phase: 1, hit: {}});
+            compare(panel.height, listening);
+            var frequency = findChild(screen, "searchFrequency");
+            compare(frequency.text, "Waiting for a signal");
+            compare(frequency.font.family, Ui.Theme.sans, "not the frequency's mono face");
+            verify(Qt.colorEqual(frequency.color, Ui.Theme.textSecondary));
+            verify(!frequency.Accessible.ignored);
+            compare(findChild(screen, "searchIdentification").text, "Searching Local UHF…");
+            var detail = findChild(screen, "searchDetail");
+            compare(detail.text, "Strong signals open here to be identified and monitored.");
+            verify(!detail.truncated && !detail.Accessible.ignored);
+            verify(findChild(screen, "searchStrength").Accessible.ignored);
+            verify(!findChild(screen, "searchHold").visible && !findChild(screen, "searchSave").visible);
+            var y = [frequency, findChild(screen, "searchIdentification"), detail].map(function (item) { return item.mapToItem(panel, 0, 0).y; });
+            verify(y[0] < y[1] && y[1] < y[2], "reading order is top to bottom");
+            model.status = Object.assign({}, model.status, {phase: 2, hit: {}});
+            compare(findChild(screen, "searchIdentification").text, "Tuning…");
+            compare(frequency.text, "Waiting for a signal");
+            model.status = Object.assign({}, model.status, {phase: 6, hit: {}});
+            compare(findChild(screen, "searchIdentification").text, "Paused");
+        }
+        // A 63-character range name gives way, so the channel count always shows.
+        function test_status_line_keeps_the_channel_count() {
+            Ui.Theme.fontScale = 1.6;
+            var line = findChild(loader.item, "searchStatusLine");
+            var name = "Regional interoperability and public safety mutual aid channels";
+            compare(name.length, 63);
+            model.status = Object.assign({}, model.status, {rangeName: name, rangeStartMHz: "450.000000", rangeEndMHz: "459.987500"});
+            waitForRendering(line);
+            verify(!line.truncated, "the line fits its two lines");
+            verify(line.text.indexOf("channel 81 of 801") > 0);
+            verify(line.text.indexOf("450.000000–459.987500 MHz") > 0);
+            verify(line.text.indexOf("…") > 0, "the range name is shortened");
+            Ui.Theme.fontScale = 1.0;
+            verify(!line.truncated);
+            verify(line.text.indexOf("channel 81 of 801") > 0);
+        }
         function test_live_cue_marks_each_measurement() {
             var cue = findChild(loader.item, "searchLiveCue");
             var strength = findChild(loader.item, "searchStrength");
@@ -633,6 +715,26 @@ Item {
             compare(strength.text, "-32.1 dBFS · Local UHF");
             model.status = Object.assign({}, model.status, {liveSeq: 3});
             compare(cue.marks, marks + 1);
+        }
+        // The strength text keeps its place as a live level comes and goes.
+        function test_strength_text_does_not_shift() {
+            var strength = findChild(loader.item, "searchStrength");
+            var x = strength.x;
+            model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -50, liveSeq: 7});
+            compare(strength.x, x);
+            model.status = Object.assign({}, model.status, {livePowerValid: false});
+            compare(strength.x, x);
+        }
+        // One refresh can bring a detection and its first measurement together;
+        // that first reading is marked too.
+        function test_first_measurement_is_marked() {
+            var cue = findChild(loader.item, "searchLiveCue");
+            var listening = model.status;
+            model.status = Object.assign({}, listening, {phase: 1, hit: {}, livePowerValid: false, liveSeq: 20});
+            var marks = cue.marks;
+            model.status = Object.assign({}, listening, {phase: 4, livePowerValid: true, livePower: -51, liveSeq: 21});
+            compare(cue.marks, marks + 1);
+            verify(cue.visible);
         }
         function test_capture_searching() {
             model.status = Object.assign({}, model.status, {phase: 1, rangeName: "Local UHF", rangeStartMHz: "450.000", rangeEndMHz: "460.000", hit: {}});

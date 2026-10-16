@@ -83,15 +83,17 @@ While a search runs, the screen is laid out for what is on the air now:
   its bounds, and the channel, for example
   **Pass 2 · Air band · 118.000–137.000 MHz · channel 81 of 801**. It names the
   range the search is in, not the range of the last detection, and a range
-  edited while paused shows there once **Resume** applies it.
+  edited while paused shows there once **Resume** applies it. A range name too
+  long for the line is shortened so the channel count always shows.
 - The **Now** panel keeps one height for the whole session: frequency, strength,
   identification, two lines of detail, saved-frequency names and the actions.
   Lines that do not fit end in an ellipsis, and the full text is available to
   screen readers. When several saved frequencies match, the panel names two and
   counts the rest (**Saved: A / B +1**); the detection's history row lists them
-  all. Between detections the panel shows the phase (**Searching Air band…**,
-  **Tuning…**, **Paused**) and keeps the actions' space empty, so nothing below
-  it moves as detections come and go. The actions sit in two columns, or three
+  all. Between detections the panel reads **Waiting for a signal**, shows the
+  phase (**Searching Air band…**, **Tuning…**, **Paused**) and the hint
+  **Strong signals open here to be identified and monitored.**, and keeps the
+  actions' space empty, so nothing below it moves as detections come and go. The actions sit in two columns, or three
   where every label fits.
 - **Recent detections** shows the five newest; **Show more** adds 25.
 - **Search ranges · 3 enabled** is collapsed; tap it to show the ranges. While
@@ -107,8 +109,10 @@ confirmed digital identity, access code or call details. A protocol reports its
 confirmation only after decoding the content that passed the check, so one
 validated frame, such as a single M17 link setup or D-STAR header, is enough for
 its details to reach the detection. When a digital probe
-expires, the display says **NFM monitoring · digital identification unresolved**.
-That fallback does not establish that the transmission is analog.
+expires, the panel says **NFM · digital unresolved** (screen readers hear
+**NFM monitoring · digital identification unresolved**): the channel is monitored
+as NFM because no digital identification succeeded. That fallback does not
+establish that the transmission is analog.
 
 P25 Phase 1 is confirmed by a control block whose CRC passes (TSBK, MBT or LCCH MAC)
 or by a call whose identity resolves. A carrier that sends only NIDs, such as a run
