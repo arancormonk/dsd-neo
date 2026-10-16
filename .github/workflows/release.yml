@@ -16,6 +16,10 @@ jobs:
   create-release-metadata:
     name: Create release metadata
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-control
+      cancel-in-progress: false
+      queue: max
     if: github.repository == 'arancormonk/dsd-neo'
     permissions:
       contents: write

@@ -23,9 +23,21 @@ permissions:
   contents: read
 
 jobs:
+  # A classifier error or missing output runs the affected checks in full.
+  changes:
+    if: github.event_name == 'pull_request'
+    # Keep the local workflow syntax understood by actionlint 1.7.12.
+    uses: ./.github/workflows/ci-changes.yml # zizmor: ignore[self-repository]
+
   cross-build-cli:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: arm64 CLI (NDK cross build)
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-01
+      cancel-in-progress: false
+      queue: max
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -162,8 +174,14 @@ jobs:
   # have never run anywhere in CI. Only the frontend's test targets are built:
   # they do not link the decoder, so this stays a short job.
   qt-ui-tests:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: Qt UI tests (host Qt)
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-03
+      cancel-in-progress: false
+      queue: max
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
@@ -342,7 +360,7 @@ jobs:
       # here — a developer running ctest locally gets the same run.
       - name: Test
         shell: bash
-        run: ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$)' --output-on-failure
+        run: ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$)' --parallel 2 --output-on-failure
 
       # The baked RadioReference key is a compile-time constant, so the shipped
       # configuration — a build that carries its own key and must ignore any
@@ -366,15 +384,21 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset dev-debug -j \
             --target dsd-neo_test_ui_qt_radio_reference_model
-          ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --output-on-failure
+          ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --parallel 2 --output-on-failure
 
       - name: Show ccache stats
         shell: bash
         run: ccache --show-stats
 
   build-apk:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: APK (Qt Quick app)
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-02
+      cancel-in-progress: false
+      queue: max
     permissions:
       actions: read
       attestations: write
@@ -1148,6 +1172,10 @@ jobs:
     # as its own red check instead of vanishing.
     needs: [build-apk]
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
     if: needs.build-apk.outputs.publishable == 'true'
     steps:
       - name: Fail when the AAB pipeline failed
@@ -1170,6 +1198,10 @@ jobs:
     # publish until it is re-run.
     needs: [build-apk, qt-ui-tests]
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     # An unsigned APK cannot be installed, so a build that could not sign
     # publishes nothing rather than shipping a broken download. The publishable
     # predicate (upstream repo + release tag or main/master push/dispatch) is

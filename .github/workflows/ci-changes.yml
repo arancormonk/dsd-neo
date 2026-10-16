@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: ci-changes
+
+on:
+  workflow_call:
+    outputs:
+      native_needed:
+        value: ${{ jobs.changes.outputs.native_needed }}
+      format_files:
+        value: ${{ jobs.changes.outputs.format_files }}
+      analysis_tus:
+        value: ${{ jobs.changes.outputs.analysis_tus }}
+      analysis_full_scan:
+        value: ${{ jobs.changes.outputs.analysis_full_scan }}
+      cppcheck_sources:
+        value: ${{ jobs.changes.outputs.cppcheck_sources }}
+      semgrep_targets:
+        value: ${{ jobs.changes.outputs.semgrep_targets }}
+      semgrep_full_scan:
+        value: ${{ jobs.changes.outputs.semgrep_full_scan }}
+      cmake_format_files:
+        value: ${{ jobs.changes.outputs.cmake_format_files }}
+      workflow_security_targets:
+        value: ${{ jobs.changes.outputs.workflow_security_targets }}
+      dependency_scan_targets:
+        value: ${{ jobs.changes.outputs.dependency_scan_targets }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Classify PR changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
+    outputs:
+      native_needed: ${{ steps.changes.outputs.native_needed }}
+      format_files: ${{ steps.changes.outputs.format_files }}
+      analysis_tus: ${{ steps.changes.outputs.analysis_tus }}
+      analysis_full_scan: ${{ steps.changes.outputs.analysis_full_scan }}
+      cppcheck_sources: ${{ steps.changes.outputs.cppcheck_sources }}
+      semgrep_targets: ${{ steps.changes.outputs.semgrep_targets }}
+      semgrep_full_scan: ${{ steps.changes.outputs.semgrep_full_scan }}
+      cmake_format_files: ${{ steps.changes.outputs.cmake_format_files }}
+      workflow_security_targets: ${{ steps.changes.outputs.workflow_security_targets }}
+      dependency_scan_targets: ${{ steps.changes.outputs.dependency_scan_targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install classifier dependencies
+        run: |
+          if ! command -v rg > /dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ripgrep
+          fi
+      - name: Classify changes
+        id: changes
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Missing header-expansion tools must not produce an empty target set.
+          command -v rg
+          tools/ci_changed_files.sh --base "$CI_BASE_SHA" --head HEAD --out-dir "$RUNNER_TEMP/ci-changes"

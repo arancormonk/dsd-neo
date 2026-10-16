@@ -26,6 +26,10 @@ jobs:
   test-msvc-debug-seed:
     name: Windows • Debug • ctest (MSVC x64, cache seed)
     runs-on: windows-latest
+    concurrency:
+      group: ci-worker-12
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 180
     permissions:
       actions: read
@@ -125,7 +129,7 @@ jobs:
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset win-msvc-debug -N | Select-Object -Last 1
-          ctest --preset win-msvc-debug --output-on-failure
+          ctest --preset win-msvc-debug --parallel 2 --output-on-failure
 
       - name: Show sccache stats
         if: always()

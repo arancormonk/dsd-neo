@@ -18,9 +18,19 @@ permissions:
   pull-requests: read
 
 jobs:
+  # A classifier error or missing output runs the affected checks in full.
+  changes:
+    if: github.event_name == 'pull_request'
+    # Keep the local workflow syntax understood by actionlint 1.7.12.
+    uses: ./.github/workflows/ci-changes.yml # zizmor: ignore[self-repository]
+
   repository-guardrails:
     name: repository guardrails
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -40,6 +50,10 @@ jobs:
   script-lint:
     name: shell/workflow lint
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -92,8 +106,14 @@ jobs:
           retention-days: 7
 
   cmake-format:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.cmake_format_files != '0') }}
     name: cmake format
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -147,6 +167,10 @@ jobs:
   gitleaks:
     name: gitleaks
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       security-events: write
@@ -177,8 +201,14 @@ jobs:
           retention-days: 7
 
   zizmor:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.workflow_security_targets != '0') }}
     name: zizmor
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       security-events: write
@@ -245,8 +275,14 @@ jobs:
           retention-days: 7
 
   osv-scan:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.dependency_scan_targets != '0') }}
     name: osv scan
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       security-events: write
@@ -293,8 +329,14 @@ jobs:
           retention-days: 7
 
   warnings-as-errors:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: warnings as errors
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-08
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -339,8 +381,14 @@ jobs:
         run: cmake --build --preset dev-debug -j
 
   fuzz-smoke:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: fuzz smoke
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-01
+      cancel-in-progress: false
+      queue: max
     env:
       CC: clang
       CXX: clang++
@@ -392,6 +440,10 @@ jobs:
   fuzz-extended:
     name: fuzz extended
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-01
+      cancel-in-progress: false
+      queue: max
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     env:
       CC: clang

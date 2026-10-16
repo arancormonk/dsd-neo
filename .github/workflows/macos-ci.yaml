@@ -20,13 +20,25 @@ permissions:
   contents: read
 
 jobs:
+  # A classifier error or missing output runs the affected checks in full.
+  changes:
+    if: github.event_name == 'pull_request'
+    # Keep the local workflow syntax understood by actionlint 1.7.12.
+    uses: ./.github/workflows/ci-changes.yml # zizmor: ignore[self-repository]
+
   # Debug build plus the full ctest suite on the shipped macOS architecture. The
   # DMG jobs build Release with tests off, so without this job no test ever ran
   # against AppleClang, libc++, ld64 or BSD libc. Runs on push as well, so main
   # keeps a warm ccache for pull requests.
   test-debug-arm64:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: macOS • Debug • ctest (arm64)
     runs-on: macos-latest
+    concurrency:
+      group: ci-worker-13
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 45
     permissions:
       contents: read
@@ -273,7 +285,7 @@ jobs:
           export PATH="$RUNNER_TEMP/gnu-gcc:$PATH"
           gcc --version | head -n 1
           ctest --preset dev-debug -N | tail -n 1
-          ctest --preset dev-debug --output-on-failure
+          ctest --preset dev-debug --parallel 2 --output-on-failure
 
       - name: Show ccache stats
         if: always()
@@ -283,6 +295,10 @@ jobs:
   package-portable-dmg:
     name: Package portable DMG
     runs-on: macos-latest
+    concurrency:
+      group: ci-worker-13
+      cancel-in-progress: false
+      queue: max
     if: github.event_name != 'pull_request'
     permissions:
       actions: read
@@ -904,6 +920,10 @@ jobs:
     name: Publish portable DMG
     needs: package-portable-dmg
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     if: >-
       github.repository == 'arancormonk/dsd-neo' &&
       (startsWith(github.ref, 'refs/tags/v') ||

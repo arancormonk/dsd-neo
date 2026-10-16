@@ -63,8 +63,13 @@ if [[ ${#FILTERED[@]} -eq 0 ]]; then
 fi
 
 LOG_FILE=".actionlint.local.out"
+# actionlint 1.7.12 predates GitHub's queue: max support (upstream #654).
+# Validate every runner slot first, including the exact queue value and its
+# cancel-in-progress setting, then ignore only that obsolete syntax diagnostic.
+python3 tools/check_ci_concurrency.py
 set +e
-actionlint "${FILTERED[@]}" 2>&1 | tee "$LOG_FILE"
+actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$' \
+  "${FILTERED[@]}" 2>&1 | tee "$LOG_FILE"
 rc=${PIPESTATUS[0]}
 set -e
 

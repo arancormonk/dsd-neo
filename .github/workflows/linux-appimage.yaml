@@ -19,7 +19,12 @@ permissions:
 
 jobs:
   build-appimage:
+    name: build-appimage (${{ matrix.arch }})
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
     permissions:
       actions: read
       attestations: write
@@ -28,8 +33,13 @@ jobs:
       id-token: write
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        arch: [x86_64, aarch64]
+        include:
+          - arch: x86_64
+            ci_group: ci-worker-07
+          - arch: aarch64
+            ci_group: ci-worker-07
     env:
       APPIMAGE_DEPS_DIR: ${{ github.workspace }}/.deps/appimage-${{ matrix.arch }}
       APPIMAGE_CCACHE_DIR: ${{ github.workspace }}/.ccache/appimage-${{ matrix.arch }}
@@ -547,6 +557,10 @@ jobs:
     name: Publish AppImage (${{ matrix.arch }})
     needs: build-appimage
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
     if: >-
       github.repository == 'arancormonk/dsd-neo' &&
       (startsWith(github.ref, 'refs/tags/v') ||
@@ -557,8 +571,13 @@ jobs:
       contents: write
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        arch: [x86_64, aarch64]
+        include:
+          - arch: x86_64
+            ci_group: ci-fast-2
+          - arch: aarch64
+            ci_group: ci-fast-2
     steps:
       - name: Checkout release helpers
         if: startsWith(github.ref, 'refs/tags/v')

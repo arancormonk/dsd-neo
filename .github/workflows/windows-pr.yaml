@@ -22,8 +22,20 @@ permissions:
   contents: read
 
 jobs:
+  # A classifier error or missing output runs the affected checks in full.
+  changes:
+    if: github.event_name == 'pull_request'
+    # Keep the local workflow syntax understood by actionlint 1.7.12.
+    uses: ./.github/workflows/ci-changes.yml # zizmor: ignore[self-repository]
+
   build-native-msvc:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     runs-on: windows-latest
+    concurrency:
+      group: ci-worker-12
+      cancel-in-progress: false
+      queue: max
     permissions:
       actions: read
       contents: read
@@ -121,8 +133,14 @@ jobs:
   # Windows. Pull requests may restore vcpkg binaries but never write them;
   # windows-ctest-seed writes them.
   test-msvc-debug:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: Windows • Debug • ctest (MSVC x64)
     runs-on: windows-latest
+    concurrency:
+      group: ci-worker-12
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 180
     permissions:
       actions: read
@@ -218,7 +236,7 @@ jobs:
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset win-msvc-debug -N | Select-Object -Last 1
-          ctest --preset win-msvc-debug --output-on-failure
+          ctest --preset win-msvc-debug --parallel 2 --output-on-failure
 
       - name: Show sccache stats
         if: always()
