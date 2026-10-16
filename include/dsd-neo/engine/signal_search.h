@@ -18,6 +18,13 @@ typedef void (*dsd_signal_search_publish_fn)(const dsd_signal_search_status*, co
 int dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
                                    dsd_signal_search_publish_fn observer, void* user, char* error, size_t capacity);
 int dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_signal_search_control* action);
+/** Whether @p action is valid for the running search now, without acting on it: 0 with the frequency it acts on (the
+ * current hit's, or frequency_hz for UNAVOID and AVOID_FREQUENCY), -1 for a stale session or hit. */
+int dsd_engine_signal_search_target(const dsd_state* state, const dsd_signal_search_control* action,
+                                    uint32_t* frequency);
+/** Show @p message in the running search's status (an action's refusal decided outside the coordinator). It stays
+ * until an action takes effect; a stopped or failed search, or another session, keeps its own message. */
+void dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, const char* message);
 int dsd_engine_signal_search_tick(dsd_opts* opts, dsd_state* state);
 int dsd_engine_signal_search_active(const dsd_state* state);
 int dsd_engine_signal_search_should_yield(const dsd_opts* opts, dsd_state* state);

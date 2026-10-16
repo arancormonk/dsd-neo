@@ -79,7 +79,14 @@ Generated (do not edit/commit):
     publishes, captures or reports evidence. An analog visit's
     500 ms quiet timing starts only at the monitor's first verdict on the landed channel
     (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s. `DSD_SEARCH_ACTION_UNAVOID`
-    lifts a session avoid by frequency. Published status carries `owned` (a coordinator
+    lifts a session avoid by frequency; `DSD_SEARCH_ACTION_AVOID_FREQUENCY` (appended, hit ID
+    may be 0) adds one, a duplicate succeeding and the frequency being visited being left as
+    `AVOID` leaves it. A full session list refuses either avoid and publishes "The avoid list
+    is full" in `status.message`; any action that takes effect clears an earlier refusal (an
+    ERROR phase keeps its message). `dsd_engine_signal_search_target()` validates an action
+    against the live coordinator without acting and gives the frequency it acts on;
+    `dsd_engine_signal_search_notice()` shows a refusal decided outside the coordinator in
+    the running session's status. Published status carries `owned` (a coordinator
     holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
     frequency are restored on exit: a search Stop tunes back, running the carrier boundary
     and acquisition reset as each visit's tune does, and its retune carries the session's
@@ -1801,7 +1808,16 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     retries it; a history retry compacts every retained record, so nothing is appended
     twice. The worker survives QML teardown; it never reads live decoder state. History
     and avoid revisions let frontends copy history only when it changed. The control
-    actions mirror the session's own avoid list (cleared when it stops). A rejected start
+    actions mirror the session's own avoid list (cleared when it stops), only after the
+    coordinator accepted the avoid, and with the frequency `dsd_engine_signal_search_target()`
+    resolved on the decoder thread, never an older published hit; a stale session or hit
+    changes neither list. `dsd_app_signal_search_permanent_avoid()` returns
+    `DSD_APP_SEARCH_AVOID_ADDED`/`DUPLICATE`/`FULL`/`INVALID`. `AVOID_PERMANENT` is
+    permanent-first: validate, save (a full list refuses with a notice and no skip or session
+    avoid), then the session's avoid (the current hit, or by frequency for a history row's
+    hit ID 0); a full session list after the save is reported as "Saved as a permanent
+    avoid; this session's avoid list is full" (`APP_SIGNAL_SEARCH_PROVENANCE`,
+    `APP_SIGNAL_SEARCH_STORE`). A rejected start
     with no coordinator left publishes an unowned error, and
     `dsd_app_frontend_runtime_stop()` retires any status left behind
     (`dsd_app_signal_search_session_ended()`). A rejected restart of a paused coordinator
@@ -5323,8 +5339,29 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   expansion and the history limit reset on close and on a new session). The Now panel's
   height depends on width and font scale only: each line is a fixed-height `Text` sized
   from `FontMetrics`, and its action grid takes three equal columns when the widest label
-  any cell can show fits, else two, for any cell count (`tst_signal_search.qml`). Its
-  liveness cue marks each new `liveSeq`. Native status is copied on a 250 ms timer; history and the
+  any cell can show fits, else two, for any cell count; its sixth cell, More, opens the
+  detection menu (`tst_signal_search.qml`). Its
+  liveness cue marks each new `liveSeq`. Each Recent detections row has an `IconButton`
+  opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
+  Explore here, Start for each distinct saved system its `matches[].systemUid` resolves to
+  (an avoided site's row disabled with its reason), Save as system, Avoid this session
+  while a search owns the tuner (`SignalSearchModel::avoidFrequency()`), and Avoid
+  permanently or Remove permanent avoid (`avoidPermanently()`: through the decoder thread
+  while a search runs, the store directly when none does). The verdicts arrive as the
+  status message or the model's error. Leaving for another session is one Main operation,
+  `leaveSearchFor(request)` (`{kind: "explore", system, remember: false}` or
+  `{kind: "saved", uid}`): it abandons the search's start, closes the screen and runs the
+  request through `pendingRestart` once the host is Idle (stopping it from Starting,
+  Running or Failed). A saved request is checked (`savedStartRefusal()`) before the stop
+  and again in `finishPendingRestart()`, which now shows the refusal for an avoided site
+  instead of declining silently. Explore here (`exploreHereSystem()`) is
+  `systemForHit()` renamed Exploring, untrunked, on the `effectiveSource()` kind (an
+  Airspy map only stays on an Airspy); `startWithMap(sys, row, scan, options)` records
+  `options.remember` in `attemptedSource` and `pendingStartRemember` (through a USB wait),
+  and only a remembered explore session writes `prefs.exploreFreqMhz` when it ends.
+  `retrySource()` carries the attempted system: a failed search is retried by reopening
+  the screen and running its `startSearch()` (arm, then start), and edited by reopening
+  it (`tst_signal_search_handoff.qml`). Native status is copied on a 250 ms timer; history and the
   avoid lists only when their store revisions move. Back delegates to Main's session
   policy; a search a coordinator owns (`status.owned`) is a navigation root so its controls
   remain accessible after Activity recreation. Range edits apply on paused restart.

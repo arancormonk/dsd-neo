@@ -124,7 +124,7 @@ main(void) {
     dsd_app_signal_search_store_flush();
     assert(store_error());
     assert(dsd_mkdir(late.dir, 0700) == 0);
-    dsd_app_signal_search_permanent_avoid(462575000);
+    assert(dsd_app_signal_search_permanent_avoid(462575000) == DSD_APP_SEARCH_AVOID_ADDED);
     assert(wait_error_cleared());
     assert(file_size(late.journal) == record);
     assert(file_size(late.avoids) > 0);
@@ -146,7 +146,7 @@ main(void) {
     publish(4);
     dsd_app_signal_search_store_flush();
     assert(store_error());
-    dsd_app_signal_search_permanent_avoid(462600000);
+    assert(dsd_app_signal_search_permanent_avoid(462600000) == DSD_APP_SEARCH_AVOID_ADDED);
     dsd_app_signal_search_store_flush();
     assert(store_error());
     assert(file_size(blocked.avoids) > 0);
@@ -164,7 +164,7 @@ main(void) {
     assert(dsd_mkdir(stuck.dir, 0700) == 0);
     assert(dsd_app_signal_search_store_open(stuck.journal) == 0);
     assert(dsd_mkdir(stuck.avoids, 0700) == 0);
-    dsd_app_signal_search_permanent_avoid(462625000);
+    assert(dsd_app_signal_search_permanent_avoid(462625000) == DSD_APP_SEARCH_AVOID_ADDED);
     dsd_app_signal_search_store_flush();
     assert(store_error());
     publish(5);
@@ -182,7 +182,7 @@ main(void) {
     paths_init(&closing, root, "closing");
     assert(dsd_app_signal_search_store_open(closing.journal) == 0);
     publish(6);
-    dsd_app_signal_search_permanent_avoid(462650000);
+    assert(dsd_app_signal_search_permanent_avoid(462650000) == DSD_APP_SEARCH_AVOID_ADDED);
     dsd_app_signal_search_store_flush();
     assert(store_error());
     assert(dsd_mkdir(closing.dir, 0700) == 0);
@@ -191,7 +191,37 @@ main(void) {
     assert(file_size(closing.journal) == record);
     dsd_app_signal_search_store_close();
 
+    // Each permanent avoid says what it did: added, already there, no room, or no channel at all.
+    store_paths limits;
+    paths_init(&limits, root, "limits");
+    assert(dsd_mkdir(limits.dir, 0700) == 0);
+    assert(dsd_app_signal_search_store_open(limits.journal) == 0);
+    const uint64_t first_revision = dsd_app_signal_search_avoids_revision();
+    assert(dsd_app_signal_search_permanent_avoid(450000000) == DSD_APP_SEARCH_AVOID_ADDED);
+    const uint64_t added_revision = dsd_app_signal_search_avoids_revision();
+    assert(added_revision != first_revision);
+    assert(dsd_app_signal_search_permanent_avoid(450000000) == DSD_APP_SEARCH_AVOID_DUPLICATE);
+    assert(dsd_app_signal_search_permanent_avoid(0) == DSD_APP_SEARCH_AVOID_INVALID);
+    assert(dsd_app_signal_search_avoids_revision() == added_revision);
+    for (uint32_t i = 1; i < DSD_SEARCH_MAX_AVOIDS; ++i) {
+        assert(dsd_app_signal_search_permanent_avoid(450000000U + i * 12500U) == DSD_APP_SEARCH_AVOID_ADDED);
+    }
+    const uint64_t full_revision = dsd_app_signal_search_avoids_revision();
+    assert(dsd_app_signal_search_permanent_avoid(470000000) == DSD_APP_SEARCH_AVOID_FULL);
+    // A full list still recognises what it holds, and a refusal leaves it as it was.
+    assert(dsd_app_signal_search_permanent_avoid(450012500) == DSD_APP_SEARCH_AVOID_DUPLICATE);
+    assert(dsd_app_signal_search_avoids_revision() == full_revision);
+    static uint32_t all[DSD_SEARCH_MAX_AVOIDS + 1];
+    assert(dsd_app_signal_search_avoids_get(all, DSD_SEARCH_MAX_AVOIDS + 1) == DSD_SEARCH_MAX_AVOIDS);
+    // Lifting one makes room again.
+    assert(dsd_app_signal_search_avoid_remove(450000000) == 0);
+    assert(dsd_app_signal_search_permanent_avoid(470000000) == DSD_APP_SEARCH_AVOID_ADDED);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error());
+    dsd_app_signal_search_store_close();
+
     // Failed replacements removed their temporary files.
+    paths_remove(&limits);
     paths_remove(&clean);
     paths_remove(&late);
     paths_remove(&blocked);

@@ -136,6 +136,35 @@ start_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd
     return 1;
 }
 
+/* A permanent avoid is saved first, and only then is the session's own avoid made, so a full permanent list changes
+   nothing at all. A history row (hit_id 0) names its frequency, and the session avoids it by frequency. */
+static int
+avoid_permanently(dsd_opts* opts, dsd_state* state, const dsd_signal_search_control* control) {
+    dsd_signal_search_control session = *control;
+    if (!session.hit_id) {
+        session.action = DSD_SEARCH_ACTION_AVOID_FREQUENCY;
+    }
+    uint32_t frequency = 0;
+    if (dsd_engine_signal_search_target(state, &session, &frequency)) {
+        return 2;
+    }
+    const int saved = dsd_app_signal_search_permanent_avoid(frequency);
+    if (saved != DSD_APP_SEARCH_AVOID_ADDED && saved != DSD_APP_SEARCH_AVOID_DUPLICATE) {
+        dsd_engine_signal_search_notice(state, control->session_id,
+                                        saved == DSD_APP_SEARCH_AVOID_FULL ? "The permanent avoid list is full"
+                                                                           : "This frequency cannot be avoided");
+        return 2;
+    }
+    if (dsd_engine_signal_search_control(opts, state, &session)) {
+        /* Validated above on this thread, so only a full session list refuses. */
+        dsd_engine_signal_search_notice(state, control->session_id,
+                                        "Saved as a permanent avoid; this session's avoid list is full");
+        return 1;
+    }
+    dsd_app_signal_search_session_avoid_add(control->session_id, frequency);
+    return 1;
+}
+
 static int
 control_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd) {
     if (cmd->n != sizeof(dsd_signal_search_control)) {
@@ -143,17 +172,21 @@ control_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c
     }
     dsd_signal_search_control control;
     DSD_MEMCPY(&control, cmd->data, sizeof(control));
-    dsd_signal_search_status before;
-    dsd_app_signal_search_status_get(&before, NULL, 0);
-    if (dsd_engine_signal_search_control(opts, state, &control)) {
+    if (control.action == DSD_SEARCH_ACTION_AVOID_PERMANENT) {
+        return avoid_permanently(opts, state, &control);
+    }
+    /* The frequency an avoid mirrors is the one the coordinator validates now, never an older status copy's hit. */
+    uint32_t frequency = 0;
+    if (dsd_engine_signal_search_target(state, &control, &frequency)
+        || dsd_engine_signal_search_control(opts, state, &control)) {
         return 2;
     }
     switch (control.action) {
         case DSD_SEARCH_ACTION_AVOID:
-            dsd_app_signal_search_session_avoid_add(control.session_id, before.hit.frequency_hz);
+        case DSD_SEARCH_ACTION_AVOID_FREQUENCY:
+            dsd_app_signal_search_session_avoid_add(control.session_id, frequency);
             break;
-        case DSD_SEARCH_ACTION_AVOID_PERMANENT: dsd_app_signal_search_permanent_avoid(before.hit.frequency_hz); break;
-        case DSD_SEARCH_ACTION_UNAVOID: dsd_app_signal_search_session_avoid_remove(control.frequency_hz); break;
+        case DSD_SEARCH_ACTION_UNAVOID: dsd_app_signal_search_session_avoid_remove(frequency); break;
         default: break;
     }
     return 1;

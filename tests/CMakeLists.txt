@@ -4380,7 +4380,12 @@ if(DSD_ENABLE_QT_UI)
         foreach(
             _case
             IN
-            ITEMS settings_layout licenses_screen signal_search receiver_choice
+            ITEMS
+                settings_layout
+                licenses_screen
+                signal_search
+                signal_search_handoff
+                receiver_choice
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(

@@ -57,9 +57,13 @@ Window {
     function retrySource() {
         if (!attemptedSource || decoderHost.sessionActive || decoderHost.transitioning)
             return;
+        // The attempt itself, not just its kind: a failed Signal search start
+        // is retried as a search, and an Explore-here start as that frequency.
         pendingRestart = {
             kind: attemptedSource.kind,
-            uid: attemptedSource.uid
+            uid: attemptedSource.uid,
+            system: attemptedSource.system,
+            remember: attemptedSource.remember !== false
         };
         if (decoderHost.sessionState === 4)
             decoderHost.stop();
@@ -70,7 +74,10 @@ Window {
         cancelPendingRestart();
         if (!attemptedSource)
             return;
-        if (attemptedSource.kind === "explore") {
+        if (attemptedSource.system && attemptedSource.system.signalSearch) {
+            // A failed search is edited where it was set up.
+            mainRoot.openSignalSearchOn(attemptedSource.system);
+        } else if (attemptedSource.kind === "explore") {
             openExploreSetup();
         } else {
             var row = attemptedSource.kind === "scan" ? scanLists.rowForUid(attemptedSource.uid) : savedSystems.rowForUid(attemptedSource.uid);
@@ -117,10 +124,29 @@ Window {
         var request = pendingRestart;
         pendingRestart = null;
         if (request.kind === "explore") {
-            startExploring();
+            if (request.system && request.system.signalSearch) {
+                // A search starts from its screen: its ranges are armed there.
+                mainRoot.openSignalSearchOn(request.system);
+                signalSearchScreen.startSearch();
+            } else if (request.system && request.remember === false) {
+                // Explore here: that detection's frequency, without becoming
+                // where Explore resumes.
+                mainRoot.startWithMap(request.system, -1, false, {
+                    remember: false
+                });
+            } else {
+                startExploring();
+            }
             return;
         }
         var scan = request.kind === "scan";
+        if (!scan) {
+            var refusal = savedStartRefusal(request.uid);
+            if (refusal.length) {
+                startError = refusal;
+                return;
+            }
+        }
         var row = scan ? scanLists.rowForUid(request.uid) : savedSystems.rowForUid(request.uid);
         if (row < 0) {
             startError = qsTr("This source was removed. Choose another source.");
@@ -128,12 +154,81 @@ Window {
         }
         if (scan)
             startScanList(row);
-        else if (!savedSystems.get(row).avoidSite)
+        else
             startSystem(row);
+    }
+    /** Why saved system @p uid cannot start now, or empty when it can. */
+    function savedStartRefusal(uid) {
+        var row = savedSystems.rowForUid(uid);
+        if (row < 0)
+            return qsTr("This source was removed. Choose another source.");
+        var system = savedSystems.get(row);
+        if (system.avoidSite)
+            return qsTr("“%1” is avoided. Remove the avoid in its site list to start it.").arg(system.name);
+        return "";
+    }
+    /**
+     * Leave Signal search for another session, as one operation.
+     *
+     * @a request is {kind: "explore", system, remember: false} or
+     * {kind: "saved", uid}. The search's own start is abandoned first (its arm
+     * and any USB-access wait, so a late grant cannot turn the replacement into
+     * a search), the screen closes, and the request runs once the decoder is
+     * idle. A saved system is checked before anything stops, and again when it
+     * starts.
+     */
+    function leaveSearchFor(request) {
+        if (request.kind === "saved") {
+            var refusal = savedStartRefusal(request.uid);
+            if (refusal.length) {
+                mainRoot.dismissedFailure = "";
+                startError = refusal;
+                return;
+            }
+        }
+        abandonSignalSearchStart();
+        cancelPendingRestart();
+        mainRoot.signalSearchOpen = false;
+        var state = decoderHost.sessionState;
+        pendingRestart = request;
+        if (state === 1 || state === 2 || state === 4)
+            decoderHost.stop();
+        else if (state === 0)
+            finishPendingRestart();
+        // Stopping: finished on Idle, as any pending restart is.
+    }
+    /** Explore here: the detection's own receiver settings, mode and gain. */
+    function exploreHereSystem(hit, screenSource) {
+        var source = mainRoot.sessionSystem && mainRoot.sessionSystem.signalSearch ? mainRoot.sessionSystem : screenSource;
+        var system = Object.assign({}, signalSearchScreen.searchModel.systemForHit(hit, source));
+        system.name = qsTr("Exploring");
+        system.trunking = false;
+        delete system.signalSearch;
+        delete system.searchUnresolved;
+        delete system.uid;
+        // The receiver attached now, as every Explore start resolves it. An
+        // Airspy's own settings (its serial among them) only go with an Airspy.
+        var kind = mainRoot.effectiveSource(system.sourceType);
+        if (kind !== system.sourceType) {
+            system.sourceType = kind;
+            if (kind === "airspy")
+                system.gainDb = -1;
+        }
+        if (system.sourceType !== "airspy")
+            delete system.airspy;
+        return system;
+    }
+    /** Open Signal search on the receiver @p system ran on. */
+    function openSignalSearchOn(system) {
+        signalSearchScreen.seed(system.sourceType || "usb", system.host || prefs.searchHost || "192.168.1.10", system.port || prefs.searchPort || 1234);
+        mainRoot.signalSearchOpen = true;
     }
     // The system map waiting for USB access and its row (-1 for exploration).
     property var pendingStart: null
     property int pendingStartRow: -1
+    // Whether the waiting start, once granted, may become where Explore
+    // resumes: an Explore-here start keeps false through the permission dialog.
+    property bool pendingStartRemember: true
     // Leaving Signal search abandons the start it asked for: closing the screen
     // (its Back, the system Back, the window), a later Start it refuses, or Stop.
     // The arm is cancelled, so a USB grant still finishing that start would run a
@@ -373,6 +468,9 @@ Window {
     // it makes the card a lie and mis-files the calls heard afterwards. Set at
     // start, and again if the user asks to explore from where they are.
     property bool exploring: false
+    // Whether this explore session writes where it got to back to Explore's
+    // prefs; false for Explore here.
+    property bool exploreRemembered: true
     // Sampled while an explore session runs, not read at the end of one: the
     // metrics are cleared the moment the session stops, so asking then would
     // persist a zero and lose the frequency the user had found.
@@ -429,8 +527,12 @@ Window {
             var sys = mainRoot.pendingStart;
             var row = mainRoot.pendingStartRow;
             var scan = mainRoot.pendingScanList;
+            var options = {
+                remember: mainRoot.pendingStartRemember
+            };
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
+            mainRoot.pendingStartRemember = true;
             // Issue #580: a backup flow holds the screen, and a restore replaces
             // the setup this start would run on. The grant ends the wait and
             // starts nothing.
@@ -446,7 +548,7 @@ Window {
                 mainRoot.signalSearchOpen = false;
             }
             if (sys)
-                mainRoot.startWithMap(sys, row, scan);
+                mainRoot.startWithMap(sys, row, scan, options);
         }
     }
 
@@ -456,9 +558,12 @@ Window {
         if (!monitorMode) {
             // Where the exploring got to, so the next one resumes there rather
             // than back at the start frequency.
-            if (mainRoot.exploring && mainRoot.lastExploreFreqMhz.length > 0)
+            // An Explore-here session went where a detection was, which is not
+            // where the user's own exploring got to.
+            if (mainRoot.exploring && mainRoot.exploreRemembered && mainRoot.lastExploreFreqMhz.length > 0)
                 prefs.exploreFreqMhz = mainRoot.lastExploreFreqMhz;
             mainRoot.exploring = false;
+            mainRoot.exploreRemembered = true;
             mainRoot.spectrumOpen = false;
             mainRoot.talkgroupsOpen = false;
             sessionRadio.visible = false;
@@ -547,17 +652,22 @@ Window {
      * alternative, a second start path, would have to re-implement the USB
      * permission dance below, and would get it wrong on exactly the install
      * where it matters: a fresh one.
+     *
+     * @a options.remember (default true) is whether an explore session may
+     * become where Explore resumes; it is kept through a USB-access wait.
      */
-    function startWithMap(sys, row, scan) {
+    function startWithMap(sys, row, scan, options) {
         cancelPendingRestart();
         mainRoot.awaitingSessionInitialized = false;
         mainRoot.sessionReachedRunning = false;
         if (!sys || !sys.sourceType)
             return;
+        var remember = !options || options.remember !== false;
         attemptedSource = {
             kind: scan ? "scan" : row < 0 ? "explore" : "saved",
             uid: sys.uid || "",
-            system: Object.assign({}, sys)
+            system: Object.assign({}, sys),
+            remember: remember
         };
         completionMessage = "";
         var wantedSerial = sys.sourceType === "airspy" ? String((sys.airspy || {}).serial || "").toUpperCase() : "";
@@ -572,6 +682,7 @@ Window {
             mainRoot.pendingStart = sys;
             mainRoot.pendingStartRow = row;
             mainRoot.pendingScanList = !!scan;
+            mainRoot.pendingStartRemember = remember;
             decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, String((sys.airspy || {}).serial || ""));
             return;
         }
@@ -629,6 +740,7 @@ Window {
         // saved is a thing to listen to, and the spectrum watches it. Only a
         // session with no saved system behind it is free to wander.
         mainRoot.exploring = !scan && (row < 0) && !sys.signalSearch;
+        mainRoot.exploreRemembered = remember;
         // Belongs to the session that just ended. Carried into this one it would be
         // written back to prefs on stop as if it were where this exploring got to —
         // a frequency from two sessions ago, on a session that may never have moved.
@@ -985,6 +1097,7 @@ Window {
                 // later whether or not the request was honoured.
                 commands.releaseTuner();
                 mainRoot.exploring = true;
+                mainRoot.exploreRemembered = true;
                 // Seeded here rather than waiting for the next tuner reading: the
                 // session may never move again, and an empty value would leave the
                 // stop handler with nothing to remember this band by.
@@ -1086,6 +1199,19 @@ Window {
             sys.bandwidthKhz = 48;
             mainRoot.startWithMap(sys, -1, false);
             mainRoot.spectrumOpen = false;
+        }
+        onExploreDetection: function (hit) {
+            mainRoot.leaveSearchFor({
+                kind: "explore",
+                system: mainRoot.exploreHereSystem(hit, mainRoot.exploreSystem(sourceType, host, port, hit.freqMHz)),
+                remember: false
+            });
+        }
+        onStartSavedSystem: function (uid) {
+            mainRoot.leaveSearchFor({
+                kind: "saved",
+                uid: uid
+            });
         }
         onSaveDetection: function (hit) {
             var source = mainRoot.sessionSystem || mainRoot.exploreSystem(sourceType, host, port, hit.freqMHz);

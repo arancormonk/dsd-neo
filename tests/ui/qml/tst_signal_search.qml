@@ -28,6 +28,8 @@ Item {
         property int arms: 0
         property string armError: ""
         function control(action, session, hit) { actions = [action, session, hit]; return true; }
+        function avoidFrequency(session, frequency) { actions = ["session", session, frequency]; return true; }
+        function avoidPermanently(session, frequency) { actions = ["permanent", session, frequency]; return true; }
         function removeSessionAvoid(frequency) { lifted = lifted.concat(["session:" + frequency]); return true; }
         function removeAvoid(frequency) { lifted = lifted.concat(["permanent:" + frequency]); }
         function arm() { arms++; return armError; }
@@ -40,6 +42,7 @@ Item {
         source: uiDir + "/SignalSearchScreen.qml"
         onLoaded: {
             item.searchModel = model;
+            item.systems = systemsStub;
             // As Main.qml binds it: failure: mainRoot.failureText.
             item.failure = Qt.binding(function () { return root.hostFailure; });
         }
@@ -49,6 +52,14 @@ Item {
     SignalSpy { id: closed; target: loader.item; signalName: "closed" }
     SignalSpy { id: started; target: loader.item; signalName: "start" }
     SignalSpy { id: refused; target: loader.item; signalName: "startRefused" }
+    SignalSpy { id: explored; target: loader.item; signalName: "exploreDetection" }
+    SignalSpy { id: startedSaved; target: loader.item; signalName: "startSavedSystem" }
+    // The saved systems a detection's matches name, as savedSystems answers.
+    QtObject {
+        id: systemsStub
+        property var byUid: ({"uid-a": {uid: "uid-a", name: "Warehouse"}, "uid-b": {uid: "uid-b", name: "Dock", avoidSite: true}})
+        function getByUid(uid) { return byUid[uid] || {}; }
+    }
     TestCase {
         name: "SignalSearch"
         when: windowShown
@@ -81,6 +92,11 @@ Item {
             closed.clear();
             started.clear();
             refused.clear();
+            explored.clear();
+            startedSaved.clear();
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            if (menu)
+                menu.visible = false;
         }
         // The panel is narrower than a phone: the strip beside it is scrim.
         function tapBeside(sheet) {
@@ -606,7 +622,7 @@ Item {
                     }
                     compare(hold.x, holdX, "Hold and Release Hold share one cell");
                     compare(hold.width, holdWidth);
-                    for (var cellName of ["searchHold", "searchSkip", "searchAvoidSession", "searchAvoidPermanent", "searchSave"]) {
+                    for (var cellName of ["searchHold", "searchSkip", "searchAvoidSession", "searchAvoidPermanent", "searchSave", "searchMore"]) {
                         var label = buttonLabel(findChild(screen, cellName));
                         verify(!label.truncated, cellName + " shows its whole label in " + st.tag);
                     }
@@ -614,6 +630,9 @@ Item {
             }
             var actions = findChild(screen, "searchActions");
             compare(actions.columns, 2, "a phone is two columns wide");
+            compare(actions.rows, 3, "six cells, three rows");
+            var more = findChild(screen, "searchMore");
+            compare(more.y, 2 * (actions.cellHeight + actions.spacing), "More closes the last row");
             compare(actions.labelLines, data.scale > 1 ? 2 : 1);
             model.status = Object.assign({}, base, {phase: 1});
             verify(!findChild(screen, "searchStatusLine").truncated, "the status line wraps onto its second line");
@@ -630,6 +649,8 @@ Item {
             var save = findChild(loader.item, "searchSave");
             var skip = findChild(loader.item, "searchSkip");
             compare(save.width, skip.width);
+            compare(actions.rows, 2);
+            compare(findChild(loader.item, "searchMore").width, skip.width);
             verify(actions.widest + 2 * Ui.Theme.cardPadding <= actions.cellWidth);
         }
         // Each fresh live measurement marks the cue, even one that reads the same
@@ -772,6 +793,162 @@ Item {
             model.status = Object.assign({}, listening, {phase: 4, livePowerValid: true, livePower: -51, liveSeq: 21});
             compare(cue.marks, marks + 1);
             verify(cue.visible);
+        }
+        function menuTexts() {
+            return findChild(loader.item, "searchDetectionMenu").actions.map(function (a) { return a.text + (a.enabled === false ? " (disabled)" : ""); });
+        }
+        function menuItem(name) {
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            verify(menu.visible);
+            var item = findChild(menu, name);
+            verify(item !== null && item.visible, name);
+            return item;
+        }
+        function historyHit(extra) {
+            return Object.assign({id: "40", session: "17", freqMHz: "462.575000", frequency: 462575000, power: -40, confirmed: false, ended: true, matches: []}, extra || {});
+        }
+        // Each detection row offers what can be done with it, by state: saved
+        // systems it matched (an avoided one disabled, saying why), avoiding it
+        // this session only while one runs, and the permanent avoid both ways.
+        function test_history_menu_per_state_data() {
+            var matched = [{systemUid: "uid-a"}, {systemUid: "uid-a"}, {systemUid: "uid-b"}, {systemUid: "gone"}];
+            return [
+                {tag: "unmatched, searching", hit: {}, session: true, avoided: false,
+                    want: ["Explore here", "Save as system", "Avoid this session", "Avoid permanently"]},
+                {tag: "matched, searching", hit: {matches: matched}, session: true, avoided: false,
+                    want: ["Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Avoid this session", "Avoid permanently"]},
+                {tag: "no session", hit: {}, session: false, avoided: false,
+                    want: ["Explore here", "Save as system", "Avoid permanently"]},
+                {tag: "permanently avoided", hit: {}, session: true, avoided: true,
+                    want: ["Explore here", "Save as system", "Avoid this session", "Remove permanent avoid"]},
+                {tag: "permanently avoided, no session", hit: {matches: matched}, session: false, avoided: true,
+                    want: ["Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Remove permanent avoid"]}
+            ];
+        }
+        function test_history_menu_per_state(data) {
+            var screen = loader.item;
+            screen.sessionActive = data.session;
+            if (!data.session)
+                model.status = {phase: 0, session: "17", owned: false};
+            model.avoids = data.avoided ? [462575000] : [];
+            model.history = [historyHit(data.hit)];
+            wait(0);
+            var more = findChild(screen, "searchHistoryActions");
+            verify(more !== null && more.visible);
+            compare(more.accessibleName, "Actions for 462.5750 MHz");
+            verify(more.width >= Ui.Theme.minimumTouchSize && more.height >= Ui.Theme.minimumTouchSize);
+            more.activate();
+            var menu = findChild(screen, "searchDetectionMenu");
+            verify(menu.visible);
+            compare(menu.title, "462.5750 MHz");
+            compare(menuTexts(), data.want);
+            if (data.hit.matches) {
+                compare(findChild(menu, "actionMenuDescription2").text, "Avoided; remove the avoid in its site list to start it");
+                verify(!menuItem("searchActionStart1").enabled);
+            }
+            verify(!findChild(screen, "searchStartPause").enabled || !findChild(screen, "searchStartPause").parent.enabled, "the screen under the menu takes no taps");
+            menu.cancel();
+            model.history = [];
+        }
+        // Every row action does what it says, on the row it was opened for.
+        function test_history_menu_actions() {
+            var screen = loader.item;
+            model.history = [historyHit({matches: [{systemUid: "uid-a"}]})];
+            wait(0);
+            var open = function () { findChild(screen, "searchHistoryActions").activate(); };
+            open();
+            menuItem("searchActionExplore").activate();
+            compare(explored.count, 1);
+            compare(explored.signalArguments[0][0].frequency, 462575000);
+            open();
+            menuItem("searchActionStart0").activate();
+            compare(startedSaved.count, 1);
+            compare(startedSaved.signalArguments[0][0], "uid-a");
+            open();
+            menuItem("searchActionSave").activate();
+            compare(saved.count, 1);
+            compare(saved.signalArguments[0][0].id, "40");
+            open();
+            menuItem("searchActionAvoidSession").activate();
+            compare(model.actions.join(","), "session,17,462575000");
+            open();
+            menuItem("searchActionAvoidPermanent").activate();
+            compare(model.actions.join(","), "permanent,17,462575000");
+            model.avoids = [462575000];
+            open();
+            menuItem("searchActionRemovePermanent").activate();
+            compare(model.lifted.join(","), "permanent:462575000");
+            // The menu acts on the row it opened for, even if the list moved meanwhile.
+            open();
+            model.history = [historyHit({id: "41", frequency: 451000000, freqMHz: "451.000000"})];
+            menuItem("searchActionExplore").activate();
+            compare(explored.signalArguments[1][0].frequency, 462575000);
+            model.history = [];
+        }
+        // The Now panel's More leaves for the current detection: Explore here
+        // and the saved systems it matched; the rest are its own buttons.
+        function test_now_more_offers_leaving_for_the_detection() {
+            var screen = loader.item;
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {matches: [{systemUid: "uid-a"}, {systemUid: "uid-b"}]})});
+            var more = findChild(screen, "searchMore");
+            verify(more.visible);
+            compare(more.accessibleName, "More actions for this detection");
+            more.clicked();
+            compare(findChild(screen, "searchDetectionMenu").title, "463.5521 MHz");
+            compare(menuTexts(), ["Explore here", "Start “Warehouse”", "Start “Dock” (disabled)"]);
+            menuItem("searchActionExplore").activate();
+            compare(explored.count, 1);
+            compare(explored.signalArguments[0][0].id, "42");
+            more.clicked();
+            menuItem("searchActionStart0").activate();
+            compare(startedSaved.signalArguments[0][0], "uid-a");
+            // Hidden with the other actions between detections.
+            model.status = Object.assign({}, model.status, {phase: 1, hit: {}});
+            verify(!more.visible);
+        }
+        // An avoid the decoder refuses (either list full, from the Now panel or
+        // a row) is the status message, which the screen shows; with no session
+        // a refused permanent avoid is the model's error.
+        function test_avoid_refusals_are_shown_data() {
+            return [{tag: "session list full", message: "The avoid list is full"},
+                {tag: "permanent list full", message: "The permanent avoid list is full"},
+                {tag: "permanent saved, session full", message: "Saved as a permanent avoid; this session's avoid list is full"}];
+        }
+        function test_avoid_refusals_are_shown(data) {
+            var message = findChild(loader.item, "searchMessage");
+            verify(!message.visible);
+            findChild(loader.item, "searchAvoidPermanent").clicked();
+            compare(model.actions.join(","), "6,17,42");
+            model.status = Object.assign({}, model.status, {message: data.message});
+            verify(message.visible);
+            compare(message.text, data.message);
+            loader.item.sessionActive = false;
+            model.status = {phase: 0, session: "17"};
+            model.error = "The permanent avoid list is full";
+            compare(message.text, "The permanent avoid list is full");
+            model.error = "";
+        }
+        function test_capture_menu() {
+            model.history = [historyHit({matches: [{systemUid: "uid-a"}, {systemUid: "uid-b"}]})];
+            wait(0);
+            findChild(loader.item, "searchHistoryActions").activate();
+            wait(100);
+            grabImage(root).save("/tmp/dsd-signal-search-menu.png");
+            findChild(loader.item, "searchDetectionMenu").cancel();
+            model.history = [historyHit({matches: [{systemUid: "uid-a"}], knownLabel: "Warehouse · 462.5750 MHz"}), historyHit({id: "39", confirmed: true, protocol: "DMR", ended: false})];
+            var scroll = findChild(loader.item, "searchScroll");
+            for (var scale of [1.0, 1.6]) {
+                Ui.Theme.fontScale = scale;
+                wait(50);
+                var row = findChild(loader.item, "searchHistoryRow");
+                scroll.contentY = Math.max(0, row.mapToItem(scroll.contentItem, 0, 0).y - 60);
+                wait(100);
+                grabImage(root).save(scale > 1 ? "/tmp/dsd-signal-search-history-large.png" : "/tmp/dsd-signal-search-history.png");
+                var actions = findChild(loader.item, "searchHistoryActions");
+                verify(actions.mapToItem(row, 0, 0).x + actions.width <= row.width + 0.5, "the row's actions stay inside it");
+            }
+            scroll.contentY = 0;
+            model.history = [];
         }
         function test_capture_searching() {
             model.status = Object.assign({}, model.status, {phase: 1, rangeName: "Local UHF", rangeStartMHz: "450.000", rangeEndMHz: "460.000", hit: {}});

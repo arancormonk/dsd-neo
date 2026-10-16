@@ -93,7 +93,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 54);
+    assert(owner >= 42 && owner <= 55);
     if (defer) {
         --defer;
         return 1;
@@ -691,6 +691,111 @@ test_status_names_running_range(dsd_opts* o, dsd_state* s, dsd_signal_search_con
     assert(status.phase == DSD_SEARCH_STOPPED);
 }
 
+/* Avoiding a frequency named by a history row: no hit is needed, the visit it names is left, and the session's list is
+   bounded with a visible refusal. */
+static void
+test_avoid_by_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    dsd_signal_search_config one = *config;
+    one.session_id = 55;
+    one.avoid_count = 0;
+    one.range_count = 1;
+    one.ranges[0].start_hz = 100000000;
+    one.ranges[0].end_hz = 100025000;
+    one.ranges[0].digital = 0;
+    one.ranges[0].max_visit_ms = 0;
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100025000);
+    const uint64_t hit = status.hit.hit_id;
+
+    // What an action would act on, resolved without acting: the live hit's frequency, or the one named.
+    dsd_signal_search_control avoid_hit = {55, hit, DSD_SEARCH_ACTION_AVOID, 0};
+    uint32_t resolved = 0;
+    assert(dsd_engine_signal_search_target(s, &avoid_hit, &resolved) == 0 && resolved == 100025000);
+    avoid_hit.hit_id = hit + 1;
+    assert(dsd_engine_signal_search_target(s, &avoid_hit, &resolved) < 0);
+    avoid_hit.hit_id = hit;
+    avoid_hit.session_id = 56;
+    assert(dsd_engine_signal_search_target(s, &avoid_hit, &resolved) < 0);
+
+    // Another frequency: avoided, and the visit goes on. Again: still fine.
+    dsd_signal_search_control by_frequency = {55, 0, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500};
+    resolved = 0;
+    assert(dsd_engine_signal_search_target(s, &by_frequency, &resolved) == 0 && resolved == 100012500);
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.hit.ended);
+    // A stale session or no frequency is refused.
+    by_frequency.session_id = 56;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    by_frequency.session_id = 55;
+    by_frequency.frequency_hz = 0;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    // The frequency being visited: left, as AVOID leaves it.
+    by_frequency.frequency_hz = 100025000;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+
+    // Later spans exclude both: only 100.000 MHz is visited, this pass and the next.
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100000000);
+    land(o, s);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    tick(o, s);
+    assert(status.pass == 2);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100000000);
+
+    // A full list refuses a new frequency and says so; one already on it still succeeds and clears the refusal.
+    by_frequency.frequency_hz = 200000000;
+    for (uint32_t i = 2; i < DSD_SEARCH_MAX_AVOIDS; ++i, by_frequency.frequency_hz += 12500) {
+        assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    }
+    assert(status.message[0] == '\0');
+    const uint64_t revision = status.revision;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    assert(strcmp(status.message, "The avoid list is full") == 0 && status.revision > revision);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.hit.ended); // nothing was skipped
+    avoid_hit = (dsd_signal_search_control){55, status.hit.hit_id, DSD_SEARCH_ACTION_AVOID, 0};
+    assert(dsd_engine_signal_search_control(o, s, &avoid_hit) < 0); // the current hit has no room either
+    assert(strcmp(status.message, "The avoid list is full") == 0);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.hit.ended);
+    by_frequency.frequency_hz = 100012500;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    assert(status.message[0] == '\0');
+
+    // A refusal decided outside the coordinator is shown in its status, for its own session only.
+    dsd_engine_signal_search_notice(s, 56, "elsewhere");
+    assert(status.message[0] == '\0');
+    dsd_engine_signal_search_notice(s, 55, "The permanent avoid list is full");
+    assert(strcmp(status.message, "The permanent avoid list is full") == 0);
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+    // No search: nothing to resolve, nothing to show.
+    by_frequency.frequency_hz = 100012500;
+    assert(dsd_engine_signal_search_target(s, &by_frequency, &resolved) < 0);
+    assert(dsd_engine_signal_search_target(NULL, &by_frequency, &resolved) < 0);
+    dsd_engine_signal_search_notice(s, 55, "after the stop");
+    assert(strcmp(status.message, "after the stop") != 0);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -853,6 +958,7 @@ main(void) {
     test_restore_retune_carries_family(o, s, &config);
     test_capture_freshness(o, s, &config);
     test_status_names_running_range(o, s, &config);
+    test_avoid_by_frequency(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

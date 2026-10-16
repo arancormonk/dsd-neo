@@ -42,7 +42,22 @@ void dsd_app_signal_search_session_avoids_clear(void);
 void dsd_app_signal_search_session_ended(void);
 /** Decoder-thread publication; no disk access. */
 void dsd_app_signal_search_publish(const dsd_signal_search_status*, const dsd_signal_search_hit*, void*);
-void dsd_app_signal_search_permanent_avoid(uint32_t frequency);
+
+/** dsd_app_signal_search_permanent_avoid() results. */
+typedef enum {
+    DSD_APP_SEARCH_AVOID_ADDED = 0,
+    /** Already avoided: the list is as asked, so this is no refusal. */
+    DSD_APP_SEARCH_AVOID_DUPLICATE = 1,
+    /** DSD_SEARCH_MAX_AVOIDS reached; nothing changed. */
+    DSD_APP_SEARCH_AVOID_FULL = -1,
+    /** Frequency 0 names no channel; nothing changed. */
+    DSD_APP_SEARCH_AVOID_INVALID = -2
+} dsd_app_search_avoid_result;
+
+/** Add a permanent avoid. Thread-safe; the store saves it in the background.
+ * DSD_SEARCH_ACTION_AVOID_PERMANENT runs it on the decoder thread before the session's own avoid, after validating
+ * the target; a control with hit_id 0 names a history row's frequency_hz instead of the current hit. */
+int dsd_app_signal_search_permanent_avoid(uint32_t frequency);
 #ifdef __cplusplus
 }
 #endif

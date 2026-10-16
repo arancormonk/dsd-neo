@@ -460,8 +460,8 @@ make_backup(TestHost& host) {
         QVariantMap range = search.defaultRange();
         range.insert("name", "Marine");
         expect("save search range", search.saveRange(-1, range).isEmpty());
-        dsd_app_signal_search_permanent_avoid(156800000U);
-        dsd_app_signal_search_permanent_avoid(162550000U);
+        expect("avoid 156800000", dsd_app_signal_search_permanent_avoid(156800000U) >= DSD_APP_SEARCH_AVOID_ADDED);
+        expect("avoid 162550000", dsd_app_signal_search_permanent_avoid(162550000U) >= DSD_APP_SEARCH_AVOID_ADDED);
     }
     expect("write backup settings",
            dsd_qt::AppPrefs::replacePortable(
@@ -636,7 +636,7 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
                && write_file(at("diagnostics/log.txt"), "log\n") && write_file(at("unknown.dat"), "unknown\n"));
     {
         dsd_qt::SignalSearchModel search(&host, nullptr);
-        dsd_app_signal_search_permanent_avoid(400000000U);
+        expect("avoid 400000000", dsd_app_signal_search_permanent_avoid(400000000U) >= DSD_APP_SEARCH_AVOID_ADDED);
     }
     dsd_app_signal_search_store_close();
     expect("old settings", dsd_qt::AppPrefs::replacePortable({{"rr/username", "someone"}, {"tuner/gainDb", "12"}}));

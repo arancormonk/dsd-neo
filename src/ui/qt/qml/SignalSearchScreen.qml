@@ -41,6 +41,13 @@ Item {
     signal startRefused
     signal stop
     signal saveDetection(var hit)
+    // Leave the search for an Explore session on a detection, or for a saved
+    // system it matched; Main ends the search first.
+    signal exploreDetection(var hit)
+    signal startSavedSystem(string uid)
+    // The saved systems a detection's matches name (Main's savedSystems).
+    property var systems: typeof savedSystems !== "undefined" ? savedSystems : null
+    readonly property bool menuOpen: detectionMenu.visible
     function followSessionSource() {
         var source = sessionSource || {};
         if (!ownedSession || ["usb", "airspy", "rtltcp"].indexOf(source.sourceType) < 0)
@@ -96,6 +103,21 @@ Item {
     }
     DiscardDialog {
         id: discard
+    }
+    /** Start a search on the screen's receiver: arm the ranges, then ask Main
+     * to start the session. Main's retry of a failed search runs this too. */
+    function startSearch() {
+        if (!searchModel)
+            return;
+        var error = searchModel.arm();
+        if (error.length) {
+            localFailure = error;
+            startRefused();
+            return;
+        }
+        var ranges = searchModel.ranges.filter(function (r) { return r.enabled; });
+        localFailure = "";
+        start(sourceType, host, Number(portField.text), ranges[0].startMHz);
     }
     function act(action) {
         if (searchModel)
@@ -193,8 +215,57 @@ Item {
         { name: "searchSkip", label: qsTr("Skip"), action: 4 },
         { name: "searchAvoidSession", label: qsTr("Avoid this session"), action: 5 },
         { name: "searchAvoidPermanent", label: qsTr("Avoid permanently"), action: 6 },
-        { name: "searchSave", label: qsTr("Save as system"), save: true }
+        { name: "searchSave", label: qsTr("Save as system"), save: true },
+        { name: "searchMore", label: qsTr("More"), more: true, accessibleName: qsTr("More actions for this detection") }
     ]
+    /** The saved systems @p h matched, once each, in match order: the ones still saved. */
+    function savedTargets(h) {
+        var seen = {}, found = [];
+        for (var match of (h.matches || [])) {
+            var uid = String(match.systemUid || "");
+            if (!uid.length || seen[uid] || !systems)
+                continue;
+            seen[uid] = true;
+            var system = systems.getByUid(uid);
+            if (system && system.uid)
+                found.push({ uid: uid, name: system.name || qsTr("Saved system"), avoided: !!system.avoidSite });
+        }
+        return found;
+    }
+    /** What can be done with detection @p h: leaving for it from the Now
+     * panel's More, or everything from its history row (@p all). */
+    function detectionActions(h, all) {
+        var items = [{ text: qsTr("Explore here"), key: "explore", objectName: "searchActionExplore" }];
+        var targets = savedTargets(h);
+        for (var i = 0; i < targets.length; ++i) {
+            var target = targets[i];
+            items.push({ text: qsTr("Start “%1”").arg(target.name), key: "start", uid: target.uid, objectName: "searchActionStart" + i, enabled: !target.avoided,
+                description: target.avoided ? qsTr("Avoided; remove the avoid in its site list to start it") : "" });
+        }
+        if (!all)
+            return items;
+        items.push({ text: qsTr("Save as system"), key: "save", objectName: "searchActionSave" });
+        if (ownedSession && phase !== 0)
+            items.push({ text: qsTr("Avoid this session"), key: "avoidSession", objectName: "searchActionAvoidSession" });
+        if (permanentlyAvoided(h))
+            items.push({ text: qsTr("Remove permanent avoid"), key: "removePermanent", objectName: "searchActionRemovePermanent" });
+        else
+            items.push({ text: qsTr("Avoid permanently"), key: "avoidPermanent", objectName: "searchActionAvoidPermanent" });
+        return items;
+    }
+    function hitHz(h) {
+        return Number(h.frequency) || Math.round(Number(h.freqMHz || 0) * 1e6);
+    }
+    function permanentlyAvoided(h) {
+        var hz = hitHz(h);
+        return !!searchModel && (searchModel.avoids || []).some(function (f) { return Number(f) === hz; });
+    }
+    function openDetectionMenu(h, all) {
+        detectionMenu.target = Object.assign({}, h);
+        detectionMenu.title = qsTr("%1 MHz").arg(Util.mhzText(hitHz(h)));
+        detectionMenu.actions = detectionActions(h, all);
+        detectionMenu.open();
+    }
     FontMetrics { id: statusMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(13) }
     FontMetrics { id: frequencyMetrics; font.family: Theme.mono; font.pixelSize: Theme.fontSize(28) }
     FontMetrics { id: strengthMetrics; font.family: Theme.mono; font.pixelSize: Theme.fontSize(14) }
@@ -204,6 +275,8 @@ Item {
     Rectangle { anchors.fill: parent; color: Theme.bg }
     Column {
         id: header
+        // The menu's rows take passive taps: nothing under it may take one too.
+        enabled: !screen.menuOpen
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -245,6 +318,7 @@ Item {
     }
     PlexFlickable {
         id: scroll
+        objectName: "searchScroll"
         anchors.top: header.bottom
         anchors.topMargin: Theme.gap
         anchors.bottom: footer.top
@@ -253,6 +327,7 @@ Item {
         anchors.right: parent.right
         contentHeight: content.height + Theme.gap
         clip: true
+        enabled: !screen.menuOpen
         Column {
             id: content
             x: (parent.width - width) / 2
@@ -341,6 +416,8 @@ Item {
                         // off, and the height still depends on nothing else.
                         readonly property real textWidth: width - liveCue.width - 8
                         readonly property int lines: {
+                            // advanceWidth() is a call, which a binding does not
+                            // track: reading the font re-measures on a scale change.
                             var font = strengthMetrics.font;
                             return strengthMetrics.advanceWidth(qsTr("Now %1 · detected %2 dBFS").arg("-100.0").arg("-100.0")) <= textWidth ? 1 : 2;
                         }
@@ -504,8 +581,11 @@ Item {
                                 // Hidden, not removed, while nothing is received.
                                 visible: screen.receiving
                                 text: cell.label
+                                accessibleName: cell.accessibleName || cell.label
                                 onClicked: {
-                                    if (cell.save)
+                                    if (cell.more)
+                                        screen.openDetectionMenu(screen.hit, false);
+                                    else if (cell.save)
                                         screen.saveDetection(Object.assign({}, screen.hit));
                                     else
                                         screen.act(cell.action);
@@ -635,16 +715,32 @@ Item {
                     objectName: "searchHistoryRow"
                     width: parent.width
                     spacing: 5
-                    Text { width: parent.width; text: modelData.freqMHz + " MHz · " + Number(modelData.power).toFixed(1) + " dBFS"; color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
-                    Text {
+                    Item {
                         width: parent.width
-                        text: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "")
-                        color: Theme.textSecondary
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(13)
-                        wrapMode: Text.Wrap
+                        height: Math.max(rowText.height, rowActions.height)
+                        Column {
+                            id: rowText
+                            width: parent.width - rowActions.width - 8
+                            spacing: 5
+                            Text { width: parent.width; text: modelData.freqMHz + " MHz · " + Number(modelData.power).toFixed(1) + " dBFS"; color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
+                            Text {
+                                width: parent.width
+                                text: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "")
+                                color: Theme.textSecondary
+                                font.family: Theme.sans
+                                font.pixelSize: Theme.fontSize(13)
+                                wrapMode: Text.Wrap
+                            }
+                        }
+                        IconButton {
+                            id: rowActions
+                            objectName: "searchHistoryActions"
+                            anchors.right: parent.right
+                            icon: "more"
+                            accessibleName: qsTr("Actions for %1 MHz").arg(Util.mhzText(screen.hitHz(modelData)))
+                            onClicked: screen.openDetectionMenu(modelData, true)
+                        }
                     }
-                    OutlineButton { text: qsTr("Save as system"); accessibleName: qsTr("Save %1 MHz as system").arg(modelData.freqMHz); onClicked: screen.saveDetection(Object.assign({}, modelData)) }
                     Rectangle { width: parent.width; height: 1; color: Theme.panelBorder }
                 }
             }
@@ -658,6 +754,7 @@ Item {
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
         spacing: 12
+        enabled: !screen.menuOpen
         GradientButton {
             objectName: "searchStartPause"
             width: screen.sessionActive ? (parent.width - 12) / 2 : parent.width
@@ -671,18 +768,35 @@ Item {
                         screen.act(1);
                     return;
                 }
-                var error = searchModel.arm();
-                if (error.length) {
-                    screen.localFailure = error;
-                    screen.startRefused();
-                    return;
-                }
-                var ranges = searchModel.ranges.filter(function (r) { return r.enabled; });
-                screen.localFailure = "";
-                screen.start(screen.sourceType, screen.host, Number(portField.text), ranges[0].startMHz);
+                screen.startSearch();
             }
         }
         OutlineButton { objectName: "searchStop"; visible: screen.sessionActive; width: (parent.width - 12) / 2; text: qsTr("Stop"); onClicked: screen.stop() }
     }
     SignalSearchRangeEditor { id: editor; searchModel: screen.searchModel; sourceType: screen.sourceType }
+    // One menu for a detection, from its history row or the Now panel's More.
+    // It acts on the snapshot it opened with: the row or the hit can change
+    // underneath while it is open.
+    ActionMenu {
+        id: detectionMenu
+        objectName: "searchDetectionMenu"
+        property var target: ({})
+        onTriggered: function (index) {
+            // Qualified: the action grid's id is "actions".
+            var item = detectionMenu.actions[index];
+            var h = detectionMenu.target;
+            if (item.key === "explore")
+                screen.exploreDetection(Object.assign({}, h));
+            else if (item.key === "start")
+                screen.startSavedSystem(item.uid);
+            else if (item.key === "save")
+                screen.saveDetection(Object.assign({}, h));
+            else if (item.key === "avoidSession")
+                searchModel.avoidFrequency(String(screen.status.session || ""), screen.hitHz(h));
+            else if (item.key === "avoidPermanent")
+                searchModel.avoidPermanently(String(screen.status.session || ""), screen.hitHz(h));
+            else if (item.key === "removePermanent")
+                searchModel.removeAvoid(screen.hitHz(h));
+        }
+    }
 }

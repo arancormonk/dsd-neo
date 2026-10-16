@@ -446,6 +446,61 @@ SignalSearchModel::unavoid(uint32_t frequency) {
     return true;
 }
 
+/* A frequency a control can carry: a whole, positive Hz value. */
+static bool
+controlFrequency(double frequency, uint32_t* hz) {
+    if (!std::isfinite(frequency) || frequency < 1 || frequency > UINT32_MAX) {
+        return false;
+    }
+    *hz = (uint32_t)std::lround(frequency);
+    return true;
+}
+
+bool
+SignalSearchModel::avoidFrequency(const QString& session, double frequency) {
+    dsd_signal_search_control c{};
+    c.action = DSD_SEARCH_ACTION_AVOID_FREQUENCY;
+    c.session_id = session.toULongLong();
+    if (!m_owned || c.session_id != m_session || !controlFrequency(frequency, &c.frequency_hz)) {
+        return false;
+    }
+    if (dsd_app_signal_search_control(&c) < 0) {
+        m_error = tr("The decoder did not accept this action.");
+        Q_EMIT changed();
+        return false;
+    }
+    return true;
+}
+
+bool
+SignalSearchModel::avoidPermanently(const QString& session, double frequency) {
+    dsd_signal_search_control c{};
+    if (!controlFrequency(frequency, &c.frequency_hz)) {
+        return false;
+    }
+    if (m_owned) {
+        /* Permanent first, then this session, both on the decoder thread once it has checked the session. */
+        c.action = DSD_SEARCH_ACTION_AVOID_PERMANENT;
+        c.session_id = session.toULongLong();
+        if (dsd_app_signal_search_control(&c) < 0) {
+            m_error = tr("The decoder did not accept this action.");
+            Q_EMIT changed();
+            return false;
+        }
+        return true;
+    }
+    const int saved = dsd_app_signal_search_permanent_avoid(c.frequency_hz);
+    const QString error = saved == DSD_APP_SEARCH_AVOID_FULL ? tr("The permanent avoid list is full")
+                          : saved < 0                        ? tr("This frequency cannot be avoided")
+                                                             : QString();
+    if (error != m_error) {
+        m_error = error;
+        Q_EMIT changed();
+    }
+    refresh();
+    return saved >= 0;
+}
+
 void
 SignalSearchModel::removeAvoid(double frequency) {
     if (std::isfinite(frequency) && frequency > 0 && frequency <= UINT32_MAX) {

@@ -632,7 +632,7 @@ search_valid_action(const search_coord* c, const dsd_signal_search_control* acti
     if (!action || action->session_id != c->status.session_id || c->status.phase == DSD_SEARCH_STOPPED) {
         return 0;
     }
-    if (action->action == DSD_SEARCH_ACTION_UNAVOID) {
+    if (action->action == DSD_SEARCH_ACTION_UNAVOID || action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY) {
         return action->frequency_hz != 0;
     }
     if (action->action >= DSD_SEARCH_ACTION_HOLD
@@ -642,17 +642,34 @@ search_valid_action(const search_coord* c, const dsd_signal_search_control* acti
     return 1;
 }
 
+int
+dsd_engine_signal_search_target(const dsd_state* state, const dsd_signal_search_control* action, uint32_t* frequency) {
+    const search_coord* c = state ? search_get(state) : NULL;
+    if (!c || !search_valid_action(c, action)) {
+        return -1;
+    }
+    if (frequency) {
+        const int by_frequency =
+            action->action == DSD_SEARCH_ACTION_UNAVOID || action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY;
+        *frequency = by_frequency ? action->frequency_hz : c->status.hit.frequency_hz;
+    }
+    return 0;
+}
+
 #ifdef USE_RADIO
-/* Avoid the current hit for the rest of the session and leave it; -1 when the avoid list is full. */
+/* Avoid @p frequency for the rest of the session, leaving it if it is being visited; -1 when the avoid list is full.
+   Avoiding a frequency already avoided succeeds. */
 static int
-search_avoid_hit(search_coord* c) {
-    if (!search_contains(c->config.avoids, c->config.avoid_count, c->status.hit.frequency_hz)) {
+search_avoid(search_coord* c, uint32_t frequency) {
+    if (!search_contains(c->config.avoids, c->config.avoid_count, frequency)) {
         if (c->config.avoid_count == DSD_SEARCH_MAX_AVOIDS) {
             return -1;
         }
-        c->config.avoids[c->config.avoid_count++] = c->status.hit.frequency_hz;
+        c->config.avoids[c->config.avoid_count++] = frequency;
     }
-    c->skip = 1;
+    if (c->visit && !c->status.hit.ended && c->status.hit.frequency_hz == frequency) {
+        c->skip = 1;
+    }
     return 0;
 }
 
@@ -710,7 +727,13 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
             break;
         case DSD_SEARCH_ACTION_AVOID:
         case DSD_SEARCH_ACTION_AVOID_PERMANENT:
-            if (search_avoid_hit(c)) {
+        case DSD_SEARCH_ACTION_AVOID_FREQUENCY:
+            /* A valid AVOID names the hit being visited, so it is left as well. */
+            if (search_avoid(c, action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY ? action->frequency_hz
+                                                                                    : c->status.hit.frequency_hz)) {
+                /* The refusal is the frontends' to show: the queue only said the command was taken. */
+                DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
+                search_publish(c, 0);
                 return -1;
             }
             break;
@@ -718,11 +741,27 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
         case DSD_SEARCH_ACTION_UNAVOID: search_unavoid(c, action->frequency_hz); break;
         default: return -1;
     }
+    /* An action that took effect replaces an earlier refusal; a search error stays until the session ends. */
+    if (c->status.phase != DSD_SEARCH_ERROR) {
+        c->status.message[0] = '\0';
+    }
     search_publish(c, 0);
     return 0;
 #else
     return -1;
 #endif
+}
+
+void
+// cppcheck-suppress constParameterPointer -- The coordinator attached to state publishes the message.
+dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, const char* message) {
+    search_coord* c = state ? search_get(state) : NULL;
+    if (!c || !message || c->status.session_id != session_id || c->status.phase == DSD_SEARCH_STOPPED
+        || c->status.phase == DSD_SEARCH_ERROR) {
+        return;
+    }
+    DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", message);
+    search_publish(c, 0);
 }
 
 #ifdef USE_RADIO

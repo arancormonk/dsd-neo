@@ -119,7 +119,10 @@ typedef enum {
     DSD_SEARCH_ACTION_AVOID,
     DSD_SEARCH_ACTION_AVOID_PERMANENT,
     /** Lift a session avoid by frequency_hz; not tied to a hit. */
-    DSD_SEARCH_ACTION_UNAVOID
+    DSD_SEARCH_ACTION_UNAVOID,
+    /** Avoid frequency_hz for the rest of the session (a history row: hit_id may be 0). Visiting it now leaves it, as
+     * DSD_SEARCH_ACTION_AVOID does; a full avoid list refuses and says so in the status message. */
+    DSD_SEARCH_ACTION_AVOID_FREQUENCY
 } dsd_signal_search_action;
 
 typedef struct {

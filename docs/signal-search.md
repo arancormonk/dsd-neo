@@ -90,16 +90,25 @@ While a search runs, the screen is laid out for what is on the air now:
   The strength line shows the live and detection levels
   (**Now -47.2 · detected -32.1 dBFS**, on two lines with the largest text);
   the range is named in the status line. Other lines that do not fit end in an
-  ellipsis, and the full text is available to screen readers. When several saved frequencies match, the panel names two and
-  counts the rest (**Saved: A / B +1**); the detection's history row lists them
-  all. Between detections the panel reads **Waiting for a signal**, shows the
-  phase (**Searching Air band…**, **Tuning…**, **Paused**) and the hint
-  **Strong signals open here to be identified and monitored.** (while searching,
-  tuning or paused; a stopped or failed search shows only its phase and
-  message), and keeps the
-  actions' space empty, so nothing below it moves as detections come and go. The actions sit in two columns, or three
-  where every label fits.
-- **Recent detections** shows the five newest; **Show more** adds 25.
+  ellipsis, and the full text is available to screen readers. When several
+  saved frequencies match, the panel names two and counts the rest
+  (**Saved: A / B +1**); the detection's history row lists them all. Between
+  detections the panel reads **Waiting for a signal**, shows the phase
+  (**Searching Air band…**, **Tuning…**, **Paused**) and the hint **Strong
+  signals open here to be identified and monitored.** (while searching, tuning
+  or paused; a stopped or failed search shows only its phase and message), and
+  keeps the actions' space empty, so nothing below it moves as detections come
+  and go. The six actions (**Hold**, **Skip**, **Avoid this session**, **Avoid
+  permanently**, **Save as system** and **More**) sit in two columns, or three
+  where every label fits. **More** offers **Explore here** and **Start** for
+  each saved system the detection matched.
+- **Recent detections** shows the five newest; **Show more** adds 25. Each row's
+  actions button (**Actions for 463.5521 MHz**) opens what can be done with that
+  detection: **Explore here**, **Start “<saved system>”** for each saved system
+  it matched, **Save as system**, **Avoid this session** (while a search runs),
+  and **Avoid permanently**, or **Remove permanent avoid** when it already is.
+  A matched system whose site is avoided is listed but cannot start: remove the
+  avoid in its site list first.
 - **Search ranges · 3 enabled** is collapsed; tap it to show the ranges. While
   paused, or before a search starts, the ranges are always shown with their
   edit controls. A range list opened by hand stays open until you leave the
@@ -133,9 +142,18 @@ from noise. That carrier is monitored as NFM with the display above.
 - **Avoid this session** lasts until the session ends, including across Activity
   recreation. Session avoids are listed under **Avoided this session**, and
   **Stop avoiding** lifts one for the following measurements; a frequency already
-  visited in the current pass returns with the next pass. **Avoid permanently** also saves it for
-  future searches; removing a permanent avoid during a search lifts it from the
-  running session too.
+  visited in the current pass returns with the next pass. A history row's avoid
+  works the same way, and leaves the frequency at once if the search is
+  visiting it. **Avoid permanently** also saves it for future searches;
+  removing a permanent avoid during a search lifts it from the running session
+  too. With no search running, a row's permanent avoid only saves it.
+- Each list holds 1,024 frequencies. A full list is said on the screen: **The
+  avoid list is full** for this session's list and **The permanent avoid list is
+  full** for the permanent one, and nothing changes, not even a skip. A
+  permanent avoid is saved first, so when only this session's list is full the
+  screen says **Saved as a permanent avoid; this session's avoid list is full**:
+  it applies from the next search. An avoid for a detection the search has
+  already left (the panel was a moment old) is refused and changes neither list.
 - **Pause** ends any call in progress on the channel and permits range edits. A search
   that fails (its input stalls, for example) ends that call too.
   **Resume** applies them and restarts the pass under the same session, retaining
@@ -146,6 +164,19 @@ from noise. That carrier is monitored as NFM with the display above.
 - A start waiting for Android USB permission belongs to the search: leaving Signal
   search, or a later **Start search** it refuses, cancels it, so a permission
   granted afterwards starts nothing.
+- **Explore here** and **Start “<saved system>”** leave the search for another
+  session. The search's own start is cancelled first (a USB permission granted
+  afterwards cannot turn the new session into a search), the screen closes, and
+  the running search stops; the new session starts once the decoder is idle.
+  Explore here tunes the detection's frequency with its receive mode, gain and
+  receiver settings, on the receiver attached now, and does not change where
+  Explore resumes from Home, even through a USB permission request. A saved
+  system starts as saved (keys, decoder and trunking). A system whose site is
+  avoided is refused with a message, before the search stops and again when the
+  new session would start. If Android recreates the Activity during the
+  handoff, the reopened app finds the search stopped and starts nothing.
+- **Retry** on a failed Signal search start opens Signal search again and starts
+  the search on the same receiver; **Edit** opens Signal search.
 - Android Back follows the existing background-listening preference. The native
   session and history worker continue when the foreground Activity is recreated,
   and the reopened screen takes its receiver (USB, Airspy or rtl_tcp server) from

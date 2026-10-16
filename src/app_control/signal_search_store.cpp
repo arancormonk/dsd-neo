@@ -640,16 +640,23 @@ dsd_app_signal_search_avoids_get(uint32_t* frequencies, size_t capacity) {
     return n;
 }
 
-extern "C" void
+extern "C" int
 dsd_app_signal_search_permanent_avoid(uint32_t frequency) {
-    std::lock_guard<std::mutex> lock(store.mutex);
-    if (std::find(store.avoids.begin(), store.avoids.end(), frequency) == store.avoids.end()
-        && store.avoids.size() < DSD_SEARCH_MAX_AVOIDS) {
-        store.avoids.push_back(frequency);
-        ++store.avoids_revision;
-        store.dirty_avoids = true;
-        store.wake.notify_all();
+    if (frequency == 0) {
+        return DSD_APP_SEARCH_AVOID_INVALID;
     }
+    std::lock_guard<std::mutex> lock(store.mutex);
+    if (std::find(store.avoids.begin(), store.avoids.end(), frequency) != store.avoids.end()) {
+        return DSD_APP_SEARCH_AVOID_DUPLICATE;
+    }
+    if (store.avoids.size() >= DSD_SEARCH_MAX_AVOIDS) {
+        return DSD_APP_SEARCH_AVOID_FULL;
+    }
+    store.avoids.push_back(frequency);
+    ++store.avoids_revision;
+    store.dirty_avoids = true;
+    store.wake.notify_all();
+    return DSD_APP_SEARCH_AVOID_ADDED;
 }
 
 extern "C" int

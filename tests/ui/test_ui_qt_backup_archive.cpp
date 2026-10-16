@@ -284,8 +284,8 @@ populate(TestHost& host) {
     QVariantMap range = search.defaultRange();
     range.insert("name", "Marine");
     expect("save search range", search.saveRange(-1, range).isEmpty());
-    dsd_app_signal_search_permanent_avoid(156800000U);
-    dsd_app_signal_search_permanent_avoid(162550000U);
+    expect("avoid 156800000", dsd_app_signal_search_permanent_avoid(156800000U) >= DSD_APP_SEARCH_AVOID_ADDED);
+    expect("avoid 162550000", dsd_app_signal_search_permanent_avoid(162550000U) >= DSD_APP_SEARCH_AVOID_ADDED);
 
     expect("write portable settings", dsd_qt::AppPrefs::replacePortable({{"decode/extraArgs", "-Z"},
                                                                          {"rr/username", "scanner"},

@@ -410,8 +410,8 @@ main(int argc, char** argv) {
     for (int i = 2; i <= 1005; ++i) {
         publish(i);
     }
-    dsd_app_signal_search_permanent_avoid(463550000);
-    dsd_app_signal_search_permanent_avoid(463550000);
+    assert(dsd_app_signal_search_permanent_avoid(463550000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(dsd_app_signal_search_permanent_avoid(463550000) == DSD_APP_SEARCH_AVOID_DUPLICATE);
     dsd_app_signal_search_store_flush();
     dsd_app_signal_search_store_close();
     assert(dsd_app_signal_search_store_open(journal.toUtf8().constData()) == 0);
@@ -739,6 +739,49 @@ main(int argc, char** argv) {
     dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
     model.refresh();
     assert(model.sessionAvoids().isEmpty() && !model.status().value(QStringLiteral("owned")).toBool());
+
+    // While a search owns the tuner, both history avoids go to the decoder thread, which checks the session first:
+    // nothing changes here until it has.
+    dsd_signal_search_status running = stopped;
+    running.revision = 6001;
+    running.phase = DSD_SEARCH_LISTENING;
+    running.owned = 1;
+    dsd_app_signal_search_publish(&running, nullptr, nullptr);
+    model.refresh();
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    assert(model.avoidPermanently(QStringLiteral("18"), 451000000) && startQueued());
+    assert(model.avoids().isEmpty());
+    reopenAdmission();
+    assert(!model.avoidFrequency(QStringLiteral("17"), 451000000)); // not the running session
+    assert(model.avoidFrequency(QStringLiteral("18"), 451000000) && startQueued());
+    reopenAdmission();
+    dsd_app_frontend_runtime_stop();
+    stopped.revision = 6002;
+    dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    model.refresh();
+    assert(model.avoids().isEmpty() && model.sessionAvoids().isEmpty());
+
+    // With no search running, a history row's permanent avoid changes the permanent list alone, at once; a full
+    // list is refused with a message, and an avoid for this session only needs a session.
+    assert(!model.avoidFrequency(QStringLiteral("18"), 451000000));
+    assert(model.avoidPermanently(QStringLiteral("18"), 451000000));
+    assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 451000000 && model.error().isEmpty());
+    assert(model.avoidPermanently(QString(), 451000000)); // already avoided: as asked
+    assert(model.avoids().size() == 1 && model.error().isEmpty());
+    assert(!model.avoidPermanently(QString(), 0) && !model.avoidPermanently(QString(), -5));
+    for (uint32_t i = 1; i < DSD_SEARCH_MAX_AVOIDS; ++i) {
+        assert(dsd_app_signal_search_permanent_avoid(451000000U + i * 12500U) == DSD_APP_SEARCH_AVOID_ADDED);
+    }
+    assert(!model.avoidPermanently(QString(), 470000000));
+    assert(model.error() == QStringLiteral("The permanent avoid list is full"));
+    assert((uint32_t)model.avoids().size() == DSD_SEARCH_MAX_AVOIDS);
+    for (const auto& avoided : model.avoids()) {
+        assert(dsd_app_signal_search_avoid_remove(avoided.toUInt()) == 0);
+    }
+    assert(model.avoidPermanently(QString(), 470000000) && model.error().isEmpty());
+    assert(dsd_app_signal_search_avoid_remove(470000000) == 0);
+    model.refresh();
+    assert(model.avoids().isEmpty());
 
     // A rejected start owns nothing, and decoder-session teardown retires it while keeping its message.
     dsd_signal_search_status rejected{};
