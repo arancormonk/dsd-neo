@@ -93,6 +93,18 @@ CI and local quality tools are tracked through:
 Hashed Python requirements are used where Python tooling is installed in CI.
 GitHub Actions are pinned to immutable commit SHAs by policy.
 
+Semgrep 1.179.0 pins `mcp==1.29.0`, which is affected by
+[GHSA-84m7-p3x7-pcfv](https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-84m7-p3x7-pcfv).
+The Semgrep requirements explicitly override that pin with `mcp==1.30.0`.
+Regenerate the complete hashed lockfile with the command in its header, including
+`--override .github/requirements/semgrep.in`. Install it with
+`python -m pip install --require-hashes --no-deps -r .github/requirements/semgrep.txt`
+in a dedicated Python 3.14 environment. CI checks that `pip check` reports only
+the exact Semgrep/MCP metadata conflict, then runs the Semgrep guardrails.
+Remove the override, `--no-deps`, and the expected-conflict check together when
+a Semgrep release accepts the patched SDK; regenerate the lockfile and require
+an ordinary `pip check` to pass. This affects CI tooling only.
+
 The C/C++ quality jobs run in the pinned Arch Linux image
 (`ARCHLINUX_BASE_DEVEL_IMAGE`) through `tools/ci_arch_toolchain.sh`, which takes
 clang, clang-tidy, clang-format and scan-build from the Arch repositories at run

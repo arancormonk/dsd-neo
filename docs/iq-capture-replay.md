@@ -43,6 +43,9 @@ Path handling:
 - `--iq-replay` and `--iq-info` accept the metadata path, the data path, or the bare name given to `--iq-capture`.
   A bare name resolves `<name>.json` first and then `<name>.iq.json`, so captures written before `.iq` was added
   still replay.
+- These are operator-selected local paths, including absolute paths and paths outside the working directory.
+  They are opened read-only with the current process's permissions; the CLI does not confine them to a capture
+  directory. The reader requires regular files and rejects final symlinks/reparse points where supported.
 - The `.json` suffix is matched case-insensitively, so `mycap.iq.JSON` is recognised as a sidecar on Windows.
 - A path that does not end in `.json` is read as a WAV recording first: a file that starts with a RIFF, RF64 or BW64
   WAVE header replays as one, whatever its extension, and no sidecar is needed. A sidecar beside it (`<path>.json` or
