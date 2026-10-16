@@ -501,6 +501,44 @@ test_basic_pulse_config_apply(void) {
     return rc;
 }
 
+/*
+ * Issue #701: a startup config's RTL-SDR or rtl_tcp rtl_bw_khz is an explicit DSP bandwidth request of its own, so it
+ * outlives the spec it builds: --iq-replay puts the replay in place of that input, and the replay's rate plan follows
+ * the request rather than the bandwidth its sidecar recorded. A config that names no bandwidth requests none.
+ */
+static int
+test_startup_rtl_bandwidth_is_an_explicit_request(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    int rc = 0;
+    static const dsdneoUserInputSource kSources[] = {DSDCFG_INPUT_RTL, DSDCFG_INPUT_RTLTCP};
+    for (size_t i = 0; i < sizeof kSources / sizeof kSources[0]; i++) {
+        dsd_opts_set_rtl_dsp_bw(opts, DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_input = 1;
+        cfg.input_source = kSources[i];
+        DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851.375M");
+        DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "127.0.0.1");
+        dsd_apply_user_config_to_opts_pre_cli(&cfg, opts, state);
+        rc |= expect_int_eq("startup config without a bandwidth requests none", opts->rtl_dsp_bw_source,
+                            DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+        cfg.rtl_bw_khz = 24;
+        dsd_apply_user_config_to_opts_pre_cli(&cfg, opts, state);
+        /* --iq-replay replaces the input the config built (cli_set_iqreplay_audio_dev()). */
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:capture.iq.json");
+        rc |= expect_int_eq("startup config bandwidth reaches the replay", opts->rtl_dsp_bw_khz, 24);
+        rc |= expect_int_eq("startup config bandwidth is an explicit request", opts->rtl_dsp_bw_source,
+                            DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    }
+    free_test_runtime(&runtime);
+    return rc;
+}
+
 static int
 test_input_warn_db_apply_clamps_to_window(void) {
     test_runtime runtime;
@@ -3521,6 +3559,7 @@ main(void) {
     int rc = 0;
     rc |= test_basic_pulse_config_apply();
     rc |= test_input_warn_db_apply_clamps_to_window();
+    rc |= test_startup_rtl_bandwidth_is_an_explicit_request();
     rc |= test_output_config_without_frontend_preserves_active_frontend();
     rc |= test_config_apply_under_row_tone_policy_keeps_the_row();
     rc |= test_ui_command_queue_applies_fifo();

@@ -3837,6 +3837,48 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
 }
 #endif
 
+#ifdef USE_RADIO
+/* Put back what a config apply's replay re-plan found (@p ctx, the apply's ui_cfg_rollback): the receive settings and
+   the rest of [mode], as a failed reopen puts them back (ui_cfg_settle_reopen()), and the requested DSP bandwidth. */
+static void
+apply_cfg_replay_restore(dsd_opts* opts, dsd_state* state, void* ctx) {
+    const ui_cfg_rollback* before = (const ui_cfg_rollback*)ctx;
+    ui_restore_receive_settings(opts, state, &before->receive);
+    ui_cfg_restore_mode_extras(opts, state, &before->mode);
+    dsd_opts_set_rtl_dsp_bw(opts, before->input.rtl_dsp_bw_khz, before->input.rtl_dsp_bw_source);
+}
+
+/* A config applied during an I/Q replay it leaves running (issue #701): its RTL-family [input]'s rtl_bw_khz is a
+   bandwidth request the replay's rate follows, and its [mode] can need another rate (TETRA's), so the replay re-plans
+   (svc_rtl_replay_replan_locked()) and reopens where it stopped. A plan no chain reaches, or a start that failed, puts
+   the receive settings, [mode] and the bandwidth back with the replay running as before, and fails the apply with the
+   reason, the rest of the config staying applied as a failed reopen leaves it; a start that left no stream at all
+   takes the failed reopen's path (ui_cfg_settle_reopen()). Returns 0, or -1 when the apply fails. Caller holds the P25
+   SM tick guard. */
+static int
+apply_cfg_replay_replan(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
+    if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx
+        || strncmp(before->input.audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
+        return 0;
+    }
+    if (cfg_uses_rtl_runtime(cfg) && cfg->rtl_bw_khz) {
+        dsd_opts_set_rtl_dsp_bw(opts, dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz),
+                                DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    }
+    char why[128];
+    const int replan = svc_rtl_replay_replan_locked(opts, state, "the config", apply_cfg_replay_restore, (void*)before,
+                                                    NULL, NULL, why, sizeof why);
+    if (replan == SVC_REPLAY_REPLAN_REFUSED) {
+        ui_set_rollback_toast(state, "Config not applied: ", why, 0);
+        return -1;
+    }
+    if (replan == SVC_REPLAY_REPLAN_FAILED) {
+        return ui_cfg_settle_reopen(opts, state, -1, before);
+    }
+    return 0;
+}
+#endif
+
 /* A reopen that replaced the stream the decoder read (issue #634): the engine ends the reception before it decodes the
    new one. A reopen that restarted the running UDP input, or lost it, puts back the options the config wrote, so the
    received-tone check that compares them (cfg_forget_rx_tone_on_boundary()) would see no change: the boundary is
@@ -5283,11 +5325,105 @@ decode_mode_drop_old_analog_block(const dsd_opts* opts, dsd_state* state, int wa
     }
 }
 
+/* Whether the command being applied holds the P25 SM tick guard (apply_cmd()): a replay re-plan from a mode change
+   (decode_mode_replan_replay()) restarts the stream under it, taking it only when the command does not. */
+static int g_apply_cmd_guard_held;
+
+#ifdef USE_RADIO
+/* What a mode change's replay re-plan reopened at (decode_mode_replan_replay()), for its toast. */
+typedef struct {
+    int reopened;
+    uint32_t dsp_rate_hz;
+    int resampled;
+} decode_mode_replan;
+
+/* The receive profile a mode change found (issue #701): the settings the staged preset replaced, and the requested
+   DSP bandwidth, which no preset sets but which the profile a refused re-plan puts back holds all the same. */
+typedef struct {
+    const dsd_scan_settings* settings;
+    int bw_khz;
+    int bw_source;
+} decode_mode_profile_before;
+
+static void
+decode_mode_restore_profile(dsd_opts* opts, dsd_state* state, void* ctx) {
+    const decode_mode_profile_before* before = (const decode_mode_profile_before*)ctx;
+    dsd_scan_settings_restore(before->settings, opts, state);
+    dsd_opts_set_rtl_dsp_bw(opts, before->bw_khz, before->bw_source);
+}
+
+/*
+ * A mode change during an I/Q replay (issue #701): a mode whose rate plan differs from the chain the replay runs (TETRA
+ * needs a multiple of 18 kHz, and leaving it returns to the requested bandwidth's chain) reopens the replay at the new
+ * chain where it stopped, before the mode publishes its profile at the new rate. A plan no chain reaches, or a start
+ * that failed, puts the profile from before the preset back, the replay running as before, and fails the change with
+ * the reason; a start that left no stream at all goes down the start-failure path every reopen takes
+ * (ui_radio_start_failed_locked()). Returns UI_CMD_APPLY_UNHANDLED for the change to go on, else its result.
+ */
+static int
+decode_mode_replan_replay(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, decode_mode_replan* out) {
+    DSD_MEMSET(out, 0, sizeof *out);
+    if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
+        return UI_CMD_APPLY_UNHANDLED;
+    }
+    const int take_guard = !g_apply_cmd_guard_held;
+    if (take_guard) {
+        p25_sm_tick_guard_enter();
+    }
+    decode_mode_profile_before before = {&g_analog_entry_staged, opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source};
+    ui_radio_input input_before;
+    ui_capture_radio_input(opts, state, &input_before);
+    char reason[96];
+    DSD_SNPRINTF(reason, sizeof reason, "the %s decoder", dsd_decode_mode_display_name(mode));
+    char why[128];
+    const int replan = svc_rtl_replay_replan_locked(opts, state, reason, decode_mode_restore_profile, &before,
+                                                    &out->dsp_rate_hz, &out->resampled, why, sizeof why);
+    int capture_stopped = 0;
+    int refused = 0;
+    if (replan == SVC_REPLAY_REPLAN_FAILED) {
+        refused = ui_radio_start_failed_locked(opts, state, &input_before, why, sizeof why, &capture_stopped);
+    }
+    if (take_guard) {
+        p25_sm_tick_guard_leave();
+    }
+    if (replan == SVC_REPLAY_REPLAN_KEPT) {
+        return UI_CMD_APPLY_UNHANDLED;
+    }
+    if (replan == SVC_REPLAY_REPLAN_REOPENED) {
+        out->reopened = 1;
+        return UI_CMD_APPLY_UNHANDLED;
+    }
+    if (replan == SVC_REPLAY_REPLAN_FAILED) {
+        ui_set_rollback_toast(state, refused ? "Refused: " : "Failed: ", why, capture_stopped);
+        return UI_CMD_APPLY_FAILED;
+    }
+    /* Refused: TETRA's advice names the rate the replay keeps and that its capture resamples to no TETRA rate. */
+    char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
+        char advice[DSD_TETRA_RATE_ADVICE_MAX];
+        (void)svc_tetra_rate_advice(opts, state, 0, advice, sizeof advice);
+        LOG_WARN("WARNING: %s (%s).\n", advice, why);
+        ui_set_toast(state, 8, "Failed: %s -> %s", dsd_decode_mode_display_name(mode), brief);
+    } else {
+        ui_set_toast(state, 5, "Failed: %s -> %s", dsd_decode_mode_display_name(mode), why);
+    }
+    return UI_CMD_APPLY_FAILED;
+}
+#endif
+
 /* The toast a mode change that took posts. TETRA switched on where the DSP rate is no multiple of 18 kHz is kept, but
    decodes nothing until the rate changes, so the toast says so and the log names the fix in full
-   (svc_tetra_rate_advice()). */
+   (svc_tetra_rate_advice()). A replay the change reopened at another rate says so (issue #701). */
 static void
-decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, int replay_reopened,
+                          uint32_t replay_rate_hz, int replay_resampled) {
+    if (replay_reopened && replay_rate_hz > 0U) {
+        char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_analog_width_format((int)replay_rate_hz, rate, sizeof rate);
+        ui_set_toast(state, 5, "Decoding %s: replay %s %s", dsd_decode_mode_display_name(mode),
+                     replay_resampled ? "resampled to" : "runs at", rate);
+        return;
+    }
     char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
     if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
         char advice[DSD_TETRA_RATE_ADVICE_MAX];
@@ -5378,6 +5514,21 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
         ui_set_toast(state, 4, "Decode mode not available");
         return UI_CMD_APPLY_UNSUPPORTED;
     }
+    int replay_reopened = 0;
+    uint32_t replay_rate_hz = 0U;
+    int replay_resampled = 0;
+#ifdef USE_RADIO
+    /* A replay's rate follows the mode (issue #701): reopened at the chain the new mode plans before its profile is
+       timed and published at that rate. */
+    decode_mode_replan replan;
+    const int replan_rc = decode_mode_replan_replay(opts, state, mode, &replan);
+    if (replan_rc != UI_CMD_APPLY_UNHANDLED) {
+        return replan_rc;
+    }
+    replay_reopened = replan.reopened;
+    replay_rate_hz = replan.dsp_rate_hz;
+    replay_resampled = replan.resampled;
+#endif
     opts->pulse_digi_out_channels = audio_channels;
     opts->pulse_digi_rate_out = audio_rate;
     /* The session's sinks were opened for the mode it started in: an analog start has no digital voice stream and
@@ -5417,7 +5568,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         reset_call_tracking(opts, state, 1);
     }
-    decode_mode_toast_applied(opts, state, mode);
+    decode_mode_toast_applied(opts, state, mode, replay_reopened, replay_rate_hz, replay_resampled);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -7335,7 +7486,10 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     /* A reopen whose start fails puts the receive side back (ui_cfg_settle_reopen()), so everything below sees the
        input, mode and widths the session ran, and publishes nothing for the settings the start refused; with no stream
        running before it there is nothing to put back, and no stream to publish to. */
-    const int radio_rc = apply_cfg_radio_input(opts, state, &cfg, &rollback);
+    int radio_rc = apply_cfg_radio_input(opts, state, &cfg, &rollback);
+    if (radio_rc == 0) {
+        radio_rc = apply_cfg_replay_replan(opts, state, &cfg, &rollback);
+    }
 #endif
     const cfg_input_before input_before = {old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
                                            old_effective_input_rate, old_staged_file_sample_rate};
@@ -7946,7 +8100,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
             p25_sm_tick_guard_enter();
         }
     }
+    g_apply_cmd_guard_held = guarded;
     const int result = apply_cmd_scoped(opts, state, c, guarded);
+    g_apply_cmd_guard_held = 0;
     if (guarded) {
         if (state && command_changes_call_verdict(c)) {
             dsd_p25p2_playout_note_policy(opts, state);

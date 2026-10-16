@@ -814,6 +814,39 @@ int svc_check_started_stream_analog(const dsd_opts* opts, int kind, int width_hz
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** Restart without acquiring; caller holds the P25 SM tick guard. */
 int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
+
+/** What svc_rtl_replay_replan_locked() did (issue #701). */
+typedef enum {
+    SVC_REPLAY_REPLAN_FAILED = -1,  /**< the profile is back, and no stream runs: the caller's start-failure path */
+    SVC_REPLAY_REPLAN_KEPT = 0,     /**< no replay runs, or it already runs the chain the options plan */
+    SVC_REPLAY_REPLAN_REOPENED = 1, /**< the replay reopened at the new chain where it stopped */
+    SVC_REPLAY_REPLAN_REFUSED = 2,  /**< the profile is back, and the replay runs its chain; @c why says why */
+} svc_replay_replan_result;
+
+/** Put back the receive profile a re-plan's caller found: frame flags, modulation, symbol profile, and the requested
+    DSP bandwidth with its source (dsd_opts_set_rtl_dsp_bw()). */
+typedef void (*svc_replay_profile_restore_fn)(dsd_opts* opts, dsd_state* state, void* ctx);
+
+/**
+ * @brief Re-plan a running I/Q replay's rate chain for the decode mode and DSP bandwidth the options now hold, and
+ *        reopen it where it stopped (issue #701). Caller holds the P25 SM tick guard; decoder thread.
+ *
+ * Does nothing unless the input in force is a replay (dsd_opts_input_is_iq_replay()) with a stream running, and
+ * nothing when the options plan the chain it runs. A plan no chain reaches is refused before anything stops: @p restore
+ * puts the caller's profile back and @p why gets the planner's reason. Otherwise the stream stops with the decode clock
+ * kept on the capture (the media time goes on from the checkpoint, so it never runs backwards), the reader's checkpoint
+ * is taken (rtl_stream_replay_checkpoint()), and a start resumes from it. A start that fails puts the profile back and
+ * starts the previous chain from the same checkpoint, and the refusal is reported; when that start fails too, the
+ * stream is stopped as any other stop stops it (svc_rtl_stop_locked()) and the caller's start-failure path runs.
+ *
+ * @param reason          What changed, for the log ("the TETRA decoder", "a 24 kHz DSP bandwidth").
+ * @param out_dsp_rate_hz [out] The DSP rate the new chain runs at; may be NULL.
+ * @param out_resampled   [out] 1 when the new chain resamples the capture; may be NULL.
+ * @return An svc_replay_replan_result.
+ */
+int svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
+                                 svc_replay_profile_restore_fn restore, void* restore_ctx, uint32_t* out_dsp_rate_hz,
+                                 int* out_resampled, char* why, size_t why_size);
 /**
  * @brief Start the input the options describe again after the start on the input that replaced it failed, or ran but
  * was undone, without acquiring; caller holds the P25 SM tick guard (issue #578).

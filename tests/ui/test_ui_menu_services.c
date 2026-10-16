@@ -607,6 +607,24 @@ rtl_stream_start(RtlSdrContext* ctx) {
     return g_rtl_start_result;
 }
 
+/* No replay stream runs here: a replay's run-time re-plan (issue #701) is APP_COMMAND_QUEUE's. */
+int
+rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
+                               size_t why_size) {
+    (void)opts;
+    (void)out_dsp_rate_hz;
+    (void)out_resampled;
+    (void)why;
+    (void)why_size;
+    return RTL_STREAM_REPLAN_NO_REPLAY;
+}
+
+int
+rtl_stream_replay_checkpoint(dsd_iq_replay_checkpoint* out) {
+    (void)out;
+    return -1;
+}
+
 /* What the last start recorded when its analog channel check refused it (issue #578): set by each case. */
 static int g_start_refused;
 static int g_start_refused_kind;
@@ -1555,7 +1573,8 @@ test_describe_start_failure(void) {
     g_start_refused_rate_hz = 7500;
     rc |= expect_int("AM default refusal", svc_describe_start_failure(&opts, why, sizeof why), 1);
     rc |= expect_str("AM default refusal names its 6 kHz", why,
-                     "AM 6 kHz does not fit the 7.5 kHz DSP rate (max 5.55 kHz); narrow the AM width");
+                     "AM 6 kHz does not fit the 7.5 kHz DSP rate (max 5.55 kHz); use a 8, 12, 16, 24, 48 or 72 kHz DSP "
+                     "bandwidth");
     /* (The DSD_NEO_CHANNEL_LPF=0 text is covered by APP_COMMAND_QUEUE: dsd_setenv() is stubbed here.) */
 
     /* No refusal recorded: the input that did not start, as the stream classifies its device string. */
@@ -2588,8 +2607,9 @@ test_nfm_bandwidth_services(void) {
 
     /* On SoapySDR, Airspy and I/Q replay inputs the RTL DSP bandwidth is not the rate: the refusal names the demod
        rate the stream publishes and the width's limit there. A device's rate is its capture rate decimated toward the
-       DSP bandwidth, so a wider DSP bandwidth raises it; a replay runs at its capture's rate, which only a narrower
-       width can suit. Where no NFM width fits the rate, narrowing is never the fix: leaving the width unset is. */
+       DSP bandwidth, so a wider DSP bandwidth raises it; a replay's rate plan follows the DSP bandwidth as an RTL-SDR's
+       does (issue #701), so it names the bandwidths that fit. Where no NFM width fits a device's rate, narrowing is
+       never the fix: leaving the width unset is. */
     const struct {
         const char* dev;
         const char* at_24k;
@@ -2601,9 +2621,9 @@ test_nfm_bandwidth_services(void) {
         {"airspy",
          "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise the DSP bandwidth or narrow the NFM width",
          "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); raise the DSP bandwidth or leave the NFM width unset"},
-        {"iqreplay:capture.cu8", "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); narrow the NFM width",
-         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); no NFM width fits this DSP rate; leave the NFM width "
-         "unset"},
+        {"iqreplay:capture.cu8",
+         "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth",
+         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); use a 12, 16, 24, 48 or 72 kHz DSP bandwidth"},
     };
 
     for (size_t i = 0; i < sizeof forced_rate_devs / sizeof forced_rate_devs[0]; i++) {

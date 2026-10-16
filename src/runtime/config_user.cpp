@@ -1386,8 +1386,19 @@ apply_rtl_sql_level_beneath_auto(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* An RTL-SDR or rtl_tcp [input]'s rtl_bw_khz is an explicit DSP bandwidth request of its own (issue #701), not only a
+   field of the spec it builds: an I/Q replay that --iq-replay puts in place of the input plans its rate chain to it. */
+static void
+apply_input_rtl_bw_request(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (cfg->rtl_bw_khz) {
+        dsd_opts_set_rtl_dsp_bw(opts, dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz),
+                                DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    }
+}
+
 static void
 apply_input_source_rtl(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    apply_input_rtl_bw_request(cfg, opts);
     char spec[sizeof opts->audio_in_dev];
     if (format_rtl_input_spec(cfg, opts, spec, sizeof spec) == 0) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
@@ -1397,6 +1408,7 @@ apply_input_source_rtl(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 
 static void
 apply_input_source_rtltcp(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    apply_input_rtl_bw_request(cfg, opts);
     char spec[sizeof opts->audio_in_dev];
     if (format_rtltcp_input_spec(cfg, opts, spec, sizeof spec) == 0) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);

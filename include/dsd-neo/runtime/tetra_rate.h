@@ -41,8 +41,8 @@ int dsd_tetra_dsp_rate_runs(int rate_hz);
  *
  * The text names the rate and the fix for the input @p opts names (dsd_opts_analog_rate_source()): an RTL-SDR or
  * rtl_tcp input's 72 kHz DSP bandwidth in its spec form, a SoapySDR device's 72 kHz DSP bandwidth on a device that
- * delivers 1.152 MS/s, that no Airspy sample rate halves to a multiple of 18 kHz, or that an I/Q replay keeps its
- * capture's rate. The full text is for the log; the brief one ("DSP rate 48 kHz is no multiple of 18 kHz; set the DSP
+ * delivers 1.152 MS/s, that no Airspy sample rate halves to a multiple of 18 kHz, or that an I/Q replay's capture
+ * cannot be resampled to a TETRA rate (a replay re-plans to one otherwise, issue #701). The full text is for the log; the brief one ("DSP rate 48 kHz is no multiple of 18 kHz; set the DSP
  * bandwidth to 72 kHz") fits a toast.
  *
  * @param opts     Decoder options naming the input; NULL reads as an RTL-SDR.

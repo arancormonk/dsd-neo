@@ -903,7 +903,8 @@ svc_analog_rate_refusal(int kind, int width_hz, int rate_hz, int source, char* w
     char fix[96];
     (void)dsd_analog_width_format(width_hz, width, sizeof width);
     (void)dsd_analog_width_format(rate_hz, rate, sizeof rate);
-    if (source == DSD_ANALOG_RATE_RTL_BW) {
+    if (source == DSD_ANALOG_RATE_RTL_BW || source == DSD_ANALOG_RATE_CAPTURE) {
+        /* A replay's rate follows the DSP bandwidth as an RTL-SDR's does: a bandwidth change re-plans it (issue #701). */
         char fits[32];
         (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits, sizeof fits);
         DSD_SNPRINTF(fix, sizeof fix, "use a %s kHz DSP bandwidth", fits);
@@ -1533,9 +1534,11 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
    at all, so its decode time can no longer follow the capture: the decode clock goes back to the system clock with the
    stream stopped (issue #572). When the input is still that replay, the restart replays it on the system clock, which
    is logged once, at the leave. The replay centre the decoder last read goes with the stream (issue #575): every stop,
-   restart, input switch and rollback comes here, so a live radio that replaces the replay reads its own centre. */
+   restart, input switch and rollback comes here, so a live radio that replaces the replay reads its own centre. A
+   run-time re-plan (svc_rtl_replay_replan_locked(), issue #701) passes @p keep_replay_clock: the replay it reopens
+   resumes where this one stopped and its media time goes on from there, so decode time stays on the capture. */
 static void
-svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
+svc_rtl_stop_ex_locked(dsd_opts* opts, dsd_state* state, int keep_replay_clock) {
     if (state->rtl_ctx) {
         rtl_stream_stop(state->rtl_ctx);
         rtl_stream_destroy(state->rtl_ctx);
@@ -1544,12 +1547,20 @@ svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
     dsd_opts_forget_iq_replay_center(opts);
+    if (keep_replay_clock) {
+        return;
+    }
     const int leaves_replay = dsd_decode_clock_source() == DSD_DECODE_CLOCK_REPLAY;
     dsd_engine_decode_clock_leave_replay(opts, state);
     if (leaves_replay && opts->audio_in_type == AUDIO_IN_RTL && opts->iq_replay_requested
         && dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
         LOG_INFO("IQ replay restarted mid-run; decode timestamps now follow the system clock.\n");
     }
+}
+
+static void
+svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
+    svc_rtl_stop_ex_locked(opts, state, 0);
 }
 
 /* A stream opens with the operator's last tuner autogain setting or the environment default. Under --trunk-scan the
@@ -1587,8 +1598,11 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
     ++g_svc_rtl_starts;
     svc_apply_scan_autogain(opts, state);
     /* A stream on another source than the one before it is another carrier (issue #575): every start comes here, so a
-       command that changes the source and restarts needs no boundary of its own. Callers hold the P25 SM tick guard. */
-    dsd_engine_note_stream_source(opts, state, 1);
+       command that changes the source and restarts needs no boundary of its own. Callers hold the P25 SM tick guard. A
+       replay that resumes where it stopped (issue #701) goes on on the carrier it was on: it takes no boundary. */
+    if (!opts->iq_replay_resume_pending) {
+        dsd_engine_note_stream_source(opts, state, 1);
+    }
     return 0;
 }
 
@@ -1599,6 +1613,62 @@ svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
     }
     svc_rtl_stop_locked(opts, state);
     return svc_rtl_start_locked(opts, state);
+}
+
+/* Start the replay the options describe at @p at (issue #701): the start's copy of the options carries the checkpoint
+   (dsd_opts::iq_replay_resume), consumed by that one start. */
+static int
+svc_rtl_start_replay_at_locked(dsd_opts* opts, dsd_state* state, const dsd_iq_replay_checkpoint* at) {
+    if (at) {
+        opts->iq_replay_resume = *at;
+        opts->iq_replay_resume_pending = 1;
+    }
+    const int rc = svc_rtl_start_locked(opts, state);
+    opts->iq_replay_resume_pending = 0;
+    DSD_MEMSET(&opts->iq_replay_resume, 0, sizeof opts->iq_replay_resume);
+    return rc;
+}
+
+int
+svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
+                             svc_replay_profile_restore_fn restore, void* restore_ctx, uint32_t* out_dsp_rate_hz,
+                             int* out_resampled, char* why, size_t why_size) {
+    svc_why(why, why_size, "%s", "");
+    if (!opts || !state || !restore || !dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
+        return SVC_REPLAY_REPLAN_KEPT;
+    }
+    char reason_text[192];
+    const int verdict =
+        rtl_stream_replay_replan_check(opts, out_dsp_rate_hz, out_resampled, reason_text, sizeof reason_text);
+    if (verdict == RTL_STREAM_REPLAN_NO_REPLAY || verdict == RTL_STREAM_REPLAN_SAME) {
+        return SVC_REPLAY_REPLAN_KEPT;
+    }
+    if (verdict == RTL_STREAM_REPLAN_REFUSED) {
+        LOG_WARN("IQ replay: %s needs a rate chain this capture cannot run: %s. The replay keeps its rate.\n",
+                 reason ? reason : "the change", reason_text);
+        restore(opts, state, restore_ctx);
+        svc_why(why, why_size, "%s", reason_text);
+        return SVC_REPLAY_REPLAN_REFUSED;
+    }
+    svc_rtl_stop_ex_locked(opts, state, 1);
+    dsd_iq_replay_checkpoint at;
+    const int have_at = rtl_stream_replay_checkpoint(&at) == 0;
+    if (have_at) {
+        LOG_INFO("IQ replay: re-planning the rate chain for %s; resuming at capture byte %llu.\n",
+                 reason ? reason : "the change", (unsigned long long)at.data_offset);
+    }
+    if (svc_rtl_start_replay_at_locked(opts, state, have_at ? &at : NULL) == 0) {
+        return SVC_REPLAY_REPLAN_REOPENED;
+    }
+    /* The new chain did not start: the previous one resumes from the same checkpoint. */
+    restore(opts, state, restore_ctx);
+    svc_rtl_stop_ex_locked(opts, state, 1);
+    if (svc_rtl_start_replay_at_locked(opts, state, have_at ? &at : NULL) == 0) {
+        svc_why(why, why_size, "the replay did not start at the new rate (see log)");
+        return SVC_REPLAY_REPLAN_REFUSED;
+    }
+    svc_rtl_stop_locked(opts, state);
+    return SVC_REPLAY_REPLAN_FAILED;
 }
 
 /* Turn the I/Q capture off for the rest of the session before a rollback restart (svc_rtl_restart_recovery_locked()),
@@ -2016,6 +2086,19 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
                                         svc_row_sets_width(state, opts->analog_demod), khz, why, why_size);
 }
 
+/* The requested DSP bandwidth a refused replay re-plan puts back. */
+typedef struct {
+    int khz;
+    int source;
+} svc_rtl_bw_request;
+
+static void
+svc_rtl_bw_request_restore(dsd_opts* opts, dsd_state* state, void* ctx) {
+    (void)state;
+    const svc_rtl_bw_request* req = (const svc_rtl_bw_request*)ctx;
+    dsd_opts_set_rtl_dsp_bw(opts, req->khz, req->source);
+}
+
 int
 svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size) {
     svc_why(why, why_size, "%s", "");
@@ -2034,9 +2117,26 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
     if (!svc_rtl_bandwidth_fits_analog_width(opts, state, khz, why, why_size)) {
         return -1;
     }
+    const svc_rtl_bw_request before = {opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source};
     dsd_opts_set_rtl_dsp_bw(opts, khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     /* Tuner bandwidth change requires reopen */
     opts->rtl_needs_restart = 1;
+    if (opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_input_is_iq_replay(opts) && state->rtl_ctx) {
+        /* A replay's rate follows the bandwidth (issue #701): it reopens at the chain the request plans, where it
+           stopped. */
+        char reason[64];
+        DSD_SNPRINTF(reason, sizeof reason, "a %d kHz DSP bandwidth", khz);
+        const int replan = svc_rtl_replay_replan_locked(opts, state, reason, svc_rtl_bw_request_restore, (void*)&before,
+                                                        NULL, NULL, why, why_size);
+        opts->rtl_needs_restart = 0;
+        if (replan == SVC_REPLAY_REPLAN_REFUSED) {
+            if (why && why_size > 0U && why[0] == '\0') {
+                svc_why(why, why_size, "the replay cannot run at that bandwidth");
+            }
+            return -1;
+        }
+        return replan == SVC_REPLAY_REPLAN_FAILED ? -1 : 0;
+    }
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         return svc_rtl_restart_locked(opts, state);
     }

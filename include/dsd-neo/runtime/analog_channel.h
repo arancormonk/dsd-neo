@@ -213,7 +213,8 @@ typedef enum dsd_analog_rate_source {
     DSD_ANALOG_RATE_DEVICE = 1,  /**< A SoapySDR or Airspy device: the capture rate its device delivers, halved down to
                                       the first rate at or above the DSP bandwidth, so a wider DSP bandwidth raises it
                                       and a narrower one lowers it, but neither picks it. */
-    DSD_ANALOG_RATE_CAPTURE = 2, /**< An I/Q replay: the capture's own rate, which no setting moves. */
+    DSD_ANALOG_RATE_CAPTURE = 2, /**< An I/Q replay: its rate plan follows the DSP bandwidth (issue #701), a bandwidth
+                                      change re-planning the chain to it and resampling the capture where it must. */
 } dsd_analog_rate_source;
 
 /**
@@ -231,10 +232,11 @@ int dsd_analog_width_check_at(int kind, int width_hz, int rate_hz, int source, c
  *   kHz").
  * - DSD_ANALOG_RATE_DEVICE: "raise the DSP bandwidth or narrow the NFM width"; where the rate filters no width of the
  *   kind, raising the DSP bandwidth, and where it is past what the channel filter's taps cover, lowering it.
- * - DSD_ANALOG_RATE_CAPTURE: "narrow the NFM width", or where the rate filters no width of the kind, that none fits.
+ * - DSD_ANALOG_RATE_CAPTURE: the DSP bandwidths that would fit, as for an RTL-SDR ("set the DSP bandwidth to 24, 48 or
+ *   72 kHz"): a replay re-plans its rate to the bandwidth.
  *
- * Narrowing is never named where it cannot help. Where no NFM width fits, the fix also names leaving the NFM width
- * unset: the unset NFM default runs at any rate, DSP-limited where it cannot filter.
+ * Narrowing is never named where it cannot help. Where no NFM width fits a device's rate, the fix also names leaving
+ * the NFM width unset: the unset NFM default runs at any rate, DSP-limited where it cannot filter.
  *
  * @return 0 on success, -1 on a NULL or empty buffer.
  */

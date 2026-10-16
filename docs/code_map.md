@@ -1384,7 +1384,8 @@ suite runs under this compiler.
     returns to
     SYSTEM with the same rebase once the replay no longer feeds the decoder (`dsd_engine_decode_clock_leave_replay()`):
     at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`; the replay it
-    restarts runs on SYSTEM, which it logs once at that leave when the input is still the replay), and when the input
+    restarts runs on SYSTEM, which it logs once at that leave when the input is still the replay; a run-time re-plan's
+    stop keeps REPLAY instead, as the replay it reopens resumes the media time, issue #701), and when the input
     moves away from it (`ui_input_left()` in `app_command_queue.c`: an input switch, a stop of playback, a config
     apply that moves the input). Before the switch the leave ends each slot's call (`DSD_CALL_END_EXPLICIT`) and syncs
     the slot. The call's row, and the per-call recording and rdio-scanner sidecar a commit closes, are then stamped on
@@ -3510,7 +3511,9 @@ Key public headers:
     config apply, the interactive bootstrap, and `svc_rtl_set_bandwidth_locked()` (EXPLICIT). Snapshots put both back
     (`ui_capture_radio_input()`/`ui_restore_radio_input()`, the config rollback's live-gain path,
     `svc_airspy_tuning`). A replay no longer writes its recorded bandwidth into opts: only an EXPLICIT request beats
-    `recorded_dsp_bw_khz` as the plan's target, so a mode preset (`-fT`) keeps a sidecar's recorded chain.
+    `recorded_dsp_bw_khz` as the plan's target, so a mode preset (`-fT`) keeps a sidecar's recorded chain. An
+    RTL-SDR or rtl_tcp `[input]` `rtl_bw_khz` is an EXPLICIT request of its own (`apply_input_rtl_bw_request()`), so it
+    outlives the spec `--iq-replay` replaces at startup.
   - Run-time re-plan with approximate resume (issue #701): the replay reader records, after every chunk it hands the
     ring, a checkpoint (`dsd_iq_replay_checkpoint` in `<dsd-neo/core/iq_replay_checkpoint.h>`: data offset, next event
     index, media timeline and pass samples, loop pass, fs/4 phase; `rtl_device_replay_checkpoint()`), which soft stop
@@ -3519,6 +3522,16 @@ Key public headers:
     (`dsd_iq_replay_resume_check()`), and goes on with the event cursor, media time, loop count and fs/4 phase;
     realtime pacing is rebased to the resume, the resampler starts fresh, and what was in the ring or the decoder's
     cache is dropped (a few ms). Test: `IO_RTL_REPLAY_RESUME`.
+  - App-control re-plan (issue #701): `svc_rtl_replay_replan_locked()` (decoder thread, P25 SM tick guard held) asks
+    `rtl_stream_replay_replan_check()` whether the options plan another chain, stops with the decode clock kept on the
+    capture (`svc_rtl_stop_ex_locked()`), and starts at the checkpoint, taking no source carrier boundary (the replay
+    stays on its carrier); a refused plan, or a failed start, puts the caller's receive profile back through its restore
+    callback and resumes the previous chain from the same checkpoint, and a recovery that fails too takes the caller's
+    start-failure path. Callers: `RTL_SET_BW` on a replay, `decode_mode_apply_value()` (`decode_mode_replan_replay()`,
+    TETRA on and off) and a config apply (`apply_cfg_replay_replan()`: `[mode]`, and an RTL-family `[input]`
+    `rtl_bw_khz` for the replay it leaves running). A replay's analog-width refusals name the DSP bandwidths that fit,
+    and TETRA's capture advice only a refused re-plan. Tests: `APP_COMMAND_QUEUE` (`test_replay_*`),
+    `RUNTIME_CONFIG_APPLY`.
 
 Notes:
 

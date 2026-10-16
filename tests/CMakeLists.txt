@@ -7218,6 +7218,8 @@ if(
             "LINKER:--wrap=rtl_stream_get_demod_rate_hz"
             "LINKER:--wrap=rtl_stream_get_request_rate_hz"
             "LINKER:--wrap=rtl_stream_output_rate"
+            "LINKER:--wrap=rtl_stream_replay_replan_check"
+            "LINKER:--wrap=rtl_stream_replay_checkpoint"
             "LINKER:--wrap=p25_sm_tick_guard_enter"
             "LINKER:--wrap=p25_sm_tick_guard_leave"
     )
