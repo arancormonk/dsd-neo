@@ -1744,6 +1744,11 @@ admit a validated owner (`dsd_state::trunk_recovery_protocol`), or, with none ye
 protocol's trunk. `dsd_trunk_p25_cold_start_presumed()` names the protocol that runs the startup control-channel hunt
 of a session no protocol has proven yet: P25 for a frame set with P25 and without NXDN48, NXDN96 and ProVoice (`-ft`,
 the default set, `-1`, `-2`); it grants no recovery ownership (issue #703, `RUNTIME_TRUNK_SCAN_HOOKS`).
+`dsd_trunk_nxdn_recovery_allowed()` admits the NXDN control-channel hunt: trunking on outside `-Y` and trunk scan,
+NXDN48 or NXDN96 decoded (whatever the owner, so a mode change away from NXDN stops it), and an NXDN owner
+(`DSD_TRUNK_RECOVERY_NXDN`, named by a CRC-good CAC or a confirmed Type-D SCCH) or, with none yet, a frame set without
+P25, DMR or ProVoice (`-fi`, `-fn`). A rest channel DMR left behind (`dmr_rest_channel`) never overrides a P25 or NXDN
+owner's control channel at the no-carrier return (`no_carrier_has_mapped_dmr_rest_channel()`).
 
 Retune requests use a sibling table, `include/dsd-neo/runtime/trunk_tuning_hooks.h`, whose implementations the engine
 installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_install.c`. The correlated request records
@@ -2549,7 +2554,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   runtime's controls-pending query reports a queued command, or decoder-thread trunking timers are due
   (`dsd_frame_sync_hook_decoder_ticks_due()`: a startup control-channel hunt armed, running or due to arm
   (`p25_sm_cold_start_due()`, `dmr_sm_cold_start_due()`; with trunking turned off too, until the tick that lets it
-  go), or DMR recovery under way, issue #703), it leaves with no sample and sets
+  go), DMR recovery under way, issue #703, or the NXDN control-channel hunt armed, running or due,
+  `nxdn_cc_hunt_due()`), it leaves with no sample and sets
   `dsd_state::input_interrupted`, which `getFrameSync()` checks after each read and returns on at once, with no SPS hunt
   step and no no-sync hooks. A shorter gap, frame decoding, or no queued command keeps waiting. The M17 TCP reconnect
   gives up the same way between attempts, which connect within a bound to the address the connection was made to
@@ -3466,7 +3472,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     runs not known either, `DSD_RIGCTL_KIND_UNKNOWN`), and a demodulator whose undo the peer did not accept keeps the
     own passband read for it, so the next undo still sends that rather than reading the row's back as the peer's own.
     The engine's legacy rigctl leg (`no_carrier_tune_rigctl_if_needed()` in `engine.c`: the untyped `-Y` step and the
-    direct control-channel return) skips a repeat of the frequency it last sent. That cache holds for one connection:
+    direct control-channel return) skips a repeat of the frequency it last sent, and so does its RTL twin
+    (`no_carrier_tune_rtl_if_needed()`). Both caches hold only until the trunk tuning hooks issue another request
+    (`dsd_trunk_tuning_last_request()`): a grant or a control-channel hunt moves the radio without writing them, and a
+    return to the cached frequency after it must be sent (`ENGINE_NO_CARRIER_RESET`). The rigctl cache holds for one connection:
     `dsd_engine_rigctl_tune_cache_forget()` (`trunk_tuning.h`) empties it when rigctl reconnects (issue #589), since the
     new connection's peer, another one or the same one restarted, was sent nothing. The leg keeps no copy of the `-B` it
     sent (issue #621): it asks for `-B` at every step, strictly as always (through the capturing call on audio input,
@@ -4248,6 +4257,27 @@ control within the CC grace walks its channel map with the ordinary hunts.
   unresolved there.
 - Tests: `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`, `P25_SM_COLD_START`, `P25_MBT_DECODE`,
   `ENGINE_DMR_CC_RECOVERY`, `ENGINE_COLD_START_HUNT`, `APP_COMMAND_QUEUE`, `DMR_CONFIDENCE_GATE`.
+- NXDN (`src/protocol/nxdn/nxdn_cc_hunt.c`, `<dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>`, context in state-ext slot 28
+  `DSD_STATE_EXT_PROTO_NXDN_CC_HUNT`): NXDN has no trunk state machine and no other control-channel hunt, so this one
+  runs at session start and after a control channel is lost. Eligibility is
+  `dsd_state_trunk_nxdn_hunt_eligible()` (the startup conditions with an NXDN owner allowed) under
+  `dsd_trunk_nxdn_recovery_allowed()`; with an NXDN owner only after a CAC confirmed a control channel. Ticked like the
+  others (`nxdn_cc_hunt_tick_locked()` in `dsd_engine_cold_start_tick_locked()`, between frames while
+  `nxdn_cc_hunt_active()`, `nxdn_cc_hunt_due()` in the decoder-ticks hook); notes on operator moves from the same
+  carrier boundary and cycle sites (`nxdn_cc_hunt_note_retune()`). The window (6 s) runs from the later of its arming
+  and `dsd_state::nxdn_confirm_lock_m` (stamped by `nxdn_confirm_end_frame()` when a frame's own CRCs confirmed the
+  transmission, never cleared); it is dropped on a voice channel and restarted while a tune the hunt does not own is in
+  flight, so a DISC return still pending when `trunk_is_tuned` drops starts it at completion. Probes, settle tunes,
+  deadlines and parking follow the DMR startup hunt's rules; each hunt tune also resets the per-carrier NXDN evidence
+  (`nxdn_confirm_reset()`, SACCH assemblies), so a weak streak or sticky confirmation never crosses carriers, and
+  restores both control-channel aliases. `nxdn_handle_cac()` calls `nxdn_cc_hunt_note_control()` on every CRC-good CAC,
+  before element decode: an unresolved probe is not credited; otherwise the frequency (the completed probe, else one
+  tuner query per tuning generation, forgotten at an operator move) becomes `p25_cc_freq`/`trunk_cc_freq`, NXDN is
+  named the owner and the post-loss window re-armed. A post-loss hunt revisits that control channel between other rows.
+  The confirmed branch of `nxdn_scch_prepare_type_d()` calls `nxdn_cc_hunt_note_type_d()`: owner named, hunt ended,
+  any CAC-confirmed control channel forgotten, so a Type-D site never hunts afterwards (an idle, silent Type-D site at
+  start is walked like a dead one until confirmed traffic holds the window). Tests: `NXDN_CC_HUNT`,
+  `ENGINE_COLD_START_HUNT`, `NXDN_CONFIRM`, `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`.
 
 P25 Phase 2 voice dispatch (`src/protocol/p25/phase2/p25p2_frame.c`, issue #651). A `processP2()` window is four
 timeslots, 700 dibits after a 20-dibit sync, 180 dibits each. `p2_scramble_offset` is the superframe timeslot (mod 12)
@@ -4583,7 +4613,8 @@ Private per-protocol modules worth knowing about:
   `NXDN_SACCH_Full_decode()` hand it CRC-verified content only, so the gate lives in those callers, with
   `nxdn_confirm_is_confirmed()` as the frame-level check at the sites that publish a call or refresh a scan hold.
   Evidence confirms at once, before the RAN and call it unlocks are published; a signal search hears a frame's
-  confirmation once, from `nxdn_confirm_end_frame()`, after they are (`NXDN_CONFIRM`, `NXDN_DEPERM_PRIMITIVES`).
+  confirmation once, from `nxdn_confirm_end_frame()`, after they are (`NXDN_CONFIRM`, `NXDN_DEPERM_PRIMITIVES`), which
+  also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN control-channel hunt.
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
   alternating symbol run. Frame handlers report `(own check || confirmed)`, `dispatch_m17.c` reports it on an EOT, and
   `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain.

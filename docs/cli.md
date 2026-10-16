@@ -1721,26 +1721,35 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 
 A single-system trunked session (`-T` with a channel map, not `-Y` or `--trunk-scan`) that starts on a frequency with
 no live control channel searches the channel map for one. If no control message that passed its CRC check arrives
-within the grace window (P25 `--p25-cc-grace`, default 5 s; DMR 6 s), the receiver tries the map's rows in file order,
+within the grace window (P25 `--p25-cc-grace`, default 5 s; DMR and NXDN 6 s), the receiver tries the map's rows in file order,
 about two seconds each, and stays on the first one whose control passes the check. List every control-channel
 frequency in the map: the start frequency is retried only if the map lists it, which a RadioReference import always
 does.
 
 - The search needs a tuner the decoder controls: an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or rigctl. An I/Q
   replay never searches.
-- P25 searches under `-1`, `-2`, `-ft` and the default decoder set (`-mq` included); DMR under `-fs` and `-fr`. A
-  P25-driven search also finds a DMR control channel: the first validated DMR control message hands the session to
-  DMR. `-fa` does not search at startup.
+- P25 searches under `-1`, `-2`, `-ft` and the default decoder set (`-mq` included); DMR under `-fs` and `-fr`; NXDN
+  under `-fi` and `-fn` (an IDAS or NEXEDGE import). A P25-driven search also finds a DMR control channel: the first
+  validated DMR control message hands the session to DMR. `-fa` does not search at startup.
+- NXDN has no other control-channel hunt, so the same search also runs after an NXDN control channel is lost: once a
+  CAC that passed its CRC (only an outbound control channel sends one) has named the control channel, 6 s without
+  validated NXDN content starts it, revisiting that control channel between the other rows, and the next such CAC ends
+  it where it is. Under `-fa` this runs once validated NXDN control has named the system. A call's return to the
+  control channel restarts the window when its tune completes.
+- An IDAS Type-D site has no dedicated control channel: an SCCH whose CRC repeated (a confirmed transmission) ends a
+  startup search where it is, and no search runs after that. A Type-D site that is idle and silent at session start is
+  searched like a dead one, until a call's confirmed traffic holds the receiver.
 - A simulcast (LSM/CQPSK) P25 system needs `-mq`, which a RadioReference import sets for such sites: each row gets
   about two seconds, too short for the automatic modulation search to reach CQPSK on a control channel the session has
   not decoded yet.
 - DMR content that passed the colour-code check (a call on a Hytera XPT repeater, say) restarts the window, so the
-  search never leaves it mid-call. Sync alone, which noise can produce, never holds the search.
+  search never leaves it mid-call; for NXDN, a frame whose own CRCs confirmed the transmission (a call on a traffic
+  channel) does. Sync alone, which noise can produce, never holds the search.
 - A frequency entry, **Next channel** (`L`), a radio configuration change, a RadioReference apply or an input switch
   restarts the window on the new frequency.
 - Nothing is shown or used as the control channel until a searched frequency passes the CRC check, and the saved
   system is not changed. Once validated control names the system, the search ends there; losing that control channel
-  later uses the ordinary hunt (DMR hunts only after it has confirmed a control channel, as before).
+  later uses the ordinary hunt (DMR hunts only after it has confirmed a control channel, as before; NXDN as above).
 - The search runs on the decoder's own pass, so it needs an input that keeps delivering samples. RTL-family inputs
   always do, and a silent UDP stream gives way to it after a short pause; a TCP audio stream with rigctl that stops
   sending pauses it until audio resumes.

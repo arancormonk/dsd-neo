@@ -267,7 +267,7 @@ list — RadioReference adds rows over time.
 | DMR Connect Plus | `-fs` | Yes, LCN-keyed, with a `999,<cc>` seed row |
 | DMR Capacity Plus / Hytera XPT | `-fs` | Yes, LSN-paired (`2n-1`, `2n`) |
 | DMR Tier III | `-fs` | Yes, LCN-keyed, with a `999,<cc>` seed row |
-| NXDN 4800 / 9600 | `-fi` / `-fn` | When the site publishes channel numbers |
+| NXDN 4800 / 9600 | `-fi` / `-fn` | When the site publishes channel numbers; it is then the control-channel hunt list, at session start and after a loss ([Startup control-channel hunt](cli.md#startup-control-channel-hunt)) |
 | EDACS Standard / Networked / Narrowband | `-fh`, or `-fH` with ESK | Yes, strictly positional |
 | EDACS Extended Addressing | `-fe`, or `-fE` with ESK | Yes, strictly positional |
 | P25 / DMR / NXDN **Conventional Networked** | see below | Only with two or more repeaters, each row named |
