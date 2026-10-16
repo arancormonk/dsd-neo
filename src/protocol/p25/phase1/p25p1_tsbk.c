@@ -1005,10 +1005,7 @@ tsbk_handle_network_status(const dsd_opts* opts, dsd_state* state, const uint8_t
     } else {
         DSD_FPRINTF(stderr, "\n  P25 TSBK NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channel);
     }
-    /* Only the standard broadcast names the system; a manufacturer's opcode 0x3B is not one. */
-    if (tsbk_byte[1] < 0x2) {
-        p25_search_note_network(state, (uint32_t)wacn, (uint16_t)sysid);
-    }
+    p25_search_note_network(state, (uint32_t)wacn, (uint16_t)sysid);
 }
 
 static void
@@ -1044,7 +1041,9 @@ tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t*
         tsbk_handle_mfid_a4(state, ctx->tsbk_byte);
         return;
     }
-    if ((ctx->tsbk_byte[0] & 0x3F) == 0x3B) {
+    /* Standard opcodes apply to MFID $00/$01 alone (TIA-102.AABC): another manufacturer's opcode 0x3B is its own
+       message, never a network status that could move the control channel or rename the system. */
+    if (MFID < 0x2 && (ctx->tsbk_byte[0] & 0x3F) == 0x3B) {
         tsbk_handle_network_status(opts, state, ctx->tsbk_byte);
     }
 }

@@ -4751,8 +4751,9 @@ Private per-protocol modules worth knowing about:
   clear.
 - Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
   writer passes the identity of one message that passed its check, after handling it, never decoder state.
-  P25 (`src/protocol/p25/p25_search_site.h`): a standard-MFID TSBK network status (`tsbk_handle_network_status()`,
-  dispatched only after the block's CRC-16), an MBT network or RFSS status (`p25_decode_pdu_trunking()`, reached only
+  P25 (`src/protocol/p25/p25_search_site.h`): a TSBK network status (`tsbk_handle_network_status()`, dispatched only
+  after the block's CRC-16, and for opcode 0x3B only under MFID $00/$01: as `processTSBK()` routes every standard
+  opcode, a manufacturer's 0x3B is that manufacturer's message and changes no control channel or system), an MBT network or RFSS status (`p25_decode_pdu_trunking()`, reached only
   after the header CRC-16 and CRC-32), and the vPDU network status (0x7B/0xFB) and RFSS status (0x7A/0xFA) blocks only
   when `p25p2_vpdu_ctx::crc_ok` holds, which covers a bridged TSBK and a Phase 2 MAC but not a MAC_SIGNAL let
   through with a failed CRC under `-F`. An RFSS status notes the SYSID it advertises, even one the decoder's
