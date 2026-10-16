@@ -152,8 +152,11 @@ from noise. That carrier is monitored as NFM with the display above.
   full** for the permanent one, and nothing changes, not even a skip. A
   permanent avoid is saved first, so when only this session's list is full the
   screen says **Saved as a permanent avoid; this session's avoid list is full**:
-  it applies from the next search. An avoid for a detection the search has
-  already left (the panel was a moment old) is refused and changes neither list.
+  it applies from the next search. A full-list message clears when the search
+  tunes to its next detection, and a failed search keeps its own error. An avoid
+  for a detection the search has already left (the panel was a moment old)
+  changes neither list and shows nothing: the panel already shows what the
+  search is doing now.
 - **Pause** ends any call in progress on the channel and permits range edits. A search
   that fails (its input stalls, for example) ends that call too.
   **Resume** applies them and restarts the pass under the same session, retaining
@@ -166,14 +169,19 @@ from noise. That carrier is monitored as NFM with the display above.
   granted afterwards starts nothing.
 - **Explore here** and **Start “<saved system>”** leave the search for another
   session. The search's own start is cancelled first (a USB permission granted
-  afterwards cannot turn the new session into a search), the screen closes, and
-  the running search stops; the new session starts once the decoder is idle.
+  afterwards cannot turn the new session into a search), then the running
+  search stops. Until it has, the screen stays and reads **Stopping the
+  search…**; its controls and Back do nothing in that moment, so the handoff
+  cannot be dropped by accident. Once the decoder is idle the screen closes and
+  the new session starts. If the search fails to stop, nothing starts and Home
+  shows the failure.
   Explore here tunes the detection's frequency with its receive mode, gain and
   receiver settings, on the receiver attached now, and does not change where
   Explore resumes from Home, even through a USB permission request. A saved
   system starts as saved (keys, decoder and trunking). A system whose site is
-  avoided is refused with a message, before the search stops and again when the
-  new session would start. If Android recreates the Activity during the
+  avoided is refused with a message on the search screen, and nothing stops. If
+  it became avoided while the search stopped, Home shows the refusal: **Retry**
+  asks again and **Edit** opens that system. If Android recreates the Activity during the
   handoff, the reopened app finds the search stopped and starts nothing.
 - **Retry** on a failed Signal search start opens Signal search again and starts
   the search on the same receiver; **Edit** opens Signal search.

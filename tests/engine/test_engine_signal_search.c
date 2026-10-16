@@ -779,12 +779,40 @@ test_avoid_by_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_config* con
     by_frequency.frequency_hz = 100012500;
     assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
     assert(status.message[0] == '\0');
+    // A refusal belongs to the detection it was about: the next visit's tune clears it, without any other action.
+    by_frequency.frequency_hz = 300000000;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    assert(strcmp(status.message, "The avoid list is full") == 0);
+    tick(o, s); // the monitor's first verdict starts quiet timing
+    advance(500);
+    tick(o, s); // quiet: the visit ends and the search goes back to its span
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    assert(strcmp(status.message, "The avoid list is full") == 0); // a span tune is not a new detection
+    for (int i = 0; i < 8 && !(status.phase == DSD_SEARCH_TUNING && !status.hit.ended); ++i) {
+        land(o, s);
+        ready = 1;
+        tick(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended && status.message[0] == '\0');
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
 
     // A refusal decided outside the coordinator is shown in its status, for its own session only.
     dsd_engine_signal_search_notice(s, 56, "elsewhere");
     assert(status.message[0] == '\0');
     dsd_engine_signal_search_notice(s, 55, "The permanent avoid list is full");
     assert(strcmp(status.message, "The permanent avoid list is full") == 0);
+    // A failed search keeps its error: a full list refuses without replacing it.
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    failed = 1;
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && status.message[0] != '\0');
+    char search_error_text[sizeof(status.message)];
+    DSD_SNPRINTF(search_error_text, sizeof(search_error_text), "%s", status.message);
+    by_frequency.frequency_hz = 300000000;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    assert(strcmp(status.message, search_error_text) == 0);
+    failed = 0;
     live = 0;
     act(o, s, DSD_SEARCH_ACTION_STOP);
     assert(status.phase == DSD_SEARCH_STOPPED);

@@ -9,6 +9,9 @@ Item {
     objectName: "signalSearchScreen"
     property var searchModel: null
     property bool sessionActive: false
+    // Main sets this while the search stops for a handoff (Explore here, a
+    // saved system): the screen says so and takes no input until it closes.
+    property bool leaving: false
     // Main binds this to its failure text (connection, USB access and
     // configuration failures). Never assigned here: an assignment would replace
     // that binding, and no later failure would reach this screen, which covers
@@ -204,8 +207,8 @@ Item {
     // The panel's one identification line is short enough for a phone; the
     // full phrase is its accessible description.
     readonly property bool unresolvedShown: receiving && phase !== 2 && !hit.confirmed && !(phase === 3 || status.identifying) && !!hit.unresolved
-    readonly property string identificationLine: !receiving ? phaseLine : phase === 2 ? qsTr("Tuning to detection…") : hit.confirmed ? hit.protocol + qsTr(" · confirmed") : phase === 3 || status.identifying ? qsTr("Trying digital identification…") : hit.unresolved ? qsTr("NFM · digital unresolved") : hit.am ? qsTr("AM monitoring") : qsTr("NFM monitoring")
-    readonly property string identificationFull: unresolvedShown ? qsTr("NFM monitoring · digital identification unresolved") : identificationLine
+    readonly property string identificationLine: leaving ? qsTr("Stopping the search…") : !receiving ? phaseLine : phase === 2 ? qsTr("Tuning to detection…") : hit.confirmed ? hit.protocol + qsTr(" · confirmed") : phase === 3 || status.identifying ? qsTr("Trying digital identification…") : hit.unresolved ? qsTr("NFM · digital unresolved") : hit.am ? qsTr("AM monitoring") : qsTr("NFM monitoring")
+    readonly property string identificationFull: !leaving && unresolvedShown ? qsTr("NFM monitoring · digital identification unresolved") : identificationLine
     readonly property var knownNames: hit.knownNames || ((hit.knownLabel || "").length > 0 ? [hit.knownLabel] : [])
     // The Now panel's actions. "Hold" and "Release Hold" share one cell, so a
     // Hold toggle never reflows the grid; `labels` lists every label a cell can
@@ -276,7 +279,7 @@ Item {
     Column {
         id: header
         // The menu's rows take passive taps: nothing under it may take one too.
-        enabled: !screen.menuOpen
+        enabled: !screen.menuOpen && !screen.leaving
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -327,7 +330,7 @@ Item {
         anchors.right: parent.right
         contentHeight: content.height + Theme.gap
         clip: true
-        enabled: !screen.menuOpen
+        enabled: !screen.menuOpen && !screen.leaving
         Column {
             id: content
             x: (parent.width - width) / 2
@@ -754,7 +757,7 @@ Item {
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
         spacing: 12
-        enabled: !screen.menuOpen
+        enabled: !screen.menuOpen && !screen.leaving
         GradientButton {
             objectName: "searchStartPause"
             width: screen.sessionActive ? (parent.width - 12) / 2 : parent.width

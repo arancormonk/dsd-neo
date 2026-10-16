@@ -505,6 +505,11 @@ void
 SignalSearchModel::removeAvoid(double frequency) {
     if (std::isfinite(frequency) && frequency > 0 && frequency <= UINT32_MAX) {
         dsd_app_signal_search_avoid_remove((uint32_t)frequency);
+        /* The list has room again, so a refusal for being full no longer holds. */
+        if (m_error == tr("The permanent avoid list is full")) {
+            m_error.clear();
+            Q_EMIT changed();
+        }
         /* A running session loaded this avoid when it started; lift it there too. */
         if (m_owned) {
             (void)unavoid((uint32_t)frequency);

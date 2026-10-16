@@ -775,6 +775,9 @@ main(int argc, char** argv) {
     assert(!model.avoidPermanently(QString(), 470000000));
     assert(model.error() == QStringLiteral("The permanent avoid list is full"));
     assert((uint32_t)model.avoids().size() == DSD_SEARCH_MAX_AVOIDS);
+    // Lifting one through the model makes room, and the refusal goes with it.
+    model.removeAvoid(model.avoids().front().toDouble());
+    assert(model.error().isEmpty() && (uint32_t)model.avoids().size() == DSD_SEARCH_MAX_AVOIDS - 1);
     for (const auto& avoided : model.avoids()) {
         assert(dsd_app_signal_search_avoid_remove(avoided.toUInt()) == 0);
     }

@@ -82,8 +82,9 @@ Generated (do not edit/commit):
     lifts a session avoid by frequency; `DSD_SEARCH_ACTION_AVOID_FREQUENCY` (appended, hit ID
     may be 0) adds one, a duplicate succeeding and the frequency being visited being left as
     `AVOID` leaves it. A full session list refuses either avoid and publishes "The avoid list
-    is full" in `status.message`; any action that takes effect clears an earlier refusal (an
-    ERROR phase keeps its message). `dsd_engine_signal_search_target()` validates an action
+    is full" in `status.message` (in the ERROR phase the search error stays instead); any
+    action that takes effect, or the next visit's tune (`search_queue_tune()`), clears an
+    earlier refusal, and an ERROR phase keeps its message. `dsd_engine_signal_search_target()` validates an action
     against the live coordinator without acting and gives the frequency it acts on;
     `dsd_engine_signal_search_notice()` shows a refusal decided outside the coordinator in
     the running session's status. Published status carries `owned` (a coordinator
@@ -5350,11 +5351,16 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   while a search runs, the store directly when none does). The verdicts arrive as the
   status message or the model's error. Leaving for another session is one Main operation,
   `leaveSearchFor(request)` (`{kind: "explore", system, remember: false}` or
-  `{kind: "saved", uid}`): it abandons the search's start, closes the screen and runs the
-  request through `pendingRestart` once the host is Idle (stopping it from Starting,
-  Running or Failed). A saved request is checked (`savedStartRefusal()`) before the stop
-  and again in `finishPendingRestart()`, which now shows the refusal for an avoided site
-  instead of declining silently. Explore here (`exploreHereSystem()`) is
+  `{kind: "saved", uid}`): it abandons the search's start and runs the request through
+  `pendingRestart` (marked `leaveSearch`) once the host is Idle, stopping it from Starting,
+  Running or Failed. Until then `leavingSearch` keeps the search screen the root (its
+  `leaving` state reads "Stopping the search…" and disables its controls); Back, Escape and
+  the site chooser's any-input cancel are ignored, `finishPendingRestart()` closes the
+  screen just before starting the request, and a stop ending in Failed closes it and clears
+  the flag. A saved request is checked (`savedStartRefusal()`) before the stop, the refusal
+  shown in the screen's `localFailure`, and again in `finishPendingRestart()`, which shows
+  the refusal (an avoided site no longer declines silently) and records the system as
+  `attemptedSource` so Home's Retry asks again and Edit opens it. Explore here (`exploreHereSystem()`) is
   `systemForHit()` renamed Exploring, untrunked, on the `effectiveSource()` kind (an
   Airspy map only stays on an Airspy); `startWithMap(sys, row, scan, options)` records
   `options.remember` in `attemptedSource` and `pendingStartRemember` (through a USB wait),

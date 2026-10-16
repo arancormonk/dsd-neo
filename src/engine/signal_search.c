@@ -291,6 +291,10 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
         return -1;
     }
     c->status.phase = DSD_SEARCH_TUNING;
+    /* A refusal (a full avoid list) belonged to the detection being left; the next one starts clean. */
+    if (visit) {
+        c->status.message[0] = '\0';
+    }
     search_publish(c, 0);
     return 0;
 }
@@ -731,9 +735,12 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
             /* A valid AVOID names the hit being visited, so it is left as well. */
             if (search_avoid(c, action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY ? action->frequency_hz
                                                                                     : c->status.hit.frequency_hz)) {
-                /* The refusal is the frontends' to show: the queue only said the command was taken. */
-                DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
-                search_publish(c, 0);
+                /* The refusal is the frontends' to show: the queue only said the command was taken. A failed search
+                   keeps its error, which says more. */
+                if (c->status.phase != DSD_SEARCH_ERROR) {
+                    DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
+                    search_publish(c, 0);
+                }
                 return -1;
             }
             break;

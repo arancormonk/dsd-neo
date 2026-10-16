@@ -105,13 +105,20 @@ Window {
     property var pendingRestart: null
     function cancelPendingRestart() {
         pendingRestart = null;
+        leavingSearch = false;
     }
+    // Set while Signal search waits for its session to stop before a handoff
+    // (leaveSearchFor()). The search screen stays the root until the decoder is
+    // idle, says it is stopping, and takes no Back: the stop is brief, and a
+    // Back that dropped the handoff would end on Home with nothing started.
+    property bool leavingSearch: false
     function restartSite(uid) {
         cancelPendingRestart();
         if (decoderHost.sessionState !== 2 || savedSystems.rowForUid(uid) < 0)
             return;
         pendingStart = null;
         pendingStartRow = -1;
+        pendingStartRemember = true;
         awaitingUsbAccess = false;
         pendingRestart = {
             uid: uid
@@ -123,6 +130,12 @@ Window {
             return;
         var request = pendingRestart;
         pendingRestart = null;
+        if (request.leaveSearch) {
+            // The search has stopped: its screen gives way to what replaces it.
+            leavingSearch = false;
+            signalSearchScreen.localFailure = "";
+            mainRoot.signalSearchOpen = false;
+        }
         if (request.kind === "explore") {
             if (request.system && request.system.signalSearch) {
                 // A search starts from its screen: its ranges are armed there.
@@ -143,6 +156,14 @@ Window {
         if (!scan) {
             var refusal = savedStartRefusal(request.uid);
             if (refusal.length) {
+                // The refused system is the attempt Home's failure card names:
+                // Retry asks again, and Edit opens that system.
+                attemptedSource = {
+                    kind: "saved",
+                    uid: request.uid,
+                    system: savedSystems.getByUid(request.uid),
+                    remember: true
+                };
                 startError = refusal;
                 return;
             }
@@ -174,28 +195,32 @@ Window {
      * {kind: "saved", uid}. The search's own start is abandoned first (its arm
      * and any USB-access wait, so a late grant cannot turn the replacement into
      * a search), the screen closes, and the request runs once the decoder is
-     * idle. A saved system is checked before anything stops, and again when it
-     * starts.
+     * idle; until then the search screen stays, saying it is stopping
+     * (leavingSearch). A saved system is checked before anything stops, the
+     * refusal shown on the search screen, and again when it starts.
      */
     function leaveSearchFor(request) {
         if (request.kind === "saved") {
             var refusal = savedStartRefusal(request.uid);
             if (refusal.length) {
-                mainRoot.dismissedFailure = "";
-                startError = refusal;
+                signalSearchScreen.localFailure = refusal;
                 return;
             }
         }
         abandonSignalSearchStart();
         cancelPendingRestart();
-        mainRoot.signalSearchOpen = false;
         var state = decoderHost.sessionState;
-        pendingRestart = request;
+        pendingRestart = Object.assign({
+            leaveSearch: true
+        }, request);
+        if (state === 0) {
+            finishPendingRestart();
+            return;
+        }
+        leavingSearch = true;
+        // Stopping: finished on Idle, as any pending restart is.
         if (state === 1 || state === 2 || state === 4)
             decoderHost.stop();
-        else if (state === 0)
-            finishPendingRestart();
-        // Stopping: finished on Idle, as any pending restart is.
     }
     /** Explore here: the detection's own receiver settings, mode and gain. */
     function exploreHereSystem(hit, screenSource) {
@@ -242,6 +267,7 @@ Window {
         mainRoot.awaitingUsbAccess = false;
         mainRoot.pendingStart = null;
         mainRoot.pendingStartRow = -1;
+        mainRoot.pendingStartRemember = true;
     }
     // Issue #580: a restore replaces the systems a waiting start or restart
     // names, so entering one drops both rather than letting them run after it.
@@ -252,6 +278,7 @@ Window {
         mainRoot.awaitingUsbAccess = false;
         mainRoot.pendingStart = null;
         mainRoot.pendingStartRow = -1;
+        mainRoot.pendingStartRemember = true;
     }
     // WP-S1 shares the saved-session USB gate and initialization bookkeeping.
     property bool pendingScanList: false
@@ -285,6 +312,8 @@ Window {
     property int currentTab: 0
     property string sessionDestination: ""
     function requestBack() {
+        if (leavingSearch)
+            return;
         cancelPendingRestart();
         if (Navigation.back(mainRoot))
             return;
@@ -444,8 +473,13 @@ Window {
             mainRoot.recordSessionInitialized();
         }
         function onSessionStateChanged() {
-            if (decoderHost.sessionState === 4)
+            if (decoderHost.sessionState === 4) {
+                // A search that failed to stop hands off nothing: its screen
+                // closes onto Home's failure card.
+                if (mainRoot.leavingSearch)
+                    mainRoot.signalSearchOpen = false;
                 mainRoot.cancelPendingRestart();
+            }
             if (decoderHost.sessionState === 0 && mainRoot.attemptedSource && mainRoot.attemptedSource.system.sourceType === "file") {
                 var host = decoderHost;
                 mainRoot.completionMessage = host.terminalReason === 1 ? qsTr("Replay completed: %1").arg(mainRoot.attemptedSource.system.filePath.substring(mainRoot.attemptedSource.system.filePath.lastIndexOf('/') + 1)) : host.terminalReason === 2 ? qsTr("Replay stopped") : "";
@@ -512,6 +546,7 @@ Window {
             awaitingUsbAccess = false;
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
+            mainRoot.pendingStartRemember = true;
         }
     }
 
@@ -599,7 +634,9 @@ Window {
     // when the host can; and when background listening is off, stop first so the
     // radio does not keep playing from a window the user just dismissed.
     onClosing: function (close) {
-        cancelPendingRestart();
+        // A handoff under way finishes even if the window goes to the background.
+        if (!leavingSearch)
+            cancelPendingRestart();
         if (Navigation.back(mainRoot)) {
             close.accepted = false;
             return;
@@ -691,6 +728,7 @@ Window {
         mainRoot.awaitingUsbAccess = false;
         mainRoot.pendingStart = null;
         mainRoot.pendingStartRow = -1;
+        mainRoot.pendingStartRemember = true;
         var built = scan ? scanListStarter.start(sys, decoderHost) : sessionArgs.start(sys, decoderHost);
         if (!built.ok) {
             // Match the rejected field without exposing a prohibited argument or a key.
@@ -1169,6 +1207,7 @@ Window {
         enabled: visible && !mainRoot.wizardOpen
         searchModel: typeof signalSearch !== "undefined" ? signalSearch : null
         sessionActive: decoderHost.sessionActive
+        leaving: mainRoot.leavingSearch
         sessionSource: metrics.radioSource || ({})
         failure: mainRoot.failureText
         onBackRequested: mainRoot.requestBack()
@@ -1528,7 +1567,12 @@ Window {
     SiteChooserSheet {
         id: siteChooser
         anchors.fill: safeArea
-        onUserAction: mainRoot.cancelPendingRestart()
+        // Any input cancels a site restart still waiting; a Signal search
+        // handoff instead takes no input until it finishes (leavingSearch).
+        onUserAction: {
+            if (!mainRoot.leavingSearch)
+                mainRoot.cancelPendingRestart();
+        }
         onEditSite: function (row) {
             wizard.openForEdit(row);
             mainRoot.wizardOpen = true;

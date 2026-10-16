@@ -174,7 +174,6 @@ Item {
             var cancels = searchStub.cancels;
             var stops = decoderHost.stopCalls();
             screen().exploreDetection(detection);
-            verify(!app.signalSearchOpen, "the search screen closes");
             verify(searchStub.cancels > cancels, "the search's arm is cancelled");
             if (data.state === 3) {
                 compare(decoderHost.stopCalls(), stops, "a stop already under way is not repeated");
@@ -185,6 +184,8 @@ Item {
                 compare(decoderHost.stopCalls(), stops + (data.state === 0 ? 0 : 1));
             }
             tryCompare(decoderHost, "sessionState", 1);
+            verify(!app.signalSearchOpen, "the search screen gave way to the new session");
+            verify(!app.leavingSearch);
             compare(app.sessionSystem.name, "Exploring");
             compare(app.sessionSystem.freqMhz, "463.552100");
             compare(app.sessionSystem.decodeFlag, "-fA");
@@ -289,24 +290,26 @@ Item {
         // Start a saved system it matched, from a running search: the search
         // stops, then the saved system starts as saved.
         function test_start_saved_system_from_every_state_data() {
-            return [{tag: "idle", state: 0}, {tag: "running", state: 2}, {tag: "stopping", state: 3}, {tag: "failed", state: 4}];
+            return [{tag: "idle", state: 0}, {tag: "starting", state: 1}, {tag: "running", state: 2}, {tag: "stopping", state: 3},
+                {tag: "failed", state: 4}];
         }
         function test_start_saved_system_from_every_state(data) {
             var uid = addWarehouse();
             enterState(data.state);
             screen().startSavedSystem(uid);
-            verify(!app.signalSearchOpen);
             if (data.state === 3) {
                 testContext.setDelayedStop(false);
                 testContext.setLifecyclePhase(0);
             }
             tryCompare(decoderHost, "sessionState", 1);
+            verify(!app.signalSearchOpen);
             compare(app.sessionSystem.uid, uid);
             verify(!app.sessionSystem.signalSearch);
             verify(!app.exploring);
         }
-        // An avoided system is refused visibly: before anything stops, and again
-        // if it became avoided while the search stopped.
+        // An avoided system is refused visibly: before anything stops, on the
+        // search screen; and if it became avoided while the search stopped, on
+        // Home, where Retry asks again and Edit opens that system.
         function test_avoided_saved_system_is_refused_visibly() {
             var uid = addWarehouse();
             savedSystems.setAvoidSite(savedSystems.rowForUid(uid), true);
@@ -315,20 +318,89 @@ Item {
             screen().startSavedSystem(uid);
             compare(decoderHost.stopCalls(), stops, "nothing stops for a refused start");
             verify(app.signalSearchOpen, "the search stays");
-            compare(app.startError, "“Warehouse” is avoided. Remove the avoid in its site list to start it.");
-            compare(findChild(screen(), "searchMessage").text, app.startError);
+            var refusal = "“Warehouse” is avoided. Remove the avoid in its site list to start it.";
+            compare(findChild(screen(), "searchMessage").text, refusal);
+            compare(app.startError, "", "the refusal is the screen's, not a start failure for Home");
+            // A later search message is not hidden by it once the screen is left.
+            screen().localFailure = "";
+            searchStub.status = Object.assign({}, searchStub.status, {message: "The avoid list is full"});
+            compare(findChild(screen(), "searchMessage").text, "The avoid list is full");
             // Avoided while the search stops.
             savedSystems.setAvoidSite(savedSystems.rowForUid(uid), false);
-            app.startError = "";
             testContext.setDelayedStop(true);
             screen().startSavedSystem(uid);
             compare(decoderHost.sessionState, 3);
             savedSystems.setAvoidSite(savedSystems.rowForUid(uid), true);
+            testContext.setDelayedStop(false);
             testContext.setLifecyclePhase(0);
             wait(10);
             compare(decoderHost.sessionState, 0, "nothing starts");
-            compare(app.startError, "“Warehouse” is avoided. Remove the avoid in its site list to start it.");
+            verify(!app.signalSearchOpen);
+            compare(app.startError, refusal);
             verify(app.showFailure, "the refusal is shown");
+            compare(app.attemptedSource.kind, "saved");
+            compare(app.attemptedSource.uid, uid);
+            // Retry is the saved system again, refused again; never the search.
+            var arms = searchStub.arms;
+            app.retrySource();
+            wait(10);
+            compare(decoderHost.sessionState, 0);
+            compare(searchStub.arms, arms);
+            verify(!app.signalSearchOpen);
+            compare(app.startError, refusal);
+            app.editFailedSource();
+            verify(app.wizardOpen, "Edit opens the refused system");
+            app.wizardOpen = false;
+        }
+        // Handing off from a running search keeps the search screen as the root
+        // while it stops, says so, and takes no Back; the handoff then runs.
+        function test_running_handoff_keeps_the_search_screen_while_stopping() {
+            enterState(2);
+            testContext.setDelayedStop(true);
+            var roots = [];
+            var record = function () { roots.push({state: decoderHost.sessionState, root: Ui.Navigation.rootSurfaces[0]}); };
+            Ui.Navigation.rootSurfacesChanged.connect(record);
+            try {
+                screen().exploreDetection(detection);
+                compare(decoderHost.sessionState, 3);
+                verify(app.leavingSearch);
+                compare(Ui.Navigation.rootSurfaces[0], screen(), "the search screen is the root while it stops");
+                compare(findChild(screen(), "searchIdentification").text, "Stopping the search…");
+                verify(!findChild(screen(), "searchStop").enabled && !findChild(screen(), "searchStartPause").enabled, "the footer takes no input");
+                verify(!findChild(screen(), "searchMore").enabled && !findChild(screen(), "searchHold").enabled, "nor do the Now actions");
+                verify(!findChild(screen(), "searchBack").enabled);
+                // Back is ignored until the decoder is idle: the handoff stands.
+                app.requestBack();
+                keyClick(Qt.Key_Escape);
+                mouseClick(screen(), screen().width / 2, screen().height / 2);
+                verify(app.pendingRestart !== null && app.leavingSearch);
+                compare(Ui.Navigation.rootSurfaces[0], screen());
+                testContext.setDelayedStop(false);
+                testContext.setLifecyclePhase(0);
+                tryCompare(decoderHost, "sessionState", 1);
+            } finally {
+                Ui.Navigation.rootSurfacesChanged.disconnect(record);
+            }
+            compare(app.sessionSystem.name, "Exploring");
+            verify(!app.leavingSearch && !app.signalSearchOpen);
+            // Nothing else was the root while the search stopped: not its monitor, not Home.
+            for (var entry of roots) {
+                if (entry.state === 3)
+                    compare(entry.root, screen(), "the root while stopping");
+            }
+        }
+        // A search that fails to stop hands off nothing: the screen closes onto
+        // Home's failure card and the flag clears.
+        function test_failed_stop_ends_the_handoff() {
+            enterState(2);
+            testContext.setDelayedStop(true);
+            screen().startSavedSystem(addWarehouse());
+            verify(app.leavingSearch);
+            testContext.setLifecyclePhase(4);
+            verify(!app.leavingSearch);
+            compare(app.pendingRestart, null);
+            verify(!app.signalSearchOpen);
+            testContext.setDelayedStop(false);
         }
     }
 }
