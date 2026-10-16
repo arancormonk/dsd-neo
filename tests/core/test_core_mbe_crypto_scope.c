@@ -1368,13 +1368,18 @@ test_nxdn_cipher23_session_exhaustion(void) {
     return rc;
 }
 
-/* Fully corrected AMBE 2450 frames (one C0 and three C1 bit errors: 4 in all with mbelib-neo 2.5's counts) captured
-   live with -d replay with -r as they played live: the record's error byte is the C0 count, which replay restores as
-   C0 context, so no frame repeats and the replay is not muted. */
-static int
-test_amb_capture_replays_corrected_frames(void) {
-    enum { FRAMES = 6 };
+/* Capture @p frames DMR AMBE 2450 frames live with -d, each fixture frame with @p c0_flips C0 and @p c1_flips C1 bit
+   errors (all corrected), then replay the capture with -r. Reports the live and the replayed vocoder state after the
+   last frame. */
+typedef struct {
+    int repeat_count;
+    int muted;
+    float error_rate;
+} vocoder_end;
 
+static int
+capture_and_replay(int frames, int c0_flips, int c1_flips, int want_c0, int want_total, vocoder_end* live,
+                   vocoder_end* replay) {
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_crypto_scope_capture");
     if (fd < 0) {
@@ -1389,21 +1394,25 @@ test_amb_capture_replays_corrected_frames(void) {
     reset_state(DSD_SYNC_DMR_BS_VOICE_POS, 0);
     g_opts.mbe_out_f = f;
     int rc = (fwrite(".amb", 1, 4, f) == 4) ? 0 : 1;
-    for (int i = 0; i < FRAMES && rc == 0; i++) {
+    for (int i = 0; i < frames && rc == 0; i++) {
         char fr[4][24];
-        if (mbe_encodeAmbe3600x2450Frame(g_ambe_d[i], fr) < 0) {
+        if (mbe_encodeAmbe3600x2450Frame(g_ambe_d[i % FIXTURE_FRAMES], fr) < 0) {
             rc = 1;
             break;
         }
-        fr[0][0] ^= 1;
-        fr[1][0] ^= 1;
-        fr[1][1] ^= 1;
-        fr[1][2] ^= 1;
+        for (int k = 0; k < c0_flips; k++) {
+            fr[0][k] ^= 1;
+        }
+        for (int k = 0; k < c1_flips; k++) {
+            fr[1][k] ^= 1;
+        }
         processMbeFrame(&g_opts, &g_state, DSD_VOICE_PROTOCOL_DMR, NULL, fr, NULL);
-        rc |= expect_int("capture frame c0 errors", g_state.errs, 1);
-        rc |= expect_int("capture frame total errors", g_state.errs2, 4);
-        rc |= expect_int("capture frame plays live", g_state.cur_mp->repeatCount, 0);
+        rc |= expect_int("capture frame c0 errors", g_state.errs, want_c0);
+        rc |= expect_int("capture frame total errors", g_state.errs2, want_total);
     }
+    live->repeat_count = g_state.cur_mp->repeatCount;
+    live->muted = strchr(g_state.err_str, 'M') != NULL;
+    live->error_rate = g_state.cur_mp->errorRate;
     if (fclose(f) != 0) {
         rc = 1;
     }
@@ -1413,12 +1422,34 @@ test_amb_capture_replays_corrected_frames(void) {
     g_state.optind = 1;
     char* argv[] = {"dsd-neo", path};
     playMbeFiles(&g_opts, &g_state, 2, argv);
-    rc |= expect_int("replayed frames do not repeat", g_state.cur_mp->repeatCount, 0);
-    if (strchr(g_state.err_str, 'R') != NULL) {
-        DSD_FPRINTF(stderr, "replayed frame repeated (%s)\n", g_state.err_str);
+    replay->repeat_count = g_state.cur_mp->repeatCount;
+    replay->muted = strchr(g_state.err_str, 'M') != NULL;
+    replay->error_rate = g_state.cur_mp->errorRate;
+    (void)remove(path);
+    return rc;
+}
+
+/* A -d capture replays with -r as the stream played live. Fully corrected frames of one C0 and three C1 bit errors (4
+   in all with mbelib-neo 2.5's counts, parity bits included) play live and do not repeat on replay: the record carries
+   the C0 count, which replay restores as C0 context. A long run of three C0 and three C1 errors (6 in all) mutes live
+   on its error rate, and on replay too: the record carries the total as well. */
+static int
+test_amb_capture_replays_as_live(void) {
+    int rc = 0;
+    vocoder_end live;
+    vocoder_end replay;
+    rc |= capture_and_replay(6, 1, 3, 1, 4, &live, &replay);
+    rc |= expect_int("corrected frames play live", live.repeat_count, 0);
+    rc |= expect_int("corrected frames do not repeat on replay", replay.repeat_count, 0);
+
+    rc |= capture_and_replay(40, 3, 3, 3, 6, &live, &replay);
+    rc |= expect_int("a noisy run mutes live", live.muted, 1);
+    rc |= expect_int("a noisy run mutes on replay", replay.muted, 1);
+    const float drift = live.error_rate - replay.error_rate;
+    if (drift > 1e-4f || drift < -1e-4f) {
+        DSD_FPRINTF(stderr, "replayed error rate %f, live %f\n", (double)replay.error_rate, (double)live.error_rate);
         rc = 1;
     }
-    (void)remove(path);
     return rc;
 }
 
@@ -1500,7 +1531,7 @@ main(void) {
     rc |= test_dmr_des_frames_match_reference();
     rc |= test_dmr_rc4_decrypts_three_c0_errors();
     rc |= test_dmr_rc4_corrected_frames_are_not_repeated();
-    rc |= test_amb_capture_replays_corrected_frames();
+    rc |= test_amb_capture_replays_as_live();
     rc |= test_p25p2_aes_does_not_skip_dmr_silence_patterns();
     rc |= test_nxdn_cipher23_session_exhaustion();
     rc |= test_keystream_muted_frame_stages_silence();

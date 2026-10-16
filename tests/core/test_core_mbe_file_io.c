@@ -233,16 +233,21 @@ binary_probe_ambe_bits(char* ambe_d) {
     ambe_d[48] = (char)kBinaryProbeFrame[7];
 }
 
-/* The MBE file holds exactly its four-byte header and the probe frame, byte for byte. */
+/* The probe frame's counts as an .amb record packs them: C0 2 and total 10 behind DSD_MBE_AMB_ERR_FLAG. A .dmb record
+   keeps the total alone, the probe frame's LF. */
+#define BINARY_PROBE_AMB_C0  2
+#define BINARY_PROBE_AMB_ERR 0xAAU
+
+/* The MBE file holds exactly its four-byte header, the error byte @p err and the rest of the probe frame. */
 static int
-expect_mbe_file_bytes(const char* label, const char* path, const char* header) {
+expect_mbe_file_bytes(const char* label, const char* path, const char* header, unsigned char err) {
     unsigned char bytes[12];
     size_t got = 0;
     if (read_file_exact(path, bytes, sizeof bytes, &got) != 0) {
         return 1;
     }
-    int ok = got == sizeof bytes && memcmp(bytes, header, 4) == 0
-             && memcmp(bytes + 4, kBinaryProbeFrame, sizeof kBinaryProbeFrame) == 0;
+    int ok = got == sizeof bytes && memcmp(bytes, header, 4) == 0 && bytes[4] == err
+             && memcmp(bytes + 5, kBinaryProbeFrame + 1, sizeof kBinaryProbeFrame - 1U) == 0;
     return expect_true(label, ok);
 }
 
@@ -575,11 +580,11 @@ test_ambe_save_read_roundtrip_and_slot2(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    /* The record carries the C0 error count (errs), not the total (errs2). */
-    state.errs = 0x44;
-    state.errs2 = 0x66;
-    state.errsR = 0x55;
-    state.errs2R = 0x77;
+    /* The record packs the C0 error count (errs) and the total (errs2) behind DSD_MBE_AMB_ERR_FLAG. */
+    state.errs = 2;
+    state.errs2 = 5;
+    state.errsR = 1;
+    state.errs2R = 3;
     set_bits_from_bytes(ambe_bits, payload, sizeof payload);
     ambe_bits[48] = 1;
 
@@ -600,7 +605,7 @@ test_ambe_save_read_roundtrip_and_slot2(void) {
     saveAmbe2450Data(&opts, &state, ambe_bits);
     fflush(out);
     rc |= read_bytes(out, bytes, sizeof bytes);
-    rc |= expect_byte("ambe-err", bytes[0], 0x44);
+    rc |= expect_byte("ambe-err", bytes[0], 0xA5);
     for (size_t i = 0; i < sizeof payload; i++) {
         char tag[32];
         DSD_SNPRINTF(tag, sizeof tag, "ambe-byte-%zu", i);
@@ -614,8 +619,9 @@ test_ambe_save_read_roundtrip_and_slot2(void) {
     state.errs2 = 0;
     opts.mbe_in_f = out;
     rc |= expect_int("read-ambe", readAmbe2450Data(&opts, &state, decoded), 0);
-    rc |= expect_int("ambe-state-errs", state.errs, 0x44);
-    rc |= expect_int("ambe-state-errs2", state.errs2, 0x44);
+    rc |= expect_int("ambe-state-errs", state.errs, 2);
+    rc |= expect_int("ambe-state-errs2", state.errs2, 5);
+    rc |= expect_int("ambe-state-c0-valid", state.mbe_file_c0_valid, 1);
     rc |= expect_bits("ambe-roundtrip", decoded, ambe_bits, sizeof decoded);
 
     DSD_MEMSET(bytes, 0, sizeof bytes);
@@ -623,7 +629,18 @@ test_ambe_save_read_roundtrip_and_slot2(void) {
     saveAmbe2450DataR(&opts, &state, ambe_bits);
     fflush(out_r);
     rc |= read_bytes(out_r, bytes, sizeof bytes);
-    rc |= expect_byte("ambe-r-err", bytes[0], 0x55);
+    rc |= expect_byte("ambe-r-err", bytes[0], 0x93);
+
+    /* A byte without the flag is a total alone (older captures, other tools): no C0 count. */
+    rewind(out);
+    if (fputc(0x04, out) == EOF || fflush(out) != 0) {
+        rc = 1;
+    }
+    rewind(out);
+    rc |= expect_int("read-legacy-ambe", readAmbe2450Data(&opts, &state, decoded), 0);
+    rc |= expect_int("legacy-ambe-errs", state.errs, 4);
+    rc |= expect_int("legacy-ambe-errs2", state.errs2, 4);
+    rc |= expect_int("legacy-ambe-c0-valid", state.mbe_file_c0_valid, 0);
     rc |= expect_byte("ambe-r-tail", bytes[7], 1);
 
     fclose(out);
@@ -2277,8 +2294,7 @@ test_mbe_out_write_creates_slot_files_and_closes(void) {
             state.errs2 = kBinaryProbeImbe[0];
         } else {
             binary_probe_ambe_bits(bits);
-            /* An .amb record carries the C0 count (errs), a .dmb record the total (errs2). */
-            state.errs = kBinaryProbeFrame[0];
+            state.errs = BINARY_PROBE_AMB_C0;
             state.errs2 = kBinaryProbeFrame[0];
         }
         dsd_mbe_out_write(&opts, &state, 0, slot1_cases[i].format, bits);
@@ -2302,7 +2318,9 @@ test_mbe_out_write_creates_slot_files_and_closes(void) {
         if (slot1_cases[i].format == DSD_MBE_OUT_FORMAT_IMBE) {
             rc |= expect_imbe_file_bytes("slot1 header and binary imbe record", opts.mbe_out_path);
         } else {
-            rc |= expect_mbe_file_bytes("slot1 header and binary frame", opts.mbe_out_path, slot1_cases[i].header);
+            const unsigned char err =
+                slot1_cases[i].format == DSD_MBE_OUT_FORMAT_AMBE ? BINARY_PROBE_AMB_ERR : kBinaryProbeFrame[0];
+            rc |= expect_mbe_file_bytes("slot1 header and binary frame", opts.mbe_out_path, slot1_cases[i].header, err);
         }
         (void)remove(opts.mbe_out_path);
     }
@@ -2316,7 +2334,8 @@ test_mbe_out_write_creates_slot_files_and_closes(void) {
 
     char probe_bits[49];
     binary_probe_ambe_bits(probe_bits);
-    state.errsR = kBinaryProbeFrame[0];
+    state.errsR = BINARY_PROBE_AMB_C0;
+    state.errs2R = kBinaryProbeFrame[0];
     dsd_mbe_out_write(&opts, &state, 1, DSD_MBE_OUT_FORMAT_AMBE, probe_bits);
     rc |= expect_int("slot2 open flag", opts.mbe_outR, 1);
     rc |= expect_true("slot2 file handle opened", opts.mbe_out_fR != NULL);
@@ -2330,7 +2349,7 @@ test_mbe_out_write_creates_slot_files_and_closes(void) {
     rc |= expect_int("slot2 close clears flag", opts.mbe_outR, 0);
     rc |= expect_true("slot2 close clears handle", opts.mbe_out_fR == NULL);
 
-    rc |= expect_mbe_file_bytes("slot2 header and binary frame", opts.mbe_out_path, ".amb");
+    rc |= expect_mbe_file_bytes("slot2 header and binary frame", opts.mbe_out_path, ".amb", BINARY_PROBE_AMB_ERR);
     (void)remove(opts.mbe_out_path);
     (void)remove_dir(dir);
     return rc;

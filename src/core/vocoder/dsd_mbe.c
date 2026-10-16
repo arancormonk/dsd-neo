@@ -354,11 +354,13 @@ decode_ambe_file_frame(dsd_state* state, char ambe_d[49], char file_err_str[260]
     init_mbe_file_result(&result, state->errs2);
     int ret = MBE_STATUS_INVALID_ARGUMENT;
     if (state->mbe_file_type == 1) {
-        /* An .amb record's error byte is the frame's C0 error count (saveAmbe2450Data()): replay it as C0 context, so
-           the frame repeats as it did live. */
-        result.flags |= MBE_PROCESS_FLAG_C0_VALID;
-        result.c0_errors = result.total_errors;
-        result.protected_errors = 0;
+        /* A record saveAmbe2450Data() packed carries the frame's C0 count: replay it as C0 context, so the frame
+           repeats as it did live. A total alone (older captures) keeps mbelib's no-context rule. */
+        if (state->mbe_file_c0_valid && state->errs <= state->errs2) {
+            result.flags |= MBE_PROCESS_FLAG_C0_VALID;
+            result.c0_errors = state->errs;
+            result.protected_errors = state->errs2 - state->errs;
+        }
         file_err_str[0] = '\0';
         ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp, state->prev_mp,
                                        state->prev_mp_enhanced);
@@ -873,14 +875,17 @@ mbe_process_dstar(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voc
 
 static void
 mbe_save_x2_frame(dsd_opts* opts, dsd_state* state, const char* ambe_d) {
-    /* X2 records both timeslots in one interleaved .amb stream, each record with its own slot's error count. */
+    /* X2 records both timeslots in one interleaved .amb stream, each record with its own slot's error counts. */
     int saved_errs = state->errs;
+    int saved_errs2 = state->errs2;
 
     if (state->currentslot == 1) {
         state->errs = state->errsR;
+        state->errs2 = state->errs2R;
     }
     dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe_d);
     state->errs = saved_errs;
+    state->errs2 = saved_errs2;
 }
 
 static void

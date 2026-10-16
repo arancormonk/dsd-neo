@@ -28,8 +28,13 @@ extern "C" {
 #endif
 
 void saveImbe4400Data(dsd_opts* opts, const dsd_state* state, const char* imbe_d);
-/* AMBE 2450 records (.amb): the error byte is the frame's C0 error count (errs / errsR), which -r replay restores as
-   C0 context. */
+/* AMBE 2450 records (.amb): the error byte packs the frame's C0 and total error counts behind DSD_MBE_AMB_ERR_FLAG,
+   which -r replay restores as C0 context and error rate. A byte without the flag is a total alone (older captures,
+   other tools). */
+#define DSD_MBE_AMB_ERR_FLAG      0x80U
+#define DSD_MBE_AMB_ERR_C0_SHIFT  4
+#define DSD_MBE_AMB_ERR_C0_MAX    7
+#define DSD_MBE_AMB_ERR_TOTAL_MAX 15
 void saveAmbe2450Data(dsd_opts* opts, const dsd_state* state, const char* ambe_d);
 void saveAmbe2450DataR(dsd_opts* opts, const dsd_state* state, const char* ambe_d);
 int dsd_frame_log_enabled(const dsd_opts* opts);

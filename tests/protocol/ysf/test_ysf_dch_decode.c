@@ -1507,7 +1507,7 @@ reset_ysf_stream(void) {
 }
 
 #ifndef DSD_YSF_TEST_REAL_VOCODER
-/* V/D2 decodes straight through mbelib: each block is captured after the vocoder settled its error count (0 for a
+/* V/D2 decodes straight through mbelib: each block is captured after the vocoder settled its error counts (0 for a
    block mbelib refused), in the record format -r reads back. */
 static void
 test_process_ysf_vd_type2_captures_each_block(void) {
@@ -1536,7 +1536,10 @@ test_process_ysf_vd_type2_captures_each_block(void) {
     assert(memcmp(bytes, ".amb", 4) == 0);
     for (int block = 0; block < 5; block++) {
         const unsigned char* rec = &bytes[4 + (block * 8)];
-        assert(rec[0] == (block == 3 ? 0U : (unsigned char)(4 + block)));
+        /* The record packs the C0 and total counts (DSD_MBE_AMB_ERR_FLAG); without C0 context both are the total. */
+        const unsigned total = block == 3 ? 0U : (unsigned)(4 + block);
+        const unsigned c0 = total > (unsigned)DSD_MBE_AMB_ERR_C0_MAX ? (unsigned)DSD_MBE_AMB_ERR_C0_MAX : total;
+        assert(rec[0] == (unsigned char)(DSD_MBE_AMB_ERR_FLAG | (c0 << DSD_MBE_AMB_ERR_C0_SHIFT) | total));
         unsigned char want[7];
         DSD_MEMSET(want, 0, sizeof want);
         for (int i = 0; i < 48; i++) {

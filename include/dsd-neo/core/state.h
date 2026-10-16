@@ -1072,6 +1072,7 @@ struct dsd_state {
     int errsR;
     int errs2R;
     int mbe_file_type;
+    int mbe_file_c0_valid; /* the last .amb record read carried its C0 error count (DSD_MBE_AMB_ERR_FLAG) */
     int optind;
     // CLI argv/argc snapshot for file playback modes (set by frontend)
     int cli_argc_effective;
