@@ -4278,7 +4278,7 @@ test_iq_replay_audio_classifier_respects_radio_guard(void) {
 }
 
 static int
-test_iq_info_returns_one_shot(void) {
+test_iq_info_returns_one_shot(int path_form) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -4304,7 +4304,12 @@ test_iq_info_returns_one_shot(void) {
     char arg0[] = "dsd-neo";
     char arg1[] = "--iq-info";
     char arg2[1024];
-    DSD_SNPRINTF(arg2, sizeof arg2, "%s", metadata_path);
+    /* Operator-selected paths outside the working directory are intentional. The
+       data path also exercises WAV sniffing before the JSON sidecar is read. */
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", path_form == 0 ? metadata_path : data_path);
+    if (path_form == 2) {
+        arg2[strlen(arg2) - 3U] = '\0'; /* Bare capture name: drop the fixture's .iq suffix. */
+    }
     char* argv[] = {arg0, arg1, arg2, NULL};
 
     int argc_effective = 0;
@@ -4312,7 +4317,8 @@ test_iq_info_returns_one_shot(void) {
     test_redirect_stdout_to_null();
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ONE_SHOT || exit_rc != 0) {
-        DSD_FPRINTF(stderr, "expected iq-info one-shot success, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected iq-info form %d one-shot success, got rc=%d exit_rc=%d\n", path_form, rc,
+                    exit_rc);
         (void)remove(metadata_path);
         (void)remove(data_path);
         freeState(state);
@@ -10050,7 +10056,9 @@ main(void) {
     rc |= test_iq_replay_long_options_parse();
     rc |= test_iq_replay_audio_classifier_respects_radio_guard();
     rc |= test_iq_replay_rate_missing_value_returns_error();
-    rc |= test_iq_info_returns_one_shot();
+    rc |= test_iq_info_returns_one_shot(0); /* Explicit metadata path. */
+    rc |= test_iq_info_returns_one_shot(1); /* Explicit data path. */
+    rc |= test_iq_info_returns_one_shot(2); /* Bare capture name. */
     rc |= test_iq_info_missing_value_returns_error();
     rc |= test_iq_replay_capture_conflict_returns_error();
     rc |= test_iq_replay_missing_value_returns_error();
