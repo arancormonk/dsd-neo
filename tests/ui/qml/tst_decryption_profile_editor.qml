@@ -165,10 +165,21 @@ Item {
             verify(!shownDiscard(loader.item), "the saved algorithm is not an edit");
             sheet.open(uid, "dmr");
             waitForRendering(sheet);
-            findChild(sheet, "profileFallbackAlgorithm").text = "2A";
+            // Typed, not assigned: an assignment would break the field's binding
+            // to the draft for every later case on this shared editor.
+            field = findChild(sheet, "profileFallbackAlgorithm");
+            field.input.forceActiveFocus();
+            field.input.selectAll();
+            keyClick("2");
+            keyClick("A");
+            compare(field.text, "2A");
             verify(!sheet.dirty, "the edit has not committed yet");
             expectAsk(sheet, "scrim");
             compare(decryptionProfiles.get(uid).force, 33, "a discarded edit is never saved");
+            // The field still follows the draft: reopened, it reads the saved value.
+            sheet.open(uid, "dmr");
+            compare(findChild(sheet, "profileFallbackAlgorithm").text, "21");
+            sheet.visible = false;
         }
         // A question left open goes with the sheet that asked it.
         function test_question_closes_with_its_sheet() {

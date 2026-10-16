@@ -229,6 +229,35 @@ Item {
             compare(findChild(screen, "searchPort").text, "1235");
             compare(screen.sourceType, "rtltcp");
         }
+        // Main binds sessionActive to DecoderHost (sessionStateChanged) and
+        // sessionSource to the metrics poll (controlChanged), which can land on
+        // either side of the stop. Whichever order, the receiver a stopped
+        // session leaves is the baseline, and Back asks nothing.
+        function test_stopped_session_leaves_no_phantom_edit_data() {
+            return [{tag: "source before stop", sourceFirst: true}, {tag: "source after stop", sourceFirst: false}];
+        }
+        function test_stopped_session_leaves_no_phantom_edit(data) {
+            var screen = loader.item;
+            screen.sessionActive = false;
+            screen.seed("usb", "192.168.1.10", 1234);
+            model.status = {phase: 1, session: "19", owned: true};
+            screen.sessionActive = true;
+            screen.sessionSource = {sourceType: "rtltcp", host: "10.0.0.5", port: 1235};
+            compare(screen.sourceType, "rtltcp");
+            if (data.sourceFirst)
+                screen.sessionSource = {sourceType: "airspy"};
+            screen.sessionActive = false;
+            if (!data.sourceFirst) {
+                // A poll after the stop: no owned session, so it changes nothing.
+                screen.sessionSource = {sourceType: "airspy"};
+                compare(screen.sourceType, "rtltcp");
+                screen.sessionSource = {};
+            }
+            model.status = {phase: 0, session: "19", owned: false};
+            screen.requestClose();
+            compare(closed.count, 1, "a stop is not an edit");
+            verify(!shownDiscard(screen));
+        }
         function test_back_is_delegated_to_session_owner() {
             loader.item.requestClose();
             compare(back.count, 1);

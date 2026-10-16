@@ -5694,7 +5694,8 @@ Qt Quick frontend (`src/ui/qt`):
   Main's `seedSignalSearch()` and when a session stops), `BackupFlow.qml`'s passphrase and unlock sheets (only while
   editable and typed; their Cancel and the busy steps cancel at once), `DecryptionProfileEditor.qml` and its key and
   mapping dialogs (`openedForm`, re-captured after `openMatching()`/`openTalkgroup()` prefill, plus the pending fallback
-  algorithm), `KeySheet.qml` (unapplied direct-key draft or another profile/scope than at open), `ToneFilterSheet.qml`
+  algorithm), `KeySheet.qml` (an unapplied direct-key draft asks the discard question; another saved profile or scope than at
+  open, not applied yet, asks "Close without applying the profile …?" through `DiscardDialog.askWith()`), `ToneFilterSheet.qml`
   (`openedPolicy`, re-captured by `chooseScope()`), Spectrum's Go to, `ScanListScreen.qml` (`fingerprint()` includes
   the unadded frequency fields), plus the wizard, Explore setup and talkgroup sheets. A `DiscardDialog` closes with the
   surface under it, so it never returns when that reopens. `RadioReferenceScreen.reset()` keeps the typed zip code and

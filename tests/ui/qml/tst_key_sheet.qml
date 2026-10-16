@@ -150,7 +150,7 @@ Item {
         function shownDiscard(item) {
             if (!item || !item.visible)
                 return null;
-            if (item.accessibleName === "Discard changes?")
+            if (typeof item.askWith === "function")
                 return item;
             for (var child of item.children) {
                 var found = shownDiscard(child);
@@ -168,8 +168,7 @@ Item {
                 {tag: "key by scrim", change: "key", method: "scrim"},
                 {tag: "key by Back", change: "key", method: "back"},
                 {tag: "identifier policy by scrim", change: "force", method: "scrim"},
-                {tag: "profile by scrim", change: "profile", method: "scrim"},
-                {tag: "scope by Close", change: "scope", method: "close"}
+                {tag: "profile and key by scrim", change: "profile+key", method: "scrim"}
             ];
         }
         function test_close_with_a_change_asks(data) {
@@ -193,18 +192,20 @@ Item {
                 editor.keyValue = String(17 * 3);
             } else if (data.change === "force") {
                 editor.forceChanged = true;
-            } else if (data.change === "profile") {
-                sheet.selectedProfileUid = "another-profile";
             } else {
-                sheet.profileScope = 1;
+                sheet.selectedProfileUid = "another-profile";
+                editor.keyType = "basic";
+                editor.keyValue = String(17 * 3);
             }
             dismiss();
             verify(sheet.visible, "an unapplied change survives the dismissal");
             var discard = shownDiscard(sheet);
             verify(discard !== null);
+            // A typed draft is unsaved work, whatever profile is chosen.
+            compare(findChild(discard, "discardDialogQuestion").text, "Discard unsaved changes?");
             findChild(discard, "discardDialogKeep").activate();
             verify(sheet.visible);
-            if (data.change === "key")
+            if (data.change !== "force")
                 compare(editor.keyValue, String(17 * 3));
             dismiss();
             findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
@@ -212,6 +213,103 @@ Item {
             verify(editor.keyValue.length === 0);
             compare(commands.keyApplyCalls(), 0);
             compare(commands.lastForceMode(), -1);
+        }
+        // A profile chosen (or saved by "Manage matching key") is saved already:
+        // closing gives up only applying it, and the question says so. "No
+        // profile" leaves nothing to apply, and a profile in flight asks nothing.
+        function test_unapplied_profile_asks_about_applying_data() {
+            return [
+                {tag: "picked, Close", how: "pick", method: "close", scope: 0},
+                {tag: "picked, scrim", how: "pick", method: "scrim", scope: 0},
+                {tag: "saved by the matching editor", how: "saved", method: "close", scope: 0},
+                {tag: "apply refused", how: "failed", method: "close", scope: 0},
+                {tag: "target scope", how: "scope", method: "close", scope: 1}
+            ];
+        }
+        function test_unapplied_profile_asks_about_applying(data) {
+            var uid = decryptionProfiles.saveProfile({label: "Fire keys", protocol: "dmr", mode: "direct", directType: "basic", directValue: "51"}).uid;
+            verify(uid.length > 0);
+            try {
+                waitForRendering(sheet);
+                if (data.how === "saved") {
+                    // The matching editor reports what it saved through saved().
+                    var matching = named(sheet, "Decryption profile");
+                    verify(matching !== null);
+                    matching.saved(uid);
+                    compare(sheet.selectedProfileUid, uid);
+                } else if (data.how === "failed") {
+                    sheet.selectedProfileUid = uid;
+                    var apply = visualText(sheet, "Apply profile to session defaults");
+                    verify(apply !== null);
+                    apply.activate();
+                    uiController.finishDecryption(commands.lastDecryptionRequest(), -2);
+                    verify(sheet.visible && sheet.notice.length > 0, "a refused apply leaves the sheet up");
+                } else if (data.how === "scope") {
+                    sheet.selectedProfileUid = uid;
+                    sheet.profileScope = 1;
+                } else {
+                    sheet.selectedProfileUid = uid;
+                }
+                if (data.method === "close")
+                    findChild(sheet, "keySheetClose").activate();
+                else
+                    tapBeside(sheet);
+                verify(sheet.visible, "an unapplied profile is asked about");
+                var discard = shownDiscard(sheet);
+                verify(discard !== null);
+                compare(findChild(discard, "discardDialogQuestion").text, data.scope === 1 ? "Close without applying the profile to this target?" : "Close without applying the profile to session defaults?");
+                compare(findChild(discard, "discardDialogDiscard").text, "Close without applying");
+                compare(discard.accessibleName, findChild(discard, "discardDialogQuestion").text);
+                findChild(discard, "discardDialogKeep").activate();
+                verify(sheet.visible);
+                compare(sheet.selectedProfileUid, uid);
+                findChild(sheet, "keySheetClose").activate();
+                findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
+                verify(!sheet.visible);
+                compare(commands.keyApplyCalls(), 0);
+                // The next question is the plain one again.
+                sheet.open();
+                editor().keyType = "basic";
+                editor().keyValue = String(17 * 3);
+                findChild(sheet, "keySheetClose").activate();
+                compare(findChild(shownDiscard(sheet), "discardDialogQuestion").text, "Discard unsaved changes?");
+                findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
+                // "No profile" leaves nothing to apply.
+                sheet.open();
+                sheet.selectedProfileUid = uid;
+                sheet.selectedProfileUid = "";
+                findChild(sheet, "keySheetClose").activate();
+                verify(!sheet.visible);
+            } finally {
+                verify(decryptionProfiles.removeProfile(uid).ok);
+            }
+        }
+        function named(item, name) {
+            if (!item)
+                return null;
+            if (item.accessibleName === name)
+                return item;
+            for (var child of item.children) {
+                var found = named(child, name);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        function visualText(item, text) {
+            if (!item)
+                return null;
+            if (item.text === text && typeof item.activate === "function")
+                return item;
+            for (var child of item.children) {
+                var found = visualText(child, text);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        function editor() {
+            return findChild(sheet, "sessionEncryptionEditor");
         }
         function test_unchanged_apply_preserves_force_and_keyloader() {
             sheet.apply();

@@ -3,15 +3,25 @@ import QtQuick
 
 ModalSheet {
     id: sheet
-    accessibleName: qsTr("Discard changes?")
+    accessibleName: question.length ? question : qsTr("Discard changes?")
     property var discardAction: null
+    // A surface whose outstanding work is not an unsaved edit names what
+    // closing gives up instead (askWith()); ask() keeps the usual wording.
+    property string question: ""
+    property string discardLabel: ""
     function ask(action) {
+        askWith(action, "", "");
+    }
+    function askWith(action, questionText, discardText) {
+        question = questionText;
+        discardLabel = discardText;
         discardAction = action;
         visible = true;
     }
     Text {
+        objectName: "discardDialogQuestion"
         width: parent.width
-        text: qsTr("Discard unsaved changes?")
+        text: sheet.question.length ? sheet.question : qsTr("Discard unsaved changes?")
         wrapMode: Text.Wrap
         color: Theme.textPrimary
         font.family: Theme.sans
@@ -29,7 +39,7 @@ ModalSheet {
     OutlineButton {
         objectName: "discardDialogDiscard"
         width: parent.width
-        text: qsTr("Discard changes")
+        text: sheet.discardLabel.length ? sheet.discardLabel : qsTr("Discard changes")
         onClicked: {
             var action = sheet.discardAction;
             sheet.discardAction = null;
