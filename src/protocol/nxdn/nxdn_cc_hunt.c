@@ -137,13 +137,15 @@ nxdn_cc_hunt_tune(nxdn_cc_hunt_ctx* ctx, dsd_opts* opts, dsd_state* state, long 
 }
 
 /* Resolve the hunt's own request. Returns 0 while it is still in flight; a completed one attributes the receiver to
-   the probe, a failed one (or one the deadline failed) only clears the request: the next probe replaces it. */
+   the probe and gives it its full dwell from the completion, a failed one (or one the deadline failed) only clears the
+   request: the next probe replaces it. */
 static int
 nxdn_cc_hunt_resolve(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts, double now_m) {
     if (ctx->tune_request_id == 0U) {
         return 1;
     }
-    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(ctx->tune_request_id, NULL);
+    double completed_m = 0.0;
+    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(ctx->tune_request_id, &completed_m);
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         if (now_m < ctx->tune_deadline_m) {
             return 0;
@@ -157,6 +159,9 @@ nxdn_cc_hunt_resolve(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts, double now_m) 
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
         ctx->rx_freq_hz = ctx->probe_freq_hz;
         ctx->rx_generation = dsd_trunk_tuning_generation();
+        if (ctx->hunting) {
+            ctx->retry_after_m = (completed_m > 0.0 ? completed_m : now_m) + NXDN_CC_HUNT_PROBE_S;
+        }
     }
     return 1;
 }
@@ -387,10 +392,10 @@ nxdn_cc_hunt_note_control(const dsd_opts* opts, dsd_state* state) {
     ctx->park_pending = 0;
     ctx->retry_after_m = 0.0;
     ctx->armed_m = now_m;
+    ctx->cc_confirmed = 1; // with no frequency the map is still hunted, without an anchor
     if (freq > 0) {
         ctx->probe_freq_hz = freq;
         ctx->cc_freq_hz = freq;
-        ctx->cc_confirmed = 1;
         state->p25_cc_freq = freq;
         state->trunk_cc_freq = freq;
     }
@@ -404,7 +409,11 @@ nxdn_cc_hunt_note_control(const dsd_opts* opts, dsd_state* state) {
 
 void
 nxdn_cc_hunt_note_type_d(const dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state || !nxdn_cc_hunt_on_control_side(opts)) {
+    /* On a voice channel a busy-repeater message sent the receiver to as well: a Type-D site needs no control channel.
+       The SCCH's own run of short CRCs must confirm it: a confirmation left from a CAC or another carrier must not
+       turn a Type-C session's recovery off on one noise frame. */
+    if (!opts || !state || opts->trunk_enable != 1 || opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1
+        || state->nxdn_confirm_weak_streak < NXDN_CONFIRM_WEAK_OBSERVES) {
         return;
     }
     nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_get(state);
@@ -431,6 +440,7 @@ nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
         return;
     }
+    nxdn_cc_hunt_reset_carrier_evidence(state); // a trunked channel cycle crosses no carrier boundary
     const double now_m = dsd_decode_now_mono_s();
     ctx->rx_freq_hz = 0;
     if (ctx->hunting) {

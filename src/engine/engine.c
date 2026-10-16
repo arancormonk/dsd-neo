@@ -3061,7 +3061,7 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     /* So may a stream of syncs that never validate: a startup control-channel hunt runs between frames too, until
        an owner is named and nothing is armed or hunting (issue #703). */
     if (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN || p25_sm_cold_start_active(p25_sm_get_ctx())
-        || dmr_sm_cold_start_active(dmr_sm_get_ctx()) || nxdn_cc_hunt_active(state)) {
+        || dmr_sm_cold_start_active(dmr_sm_get_ctx()) || nxdn_cc_hunt_due(opts, state)) {
         dsd_engine_cold_start_tick_locked(opts, state);
     }
     return frame_dispatchable;

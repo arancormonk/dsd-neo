@@ -45,6 +45,7 @@ static int g_tune_count;
 static long g_radio_hz;
 static int g_queries;
 static uint64_t g_now_ns;
+static uint64_t g_last_cc_request;
 
 static void
 expect(const char* label, long got, long want) {
@@ -72,7 +73,7 @@ static dsd_trunk_tune_result
 fake_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)ted_sps;
-    (void)request_id;
+    g_last_cc_request = request_id;
     return fake_tune(g_cc_mode, state, freq);
 }
 
@@ -241,6 +242,11 @@ test_type_d(void) {
     tick_at(0.0);
     run_until(0.0, 6.5);
     expect("type-d: hunting", g_tune_count, 1);
+    g_state->nxdn_confirm_weak_streak = 1; // borrowed confirmation: this SCCH alone
+    g_state->nxdn_confirmed = 1;
+    nxdn_cc_hunt_note_type_d(g_opts, g_state);
+    expect("type-d: one SCCH names nobody", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_UNKNOWN);
+    g_state->nxdn_confirm_weak_streak = 2; // the SCCH's own run confirms it
     nxdn_cc_hunt_note_type_d(g_opts, g_state);
     expect("type-d: owner", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_NXDN);
     expect("type-d: inactive", nxdn_cc_hunt_active(g_state), 0);
@@ -252,9 +258,68 @@ test_type_d(void) {
     tick_at(0.0);
     nxdn_cc_hunt_note_control(g_opts, g_state); // a Type-C control channel
     nxdn_cc_hunt_note_retune(g_opts, g_state);  // the operator moves to a Type-D system
+    g_state->nxdn_confirm_weak_streak = 2;
     nxdn_cc_hunt_note_type_d(g_opts, g_state);
     run_until(0.0, 40.0);
     expect("type-d after type-c: never hunts", g_tune_count, 0);
+}
+
+/* Type-D confirmed on a voice channel a busy-repeater message followed still names the owner: a startup hunt does not
+   resume once the receiver is back on a silent home repeater. */
+static void
+test_type_d_on_voice_channel(void) {
+    session();
+    tick_at(0.0);
+    g_opts->trunk_is_tuned = 1;
+    g_state->nxdn_confirm_weak_streak = 2;
+    nxdn_cc_hunt_note_type_d(g_opts, g_state);
+    expect("type-d voice: owner", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_NXDN);
+    g_opts->trunk_is_tuned = 0;
+    run_until(0.0, 30.0);
+    expect("type-d voice: never hunts", g_tune_count, 0);
+}
+
+/* A CAC whose frequency the tuner cannot name still proves a Type-C control channel: losing it hunts the map. */
+static void
+test_cac_without_frequency(void) {
+    session();
+    g_radio_hz = 0;
+    tick_at(0.0);
+    nxdn_cc_hunt_note_control(g_opts, g_state);
+    expect("no frequency: owner", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_NXDN);
+    expect("no frequency: alias untouched", g_state->p25_cc_freq, 0);
+    run_until(0.0, 6.5);
+    expect("no frequency: recovery hunts", g_tune_count, 1);
+}
+
+/* A probe whose tune completes late gets its full dwell from the completion. */
+static void
+test_late_completion_dwell(void) {
+    session();
+    g_cc_mode = FAKE_PENDING;
+    tick_at(0.0);
+    run_until(0.0, 6.5); // probe A in flight from 6.1
+    expect("late: probe issued", g_tune_count, 1);
+    run_until(6.5, 9.0);
+    dsd_trunk_tuning_request_complete(g_last_cc_request, DSD_TRUNK_TUNE_RESULT_OK); // completes at 9.0
+    g_cc_mode = FAKE_OK;
+    run_until(9.0, 10.9);
+    expect("late: dwell runs from the completion", g_tune_count, 1);
+    run_until(10.9, 11.5);
+    expect("late: next row after the dwell", g_tune_count, 2);
+}
+
+/* An operator's channel cycle crosses no carrier boundary: the move drops the previous carrier's confirmation. */
+static void
+test_operator_move_resets_evidence(void) {
+    session();
+    tick_at(0.0);
+    nxdn_cc_hunt_note_control(g_opts, g_state);
+    g_state->nxdn_confirmed = 1;
+    g_state->nxdn_confirm_weak_streak = 1;
+    nxdn_cc_hunt_note_retune(g_opts, g_state);
+    expect("move: confirmation reset", g_state->nxdn_confirmed, 0);
+    expect("move: streak reset", g_state->nxdn_confirm_weak_streak, 0);
 }
 
 /* -fa: no startup hunt; validated NXDN control arms recovery at once. A mode change away from NXDN stops a hunt. */
@@ -396,6 +461,10 @@ main(void) {
     test_post_loss();
     test_content_holds();
     test_type_d();
+    test_type_d_on_voice_channel();
+    test_cac_without_frequency();
+    test_late_completion_dwell();
+    test_operator_move_resets_evidence();
     test_frame_sets();
     test_pending_return();
     test_carrier_evidence_reset();

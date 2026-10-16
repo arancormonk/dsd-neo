@@ -56,6 +56,8 @@ void nxdn_cc_hunt_note_control(const dsd_opts* opts, dsd_state* state);
 /**
  * @brief A Type-D SCCH confirmed the transmission: names NXDN the owner and ends a hunt where it is.
  *
+ * Only an SCCH whose own run of short CRCs reached NXDN_CONFIRM_WEAK_OBSERVES counts, on a control or a voice channel.
+ *
  * A Type-D site has no continuous control channel, so a control channel a CAC confirmed earlier is forgotten and no
  * hunt arms afterwards.
  */
@@ -64,8 +66,8 @@ void nxdn_cc_hunt_note_type_d(const dsd_opts* opts, dsd_state* state);
 /**
  * @brief The operator moved the receiver.
  *
- * Forgets the frequency attribution and restarts an armed window at the move; a running hunt drops its probe and
- * parks, keeping that window, once the tuning layer is settled.
+ * Forgets the frequency attribution and the per-carrier NXDN evidence and restarts an armed window at the move; a
+ * running hunt drops its probe and parks, keeping that window, once the tuning layer is settled.
  */
 void nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state);
 

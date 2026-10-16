@@ -58,6 +58,7 @@ enum scenario {
     SC_NXDN_OUTER_LOOP,
     SC_NXDN_SYNCED_LOOP,
     SC_NXDN_LOST_CC,
+    SC_NXDN_CALL_RETURN,
 };
 
 static enum scenario g_scenario;
@@ -188,7 +189,7 @@ processFrame(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-lin
         p25_sm_note_validated_cc(opts, state);
         g_validated_sent = 1;
     }
-    if (g_scenario == SC_NXDN_LOST_CC && g_now_ms <= 2000U) {
+    if ((g_scenario == SC_NXDN_LOST_CC || g_scenario == SC_NXDN_CALL_RETURN) && g_now_ms <= 2000U) {
         nxdn_cc_hunt_note_control(opts, state);
         g_validated_sent = 1;
     }
@@ -305,6 +306,18 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                 return finish();
             }
             return DSD_SYNC_NXDN_POS;
+        case SC_NXDN_CALL_RETURN:
+            // -fi: CACs for two seconds, a followed call, its return at 3 s, then syncs that never validate.
+            if (g_now_ms == 2250U) {
+                opts->trunk_is_tuned = 1;
+            }
+            if (g_now_ms == 3000U) {
+                opts->trunk_is_tuned = 0;
+            }
+            if (g_now_ms > 11000U) {
+                return finish();
+            }
+            return DSD_SYNC_NXDN_POS;
         case SC_MODE_CHANGE_DMR:
             if (g_now_ms == 2750U) {
                 g_dmr_armed_seen = dmr_sm_cold_start_active(dmr_sm_get_ctx());
@@ -412,6 +425,10 @@ run_scenario(enum scenario sc, int ft) {
                    "a lost NXDN control channel is hunted between frames once the grace ran out");
             expect(state->p25_cc_freq == 450000000L, "the return destination stays until a CAC proves another");
             break;
+        case SC_NXDN_CALL_RETURN:
+            expect(g_tunes >= 1 && g_first_tune == ROW0_HZ && g_tunes_before_ms > 9000U,
+                   "after a call's return, a quiet control channel is hunted between frames once the grace ran out");
+            break;
         case SC_MODE_CHANGE_DMR:
             expect(g_dmr_armed_seen == 1, "DMR armed its startup window between frames");
             expect(g_tunes == 0 && dmr->cold_start_armed_m <= 0.0 && dmr->cold_start_hunt == 0,
@@ -467,6 +484,7 @@ main(void) {
     run_scenario(SC_NXDN_OUTER_LOOP, 2);
     run_scenario(SC_NXDN_SYNCED_LOOP, 2);
     run_scenario(SC_NXDN_LOST_CC, 3);
+    run_scenario(SC_NXDN_CALL_RETURN, 2);
     run_scenario(SC_INPUT_SWITCH_NEW_REQUEST, 1);
     if (g_failures == 0) {
         printf("engine cold start hunt: OK\n");

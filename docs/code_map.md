@@ -4263,18 +4263,23 @@ control within the CC grace walks its channel map with the ordinary hunts.
   `dsd_state_trunk_nxdn_hunt_eligible()` (the startup conditions with an NXDN owner allowed) under
   `dsd_trunk_nxdn_recovery_allowed()`; with an NXDN owner only after a CAC confirmed a control channel. Ticked like the
   others (`nxdn_cc_hunt_tick_locked()` in `dsd_engine_cold_start_tick_locked()`, between frames while
-  `nxdn_cc_hunt_active()`, `nxdn_cc_hunt_due()` in the decoder-ticks hook); notes on operator moves from the same
-  carrier boundary and cycle sites (`nxdn_cc_hunt_note_retune()`). The window (6 s) runs from the later of its arming
+  `nxdn_cc_hunt_due()`, so a window a followed call dropped re-arms after the return, and in the decoder-ticks hook);
+  notes on operator moves from the same carrier boundary and cycle sites (`nxdn_cc_hunt_note_retune()`, which also
+  resets the per-carrier NXDN evidence: a trunked cycle crosses no carrier boundary). The window (6 s) runs from the later of its arming
   and `dsd_state::nxdn_confirm_lock_m` (stamped by `nxdn_confirm_end_frame()` when a frame's own CRCs confirmed the
   transmission, never cleared); it is dropped on a voice channel and restarted while a tune the hunt does not own is in
   flight, so a DISC return still pending when `trunk_is_tuned` drops starts it at completion. Probes, settle tunes,
-  deadlines and parking follow the DMR startup hunt's rules; each hunt tune also resets the per-carrier NXDN evidence
+  deadlines and parking follow the DMR startup hunt's rules (a probe's 2 s dwell runs from its tune's completion); each
+  hunt tune also resets the per-carrier NXDN evidence
   (`nxdn_confirm_reset()`, SACCH assemblies), so a weak streak or sticky confirmation never crosses carriers, and
   restores both control-channel aliases. `nxdn_handle_cac()` calls `nxdn_cc_hunt_note_control()` on every CRC-good CAC,
   before element decode: an unresolved probe is not credited; otherwise the frequency (the completed probe, else one
   tuner query per tuning generation, forgotten at an operator move) becomes `p25_cc_freq`/`trunk_cc_freq`, NXDN is
-  named the owner and the post-loss window re-armed. A post-loss hunt revisits that control channel between other rows.
-  The confirmed branch of `nxdn_scch_prepare_type_d()` calls `nxdn_cc_hunt_note_type_d()`: owner named, hunt ended,
+  named the owner and the post-loss window re-armed; a CAC whose frequency no tuner names still proves a Type-C control
+  channel, and its loss hunts the map without an anchor. A post-loss hunt revisits that control channel between other rows.
+  The confirmed branch of `nxdn_scch_prepare_type_d()` calls `nxdn_cc_hunt_note_type_d()`, which counts only an SCCH
+  whose own weak streak reached `NXDN_CONFIRM_WEAK_OBSERVES` (not a confirmation left by a CAC or another carrier), on a
+  control or a followed voice channel: owner named, hunt ended,
   any CAC-confirmed control channel forgotten, so a Type-D site never hunts afterwards (an idle, silent Type-D site at
   start is walked like a dead one until confirmed traffic holds the window). Tests: `NXDN_CC_HUNT`,
   `ENGINE_COLD_START_HUNT`, `NXDN_CONFIRM`, `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`.
