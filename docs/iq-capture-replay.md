@@ -2,8 +2,8 @@
 
 This guide covers `dsd-neo` RF/baseband I/Q capture and replay.
 
-Capture writes a raw I/Q data file plus a metadata sidecar. Replay reads that metadata/data pair and feeds the same
-RTL demodulation path used by live radio input.
+Capture writes a raw I/Q data file plus a metadata sidecar. Replay reads that metadata/data pair, or a two-channel WAV
+I/Q recording made by other SDR software, and feeds the same RTL demodulation path used by live radio input.
 
 ## Quick Commands
 
@@ -11,6 +11,8 @@ RTL demodulation path used by live radio input.
 dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal
 dsd-neo --iq-info p25-control.iq.json
 dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal
+dsd-neo --iq-info SDRSharp_20261015_123456Z_426700000Hz_IQ.wav
+dsd-neo -fT --iq-replay SDRSharp_20261015_123456Z_426700000Hz_IQ.wav
 ```
 
 ## CLI Flags
@@ -18,14 +20,16 @@ dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal
 - `--iq-capture <path>`: enable I/Q capture.
 - `--iq-capture-format <cu8|cf32>`: requested capture format (default `cu8`).
 - `--iq-capture-max-mb <n>`: size limit in MiB (`0` means unlimited). Decode continues after capture writer stops.
-- `--iq-replay <path>`: replay a capture file pair.
+- `--iq-replay <path>`: replay a capture file pair, or a two-channel WAV I/Q recording (see
+  [Replaying WAV I/Q Recordings From Other SDR Software](#replaying-wav-iq-recordings-from-other-sdr-software)).
 - `--iq-replay-rate <fast|realtime>`: replay pacing mode (default `fast`).
 - `--iq-loop`: loop replay at EOF.
   Without it, a replay ends once the decoder has read everything the capture delivered. A capture that cannot be read to
   its end (an I/O error partway, or a data file cut short while it replays, which ends before the bytes measured when
   the replay opened it) ends the same way after the samples already read, logs the error, and makes `dsd-neo` exit
   with status 1.
-- `--iq-info <path>`: print metadata/size/alignment summary and exit.
+- `--iq-info <path>`: print metadata/size/alignment summary and exit. For a WAV recording it describes the header
+  instead.
 
 Path handling:
 
@@ -40,6 +44,15 @@ Path handling:
   A bare name resolves `<name>.json` first and then `<name>.iq.json`, so captures written before `.iq` was added
   still replay.
 - The `.json` suffix is matched case-insensitively, so `mycap.iq.JSON` is recognised as a sidecar on Windows.
+- A path that does not end in `.json` is read as a WAV recording first: a file that starts with a RIFF, RF64 or BW64
+  WAVE header replays as one, whatever its extension, and no sidecar is needed. A sidecar beside it (`<path>.json` or
+  `<path>.iq.json`) is ignored, with a warning that names it: `IQ replay: 'tetra.wav' is a WAV file: its header gives
+  the format and rate (2-channel PCM 24-bit, 48254 Hz), so the sidecar 'tetra.wav.json' is ignored`.
+- A sidecar whose `data_file` names a WAV recording is read for that name only: the WAV replays from its own header,
+  however wrong the sidecar's other fields are, with the same warning.
+- A `.wav` path that holds no WAV header and has no sidecar is refused: `'x.wav' is not a WAV file (no RIFF, RF64 or
+  BW64 WAVE header) and has no sidecar (tried 'x.wav.json' and 'x.wav.iq.json')`. A big-endian RIFX file is refused
+  too.
 
 ## Format Notes
 
@@ -50,7 +63,8 @@ Metadata is JSON with `format: "dsd-neo-iq"`.
 
 The writer records:
 
-- sample format (`cu8` or `cf32`), sample rate, and tuned centers.
+- sample format (`cu8` or `cf32`: live capture writes only these; replay also reads `cs16` sidecars, see Backend
+  Notes), sample rate, and tuned centers.
 - capture-time transform policy (`fs4_shift_enabled`, `offset_tuning_enabled`, `combine_rotate_enabled`). CU8 captures
   record the active `DSD_NEO_COMBINE_ROT` selection: the combined transform by default, or the supported two-pass
   equivalent when explicitly disabled.
@@ -86,7 +100,7 @@ the writer handed to `fwrite`. Anything the file system refused — a full disk,
 stamped from bytes accepted rather than bytes written, offsets past the end of a truncated capture are clamped to
 `data_bytes` so the surviving part of the capture stays replayable.
 
-`--iq-info` reports:
+`--iq-info` reports, for a sidecar capture:
 
 - metadata bytes vs actual file bytes.
 - aligned effective replay bytes and estimated duration.
@@ -95,9 +109,197 @@ stamped from bytes accepted rather than bytes written, offsets past the end of a
 - warnings for interrupted captures (`data_bytes == 0`), metadata/data mismatch, misalignment, and retune-containing
   captures that do not include a replay event timeline.
 
+For a WAV recording it reports the container, the sample encoding and channel order, the sample rate, the centre
+frequency and start time with where each came from (`auxi chunk`, `file name`, or `unknown`), the data offset and
+bytes, the duration, the rate chain the replay would run at the default 48 kHz and at TETRA's 72 kHz, and whether it
+replays, with warnings for a truncated or unfinalized header, a partial last frame, and an ignored sidecar.
+
 Replay uses `min(data_bytes, actual_file_size)` rounded down to sample alignment after metadata is finalized. If an
 interrupted capture never finalized metadata (`data_bytes == 0`), replay falls back to the actual file size and still
 rounds down to sample alignment. Zero effective bytes are rejected for `--iq-replay`.
+
+## Replaying WAV I/Q Recordings From Other SDR Software
+
+`--iq-replay` reads a two-channel WAV I/Q recording directly, with no sidecar. Its header gives the sample format and
+rate, and the replay plans its rate chain from that rate (see [Rate Chain And Resampling](#rate-chain-and-resampling)):
+
+```bash
+dsd-neo --iq-info SDRSharp_20261015_123456Z_426700000Hz_IQ.wav
+dsd-neo -fT --iq-replay SDRSharp_20261015_123456Z_426700000Hz_IQ.wav
+```
+
+What it reads:
+
+- Exactly two channels: the first is I, the second Q. A one-channel WAV is refused with a pointer to audio input
+  (`WAV 'x.wav' has 1 channel: I/Q replay needs 2 (I, then Q); decode an audio WAV with -i 'x.wav'`); a WAV of more
+  channels is refused too.
+- 8-bit unsigned PCM, 16-, 24- or 32-bit signed PCM, or 32- or 64-bit IEEE float, in a plain `fmt` chunk or a
+  `WAVE_FORMAT_EXTENSIBLE` one whose subformat is PCM or IEEE float (its valid bits may be fewer than the container's).
+  Any other format, sample size or subformat is refused, naming what replay reads. The block align must be two samples.
+- RIFF, RF64 and BW64 containers (RF64 and BW64 carry 64-bit sizes in a `ds64` chunk, which must come first).
+  Chunks other than `fmt`, `data` and `auxi` (`meta`, `LIST` and the like) are skipped, `fmt` may come after `data`,
+  and an odd-sized chunk is read with or without the pad byte its writer should have added. Chunks after `data` are
+  not samples.
+- Samples are scaled to the floats a live receiver delivers: 8-bit unsigned as (x - 127.5) / 127.5, as a `cu8`
+  capture is widened (so no DC offset is added); signed PCM by its full scale; 32-bit float as it is; 64-bit float
+  with NaN read as 0, and infinities and magnitudes above 1e6 clamped to 1e6.
+- The sample rate is the header's. Any rate from 8 kHz replays, within the limits under Rate Chain And Resampling.
+
+The centre frequency comes from, in order:
+
+1. An `auxi` chunk (the layout SDR#, HDSDR and SDRuno write): its centre frequency field.
+2. The file name: the last `_`-separated token of the name, without its `.wav` extension, that reads as a number with
+   a `Hz`, `kHz` or `MHz` unit (any case) and is a whole number of hertz: `426700000Hz`, `426.7MHz`, `426700kHz`, as
+   SDR#, SDR++ and SDRuno name their recordings.
+3. Otherwise the centre is unknown. The replay still runs and loops; nothing tunes, and only what needs the tuned
+   frequency goes without it. TETRA, for one, publishes a call to the event history only once the tuned frequency
+   shows the recording is on the carrier the call was allocated: with no centre it decodes the call's signalling and
+   speech but records no call. Renaming the file to carry its centre (`..._426700000Hz.wav`) supplies one.
+
+The start time, which the decode clock starts from (see
+[Replay Pacing And The Decode Clock](#replay-pacing-and-the-decode-clock)), comes from the `auxi` chunk's start time,
+taken as UTC (a year before 1601, such as the 0 a writer that left it unset stores, counts as none), or else from the
+`YYYYMMDD_HHMMSSZ` tokens SDR# and SDRuno put in the name (`..._20261015_123456Z_...`). With neither, decode times start
+at 2000-01-01T00:00:00Z.
+
+The replay demodulates the channel at the recording's centre. A replay cannot be retuned, so a channel elsewhere in
+a wide recording is not decoded: set the recording program's centre (tuner) frequency on the carrier before recording,
+not only a VFO inside its band. A small offset, such as the +343 Hz the `tetra_call_real_air_72k` fixture's recording
+carries, is recovered as it is on air.
+
+Headers a recording program did not finish:
+
+- A RIFF header that was never finalized, as an interrupted recording leaves it (a `data` size of 0 or 0xFFFFFFFF in a
+  container whose size is 0, 0xFFFFFFFF or past the end of the file, with `data` its last chunk), replays every whole
+  frame to the end of the file. The replay logs a warning, and `--iq-info` reports `unfinalized header`.
+- A header that declares more data than the file holds (a copy cut short) replays the whole frames the file has, with
+  a warning. A partial frame at the end is not replayed.
+- A `data` chunk that declares no data in a finished header is refused (`the data chunk is empty (no I/Q frames)`).
+
+Large files: sizes and offsets are 64-bit on every platform, Windows included, so recordings past 2 GiB replay. Past
+4 GiB a WAV needs RF64 or BW64, or a RIFF whose size fields its writer left at 0 or 0xFFFFFFFF, which replays to the end
+of the file as above; a finished plain RIFF cannot describe more than 4 GiB.
+
+At start the replay logs what it found, for example `IQ replay: WAV RIFF, 2-channel PCM 24-bit, 50000 Hz, ~1.5 s,
+centre 467.913000 MHz (auxi chunk).`, or `centre unknown (no auxi chunk, none in the file name)`.
+
+## Rate Chain And Resampling
+
+Every replay start plans the rate chain the decode mode needs from the capture's rate, for a sidecar capture and a WAV
+recording alike. The plan aims at a DSP rate D:
+
+- the DSP bandwidth asked for, when one was: the DSP bandwidth row or the control API's `RTL_SET_BW`, or an RTL-SDR,
+  rtl_tcp, SoapySDR or Airspy `[input]` with `rtl_bw_khz` in the config. `--iq-replay` replaces the `-i` input, so a
+  bandwidth field in an `-i` spec does not reach a replay, and a decode-mode preset on the command line (`-fT`, `-fe`,
+  `-fp` and the others that set a DSP bandwidth) replaces a config's request;
+- otherwise the DSP bandwidth the sidecar recorded (`rtl_dsp_bw_khz`);
+- otherwise (a WAV recording, or a sidecar that recorded none) the mode's preset bandwidth (72 kHz under `-fT`, 24 kHz
+  under the EDACS/ProVoice presets) or the 48 kHz default.
+
+Under TETRA a D that is not a multiple of 18 kHz becomes 72 kHz. TETRA's pi/4-DQPSK runs at 18 ksym/s, its symbols
+are timed at a whole number of samples each, and its CQPSK path skips the decimation after the demodulator
+(`post_downsample`), so the rate the half-band chain delivers must itself be a multiple of 18 kHz.
+
+The chain:
+
+- **Kept as recorded.** A sidecar capture with no DSP bandwidth asked for runs the chain it recorded
+  (`base_decimation`, `post_downsample`, `demod_rate_hz`), exactly as before, unless the mode is TETRA and the chain
+  cannot run it: its rate after `base_decimation` is not a multiple of 18 kHz, or its `post_downsample` is above 1. A
+  TETRA chain that misses
+  only through a power-of-two `post_downsample` folds it into the half-band chain where that reaches a multiple of
+  18 kHz. Every committed fixture keeps its chain, and so does every committed TETRA fixture under TETRA but the
+  unmodified 50 kHz capture, which TETRA resamples.
+- **Otherwise** (a WAV recording, a DSP bandwidth asked for, or a recorded chain TETRA cannot run): a capture at
+  D x 2^k (k from 0 to 10) is decimated by 2^k in the half-band chain with no resampling. Any other capture is
+  resampled first, to R = D x 2^k, the largest such rate at or below its own (R = D when the capture is slower than
+  D), and then decimated by 2^k. `post_downsample` is 1 and the demodulator runs at D.
+
+| Capture | DSP rate | Chain |
+| --- | --- | --- |
+| 48,254 Hz WAV | 72 kHz (`-fT`) | resampled to 72,000 Hz |
+| 48,254 Hz WAV | 48 kHz | resampled to 48,000 Hz |
+| 50 kHz `cs16` sidecar | 72 kHz (`-fT`) | resampled to 72,000 Hz |
+| 48 kHz sidecar | 24 kHz asked for | decimated by 2, no resampling |
+| 2.304 MS/s WAV | 72 kHz (`-fT`) | decimated by 32, no resampling |
+| 2.048 MS/s | 72 kHz (`-fT`) | resampled to 1.152 MS/s, decimated by 16 |
+| 2.4 MS/s | 48 kHz | resampled to 1.536 MS/s, decimated by 32 |
+
+A plan is refused for a capture slower than 8 kHz, one that would need more than a 9x upsample, and one at
+2 x 1024 x D or faster. The resampler also refuses a ratio it cannot hold within 250 ppm and a design that needs more
+than 256 taps per phase. A refused plan stops the start and `dsd-neo` exits with status 1, for example `IQ replay:
+'slow.wav' cannot run at the 48000 Hz DSP rate: the capture's rate (4000 Hz) is below the 8000 Hz a replay can
+resample.` (with ` TETRA needs` after `DSP rate` under `-fT`). `--iq-info` shows a WAV's plan at 48 and 72 kHz, and
+the reason where one is refused.
+
+The DSP bandwidth asked for is kept as asked: the plan's own target never replaces it. A replay asked for 24 kHz runs
+at 72 kHz while TETRA decodes and returns to 24 kHz when the mode leaves TETRA.
+
+A resampled replay logs the resampler and the chain:
+
+```text
+IQ replay: resampling the 48254 Hz capture to 72000 Hz (L/M=4063/2723, +0.01 ppm, 40 taps per phase, group delay 0.41 ms).
+Rate chain: capture=48254 Hz resampled to 72000 Hz (L/M=4063/2723, +0.01 ppm), base_decim=1, post=1 -> demod=72000 Hz; ...
+```
+
+- The resampler is a Kaiser-windowed sinc polyphase filter for I and Q together. It protects +-0.45 x D, the band the
+  decoder reads after the half-band chain (+-32.4 kHz at TETRA's 72 kHz, which covers TETRA's +-12.15 kHz), with at
+  most 0.1 dB of passband ripple and at least 60 dB against anything that would fold into that band.
+- Its ratio L/M is exact where both reduced terms fit 4096, otherwise the nearest such ratio, within 250 ppm. The error
+  shows as a sample-clock error of that size: +0.01 ppm for 48,254 to 72,000 Hz.
+- Its group delay is not compensated. Pacing, media time, events and the decode clock count capture samples, so a
+  resampled replay's decode timestamps run that much behind the capture time of the signal: 0.41 ms from 48,254 Hz to
+  72 kHz, 0.45 ms from 48 kHz, up to about 2.5 ms from 8 kHz to 72 kHz.
+- It starts over from silence at a `RETUNE`, a `RESET`, the samples a `MUTE` omitted, and an `--iq-loop` rewind, as the
+  front end's filters do.
+- A resampled chunk still spans no more than one live transfer (issue #626), and its input-level snapshot is taken
+  from the capture's samples before resampling.
+- The resampler runs only in a replay its plan resamples, in the replay reader thread. Live inputs and replays that
+  run at their capture's rate do not run it, and a resampled replay costs the CPU its filter takes on top of the
+  replay's usual work.
+
+### Run-time Re-plan
+
+During a replay, a change that plans another chain reopens the replay at the new chain where it stopped:
+
+- a DSP bandwidth (the terminal DSP bandwidth row, the control API's `RTL_SET_BW`);
+- a decode mode switch whose plan differs (a switch to TETRA on a 48 kHz replay, and back);
+- a loaded config that leaves the replay running, for its `[mode]` and for an RTL-SDR, rtl_tcp, SoapySDR or Airspy
+  `[input]` `rtl_bw_khz`.
+
+A change that plans the chain already running reopens nothing: a DSP bandwidth chosen while TETRA runs at 72 kHz is
+stored and takes effect when the mode leaves TETRA.
+
+The resume is approximate. The stopped replay's reader leaves the position of the last capture chunk it handed the
+demodulator, and the reopened replay starts there, on the centre the last `RETUNE` before it set. What was still in
+the input ring or the decoder's symbol cache, at most one chunk plus that cache (a few milliseconds of capture), is not
+replayed, and the front end's filters and the resampler start over, as at a `RESET`. The event schedule, the media
+time, the `--iq-loop` pass count and the CU8 rotation phase go on from the checkpoint, so the decode clock stays on the
+capture and never runs backwards: decode time steps forward by the samples skipped. The log says
+`IQ replay: re-planning the rate chain for the TETRA decoder; resuming at capture byte <n>.`, and a mode switch's
+toast names the new rate (`Decoding TETRA: replay resampled to 72 kHz`).
+
+A plan no chain reaches is refused before anything stops: the replay keeps running at its chain, the mode, symbol
+profile and DSP bandwidth go back to what they were, and the change fails with the planner's reason (logged as
+`IQ replay: ... needs a rate chain this capture cannot run: ... The replay keeps its rate.`; a refused switch to TETRA
+shows `this replay cannot be resampled to one`). A new chain that does not start puts the same settings back and
+resumes the previous chain from the same checkpoint. When that start fails too, the replay is started again as any
+failed change starts its input again: from the capture's start, with decode time back on the system clock.
+
+## Raw I/Q Over The Network
+
+The network input that carries raw I/Q is rtl_tcp: `-i rtltcp:host:port:freq:gain:ppm:bw` connects to a server that
+speaks the rtl_tcp protocol, `rtl_tcp` itself or another that implements it. The server sends unsigned 8-bit I/Q
+(`cu8`) after its `RTL0` header, and dsd-neo sets its frequency, sample rate, gain and correction over the
+connection, so the server must honour those commands. For TETRA give it TETRA's 72 kHz DSP bandwidth:
+
+```bash
+dsd-neo -fT -i rtltcp:192.168.1.10:1234:426.7M:22:0:72
+```
+
+`-i tcp` and `-i udp` carry demodulated PCM audio, not I/Q (see `docs/network-audio.md`), so they cannot feed TETRA or
+any other mode that needs I/Q. dsd-neo has no input for headerless I/Q streamed over TCP or UDP (`cf32` or otherwise)
+from other SDR software. To decode TETRA from another SDR program, record a WAV I/Q recording there, centred on the
+carrier, and replay it with `--iq-replay`.
 
 ## Replay Pacing And The Decode Clock
 
@@ -123,13 +325,16 @@ transfer's time, as a live stream's covers each transfer. A replay now does the 
 in a Release build it takes 13 to 27 % more CPU than with 64 KiB chunks, and that 94 s capture's fast replay 2.0 s
 against 1.6 s.
 
-The decoder's clock follows the capture as well. Under `--iq-replay`, decode time is the sidecar's
-`capture_started_utc` plus the capture time of the sample being decoded, the time `MUTE` events omitted included:
+The decoder's clock follows the capture as well. Under `--iq-replay`, decode time is the capture's start time (the
+sidecar's `capture_started_utc`, or a WAV recording's start time, below) plus the capture time of the sample being
+decoded, the time `MUTE` events omitted included:
 
 - Timestamps in the decoder's output (the console, event and call history, logs and file names) show when the
   capture was made, in the local time zone as live, not when it was replayed. A `capture_started_utc` before
   2000-01-01T00:00:00Z, such as the `1970-01-01T00:00:00Z` the generated fixtures in `tests/fixtures/iq` carry, starts
-  the clock at 2000-01-01T00:00:00Z instead; one that does not parse is logged and starts it there too.
+  the clock at 2000-01-01T00:00:00Z instead; one that does not parse is logged and starts it there too. So does a WAV
+  recording that records no start time, with `IQ replay: no start time recorded; decode times start at
+  2000-01-01T00:00:00Z.`
 - Call durations, the call reacquisition window (`DSD_CALL_REACQUIRE_GAP_S`, which decides whether a
   sync-loss-interrupted transmission is one history row or two), protocol windows and staleness timers measure air
   time, as they would live, in both modes.
@@ -154,9 +359,11 @@ or realtime. These replays are outside it altogether:
   logged at most once a second of real time), so its hangtime and visit timers step a scan that never leaves the
   capture's channel, and how often the notice prints follows the replay's pace.
 - **A replay restarted mid-run.** Only a replay started as the run's input runs on the capture's clock, from its first
-  sample. When an interactive frontend restarts the stream (a gain, device or DSP bandwidth change, or a stream
-  restart) or switches the input away, the decode clock goes back to the system clock, and a replay that starts again
-  within the same run decodes on the system clock. A restart that replays the same capture logs this once, as "IQ
+  sample. When an interactive frontend restarts the stream (a gain or device change, or a stream restart) or switches
+  the input away, the decode clock goes back to the system clock, and a replay that starts again within the same run
+  decodes on the system clock. A run-time re-plan of the replay's rate chain (a DSP bandwidth or decode mode change,
+  see [Run-time re-plan](#run-time-re-plan)) is the exception: it resumes where the replay stopped and stays on the
+  capture's clock. A restart that replays the same capture logs this once, as "IQ
   replay restarted mid-run; decode timestamps now follow the system clock." Any call in progress ends first, on the
   capture's clock: its history row, per-call WAV and rdio-scanner sidecar keep the capture's times.
 - **A replay on a reused decoder state.** Only a run on a decoder state no earlier run has used moves onto the
@@ -192,8 +399,9 @@ branch at the recorded alignment decodes 1039 voice frames, 673 syncs and 307 `M
 with 10 error-type frames against 15 and 15 unattributed aliases on both. It is level or ahead on every count except
 audio errors, 25 against 24.
 
-File input under `-r` or WAV replay has no capture clock: it decodes on the system clock and is unthrottled (only `.bin`
-symbol-capture replay is paced), so its call gaps, hangtime and staleness windows look shorter than they were on air.
+File input under `-r` or audio WAV input (`-i file.wav`) has no capture clock: it decodes on the system clock and is
+unthrottled (only `.bin` symbol-capture replay is paced), so its call gaps, hangtime and staleness windows look shorter
+than they were on air.
 
 ## Analog Monitor Replay
 
@@ -210,12 +418,17 @@ dsd-neo -fA --iq-replay tests/fixtures/iq/nfm_ctcss_real.iq.json --iq-replay-rat
 dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-rate realtime
 ```
 
-- The monitor runs at the capture's `demod_rate_hz` (48 kHz for every committed fixture). The capture dictates the
-  rate chain, so the RTL DSP bandwidth option has no effect on replay. A capture at another rate, such as the
-  78,125 Hz an Airspy at 2.5 MS/s forces, is resampled to the 48 kHz output once, as live.
-- AM needs a capture whose sidecar has `post_downsample` 1 (every committed fixture has): one that decimates after the
-  demodulator would run the AM channel filter at a multiple of the demod rate, so the stream start refuses it with
-  `...; AM needs a capture with post_downsample 1`. FM replays such a capture as before.
+- The monitor runs at the demod rate the replay's rate chain plans (see
+  [Rate Chain And Resampling](#rate-chain-and-resampling)). A sidecar capture keeps its recorded `demod_rate_hz`
+  (48 kHz for every committed fixture) unless a DSP bandwidth is asked for, and then runs at that bandwidth, as an
+  RTL-SDR does; a WAV recording runs at the DSP bandwidth in force (48 kHz by default). A chain kept at another rate,
+  such as the 78,125 Hz an Airspy at 2.5 MS/s forces, is resampled to the 48 kHz output once, as live.
+- A width the replay's demod rate cannot filter is refused with the DSP bandwidths that would fit (`...; set the DSP
+  bandwidth to 48 or 72 kHz`), since a DSP bandwidth change re-plans the replay's rate.
+- AM needs a replay that runs with `post_downsample` 1 (every committed fixture does): a sidecar that keeps a recorded
+  chain decimating after the demodulator would run the AM channel filter at a multiple of the demod rate, so the
+  stream start refuses it with `...; AM needs a capture with post_downsample 1`. A DSP bandwidth asked for re-plans the
+  chain with `post_downsample` 1, which AM runs. FM replays such a capture as before.
 - The power squelch, the monitor's voice filters (`-v`) and its gain stage (`-n`, the AGC by default) apply as they do
   live; `-o null` discards the audio.
 - The monitor plays a replayed signal at the level it plays at live: replay runs the FM discriminator output scale a
@@ -229,8 +442,10 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - `tests/fixtures/iq` carries short analog captures (`nfm_*`, and for AM `am_airband_real`, `am_tone_synth` and
   `am_adjacent_synth`), and `dsd-neo_test_analog_replay` scores the monitor's audio from any capture.
   `docs/testing.md` covers both, the `tools/replay_ab.sh --metric analog` procedure, and the listen-test sign-off.
-- Two-channel u8 or s16 PCM WAV recordings of I/Q (the SDR# style) are not replayable directly.
-  `tools/build_iq_fixtures.py` shows the conversion the analog fixtures use: sample-exact WAV read, carrier centring,
+- Two-channel WAV I/Q recordings replay directly (see
+  [Replaying WAV I/Q Recordings From Other SDR Software](#replaying-wav-iq-recordings-from-other-sdr-software)), with
+  their channel at the recording's centre. `tools/build_iq_fixtures.py` shows the conversion the committed analog
+  fixtures were made with, which also centres an off-centre carrier: sample-exact WAV read, carrier centring,
   frequency-domain resampling to 48 kHz and a cu8 sidecar pair (`read_wav_iq`, `centre_carrier`,
   `resample_to_fixture_rate`, `write_fixture`).
 
@@ -238,6 +453,8 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 
 - `--iq-capture` and `--iq-replay` are mutually exclusive in one invocation.
 - Single-segment v1 captures continue to replay unchanged.
+- A WAV recording replays as one segment with no events, as a virtual `cf32` capture: its byte counts and offsets (in
+  `--iq-info`'s duration and a re-plan's resume) count 8 bytes per frame whatever its encoding.
 - CU8 metadata with `combine_rotate_enabled: false` selects the two-pass byte rotation and bias-128 widening so captures
   made under that transform policy replay identically.
 - Retuned captures are replayable only when they include a v2 event timeline. Older retuned v1 captures with
@@ -269,17 +486,21 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - Event timelines currently require a constant sample rate through the capture. Metadata with event sample-rate changes is
   rejected until segment-rate replay is supported.
 - Replay converts `cu8`, `cf32` captured as the driver delivered it (`capture_stage: "post_driver_cf32_pre_ring"`),
-  and little-endian `cs16` stamped `post_mute_pre_widen`. `--iq-replay` refuses any other capture when it opens it,
-  naming the sample format and stage, and `dsd-neo` exits with status 1: a `cf32` or `cs16` sidecar stamped with
-  another stage. `--iq-info` still describes such a capture and reports `Replay compatible: no`.
+  little-endian `cs16` stamped `post_mute_pre_widen`, and two-channel WAV I/Q recordings. `--iq-replay` refuses any
+  other capture when it opens it, naming the sample format and stage, and `dsd-neo` exits with status 1: a `cf32` or
+  `cs16` sidecar stamped with another stage. `--iq-info` still describes such a capture and reports `Replay compatible:
+  no`.
 - Direct `-i iqreplay:...` is intentionally rejected; use `--iq-replay <path>`.
 - Replay currently feeds the RTL radio path and reuses existing demod processing/state handling.
+- A replay with no known centre (a WAV recording with neither an `auxi` chunk nor a frequency in its name) opens,
+  decodes and loops without one; the frequency check a live RTL start makes does not apply to a replay.
 - `base_decimation` is capped at 1024 (10 half-band passes); metadata requesting more is rejected.
-- The capture file dictates the replay rate chain, so a capture whose demod rate yields a non-integer
-  samples-per-symbol (for example 62,500 Hz at 4800 sym/s) is resampled to the resampler target (48,000 Hz by
-  default) under the default `digital_resample = "auto"` policy. Decode output for such captures can therefore
-  differ from releases that fed the raw demod rate through; set `digital_resample = "off"` to restore the
-  previous behavior. See `docs/soapysdr.md` for the full policy.
+- A replay's rate follows its rate plan (see [Rate Chain And Resampling](#rate-chain-and-resampling)). A sidecar that
+  keeps its recorded chain keeps its demod rate, so a capture whose demod rate yields a non-integer samples-per-symbol
+  (for example 62,500 Hz at 4800 sym/s) is resampled after the demodulator to the resampler target (48,000 Hz by
+  default) under the default `digital_resample = "auto"` policy. Decode output for such captures can therefore differ
+  from releases that fed the raw demod rate through; set `digital_resample = "off"` to restore the previous behavior.
+  See `docs/soapysdr.md` for the full policy.
 
 ## Backend Notes
 
@@ -291,5 +512,6 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - The metadata parser and public sample-format helpers recognize `cs16` metadata with 4-byte sample alignment. Replay
   converts little-endian interleaved `cs16` captured at `post_mute_pre_widen` to the same normalized float IQ stream
   the Soapy CS16 backend produces; `--iq-replay` refuses a `cs16` sidecar at any other capture stage at open
-  (Operational Limits). Live IQ capture still accepts only `cu8` and `cf32`.
+  (Operational Limits). Live IQ capture still writes only `cu8` and `cf32`, so a `cs16` sidecar is written by hand or
+  by another tool, as `tests/fixtures/iq/tetra_scbs_real_air_50k.cs16.json` is for an unmodified upstream capture.
 - If requested capture format does not match the active backend stream format, startup fails with a clear error.

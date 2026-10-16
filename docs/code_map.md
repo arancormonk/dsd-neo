@@ -1370,8 +1370,10 @@ suite runs under this compiler.
     C/C++ outside `src/platform/`, `decode_clock.c`, those two sources and `realtime_clock.h`, and
     `dsd-neo.no-direct-clock-read-js` does the same for the frontend's QML and JavaScript (see
     `docs/code-quality-guardrails.md`). Under `--iq-replay` the engine selects REPLAY first in the run, before common
-    setup writes its first record (`dsd_engine_decode_clock_enter_replay()`: the sidecar's `capture_started_utc`, parsed
-    by `dsd_iq_replay_parse_utc_seconds()`, then `dsd_state_rebase_decode_timestamps()` in `<dsd-neo/core/init.h>`, the
+    setup writes its first record (`dsd_engine_decode_clock_enter_replay()`: the sidecar's `capture_started_utc`, or a
+    WAV recording's start time from its `auxi` chunk or file name (empty when it records none, which logs an INFO line
+    and starts at 2000-01-01T00:00:00Z, issue #701), parsed by `dsd_iq_replay_parse_utc_seconds()`, then
+    `dsd_state_rebase_decode_timestamps()` in `<dsd-neo/core/init.h>`, the
     one list of decode stamps `initOpts()`/`initState()` seed with "now"; a sidecar that does not parse fails the run
     there). REPLAY is entered only there, at a run's start, on a state fresh from `initState()`, and the engine enforces
     that: `dsd_state::engine_fresh`, set by `initState()` and cleared by the run once it has made the choice, says no
@@ -1385,7 +1387,9 @@ suite runs under this compiler.
     SYSTEM with the same rebase once the replay no longer feeds the decoder (`dsd_engine_decode_clock_leave_replay()`):
     at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`; the replay it
     restarts runs on SYSTEM, which it logs once at that leave when the input is still the replay; a run-time re-plan's
-    stop keeps REPLAY instead, as the replay it reopens resumes the media time, issue #701), and when the input
+    stop keeps REPLAY instead, as the replay it reopens resumes the media time from the checkpoint's
+    `timeline_samples`, so decode time steps forward over the few ms the resume skips and never back, issue #701), and
+    when the input
     moves away from it (`ui_input_left()` in `app_command_queue.c`: an input switch, a stop of playback, a config
     apply that moves the input). Before the switch the leave ends each slot's call (`DSD_CALL_END_EXPLICIT`) and syncs
     the slot. The call's row, and the per-call recording and rdio-scanner sidecar a commit closes, are then stamped on
@@ -1415,9 +1419,10 @@ suite runs under this compiler.
     `dsd_analog_airspy_dsp_bw_is_selectable()` caps it at `DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ` (48), since no Airspy
     sample rate halves to 72 kHz. `dsd_analog_width_check_at()` words a rate refusal for what sets the rate
     (`dsd_analog_rate_source`, fix text from `dsd_analog_width_rate_fix()`): the RTL DSP bandwidth, a SoapySDR or Airspy
-    device (whose capture rate is halved down to the first rate at or above the DSP bandwidth: raise the DSP bandwidth or
-    narrow the width) or an I/Q replay's capture (narrow the width); where the rate filters no width of the kind it
-    never names narrowing, and for NFM names leaving the width unset. `dsd_analog_channel_lpf_off_check()` is the
+    device (whose capture rate is halved down to the first rate at or above the DSP bandwidth: raise the DSP bandwidth
+    or narrow the width) or an I/Q replay's capture, whose rate plan follows the DSP bandwidth (the DSP bandwidths that
+    fit, as for the RTL DSP bandwidth, issue #701); where a device's rate filters no width of the kind it never names
+    narrowing, and for NFM names leaving the width unset. `dsd_analog_channel_lpf_off_check()` is the
     `DSD_NEO_CHANNEL_LPF=0` rule (an explicit width, or the AM default, cannot run), taking that state as an argument.
     It is pure integer arithmetic so callers need not link the DSP;
     `src/dsp/demod_pipeline.cpp` static-asserts its design constants against the ones here. Tests:
@@ -2096,7 +2101,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   bandwidth sets that no check knows, so the handler copies the input under the guard, stores and reopens through
   `svc_rtl_set_bandwidth_locked()` (which leaves a failed start with no stream and an empty reason), and a start that
   fails puts the bandwidth and input that ran back through `ui_radio_start_failed_locked()`, toasting `Refused: <why>`
-  or `Failed: <why>`. These are the commands with a rollback: Input > Switch source, RTL_SET_BW, AIRSPY_SET and a
+  or `Failed: <why>`. On an I/Q replay `svc_rtl_set_bandwidth_locked()` stores the request as EXPLICIT and re-plans
+  the replay instead of reopening it (`svc_rtl_replay_replan_locked()`, see IO, "Run-time re-plan"): a bandwidth that
+  plans the running chain reopens nothing, and a refused re-plan puts the request back with the replay running. These
+  are the commands with a rollback: Input > Switch source, RTL_SET_BW, AIRSPY_SET and a
   config apply's reopen; a gain, device index or explicit stream restart that fails still leaves no stream. Every one
   of these rollback restarts, and the config apply's below, goes through `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran,
   which closed its I/Q capture with what it had recorded, and a start reopens the capture file for writing, so the
@@ -2933,6 +2941,19 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     with the demod rate published, the rate the samples have.
   - Tests: `DSP_RATE_CONVERTER`, `DSP_RESAMPLER`, `IO_RTL_DEMOD_CONFIG`, `DSP_SYMBOL_REPLAY` (the issue #633 cases),
     `DECODE_PCM_ANALOG_TAP_44K`, `DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST_44K`.
+- Complex I/Q resampler for replays (issue #701): `src/dsp/iq_resampler.c`, `<dsd-neo/dsp/iq_resampler.h>`. It
+  resamples interleaved I/Q ahead of the half-band chain when a replay's rate plan cannot reach the mode's DSP rate D by
+  decimation alone (IO, "Replay rate plan"). L/M is `dsd_rate_converter_ratio()`'s, as is (exact where both reduced
+  terms fit 4096, else within 250 ppm; `DSD_IQ_RESAMPLER_MAX_PPM`). The filter is a Kaiser-windowed sinc polyphase bank
+  designed in the file from explicit edges: the protected band is 0.45 x D (the caller's `protect_hz`), the passband
+  edge that band or 0.45 of the input rate, whichever is lower, and the stopband starts where input content would fold
+  into the protected band at the output rate (or at the input's own first image, upsampling), at least 60 dB down with
+  at most 0.1 dB of ripple; taps per phase from the Kaiser estimate rounded up to a multiple of 4, refused past 256 per
+  phase or 4096 x 256 in the bank. I and Q share one phase and one set of taps; the output depends only on the samples
+  fed since the last `dsd_iq_resampler_clear()`, never on how calls cut them. `dsd_iq_resampler_group_delay_seconds()`
+  reports the delay, which replay does not compensate (0.41 ms for 48,254 Hz to 72 kHz, about 2.5 ms for 8 to 72 kHz).
+  Only the replay reader thread touches it (`rtl_device.cpp`: configured before the thread starts, cleared at a RETUNE,
+  RESET, MUTE and loop rewind, freed after the join); live paths never run it. Test: `DSP_IQ_RESAMPLER`.
 - The analog audio chain (issue #518) is `src/dsp/analog_audio.c` (`<dsd-neo/dsp/analog_audio.h>`) over the pure cores
   in `src/dsp/analog_voice.c` (`<dsd-neo/dsp/analog_voice.h>`): the voice band-pass (`use_pbf`, `-v 0x1`; FM: a
   6th-order elliptic high-pass at 300 Hz that takes every CTCSS tone, and all else below 254.1 Hz, 40 dB down (a DCS
@@ -3488,15 +3509,30 @@ Key public headers:
     frame, and the replay reader converts frames as it reads them, keeping a short read's partial frame and the rest
     of a frame a read smaller than 8 bytes split for the next read. `dsd_iq_replay_measure()` is the effective-size
     rule for both containers (used by the open, `--iq-info` and the CLI); `dsd_iq_replay_seek()` moves either kind of
-    source to a whole complex sample. Tests: `IO_IQ_WAV`,
+    source to a whole complex sample. `dsd_iq_wav_read_info()` decides the container's extent before it walks the
+    chunks (RF64/BW64 from `ds64`, which must come first; a RIFF whose size is 0, 0xFFFFFFFF or past the file runs to
+    the file's end, and a `data` chunk sized 0 or 0xFFFFFFFF as its last chunk is then unfinalized: whole frames to
+    EOF), tries a chunk's pad byte first and the unpadded position only where the padded one is no chunk header, and
+    caps the walk at `DSD_IQ_WAV_MAX_CHUNKS`. Centre: the `auxi` chunk's, else `dsd_iq_wav_center_from_name()`, else 0;
+    start: the `auxi` SYSTEMTIME taken as UTC (a year below 1601 is none), else `dsd_iq_wav_start_from_name()`.
+    `dsd_iq_wav_frames_to_cf32()` scales u8 as cu8 widening does ((x - 127.5) / 127.5) and classifies f64 before it
+    narrows it (NaN to 0, infinities and magnitudes past `DSD_IQ_WAV_F64_CLAMP` clamped). `--iq-info` has a WAV branch
+    (`dsd_iq_info_print_wav()`: provenance, the plan at 48 and 72 kHz, truncated/unfinalized/partial-frame/ignored
+    sidecar warnings); `args.c` logs the open notice and a one-line summary (`cli_log_iq_replay_wav_summary()`). Tests:
+    `IO_IQ_WAV` (with an unfinalized WAV read near its end past 4 GiB, on a sparse file), `IQ_INFO_WAV_SCBS`,
     `FUZZ_IO_IQ_WAV`
-  - Replay rate plan (issue #701): `dsd_iq_replay_plan_rate()` picks the chain a replay runs for the mode's DSP rate
+  - Replay rate plan (issue #701, user rules in `docs/iq-capture-replay.md` "Rate Chain And Resampling"):
+    `dsd_iq_replay_plan_rate()` picks the chain a replay runs for the mode's DSP rate
     and `dsd_iq_replay_apply_rate_plan()` writes it into the config (`dsp_input_rate_hz`, base, post, demod;
     `sample_rate_hz` stays the capture's rate for pacing, media time, chunking and events). A sidecar with no explicit
     bandwidth request keeps its recorded chain unless TETRA's 18 kHz requirement fails on its CQPSK rate (dsp input /
     base, post 1); otherwise the capture decimates by 2^k when it is D x 2^k, else it is resampled to the largest
-    D x 2^k at or below its rate (or up to D). Stream open (`stream_open_plan_replay_rate()`) plans at every start and
-    refuses a start whose plan fails; the replay device resamples with `dsd_iq_resampler` (protected band 0.45 x D) in
+    D x 2^k at or below its rate (or up to D). The plan refuses a capture below 8 kHz, an upsample past 9x and a capture
+    at 2 x 2^10 x D or faster. Stream open (`stream_open_plan_replay_rate()`) plans at every start for the target
+    `stream_open_replay_target_hz()` picks (an EXPLICIT request, else the recorded bandwidth, else the request in force;
+    under TETRA 72 kHz for a target that is no multiple of 18 kHz) and refuses a start whose plan fails; the stream runs
+    the planned bandwidth while opts keeps the request, and the plan in force is kept for
+    `rtl_stream_replay_replan_check()`; the replay device resamples with `dsd_iq_resampler` (protected band 0.45 x D) in
     the reader thread only when `dsp_input_rate_hz` differs from the capture's, clears it at a RETUNE, RESET, MUTE and
     loop rewind, hands event callbacks the DSP input rate, and counts pacing and media time in capture samples
     (`dsd_iq_replay_chunk_bytes_for()` keeps a resampled chunk within one live transfer). A replay with no known centre
@@ -3507,13 +3543,13 @@ Key public headers:
   - Requested bandwidth provenance: `dsd_opts::rtl_dsp_bw_khz` is the requested DSP bandwidth and
     `rtl_dsp_bw_source` says where it came from (`DSD_RTL_DSP_BW_SOURCE_DEFAULT`, `_EXPLICIT`, `_PRESET`). Writers set
     both (`dsd_opts_set_rtl_dsp_bw()`): mode presets in `args.c` (PRESET); input spec bandwidth fields
-    (`input_spec.c`, `airspy_config.c`), the INI `[rtl]` bandwidth at startup (`config_user.cpp`) and on a runtime
-    config apply, the interactive bootstrap, and `svc_rtl_set_bandwidth_locked()` (EXPLICIT). Snapshots put both back
-    (`ui_capture_radio_input()`/`ui_restore_radio_input()`, the config rollback's live-gain path,
-    `svc_airspy_tuning`). A replay no longer writes its recorded bandwidth into opts: only an EXPLICIT request beats
-    `recorded_dsp_bw_khz` as the plan's target, so a mode preset (`-fT`) keeps a sidecar's recorded chain. An
-    RTL-SDR or rtl_tcp `[input]` `rtl_bw_khz` is an EXPLICIT request of its own (`apply_input_rtl_bw_request()`), so it
-    outlives the spec `--iq-replay` replaces at startup.
+    (`input_spec.c`, `airspy_config.c`), the INI `[input]` `rtl_bw_khz` of an RTL-family source at startup
+    (`config_user.cpp`) and on a runtime config apply, the interactive bootstrap, and `svc_rtl_set_bandwidth_locked()`
+    (EXPLICIT). Snapshots put both back (`ui_capture_radio_input()`/`ui_restore_radio_input()`, the config rollback's
+    live-gain path, `svc_airspy_tuning`). A replay no longer writes its recorded bandwidth into opts: only an EXPLICIT
+    request beats `recorded_dsp_bw_khz` as the plan's target, so a mode preset (`-fT`) keeps a sidecar's recorded chain.
+    An RTL-SDR or rtl_tcp `[input]` `rtl_bw_khz` is an EXPLICIT request of its own (`apply_input_rtl_bw_request()`), so
+    it outlives the spec `--iq-replay` replaces at startup.
   - Run-time re-plan with approximate resume (issue #701): the replay reader records, after every chunk it hands the
     ring, a checkpoint (`dsd_iq_replay_checkpoint` in `<dsd-neo/core/iq_replay_checkpoint.h>`: data offset, next event
     index, media timeline and pass samples, loop pass, fs/4 phase; `rtl_device_replay_checkpoint()`), which soft stop
@@ -3561,8 +3597,9 @@ Notes:
     de-emphasis back. `rtl_demod_reset_audio_monitor_state()`, which every open, retune and family or kind switch runs,
     returns the detector's carrier estimate to cold (`demod_state::am_carrier` 0 and its closed-squelch run
     `am_squelched_samples` 0; the next block warm-starts it), and `demod_init_common_defaults()` clears both for a fresh
-    open. An AM start on a replay whose sidecar decimates after the demodulator is refused with
-    `AM needs a capture with post_downsample 1`: no AM width runs there, the default included.
+    open. An AM start on a replay whose kept sidecar chain decimates after the demodulator is refused with
+    `AM needs a capture with post_downsample 1`: no AM width runs there, the default included (a planned chain always
+    has `post_downsample` 1).
     `demod_write_output_block()` skips the output scale for AM (`dsd_demod_am_active()`), which normalises its own
     level. A configured I/Q DC blocker and I/Q balance are bypassed under AM, each with a one-time note
     (`rtl_demod_note_am_iq_dc_bypass()`, `rtl_demod_note_am_iq_balance_bypass()`, from configuration, a kind switch, a
@@ -3586,7 +3623,8 @@ Notes:
     `rtl_stream_test_replay_output_scale()`), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
   - The monitor's legacy `low_pass_real()` stage (`rate_in` to `rate_out2`) passes audio through: a live open sets both
     to the DSP bandwidth, and IQ replay (`controller_apply_replay_settings()`) sets `rate_out2` to the `rate_in` it
-    takes from the capture, so only the rational resampler converts `rate_out` to the output rate. Test:
+    takes from the replay's rate plan (`dsd_iq_replay_dsp_input_rate_hz()` / `base_decimation`), so only the rational
+    resampler converts `rate_out` to the output rate. Test:
     `IO_RTL_ANALOG_OPEN` (a 78,125 Hz capture).
   - De-emphasis and audio-LPF settings are stored in `demod_state` (`deemph_tau_us`, `audio_lpf_cutoff_hz`) and their
     coefficients recomputed every time the rate chain is finalized (`rtl_demod_refresh_audio_coefficients()`).
