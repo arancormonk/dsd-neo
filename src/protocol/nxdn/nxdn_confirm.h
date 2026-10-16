@@ -69,7 +69,8 @@ void nxdn_confirm_end_frame(dsd_state* state);
 /**
  * @brief Report a CRC-good SCCH in this frame, besides its weak evidence.
  *
- * SCCH frames run their own streak, which other channels neither extend nor break: a frame without one ends it.
+ * SCCH frames run their own streak, which other channels neither extend nor break: a frame without one ends it, and so
+ * does a completed tune (a new trunk tuning generation).
  */
 void nxdn_confirm_note_scch(dsd_state* state);
 

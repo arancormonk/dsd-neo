@@ -4290,13 +4290,15 @@ control within the CC grace walks its channel map with the ordinary hunts.
   refuses does not hold the hunt.
   The confirmed branch of `nxdn_scch_prepare_type_d()` calls `nxdn_cc_hunt_note_type_d()`, which counts only SCCHs in
   `NXDN_CONFIRM_WEAK_OBSERVES` frames running (`nxdn_confirm_scch_confirmed()`: the gate's own SCCH streak, which other
-  channels neither extend nor break, and a frame rejected at its LICH ends, `nxdn_confirm_frame_rejected()`; not a
-  confirmation left by a CAC, a SACCH or another carrier), on a control or a
+  channels neither extend nor break, and a frame rejected at its LICH or a completed tune (a new trunk tuning
+  generation) ends, `nxdn_confirm_frame_rejected()`; not a confirmation left by a CAC, a SACCH or another carrier), on a control or a
   followed voice channel: owner named, hunt ended (a RadioReference apply's `rr_apply_reacquire()` calls
   `nxdn_cc_hunt_note_system_replaced()`, which forgets that and an NXDN owner for the new system; the apply also drops a
   P25 or DMR owner its decode mode no longer decodes),
   any CAC-confirmed control channel forgotten, so a Type-D site never hunts afterwards (an idle, silent Type-D site at
-  start is walked like a dead one until confirmed traffic holds the window). Tests: `NXDN_CC_HUNT`,
+  start is walked like a dead one until confirmed traffic holds the window). A hunt tune, like every trunk hook tune
+  (grant follows, the P25/DMR probes), is not a carrier boundary: beyond what the hunt resets itself, a call, its voice
+  crypto, the displayed alias and an MBE capture are ended by the no-carrier pass, which continuous syncs can defer. Tests: `NXDN_CC_HUNT`,
   `ENGINE_COLD_START_HUNT`, `NXDN_CONFIRM`, `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`.
 
 P25 Phase 2 voice dispatch (`src/protocol/p25/phase2/p25p2_frame.c`, issue #651). A `processP2()` window is four

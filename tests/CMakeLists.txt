@@ -2080,6 +2080,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_frame.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_frame_routing
@@ -2094,6 +2095,7 @@ add_executable(
     protocol/nxdn/test_nxdn_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
 )
 target_include_directories(

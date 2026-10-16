@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -203,6 +204,14 @@ main(void) {
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_scch(state);
     expect("a SACCH frame ends the SCCH run", nxdn_confirm_scch_confirmed(state), 0);
+    nxdn_confirm_end_frame(state);
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_scch(state); // the second of a run ...
+    nxdn_confirm_end_frame(state);
+    dsd_trunk_tuning_generation_advance(); // ... cut by a grant's completed tune to another carrier
+    nxdn_confirm_begin_frame(state);
+    nxdn_confirm_note_scch(state);
+    expect("a completed tune ends the SCCH run", nxdn_confirm_scch_confirmed(state), 0);
     nxdn_confirm_end_frame(state);
 
     /* NULL is tolerated: the gate is called from paths that run before state exists. */

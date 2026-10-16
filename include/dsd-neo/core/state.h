@@ -1165,12 +1165,14 @@ struct dsd_state {
      * nxdn_confirm_frame_evidence: strongest nxdn_evidence seen since begin_frame().
      * nxdn_confirm_scch_streak: consecutive frames carrying a CRC-good SCCH, whatever else they carried; the Type-D
      * site test of the control-channel hunt reads it (nxdn_confirm_note_scch()).
-     * nxdn_confirm_frame_scch: this frame carried one. */
+     * nxdn_confirm_frame_scch: this frame carried one.
+     * nxdn_confirm_scch_generation: the trunk tuning generation the run counts in; a completed tune restarts it. */
     uint8_t nxdn_confirmed;
     uint8_t nxdn_confirm_weak_streak;
     uint8_t nxdn_confirm_frame_evidence;
     uint8_t nxdn_confirm_scch_streak;
     uint8_t nxdn_confirm_frame_scch;
+    uint64_t nxdn_confirm_scch_generation;
 
     NxdnElementsContent_t NxdnElementsContent;
 

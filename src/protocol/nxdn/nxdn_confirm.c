@@ -5,6 +5,7 @@
 
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include "nxdn_confirm.h"
 
@@ -40,6 +41,13 @@ nxdn_confirm_note_scch(dsd_state* state) {
         return;
     }
     state->nxdn_confirm_frame_scch = 1;
+    /* A grant, a probe or a return the tuner completed put the receiver on another carrier, whose SCCHs start their own
+       run: no pass of the no-carrier code need come between. */
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    if (generation != state->nxdn_confirm_scch_generation) {
+        state->nxdn_confirm_scch_generation = generation;
+        state->nxdn_confirm_scch_streak = 0;
+    }
     if (state->nxdn_confirm_scch_streak < 0xFFU) {
         state->nxdn_confirm_scch_streak++;
     }
