@@ -3,11 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* What the test codec library (tetra_test_codec.c) puts in each sample, for the tests that read its output back. */
+/* The test speech decoder (tetra_test_codec.c) and what it puts in each sample, for the tests that read its output
+   back. */
 #ifndef DSD_NEO_TESTS_TETRA_TEST_CODEC_H
 #define DSD_NEO_TESTS_TETRA_TEST_CODEC_H
 
 #include <stdint.h>
+
+#include "tetra_voice_state.h"
 
 /* Sample i of decode number @p frame (from 1): negative for a bad frame, its magnitude 2 + 16 * frame + bit, where bit
    is input bit i mod 137. Distinct from silence for every frame below 2047. */
@@ -34,5 +37,17 @@ tetra_test_codec_read(int16_t sample) {
     s.bit = (magnitude - 2) % 16;
     return s;
 }
+
+typedef enum {
+    TETRA_TEST_CODEC_GOOD = 0,    /* decodes every frame */
+    TETRA_TEST_CODEC_NO_DECODER,  /* cannot make a decoder */
+    TETRA_TEST_CODEC_FAIL_DECODE, /* makes samples but reports every decode failed */
+} tetra_test_codec_variant;
+
+/* The test codec of @p variant, for tetra_voice_set_codec_for_test(). */
+const tetra_voice_codec* tetra_test_codec(tetra_test_codec_variant variant);
+
+/* Decodes a test decoder made since it was made or last reset; 0 for NULL. */
+uint32_t tetra_test_codec_decodes(const void* decoder);
 
 #endif /* DSD_NEO_TESTS_TETRA_TEST_CODEC_H */

@@ -42,8 +42,7 @@ This project is an active work in progress as we decouple from the upstream fork
 - A performance‑enhanced fork of [lwvmobile/dsd-fme](https://github.com/lwvmobile/dsd-fme), which is a fork of [szechyjs/dsd](https://github.com/szechyjs/dsd)
 - Modularized fork with clear boundaries: `runtime`, `platform`, `dsp`, `io`, `engine`, `fec`, `crypto`, `protocol`, `core`, plus `ui` and a CLI app.
 - Protocol coverage: DMR, dPMR, D‑STAR, NXDN, P25 Phase 1/2, X2‑TDMA, EDACS, ProVoice, M17
-  (RF/UDP LSF, stream, packet, BERT), YSF, TETRA (trunked downlink and direct mode; speech through a codec library
-  the user supplies with `--tetra-codec`).
+  (RF/UDP LSF, stream, packet, BERT), YSF, TETRA (trunked downlink and direct mode, with speech).
 - Requires [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) 2.5 or newer for IMBE/AMBE vocoder primitives and TETRA speech decoding.
 - Public headers live under `include/dsd-neo/...` and are included as `#include <dsd-neo/<module>/<header>>`.
 
@@ -135,7 +134,6 @@ Requirements
   - Required: libsndfile; OpenSSL 3.x libcrypto; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
   - Optional: librtlsdr (RTL‑SDR support; 2.0.3 or newer for RTL‑SDR Blog V4/V4L dongles), SoapySDR >= 0.8.1 (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl >= 7.56.0 (rdio API uploads), expat 2.x (RadioReference import), PortAudio on non-Windows builds, help2man (man page generation).
   - Vocoder: mbelib-neo 2.5+ (`mbe-neo` CMake package) is required.
-  - TETRA speech is not a build dependency. At runtime, `--tetra-codec <file>` names a speech codec library the user supplies. The ETSI ACELP sources stay on the developer's machine; see `tools/tetra/README.md`.
 
 OS package hints
 

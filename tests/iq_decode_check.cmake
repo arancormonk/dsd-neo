@@ -10,7 +10,9 @@
 # MIN_MATCHES (minimum number of non-overlapping EXPECTED matches),
 # EXPECTED2/MIN_MATCHES2 and EXPECTED3/MIN_MATCHES3 (further payloads the same
 # run must print, at least as often; a MIN_MATCHESn of its own defaults to 1),
-# and EVENT_EXPECTED with WORK_DIR (a regex the run's event history must match).
+# EVENT_EXPECTED with WORK_DIR (a regex the run's event history must match),
+# and AUDIO_MIN_BYTES with WORK_DIR (the run's decoded-audio WAV, -w, must hold
+# at least that many bytes, not all of them zero).
 foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "iq_decode_check: missing -D${_var}")
@@ -36,10 +38,32 @@ if(DEFINED EVENT_EXPECTED)
     set(_event_args -J "${_event_log}")
 endif()
 
+# Optional -DAUDIO_MIN_BYTES, with -DWORK_DIR: the run also saves its decoded
+# audio (-w), which must be at least that long and not silence, for voice a
+# decoder plays rather than prints.
+set(_audio_args)
+if(DEFINED AUDIO_MIN_BYTES)
+    if(NOT DEFINED WORK_DIR)
+        message(FATAL_ERROR "iq_decode_check: AUDIO_MIN_BYTES needs -DWORK_DIR")
+    endif()
+    if(NOT "${AUDIO_MIN_BYTES}" MATCHES "^[1-9][0-9]*$")
+        message(
+            FATAL_ERROR
+            "iq_decode_check: AUDIO_MIN_BYTES must be a positive integer"
+        )
+    endif()
+    if(NOT DEFINED EVENT_EXPECTED)
+        file(REMOVE_RECURSE "${WORK_DIR}")
+        file(MAKE_DIRECTORY "${WORK_DIR}")
+    endif()
+    set(_audio_wav "${WORK_DIR}/audio.wav")
+    set(_audio_args -w "${_audio_wav}")
+endif()
+
 execute_process(
     COMMAND
-        "${DSD_BIN}" --frontend none ${_mode_args} ${_event_args} --iq-replay
-        "${FIXTURE}" -o null
+        "${DSD_BIN}" --frontend none ${_mode_args} ${_event_args} ${_audio_args}
+        --iq-replay "${FIXTURE}" -o null
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out
     ERROR_VARIABLE _err
@@ -112,6 +136,30 @@ if(DEFINED NOT_EXPECTED AND NOT "${NOT_EXPECTED}" STREQUAL "")
             FATAL_ERROR
             "iq_decode_check: forbidden output /${NOT_EXPECTED}/ matched '${_hit}'\n${_all}"
         )
+    endif()
+endif()
+
+if(DEFINED AUDIO_MIN_BYTES)
+    set(_audio_size 0)
+    set(_audio_hex "")
+    if(EXISTS "${_audio_wav}")
+        file(SIZE "${_audio_wav}" _audio_size)
+        # Past the RIFF header: some sample must be nonzero.
+        file(READ "${_audio_wav}" _audio_hex OFFSET 64 HEX)
+    endif()
+    if(_audio_size LESS AUDIO_MIN_BYTES)
+        file(REMOVE_RECURSE "${WORK_DIR}")
+        message(
+            FATAL_ERROR
+            "iq_decode_check: the decoded audio is ${_audio_size} bytes, expected at least ${AUDIO_MIN_BYTES}\n${_all}"
+        )
+    endif()
+    if(NOT "${_audio_hex}" MATCHES "[1-9a-f]")
+        file(REMOVE_RECURSE "${WORK_DIR}")
+        message(FATAL_ERROR "iq_decode_check: the decoded audio is silence")
+    endif()
+    if(NOT DEFINED EVENT_EXPECTED)
+        file(REMOVE_RECURSE "${WORK_DIR}")
     endif()
 endif()
 

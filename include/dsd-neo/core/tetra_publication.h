@@ -48,13 +48,11 @@ typedef enum {
     DSD_TETRA_TRUNK_ON_TRAFFIC = 2, /**< Tuned to a traffic channel (a call, or its hangtime). */
 } dsd_tetra_trunk_state;
 
-/** The speech codec's health (dsd_tetra_publication::codec_status). */
+/** The speech decoder's health (dsd_tetra_publication::codec_status). */
 typedef enum {
-    DSD_TETRA_CODEC_UNKNOWN = 0,       /**< No speech frame has reached the codec yet. */
-    DSD_TETRA_CODEC_READY = 1,         /**< The codec decodes. */
-    DSD_TETRA_CODEC_MISSING = 2,       /**< No codec is installed or configured. */
-    DSD_TETRA_CODEC_LOAD_FAILED = 3,   /**< A codec is configured but would not load or start. */
-    DSD_TETRA_CODEC_DECODE_ERRORS = 4, /**< The codec runs but its last frames failed to decode. */
+    DSD_TETRA_CODEC_UNKNOWN = 0,       /**< No speech frame has reached the decoder yet. */
+    DSD_TETRA_CODEC_READY = 1,         /**< The decoder decodes. */
+    DSD_TETRA_CODEC_DECODE_ERRORS = 2, /**< The last speech frame failed to decode, or no decoder could be made. */
 } dsd_tetra_codec_status;
 
 /** Whether the cell offers air interface encryption, as its BS service details say (dsd_tetra_publication::aie). */
@@ -114,8 +112,8 @@ typedef struct dsd_tetra_publication {
     uint8_t mm_status_valid; /**< 1 once a D-MM STATUS has been decoded. */
     uint8_t mm_status_code;  /**< Its 6-bit Status downlink value (EN 300 392-2, D-MM STATUS). */
     uint8_t codec_status;    /**< dsd_tetra_codec_status */
-    uint32_t codec_frames;   /**< Speech frames the codec decoded since the last reset. */
-    uint32_t codec_errors;   /**< Speech frames the codec failed to decode since the last reset. */
+    uint32_t codec_frames;   /**< Speech frames the decoder decoded since the last reset. */
+    uint32_t codec_errors;   /**< Speech frames the decoder failed to decode since the last reset. */
     /* Trunked mode only, like the network fields above. */
     uint16_t la;              /**< The 14-bit location area of the cell's D-MLE-SYSINFO, when la_known. */
     uint16_t rx_carrier;      /**< The 12-bit number of the carrier being received, when rx_carrier_known. */

@@ -3353,7 +3353,7 @@ test_tetra_rows_follow_the_view(void) {
     state->tetra_pub.traffic_freq_hz = 392125000U;
     state->tetra_pub.mm_status_valid = 1U;
     state->tetra_pub.mm_status_code = 7U;
-    state->tetra_pub.codec_status = DSD_TETRA_CODEC_MISSING;
+    state->tetra_pub.codec_status = DSD_TETRA_CODEC_DECODE_ERRORS;
     state->tetra_pub.aie = DSD_TETRA_AIE_AVAILABLE;
     state->tetra_pub.sec_known = 1U;
     state->tetra_pub.sec_sckn = 3U;
@@ -3373,7 +3373,7 @@ test_tetra_rows_follow_the_view(void) {
     assert(strcmp(lines.text[4], "Control: carrier 321 - 392.0125 MHz") == 0);
     assert(strcmp(lines.text[5], "Traffic: carrier 654 - TS 1,3 - 392.1250 MHz") == 0);
     assert(strcmp(lines.text[6], "MM status: 7 - MS frequency bands request") == 0);
-    assert(strcmp(lines.text[7], "Codec: missing") == 0);
+    assert(strcmp(lines.text[7], "Codec: decode errors") == 0);
 
     reset_printw_capture();
     ui_render_call_info_tetra(opts, state);

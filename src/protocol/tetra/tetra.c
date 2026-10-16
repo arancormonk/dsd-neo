@@ -957,17 +957,13 @@ tetra_pub_air_encryption(const tetra_state_t* ts) {
                                                                              : DSD_TETRA_AIR_ENC_UNKNOWN;
 }
 
-/* The codec library: not needed yet, not configured, refused, or loaded (and whether its last frame failed). */
+/* The speech decoder: no speech frame has reached it yet, or it has, and whether the last one failed. */
 static uint8_t
 tetra_pub_codec_status(const tetra_voice_t* voice) {
-    switch ((tetra_codec_status)voice->codec_status) {
-        case TETRA_CODEC_STATUS_READY:
-            return voice->last_decode_failed ? DSD_TETRA_CODEC_DECODE_ERRORS : DSD_TETRA_CODEC_READY;
-        case TETRA_CODEC_STATUS_NONE: return DSD_TETRA_CODEC_MISSING;
-        case TETRA_CODEC_STATUS_FAILED: return DSD_TETRA_CODEC_LOAD_FAILED;
-        case TETRA_CODEC_STATUS_UNLOADED:
-        default: return DSD_TETRA_CODEC_UNKNOWN;
+    if (voice->frames == 0U && voice->codec_errors == 0U) {
+        return DSD_TETRA_CODEC_UNKNOWN;
     }
+    return voice->last_decode_failed ? DSD_TETRA_CODEC_DECODE_ERRORS : DSD_TETRA_CODEC_READY;
 }
 
 /* A downlink frequency the publication can carry: 1..DSD_TRUNK_FREQ_MAX_HZ, else 0 (not resolved). */

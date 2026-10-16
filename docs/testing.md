@@ -323,7 +323,9 @@ resamples it to 72 kHz, the rate `-fT` runs an RTL-SDR at; the recording's carri
 the receiver to recover. The wiki gives no frequency, so the sidecar is tuned to carrier 1068, where the call's
 allocation sends the call: a call's speech is its own only on the carrier its allocation names, and
 `DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT` requires the replay to publish the group call, talkgroup 100601 from SSI 100702 on
-426.7 MHz, to its event history (`-J`, through `iq_decode_check.cmake`'s `EVENT_EXPECTED`). The other
+426.7 MHz, to its event history (`-J`, through `iq_decode_check.cmake`'s `EVENT_EXPECTED`), and
+`DECODE_IQ_TETRA_REAL_AIR_CALL_AUDIO` requires the call's speech to play through mbelib-neo's TETRA decoder: at least
+2 seconds of decoded audio (`-w`, `AUDIO_MIN_BYTES`; the replay writes about 3), not all of it silence. The other
 `DECODE_IQ_TETRA_REAL_AIR_CALL_*` cases assert at least 200 BSCH identities (`_BSCH`; the
 replay decodes 232), the main carrier in SYSINFO, the call's channel allocation, its D-SETUP from SSI 100701,
 D-TX-CEASED and D-TX-GRANTED to SSI 100702, and at least 40 TCH/S bursts whose class-2 CRC passes (`_TCH_FS`; the
@@ -1374,9 +1376,10 @@ Known gaps and caveats:
 
 - **TETRA** replays are synthetic apart from two off-air control-channel captures, so no replay covers a real
   traffic channel, direct mode or a retune to follow a call; following runs against stand-in tuning hooks in
-  `TETRA_TRUNK_SM`, `ENGINE_TETRA_TRUNK` and `TETRA_CALLS` ([TETRA protocol tests](#tetra-protocol-tests)). Speech
-  plays only through a codec library the user builds, so CI drives the speech path with a test codec, and
-  `TETRA_ACELP_REFERENCE` pins the recovered speech bits rather than audio. The uplink is not decoded.
+  `TETRA_TRUNK_SM`, `ENGINE_TETRA_TRUNK` and `TETRA_CALLS` ([TETRA protocol tests](#tetra-protocol-tests)). The
+  speech path's unit tests drive it with a stand-in decoder whose samples say which frame they came from;
+  `TETRA_VOICE_CODEC` and `DECODE_IQ_TETRA_REAL_AIR_CALL_AUDIO` check that mbelib-neo's decoder plays, not how the
+  speech sounds. The uplink is not decoded.
 - **X2-TDMA** has no usable public sample and is untested here.
 - **dPMR** decodes only what its CCH CRC-7 verifies (issue #407), so the `dpmr` off-air capture publishes nothing:
   it carries no recoverable CCH, which is why the CRC was thought to be broken. `DECODE_IQ_DPMR_MARGINAL` pins that
@@ -1436,7 +1439,7 @@ except where a published vector is the point. Tests that need time run on the de
 | `TETRA_CALLS` | Call records by call identifier, channel allocations attached to the call they came with or to the addressed party's, the followed call chosen by talkgroup policy and the encryption lockout, and the followed, heard and direct mode calls published as canonical calls from their signalling and speech. |
 | `TETRA_TRUNK_SM`, `ENGINE_TETRA_TRUNK` | The trunking state machine per session: CRC evidence before a grant is followed, tunes the backend completes at once, completes later or fails, the grant timeout and the hangtime after speech, releases by call identifier; the engine's tick, the carrier boundary that drops a followed call without tuning, and the no-carrier pass that forgets the carrier's evidence. |
 | `TETRA_VOICE_GATE` | The followed call's timeslots on its settled carrier once its signalling proved it there; one heard timeslot at a time when not trunking, held only by speech that plays (muted speech shows its call and gives way); direct mode always; the call each burst belongs to and its encryption class. |
-| `TETRA_VOICE_PIPELINE`, `TETRA_VOICE_CODEC`, `PLATFORM_DYNLIB` | The speech path against a test codec library (`tests/protocol/tetra/tetra_test_codec.c`) built as a shared library and loaded through `--tetra-codec` as a user's would be, its samples saying which decode made them: speech starts at a CRC-passed burst, bad frames after it are concealed until a run of four ends it, a stolen half slot's frame is concealed ahead of its speech frame, 240-sample frames leave the output whole 160-sample blocks with the rest carried, a carrier-boundary reset drops the carry and restarts the codec, air-encrypted speech is decrypted at the right key stream bits once it is back in speech frame order, a TEA1 reduced key decrypts its own carrier's speech and no other's, speech starts over at another call or another talker, and the channel, timeslot, encryption, talkgroup and record gates hold back what they should. The libraries dsd-neo cannot use (none named, no file, another interface version, a missing function, no decoder, failing decodes) give one log line each and no audio; `PLATFORM_DYNLIB` runs the loader underneath over the same libraries. |
+| `TETRA_VOICE_PIPELINE`, `TETRA_VOICE_CODEC` | The speech path against a stand-in decoder (`tests/protocol/tetra/tetra_test_codec.c`) installed with `tetra_voice_set_codec_for_test()`, its samples saying which decode made them: speech starts at a CRC-passed burst, bad frames after it are concealed until a run of four ends it, a stolen half slot's frame is concealed ahead of its speech frame, 240-sample frames leave the output whole 160-sample blocks with the rest carried, a carrier-boundary reset drops the carry and resets the decoder, air-encrypted speech is decrypted at the right key stream bits once it is back in speech frame order, a TEA1 reduced key decrypts its own carrier's speech and no other's, speech starts over at another call or another talker, and the channel, timeslot, encryption, talkgroup and record gates hold back what they should. A decoder that cannot be made, and one whose decodes fail, give one log line each and no audio. `TETRA_VOICE_CODEC` also plays good, CRC-failed and stolen frames through mbelib-neo's decoder and requires exactly the samples a fresh decoder makes of the same frames, before and after a carrier-boundary reset. |
 | `TETRA_PUBLICATION`, `APP_CONTROL_TETRA_VIEW`, `TETRA_FMT_HELPERS` | What the decoder publishes for the frontends (nothing before a block decoded, the timeslot bitmap TN1 first, the algorithms signalling named, the cell's security, the carrier being received through tunes in flight, completed and rolled back, which kind of key applies, never a key, cleared with the state), the rows every frontend shows from it, and the encryption-mode and MM status names. |
 
 ### MBE capture checks (issue #661)

@@ -11471,57 +11471,20 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 
-# A stand-in for the TETRA speech codec library (--tetra-codec), built as a shared library the way a user's codec is:
-# the voice tests load it through the platform loader and read the PCM it makes off the digital voice output. Each
-# sample says which decode made it. The variants break the codec interface the ways a wrong library would.
-set(_dsd_tetra_codec_variants
-    good
-    wrong_abi
-    missing_symbol
-    no_create
-    fail_decode
-)
-set(_dsd_tetra_codec_definitions)
-foreach(_dsd_tetra_codec_variant IN LISTS _dsd_tetra_codec_variants)
-    set(_dsd_tetra_codec_target
-        "dsd-neo_test_tetra_codec_${_dsd_tetra_codec_variant}"
-    )
-    string(TOUPPER "${_dsd_tetra_codec_variant}" _dsd_tetra_codec_macro)
-    add_library(
-        "${_dsd_tetra_codec_target}"
-        SHARED
-        protocol/tetra/tetra_test_codec.c
-    )
-    target_include_directories(
-        "${_dsd_tetra_codec_target}"
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
-    )
-    target_compile_definitions(
-        "${_dsd_tetra_codec_target}"
-        PRIVATE "TETRA_TEST_CODEC_${_dsd_tetra_codec_macro}=1"
-    )
-    target_link_libraries("${_dsd_tetra_codec_target}" PRIVATE dsd-neo_warnings)
-    list(
-        APPEND _dsd_tetra_codec_definitions
-        "TETRA_TEST_CODEC_${_dsd_tetra_codec_macro}=\"$<TARGET_FILE:${_dsd_tetra_codec_target}>\""
-    )
-endforeach()
-
+# The speech path's tests decode through tetra_test_codec.c, a stand-in for mbelib-neo's TETRA decoder whose samples say
+# which decode made them (installed with tetra_voice_set_codec_for_test()); TETRA_VOICE_CODEC also runs the real one.
 foreach(_dsd_tetra_voice_test IN ITEMS voice_pipeline voice_codec)
     set(_dsd_tetra_target "dsd-neo_test_tetra_${_dsd_tetra_voice_test}")
     add_executable(
         "${_dsd_tetra_target}"
         "protocol/tetra/test_tetra_${_dsd_tetra_voice_test}.c"
+        protocol/tetra/tetra_test_codec.c
     )
     target_include_directories(
         "${_dsd_tetra_target}"
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/protocol/tetra
-    )
-    target_compile_definitions(
-        "${_dsd_tetra_target}"
-        PRIVATE ${_dsd_tetra_codec_definitions}
     )
     # initState() and the audio output reach the codecs and sinks ${LIBS} carries; dsd-neo_core goes ahead of them so
     # an --as-needed link still finds its codec2 calls.
@@ -11534,12 +11497,6 @@ foreach(_dsd_tetra_voice_test IN ITEMS voice_pipeline voice_codec)
             dsd-neo_test_support
             ${LIBS}
     )
-    foreach(_dsd_tetra_codec_variant IN LISTS _dsd_tetra_codec_variants)
-        add_dependencies(
-            "${_dsd_tetra_target}"
-            "dsd-neo_test_tetra_codec_${_dsd_tetra_codec_variant}"
-        )
-    endforeach()
     string(TOUPPER "${_dsd_tetra_voice_test}" _dsd_tetra_test_name)
     add_test(
         NAME "TETRA_${_dsd_tetra_test_name}"
@@ -11577,32 +11534,6 @@ target_link_libraries(
 add_test(NAME TETRA_BURST_VERDICT COMMAND dsd-neo_test_tetra_burst_verdict)
 set_tests_properties(TETRA_BURST_VERDICT PROPERTIES LABELS "protocol;tetra")
 
-# The run-time library loader the codec goes through (src/platform/dynlib_*.c), over the same test libraries.
-add_executable(dsd-neo_test_platform_dynlib platform/test_platform_dynlib.c)
-target_include_directories(
-    dsd-neo_test_platform_dynlib
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_compile_definitions(
-    dsd-neo_test_platform_dynlib
-    PRIVATE ${_dsd_tetra_codec_definitions}
-)
-target_link_libraries(
-    dsd-neo_test_platform_dynlib
-    PRIVATE dsd-neo_platform dsd-neo_test_support
-)
-add_dependencies(
-    dsd-neo_test_platform_dynlib
-    dsd-neo_test_tetra_codec_good
-    dsd-neo_test_tetra_codec_missing_symbol
-)
-add_test(NAME PLATFORM_DYNLIB COMMAND dsd-neo_test_platform_dynlib)
-set_tests_properties(PLATFORM_DYNLIB PROPERTIES LABELS "platform;tetra")
-unset(_dsd_tetra_codec_definitions)
-unset(_dsd_tetra_codec_macro)
-unset(_dsd_tetra_codec_target)
-unset(_dsd_tetra_codec_variant)
-unset(_dsd_tetra_codec_variants)
 unset(_dsd_tetra_target)
 unset(_dsd_tetra_test_name)
 unset(_dsd_tetra_voice_test)
@@ -13883,6 +13814,23 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(
         DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # Its speech plays through mbelib-neo's TETRA decoder: the 96 speech frames
+    # of the CRC-passed bursts are about 3 s of audio (-w writes 8 kHz stereo,
+    # 32000 bytes a second); require 2 s that are not silence.
+    add_test(
+        NAME DECODE_IQ_TETRA_REAL_AIR_CALL_AUDIO
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_call_real_air_72k.iq.json"
+            "-DEXPECTED=\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
+            -DAUDIO_MIN_BYTES=64000
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_audio/DECODE_IQ_TETRA_REAL_AIR_CALL_AUDIO"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_REAL_AIR_CALL_AUDIO
         PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
     # WAV I/Q replay and replay resampling (issue #701). dsd-neo_test_iq_wav_fixture_tool writes the WAV recordings

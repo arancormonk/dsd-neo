@@ -16,23 +16,35 @@
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
 
 #include <dsd-neo/core/voice_chain.h>
-#include <dsd-neo/protocol/tetra/tetra_codec_abi.h>
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct tetra_voice {
-    /* The codec library (--tetra-codec), loaded at the first speech frame that would play; its functions; the
-       decoder instance, made again after a reset. */
-    struct dsd_dynlib* lib;
-    dsd_tetra_codec_create_fn create;
-    dsd_tetra_codec_decode_fn decode;
-    dsd_tetra_codec_destroy_fn destroy;
-    void* codec;
+/**
+ * The speech decoder the speech path drives: mbelib-neo's TETRA decoder (mbe_tetraDecoderAlloc() and the rest) unless
+ * a test installs another with tetra_voice_set_codec_for_test(). decode() takes TETRA_VOICE_FRAME_BITS bytes, each 0
+ * or 1 (not read for a bad frame), writes TETRA_VOICE_FRAME_SAMPLES samples at 8 kHz and returns 0, else fails.
+ */
+typedef struct tetra_voice_codec {
+    void* (*alloc)(void);
+    void (*reset)(void* decoder);
+    void (*release)(void* decoder);
+    int (*decode)(void* decoder, const uint8_t* bits, int bad_frame, int16_t* pcm);
+} tetra_voice_codec;
 
-    /* Frames the codec decoded, of them concealed bad frames, and frames it failed on. */
+/** Test seam: decode speech with @p codec from the next decoder made; NULL restores mbelib-neo's. */
+void tetra_voice_set_codec_for_test(const tetra_voice_codec* codec);
+
+typedef struct tetra_voice {
+    /* The speech decoder, made at the first speech frame that would play and reset with the speech in progress; the
+       codec that made it, which releases it. */
+    void* codec;
+    const tetra_voice_codec* codec_ops;
+
+    /* Frames the codec decoded, of them concealed bad frames, and frames it failed on (or had no decoder for). */
     uint32_t frames;
     uint32_t concealed;
     uint32_t codec_errors;
@@ -41,8 +53,7 @@ typedef struct tetra_voice {
     uint16_t carry_len;
     short carry[DSD_VOICE_FRAME_SAMPLES];
 
-    uint8_t codec_status;       /* tetra_codec_status */
-    uint8_t last_decode_failed; /* the codec failed on the last frame it was given */
+    uint8_t last_decode_failed; /* the last frame to decode failed, or no decoder could be made for it */
     /* Speech integrity: 1 once a CRC-passed burst started the speech; the bad frames since the last good one. */
     uint8_t confirmed;
     uint8_t bad_run;
@@ -62,7 +73,7 @@ typedef struct tetra_voice {
     uint8_t bound;
 } tetra_voice_t;
 
-/** Unload the codec and clear @p voice; the TETRA state's cleanup calls it. */
+/** Free the speech decoder and clear @p voice; the TETRA state's cleanup calls it. */
 void tetra_voice_release(tetra_voice_t* voice);
 
 /** Call @p old_id goes on as call @p new_id (D-INFO, D-CALL RESTORE): speech in progress of it stays its speech. */

@@ -139,7 +139,7 @@ static const char* const k_skip_exact_next_any[] = {
    and must not reach getopt; see dsd_cli_option_takes_free_value()). */
 static const char* const k_skip_exact_next_nonnull[] = {
     "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format",
-    "--iq-replay",  "--iq-replay-rate",    "--iq-info",           "--tetra-codec",
+    "--iq-replay",  "--iq-replay-rate",    "--iq-info",
 };
 
 static const char* const k_skip_exact_next_nonopt[] = {
@@ -177,7 +177,6 @@ static const char* const k_skip_prefix[] = {
     "--iq-info=",
     "--tetra-net=",
     "--tetra-key=",
-    "--tetra-codec=",
     "--dmr-baofeng-pc5=",
     "--dmr-csi-ee72=",
     "--dmr-vertex-ks-csv=",

@@ -69,7 +69,6 @@ test_trunked_downlink(void) {
     ts->dl_carrier_hz = 392012500L;
     ts->mm_status_valid = 1U;
     ts->mm_status_code = 7U;
-    ts->voice.codec_status = (uint8_t)TETRA_CODEC_STATUS_READY;
     ts->voice.frames = 18U;
     ts->voice.codec_errors = 2U;
     tetra_publish(state);
@@ -109,26 +108,27 @@ test_trunked_downlink(void) {
     state_close(state);
 }
 
-/* The codec statuses the decoder reports, each on the publication's, with the frame and error counts. */
+/* The speech decoder's status on the publication, with the frame and error counts: unknown until a frame reached it,
+   then ready, or decode errors while the last frame failed. */
 static void
 test_codec_status(void) {
     static const struct {
-        tetra_codec_status decoder;
+        uint32_t frames;
+        uint32_t errors;
         uint8_t last_decode_failed;
         uint8_t published;
     } map[] = {
-        {TETRA_CODEC_STATUS_UNLOADED, 0U, DSD_TETRA_CODEC_UNKNOWN},
-        {TETRA_CODEC_STATUS_READY, 0U, DSD_TETRA_CODEC_READY},
-        {TETRA_CODEC_STATUS_READY, 1U, DSD_TETRA_CODEC_DECODE_ERRORS},
-        {TETRA_CODEC_STATUS_NONE, 0U, DSD_TETRA_CODEC_MISSING},
-        {TETRA_CODEC_STATUS_FAILED, 0U, DSD_TETRA_CODEC_LOAD_FAILED},
+        {0U, 0U, 0U, DSD_TETRA_CODEC_UNKNOWN},       {4U, 0U, 0U, DSD_TETRA_CODEC_READY},
+        {4U, 1U, 1U, DSD_TETRA_CODEC_DECODE_ERRORS}, {4U, 1U, 0U, DSD_TETRA_CODEC_READY},
+        {0U, 2U, 1U, DSD_TETRA_CODEC_DECODE_ERRORS},
     };
 
     dsd_state* state = state_open();
     tetra_state_t* const ts = tetra_st(state);
     assert(ts != NULL);
     for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
-        ts->voice.codec_status = (uint8_t)map[i].decoder;
+        ts->voice.frames = map[i].frames;
+        ts->voice.codec_errors = map[i].errors;
         ts->voice.last_decode_failed = map[i].last_decode_failed;
         tetra_publish(state);
         assert(state->tetra_pub.codec_status == map[i].published);

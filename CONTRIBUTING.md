@@ -52,10 +52,8 @@ pull request explains why an exception is appropriate.
 - Vendored third-party code stays under `src/third_party/`, keeps upstream
   license notices, and is documented in dependency records.
 - Do not add ETSI EN 300 395-2 ACELP sources, objects, patches of those
-  sources, or a downloader for them. TETRA speech audio comes from a codec
-  library the user names with `--tetra-codec`. The top-level CMake build does
-  not compile one. Build `tools/tetra/acelp_adapter/` locally with your own
-  `-DETSI_TETRA_C_CODE` path. See `tools/tetra/README.md`.
+  sources, or a downloader for them. TETRA speech is decoded by mbelib-neo's
+  TETRA speech decoder; dsd-neo carries no speech codec of its own.
 - Workflow, dependency, packaging, release, parser, decoder, crypto, radio IO,
   and security changes receive extra review.
 - Static-analysis suppressions are narrow and explain why the local exception is

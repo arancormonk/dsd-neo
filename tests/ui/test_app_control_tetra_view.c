@@ -351,12 +351,8 @@ test_mm_status_and_codec(void) {
     assert(strcmp(view.codec_text, "decode errors - 18 frames - 2 errors") == 0);
     pub->codec_frames = 0U;
     pub->codec_errors = 0U;
-    pub->codec_status = DSD_TETRA_CODEC_MISSING;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
-    assert(view.codec_fault == 1U && strcmp(view.codec_text, "missing") == 0);
-    pub->codec_status = DSD_TETRA_CODEC_LOAD_FAILED;
-    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
-    assert(view.codec_fault == 1U && strcmp(view.codec_text, "failed to load") == 0);
+    assert(view.codec_fault == 1U && strcmp(view.codec_text, "decode errors") == 0);
     pub->codec_status = 9U;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(view.codec_known == 0U && view.codec_text[0] == '\0');
