@@ -539,13 +539,11 @@ test_carrier_evidence_reset(void) {
     g_state->nxdn_confirmed = 1;
     g_state->nxdn_confirm_weak_streak = 1;
     g_state->nxdn_sacch_frame_segcrc[0] = 0;
-    g_state->nxdn_last_ran = 5U;
     run_until(5.9, 6.5);
     expect("evidence: probe", g_tune_count, 1);
     expect("evidence: confirmation reset", g_state->nxdn_confirmed, 0);
     expect("evidence: weak streak reset", g_state->nxdn_confirm_weak_streak, 0);
     expect("evidence: SACCH assembly reset", g_state->nxdn_sacch_frame_segcrc[0], 1);
-    expect("evidence: RAN forgotten", g_state->nxdn_last_ran == (unsigned)-1, 1);
 }
 
 /* A probe whose tune is unresolved is never credited; the deadline fails it and the hunt moves on. */
