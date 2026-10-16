@@ -1,1 +1,4 @@
 semgrep==1.179.0
+# GHSA-84m7-p3x7-pcfv: override Semgrep's vulnerable mcp==1.29.0 pin.
+# Use this file as both the input and --override when compiling the lockfile.
+mcp==1.30.0
