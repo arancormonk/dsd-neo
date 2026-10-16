@@ -4276,7 +4276,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   belongs to a reused state's next run (the engine's cleanup frees the context): the owner goes back to unknown. Probes, settle tunes,
   deadlines and parking follow the DMR startup hunt's rules (a probe's 2 s dwell runs from its tune's completion); each
   hunt tune also resets the per-carrier NXDN evidence
-  (`nxdn_confirm_reset()`, SACCH assemblies), so a weak streak or a sticky confirmation never crosses carriers (the RAN
+  (`nxdn_confirm_reset()`, the SACCH superframe and alias assemblies), so a weak streak, a sticky confirmation or a
+  half-assembled alias never crosses carriers (the RAN
   stays, as at every trunked move within the system's map, issue #575), and
   restores both control-channel aliases. `nxdn_handle_cac()` calls `nxdn_cc_hunt_note_control()` on every CRC-good CAC,
   before element decode: an unresolved probe is not credited; otherwise the frequency (the completed probe, else one

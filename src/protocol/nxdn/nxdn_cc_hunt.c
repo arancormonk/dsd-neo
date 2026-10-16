@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -115,13 +116,17 @@ nxdn_cc_hunt_attributed_frequency(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts) {
 }
 
 /* A hunt tune lands on another carrier: what the last one proved must not carry over, or a weak streak or a sticky
-   confirmation would let one short CRC on the new frequency pass for a confirmed transmission. The durable
+   confirmation would let one short CRC on the new frequency pass for a confirmed transmission, and a SACCH superframe
+   or alias assembly would complete with the new carrier's pieces. The durable
    nxdn_confirm_lock_m stays, and so does the RAN, as at every trunked move within the system's map (issue #575). */
 static void
 nxdn_cc_hunt_reset_carrier_evidence(dsd_state* state) {
     nxdn_confirm_reset(state);
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+    state->nxdn_part_of_frame = 0;
+    state->nxdn_sf = 0;
+    nxdn_alias_reset(state); // the multi-frame assemblies the carrier boundary drops too
 }
 
 /* Tune for the hunt, keeping the shared control-channel aliases: the tuning helper stages the frequency as the control
