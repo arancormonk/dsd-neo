@@ -33,6 +33,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
@@ -2563,7 +2564,7 @@ nxdn_scch_print_payload_label(const dsd_opts* opts, const struct nxdn_scch_info*
 }
 
 static void
-nxdn_scch_prepare_type_d(dsd_state* state, const struct nxdn_scch_info* info) {
+nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "Type-D");
     if (!nxdn_confirm_is_confirmed(state)) {
         /* SCCH carries a 7-bit CRC, which noise clears often enough that a RAN and a scan
@@ -2575,6 +2576,7 @@ nxdn_scch_prepare_type_d(dsd_state* state, const struct nxdn_scch_info* info) {
     state->nxdn_last_ran_stand_in = 1U;
     state->last_cc_sync_time = info->now;
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    nxdn_cc_hunt_note_type_d(opts, state);
 }
 
 static void
@@ -2872,7 +2874,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
 
     DSD_FPRINTF(stderr, "\n "); //initial line break
     nxdn_scch_print_payload_label(opts, &info);
-    nxdn_scch_prepare_type_d(state, &info);
+    nxdn_scch_prepare_type_d(opts, state, &info);
 
     if (info.opcode == 0x04U || info.opcode == 0x00U) {
         nxdn_scch_handle_info4(opts, state, &info);

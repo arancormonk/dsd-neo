@@ -286,28 +286,21 @@ dsd_rigctl_query_hook_get_current_freq_hz(const dsd_opts* opts) {
     return g_current_rigctl_freq;
 }
 
-dsd_trunk_tune_result
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                                 uint64_t* out_request_id) {
+/* Installed through the trunk tuning hook table: the runtime wrappers they sit behind correlate the request. */
+static dsd_trunk_tune_result
+test_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)state;
-    if (out_request_id != NULL) {
-        *out_request_id = 0U;
-    }
+    (void)request_id;
     g_tune_cc_calls++;
     g_tune_cc_freq = freq;
     g_tune_cc_ted_sps = ted_sps;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-dsd_trunk_tune_result
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                                   uint64_t* out_request_id) {
-    if (out_request_id != NULL) {
-        *out_request_id = 0U;
-    }
+static dsd_trunk_tune_result
+test_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     g_tune_freq_calls++;
     g_tune_freq_freq = freq;
     g_tune_freq_ted_sps = ted_sps;
@@ -2144,6 +2137,10 @@ main(void) {
     int rc = 0;
 
     dsd_decode_clock_use_test(1000000000000ULL);
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = test_tune_to_cc_request;
+    hooks.tune_to_freq_request = test_tune_to_freq_request;
+    dsd_trunk_tuning_hooks_set(hooks);
     rc |= test_decode_guards_and_unknown_dispatch();
     rc |= test_sacch_full_decode_crc_gate_and_reset();
     rc |= test_disc_trunk_return_clears_call_state();

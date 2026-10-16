@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include "nxdn_confirm.h"
@@ -68,6 +69,8 @@ nxdn_confirm_end_frame(dsd_state* state) {
      * confirmation unlocked, since it reads them from state when it hears it. */
     if (state->nxdn_confirm_frame_evidence == (uint8_t)NXDN_EVIDENCE_STRONG
         || state->nxdn_confirm_weak_streak >= NXDN_CONFIRM_WEAK_OBSERVES) {
+        /* Validated NXDN content: the frequency is not dead, even when it carries no control channel. */
+        state->nxdn_confirm_lock_m = dsd_decode_now_mono_s();
         dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
     }
 }

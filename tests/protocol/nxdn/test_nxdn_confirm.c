@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -158,6 +159,25 @@ main(void) {
     run_frame(state, NXDN_EVIDENCE_WEAK);
     expect("a frame continuing the streak reports", g_search_reports, 3);
     dsd_signal_search_evidence_set(NULL);
+
+    /* The control-channel hunt's evidence stamp: written exactly when a frame's own CRCs confirmed the transmission (as
+     * a signal search hears it), on the decode clock, and never cleared by a reset. */
+    dsd_decode_clock_use_test(5000000000ULL); // 5 s
+    nxdn_confirm_reset(state);
+    state->nxdn_confirm_lock_m = 0.0;
+    run_frame(state, NXDN_EVIDENCE_WEAK);
+    expect("a lone weak frame stamps nothing", state->nxdn_confirm_lock_m > 0.0, 0);
+    run_frame(state, NXDN_EVIDENCE_WEAK);
+    expect("the frame completing a weak streak stamps",
+           state->nxdn_confirm_lock_m > 4.999 && state->nxdn_confirm_lock_m < 5.001, 1);
+    dsd_decode_clock_test_set_ns(7000000000ULL); // 7 s
+    run_frame(state, 0);
+    expect("a confirmed transmission's empty frame keeps the stamp", state->nxdn_confirm_lock_m < 5.001, 1);
+    run_frame(state, NXDN_EVIDENCE_STRONG);
+    expect("a strong frame stamps", state->nxdn_confirm_lock_m > 6.999, 1);
+    nxdn_confirm_reset(state);
+    expect("a reset keeps the stamp", state->nxdn_confirm_lock_m > 6.999, 1);
+    dsd_decode_clock_use_system();
 
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     nxdn_confirm_reset(NULL);

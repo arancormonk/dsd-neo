@@ -34,6 +34,7 @@
 #include <dsd-neo/fec/trellis.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
@@ -628,6 +629,9 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
     nxdn_print_last_ran(state);
     if (crc == 0) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
+        /* Only an outbound control channel carries a CAC: this one names the control channel, before its elements
+           (a grant among them) are decoded. */
+        nxdn_cc_hunt_note_control(opts, state);
         state->data_header_format[0] = 2;
         state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
         state->nxdn_last_ran_stand_in = 0U;

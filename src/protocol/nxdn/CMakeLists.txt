@@ -4,6 +4,7 @@ target_sources(
     dsd-neo_proto_nxdn
     PRIVATE
         nxdn_alias_decode.c
+        nxdn_cc_hunt.c
         nxdn_confirm.c
         nxdn_convolution.c
         nxdn_crc.c
