@@ -44,7 +44,32 @@ ModalSheet {
         editor.forceChanged = false;
         editor.currentForceSummary = force === 0 ? qsTr("normal identifiers") : force === 1 ? qsTr("privacy forcing") : qsTr("algorithm %1 fallback").arg(force.toString(16).toUpperCase());
         advancedOpen = false;
+        openedChoice = choiceValue();
         visible = sessionRunning;
+    }
+    // The profile and scope as the sheet opened: a different choice is an edit.
+    property string openedChoice: ""
+    function choiceValue() {
+        return JSON.stringify([selectedProfileUid, profileScope]);
+    }
+    /** Changes not yet applied: the direct-key draft, or another profile or scope. */
+    function unapplied() {
+        if (applyFlow.pending)
+            return false;
+        return editor.keyType.length > 0 || editor.keyValue.length > 0 || editor.forceChanged || choiceValue() !== openedChoice;
+    }
+    function requestClose() {
+        if (visible && unapplied())
+            discard.ask(function () {
+                sheet.visible = false;
+            });
+        else
+            visible = false;
+    }
+    dismissHandler: requestClose
+    DiscardDialog {
+        id: discard
+        parent: sheet
     }
     function apply() {
         if (!visible || !sessionRunning || !editor.valid || applyFlow.pending)
@@ -200,8 +225,9 @@ ModalSheet {
         onClicked: sheet.apply()
     }
     OutlineButton {
+        objectName: "keySheetClose"
         width: parent.width
         text: applyFlow.pending ? qsTr("Close") : qsTr("Cancel")
-        onClicked: sheet.visible = false
+        onClicked: sheet.requestClose()
     }
 }

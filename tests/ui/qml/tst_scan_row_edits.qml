@@ -341,6 +341,45 @@ Item {
             compare(testContext.toneFilterCalls(), 0, "the configured policy was not touched");
         }
 
+        function shownDiscard(item) {
+            if (!item || !item.visible)
+                return null;
+            if (item.accessibleName === "Discard changes?")
+                return item;
+            for (var child of item.children) {
+                var found = shownDiscard(child);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        // Choosing "This channel" loads the row's policy: that is where the edit
+        // starts, not a change. A change made there still asks.
+        function test_tone_editor_scope_switch_is_not_an_edit() {
+            onAir(true, squelchField | toneField, toneField, 0);
+            toneSheet.openEditor();
+            findChild(toneSheet, "toneFilterScope").selected(1);
+            compare(findChild(toneSheet, "toneFilterList").text, "100.0");
+            findChild(toneSheet, "toneFilterClose").clicked();
+            verify(!toneSheet.visible, "the row's own policy is not an edit");
+            verify(!shownDiscard(tone.item));
+            toneSheet.openEditor();
+            findChild(toneSheet, "toneFilterScope").selected(1);
+            findChild(toneSheet, "toneFilterList").text = "100.0/D023N";
+            findChild(toneSheet, "toneFilterClose").clicked();
+            verify(toneSheet.visible);
+            var discard = shownDiscard(toneSheet);
+            verify(discard !== null);
+            // Switching back to the configured policy replaces the draft: the
+            // baseline follows it.
+            findChild(discard, "discardDialogKeep").activate();
+            findChild(toneSheet, "toneFilterScope").selected(0);
+            findChild(toneSheet, "toneFilterClose").clicked();
+            verify(!toneSheet.visible);
+            compare(testContext.scanRowEditCalls(), 0);
+            compare(testContext.toneFilterCalls(), 0);
+        }
+
         function test_tone_editor_without_a_tone_row() {
             onAir(true, squelchField, squelchField, 0);
             toneSheet.openEditor();

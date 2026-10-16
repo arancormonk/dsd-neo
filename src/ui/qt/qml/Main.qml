@@ -698,9 +698,7 @@ Window {
     function seedSignalSearch() {
         var fromSearch = prefs.searchSourceType.length > 0;
         var remembered = fromSearch ? prefs.searchSourceType : prefs.exploreSourceType;
-        signalSearchScreen.sourceType = mainRoot.effectiveSource(remembered) || "usb";
-        signalSearchScreen.host = (fromSearch ? prefs.searchHost : prefs.exploreHost) || "192.168.1.10";
-        signalSearchScreen.port = (fromSearch ? prefs.searchPort : prefs.explorePort) || 1234;
+        signalSearchScreen.seed(mainRoot.effectiveSource(remembered) || "usb", (fromSearch ? prefs.searchHost : prefs.exploreHost) || "192.168.1.10", (fromSearch ? prefs.searchPort : prefs.explorePort) || 1234);
     }
 
     /**

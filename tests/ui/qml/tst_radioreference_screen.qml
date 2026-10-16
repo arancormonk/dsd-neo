@@ -245,6 +245,29 @@ Item {
                 compare(findChild(findChild(tc.screen, name), "browseSearch").text, "");
         }
 
+        // The zip code or system ID typed on one visit is there on the next:
+        // leaving the screen (header Back, system Back, a keyboard Back) never
+        // asks to retype it. A loaded system still goes.
+        function test_typed_queries_survive_a_new_visit_data() {
+            return [{tag: "zip", mode: 0}, {tag: "system id", mode: 2}];
+        }
+        function test_typed_queries_survive_a_new_visit(data) {
+            tc.screen.sourceMode = data.mode;
+            tc.screen.zipText = "52401";
+            tc.screen.sidText = "6673";
+            tc.screen.reset();
+            compare(tc.screen.zipText, "52401");
+            compare(tc.screen.sidText, "6673");
+            compare(tc.screen.sourceMode, data.mode, "the way in the query belongs to stays");
+            // Browse picks are not typed, and they restart with the visit.
+            tc.screen.sourceMode = 1;
+            tc.screen.reset();
+            compare(tc.screen.sourceMode, 0);
+            compare(tc.screen.zipText, "52401");
+            tc.screen.zipText = "";
+            tc.screen.sidText = "";
+        }
+
         function test_browse_empty_state_data() {
             return [
                 {tag: "country", sheet: "radioReferenceCountrySheet", key: "countries", idKey: "coid"},

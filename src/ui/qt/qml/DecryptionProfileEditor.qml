@@ -73,6 +73,8 @@ ModalSheet {
             keyId.text = kid.toString(16).toUpperCase();
             keyName.text = qsTr("Key %1").arg(keyId.text);
             keyKind.currentIndex = kinds.indexOf(kind);
+            // The dialog opened with these values: they are not an edit.
+            keyDialog.openedForm = keyDialog.fingerprint();
         }
     }
     function openTalkgroup(uid, protocol, talkgroup) {
@@ -86,6 +88,7 @@ ModalSheet {
         });
         mappingDialog.openFor(index);
         mapTg.text = String(talkgroup);
+        mappingDialog.openedForm = mappingDialog.fingerprint();
     }
     function save() {
         var value = Object.assign({}, draft, {
@@ -105,8 +108,13 @@ ModalSheet {
         visible = false;
         saved(result.uid);
     }
+    // The fallback algorithm commits to the draft on editingFinished, which a
+    // tap beside the panel beats: read what the field holds now.
+    function fallbackPending() {
+        return fallbackField.visible && fallbackField.text.toUpperCase() !== Number(draft.force).toString(16).toUpperCase();
+    }
     function requestClose() {
-        if (dirty || directMaterial.text.length || vendorMaterial.text.length)
+        if (dirty || directMaterial.text.length || vendorMaterial.text.length || fallbackPending())
             discard.ask(function () {
                 sheet.visible = false;
             });
@@ -342,6 +350,8 @@ ModalSheet {
         onActivated: sheet.setField("force", sheet.forceValues[currentIndex])
     }
     PlexTextField {
+        id: fallbackField
+        objectName: "profileFallbackAlgorithm"
         width: parent.width
         visible: sheet.draft.force >= 32
         placeholderText: qsTr("Fallback algorithm ID (hex)")
@@ -379,6 +389,25 @@ ModalSheet {
         id: keyDialog
         parent: sheet
         accessibleName: qsTr("Key details")
+        // The fields as the dialog opened: a dismissal asks only once they differ.
+        property string openedForm: ""
+        function fingerprint() {
+            return JSON.stringify([keyName.text, keyKind.currentIndex, keyLookup.currentIndex, keyId.text, keyMaterial.text]);
+        }
+        function requestClose() {
+            if (fingerprint() !== openedForm)
+                keyDiscard.ask(function () {
+                    keyMaterial.text = "";
+                    keyDialog.visible = false;
+                });
+            else
+                visible = false;
+        }
+        dismissHandler: requestClose
+        DiscardDialog {
+            id: keyDiscard
+            parent: keyDialog
+        }
         Connections {
             target: keyDialog
             function onVisibleChanged() {
@@ -400,10 +429,12 @@ ModalSheet {
             keyLookup.currentIndex = sheet.originalKey.lookup === "destination" ? 1 : 0;
             keyKind.currentIndex = sheet.kinds.indexOf(sheet.originalKey.kind);
             keyMaterial.text = "";
+            openedForm = fingerprint();
             visible = true;
         }
         PlexTextField {
             id: keyName
+            objectName: "profileKeyName"
             width: parent.width
             placeholderText: qsTr("Key label")
         }
@@ -422,11 +453,13 @@ ModalSheet {
         }
         PlexTextField {
             id: keyId
+            objectName: "profileKeyId"
             width: parent.width
             placeholderText: keyLookup.currentIndex ? qsTr("Destination ID (decimal)") : qsTr("Key ID (hex)")
         }
         PlexTextField {
             id: keyMaterial
+            objectName: "profileKeyMaterial"
             width: parent.width
             placeholderText: sheet.editingKey >= 0 ? qsTr("Replacement material; blank keeps current") : qsTr("Key material")
             echoMode: TextInput.Password
@@ -469,18 +502,33 @@ ModalSheet {
             }
         }
         OutlineButton {
+            objectName: "profileKeyCancel"
             width: parent.width
             text: qsTr("Cancel")
-            onClicked: {
-                keyMaterial.text = "";
-                keyDialog.visible = false;
-            }
+            onClicked: keyDialog.requestClose()
         }
     }
     ModalSheet {
         id: mappingDialog
         parent: sheet
         accessibleName: qsTr("Talkgroup key selection")
+        property string openedForm: ""
+        function fingerprint() {
+            return JSON.stringify([mapTg.text, mapKid.text]);
+        }
+        function requestClose() {
+            if (fingerprint() !== openedForm)
+                mappingDiscard.ask(function () {
+                    mappingDialog.visible = false;
+                });
+            else
+                visible = false;
+        }
+        dismissHandler: requestClose
+        DiscardDialog {
+            id: mappingDiscard
+            parent: mappingDialog
+        }
         function openFor(index) {
             sheet.editingMap = index;
             sheet.originalMap = index >= 0 ? sheet.mapRows[index] : {
@@ -489,15 +537,18 @@ ModalSheet {
             };
             mapTg.text = sheet.originalMap.talkgroup ? String(sheet.originalMap.talkgroup) : "";
             mapKid.text = Number(sheet.originalMap.keyId).toString(16).toUpperCase();
+            openedForm = fingerprint();
             visible = true;
         }
         PlexTextField {
             id: mapTg
+            objectName: "profileMapTalkgroup"
             width: parent.width
             placeholderText: qsTr("Talkgroup ID (decimal)")
         }
         PlexTextField {
             id: mapKid
+            objectName: "profileMapKeyId"
             width: parent.width
             placeholderText: qsTr("Key ID (hex, 00–FF)")
         }
@@ -538,9 +589,10 @@ ModalSheet {
             }
         }
         OutlineButton {
+            objectName: "profileMapCancel"
             width: parent.width
             text: qsTr("Cancel")
-            onClicked: mappingDialog.visible = false
+            onClicked: mappingDialog.requestClose()
         }
     }
 }

@@ -39,4 +39,16 @@ ModalSheet {
         }
     }
     onDismissed: discardAction = null
+    // Whatever closes the surface under the question takes the question with
+    // it. Hidden only through its parent, the dialog would keep its own visible
+    // flag and stand over the surface again the next time that opens.
+    Connections {
+        target: sheet.parent
+        function onVisibleChanged() {
+            if (sheet.parent.visible)
+                return;
+            sheet.discardAction = null;
+            sheet.visible = false;
+        }
+    }
 }

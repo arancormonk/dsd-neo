@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import QtQuick.Window
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
@@ -78,6 +79,155 @@ Item {
             closed.clear();
             started.clear();
             refused.clear();
+        }
+        // The panel is narrower than a phone: the strip beside it is scrim.
+        function tapBeside(sheet) {
+            var x = 4, y = sheet.height / 2;
+            verify(!sheet.hitsPanel(x, y), "the side margin lies outside the panel");
+            mouseClick(sheet, x, y);
+        }
+        function shownDiscard(item) {
+            if (!item || !item.visible)
+                return null;
+            if (item.accessibleName === "Discard changes?")
+                return item;
+            for (var child of item.children) {
+                var found = shownDiscard(child);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        function dismissEditor(editor, method) {
+            if (method === "scrim")
+                tapBeside(editor);
+            else if (method === "back")
+                verify(Ui.Navigation.back(editor.Window.window));
+            else if (method === "escape")
+                keyClick(Qt.Key_Escape);
+            else
+                findChild(editor, "searchRangeCancel").activate();
+        }
+        // A range edited, then dismissed by the side margin, Back, Escape or
+        // Cancel, asks before the edit goes; an untouched range just closes.
+        function test_range_editor_asks_before_dropping_edits_data() {
+            return [{tag: "scrim", method: "scrim"}, {tag: "back", method: "back"}, {tag: "escape", method: "escape"}, {tag: "cancel", method: "cancel"}];
+        }
+        function test_range_editor_asks_before_dropping_edits(data) {
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            dismissEditor(editor, data.method);
+            tryCompare(editor, "visible", false);
+            verify(!shownDiscard(loader.item), "an untouched range closes without asking");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var numerator = findChild(editor, "searchStepNumerator");
+            numerator.text = "9999";
+            dismissEditor(editor, data.method);
+            verify(editor.visible, "the typed step survives the dismissal");
+            var discard = shownDiscard(editor);
+            verify(discard !== null, "the editor asks before discarding");
+            findChild(discard, "discardDialogKeep").activate();
+            verify(!discard.visible);
+            verify(editor.visible);
+            compare(numerator.text, "9999");
+            tryVerify(function () { return Ui.Navigation.contains(editor, editor.Window.window.activeFocusItem); }, 1000, "focus returns into the editor");
+            dismissEditor(editor, data.method);
+            discard = shownDiscard(editor);
+            verify(discard !== null);
+            findChild(discard, "discardDialogDiscard").activate();
+            tryCompare(editor, "visible", false);
+            compare(model.ranges[0].stepNum, 12500, "a discarded edit is never saved");
+        }
+        // Every field the editor fills counts, including a selector's choice.
+        function test_range_editor_counts_every_field() {
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            findChild(editor, "searchRangeName").text = "Renamed";
+            tapBeside(editor);
+            verify(shownDiscard(editor) !== null);
+            findChild(shownDiscard(editor), "discardDialogDiscard").activate();
+            tryCompare(editor, "visible", false);
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            findChild(editor, "searchRangeSquelch").currentIndex = 0;
+            tapBeside(editor);
+            verify(shownDiscard(editor) !== null);
+            findChild(shownDiscard(editor), "discardDialogDiscard").activate();
+            tryCompare(editor, "visible", false);
+        }
+        // An open selector closes on the first Back; only the next one asks.
+        function test_range_editor_back_closes_a_selector_first() {
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            findChild(editor, "searchStepNumerator").text = "9999";
+            var preset = findChild(editor, "searchStepPreset");
+            preset.popup.open();
+            tryCompare(preset.popup, "opened", true);
+            verify(Ui.Navigation.back(editor.Window.window));
+            tryCompare(preset.popup, "visible", false);
+            verify(editor.visible);
+            verify(!shownDiscard(editor), "the first Back only closes the selector");
+            verify(Ui.Navigation.back(editor.Window.window));
+            verify(shownDiscard(editor) !== null);
+            findChild(shownDiscard(editor), "discardDialogDiscard").activate();
+            tryCompare(editor, "visible", false);
+        }
+        // Save still closes at once, and Cancel sits beside it.
+        function test_range_editor_saves_and_offers_cancel() {
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var cancel = findChild(editor, "searchRangeCancel");
+            var save = findChild(editor, "searchRangeSave");
+            verify(cancel !== null && cancel.visible);
+            verify(cancel.height >= Ui.Theme.minimumTouchSize);
+            compare(cancel.text, "Cancel");
+            verify(cancel.mapToItem(editor, 0, 0).y > save.mapToItem(editor, 0, 0).y, "Cancel follows Save range");
+            findChild(editor, "searchStepNumerator").text = "6250";
+            save.activate();
+            tryCompare(editor, "visible", false);
+            verify(!shownDiscard(loader.item));
+            compare(Number(model.ranges[0].stepNum), 6250);
+            model.ranges = [Object.assign({}, model.ranges[0], {stepNum: 12500})];
+        }
+        // Idle, the screen's receiver is an edit too: changed, Back asks; the
+        // receiver it opened with (seeded by Home) is not a change.
+        function test_idle_source_edit_asks_before_closing_data() {
+            return [{tag: "chip", chip: true}, {tag: "port", chip: false}];
+        }
+        function test_idle_source_edit_asks_before_closing(data) {
+            var screen = loader.item;
+            screen.sessionActive = false;
+            screen.seed("rtltcp", "10.0.0.5", 1235);
+            compare(findChild(screen, "searchPort").text, "1235");
+            screen.requestClose();
+            compare(closed.count, 1, "the seeded receiver is not an edit");
+            screen.seed("rtltcp", "10.0.0.5", 1235);
+            if (data.chip)
+                screen.sourceType = "airspy";
+            else
+                findChild(screen, "searchPort").text = "5555";
+            screen.requestClose();
+            compare(closed.count, 1, "an edited receiver asks first");
+            var discard = shownDiscard(screen);
+            verify(discard !== null);
+            findChild(discard, "discardDialogKeep").activate();
+            compare(closed.count, 1);
+            screen.requestClose();
+            findChild(shownDiscard(screen), "discardDialogDiscard").activate();
+            compare(closed.count, 2);
+            // The next visit starts from what Home seeds, not from the discarded port.
+            screen.seed("rtltcp", "10.0.0.5", 1235);
+            compare(findChild(screen, "searchPort").text, "1235");
+            compare(screen.sourceType, "rtltcp");
         }
         function test_back_is_delegated_to_session_owner() {
             loader.item.requestClose();

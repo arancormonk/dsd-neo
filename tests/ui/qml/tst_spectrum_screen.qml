@@ -2,7 +2,9 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import QtQuick.Window
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // Tap-to-tune is the one thing on this screen that moves hardware, and the two
 // ways it can be wrong are both invisible to a C++ model test: a tap could map
@@ -562,6 +564,72 @@ Item {
             verify(!sheet.visible, "the sheet stayed open after tuning")
             compare(testContext.manualTuneCalls(), 1)
             compare(testContext.lastManualTuneHz(), 154000000)
+        }
+
+        function shownDiscard(item) {
+            if (!item || !item.visible)
+                return null
+            if (item.accessibleName === "Discard changes?")
+                return item
+            for (var child of item.children) {
+                var found = shownDiscard(child)
+                if (found)
+                    return found
+            }
+            return null
+        }
+
+        // A frequency being typed is not lost to a tap beside the panel or Back:
+        // Go to asks first. The frequency it opened on is not an edit, and a
+        // question left open goes with the sheet when a replay closes it.
+        function test_14b_go_to_asks_before_dropping_a_typed_frequency_data() {
+            return [{tag: "scrim", method: "scrim"}, {tag: "back", method: "back"}]
+        }
+        function test_14b_go_to_asks_before_dropping_a_typed_frequency(data) {
+            var screen = screenLoader.item
+            var sheet = findChild(screen, "spectrumGoToSheet")
+            var dismiss = function () {
+                if (data.method === "back") {
+                    verify(Ui.Navigation.back(sheet.Window.window))
+                } else {
+                    verify(!sheet.hitsPanel(4, sheet.height / 2), "the side margin lies outside the panel")
+                    mouseClick(sheet, 4, sheet.height / 2)
+                }
+            }
+            try {
+                sheet.open(spectrum.centerFreqHz)
+                waitForRendering(sheet)
+                dismiss()
+                tryVerify(function () { return !sheet.visible }, 2000, "an untouched Go to stayed open")
+                verify(!shownDiscard(screen))
+                sheet.open(spectrum.centerFreqHz)
+                waitForRendering(sheet)
+                findChild(screen, "spectrumGoToField").text = "154.0000"
+                dismiss()
+                verify(sheet.visible, "the typed frequency survives the dismissal")
+                var discard = shownDiscard(sheet)
+                verify(discard !== null)
+                findChild(discard, "discardDialogKeep").activate()
+                compare(findChild(screen, "spectrumGoToField").text, "154.0000")
+                dismiss()
+                findChild(shownDiscard(sheet), "discardDialogDiscard").activate()
+                verify(!sheet.visible)
+                compare(testContext.manualTuneCalls(), 0, "a discarded frequency never tunes")
+                // Asked, then closed by a replay starting: the question goes too.
+                sheet.open(spectrum.centerFreqHz)
+                findChild(screen, "spectrumGoToField").text = "154.0000"
+                dismiss()
+                verify(shownDiscard(sheet) !== null)
+                testContext.setMetric("replayInput", true)
+                tryVerify(function () { return !sheet.visible }, 2000)
+                testContext.setMetric("replayInput", false)
+                sheet.open(spectrum.centerFreqHz)
+                verify(!shownDiscard(sheet), "the old question does not come back with the sheet")
+                compare(Ui.Navigation.topModal, sheet)
+            } finally {
+                sheet.visible = false
+                testContext.setMetric("replayInput", false)
+            }
         }
 
         // The engine reports every step of a sweep with a three-second message; at

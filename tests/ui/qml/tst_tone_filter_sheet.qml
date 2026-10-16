@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import QtQuick.Window
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
@@ -152,13 +153,77 @@ Item {
         function test_close_sends_nothing() {
             showEditable();
             var sheet = openEditor();
+            // Untouched, Close just closes.
+            mouseClick(item("toneFilterClose"));
+            tryCompare(sheet, "visible", false);
+            verify(!shownDiscard(monitor));
+            sheet = openEditor();
             item("toneFilterList").text = "82.5";
             mouseClick(item("toneFilterClose"));
+            // Changed, Close asks first; discarding sends nothing.
+            verify(sheet.visible, "Close with a change asks before dropping it");
+            var discard = shownDiscard(sheet);
+            verify(discard !== null);
+            findChild(discard, "discardDialogDiscard").activate();
             tryCompare(sheet, "visible", false);
             compare(testContext.toneFilterCalls(), 0);
             // Reopened, it reads the configured policy again, not the abandoned edit.
             openEditor();
             compare(item("toneFilterList").text, "");
+        }
+        function tapBeside(sheet) {
+            var x = 4, y = sheet.height / 2;
+            verify(!sheet.hitsPanel(x, y), "the side margin lies outside the panel");
+            mouseClick(sheet, x, y);
+        }
+        function shownDiscard(item) {
+            if (!item || !item.visible)
+                return null;
+            if (item.accessibleName === "Discard changes?")
+                return item;
+            for (var child of item.children) {
+                var found = shownDiscard(child);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        // A list being typed survives a tap beside the panel and Back: the sheet
+        // asks, Keep editing keeps the text, Discard sends nothing.
+        function test_dismissal_asks_before_dropping_the_list_data() {
+            return [{tag: "scrim", method: "scrim"}, {tag: "back", method: "back"}, {tag: "mode only", method: "scrim", modeOnly: true}];
+        }
+        function test_dismissal_asks_before_dropping_the_list(data) {
+            showEditable();
+            testContext.setMetric("toneFilterConfiguredMode", 1);
+            testContext.setMetric("toneFilterConfiguredList", "100.0");
+            var sheet = openEditor();
+            waitForRendering(sheet);
+            // The configured policy it opened on is not an edit.
+            tapBeside(sheet);
+            tryCompare(sheet, "visible", false);
+            verify(!shownDiscard(monitor));
+            sheet = openEditor();
+            waitForRendering(sheet);
+            if (data.modeOnly)
+                item("toneFilterMode").selected(2);
+            else
+                item("toneFilterList").text = "100.0/D023";
+            if (data.method === "back")
+                verify(Ui.Navigation.back(sheet.Window.window));
+            else
+                tapBeside(sheet);
+            verify(sheet.visible);
+            var discard = shownDiscard(sheet);
+            verify(discard !== null);
+            findChild(discard, "discardDialogKeep").activate();
+            verify(sheet.visible);
+            if (!data.modeOnly)
+                compare(item("toneFilterList").text, "100.0/D023");
+            tapBeside(sheet);
+            findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
+            tryCompare(sheet, "visible", false);
+            compare(testContext.toneFilterCalls(), 0);
         }
         function test_row_note_under_a_scan_row() {
             showEditable();

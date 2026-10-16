@@ -211,6 +211,10 @@ Item {
             compare(screen.sourceType, data.want);
             compare(screen.host, data.host);
             compare(screen.port, data.port);
+            // The receiver Home seeded, an attached one included, is not an edit:
+            // Back closes without asking.
+            screen.requestClose();
+            verify(!app.signalSearchOpen, "the seeded receiver is not an edit");
         }
 
         // Start search remembers the radio it starts on in the search's keys, and

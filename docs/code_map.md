@@ -5685,6 +5685,23 @@ Qt Quick frontend (`src/ui/qt`):
   calls for the Monitor hero, its quality row and the Android notification. Later calls on the other slot do not
   displace it. Exact ties prefer the lower slot; when no call is active, the lowest ended slot wins. An earlier
   call gaining identity late takes the headline using its original start.
+- Typed input and sheet dismissal: `qml/ModalSheet.qml` hides on a tap outside its panel (on a phone the 18 px margins
+  beside it), Back and Escape through `requestDismiss()`; menus, confirmations and read-only sheets keep that. A sheet
+  that holds typed input sets `dismissHandler` to a `requestClose()` that compares the live field text (never state
+  committed on `editingFinished`, which the scrim beats) with a baseline captured when its editing scope opened or was
+  replaced, and asks through `qml/DiscardDialog.qml` (parented to the sheet) when they differ: the Signal search range
+  editor (`openedForm`, with its own Cancel), the idle Signal search screen (`openedSource`, set by `seed()` from
+  Main's `seedSignalSearch()` and when a session stops), `BackupFlow.qml`'s passphrase and unlock sheets (only while
+  editable and typed; their Cancel and the busy steps cancel at once), `DecryptionProfileEditor.qml` and its key and
+  mapping dialogs (`openedForm`, re-captured after `openMatching()`/`openTalkgroup()` prefill, plus the pending fallback
+  algorithm), `KeySheet.qml` (unapplied direct-key draft or another profile/scope than at open), `ToneFilterSheet.qml`
+  (`openedPolicy`, re-captured by `chooseScope()`), Spectrum's Go to, `ScanListScreen.qml` (`fingerprint()` includes
+  the unadded frequency fields), plus the wizard, Explore setup and talkgroup sheets. A `DiscardDialog` closes with the
+  surface under it, so it never returns when that reopens. `RadioReferenceScreen.reset()` keeps the typed zip code and
+  system ID (and their tab) across visits instead; `doImport()` clears them. Tests: `UI_QT_QML_CALL_LISTS`
+  (`tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
+  `tst_tone_filter_sheet.qml`, `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`,
+  `tst_radioreference_screen.qml`, `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies

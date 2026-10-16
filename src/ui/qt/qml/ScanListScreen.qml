@@ -115,7 +115,9 @@ Rectangle {
             draft: draft,
             entries: entries,
             overrides: [gainMode, ppmSet, bandwidthSet, gainText, ppmText, bandwidthText, portText, timingText],
-            entryInputText: entryInputText
+            entryInputText: entryInputText,
+            // The add-a-frequency fields hold typing that is not an entry yet.
+            unadded: [freqName.text, frequency.text]
         });
     }
     function requestClose() {

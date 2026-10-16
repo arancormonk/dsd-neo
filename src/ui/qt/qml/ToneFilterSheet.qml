@@ -52,6 +52,28 @@ ModalSheet {
             mode = metrics.toneFilterConfiguredMode;
             listField.text = metrics.toneFilterConfiguredList;
         }
+        openedPolicy = policyValue();
+    }
+    // The policy of the scope being edited, as it was when that scope was chosen.
+    property string openedPolicy: ""
+    function policyValue() {
+        return JSON.stringify([mode, listField.text]);
+    }
+    function requestClose() {
+        if (visible && policyValue() !== openedPolicy)
+            discard.ask(function () {
+                sheet.visible = false;
+                Qt.inputMethod.hide();
+            });
+        else {
+            visible = false;
+            Qt.inputMethod.hide();
+        }
+    }
+    dismissHandler: requestClose
+    DiscardDialog {
+        id: discard
+        parent: sheet
     }
     function rowEdit(action) {
         if (sheet.bridge.editScanRow(rowContext, sheet.bridge.scanRowFieldTone, action,
@@ -187,9 +209,6 @@ ModalSheet {
         width: parent.width
         height: Math.max(48, implicitHeight)
         text: qsTr("Close")
-        onClicked: {
-            sheet.visible = false;
-            Qt.inputMethod.hide();
-        }
+        onClicked: sheet.requestClose()
     }
 }

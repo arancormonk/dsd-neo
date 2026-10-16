@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import QtQuick.Window
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 Item {
     width: 420
@@ -139,6 +141,77 @@ Item {
             verify(sheet.visible);
             uiController.finishDecryption(commands.lastDecryptionRequest(), 1);
             verify(!sheet.visible);
+        }
+        function tapBeside(item) {
+            var x = 4, y = item.height / 2;
+            verify(!item.hitsPanel(x, y), "the side margin lies outside the panel");
+            mouseClick(item, x, y);
+        }
+        function shownDiscard(item) {
+            if (!item || !item.visible)
+                return null;
+            if (item.accessibleName === "Discard changes?")
+                return item;
+            for (var child of item.children) {
+                var found = shownDiscard(child);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        // Beside test_cancel_and_force_only: Close, a tap beside the panel or Back
+        // with an unapplied change asks first; discarding applies nothing and
+        // resets the draft.
+        function test_close_with_a_change_asks_data() {
+            return [
+                {tag: "key by Close", change: "key", method: "close"},
+                {tag: "key by scrim", change: "key", method: "scrim"},
+                {tag: "key by Back", change: "key", method: "back"},
+                {tag: "identifier policy by scrim", change: "force", method: "scrim"},
+                {tag: "profile by scrim", change: "profile", method: "scrim"},
+                {tag: "scope by Close", change: "scope", method: "close"}
+            ];
+        }
+        function test_close_with_a_change_asks(data) {
+            var editor = findChild(sheet, "sessionEncryptionEditor");
+            waitForRendering(sheet);
+            var dismiss = function () {
+                if (data.method === "close")
+                    findChild(sheet, "keySheetClose").activate();
+                else if (data.method === "back")
+                    verify(Ui.Navigation.back(sheet.Window.window));
+                else
+                    tapBeside(sheet);
+            };
+            dismiss();
+            verify(!sheet.visible, "an untouched sheet closes without asking");
+            verify(!shownDiscard(loader.item));
+            sheet.open();
+            waitForRendering(sheet);
+            if (data.change === "key") {
+                editor.keyType = "basic";
+                editor.keyValue = String(17 * 3);
+            } else if (data.change === "force") {
+                editor.forceChanged = true;
+            } else if (data.change === "profile") {
+                sheet.selectedProfileUid = "another-profile";
+            } else {
+                sheet.profileScope = 1;
+            }
+            dismiss();
+            verify(sheet.visible, "an unapplied change survives the dismissal");
+            var discard = shownDiscard(sheet);
+            verify(discard !== null);
+            findChild(discard, "discardDialogKeep").activate();
+            verify(sheet.visible);
+            if (data.change === "key")
+                compare(editor.keyValue, String(17 * 3));
+            dismiss();
+            findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
+            verify(!sheet.visible);
+            verify(editor.keyValue.length === 0);
+            compare(commands.keyApplyCalls(), 0);
+            compare(commands.lastForceMode(), -1);
         }
         function test_unchanged_apply_preserves_force_and_keyloader() {
             sheet.apply();

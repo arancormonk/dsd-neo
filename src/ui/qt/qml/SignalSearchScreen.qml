@@ -48,19 +48,53 @@ Item {
         sourceType = source.sourceType;
         if (source.sourceType === "rtltcp") {
             host = source.host || "";
-            port = source.port || 1234;
+            setPort(source.port || 1234);
         }
+    }
+    // The port field keeps what was typed until told otherwise, so every
+    // assignment from outside sets the field as well as the property.
+    function setPort(value) {
+        port = value;
+        portField.text = String(value);
+    }
+    /** Fill the receiver as Home opens the screen; that is not an edit. */
+    function seed(type, hostName, portNumber) {
+        sourceType = type;
+        host = hostName;
+        setPort(portNumber);
+        openedSource = sourceValue();
+    }
+    // The receiver as the screen opened (or as a stopped session left it):
+    // closing while idle asks only once it differs.
+    property string openedSource: ""
+    function sourceValue() {
+        var tcp = sourceType === "rtltcp";
+        return JSON.stringify([sourceType, tcp ? host : "", tcp ? portField.text : ""]);
+    }
+    onSessionActiveChanged: {
+        if (!sessionActive)
+            openedSource = sourceValue();
     }
     onSessionSourceChanged: followSessionSource()
     onOwnedSessionChanged: followSessionSource()
     Component.onCompleted: followSessionSource()
     function requestClose() {
-        if (!sessionActive) {
-            localFailure = "";
-            closed();
-        } else {
+        if (sessionActive) {
             backRequested();
+            return;
         }
+        if (openedSource.length && sourceValue() !== openedSource) {
+            discard.ask(function () {
+                screen.localFailure = "";
+                screen.closed();
+            });
+            return;
+        }
+        localFailure = "";
+        closed();
+    }
+    DiscardDialog {
+        id: discard
     }
     function act(action) {
         if (searchModel)
@@ -141,7 +175,7 @@ Item {
                     }
                 }
                 PlexTextField { id: hostField; width: parent.width; visible: screen.sourceType === "rtltcp"; label: qsTr("Host"); text: screen.host; onTextChanged: screen.host = text }
-                PlexTextField { id: portField; width: parent.width; visible: screen.sourceType === "rtltcp"; label: qsTr("Port"); text: String(screen.port); inputMethodHints: Qt.ImhDigitsOnly }
+                PlexTextField { id: portField; objectName: "searchPort"; width: parent.width; visible: screen.sourceType === "rtltcp"; label: qsTr("Port"); text: String(screen.port); inputMethodHints: Qt.ImhDigitsOnly }
                 Text {
                     width: parent.width
                     text: qsTr("RF strength is not a distance measurement. Search uses one radio; each detection is identified, then monitored before searching continues.")

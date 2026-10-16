@@ -44,6 +44,12 @@ suppressed until the next pass.
 | Maximum visit | 30 seconds; adjustable through 600 seconds, or 0 to disable |
 | Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls |
 
+The range editor closes with **Save range** or **Cancel**. Once a field differs
+from what the editor opened with, Cancel, Back, Escape or a tap beside the panel
+asks before discarding the change. While no search runs, leaving the screen with
+a different radio or RTL-TCP host or port asks the same way; the radio the screen
+opened on, including the attached receiver it chose, is not a change.
+
 RF detection sensitivity and listening squelch are separate. Changing listening
 squelch does not change which channels pass the RF detector. An Auto or Noise
 listening squelch takes a margin of 3 to 30 dB, the range the receiver applies;

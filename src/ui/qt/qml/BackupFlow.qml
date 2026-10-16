@@ -228,6 +228,15 @@ Item {
         backup.prepareExport(first);
     }
 
+    // A tap beside the panel, Back or Escape: a passphrase already typed is
+    // asked about first. Cancel itself, and the encrypting step, cancel at once.
+    function dismissExport() {
+        if (step === "exportPassphrase" && (passphraseField.text.length || confirmField.text.length))
+            passphraseDiscard.ask(cancelExport);
+        else
+            cancelExport();
+    }
+
     function cancelExport() {
         if (step === "encrypting")
             backup.cancel();
@@ -342,6 +351,15 @@ Item {
         }
         step = "checking";
         backup.inspectRestore(reference, unlockField.text);
+    }
+
+    // As dismissExport(), for the unlock sheet. Once the file itself is the
+    // problem no passphrase opens it, so there is nothing to keep.
+    function dismissUnlock() {
+        if (step === "unlock" && !fileProblem && unlockField.text.length)
+            unlockDiscard.ask(cancelUnlock);
+        else
+            cancelUnlock();
     }
 
     function cancelUnlock() {
@@ -501,7 +519,11 @@ Item {
         objectName: "backupPassphraseSheet"
         accessibleName: qsTr("Encrypt backup")
         dismissHandler: function () {
-            flow.cancelExport();
+            flow.dismissExport();
+        }
+        DiscardDialog {
+            id: passphraseDiscard
+            parent: passphraseSheet
         }
 
         Text {
@@ -622,7 +644,11 @@ Item {
         objectName: "backupUnlockSheet"
         accessibleName: qsTr("Unlock backup")
         dismissHandler: function () {
-            flow.cancelUnlock();
+            flow.dismissUnlock();
+        }
+        DiscardDialog {
+            id: unlockDiscard
+            parent: unlockSheet
         }
 
         Text {

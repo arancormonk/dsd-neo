@@ -409,6 +409,28 @@ Item {
             compare(closedSpy.count, 1);
         }
 
+        // A frequency typed into "Add a frequency" but not added yet is still
+        // typing: Back asks before it goes, as for any other change.
+        function test_unadded_frequency_asks_before_closing_data() {
+            return [{tag: "name", field: "scanAddFrequencyName", value: "Fire"}, {tag: "frequency", field: "scanAddFrequency", value: "851.5"}];
+        }
+        function test_unadded_frequency_asks_before_closing(data) {
+            var back = control("scanListBack");
+            edit(data.field, data.value);
+            back.Accessible.pressAction();
+            compare(closedSpy.count, 0, "the unadded entry survives Back");
+            var dialog = findChild(screen, "scanListDiscardDialog");
+            verify(dialog.visible);
+            var keep = visualChild(dialog, function(item) { return item.text === "Keep editing" && item.activate; });
+            keep.Accessible.pressAction();
+            compare(control(data.field).text, data.value);
+            back.Accessible.pressAction();
+            var discard = visualChild(dialog, function(item) { return item.text === "Discard changes" && item.activate; });
+            discard.Accessible.pressAction();
+            compare(closedSpy.count, 1);
+            compare(screen.entries.length, 0);
+        }
+
         function test_advanced_hidden_by_default_and_keyboard_accessible() {
             verify(!control("scanAdvancedBody").visible);
             var toggle = control("scanAdvancedToggle");
