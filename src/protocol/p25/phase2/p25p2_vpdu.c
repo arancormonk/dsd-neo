@@ -43,6 +43,7 @@
 #include "../p25_cc_update.h"
 #include "../p25_extended_function.h"
 #include "../p25_response_reason.h"
+#include "../p25_search_site.h"
 #include "../p25_trunk_sm_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -2274,6 +2275,10 @@ p25p2_vpdu_iter_block_22(p25p2_vpdu_ctx* ctx) {
         state->p2_rfssid = rfssid;
         // Promote any matching IDENs to trusted on site identification
         p25_confirm_idens_for_current_site(state);
+        /* A MAC_SIGNAL that failed its CRC (-F) names no site a search may show. */
+        if (ctx->crc_ok) {
+            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid);
+        }
     }
 
     if (len_b < 0) {
@@ -2321,6 +2326,9 @@ p25p2_vpdu_iter_block_23(p25p2_vpdu_ctx* ctx) {
         state->p2_siteid = siteid;
         state->p2_rfssid = rfssid;
         p25_confirm_idens_for_current_site(state);
+        if (ctx->crc_ok) {
+            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid);
+        }
     }
 
     if (len_b < 0) {
@@ -3708,6 +3716,10 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
         } else {
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
         }
+        /* A MAC_SIGNAL that failed its CRC (-F) may still update decoder state, but names no system a search shows. */
+        if (ctx->crc_ok) {
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid);
+        }
     }
 
     if (len_b < 0) {
@@ -3759,6 +3771,10 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
             p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0, ctx->crc_ok);
         } else {
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
+        }
+        /* A MAC_SIGNAL that failed its CRC (-F) may still update decoder state, but names no system a search shows. */
+        if (ctx->crc_ok) {
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid);
         }
     }
 

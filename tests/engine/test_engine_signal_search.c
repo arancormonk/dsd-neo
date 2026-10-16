@@ -68,11 +68,18 @@ rtl_signal_search_set_owner(uint64_t session) {
     tuner_owner = session;
 }
 
+/* Publications that carried a changed hit, and the last such hit. */
+static int hits_published;
+static dsd_signal_search_hit published_hit;
+
 static void
 observer(const dsd_signal_search_status* s, const dsd_signal_search_hit* h, void* ctx) {
-    (void)h;
     (void)ctx;
     status = *s;
+    if (h) {
+        ++hits_published;
+        published_hit = *h;
+    }
 }
 
 static void
@@ -93,7 +100,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 55);
+    assert(owner >= 42 && owner <= 61);
     if (defer) {
         --defer;
         return 1;
@@ -824,6 +831,201 @@ test_avoid_by_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_config* con
     assert(strcmp(status.message, "after the stop") != 0);
 }
 
+static dsd_signal_search_site_note
+p25_network_note(uint32_t wacn, uint16_t sysid) {
+    dsd_signal_search_site_note note = {0};
+    note.kind = DSD_SEARCH_SITE_NOTE_P25_NETWORK;
+    note.wacn = wacn;
+    note.sysid = sysid;
+    return note;
+}
+
+static dsd_signal_search_site_note
+p25_site_note(uint16_t sysid, uint8_t rfss, uint8_t site) {
+    dsd_signal_search_site_note note = {0};
+    note.kind = DSD_SEARCH_SITE_NOTE_P25_SITE;
+    note.sysid = sysid;
+    note.rfss = rfss;
+    note.site = site;
+    return note;
+}
+
+static int
+site_text_is(const dsd_signal_search_site* record, const char* want) {
+    char text[96];
+    (void)dsd_signal_search_site_format(record, text, sizeof(text));
+    return strcmp(text, want) == 0;
+}
+
+/* The checked site record joins notes by the SYSID each one advertises and replaces itself on a new system. */
+static void
+test_site_record_binding(void) {
+    dsd_signal_search_site record;
+    dsd_signal_search_site_clear(&record);
+    assert(site_text_is(&record, ""));
+    dsd_signal_search_site_note note = p25_site_note(0x1A3, 1, 2);
+    // An RFSS status before any network status sets the SYSID; the network status that follows joins it.
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2"));
+    note = p25_network_note(0xBEE00, 0x1A3);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2"));
+    // The same broadcast again changes nothing.
+    assert(!dsd_signal_search_site_apply(&record, &note));
+    note = p25_site_note(0x1A3, 1, 2);
+    assert(!dsd_signal_search_site_apply(&record, &note));
+    // A site advertised under another SYSID is not this record's.
+    note = p25_site_note(0x2B4, 7, 9);
+    assert(!dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2"));
+    // The same system's next site replaces the site part only.
+    note = p25_site_note(0x1A3, 1, 3);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 3"));
+    // A network status naming another WACN or another SYSID replaces the record whole.
+    note = p25_network_note(0xBEE01, 0x1A3);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE01 \xC2\xB7 SYS 1A3"));
+    note = p25_site_note(0x1A3, 4, 5);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    note = p25_network_note(0xBEE01, 0x2B4);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE01 \xC2\xB7 SYS 2B4"));
+    // A site note whose SYSID differs from a site-only record replaces nothing either.
+    dsd_signal_search_site_clear(&record);
+    note = p25_site_note(0x1A3, 1, 2);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    note = p25_network_note(0xBEE00, 0x2B4);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 2B4"));
+    // Another protocol's note replaces the record; DMR and NXDN notes are whole identities.
+    dsd_signal_search_site_note dmr = {0};
+    dmr.kind = DSD_SEARCH_SITE_NOTE_DMR_TIII;
+    assert(!dsd_signal_search_site_apply(&record, &dmr)); // no text, no identity
+    DSD_SNPRINTF(dmr.text, sizeof(dmr.text), "%s", "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 3.1 \xC2\xB7 SYS 0A3F");
+    assert(dsd_signal_search_site_apply(&record, &dmr));
+    assert(strcmp(record.protocol, "DMR") == 0);
+    assert(site_text_is(&record, "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 3.1 \xC2\xB7 SYS 0A3F"));
+    dsd_signal_search_site_note nxdn = {0};
+    nxdn.kind = DSD_SEARCH_SITE_NOTE_NXDN;
+    nxdn.nxdn_site = 12;
+    nxdn.nxdn_sys = 3;
+    assert(dsd_signal_search_site_apply(&record, &nxdn));
+    assert(strcmp(record.protocol, "NXDN") == 0 && site_text_is(&record, "Site 12 \xC2\xB7 Sys 3"));
+    note = p25_network_note(0xBEE00, 0x1A3);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(strcmp(record.protocol, "P25") == 0 && site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 1A3"));
+    // Nothing else is a note.
+    dsd_signal_search_site_note unknown = {0};
+    assert(!dsd_signal_search_site_apply(&record, &unknown) && !dsd_signal_search_site_apply(&record, NULL));
+    char small[8];
+    assert(dsd_signal_search_site_format(&record, small, sizeof(small)) == sizeof(small) - 1);
+}
+
+/* A detection shows the site its visit heard in checked broadcasts, from the visit alone. */
+static void
+test_site_notes_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    dsd_signal_search_config one = *config;
+    one.session_id = 61;
+    one.avoid_count = 0;
+    one.range_count = 1;
+    one.ranges[0].start_hz = 100000000;
+    one.ranges[0].end_hz = 100025000;
+    one.ranges[0].digital = 1;
+    one.ranges[0].max_visit_ms = 0;
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    // A broadcast heard while the search measures its span belongs to no detection.
+    dsd_signal_search_site_note early = p25_network_note(0xABCDE, 0x123);
+    dsd_signal_search_note_site(s, &early);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && status.hit.site[0] == '\0');
+
+    // A site noted before the protocol is identified shows once it is.
+    int published = hits_published;
+    dsd_signal_search_site_note site = p25_site_note(0x1A3, 1, 2);
+    dsd_signal_search_note_site(s, &site);
+    assert(status.hit.site[0] == '\0' && hits_published == published);
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    assert(strcmp(status.hit.site, "SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+    // The network status after the RFSS status joins it, published with the hit.
+    published = hits_published;
+    dsd_signal_search_site_note network = p25_network_note(0xBEE00, 0x1A3);
+    dsd_signal_search_note_site(s, &network);
+    assert(hits_published == published + 1);
+    assert(strcmp(published_hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+    assert(strcmp(status.hit.site, published_hit.site) == 0);
+    // A repeated broadcast publishes nothing.
+    const uint64_t revision = status.revision;
+    dsd_signal_search_note_site(s, &network);
+    dsd_signal_search_note_site(s, &site);
+    assert(status.revision == revision && hits_published == published + 1);
+    // A note from a frame an input interruption cut is dropped.
+    s->input_interrupted = 1;
+    dsd_signal_search_site_note cut = p25_network_note(0xBEE00, 0x2B4);
+    dsd_signal_search_note_site(s, &cut);
+    s->input_interrupted = 0;
+    assert(strcmp(status.hit.site, published_hit.site) == 0 && status.revision == revision);
+    // A protocol change clears the site: going back to P25 shows none until a new broadcast names it.
+    dsd_signal_search_note_evidence(s, "DMR", 0, 0, NULL);
+    assert(status.hit.site[0] == '\0');
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    assert(status.hit.site[0] == '\0');
+    dsd_signal_search_note_site(s, &site);
+    dsd_signal_search_note_site(s, &network);
+    assert(strcmp(status.hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+    // NXDN48 and NXDN96 are one protocol's site.
+    dsd_signal_search_site_note nxdn = {0};
+    nxdn.kind = DSD_SEARCH_SITE_NOTE_NXDN;
+    nxdn.nxdn_site = 12;
+    nxdn.nxdn_sys = 3;
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    dsd_signal_search_note_evidence(s, "NXDN", 0, 0, NULL);
+    dsd_signal_search_note_site(s, &nxdn);
+    assert(strcmp(status.hit.protocol, "NXDN48") == 0 && strcmp(status.hit.site, "Site 12 \xC2\xB7 Sys 3") == 0);
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    dsd_signal_search_note_evidence(s, "NXDN", 0, 0, NULL);
+    assert(strcmp(status.hit.protocol, "NXDN96") == 0 && strcmp(status.hit.site, "Site 12 \xC2\xB7 Sys 3") == 0);
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    dsd_signal_search_note_site(s, &site);
+    dsd_signal_search_note_site(s, &network);
+    assert(strcmp(status.hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+
+    // The last broadcast before the channel falls silent is the detection's: it is in the live status and in the
+    // ended hit the visit publishes.
+    tick(o, s);
+    advance(500);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && published_hit.ended);
+    assert(strcmp(status.hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+    assert(strcmp(published_hit.site, status.hit.site) == 0);
+    // Between visits nothing is noted, and the next landing starts with no site.
+    dsd_signal_search_note_site(s, &early);
+    for (int i = 0; i < 8 && !(status.phase == DSD_SEARCH_TUNING && !status.hit.ended); ++i) {
+        land(o, s);
+        ready = 1;
+        tick(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended && status.hit.site[0] == '\0');
+    land(o, s);
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    assert(status.hit.confirmed && status.hit.site[0] == '\0');
+    dsd_signal_search_note_site(s, &early);
+    assert(strcmp(status.hit.site, "WACN ABCDE \xC2\xB7 SYS 123") == 0);
+
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+    // No search: a note goes nowhere.
+    dsd_signal_search_note_site(s, &network);
+    assert(strcmp(status.hit.site, "WACN ABCDE \xC2\xB7 SYS 123") == 0);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -987,6 +1189,8 @@ main(void) {
     test_capture_freshness(o, s, &config);
     test_status_names_running_range(o, s, &config);
     test_avoid_by_frequency(o, s, &config);
+    test_site_record_binding();
+    test_site_notes_on_detection(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

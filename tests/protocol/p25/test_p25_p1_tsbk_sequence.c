@@ -94,6 +94,17 @@ append_tsbk_stream_block(const uint8_t dibits[98], int* skipdibit) {
     }
 }
 
+/* Signal search site notes, and the last one. */
+static int g_site_notes = 0;
+static dsd_signal_search_site_note g_site_note;
+
+static void
+capture_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
+    (void)state;
+    g_site_notes++;
+    g_site_note = *note;
+}
+
 static void
 reset_decode_counters(void) {
     g_mac_count = 0;
@@ -404,6 +415,7 @@ int
 main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
     dsd_signal_search_evidence_set(capture_evidence);
+    dsd_signal_search_site_set(capture_site);
     build_two_block_stream();
     reset_decode_counters();
 
@@ -462,6 +474,26 @@ main(void) {
     rc |= expect_eq_int("net-sts missing-iden marks p1 cc fdma", state.p25_cc_is_tdma, 0);
     rc |= expect_eq_int("net-sts missing-iden leaves p25 cc empty", (int)state.p25_cc_freq, 0);
     rc |= expect_eq_int("net-sts missing-iden leaves trunk cc empty", (int)state.trunk_cc_freq, 0);
+    /* The CRC-valid standard network status names the system to a Signal search, from its own fields. */
+    rc |= expect_eq_int("net-sts notes the search site once", g_site_notes, 1);
+    rc |= expect_eq_int("net-sts site note kind", g_site_note.kind, DSD_SEARCH_SITE_NOTE_P25_NETWORK);
+    rc |= expect_eq_int("net-sts site note wacn", (int)g_site_note.wacn, 0xABCDE);
+    rc |= expect_eq_int("net-sts site note sysid", (int)g_site_note.sysid, 0x123);
+
+    /* The same block with its CRC broken notes nothing. */
+    build_network_status_stream();
+    for (int i = 20; i < 80; i++) {
+        g_stream[i] = (uint8_t)(3 - g_stream[i]);
+    }
+    reset_decode_counters();
+    g_site_notes = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    processTSBK(&opts, &state);
+    rc |= expect_eq_int("corrupt net-sts fails its crc", state.p25_p1_fec_err > 0, 1);
+    rc |= expect_eq_int("corrupt net-sts notes no site", g_site_notes, 0);
+    rc |= expect_eq_int("corrupt net-sts names no system", (int)state.p2_wacn, 0);
+    g_site_notes = 0;
 
     build_network_status_stream();
     reset_decode_counters();
@@ -480,6 +512,8 @@ main(void) {
     rc |= expect_eq_int("net-sts rejected voice preserves tdma cc hint", state.p25_cc_is_tdma, 1);
     rc |= expect_eq_int("net-sts rejected voice skips wacn", (int)state.p2_wacn, 0);
     rc |= expect_eq_int("net-sts rejected voice skips sysid", (int)state.p2_sysid, 0);
+    /* The decoder's state gate is its own: the checked broadcast still names its system. */
+    rc |= expect_eq_int("net-sts rejected voice still notes its site", g_site_notes, 1);
 
     /* A Signal search that leaves the TSDU (its visit ended, or a command came), or a live read that gives up on a
        stalled input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. Neither the block it cut
@@ -505,6 +539,7 @@ main(void) {
         rc |= expect_eq_int("cut tsdu reports only the blocks before the cut", g_evidence, grants_before[c]);
     }
     g_interrupt_at = -1;
+    dsd_signal_search_site_set(NULL);
     dsd_decode_clock_use_system();
     return rc;
 }

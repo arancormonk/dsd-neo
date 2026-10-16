@@ -8,6 +8,7 @@
 #define DSD_NEO_RUNTIME_SIGNAL_SEARCH_H
 
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -69,6 +70,9 @@ typedef struct {
     char tone[64];
     uint32_t target, source;
     char target_text[64], source_text[64];
+    /** The visit's checked site identity (dsd_signal_search_site_format()), shown only while it belongs to the hit's
+     * protocol; e.g. "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2". Not persisted in history yet. */
+    char site[96];
     /** Applied source settings, copied at detection time for history and save-as-system. */
     char input_spec[1024];
     int ppm, bias_tee;
@@ -130,6 +134,37 @@ typedef struct {
     int action;
     uint32_t frequency_hz;
 } dsd_signal_search_control;
+
+/** dsd_signal_search_site.valid bits. */
+enum {
+    DSD_SEARCH_SITE_WACN = 1U << 0,
+    DSD_SEARCH_SITE_SYSID = 1U << 1,
+    DSD_SEARCH_SITE_RFSS_SITE = 1U << 2,
+    DSD_SEARCH_SITE_TEXT = 1U << 3,
+    DSD_SEARCH_SITE_NXDN = 1U << 4
+};
+
+/** The checked site identity of one visit, built only from site notes (dsd_signal_search_note_site()). It is separate
+ * from decoder state, which keeps its own caches and seeds. */
+typedef struct {
+    /** "P25", "DMR", "NXDN" or "" for none. */
+    char protocol[8];
+    unsigned valid;
+    uint32_t wacn;
+    uint16_t sysid;
+    uint8_t rfss, site;
+    char text[64];
+    uint32_t nxdn_sys;
+    uint16_t nxdn_site;
+} dsd_signal_search_site;
+
+void dsd_signal_search_site_clear(dsd_signal_search_site* record);
+/** Join @p note to @p record; 1 when the record changed. A P25 site note joins only a record with no SYSID or the same
+ * one, giving it that SYSID; a P25 network note naming another WACN or SYSID, a note of another protocol, and every
+ * DMR or NXDN note replace the record whole. */
+int dsd_signal_search_site_apply(dsd_signal_search_site* record, const dsd_signal_search_site_note* note);
+/** Format @p record for display ("" for an empty record); returns the length written. */
+size_t dsd_signal_search_site_format(const dsd_signal_search_site* record, char* out, size_t capacity);
 
 void dsd_signal_search_range_default(dsd_signal_search_range* range);
 int dsd_signal_search_validate(const dsd_signal_search_range* range, char* error, size_t capacity);

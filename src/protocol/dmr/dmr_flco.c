@@ -1819,6 +1819,8 @@ dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco
     dmr_slco_print_tiii_site_parms(state, data, syscode);
 
     dmr_sm_note_cc_activity(opts, state, 0);
+    /* Reached only from dmr_slco(), whose short LC passed Hamming(17,12,3) and its CRC-8. */
+    dmr_tiii_note_search_site(state, data->model_str, data->net, data->site, data->n, data->sub_mask, syscode);
 }
 
 static void
@@ -1835,6 +1837,7 @@ dmr_slco_handle_p_sys_parms(dsd_state* state, uint8_t slco_bits[], const dmr_slc
     }
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
     dmr_slco_print_tiii_site_parms(state, data, syscode);
+    dmr_tiii_note_search_site(state, data->model_str, data->net, data->site, data->n, data->sub_mask, syscode);
 }
 
 static int

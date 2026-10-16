@@ -134,6 +134,23 @@ list-decoded NID accepts several percent of random words and the voice link
 control's soft Reed-Solomon decode about a fifth, so neither tells such a carrier
 from noise. That carrier is monitored as NFM with the display above.
 
+A digital detection also shows the site it identified, from checked broadcasts heard
+during that visit only: a P25 network status (WACN and SYSID) or RFSS status (SYSID,
+RFSS and site) from a TSBK, MBT or Phase 2 MAC whose CRC passed, read as
+**WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2**; a DMR Tier III identity from a C_ALOHA or a
+C_SYS_PARMS/P_SYS_PARMS short LC that passed its checks, read as
+**TIII Small · Net 12 · Site 3 · SYS 1183**; or the NXDN location of a CRC-checked site,
+service or control channel message once the transmission is confirmed, read as
+**Site 12 · Sys 3**. A P25 RFSS status joins only the system its SYSID names, and a
+network status of another system replaces what was shown. Voice link control (whose
+Reed-Solomon check accepts random input), a Phase 2 broadcast let through with a failed
+CRC by `-F`, a secondary control channel or adjacent site broadcast, and any value the
+decoder keeps from earlier, from a hard-set system or from a cache never set it. Each
+detection starts with no site, a site is shown only once the detection's protocol is
+identified and matches it, and a change to another protocol clears it; the last broadcast
+before the channel falls silent is kept on the ended detection. History does not store
+the site yet.
+
 ## Controls, history and saved systems
 
 - **Hold** overrides quiet release and the maximum visit. A held probe still falls

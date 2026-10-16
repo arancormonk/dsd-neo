@@ -197,9 +197,20 @@ main(void) {
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "RAN 3") == 0 && published.hit.source_text[0] == '\0');
 
+    // The coordinator's checked site reaches the published status as it gave it, on a hit change and on a periodic
+    // refresh alike; the observer neither invents nor carries one.
+    DSD_SNPRINTF(status.hit.site, sizeof(status.hit.site), "%s", "Site 12 \xC2\xB7 Sys 3");
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.site, "Site 12 \xC2\xB7 Sys 3") == 0);
+    observer(&status, NULL, observer_user);
+    assert(strcmp(published.hit.site, "Site 12 \xC2\xB7 Sys 3") == 0);
+
+    // A final broadcast followed by silence: the ended hit keeps the site it last carried.
     status.hit.ended = 1;
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "RAN 3") == 0);
+    assert(strcmp(published.hit.site, "Site 12 \xC2\xB7 Sys 3") == 0);
+    status.hit.site[0] = '\0';
     status.hit.hit_id = 2;
     status.hit.ended = status.hit.confirmed = 0;
     status.hit.protocol[0] = '\0';

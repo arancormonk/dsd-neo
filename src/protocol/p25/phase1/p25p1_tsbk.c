@@ -32,6 +32,7 @@
 #include "../p25_cc_update.h"
 #include "../p25_mfid90_utils.h"
 #include "../p25_response_reason.h"
+#include "../p25_search_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1003,6 +1004,10 @@ tsbk_handle_network_status(const dsd_opts* opts, dsd_state* state, const uint8_t
         DSD_FPRINTF(stderr, "\n  P25 TSBK NET_STS: ignoring CC update while voice-tuned (freq=%ld)", cc_freq);
     } else {
         DSD_FPRINTF(stderr, "\n  P25 TSBK NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channel);
+    }
+    /* Only the standard broadcast names the system; a manufacturer's opcode 0x3B is not one. */
+    if (tsbk_byte[1] < 0x2) {
+        p25_search_note_network(state, (uint32_t)wacn, (uint16_t)sysid);
     }
 }
 

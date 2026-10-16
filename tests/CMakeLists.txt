@@ -2045,6 +2045,25 @@ target_link_libraries(
 )
 add_test(NAME NXDN_ELEMENT_BOUNDS COMMAND dsd-neo_test_nxdn_element_bounds)
 
+# Signal search site notes come only from checked NXDN location IDs of a confirmed transmission
+add_executable(
+    dsd-neo_test_nxdn_search_site_notes
+    protocol/nxdn/test_nxdn_search_site_notes.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_search_site_notes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_search_site_notes
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_test_support
+)
+add_test(
+    NAME NXDN_SEARCH_SITE_NOTES
+    COMMAND dsd-neo_test_nxdn_search_site_notes
+)
+
 add_executable(
     dsd-neo_test_nxdn_enc_class
     protocol/nxdn/test_nxdn_enc_class.c
@@ -8033,6 +8052,21 @@ target_link_libraries(
 )
 add_test(NAME P25_MBT_ADJ_RFSS COMMAND dsd-neo_test_p25_mbt_adj_rfss)
 
+# Signal search site notes come only from P25 broadcasts that passed their CRC
+add_executable(
+    dsd-neo_test_p25_search_site_notes
+    protocol/p25/test_p25_search_site_notes.c
+)
+target_include_directories(
+    dsd-neo_test_p25_search_site_notes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_search_site_notes
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_SEARCH_SITE_NOTES COMMAND dsd-neo_test_p25_search_site_notes)
+
 # P25 P1 MBT negative clamps (invalid CHAN-T)
 add_executable(
     dsd-neo_test_p25_p1_mbtx_clamp
@@ -10047,6 +10081,21 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_dmr_crc_props PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_CRC_PROPS COMMAND dsd-neo_test_dmr_crc_props)
+
+# Signal search site notes come only from DMR messages that passed their CRC
+add_executable(
+    dsd-neo_test_dmr_search_site_notes
+    protocol/dmr/test_dmr_search_site_notes.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_search_site_notes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_search_site_notes
+    PRIVATE dsd-neo_proto_dmr
+)
+add_test(NAME DMR_SEARCH_SITE_NOTES COMMAND dsd-neo_test_dmr_search_site_notes)
 
 add_executable(dsd-neo_test_dmr_bit_utils protocol/dmr/test_dmr_bit_utils.c)
 target_include_directories(

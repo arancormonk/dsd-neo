@@ -47,6 +47,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -1193,6 +1194,16 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
         DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", category);
         DSD_FPRINTF(stderr, "\n Location Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
                     site_code);
+        /* Every caller holds a message its channel's CRC passed (NXDN_Elements_Content_decode()); a short SACCH CRC
+           counts once the transmission is confirmed, as its RAN does. A reserved category names no site. */
+        if (category_bit != 3U && nxdn_confirm_is_confirmed(state)) {
+            dsd_signal_search_site_note note;
+            DSD_MEMSET(&note, 0, sizeof(note));
+            note.kind = DSD_SEARCH_SITE_NOTE_NXDN;
+            note.nxdn_sys = sys_code;
+            note.nxdn_site = site_code;
+            dsd_signal_search_note_site(state, &note);
+        }
     } else {
         DSD_FPRINTF(stderr, "\n Adjacent Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
                     site_code);

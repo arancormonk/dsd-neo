@@ -68,6 +68,8 @@ typedef struct {
     /* Paused or failed, the search has ended what the decoder was receiving (search_end_reception()). */
     int reception_ended;
     uint32_t ticket, target, before_generation;
+    /* The current visit's checked site identity, from site notes alone; cleared at each landing. */
+    dsd_signal_search_site site;
 #ifdef USE_RADIO
     dsd_signal_search_span span;
     dsd_signal_measure_report report;
@@ -454,6 +456,7 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         return -1;
     }
     dsd_signal_search_evidence_set(dsd_engine_signal_search_evidence);
+    dsd_signal_search_site_set(dsd_engine_signal_search_site);
     dsd_signal_search_active_set(dsd_engine_signal_search_active);
     rtl_signal_search_set_owner(c->status.session_id);
     rtl_signal_search_bypass(1);
@@ -462,6 +465,29 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     search_publish(c, 0);
     return 0;
 #endif
+}
+
+/* Whether the visit's site record belongs to @p protocol ("NXDN" for NXDN48 and NXDN96). */
+static int
+search_site_is(const search_coord* c, const char* protocol) {
+    const size_t n = strlen(c->site.protocol);
+    return n && strncmp(protocol, c->site.protocol, n) == 0;
+}
+
+/* The hit shows the visit's site record only while it belongs to the hit's protocol: a site noted before the protocol
+   is identified shows once it is. 1 when the shown site changed. */
+static int
+search_refresh_site(search_coord* c) {
+    dsd_signal_search_hit* hit = &c->status.hit;
+    char site[sizeof(hit->site)] = "";
+    if (search_site_is(c, hit->protocol)) {
+        (void)dsd_signal_search_site_format(&c->site, site, sizeof(site));
+    }
+    if (strcmp(site, hit->site) == 0) {
+        return 0;
+    }
+    DSD_SNPRINTF(hit->site, sizeof(hit->site), "%s", site);
+    return 1;
 }
 
 static void
@@ -476,19 +502,31 @@ search_identified_protocol(search_coord* c, const dsd_state* state, const char* 
     if (strcmp(hit->protocol, identified) != 0) {
         hit->target = hit->source = 0;
         hit->access[0] = hit->source_text[0] = hit->target_text[0] = '\0';
+        /* Another protocol's identity is not this one's site: it clears, and only a new note shows one again. A site
+           noted before any protocol was identified waits for it. */
+        if (hit->protocol[0] && !search_site_is(c, identified)) {
+            dsd_signal_search_site_clear(&c->site);
+        }
     }
     DSD_SNPRINTF(hit->protocol, sizeof(hit->protocol), "%s", identified);
+    (void)search_refresh_site(c);
+}
+
+/* Whether a protocol observation may join the visit: one is being received, and no input interruption stands (an
+   observation noted then comes from a frame it cut, whose rest is erasures getSymbol() stood in). */
+static int
+search_receiving(const search_coord* c, const dsd_state* state) {
+    return c && c->visit && !c->status.hit.ended && !state->input_interrupted
+           && (c->status.phase == DSD_SEARCH_IDENTIFYING || c->status.phase == DSD_SEARCH_LISTENING
+               || c->status.phase == DSD_SEARCH_HELD);
 }
 
 void
 dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
                                   const char* access) {
     search_coord* c = search_get(state);
-    /* Evidence noted while an input interruption stands comes from a frame it cut, whose rest is erasures getSymbol()
-       stood in: the decoders drop such a frame, and this refuses whatever one still reports. */
-    if (!c || !c->visit || c->status.hit.ended || state->input_interrupted
-        || (c->status.phase != DSD_SEARCH_IDENTIFYING && c->status.phase != DSD_SEARCH_LISTENING
-            && c->status.phase != DSD_SEARCH_HELD)) {
+    /* The decoders drop a frame an input interruption cut; this refuses whatever one still reports. */
+    if (!search_receiving(c, state)) {
         return;
     }
     c->activity = dsd_decode_now_mono_ms();
@@ -509,6 +547,19 @@ dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, 
         DSD_SNPRINTF(c->status.hit.access, sizeof(c->status.hit.access), "%s", access);
     }
     search_publish(c, 1);
+}
+
+void
+dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
+    search_coord* c = search_get(state);
+    /* A repeated broadcast changes nothing and publishes nothing; a new identity publishes the hit at once, so the
+       last broadcast before the channel falls silent still reaches it. */
+    if (!search_receiving(c, state) || !dsd_signal_search_site_apply(&c->site, note)) {
+        return;
+    }
+    if (search_refresh_site(c)) {
+        search_publish(c, 1);
+    }
 }
 
 #ifdef USE_RADIO
@@ -930,6 +981,8 @@ search_visit_candidate(search_coord* c, dsd_opts* opts, dsd_state* state, const 
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
     dsd_signal_search_hit* hit = &c->status.hit;
     DSD_MEMSET(hit, 0, sizeof(*hit));
+    /* Nothing noted before this landing, on the span or an earlier visit, is this detection's. */
+    dsd_signal_search_site_clear(&c->site);
     hit->session_id = c->status.session_id;
     hit->hit_id = ++c->next_hit;
     hit->frequency_hz = found->frequency_hz;

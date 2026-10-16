@@ -32,6 +32,9 @@ void dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state);
 /** Only call with protocol-confirmed observations from runtime evidence hooks. */
 void dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
                                        const char* access);
+/** Runtime site hook: joins a CRC/FEC-checked site note to the visit's site record and publishes the hit when its shown
+ * site changes. Notes outside a visit, or from a frame an input interruption cut, are dropped. */
+void dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_site_note* note);
 #ifdef __cplusplus
 }
 #endif

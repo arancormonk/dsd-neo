@@ -87,7 +87,17 @@ Generated (do not edit/commit):
     earlier refusal, and an ERROR phase keeps its message. `dsd_engine_signal_search_target()` validates an action
     against the live coordinator without acting and gives the frequency it acts on;
     `dsd_engine_signal_search_notice()` shows a refusal decided outside the coordinator in
-    the running session's status. Published status carries `owned` (a coordinator
+    the running session's status. The coordinator keeps the visit's checked site record
+    (`dsd_engine_signal_search_site()`, installed as the runtime site hook): it accepts notes
+    only while a visit is receiving and no input interruption stands, clears the record in
+    `search_visit_candidate()` at each landing (nothing from the span or an earlier visit
+    survives) and when the hit's identified protocol changes to another, and copies its formatted
+    text into `hit.site` while the record's protocol is the hit's ("NXDN" for NXDN48/NXDN96; a
+    site noted before identification waits for it), publishing the hit when the text changes,
+    so a final broadcast before silence reaches the live status and the ended hit. Decoder state
+    (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never cleared or written
+    for it. `hit.site` is not yet in the history journal (`ENGINE_SIGNAL_SEARCH`,
+    `APP_SIGNAL_SEARCH_PROVENANCE`). Published status carries `owned` (a coordinator
     holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
     frequency are restored on exit: a search Stop tunes back, running the carrier boundary
     and acquisition reset as each visit's tune does, and its retune carries the session's
@@ -1330,8 +1340,12 @@ suite runs under this compiler.
   - Frontend-neutral Signal search records, rational range validation, the aggregate
     configuration check engine and frontends share (`dsd_signal_search_validate_config()`)
     and conservative DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
-    carries validated protocol evidence and the decoder-thread active query, with no-op
-    defaults. P25 reports evidence from a control block whose CRC passes
+    carries validated protocol evidence, CRC/FEC-checked site notes
+    (`dsd_signal_search_note_site()`) and the decoder-thread active query, with no-op
+    defaults. The checked site record (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`,
+    `dsd_signal_search_site_format()`) is runtime's: a P25 site note joins only a record with
+    no SYSID or the same one, and a network note naming another WACN or SYSID, another protocol's
+    note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a control block whose CRC passes
     (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves, never
     from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on
     a large share of random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
@@ -4735,6 +4749,22 @@ Private per-protocol modules worth knowing about:
   leaves confirmation standing, so a half no verified half speaks for since it (`DPMR_HALF_UNVERIFIED`) plays nothing
   and leaves the call's classification alone, rather than playing a scrambled call's first undecodable halves as
   clear.
+- Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
+  writer passes the identity of one message that passed its check, after handling it, never decoder state.
+  P25 (`src/protocol/p25/p25_search_site.h`): a standard-MFID TSBK network status (`tsbk_handle_network_status()`,
+  dispatched only after the block's CRC-16), an MBT network or RFSS status (`p25_decode_pdu_trunking()`, reached only
+  after the header CRC-16 and CRC-32), and the vPDU network status (0x7B/0xFB) and RFSS status (0x7A/0xFA) blocks only
+  when `p25p2_vpdu_ctx::crc_ok` holds, which covers a bridged TSBK and a Phase 2 MAC but not a MAC_SIGNAL let
+  through with a failed CRC under `-F`. An RFSS status notes the SYSID it advertises, even one the decoder's
+  `p2_sysid` check ignores. Not notes: the voice LCW network/RFSS formats (Reed-Solomon only), the secondary control
+  channel fill-in (`p25_note_sccb_site()`), adjacent-status broadcasts, CLI/menu hard-set values and trunk-scan
+  snapshot restores (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). DMR (`dmr_tiii_note_search_site()` in
+  `src/protocol/dmr/dmr_tiii_site.h`): C_ALOHA inside `dmr_cspdu()`'s CRC gate, and the C_SYS_PARMS / P_SYS_PARMS
+  short LC that `dmr_cach()` assembles behind Hamming(17,12,3) and CRC-8; a C_BCAST vote/adjacent syscode names
+  another site (`DMR_SEARCH_SITE_NOTES`). NXDN: the current-site location ID in `nxdn_location_id_handler()` (SITE_INFO,
+  SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once `nxdn_confirm_is_confirmed()`, so a single short
+  SACCH CRC does not show a site; adjacent sites and the Type-D SCCH site ID (7-bit CRC) are not notes
+  (`NXDN_SEARCH_SITE_NOTES`).
 
 - `src/protocol/tetra/tetra_confirm.{c,h}` — the same module for TETRA, whose 22-bit normal-burst training sequence
   receiver noise matches under the frame sync's eight hypotheses. A burst proves itself with a block whose CRC passed:
@@ -5358,7 +5388,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   so Escape/Back reach Main). Back cancels the handoff (`requestBack()` clears it and
   returns), so a stop that hangs past the engine's restore timeouts cannot lock the
   screen; the site chooser's any-input cancel is ignored while it runs, and
-  `startSystem()`/ `restartSite()` refuse by state before cancelling, so a USB
+  `startSystem()`/`restartSite()` refuse by state before cancelling, so a USB
   attachment's start cannot drop it. `finishPendingRestart()` closes the screen just
   before starting the request, and a stop ending in Failed closes it and clears the flag.
   A saved request is checked (`savedStartRefusal()`) before the stop, the refusal shown in
@@ -5371,13 +5401,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   `pendingStartRemember` (through a USB wait), and only a remembered explore session
   writes `prefs.exploreFreqMhz` when it ends. `retrySource()` carries the attempted
   system: a failed search is retried by reopening the screen and running its
-  `startSearch()` (arm, then start), and edited by reopening it
-  (`tst_signal_search_handoff.qml`).
+  `startSearch()` (arm, then start), and edited by reopening it (`tst_signal_search_handoff.qml`).
   Native status is copied on a 250 ms timer; history and the avoid lists only when their
-  store revisions move. Back delegates to Main's session
-  policy; a search a coordinator owns (`status.owned`) is a navigation root so its controls
-  remain accessible after Activity recreation. Range edits apply on paused restart.
-  Home's `onSignalSearch` seeds the source fields (`Main.seedSignalSearch()`) only when it
+  store revisions move. While a search session is active, Escape and Back from any control go
+  Back, which delegates to Main's session policy; a search a coordinator owns (`status.owned`)
+  is a navigation root so its controls remain accessible after Activity recreation. Range
+  edits apply on paused restart. Home's `onSignalSearch` seeds the source fields (`Main.seedSignalSearch()`) only when it
   opens the screen: `AppPrefs` `search/sourceType`/`search/host`/`search/port` (written by
   **Start search** before the start, portable in the backup), else the `explore/*` answer,
   else `usb`. Every Explore and search entry (Home's direct Explore start, Explore setup's
