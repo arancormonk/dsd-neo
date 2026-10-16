@@ -1603,7 +1603,9 @@ mbeslot_left_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     }
 
     pack_ambe(frame_ctx->ambe_d, cipher, 49);
-    if (state->errs < 3) {
+    /* C0 errors as TIA-102.BABA-1 5.5 counts them (mbelib-neo 2.5): up to 3 are corrected, so the frame's parameters
+       are its own and decrypt; 4 is uncorrectable and stays as received. */
+    if (state->errs < 4) {
         rc4_voice_decrypt(state->dropL, 9, 7, rckey, cipher, plain);
     } else {
         DSD_MEMCPY(plain, cipher, sizeof(plain));
@@ -1641,7 +1643,9 @@ mbeslot_right_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     }
 
     pack_ambe(frame_ctx->ambe_d, cipher, 49);
-    if (state->errsR < 3) {
+    /* C0 errors as TIA-102.BABA-1 5.5 counts them (mbelib-neo 2.5): up to 3 are corrected, so the frame's parameters
+       are its own and decrypt; 4 is uncorrectable and stays as received. */
+    if (state->errsR < 4) {
         rc4_voice_decrypt(state->dropR, 9, 7, rckey, cipher, plain);
     } else {
         DSD_MEMCPY(plain, cipher, sizeof(plain));

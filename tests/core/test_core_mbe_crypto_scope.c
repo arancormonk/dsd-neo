@@ -187,8 +187,8 @@ build_fixtures(void) {
             fr[(seed + k) % 4][(seed * (5 + (2 * k)) + (3 * k) + 1) % 24] = 1;
         }
         mbe_process_result result;
-        // Few corrections: DMR RC4 passes a frame with 3 or more C0 errors through undecrypted.
-        if (mbe_decodeAmbe3600x2450Frame((const char (*)[24])fr, d, &result) < 0 || result.total_errors > 2
+        // Few corrections, so a frame's errors never decide whether a cipher applies.
+        if (mbe_decodeAmbe3600x2450Frame((const char (*)[24])fr, d, &result) < 0 || result.c0_errors > 2
             || dmr_ambe49_should_skip_crypto(d) == 1) {
             continue;
         }
@@ -1122,6 +1122,82 @@ test_dmr_des_frames_match_reference(void) {
     return rc;
 }
 
+/* DMR RC4 decrypts every frame whose C0 the Golay code corrected: three C0 bit errors (mbelib-neo 2.5 counts them per
+   TIA-102.BABA-1 5.5, where 2.4 reported fewer) still decode to the frame's own parameters, so the frame decrypts as
+   the clean one does, on both slots. */
+/* One more bit flipped in C0 of fixture frame @p f at each listed position (-1 for none): 1 when the frame then
+   corrects exactly three C0 errors and still decodes to the frame's own parameters. */
+static int
+three_c0_error_frame(int f, int a, int b, int c, char out[4][24]) {
+    DSD_MEMCPY(out, g_ambe_fr[f], sizeof(g_ambe_fr[f]));
+    out[0][a] ^= 1;
+    out[0][b] ^= 1;
+    if (c >= 0) {
+        out[0][c] ^= 1;
+    }
+    char d[49];
+    mbe_process_result result;
+    mbe_initProcessResult(&result);
+    return mbe_decodeAmbe3600x2450Frame((const char (*)[24])out, d, &result) >= 0 && result.c0_errors == 3
+           && memcmp(d, g_ambe_d[f], sizeof(d)) == 0;
+}
+
+static int
+test_dmr_rc4_decrypts_three_c0_errors(void) {
+    char noisy[4][24];
+    int frame = -1;
+    for (int f = 0; f < FIXTURE_FRAMES && frame < 0; f++) {
+        for (int a = 0; a < 24 && frame < 0; a++) {
+            for (int b = a + 1; b < 24 && frame < 0; b++) {
+                for (int c = -1; c < 24 && frame < 0; c++) {
+                    if ((c < 0 || c > b) && three_c0_error_frame(f, a, b, c, noisy)) {
+                        frame = f;
+                    }
+                }
+            }
+        }
+    }
+    if (frame < 0) {
+        DSD_FPRINTF(stderr, "dmr rc4: no frame with three corrected C0 errors\n");
+        return 1;
+    }
+    int rc = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        frame_trace clean;
+        frame_trace clear;
+        reset_state(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+        key_dmr_rc4(&g_state);
+        if (trace_begin() != 0) {
+            return 1;
+        }
+        processMbeFrame(&g_opts, &g_state, DSD_VOICE_PROTOCOL_DMR, NULL, g_ambe_fr[frame], NULL);
+        rc |= trace_end(&clean);
+        reset_state(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+        if (trace_begin() != 0) {
+            return 1;
+        }
+        processMbeFrame(&g_opts, &g_state, DSD_VOICE_PROTOCOL_DMR, NULL, g_ambe_fr[frame], NULL);
+        rc |= trace_end(&clear);
+        reset_state(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+        key_dmr_rc4(&g_state);
+        if (trace_begin() != 0) {
+            return 1;
+        }
+        processMbeFrame(&g_opts, &g_state, DSD_VOICE_PROTOCOL_DMR, NULL, noisy, NULL);
+        rc |= trace_end(&g_trace);
+        rc |= expect_int("dmr rc4 three c0 errors frames", g_trace.frames, 1);
+        if (!traces_all_differ(&clear, &clean)) {
+            DSD_FPRINTF(stderr, "dmr rc4 slot %d: the key left the clean frame undecrypted\n", slot + 1);
+            rc = 1;
+        }
+        if (!traces_equal(&clean, &g_trace)) {
+            DSD_FPRINTF(stderr, "dmr rc4 slot %d: a frame with three C0 errors was not decrypted\n", slot + 1);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 /* P25 Phase 2 ciphertext can coincidentally match either DMR clear-silence pattern. It still needs AES, unlike DMR.
    These hard frames encode F801A99F8CE080 (default silence) and 80000000000080 (zero tail); decoding asserts the
    fixtures independently, without requiring the newer mbelib encoder API at build time. */
@@ -1324,6 +1400,7 @@ main(void) {
     rc |= test_p25p1_keystream_read_is_bounded();
     rc |= test_dmr_keystream_read_is_bounded();
     rc |= test_dmr_des_frames_match_reference();
+    rc |= test_dmr_rc4_decrypts_three_c0_errors();
     rc |= test_p25p2_aes_does_not_skip_dmr_silence_patterns();
     rc |= test_nxdn_cipher23_session_exhaustion();
     rc |= test_keystream_muted_frame_stages_silence();
