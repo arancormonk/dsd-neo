@@ -27,8 +27,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/rtl_stream_c.h>

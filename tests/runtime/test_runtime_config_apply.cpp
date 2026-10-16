@@ -39,6 +39,7 @@
 #endif
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>

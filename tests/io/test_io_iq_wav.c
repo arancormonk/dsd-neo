@@ -17,7 +17,6 @@
 #include <float.h>
 #include <inttypes.h>
 #include <math.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -346,6 +345,21 @@ f32_at(const uint8_t* bytes, size_t i) {
     return v;
 }
 
+/* Whether @p bytes hold the bit patterns of the @p count floats at @p want: replay hands samples over unchanged. */
+static int
+f32_bytes_match(const uint8_t* bytes, const float* want, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        uint32_t got_bits = 0;
+        uint32_t want_bits = 0;
+        DSD_MEMCPY(&got_bits, bytes + i * sizeof(float), sizeof(got_bits));
+        DSD_MEMCPY(&want_bits, &want[i], sizeof(want_bits));
+        if (got_bits != want_bits) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* Open @p name and read all of it as cf32; *@p n_floats gets the float count. The caller frees the result. */
 static float*
 replay_floats(const char* name, size_t max_read, size_t* n_floats, dsd_iq_replay_config* cfg_out) {
@@ -457,7 +471,7 @@ check_encoding(const char* name, unsigned tag, unsigned bits, int extensible, ds
         wb_fmt(&b, tag, 2, 48000, bits);
     }
     wb_data_header(&b, (uint32_t)(ENC_FRAMES * 2U * bits / 8U));
-    for (size_t i = 0; i < 2U * ENC_FRAMES; i++) {
+    for (size_t i = 0; i < (size_t)2U * ENC_FRAMES; i++) {
         put_sample(&b, tag, bits, i, &want[i]);
     }
     wb_finish_riff(&b);
@@ -478,11 +492,11 @@ check_encoding(const char* name, unsigned tag, unsigned bits, int extensible, ds
     if (!f) {
         return 1;
     }
-    rc |= expect_u64("encoding floats", n, 2U * ENC_FRAMES);
+    rc |= expect_u64("encoding floats", n, (uint64_t)2U * ENC_FRAMES);
     rc |= expect_int("encoding replays as cf32", (int)cfg.format, (int)DSD_IQ_FORMAT_CF32);
     rc |= expect_str("encoding stage", cfg.capture_stage, "post_driver_cf32_pre_ring");
-    rc |= expect_u64("encoding data bytes", cfg.data_bytes, ENC_FRAMES * 8U);
-    for (size_t i = 0; i < n && i < 2U * ENC_FRAMES; i++) {
+    rc |= expect_u64("encoding data bytes", cfg.data_bytes, (uint64_t)ENC_FRAMES * 8U);
+    for (size_t i = 0; i < n && i < (size_t)2U * ENC_FRAMES; i++) {
         rc |= expect_float(name, i, f[i], want[i]);
     }
     free(f);
@@ -990,7 +1004,7 @@ test_small_reads_and_seek(void) {
     for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
         size_t n = 0;
         float* f = replay_floats("small.wav", sizes[s], &n, NULL);
-        rc |= expect_true("small reads stream", f != NULL && n == n_ref && memcmp(f, ref, n * sizeof(float)) == 0);
+        rc |= expect_true("small reads stream", f != NULL && n == n_ref && f32_bytes_match((const uint8_t*)f, ref, n));
         free(f);
     }
 
@@ -1011,18 +1025,18 @@ test_small_reads_and_seek(void) {
     rc |= expect_int("seek to frame 5", dsd_iq_replay_seek(src, 40), DSD_IQ_OK);
     rc |= expect_int("read at frame 5", dsd_iq_replay_read(src, buf, 16, &got), DSD_IQ_OK);
     rc |= expect_u64("read at frame 5 size", got, 16);
-    rc |= expect_true("read at frame 5 bytes", memcmp(buf, ref + 10, 16) == 0);
+    rc |= expect_true("read at frame 5 bytes", f32_bytes_match(buf, ref + 10, 4));
     rc |= expect_int("unaligned seek rounds down", dsd_iq_replay_seek(src, 8U * 7U + 5U), DSD_IQ_OK);
     rc |= expect_int("read at frame 7", dsd_iq_replay_read(src, buf, 8, &got), DSD_IQ_OK);
-    rc |= expect_true("read at frame 7 bytes", got == 8U && memcmp(buf, ref + 14, 8) == 0);
-    rc |= expect_int("seek to the end", dsd_iq_replay_seek(src, 8U * 300U), DSD_IQ_OK);
+    rc |= expect_true("read at frame 7 bytes", got == 8U && f32_bytes_match(buf, ref + 14, 2));
+    rc |= expect_int("seek to the end", dsd_iq_replay_seek(src, (uint64_t)8U * 300U), DSD_IQ_OK);
     rc |= expect_int("read at the end", dsd_iq_replay_read(src, buf, 8, &got), DSD_IQ_OK);
     rc |= expect_u64("read at the end size", got, 0);
-    rc |= expect_int("seek past the end", dsd_iq_replay_seek(src, 8U * 301U), DSD_IQ_ERR_INVALID_ARG);
+    rc |= expect_int("seek past the end", dsd_iq_replay_seek(src, (uint64_t)8U * 301U), DSD_IQ_ERR_INVALID_ARG);
     rc |= expect_int("seek NULL", dsd_iq_replay_seek(NULL, 0), DSD_IQ_ERR_INVALID_ARG);
     rc |= expect_int("rewind", dsd_iq_replay_rewind(src), DSD_IQ_OK);
     rc |= expect_int("read after rewind", dsd_iq_replay_read(src, buf, 64, &got), DSD_IQ_OK);
-    rc |= expect_true("read after rewind bytes", got == 64U && memcmp(buf, ref, 64) == 0);
+    rc |= expect_true("read after rewind bytes", got == 64U && f32_bytes_match(buf, ref, 16));
     dsd_iq_replay_close(src);
     dsd_iq_replay_config_clear(&cfg);
     free(ref);
@@ -1094,7 +1108,7 @@ test_truncation(void) {
     int rc = expect_int("truncation write", write_wav("whole.wav", &b), 0);
 
     /* Declared but missing: 1000 frames and 2 bytes cut off. */
-    rc |= expect_int("truncated write", write_file(tpath("short.wav"), b.p, b.len - 6U * 1000U - 2U), 0);
+    rc |= expect_int("truncated write", write_file(tpath("short.wav"), b.p, b.len - (size_t)6U * 1000U - 2U), 0);
     dsd_iq_wav_info info;
     char err[512] = {0};
     rc |= expect_int("truncated info", dsd_iq_wav_read_info(tpath("short.wav"), &info, err, sizeof(err)), DSD_IQ_OK);
@@ -1106,9 +1120,9 @@ test_truncation(void) {
                      DSD_IQ_OK);
     uint64_t effective = 0;
     int mismatch = 0;
-    rc |= expect_int("truncated measure", dsd_iq_replay_measure(&cfg, b.len - 6U * 1000U - 2U, &effective, &mismatch),
-                     DSD_IQ_OK);
-    rc |= expect_u64("truncated measure bytes", effective, 8U * (BIG_FRAMES - 1001U));
+    rc |= expect_int("truncated measure",
+                     dsd_iq_replay_measure(&cfg, b.len - (size_t)6U * 1000U - 2U, &effective, &mismatch), DSD_IQ_OK);
+    rc |= expect_u64("truncated measure bytes", effective, (uint64_t)8U * (BIG_FRAMES - 1001U));
     rc |= expect_int("truncated measure mismatch", mismatch, 1);
     rc |= expect_int("whole measure", dsd_iq_replay_measure(&cfg, b.len, &effective, &mismatch), DSD_IQ_OK);
     rc |= expect_int("whole measure no mismatch", mismatch, 0);
@@ -1130,7 +1144,7 @@ test_truncation(void) {
     rc |= expect_int("cut", write_file(tpath("whole.wav"), b.p, header + first_frames * 6U + 1000U), 0);
     got = 0;
     rc |= expect_int("cut: the whole frames left", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
-    rc |= expect_u64("cut: the whole frames left, size", got, 8U * (1000U / 6U));
+    rc |= expect_u64("cut: the whole frames left, size", got, (uint64_t)8U * (1000U / 6U));
     for (size_t i = 0; i < got / sizeof(float); i++) {
         rc |= expect_float("cut: frames", i, f32_at(buf, i), s24_ramp_value(2U * first_frames + i));
     }
@@ -1631,13 +1645,13 @@ test_container_end(void) {
     rc |= expect_u64("rf64 end frames", info.frames, 5U);
     rc |= expect_int("rf64 end clamped", info.container_clamped, 1);
     rc |= expect_int("rf64 end not truncated", info.truncated, 0);
-    f = replay_floats("rf64_end.wav", 4096U, &n, NULL);
-    if (!f) {
+    float* rf64_f = replay_floats("rf64_end.wav", 4096U, &n, NULL);
+    if (!rf64_f) {
         return 1;
     }
     rc |= expect_u64("rf64 end replayed floats", n, 10U);
-    rc |= check_s16_ramp("rf64 end samples", f, n, 0);
-    free(f);
+    rc |= check_s16_ramp("rf64 end samples", rf64_f, n, 0);
+    free(rf64_f);
     rc |= run_iq_info("rf64_end.wav", NULL);
     rc |= expect_contains("rf64 end info warn", g_info_err,
                           "WARNING: the WAV data chunk declares 40 bytes but its RF64 container ends 20 bytes into it "

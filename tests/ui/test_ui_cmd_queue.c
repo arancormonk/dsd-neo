@@ -21,6 +21,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
@@ -7422,8 +7423,8 @@ static fake_replay_stream g_fake_replay;
 
 /* What each create was handed: the resume, the TETRA decoder and the bandwidth request (up to four creates). */
 typedef struct {
-    int resume_pending;
     dsd_iq_replay_checkpoint resume;
+    int resume_pending;
     int frame_tetra;
     int bw_khz;
     int bw_source;

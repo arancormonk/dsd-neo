@@ -601,10 +601,10 @@ test_no_crosstalk(void) {
         if (counts[0] > 0 && counts[0] == counts[1] && counts[0] == counts[2]) {
             int leak = 0;
             int differ = 0;
-            for (int m = 0; m < counts[0]; m++) {
-                leak |= fabsf(outs[1][2 * m + 1]) > 1e-30f || fabsf(outs[2][2 * m]) > 1e-30f;
-                differ |= !same_bits(&outs[0][2 * m], &outs[1][2 * m], 1)
-                          || !same_bits(&outs[0][2 * m + 1], &outs[2][2 * m + 1], 1);
+            for (size_t m = 0; m < (size_t)counts[0]; m++) {
+                leak |= fabsf(outs[1][2U * m + 1U]) > 1e-30f || fabsf(outs[2][2U * m]) > 1e-30f;
+                differ |= !same_bits(&outs[0][2U * m], &outs[1][2U * m], 1)
+                          || !same_bits(&outs[0][2U * m + 1U], &outs[2][2U * m + 1U], 1);
             }
             CHECK(!leak, "%d->%d: one channel leaks into the other", k->in_hz, k->out_hz);
             CHECK(!differ, "%d->%d: a channel depends on the other", k->in_hz, k->out_hz);
@@ -641,7 +641,7 @@ test_clear(void) {
             CHECK(0, "%d->%d: configure", k->in_hz, k->out_hz);
         } else {
             float* junk = NULL;
-            (void)run_once(&used, in + 2 * 17, 1237, &junk);
+            (void)run_once(&used, in + (size_t)2 * 17U, 1237, &junk);
             free(junk);
             dsd_iq_resampler_clear(&used);
             CHECK(used.phase == 0, "%d->%d: phase %d after clear", k->in_hz, k->out_hz, used.phase);
@@ -679,7 +679,7 @@ test_max_out(void) {
         }
         float in[2 * 64];
         float out[2 * 64 * 16];
-        for (size_t i = 0; i < 2 * 64; i++) {
+        for (size_t i = 0; i < sizeof(in) / sizeof(in[0]); i++) {
             in[i] = rng_float();
         }
         int max_seen = 0;

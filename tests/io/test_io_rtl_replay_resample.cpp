@@ -26,7 +26,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
@@ -423,7 +422,7 @@ test_resampled_events(void) {
             rc = 1;
             break;
         }
-        if (tb[i].floats.size() > 2U * 8192U) {
+        if (tb[i].floats.size() > static_cast<size_t>(2U) * 8192U) {
             DSD_FPRINTF(stderr, "FAIL: block %zu holds %zu floats, past one live transfer\n", i, tb[i].floats.size());
             rc = 1;
         }
@@ -507,7 +506,8 @@ test_wav_loop(void) {
         }
     }
     /* 9000 samples at 30 kHz resample to 14400 at 48 kHz. */
-    rc |= expect_true("the first pass delivered the recording resampled", passes[0].size() == 2U * 14400U);
+    rc |= expect_true("the first pass delivered the recording resampled",
+                      passes[0].size() == static_cast<size_t>(2U) * 14400U);
     rc |= expect_true("the second pass delivered the first pass's blocks", passes[1] == passes[0]);
     rc |= expect_true("the third pass delivered the first pass's blocks", passes[2] == passes[0]);
     /* The rewind finalizes the demodulator afresh, centre or none: each pass demodulates to the same output. */
