@@ -939,6 +939,92 @@ test_trunk_cache_with_mode_metadata(void) {
     return rc;
 }
 
+/* An NXDN call's hangtime return on rigctl goes through the direct return, which skips a SetFreq to the frequency it
+   last sent. A grant tunes the radio away through the trunk tuning hooks, which never write that cache: the next
+   return to the same control channel must still be sent, or the radio stays on the voice channel while the decoder
+   believes it is back. With no tune in between, a repeat stays suppressed. */
+static int
+test_direct_return_after_hook_tune(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_trunk_tuning_requests_reset();
+    opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->trunk_enable = 1;
+    opts->setmod_bw = 0;
+    opts->frame_nxdn48 = 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    const long cc = 942037500L; // a frequency no other case uses: engine.c caches the last rigctl tune across cases
+    for (int call = 0; call < 3; call++) {
+        if (call == 2) {
+            // A grant to the voice channel, through the hooks (here a completed request; no SetFreq of the legacy leg).
+            const uint64_t grant = dsd_trunk_tuning_request_begin();
+            dsd_trunk_tuning_request_mark_ready(grant);
+            dsd_trunk_tuning_request_publish(grant, DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        opts->trunk_is_tuned = 1;
+        state->trunk_cc_freq = cc;
+        state->p25_cc_freq = cc;
+        state->lastsynctype = DSD_SYNC_NXDN_POS;
+        state->last_vc_sync_time = 0;
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("a return after a hook tune is sent again",
+                      g_rigctl_setfreq_calls == 2 && g_rigctl_setfreq_freq == cc);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A DMR rest channel left from before an operator move onto an NXDN system never replaces the NXDN control channel a
+   CAC validated since; with no owner it still applies, as before. */
+static int
+test_stale_dmr_rest_channel_under_nxdn_owner(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    const long nxdn_cc = 942062500L;
+    const long dmr_rest = 942087500L;
+    for (int owner_known = 1; owner_known >= 0; owner_known--) {
+        dsd_trunk_tuning_requests_reset();
+        opts->use_rigctl = 1;
+        opts->audio_in_type = AUDIO_IN_WAV;
+        opts->trunk_enable = 1;
+        opts->setmod_bw = 0;
+        opts->frame_nxdn48 = opts->frame_dmr = 1;
+        opts->frame_p25p1 = opts->frame_p25p2 = 0;
+        g_rigctl_setfreq_ok = 1;
+        g_rigctl_setfreq_calls = 0;
+        dsd_engine_rigctl_tune_cache_forget();
+        state->trunk_recovery_protocol = owner_known ? DSD_TRUNK_RECOVERY_NXDN : DSD_TRUNK_RECOVERY_UNKNOWN;
+        state->dmr_rest_channel = 7;
+        state->trunk_chan_map[7] = dmr_rest;
+        opts->trunk_is_tuned = 1;
+        state->trunk_cc_freq = nxdn_cc;
+        state->p25_cc_freq = nxdn_cc;
+        state->lastsynctype = DSD_SYNC_NXDN_POS;
+        state->last_vc_sync_time = 0;
+        noCarrier(opts, state);
+        const long want = owner_known ? nxdn_cc : dmr_rest;
+        rc |= expect_true(owner_known ? "an NXDN owner returns to its own control channel"
+                                      : "with no owner the DMR rest channel still applies",
+                          g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == want && state->trunk_cc_freq == want);
+    }
+    g_rigctl_setfreq_ok = 0;
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_UNKNOWN;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_typed_scan_tune_boundaries(void) {
     dsd_opts* opts = NULL;
@@ -6437,6 +6523,8 @@ main(void) {
     rc |= test_typed_scan_am_default_width_skipped_without_the_stream();
     rc |= test_typed_scan_analog_rows_hold_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
+    rc |= test_direct_return_after_hook_tune();
+    rc |= test_stale_dmr_rest_channel_under_nxdn_owner();
     rc |= test_dmr_explicit_return_destination();
     rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
     rc |= test_fsk_reacquire_cooldown_runs_across_a_replay_leave();

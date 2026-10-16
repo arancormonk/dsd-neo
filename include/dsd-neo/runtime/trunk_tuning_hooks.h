@@ -81,6 +81,13 @@ uint64_t dsd_trunk_tuning_request_begin(void);
  * ignored after the reset. Do not call while an active run owns tune requests.
  */
 void dsd_trunk_tuning_requests_reset(void);
+/**
+ * @brief Return the newest request ID dsd_trunk_tuning_request_begin() handed out, or zero before the first.
+ *
+ * Monotonic for the process, across dsd_trunk_tuning_requests_reset(): a caller that remembers where the radio was
+ * left compares it to tell whether any correlated tune has been issued since.
+ */
+uint64_t dsd_trunk_tuning_last_request(void);
 
 /**
  * @brief Retire terminal failed requests after correlated recovery is abandoned.
