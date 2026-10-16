@@ -1631,8 +1631,8 @@ expect_rx_request_outcomes(void) {
 
 /*
  * Where the RTL DSP bandwidth is not the DSP rate, a width that rate cannot filter fails the start with the fix that
- * rate allows, the fix a running stream's refusal names too: an I/Q replay's sidecar fixes the rate, so the width has
- * to narrow; a SoapySDR or Airspy device's capture rate is decimated toward the DSP bandwidth, so a wider DSP bandwidth
+ * rate allows, the fix a running stream's refusal names too: an I/Q replay's rate plan follows the DSP bandwidth (issue
+ * #701), so it names the bandwidths that fit, as an RTL-SDR does, without calling them RTL's; a SoapySDR or Airspy device's capture rate is decimated toward the DSP bandwidth, so a wider DSP bandwidth
  * raises it. An RTL-SDR or rtl_tcp input at the same rate names the DSP bandwidths that would fit.
  */
 static int
@@ -1643,7 +1643,7 @@ expect_forced_rate_refusal_names_the_width(void) {
         int forced;
         const char* fix;
     } rows[] = {
-        {"iqreplay:/tmp/capture24k.iq.json", 1, 1, "; narrow the NFM width"},
+        {"iqreplay:/tmp/capture24k.iq.json", 1, 1, "; set the DSP bandwidth to 48 or 72 kHz"},
         {"soapy:driver=airspy", 0, 1, "; raise the DSP bandwidth or narrow the NFM width"},
         {"airspy", 0, 1, "; raise the DSP bandwidth or narrow the NFM width"},
         {"rtl:0:851.375M:0:0:24", 0, 0, "; set the RTL DSP bandwidth to 48 or 72 kHz"},

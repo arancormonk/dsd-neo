@@ -291,7 +291,7 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
 
     int gain = opts->rtl_gain_value;
     int ppm = opts->rtlsdr_ppm_error;
-    int bw = opts->rtl_dsp_bw_khz;
+    int bw = -1; /* stays -1 when the spec has no bandwidth field */
     const char* sql = NULL;
     int vol = opts->rtl_volume_multiplier;
     if (parse_soapy_optional_tokens(tok, n, idx + 1, &gain, &ppm, &bw, &sql, &vol) != 0) {
@@ -302,7 +302,9 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
     opts->rtlsdr_center_freq = freq_hz;
     opts->rtl_gain_value = gain;
     opts->rtlsdr_ppm_error = ppm;
-    opts->rtl_dsp_bw_khz = bw;
+    if (bw != -1) {
+        dsd_opts_set_rtl_dsp_bw(opts, bw, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    }
     if (sql) {
         (void)dsd_squelch_spec_field_apply(opts, sql);
     }
@@ -454,7 +456,7 @@ rtl_spec_apply_tuning_tokens(dsd_opts* opts, char** saveptr) {
     if (!curr) {
         return 0;
     }
-    opts->rtl_dsp_bw_khz = dsd_rtl_spec_bw_khz_or_default(curr);
+    dsd_opts_set_rtl_dsp_bw(opts, dsd_rtl_spec_bw_khz_or_default(curr), DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     curr = dsd_strtok_r(NULL, ":", saveptr);
     if (!curr) {
         return 0;

@@ -21,14 +21,16 @@ dsd_tetra_dsp_rate_runs(int rate_hz) {
 }
 
 /* The fix for TETRA at a rate it cannot run, by what sets the rate: the RTL DSP bandwidth (in the spec form of the input
-   at hand), a SoapySDR or Airspy device, or an I/Q replay's capture. The brief form fits a toast. */
+   at hand), a SoapySDR or Airspy device, or an I/Q replay's capture. A replay re-plans its rate to TETRA's when TETRA
+   comes on (issue #701), so only a capture no plan resamples to a TETRA rate reaches its text. The brief form fits a
+   toast. */
 static const char*
 tetra_rate_fix(const dsd_opts* opts, int brief) {
     const char* dev = opts ? opts->audio_in_dev : NULL;
     switch (dsd_opts_analog_rate_source(opts)) {
         case DSD_ANALOG_RATE_CAPTURE:
-            return brief ? ", and a replay keeps its capture's rate"
-                         : ": an I/Q replay keeps its capture's rate; capture TETRA at a 72 kHz DSP bandwidth";
+            return brief ? ", and this replay cannot be resampled to one"
+                         : ": this replay's capture cannot be resampled to a TETRA rate";
         case DSD_ANALOG_RATE_DEVICE:
             if (dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
                 return brief ? ", and no Airspy rate is one"

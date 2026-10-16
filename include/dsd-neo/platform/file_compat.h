@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/platform/platform.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
 
@@ -21,7 +22,8 @@ extern "C" {
 
 #if DSD_PLATFORM_WIN_NATIVE
 #include <sys/stat.h>
-typedef struct _stat dsd_stat_t;
+/* The 64-bit-size form: struct _stat holds st_size in 32 bits, which a file past 2 GiB overflows. */
+typedef struct _stat64 dsd_stat_t;
 #else
 #include <sys/stat.h>
 typedef struct stat dsd_stat_t;
@@ -119,6 +121,28 @@ int dsd_stat_path(const char* path, dsd_stat_t* st);
  * @return Non-zero if regular file, 0 otherwise.
  */
 int dsd_stat_is_regular(const dsd_stat_t* st);
+
+/**
+ * @brief Seek a stream to a 64-bit offset.
+ *
+ * fseek() takes a long, which is 32 bits on Windows (and on 32-bit POSIX systems), so it cannot reach past 2 GiB
+ * there. This uses _fseeki64() on Windows and fseeko() elsewhere. Where off_t is 32 bits, an offset it cannot hold
+ * fails with EOVERFLOW.
+ *
+ * @param fp      Stream.
+ * @param offset  Offset from @p whence.
+ * @param whence  SEEK_SET, SEEK_CUR or SEEK_END.
+ * @return 0 on success, -1 with errno set on error (EINVAL for a NULL stream).
+ */
+int dsd_fseek64(FILE* fp, int64_t offset, int whence);
+
+/**
+ * @brief A stream's position as a 64-bit offset (_ftelli64() on Windows, ftello() elsewhere).
+ *
+ * @param fp  Stream.
+ * @return The position, or -1 with errno set on error (EINVAL for a NULL stream).
+ */
+int64_t dsd_ftell64(FILE* fp);
 
 /**
  * @brief Set file permissions (best effort on Windows).

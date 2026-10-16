@@ -179,6 +179,42 @@ init_opts_tetra_defaults(dsd_opts* opts) {
 }
 
 static void
+init_opts_radio_input_defaults(dsd_opts* opts) {
+    //all RTL user options -- enabled AGC by default due to weak signal related issues
+    opts->rtl_dev_index = 0;  //choose which device we want by index number
+    opts->rtl_gain_value = 0; //mid value, 0 - AGC - 0 to 49 acceptable values
+    opts->rtl_volume_multiplier =
+        2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
+    // Generic input volume for non-RTL inputs (Pulse/WAV/TCP/UDP)
+    opts->input_volume_multiplier = 1;
+    opts->rtl_udp_port = 0; // external RTL retune control is disabled by default
+    DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", "127.0.0.1");
+    opts->rtl_dsp_bw_khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ; // DSP baseband kHz (a selectable one). Not tuner IF BW.
+    opts->rtl_dsp_bw_source = DSD_RTL_DSP_BW_SOURCE_DEFAULT;
+    opts->rtlsdr_ppm_error = 0;           // no frequency correction until one is set
+    opts->rtlsdr_center_freq = 850000000; // an initial tune, so a channel map user needs nothing beyond -i rtl
+    dsd_airspy_config_defaults(&opts->airspy);
+    DSD_MEMSET(&opts->airspy_info, 0, sizeof opts->airspy_info);
+    opts->airspy_list = 0;
+    opts->airspy_config_error = 0;
+    opts->soapy_bandwidth_hz = -1;
+    opts->soapy_profile[0] = '\0';
+    opts->soapy_stream_format[0] = '\0';
+    opts->soapy_antenna[0] = '\0';
+    opts->soapy_clock[0] = '\0';
+    opts->soapy_settings[0] = '\0';
+    opts->soapy_gains[0] = '\0';
+    opts->digital_resample_mode = 0; // DSD_DIGITAL_RESAMPLE_AUTO
+    opts->rtl_started = 0;
+    opts->rtl_needs_restart = 0;
+    opts->rtl_pwr = 0;                // mean power approximation level on rtl input signal
+    opts->rtl_bias_tee = 0;           // bias tee disabled by default
+    opts->rtl_auto_ppm = 0;           // auto PPM disabled by default
+    opts->rtl_auto_ppm_snr_db = 0.0f; // use default SNR threshold unless overridden
+    //end RTL user options
+}
+
+static void
 init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->dmr_stereo_wav = 0;  //flag for per call dmr stereo wav recordings
     opts->static_wav_file = 0; //single static wav file for decoding duration
@@ -223,38 +259,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->delay = 0;
     opts->use_cosine_filter = 1;
     opts->unmute_encrypted_p25 = 0;
-    //all RTL user options -- enabled AGC by default due to weak signal related issues
-    opts->rtl_dev_index = 0;  //choose which device we want by index number
-    opts->rtl_gain_value = 0; //mid value, 0 - AGC - 0 to 49 acceptable values
-    opts->rtl_volume_multiplier =
-        2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
-    // Generic input volume for non-RTL inputs (Pulse/WAV/TCP/UDP)
-    opts->input_volume_multiplier = 1;
-    opts->rtl_udp_port = 0; // external RTL retune control is disabled by default
-    DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", "127.0.0.1");
-    opts->rtl_dsp_bw_khz = DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ; // DSP baseband kHz (a selectable one). Not tuner IF BW.
-    opts->rtlsdr_ppm_error = 0;                               //initialize ppm with 0 value;
-    opts->rtlsdr_center_freq =
-        850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
-    dsd_airspy_config_defaults(&opts->airspy);
-    DSD_MEMSET(&opts->airspy_info, 0, sizeof opts->airspy_info);
-    opts->airspy_list = 0;
-    opts->airspy_config_error = 0;
-    opts->soapy_bandwidth_hz = -1;
-    opts->soapy_profile[0] = '\0';
-    opts->soapy_stream_format[0] = '\0';
-    opts->soapy_antenna[0] = '\0';
-    opts->soapy_clock[0] = '\0';
-    opts->soapy_settings[0] = '\0';
-    opts->soapy_gains[0] = '\0';
-    opts->digital_resample_mode = 0; // DSD_DIGITAL_RESAMPLE_AUTO
-    opts->rtl_started = 0;
-    opts->rtl_needs_restart = 0;
-    opts->rtl_pwr = 0;                // mean power approximation level on rtl input signal
-    opts->rtl_bias_tee = 0;           // bias tee disabled by default
-    opts->rtl_auto_ppm = 0;           // auto PPM disabled by default
-    opts->rtl_auto_ppm_snr_db = 0.0f; // use default SNR threshold unless overridden
-    //end RTL user options
+    init_opts_radio_input_defaults(opts);
     opts->pulse_raw_rate_in = 48000;
     opts->pulse_raw_rate_out = 48000; //
     opts->pulse_digi_rate_in = 48000;
@@ -305,6 +310,8 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     opts->iq_replay_active = 0;
     opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;
     opts->iq_replay_center_freq = 0U;
+    opts->iq_replay_resume_pending = 0;
+    DSD_MEMSET(&opts->iq_replay_resume, 0, sizeof opts->iq_replay_resume);
     opts->iq_capture_format = 1; /* DSD_IQ_FORMAT_CU8 */
     opts->iq_capture_max_bytes = 0;
     opts->iq_capture_path[0] = '\0';

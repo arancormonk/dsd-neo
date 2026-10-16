@@ -56,6 +56,14 @@ dsd_neo_add_fuzzer(
 )
 
 dsd_neo_add_fuzzer(
+  dsd-neo_fuzz_io_iq_wav
+  FUZZ_IO_IQ_WAV
+  fuzz_io_iq_wav.c
+  io_iq_wav
+  dsd-neo_io_iq
+)
+
+dsd_neo_add_fuzzer(
   dsd-neo_fuzz_crypto_backup_header
   FUZZ_CRYPTO_BACKUP_HEADER
   fuzz_crypto_backup_header.c

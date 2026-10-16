@@ -168,7 +168,7 @@ interactive_configure_rtl_input(dsd_opts* opts, int* src) {
     int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm, bw,
                  sql, vol);
-    opts->rtl_dsp_bw_khz = interactive_dsp_bw_khz(bw);
+    dsd_opts_set_rtl_dsp_bw(opts, interactive_dsp_bw_khz(bw), DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
 #else
     (void)opts;
     LOG_WARN("WARNING: RTL-SDR support not enabled in this build.\n");
@@ -194,7 +194,7 @@ interactive_configure_rtltcp_input(dsd_opts* opts) {
     int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d:%s:%d:%d:%d:%d:%d", host, port, freq,
                  gain, ppm, bw, sql, vol);
-    opts->rtl_dsp_bw_khz = interactive_dsp_bw_khz(bw);
+    dsd_opts_set_rtl_dsp_bw(opts, interactive_dsp_bw_khz(bw), DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
 }
 
 static void

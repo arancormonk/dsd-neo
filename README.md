@@ -55,7 +55,7 @@ This project is an active work in progress as we decouple from the upstream fork
   - Generic TCP PCM16LE input (`-i tcp[:host:port]`, SDR++/GRC 7355 audio streams).
   - UDP audio in/out: receive PCM16LE over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts (decoded voice is typically 8 kHz; see `docs/network-audio.md`).
   - M17 UDP/IP in/out: dedicated M17 stream and packet frame input/output over UDP (`-i m17udp[:bind:17000]`, `-o m17udp[:host:17000]`).
-  - RF I/Q capture/replay workflow with metadata (`--iq-capture`, `--iq-info`, `--iq-replay`) for reproducible decode debugging and regression replay.
+  - RF I/Q capture/replay workflow with metadata (`--iq-capture`, `--iq-info`, `--iq-replay`) for reproducible decode debugging and regression replay. `--iq-replay` also reads two-channel WAV I/Q recordings from other SDR software (8-bit to 32-bit PCM or float, RIFF/RF64/BW64) and resamples a capture whose rate the decode mode cannot run.
 
 - Built‑in trunking workflow
 

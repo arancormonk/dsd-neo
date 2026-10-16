@@ -77,6 +77,30 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
 }
 
 int
+dsd_fseek64(FILE* fp, int64_t offset, int whence) {
+    if (!fp) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* A 32-bit off_t (a 32-bit build without large-file offsets) cannot hold every offset. */
+    if ((int64_t)(off_t)offset != offset) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    return fseeko(fp, (off_t)offset, whence) == 0 ? 0 : -1;
+}
+
+int64_t
+dsd_ftell64(FILE* fp) {
+    if (!fp) {
+        errno = EINVAL;
+        return -1;
+    }
+    const off_t pos = ftello(fp);
+    return pos < 0 ? -1 : (int64_t)pos;
+}
+
+int
 dsd_stat_is_regular(const dsd_stat_t* st) {
     return st && S_ISREG(st->st_mode);
 }

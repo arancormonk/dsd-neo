@@ -935,12 +935,11 @@ test_tetra_rate_rules(void) {
     rc |= expect_tetra_advice("Airspy, brief", &opts, 93750, 1,
                               "DSP rate 93.75 kHz is no multiple of 18 kHz, and no Airspy rate is one");
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:/tmp/tetra.iq.json");
-    rc |=
-        expect_tetra_advice("replay at 50 kHz", &opts, 50000, 0,
-                            "TETRA needs a DSP rate that is a multiple of 18 kHz, not 50 kHz: an I/Q replay keeps its "
-                            "capture's rate; capture TETRA at a 72 kHz DSP bandwidth");
+    rc |= expect_tetra_advice("replay at 50 kHz", &opts, 50000, 0,
+                              "TETRA needs a DSP rate that is a multiple of 18 kHz, not 50 kHz: this replay's capture "
+                              "cannot be resampled to a TETRA rate");
     rc |= expect_tetra_advice("replay, brief", &opts, 50000, 1,
-                              "DSP rate 50 kHz is no multiple of 18 kHz, and a replay keeps its capture's rate");
+                              "DSP rate 50 kHz is no multiple of 18 kHz, and this replay cannot be resampled to one");
     rc |= expect_tetra_advice("no options read as an RTL-SDR", NULL, 48000, 1,
                               "DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
     char tiny[1];

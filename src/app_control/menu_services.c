@@ -13,6 +13,7 @@
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -44,6 +45,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/tetra_rate.h>
+#include <limits.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -893,8 +895,8 @@ svc_analog_held_width_hz(int kind, int width_hz) {
 /* "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth": short enough for a
    toast, with both values, the limit and the fix. @p source (dsd_analog_rate_source) says what sets the rate: an
    RTL-SDR or rtl_tcp input's DSP bandwidth, whose fix names the bandwidths that fit; a SoapySDR or Airspy device, whose
-   rate a wider DSP bandwidth raises; or an I/Q replay's capture, which only a narrower width can suit
-   (dsd_analog_width_rate_fix(), which never names narrowing where no width of the kind fits). */
+   rate a wider DSP bandwidth raises; or an I/Q replay, whose rate follows the DSP bandwidth and whose fix names the
+   bandwidths that fit, as for an RTL input. */
 static void
 svc_analog_rate_refusal(int kind, int width_hz, int rate_hz, int source, char* why, size_t why_size) {
     char width[DSD_ANALOG_WIDTH_TEXT_MAX];
@@ -903,10 +905,11 @@ svc_analog_rate_refusal(int kind, int width_hz, int rate_hz, int source, char* w
     char fix[96];
     (void)dsd_analog_width_format(width_hz, width, sizeof width);
     (void)dsd_analog_width_format(rate_hz, rate, sizeof rate);
-    if (source == DSD_ANALOG_RATE_RTL_BW) {
+    if (source == DSD_ANALOG_RATE_RTL_BW || source == DSD_ANALOG_RATE_CAPTURE) {
+        /* A replay's rate follows the DSP bandwidth as an RTL-SDR's does: a bandwidth change re-plans it (issue #701). */
         char fits[32];
         (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits, sizeof fits);
-        DSD_SNPRINTF(fix, sizeof fix, "use a %s kHz DSP bandwidth", fits);
+        DSD_SNPRINTF(fix, sizeof fix, "use %s %s kHz DSP bandwidth", fits[0] == '8' ? "an" : "a", fits);
     } else {
         (void)dsd_analog_width_rate_fix(kind, width_hz, rate_hz, source, fix, sizeof fix);
     }
@@ -981,6 +984,19 @@ svc_rtl_bw_dsp_rate_hz(const dsd_opts* opts, int rtl_bw_khz) {
 static int
 svc_rtl_stream_running(const dsd_opts* opts, const dsd_state* state) {
     return opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx;
+}
+
+int
+svc_replay_planned_rate_hz(const dsd_opts* opts, const dsd_state* state, int bw_khz, int bw_source, int frame_tetra) {
+    if (!opts || !dsd_opts_input_is_iq_replay(opts) || !svc_rtl_stream_running(opts, state)) {
+        return 0;
+    }
+    const rtl_stream_replay_request req = {bw_khz, bw_source, frame_tetra ? 1 : 0};
+    uint32_t rate_hz = 0U;
+    if (rtl_stream_replay_replan_check_request(opts, &req, &rate_hz, NULL, NULL, 0U) != RTL_STREAM_REPLAN_DIFFERS) {
+        return 0;
+    }
+    return rate_hz > (uint32_t)INT_MAX ? INT_MAX : (int)rate_hz;
 }
 
 #endif
@@ -1243,6 +1259,18 @@ svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz, ch
         svc_why(why, why_size, "%s", text);
         LOG_WARN("%s.\n", text);
         return -1;
+    }
+    return svc_analog_width_fits_rtl_rate(kind, held_hz, rate_hz, why, why_size) ? 0 : -1;
+}
+
+int
+svc_check_analog_bandwidth_at_rate(int kind, int width_hz, int rate_hz, char* why, size_t why_size) {
+    if (svc_check_analog_bandwidth_at_device_rate(kind, width_hz, why, why_size) != 0) {
+        return -1;
+    }
+    const int held_hz = svc_analog_held_width_hz(kind, width_hz);
+    if (held_hz == 0) {
+        return 0;
     }
     return svc_analog_width_fits_rtl_rate(kind, held_hz, rate_hz, why, why_size) ? 0 : -1;
 }
@@ -1533,9 +1561,11 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
    at all, so its decode time can no longer follow the capture: the decode clock goes back to the system clock with the
    stream stopped (issue #572). When the input is still that replay, the restart replays it on the system clock, which
    is logged once, at the leave. The replay centre the decoder last read goes with the stream (issue #575): every stop,
-   restart, input switch and rollback comes here, so a live radio that replaces the replay reads its own centre. */
+   restart, input switch and rollback comes here, so a live radio that replaces the replay reads its own centre. A
+   run-time re-plan (svc_rtl_replay_replan_locked(), issue #701) passes @p keep_replay_clock: the replay it reopens
+   resumes where this one stopped and its media time goes on from there, so decode time stays on the capture. */
 static void
-svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
+svc_rtl_stop_ex_locked(dsd_opts* opts, dsd_state* state, int keep_replay_clock) {
     if (state->rtl_ctx) {
         rtl_stream_stop(state->rtl_ctx);
         rtl_stream_destroy(state->rtl_ctx);
@@ -1544,12 +1574,20 @@ svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
     dsd_opts_forget_iq_replay_center(opts);
+    if (keep_replay_clock) {
+        return;
+    }
     const int leaves_replay = dsd_decode_clock_source() == DSD_DECODE_CLOCK_REPLAY;
     dsd_engine_decode_clock_leave_replay(opts, state);
     if (leaves_replay && opts->audio_in_type == AUDIO_IN_RTL && opts->iq_replay_requested
         && dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
         LOG_INFO("IQ replay restarted mid-run; decode timestamps now follow the system clock.\n");
     }
+}
+
+static void
+svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
+    svc_rtl_stop_ex_locked(opts, state, 0);
 }
 
 /* A stream opens with the operator's last tuner autogain setting or the environment default. Under --trunk-scan the
@@ -1587,8 +1625,11 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
     ++g_svc_rtl_starts;
     svc_apply_scan_autogain(opts, state);
     /* A stream on another source than the one before it is another carrier (issue #575): every start comes here, so a
-       command that changes the source and restarts needs no boundary of its own. Callers hold the P25 SM tick guard. */
-    dsd_engine_note_stream_source(opts, state, 1);
+       command that changes the source and restarts needs no boundary of its own. Callers hold the P25 SM tick guard. A
+       replay that resumes where it stopped (issue #701) goes on on the carrier it was on: it takes no boundary. */
+    if (!opts->iq_replay_resume_pending) {
+        dsd_engine_note_stream_source(opts, state, 1);
+    }
     return 0;
 }
 
@@ -1599,6 +1640,71 @@ svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
     }
     svc_rtl_stop_locked(opts, state);
     return svc_rtl_start_locked(opts, state);
+}
+
+/* Start the replay the options describe at @p at (issue #701): the start's copy of the options carries the checkpoint
+   (dsd_opts::iq_replay_resume), consumed by that one start. */
+static int
+svc_rtl_start_replay_at_locked(dsd_opts* opts, dsd_state* state, const dsd_iq_replay_checkpoint* at) {
+    if (at) {
+        opts->iq_replay_resume = *at;
+        opts->iq_replay_resume_pending = 1;
+    }
+    const int rc = svc_rtl_start_locked(opts, state);
+    opts->iq_replay_resume_pending = 0;
+    DSD_MEMSET(&opts->iq_replay_resume, 0, sizeof opts->iq_replay_resume);
+    return rc;
+}
+
+/* Reopen the running replay on the rate chain its options now plan, resuming where it stopped; a chain that does not
+   start puts the profile back (@p restore) and resumes the previous one there. A SVC_REPLAY_REPLAN_* verdict. */
+static int
+svc_rtl_replay_reopen_locked(dsd_opts* opts, dsd_state* state, const char* reason,
+                             svc_replay_profile_restore_fn restore, const void* restore_ctx, char* why,
+                             size_t why_size) {
+    svc_rtl_stop_ex_locked(opts, state, 1);
+    dsd_iq_replay_checkpoint at;
+    const int have_at = rtl_stream_replay_checkpoint(&at) == 0;
+    if (have_at) {
+        LOG_INFO("IQ replay: re-planning the rate chain for %s; resuming at capture byte %llu.\n",
+                 reason ? reason : "the change", (unsigned long long)at.data_offset);
+    }
+    if (svc_rtl_start_replay_at_locked(opts, state, have_at ? &at : NULL) == 0) {
+        return SVC_REPLAY_REPLAN_REOPENED;
+    }
+    /* The new chain did not start: the previous one resumes from the same checkpoint. */
+    restore(opts, state, restore_ctx);
+    svc_rtl_stop_ex_locked(opts, state, 1);
+    if (svc_rtl_start_replay_at_locked(opts, state, have_at ? &at : NULL) == 0) {
+        svc_why(why, why_size, "the replay did not start at the new rate (see log)");
+        return SVC_REPLAY_REPLAN_REFUSED;
+    }
+    svc_rtl_stop_locked(opts, state);
+    return SVC_REPLAY_REPLAN_FAILED;
+}
+
+int
+svc_rtl_replay_replan_locked(dsd_opts* opts, dsd_state* state, const char* reason,
+                             svc_replay_profile_restore_fn restore, const void* restore_ctx, uint32_t* out_dsp_rate_hz,
+                             int* out_resampled, char* why, size_t why_size) {
+    svc_why(why, why_size, "%s", "");
+    if (!opts || !state || !restore || !dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
+        return SVC_REPLAY_REPLAN_KEPT;
+    }
+    char reason_text[192];
+    const int verdict =
+        rtl_stream_replay_replan_check(opts, out_dsp_rate_hz, out_resampled, reason_text, sizeof reason_text);
+    if (verdict == RTL_STREAM_REPLAN_NO_REPLAY || verdict == RTL_STREAM_REPLAN_SAME) {
+        return SVC_REPLAY_REPLAN_KEPT;
+    }
+    if (verdict == RTL_STREAM_REPLAN_REFUSED) {
+        LOG_WARN("IQ replay: %s needs a rate chain this capture cannot run: %s. The replay keeps its rate.\n",
+                 reason ? reason : "the change", reason_text);
+        restore(opts, state, restore_ctx);
+        svc_why(why, why_size, "%s", reason_text);
+        return SVC_REPLAY_REPLAN_REFUSED;
+    }
+    return svc_rtl_replay_reopen_locked(opts, state, reason, restore, restore_ctx, why, why_size);
 }
 
 /* Turn the I/Q capture off for the rest of the session before a rollback restart (svc_rtl_restart_recovery_locked()),
@@ -1697,7 +1803,7 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
 static void
 svc_airspy_restore_tuning(dsd_opts* opts, const svc_airspy_tuning* tuning) {
     opts->rtlsdr_center_freq = tuning->frequency;
-    opts->rtl_dsp_bw_khz = tuning->bandwidth;
+    dsd_opts_set_rtl_dsp_bw(opts, tuning->bandwidth, tuning->bandwidth_source);
     opts->rtl_squelch_level = tuning->squelch;
     opts->rtl_squelch_mode = tuning->squelch_mode;
     opts->rtl_squelch_margin_db = tuning->squelch_margin_db;
@@ -1838,7 +1944,8 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
         return -1;
     }
     const svc_airspy_tuning tuning = {opts->rtlsdr_center_freq,    opts->rtl_dsp_bw_khz,   opts->rtl_squelch_level,
-                                      opts->rtl_volume_multiplier, opts->rtl_squelch_mode, opts->rtl_squelch_margin_db};
+                                      opts->rtl_volume_multiplier, opts->rtl_squelch_mode, opts->rtl_squelch_margin_db,
+                                      opts->rtl_dsp_bw_source};
     return svc_airspy_apply_config_impl(opts, state, config, &tuning, 0, out_capture_stopped);
 }
 
@@ -1953,13 +2060,11 @@ svc_rtl_bw_width_fix(int kind, int max_hz, int row, char* fix, size_t fix_size) 
    width is a scan row's own (--nfm-bandwidth-hz or --am-bandwidth-hz), which the width controls do not edit: the toast
    names the row, and the only fix is the bandwidth. */
 static int
-svc_rtl_bandwidth_fits_width(const dsd_opts* opts, int kind, int configured_hz, int row, int khz, char* why,
-                             size_t why_size) {
+svc_rtl_bandwidth_fits_width(int kind, int configured_hz, int row, int khz, int rate_hz, char* why, size_t why_size) {
     const int width_hz = svc_analog_held_width_hz(kind, configured_hz);
     if (width_hz > 0 && !svc_analog_width_env_allows(kind, configured_hz, why, why_size)) {
         return 0; /* the reopen's start would refuse the width at any rate */
     }
-    const int rate_hz = svc_rtl_bw_dsp_rate_hz(opts, khz);
     if (width_hz <= 0 || rate_hz <= 0 || dsd_analog_width_realizable(width_hz, rate_hz)) {
         return 1;
     }
@@ -1994,13 +2099,19 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
     int kind = DSD_ANALOG_DEMOD_FM;
     int configured_hz = 0;
     (void)svc_configured_analog_width(opts, state, &kind, &configured_hz);
-    if (!svc_rtl_bandwidth_fits_width(opts, kind, configured_hz, 0, khz, why, why_size)) {
+    /* The rate the bandwidth gives: an RTL-SDR or rtl_tcp input's DSP bandwidth, or the rate a running I/Q replay
+       re-plans to for it (issue #701). */
+    int rate_hz = svc_rtl_bw_dsp_rate_hz(opts, khz);
+    if (rate_hz <= 0) {
+        rate_hz = svc_replay_planned_rate_hz(opts, state, khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT, opts->frame_tetra == 1);
+    }
+    if (!svc_rtl_bandwidth_fits_width(kind, configured_hz, 0, khz, rate_hz, why, why_size)) {
         return 0;
     }
     for (int row_kind = DSD_ANALOG_DEMOD_FM; row_kind <= DSD_ANALOG_DEMOD_AM; row_kind++) {
         if (svc_scan_width_beside_preset(opts, state, kind, row_kind)
-            && !svc_rtl_bandwidth_fits_width(
-                opts, row_kind, dsd_scan_mode_configured_analog_width(opts, state, row_kind), 0, khz, why, why_size)) {
+            && !svc_rtl_bandwidth_fits_width(row_kind, dsd_scan_mode_configured_analog_width(opts, state, row_kind), 0,
+                                             khz, rate_hz, why, why_size)) {
             return 0;
         }
     }
@@ -2011,8 +2122,21 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
     }
     /* A row without a width of its own runs the configured one (on a digital session, where the configured preset holds
        none): the width's own fix applies to it. */
-    return svc_rtl_bandwidth_fits_width(opts, opts->analog_demod, in_force_hz,
-                                        svc_row_sets_width(state, opts->analog_demod), khz, why, why_size);
+    return svc_rtl_bandwidth_fits_width(opts->analog_demod, in_force_hz, svc_row_sets_width(state, opts->analog_demod),
+                                        khz, rate_hz, why, why_size);
+}
+
+/* The requested DSP bandwidth a refused replay re-plan puts back. */
+typedef struct {
+    int khz;
+    int source;
+} svc_rtl_bw_request;
+
+static void
+svc_rtl_bw_request_restore(dsd_opts* opts, dsd_state* state, const void* ctx) {
+    (void)state;
+    const svc_rtl_bw_request* req = (const svc_rtl_bw_request*)ctx;
+    dsd_opts_set_rtl_dsp_bw(opts, req->khz, req->source);
 }
 
 int
@@ -2033,9 +2157,26 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
     if (!svc_rtl_bandwidth_fits_analog_width(opts, state, khz, why, why_size)) {
         return -1;
     }
-    opts->rtl_dsp_bw_khz = khz;
+    const svc_rtl_bw_request before = {opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source};
+    dsd_opts_set_rtl_dsp_bw(opts, khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     /* Tuner bandwidth change requires reopen */
     opts->rtl_needs_restart = 1;
+    if (opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_input_is_iq_replay(opts) && state->rtl_ctx) {
+        /* A replay's rate follows the bandwidth (issue #701): it reopens at the chain the request plans, where it
+           stopped. */
+        char reason[64];
+        DSD_SNPRINTF(reason, sizeof reason, "a %d kHz DSP bandwidth", khz);
+        const int replan = svc_rtl_replay_replan_locked(opts, state, reason, svc_rtl_bw_request_restore, &before, NULL,
+                                                        NULL, why, why_size);
+        opts->rtl_needs_restart = 0;
+        if (replan == SVC_REPLAY_REPLAN_REFUSED) {
+            if (why && why_size > 0U && why[0] == '\0') {
+                svc_why(why, why_size, "the replay cannot run at that bandwidth");
+            }
+            return -1;
+        }
+        return replan == SVC_REPLAY_REPLAN_FAILED ? -1 : 0;
+    }
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         return svc_rtl_restart_locked(opts, state);
     }

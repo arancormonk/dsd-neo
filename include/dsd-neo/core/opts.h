@@ -17,6 +17,7 @@
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/frontend_types.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/platform.h>
 #ifdef __cplusplus
@@ -209,6 +210,10 @@ struct dsd_opts {
     /* Base DSP bandwidth for RTL path in kHz (dsd_analog_rtl_dsp_bw_is_selectable(): 4, 6, 8, 12, 16, 24, 48 or 72).
        Influences capture rate planning. Not the hardware tuner IF bandwidth. */
     int rtl_dsp_bw_khz;
+    /* Where rtl_dsp_bw_khz came from (enum dsd_rtl_dsp_bw_source). Every writer of rtl_dsp_bw_khz sets it, and every
+       snapshot that puts rtl_dsp_bw_khz back puts it back too. An I/Q replay's rate plan reads it: only an explicit
+       request beats the bandwidth a sidecar recorded (issue #701). */
+    int rtl_dsp_bw_source;
     int rtl_bias_tee;       /* 1 to enable RTL-SDR bias tee (if supported) */
     int soapy_bandwidth_hz; /* -1=profile/default, 0=driver automatic, >0 explicit Soapy hardware bandwidth */
     /* Digital FSK stream resampling: 0=auto (only for non-integer SPS), 1=on, 2=off.
@@ -379,6 +384,11 @@ struct dsd_opts {
        does rtl_pwr, a live read never does, and every stop of the RTL stream clears it. rtlsdr_center_freq keeps the
        capture's opening centre meanwhile; read the tuned frequency through dsd_opts_tuned_freq_hz(). */
     uint32_t iq_replay_center_freq;
+    /* A run-time re-plan of an I/Q replay's rate chain (issue #701): app-control sets it, with the pending flag, for
+       the one stream start that reopens the replay where the stopped one left it (rtl_stream_replay_checkpoint()), and
+       clears it after that start. The stream start reads it from its copy of the options. */
+    uint8_t iq_replay_resume_pending;
+    dsd_iq_replay_checkpoint iq_replay_resume;
 
     // Strings and paths (large trailing arrays)
     char pa_input_idx[100];
@@ -450,6 +460,23 @@ enum DSD_ATTR_PACKED {
     DSD_IQ_REPLAY_RATE_FAST = 0,
     DSD_IQ_REPLAY_RATE_REALTIME = 1,
 };
+
+/** Where dsd_opts::rtl_dsp_bw_khz came from (dsd_opts::rtl_dsp_bw_source). */
+enum dsd_rtl_dsp_bw_source {
+    DSD_RTL_DSP_BW_SOURCE_DEFAULT = 0,  ///< the built-in default: nothing set it
+    DSD_RTL_DSP_BW_SOURCE_EXPLICIT = 1, ///< asked for: an input spec's field, INI rtl_bw_khz, a menu or API set
+    DSD_RTL_DSP_BW_SOURCE_PRESET = 2,   ///< a decode mode's preset (-fT, -fe, -fp ...)
+};
+
+/** Set the requested RTL DSP bandwidth and where it came from, together. */
+static inline void
+dsd_opts_set_rtl_dsp_bw(dsd_opts* opts, int khz, int source) {
+    if (!opts) {
+        return;
+    }
+    opts->rtl_dsp_bw_khz = khz;
+    opts->rtl_dsp_bw_source = source;
+}
 
 enum DSD_ATTR_PACKED {
     DSD_OPTS_INPUT_UPSAMPLE_STAGING_CAP =

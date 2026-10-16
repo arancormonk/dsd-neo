@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/threading.h>
 
@@ -69,5 +70,16 @@ struct rtl_replay_eof_state {
 
 struct rtl_device* rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, struct input_ring_state* input_ring,
                                                const struct rtl_replay_eof_state* eof_state);
+
+/* A replay resampled to its DSP input rate (issue #701): the capture's rate, the resampler's L/M and its ratio error.
+ * Returns 1 for a resampled replay, 0 for one that runs at its capture's rate or any other device. */
+int rtl_device_replay_resample_info(const struct rtl_device* dev, uint32_t* out_capture_hz, int* out_l, int* out_m,
+                                    double* out_ppm);
+
+/* Where the replay's reader stood after the last capture chunk it handed the demodulator (issue #701), for a run-time
+ * re-plan to reopen the replay there (dsd_iq_replay_config::resume). Read only once the reader is stopped and joined
+ * (rtl_device_stop_async()); a replay that handed over nothing yet gives the point it opened at. Returns 0, or -1 for
+ * another device or a reader still running. */
+int rtl_device_replay_checkpoint(const struct rtl_device* dev, dsd_iq_replay_checkpoint* out);
 
 #endif /* DSD_NEO_IO_RADIO_RTL_REPLAY_DEVICE_H */

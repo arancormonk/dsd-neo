@@ -3723,7 +3723,10 @@ dsd_engine_decode_clock_enter_replay(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     int64_t anchor_s = 0;
-    if (dsd_iq_replay_parse_utc_seconds(cfg.capture_started_utc, &anchor_s) != DSD_IQ_OK) {
+    if (cfg.capture_started_utc[0] == '\0') {
+        /* A WAV recording with no start time in an auxi chunk or its name (issue #701). */
+        LOG_INFO("IQ replay: no start time recorded; decode times start at 2000-01-01T00:00:00Z.\n");
+    } else if (dsd_iq_replay_parse_utc_seconds(cfg.capture_started_utc, &anchor_s) != DSD_IQ_OK) {
         LOG_WARN("IQ replay: capture_started_utc \"%s\" is not YYYY-MM-DDTHH:MM:SSZ; decode times start at "
                  "2000-01-01T00:00:00Z.\n",
                  cfg.capture_started_utc);

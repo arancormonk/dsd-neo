@@ -297,9 +297,13 @@ is invertible), so those fixtures exercise the same code path but carry none of
 the original RF impairments. Where a genuine off-air I/Q recording exists (P25
 C4FM/CQPSK, NXDN48/96, dPMR, TETRA) it is used directly. The TETRA SCBS
 fixture preserves the Apache-2.0 upstream 50 kHz CS16 capture byte-for-byte and
-also commits a deterministic 54 kHz derivative because the current CQPSK path
-requires an integer samples-per-symbol rate. `DECODE_IQ_TETRA_REAL_AIR_SCBS`
-asserts the independently reported MCC 250, MNC 13 and colour code `0x2C`.
+also commits a deterministic 54 kHz derivative, made when replay kept a capture's
+rate and the CQPSK path needed an integer samples-per-symbol rate from the capture
+itself. `DECODE_IQ_TETRA_REAL_AIR_SCBS` replays the 54 kHz derivative and asserts
+the independently reported MCC 250, MNC 13 and colour code `0x2C`; replay now
+resamples the 50 kHz original to 72 kHz under the hand-written sidecar
+`tetra_scbs_real_air_50k.cs16.json`, which `DECODE_IQ_TETRA_REAL_AIR_SCBS_50K`
+checks (see [WAV I/Q replay and replay resampling](#wav-iq-replay-and-replay-resampling-issue-701)).
 `DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC` replays a second unmodified Apache-2.0
 CS16 capture recorded during control-channel reacquisition at about 10 dB
 in-channel SNR. It requires at least 15 clean MCC 250/MNC 13/colour `0x2C`
@@ -501,6 +505,53 @@ draw of the hunt's phase against the calls, which a change to the hunt's timelin
 [Replay determinism](#replay-determinism-issue-572) says how to judge such a change across captures and their
 realizations instead. Decode *volume* under the hunt is not covered by the `iq-decode` suite, which asks only whether a
 build still decodes.
+
+#### WAV I/Q replay and replay resampling (issue #701)
+
+No WAV recording is committed. `dsd-neo_test_iq_wav_fixture_tool` (`tests/io/iq_wav_fixture_tool.c`) writes them into
+the build tree (`<build>/tests/iq_wav_fixtures/`) from the committed fixtures, and the `IQ_WAV_FIXTURES` test, a CTest
+fixture setup in the `iq-decode` label, runs it once for every case that replays one:
+
+- `scbs_s24/tetra_scbs_50k_s24.wav`: the unmodified 50 kHz `tetra_scbs_real_air_50k.cs16` as 24-bit PCM (each sample
+  shifted left 8 bits, exact), with a `meta` chunk, an odd-sized `LIST` chunk and its pad byte, and an `auxi` chunk
+  giving the centre (467.913 MHz) and a start time.
+- `call_48254/tetra.wav`: `tetra_call_real_air_72k.iq` resampled to 48,254 Hz by the tool's own double-precision
+  windowed-sinc filter, as 24-bit PCM laid out as the issue's recording (a 1016-byte `meta` chunk, no `auxi`, no
+  frequency in the name), with the issue's hand-written `cf32` sidecar beside it as `tetra.wav.json`.
+- `call_known_centre/tetra_call.wav`: the same samples with an `auxi` chunk giving the carrier's centre, 426.7 MHz.
+- `pow2/tetra_bsch_2304k.wav`: `tetra_bsch_synth_72k.iq` upsampled x32 to 2.304 MS/s as 16-bit PCM, a rate that
+  reaches 72 kHz through the half-band chain alone.
+- `u8/tetra_bsch_72k_u8.wav`: `tetra_bsch_synth_72k.iq`'s `cu8` bytes, unchanged, as 8-bit unsigned PCM.
+
+The end-to-end cases (`iq-decode`, radio builds):
+
+| Case | What it pins |
+| --- | --- |
+| `DECODE_IQ_TETRA_REAL_AIR_SCBS_50K` | The unmodified 50 kHz capture under its hand-written sidecar `tetra_scbs_real_air_50k.cs16.json` (no WAV): resampled to 72 kHz (`Rate chain: capture=50000 Hz resampled to 72000 Hz`), at least 25 MCC 250/MNC 13/colour `0x2C` identities (51 in dev-debug), and no TETRA rate warning. |
+| `DECODE_IQ_TETRA_WAV_SCBS_S24`, `IQ_INFO_WAV_SCBS` | The same capture as a 24-bit WAV: the same identities and resampling, the WAV summary line with its `auxi` centre, no rate warning, no `Please specify a frequency`, no `CLIP`; and its `--iq-info` (container, encoding, rate, `auxi` centre and start time, duration, the 72 kHz plan, `Replay compatible: yes`, no warning). |
+| `DECODE_IQ_TETRA_WAV_POW2` | The 2.304 MS/s WAV decimated by 32 to 72 kHz with no resampling (`base_decim=32`, no `resampled to`). |
+| `DECODE_IQ_TETRA_WAV_CALL_48254` | The issue's case: the 48,254 Hz recording under `-fT -Z` decodes the call as the 72 kHz fixture does, at least 200 BSCH identities (232), the D-SETUP twice and at least 40 TCH/S bursts whose class-2 CRC passes (48), with no rate warning, no frequency refusal and no clipping. |
+| `DECODE_IQ_TETRA_WAV_SIDECAR_NOTICE` | The same recording opened by its sidecar: the replay names the sidecar it ignores and decodes from the WAV's header. |
+| `DECODE_IQ_TETRA_WAV_CALL_EVENT` | The known-centre recording publishes the group call to the event history (`-J`), as `DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT` does for the 72 kHz fixture. |
+| `DECODE_IQ_TETRA_WAV_U8_MATCHES_CU8` | The 8-bit WAV of a `cu8` fixture's bytes decodes line for line as the `cu8` sidecar replay (`tests/iq_decode_match_check.cmake`), so the u8 conversion adds no DC offset. |
+| `DECODE_IQ_TETRA_WAV_UNKNOWN_CENTRE_LOOP` | The recording with no centre under `--iq-loop`: three passes, each after the first decoding line for line what the second did, the first (from a cold decoder) at most 2 fewer of each count. `tests/tools/iq_loop_passes_check.py` splits the passes at the replay's `--iq-loop rewound` lines, so the case registers only where CMake finds Python 3. |
+
+`iq_decode_check.cmake` takes `EXPECTED2`/`MIN_MATCHES2` and `EXPECTED3`/`MIN_MATCHES3` for these cases: further
+payloads the same run must print, at least as often (1 by default).
+
+The unit tests:
+
+| Case | What it pins |
+| --- | --- |
+| `IO_IQ_WAV` | The parser's container rules (RIFF, RF64 and BW64 with chunks after `data`, unfinalized RIFFs with RIFF size 0 and 0xFFFFFFFF, pad bytes and the ambiguous missing-pad layouts, `fmt` after `data`, an empty `data` chunk refused), every encoding and EXTENSIBLE through the reader's `cf32` conversion, 64-bit float extremes (DBL_MAX, infinities, NaN), the reader's partial-read contract (complete frames of a short read returned, the error on the next call; reads smaller than one frame), truncation, rewind and seek, the refusals with their messages, the centre and start time from `auxi` and from file names, `--iq-info`, a sidecar beside a WAV (bogus, or semantically invalid) ignored whether the replay is opened by the `.wav` or the `.json` path, and an unfinalized WAV read near its end past 4 GiB (a sparse file; skipped where the filesystem cannot make one). |
+| `PLATFORM_FILE_LARGE` | `dsd_stat_path()`/`dsd_fstat()` sizes and `dsd_fseek64()`/`dsd_ftell64()` offsets past 2 GiB and 4 GiB, on sparse files (skipped where they cannot be made). |
+| `DSP_IQ_RESAMPLER` | The ratio and its ppm error per case (48,254 to 72,000 Hz is 4063/2723, +0.01 ppm), the filter's edges, passband ripple within 0.1 dB and at least 60 dB at every frequency that folds into the protected band (2.048 to 1.152 MS/s, 48,254 Hz to 72 kHz and others), tone frequency, group delay (measured against the reported one), output independent of how input is cut into calls, no I/Q cross-talk, a clear equal to a fresh design, the output bound, and the refusals. |
+| `IO_IQ_REPLAY_RATE_PLAN` | Every committed fixture sidecar keeps its recorded chain (and every TETRA one under TETRA but the 50 kHz source, which is resampled), the fold of a power-of-two `post_downsample`, the general rule's examples, an explicit request met exactly, the refusals, the applied config passing the replay validators, and the chunk rule (`dsd_iq_replay_chunk_bytes_for()` equal to `dsd_iq_replay_chunk_bytes()` at equal rates, and a resampled chunk within one live transfer). |
+| `IO_RTL_REPLAY_RESAMPLE` (radio) | A 48 kHz `cu8` capture with the fs/4 shift, a `MUTE`, a `RETUNE` and `RESET` and a second `MUTE`, replayed at its own chain and under TETRA at 72 kHz: each TETRA block is the native block of the same capture span resampled, the resampler starting over at each event, media spans contiguous but for what a `MUTE` omits, the input level taken from the raw chunk, and identical blocks fast, realtime and with short reads; and a 30 kHz WAV with no centre looping under `--iq-loop`, every pass the same. |
+| `IO_RTL_REPLAY_RESUME` (radio) | A replay stopped part way and resumed from `rtl_stream_replay_checkpoint()`: after a `MUTE`, after a `RETUNE` (opening on its centre) and on a second `--iq-loop` pass, the resumed replay's blocks are the straight replay's from the checkpoint on, sample for sample, with its media time going on from the checkpoint; and resumed at an explicit 24 kHz or under TETRA's 72 kHz, from the same media time. |
+| `APP_COMMAND_QUEUE` (`test_replay_*`) | Over a fake replay stream: `RTL_SET_BW` on a replay re-plans and resumes from the checkpoint with the request kept, a switch to TETRA and back re-plans each way, a config apply's `[mode] decode = tetra` and RTL-family `rtl_bw_khz` re-plan, and a re-plan that cannot go ahead leaves the session as it was: a refused plan stops nothing and puts the whole receive profile back, a failed start resumes the previous chain from the same checkpoint on the capture's clock, and when that fails too the replay restarts as any failed start's input does (from its start, on the system clock). |
+| `RUNTIME_CONFIG_APPLY` | A startup RTL-SDR or rtl_tcp `[input]` `rtl_bw_khz` is an explicit request that outlives the input `--iq-replay` replaces; one that names no bandwidth requests none. |
+| `FUZZ_IO_IQ_WAV` (fuzz presets) | `dsd_iq_wav_read_info()` and the replay reader over a WAV (open, read, seek) on arbitrary input; seeds in `tests/fuzz/corpus/io_iq_wav/`. |
 
 #### stdout audio (issue #659)
 

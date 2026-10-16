@@ -21,6 +21,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
@@ -7397,8 +7398,68 @@ config_rtl_start_latch(int opened) {
     }
 }
 
+/* Issue #701: a fake I/Q replay stream, for a run-time re-plan of its rate chain. While g_fake_replay.active, the re-plan
+   check (rtl_stream_replay_replan_check()) plans the rate the options need as the stream's plan does: an explicit
+   bandwidth request, else the sidecar's recorded bandwidth (none for a WAV), else the request; under TETRA, 72 kHz
+   unless that is a multiple of 18 kHz. It says DIFFERS when that is not the rate running, and REFUSED, with a
+   planner's reason, under TETRA when refuse_tetra is set, or always when refuse_all is. A create records the resume it
+   was handed and the rate it would plan; a start that works makes that the rate running. Each checkpoint read hands
+   out the next byte offset, so a re-plan that read it twice would resume the two starts at different places. */
+typedef struct {
+    int active;
+    uint32_t capture_hz;
+    int recorded_khz;
+    uint32_t running_hz;
+    uint32_t created_hz;
+    int refuse_tetra;
+    int refuse_all;
+    int checks;
+    int request_checks;
+    int checkpoint_reads;
+    dsd_iq_replay_checkpoint checkpoint;
+} fake_replay_stream;
+
+static fake_replay_stream g_fake_replay;
+
+/* What each create was handed: the resume, the TETRA decoder and the bandwidth request (up to four creates). */
+typedef struct {
+    dsd_iq_replay_checkpoint resume;
+    int resume_pending;
+    int frame_tetra;
+    int bw_khz;
+    int bw_source;
+} fake_replay_create;
+
+static fake_replay_create g_fake_replay_creates[4];
+
+static uint32_t
+fake_replay_plan_hz_for(int bw_khz, int bw_source, int frame_tetra) {
+    const int explicit_bw = bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT;
+    int khz = bw_khz;
+    if (!explicit_bw && g_fake_replay.recorded_khz > 0) {
+        khz = g_fake_replay.recorded_khz;
+    }
+    uint32_t hz = (uint32_t)khz * 1000U;
+    if (frame_tetra == 1 && hz % 18000U != 0U) {
+        hz = 72000U;
+    }
+    return hz;
+}
+
+static uint32_t
+fake_replay_plan_hz(const dsd_opts* opts) {
+    return fake_replay_plan_hz_for(opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, opts->frame_tetra == 1);
+}
+
+static void
+reset_fake_replay(void) {
+    DSD_MEMSET(&g_fake_replay, 0, sizeof g_fake_replay);
+    DSD_MEMSET(g_fake_replay_creates, 0, sizeof g_fake_replay_creates);
+}
+
 static void
 reset_config_rtl_wrap(void) {
+    reset_fake_replay();
     dsd_input_failure_clear();
     g_config_rtl_airspy_stops_after_open = 0;
     g_config_rtl_next_fail_opens = 0;
@@ -7445,6 +7506,15 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_config_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
     g_config_rtl_captures += g_config_rtl_create_capture == 1;
     g_config_rtl_opened_capture = 0;
+    if (opts && g_config_rtl_creates >= 0 && g_config_rtl_creates < 4) {
+        fake_replay_create* made = &g_fake_replay_creates[g_config_rtl_creates];
+        made->resume_pending = opts->iq_replay_resume_pending;
+        made->resume = opts->iq_replay_resume;
+        made->frame_tetra = opts->frame_tetra;
+        made->bw_khz = opts->rtl_dsp_bw_khz;
+        made->bw_source = opts->rtl_dsp_bw_source;
+    }
+    g_fake_replay.created_hz = opts ? fake_replay_plan_hz(opts) : 0U;
     *out_ctx = g_config_rtl_open_ok ? (RtlSdrContext*)g_config_rtl_ctx : NULL;
     ++g_config_rtl_creates;
     return g_config_rtl_open_ok ? 0 : -1;
@@ -7466,6 +7536,7 @@ __wrap_rtl_stream_start(RtlSdrContext* ctx) {
     if (g_config_rtl_fail_starts <= 0) {
         g_config_rtl_opened_capture = capturing;
         config_rtl_start_latch(1);
+        g_fake_replay.running_hz = g_fake_replay.created_hz;
         return 0;
     }
     --g_config_rtl_fail_starts;
@@ -7503,6 +7574,73 @@ __wrap_rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* ou
         *out_rate_hz = g_config_rtl_refused_rate_hz;
     }
     return 1;
+}
+
+int __wrap_rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, int* out_resampled,
+                                          char* why, size_t why_size);
+int __wrap_rtl_stream_replay_checkpoint(dsd_iq_replay_checkpoint* out);
+int __wrap_rtl_stream_replay_replan_check_request(const dsd_opts* opts, const rtl_stream_replay_request* req,
+                                                  uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
+                                                  size_t why_size);
+
+/* The fake's re-plan check for the request @p req (the options' own, or one a check made before a change asks
+   about). */
+static int
+fake_replay_replan_check(const rtl_stream_replay_request* req, uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
+                         size_t why_size) {
+    if (!g_fake_replay.active || !req) {
+        return RTL_STREAM_REPLAN_NO_REPLAY;
+    }
+    if (g_fake_replay.refuse_all || (g_fake_replay.refuse_tetra && req->frame_tetra == 1)) {
+        DSD_SNPRINTF(why, why_size, "the capture's rate (%u Hz) is below the 8000 Hz a replay can resample",
+                     (unsigned)g_fake_replay.capture_hz);
+        return RTL_STREAM_REPLAN_REFUSED;
+    }
+    const uint32_t hz = fake_replay_plan_hz_for(req->dsp_bw_khz, req->dsp_bw_source, req->frame_tetra);
+    if (out_dsp_rate_hz) {
+        *out_dsp_rate_hz = hz;
+    }
+    if (out_resampled) {
+        uint32_t fs = g_fake_replay.capture_hz;
+        while (fs > hz && fs % 2U == 0U) {
+            fs /= 2U;
+        }
+        *out_resampled = fs != hz;
+    }
+    return hz == g_fake_replay.running_hz ? RTL_STREAM_REPLAN_SAME : RTL_STREAM_REPLAN_DIFFERS;
+}
+
+int
+__wrap_rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
+                                      size_t why_size) {
+    g_fake_replay.checks++;
+    if (!opts) {
+        return RTL_STREAM_REPLAN_NO_REPLAY;
+    }
+    const rtl_stream_replay_request req = {opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, opts->frame_tetra == 1};
+    return fake_replay_replan_check(&req, out_dsp_rate_hz, out_resampled, why, why_size);
+}
+
+int
+__wrap_rtl_stream_replay_replan_check_request(const dsd_opts* opts, const rtl_stream_replay_request* req,
+                                              uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
+                                              size_t why_size) {
+    g_fake_replay.request_checks++;
+    if (!opts) {
+        return RTL_STREAM_REPLAN_NO_REPLAY;
+    }
+    return fake_replay_replan_check(req, out_dsp_rate_hz, out_resampled, why, why_size);
+}
+
+int
+__wrap_rtl_stream_replay_checkpoint(dsd_iq_replay_checkpoint* out) {
+    if (!g_fake_replay.active) {
+        return -1;
+    }
+    g_fake_replay.checkpoint_reads++;
+    *out = g_fake_replay.checkpoint;
+    g_fake_replay.checkpoint.data_offset += 512U;
+    return 0;
 }
 
 /* A restart stops and destroys the running context, which the tests fake with a pointer to their own storage. */
@@ -9822,6 +9960,476 @@ test_decode_mode_set_tetra_names_an_unusable_rate(void) {
     rc |= expect_str("tetra at 72 kHz is the usual toast", state.ui_msg, "Decoding TETRA");
     reset_rx_family_wrap();
     freeState(&state);
+    return rc;
+}
+
+static int submit_config(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* label);
+
+/*
+ * Issue #701: a running I/Q replay whose decode mode or DSP bandwidth changes re-plans its rate chain. A fake replay of
+ * @p capture_hz recording @p recorded_khz (0 for a WAV) runs the chain the request (@p bw_khz from @p bw_source) plans,
+ * on the capture's clock, with a checkpoint 30720 bytes in, past one event.
+ */
+static void
+init_replay_replan_context(dsd_opts* opts, dsd_state* state, void** fake_ctx, uint32_t capture_hz, int recorded_khz,
+                           int bw_khz, int bw_source) {
+    init_decode_mode_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->iq_replay_requested = 1;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:capture.iq.json");
+    dsd_opts_set_rtl_dsp_bw(opts, bw_khz, bw_source);
+    state->rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_fake_replay.active = 1;
+    g_fake_replay.capture_hz = capture_hz;
+    g_fake_replay.recorded_khz = recorded_khz;
+    g_fake_replay.running_hz = fake_replay_plan_hz(opts);
+    g_fake_replay.checkpoint.data_offset = 30720U;
+    g_fake_replay.checkpoint.event_index = 1U;
+    g_fake_replay.checkpoint.timeline_samples = 16897U;
+    g_fake_replay.checkpoint.pass_samples = 16897U;
+    g_fake_replay.checkpoint.fs4_phase = 1;
+    dsd_decode_clock_use_replay(1700000000LL);
+    dsd_decode_clock_set_media_ns(352000000ULL);
+}
+
+/* Create @p index was handed the fake replay's first checkpoint (30720 bytes in), to start once from it. */
+static int
+expect_resumed_at_checkpoint(const char* label, int index) {
+    const fake_replay_create* made = &g_fake_replay_creates[index];
+    return expect_true(label, made->resume_pending == 1 && made->resume.data_offset == 30720U
+                                  && made->resume.event_index == 1U && made->resume.timeline_samples == 16897U
+                                  && made->resume.fs4_phase == 1);
+}
+
+static int
+submit_and_drain_i32(dsd_opts* opts, dsd_state* state, int cmd, int32_t value, const char* label) {
+    int rc = expect_int(label, dsd_app_command_set_i32(cmd, value), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * RTL_SET_BW 48 -> 24 kHz on a replay of a 48 kHz capture that recorded 48 kHz: the request becomes explicit and takes
+ * effect, the replay reopening at 24 kHz where it stopped with its decode clock kept on the capture, on the carrier it
+ * was on; the request stays in the options, and the resume is consumed. A bandwidth no chain reaches is refused with the planner's reason and
+ * nothing stops. A live radio's bandwidth change restarts it as before, with no re-plan and no resume.
+ */
+static int
+test_replay_bandwidth_change_replans(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    state.carrier_source_key = 1U; /* a stream ran: a restart of the replay would take a source boundary */
+    const uint32_t carrier_seq = state.carrier_seq;
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_RTL_SET_BW, 24, "replay bw 24");
+    rc |= expect_true("replay bw 24: the resumed replay stays on its carrier", state.carrier_seq == carrier_seq);
+    rc |= expect_int("replay bw 24: one reopen", g_config_rtl_creates, 1);
+    rc |= expect_resumed_at_checkpoint("replay bw 24: resumes at the checkpoint", 0);
+    rc |= expect_int("replay bw 24: checkpoint read once", g_fake_replay.checkpoint_reads, 1);
+    rc |= expect_true("replay bw 24: opened on the explicit request",
+                      g_fake_replay_creates[0].bw_khz == 24
+                          && g_fake_replay_creates[0].bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= expect_int("replay bw 24: runs at 24 kHz", (int)g_fake_replay.running_hz, 24000);
+    rc |= expect_true("replay bw 24: the request stays",
+                      opts.rtl_dsp_bw_khz == 24 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= expect_int("replay bw 24: the resume is consumed", opts.iq_replay_resume_pending, 0);
+    rc |= expect_int("replay bw 24: decode time stays on the capture", (int)dsd_decode_clock_source(),
+                     (int)DSD_DECODE_CLOCK_REPLAY);
+    rc |= expect_toast("replay bw 24: toast", &state, "Applied: RTL DSP BW -> 24 kHz");
+    rc |= expect_int("replay bw 24: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    g_fake_replay.refuse_all = 1;
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_RTL_SET_BW, 24, "replay bw refused");
+    rc |= expect_int("replay bw refused: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_true("replay bw refused: the request goes back",
+                      opts.rtl_dsp_bw_khz == 48 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_true("replay bw refused: the stream keeps running", state.rtl_ctx == (RtlSdrContext*)fake_ctx);
+    rc |= expect_toast("replay bw refused: toast", &state,
+                       "Refused: the capture's rate (48000 Hz) is below the 8000 Hz a replay can resample");
+    rc |= expect_int("replay bw refused: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    dsd_decode_clock_use_system();
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_RTL_SET_BW, 24, "live bw 24");
+    rc |= expect_int("live bw 24: no re-plan asked", g_fake_replay.checks, 0);
+    rc |= expect_true("live bw 24: a plain restart", g_config_rtl_creates == 1
+                                                         && g_fake_replay_creates[0].resume_pending == 0
+                                                         && g_fake_replay.checkpoint_reads == 0);
+    rc |= expect_toast("live bw 24: toast", &state, "Applied: RTL DSP BW -> 24 kHz");
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * A switch to TETRA during a replay of a 48 kHz capture reopens it resampled to 72 kHz where it stopped, and the
+ * switch back returns to the 48 kHz chain the request plans; a mode on the chain the replay runs reopens nothing. A
+ * 48254 Hz WAV asked for 24 kHz goes to TETRA's 72 kHz and back to 24 kHz: the request is never replaced by the rate
+ * TETRA ran.
+ */
+static int
+test_replay_mode_change_replans(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA, "tetra");
+    rc |= expect_int("tetra: one reopen", g_config_rtl_creates, 1);
+    rc |= expect_resumed_at_checkpoint("tetra: resumes at the checkpoint", 0);
+    rc |= expect_int("tetra: opened with the TETRA decoder", g_fake_replay_creates[0].frame_tetra, 1);
+    rc |= expect_int("tetra: runs at 72 kHz", (int)g_fake_replay.running_hz, 72000);
+    rc |= expect_int("tetra: decoding TETRA", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_TETRA, 1);
+    rc |= expect_str("tetra: toast", state.ui_msg, "Decoding TETRA: replay resampled to 72 kHz");
+    rc |= expect_true("tetra: the request is untouched",
+                      opts.rtl_dsp_bw_khz == 48 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_int("tetra: decode time stays on the capture", (int)dsd_decode_clock_source(),
+                     (int)DSD_DECODE_CLOCK_REPLAY);
+    rc |= expect_int("tetra: not failed", dsd_app_command_test_last_failed(), 0);
+
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR, "back to dmr");
+    rc |= expect_int("back to dmr: a second reopen", g_config_rtl_creates, 2);
+    rc |= expect_int("back to dmr: opened without TETRA", g_fake_replay_creates[1].frame_tetra, 0);
+    rc |= expect_int("back to dmr: resumes", g_fake_replay_creates[1].resume_pending, 1);
+    rc |= expect_int("back to dmr: runs at 48 kHz again", (int)g_fake_replay.running_hz, 48000);
+    rc |= expect_str("back to dmr: toast", state.ui_msg, "Decoding DMR: replay runs at 48 kHz");
+
+    rc |=
+        submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1, "p25 same chain");
+    rc |= expect_int("p25 same chain: nothing reopened", g_config_rtl_creates, 2);
+    rc |= expect_str("p25 same chain: the usual toast", state.ui_msg, "Decoding P25 Phase 1");
+    freeState(&state);
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48254U, 0, 24, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA, "wav tetra");
+    rc |= expect_int("wav tetra: runs at 72 kHz", (int)g_fake_replay.running_hz, 72000);
+    rc |= expect_true("wav tetra: opened on the 24 kHz request",
+                      g_fake_replay_creates[0].bw_khz == 24
+                          && g_fake_replay_creates[0].bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR, "wav back");
+    rc |= expect_int("wav back: runs at 24 kHz", (int)g_fake_replay.running_hz, 24000);
+    rc |= expect_true("wav back: the request is still 24 kHz",
+                      opts.rtl_dsp_bw_khz == 24 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= expect_str("wav back: toast", state.ui_msg, "Decoding DMR: replay resampled to 24 kHz");
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/* What a decode preset stages beyond the receive profile dsd_scan_settings holds: the audio layout (the stereo 48 kHz
+   output this session opened its sink with) and EDACS's mode and ESK mask. */
+typedef struct {
+    int audio_channels;
+    int audio_rate;
+    int ea_mode;
+    int esk_mask;
+} preset_side_fields;
+
+static void
+stereo_session_with_edacs_state(dsd_opts* opts, dsd_state* state) {
+    opts->pulse_digi_out_channels = 2;
+    opts->pulse_digi_rate_out = 48000;
+    state->ea_mode = 1;
+    state->esk_mask = 0xA0;
+}
+
+static int
+expect_preset_side_fields_back(const char* label, const dsd_opts* opts, const dsd_state* state) {
+    const preset_side_fields want = {2, 48000, 1, 0xA0};
+    const preset_side_fields got = {opts->pulse_digi_out_channels, opts->pulse_digi_rate_out, state->ea_mode,
+                                    state->esk_mask};
+    return expect_true(label, got.audio_channels == want.audio_channels && got.audio_rate == want.audio_rate
+                                  && got.ea_mode == want.ea_mode && got.esk_mask == want.esk_mask);
+}
+
+/*
+ * A re-plan that cannot go ahead leaves the session as it was. A TETRA plan the planner refuses stops nothing: the whole
+ * receive profile (decoders, modulation, symbol timing, the bandwidth request) goes back and the toast names the rate
+ * and that the capture resamples to no TETRA rate. A TETRA start that fails reopens the previous chain from the same
+ * checkpoint, the profile back, decode time still on the capture. When that start fails too, the replay is restarted
+ * as any failed start's input is (no resume, decode time back on the system clock), with the profile back.
+ */
+static int
+test_replay_refused_replan_restores_the_profile(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    dsd_scan_settings before;
+    dsd_scan_settings after;
+    int rc = 0;
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    g_fake_replay.refuse_tetra = 1;
+    g_fake_request_rate_hz = 48000;
+    stereo_session_with_edacs_state(&opts, &state);
+    dsd_scan_settings_capture(&opts, &state, &before);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA, "refused tetra");
+    dsd_scan_settings_capture(&opts, &state, &after);
+    rc |= expect_int("refused tetra: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_int("refused tetra: the profile is back", dsd_scan_settings_equal(&before, &after, 1), 1);
+    rc |= expect_int("refused tetra: no TETRA decoder", opts.frame_tetra, 0);
+    rc |= expect_preset_side_fields_back("refused tetra: the audio layout is back", &opts, &state);
+    rc |= expect_true("refused tetra: the request is back",
+                      opts.rtl_dsp_bw_khz == 48 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_str("refused tetra: toast", state.ui_msg,
+                     "Failed: TETRA -> DSP rate 48 kHz is no multiple of 18 kHz, and this replay cannot be resampled "
+                     "to one");
+    rc |= expect_int("refused tetra: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    g_config_rtl_fail_starts = 1;
+    stereo_session_with_edacs_state(&opts, &state);
+    dsd_scan_settings_capture(&opts, &state, &before);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA,
+                               "tetra start fails");
+    rc |= expect_preset_side_fields_back("tetra start fails: the audio layout is back", &opts, &state);
+    dsd_scan_settings_capture(&opts, &state, &after);
+    rc |= expect_int("tetra start fails: two starts", g_config_rtl_creates, 2);
+    rc |= expect_int("tetra start fails: the first had TETRA", g_fake_replay_creates[0].frame_tetra, 1);
+    rc |= expect_resumed_at_checkpoint("tetra start fails: the first resumed at the checkpoint", 0);
+    rc |= expect_int("tetra start fails: the second runs the previous chain", g_fake_replay_creates[1].frame_tetra, 0);
+    rc |= expect_resumed_at_checkpoint("tetra start fails: the second resumed at the same checkpoint", 1);
+    rc |= expect_int("tetra start fails: the checkpoint was read once", g_fake_replay.checkpoint_reads, 1);
+    rc |= expect_int("tetra start fails: runs at 48 kHz", (int)g_fake_replay.running_hz, 48000);
+    rc |= expect_int("tetra start fails: the profile is back", dsd_scan_settings_equal(&before, &after, 1), 1);
+    rc |= expect_int("tetra start fails: decode time stays on the capture", (int)dsd_decode_clock_source(),
+                     (int)DSD_DECODE_CLOCK_REPLAY);
+    rc |= expect_str("tetra start fails: toast", state.ui_msg,
+                     "Failed: TETRA -> the replay did not start at the new rate (see log)");
+    rc |= expect_int("tetra start fails: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 24, DSD_RTL_DSP_BW_SOURCE_PRESET);
+    g_config_rtl_fail_starts = 2;
+    stereo_session_with_edacs_state(&opts, &state);
+    dsd_scan_settings_capture(&opts, &state, &before);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_TETRA,
+                               "tetra recovery fails");
+    rc |= expect_preset_side_fields_back("tetra recovery fails: the audio layout is back", &opts, &state);
+    dsd_scan_settings_capture(&opts, &state, &after);
+    rc |= expect_int("tetra recovery fails: three starts", g_config_rtl_creates, 3);
+    rc |= expect_resumed_at_checkpoint("tetra recovery fails: the recovery resumed first", 1);
+    rc |= expect_true("tetra recovery fails: then a plain restart on the profile from before",
+                      g_fake_replay_creates[2].resume_pending == 0 && g_fake_replay_creates[2].frame_tetra == 0
+                          && g_fake_replay_creates[2].bw_khz == 24
+                          && g_fake_replay_creates[2].bw_source == DSD_RTL_DSP_BW_SOURCE_PRESET);
+    rc |= expect_int("tetra recovery fails: the profile is back", dsd_scan_settings_equal(&before, &after, 1), 1);
+    rc |= expect_true("tetra recovery fails: the request is back",
+                      opts.rtl_dsp_bw_khz == 24 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_PRESET);
+    rc |= expect_int("tetra recovery fails: decode time follows the system clock", (int)dsd_decode_clock_source(),
+                     (int)DSD_DECODE_CLOCK_SYSTEM);
+    rc |= expect_toast("tetra recovery fails: toast", &state, "Failed: ");
+    rc |= expect_int("tetra recovery fails: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    /* EDACS/ProVoice refused: its preset also clears the EDACS mode and ESK mask, which come back with the rest. */
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    g_fake_replay.refuse_all = 1;
+    stereo_session_with_edacs_state(&opts, &state);
+    dsd_scan_settings_capture(&opts, &state, &before);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_EDACS_PV,
+                               "refused edacs");
+    dsd_scan_settings_capture(&opts, &state, &after);
+    rc |= expect_int("refused edacs: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_int("refused edacs: the profile is back", dsd_scan_settings_equal(&before, &after, 1), 1);
+    rc |= expect_preset_side_fields_back("refused edacs: the audio layout and EDACS state are back", &opts, &state);
+    rc |= expect_int("refused edacs: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * A config applied during a replay re-plans it too: a [mode] decode = tetra, and an RTL-family [input] whose
+ * rtl_bw_khz is a new bandwidth request for the replay it leaves running, each reopen it where it stopped. One the
+ * planner refuses, or whose starts all fail, fails the apply with the bandwidth request and its source back.
+ */
+static int
+test_replay_config_apply_replans(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    dsdneoUserConfig cfg;
+    int rc = 0;
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_TETRA;
+    rc |= submit_config(&opts, &state, &cfg, "config tetra");
+    rc |= expect_int("config tetra: one reopen", g_config_rtl_creates, 1);
+    rc |= expect_int("config tetra: opened with the TETRA decoder", g_fake_replay_creates[0].frame_tetra, 1);
+    rc |= expect_resumed_at_checkpoint("config tetra: resumes at the checkpoint", 0);
+    rc |= expect_int("config tetra: runs at 72 kHz", (int)g_fake_replay.running_hz, 72000);
+    rc |= expect_int("config tetra: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_bw_khz = 24;
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= submit_config(&opts, &state, &cfg, "config bw 24");
+    rc |= expect_str("config bw 24: the replay stays the input", opts.audio_in_dev, "iqreplay:capture.iq.json");
+    rc |= expect_int("config bw 24: one reopen", g_config_rtl_creates, 1);
+    rc |= expect_resumed_at_checkpoint("config bw 24: resumes at the checkpoint", 0);
+    rc |= expect_int("config bw 24: runs at 24 kHz", (int)g_fake_replay.running_hz, 24000);
+    rc |= expect_true("config bw 24: the request is explicit",
+                      opts.rtl_dsp_bw_khz == 24 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= expect_int("config bw 24: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+
+    /* A new gain beside the bandwidth: a replay plays the gain its capture recorded, so the gain restarts nothing (a
+       restart would rewind the replay to its first byte and put decode time on the system clock), and the one reopen
+       is the re-plan's, from where the replay stopped. A gain alone reopens nothing at all. */
+    cfg.rtl_gain = 30;
+    cfg.rtl_gain_is_set = 1;
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    opts.rtl_gain_value = 20;
+    rc |= submit_config(&opts, &state, &cfg, "config gain + bw 24");
+    rc |= expect_int("config gain + bw 24: one reopen", g_config_rtl_creates, 1);
+    rc |= expect_resumed_at_checkpoint("config gain + bw 24: resumes at the checkpoint", 0);
+    rc |= expect_int("config gain + bw 24: checkpoint read once", g_fake_replay.checkpoint_reads, 1);
+    rc |= expect_int("config gain + bw 24: runs at 24 kHz", (int)g_fake_replay.running_hz, 24000);
+    rc |= expect_int("config gain + bw 24: decode time stays on the capture", (int)dsd_decode_clock_source(),
+                     (int)DSD_DECODE_CLOCK_REPLAY);
+    rc |= expect_int("config gain + bw 24: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+    cfg.rtl_bw_khz = 0;
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    opts.rtl_gain_value = 20;
+    rc |= submit_config(&opts, &state, &cfg, "config gain only");
+    rc |= expect_int("config gain only: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_int("config gain only: decode time stays on the capture", (int)dsd_decode_clock_source(),
+                     (int)DSD_DECODE_CLOCK_REPLAY);
+    rc |= expect_int("config gain only: not failed", dsd_app_command_test_last_failed(), 0);
+    freeState(&state);
+    cfg.rtl_gain = 0;
+    cfg.rtl_gain_is_set = 0;
+    cfg.rtl_bw_khz = 24;
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    g_fake_replay.refuse_all = 1;
+    rc |= submit_config(&opts, &state, &cfg, "config bw refused");
+    rc |= expect_int("config bw refused: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_true("config bw refused: the request and its source are back",
+                      opts.rtl_dsp_bw_khz == 48 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_toast("config bw refused: toast", &state, "Config not applied: the capture's rate");
+    rc |= expect_int("config bw refused: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    init_replay_replan_context(&opts, &state, fake_ctx, 48000U, 48, 48, DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    g_config_rtl_fail_starts = 2;
+    rc |= submit_config(&opts, &state, &cfg, "config bw starts fail");
+    rc |= expect_int("config bw starts fail: three starts", g_config_rtl_creates, 3);
+    rc |= expect_true("config bw starts fail: the request and its source are back",
+                      opts.rtl_dsp_bw_khz == 48 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_true("config bw starts fail: the input that ran restarts on them",
+                      g_fake_replay_creates[2].bw_khz == 48
+                          && g_fake_replay_creates[2].bw_source == DSD_RTL_DSP_BW_SOURCE_DEFAULT);
+    rc |= expect_toast("config bw starts fail: toast", &state, "Config not applied: ");
+    rc |= expect_int("config bw starts fail: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/* A replay of a 48 kHz capture on the Analog monitor with an NFM width of @p width_hz, its request @p bw_khz explicit
+   and the chain it plans running. */
+static void
+init_replay_nfm_context(dsd_opts* opts, dsd_state* state, void** fake_ctx, int bw_khz, int width_hz) {
+    init_replay_replan_context(opts, state, fake_ctx, 48000U, 0, bw_khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    opts->analog_nfm_bandwidth_hz = width_hz;
+    g_fake_replay.running_hz = fake_replay_plan_hz(opts);
+}
+
+/*
+ * A width beside a change that re-plans a running replay is held to the rate the replay will run at, not the one it
+ * runs: the request it plans (rtl_stream_replay_replan_check_request()), as an RTL-SDR reopen's width is held to its
+ * new DSP bandwidth. A config that widens a 24 kHz replay to 48 kHz with a 25 kHz NFM width the 24 kHz stream would
+ * refuse applies, reopening once at 48 kHz; one that narrows a 48 kHz replay to 24 kHz under that width is refused
+ * before anything reopens, though the running 48 kHz stream would take it. RTL_SET_BW narrowing a replay under that
+ * width is refused before anything reopens, and a switch from TETRA's 72 kHz back to the Analog monitor, whose replay
+ * returns to the 24 kHz the request plans, is refused for a width that rate cannot filter.
+ */
+static int
+test_replay_widths_held_to_the_planned_rate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    dsdneoUserConfig cfg;
+    int rc = 0;
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_bw_khz = 48;
+    cfg.has_analog = 1;
+    cfg.analog_nfm_bandwidth_hz = 25000;
+    init_replay_nfm_context(&opts, &state, fake_ctx, 24, 12500);
+    g_analog_check_result = -1; /* the 24 kHz stream running cannot filter 25 kHz */
+    rc |= submit_config(&opts, &state, &cfg, "config widen + width");
+    rc |= expect_int("config widen + width: not failed", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("config widen + width: one reopen", g_config_rtl_creates, 1);
+    rc |= expect_int("config widen + width: runs at 48 kHz", (int)g_fake_replay.running_hz, 48000);
+    rc |= expect_int("config widen + width: the width applies", opts.analog_nfm_bandwidth_hz, 25000);
+    freeState(&state);
+
+    cfg.rtl_bw_khz = 24;
+    init_replay_nfm_context(&opts, &state, fake_ctx, 48, 12500);
+    g_analog_check_result = 0; /* the 48 kHz stream running would take it */
+    rc |= submit_config(&opts, &state, &cfg, "config narrow + width");
+    rc |= expect_int("config narrow + width: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("config narrow + width: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_int("config narrow + width: the width stays", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_true("config narrow + width: the request stays",
+                      opts.rtl_dsp_bw_khz == 48 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= expect_toast("config narrow + width: toast", &state, "Config not applied: ");
+    freeState(&state);
+
+    init_replay_nfm_context(&opts, &state, fake_ctx, 48, 25000);
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_RTL_SET_BW, 24, "replay bw 24 under a 25 kHz width");
+    rc |= expect_int("replay bw 24 under a 25 kHz width: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_true("replay bw 24 under a 25 kHz width: the request stays",
+                      opts.rtl_dsp_bw_khz == 48 && opts.rtl_dsp_bw_source == DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    rc |= expect_toast("replay bw 24 under a 25 kHz width: toast", &state, "DSP BW 24 kHz cannot filter");
+    rc |= expect_int("replay bw 24 under a 25 kHz width: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    init_replay_nfm_context(&opts, &state, fake_ctx, 24, 25000);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    g_fake_replay.running_hz = fake_replay_plan_hz(&opts);
+    g_analog_check_result = 0; /* the 72 kHz stream running would take it */
+    rc |= submit_and_drain_i32(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG,
+                               "tetra -> analog at 25 kHz");
+    rc |= expect_int("tetra -> analog at 25 kHz: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_int("tetra -> analog at 25 kHz: still TETRA", opts.frame_tetra, 1);
+    rc |= expect_int("tetra -> analog at 25 kHz: failed", dsd_app_command_test_last_failed(), 1);
+    freeState(&state);
+
+    reset_rx_family_wrap();
+    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -18420,6 +19028,11 @@ main(void) {
     rc |= test_refused_width_under_a_scan_row_keeps_the_configured_width();
     rc |= test_refused_row_width_request_puts_the_edit_back();
     rc |= test_decode_mode_set_tetra_names_an_unusable_rate();
+    rc |= test_replay_bandwidth_change_replans();
+    rc |= test_replay_mode_change_replans();
+    rc |= test_replay_refused_replan_restores_the_profile();
+    rc |= test_replay_config_apply_replans();
+    rc |= test_replay_widths_held_to_the_planned_rate();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_width_under_scan_rows();

@@ -1373,6 +1373,7 @@ typedef struct {
     int rtl_dev_index;
     uint32_t rtlsdr_center_freq;
     int rtl_dsp_bw_khz;
+    int rtl_dsp_bw_source;
     int rtl_gain_value;
     int rtlsdr_ppm_error;
     int rtl_auto_ppm;
@@ -1413,6 +1414,7 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
     out->tuned_freq_hz = dsd_opts_tuned_freq_hz(opts);
     out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
+    out->rtl_dsp_bw_source = opts->rtl_dsp_bw_source;
     out->rtl_gain_value = opts->rtl_gain_value;
     out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
     out->rtl_auto_ppm = opts->rtl_auto_ppm;
@@ -1443,7 +1445,7 @@ ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     opts->rtltcp_portno = in->rtltcp_portno;
     opts->rtl_dev_index = in->rtl_dev_index;
     opts->rtlsdr_center_freq = in->rtlsdr_center_freq;
-    opts->rtl_dsp_bw_khz = in->rtl_dsp_bw_khz;
+    dsd_opts_set_rtl_dsp_bw(opts, in->rtl_dsp_bw_khz, in->rtl_dsp_bw_source);
     opts->rtl_gain_value = in->rtl_gain_value;
     opts->rtlsdr_ppm_error = in->rtlsdr_ppm_error;
     opts->rtl_auto_ppm = in->rtl_auto_ppm;
@@ -3350,7 +3352,7 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
         }
     }
     if (cfg->rtl_bw_khz) {
-        opts->rtl_dsp_bw_khz = cfg->rtl_bw_khz;
+        dsd_opts_set_rtl_dsp_bw(opts, cfg->rtl_bw_khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     }
     /* rtl_sql is the same setting the CLI `sql` field carries, so it converts the
      * same way: negative is decibels, 0 is off. Storing the raw integer put a
@@ -3418,7 +3420,15 @@ apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
        (cfg_radio_reopen() calls this restart one at the running rate). A SoapySDR config's own frequency and
        bandwidth, which its spec cannot carry, wait for an [input] that reopens the device. */
     opts->rtlsdr_center_freq = before->input.rtlsdr_center_freq;
-    opts->rtl_dsp_bw_khz = before->input.rtl_dsp_bw_khz;
+    dsd_opts_set_rtl_dsp_bw(opts, before->input.rtl_dsp_bw_khz, before->input.rtl_dsp_bw_source);
+    /* An I/Q replay plays the gain its capture recorded (its open sets it), so a new gain reopens nothing: a restart
+       would rewind the replay to its first sample and put decode time back on the system clock. A bandwidth request
+       or a mode the replay's rate follows goes to its re-plan (apply_cfg_replay_replan()), which reopens it once,
+       where it stopped (issue #701). */
+    if (dsd_opts_input_is_iq_replay(opts)) {
+        opts->rtl_gain_value = before->input.rtl_gain_value;
+        return 0;
+    }
     if (!dsd_user_config_rtl_gain_is_set(cfg) || cfg->input_source == DSDCFG_INPUT_AIRSPY) {
         return 0;
     }
@@ -3800,7 +3810,8 @@ apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
     opts->airspy = in->airspy;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", in->audio_in_dev);
     const svc_airspy_tuning tuning = {in->rtlsdr_center_freq,    in->rtl_dsp_bw_khz,   in->rtl_squelch_level,
-                                      in->rtl_volume_multiplier, in->rtl_squelch_mode, in->rtl_squelch_margin_db};
+                                      in->rtl_volume_multiplier, in->rtl_squelch_mode, in->rtl_squelch_margin_db,
+                                      in->rtl_dsp_bw_source};
     int rc = 0;
     if (!state->rtl_ctx
         || svc_airspy_settings_reopen(&in->airspy, &cfg->airspy, tuning.bandwidth, opts->rtl_dsp_bw_khz, tuning.volume,
@@ -3831,6 +3842,48 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1); // a config apply holds the guard
     }
     return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/* Put back what a config apply's replay re-plan found (@p ctx, the apply's ui_cfg_rollback): the receive settings and
+   the rest of [mode], as a failed reopen puts them back (ui_cfg_settle_reopen()), and the requested DSP bandwidth. */
+static void
+apply_cfg_replay_restore(dsd_opts* opts, dsd_state* state, const void* ctx) {
+    const ui_cfg_rollback* before = (const ui_cfg_rollback*)ctx;
+    ui_restore_receive_settings(opts, state, &before->receive);
+    ui_cfg_restore_mode_extras(opts, state, &before->mode);
+    dsd_opts_set_rtl_dsp_bw(opts, before->input.rtl_dsp_bw_khz, before->input.rtl_dsp_bw_source);
+}
+
+/* A config applied during an I/Q replay it leaves running (issue #701): its RTL-family [input]'s rtl_bw_khz is a
+   bandwidth request the replay's rate follows, and its [mode] can need another rate (TETRA's), so the replay re-plans
+   (svc_rtl_replay_replan_locked()) and reopens where it stopped. A plan no chain reaches, or a start that failed, puts
+   the receive settings, [mode] and the bandwidth back with the replay running as before, and fails the apply with the
+   reason, the rest of the config staying applied as a failed reopen leaves it; a start that left no stream at all
+   takes the failed reopen's path (ui_cfg_settle_reopen()). Returns 0, or -1 when the apply fails. Caller holds the P25
+   SM tick guard. */
+static int
+apply_cfg_replay_replan(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
+    if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx
+        || strncmp(before->input.audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
+        return 0;
+    }
+    if (cfg_uses_rtl_runtime(cfg) && cfg->rtl_bw_khz) {
+        dsd_opts_set_rtl_dsp_bw(opts, dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz),
+                                DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    }
+    char why[128];
+    const int replan = svc_rtl_replay_replan_locked(opts, state, "the config", apply_cfg_replay_restore, before, NULL,
+                                                    NULL, why, sizeof why);
+    if (replan == SVC_REPLAY_REPLAN_REFUSED) {
+        ui_set_rollback_toast(state, "Config not applied: ", why, 0);
+        return -1;
+    }
+    if (replan == SVC_REPLAY_REPLAN_FAILED) {
+        return ui_cfg_settle_reopen(opts, state, -1, before);
+    }
+    return 0;
 }
 #endif
 
@@ -5257,15 +5310,28 @@ ui_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdn
     }
     /* The Analog preset selects NFM and AM the AM detector, each keeping the configured width of its kind
        (dsd_apply_decode_mode_preset()). */
+    int kind = -1;
+    int width_hz = 0;
     if (mode == DSDCFG_MODE_AM && opts->m17encoder != 1) {
-        return svc_check_analog_bandwidth(opts, state, DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz, why,
-                                          why_size);
+        kind = DSD_ANALOG_DEMOD_AM;
+        width_hz = opts->analog_am_bandwidth_hz;
+    } else if (mode == DSDCFG_MODE_ANALOG && opts->m17encoder != 1 && opts->analog_nfm_bandwidth_hz > 0) {
+        kind = DSD_ANALOG_DEMOD_FM;
+        width_hz = opts->analog_nfm_bandwidth_hz;
     }
-    if (mode == DSDCFG_MODE_ANALOG && opts->m17encoder != 1 && opts->analog_nfm_bandwidth_hz > 0) {
-        return svc_check_analog_bandwidth(opts, state, DSD_ANALOG_DEMOD_FM, opts->analog_nfm_bandwidth_hz, why,
-                                          why_size);
+    if (kind < 0) {
+        return svc_check_mode_receive_profile(opts, state, mode);
     }
-    return svc_check_mode_receive_profile(opts, state, mode);
+#ifdef USE_RADIO
+    /* A running replay the change re-plans (leaving TETRA's rate, issue #701) runs the width at the rate the request
+       plans, not the one it runs. */
+    const int replay_rate_hz =
+        svc_replay_planned_rate_hz(opts, state, opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source, 0);
+    if (replay_rate_hz > 0) {
+        return svc_check_analog_bandwidth_at_rate(kind, width_hz, replay_rate_hz, why, why_size);
+    }
+#endif
+    return svc_check_analog_bandwidth(opts, state, kind, width_hz, why, why_size);
 }
 
 /* The analog monitor block the decoder has part-collected holds the old family's samples (a digital session collects
@@ -5280,11 +5346,113 @@ decode_mode_drop_old_analog_block(const dsd_opts* opts, dsd_state* state, int wa
     }
 }
 
+/* Whether the command being applied holds the P25 SM tick guard (apply_cmd()): a replay re-plan from a mode change
+   (decode_mode_replan_replay()) restarts the stream under it, taking it only when the command does not. */
+static int g_apply_cmd_guard_held;
+
+#ifdef USE_RADIO
+/* What a mode change's replay re-plan reopened at (decode_mode_replan_replay()), for its toast. */
+typedef struct {
+    int reopened;
+    uint32_t dsp_rate_hz;
+    int resampled;
+} decode_mode_replan;
+
+/* What a mode change found (issue #701), for a refused re-plan to put every field the staged preset wrote back: the
+   receive profile (dsd_scan_settings), the audio layout the session's sink was opened with and EDACS's mode and ESK
+   mask, which presets also write and dsd_scan_settings leaves out, and the requested DSP bandwidth, which no preset
+   sets but which the profile a refused re-plan puts back holds all the same. */
+typedef struct {
+    const dsd_scan_settings* settings;
+    int audio_channels;
+    int audio_rate;
+    ui_cfg_mode_extras extras;
+    int bw_khz;
+    int bw_source;
+} decode_mode_profile_before;
+
+static void
+decode_mode_restore_profile(dsd_opts* opts, dsd_state* state, const void* ctx) {
+    const decode_mode_profile_before* before = (const decode_mode_profile_before*)ctx;
+    dsd_scan_settings_restore(before->settings, opts, state);
+    opts->pulse_digi_out_channels = before->audio_channels;
+    opts->pulse_digi_rate_out = before->audio_rate;
+    ui_cfg_restore_mode_extras(opts, state, &before->extras);
+    dsd_opts_set_rtl_dsp_bw(opts, before->bw_khz, before->bw_source);
+}
+
+/*
+ * A mode change during an I/Q replay (issue #701): a mode whose rate plan differs from the chain the replay runs (TETRA
+ * needs a multiple of 18 kHz, and leaving it returns to the requested bandwidth's chain) reopens the replay at the new
+ * chain where it stopped, before the mode publishes its profile at the new rate. A plan no chain reaches, or a start
+ * that failed, puts the profile from before the preset back, the replay running as before, and fails the change with
+ * the reason; a start that left no stream at all goes down the start-failure path every reopen takes
+ * (ui_radio_start_failed_locked()). Returns UI_CMD_APPLY_UNHANDLED for the change to go on, else its result.
+ */
+static int
+decode_mode_replan_replay(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode,
+                          const decode_mode_profile_before* before, decode_mode_replan* out) {
+    DSD_MEMSET(out, 0, sizeof *out);
+    if (!dsd_opts_input_is_iq_replay(opts) || !state->rtl_ctx) {
+        return UI_CMD_APPLY_UNHANDLED;
+    }
+    const int take_guard = !g_apply_cmd_guard_held;
+    if (take_guard) {
+        p25_sm_tick_guard_enter();
+    }
+    ui_radio_input input_before;
+    ui_capture_radio_input(opts, state, &input_before);
+    char reason[96];
+    DSD_SNPRINTF(reason, sizeof reason, "the %s decoder", dsd_decode_mode_display_name(mode));
+    char why[128];
+    const int replan = svc_rtl_replay_replan_locked(opts, state, reason, decode_mode_restore_profile, before,
+                                                    &out->dsp_rate_hz, &out->resampled, why, sizeof why);
+    int capture_stopped = 0;
+    int refused = 0;
+    if (replan == SVC_REPLAY_REPLAN_FAILED) {
+        refused = ui_radio_start_failed_locked(opts, state, &input_before, why, sizeof why, &capture_stopped);
+    }
+    if (take_guard) {
+        p25_sm_tick_guard_leave();
+    }
+    if (replan == SVC_REPLAY_REPLAN_KEPT) {
+        return UI_CMD_APPLY_UNHANDLED;
+    }
+    if (replan == SVC_REPLAY_REPLAN_REOPENED) {
+        out->reopened = 1;
+        return UI_CMD_APPLY_UNHANDLED;
+    }
+    if (replan == SVC_REPLAY_REPLAN_FAILED) {
+        ui_set_rollback_toast(state, refused ? "Refused: " : "Failed: ", why, capture_stopped);
+        return UI_CMD_APPLY_FAILED;
+    }
+    /* Refused: TETRA's advice names the rate the replay keeps and that its capture resamples to no TETRA rate. */
+    char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
+    if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
+        char advice[DSD_TETRA_RATE_ADVICE_MAX];
+        (void)svc_tetra_rate_advice(opts, state, 0, advice, sizeof advice);
+        LOG_WARN("WARNING: %s (%s).\n", advice, why);
+        ui_set_toast(state, 8, "Failed: %s -> %s", dsd_decode_mode_display_name(mode), brief);
+    } else {
+        ui_set_toast(state, 5, "Failed: %s -> %s", dsd_decode_mode_display_name(mode), why);
+    }
+    return UI_CMD_APPLY_FAILED;
+}
+#endif
+
 /* The toast a mode change that took posts. TETRA switched on where the DSP rate is no multiple of 18 kHz is kept, but
    decodes nothing until the rate changes, so the toast says so and the log names the fix in full
-   (svc_tetra_rate_advice()). */
+   (svc_tetra_rate_advice()). A replay the change reopened at another rate says so (issue #701). */
 static void
-decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, int replay_reopened,
+                          uint32_t replay_rate_hz, int replay_resampled) {
+    if (replay_reopened && replay_rate_hz > 0U) {
+        char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_analog_width_format((int)replay_rate_hz, rate, sizeof rate);
+        ui_set_toast(state, 5, "Decoding %s: replay %s %s", dsd_decode_mode_display_name(mode),
+                     replay_resampled ? "resampled to" : "runs at", rate);
+        return;
+    }
     char brief[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
     if (mode == DSDCFG_MODE_TETRA && svc_tetra_rate_advice(opts, state, 1, brief, sizeof brief) == 1) {
         char advice[DSD_TETRA_RATE_ADVICE_MAX];
@@ -5294,6 +5462,67 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
         return;
     }
     ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(mode));
+}
+
+/* Whether the front end takes the analog receive profile @p mode publishes (ui_check_mode_receive_profile()): 0, or
+   -1 with a toast naming why not. */
+static int
+decode_mode_check_receive_profile(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    char why[128];
+    if (ui_check_mode_receive_profile(opts, state, mode, why, sizeof why) == 0) {
+        return 0;
+    }
+    if (why[0] != '\0') {
+        ui_set_toast(state, 5, "Failed: %s -> %s", dsd_decode_mode_display_name(mode), why);
+    } else {
+        ui_set_toast(state, 4, "Failed: %s -> RTL front end refused its channel (see log)",
+                     dsd_decode_mode_display_name(mode));
+    }
+    return -1;
+}
+
+/* Stage @p mode's CLI preset with the modulation locks released. 0, or -1 (locks put back, toast posted) for a mode
+   that is not available. */
+static int
+decode_mode_stage_preset(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    /* Released before the preset runs, not after. The presets skip their whole
+       modulation block under mod_cli_lock (decode_mode_apply_dmr() and siblings),
+       so on a session started with `-mq`/`-mg` the new protocol would keep the old
+       modulation -- and svc_publish_symbol_profile() later reads state->rf_mod, so
+       it would then ask the front end for that modulation's demodulator and channel
+       filter at the new protocol's symbol rate, with the lock still on to stop the
+       SPS hunt correcting it. Choosing a protocol here is a fresh answer to what is
+       on this channel and outranks a `-m` flag from session start; this is the same
+       release ui_apply_modulation() performs for the modulation control.
+
+       Restored if the mode turns out to be unsupported, so a refused command
+       changes nothing -- which is the contract the preset helper itself keeps. */
+    const int mod_locks[3] = {opts->mod_cli_lock, opts->mod_p25p2_c4fm, opts->mod_p25p2_profile_lock};
+    ui_stage_analog_entry(opts, state);
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
+    opts->mod_cli_lock = 0;
+    /* Staged: the mode change's commit, once nothing can put the session back, leaves TETRA
+       (dsd_stage_decode_mode_preset()). */
+    if (dsd_stage_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
+        opts->mod_cli_lock = mod_locks[0];
+        opts->mod_p25p2_c4fm = mod_locks[1];
+        opts->mod_p25p2_profile_lock = mod_locks[2];
+        ui_set_toast(state, 4, "Decode mode not available");
+        return -1;
+    }
+    return 0;
+}
+
+/* The session's sinks were opened for the mode it started in: an analog start has no digital voice stream and a
+   digital one no raw monitor stream. Open whichever the new mode writes to, if it is missing. */
+static void
+decode_mode_ensure_output(dsd_opts* opts) {
+    if (opts->analog_only) {
+        (void)dsd_audio_ensure_analog_output(opts);
+    } else {
+        (void)dsd_audio_ensure_digital_output(opts);
+    }
 }
 
 /**
@@ -5335,55 +5564,41 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        bootstrap against BS voice and nothing at all against MS voice. */
     const int audio_channels = opts->pulse_digi_out_channels;
     const int audio_rate = opts->pulse_digi_rate_out;
+#ifdef USE_RADIO
+    /* A refused replay re-plan puts back everything the preset staged (decode_mode_restore_profile()). */
+    decode_mode_profile_before replay_before = {&g_analog_entry_staged, audio_channels,         audio_rate, {0},
+                                                opts->rtl_dsp_bw_khz,   opts->rtl_dsp_bw_source};
+    ui_cfg_capture_mode_extras(opts, state, &replay_before.extras);
+#endif
     const int was_analog = opts->analog_only != 0;
     const int was_analog_family = dsd_opts_is_analog_family(opts);
     const int was_kind = opts->analog_demod;
     /* Asked before anything changes: a front end that would refuse the analog receive profile the new mode publishes
        leaves the session in its mode, instead of an analog decoder on a front end running something else. */
-    char why[128];
-    if (ui_check_mode_receive_profile(opts, state, mode, why, sizeof why) != 0) {
-        if (why[0] != '\0') {
-            ui_set_toast(state, 5, "Failed: %s -> %s", dsd_decode_mode_display_name(mode), why);
-        } else {
-            ui_set_toast(state, 4, "Failed: %s -> RTL front end refused its channel (see log)",
-                         dsd_decode_mode_display_name(mode));
-        }
+    if (decode_mode_check_receive_profile(opts, state, mode) != 0) {
         return UI_CMD_APPLY_FAILED;
     }
-    /* Released before the preset runs, not after. The presets skip their whole
-       modulation block under mod_cli_lock (decode_mode_apply_dmr() and siblings),
-       so on a session started with `-mq`/`-mg` the new protocol would keep the old
-       modulation -- and svc_publish_symbol_profile() below reads state->rf_mod, so
-       it would then ask the front end for that modulation's demodulator and channel
-       filter at the new protocol's symbol rate, with the lock still on to stop the
-       SPS hunt correcting it. Choosing a protocol here is a fresh answer to what is
-       on this channel and outranks a `-m` flag from session start; this is the same
-       release ui_apply_modulation() performs for the modulation control.
-
-       Restored if the mode turns out to be unsupported, so a refused command
-       changes nothing -- which is the contract the preset helper itself keeps. */
-    const int mod_locks[3] = {opts->mod_cli_lock, opts->mod_p25p2_c4fm, opts->mod_p25p2_profile_lock};
-    ui_stage_analog_entry(opts, state);
-    opts->mod_p25p2_c4fm = 0;
-    opts->mod_p25p2_profile_lock = 0;
-    opts->mod_cli_lock = 0;
-    /* Staged: the commit below, once nothing can put the session back, leaves TETRA (dsd_stage_decode_mode_preset()). */
-    if (dsd_stage_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
-        opts->mod_cli_lock = mod_locks[0];
-        opts->mod_p25p2_c4fm = mod_locks[1];
-        opts->mod_p25p2_profile_lock = mod_locks[2];
-        ui_set_toast(state, 4, "Decode mode not available");
+    if (decode_mode_stage_preset(opts, state, mode) != 0) {
         return UI_CMD_APPLY_UNSUPPORTED;
     }
+    int replay_reopened = 0;
+    uint32_t replay_rate_hz = 0U;
+    int replay_resampled = 0;
+#ifdef USE_RADIO
+    /* A replay's rate follows the mode (issue #701): reopened at the chain the new mode plans before its profile is
+       timed and published at that rate. */
+    decode_mode_replan replan;
+    const int replan_rc = decode_mode_replan_replay(opts, state, mode, &replay_before, &replan);
+    if (replan_rc != UI_CMD_APPLY_UNHANDLED) {
+        return replan_rc;
+    }
+    replay_reopened = replan.reopened;
+    replay_rate_hz = replan.dsp_rate_hz;
+    replay_resampled = replan.resampled;
+#endif
     opts->pulse_digi_out_channels = audio_channels;
     opts->pulse_digi_rate_out = audio_rate;
-    /* The session's sinks were opened for the mode it started in: an analog start has no digital voice stream and
-       a digital one no raw monitor stream. Open whichever the new mode writes to, if it is missing. */
-    if (opts->analog_only) {
-        (void)dsd_audio_ensure_analog_output(opts);
-    } else {
-        (void)dsd_audio_ensure_digital_output(opts);
-    }
+    decode_mode_ensure_output(opts);
     decode_mode_drop_old_analog_block(opts, state, was_analog, was_kind);
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
@@ -5414,7 +5629,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         reset_call_tracking(opts, state, 1);
     }
-    decode_mode_toast_applied(opts, state, mode);
+    decode_mode_toast_applied(opts, state, mode, replay_reopened, replay_rate_hz, replay_resampled);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -6883,7 +7098,50 @@ typedef enum {
     CFG_REOPEN_AT_DEVICE_RATE,  /* a SoapySDR or Airspy device, at the rate the device delivers */
     CFG_REOPEN_AT_RUNNING_RATE, /* the running device at the rate it runs now: an Airspy for its monitor volume
                                    alone, or any device for a new gain under the same spec */
+    CFG_REOPEN_AT_REPLAY_RATE,  /* a running I/Q replay the config leaves running, re-planned at the rate its new DSP
+                                   bandwidth request or decode mode plans (cfg_replay_rate_hz(), issue #701) */
 } cfg_reopen_kind;
+
+/*
+ * The DSP rate a running I/Q replay the config leaves running re-plans to (apply_cfg_replay_replan(), issue #701): for
+ * the bandwidth request an RTL-family [input]'s rtl_bw_khz makes, and whether the [mode] runs TETRA. 0 when no replay
+ * runs, the config keeps the chain it runs, or no chain reaches it (the apply's re-plan refuses that, with the
+ * planner's reason).
+ */
+static int
+cfg_replay_rate_hz(const dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
+#ifdef USE_RADIO
+    int bw_khz = opts->rtl_dsp_bw_khz;
+    int bw_source = opts->rtl_dsp_bw_source;
+    if (cfg_uses_rtl_runtime(cfg) && cfg->rtl_bw_khz) {
+        bw_khz = dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz);
+        bw_source = DSD_RTL_DSP_BW_SOURCE_EXPLICIT;
+    }
+    const int frame_tetra = (cfg->has_mode && cfg->decode_mode != DSDCFG_MODE_UNSET)
+                                ? cfg->decode_mode == DSDCFG_MODE_TETRA
+                                : opts->frame_tetra == 1;
+    return svc_replay_planned_rate_hz(opts, state, bw_khz, bw_source, frame_tetra);
+#else
+    (void)opts;
+    (void)state;
+    (void)cfg;
+    return 0;
+#endif
+}
+
+/* A running I/Q replay the config leaves running reopens only when the config re-plans its rate (cfg_replay_rate_hz());
+   a build without radio support runs no replay. */
+static cfg_reopen_kind
+cfg_replay_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
+#ifdef USE_RADIO
+    return cfg_replay_rate_hz(opts, state, cfg) > 0 ? CFG_REOPEN_AT_REPLAY_RATE : CFG_REOPEN_NONE;
+#else
+    (void)opts;
+    (void)state;
+    (void)cfg;
+    return CFG_REOPEN_NONE;
+#endif
+}
 
 /*
  * A running RTL-family input (an RTL-SDR, rtl_tcp, SoapySDR or Airspy one) is reopened when the config's [input]
@@ -6940,9 +7198,13 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
     }
     /* A config that builds no spec (an [input] without rtl_freq, say) leaves the running one, as one that builds the
        same spec does: either way the input restarts for a new gain alone, at the rate it runs
-       (apply_cfg_rtl_live_gain()). */
+       (apply_cfg_rtl_live_gain()). An I/Q replay never restarts for a gain: it reopens, where it stopped, only when
+       the config re-plans its rate (apply_cfg_replay_replan()). */
     if (dsd_user_config_radio_input_spec(cfg, opts, spec, sizeof spec) != 0
         || strncmp(spec, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
+        if (dsd_opts_input_is_iq_replay(opts)) {
+            return cfg_replay_reopen(opts, state, cfg);
+        }
         return cfg_gain_restarts_running_input(opts, state, cfg) ? CFG_REOPEN_AT_RUNNING_RATE : CFG_REOPEN_NONE;
     }
     return (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP)
@@ -6959,11 +7221,17 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
  * and the fix.
  */
 static int
-cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int kind, int reopen_bw_khz, int width_hz) {
+cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int kind, int reopen_bw_khz, int reopen_rate_hz,
+                       int width_hz) {
     char why[128];
-    const int rc = (reopen_bw_khz > 0)
-                       ? svc_check_analog_bandwidth_for_rtl_bw(kind, width_hz, reopen_bw_khz, why, sizeof why)
-                       : svc_check_analog_bandwidth(opts, state, kind, width_hz, why, sizeof why);
+    int rc = 0;
+    if (reopen_rate_hz > 0) {
+        rc = svc_check_analog_bandwidth_at_rate(kind, width_hz, reopen_rate_hz, why, sizeof why);
+    } else if (reopen_bw_khz > 0) {
+        rc = svc_check_analog_bandwidth_for_rtl_bw(kind, width_hz, reopen_bw_khz, why, sizeof why);
+    } else {
+        rc = svc_check_analog_bandwidth(opts, state, kind, width_hz, why, sizeof why);
+    }
     if (rc == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
@@ -6993,6 +7261,9 @@ cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUse
                                                    sizeof why);
     } else if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
         rc = svc_check_analog_bandwidth_at_device_rate(kind, row->channel_bw_hz, why, sizeof why);
+    } else if (reopen == CFG_REOPEN_AT_REPLAY_RATE) {
+        rc = svc_check_analog_bandwidth_at_rate(kind, row->channel_bw_hz, cfg_replay_rate_hz(opts, state, cfg), why,
+                                                sizeof why);
     }
     if (rc == 0) {
         return UI_CMD_APPLY_COMPLETED;
@@ -7023,8 +7294,11 @@ cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneo
         return UI_CMD_APPLY_FAILED;
     }
     const int reopen_bw_khz = (reopen == CFG_REOPEN_AT_RTL_BW) ? cfg_reopen_rtl_bw_khz(opts, cfg) : 0;
-    const int holds = width_hz != dsd_app_analog_width_setting_hz(opts, kind) || reopen_bw_khz > 0 || opens_anew;
-    return holds ? cfg_check_analog_width(opts, state, kind, reopen_bw_khz, width_hz) : UI_CMD_APPLY_COMPLETED;
+    const int reopen_rate_hz = (reopen == CFG_REOPEN_AT_REPLAY_RATE) ? cfg_replay_rate_hz(opts, state, cfg) : 0;
+    const int holds = width_hz != dsd_app_analog_width_setting_hz(opts, kind) || reopen_bw_khz > 0 || reopen_rate_hz > 0
+                      || opens_anew;
+    return holds ? cfg_check_analog_width(opts, state, kind, reopen_bw_khz, reopen_rate_hz, width_hz)
+                 : UI_CMD_APPLY_COMPLETED;
 }
 
 /*
@@ -7332,7 +7606,10 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     /* A reopen whose start fails puts the receive side back (ui_cfg_settle_reopen()), so everything below sees the
        input, mode and widths the session ran, and publishes nothing for the settings the start refused; with no stream
        running before it there is nothing to put back, and no stream to publish to. */
-    const int radio_rc = apply_cfg_radio_input(opts, state, &cfg, &rollback);
+    int radio_rc = apply_cfg_radio_input(opts, state, &cfg, &rollback);
+    if (radio_rc == 0) {
+        radio_rc = apply_cfg_replay_replan(opts, state, &cfg, &rollback);
+    }
 #endif
     const cfg_input_before input_before = {old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
                                            old_effective_input_rate, old_staged_file_sample_rate};
@@ -7943,7 +8220,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
             p25_sm_tick_guard_enter();
         }
     }
+    g_apply_cmd_guard_held = guarded;
     const int result = apply_cmd_scoped(opts, state, c, guarded);
+    g_apply_cmd_guard_held = 0;
     if (guarded) {
         if (state && command_changes_call_verdict(c)) {
             dsd_p25p2_playout_note_policy(opts, state);

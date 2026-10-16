@@ -300,10 +300,11 @@ refuses rather than clamps, and the checks sit where the rate is known:
   the only one, and its refusal names the fix that rate allows
   (`dsd_analog_width_check_at()` with a `dsd_analog_rate_source`): a device's
   capture rate is halved down to the first rate at or above the DSP
-  bandwidth, so raising the DSP bandwidth or narrowing the width; a replay
-  runs at its capture's rate, so narrowing the width. Where the rate filters
-  no width of the kind, narrowing is never named: an NFM refusal names
-  leaving the width unset, which runs at any rate.
+  bandwidth, so raising the DSP bandwidth or narrowing the width; a replay's
+  rate plan follows the DSP bandwidth (issue #701), so the DSP bandwidths that
+  fit, as for an RTL-SDR. Where a device's rate filters no width of the kind,
+  narrowing is never named: an NFM refusal names leaving the width unset,
+  which runs at any rate.
 - `DSD_NEO_CHANNEL_LPF=0` refuses every explicit width at any rate
   (`dsd_analog_channel_lpf_off_check()`) on a radio input (PCM input runs no
   channel filter, so a width there is only stored, or with a rigctl peer asked

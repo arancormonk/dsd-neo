@@ -319,24 +319,20 @@ dsd_analog_width_rate_fix(int kind, int width_hz, int rate_hz, int source, char*
     if (!out || out_size == 0U) {
         return -1;
     }
-    const char* label = dsd_analog_demod_label(kind);
     const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
     const int too_fast = max_hz <= 0 && dsd_analog_channel_taps_for_rate(rate_hz) > DSD_ANALOG_CHANNEL_MAX_TAPS;
     /* Narrowing cannot help where the rate filters no width of the kind; the unset NFM default runs at any rate
        (DSP-limited where it cannot filter), so it is the fix left for NFM. */
     const int none_fits = max_hz < dsd_analog_width_min_hz(kind);
-    if (source == DSD_ANALOG_RATE_RTL_BW) {
+    if (source == DSD_ANALOG_RATE_RTL_BW || source == DSD_ANALOG_RATE_CAPTURE) {
+        /* An I/Q replay's rate follows the DSP bandwidth as an RTL-SDR's does (issue #701): a bandwidth change re-plans
+           its rate chain to it, resampling the capture where it must. */
         char fits_text[64];
         (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits_text, sizeof fits_text);
-        DSD_SNPRINTF(out, out_size, "set the RTL DSP bandwidth to %s kHz", fits_text);
-    } else if (source == DSD_ANALOG_RATE_DEVICE) {
-        analog_format_device_fix(kind, too_fast, none_fits, out, out_size);
-    } else if (!none_fits) {
-        DSD_SNPRINTF(out, out_size, "narrow the %s width", label);
-    } else if (kind == DSD_ANALOG_DEMOD_FM) {
-        DSD_SNPRINTF(out, out_size, "no NFM width fits this DSP rate; leave the NFM width unset");
+        DSD_SNPRINTF(out, out_size, "set the %sDSP bandwidth to %s kHz", source == DSD_ANALOG_RATE_RTL_BW ? "RTL " : "",
+                     fits_text);
     } else {
-        DSD_SNPRINTF(out, out_size, "no %s width fits this DSP rate", label);
+        analog_format_device_fix(kind, too_fast, none_fits, out, out_size);
     }
     return 0;
 }

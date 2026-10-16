@@ -27,6 +27,7 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/io/iq_wav.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
@@ -805,6 +806,41 @@ cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     DSD_MEMCPY(opts->audio_in_dev + strlen("iqreplay:"), path, path_len + 1);
     return 0;
 }
+
+#ifdef USE_RADIO
+/* What --iq-replay is about to replay when it names a WAV recording (issue #701): its encoding, rate and length, and
+ * its centre with where that came from. */
+static void
+cli_log_iq_replay_wav_summary(const dsd_iq_replay_config* cfg, uint64_t effective_bytes, int truncated) {
+    const dsd_iq_wav_info* w = &cfg->wav;
+    const uint64_t frames = effective_bytes / 8U;
+    const double seconds = cfg->sample_rate_hz ? (double)frames / (double)cfg->sample_rate_hz : 0.0;
+    char centre[96];
+    if (w->center_source != DSD_IQ_WAV_FROM_NONE) {
+        DSD_SNPRINTF(centre, sizeof(centre), "centre %.6f MHz (%s)", (double)w->center_frequency_hz / 1000000.0,
+                     dsd_iq_wav_source_name(w->center_source));
+    } else {
+        DSD_SNPRINTF(centre, sizeof(centre), "%s", "centre unknown (no auxi chunk, none in the file name)");
+    }
+    LOG_INFO("IQ replay: WAV %s, 2-channel %s, %u Hz, ~%.1f s, %s.\n", dsd_iq_wav_container_name(w->container),
+             dsd_iq_wav_encoding_name(w->encoding), cfg->sample_rate_hz, seconds, centre);
+    if (truncated) {
+        LOG_WARN("IQ replay: the WAV header declares %" PRIu64 " data bytes, more than the file holds (a truncated "
+                 "recording); replaying the %" PRIu64 " whole frames present.\n",
+                 w->declared_data_bytes, frames);
+    }
+    if (w->unfinalized) {
+        LOG_WARN("IQ replay: the WAV header was never finalized (an interrupted recording); replaying to the end of "
+                 "the file.\n");
+    }
+    if (w->container_clamped) {
+        LOG_WARN("IQ replay: the WAV data chunk declares %" PRIu64 " bytes but its %s container ends %" PRIu64
+                 " bytes into it (a writer inconsistency); replaying only the data inside the container.\n",
+                 w->declared_data_bytes, dsd_iq_wav_container_name(w->container),
+                 w->container_end > w->data_offset ? w->container_end - w->data_offset : 0U);
+    }
+}
+#endif
 
 #define DSD_CLI_LOCAL_PATH_MAX 2048
 
@@ -1951,8 +1987,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
     }                                                                                                                  \
     uint64_t effective_bytes = 0;                                                                                      \
     int size_mismatch = 0;                                                                                             \
-    rc = dsd_iq_replay_compute_effective_bytes(replay_cfg.data_bytes, (uint64_t)st.st_size, replay_cfg.format,         \
-                                               &effective_bytes, &size_mismatch);                                      \
+    rc = dsd_iq_replay_measure(&replay_cfg, (uint64_t)st.st_size, &effective_bytes, &size_mismatch);                   \
     if (rc != DSD_IQ_OK) {                                                                                             \
         LOG_ERROR("--iq-replay: failed to compute effective replay bytes\n");                                          \
         dsd_iq_replay_config_clear(&replay_cfg);                                                                       \
@@ -1966,7 +2001,12 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         cli_set_exit_rc(out_exit_rc, 1);                                                                               \
         return DSD_PARSE_ERROR;                                                                                        \
     }                                                                                                                  \
-    if (size_mismatch) {                                                                                               \
+    if (replay_cfg.open_notice[0] != '\0') {                                                                           \
+        LOG_WARN("IQ replay: %s\n", replay_cfg.open_notice);                                                           \
+    }                                                                                                                  \
+    if (replay_cfg.container == DSD_IQ_REPLAY_CONTAINER_WAV) {                                                         \
+        cli_log_iq_replay_wav_summary(&replay_cfg, effective_bytes, size_mismatch);                                    \
+    } else if (size_mismatch) {                                                                                        \
         LOG_WARN("IQ replay metadata/data size mismatch: metadata=%" PRIu64 " actual=%" PRIu64 "\n",                   \
                  replay_cfg.data_bytes, (uint64_t)st.st_size);                                                         \
     }                                                                                                                  \
@@ -1982,9 +2022,6 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
     opts->rtlsdr_ppm_error = replay_cfg.ppm;                                                                           \
     if (replay_cfg.tuner_gain_tenth_db > 0) {                                                                          \
         opts->rtl_gain_value = replay_cfg.tuner_gain_tenth_db / 10;                                                    \
-    }                                                                                                                  \
-    if (replay_cfg.rtl_dsp_bw_khz > 0) {                                                                               \
-        opts->rtl_dsp_bw_khz = replay_cfg.rtl_dsp_bw_khz;                                                              \
     }                                                                                                                  \
     opts->audio_in_type = AUDIO_IN_RTL;                                                                                \
     if (cli_set_iqreplay_audio_dev(opts, opts->iq_replay_path) != 0) {                                                 \
@@ -3043,7 +3080,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                     case 'T':                                                                                          \
                         /* As -fe takes 24 kHz: TETRA runs only at a multiple of 18 kHz. A bandwidth field in      \
                            the -i spec, applied when the input opens, still names another. */                          \
-                        opts->rtl_dsp_bw_khz = DSD_TETRA_DSP_BW_KHZ;                                                   \
+                        dsd_opts_set_rtl_dsp_bw(opts, DSD_TETRA_DSP_BW_KHZ, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                         LOG_INFO("NOTICE: Decoding only TETRA frames at a %d kHz DSP bandwidth.\n",                    \
                                  DSD_TETRA_DSP_BW_KHZ);                                                                \
                         break;                                                                                         \
@@ -3076,7 +3113,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
                 LOG_INFO("NOTICE: Decoding only ProVoice frames.\n");                                                  \
                 LOG_INFO("NOTICE: EDACS Analog Voice Channels are Experimental.\n");                                   \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
@@ -3134,7 +3171,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                     LOG_INFO("NOTICE: AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits,                    \
                              state->edacs_f_bits, state->edacs_s_bits);                                                \
                 }                                                                                                      \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
@@ -3192,7 +3229,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                     LOG_INFO("NOTICE: AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits,                    \
                              state->edacs_f_bits, state->edacs_s_bits);                                                \
                 }                                                                                                      \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
@@ -3225,7 +3262,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
                 LOG_INFO("NOTICE: Decoding EDACS EA/ProVoice frames.\n");                                              \
                 LOG_INFO("NOTICE: EDACS Analog Voice Channels are Experimental.\n");                                   \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
@@ -3258,7 +3295,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
                 LOG_INFO("NOTICE: Decoding EDACS EA/ProVoice w/ ESK frames.\n");                                       \
                 LOG_INFO("NOTICE: EDACS Analog Voice Channels are Experimental.\n");                                   \
-                opts->rtl_dsp_bw_khz = 24;                                                                             \
+                dsd_opts_set_rtl_dsp_bw(opts, 24, DSD_RTL_DSP_BW_SOURCE_PRESET); \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \

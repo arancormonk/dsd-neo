@@ -19,6 +19,7 @@ target_sources(
         dsd_filters.c
         pcm_input_staging.c
         rate_converter.c
+        iq_resampler.c
         analog_sink.c
         symbol_levels.c
         dsd_symbol.c
@@ -127,9 +128,12 @@ endif()
 # fast-math could reassociate its running window sums across a vectorised loop,
 # making them depend on where a block starts. The NFM noise squelch makes the
 # same promise for its band-pass and window sums, on the band-pass bank it
-# shares with the PCM noise squelch, which promises it for its learner too.
+# shares with the PCM noise squelch, which promises it for its learner too. The
+# replay's I/Q resampler promises the same bits however a capture is cut into
+# blocks, which a vectoriser's alignment peeling could otherwise break.
 set(_dsd_neo_dsp_ieee_c_sources
     rate_converter.c
+    iq_resampler.c
     analog_sink.c
     analog_voice.c
     analog_audio.c

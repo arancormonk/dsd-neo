@@ -1270,6 +1270,7 @@ typedef struct rtl_stream_test_replay_state {
     uint64_t replay_out_written;      /* output batches the demod published, the virtual block 0 included */
     uint64_t replay_out_acked;        /* ... that the decoder acknowledged */
     uint64_t replay_output_truncated; /* output samples a replay block could not publish (none should be) */
+    uint32_t dongle_rate_hz;          /* the rate the chain runs from: a resampled replay's DSP input rate (#701) */
 } rtl_stream_test_replay_state;
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);

@@ -310,8 +310,9 @@ test_check_messages(void) {
 
 /* Where a SoapySDR or Airspy device or an I/Q replay sets the rate, the same acceptance and wording, with the fix that
    rate allows: a device's rate is its capture rate decimated toward the DSP bandwidth, so a wider DSP bandwidth raises
-   it (and a narrower one lowers it past the tap ceiling); a replay's rate is its capture's, which only a narrower width
-   can suit. Narrowing is never the fix where no width of the kind fits; for NFM, leaving the width unset is. */
+   it (and a narrower one lowers it past the tap ceiling); a replay's rate plan follows the DSP bandwidth (issue #701), so
+   its fix names the bandwidths that fit, as an RTL-SDR's does, without calling them RTL's. Narrowing is never a
+   device's fix where no width of the kind fits; for NFM, leaving the width unset is. */
 static void
 test_check_at_rate_source_messages(void) {
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
@@ -324,8 +325,8 @@ test_check_at_rate_source_messages(void) {
     expect_int("capture 25k at 24k rejected",
                dsd_analog_width_check_at(fm, 25000, 24000, DSD_ANALOG_RATE_CAPTURE, err, sizeof err), -1);
     expect_str("capture 25k at 24k text", err,
-               "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz); narrow "
-               "the NFM width");
+               "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz); set the "
+               "DSP bandwidth to 48 or 72 kHz");
     expect_int("rtl source is the plain check",
                dsd_analog_width_check_at(fm, 25000, 24000, DSD_ANALOG_RATE_RTL_BW, err, sizeof err), -1);
     expect_contains("rtl source names the bandwidths", err, "set the RTL DSP bandwidth to 48 or 72 kHz");
@@ -339,12 +340,13 @@ test_check_at_rate_source_messages(void) {
     expect_int("capture 8k at 8k rejected",
                dsd_analog_width_check_at(fm, 8000, 8000, DSD_ANALOG_RATE_CAPTURE, err, sizeof err), -1);
     expect_str("capture 8k at 8k text", err,
-               "NFM bandwidth 8 kHz does not fit the 8 kHz DSP rate (the largest width it fits is 6 kHz); no NFM width "
-               "fits this DSP rate; leave the NFM width unset");
+               "NFM bandwidth 8 kHz does not fit the 8 kHz DSP rate (the largest width it fits is 6 kHz); set the DSP "
+               "bandwidth to 12, 16, 24, 48 or 72 kHz");
     expect_int("capture AM at 6k rejected",
                dsd_analog_width_check_at(DSD_ANALOG_DEMOD_AM, 5000, 6000, DSD_ANALOG_RATE_CAPTURE, err, sizeof err),
                -1);
-    expect_contains("capture AM at 6k says none fits", err, "no AM width fits this DSP rate");
+    expect_contains("capture AM at 6k names the bandwidths that fit", err,
+                    "set the DSP bandwidth to 8, 12, 16, 24, 48 or 72 kHz");
     expect_int("capture AM never names an unset width", strstr(err, "unset") == NULL, 1);
 
     /* Past the tap ceiling: a device's rate comes down with the DSP bandwidth; a replay's does not. */
@@ -355,8 +357,8 @@ test_check_at_rate_source_messages(void) {
                     "lower the DSP bandwidth or leave the NFM width unset");
     expect_int("capture 16k at 128k rejected",
                dsd_analog_width_check_at(fm, 16000, 128000, DSD_ANALOG_RATE_CAPTURE, err, sizeof err), -1);
-    expect_contains("capture 128k says no width fits", err,
-                    "no NFM width fits this DSP rate; leave the NFM width unset");
+    expect_contains("capture 128k names the narrower bandwidths that fit", err,
+                    "set the DSP bandwidth to 24, 48 or 72 kHz");
     expect_int("capture never names an RTL DSP bandwidth", strstr(err, "RTL DSP bandwidth") == NULL, 1);
 
     /* What the check accepts is unchanged, and so is every other refusal. */

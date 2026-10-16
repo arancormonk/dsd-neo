@@ -21,6 +21,7 @@
 #include <stdint.h>
 
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
@@ -280,6 +281,51 @@ typedef struct rtl_stream_replay_batch {
         the opening one again after a loop rewind. */
     uint32_t center_frequency_hz;
 } rtl_stream_replay_batch;
+
+/** What a run-time change of the decode mode or DSP bandwidth does to a running I/Q replay (issue #701). */
+typedef enum rtl_stream_replan_verdict {
+    RTL_STREAM_REPLAN_NO_REPLAY = -1, /**< no replay stream runs */
+    RTL_STREAM_REPLAN_SAME = 0,       /**< the options plan the rate chain the replay runs: nothing to reopen */
+    RTL_STREAM_REPLAN_DIFFERS = 1,    /**< they plan another chain: the replay reopens at it, resuming */
+    RTL_STREAM_REPLAN_REFUSED = 2,    /**< no chain reaches the rate they need; the reason is given */
+} rtl_stream_replan_verdict;
+
+/**
+ * @brief Plan the running I/Q replay's rate chain for @p opts, the decode mode and DSP bandwidth a change is about to
+ *        put in force, and compare it with the chain the replay runs (issue #701). Decoder thread.
+ *
+ * @param out_dsp_rate_hz [out] The DSP rate the new chain runs at (demod rate x post-demod decimation); may be NULL.
+ * @param out_resampled   [out] 1 when the new chain resamples the capture; may be NULL.
+ * @param why             [out] The planner's reason for RTL_STREAM_REPLAN_REFUSED; may be NULL.
+ * @return An rtl_stream_replan_verdict.
+ */
+int rtl_stream_replay_replan_check(const dsd_opts* opts, uint32_t* out_dsp_rate_hz, int* out_resampled, char* why,
+                                   size_t why_size);
+
+/** What a replay's rate chain follows (issue #701): the DSP bandwidth request and whether the TETRA decoder runs. */
+typedef struct rtl_stream_replay_request {
+    int dsp_bw_khz;    /**< dsd_opts::rtl_dsp_bw_khz */
+    int dsp_bw_source; /**< dsd_opts::rtl_dsp_bw_source (a DSD_RTL_DSP_BW_SOURCE_* value) */
+    int frame_tetra;   /**< 1 when the TETRA decoder runs */
+} rtl_stream_replay_request;
+
+/**
+ * @brief rtl_stream_replay_replan_check() for a request a change has not yet put in @p opts: the chain the running
+ *        replay @p opts names would run for @p req, so a check made before anything changes (a config's preflight, a
+ *        bandwidth or mode command's width check) holds a width to the rate the replay will run at. Decoder thread.
+ *
+ * @return An rtl_stream_replan_verdict; RTL_STREAM_REPLAN_NO_REPLAY for a NULL @p req.
+ */
+int rtl_stream_replay_replan_check_request(const dsd_opts* opts, const rtl_stream_replay_request* req,
+                                           uint32_t* out_dsp_rate_hz, int* out_resampled, char* why, size_t why_size);
+
+/**
+ * @brief Where the last I/Q replay stream stopped (issue #701): the reader's position after the last capture chunk it
+ *        handed the demodulator, for the next start to resume from (dsd_opts::iq_replay_resume). Decoder thread.
+ *
+ * @return 0 with @p out set; -1 while a stream runs, or when no replay stream stopped since the last stream start.
+ */
+int rtl_stream_replay_checkpoint(dsd_iq_replay_checkpoint* out);
 
 /**
  * @brief Get the tag of the batch the last I/Q replay read took its samples from.

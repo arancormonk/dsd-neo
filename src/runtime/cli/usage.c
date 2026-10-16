@@ -222,7 +222,9 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("                             (.iq is added when <path> has no extension)\n");
     printf("      --iq-capture-format <fmt>  Capture format (cu8|cf32)\n");
     printf("      --iq-capture-max-mb <n>  Capture size limit in MiB (0 = unlimited)\n");
-    printf("      --iq-replay <path>     Replay I/Q capture metadata/data through RTL path (requires radio)\n");
+    printf("      --iq-replay <capture.json|data|file.wav>\n");
+    printf("                             Replay an I/Q capture (sidecar, its data file, or a 2-channel WAV I/Q\n");
+    printf("                             recording) through the RTL path (requires radio)\n");
     printf("      --iq-replay-rate <mode>  Replay pacing mode (fast|realtime)\n");
     printf("      --iq-loop              Loop I/Q replay at EOF\n");
     printf("      --iq-info <path>       Print metadata/alignment summary and exit\n");
