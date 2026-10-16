@@ -97,12 +97,31 @@ dsd_fstat(int fd, dsd_stat_t* st) {
     if (dsd_fd_is_negative(fd)) {
         return -1;
     }
-    return _fstat(fd, st);
+    return _fstat64(fd, st);
 }
 
 int
 dsd_stat_path(const char* path, dsd_stat_t* st) {
-    return _stat(path, st);
+    return _stat64(path, st);
+}
+
+int
+dsd_fseek64(FILE* fp, int64_t offset, int whence) {
+    if (!fp) {
+        errno = EINVAL;
+        return -1;
+    }
+    return _fseeki64(fp, (__int64)offset, whence) == 0 ? 0 : -1;
+}
+
+int64_t
+dsd_ftell64(FILE* fp) {
+    if (!fp) {
+        errno = EINVAL;
+        return -1;
+    }
+    const __int64 pos = _ftelli64(fp);
+    return pos < 0 ? -1 : (int64_t)pos;
 }
 
 int
@@ -264,7 +283,7 @@ dsd_open_existing_regular_fd_win32(const char* path, const char* mode) {
     }
 
     dsd_stat_t st;
-    if (_fstat(fd, &st) != 0) {
+    if (_fstat64(fd, &st) != 0) {
         int saved_errno = errno ? errno : EINVAL;
         _close(fd);
         errno = saved_errno;
