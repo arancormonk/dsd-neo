@@ -553,6 +553,13 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/dsp/rate_converter.h
   CXX
 )
+# Where an I/Q replay resumes after a run-time re-plan (issue #701).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_iq_replay_checkpoint
+  HEADERS_PUBLIC_CORE_IQ_REPLAY_CHECKPOINT
+  dsd-neo/core/iq_replay_checkpoint.h
+  C
+)
 # The replay's complex resampler (issue #701).
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_iq_resampler
@@ -13009,6 +13016,41 @@ if(DSD_HAS_RADIO)
     add_test(
         NAME IO_RTL_REPLAY_RESAMPLE
         COMMAND dsd-neo_test_io_rtl_replay_resample
+    )
+
+    # Issue #701: a run-time re-plan reopens an I/Q replay where the stopped stream left it. The checkpoint after a
+    # MUTE, a RETUNE and a completed --iq-loop pass names the event to apply next and the media time so far, and the
+    # resumed replay goes on with the straight replay's blocks, at the capture's rate, an explicit 24 kHz bandwidth or
+    # TETRA's 72 kHz.
+    add_executable(
+        dsd-neo_test_io_rtl_replay_resume
+        io/test_io_rtl_replay_resume.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_replay_resume
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_replay_resume
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_platform
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_replay_resume
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_REPLAY_RESUME
+        COMMAND dsd-neo_test_io_rtl_replay_resume
     )
 
     add_executable(

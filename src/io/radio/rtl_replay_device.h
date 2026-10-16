@@ -75,4 +75,10 @@ struct rtl_device* rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, 
 int rtl_device_replay_resample_info(const struct rtl_device* dev, uint32_t* out_capture_hz, int* out_l, int* out_m,
                                     double* out_ppm);
 
+/* Where the replay's reader stood after the last capture chunk it handed the demodulator (issue #701), for a run-time
+ * re-plan to reopen the replay there (dsd_iq_replay_config::resume). Read only once the reader is stopped and joined
+ * (rtl_device_stop_async()); a replay that handed over nothing yet gives the point it opened at. Returns 0, or -1 for
+ * another device or a reader still running. */
+int rtl_device_replay_checkpoint(const struct rtl_device* dev, dsd_iq_replay_checkpoint* out);
+
 #endif /* DSD_NEO_IO_RADIO_RTL_REPLAY_DEVICE_H */

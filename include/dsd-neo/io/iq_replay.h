@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_REPLAY_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_IQ_REPLAY_H_
 
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/iq_wav.h>
 #include <stdint.h>
@@ -93,6 +94,10 @@ typedef struct {
     int recorded_dsp_bw_khz;
     /* Something the open wants the user told (a sidecar beside a WAV that the WAV's header overrides), or empty. */
     char open_notice[DSD_IQ_REPLAY_NOTICE_SIZE];
+    /* A run-time re-plan's resume (issue #701): when resume is set, the replay opens at resume_at
+     * (dsd_iq_replay_resume_check()) instead of the capture's start. Set by the stream start, never read from a file. */
+    int resume;
+    dsd_iq_replay_checkpoint resume_at;
 } dsd_iq_replay_config;
 
 typedef struct dsd_iq_replay_source dsd_iq_replay_source;
@@ -266,6 +271,21 @@ int dsd_iq_replay_apply_rate_plan(dsd_iq_replay_config* cfg, const dsd_iq_replay
  * @return The chunk in bytes, or 0 for a rate of 0 or a format with no sample size.
  */
 size_t dsd_iq_replay_chunk_bytes_for(dsd_iq_sample_format format, uint32_t capture_hz, uint32_t dsp_in_hz);
+
+/**
+ * @brief Check that the replay of @p cfg can resume at @p ckpt, and give the centre in force there (issue #701).
+ *
+ * The checkpoint must name an event index no further than the event list, past every event before data_offset and
+ * before every event after it (one at data_offset itself may be either side), and carry an fs/4 phase of 0 to 3; an
+ * offset past the capture's bytes is refused when the reader seeks to it (dsd_iq_replay_seek()). The centre is the one
+ * the last RETUNE before event_index moved the capture to, or the capture's opening centre when none did.
+ *
+ * @param out_center         [out] The channel centre in force at the checkpoint (may be NULL).
+ * @param out_capture_center [out] The capture (tuner) centre in force there (may be NULL).
+ * @return DSD_IQ_OK; DSD_IQ_ERR_INVALID_ARG with the reason in @p err_buf for a checkpoint this capture cannot resume.
+ */
+int dsd_iq_replay_resume_check(const dsd_iq_replay_config* cfg, const dsd_iq_replay_checkpoint* ckpt,
+                               uint64_t* out_center, uint64_t* out_capture_center, char* err_buf, size_t err_buf_size);
 
 /**
  * @brief Estimate capture duration from bytes and sample rate.

@@ -17,6 +17,7 @@
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/frontend_types.h>
+#include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/platform.h>
 #ifdef __cplusplus
@@ -383,6 +384,11 @@ struct dsd_opts {
        does rtl_pwr, a live read never does, and every stop of the RTL stream clears it. rtlsdr_center_freq keeps the
        capture's opening centre meanwhile; read the tuned frequency through dsd_opts_tuned_freq_hz(). */
     uint32_t iq_replay_center_freq;
+    /* A run-time re-plan of an I/Q replay's rate chain (issue #701): app-control sets it, with the pending flag, for
+       the one stream start that reopens the replay where the stopped one left it (rtl_stream_replay_checkpoint()), and
+       clears it after that start. The stream start reads it from its copy of the options. */
+    uint8_t iq_replay_resume_pending;
+    dsd_iq_replay_checkpoint iq_replay_resume;
 
     // Strings and paths (large trailing arrays)
     char pa_input_idx[100];

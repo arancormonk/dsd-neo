@@ -3511,6 +3511,14 @@ Key public headers:
     (`ui_capture_radio_input()`/`ui_restore_radio_input()`, the config rollback's live-gain path,
     `svc_airspy_tuning`). A replay no longer writes its recorded bandwidth into opts: only an EXPLICIT request beats
     `recorded_dsp_bw_khz` as the plan's target, so a mode preset (`-fT`) keeps a sidecar's recorded chain.
+  - Run-time re-plan with approximate resume (issue #701): the replay reader records, after every chunk it hands the
+    ring, a checkpoint (`dsd_iq_replay_checkpoint` in `<dsd-neo/core/iq_replay_checkpoint.h>`: data offset, next event
+    index, media timeline and pass samples, loop pass, fs/4 phase; `rtl_device_replay_checkpoint()`), which soft stop
+    keeps once the reader is joined (`rtl_stream_replay_checkpoint()`). A start with `dsd_opts::iq_replay_resume_pending`
+    seeks there (`dsd_iq_replay_seek()`), opens on the centre the last RETUNE before the event index set
+    (`dsd_iq_replay_resume_check()`), and goes on with the event cursor, media time, loop count and fs/4 phase;
+    realtime pacing is rebased to the resume, the resampler starts fresh, and what was in the ring or the decoder's
+    cache is dropped (a few ms). Test: `IO_RTL_REPLAY_RESUME`.
 
 Notes:
 

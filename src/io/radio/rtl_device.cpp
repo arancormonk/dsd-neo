@@ -334,6 +334,10 @@ struct rtl_device {
        the demodulator (issue #701). Made at open, before the reader starts, freed after it is joined; only the reader
        thread uses it between. NULL when the capture runs at its own rate. */
     dsd_iq_resampler* replay_resampler = nullptr;
+    /* Where the reader stood after the last capture chunk it handed the demodulator (issue #701): a run-time re-plan
+       reopens the replay there (rtl_device_replay_checkpoint()). Written by the reader thread only, read once it is
+       joined; at open, the point the replay opened at. */
+    dsd_iq_replay_checkpoint replay_committed{};
     /* SoapySDR backend */
     SoapySDR::Device* soapy_dev = nullptr;
     SoapySDR::Stream* soapy_stream = nullptr;
@@ -1896,6 +1900,7 @@ struct replay_thread_io_state {
     uint64_t* timeline_samples; /* capture samples handed over or omitted so far (the media timeline); a loop goes on */
     uint64_t* chunk_sequence;   /* chunks submitted so far */
     uint64_t* pass_start_sequence; /* chunk_sequence when this pass over the capture began: at the start, or a rewind */
+    uint32_t* loop_pass;           /* passes completed under --iq-loop */
     int realtime;
     /* What REPLAY_STEP_FAILED failed on: the capture file's DSD_IQ_* error, or kReplayPipelineFailureRc for a failure
        outside it. */
@@ -1922,10 +1927,23 @@ replay_thread_process_inputs_valid(const struct rtl_device* s, const uint8_t* ra
     if (!io->complex_written || !io->data_offset || !io->event_cursor || !io->start_ns) {
         return 0;
     }
-    if (!io->timeline_samples || !io->chunk_sequence || !io->pass_start_sequence) {
+    if (!io->timeline_samples || !io->chunk_sequence || !io->pass_start_sequence || !io->loop_pass) {
         return 0;
     }
     return 1;
+}
+
+/* The reader's position now that the demodulator has the capture up to it: what a run-time re-plan resumes from
+ * (issue #701). The data offset is the bytes read, a cu8 byte carried to the next chunk included (the resume's seek
+ * rounds down to it); the fs/4 phase is the next sample's. */
+static void
+replay_commit_checkpoint(struct rtl_device* s, const replay_thread_io_state* io) {
+    s->replay_committed.data_offset = *io->data_offset;
+    s->replay_committed.event_index = *io->event_cursor;
+    s->replay_committed.timeline_samples = *io->timeline_samples;
+    s->replay_committed.pass_samples = *io->complex_written;
+    s->replay_committed.loop_pass = *io->loop_pass;
+    s->replay_committed.fs4_phase = (int32_t)(*io->phase & 3);
 }
 
 /* Hand one capture chunk to the demod whole (issue #572): wait for its realtime deadline, then, with no deadline, for
@@ -1954,6 +1972,7 @@ replay_submit_whole_chunk(struct rtl_device* s, const float* src, size_t float_c
     *io->chunk_sequence = chunk->sequence;
     *io->complex_written += capture_complex;
     *io->timeline_samples += capture_complex;
+    replay_commit_checkpoint(s, io);
     return 0;
 }
 
@@ -2066,6 +2085,7 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
         /* Too few samples for an output yet: they are in the resampler's history, and their capture time passes. */
         *io->complex_written += capture_complex;
         *io->timeline_samples += capture_complex;
+        replay_commit_checkpoint(s, io);
         return REPLAY_STEP_CONTINUE;
     }
     if (replay_submit_whole_chunk(s, io->rs_block, (size_t)resampled * 2U, capture_complex, io, &chunk) != 0) {
@@ -2556,6 +2576,7 @@ replay_handle_empty_read(struct rtl_device* s, replay_thread_io_state* io) {
     *io->event_cursor = 0;
     *io->start_ns = dsd_realtime_mono_ns();
     *io->pass_start_sequence = *io->chunk_sequence;
+    (*io->loop_pass)++;
     return REPLAY_STEP_CONTINUE;
 }
 
@@ -2695,18 +2716,36 @@ replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
     uint64_t timeline_samples = 0;
     uint64_t chunk_sequence = 0;
     uint64_t pass_start_sequence = 0;
+    uint32_t loop_pass = 0;
     int realtime = s->replay_cfg.realtime ? 1 : 0;
     s->replay_deferred_read_rc = DSD_IQ_OK;
+    if (s->replay_cfg.resume) {
+        /* A run-time re-plan's resume (issue #701): the open sought the capture to the checkpoint, rounded down to a
+           whole sample. The media timeline and the event cursor go on from it, and the realtime schedule is rebased so
+           its next deadline is now. A pass resumed past its start has handed the demod chunks already, so its end
+           rewinds under --iq-loop. */
+        const dsd_iq_replay_checkpoint* at = &s->replay_cfg.resume_at;
+        const size_t align = dsd_iq_sample_format_alignment_bytes(s->replay_cfg.format);
+        data_offset = align > 0U ? at->data_offset - at->data_offset % (uint64_t)align : at->data_offset;
+        event_cursor = at->event_index;
+        timeline_samples = at->timeline_samples;
+        complex_written = at->pass_samples;
+        loop_pass = at->loop_pass;
+        phase = (int)(at->fs4_phase & 3);
+        const uint64_t elapsed_ns = replay_media_ns(s, complex_written);
+        start_ns = start_ns > elapsed_ns ? start_ns - elapsed_ns : 0U;
+        pass_start_sequence = data_offset > 0U ? UINT64_MAX : 0U;
+    }
 
     while (step == REPLAY_STEP_CONTINUE) {
         if (replay_forced_stop_requested(s)) {
             step = REPLAY_STEP_STOP;
             break;
         }
-        replay_thread_io_state io = {&phase,          &have_carry,          &carry_byte, &complex_written,
-                                     &data_offset,    &event_cursor,        &start_ns,   &timeline_samples,
-                                     &chunk_sequence, &pass_start_sequence, realtime,    DSD_IQ_OK,
-                                     rs_block,        rs_cap_complex};
+        replay_thread_io_state io = {
+            &phase,        &have_carry, &carry_byte,       &complex_written, &data_offset,
+            &event_cursor, &start_ns,   &timeline_samples, &chunk_sequence,  &pass_start_sequence,
+            &loop_pass,    realtime,    DSD_IQ_OK,         rs_block,         rs_cap_complex};
         step = replay_thread_process_block(s, raw_block, raw_block_bytes, f32_block, &io);
         if (step == REPLAY_STEP_FAILED) {
             *out_failure_rc = io.failure_rc;
@@ -6112,6 +6151,15 @@ replay_free_resampler(struct rtl_device* dev) {
     }
 }
 
+int
+rtl_device_replay_checkpoint(const struct rtl_device* dev, dsd_iq_replay_checkpoint* out) {
+    if (!dev || !out || dev->backend != RTL_BACKEND_IQ_REPLAY || dev->thread_started) {
+        return -1;
+    }
+    *out = dev->replay_committed;
+    return 0;
+}
+
 static int
 rtl_device_open_iq_replay_source(struct rtl_device* dev, const dsd_iq_replay_config* cfg) {
     dsd_iq_replay_config opened_cfg;
@@ -6144,17 +6192,39 @@ rtl_device_open_iq_replay_source(struct rtl_device* dev, const dsd_iq_replay_con
     opened_cfg.base_decimation = cfg->base_decimation;
     opened_cfg.post_downsample = cfg->post_downsample;
     opened_cfg.demod_rate_hz = cfg->demod_rate_hz;
+    /* A loop rewinds to the capture's opening centre and rate, wherever the replay opened. */
+    dev->replay_initial_center_frequency_hz = opened_cfg.center_frequency_hz;
+    dev->replay_initial_capture_center_frequency_hz = opened_cfg.capture_center_frequency_hz;
+    dev->replay_initial_sample_rate_hz = opened_cfg.sample_rate_hz;
+    dev->replay_initial_freq = (opened_cfg.capture_center_frequency_hz > UINT32_MAX)
+                                   ? UINT32_MAX
+                                   : (uint32_t)opened_cfg.capture_center_frequency_hz;
+    dev->replay_initial_rate = opened_cfg.dsp_input_rate_hz;
+    DSD_MEMSET(&dev->replay_committed, 0, sizeof(dev->replay_committed));
+    if (cfg->resume) {
+        /* A run-time re-plan's resume (issue #701): the reader starts at the checkpoint, on the centre the caller found
+           in force there (dsd_iq_replay_resume_check()). */
+        rc = dsd_iq_replay_seek(replay_src, cfg->resume_at.data_offset);
+        if (rc != DSD_IQ_OK) {
+            LOG_ERROR("IQ replay: cannot resume '%s' at capture byte %llu (rc=%d).\n", open_path,
+                      (unsigned long long)cfg->resume_at.data_offset, rc);
+            replay_free_resampler(dev);
+            dsd_iq_replay_close(replay_src);
+            dsd_iq_replay_config_clear(&opened_cfg);
+            return -1;
+        }
+        opened_cfg.resume = 1;
+        opened_cfg.resume_at = cfg->resume_at;
+        opened_cfg.center_frequency_hz = cfg->center_frequency_hz;
+        opened_cfg.capture_center_frequency_hz = cfg->capture_center_frequency_hz;
+        dev->replay_committed = cfg->resume_at;
+    }
     dev->replay_cfg = opened_cfg;
     dev->replay_src = replay_src;
     dev->freq = (opened_cfg.capture_center_frequency_hz > UINT32_MAX)
                     ? UINT32_MAX
                     : (uint32_t)opened_cfg.capture_center_frequency_hz;
     dev->rate = opened_cfg.dsp_input_rate_hz;
-    dev->replay_initial_center_frequency_hz = opened_cfg.center_frequency_hz;
-    dev->replay_initial_capture_center_frequency_hz = opened_cfg.capture_center_frequency_hz;
-    dev->replay_initial_sample_rate_hz = opened_cfg.sample_rate_hz;
-    dev->replay_initial_freq = dev->freq;
-    dev->replay_initial_rate = dev->rate;
     dev->gain = opened_cfg.tuner_gain_tenth_db;
     dev->ppm_error = opened_cfg.ppm;
     return 0;

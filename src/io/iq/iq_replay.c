@@ -2217,6 +2217,50 @@ dsd_iq_replay_apply_rate_plan(dsd_iq_replay_config* cfg, const dsd_iq_replay_rat
     return DSD_IQ_OK;
 }
 
+int
+dsd_iq_replay_resume_check(const dsd_iq_replay_config* cfg, const dsd_iq_replay_checkpoint* ckpt, uint64_t* out_center,
+                           uint64_t* out_capture_center, char* err_buf, size_t err_buf_size) {
+    if (err_buf && err_buf_size > 0U) {
+        err_buf[0] = '\0';
+    }
+    if (!cfg || !ckpt) {
+        set_error(err_buf, err_buf_size, "no replay or checkpoint to resume");
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (ckpt->fs4_phase < 0 || ckpt->fs4_phase > 3) {
+        set_error(err_buf, err_buf_size, "the checkpoint's fs/4 phase %d is not 0 to 3", (int)ckpt->fs4_phase);
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (ckpt->event_index > cfg->event_count || (cfg->event_count > 0U && !cfg->events)) {
+        set_error(err_buf, err_buf_size, "the checkpoint's event %u is past the capture's %u events",
+                  (unsigned)ckpt->event_index, (unsigned)cfg->event_count);
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if ((ckpt->event_index > 0U && cfg->events[ckpt->event_index - 1U].byte_offset > ckpt->data_offset)
+        || (ckpt->event_index < cfg->event_count && cfg->events[ckpt->event_index].byte_offset < ckpt->data_offset)) {
+        set_error(err_buf, err_buf_size, "the checkpoint at byte %" PRIu64 " does not fall before event %u",
+                  ckpt->data_offset, (unsigned)ckpt->event_index);
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    uint64_t center = cfg->center_frequency_hz;
+    uint64_t capture_center = cfg->capture_center_frequency_hz;
+    for (uint32_t i = ckpt->event_index; i > 0U; i--) {
+        const dsd_iq_event* ev = &cfg->events[i - 1U];
+        if (ev->kind == DSD_IQ_EVENT_RETUNE) {
+            center = ev->center_frequency_hz;
+            capture_center = ev->capture_center_frequency_hz;
+            break;
+        }
+    }
+    if (out_center) {
+        *out_center = center;
+    }
+    if (out_capture_center) {
+        *out_capture_center = capture_center;
+    }
+    return DSD_IQ_OK;
+}
+
 double
 dsd_iq_replay_estimate_duration_seconds(uint64_t data_bytes, dsd_iq_sample_format format, uint32_t sample_rate_hz) {
     if (sample_rate_hz == 0) {
