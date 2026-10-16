@@ -4,8 +4,9 @@
  */
 
 /*
- * TETRA speech through the codec library to the digital voice output. The test codec (tetra_test_codec.c) is loaded
- * through --tetra-codec as a user's would be; its samples say which decode made them and whether it was a bad frame,
+ * TETRA speech through the speech decoder to the digital voice output. The test codec (tetra_test_codec.c) stands in
+ * for mbelib-neo's decoder (tetra_voice_set_codec_for_test()); its samples say which decode made them and whether it
+ * was a bad frame,
  * and the test reads them back from the raw output (-o -, here a temp file) to check what played, in what order:
  * speech starts at a CRC-passed burst, bad frames after it are concealed until a run of them ends it, a stolen half
  * slot keeps the frame timing, 240-sample frames leave the output whole 160-sample blocks, and the follow, encryption,
@@ -29,7 +30,6 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
-#include <dsd-neo/protocol/tetra/tetra_codec_abi.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
@@ -49,11 +49,7 @@
 #include "tetra_test_pdu.h"
 #include "tetra_voice_state.h"
 
-#ifndef TETRA_TEST_CODEC_GOOD
-#error TETRA_TEST_CODEC_GOOD names the test codec library
-#endif
-
-#define FRAME   ((size_t)DSD_TETRA_CODEC_FRAME_SAMPLES)
+#define FRAME   ((size_t)TETRA_VOICE_FRAME_SAMPLES)
 #define MAX_OUT (64U * FRAME)
 
 static int g_fail = 0;
@@ -105,7 +101,7 @@ fixture_open(fixture* f) {
     f->opts->use_hpf_d = 0;
     f->opts->slot1_on = 1;
     f->opts->dmr_mute_encL = 1;
-    DSD_SNPRINTF(f->opts->tetra_codec_path, sizeof(f->opts->tetra_codec_path), "%s", TETRA_TEST_CODEC_GOOD);
+    tetra_voice_set_codec_for_test(tetra_test_codec(TETRA_TEST_CODEC_GOOD));
     f->state->last_vc_sync_time = 0;
     f->state->last_vc_sync_time_m = 0.0;
     /* A BSCH has set the TDMA clock: the bursts are TN1's (a trunked or heard timeslot is one the clock places). */
@@ -174,7 +170,7 @@ expect_output(const fixture* f, size_t from, const played_frame* frames, size_t 
         const tetra_test_codec_sample s = tetra_test_codec_read(out[from + k]);
         int ok = s.valid && s.frame == p->frame && s.bad == p->bad;
         if (ok && p->bits) {
-            ok = s.bit == (p->bits[(k % FRAME) % DSD_TETRA_CODEC_FRAME_BITS] & 1);
+            ok = s.bit == (p->bits[(k % FRAME) % TETRA_VOICE_FRAME_BITS] & 1);
         }
         if (!ok) {
             DSD_SNPRINTF(label, sizeof(label), "%s: sample %zu (%d) is not decode %u%s", what, k, out[from + k],
@@ -191,8 +187,8 @@ test_clean_stream_plays_every_frame(void) {
     expect(fixture_open(&f) == 0, "clean: fixture");
     uint8_t b1[TETRA_SPEECH_FULL_BITS];
     uint8_t b2[TETRA_SPEECH_FULL_BITS];
-    uint8_t s1[2 * DSD_TETRA_CODEC_FRAME_BITS];
-    uint8_t s2[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t s1[2 * TETRA_VOICE_FRAME_BITS];
+    uint8_t s2[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(b1, TETRA_SPEECH_FULL_BITS, 1U);
     burst_bits(b2, TETRA_SPEECH_FULL_BITS, 5U);
     tetra_voice_reorder_full(b1, s1);
@@ -205,9 +201,9 @@ test_clean_stream_plays_every_frame(void) {
 
     const played_frame want[] = {
         {1, 0, s1},
-        {2, 0, s1 + DSD_TETRA_CODEC_FRAME_BITS},
+        {2, 0, s1 + TETRA_VOICE_FRAME_BITS},
         {3, 0, s2},
-        {4, 0, s2 + DSD_TETRA_CODEC_FRAME_BITS},
+        {4, 0, s2 + TETRA_VOICE_FRAME_BITS},
     };
     expect_output(&f, 0, want, 4, 4 * FRAME, "clean stream");
     uint64_t stamp = 0;
@@ -215,8 +211,8 @@ test_clean_stream_plays_every_frame(void) {
     expect(stamp != 0U, "clean: the played speech notes audible audio");
     expect(f.state->last_vc_sync_time != 0 && f.state->last_vc_sync_time_m > 0.0, "clean: speech marks reception");
     const tetra_voice_t* v = voice_of(&f);
-    expect(v->codec_status == TETRA_CODEC_STATUS_READY && v->frames == 4 && v->concealed == 0 && v->carry_len == 0,
-           "clean: codec ready, four frames, nothing carried");
+    expect(v->codec != NULL && v->frames == 4 && v->concealed == 0 && v->carry_len == 0,
+           "clean: a decoder, four frames, nothing carried");
     fixture_close(&f);
 }
 
@@ -225,16 +221,16 @@ test_integrity_starts_conceals_and_ends_speech(void) {
     fixture f;
     expect(fixture_open(&f) == 0, "integrity: fixture");
     uint8_t bits[TETRA_SPEECH_FULL_BITS];
-    uint8_t speech[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t speech[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(bits, TETRA_SPEECH_FULL_BITS, 3U);
     tetra_voice_reorder_full(bits, speech);
     const uint8_t* a = speech;
-    const uint8_t* b = speech + DSD_TETRA_CODEC_FRAME_BITS;
+    const uint8_t* b = speech + TETRA_VOICE_FRAME_BITS;
 
     /* A burst whose CRC failed proves nothing: no codec, no audio, no reception. */
     tetra_voice_full_slot(f.opts, f.state, bits, 0);
     expect_output(&f, 0, NULL, 0, 0, "integrity: bad first burst");
-    expect(voice_of(&f)->codec_status == TETRA_CODEC_STATUS_UNLOADED, "integrity: no codec for an unproven burst");
+    expect(voice_of(&f)->codec == NULL, "integrity: no decoder for an unproven burst");
     expect(f.state->last_vc_sync_time == 0, "integrity: an unproven burst is not reception");
 
     tetra_voice_full_slot(f.opts, f.state, bits, 1); /* decodes 1, 2 */
@@ -258,8 +254,8 @@ test_half_slot_and_carry(void) {
     expect(fixture_open(&f) == 0, "half: fixture");
     uint8_t half[TETRA_SPEECH_HALF_BITS];
     uint8_t full[TETRA_SPEECH_FULL_BITS];
-    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t half_frame[TETRA_VOICE_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
     tetra_voice_reorder_half(half, half_frame);
@@ -277,17 +273,18 @@ test_half_slot_and_carry(void) {
         {2, 1, NULL},
         {3, 0, half_frame},
         {4, 0, full_frames},
-        {5, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+        {5, 0, full_frames + TETRA_VOICE_FRAME_BITS},
     };
     /* 5 frames are 1200 samples: 1120 played, 80 waiting. */
     expect_output(&f, 0, want, 5, 1120, "half slot");
 
     /* A carrier boundary drops what waits and starts the codec over: decodes count from 1 again. */
     tetra_voice_reset(f.state);
-    expect(voice_of(&f)->carry_len == 0 && voice_of(&f)->confirmed == 0 && voice_of(&f)->codec == NULL,
-           "reset: nothing carried, no speech, no decoder");
+    expect(voice_of(&f)->carry_len == 0 && voice_of(&f)->confirmed == 0
+               && tetra_test_codec_decodes(voice_of(&f)->codec) == 0,
+           "reset: nothing carried, no speech, the decoder reset");
     tetra_voice_full_slot(f.opts, f.state, full, 1);
-    const played_frame after[] = {{1, 0, full_frames}, {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS}};
+    const played_frame after[] = {{1, 0, full_frames}, {2, 0, full_frames + TETRA_VOICE_FRAME_BITS}};
     expect_output(&f, 1120, after, 2, 2 * FRAME, "after reset");
     fixture_close(&f);
 }
@@ -466,20 +463,20 @@ test_air_key_stream_positions(void) {
     air_encrypted_call(&f, 1);
     uint8_t full[TETRA_SPEECH_FULL_BITS];
     uint8_t half[TETRA_SPEECH_HALF_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
-    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
+    uint8_t half_frame[TETRA_VOICE_FRAME_BITS];
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 7U);
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 9U);
     tetra_voice_reorder_full(full, full_frames);
     tetra_voice_reorder_half(half, half_frame);
-    expected_clear(&f, full_frames, 2 * DSD_TETRA_CODEC_FRAME_BITS, 0, full_frames);
-    expected_clear(&f, half_frame, DSD_TETRA_CODEC_FRAME_BITS, 216, half_frame);
+    expected_clear(&f, full_frames, 2 * TETRA_VOICE_FRAME_BITS, 0, full_frames);
+    expected_clear(&f, half_frame, TETRA_VOICE_FRAME_BITS, 216, half_frame);
 
     tetra_voice_full_slot(f.opts, f.state, full, 1);
     tetra_voice_half_slot(f.opts, f.state, half, 1);
     const played_frame want[] = {
         {1, 0, full_frames},
-        {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+        {2, 0, full_frames + TETRA_VOICE_FRAME_BITS},
         {3, 1, NULL},
         {4, 0, half_frame},
     };
@@ -515,19 +512,19 @@ test_reduced_key_speech(void) {
             continue;
         }
         uint8_t full[TETRA_SPEECH_FULL_BITS];
-        uint8_t frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+        uint8_t frames[2 * TETRA_VOICE_FRAME_BITS];
         uint8_t ks[35];
         burst_bits(full, TETRA_SPEECH_FULL_BITS, 7U);
         tetra_voice_reorder_full(full, frames);
         tetra_tea1_keystream_reduced(k_register, tetra_air_build_iv(ts->tn, ts->fn, ts->mn, ts->hyperframe, 0), ks,
                                      (int)sizeof(ks));
-        for (int i = 0; i < 2 * DSD_TETRA_CODEC_FRAME_BITS; i++) {
+        for (int i = 0; i < 2 * TETRA_VOICE_FRAME_BITS; i++) {
             frames[i] = (uint8_t)((frames[i] ^ (ks[i / 8] >> (7 - (i % 8)))) & 1u);
         }
         tetra_voice_full_slot(f.opts, f.state, full, 1);
         const played_frame want[] = {
             {1, 0, frames},
-            {2, 0, frames + DSD_TETRA_CODEC_FRAME_BITS},
+            {2, 0, frames + TETRA_VOICE_FRAME_BITS},
         };
         expect_output(&f, 0, want, 2, 2 * FRAME, "reduced: carrier 321's speech, decrypted from the register");
         expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE,
@@ -665,7 +662,7 @@ expect_segment(const fixture* f, size_t from, uint32_t frame, const uint8_t* bit
     for (size_t k = 0; k < count && from + k < n; k++) {
         const tetra_test_codec_sample smp = tetra_test_codec_read(out[from + k]);
         if (!smp.valid || smp.bad || smp.frame != frame
-            || smp.bit != (bits[(first + k) % DSD_TETRA_CODEC_FRAME_BITS] & 1)) {
+            || smp.bit != (bits[(first + k) % TETRA_VOICE_FRAME_BITS] & 1)) {
             DSD_SNPRINTF(label, sizeof(label), "%s: sample %zu (%d) is not sample %zu of decode %u", what, from + k,
                          out[from + k], first + k, frame);
             expect(0, label);
@@ -690,9 +687,9 @@ test_call_boundary_resets_speech(void) {
     row.record = 0U;
     expect(dsd_tg_policy_upsert_exact(f.state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0, "boundary: policy");
     uint8_t half[TETRA_SPEECH_HALF_BITS];
-    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t half_frame[TETRA_VOICE_FRAME_BITS];
     uint8_t full[TETRA_SPEECH_FULL_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
     tetra_voice_reorder_half(half, half_frame);
@@ -724,7 +721,7 @@ test_call_boundary_resets_speech(void) {
     tetra_voice_full_slot(f.opts, f.state, full, 1);
     expect_segment(&f, 2 * block, 1, half_frame, 0, block, "boundary: direct mode call to 1234");
     expect_segment(&f, 3 * block, 1, full_frames, 0, FRAME, "boundary: direct mode call to 1236");
-    expect_segment(&f, 3 * block + FRAME, 2, full_frames + DSD_TETRA_CODEC_FRAME_BITS, 0, FRAME,
+    expect_segment(&f, 3 * block + FRAME, 2, full_frames + TETRA_VOICE_FRAME_BITS, 0, FRAME,
                    "boundary: direct mode call to 1236, second frame");
 
     /* The same trunked call: its transmission ends (D-TX CEASED) and the next one is granted. */
@@ -739,7 +736,7 @@ test_call_boundary_resets_speech(void) {
     tetra_voice_full_slot(f.opts, f.state, full, 1);
     expect_segment(&f, before_tx, 1, half_frame, 0, block, "boundary: the first transmission");
     expect_segment(&f, before_tx + block, 1, full_frames, 0, FRAME, "boundary: the next transmission");
-    expect_segment(&f, before_tx + block + FRAME, 2, full_frames + DSD_TETRA_CODEC_FRAME_BITS, 0, FRAME,
+    expect_segment(&f, before_tx + block + FRAME, 2, full_frames + TETRA_VOICE_FRAME_BITS, 0, FRAME,
                    "boundary: the next transmission, second frame");
     static int16_t out[MAX_OUT];
     expect(voice_of(&f)->carry_len == 0 && fixture_output(&f, out, MAX_OUT) == before_tx + block + 2 * FRAME,
@@ -767,9 +764,9 @@ test_talker_change_resets_speech(void) {
     fixture f;
     expect(fixture_open(&f) == 0, "talker: fixture");
     uint8_t half[TETRA_SPEECH_HALF_BITS];
-    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t half_frame[TETRA_VOICE_FRAME_BITS];
     uint8_t full[TETRA_SPEECH_FULL_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
     tetra_voice_reorder_half(half, half_frame);
@@ -781,7 +778,7 @@ test_talker_change_resets_speech(void) {
     tetra_voice_half_slot(f.opts, f.state, half, 1);
     expect(voice_of(&f)->carry_len == 80, "talker: 80 samples carried");
     /* D-TX GRANTED names talker 0x4444: the same transmission, so the carried samples and decodes 2 and 3 play. */
-    const uint8_t* const b = full_frames + DSD_TETRA_CODEC_FRAME_BITS;
+    const uint8_t* const b = full_frames + TETRA_VOICE_FRAME_BITS;
     grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x4444U);
     tetra_voice_full_slot(f.opts, f.state, full, 1);
     expect_segment(&f, 0, 1, half_frame, 0, block, "talker: the speech before the talker was named");
@@ -801,7 +798,7 @@ test_talker_change_resets_speech(void) {
     grant_transmission(&f, TETRA_CALL_EV_TX_INTERRUPT, 12, 0x5555U);
     tetra_voice_full_slot(f.opts, f.state, full, 1);
     expect_segment(&f, at, 1, full_frames, 0, FRAME, "talker: D-TX INTERRUPT starts over");
-    expect_segment(&f, at + FRAME, 2, full_frames + DSD_TETRA_CODEC_FRAME_BITS, 0, FRAME,
+    expect_segment(&f, at + FRAME, 2, full_frames + TETRA_VOICE_FRAME_BITS, 0, FRAME,
                    "talker: D-TX INTERRUPT, second frame");
     at += 2 * FRAME;
 
@@ -838,9 +835,9 @@ test_grant_after_cease_resets_speech(void) {
     fixture f;
     expect(fixture_open(&f) == 0, "next transmission: fixture");
     uint8_t half[TETRA_SPEECH_HALF_BITS];
-    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t half_frame[TETRA_VOICE_FRAME_BITS];
     uint8_t full[TETRA_SPEECH_FULL_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
     tetra_voice_reorder_half(half, half_frame);
@@ -951,9 +948,9 @@ test_call_identifier_change_resets_speech(void) {
     fixture f;
     expect(fixture_open(&f) == 0, "call id: fixture");
     uint8_t half[TETRA_SPEECH_HALF_BITS];
-    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t half_frame[TETRA_VOICE_FRAME_BITS];
     uint8_t full[TETRA_SPEECH_FULL_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
     tetra_voice_reorder_half(half, half_frame);
@@ -990,7 +987,7 @@ test_call_identifier_change_resets_speech(void) {
     tetra_calls_on_event(f.opts, f.state, &info, NULL);
     expect(tetra_calls_peek(f.state, 14) != NULL, "call id: call 10 renamed 14");
     tetra_voice_full_slot(f.opts, f.state, full, 1);
-    const uint8_t* const b = full_frames + DSD_TETRA_CODEC_FRAME_BITS;
+    const uint8_t* const b = full_frames + TETRA_VOICE_FRAME_BITS;
     expect_segment(&f, block + (2 * FRAME), 3, full_frames, 0, FRAME, "call id: the renamed call's codec goes on");
     expect_segment(&f, block + (3 * FRAME), 4, b, 0, FRAME, "call id: the renamed call's second frame");
     fixture_close(&f);
@@ -1004,9 +1001,9 @@ test_network_change_resets_speech(void) {
     fixture f;
     expect(fixture_open(&f) == 0, "network: fixture");
     uint8_t half[TETRA_SPEECH_HALF_BITS];
-    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t half_frame[TETRA_VOICE_FRAME_BITS];
     uint8_t full[TETRA_SPEECH_FULL_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
     tetra_voice_reorder_half(half, half_frame);
@@ -1149,7 +1146,7 @@ test_timeslot_change_resets_speech(void) {
     expect(fixture_open(&f) == 0, "timeslot: fixture");
     dsd_decode_clock_use_test(1000000000000ULL);
     uint8_t full[TETRA_SPEECH_FULL_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
     tetra_voice_reorder_full(full, full_frames);
     tetra_state_t* const ts = tetra_st(f.state);
@@ -1166,7 +1163,8 @@ test_timeslot_change_resets_speech(void) {
     const size_t before = fixture_output(&f, out, MAX_OUT);
     tetra_voice_full_slot(f.opts, f.state, full, 0);
     expect(fixture_output(&f, out, MAX_OUT) == before, "timeslot: TN3's bad first burst conceals nothing of TN2");
-    expect(voice_of(&f)->confirmed == 0 && voice_of(&f)->codec == NULL, "timeslot: TN3's speech starts over");
+    expect(voice_of(&f)->confirmed == 0 && tetra_test_codec_decodes(voice_of(&f)->codec) == 0,
+           "timeslot: TN3's speech starts over");
     tetra_voice_full_slot(f.opts, f.state, full, 1);
     expect_segment(&f, before, 1, full_frames, 0, FRAME, "timeslot: TN3's speech from its own first decode");
     dsd_decode_clock_use_system();
@@ -1183,9 +1181,9 @@ test_speech_gap_resets_speech(void) {
     expect(fixture_open(&f) == 0, "gap: fixture");
     dsd_decode_clock_use_test(1000000000000ULL);
     uint8_t half[TETRA_SPEECH_HALF_BITS];
-    uint8_t half_frame[DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t half_frame[TETRA_VOICE_FRAME_BITS];
     uint8_t full[TETRA_SPEECH_FULL_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
     tetra_voice_reorder_half(half, half_frame);
@@ -1219,7 +1217,7 @@ test_followed_speech_gap_resets_speech(void) {
         expect(fixture_open(&f) == 0, "followed gap: fixture");
         dsd_decode_clock_use_test(1000000000000ULL);
         uint8_t full[TETRA_SPEECH_FULL_BITS];
-        uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+        uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
         burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
         tetra_voice_reorder_full(full, full_frames);
         if (direct) {
@@ -1241,9 +1239,9 @@ test_followed_speech_gap_resets_speech(void) {
         tetra_voice_full_slot(f.opts, f.state, full, 1);
         const played_frame want[] = {
             {1, 0, full_frames},
-            {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+            {2, 0, full_frames + TETRA_VOICE_FRAME_BITS},
             {1, 0, full_frames},
-            {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+            {2, 0, full_frames + TETRA_VOICE_FRAME_BITS},
         };
         expect_output(&f, 0, want, 4, 4 * FRAME, "followed gap: the next transmission from its own first decode");
         dsd_decode_clock_use_system();
@@ -1262,7 +1260,7 @@ test_frame_18_is_no_speech(void) {
     fixture f;
     expect(fixture_open(&f) == 0, "frame 18: fixture");
     uint8_t full[TETRA_SPEECH_FULL_BITS];
-    uint8_t full_frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t full_frames[2 * TETRA_VOICE_FRAME_BITS];
     uint8_t half[TETRA_SPEECH_HALF_BITS];
     burst_bits(full, TETRA_SPEECH_FULL_BITS, 4U);
     burst_bits(half, TETRA_SPEECH_HALF_BITS, 8U);
@@ -1281,9 +1279,9 @@ test_frame_18_is_no_speech(void) {
 
     const played_frame want[] = {
         {1, 0, full_frames},
-        {2, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+        {2, 0, full_frames + TETRA_VOICE_FRAME_BITS},
         {3, 0, full_frames},
-        {4, 0, full_frames + DSD_TETRA_CODEC_FRAME_BITS},
+        {4, 0, full_frames + TETRA_VOICE_FRAME_BITS},
     };
     expect_output(&f, 0, want, 4, 4 * FRAME, "frame 18: the speech of frames 17 and 1 only");
     const tetra_voice_t* v = voice_of(&f);

@@ -354,10 +354,20 @@ decode_ambe_file_frame(dsd_state* state, char ambe_d[49], char file_err_str[260]
     init_mbe_file_result(&result, state->errs2);
     int ret = MBE_STATUS_INVALID_ARGUMENT;
     if (state->mbe_file_type == 1) {
+        /* A record saveAmbe2450Data() packed carries the frame's C0 count: replay it as C0 context, so the frame
+           repeats as it did live. A total alone (older captures) keeps mbelib's no-context rule. */
+        if (state->mbe_file_c0_valid && state->errs <= state->errs2) {
+            result.flags |= MBE_PROCESS_FLAG_C0_VALID;
+            result.c0_errors = state->errs;
+            result.protected_errors = state->errs2 - state->errs;
+        }
         file_err_str[0] = '\0';
         ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp, state->prev_mp,
                                        state->prev_mp_enhanced);
     } else if (state->mbe_file_type == 2) {
+        /* D-STAR voice is decoded with soft decisions (processMbeFrameSoft()), which keeps mbelib from muting AMBE 2400
+           on its error rate; a .dmb record replays the same way. */
+        result.flags |= MBE_PROCESS_FLAG_SOFT_INPUT;
         file_err_str[0] = '\0';
         ret = mbe_processAmbe2400Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp, state->prev_mp,
                                        state->prev_mp_enhanced);
@@ -868,13 +878,16 @@ mbe_process_dstar(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voc
 
 static void
 mbe_save_x2_frame(dsd_opts* opts, dsd_state* state, const char* ambe_d) {
-    /* X2 records both timeslots in one interleaved .amb stream. */
+    /* X2 records both timeslots in one interleaved .amb stream, each record with its own slot's error counts. */
+    int saved_errs = state->errs;
     int saved_errs2 = state->errs2;
 
     if (state->currentslot == 1) {
+        state->errs = state->errsR;
         state->errs2 = state->errs2R;
     }
     dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe_d);
+    state->errs = saved_errs;
     state->errs2 = saved_errs2;
 }
 
@@ -1099,9 +1112,6 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
         return;
     }
 
-    char decoded_ambe_d[49];
-    DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
-
     // YSF V/D Type 1 borrows this decoder and has no cipher: the scrambler and cipher 2/3 are NXDN's, and scrambled
     // dPMR halves', only.
     const int nxdn_crypto =
@@ -1121,8 +1131,6 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
             return;
         }
     }
-
-    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
 
     int process_ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &ambe_result, frame_ctx->ambe_d,
                                                state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
@@ -1603,7 +1611,9 @@ mbeslot_left_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     }
 
     pack_ambe(frame_ctx->ambe_d, cipher, 49);
-    if (state->errs < 3) {
+    /* C0 errors as TIA-102.BABA-1 5.5 counts them (mbelib-neo 2.5): up to 3 are corrected, so the frame's parameters
+       are its own and decrypt; 4 is uncorrectable and stays as received. */
+    if (state->errs < 4) {
         rc4_voice_decrypt(state->dropL, 9, 7, rckey, cipher, plain);
     } else {
         DSD_MEMCPY(plain, cipher, sizeof(plain));
@@ -1641,7 +1651,9 @@ mbeslot_right_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     }
 
     pack_ambe(frame_ctx->ambe_d, cipher, 49);
-    if (state->errsR < 3) {
+    /* C0 errors as TIA-102.BABA-1 5.5 counts them (mbelib-neo 2.5): up to 3 are corrected, so the frame's parameters
+       are its own and decrypt; 4 is uncorrectable and stays as received. */
+    if (state->errsR < 4) {
         rc4_voice_decrypt(state->dropR, 9, 7, rckey, cipher, plain);
     } else {
         DSD_MEMCPY(plain, cipher, sizeof(plain));
@@ -1731,9 +1743,6 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
         return;
     }
 
-    char decoded_ambe_d[49];
-    DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
-
     // DMR's talkgroup key autoload, privacy, Hytera, Vertex and vendor scramblers are DMR's alone: clear dPMR and P25
     // Phase 2 reach this path too (issue #656).
     const int dmr_owned = frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR;
@@ -1758,7 +1767,6 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
         frame_ctx->slot_keyed[0] = 1;
         frame_ctx->straight_ks[0] = 1;
     }
-    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_left(opts, state, frame_ctx->ambe_d, &ambe_result);
     frame_ctx->capture = MBE_CAPTURE_SLOT_LEFT;
 }
@@ -1774,9 +1782,6 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
                              state->err_strR, sizeof(state->err_strR), NULL);
         return;
     }
-
-    char decoded_ambe_d[49];
-    DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
     const int dmr_owned = frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR;
     if (dmr_owned) {
@@ -1799,7 +1804,6 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
         frame_ctx->slot_keyed[1] = 1;
         frame_ctx->straight_ks[1] = 1;
     }
-    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_right(opts, state, frame_ctx->ambe_d, &ambe_result);
     frame_ctx->capture = MBE_CAPTURE_SLOT_RIGHT;
 }

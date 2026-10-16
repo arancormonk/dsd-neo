@@ -613,12 +613,6 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
     so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
     timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
-  - Run-time libraries: `dsd_dynlib_open()`/`dsd_dynlib_symbol()`/`dsd_dynlib_close()` in
-    `include/dsd-neo/platform/dynlib.h` load a user-supplied shared library (the TETRA speech codec,
-    `--tetra-codec`): `dlopen(RTLD_NOW | RTLD_LOCAL)` in `dynlib_posix.c` (linked with `${CMAKE_DL_LIBS}`),
-    `LoadLibraryExW()` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` in `dynlib_win32.c`
-    on the full path (UTF-8, else the ANSI code page). A bare file name means the working directory, never the loader's
-    search path; only these two files include `<dlfcn.h>` for it. Test: `PLATFORM_DYNLIB`
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
     `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
     object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
@@ -696,6 +690,17 @@ suite runs under this compiler.
   the NXDN scrambler (signalled or forced `M == 1`) and cipher 2/3. YSF, D-STAR, X2-TDMA, ProVoice: none. The
   keyloader's ALG ID / KEY ID activation (`mbe_activate_keyloader_slot()`) runs for DMR and P25 only: NXDN voice loads
   its keys from its VCALL, and the others signal none. The manual `-S` keystream stays on the slot path for every owner.
+  DMR RC4 (ALG ID 0x21) decrypts a frame whose C0 the vocoder corrected (fewer than 4 C0 errors as mbelib-neo 2.5
+  counts them, TIA-102.BABA-1 5.5) and leaves an uncorrectable one as received; its drop position advances either way.
+  A keystream or scrambler that changes AMBE 2450 parameter bits leaves the decode's C0 context in place
+  (`src/core/mbe_result_context.h`): mbelib-neo repeats such a frame only at 4 C0 errors, as it does clear voice,
+  rather than by its no-context fallback (more than 3 errors in all). IMBE transforms still drop the C0/C4 context.
+  `.amb` capture records pack the C0 and total error counts behind `DSD_MBE_AMB_ERR_FLAG` (`saveAmbe2450Data()`,
+  `<dsd-neo/core/file_io.h>`); `-r` replay restores the C0 count as C0 context and the total for mbelib's error rate
+  (`readAmbe2450Data()`, `dsd_state::mbe_file_c0_valid`, `decode_ambe_file_frame()`). A byte without the flag (older
+  captures, other tools) is a total and replays with no C0 context, as before. `.imb` and `.dmb` records keep the total;
+  a `.dmb` record replays as soft input, as live D-STAR voice decodes, so mbelib does not mute AMBE 2400 on its error
+  rate where the live decode played.
   Keystream reads are bounded by what was generated: P25 Phase 1 by ALG ID (DES/TDEA 224 octets, DES-XL 213, AES 15
   blocks = 240; a superframe reads up to octet 228), the slot path by `dmr_voice_stream_apply_frame49()`'s
   `ks_bit_count` and the DES helper (DES and AES 1152 bits, Hytera Enhanced 1080, Kirisun 1008). A frame past the end is
@@ -905,9 +910,9 @@ suite runs under this compiler.
   extended services broadcast), its location area, the carrier being received (`tetra_calls_rx_carrier()`) and which
   kind of air key applies there with its TEA (`key_kind`, `key_tea`, from `tetra_air_key_for_carrier()`; never a key),
   in direct mode the transmission's security class and SCKN (`dmo_class`, `dmo_sckn`), where call following stands, the SYSINFO main carrier and its frequency, the channel allocation's carrier, timeslot bitmap (bit 3 is
-  timeslot 1, as the Timeslot assigned field carries it) and frequency, the last D-MM STATUS, and the speech codec's
-  status (`dsd_tetra_codec_status`: unknown, ready, missing, load failed, decode errors) with its frame and error
-  counts. The network, the SYSINFO main carrier, the traffic channel and the D-MM STATUS are a trunked network's, so a
+  timeslot 1, as the Timeslot assigned field carries it) and frequency, the last D-MM STATUS, and the speech decoder's
+  status (`dsd_tetra_codec_status`: unknown until a speech frame reached it, ready, decode errors while the last frame
+  failed or no decoder could be made) with its frame and error counts. The network, the SYSINFO main carrier, the traffic channel and the D-MM STATUS are a trunked network's, so a
   direct mode carrier publishes none of them, though the TETRA state keeps the network identity for the trunked carrier
   the session goes back to: a retune from a TMO cell to a DMO carrier shows no network of that cell beside the DMO
   mode, as it shows no colour code, cell security, carrier or channel rows. A synchronisation burst that sets the mode or the network publishes at once (`tetra_bsch_parse()`,
@@ -5051,7 +5056,7 @@ single "current call".
   stream applies after `tetra_voice_reorder_full()` / `_half()`, to the speech frame bits in codec order (table 6.4: a
   full slot's frame A takes KSS(0..136) and frame B KSS(137..273), a half slot's frame KSS(216..352)). Only the
   encrypted values (2 and 3) of the encryption mode element are encrypted; 1 is reserved. The speech in progress (the
-  codec's decoder state, the speech's integrity and its unplayed samples) belongs to one transmission: a burst of speech
+  speech decoder's state, the speech's integrity and its unplayed samples) belongs to one transmission: a burst of speech
   of another kind, call identifier or target, on another timeslot (each a traffic channel of its own, EN 300 392-2
   clause 9.4.2.2; speech no record names has no other identity), of another transmitting party (the call's talker, which D-TX GRANTED and
   D-TX INTERRUPT name, or the direct mode source; a party not known on either side is no change, as for the canonical
@@ -5069,6 +5074,12 @@ single "current call".
   transmissions apart at the second's first burst, which publishes nothing when its CRC fails. The kind tells direct
   mode from trunked mode; downlink or uplink is the session's (`--tetra-uplink`). A D-INFO or D-CALL RESTORE renaming the call keeps
   its speech (`tetra_voice_call_renamed()`).
+- Speech decoding. mbelib-neo's TETRA decoder (`mbe_tetraDecodeFrame()`, mbe-neo 2.5+) turns each 137-bit speech frame
+  into 240 samples at 8 kHz; a CRC-failed or stolen frame goes to it as a bad frame, which it conceals. `tetra_voice.c`
+  makes one decoder (`tetra_voice_t::codec`) at the first frame that plays, resets it (`mbe_tetraDecoderReset()`) when
+  the speech in progress starts over and frees it with the TETRA state. A decoder that cannot be made or a decode that
+  fails drops that frame with one logged error per session; decoding carries on. Tests swap in a stand-in decoder
+  through `tetra_voice_set_codec_for_test()` (`tetra_voice_state.h`).
 - Canonical calls. Slot 0, the TETRA synctype as protocol. The followed call publishes from its CRC-passed signalling
   once the carrier is proven and its tune settled, until its transmission ceased: a group call's called group as
   target and its talker as source; an individual call's talker (the calling party while none is named) as source and
@@ -5866,7 +5877,7 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 External dependencies (resolved via CMake):
 
 - Required: OpenSSL 3.x libcrypto; LibSndFile; an audio backend (PulseAudio by default, PortAudio on Windows); MBE
-  vocoder (`mbe-neo` 2.3+).
+  vocoder (`mbe-neo` 2.5+).
 - Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
 - Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl >= 7.56.0.
 

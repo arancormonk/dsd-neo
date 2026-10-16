@@ -279,6 +279,10 @@ Windows console runs:
   none of whose frames may be recorded leaves no file. Each file holds one protocol's frames in one record format,
   named by its 4-byte header and extension: `.imb` (IMBE: P25 Phase 1, ProVoice, YSF full rate), `.amb` (AMBE 2450:
   DMR, P25 Phase 2, NXDN, dPMR, X2-TDMA, YSF V/D1 and V/D2) or `.dmb` (D-STAR AMBE 2400); `-r` plays them back.
+  Each record starts with an error byte. An `.amb` record dsd-neo writes packs the frame's C0 and total error counts
+  (high bit set, C0 in bits 6-4, the total in bits 3-0), so `-r` repeats and mutes the frames the live decode did; a
+  byte without the high bit (older captures, other tools) is a total alone and replays as before. `.imb` and `.dmb`
+  records hold the total.
   Files are capture segments: a frame of another protocol or format, a call end the protocol signals, a lost
   carrier, a retune and a trunk-scan switch each end the open capture, and the next frame starts another. Two-slot
   protocols write one file per slot (`_S1`, `_S2`); X2-TDMA writes both slots into one. Each frame is saved by its
@@ -513,13 +517,9 @@ Notes
   picker's entry reads `TETRA (needs an I/Q radio input)` there and the Qt setup wizard greys its chip out (it offers it
   for a `.bin` capture). A running TETRA session whose input moves to a PCM one keeps the mode, and a toast says once
   that nothing decodes there.
-  Speech plays only through a TETRA speech codec library the user supplies:
-  `--tetra-codec <file>` names its shared library (`.so`, `.dylib` or `.dll`), opened by that path, relative to the
-  working directory when it is not absolute. dsd-neo loads it when the first TETRA speech frame needs decoding and
-  refuses, with one error, a library of another interface version or one missing a function; decoding carries on
-  without audio. Without `--tetra-codec` TETRA decodes as usual and plays no speech. A speech burst plays once its
-  CRC has passed; later bursts whose CRC fails are concealed by the codec, and a run of them ends the speech until the
-  next good burst. The interface, and building a library from the ETSI reference code, are in `tools/tetra/README.md`.
+  Speech plays through mbelib-neo's TETRA speech decoder (EN 300 395-2 full-rate ACELP), part of the vocoder library
+  every build links; no codec or option is needed. A speech burst plays once its CRC has passed; later bursts whose CRC
+  fails are concealed by the decoder, and a run of them ends the speech until the next good burst.
   With `-T` the decoder follows a call's traffic channel off a TETRA control channel, once a block whose CRC passed
   has been decoded on the carrier it is on, and returns `-t` seconds after the call's speech ends, or 4 seconds after
   the tune when no speech follows. It follows a call whose D-SETUP named its called party, as the group list, `-I`,

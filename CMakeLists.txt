@@ -602,13 +602,15 @@ endif()
 find_package(LibSndFile REQUIRED)
 find_package(OpenSSL 3.0 REQUIRED)
 
-# Require mbelib-neo 2.3+. Its ABI provides the
+# Require mbelib-neo 2.5+. Its ABI provides the
 # soft-decision frame decode and result-based processing APIs used by dsd-neo,
 # and 2.2 follows TIA-102.BABA-1 for AMBE 2450 erasures and repeats with
 # deterministic mute noise. 2.3 synthesizes speech at the reference level, so
 # float PCM is int16 / 7 as documented; the vocoder scales it to the int16
 # scale of the voice buffers, which would clip with 2.2's 17 dB hotter speech.
-set(_DSD_MBE_REQUIRED_VERSION 2.3)
+# 2.5 adds the TETRA full-rate speech decoder (mbe_tetraDecodeFrame) that
+# plays TETRA voice.
+set(_DSD_MBE_REQUIRED_VERSION 2.5)
 find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
 if(ANDROID AND TARGET mbe_neo::mbe_static)
     # Every shared library an Android app uses has to be bundled into the APK
@@ -696,6 +698,14 @@ int main(void) {
     (void)mbe_encodeAmbe3600x2400Frame(ambe_d, encoded_ambe_fr);
     mbe_synthesizeSilencef(audio);
     mbe_formatProcessResult(err_str, sizeof(err_str), &result);
+    {
+        const uint8_t tetra_bits[MBE_TETRA_FRAME_BITS] = {0};
+        int16_t tetra_pcm[MBE_TETRA_FRAME_SAMPLES] = {0};
+        mbe_tetra_decoder* tetra = mbe_tetraDecoderAlloc();
+        (void)mbe_tetraDecodeFrame(tetra, tetra_bits, 0, tetra_pcm);
+        mbe_tetraDecoderReset(tetra);
+        mbe_tetraDecoderFree(tetra);
+    }
     return (int)(sizeof(mbe_soft_bit) + sizeof(mbe_process_result));
 }
 ]]
@@ -717,7 +727,7 @@ unset(_DSD_SAVED_CMAKE_REQUIRED_FLAGS)
 if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
     message(
         FATAL_ERROR
-        "mbe-neo 2.3+ with the soft-decision/result API is required; update mbelib-neo"
+        "mbe-neo 2.5+ with the soft-decision/result and TETRA decoder APIs is required; update mbelib-neo"
     )
 endif()
 if(ANDROID AND (DSD_ANDROID_VENDORED_RTLSDR OR DSD_ENABLE_AIRSPY))

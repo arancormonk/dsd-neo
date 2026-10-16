@@ -1,24 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * TETRA speech: type-1 bits to speech frames (EN 300 395-2 clause 5), the codec library (tetra_codec_abi.h) and the
+ * TETRA speech: type-1 bits to speech frames (EN 300 395-2 clause 5), mbelib-neo's TETRA speech decoder and the
  * digital voice output.
  */
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/voice_chain.h>
-#include <dsd-neo/platform/dynlib.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
-#include <dsd-neo/protocol/tetra/tetra_codec_abi.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <mbelib-neo/mbelib.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -50,8 +48,8 @@ enum {
     CLASS2_BITS = sizeof(k_class2_bits),
 };
 
-_Static_assert(CLASS0_BITS + CLASS1_BITS + CLASS2_BITS == DSD_TETRA_CODEC_FRAME_BITS, "a speech frame is 137 bits");
-_Static_assert(2 * DSD_TETRA_CODEC_FRAME_BITS == TETRA_SPEECH_FULL_BITS, "a full slot carries two frames");
+_Static_assert(CLASS0_BITS + CLASS1_BITS + CLASS2_BITS == TETRA_VOICE_FRAME_BITS, "a speech frame is 137 bits");
+_Static_assert(2 * TETRA_VOICE_FRAME_BITS == TETRA_SPEECH_FULL_BITS, "a full slot carries two frames");
 
 /* Scatter one class into the speech frames: @p nframes frames alternate bit by bit within the class (table 5's A,B
    pairs), one frame takes them in turn (table 6). Returns the type-1 bits consumed. */
@@ -59,7 +57,7 @@ static int
 voice_scatter_class(const uint8_t* type1, const uint8_t* positions, int count, int nframes, uint8_t* frames) {
     for (int bit = 0; bit < count; bit++) {
         for (int frame = 0; frame < nframes; frame++) {
-            frames[(frame * DSD_TETRA_CODEC_FRAME_BITS) + positions[bit] - 1] = type1[(bit * nframes) + frame] & 1u;
+            frames[(frame * TETRA_VOICE_FRAME_BITS) + positions[bit] - 1] = type1[(bit * nframes) + frame] & 1u;
         }
     }
     return count * nframes;
@@ -87,16 +85,50 @@ tetra_voice_reorder_half(const uint8_t* type1, uint8_t* frame) {
     }
 }
 
+_Static_assert(TETRA_VOICE_FRAME_BITS == MBE_TETRA_FRAME_BITS, "mbelib-neo's TETRA frame is 137 bits");
+_Static_assert(TETRA_VOICE_FRAME_SAMPLES == MBE_TETRA_FRAME_SAMPLES, "mbelib-neo's TETRA frame is 240 samples");
+
 /* ---------------------------------------------------------------------------------------------------------------
- * The codec library.
+ * The speech decoder.
  * ------------------------------------------------------------------------------------------------------------- */
 
+static void*
+voice_mbe_alloc(void) {
+    return mbe_tetraDecoderAlloc();
+}
+
 static void
-voice_codec_destroy(tetra_voice_t* v) {
-    if (v->codec && v->destroy) {
-        v->destroy(v->codec);
+voice_mbe_reset(void* decoder) {
+    mbe_tetraDecoderReset((mbe_tetra_decoder*)decoder);
+}
+
+static void
+voice_mbe_release(void* decoder) {
+    mbe_tetraDecoderFree((mbe_tetra_decoder*)decoder);
+}
+
+static int
+voice_mbe_decode(void* decoder, const uint8_t* bits, int bad_frame, int16_t* pcm) {
+    return mbe_tetraDecodeFrame((mbe_tetra_decoder*)decoder, bits, bad_frame, pcm);
+}
+
+static const tetra_voice_codec k_mbe_codec = {voice_mbe_alloc, voice_mbe_reset, voice_mbe_release, voice_mbe_decode};
+
+/* The codec new decoders come from; a test may install another (tetra_voice_set_codec_for_test()). */
+static const tetra_voice_codec* g_voice_codec = &k_mbe_codec;
+
+void
+tetra_voice_set_codec_for_test(const tetra_voice_codec* codec) {
+    g_voice_codec = codec ? codec : &k_mbe_codec;
+}
+
+static void
+voice_codec_release(tetra_voice_t* v) {
+    if (v->codec && v->codec_ops) {
+        v->codec_ops->release(v->codec);
     }
     v->codec = NULL;
+    v->codec_ops = NULL;
 }
 
 void
@@ -104,84 +136,33 @@ tetra_voice_release(tetra_voice_t* voice) {
     if (!voice) {
         return;
     }
-    voice_codec_destroy(voice);
-    dsd_dynlib_close(voice->lib);
+    voice_codec_release(voice);
     DSD_MEMSET(voice, 0, sizeof(*voice));
 }
 
-static void
-voice_codec_refuse(tetra_voice_t* v, const char* path, const char* reason) {
-    LOG_ERROR("TETRA: codec library %s refused: %s. TETRA speech will not be played.\n", path, reason);
-    dsd_dynlib_close(v->lib);
-    v->lib = NULL;
-    v->create = NULL;
-    v->decode = NULL;
-    v->destroy = NULL;
-    v->codec_status = TETRA_CODEC_STATUS_FAILED;
-}
-
-/* Load and check the library @p path names and make its first decoder: TETRA_CODEC_STATUS_READY with v->codec set, or
-   TETRA_CODEC_STATUS_FAILED. */
-static void
-voice_codec_load(tetra_voice_t* v, const char* path) {
-    char err[256];
-    v->lib = dsd_dynlib_open(path, err, sizeof(err));
-    if (!v->lib) {
-        voice_codec_refuse(v, path, err);
-        return;
-    }
-    const dsd_tetra_codec_abi_version_fn version =
-        (dsd_tetra_codec_abi_version_fn)dsd_dynlib_symbol(v->lib, DSD_TETRA_CODEC_SYM_ABI_VERSION);
-    v->create = (dsd_tetra_codec_create_fn)dsd_dynlib_symbol(v->lib, DSD_TETRA_CODEC_SYM_CREATE);
-    v->decode = (dsd_tetra_codec_decode_fn)dsd_dynlib_symbol(v->lib, DSD_TETRA_CODEC_SYM_DECODE);
-    v->destroy = (dsd_tetra_codec_destroy_fn)dsd_dynlib_symbol(v->lib, DSD_TETRA_CODEC_SYM_DESTROY);
-    if (!version || !v->create || !v->decode || !v->destroy) {
-        DSD_SNPRINTF(err, sizeof(err), "it does not export all of %s, %s, %s and %s", DSD_TETRA_CODEC_SYM_ABI_VERSION,
-                     DSD_TETRA_CODEC_SYM_CREATE, DSD_TETRA_CODEC_SYM_DECODE, DSD_TETRA_CODEC_SYM_DESTROY);
-        voice_codec_refuse(v, path, err);
-        return;
-    }
-    const uint32_t abi = version();
-    if (abi != DSD_TETRA_CODEC_ABI_VERSION) {
-        DSD_SNPRINTF(err, sizeof(err), "it implements codec interface version %u, this dsd-neo needs version %u",
-                     (unsigned)abi, (unsigned)DSD_TETRA_CODEC_ABI_VERSION);
-        voice_codec_refuse(v, path, err);
-        return;
-    }
-    v->codec = v->create();
-    if (!v->codec) {
-        voice_codec_refuse(v, path, "it could not create a decoder");
-        return;
-    }
-    v->codec_status = TETRA_CODEC_STATUS_READY;
-    LOG_INFO("TETRA: speech codec library %s loaded.\n", path);
-}
-
-/* 1 when a decoder instance is ready for the next frame: the library loads at the first frame that needs it, and an
-   instance is made after each reset. */
+/* 1 when a decoder is ready for the next frame: it is made at the first frame that needs it, and made again after a
+   frame for which it could not be. */
 static int
-voice_codec_ready(const dsd_opts* opts, tetra_voice_t* v) {
+voice_codec_ready(tetra_voice_t* v) {
     if (v->codec) {
         return 1;
     }
-    if (v->codec_status == TETRA_CODEC_STATUS_UNLOADED) {
-        if (!opts || opts->tetra_codec_path[0] == '\0') {
-            v->codec_status = TETRA_CODEC_STATUS_NONE;
-            LOG_INFO("TETRA: speech received, but no codec library is loaded (--tetra-codec); it is not played.\n");
-            return 0;
-        }
-        voice_codec_load(v, opts->tetra_codec_path);
-        return v->codec != NULL;
-    }
-    if (v->codec_status != TETRA_CODEC_STATUS_READY) {
-        return 0;
-    }
-    v->codec = v->create();
+    v->codec = g_voice_codec->alloc();
     if (!v->codec) {
-        voice_codec_refuse(v, opts ? opts->tetra_codec_path : "", "it could not create a decoder");
         return 0;
     }
+    v->codec_ops = g_voice_codec;
     return 1;
+}
+
+/* One frame the speech decoder could not take: no decoder, or a failed decode. Logged once per TETRA session. */
+static void
+voice_codec_failed(tetra_voice_t* v, const char* what) {
+    if (v->codec_errors++ == 0U) {
+        LOG_ERROR("TETRA: %s; such speech frames are dropped.\n", what);
+    }
+    v->last_decode_failed = 1;
+    v->carry_len = 0;
 }
 
 /* ---------------------------------------------------------------------------------------------------------------
@@ -209,11 +190,11 @@ voice_route_for(const dsd_opts* opts, const dsd_state* state, const tetra_speech
 /* Play @p pcm after the samples carried from the last frame; whole output frames go out, the rest waits. */
 static void
 voice_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const short* pcm, int record) {
-    short buf[DSD_VOICE_FRAME_SAMPLES + DSD_TETRA_CODEC_FRAME_SAMPLES];
+    short buf[DSD_VOICE_FRAME_SAMPLES + TETRA_VOICE_FRAME_SAMPLES];
     size_t count = v->carry_len;
     DSD_MEMCPY(buf, v->carry, count * sizeof(short));
-    DSD_MEMCPY(buf + count, pcm, (size_t)DSD_TETRA_CODEC_FRAME_SAMPLES * sizeof(short));
-    count += DSD_TETRA_CODEC_FRAME_SAMPLES;
+    DSD_MEMCPY(buf + count, pcm, (size_t)TETRA_VOICE_FRAME_SAMPLES * sizeof(short));
+    count += TETRA_VOICE_FRAME_SAMPLES;
     const size_t whole = count - (count % DSD_VOICE_FRAME_SAMPLES);
     dsd_audio_play_decoded_pcm16_record(opts, state, buf, whole, record);
     v->carry_len = (uint16_t)(count - whole);
@@ -246,17 +227,14 @@ voice_frame_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const
         v->carry_len = 0;
         return;
     }
-    if (!voice_codec_ready(opts, v)) {
+    if (!voice_codec_ready(v)) {
+        voice_codec_failed(v, "no TETRA speech decoder could be made");
         return;
     }
-    int16_t pcm[DSD_TETRA_CODEC_FRAME_SAMPLES];
+    int16_t pcm[TETRA_VOICE_FRAME_SAMPLES];
     DSD_MEMSET(pcm, 0, sizeof(pcm));
-    if (v->decode(v->codec, bits, bad ? 1 : 0, pcm) != 0) {
-        if (v->codec_errors++ == 0U) {
-            LOG_ERROR("TETRA: the codec library failed to decode a speech frame; failed frames are dropped.\n");
-        }
-        v->last_decode_failed = 1;
-        v->carry_len = 0;
+    if (v->codec_ops->decode(v->codec, bits, bad ? 1 : 0, pcm) != 0) {
+        voice_codec_failed(v, "the TETRA speech decoder failed to decode a speech frame");
         return;
     }
     v->last_decode_failed = 0;
@@ -267,11 +245,12 @@ voice_frame_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const
     voice_play(opts, state, v, pcm, route->record);
 }
 
-/* Forget the speech in progress: the decoder instance (made again at the next frame), its integrity and its unplayed
-   samples. */
+/* Forget the speech in progress: the decoder's state, its integrity and its unplayed samples. */
 static void
 voice_speech_reset(tetra_voice_t* v) {
-    voice_codec_destroy(v);
+    if (v->codec) {
+        v->codec_ops->reset(v->codec);
+    }
     v->confirmed = 0;
     v->bad_run = 0;
     v->carry_len = 0;
@@ -366,7 +345,7 @@ voice_burst(dsd_opts* opts, dsd_state* state, tetra_speech* sp, const uint8_t* f
             route = voice_route_for(opts, state, sp);
             routed = 1;
         }
-        voice_frame_play(opts, state, &ts->voice, frames + ((size_t)i * DSD_TETRA_CODEC_FRAME_BITS), bad[i], &route);
+        voice_frame_play(opts, state, &ts->voice, frames + ((size_t)i * TETRA_VOICE_FRAME_BITS), bad[i], &route);
     }
 }
 
@@ -383,7 +362,7 @@ voice_decrypt(const dsd_opts* opts, const dsd_state* state, const tetra_speech* 
 
 void
 tetra_voice_full_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good) {
-    uint8_t frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t frames[2 * TETRA_VOICE_FRAME_BITS];
     tetra_speech sp;
     if (!state || !type1 || !tetra_st(state) || !tetra_voice_gate(opts, state, &sp)) {
         return;
@@ -398,16 +377,16 @@ tetra_voice_full_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, in
 
 void
 tetra_voice_half_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type1, int good) {
-    uint8_t frames[2 * DSD_TETRA_CODEC_FRAME_BITS];
+    uint8_t frames[2 * TETRA_VOICE_FRAME_BITS];
     tetra_speech sp;
     if (!state || !type1 || !tetra_st(state) || !tetra_voice_gate(opts, state, &sp)) {
         return;
     }
     /* Frame A of the slot was stolen (EN 300 395-2 clause 5.2): the codec conceals it, frame B is the speech. */
-    uint8_t* const speech = frames + DSD_TETRA_CODEC_FRAME_BITS;
-    DSD_MEMSET(frames, 0, DSD_TETRA_CODEC_FRAME_BITS);
+    uint8_t* const speech = frames + TETRA_VOICE_FRAME_BITS;
+    DSD_MEMSET(frames, 0, TETRA_VOICE_FRAME_BITS);
     tetra_voice_reorder_half(type1, speech);
-    const int keystream = voice_decrypt(opts, state, &sp, speech, DSD_TETRA_CODEC_FRAME_BITS, TETRA_AIR_KSS_TCH_S_HALF);
+    const int keystream = voice_decrypt(opts, state, &sp, speech, TETRA_VOICE_FRAME_BITS, TETRA_AIR_KSS_TCH_S_HALF);
     const int bad[2] = {1, !good};
     voice_burst(opts, state, &sp, frames, bad, 2, keystream);
     DSD_SECURE_ZERO(frames, sizeof(frames));

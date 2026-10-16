@@ -292,7 +292,7 @@ tetra_view_fill_mm_status(dsd_app_tetra* out, const dsd_tetra_publication* pub, 
 /* "ready · 18 frames · 2 errors"; the counts only once there are any. */
 static void
 tetra_view_fill_codec(dsd_app_tetra* out, const dsd_tetra_publication* pub, unsigned flags) {
-    static const char* const words[] = {NULL, "ready", "missing", "failed to load", "decode errors"};
+    static const char* const words[] = {NULL, "ready", "decode errors"};
     if (pub->codec_status >= sizeof words / sizeof words[0] || words[pub->codec_status] == NULL) {
         return;
     }

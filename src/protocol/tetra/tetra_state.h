@@ -260,7 +260,7 @@ typedef struct {
 } tetra_air_ksg_net;
 
 typedef struct tetra_state {
-    /* The speech path: codec library, speech integrity and PCM carry (tetra_voice.c). */
+    /* The speech path: speech decoder, speech integrity and PCM carry (tetra_voice.c). */
     tetra_voice_t voice;
 
     /* Call following (tetra_trunk_sm.c) and the CRC evidence it and the speech path rely on (tetra_confirm.c). */

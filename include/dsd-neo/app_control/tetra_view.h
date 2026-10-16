@@ -55,7 +55,7 @@ typedef struct {
     uint8_t mm_status_known; /**< 1 = @c mm_status_text is set. */
     uint8_t codec_known;     /**< 1 = @c codec_text is set. */
     uint8_t codec_status;    /**< dsd_tetra_codec_status */
-    uint8_t codec_fault;     /**< 1 = no codec, one that failed to load, or one whose last frames failed. */
+    uint8_t codec_fault;     /**< 1 = the last speech frame failed to decode. */
     uint32_t generation;     /**< The publication's reset counter. */
     char mode_text[DSD_APP_TETRA_TEXT_SIZE];      /**< "TMO downlink · encrypted (TEA2)", "DMO direct · clear". */
     char network_text[DSD_APP_TETRA_TEXT_SIZE];   /**< "MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654". */
@@ -64,7 +64,7 @@ typedef struct {
     char control_text[DSD_APP_TETRA_TEXT_SIZE];   /**< "carrier 321 · 392.0125 MHz". */
     char traffic_text[DSD_APP_TETRA_TEXT_SIZE];   /**< "carrier 654 · TS 1,3 · 392.1250 MHz". */
     char mm_status_text[DSD_APP_TETRA_TEXT_SIZE]; /**< "7 · MS frequency bands request". */
-    char codec_text[DSD_APP_TETRA_TEXT_SIZE];     /**< "ready · 18 frames · 2 errors", "missing". */
+    char codec_text[DSD_APP_TETRA_TEXT_SIZE];     /**< "ready · 18 frames · 2 errors", "decode errors". */
 } dsd_app_tetra;
 
 /**

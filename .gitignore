@@ -37,9 +37,6 @@ Thumbs.db
 /logs/
 *.log
 *.out
-# Local ETSI EN 300 395-2 speech sources for tools/tetra/acelp_adapter. Never commit these.
-/tools/tetra/etsi/
-/tools/tetra/acelp_adapter/C-CODE/
 /.cmake-format.local.out
 /.gitleaks.sarif
 /.osv-scanner.local.out

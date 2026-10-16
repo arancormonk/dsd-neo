@@ -90,50 +90,46 @@ saveImbe4400Data(dsd_opts* opts, const dsd_state* state, const char* imbe_d) {
     }
 }
 
-void
-saveAmbe2450Data(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
-    int i, j, k;
-    unsigned char b;
-    unsigned char err;
-
-    err = (unsigned char)state->errs2;
-    fputc(err, opts->mbe_out_f);
-
-    k = 0;
-    for (i = 0; i < 6; i++) {
-        b = 0;
-        for (j = 0; j < 8; j++) {
-            b = b << 1;
-            b = b + ambe_d[k];
+/* One AMBE record: the error byte, six packed bytes, then the final bit. */
+static void
+save_ambe_record(FILE* f, int errors, const char* ambe_d) {
+    fputc((unsigned char)(errors < 0 ? 0 : errors), f);
+    int k = 0;
+    for (int i = 0; i < 6; i++) {
+        unsigned char b = 0;
+        for (int j = 0; j < 8; j++) {
+            b = (unsigned char)((b << 1) + ambe_d[k]);
             k++;
         }
-        fputc(b, opts->mbe_out_f);
+        fputc(b, f);
     }
-    b = ambe_d[48];
-    fputc(b, opts->mbe_out_f);
+    fputc((unsigned char)ambe_d[48], f);
+}
+
+static int
+clamp_count(int count, int max) {
+    return count < 0 ? 0 : (count > max ? max : count);
+}
+
+/* An AMBE 2450 record's error byte packs the frame's C0 error count (state->errs) and total (state->errs2) behind
+   DSD_MBE_AMB_ERR_FLAG: replay restores the C0 count as C0 context, so a frame repeats as it did live (4,
+   uncorrectable), and the total for mbelib's error rate, which mutes a long noisy stream as it did live. mbelib-neo
+   2.5's totals count parity bits; replaying one alone through mbelib's no-context rule (more than 3) would repeat
+   frames the channel decoder corrected. A byte without the flag is a total (older captures, other tools). */
+static int
+pack_ambe_errors(int c0, int total) {
+    return (int)(DSD_MBE_AMB_ERR_FLAG | ((unsigned)clamp_count(c0, DSD_MBE_AMB_ERR_C0_MAX) << DSD_MBE_AMB_ERR_C0_SHIFT)
+                 | (unsigned)clamp_count(total, DSD_MBE_AMB_ERR_TOTAL_MAX));
+}
+
+void
+saveAmbe2450Data(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
+    save_ambe_record(opts->mbe_out_f, pack_ambe_errors(state->errs, state->errs2), ambe_d);
 }
 
 void
 saveAmbe2450DataR(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
-    int i, j, k;
-    unsigned char b;
-    unsigned char err;
-
-    err = (unsigned char)state->errs2R;
-    fputc(err, opts->mbe_out_fR);
-
-    k = 0;
-    for (i = 0; i < 6; i++) {
-        b = 0;
-        for (j = 0; j < 8; j++) {
-            b = b << 1;
-            b = b + ambe_d[k];
-            k++;
-        }
-        fputc(b, opts->mbe_out_fR);
-    }
-    b = ambe_d[48];
-    fputc(b, opts->mbe_out_fR);
+    save_ambe_record(opts->mbe_out_fR, pack_ambe_errors(state->errsR, state->errs2R), ambe_d);
 }
 
 static int
@@ -391,8 +387,15 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
     if (c == EOF) {
         return (1);
     }
-    state->errs2 = c;
-    state->errs = state->errs2;
+    if (((unsigned)c & DSD_MBE_AMB_ERR_FLAG) != 0U) {
+        state->errs = (int)(((unsigned)c >> DSD_MBE_AMB_ERR_C0_SHIFT) & (unsigned)DSD_MBE_AMB_ERR_C0_MAX);
+        state->errs2 = (int)((unsigned)c & (unsigned)DSD_MBE_AMB_ERR_TOTAL_MAX);
+        state->mbe_file_c0_valid = 1;
+    } else {
+        state->errs2 = c;
+        state->errs = state->errs2;
+        state->mbe_file_c0_valid = 0;
+    }
 
     k = 0;
     if (opts->payload == 1) {
@@ -825,6 +828,10 @@ dsd_mbe_out_write(dsd_opts* opts, dsd_state* state, int slot, dsd_mbe_out_format
     }
     if (format == DSD_MBE_OUT_FORMAT_IMBE) {
         saveImbe4400Data(opts, state, bits);
+    } else if (format == DSD_MBE_OUT_FORMAT_DSTAR) {
+        /* D-STAR's AMBE 2400 replay reads the total too (its tone rule), so a .dmb record keeps it. */
+        save_ambe_record(slot == 1 ? opts->mbe_out_fR : opts->mbe_out_f, slot == 1 ? state->errs2R : state->errs2,
+                         bits);
     } else if (slot == 1) {
         saveAmbe2450DataR(opts, state, bits);
     } else {
@@ -1698,8 +1705,6 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         state->debug_audio_errors += state->errs2;
     }
 
-    char decoded_ambe_d[49];
-    DSD_MEMCPY(decoded_ambe_d, ambe_d, sizeof(decoded_ambe_d));
     ks_idx = sdrtrunk_apply_keystream(ambe_d, 49, ks, ks_idx);
 
     //DMRA or P25 KS, skip the left over 7 bits from a byte
@@ -1715,8 +1720,6 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         }
         return ks_idx;
     }
-
-    (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, ambe_d, &result);
 
     int process_ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp,
                                                state->prev_mp, state->prev_mp_enhanced);

@@ -693,6 +693,7 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
     state->errs = 0;
     state->errs2 = 0;
     state->mbe_file_type = -1;
+    state->mbe_file_c0_valid = 0;
     state->optind = 0;
     state->numtdulc = 0;
     state->firstframe = 0;

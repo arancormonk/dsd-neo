@@ -7,7 +7,6 @@ if(WIN32)
     target_sources(
         dsd-neo_platform
         PRIVATE
-            dynlib_win32.c
             threading_win32.c
             sockets_win32.c
             timing_win32.c
@@ -19,7 +18,6 @@ else()
     target_sources(
         dsd-neo_platform
         PRIVATE
-            dynlib_posix.c
             threading_posix.c
             sockets_posix.c
             timing_posix.c
@@ -28,8 +26,6 @@ else()
     )
     find_package(Threads REQUIRED)
     target_link_libraries(dsd-neo_platform PUBLIC Threads::Threads)
-    # dlopen() for dynlib_posix.c (libdl where the C library does not carry it).
-    target_link_libraries(dsd-neo_platform PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 if(ANDROID)

@@ -1075,6 +1075,16 @@ jobs:
           python3 tools/update_aur_pffft.py --pins "$RUNNER_TEMP/aur-pins.env" aur-package/PKGBUILD
           python3 tools/update_aur_tetra_crypto.py --pins "$RUNNER_TEMP/aur-pins.env" aur-package/PKGBUILD
 
+      - name: Require the mbelib-neo version the build requires
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          # An existing recipe keeps the minimum it was created with; the build refuses an older mbelib-neo.
+          min=$(git show origin/main:CMakeLists.txt | sed -n 's/^set(_DSD_MBE_REQUIRED_VERSION \([0-9.]*\))$/\1/p')
+          test -n "$min"
+          sed -i -E "s/'mbelib-neo>=[0-9.]+'/'mbelib-neo>=${min}'/" aur-package/PKGBUILD
+          grep -Fq "'mbelib-neo>=${min}'" aur-package/PKGBUILD
+
       - name: Validate AUR VCS metadata
         if: steps.aur_up.outputs.available == 'true'
         run: |
@@ -1272,7 +1282,7 @@ jobs:
           url="https://github.com/arancormonk/dsd-neo"
           license=('GPL-3.0-or-later')
           depends=(
-              'mbelib-neo>=2.3'
+              'mbelib-neo>=2.5'
               'mbelib-neo<3'
               'libsndfile'
               'openssl'
@@ -1312,6 +1322,16 @@ jobs:
         run: |
           python3 tools/update_aur_pffft.py aur-package/PKGBUILD
           python3 tools/update_aur_tetra_crypto.py aur-package/PKGBUILD
+
+      - name: Require the mbelib-neo version the build requires
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          # An existing recipe keeps the minimum it was created with; the build refuses an older mbelib-neo.
+          min=$(sed -n 's/^set(_DSD_MBE_REQUIRED_VERSION \([0-9.]*\))$/\1/p' CMakeLists.txt)
+          test -n "$min"
+          sed -i -E "s/'mbelib-neo>=[0-9.]+'/'mbelib-neo>=${min}'/" aur-package/PKGBUILD
+          grep -Fq "'mbelib-neo>=${min}'" aur-package/PKGBUILD
 
       - name: Check if update needed
         id: check

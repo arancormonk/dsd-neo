@@ -310,8 +310,6 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fm           Decode only dPMR\n");
     printf("  -fT           Decode only TETRA (pi/4-DQPSK at 18 ksym/s) at a 72 kHz DSP bandwidth: needs an I/Q\n");
     printf("                radio input whose DSP rate is a multiple of 18 kHz, or a symbol capture\n");
-    printf("      --tetra-codec <file>  TETRA speech codec library to play TETRA speech with (see\n");
-    printf("                            tools/tetra/README.md); without one TETRA speech is not played\n");
     printf("      --tetra-key <mcc,mnc,hex[,teaN]>  TETRA air interface cipher key (SCK or CCK, 20 hex digits) of\n");
     printf("                            one network, optionally naming its algorithm (tea1, tea2 or tea3);\n");
     printf("                            air-encrypted trunked speech decrypts with it\n");
