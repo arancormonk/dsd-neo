@@ -397,6 +397,7 @@ static void
 test_owner_from_previous_run(void) {
     session();
     g_state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN;
+    expect("previous run: due before the first tick", nxdn_cc_hunt_due(g_opts, g_state), 1);
     tick_at(0.0);
     expect("previous run: owner forgotten", g_state->trunk_recovery_protocol, DSD_TRUNK_RECOVERY_UNKNOWN);
     run_until(0.0, 6.5);

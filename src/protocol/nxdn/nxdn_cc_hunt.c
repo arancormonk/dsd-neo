@@ -229,14 +229,15 @@ nxdn_cc_hunt_window_expired(const nxdn_cc_hunt_ctx* ctx, const dsd_state* state,
     return (now_m - start_m) > NXDN_CC_HUNT_GRACE_S;
 }
 
-/* Whether the session may arm or run a hunt: admitted, eligible, and with a NXDN owner only after a CAC confirmed a
+/* Whether the session may arm or run a hunt: admitted, eligible, and with an NXDN owner only after a CAC confirmed a
    control channel (a Type-D site never hunts once proven). */
 static int
 nxdn_cc_hunt_may_run(const nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts, const dsd_state* state) {
     if (!dsd_trunk_nxdn_recovery_allowed(opts, state) || !dsd_state_trunk_nxdn_hunt_eligible(opts, state)) {
         return 0;
     }
-    return state->trunk_recovery_protocol != (int)DSD_TRUNK_RECOVERY_NXDN || (ctx && ctx->cc_confirmed);
+    /* No context under an NXDN owner is a reused state's next run, whose first tick forgets that owner. */
+    return state->trunk_recovery_protocol != (int)DSD_TRUNK_RECOVERY_NXDN || !ctx || ctx->cc_confirmed;
 }
 
 static void
