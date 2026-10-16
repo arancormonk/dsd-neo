@@ -1991,6 +1991,24 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
     }
 }
 
+/* The bookkeeping of a direct control-channel return the tuner accepted. */
+static void
+no_carrier_accept_direct_cc_return(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
+                                   int clear_generic_p25_alias, time_t now) {
+    no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
+    if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
+        /* The tuner frequency the decoder reads, as a tune through the trunk tuning hooks records it: left on the voice
+           channel, a control message decoded next would be attributed there. */
+        opts->rtlsdr_center_freq = (uint32_t)cc;
+    }
+    state->edacs_tuned_lcn = -1;
+    state->last_cc_sync_time = now;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    if (p25_return) {
+        no_carrier_apply_p25_cc_symbolrate(opts, state);
+    }
+}
+
 static void
 no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now, int guard_held) {
     if (no_carrier_tick_dmr_owner(opts, state, guard_held) || no_carrier_tick_tetra_owner(opts, state, guard_held)) {
@@ -2026,19 +2044,8 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
              * voice state intact so the main loop can retry safely. */
         } else if (!generic_helper_attempted
                    && no_carrier_apply_direct_cc_return(opts, state, cc, p25_helper_attempted)) {
-            no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
+            no_carrier_accept_direct_cc_return(opts, state, cc, p25_return, clear_generic_p25_alias, now);
             accepted_cc_return = 1;
-            if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
-                /* The tuner frequency the decoder reads, as a tune through the trunk tuning hooks records it: left on
-                   the voice channel, a control message decoded next would be attributed there. */
-                opts->rtlsdr_center_freq = (uint32_t)cc;
-            }
-            state->edacs_tuned_lcn = -1;
-            state->last_cc_sync_time = now;
-            state->last_cc_sync_time_m = dsd_decode_now_mono_s();
-            if (p25_return) {
-                no_carrier_apply_p25_cc_symbolrate(opts, state);
-            }
         } else if (p25_helper_attempted
                    && !no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result)) {
             clear_failed_helper_state = 1;
