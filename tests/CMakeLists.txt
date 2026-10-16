@@ -16807,6 +16807,12 @@ add_test(NAME IO_FFT_CACHE COMMAND dsd-neo_test_io_fft_cache)
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(
+        NAME TOOLS_CI_SCHEDULING
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ci_scheduling.py
+    )
+    add_test(
         NAME TOOLS_MSVC_FAST_MATH
         COMMAND
             ${Python3_EXECUTABLE}

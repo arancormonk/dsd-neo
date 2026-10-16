@@ -2490,6 +2490,86 @@ SDR-backend combinations — `both`, `rtl_only`, `soapy_only`, `airspy_only` and
 `neither` — on pull requests as well as pushes, so the radio-off build is proven
 before a merge rather than after one.
 
+### Runner budget and change classification
+
+All runner jobs share an 18-slot repository budget, including PRs, primary-branch
+pushes, tags and scheduled/manual runs. Workflow-level concurrency still cancels
+superseded runs of the same workflow and PR/ref. Job-level concurrency uses fixed
+groups with `cancel-in-progress: false` and `queue: max`: unrelated checks wait
+instead of replacing each other. GitHub's [concurrency queues][ci-concurrency]
+permit up to 100 pending jobs per group; additional jobs are canceled if that
+queue fills. These slots cover this
+repository's workflows, not other repositories or GitHub-generated workflows.
+Existing runs from before the change are not retroactively budgeted.
+
+[ci-concurrency]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency#example-queueing-multiple-pending-runs
+
+| Shared group | Work |
+|---|---|
+| `ci-worker-01` | all-backend x86 Linux tests, Android CLI, fuzzing |
+| `ci-worker-02` | Soapy-only Linux tests, APK/AAB build, IWYU |
+| `ci-worker-03` | RTL-only Linux tests, host Qt UI tests, C/C++ CodeQL |
+| `ci-worker-04` | radio-off Linux tests, optimized GCC tests, gcc-fanalyzer |
+| `ci-worker-05` | Airspy-only Linux tests, optimized Clang tests, clang-tidy |
+| `ci-worker-06` | native arm64 backend and Android-shape tests |
+| `ci-worker-07` | x86 Android-shape tests, AppImage builds |
+| `ci-worker-08` | ASan/UBSan, Linux release build, warnings build |
+| `ci-worker-09` | TSan |
+| `ci-worker-10` | scan-build |
+| `ci-worker-11` | cppcheck |
+| `ci-worker-12` | Windows builds and tests, including cache seeding |
+| `ci-worker-13` | macOS builds and tests, AVX-512 link check |
+| `ci-fast-1`, `ci-fast-2` | classification, short checks, non-C/C++ CodeQL, publishing, Scorecard |
+| `aur-dsd-neo-git`, `aur-dsd-neo` | existing per-package AUR locks |
+| `ci-control` | closed-PR cleanup and release metadata creation |
+
+Release metadata has a separate slot from publishers that wait for it, so those
+waits cannot block the job that satisfies them. Matrix `max-parallel` limits also
+keep one run from occupying every backend/analysis slot at once. Retune the
+assignments using job queue and execution times; the fixed groups can leave a
+slot idle while another has a queue. `tools/check_ci_concurrency.py`, run by
+`tools/workflow_lint.sh`, rejects unbudgeted runner jobs, variable per-ref slots,
+and replacing queues. Until actionlint supports `queue`, the wrapper suppresses
+only its unknown-queue diagnostic after this stricter check has passed.
+
+`ci-changes.yml` classifies a PR once per calling workflow before expensive jobs
+are admitted. Standalone tools whose existing target sets are empty are skipped
+before runner allocation. Native builds skip only known prose-only changes
+(`docs/*.md` and the named root Markdown files in `tools/ci_changed_files.sh`);
+unknown paths, fixtures, deletions/renames of sources, dependencies and CI inputs
+retain native coverage. A failed classifier or missing output runs the checks.
+Push/tag/scheduled/manual coverage is unchanged. CodeQL continues to run so its
+separate required app check is always reported.
+
+Required matrices always expand, because a job condition is evaluated before
+matrix expansion and could otherwise omit the individual required check names.
+Irrelevant matrix entries briefly acquire a budgeted runner and report success
+without installing or building. Required standalone jobs retain their names and
+report skipped only for proven irrelevant changes. No branch-protection or
+ruleset changes are needed.
+
+`ci-cancel-closed-pr.yml` releases obsolete PR work on close/merge. Its privileged
+token only executes the cleanup program from the default branch. The program
+snapshots paginated active runs, matches their source repository and PR metadata,
+and rechecks the PR state before canceling. GitHub can clear run-to-PR
+associations after merge; the fallback requires the source repository, branch
+and PR lifetime to match, and retains runs if another PR on that source branch
+is open. API errors are failures unless the run has already completed.
+
+Scorecard starts on successful default-branch Linux push completion via
+`workflow_run`, or on its existing schedule/manual trigger. Completion events
+for a commit already superseded at dispatch are skipped; checkout and SARIF
+attribution use the triggering commit. Waiting for Linux CI no longer occupies
+a runner.
+
+Native CTest jobs use two test workers per runner. The Kotlin JVM suites retain
+their `android_kotlin_jvm` resource lock. This is separate from runner concurrency:
+it shortens job occupancy without allocating another runner. Validate changes to
+this setting with the full normal and sanitizer suites and check for shared
+resources, memory pressure and timing-sensitive failures.
+
+### Required platform checks
+
 The full ctest suite also runs, as a required check on every pull request, on
 each platform a release ships for:
 

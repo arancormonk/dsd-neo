@@ -20,18 +20,26 @@ jobs:
   analyze:
     name: analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       security-events: write
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - language: c-cpp
+            ci_group: ci-worker-03
             build-mode: manual
           - language: actions
+            ci_group: ci-fast-2
             build-mode: ""
           - language: python
+            ci_group: ci-fast-1
             build-mode: ""
 
     steps:

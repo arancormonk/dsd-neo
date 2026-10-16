@@ -241,6 +241,7 @@ fi
 
 changed_sources=()
 changed_headers=()
+native_needed=false
 format_files=()
 semgrep_targets=()
 semgrep_full_scan=0
@@ -250,6 +251,12 @@ workflow_security_targets=()
 dependency_scan_targets=()
 
 for p in "${changed_paths[@]}"; do
+  # Only known prose paths can opt out of native builds. Unknown inputs,
+  # fixtures, workflow/tool changes and deletions all keep the full coverage.
+  case "$p" in
+    docs/*.md | README.md | CHANGELOG.md | CONTRIBUTING.md | SECURITY.md | AGENTS.md) ;;
+    *) native_needed=true ;;
+  esac
   case "$p" in
     .github/dependabot.yml | .github/requirements/* | vcpkg.json | vcpkg-configuration.json | vcpkg-ports/* | vcpkg-triplets/* | tools/osv_scan.sh | tools/ci-dependency-pins.env | cmake/Pffft.cmake | tools/update_pffft.py | tools/update_aur_pffft.py | tools/pffft_metadata.py | cmake/TetraCrypto.cmake | tools/update_tetra_crypto.py | tools/update_aur_tetra_crypto.py | tools/tetra_crypto_metadata.py | CMakeLists.txt)
       dependency_scan_targets+=("$p")
@@ -403,6 +410,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
     echo "out_dir=$OUT_DIR"
     echo "changed_paths=${#changed_paths[@]}"
+    echo "native_needed=$native_needed"
     echo "format_files=${#format_files[@]}"
     echo "analysis_tus=${#analysis_tus[@]}"
     echo "iwyu_tus=${#iwyu_tus[@]}"

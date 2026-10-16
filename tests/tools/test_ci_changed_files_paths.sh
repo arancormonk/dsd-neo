@@ -193,6 +193,37 @@ expect_full_scan "the build glue beside the vendored snapshots keeps the scoped 
 git checkout -q -f --detach "$base"
 git clean -q -fdx
 
+# Only known prose-only changes can skip native jobs before runner allocation.
+# Deleting or renaming a source, changing a fixture, or editing unknown inputs
+# must keep native coverage; matching only the surviving paths is unsafe.
+expect_native() {
+  local want="$1"
+  rm -f "$WORK/.git/native.out"
+  GITHUB_OUTPUT="$WORK/.git/native.out" bash "$SCRIPT" --base HEAD~1 --head HEAD \
+    --no-header-expansion --out-dir "$WORK/.git/native" > /dev/null
+  grep -qx "native_needed=$want" "$WORK/.git/native.out" || fail "native_needed=$want: $(cat "$WORK/.git/native.out")"
+}
+printf 'updated prose\n' > docs/notes.md
+git commit -q -am 'docs only'
+expect_native false
+git rm -q docs/notes.md
+git commit -q -m 'delete documentation'
+expect_native false
+for path in src/core/base.c tests/fixtures/input.bin .github/workflows/test.yml tools/check.sh unknown-input android/third_party/libusb/README.md; do
+  mkdir -p "$(dirname "$path")"
+  printf 'changed\n' > "$path"
+  git add -A
+  git commit -q -m "change $path"
+  expect_native true
+done
+mkdir -p docs
+git mv src/core/base.c docs/former-source.md
+git commit -q -m 'rename source to documentation'
+expect_native true
+git checkout -q -f --detach "$base"
+git clean -q -fdx
+echo 'PASS only known prose-only changes skip native jobs'
+
 # A diff that fails fails the helper. Both commits resolve, so it gets past its ref
 # checks, but git diff rejects an invalid diff setting.
 git config diff.context notanumber

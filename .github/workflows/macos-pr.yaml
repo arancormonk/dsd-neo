@@ -21,8 +21,20 @@ permissions:
   contents: read
 
 jobs:
+  # A classifier error or missing output runs the affected checks in full.
+  changes:
+    if: github.event_name == 'pull_request'
+    # Keep the local workflow syntax understood by actionlint 1.7.12.
+    uses: ./.github/workflows/ci-changes.yml # zizmor: ignore[self-repository]
+
   build-portable-dmg:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     runs-on: macos-latest
+    concurrency:
+      group: ci-worker-13
+      cancel-in-progress: false
+      queue: max
     permissions:
       actions: read
       contents: read

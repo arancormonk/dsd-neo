@@ -18,7 +18,13 @@ permissions:
   contents: read
 
 jobs:
-  # Runs on every event, pull requests included. The `neither` variant is the
+  # A classifier error or missing output runs the affected checks in full.
+  changes:
+    if: github.event_name == 'pull_request'
+    # Keep the local workflow syntax understood by actionlint 1.7.12.
+    uses: ./.github/workflows/ci-changes.yml # zizmor: ignore[self-repository]
+
+  # Runs on every event, except known prose-only PRs. The `neither` variant is the
   # only configuration in CI that leaves USE_RADIO undefined, so it is the only
   # job that can catch a symbol referenced from outside its `#ifdef USE_RADIO`
   # guard — and it has to do that on the pull request, not on the push that
@@ -31,14 +37,25 @@ jobs:
   # with tests off. An entry without `runner`/`name_suffix` reads them as empty,
   # so the x86_64 check names stay exactly as branch protection lists them.
   backend-matrix:
+    needs: changes
+    # Expand even irrelevant matrices so every required check name is reported.
+    if: ${{ !cancelled() }}
+    env:
+      CI_RUN_CHECK: ${{ (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: backend-matrix (${{ matrix.variant }}${{ matrix.name_suffix }})
     runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include:
           - variant: both
+            ci_group: ci-worker-01
             cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_ENABLE_AIRSPY=ON -DDSD_REQUIRE_AIRSPY=ON
             airspy_enabled: ON
             airspy_available: ON
@@ -48,6 +65,7 @@ jobs:
             soapy_available: ON
             radio_available: ON
           - variant: soapy_only
+            ci_group: ci-worker-02
             cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_ENABLE_AIRSPY=OFF
             airspy_enabled: OFF
             airspy_available: OFF
@@ -57,6 +75,7 @@ jobs:
             soapy_available: ON
             radio_available: ON
           - variant: rtl_only
+            ci_group: ci-worker-03
             cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_ENABLE_AIRSPY=OFF
             airspy_enabled: OFF
             airspy_available: OFF
@@ -66,6 +85,7 @@ jobs:
             soapy_available: OFF
             radio_available: ON
           - variant: neither
+            ci_group: ci-worker-04
             cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_ENABLE_AIRSPY=OFF
             airspy_enabled: OFF
             airspy_available: OFF
@@ -75,6 +95,7 @@ jobs:
             soapy_available: OFF
             radio_available: OFF
           - variant: airspy_only
+            ci_group: ci-worker-05
             cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_ENABLE_AIRSPY=ON -DDSD_REQUIRE_AIRSPY=ON
             airspy_enabled: ON
             airspy_available: ON
@@ -84,6 +105,7 @@ jobs:
             soapy_available: OFF
             radio_available: ON
           - variant: both
+            ci_group: ci-worker-06
             name_suffix: ", arm64"
             runner: ubuntu-24.04-arm
             cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_ENABLE_AIRSPY=ON -DDSD_REQUIRE_AIRSPY=ON
@@ -95,10 +117,16 @@ jobs:
             soapy_available: ON
             radio_available: ON
     steps:
+      - name: Report irrelevant check
+        if: env.CI_RUN_CHECK != 'true'
+        run: echo 'No relevant changes; this matrix check is satisfied.'
+
       - name: Checkout repository
+        if: env.CI_RUN_CHECK == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -112,6 +140,7 @@ jobs:
       # kotlinc; the arm64 one has only Java, so the pinned compiler is fetched
       # wherever kotlinc is missing.
       - name: Install the Kotlin compiler where the image lacks it
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euo pipefail
           if command -v kotlinc > /dev/null 2>&1; then
@@ -126,6 +155,7 @@ jobs:
           echo "$RUNNER_TEMP/kotlinc/bin" >> "$GITHUB_PATH"
 
       - name: Build and install mbelib-neo
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           source tools/ci-dependency-pins.env
@@ -137,6 +167,7 @@ jobs:
           cmake --install /tmp/mbelib-neo/build
 
       - name: Prepare local dependency environment
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           {
             echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
@@ -145,6 +176,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Configure (${{ matrix.variant }})
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           log="$RUNNER_TEMP/configure-${{ matrix.variant }}.log"
@@ -155,33 +187,52 @@ jobs:
           grep -F "Radio pipeline available: ${{ matrix.radio_available }}" "$log"
 
       - name: Build (${{ matrix.variant }})
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           cmake --build --preset dev-debug -j
 
       - name: Test (${{ matrix.variant }})
+        if: env.CI_RUN_CHECK == 'true'
         env:
           # A test whose tool is missing fails here instead of skipping.
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset dev-debug -N | tail -n 1
-          ctest --preset dev-debug --output-on-failure
+          ctest --preset dev-debug --parallel 2 --output-on-failure
 
   # The arm64 entry is the Android ABI's instruction set with the Android option
   # set; a missing name_suffix keeps the x86_64 check name unchanged.
   android-shape-host:
+    needs: changes
+    # Expand even irrelevant matrices so every required check name is reported.
+    if: ${{ !cancelled() }}
+    env:
+      CI_RUN_CHECK: ${{ (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: android shape (${{ matrix.name_prefix }}headless, forced radio pipeline)
     runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - arch: x86_64
+            ci_group: ci-worker-07
           - arch: arm64
+            ci_group: ci-worker-06
             name_prefix: "arm64, "
             runner: ubuntu-24.04-arm
     steps:
+      - name: Report irrelevant check
+        if: env.CI_RUN_CHECK != 'true'
+        run: echo 'No relevant changes; this matrix check is satisfied.'
+
       - name: Checkout repository
+        if: env.CI_RUN_CHECK == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Deliberately no libpulse-dev, no libncurses-dev and no libcodec2-dev:
@@ -190,6 +241,7 @@ jobs:
       # side, so leaving it out here keeps this the one job that proves the
       # graceful-degradation path still configures, builds and passes ctest.
       - name: Install build dependencies
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -200,6 +252,7 @@ jobs:
       # kotlinc; the arm64 one has only Java, so the pinned compiler is fetched
       # wherever kotlinc is missing.
       - name: Install the Kotlin compiler where the image lacks it
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euo pipefail
           if command -v kotlinc > /dev/null 2>&1; then
@@ -214,6 +267,7 @@ jobs:
           echo "$RUNNER_TEMP/kotlinc/bin" >> "$GITHUB_PATH"
 
       - name: Build and install mbelib-neo
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           source tools/ci-dependency-pins.env
@@ -225,6 +279,7 @@ jobs:
           cmake --install /tmp/mbelib-neo/build
 
       - name: Prepare local dependency environment
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           {
             echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
@@ -236,6 +291,7 @@ jobs:
       # library, no terminal UI, no SDR library, but the radio pipeline forced on
       # so rtl_tcp and radio-path I/Q replay stay covered by ctest.
       - name: Configure (android shape)
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           log="$RUNNER_TEMP/configure-android-shape.log"
@@ -259,15 +315,17 @@ jobs:
           grep -F "expat available: OFF (RadioReference import)" "$log"
 
       - name: Build (android shape)
+        if: env.CI_RUN_CHECK == 'true'
         run: cmake --build --preset dev-debug -j
 
       - name: Test (android shape)
+        if: env.CI_RUN_CHECK == 'true'
         env:
           # A test whose tool is missing fails here instead of skipping.
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset dev-debug -N | tail -n 1
-          ctest --preset dev-debug --output-on-failure
+          ctest --preset dev-debug --parallel 2 --output-on-failure
 
   # Every other ctest job is a -O0 Debug build, but what ships is optimized with
   # fast-math. This one runs the suite at -O2 with fast-math and AVX2/FMA code
@@ -276,8 +334,14 @@ jobs:
   # hosted x86_64 runner has it; AVX-512 (v4) is not guaranteed, so the v4 job
   # below only links.
   optimized-v3-ctest:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math)
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-04
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -336,7 +400,7 @@ jobs:
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset perf-bench -N | tail -n 1
-          ctest --preset perf-bench --output-on-failure
+          ctest --preset perf-bench --parallel 2 --output-on-failure
 
   # The same suite built by Clang, the toolchain of the macOS DMG, which treats
   # fast-math more aggressively than GCC: it folds bit tests on floats it computed
@@ -355,8 +419,14 @@ jobs:
   # (no Docker Hub secrets) could not run this required check at all. The
   # wrapper's pull goes out anonymously there.
   optimized-v3-ctest-clang:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-05
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -441,11 +511,17 @@ jobs:
             # A test whose tool is missing fails here instead of skipping.
             export DSD_NEO_REQUIRE_TEST_TOOLS=1
             ctest --preset perf-bench -N | tail -n 1
-            ctest --preset perf-bench --output-on-failure
+            ctest --preset perf-bench --parallel 2 --output-on-failure
           '
 
   build-linux:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-08
+      cancel-in-progress: false
+      queue: max
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -660,8 +736,14 @@ jobs:
         run: ccache -s
 
   scan-build:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: scan-build
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-10
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -721,6 +803,8 @@ jobs:
           retention-days: 7
 
   avx512-lto-link:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     # Reproduces the downstream AUR build failure from PR #261: GCC only emits the
     # -Wstringop-overflow diagnostic when the target has AVX-512, and because it fires
     # during LTO linking the full executable has to link, not just compile. Arch is used
@@ -735,6 +819,10 @@ jobs:
     # Dependabot or fork PR.
     name: gcc lto link (x86-64-v4)
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-13
+      cancel-in-progress: false
+      queue: max
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -804,8 +892,14 @@ jobs:
           '
 
   semgrep:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.semgrep_targets != '0' || needs.changes.outputs.semgrep_full_scan != '0') }}
     name: semgrep
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       security-events: write
@@ -887,6 +981,10 @@ jobs:
   lizard:
     name: lizard
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -913,6 +1011,10 @@ jobs:
     name: Validate release tag
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     outputs:
       version: ${{ steps.verify.outputs.version }}
       archive_prefix: ${{ steps.verify.outputs.archive_prefix }}
@@ -932,6 +1034,10 @@ jobs:
     name: Update nightly tag
     needs: [build-linux]
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     if: >-
       github.repository == 'arancormonk/dsd-neo' &&
       github.event_name == 'push' &&
@@ -963,6 +1069,7 @@ jobs:
     concurrency:
       group: aur-dsd-neo-git
       cancel-in-progress: false
+      queue: max
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
@@ -1176,6 +1283,7 @@ jobs:
     concurrency:
       group: aur-dsd-neo
       cancel-in-progress: false
+      queue: max
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
@@ -1409,25 +1517,43 @@ jobs:
           GIT_SSH_COMMAND="$aur_ssh_command" git push origin master
 
   sanitize-linux:
+    needs: changes
+    # Expand even irrelevant matrices so every required check name is reported.
+    if: ${{ !cancelled() }}
+    env:
+      CI_RUN_CHECK: ${{ (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
     name: Linux • Debug • sanitizer (${{ matrix.name }})
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - name: asan-ubsan
+            ci_group: ci-worker-08
             preset: asan-ubsan-debug
             cc: gcc
             cxx: g++
           - name: tsan
+            ci_group: ci-worker-09
             preset: tsan-debug
             cc: clang
             cxx: clang++
     steps:
+      - name: Report irrelevant check
+        if: env.CI_RUN_CHECK != 'true'
+        run: echo 'No relevant changes; this matrix check is satisfied.'
+
       - name: Checkout repository
+        if: env.CI_RUN_CHECK == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Prepare dependency environment
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           {
@@ -1438,6 +1564,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Compute dependency SHAs (for cache key)
+        if: env.CI_RUN_CHECK == 'true'
         id: dep-shas
         run: |
           set -euxo pipefail
@@ -1449,6 +1576,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
+        if: env.CI_RUN_CHECK == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.DEPS_PREFIX }}
@@ -1457,6 +1585,7 @@ jobs:
             deps-${{ runner.os }}-
 
       - name: Validate dependency cache
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           mf="$DEPS_PREFIX/.manifest"
@@ -1474,6 +1603,7 @@ jobs:
           mkdir -p "$DEPS_PREFIX"
 
       - name: Install base build dependencies
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -1483,6 +1613,7 @@ jobs:
             gfortran libcurl4-openssl-dev libexpat1-dev portaudio19-dev
 
       - name: Prepare ccache environment
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           {
@@ -1496,6 +1627,7 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
       - name: Compute tool versions (for ccache key)
+        if: env.CI_RUN_CHECK == 'true'
         id: toolver-sanitize
         run: |
           set -euxo pipefail
@@ -1505,6 +1637,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
+        if: env.CI_RUN_CHECK == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -1516,6 +1649,7 @@ jobs:
             ccache-${{ runner.os }}-
 
       - name: Initialize ccache
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           ccache --version
           ccache --zero-stats
@@ -1523,11 +1657,13 @@ jobs:
           ccache --set-config=compression=true
 
       - name: Install dependencies via APT when available (codec2, rtl-sdr)
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           sudo apt-get install -y --no-install-recommends \
             libcodec2-dev librtlsdr-dev libairspy-dev || true
 
       - name: Build and install mbelib-neo (required, cached)
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           mf="$DEPS_PREFIX/.manifest"
@@ -1547,6 +1683,7 @@ jobs:
           cmake --install /tmp/mbelib-neo/build
 
       - name: Ensure codec2 (cached fallback if not found)
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           mf="$DEPS_PREFIX/.manifest"
@@ -1571,6 +1708,7 @@ jobs:
           cmake --install /tmp/codec2/build
 
       - name: Ensure RTL-SDR (cached fallback if pkg-config not found)
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           mf="$DEPS_PREFIX/.manifest"
@@ -1595,6 +1733,7 @@ jobs:
           cmake --install /tmp/rtl-sdr/build
 
       - name: Update deps manifest
+        if: env.CI_RUN_CHECK == 'true'
         run: |
           set -euxo pipefail
           mkdir -p "$DEPS_PREFIX"
@@ -1607,12 +1746,15 @@ jobs:
           } > "$mf"
 
       - name: Configure (${{ matrix.preset }})
+        if: env.CI_RUN_CHECK == 'true'
         run: cmake --preset ${{ matrix.preset }}
 
       - name: Build (${{ matrix.preset }})
+        if: env.CI_RUN_CHECK == 'true'
         run: cmake --build --preset ${{ matrix.preset }} --parallel
 
       - name: Test (${{ matrix.preset }})
+        if: env.CI_RUN_CHECK == 'true'
         env:
           # A test whose tool is missing fails here instead of skipping.
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
@@ -1625,23 +1767,33 @@ jobs:
             export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/tools/lsan.supp"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
-          ctest --preset ${{ matrix.preset }} --output-on-failure
+          ctest --preset ${{ matrix.preset }} --parallel 2 --output-on-failure
 
       - name: Show ccache stats
-        if: always()
+        if: env.CI_RUN_CHECK == 'true' && (always())
         run: ccache -s
 
   cmake-install-rules:
     name: cmake install rules
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check install(TARGETS) runtime destinations
         run: tools/check_install_runtime_destinations.sh
 
   format-check:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.format_files != '0') }}
     name: clang-format
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1723,8 +1875,14 @@ jobs:
           '
 
   cppcheck:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.cppcheck_sources != '0' || needs.changes.outputs.analysis_full_scan != '0') }}
     name: cppcheck
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-11
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1810,13 +1968,24 @@ jobs:
           retention-days: 7
 
   static-analysis:
+    needs: changes
+    # Expand even irrelevant matrices so every required check name is reported.
+    if: ${{ !cancelled() }}
+    env:
+      CI_RUN_CHECK: ${{ (needs.changes.result != 'success' || needs.changes.outputs.analysis_tus != '0' || needs.changes.outputs.analysis_full_scan != '0') }}
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - name: clang-tidy
+            ci_group: ci-worker-05
             run_cmd: tools/clang_tidy.sh
             tus_file: analysis_tus.txt
             artifact_name: clang-tidy-report
@@ -1824,21 +1993,29 @@ jobs:
           # IWYU takes every includer of a changed header (iwyu_tus.txt); the
           # capped analysis_tus.txt sample is for the slower analyzers.
           - name: iwyu
+            ci_group: ci-worker-02
             run_cmd: tools/iwyu.sh --strict
             tus_file: iwyu_tus.txt
             artifact_name: iwyu-report
             artifact_path: .iwyu.local.out
           - name: gcc-fanalyzer
+            ci_group: ci-worker-04
             run_cmd: tools/gcc_fanalyzer.sh --strict
             tus_file: analysis_tus.txt
             artifact_name: gcc-fanalyzer-report
             artifact_path: .gcc-fanalyzer.local.out
     steps:
+      - name: Report irrelevant check
+        if: env.CI_RUN_CHECK != 'true'
+        run: echo 'No relevant changes; this matrix check is satisfied.'
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.CI_RUN_CHECK == 'true'
         with:
           fetch-depth: 0
 
       - name: Check Docker Hub credentials
+        if: env.CI_RUN_CHECK == 'true'
         id: dockerhub
         # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
         # and the pull goes out anonymously.
@@ -1856,7 +2033,7 @@ jobs:
       - name: Login to Docker Hub (optional)
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
-        if: steps.dockerhub.outputs.available == 'true'
+        if: env.CI_RUN_CHECK == 'true' && (steps.dockerhub.outputs.available == 'true')
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         continue-on-error: true
         env:
@@ -1866,11 +2043,11 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Install PR diff dependencies
-        if: github.event_name == 'pull_request'
+        if: env.CI_RUN_CHECK == 'true' && (github.event_name == 'pull_request')
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - name: Compute PR changed files
-        if: github.event_name == 'pull_request'
+        if: env.CI_RUN_CHECK == 'true' && (github.event_name == 'pull_request')
         id: changed
         run: |
           tools/ci_changed_files.sh \
@@ -1878,11 +2055,11 @@ jobs:
             --head HEAD
 
       - name: Skip ${{ matrix.name }}
-        if: github.event_name == 'pull_request' && steps.changed.outputs.analysis_tus == '0' && steps.changed.outputs.analysis_full_scan != '1'
+        if: env.CI_RUN_CHECK == 'true' && (github.event_name == 'pull_request' && steps.changed.outputs.analysis_tus == '0' && steps.changed.outputs.analysis_full_scan != '1')
         run: echo "No changed translation units for ${{ matrix.name }}."
 
       - name: Compute dependency SHAs (for cache key)
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
+        if: env.CI_RUN_CHECK == 'true' && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1')
         id: dep-shas
         run: |
           set -euxo pipefail
@@ -1893,7 +2070,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
+        if: env.CI_RUN_CHECK == 'true' && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .deps
@@ -1902,7 +2079,7 @@ jobs:
             arch-deps-${{ runner.os }}-
 
       - name: Validate dependency cache
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
+        if: env.CI_RUN_CHECK == 'true' && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1')
         run: |
           set -euxo pipefail
           mf=".deps/.manifest"
@@ -1918,7 +2095,7 @@ jobs:
           mkdir -p .deps
 
       - name: Restore IWYU toolchain cache
-        if: (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1') && matrix.name == 'iwyu'
+        if: env.CI_RUN_CHECK == 'true' && ((github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1') && matrix.name == 'iwyu')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .deps-arch-toolchain
@@ -1927,7 +2104,7 @@ jobs:
             arch-iwyu-${{ runner.os }}-
 
       - name: Restore ccache
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
+        if: env.CI_RUN_CHECK == 'true' && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ccache
@@ -1938,7 +2115,7 @@ jobs:
             ccache-${{ runner.os }}-arch-
 
       - name: Run ${{ matrix.name }} under Arch toolchain
-        if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'
+        if: env.CI_RUN_CHECK == 'true' && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1')
         shell: bash
         env:
           CI_ARCH_IWYU_SHA: ${{ steps.dep-shas.outputs.iwyu_sha }}
@@ -2002,7 +2179,7 @@ jobs:
           ' bash "$scope"
 
       - name: Upload ${{ matrix.name }} output
-        if: always() && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1')
+        if: env.CI_RUN_CHECK == 'true' && (always() && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1'))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}

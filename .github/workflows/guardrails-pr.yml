@@ -24,6 +24,10 @@ jobs:
   dependency-review:
     name: dependency review
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Review dependency changes
