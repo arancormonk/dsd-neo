@@ -16,6 +16,52 @@ Column {
         return settings && settings[key] !== undefined ? settings[key] : fallback;
     }
 
+    // The text fields commit on editingFinished. A form that is saved or
+    // dismissed while one still has focus reads what is typed through these.
+    /** Every text field's text as it stands now, by setting key. */
+    function pendingText() {
+        var text = {};
+        for (var repeater of [textFields, gainFields]) {
+            for (var i = 0; i < repeater.count; ++i) {
+                var row = repeater.itemAt(i);
+                if (row)
+                    text[row.key] = row.input.text;
+            }
+        }
+        return text;
+    }
+
+    /** Put every text field back to its committed setting, dropping typing a dismissed form left behind. */
+    function resetText() {
+        for (var repeater of [textFields, gainFields]) {
+            for (var i = 0; i < repeater.count; ++i) {
+                var row = repeater.itemAt(i);
+                if (row)
+                    row.input.text = Qt.binding(function (input) {
+                        return function () {
+                            return input.committedText;
+                        };
+                    }(row.input));
+            }
+        }
+    }
+
+    /** settings with every field's typing that would commit applied. */
+    function pendingSettings() {
+        var next = Object.assign({}, settings);
+        for (var i = 0; i < textFields.count; ++i) {
+            var row = textFields.itemAt(i);
+            if (row && row.input.text.trim() !== row.input.committedText)
+                next[row.key] = row.input.text.trim();
+        }
+        for (var j = 0; j < gainFields.count; ++j) {
+            var gain = gainFields.itemAt(j);
+            if (gain && gain.input.acceptableInput && gain.input.text !== gain.input.committedText)
+                next[gain.key] = gain.input.text;
+        }
+        return next;
+    }
+
     spacing: 12
 
     Text {
@@ -34,6 +80,8 @@ Column {
     }
 
     Repeater {
+        id: textFields
+
         model: [{
             "key": "serial",
             "label": qsTr("Serial (empty selects first device)"),
@@ -46,6 +94,8 @@ Column {
 
         delegate: Column {
             required property var modelData
+            readonly property string key: modelData.key
+            property alias input: textField
 
             width: panel.width
             spacing: 4
@@ -58,9 +108,13 @@ Column {
             }
 
             PlexInput {
+                id: textField
+
+                readonly property string committedText: modelData.key === "sample_rate" && Number(panel.setting(modelData.key, 0)) === 0 ? "auto" : String(panel.setting(modelData.key, modelData.value))
+
                 objectName: "airspy_" + modelData.key
                 width: parent.width
-                text: modelData.key === "sample_rate" && Number(panel.setting(modelData.key, 0)) === 0 ? "auto" : String(panel.setting(modelData.key, modelData.value))
+                text: committedText
                 onEditingFinished: panel.edited(modelData.key, text.trim())
             }
 
@@ -86,6 +140,8 @@ Column {
     }
 
     Repeater {
+        id: gainFields
+
         model: [{
             "key": "sensitivity_gain",
             "label": qsTr("Sensitivity index"),
@@ -120,6 +176,8 @@ Column {
 
         delegate: Column {
             required property var modelData
+            readonly property string key: modelData.key
+            property alias input: gainField
 
             width: panel.width
             spacing: 4
@@ -132,9 +190,13 @@ Column {
             }
 
             PlexInput {
+                id: gainField
+
+                readonly property string committedText: String(panel.setting(modelData.key, modelData.value))
+
                 objectName: "airspy_" + modelData.key
                 width: parent.width
-                text: String(panel.setting(modelData.key, modelData.value))
+                text: committedText
                 onEditingFinished: {
                     if (acceptableInput)
                         panel.edited(modelData.key, text);

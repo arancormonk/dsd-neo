@@ -159,6 +159,60 @@ Item {
             tryCompare(editor, "visible", false);
             compare(model.ranges[0].stepNum, 12500, "a discarded edit is never saved");
         }
+        // An Airspy gain typed into its field commits only when the field loses
+        // focus. Dismissed before that, by any route, the typing still counts:
+        // the editor asks, whether the text is a valid index yet or not, and
+        // Save keeps a valid one.
+        function test_range_editor_counts_a_pending_airspy_gain_data() {
+            var rows = [];
+            for (var method of ["scrim", "back", "escape", "cancel"]) {
+                rows.push({tag: method + ", valid", method: method, text: "15"});
+                rows.push({tag: method + ", not yet valid", method: method, text: ""});
+            }
+            return rows;
+        }
+        function test_range_editor_counts_a_pending_airspy_gain(data) {
+            loader.item.sessionActive = false;
+            loader.item.sourceType = "airspy";
+            var original = model.ranges;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, Object.assign(model.defaultRange(), {airspyGainSet: true,
+                airspy: {gain_mode: "sensitivity", sensitivity_gain: 10}}));
+            waitForRendering(editor);
+            var gain = findChild(editor, "airspy_sensitivity_gain");
+            verify(gain !== null && gain.visible);
+            compare(gain.text, "10");
+            gain.forceActiveFocus();
+            gain.selectAll();
+            if (data.text.length)
+                keyClick(Qt.Key_5);
+            else
+                keyClick(Qt.Key_Backspace);
+            if (data.text.length) {
+                gain.cursorPosition = 0;
+                keyClick(Qt.Key_1);
+            }
+            compare(gain.text, data.text);
+            dismissEditor(editor, data.method);
+            verify(editor.visible, "the typed gain survives the dismissal");
+            var discard = shownDiscard(editor);
+            verify(discard !== null, "the editor asks before discarding a pending gain");
+            findChild(discard, "discardDialogKeep").activate();
+            verify(editor.visible);
+            compare(gain.text, data.text);
+            if (data.text.length) {
+                gain.forceActiveFocus();
+                findChild(editor, "searchRangeSave").activate();
+                tryCompare(editor, "visible", false);
+                compare(String(model.ranges[0].airspy.sensitivity_gain), "15", "Save keeps the typed gain");
+            } else {
+                dismissEditor(editor, data.method);
+                findChild(shownDiscard(editor), "discardDialogDiscard").activate();
+                tryCompare(editor, "visible", false);
+            }
+            model.ranges = original;
+            loader.item.sourceType = "usb";
+        }
         // Every field the editor fills counts, including a selector's choice.
         function test_range_editor_counts_every_field() {
             loader.item.sessionActive = false;

@@ -52,8 +52,9 @@ ModalSheet {
         minimumSwitch.checked = draft.minimumSet;
         airspyOverride.checked = !!draft.airspyGainSet;
         airspyGain.settings = Object.assign({}, draft.airspy || {});
+        airspyGain.resetText();
         errorText = "";
-        openedForm = JSON.stringify(formValue());
+        openedForm = formFingerprint();
         open();
     }
 
@@ -67,11 +68,16 @@ ModalSheet {
             sensitivity: sensitivityField.text, minimumSet: minimumSwitch.checked, minimum: minimumField.text,
             squelchMode: squelch.currentIndex, squelchMargin: marginField.text, squelchLevel: levelField.text,
             probe: probeField.text, visit: visitField.text,
-            airspyGainSet: airspyOverride.checked, airspy: airspyGain.settings
+            airspyGainSet: airspyOverride.checked, airspy: airspyGain.pendingSettings()
         };
     }
+    // The form plus the Airspy fields' typing, committed or not: a gain typed
+    // but not yet committed (or not yet a valid index) still counts.
+    function formFingerprint() {
+        return JSON.stringify({form: formValue(), airspyText: airspyGain.pendingText()});
+    }
     function requestClose() {
-        if (visible && JSON.stringify(formValue()) !== openedForm)
+        if (visible && formFingerprint() !== openedForm)
             discard.ask(function () {
                 sheet.visible = false;
             });

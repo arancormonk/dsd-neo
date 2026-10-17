@@ -5477,7 +5477,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 - Qt Signal search uses `SignalSearchModel`, `SignalSearchScreen.qml` and
   `SignalSearchRangeEditor.qml`, sharing Theme/Plex controls, source startup and the
-  save-found-system wizard. While a session runs the screen reads status line, Now panel,
+  save-found-system wizard. The range editor's discard fingerprint and Save read the
+  Airspy gain fields' typing before it commits (`AirspyControls.pendingText()`,
+  `pendingSettings()`; the fields commit on `editingFinished`), and opening it resets them
+  (`resetText()`). While a session runs the screen reads status line, Now panel,
   five recent detections (Show more adds 25), then the ranges behind an expandable
   `DisclosureRow` (`expandable`/`expanded`; forced open while paused or idle; a manual
   expansion and the history limit reset on close and on a new session). The Now panel's
