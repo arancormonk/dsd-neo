@@ -3382,6 +3382,9 @@ typedef struct {
     // for a first-seen PTT naming the transmission already on the air.
     int continuous_activity;
     int ptt_evidence;
+    // The update only puts back on the canonical slot an identity it lost (p25_voice_canonical_lacks_identity()):
+    // the call and its crypto are unchanged, so nothing is reclassified.
+    int identity_recovery;
 } p25_voice_start_changes_t;
 
 static int
@@ -3425,6 +3428,36 @@ p25_voice_ptt_start_may_coalesce(const p25_sm_ctx_t* ctx, const dsd_state* state
     return ctx->slots[slot].ptt_canonical_epoch != current.epoch;
 }
 
+// Whether the canonical slot has lost the call a decoded identity-bearing event names, while the SM still follows it.
+// The engine's no-carrier pass ends the canonical calls as a sync loss without telling the SM, so after a fade longer
+// than the reacquire window the call either stays ended (an LC decodes before the ESS) or comes back without its
+// source: the clear ESS reopens it from the assignment's target alone (p25_crypto_ensure_phase1_call()). Every later
+// LC re-describes what the SM already holds, so without this the radio ID never returns for the rest of the
+// transmission. Only a source the event decoded itself counts: one inherited from the assignment could belong to the
+// talker before the fade. Terminator, unverified-terminator and explicit ends are not reopened here.
+static int
+p25_voice_canonical_lacks_identity(const dsd_state* state, int slot, const p25_sm_event_t* input,
+                                   const p25_sm_event_t* call_ev) {
+    if (!input->identity_valid || !p25_source_id_known(input->src)) {
+        return 0;
+    }
+    dsd_call_snapshot current;
+    if (dsd_call_state_get(state, (uint8_t)slot, &current) <= 0) {
+        return 0;
+    }
+    if (current.phase == DSD_CALL_PHASE_ENDED) {
+        return current.end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS;
+    }
+    if (current.phase != DSD_CALL_PHASE_ACTIVE || !DSD_SYNC_IS_P25(current.protocol)) {
+        return 0;
+    }
+    if (current.ota_target_id == 0U && current.policy_target_id == 0U) {
+        return 1;
+    }
+    const uint64_t target = (uint64_t)(uint32_t)p25_grant_ota_target_id(call_ev);
+    return current.ota_target_id == target && current.ota_source_id == 0U;
+}
+
 static p25_voice_start_changes_t
 p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot,
                                  const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* input,
@@ -3435,6 +3468,13 @@ p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const dsd_state* state
     changes.service_changed = p25_voice_start_service_changed(slot_ctx, call_ev);
     changes.new_epoch = p25_voice_start_begins_new_epoch(ctx, slot_ctx, input, call_ev, ptt_retransmit);
     changes.requires_update = changes.new_epoch || changes.service_changed || learned_source;
+    if (!changes.requires_update && p25_voice_slot_epoch_active(slot_ctx)
+        && p25_voice_canonical_lacks_identity(state, slot, input, call_ev)) {
+        // new_epoch stays 0: the publish is a CONTINUE, which fills the ACTIVE epoch in place or, after a sync-loss
+        // end, opens the resumed segment with the identity this event decoded.
+        changes.requires_update = 1;
+        changes.identity_recovery = 1;
+    }
     changes.ptt_evidence = p25_voice_start_is_p2_ptt(ctx, input);
     // An ACTIVE-driven start may always fold into the epoch the
     // traffic-channel observation of the same transmission just began. A PTT
@@ -3508,6 +3548,11 @@ static void
 p25_voice_start_update_crypto(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int logical_slot,
                               const p25_sm_event_t* call_ev, const p25_grant_eval_ctx_t* eval_ctx,
                               const p25_voice_start_changes_t* changes, double now_m) {
+    if (changes->identity_recovery) {
+        // Not even for a regroup clear override: the ESS that reopened the call already classified it, and starting
+        // the classification again would drop that tuple and reset the running vocoder.
+        return;
+    }
     const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
     const int pending_p1_identity = p25_p1_identity_is_pending(ctx, state, slot);
     if (changes->preserve_crypto_classification && !force_clear) {
@@ -3620,7 +3665,9 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     p25_voice_start_changes_t changes =
         p25_voice_start_classify_changes(ctx, state, slot, slot_ctx, input, &call_ev, ptt_retransmit);
     if (pending_p1_identity) {
+        // A fresh HDU's identity completion, not a recovery: its crypto still has to be applied.
         changes.requires_update = 1;
+        changes.identity_recovery = 0;
     }
     changes.preserve_crypto_classification =
         p25_voice_start_should_preserve_p1_crypto(ctx, state, slot, input, &changes);

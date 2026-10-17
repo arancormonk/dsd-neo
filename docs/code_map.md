@@ -4607,6 +4607,19 @@ Private per-protocol modules worth knowing about:
   a receiver frequency other than the one the follow tune left (an operator retune moves no generation), after
   `DMR_CAPPLUS_SEED_WINDOW_S`, and under single-slot decoding. Group calls only: a bank-two private ID's layout is
   inferred from bank one's, not published. Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
+- P25 followed-call identity across a fade (`p25_trunk_sm.c`, `p25_voice_canonical_lacks_identity()`). The engine's
+  no-carrier pass ends the canonical calls as a sync loss and resets the P25 crypto without telling the P25 SM, which
+  keeps following the assignment. Past the reacquire window a Phase 1 call comes back through the clear ESS with the
+  assignment's target only (`p25_crypto_ensure_phase1_call()`), or stays ended until it, and the LCs after it
+  re-describe what the SM already holds. So a decoded identity-bearing voice event (LCW/MAC) that decoded its own
+  subscriber source, on the call the SM follows, republishes when the canonical slot lacks it: a sync-loss end, an
+  identity-less P25 epoch, or an epoch of the same target without a source. The publish is a CONTINUE, so an ACTIVE
+  epoch is filled in place, and it reclassifies nothing (not even under a regroup KEY=0 clear override): the ESS
+  that reopened the call owns its crypto. A source inherited from the assignment never triggers it (it may be the talker before the
+  fade), and terminator, unverified-terminator and explicit ends are not reopened by it; the existing
+  new-transmission handling (the identity-pending wait, Phase 2 post-END retention) is unchanged. Phase 2 needs none
+  of it: the MAC_ACTIVE's own observation reopens and classifies the call before the SM sees it. Test:
+  `P25_VOICE_RESUME_IDENTITY`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
