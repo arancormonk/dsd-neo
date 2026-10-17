@@ -1125,6 +1125,40 @@ test_conventional_p1_replacement_publishes_only_its_own_crypto(void) {
     return rc;
 }
 
+/* A call's encryption indication (enc_received, which a detection's "Encrypted" needs) comes from checked content
+   only: service options with the encryption bit from a hard-decoded link control, and an ALG ID from an HDU or LDU2
+   whose own decode checked it. A link control or tuple only a soft-erasure RS retry recovered says nothing. */
+static int
+test_soft_recovered_p1_content_is_no_encryption_indication(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int soft = 0; soft < 2; soft++) {
+        reset_fixture(&opts, &state);
+        dsd_decode_clock_use_test(5000000000ULL);
+        state.synctype = DSD_SYNC_P25P1_POS;
+        state.lastsynctype = DSD_SYNC_P25P1_POS;
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+        state.p25_p1_lcw_soft = (uint8_t)soft;
+        (void)p25_sm_emit_active_call(&opts, &state, 0, 1001, 0, 101, 1, 0x40);
+        state.p25_p1_lcw_soft = 0U;
+        dsd_call_snapshot call;
+        rc |= expect_int("call active", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_int(soft ? "soft LCW service options say nothing" : "hard LCW service options say encrypted",
+                         call.enc_received, !soft);
+        // An LDU2 tuple: received only when checked; decryption resolves it either way.
+        (void)p25_crypto_resolve_checked(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x1234,
+                                         UINT64_C(0x0102030405060708), 1001, !soft);
+        rc |= expect_int("dsd_call_state_get", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_int(soft ? "soft tuple not received" : "hard tuple received", call.crypto_received,
+                         soft ? 0 : (DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID));
+        rc |= expect_int(soft ? "soft tuple says nothing" : "hard tuple says encrypted", call.enc_received, !soft);
+        rc |= expect_int("decryption resolves the tuple", state.payload_algid, 0x84);
+    }
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1144,5 +1178,6 @@ main(void) {
     rc |= test_phase1_resolution_stamps_only_this_carriers_frequency();
     rc |= test_resolution_publishes_received_crypto();
     rc |= test_conventional_p1_replacement_publishes_only_its_own_crypto();
+    rc |= test_soft_recovered_p1_content_is_no_encryption_indication();
     return rc;
 }

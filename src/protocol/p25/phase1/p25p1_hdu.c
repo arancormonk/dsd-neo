@@ -290,8 +290,11 @@ hdu_read_and_fec(dsd_opts* opts, dsd_state* state, char hex_data[20][6], char he
     return 0;
 }
 
+// @p checked: the HDU passed its hard Reed-Solomon decode. A soft-erasure retry can spend the whole parity budget and
+// accept an arbitrary payload, so its tuple is resolved (decryption is unchanged) but not received, as a Phase 2 ESS
+// that needed soft erasures is not.
 static void
-hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, uint64_t mi) {
+hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, uint64_t mi, int checked) {
     if (opts && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1) {
         const p25_sm_ctx_t* sm = p25_sm_get_ctx();
         if (sm && sm->initialized && sm->state == P25_SM_TUNED && !sm->vc_is_tdma && sm->slots[0].grant_active
@@ -310,7 +313,7 @@ hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, ui
     dsd_call_snapshot call;
     const int target =
         dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= INT_MAX ? (int)call.ota_target_id : 0;
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, target);
+    (void)p25_crypto_resolve_checked(opts, state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, target, checked);
 }
 
 static void
@@ -341,7 +344,7 @@ hdu_report_decryption_key(const dsd_opts* opts, const dsd_state* state) {
 
 static void
 hdu_handle_good_decode(dsd_opts* opts, dsd_state* state, int algidhex, int kidhex, unsigned long long int mihex1,
-                       unsigned long long int mihex2, unsigned long long int mihex3) {
+                       unsigned long long int mihex2, unsigned long long int mihex3, int checked) {
     const uint64_t mi = (mihex1 << 32) | mihex2;
 
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -359,7 +362,7 @@ hdu_handle_good_decode(dsd_opts* opts, dsd_state* state, int algidhex, int kidhe
     DSD_FPRINTF(stderr, "\n");
 
     state->xl_is_hdu = 1;
-    hdu_maybe_enc_lockout(opts, state, algidhex, kidhex, mi);
+    hdu_maybe_enc_lockout(opts, state, algidhex, kidhex, mi, checked);
     hdu_report_decryption_key(opts, state);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
@@ -407,8 +410,11 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     status_count = 21;
 
     const uint32_t carrier_seq = state->carrier_seq;
+    const unsigned int soft_rs_before = state->p25_p1_soft_rs_ok;
     irrecoverable_errors =
         hdu_read_and_fec(opts, state, hex_data, hex_parity, soft_dibits, &status_count, &soft_dibit_index);
+    // Only the hard decode checks the tuple; hdu_read_and_fec() counts each soft-erasure recovery.
+    const int hard_checked = state->p25_p1_soft_rs_ok == soft_rs_before;
     hdu_consume_trailing_dibits_and_status(opts, state);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the HDU was read (issue #575). Its words decode before the
@@ -440,7 +446,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     state->p25vc = 0;
 
     if (irrecoverable_errors == 0) {
-        hdu_handle_good_decode(opts, state, algidhex, kidhex, mihex1, mihex2, mihex3);
+        hdu_handle_good_decode(opts, state, algidhex, kidhex, mihex1, mihex2, mihex3, hard_checked);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " HDU FEC ERR \n");

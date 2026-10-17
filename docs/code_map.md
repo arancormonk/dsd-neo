@@ -815,8 +815,10 @@ suite runs under this compiler.
   specializes the identity-less voice epoch it opened in keeps them, and a reacquired epoch carries the ending one's
   (`call_state_seed_reacquired_snapshot()`); a trunk-scan context restore copies them with the snapshot. The writers
   that set them: P25 `p25_crypto_resolve()` (HDU, LDU2, ESS, MAC_PTT; not a tuple a clear-conflict quarantine
-  deferred, nor an ESS whose RS decode leaned on soft erasures: the ESS paths and a staged rekey pass that verdict
-  through `p25_crypto_resolve_checked()`, `dsd_p25_p2_rekey_state::parity_checked`), DMR `dmr_pi()` (Kirisun's
+  deferred, nor an HDU, LDU2 or ESS whose RS decode leaned on soft erasures: `processHDU()`/`processLDU2()` (by
+  `p25_p1_soft_rs_ok` moving), the ESS paths and a staged rekey pass that verdict through
+  `p25_crypto_resolve_checked()`, `dsd_p25_p2_rekey_state::parity_checked`; the service options of an LDU1 link
+  control only a soft-erasure retry recovered, `dsd_state::p25_p1_lcw_soft`, are no encryption indication either), DMR `dmr_pi()` (Kirisun's
   key id is a hash, so ALG only; no RAS or failed-CRC burst, no undefined DMRA
   algorithm) directly or through `dsd_state::dmr_pi_precall_*` into the call the next checked LC opens within
   `DMR_PI_PRECALL_HOLD_S` (only a PI decoded while no call is active is held; one decoded while a call is active is

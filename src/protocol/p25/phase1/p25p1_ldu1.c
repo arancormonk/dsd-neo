@@ -487,6 +487,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
            LDU an input interruption cut, whose rest is erasures the reader stood in. */
         return;
     }
+    const unsigned int soft_rs_before = state->p25_p1_soft_rs_ok;
     int irrecoverable_errors = p25p1_ldu1_apply_rs_fec(state, ctx.hex_data, ctx.hex_parity, ctx.soft_dibits);
 
     uint8_t lcformat[9];
@@ -496,7 +497,10 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     uint8_t LCW_bits[72];
     p25p1_ldu1_unpack_lc_fields(ctx.hex_data, lcformat, mfid, lcinfo);
     p25p1_ldu1_build_lcw_buffers(lcformat, mfid, lcinfo, LCW_bytes, LCW_bits);
+    // Only the hard decode checks the link control; p25p1_ldu1_apply_rs_fec() counts each soft-erasure recovery.
+    state->p25_p1_lcw_soft = (uint8_t)(state->p25_p1_soft_rs_ok != soft_rs_before);
     p25p1_ldu1_handle_lcw_output(opts, state, LCW_bits, irrecoverable_errors);
+    state->p25_p1_lcw_soft = 0U;
 
     p25p1_ldu1_correct_lsd(state, &ctx);
     p25p1_ldu1_print_payload(opts, LCW_bytes, &ctx);

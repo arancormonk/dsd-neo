@@ -175,9 +175,10 @@ with its confirmation stand in only until a call record names the detection, and
 the content that carried them passed its own check, so a RAS repeater's talkgroup and
 source never reach the detection. The encryption shows **ALG 84 · KID 0001** with only the
 parts received over the air for that call: a P25 HDU, LDU2, ESS or MAC_PTT tuple (not one
-held back as a contradiction of clear service, and not an ESS whose decode needed soft
-erasures, so a weak Phase 2 signal whose service options say encrypted shows
-**Encrypted**), a DMR PI header (its key ID only where the header carries one; Kirisun's
+held back as a contradiction of clear service, and not an HDU, LDU2 or ESS whose
+Reed-Solomon decode needed soft erasures, so a weak signal whose service options say
+encrypted shows **Encrypted**; service options from a link control that needed them
+count for nothing), a DMR PI header (its key ID only where the header carries one; Kirisun's
 is derived), an NXDN call's cipher and key once corroborated and carried by the VCALL
 itself, and an M17 link setup's encryption type. **Encrypted** alone means the call's own
 checked signalling says it is encrypted and carried no ALG ID or key ID: a DMR link

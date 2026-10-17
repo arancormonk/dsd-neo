@@ -1464,7 +1464,10 @@ struct dsd_state {
     unsigned int p25_p1_soft_hamming_ok; // soft Hamming corrections
     unsigned int p25_p1_soft_golay_ok;   // soft Golay corrections (hard would have failed)
     unsigned int p25_p1_soft_rs_ok;      // soft RS erasure corrections (hard would have failed)
-    unsigned int p25_p2_soft_ess_ok;     // soft ESS corrections
+    /* 1 while the LDU1 link control being handled passed only a soft-erasure RS retry: its service options are not
+       checked evidence that the call is encrypted (dsd_call_crypto_update::enc_observed). */
+    uint8_t p25_p1_lcw_soft;
+    unsigned int p25_p2_soft_ess_ok; // soft ESS corrections
     unsigned int p25_p2_soft_ess_max_depth;
     unsigned int p25_p1_soft_combined_ok;
     //iden freq storage for frequency calculations
