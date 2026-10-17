@@ -5852,6 +5852,12 @@ Qt Quick frontend (`src/ui/qt`):
     merged call whose seen entries were evicted or lost is logged again as new rows, one per fragment. A state an
     embedding host reuses for another run keeps its ring and identity, and the rows the earlier run left there stay that
     session's.
+  - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order),
+    saved 3 s after the last change. The UI thread hands the single save worker (`m_savePool`, one thread) copies of
+    `m_rows` and `m_seen`; the worker builds the JSON and writes both files, reading nothing live (issue #718: the
+    build alone cost ~62 ms per save at a full log). One save in flight at a time (`m_saveInFlight`); a change during
+    it marks the stores dirty and re-arms the debounce when it finishes. `clearAll()` saves at once through the same
+    path. The destructor waits for the worker, then writes any owed save synchronously (`saveNow()`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
     (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
 - Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
