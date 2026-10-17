@@ -308,7 +308,10 @@ hooks identify the parked protocol. Outside trunk scan, validated control/grant 
 across sync loss; unrelated protocol decodes and raw sync cannot evict it. Ownership writes and watchdog reads share the decoder/SM guard, so the
 watchdog predicate does not read the sync or CC-format hints modified by frame acquisition. DMR owns its decoded
 CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each
-target's `dmr_sm_ctx_t`. Probes honor avoids and revisit the saved CC anchor between alternate frequencies.
+target's `dmr_sm_ctx_t`. In single-system sessions the engine ticks admitted DMR recovery between synced frames,
+including withheld frames, after startup acquisition has ended too. Data-only or unvalidated syncs need not enter a
+voice handler's internal tick and must not starve loss, probe or pending-tune deadlines. Trunk scan ticks its own
+parked context. Probes honor avoids and revisit the saved CC anchor between alternate frequencies.
 Probe frequency is separate from the saved anchor until control or grant evidence confirms it. Target entry and accepted CC return restart acquisition, preventing a previous call or probe from holding
 or retuning a newly parked target. Pending backend probes hold the target and disarm idle dwell; completion or timeout starts
 a fresh dwell. The subsequent decoded-acquisition wait counts toward dwell. DMR heartbeats use the completed
@@ -4356,8 +4359,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   nonzero row, and no owner yet. P25 runs it when recovery is admitted or `dsd_trunk_p25_cold_start_presumed()`
   holds; DMR when its recovery is admitted.
 - Thread: decoder thread only, under the P25 SM tick guard: `p25_sm_cold_start_tick_locked()` and DMR's own tick from
-  the engine's outer loop and, while the owner is unknown or a machine is armed or hunting, between frames in
-  `live_scanner_process_synced_frames()`. The watchdog never ticks a P25 machine whose `cold_start_hunt` is set; the
+  the engine's outer loop and, while the owner is unknown, a machine is armed or hunting, or DMR recovery is admitted,
+  between frames in `live_scanner_process_synced_frames()`. The watchdog never ticks a P25 machine whose `cold_start_hunt` is set; the
   decoder's next startup tick ends one whose owner validated control has named. The end of an input switch
   (`dsd_engine_end_input_boundary()`) runs that tick too, so the new input's windows are armed before its first read,
   and a silent UDP input's wait gives way while a machine is due to arm (a session that became eligible after its

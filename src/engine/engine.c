@@ -3077,10 +3077,12 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     /* A TETRA carrier syncs on every burst, so the synced-frames loop may never hand back to the outer one: the TETRA
      * state machine settles its tune and runs its hangtime here too, withheld frames included. */
     dsd_engine_tetra_trunk_tick_locked(opts, state);
-    /* So may a stream of syncs that never validate: a startup control-channel hunt runs between frames too, until
-       an owner is named and nothing is armed or hunting (issue #703). */
+    /* A stream of syncs that never validate must not starve startup hunts (issue #703) or a known DMR owner's
+       recovery. Data frames need not reach a DMR voice handler's tick, so loss grace, probe acquisition and pending
+       tunes must keep progressing here after validated control ends the startup hunt. */
     if (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN || p25_sm_cold_start_active(p25_sm_get_ctx())
-        || dmr_sm_cold_start_active(dmr_sm_get_ctx()) || nxdn_cc_hunt_due(opts, state)) {
+        || dmr_sm_cold_start_active(dmr_sm_get_ctx()) || dsd_trunk_dmr_recovery_allowed(opts, state)
+        || nxdn_cc_hunt_due(opts, state)) {
         dsd_engine_cold_start_tick_locked(opts, state);
     }
     return frame_dispatchable;
