@@ -89,7 +89,12 @@ While a search runs, the screen is laid out for what is on the air now:
   identification, two lines of detail, saved-frequency names and the actions.
   The strength line shows the live and detection levels
   (**Now -47.2 · detected -32.1 dBFS**, on two lines with the largest text);
-  the range is named in the status line. Other lines that do not fit end in an
+  the range is named in the status line. The two detail lines read the checked
+  site, the access code and tone, the call (**Slot 2 · Target 100 · Source 2001**,
+  the slot on two-slot systems only), then its encryption
+  (**WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567**;
+  **TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 ·
+  ALG 21 · KID 0001**), breaking lines only between values. Other lines that do not fit end in an
   ellipsis, and the full text is available to screen readers. When several
   saved frequencies match, the panel names two and counts the rest
   (**Saved: A / B +1**); the detection's history row lists them all. Between
@@ -102,7 +107,9 @@ While a search runs, the screen is laid out for what is on the air now:
   permanently**, **Save as system** and **More**) sit in two columns, or three
   where every label fits. **More** offers **Explore here** and **Start** for
   each saved system the detection matched.
-- **Recent detections** shows the five newest; **Show more** adds 25. Each row's
+- **Recent detections** shows the five newest; **Show more** adds 25. Under its
+  verdict a row shows the checked site and encryption the detection last had
+  (**TIII Small · Net 12 · Site 3 · SYS 1183 · Encrypted**). Each row's
   actions button (**Actions for 463.5521 MHz**) opens what can be done with that
   detection: **Explore here**, **Start “<saved system>”** for each saved system
   it matched, **Save as system**, **Avoid this session** (while a search runs),

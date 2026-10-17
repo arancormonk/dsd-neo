@@ -379,6 +379,9 @@ publish(uint64_t id, bool confirmed = false) {
     if (confirmed) {
         DSD_SNPRINTF(h.protocol, sizeof(h.protocol), "%s", "DMR");
         h.source = 123;
+        DSD_SNPRINTF(h.site, sizeof(h.site), "%s", "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 3 \xC2\xB7 SYS 1183");
+        h.slot = 2;
+        DSD_SNPRINTF(h.crypt, sizeof(h.crypt), "%s", "ALG 21 \xC2\xB7 KID 0001");
     }
     dsd_app_signal_search_publish(&s, &h, nullptr);
 }
@@ -600,6 +603,14 @@ main(int argc, char** argv) {
     assert(saved.value(QStringLiteral("port")).toInt() == 1235);
     assert(saved.value(QStringLiteral("decodeFlag")) == QStringLiteral("-fA"));
     assert(saved.value(QStringLiteral("searchUnresolved")).toBool());
+    // The checked site, slot and encryption reach the screens as they were published, and from history too.
+    const auto shown = model.history().front().toMap();
+    assert(shown.value(QStringLiteral("site")) == QStringLiteral("TIII Small · Net 12 · Site 3 · SYS 1183"));
+    assert(shown.value(QStringLiteral("slot")).toInt() == 2);
+    assert(shown.value(QStringLiteral("crypt")) == QStringLiteral("ALG 21 · KID 0001"));
+    assert(frozen.value(QStringLiteral("site")).toString().isEmpty()
+           && frozen.value(QStringLiteral("slot")).toInt() == 0);
+    assert(frozen.value(QStringLiteral("crypt")).toString().isEmpty());
     const auto confirmed = model.systemForHit(model.history().front().toMap(), {});
     assert(confirmed.value(QStringLiteral("decodeFlag")) == QStringLiteral("-fs"));
     auto nxdn = model.history().front().toMap();

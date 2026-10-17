@@ -586,7 +586,8 @@ Item {
                 {tag: "long range name", status: {phase: 4, rangeName: long, livePowerValid: true, livePower: -47.2, hit: Object.assign({}, hit, {range: long})}},
                 {tag: "three saved matches", status: {phase: 4, hit: Object.assign({}, hit, {knownNames: ["Warehouse", "Dock security", "Yard"], knownLabel: "Warehouse / Dock security / Yard"})}},
                 {tag: "unresolved", status: {phase: 4, hit: Object.assign({}, hit, {unresolved: true})}},
-                {tag: "longest detail", status: {phase: 4, hit: Object.assign({}, hit, {confirmed: true, protocol: "DMR", access: "CC 15 · Slot 2 · " + long, tone: "CTCSS 250.3 Hz", targetText: "Target " + long, sourceText: "Source " + long})}}
+                {tag: "longest detail", status: {phase: 4, hit: Object.assign({}, hit, {confirmed: true, protocol: "DMR", access: "CC 15 · " + long, tone: "CTCSS 250.3 Hz", targetText: "Target " + long, sourceText: "Source " + long,
+                    site: longestSite, slot: 2, crypt: "ALG 84 · KID 0001"})}}
             ];
             var heights = [];
             var hold = findChild(screen, "searchHold");
@@ -640,6 +641,62 @@ Item {
             model.status = Object.assign({}, base, {phase: 5});
             compare(hold.text, "Release Hold");
             model.status = base;
+        }
+        // The longest site a detection can carry: 95 bytes, its field's limit.
+        readonly property string longestSite: "TIII Large · Net 1023 · Site 4095 · SYS 3FFF · Regional interoperability network, East dist"
+        // The detail reads site, access code, the call with its slot, then
+        // its encryption; what the two lines cannot hold elides, and the
+        // whole text is the accessible description.
+        function test_detail_reads_site_call_then_encryption_data() {
+            return [{tag: "default text", scale: 1.0}, {tag: "largest text", scale: 1.6}];
+        }
+        function test_detail_reads_site_call_then_encryption(data) {
+            Ui.Theme.fontScale = data.scale;
+            var screen = loader.item;
+            var detail = findChild(screen, "searchDetail");
+            var panel = findChild(screen, "searchNowPanel");
+            waitForRendering(panel);
+            var height = panel.height;
+            var hit = model.status.hit;
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "P25 Phase 1", unresolved: false,
+                site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293", targetText: "", target: 2401, sourceText: "", source: 1234567})});
+            compare(detail.Accessible.description, "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567");
+            compare(detail.Accessible.name, detail.Accessible.description);
+            // Shown, it breaks only after a separator: every other space is non-breaking.
+            compare(detail.text.replace(/\u00a0/g, " "), detail.Accessible.description);
+            verify(!/[^·] /.test(detail.text), "a value never splits across lines");
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "DMR", unresolved: false,
+                site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, target: 100, source: 2001, crypt: "Encrypted"})});
+            compare(detail.Accessible.description, "TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 · Encrypted");
+            compare(detail.text.replace(/\u00a0/g, " "), detail.Accessible.description);
+            // The longest: elided on its second line, whole for a screen reader.
+            var longest = {confirmed: true, protocol: "DMR", unresolved: false, site: longestSite, access: "CC 15", slot: 1,
+                targetText: "Regional interoperability talkgroup band", sourceText: "Unit 7 portable", crypt: "ALG 84 · KID 0001"};
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, longest)});
+            waitForRendering(panel);
+            verify(detail.truncated, "the longest detail elides");
+            verify(detail.lineCount <= 2 && detail.height <= detail.parent.height + 0.5, "inside its two lines");
+            verify(detail.Accessible.description.endsWith("Slot 1 · Regional interoperability talkgroup band · Unit 7 portable · ALG 84 · KID 0001"));
+            verify(detail.Accessible.description.startsWith(longestSite + " · CC 15"));
+            compare(panel.height, height, "the panel keeps its height");
+            // A clear call on a one-slot protocol names no slot and no encryption.
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "NXDN48", unresolved: false, site: "Site 12 · Sys 3", slot: 0, crypt: "", target: 5, source: 6})});
+            compare(detail.Accessible.description, "Site 12 · Sys 3 · Target 5 · Source 6");
+        }
+        // A history row keeps the site and encryption it was checked with.
+        function test_history_row_shows_site_and_encryption() {
+            model.history = [historyHit({id: "50", confirmed: true, protocol: "DMR", site: "TIII Small · Net 12 · Site 3 · SYS 1183", slot: 2, crypt: "ALG 21 · KID 0001", knownLabel: "Warehouse · 462.5750 MHz"}),
+                historyHit({id: "51", confirmed: true, protocol: "P25 Phase 1", site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2"}),
+                historyHit({id: "52"})];
+            var rows = findChildren(loader.item, "searchHistoryDetail");
+            compare(rows.length, 3);
+            compare(rows[0].fullText, "DMR · confirmed · ended\nTIII Small · Net 12 · Site 3 · SYS 1183 · ALG 21 · KID 0001\nWarehouse · 462.5750 MHz");
+            compare(rows[1].fullText, "P25 Phase 1 · confirmed · ended\nWACN BEE00 · SYS 1A3 · RFSS 1 · Site 2");
+            compare(rows[2].fullText, "RF only · ended");
+            compare(rows[0].text.replace(/\u00a0/g, " "), rows[0].fullText);
+            verify(!/[^·\n] /.test(rows[0].text), "a value never splits across lines");
+            compare(rows[0].Accessible.name, "DMR · confirmed · ended · TIII Small · Net 12 · Site 3 · SYS 1183 · ALG 21 · KID 0001 · Warehouse · 462.5750 MHz");
+            model.history = [];
         }
         // Wider, every cell fits the widest label: three equal columns.
         function test_now_actions_use_three_columns_when_they_fit() {
@@ -935,7 +992,8 @@ Item {
             wait(100);
             grabImage(root).save("/tmp/dsd-signal-search-menu.png");
             findChild(loader.item, "searchDetectionMenu").cancel();
-            model.history = [historyHit({matches: [{systemUid: "uid-a"}], knownLabel: "Warehouse · 462.5750 MHz"}), historyHit({id: "39", confirmed: true, protocol: "DMR", ended: false})];
+            model.history = [historyHit({matches: [{systemUid: "uid-a"}], knownLabel: "Warehouse · 462.5750 MHz", confirmed: true, protocol: "P25 Phase 1", site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2"}),
+                historyHit({id: "39", confirmed: true, protocol: "DMR", ended: false, site: "TIII Small · Net 12 · Site 3 · SYS 1183", slot: 2, crypt: "Encrypted"})];
             var scroll = findChild(loader.item, "searchScroll");
             for (var scale of [1.0, 1.6]) {
                 Ui.Theme.fontScale = scale;
@@ -955,17 +1013,25 @@ Item {
             wait(100);
             grabImage(root).save("/tmp/dsd-signal-search-searching.png");
         }
+        // A P25 detection with its checked site, over a history row for an
+        // encrypted DMR call.
         function test_capture_phone() {
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {confirmed: true, unresolved: false, protocol: "P25 Phase 1",
+                site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293", target: 2401, source: 1234567})});
+            model.history = [historyHit({id: "41", confirmed: true, protocol: "DMR", site: "TIII Small · Net 12 · Site 3 · SYS 1183", slot: 2, crypt: "ALG 21 · KID 0001"})];
             wait(100);
             var img = grabImage(root);
             compare(img.width, 411);
             // Optional artifact for native finish review; no screenshot comparison in the test.
             img.save("/tmp/dsd-signal-search-phone.png");
+            model.history = [];
         }
         function test_capture_large_text() {
             Ui.Theme.fontScale = 1.6;
+            // An encrypted DMR call on slot 2 with its Tier III site.
             model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.2, liveSeq: 1,
-                hit: Object.assign({}, model.status.hit, {knownNames: ["Warehouse", "Dock security", "Yard"]})});
+                hit: Object.assign({}, model.status.hit, {knownNames: ["Warehouse", "Dock security", "Yard"], confirmed: true, unresolved: false, protocol: "DMR",
+                    site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, target: 100, source: 2001, crypt: "ALG 21 · KID 0001"})});
             wait(100);
             grabImage(root).save("/tmp/dsd-signal-search-large.png");
             var button = findChild(loader.item, "searchStartPause");

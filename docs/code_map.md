@@ -5460,7 +5460,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   height depends on width and font scale only: each line is a fixed-height `Text` sized
   from `FontMetrics`, and its action grid takes three equal columns when the widest label
   any cell can show fits, else two, for any cell count; its sixth cell, More, opens the
-  detection menu (`tst_signal_search.qml`). Its
+  detection menu (`tst_signal_search.qml`). `hitMap()` passes the hit's checked `site`,
+  `slot` and `crypt` through; the panel's two-line detail (`detailText()`) reads site,
+  access, tone, `Slot N`, target, source, then crypt, eliding within the two lines with
+  the whole text as its accessible name and description, and a history row shows site and
+  crypt under its verdict. `keepValues()` makes every space but the one after a `·`
+  non-breaking, so wrapped details break only between values. Its
   liveness cue marks each new `liveSeq`. Each Recent detections row has an `IconButton`
   opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
   Explore here, Start for each distinct saved system its `matches[].systemUid` resolves to

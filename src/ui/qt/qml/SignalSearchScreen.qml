@@ -232,6 +232,17 @@ Item {
     readonly property string identificationLine: leaving ? qsTr("Stopping the search…") : !receiving ? phaseLine : phase === 2 ? qsTr("Tuning to detection…") : hit.confirmed ? hit.protocol + qsTr(" · confirmed") : phase === 3 || status.identifying ? qsTr("Trying digital identification…") : hit.unresolved ? qsTr("NFM · digital unresolved") : hit.am ? qsTr("AM monitoring") : qsTr("NFM monitoring")
     readonly property string identificationFull: !leaving && unresolvedShown ? qsTr("NFM monitoring · digital identification unresolved") : identificationLine
     readonly property var knownNames: hit.knownNames || ((hit.knownLabel || "").length > 0 ? [hit.knownLabel] : [])
+    /** A detection's checked details in reading order: its site, access code
+     * and tone, the call (slot, target, source), then the call's encryption. */
+    function detailText(h) {
+        return [h.site || "", h.access || "", h.tone || "", h.slot > 0 ? qsTr("Slot %1").arg(h.slot) : "", h.targetText || (h.target ? qsTr("Target %1").arg(h.target) : ""), h.sourceText || (h.source ? qsTr("Source %1").arg(h.source) : ""), h.crypt || ""].filter(function (s) { return s.length > 0; }).join(" · ");
+    }
+    /** @p text to show wrapped: lines break only after a " · ", so a
+     * value ("SYS 1183", "KID 0001") never splits and no line starts with
+     * a separator. Screen readers get the plain text. */
+    function keepValues(text) {
+        return text.replace(/ /g, "\u00a0").replace(/\u00a0·\u00a0/g, "\u00a0· ");
+    }
     // The Now panel's actions. "Hold" and "Release Hold" share one cell, so a
     // Hold toggle never reflows the grid; `labels` lists every label a cell can
     // show, and the widest of them sizes every cell.
@@ -518,15 +529,16 @@ Item {
                             width: parent.width
                             // The hint belongs to a search that is running or paused;
                             // a stopped or failed one shows only its phase and message.
-                            text: !screen.receiving ? ([1, 2, 6].indexOf(screen.phase) >= 0 ? qsTr("Strong signals open here to be identified and monitored.") : "") : [screen.hit.access || "", screen.hit.tone || "", screen.hit.targetText || (screen.hit.target ? qsTr("Target %1").arg(screen.hit.target) : ""), screen.hit.sourceText || (screen.hit.source ? qsTr("Source %1").arg(screen.hit.source) : "")].filter(function (s) { return s.length > 0; }).join(" · ")
+                            readonly property string fullText: !screen.receiving ? ([1, 2, 6].indexOf(screen.phase) >= 0 ? qsTr("Strong signals open here to be identified and monitored.") : "") : screen.detailText(screen.hit)
+                            text: screen.receiving ? screen.keepValues(fullText) : fullText
                             color: Theme.textSecondary
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(14)
                             wrapMode: Text.Wrap
                             maximumLineCount: 2
                             elide: Text.ElideRight
-                            Accessible.name: text
-                            Accessible.description: text
+                            Accessible.name: fullText
+                            Accessible.description: fullText
                             Accessible.ignored: text.length === 0
                         }
                     }
@@ -750,10 +762,16 @@ Item {
                             id: rowText
                             width: parent.width - rowActions.width - 8
                             spacing: 5
-                            Text { width: parent.width; text: modelData.freqMHz + " MHz · " + Number(modelData.power).toFixed(1) + " dBFS"; color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
+                            Text { width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Number(modelData.power).toFixed(1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
                             Text {
                                 width: parent.width
-                                text: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "")
+                                objectName: "searchHistoryDetail"
+                                // The site and encryption the detection was
+                                // checked with, under its verdict.
+                                readonly property string checked: [modelData.site || "", modelData.crypt || ""].filter(function (s) { return s.length > 0; }).join(" · ")
+                                readonly property string fullText: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (checked ? "\n" + checked : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "")
+                                text: screen.keepValues(fullText)
+                                Accessible.name: fullText.replace(/\n/g, " · ")
                                 color: Theme.textSecondary
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(13)
