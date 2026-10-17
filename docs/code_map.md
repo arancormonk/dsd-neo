@@ -5508,7 +5508,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   refusal (an avoided site no longer declines silently) and records the system as
   `attemptedSource` so Home's Retry asks again and Edit opens it. Explore here
   (`exploreHereSystem()`) is `systemForHit()` renamed Exploring, untrunked, on the
-  `effectiveSource()` kind (an Airspy map only stays on an Airspy); `startWithMap(sys,
+  `effectiveSource()` kind through `onAttachedReceiver()`/`onReceiver()` (an Airspy map only
+  stays on an Airspy; a switch to an Airspy drops the RTL `ppm`, `biasTee` and gain); `startWithMap(sys,
   row, scan, options)` records `options.remember` in `attemptedSource` and
   `pendingStartRemember` (through a USB wait), and only a remembered explore session
   writes `prefs.exploreFreqMhz` when it ends. `retrySource()` carries the attempted system:

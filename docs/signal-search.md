@@ -246,7 +246,12 @@ showed.
   and the new session starts. If the search fails to stop, nothing starts and
   Home shows the failure.
   Explore here tunes the detection's frequency with its receive mode, gain and
-  receiver settings, on the receiver attached now, and does not change where
+  receiver settings, on the receiver attached now, whether the search is
+  running or stopped. An rtl_tcp server stays. When the attached receiver is
+  another kind, only the settings that kind takes go with it: a detection heard
+  on an RTL dongle starts on an Airspy without the dongle's PPM, bias tee and
+  tuner gain, and an Airspy's own settings (its serial among them) never go to a
+  dongle. Explore here does not change where
   Explore resumes from Home, even through a USB permission request. A saved
   system starts as saved (keys, decoder and trunking). A system whose site is
   avoided is refused with a message on the search screen, and nothing stops.

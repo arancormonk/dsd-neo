@@ -240,16 +240,20 @@ Window {
         return mainRoot.onAttachedReceiver(system);
     }
     /**
-     * A copy of @p system on receiver kind @p kind. An Airspy's own settings
-     * (its serial among them) only go with an Airspy, and a switch to one
-     * starts it on its own gain.
+     * A copy of @p system on receiver kind @p kind, keeping the settings that
+     * kind takes. An Airspy's own settings (its serial among them) only go
+     * with an Airspy; a switch to one drops an RTL's PPM, bias tee and tuner
+     * gain, since an Airspy takes its gains and tee from its own map.
      */
     function onReceiver(system, kind) {
         var moved = Object.assign({}, system);
         if (kind !== moved.sourceType) {
             moved.sourceType = kind;
-            if (kind === "airspy")
+            if (kind === "airspy") {
                 moved.gainDb = -1;
+                delete moved.ppm;
+                delete moved.biasTee;
+            }
         }
         if (moved.sourceType !== "airspy")
             delete moved.airspy;

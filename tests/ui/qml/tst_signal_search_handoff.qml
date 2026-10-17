@@ -32,7 +32,21 @@ Item {
         function avoidPermanently(session, frequency) { return true; }
         // The shape SignalSearchModel::systemForHit() gives a detection without a recorded receiver: the source it is
         // handed, retuned to the detection with its mode and gain.
+        // A detection that recorded its receiver ("inputSpec") gets that receiver's own settings instead: an RTL's
+        // PPM, bias tee and tuner gain, an rtl_tcp server's endpoint too.
         function systemForHit(hit, source) {
+            var spec = hit.inputSpec || "";
+            if (spec.length) {
+                var parts = spec.split(":");
+                var heard = {sourceType: spec.indexOf("rtltcp") === 0 ? "rtltcp" : "usb", ppm: "3", biasTee: 1,
+                    bandwidthKhz: 48};
+                if (heard.sourceType === "rtltcp") {
+                    heard.host = parts[1];
+                    heard.port = parseInt(parts[2], 10);
+                }
+                return Object.assign(heard, {freqMhz: hit.freqMHz, decodeFlag: "-fA", gainDb: 21, trunking: false,
+                    searchUnresolved: false});
+            }
             return Object.assign({}, source, {freqMhz: hit.freqMHz, decodeFlag: "-fA", gainDb: 21, trunking: false,
                 searchUnresolved: false});
         }
@@ -260,6 +274,44 @@ Item {
             }
             if (data.want === "rtltcp")
                 compare(data.edit ? screen().host : app.sessionSystem.host, "10.0.0.7");
+        }
+        // Explore here resolves the receiver attached now, idle or over a
+        // running search: a detection heard on an RTL dongle, with only an
+        // Airspy attached, starts on the Airspy with the detection's frequency
+        // and mode but none of the RTL's own settings; an rtl_tcp detection
+        // stays on its server with them.
+        function test_explore_here_follows_the_attached_receiver_data() {
+            return [{tag: "idle, rtl to airspy", state: 0, spec: "rtl:0", want: "airspy"},
+                {tag: "running, rtl to airspy", state: 2, spec: "rtl:0", want: "airspy"},
+                {tag: "idle, rtl_tcp kept", state: 0, spec: "rtltcp:10.0.0.8:1235", want: "rtltcp"},
+                {tag: "running, rtl_tcp kept", state: 2, spec: "rtltcp:10.0.0.8:1235", want: "rtltcp"}];
+        }
+        function test_explore_here_follows_the_attached_receiver(data) {
+            testContext.setUsbBrokered(false);
+            enterState(data.state);
+            testContext.setAttachedDeviceSource("airspy");
+            screen().exploreDetection(Object.assign({}, detection, {inputSpec: data.spec}));
+            if (data.state !== 0)
+                testContext.setLifecyclePhase(0);
+            tryCompare(decoderHost, "sessionState", 1);
+            compare(app.sessionSystem.name, "Exploring");
+            compare(app.sessionSystem.sourceType, data.want);
+            compare(app.sessionSystem.freqMhz, "463.552100");
+            compare(app.sessionSystem.decodeFlag, "-fA");
+            verify(app.attemptedSource.remember === false);
+            if (data.want === "airspy") {
+                verify(app.sessionSystem.ppm === undefined, "no RTL PPM on an Airspy");
+                verify(app.sessionSystem.biasTee === undefined, "no RTL bias tee on an Airspy");
+                compare(app.sessionSystem.gainDb, -1);
+            } else {
+                compare(app.sessionSystem.host, "10.0.0.8");
+                compare(app.sessionSystem.port, 1235);
+                compare(app.sessionSystem.ppm, "3");
+                compare(app.sessionSystem.biasTee, 1);
+                compare(app.sessionSystem.gainDb, 21);
+            }
+            compare(prefs.exploreSourceType, "usb");
+            compare(prefs.exploreFreqMhz, "851.0125");
         }
         // A failed Explore here retried after the receiver changed starts on
         // the one attached; an Airspy's own settings stay with the Airspy.
