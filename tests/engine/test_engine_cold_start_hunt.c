@@ -7,7 +7,8 @@
  * The startup control-channel hunt through the real engine loop (issue #703): it runs on the decoder thread from the
  * outer loop and between frames of a continuous sync, an input switch pending its boundary holds it, a mode change
  * reaches DMR even while another protocol keeps syncing, and a hunt whose owner validated control named is finished
- * between frames.
+ * between frames. CAP+ recovery must keep running between frames after startup ends: loss and probe deadlines,
+ * pending backend tunes, and reacquisition on a new rest channel.
  *
  * getFrameSync() and processFrame() are fakes. The first fake sync, after the engine set its input up, turns rigctl on
  * (a peer no request reaches: the trunk tuning and rigctl query hooks are replaced) and loads a three-row channel map;
@@ -20,6 +21,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -59,6 +61,9 @@ enum scenario {
     SC_NXDN_SYNCED_LOOP,
     SC_NXDN_LOST_CC,
     SC_NXDN_CALL_RETURN,
+    SC_CAPPLUS_LOST_REST,
+    SC_CAPPLUS_PENDING_PROBE,
+    SC_CAPPLUS_LIVE_REST,
 };
 
 static enum scenario g_scenario;
@@ -71,9 +76,18 @@ static uint64_t g_tunes_before_ms; // decode time of the last tune
 static int g_validated_sent;
 static int g_dmr_armed_seen; // DMR's startup window was armed before the mode change
 static int g_failures;
-static uint64_t g_pending_request;    // the probe left in flight across an input switch
+static uint64_t g_pending_request;    // the first probe held in flight
 static uint64_t g_new_device_request; // a tune the new device was given between the switch and its boundary
 static int g_new_request_kept;
+static long g_probe_freqs[8];
+static uint64_t g_probe_times_ms[8];
+static uint64_t g_probe_completed_ms;
+
+static int
+capplus_scenario(void) {
+    return g_scenario == SC_CAPPLUS_LOST_REST || g_scenario == SC_CAPPLUS_PENDING_PROBE
+           || g_scenario == SC_CAPPLUS_LIVE_REST;
+}
 
 static int
 expect(int cond, const char* what) {
@@ -88,9 +102,13 @@ expect(int cond, const char* what) {
 static dsd_trunk_tune_result
 stub_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)ted_sps;
+    if (g_tunes < 8) {
+        g_probe_freqs[g_tunes] = freq;
+        g_probe_times_ms[g_tunes] = g_now_ms;
+    }
     g_tunes++;
-    if (g_scenario == SC_INPUT_SWITCH_PENDING && g_pending_request == 0U) {
-        g_pending_request = request_id; // the first probe never completes before the switch
+    if ((g_scenario == SC_INPUT_SWITCH_PENDING || g_scenario == SC_CAPPLUS_PENDING_PROBE) && g_pending_request == 0U) {
+        g_pending_request = request_id;
         opts->rtlsdr_center_freq = (uint32_t)freq;
         state->trunk_cc_freq = freq;
         return DSD_TRUNK_TUNE_RESULT_PENDING;
@@ -151,6 +169,13 @@ install_session(dsd_opts* opts, dsd_state* state) {
     state->trunk_lcn_freq[1] = ROW1_HZ;
     state->trunk_lcn_freq[2] = ROW2_HZ;
     state->lcn_freq_count = 3;
+    if (capplus_scenario()) {
+        g_hw_freq = ROW0_HZ;
+        opts->rtlsdr_center_freq = (uint32_t)g_hw_freq;
+        state->trunk_chan_map[1] = ROW0_HZ;
+        state->trunk_chan_map[3] = ROW1_HZ;
+        state->trunk_chan_map[5] = ROW2_HZ;
+    }
 }
 
 /* An input switch's commit, as the command (or the engine's fallback) makes it: under the tick guard, with the
@@ -181,8 +206,20 @@ LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) { // NOLINT(mis
     (void)state;
 }
 
-/* Frames decode to nothing, except the one validated P25 control block the named-owner scenario sends on its probe,
-   and the CRC-good CACs of an NXDN control channel that goes quiet two seconds in. */
+/* A complete idle Capacity Plus status, through the real parser's CRC/FEC-approved entry point. */
+static void
+capplus_status(dsd_opts* opts, dsd_state* state, uint8_t rest) {
+    uint8_t bytes[24] = {0x3e, 0x10, (uint8_t)(0xc0U | rest)};
+    uint8_t bits[196] = {0};
+    for (int i = 0; i < 80; ++i) {
+        bits[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1);
+    }
+    dmr_cspdu(opts, state, bits, bytes, 1, 0);
+    g_validated_sent = 1;
+}
+
+/* Frames otherwise decode to nothing: in particular, a repeated raw data sync or a discarded frame does not run a
+   DMR voice handler's internal tick. Recovery must still advance once the startup hunt has ended on valid control. */
 void
 processFrame(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     if (g_scenario == SC_NAMED_BETWEEN_FRAMES && g_tunes == 1 && !g_validated_sent && g_now_ms >= 6000U) {
@@ -193,6 +230,34 @@ processFrame(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-lin
         nxdn_cc_hunt_note_control(opts, state);
         g_validated_sent = 1;
     }
+    if (capplus_scenario()) {
+        if (g_now_ms <= 2000U || g_scenario == SC_CAPPLUS_LIVE_REST) {
+            capplus_status(opts, state, 1U);
+        } else if (g_hw_freq == ROW2_HZ) {
+            capplus_status(opts, state, 5U);
+        }
+    }
+}
+
+static int
+capplus_sync(dsd_opts* opts, dsd_state* state) {
+    if (g_now_ms == 8000U) {
+        expect(g_tunes == 0, "CAP+ retains its six-second loss grace after the last validated status");
+        expect(dsd_frame_sync_hook_decoder_ticks_due(opts, state), "known DMR recovery needs decoder-thread ticks");
+    }
+    if (g_scenario == SC_CAPPLUS_PENDING_PROBE && g_pending_request != 0U && g_probe_completed_ms == 0U
+        && g_now_ms >= g_probe_times_ms[0] + 1000U) {
+        expect(g_tunes == 1, "no second CAP+ probe while the first backend tune is pending");
+        g_hw_freq = ROW1_HZ;
+        g_probe_completed_ms = g_now_ms;
+        dsd_trunk_tuning_request_publish(g_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+    }
+    if (g_now_ms > 18000U) {
+        return finish();
+    }
+    // Under -fa, unrelated syncs after the loss must not starve DMR recovery either.
+    return opts->frame_nxdn48 && g_now_ms > 2000U && g_hw_freq != ROW2_HZ ? DSD_SYNC_NXDN_POS
+                                                                          : DSD_SYNC_DMR_BS_DATA_POS;
 }
 
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -318,6 +383,9 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                 return finish();
             }
             return DSD_SYNC_NXDN_POS;
+        case SC_CAPPLUS_LOST_REST:
+        case SC_CAPPLUS_PENDING_PROBE:
+        case SC_CAPPLUS_LIVE_REST: return capplus_sync(opts, state);
         case SC_MODE_CHANGE_DMR:
             if (g_now_ms == 2750U) {
                 g_dmr_armed_seen = dmr_sm_cold_start_active(dmr_sm_get_ctx());
@@ -358,6 +426,9 @@ run_scenario(enum scenario sc, int ft) {
     g_pending_request = 0U;
     g_new_device_request = 0U;
     g_new_request_kept = 0;
+    DSD_MEMSET(g_probe_freqs, 0, sizeof(g_probe_freqs));
+    DSD_MEMSET(g_probe_times_ms, 0, sizeof(g_probe_times_ms));
+    g_probe_completed_ms = 0U;
     dsd_decode_clock_use_test(T0_NS);
     dsd_exitflag_store(0);
     dsd_trunk_tuning_requests_reset();
@@ -429,6 +500,27 @@ run_scenario(enum scenario sc, int ft) {
             expect(g_tunes >= 1 && g_first_tune == ROW0_HZ && g_tunes_before_ms > 9000U,
                    "after a call's return, a quiet control channel is hunted between frames once the grace ran out");
             break;
+        case SC_CAPPLUS_LOST_REST:
+        case SC_CAPPLUS_PENDING_PROBE:
+            expect(g_validated_sent && state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR,
+                   "validated CAP+ rest status names DMR the recovery owner");
+            expect(g_tunes == 3 && g_probe_freqs[0] == ROW1_HZ && g_probe_freqs[1] == ROW0_HZ
+                       && g_probe_freqs[2] == ROW2_HZ,
+                   "CAP+ hunts inactive frequencies in order, revisits its anchor, then stays on the active rest");
+            expect(g_probe_times_ms[0] > 8000U && g_probe_times_ms[0] <= 8500U,
+                   "continuous syncs do not extend CAP+ loss grace beyond two engine ticks");
+            const uint64_t first_ready = sc == SC_CAPPLUS_PENDING_PROBE ? g_probe_completed_ms : g_probe_times_ms[0];
+            expect(g_probe_times_ms[1] > first_ready + 2000U && g_probe_times_ms[1] <= first_ready + 2500U
+                       && g_probe_times_ms[2] > g_probe_times_ms[1] + 2000U
+                       && g_probe_times_ms[2] <= g_probe_times_ms[1] + 2500U,
+                   "each inactive CAP+ probe gets two seconds from backend completion before the hunt advances");
+            expect(g_hw_freq == ROW2_HZ && state->trunk_cc_freq == ROW2_HZ && dmr->cc_confirmed && !dmr->cc_acquiring,
+                   "validated CAP+ status confirms the new rest channel and stops recovery");
+            break;
+        case SC_CAPPLUS_LIVE_REST:
+            expect(g_tunes == 0 && dmr->cc_confirmed && state->trunk_cc_freq == ROW0_HZ,
+                   "continuous validated CAP+ rest status keeps the receiver parked");
+            break;
         case SC_MODE_CHANGE_DMR:
             expect(g_dmr_armed_seen == 1, "DMR armed its startup window between frames");
             expect(g_tunes == 0 && dmr->cold_start_armed_m <= 0.0 && dmr->cold_start_hunt == 0,
@@ -486,6 +578,10 @@ main(void) {
     run_scenario(SC_NXDN_LOST_CC, 3);
     run_scenario(SC_NXDN_CALL_RETURN, 2);
     run_scenario(SC_INPUT_SWITCH_NEW_REQUEST, 1);
+    run_scenario(SC_CAPPLUS_LOST_REST, 0);
+    run_scenario(SC_CAPPLUS_LOST_REST, 3);
+    run_scenario(SC_CAPPLUS_PENDING_PROBE, 0);
+    run_scenario(SC_CAPPLUS_LIVE_REST, 0);
     if (g_failures == 0) {
         printf("engine cold start hunt: OK\n");
     }

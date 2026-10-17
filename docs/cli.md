@@ -1751,6 +1751,9 @@ does.
 - Nothing is shown or used as the control channel until a searched frequency passes the CRC check, and the saved
   system is not changed. Once validated control names the system, the search ends there; losing that control channel
   later uses the ordinary hunt (DMR hunts only after it has confirmed a control channel, as before; NXDN as above).
+  DMR recovery keeps its six-second loss grace and two-second probe windows even while data syncs continue without
+  valid control, including after a Capacity Plus rest channel goes inactive. A probe's window starts when its backend
+  tune completes; accepted control on that frequency ends the hunt.
 - The search runs on the decoder's own pass, so it needs an input that keeps delivering samples. RTL-family inputs
   always do, and a silent UDP stream gives way to it after a short pause; a TCP audio stream with rigctl that stops
   sending pauses it until audio resumes.
