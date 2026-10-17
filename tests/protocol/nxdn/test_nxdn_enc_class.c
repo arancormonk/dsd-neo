@@ -302,6 +302,43 @@ test_vcall_cipher_received_once_corroborated(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* A forced scrambler (-ns, M == 1) establishes cipher 1 on the decoder's own authority; that is not a received cipher.
+   A checked VCALL advertising clear is held off by the hysteresis, so decryption keeps cipher 1, but nothing about it
+   was received. A VCALL advertising the forced cipher is received only once the air itself corroborates it. */
+static void
+test_forced_cipher_is_not_received(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[96];
+    dsd_call_snapshot call;
+
+    reset_fixture(&opts, &state, history);
+    opts.trunk_enable = 0;
+    state.M = 1;
+    nxdn_cipher_force(&state, 0x1U);
+    build_vcall(bits, 0U, 0U, 100U, 1234U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(state.nxdn_cipher_type == 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.algid == 1U && call.crypto_received == 0U);
+
+    reset_fixture(&opts, &state, history);
+    opts.trunk_enable = 0;
+    state.M = 1;
+    nxdn_cipher_force(&state, 0x1U);
+    build_vcall(bits, 1U, 3U, 100U, 1234U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(state.nxdn_cipher_type == 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.algid == 1U && call.kid == 3U && call.crypto_received == 0U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto_received == (DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID));
+    assert(call.received_algid == 1U && call.received_kid == 3U);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     test_observe_tentative_then_corroborated();
@@ -311,6 +348,7 @@ main(void) {
     test_vcall_enc_lockout_requires_corroboration();
     test_lone_contradicting_vcall_does_not_flap_established_clear();
     test_vcall_cipher_received_once_corroborated();
+    test_forced_cipher_is_not_received();
     printf("NXDN enc class: OK\n");
     return 0;
 }

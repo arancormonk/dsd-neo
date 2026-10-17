@@ -825,6 +825,9 @@ init_state_nxdn_defaults(dsd_state* state) {
     state->nxdn_cipher_class = 0;
     state->nxdn_cipher_class_est = 0;
     state->nxdn_cipher_class_pending = 0;
+    state->nxdn_cipher_rx_class = 0;
+    state->nxdn_cipher_rx_est = 0;
+    state->nxdn_cipher_rx_pending = 0;
     state->nxdn_key = 0;
     state->nxdn_pn95_seed = 228;
     state->payload_miN = 0;

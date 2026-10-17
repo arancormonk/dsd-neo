@@ -1156,6 +1156,11 @@ struct dsd_state {
     uint8_t nxdn_cipher_class;         /* applied cipher observation + 1; 0 = unclassified */
     uint8_t nxdn_cipher_class_est;     /* classification corroborated (authoritative or repeat) */
     uint8_t nxdn_cipher_class_pending; /* quarantined contradicting candidate + 1; 0 = none */
+    /* The same hysteresis over the over-the-air observations alone: a forced cipher (nxdn_cipher_force()) never
+     * touches it, so it says what the air corroborated, which is what a call record may show as received. */
+    uint8_t nxdn_cipher_rx_class;
+    uint8_t nxdn_cipher_rx_est;
+    uint8_t nxdn_cipher_rx_pending;
 
     /* NXDN frame-content confirmation (src/protocol/nxdn/nxdn_confirm.c). A sync word plus
      * a LICH is not enough to believe a frame: both are weak enough that receiver noise

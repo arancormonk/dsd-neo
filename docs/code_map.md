@@ -816,7 +816,8 @@ suite runs under this compiler.
   algorithm) directly or through `dsd_state::dmr_pi_precall_*` into the call the next checked LC opens within
   `DMR_PI_PRECALL_HOLD_S` (only a PI decoded while no call is active is held; one decoded while a call is active is
   that call's), NXDN
-  `nxdn_vcall_publish()` once `nxdn_cipher_established_enc()`, and M17 `m17_publish_lsf()` (encryption type only).
+  `nxdn_vcall_publish()` once `nxdn_cipher_received_enc()` (the applied encrypted cipher is also what the
+  over-the-air-only hysteresis `dsd_state::nxdn_cipher_rx_*` established; a forced scrambler never is), and M17 `m17_publish_lsf()` (encryption type only).
   Nothing else does: dPMR's scrambling flag, TETRA, X2-TDMA, EDACS, SCCH and file playback set none. History, events,
   the terminal and Monitor read `algid`/`kid`; only Signal search reads the received ones (`CORE_CALL_STATE`,
   `DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`, `P25_P2_RELIABILITY`, `NXDN_ENC_CLASS`, `M17_STATE_DISPATCH`).

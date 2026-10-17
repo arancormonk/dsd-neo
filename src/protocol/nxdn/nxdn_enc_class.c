@@ -28,48 +28,58 @@
 
 #include "dsd-neo/core/state_fwd.h"
 
-/* Feed one cipher observation and return the cipher value to apply. `strong`
+/* One step of the hysteresis over a (class, est, pending) triple. `strong`
  * marks evidence trustworthy on its own; weak evidence establishes only by
  * repetition, and a lone contradiction of an established classification is
  * quarantined until a matching repeat (one superframe cadence). */
-uint8_t
-nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong) {
-    const uint8_t obs = (uint8_t)((cipher & 0x03U) + 1U);
-
+static void
+nxdn_cipher_class_step(uint8_t* cls, uint8_t* est, uint8_t* pending, uint8_t obs, int strong) {
     if (strong) {
-        state->nxdn_cipher_class = obs;
-        state->nxdn_cipher_class_est = 1U;
-        state->nxdn_cipher_class_pending = 0U;
-    } else if (state->nxdn_cipher_class == 0U) {
+        *cls = obs;
+        *est = 1U;
+        *pending = 0U;
+    } else if (*cls == 0U) {
         // First observation of the transmission: apply tentatively so late
         // entry still classifies immediately, but leave it uncorroborated so
         // a lone corrupt element cannot arm the lockout.
-        state->nxdn_cipher_class = obs;
-        state->nxdn_cipher_class_est = 0U;
-        state->nxdn_cipher_class_pending = 0U;
-    } else if (obs == state->nxdn_cipher_class) {
+        *cls = obs;
+        *est = 0U;
+        *pending = 0U;
+    } else if (obs == *cls) {
         // A matching repeat corroborates; VCALL repeats every superframe, so
         // a real classification establishes within one repeat.
-        state->nxdn_cipher_class_est = 1U;
-        state->nxdn_cipher_class_pending = 0U;
-    } else if (state->nxdn_cipher_class_est == 0U || state->nxdn_cipher_class_pending == obs) {
+        *est = 1U;
+        *pending = 0U;
+    } else if (*est == 0U || *pending == obs) {
         // Contradicting a value that never corroborated, or the second
         // consecutive contradiction of an established classification: the
         // newer observation wins (a tentative replacement stays tentative; a
         // corroborated flip keeps the classification established).
-        state->nxdn_cipher_class = obs;
-        state->nxdn_cipher_class_pending = 0U;
+        *cls = obs;
+        *pending = 0U;
     } else {
         // Lone contradiction of an established classification: quarantine it
         // until it repeats, keeping the established value applied.
-        state->nxdn_cipher_class_pending = obs;
+        *pending = obs;
     }
+}
 
+/* Feed one cipher observation and return the cipher value to apply. The
+ * same observation also steps the over-the-air-only classification
+ * (nxdn_cipher_rx_*), which a forced cipher never touches. */
+uint8_t
+nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong) {
+    const uint8_t obs = (uint8_t)((cipher & 0x03U) + 1U);
+    nxdn_cipher_class_step(&state->nxdn_cipher_class, &state->nxdn_cipher_class_est, &state->nxdn_cipher_class_pending,
+                           obs, strong);
+    nxdn_cipher_class_step(&state->nxdn_cipher_rx_class, &state->nxdn_cipher_rx_est, &state->nxdn_cipher_rx_pending,
+                           obs, strong);
     return (uint8_t)(state->nxdn_cipher_class - 1U);
 }
 
 /* Authoritative out-of-band evidence (user-forced scrambler mode): apply to
- * both the live cipher and the classification, corroborated. */
+ * both the live cipher and the classification, corroborated. The
+ * over-the-air classification is left alone: nothing was received. */
 void
 nxdn_cipher_force(dsd_state* state, uint8_t cipher) {
     state->nxdn_cipher_type = cipher;
@@ -83,6 +93,9 @@ nxdn_cipher_class_reset(dsd_state* state) {
     state->nxdn_cipher_class = 0U;
     state->nxdn_cipher_class_est = 0U;
     state->nxdn_cipher_class_pending = 0U;
+    state->nxdn_cipher_rx_class = 0U;
+    state->nxdn_cipher_rx_est = 0U;
+    state->nxdn_cipher_rx_pending = 0U;
 }
 
 int
@@ -93,4 +106,10 @@ nxdn_cipher_established_enc(const dsd_state* state) {
 int
 nxdn_cipher_established_clear(const dsd_state* state) {
     return state->nxdn_cipher_class == 1U && state->nxdn_cipher_class_est != 0U;
+}
+
+int
+nxdn_cipher_received_enc(const dsd_state* state) {
+    return nxdn_cipher_established_enc(state) && state->nxdn_cipher_rx_est != 0U
+           && state->nxdn_cipher_rx_class == state->nxdn_cipher_class;
 }

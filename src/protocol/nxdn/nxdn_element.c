@@ -2305,10 +2305,11 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     // Publish the applied classification, not the raw observation: a quarantined contradiction
     // must not flap the published crypto any more than it may flap the audio gate. The cipher and
-    // key id are received only once the hysteresis has corroborated an encrypted classification:
-    // this VCALL passed its channel's CRC on a confirmed transmission and carried the key id.
+    // key id are received only once the air itself has corroborated the applied encrypted
+    // classification: this VCALL passed its channel's CRC on a confirmed transmission and carried
+    // the key id. A forced scrambler is the decoder's choice, not a received cipher.
     const uint8_t received =
-        nxdn_cipher_established_enc(state) ? (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID) : 0U;
+        nxdn_cipher_received_enc(state) ? (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID) : 0U;
     nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, received);
     dsd_event_sync_slot(opts, state, 0U);
 }

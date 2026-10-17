@@ -64,6 +64,9 @@ void nxdn_confirm_reset(dsd_state* state);
 int nxdn_confirm_frame_proved(const dsd_state* state);
 int nxdn_cipher_established_enc(const dsd_state* state);
 int nxdn_cipher_established_clear(const dsd_state* state);
+/* Whether the applied encrypted cipher is also what the air itself corroborated (the over-the-air-only
+ * classification agrees and is established): a forced cipher is the decoder's choice, never received. */
+int nxdn_cipher_received_enc(const dsd_state* state);
 
 #ifdef __cplusplus
 }
