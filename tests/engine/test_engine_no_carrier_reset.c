@@ -3948,6 +3948,7 @@ test_carrier_boundary_restarts_the_evidence(void) {
     state->ysf_fich_confirmed = 1;
     state->p25_p1_nid_evidence = 1;
     state->p25_p1_nid_evidence_symbolcnt = 99U;
+    state->tdma_carrier = 1U;
     const uint32_t carrier_seq = state->carrier_seq;
 
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
@@ -3964,6 +3965,13 @@ test_carrier_boundary_restarts_the_evidence(void) {
     rc |= expect_true("evidence: the boundary drops the Phase 1 NID's evidence",
                       state->p25_p1_nid_evidence == 0 && state->p25_p1_nid_evidence_symbolcnt == 0U);
     rc |= expect_true("evidence: the boundary moves the carrier count", state->carrier_seq == carrier_seq + 1U);
+    /* The next carrier proves on its own that it is two-slot TDMA: the Monitor's second-slot strip is not kept for
+       it on the strength of the carrier left. */
+    rc |= expect_true("evidence: the boundary forgets the two-slot TDMA verdict", state->tdma_carrier == 0U);
+    /* A trunk-scan target switch, which crosses no boundary, forgets it the same way. */
+    state->tdma_carrier = 1U;
+    dsd_engine_forget_carrier_decoding(opts, state);
+    rc |= expect_true("evidence: a target switch forgets the two-slot TDMA verdict", state->tdma_carrier == 0U);
 
     free_test_runtime(opts, state);
     return rc;
@@ -4924,12 +4932,16 @@ main(void) {
     state->provoice_confirmed = 1;
     state->provoice_confirm_weak_streak = 1;
     state->provoice_confirm_frame_evidence = 2;
+    // Whether the carrier is two-slot TDMA is the carrier's, not one transmission's: a sync loss between the other
+    // slot's calls keeps the Monitor's strip in place.
+    state->tdma_carrier = 1U;
 
     noCarrier(opts, state);
 
     rc |= expect_true("nxdn-confirmation-reset", state->nxdn_confirmed == 0 && state->nxdn_confirm_weak_streak == 0
                                                      && state->nxdn_confirm_frame_evidence == 0);
     rc |= expect_true("ysf-fich-confirmation-reset", state->ysf_fich_confirmed == 0U);
+    rc |= expect_true("no-carrier keeps the two-slot TDMA verdict", state->tdma_carrier == 1U);
     rc |= expect_true("dstar-confirmation-reset", state->dstar_confirmed == 0 && state->dstar_confirm_weak_streak == 0
                                                       && state->dstar_confirm_frame_evidence == 0);
     rc |= expect_true("provoice-confirmation-reset", state->provoice_confirmed == 0

@@ -1707,6 +1707,96 @@ test_window_cut_by_an_input_interruption_is_dropped(void) {
 }
 
 /*
+ * A Phase 2 carrier is two-slot TDMA, which the Monitor keeps the second slot's strip in place for
+ * (dsd_state::tdma_carrier). Only a Reed-Solomon block that decoded with its parity check kept says so: an
+ * unscrambled or scrambled FACCH or SACCH, or an ESS. A block that failed, or that decoded only by leaning on soft
+ * erasures (which can use the whole check up), proves nothing, nor does a window a carrier boundary split or an input
+ * interruption cut, whose bursts never decode.
+ */
+static int
+test_checked_block_marks_two_slot_carrier(void) {
+    printf("Test 33c: only a parity-checked block marks the carrier two-slot TDMA... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t unscrambled[4] = {0xFFU, 0xC6U, 0xFFU, 0xC6U};
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    static const uint8_t scrambled_sacch[4] = {0x39U, 0x39U, 0x39U, 0x39U};
+    int rc = 0;
+
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, unscrambled);
+    rc |= expect_int("unscrambled bursts mark the carrier", state.tdma_carrier, 1);
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("scrambled FACCH marks the carrier", state.tdma_carrier, 1);
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("scrambled SACCH marks the carrier", state.tdma_carrier, 1);
+
+    reset_xcch_stubs();
+    g_facch_min_success = 99;
+    g_sacch_min_success = 99;
+    run_seeded_superframe(&opts, &state, unscrambled);
+    rc |= expect_int("failed unscrambled bursts mark nothing", state.tdma_carrier, 0);
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("failed scrambled FACCH marks nothing", state.tdma_carrier, 0);
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("failed scrambled SACCH marks nothing", state.tdma_carrier, 0);
+
+    reset_xcch_stubs();
+    g_facch_min_success = 19; /* one dynamic erasure past the 18 fixed */
+    g_sacch_min_success = 12; /* one dynamic erasure past the 11 fixed */
+    run_seeded_superframe(&opts, &state, unscrambled);
+    rc |= expect_int("soft-erasure unscrambled bursts decode", g_facch_mac_calls > 0 && g_sacch_mac_calls > 0, 1);
+    rc |= expect_int("soft-erasure unscrambled bursts mark nothing", state.tdma_carrier, 0);
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("soft-erasure scrambled FACCH marks nothing", state.tdma_carrier, 0);
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("soft-erasure scrambled SACCH marks nothing", state.tdma_carrier, 0);
+
+    prepare_ess_soft_inputs(&state);
+    state.tdma_carrier = 0U;
+    reset_ess_stubs();
+    g_ess_hard_rc = -1;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("failed ESS marks nothing", state.tdma_carrier, 0);
+    prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
+    reset_ess_stubs();
+    g_ess_hard_rc = -1;
+    g_ess_soft_min_success = 1;
+    g_ess_soft_success_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("soft-erasure ESS decodes", g_ess_soft_calls > 0 && state.p25_p2_rs_ess_ok == 1U, 1);
+    rc |= expect_int("soft-erasure ESS marks nothing", state.tdma_carrier, 0);
+    prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
+    reset_ess_stubs();
+    g_ess_hard_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("ESS marks the carrier", state.tdma_carrier, 1);
+
+    reset_xcch_stubs();
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    rc |= expect_int("whole fed superframe marks the carrier", state.tdma_carrier, 1);
+    run_fed_superframe(&opts, &state, scrambled_facch, 400);
+    rc |= expect_int("split superframe marks nothing", state.tdma_carrier, 0);
+    g_dibit_feed_interrupt_at = 400;
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    g_dibit_feed_interrupt_at = -1;
+    rc |= expect_int("cut window marks nothing", state.tdma_carrier, 0);
+
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+/*
  * Issue #575: the first burst descrambled with a proven seed may itself carry the MAC_END_PTT that ends its call. The
  * committed row reads the live NAC only while the call is active, so the slots are rendered as soon as the proof is set,
  * before the burst's MAC PDU is dispatched; otherwise the row of a call ended by the burst that proved its NAC kept none.
@@ -2430,6 +2520,7 @@ main(void) {
     failures += test_seed_proof_needs_a_descrambled_burst();
     failures += test_superframe_split_by_a_carrier_boundary_is_dropped();
     failures += test_window_cut_by_an_input_interruption_is_dropped();
+    failures += test_checked_block_marks_two_slot_carrier();
     failures += test_seed_proof_reaches_the_call_its_burst_ends();
     failures += test_window_position_follows_the_symbol_count();
     failures += test_missed_window_fills_in_place();

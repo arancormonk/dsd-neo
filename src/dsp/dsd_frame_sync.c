@@ -495,6 +495,8 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->rtl_fsk_sps_accum = 0;
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
+    /* Nothing decoded since says the carrier is two-slot TDMA: a decoded frame of the next acquisition does. */
+    state->tdma_carrier = 0U;
     frame_sync_seed_p25_cqpsk_level_windows(opts, state);
     /* Every caller is a boundary a received tone must not survive: a scan row or target
        change, a decode-mode change, a scope resume (issue #522). */

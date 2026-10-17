@@ -440,6 +440,14 @@ p25p2_note_seed_proven(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A Reed-Solomon block of the window decoded with its parity check kept (no soft erasures, which can use all of it up):
+   noise passing a sync word does not get here, so the carrier is P25 Phase 2, two-slot TDMA (dsd_state::tdma_carrier).
+   processP2() drops a window a carrier boundary split or an input interruption cut before any block decodes. */
+static void
+p25p2_note_tdma_carrier(dsd_state* state) {
+    state->tdma_carrier = 1U;
+}
+
 void
 p25p2_process_frame_scramble(dsd_opts* opts, const dsd_state* state) {
     UNUSED(opts);
@@ -590,6 +598,9 @@ p25p2_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
     if (ec >= 0) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
+        if (!used_dynamic_erasure) {
+            p25p2_note_tdma_carrier(state);
+        }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 1, 0, 0, 0, 0);
@@ -653,6 +664,7 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
         /* Only a decode that kept its parity check proves the seed: soft erasures can use all of it up (issue #575). */
         if (!used_dynamic_erasure) {
             p25p2_note_seed_proven(opts, state);
+            p25p2_note_tdma_carrier(state);
         }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
@@ -712,6 +724,9 @@ p25p2_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
     if (ec >= 0) {
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
+        if (!used_dynamic_erasure) {
+            p25p2_note_tdma_carrier(state);
+        }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 0, 1, 0, 0);
@@ -772,6 +787,7 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
         /* Only a decode that kept its parity check proves the seed: soft erasures can use all of it up (issue #575). */
         if (!used_dynamic_erasure) {
             p25p2_note_seed_proven(opts, state);
+            p25p2_note_tdma_carrier(state);
         }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
@@ -1443,6 +1459,7 @@ p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
            the bits were descrambled with (issue #575). */
         if (result.soft_depth == 0) {
             p25p2_note_seed_proven(opts, state);
+            p25p2_note_tdma_carrier(state);
         }
         if (!defer_rekey || !p25p2_ess_stage_rekey(state, slot, &result)) {
             p25p2_ess_apply_result(opts, state, slot, &result);

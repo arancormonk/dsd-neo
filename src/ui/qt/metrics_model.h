@@ -149,6 +149,9 @@ class MetricsModel : public QObject {
     /* Its own signal rather than slot1Changed: it reads both slots, and Q_PROPERTY takes
        only one NOTIFY -- bound to either slot alone it would go stale when the other moved. */
     Q_PROPERTY(int leadSlot READ leadSlot NOTIFY leadSlotChanged)
+    /* The carrier on air is two-slot TDMA, as the decoder decided it (dsd_state::tdma_carrier): the Monitor keeps
+       the second slot's strip in place while it holds, so the other slot's calls do not move the screen. */
+    Q_PROPERTY(bool twoSlotCarrier READ twoSlotCarrier NOTIFY twoSlotCarrierChanged)
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
@@ -1048,6 +1051,17 @@ class MetricsModel : public QObject {
         return m_view.lead_slot + 1;
     }
 
+    /**
+     * @brief Whether the carrier on air is two-slot TDMA (DMR, P25 Phase 2, X2-TDMA).
+     *
+     * A copy of the decoder's own verdict (dsd_state::tdma_carrier), set by a decoded frame and cleared at every
+     * acquisition reset and carrier boundary; never a latch the UI keeps over older snapshots.
+     */
+    bool
+    twoSlotCarrier() const {
+        return m_view.two_slot_carrier;
+    }
+
     const QString&
     slot1CallName() const {
         return m_view.slot_call[0].name;
@@ -1794,6 +1808,7 @@ class MetricsModel : public QObject {
     void slot1Changed();
     void slot2Changed();
     void leadSlotChanged();
+    void twoSlotCarrierChanged();
     void controlChanged();
     void scanTimingChanged();
     void rxToneChanged();
@@ -1900,6 +1915,7 @@ class MetricsModel : public QObject {
         /* Slot views and lead ranking share the canonical slot count. */
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
         int lead_slot = -1;
+        bool two_slot_carrier = false;
         int channel_bandwidth_hz = 0;
         int analog_bandwidth_hz = 0;
         int analog_bandwidth_configured_hz = 0;

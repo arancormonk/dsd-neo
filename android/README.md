@@ -75,6 +75,14 @@ do both at once:
   while scanning and holding as well, and an I/Q replay shows the frequency each part
   of the capture was recorded on.
 
+On a two-slot TDMA carrier (DMR, P25 Phase 2, X2-TDMA) the second slot's strip
+stays in place under the hero card, reading **SLOT 2 · idle** (or **SLOT 1 · idle**
+while slot 2 leads) between that slot's calls, so the screen below it does not jump
+when the other slot keys up or drops. It appears once the decoder has decoded a
+checked frame of a two-slot protocol and goes on a retune, a scan step, a decode-mode
+change or a P25 Phase 1 frame; an FDMA carrier shows it only for a call on the other
+slot.
+
 **Skip** leaves this call without changing the talkgroup list. On P25 a group-call
 skip lasts while the receiver keeps seeing the talkgroup's call: control-channel
 grant updates, or the call on the voice channel it is parked on for the other slot.

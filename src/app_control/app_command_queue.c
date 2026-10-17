@@ -5626,6 +5626,8 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     if (put_back) {
         return UI_CMD_APPLY_FAILED;
     }
+    /* Under a scan's scope too: the carrier proves again, under the mode now in force, that it is two-slot TDMA. */
+    state->tdma_carrier = 0U;
     /* The decoder was hunting for a different protocol a moment ago: its
        modulation votes describe frames of the old kind, and any call open on the
        old protocol will never be closed by the new one. */

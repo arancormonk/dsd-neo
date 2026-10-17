@@ -440,6 +440,9 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     if (duid != P25P1_DUID_INVALID) {
         state->p25_p1_nid_evidence = 1;
         state->p25_p1_nid_evidence_symbolcnt = state->symbolcnt;
+        /* An FDMA carrier: a trunked system's return from a Phase 2 voice channel to its Phase 1 control channel (or a
+           Phase 1 voice channel) is no carrier boundary, so the decoded NID is what says the second slot is gone. */
+        state->tdma_carrier = 0U;
     }
     p25p1_dispatch_by_duid(opts, state, duid);
     /* The 63-bit BCH over the NID is the one verdict this path has that covers every DUID.

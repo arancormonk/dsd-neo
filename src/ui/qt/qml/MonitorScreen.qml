@@ -67,6 +67,12 @@ Item {
     // be skipped.
     readonly property int otherSlot: heroSlot === 1 ? 2 : heroSlot === 2 ? 1 : 0
     readonly property bool otherActive: otherSlot === 1 ? metrics.slot1CallState === 2 : otherSlot === 2 ? metrics.slot2CallState === 2 : false
+    // The second-slot strip: kept in place while the decoder says the carrier is two-slot TDMA, so the other slot's
+    // calls coming and going never move the screen below it, and shown for an active second call whatever the
+    // carrier is known to be. With no call it stands for slot 2; with slot 2 leading, for slot 1.
+    readonly property bool stripVisible: metrics.twoSlotCarrier || otherActive
+    readonly property bool stripIdle: !otherActive
+    readonly property int stripSlot: heroSlot === 2 ? 1 : 2
     readonly property string otherName: otherSlot === 1 ? metrics.slot1CallName : otherSlot === 2 ? metrics.slot2CallName : ""
     readonly property string otherTg: otherSlot === 1 ? metrics.slot1TgText : otherSlot === 2 ? metrics.slot2TgText : ""
     readonly property double otherTgId: otherSlot === 1 ? metrics.slot1TgId : otherSlot === 2 ? metrics.slot2TgId : 0
@@ -668,22 +674,25 @@ Item {
 
             // The concurrent TDMA call on the non-hero slot: identity plus its own
             // call controls, so a second conversation is never invisible or untouchable.
+            // On a two-slot carrier the strip holds its place while that slot is idle.
             UiPanel {
                 width: parent.width
                 objectName: "otherSlotPanel"
-                visible: screen.otherActive
+                visible: screen.stripVisible
                 height: 56
 
                 MicroLabel {
                     id: otherSlotLabel
+                    objectName: "otherSlotLabel"
                     anchors.left: parent.left
                     anchors.leftMargin: Theme.cardPadding
                     anchors.verticalCenter: parent.verticalCenter
-                    text: qsTr("SLOT %1").arg(screen.otherSlot)
+                    text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
                 }
 
                 Text {
                     objectName: "otherSlotIdentity"
+                    visible: !screen.stripIdle
                     anchors.left: otherSlotLabel.right
                     anchors.leftMargin: 10
                     anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
@@ -700,7 +709,7 @@ Item {
                 EmergencyTag {
                     id: otherEmergencyTag
                     objectName: "otherEmergencyTag"
-                    visible: screen.otherEmergency
+                    visible: !screen.stripIdle && screen.otherEmergency
                     anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
@@ -708,10 +717,18 @@ Item {
 
                 EncTag {
                     id: otherEncTag
-                    visible: screen.otherEnc
+                    visible: !screen.stripIdle && screen.otherEnc
                     anchors.right: otherSkip.left
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
+                }
+
+                TextMetrics {
+                    id: otherSkipMetrics
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(15)
+                    font.weight: Font.DemiBold
+                    text: otherSkip.text
                 }
 
                 OutlineButton {
@@ -720,11 +737,16 @@ Item {
                     anchors.right: otherMore.left
                     anchors.rightMargin: 4
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 70
+                    // Grows with large text rather than cutting "Skip" short (the label keeps 12 px a side).
+                    width: Math.max(70, Math.ceil(otherSkipMetrics.advanceWidth) + 32)
+                    maximumLineCount: 1
                     implicitHeight: 48
                     height: 48
                     text: qsTr("Skip")
                     accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
+                    // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
+                    visible: !screen.stripIdle
+                    Accessible.ignored: screen.stripIdle || !navigationAllowed
                     enabled: decoderHost.running
                     onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
                 }
@@ -739,6 +761,8 @@ Item {
                     height: 48
                     icon: "more"
                     accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
+                    visible: !screen.stripIdle
+                    Accessible.ignored: screen.stripIdle || !navigationAllowed
                     enabled: decoderHost.running
                     onClicked: otherSlotMenu.openForOtherSlot()
                 }

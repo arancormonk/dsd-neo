@@ -379,6 +379,45 @@ test_lead_slot_change_alone_notifies() {
     freeState(&state);
 }
 
+/* twoSlotCarrier is the decoder's own verdict, copied from each snapshot: no latch of its own. Snapshots that still
+   carry a TDMA sync type after an acquisition reset cleared the verdict read false however many of them come, a
+   snapshot whose verdict is set reads true at once, and a clear reads false at once. */
+static void
+test_two_slot_carrier_mirrors_the_decoder() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::twoSlotCarrierChanged, [&]() { ++changes; });
+
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.tdma_carrier = 0U;
+    for (int i = 0; i < 5; ++i) {
+        model.refresh(&opts, &state);
+    }
+    expect("stale TDMA sync without the verdict reads no two-slot carrier", !model.twoSlotCarrier() && changes == 0);
+
+    state.tdma_carrier = 1U;
+    model.refresh(&opts, &state);
+    expect("the verdict reads at once", model.twoSlotCarrier() && changes == 1);
+    state.synctype = DSD_SYNC_NONE;
+    model.refresh(&opts, &state);
+    expect("a sync loss leaves the verdict to the decoder", model.twoSlotCarrier() && changes == 1);
+
+    state.tdma_carrier = 0U;
+    model.refresh(&opts, &state);
+    expect("a cleared verdict reads at once, with no hold", !model.twoSlotCarrier() && changes == 2);
+
+    state.tdma_carrier = 1U;
+    model.refresh(&opts, &state);
+    model.clear();
+    expect("clear drops the verdict", !model.twoSlotCarrier() && changes == 4);
+    freeState(&state);
+}
+
 static void
 test_site() {
     static dsd_opts opts;
@@ -1609,6 +1648,7 @@ main(int argc, char** argv) {
     test_quality();
     test_lead_slot_keeps_earlier_call_and_quality();
     test_lead_slot_change_alone_notifies();
+    test_two_slot_carrier_mirrors_the_decoder();
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 0);
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 1);
     test_quality_without_identity(DSD_SYNC_NXDN_POS, 0);

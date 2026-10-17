@@ -120,10 +120,49 @@ test_burst(int variant) {
         CHECK(has_call);
         CHECK(call.ota_source_id == 1001 && call.ota_target_id == 2002);
         CHECK(call.crc_invalid == 0);
+        /* A voice LC whose check passed proves the carrier DMR, so two-slot TDMA. */
+        CHECK(state.tdma_carrier == 1U);
     } else {
         CHECK(!has_call);
         CHECK(strstr(output, "(CRC ERR)") != NULL);
+        /* A burst that failed its check proves nothing about the carrier. */
+        CHECK(state.tdma_carrier == 0U);
     }
+    dsd_state_ext_free_all(&state);
+    return failed;
+}
+
+/* A burst the RAS heuristic accepted (its CRC failed, the reserved bits read RAS) is not a checked burst: it never
+   marks the carrier two-slot TDMA, though the heuristic lets its content through. */
+static int
+test_ras_burst_does_not_mark_carrier(void) {
+    int failed = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.aggressive_framesync = 0;
+    state.dmr_stereo = 1;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    uint8_t word[12];
+    uint8_t bits[96];
+    uint8_t info[196];
+    const uint8_t reserved[3] = {0, 0, 1};
+    make_word(word, 2);
+    dsd_unpack_bytes_to_bits(word, sizeof word, bits, sizeof bits, sizeof word);
+    dmr_test_encode_bptc_196x96(bits, reserved, info);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "rs_ras_burst") != 0) {
+        return 1;
+    }
+    dmr_data_burst_handler(&opts, &state, info, 0x01, NULL);
+    dsd_test_capture_stderr_end(&cap);
+    char output[4096];
+    if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+        return 1;
+    }
+    CHECK(strstr(output, "-RAS") != NULL);
+    CHECK(state.tdma_carrier == 0U);
     dsd_state_ext_free_all(&state);
     return failed;
 }
@@ -138,5 +177,6 @@ main(void) {
     for (int variant = 0; variant < 5; ++variant) {
         failed |= test_burst(variant);
     }
+    failed |= test_ras_burst_does_not_mark_carrier();
     return failed;
 }

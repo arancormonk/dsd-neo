@@ -480,6 +480,68 @@ test_voice_superframe_cut_by_an_input_interruption_publishes_nothing(void) {
     assert(call.crypto == DSD_CALL_CRYPTO_UNKNOWN);
 }
 
+/* A voice superframe whose only X2-TDMA sync word is the one that started it: every later sync position reads noise. */
+static void
+prepare_uncorroborated_superframe(int dibits[144]) {
+    DSD_MEMSET(dibits, 0, sizeof(int) * 144U);
+    set_slot_sync(dibits, X2TDMA_BS_VOICE_SYNC, 0);
+    append_zeros(18 + 36 + 12 + 24);
+    for (int j = 1; j < 6; j++) {
+        append_zeros(54 + 12 + 36 + 18 + 24);
+        append_zeros(18 + 36 + 12 + 24);
+    }
+}
+
+/* Nothing in an X2-TDMA superframe can fail a check: what tells it from noise that passed one sync word is that the
+   sync words read in their later places (the other timeslot's, this timeslot's) agree. Only a whole superframe on one
+   carrier with one of them marks the carrier two-slot TDMA (dsd_state::tdma_carrier); a lone sync word, or a
+   superframe a carrier boundary split or an input interruption cut, does not. */
+static void
+test_corroborated_superframe_marks_two_slot_carrier(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int dibits[144];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.pulse_digi_out_channels = 2;
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_uncorroborated_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    processX2TDMAvoice(&opts, &state);
+    assert(g_get_pos == g_get_len);
+    assert(state.tdma_carrier == 0U);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    processX2TDMAvoice(&opts, &state);
+    assert(state.tdma_carrier == 1U);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    g_boundary_at = 90 + (4 * 234) + 144 + 10;
+    processX2TDMAvoice(&opts, &state);
+    assert(state.carrier_seq == 1U);
+    assert(state.tdma_carrier == 0U);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    g_interrupt_at = 90 + (4 * 234) + 144 + 10;
+    processX2TDMAvoice(&opts, &state);
+    assert(state.input_interrupted == 1);
+    assert(state.tdma_carrier == 0U);
+}
+
 int
 main(void) {
     test_slot_light_and_mute_helpers();
@@ -489,6 +551,7 @@ main(void) {
     test_voice_superframe_split_by_a_carrier_boundary_publishes_nothing();
     test_voice_superframe_cut_by_an_input_interruption_publishes_nothing();
     test_superframe_mixes_only_synthesized_frames();
+    test_corroborated_superframe_marks_two_slot_carrier();
     printf("X2TDMA_VOICE_HELPERS: OK\n");
     return 0;
 }

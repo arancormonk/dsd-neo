@@ -2473,6 +2473,8 @@ class Setup : public QObject {
         // dsd_app_lead_slot() in the real model; here it is a plain reading a case sets
         // alongside the slotNCallState it is meant to agree with.
         metrics[QStringLiteral("leadSlot")] = 0;
+        // Whether the carrier is two-slot TDMA (dsd_state::tdma_carrier): false at rest, as on an FDMA carrier.
+        metrics[QStringLiteral("twoSlotCarrier")] = false;
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
         metrics[QStringLiteral("persistTgLockouts")] = true;

@@ -240,6 +240,36 @@ test_validated_content_stamps_decode_time(void) {
     dsd_decode_clock_use_system();
 }
 
+/* The lock is what tells a base station's DMR carrier from noise passing its sync word: only it marks the carrier
+   two-slot TDMA (dsd_state::tdma_carrier), never a pending burst, a rejected one or a voice sync alone. After an
+   acquisition reset clears the mark, the gate (which outlives the reset) marks it again on the next matching burst. */
+static void
+test_lock_marks_two_slot_carrier(void) {
+    static dsd_state state;
+    init_state(&state);
+
+    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(&state, 17) == DMR_CONFIDENCE_REJECT);
+    dmr_confidence_note_voice_sync(&state, 1);
+    assert(state.tdma_carrier == 0U);
+    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(state.tdma_carrier == 1U);
+
+    state.tdma_carrier = 0U;
+    assert(dmr_confidence_note_data_burst(&state, 9) == DMR_CONFIDENCE_REJECT);
+    assert(state.tdma_carrier == 0U);
+    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(state.tdma_carrier == 1U);
+
+    /* A voice burst that opens its slot is the same evidence. */
+    init_state(&state);
+    dmr_confidence_note_voice_sync(&state, 0);
+    assert(dmr_confidence_note_voice_burst(&state, 0, 4) == DMR_CONFIDENCE_PENDING);
+    assert(state.tdma_carrier == 0U);
+    assert(dmr_confidence_note_voice_burst(&state, 0, 4) == DMR_CONFIDENCE_LOCKED);
+    assert(state.tdma_carrier == 1U);
+}
+
 int
 main(void) {
     test_single_data_burst_does_not_lock();
@@ -253,6 +283,7 @@ main(void) {
     test_voice_requires_voice_sync_before_open();
     test_reset_clears_gate_state();
     test_validated_content_stamps_decode_time();
+    test_lock_marks_two_slot_carrier();
     printf("DMR confidence gate: OK\n");
     return 0;
 }

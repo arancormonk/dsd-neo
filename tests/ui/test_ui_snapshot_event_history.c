@@ -147,6 +147,8 @@ assert_render_fields(const dsd_state* snap) {
     assert(snap->analog_rx.ctcss_tenths_hz == 1318);
     assert(snap->analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF);
     assert(snap->analog_rx.generation == 41U);
+    /* The decoder's two-slot TDMA verdict, which the Monitor reserves the second slot's strip by. */
+    assert(snap->tdma_carrier == 1U);
 }
 
 static void
@@ -249,6 +251,7 @@ main(void) {
     state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
     state->analog_rx.ctcss_tenths_hz = 1318;
     state->analog_rx.generation = 41U;
+    state->tdma_carrier = 1U;
 
     assert(dsd_trunk_cc_candidates_add(state, 851006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
     assert(dsd_trunk_cc_candidates_add(state, 852006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
