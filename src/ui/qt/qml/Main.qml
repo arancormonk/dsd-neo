@@ -1544,6 +1544,13 @@ Window {
         onClosed: mainRoot.diagnosticsOpen = false
     }
 
+    // The log is ticked every 250 ms; only an open screen takes its rows (issue #718).
+    Binding {
+        target: diagnosticsLog
+        property: "active"
+        value: diagnosticsScreen.visible
+    }
+
     LicensesScreen {
         id: licensesScreen
         objectName: "licensesScreen"

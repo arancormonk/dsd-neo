@@ -479,6 +479,15 @@ Item {
             verify(!confirm.visible);
             compare(callHistory.count, 1);
         }
+        // Issue #718: the diagnostics model takes rows only while its screen is open.
+        function test_diagnostics_log_active_follows_screen() {
+            compare(diagnosticsLog.active, false);
+            app.diagnosticsOpen = true;
+            verify(findChild(app, "diagnosticsScreen").visible);
+            compare(diagnosticsLog.active, true);
+            app.diagnosticsOpen = false;
+            compare(diagnosticsLog.active, false);
+        }
         function test_settings_subpage_escape_data() {
             return [
                 {tag: "imports", signal: "openImports", property: "importsOpen", screen: "importsScreen"},

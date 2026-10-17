@@ -6075,6 +6075,11 @@ Qt Quick frontend (`src/ui/qt`):
   and the asynchronous bounded tail writer. `DiagnosticsLogModel` refreshes before
   the redraw consume in `UiController::tick`; it persists across decoder session
   transitions. `qml/DiagnosticsScreen.qml` provides pause, copy, clear and host share.
+  The model's `active` property is bound by `Main.qml` to the diagnostics screen's
+  visibility (issue #718): while inactive a tick consumes new lines (the pause and
+  pending-count rules are unchanged) without resetting the model, and becoming active
+  performs one reset, from a fresh snapshot or, while paused, from the lines held at
+  the pause.
   Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
   platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
 - Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is
