@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -65,7 +66,7 @@ encode_tsbk_dibits(const uint8_t bytes[12], uint8_t out[98]) {
     static const uint8_t transition[16] = {2, 12, 1, 15, 14, 0, 13, 3, 9, 7, 10, 4, 5, 11, 6, 8};
     uint8_t deinterleaved[98];
     uint8_t state = 0;
-    for (int i = 0; i < 49; i++) {
+    for (size_t i = 0; i < 49; i++) {
         const uint8_t next = i < 48 ? (uint8_t)((bytes[i / 4] >> (6 - 2 * (i % 4))) & 3U) : 0U;
         const uint8_t nibble = transition[(state << 2) | next];
         deinterleaved[2 * i] = (uint8_t)((nibble >> 2) & 3U);

@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -157,8 +158,8 @@ slco_sys_parms(dsd_opts* opts, dsd_state* state, int slco, int corrupt) {
     }
     uint8_t slco_bits[68];
     DSD_MEMSET(slco_bits, 0, sizeof(slco_bits));
-    for (int block = 0; block < 3; ++block) {
-        for (int i = 0; i < 12; ++i) {
+    for (size_t block = 0; block < 3; ++block) {
+        for (size_t i = 0; i < 12; ++i) {
             slco_bits[block * 17 + i] = data[block * 12 + i];
         }
         hamming17_parity(&slco_bits[block * 17]);
@@ -169,7 +170,7 @@ slco_sys_parms(dsd_opts* opts, dsd_state* state, int slco, int corrupt) {
     }
     raw[67] = slco_bits[67];
     static const int lcss[4] = {1, 3, 3, 2};
-    for (int f = 0; f < 4; ++f) {
+    for (size_t f = 0; f < 4; ++f) {
         uint8_t cach[25];
         DSD_MEMSET(cach, 0, sizeof(cach));
         tact(cach, lcss[f]);
