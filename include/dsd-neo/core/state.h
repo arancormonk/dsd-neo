@@ -1773,12 +1773,19 @@ struct dsd_state {
     uint64_t carrier_source_key;
     /* The carrier on air is two-slot TDMA: since the last acquisition reset, a frame of DMR (base station, mobile or
        direct mode), P25 Phase 2 or X2-TDMA decoded with its check passed (a DMR colour-code lock or CRC-checked burst,
-       a P25 Phase 2 Reed-Solomon block, an X2-TDMA voice superframe whose further sync words agree), never a bare
+       a P25 Phase 2 Reed-Solomon block, an X2-TDMA voice superframe whose further sync words agree or that follows another), never a bare
        sync. Decoder-thread owned; frontends read it from the snapshot to keep the second slot's place on screen. A
        sync loss keeps it; dsd_frame_sync_reset_acquisition(), the carrier boundary and a trunk-scan target switch
        (dsd_engine_forget_carrier_decoding()), a decoded P25 Phase 1 NID, a decode-mode change and the start and end
        of a run clear it. */
     uint8_t tdma_carrier;
+    /* The last whole X2-TDMA voice superframe (processX2TDMAvoice()): the carrier count it was read on and the symbol
+       count where it ended. A superframe whose sync follows it with no hunt gap chains to it, which is how a direct
+       mode carrier, whose other timeslot carries no sync word, proves it is X2-TDMA. x2tdma_superframe_valid is 0
+       when there is none, and after an acquisition reset. */
+    uint8_t x2tdma_superframe_valid;
+    uint32_t x2tdma_superframe_carrier_seq;
+    uint32_t x2tdma_superframe_end_symbol;
     int input_fallback_pending;
 
     //dmr trunking stuff

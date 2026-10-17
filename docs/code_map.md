@@ -5890,14 +5890,23 @@ Qt Quick frontend (`src/ui/qt`):
   check, never a bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit
   check passed with no RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove
   it), a P25 Phase 2 FACCH, SACCH or ESS that decoded with its parity check kept (`p25p2_note_tdma_carrier()`, no soft
-  erasures), or a whole X2-TDMA voice superframe on one carrier with a further X2-TDMA sync word in its places (the
-  only check X2-TDMA has; direct mode, whose other timeslot carries no sync, does not prove it). A sync loss
+  erasures), or a whole X2-TDMA voice superframe on one carrier with a further X2-TDMA sync word in its places, or
+  one that follows another whole superframe on that carrier with no hunt gap (its sync word ends exactly 24 symbols
+  after the last one ended, `dsd_state::x2tdma_superframe_*`, dropped by an acquisition reset), which is how direct
+  mode, whose other timeslot carries no sync, proves it (X2-TDMA has no FEC to check). A sync loss
   (`noCarrier()`) keeps it. `dsd_frame_sync_reset_acquisition()`, the carrier boundary and a trunk-scan target switch
   (`carrier_boundary_forget_evidence()`), a decode-mode change and the start and end of an engine run clear it, and so
   does a decoded P25 Phase 1 NID (`dsd_dispatch_handle_p25p1()`), since a trunked return from a Phase 2 voice channel
   to a Phase 1 control channel is no carrier boundary. Another FDMA protocol heard on the same carrier with no reset
   between leaves it standing until the next reset or boundary. The Skip button widens with the text scale instead of
-  cutting its label short. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `ENGINE_NO_CARRIER_RESET`, `APP_COMMAND_QUEUE`,
+  cutting its label short.
+- Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): the same deterministic grid as the Signal
+  search Now panel. The widest label any cell can show (Mute, Unmute, Hold TG, Release, Skip, TG list, Avoid TG, Lock
+  out) is measured at the font scale in force; four columns only where a quarter of the row fits it with
+  `Theme.cardPadding` either side, else two (a 360 px phone takes two at every scale); one label line count and one
+  height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces (`OutlineButton.wrapMode`
+  `Text.WordWrap`). The Avoid row spans two cells, the full width in two columns; at compact height the Avoid cell
+  takes TG list's place. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`), `tst_monitor_compact.qml`. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `ENGINE_NO_CARRIER_RESET`, `APP_COMMAND_QUEUE`,
   `DMR_CONFIDENCE_GATE`, `DMR_LC_RS_VERDICT`, `P25_P2_RELIABILITY`, `P25_P1_SYNC_DISPATCH`, `X2TDMA_VOICE_HELPERS`,
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
   `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`).

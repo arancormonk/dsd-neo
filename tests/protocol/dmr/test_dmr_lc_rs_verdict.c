@@ -87,15 +87,17 @@ test_wrapper(void) {
     return failed;
 }
 
+/* @p lastsynctype: a base station's voice sync, or a direct-mode one (DSD_SYNC_DMR_MS_DATA, which the TDMA direct-mode
+   syncs map to): the verdict, and the two-slot TDMA mark it gives, do not depend on which. */
 static int
-test_burst(int variant) {
+test_burst_on(int variant, int lastsynctype) {
     int failed = 0;
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof state);
     opts.aggressive_framesync = 1;
     state.dmr_stereo = 1;
-    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.lastsynctype = lastsynctype;
     uint8_t word[12];
     uint8_t bits[96];
     uint8_t info[196];
@@ -130,6 +132,11 @@ test_burst(int variant) {
     }
     dsd_state_ext_free_all(&state);
     return failed;
+}
+
+static int
+test_burst(int variant) {
+    return test_burst_on(variant, DSD_SYNC_DMR_BS_VOICE_POS);
 }
 
 /* A burst the RAS heuristic accepted (its CRC failed, the reserved bits read RAS) is not a checked burst: it never
@@ -178,5 +185,8 @@ main(void) {
         failed |= test_burst(variant);
     }
     failed |= test_ras_burst_does_not_mark_carrier();
+    /* Direct mode: the same checked LC marks the carrier, and the same failed one does not. */
+    failed |= test_burst_on(0, DSD_SYNC_DMR_MS_DATA);
+    failed |= test_burst_on(2, DSD_SYNC_DMR_MS_DATA);
     return failed;
 }

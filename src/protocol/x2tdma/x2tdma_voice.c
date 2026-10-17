@@ -59,6 +59,11 @@ typedef struct {
     int corroborating_syncs;
 } x2tdma_voice_ctx;
 
+/* The symbols between the end of a whole voice superframe and the end of the next one's sync word when that sync
+   follows with no hunt gap: the sync word itself. Twelve bursts of 144 dibits make a superframe; the decoder reads
+   all of it after the sync that started it but this last sync word. */
+#define X2TDMA_SUPERFRAME_CHAIN_GAP 24
+
 /* Whether the carrier boundary moved the carrier count since the superframe began (issue #575): a replay read adopting
    a recorded retune. What was read before the move belongs to the carrier left, so from there nothing decodes or
    publishes, as on a sync loss. Nor once an input interruption cut the superframe, whose rest is erasures the reader
@@ -612,6 +617,11 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
     ctx.msMode = 0;
     dsd_x2tdma_init_mi_placeholder(ctx.mi);
     ctx.carrier_seq = state->carrier_seq;
+    /* The superframe's sync word was the last thing read: a superframe that ended exactly one sync word before it, on
+       this carrier, is the one this follows with no hunt gap. */
+    const int follows_superframe =
+        state->x2tdma_superframe_valid != 0U && state->x2tdma_superframe_carrier_seq == ctx.carrier_seq
+        && (uint32_t)(state->symbolcnt - state->x2tdma_superframe_end_symbol) == (uint32_t)X2TDMA_SUPERFRAME_CHAIN_GAP;
 
     dibit_p = state->dibit_buf_p - 144;
     for (j = 0; j < 6; j++) {
@@ -625,10 +635,16 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
     const int carrier_kept = !x2tdma_carrier_left(&ctx, state);
     if (carrier_kept) {
         x2tdma_update_call_crypto(opts, state, &ctx);
-        /* A whole superframe on one carrier whose later sync words agree: the carrier is X2-TDMA, two-slot TDMA. */
-        if (ctx.corroborating_syncs > 0) {
+        /* A whole superframe on one carrier whose later sync words agree, or that follows another whole one with no
+           hunt gap (direct mode, whose other timeslot carries no sync word): the carrier is X2-TDMA, two-slot TDMA. */
+        if (ctx.corroborating_syncs > 0 || follows_superframe) {
             state->tdma_carrier = 1U;
         }
+        state->x2tdma_superframe_valid = 1U;
+        state->x2tdma_superframe_carrier_seq = ctx.carrier_seq;
+        state->x2tdma_superframe_end_symbol = state->symbolcnt;
+    } else {
+        state->x2tdma_superframe_valid = 0U;
     }
 
     if (opts->errorbars == 1) {
