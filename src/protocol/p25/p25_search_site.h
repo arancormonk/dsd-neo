@@ -17,7 +17,8 @@
 
 static inline void
 p25_search_note_network(const dsd_state* state, uint32_t wacn, uint16_t sysid) {
-    if (wacn == 0U && sysid == 0U) {
+    /* SYSID 0 names no system (an RFSS status would not bind to it either). */
+    if ((sysid & 0xFFFU) == 0U) {
         return;
     }
     dsd_signal_search_site_note note;
@@ -30,6 +31,10 @@ p25_search_note_network(const dsd_state* state, uint32_t wacn, uint16_t sysid) {
 
 static inline void
 p25_search_note_rfss(const dsd_state* state, uint16_t sysid, uint8_t rfss, uint8_t site) {
+    /* SYSID 0 names no system, as for a network status. */
+    if ((sysid & 0xFFFU) == 0U) {
+        return;
+    }
     dsd_signal_search_site_note note;
     DSD_MEMSET(&note, 0, sizeof(note));
     note.kind = DSD_SEARCH_SITE_NOTE_P25_SITE;

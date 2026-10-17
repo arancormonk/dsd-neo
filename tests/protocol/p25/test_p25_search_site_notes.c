@@ -230,6 +230,13 @@ test_vpdu_rfss(void) {
     rc |= expect_int("failed-crc explicit rfss is decoded", (long)g_state.p2_siteid, 6);
     rc |= expect_int("failed-crc explicit rfss notes nothing", g_notes, 0);
 
+    // SYSID 0 names no system.
+    reset();
+    rfss_mac(mac, 0x07, 0x7A, 0x000, 1, 2);
+    process_MAC_VPDU(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac);
+    rc |= expect_int("sysid 0 rfss is decoded", (long)g_state.p2_siteid, 2);
+    rc |= expect_int("sysid 0 rfss notes nothing", g_notes, 0);
+
     // An adjacent site is another site.
     reset();
     rfss_mac(mac, 0x00, 0x7C, 0x1A3, 7, 8);
@@ -257,6 +264,12 @@ test_vpdu_network(void) {
         process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
         rc |= expect_int("failed-crc network is decoded", (long)g_state.p2_wacn, 0xBEE00);
         rc |= expect_int("failed-crc network notes nothing", g_notes, 0);
+
+        // A WACN under SYSID 0 names no system either.
+        reset();
+        network_mac(mac, opcodes[i], 0xBEE00, 0x000);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("sysid 0 network notes nothing", g_notes, 0);
     }
     return rc;
 }

@@ -4749,23 +4749,25 @@ Private per-protocol modules worth knowing about:
   leaves confirmation standing, so a half no verified half speaks for since it (`DPMR_HALF_UNVERIFIED`) plays nothing
   and leaves the call's classification alone, rather than playing a scrambled call's first undecodable halves as
   clear.
-- Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
-  writer passes the identity of one message that passed its check, after handling it, never decoder state.
-  P25 (`src/protocol/p25/p25_search_site.h`): a TSBK network status (`tsbk_handle_network_status()`, dispatched only
-  after the block's CRC-16, and for opcode 0x3B only under MFID $00/$01: as `processTSBK()` routes every standard
-  opcode, a manufacturer's 0x3B is that manufacturer's message and changes no control channel or system), an MBT network or RFSS status (`p25_decode_pdu_trunking()`, reached only
-  after the header CRC-16 and CRC-32), and the vPDU network status (0x7B/0xFB) and RFSS status (0x7A/0xFA) blocks only
-  when `p25p2_vpdu_ctx::crc_ok` holds, which covers a bridged TSBK and a Phase 2 MAC but not a MAC_SIGNAL let
-  through with a failed CRC under `-F`. An RFSS status notes the SYSID it advertises, even one the decoder's
-  `p2_sysid` check ignores. Not notes: the voice LCW network/RFSS formats (Reed-Solomon only), the secondary control
-  channel fill-in (`p25_note_sccb_site()`), adjacent-status broadcasts, CLI/menu hard-set values and trunk-scan
-  snapshot restores (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). DMR (`dmr_tiii_note_search_site()` in
-  `src/protocol/dmr/dmr_tiii_site.h`): C_ALOHA inside `dmr_cspdu()`'s CRC gate, and the C_SYS_PARMS / P_SYS_PARMS
-  short LC that `dmr_cach()` assembles behind Hamming(17,12,3) and CRC-8; a C_BCAST vote/adjacent syscode names
-  another site (`DMR_SEARCH_SITE_NOTES`). NXDN: the current-site location ID in `nxdn_location_id_handler()` (SITE_INFO,
-  SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once `nxdn_confirm_is_confirmed()`, so a single short
-  SACCH CRC does not show a site; adjacent sites and the Type-D SCCH site ID (7-bit CRC) are not notes
-  (`NXDN_SEARCH_SITE_NOTES`).
+- Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each writer
+  passes the identity of one message that passed its check, after handling it, never decoder state; a SYSID of 0 names
+  no system. P25 (`src/protocol/p25/p25_search_site.h`): a TSBK network status (`tsbk_handle_network_status()`,
+  dispatched only after the block's CRC-16, and for opcode 0x3B only under MFID $00/$01: as for every standard opcode, a
+  manufacturer's 0x3B is that manufacturer's message and changes no control channel or system), an MBT network or RFSS
+  status (`p25_decode_pdu_trunking()`, reached only after the header CRC-16 and CRC-32), and the vPDU network status
+  (0x7B/0xFB) and RFSS status (0x7A/0xFA) blocks only when `p25p2_vpdu_ctx::crc_ok` holds, which covers a bridged TSBK
+  and a Phase 2 MAC but not a MAC_SIGNAL let through with a failed CRC under `-F`. An RFSS status notes the SYSID it
+  advertises, even one the decoder's `p2_sysid` check ignores. Not notes: the voice LCW network/RFSS formats
+  (Reed-Solomon only), the secondary control channel fill-in (`p25_note_sccb_site()`), adjacent-status broadcasts,
+  CLI/menu hard-set values and trunk-scan snapshot restores (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). DMR
+  (`dmr_tiii_note_search_site()` in `src/protocol/dmr/dmr_tiii_site.h`, which returns at once when no search runs):
+  C_ALOHA inside `dmr_cspdu()`'s CRC gate when the slot's `event_crc_invalid` is clear, since that gate also passes a
+  burst `-F` accepts as RAS (`DSD_CRC_RAS_UNVERIFIED`) and an MBC whose header CRC failed (`DSD_CRC_FAILED`), and the
+  C_SYS_PARMS / P_SYS_PARMS short LC that `dmr_cach()` assembles behind Hamming(17,12,3) and CRC-8 (no RAS path); a
+  C_BCAST vote/adjacent syscode names another site (`DMR_SEARCH_SITE_NOTES`). NXDN: the current-site location ID in
+  `nxdn_location_id_handler()` (SITE_INFO, SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once
+  `nxdn_confirm_is_confirmed()`, so a single short SACCH CRC does not show a site; adjacent sites and the Type-D SCCH
+  site ID (7-bit CRC) are not notes (`NXDN_SEARCH_SITE_NOTES`).
 
 - `src/protocol/tetra/tetra_confirm.{c,h}` — the same module for TETRA, whose 22-bit normal-burst training sequence
   receiver noise matches under the frame sync's eight hypotheses. A burst proves itself with a block whose CRC passed:
@@ -5400,15 +5402,16 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   `effectiveSource()` kind (an Airspy map only stays on an Airspy); `startWithMap(sys,
   row, scan, options)` records `options.remember` in `attemptedSource` and
   `pendingStartRemember` (through a USB wait), and only a remembered explore session
-  writes `prefs.exploreFreqMhz` when it ends. `retrySource()` carries the attempted
-  system: a failed search is retried by reopening the screen and running its
-  `startSearch()` (arm, then start), and edited by reopening it (`tst_signal_search_handoff.qml`).
-  Native status is copied on a 250 ms timer; history and the avoid lists only when their
-  store revisions move. While a search session is active, Escape and Back from any control go
-  Back, which delegates to Main's session policy; a search a coordinator owns (`status.owned`)
-  is a navigation root so its controls remain accessible after Activity recreation. Range
-  edits apply on paused restart. Home's `onSignalSearch` seeds the source fields (`Main.seedSignalSearch()`) only when it
-  opens the screen: `AppPrefs` `search/sourceType`/`search/host`/`search/port` (written by
+  writes `prefs.exploreFreqMhz` when it ends. `retrySource()` carries the attempted system:
+  a failed search is retried by reopening the screen and running its `startSearch()` (arm,
+  then start), and edited by reopening it (`tst_signal_search_handoff.qml`). Native status
+  is copied on a 250 ms timer; history and the avoid lists only when their store revisions
+  move. While a search session is active, Escape and Back from any control go Back, which
+  delegates to Main's session policy; a search a coordinator owns (`status.owned`) is a
+  navigation root so its controls remain accessible after Activity recreation. Range edits
+  apply on paused restart. Home's `onSignalSearch` seeds the source fields
+  (`Main.seedSignalSearch()`) only when it opens the screen: `AppPrefs`
+  `search/sourceType`/`search/host`/`search/port` (written by
   **Start search** before the start, portable in the backup), else the `explore/*` answer,
   else `usb`. Every Explore and search entry (Home's direct Explore start, Explore setup's
   `reset()` before it captures its dirty baseline, the unconfigured first run, failure edit,

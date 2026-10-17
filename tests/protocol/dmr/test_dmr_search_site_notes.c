@@ -9,6 +9,7 @@
  * note nothing.
  */
 
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/block_codes.h>
@@ -19,9 +20,18 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dmr_bptc_test_encoder.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static int g_search_running = 1;
+
+static int
+search_running(const dsd_state* state) {
+    (void)state;
+    return g_search_running;
+}
 
 static int g_notes;
 static dsd_signal_search_site_note g_note;
@@ -71,6 +81,26 @@ aloha(dsd_opts* opts, dsd_state* state, int crc_ok) {
     put_bits(bits, 0, 25, 8);
     put_bits(bits, 40, SYSCODE_SMALL_12_3, 14);
     dmr_cspdu(opts, state, bits, bytes, (uint32_t)crc_ok, 0);
+}
+
+/* The same C_ALOHA as a BPTC-encoded CSBK burst through the data burst handler: with its CRC, or with the CRC off by one
+   bit and the RAS reserved-bit marker, which -F accepts as RAS. */
+static void
+aloha_burst(dsd_opts* opts, dsd_state* state, int ras) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    put_bits(bits, 0, 25, 8);
+    put_bits(bits, 40, SYSCODE_SMALL_12_3, 14);
+    uint16_t crc = (uint16_t)(ComputeCrcCCITT(bits) ^ 0xA5A5U);
+    if (ras) {
+        crc ^= 0x0001U;
+    }
+    put_bits(bits, 80, crc, 16);
+    static const uint8_t k_ras_reserved[3] = {0, 0, 1};
+    static const uint8_t k_no_reserved[3] = {0, 0, 0};
+    uint8_t info[196];
+    dmr_test_encode_bptc_196x96(bits, ras ? k_ras_reserved : k_no_reserved, info);
+    dmr_data_burst_handler(opts, state, info, 0x03, NULL);
 }
 
 static void
@@ -156,6 +186,7 @@ main(void) {
         return 1;
     }
     dsd_signal_search_site_set(capture_site);
+    dsd_signal_search_active_set(search_running);
     int rc = 0;
     // No network/site split, so the identity reads as broadcast.
     opts->dmr_dmrla_is_set = 1;
@@ -169,6 +200,36 @@ main(void) {
     g_notes = 0;
     aloha(opts, state, 0);
     rc |= expect_int("failed-crc aloha notes nothing", g_notes, 0);
+
+    // dmr_cspdu()'s gate also passes a burst -F accepted by RAS or an MBC whose header CRC failed; the dispatcher flags
+    // those for the slot, and neither names a site.
+    static const uint8_t unverified[2] = {DSD_CRC_RAS_UNVERIFIED, DSD_CRC_FAILED};
+    for (int i = 0; i < 2; ++i) {
+        g_notes = 0;
+        state->currentslot = 1;
+        state->event_crc_invalid[1] = unverified[i];
+        aloha(opts, state, 1);
+        state->event_crc_invalid[1] = 0;
+        rc |= expect_int("unverified aloha notes nothing", g_notes, 0);
+        rc |= expect_text("unverified aloha is still decoded", state->dmr_site_parms, "TIII Small:12-3;1183; ");
+        state->currentslot = 0;
+    }
+    // Through the burst handler: a checked CSBK notes the site, a RAS-accepted one under -F does not.
+    opts->aggressive_framesync = 0;
+    g_notes = 0;
+    aloha_burst(opts, state, 0);
+    rc |= expect_int("checked aloha burst notes once", g_notes, 1);
+    g_notes = 0;
+    DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%s", "");
+    aloha_burst(opts, state, 1);
+    rc |= expect_text("ras aloha burst is decoded", state->dmr_site_parms, "TIII Small:12-3;1183; ");
+    rc |= expect_int("ras aloha burst notes nothing", g_notes, 0);
+    // With no search running there is nothing to note.
+    g_search_running = 0;
+    g_notes = 0;
+    aloha(opts, state, 1);
+    rc |= expect_int("aloha without a search notes nothing", g_notes, 0);
+    g_search_running = 1;
 
     // A network/site split shows the sub-site, as the site parameters do.
     opts->dmr_dmrla_n = 2;
@@ -191,6 +252,7 @@ main(void) {
     }
 
     dsd_signal_search_site_set(NULL);
+    dsd_signal_search_active_set(NULL);
     free(state);
     free(opts);
     return rc;

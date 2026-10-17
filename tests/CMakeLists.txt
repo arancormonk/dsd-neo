@@ -10086,6 +10086,7 @@ add_test(NAME DMR_CRC_PROPS COMMAND dsd-neo_test_dmr_crc_props)
 add_executable(
     dsd-neo_test_dmr_search_site_notes
     protocol/dmr/test_dmr_search_site_notes.c
+    test_support/dmr_bptc_test_encoder.c
 )
 target_include_directories(
     dsd-neo_test_dmr_search_site_notes
@@ -10093,7 +10094,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_search_site_notes
-    PRIVATE dsd-neo_proto_dmr
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
 )
 add_test(NAME DMR_SEARCH_SITE_NOTES COMMAND dsd-neo_test_dmr_search_site_notes)
 

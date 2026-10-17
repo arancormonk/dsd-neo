@@ -57,6 +57,9 @@ static inline void
 dmr_tiii_note_search_site(const dsd_state* state, const char* model, uint16_t net, uint16_t site, uint16_t n,
                           uint16_t sub_mask, uint16_t syscode) {
     static const char dot[] = " \xC2\xB7 ";
+    if (!dsd_signal_search_is_running(state)) {
+        return; /* nothing to format for */
+    }
     dsd_signal_search_site_note note;
     DSD_MEMSET(&note, 0, sizeof(note));
     note.kind = DSD_SEARCH_SITE_NOTE_DMR_TIII;
