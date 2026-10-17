@@ -138,6 +138,14 @@ Item {
             var row = findChild(screen, "scanTimingRow");
             verify(row !== null, "the monitor carries a scan timing row");
             verify(!row.visible, "nothing published: the row stays down");
+            // A rotation keeps the line, blank, so the stays coming and going never
+            // move the screen (#718).
+            testContext.setMetric("scanRotationActive", true);
+            tryCompare(row, "visible", true);
+            compare(row.text, "");
+            verify(row.height > 0);
+            testContext.setMetric("scanRotationActive", false);
+            tryCompare(row, "visible", false);
             testContext.setMetric("scanStayPhrase", "Idle dwell");
             testContext.setMetric("scanTimerLive", true);
             testContext.setMetric("scanTimerRemainingDs", 18);
@@ -208,9 +216,14 @@ Item {
             waitForRendering(screen);
             var names = ["runningSiteChooserButton", "openSpectrumButton", "monitorLiveStatus", "monitorHeaderTitle", "scanTimingRow"];
             // Past tier 0 on a phone, Sites and Spectrum are in the session menu (#718)
-            // rather than squeezed beside the title; whatever the header shows fits.
+            // rather than squeezed beside the title: they show exactly when the
+            // header has room for them, and the title, LIVE and timing always do.
+            for (var name of ["runningSiteChooserButton", "openSpectrumButton"])
+                compare(findChild(screen, name).visible, screen.wideHeaderActions, name);
+            for (var always of ["monitorLiveStatus", "monitorHeaderTitle", "scanTimingRow"])
+                verify(findChild(screen, always).visible, always);
             var shown = names.filter(function (name) { return findChild(screen, name).visible; });
-            verify(shown.length >= 3);
+            compare(shown.length, screen.wideHeaderActions ? 5 : 3);
             var hero = findChild(screen, "monitorHero");
             var heroY = hero.mapToItem(screen, 0, 0).y;
             for (var i = 0; i < shown.length; ++i) {

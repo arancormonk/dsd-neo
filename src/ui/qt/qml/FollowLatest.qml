@@ -168,10 +168,13 @@ Item {
         }
 
         // A drag that starts before the finger lifts is the reader deciding where
-        // to be; the pin they never saw is theirs to drop.
+        // to be; the pin they never saw, and a header correction owed from under
+        // the press, are theirs to drop.
         function onMovingChanged() {
-            if (root.list.moving)
+            if (root.list.moving) {
                 root.deferred = false
+                root.pendingShift = 0
+            }
         }
 
         function onHeaderItemChanged() {

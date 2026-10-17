@@ -82,8 +82,9 @@ Item {
 
         Text {
             width: parent.width
-            // An expandable row may carry its whole label in the title.
-            visible: text.length > 0 || !row.expandable
+            // An expandable row may carry its whole label in the title. A reading
+            // keeps its line while empty, so the row's height never follows it.
+            visible: text.length > 0 || !row.expandable || row.subtitleReading
             text: row.subtitle
             textFormat: row.subtitleTextFormat
             font.family: row.subtitleReading ? Theme.mono : Theme.sans

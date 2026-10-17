@@ -224,12 +224,18 @@ Item {
     }
 
     // The disclosure starts closed and remembers how it was left, on this
-    // device only (AppPrefs monitor/detailsExpanded).
-    property bool detailsExpanded: typeof prefs !== "undefined" && prefs ? prefs.monitorDetailsExpanded === true : false
+    // device only (AppPrefs monitor/detailsExpanded). The preference is the
+    // state: a tap writes it and the binding follows, so it never parts from
+    // what is stored. prefsStore is the app's AppPrefs; a test may hand in its
+    // own. With none, a local value stands in.
+    property var prefsStore: typeof prefs !== "undefined" ? prefs : null
+    property bool localDetailsExpanded: false
+    property bool detailsExpanded: prefsStore && prefsStore.monitorDetailsExpanded !== undefined ? prefsStore.monitorDetailsExpanded === true : localDetailsExpanded
     function setDetailsExpanded(on) {
-        detailsExpanded = on;
-        if (typeof prefs !== "undefined" && prefs)
-            prefs.monitorDetailsExpanded = on;
+        if (prefsStore && prefsStore.monitorDetailsExpanded !== undefined)
+            prefsStore.monitorDetailsExpanded = on;
+        else
+            localDetailsExpanded = on;
     }
 
     // The disclosure's one-line summary, most important first: the radio's SNR,
@@ -327,8 +333,13 @@ Item {
                 Text {
                     width: parent.width
                     objectName: "scanTimingRow"
-                    visible: metrics.scanTimingVisible
+                    // Kept for the whole rotation, blank between stays (#718): the view
+                    // publishes and withdraws it with each followed call, and a line
+                    // coming and going would move everything below the header.
+                    visible: metrics.scanTimingVisible || metrics.scanRotationActive
                     text: {
+                        if (!metrics.scanTimingVisible)
+                            return "";
                         var out = metrics.scanStayPhrase;
                         if (metrics.scanTimerLive) {
                             out += " " + qsTr("%1s/%2s").arg((metrics.scanTimerRemainingDs / 10).toFixed(1)).arg((metrics.scanTimerSpanMs / 1000).toFixed(1));
@@ -1029,7 +1040,9 @@ Item {
                 accessCode: model.accessCode,
                 accessCodeText: model.accessCodeText
             })
-            width: ListView.view.width
+            // Inset by the card's border, so a row's divider never paints over it.
+            x: 1
+            width: ListView.view.width - 2
             name: model.name
             metaText: {
                 // A notice keeps its payload first, the pane being too

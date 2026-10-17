@@ -17,6 +17,12 @@ Item {
     width: 360
     height: 690
 
+    // A writable stand-in for AppPrefs: the fixture's prefs map answers reads only.
+    QtObject {
+        id: fakePrefs
+        property bool monitorDetailsExpanded: false
+    }
+
     Loader {
         id: loader
 
@@ -41,13 +47,18 @@ Item {
         function m(key, value) {
             testContext.setMetric(key, value);
         }
+        // The session's live-strip parts. The scan-timing line comes and goes with
+        // each followed call, so it is set apart (setTiming), as traffic.
         function setStrip(slot, scan) {
             m("twoSlotCarrier", slot);
             m("scanRotationActive", scan);
             m("scanTargetCount", scan ? 3 : 0);
             m("scanTargetOrdinal", scan ? 2 : 0);
-            m("scanTimingVisible", scan);
-            m("scanStayPhrase", scan ? "Following call" : "");
+        }
+        function setTiming(on) {
+            m("scanTimingVisible", on);
+            m("scanStayPhrase", on ? "Following call" : "");
+            m("scanHangMs", on ? 2000 : 0);
         }
         function setCall(slot, state) {
             m("leadSlot", state === 0 ? 0 : slot);
@@ -90,6 +101,7 @@ Item {
             tc.monitor = loader.item;
             verify(tc.monitor !== null, "MonitorScreen.qml failed to load");
             tc.list = item("recentCallsList");
+            tc.monitor.prefsStore = fakePrefs;
         }
         function init() {
             testContext.resetCommands();
@@ -105,7 +117,7 @@ Item {
             m("ccFecOkPct", 100);
             callHistory.clearAll();
             callHistory.pushMany(12, "TODAY");
-            tc.monitor.detailsExpanded = false;
+            fakePrefs.monitorDetailsExpanded = false;
             root.width = 360;
             root.height = 690;
             Ui.Theme.fontScale = 1;
@@ -117,6 +129,7 @@ Item {
             // A press and release on a row is a tap, which opens its details.
             item("monitorHistoryDetail").visible = false;
             setStrip(false, false);
+            setTiming(false);
             setCall(1, 0);
             setCall(2, 0);
             for (var key of ["snrValid", "carrierLock", "qualityValid", "ccFecValid", "voiceErrsValid", "rsValid", "tetraVisible", "tetraCodecFault"])
@@ -237,6 +250,59 @@ Item {
             }
         }
 
+        // The scan-timing line is published with each followed call and withdrawn
+        // between them; the header keeps its line for the whole rotation, so
+        // neither the list nor the hero moves and the tier holds.
+        function test_scan_timing_never_moves_the_list_data() {
+            return [{tag: "phone", width: 360, height: 690, scale: 1},
+                    {tag: "tester", width: 411, height: 914, scale: 1},
+                    {tag: "large", width: 411, height: 780, scale: 1.6}];
+        }
+        function test_scan_timing_never_moves_the_list(data) {
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            setStrip(true, true);
+            setCall(1, 2);
+            setTiming(false);
+            settle();
+            tc.list.positionViewAtBeginning();
+            settle();
+            var tier = tc.monitor.tier;
+            var hero = item("monitorHero");
+            var header = item("monitorHeader");
+            var heroY = hero.mapToItem(tc.monitor, 0, 0).y;
+            var listTop = tc.list.mapToItem(tc.monitor, 0, 0).y;
+            var headerHeight = header.height;
+            verify(item("scanTimingRow").visible, "the line is kept for the rotation");
+            compare(item("scanTimingRow").text, "");
+            for (var on of [true, false, true, false]) {
+                setTiming(on);
+                settle();
+                compare(item("scanTimingRow").text.length > 0, on);
+                compare(tc.monitor.tier, tier);
+                compare(header.height, headerHeight);
+                compare(hero.mapToItem(tc.monitor, 0, 0).y, heroY);
+                compare(tc.list.mapToItem(tc.monitor, 0, 0).y, listTop);
+            }
+        }
+
+        // An empty summary keeps its line: the disclosure's height, which the
+        // budget measures, never follows the readings.
+        function test_empty_summary_keeps_the_row_height() {
+            var card = item("monitorDetailsCard");
+            var height = card.height;
+            var tier = tc.monitor.tier;
+            for (var key of ["radioInput", "qualityValid"])
+                m(key, false);
+            m("siteLine", "");
+            tryCompare(item("monitorDetailsRow"), "accessibleDescription", "");
+            settle();
+            compare(card.height, height);
+            compare(tc.monitor.tier, tier);
+            m("radioInput", true);
+        }
+
         // The hero's lines fit its reserved box in both forms, at large text too,
         // without overlapping one another.
         function test_hero_contents_contained_data() {
@@ -337,6 +403,8 @@ Item {
             compare(row.Accessible.name, "Signal & site");
             compare(row.accessibleDescription, "SNR 31.9 dB · CC FEC 100% · SITE 10");
             mouseClick(row);
+            // The tap writes the preference, and the disclosure follows it.
+            verify(fakePrefs.monitorDetailsExpanded, "the tap is remembered");
             verify(tc.monitor.detailsExpanded);
             tryCompare(details, "visible", true);
             verify(row.Accessible.checked);
@@ -349,7 +417,11 @@ Item {
                 last = y;
             }
             mouseClick(row);
+            verify(!fakePrefs.monitorDetailsExpanded);
             verify(!tc.monitor.detailsExpanded);
+            // A change to the stored value from elsewhere reaches the screen.
+            fakePrefs.monitorDetailsExpanded = true;
+            verify(tc.monitor.detailsExpanded);
         }
 
         // The disclosure is remembered (prefs monitor/detailsExpanded), on a new
@@ -509,7 +581,6 @@ Item {
             tc.list.contentY = tc.callsTop();
             settle();
             verify(row.activeFocus);
-            verify(row.activeFocus);
             var name = callHistory.push("TODAY");
             tryVerify(function () { return Math.abs(tc.list.contentY - tc.callsTop()) < 1; });
             settle();
@@ -536,7 +607,7 @@ Item {
             mousePress(tc.list, tc.list.width / 2, pressY);
             tc.monitor.setDetailsExpanded(true);
             settle();
-            verify(Math.abs(viewportY(row) - y) > 1, "corrected under the finger");
+            verify(Math.abs(viewportY(row) - y) > 1, "not corrected under the finger");
             mouseRelease(tc.list, tc.list.width / 2, pressY);
             tryVerify(function () { return Math.abs(viewportY(row) - y) < 1; }, 2000, "corrected on release");
         }
