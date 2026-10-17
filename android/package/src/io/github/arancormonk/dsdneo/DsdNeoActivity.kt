@@ -172,8 +172,9 @@ class DsdNeoActivity : QtActivity() {
             // Best effort, not a guarantee: nothing waits for the engine to finish
             // unwinding, because the only thread that could wait is the one whose blocking
             // this override exists to prevent. It buys the decode loop a chance to close
-            // its files before the process goes.
-            DsdNative.nativeStop()
+            // its files before the process goes. A teardown, not the user's Stop: it does
+            // not abandon pending rdio uploads (#718 D4).
+            EngineStop.request(StopCause.LIFECYCLE, DsdNative::nativeStop)
 
             // Withdraws the service's outstanding start request, and it has to happen
             // before the process goes. The engine thread is what normally calls stopSelf(),

@@ -1753,6 +1753,18 @@ suite runs under this compiler.
     (`src/io/radio/rtl_sdr_fm.cpp`) and the mode-change toast for a rate that cannot work, with the fix for what sets
     the rate. Tests: `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`,
     `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
+  - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
+    with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
+    `dsd_engine_cleanup()` calls `dsd_rdio_upload_shutdown()` after the final calls close, and it drains the queue, so
+    a normal end (replay EOF, input closed, USB detach) and the CLI (SIGINT, the terminal UI's `q`, the API's `quit`)
+    still upload the last calls. Only the user's Stop in the app calls `dsd_rdio_upload_cancel()` (issue #718 D4,
+    `StopCause.USER` through `nativeStop(userRequested)`): a lock-free flag the worker loop (no further jobs), the retry
+    loop (between attempts) and the transfer's xferinfo callback (aborts the transfer in flight) poll. Shutdown still
+    owns the join, logs once how many uploads were not sent, and clears the flag; uploads queued after the cancel (the
+    final call cleanup closes) are not sent either. Files are deleted only after a successful upload, so abandoned
+    calls keep theirs. An embedding host clears a cancel that landed after the last shutdown with
+    `dsd_rdio_upload_cancel_reset()` when it configures the next run. Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint,
+    cancel before and during the drain), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in

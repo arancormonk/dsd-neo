@@ -104,8 +104,9 @@ object UsbSourceManager {
                         Log.i(TAG, "SDR detached; stopping the engine")
                         // The engine is mid-transfer on a descriptor that just went
                         // away: ask it to stop, and let release() close the connection
-                        // once it has actually unwound.
-                        DsdNative.nativeStop()
+                        // once it has actually unwound. A normal end, so pending rdio uploads
+                        // still drain (#718 D4).
+                        EngineStop.request(StopCause.DEVICE_DETACHED, DsdNative::nativeStop)
                         release()
                         setStatus("Device detached", "detached")
                     }
