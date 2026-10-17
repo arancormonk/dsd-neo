@@ -140,6 +140,13 @@ void p25_crypto_clear_phase1_lockout_epoch(dsd_state* state);
  */
 dsd_p25_crypto_state p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot,
                                         int algid, int keyid, uint64_t mi, int talkgroup);
+/**
+ * p25_crypto_resolve() for a tuple whose decode may not have checked it: @p checked is 0 for a Phase 2 ESS whose RS
+ * decode leaned on soft erasures (enough erasures always decode, whatever the bits). Resolution is the same; only a
+ * checked tuple publishes its ALG ID and key id as received on the call (DSD_CALL_CRYPTO_RX_*).
+ */
+dsd_p25_crypto_state p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot,
+                                                int algid, int keyid, uint64_t mi, int talkgroup, int checked);
 
 /**
  * Return a still-pending classification to unclassified after a silent

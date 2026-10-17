@@ -1223,8 +1223,8 @@ p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int sl
 
 static void
 p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 0, result->algid, result->keyid, result->mi,
-                             p25p2_active_target(state, 0U));
+    (void)p25_crypto_resolve_checked(opts, state, DSD_P25_CRYPTO_PHASE2, 0, result->algid, result->keyid, result->mi,
+                                     p25p2_active_target(state, 0U), result->soft_depth == 0);
     p25p2_ess_maybe_enable_audio_slot(opts, state, 0, state->payload_algid);
     p25p2_audio_gate_diag(opts, state, "ess-slot0");
 
@@ -1265,8 +1265,8 @@ p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* 
 
 static void
 p25p2_ess_apply_slot1(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 1, result->algid, result->keyid, result->mi,
-                             p25p2_active_target(state, 1U));
+    (void)p25_crypto_resolve_checked(opts, state, DSD_P25_CRYPTO_PHASE2, 1, result->algid, result->keyid, result->mi,
+                                     p25p2_active_target(state, 1U), result->soft_depth == 0);
     p25p2_ess_maybe_enable_audio_slot(opts, state, 1, state->payload_algidR);
     p25p2_audio_gate_diag(opts, state, "ess-slot1");
 
@@ -1338,6 +1338,7 @@ p25p2_ess_stage_rekey(dsd_state* state, int slot, const p25p2_ess_result* result
     state->p25_p2_rekey[slot].algid = (uint8_t)result->algid;
     state->p25_p2_rekey[slot].keyid = (uint16_t)result->keyid;
     state->p25_p2_rekey[slot].mi = result->mi;
+    state->p25_p2_rekey[slot].parity_checked = (uint8_t)(result->soft_depth == 0);
     state->p25_p2_rekey[slot].pending = 1U;
     return 1;
 }
@@ -1370,6 +1371,8 @@ p25p2_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state) {
             .algid = rekey.algid,
             .keyid = rekey.keyid,
             .accepted = 1,
+            /* The staged decode's own verdict: an erasure-assisted ESS stays unchecked when it commits. */
+            .soft_depth = rekey.parity_checked ? 0 : 1,
         };
         DSD_FPRINTF(stderr, "%s", KYEL);
         p25p2_ess_apply_result(opts, state, slot, &result);

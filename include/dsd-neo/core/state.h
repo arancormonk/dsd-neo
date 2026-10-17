@@ -153,6 +153,8 @@ typedef struct {
     uint16_t keyid;
     uint8_t algid;
     uint8_t pending;
+    /* The staged ESS decoded without soft erasures, so its RS parity checked it (p25_crypto_resolve_checked()). */
+    uint8_t parity_checked;
 } dsd_p25_p2_rekey_state;
 
 typedef struct {

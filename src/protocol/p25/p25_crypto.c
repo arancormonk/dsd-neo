@@ -636,6 +636,12 @@ p25_crypto_emit_deferred_pending(dsd_opts* opts, dsd_state* state, int slot, con
 dsd_p25_crypto_state
 p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
                    uint64_t mi, int talkgroup) {
+    return p25_crypto_resolve_checked(opts, state, phase, slot, algid, keyid, mi, talkgroup, 1);
+}
+
+dsd_p25_crypto_state
+p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
+                           uint64_t mi, int talkgroup, int checked) {
     if (!p25_crypto_resolve_inputs_valid(state, phase, slot)) {
         return DSD_P25_CRYPTO_UNKNOWN;
     }
@@ -672,9 +678,9 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
     if (phase == DSD_P25_CRYPTO_PHASE2) {
         resolved = p25_crypto_p2_apply_blocked_quarantine(state, slot, algid, keyid, resolved, &deferred);
     }
-    // Every caller hands over a tuple its FEC/CRC accepted; one a clear-conflict quarantine deferred is not yet
-    // trusted, so it is not published as received.
-    const uint8_t received = deferred ? 0U : (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+    // A tuple is received only when its own check verified it (an HDU/LDU2 RS decode, a MAC_PTT CRC, an ESS RS decode
+    // that needed no soft erasures) and no clear-conflict quarantine deferred it.
+    const uint8_t received = (deferred || !checked) ? 0U : (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
     p25_crypto_apply_resolution(opts, state, phase, slot, algid, keyid, mi, talkgroup, &previous, resolved, received);
     if (deferred) {
         p25_crypto_emit_deferred_pending(opts, state, slot, &previous);
