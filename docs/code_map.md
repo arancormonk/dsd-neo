@@ -572,10 +572,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   width the front end refuses fails the tune before any backend moves. Test: `ENGINE_TRUNK_RETUNE_REGRESSION` (the `-fA`
   and `-fM` blank rows among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
-  the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary (issue #634). Conventional rows also discard learned P25 modulation; trunk targets
-  retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
-  Unlocked RTL P25 trunk-scan targets try CQPSK after their first unproductive 4800-symbol/s dwell, before visiting 6000,
-  so the default three-second target visit includes the trial. This changes acquisition scheduling, not symbol timing.
+  the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
+  (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned
+  modulation. Normal no-carrier protocol confirmation resets remain in use. Unlocked RTL P25 trunk-scan targets try
+  CQPSK after their first unproductive 4800-symbol/s dwell, before visiting 6000, so the default three-second target
+  visit includes the trial. This changes acquisition scheduling, not symbol timing.
 - Frontend snapshots deep-copy only scalar scope metadata. `dsd_app_snapshot_configured_mode()` exposes the baseline;
   `dsd_scan_mode_active()` and `dsd_scan_mode_effective_profile()` distinguish combined P25 from global AUTO.
 
@@ -4573,16 +4574,16 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
      evidence that vouched for the carrier's transmissions (`carrier_boundary_forget_evidence()`): the NXDN, dPMR (with
      its CCH evidence), D-STAR, M17 and ProVoice confirmation gates restart, the YSF FICH verdict, the Phase 1 NID's
-     evidence and the two-slot TDMA verdict (`tdma_carrier`, see UI, Qt, "Second-slot strip") go, as the no-carrier pass restarts them, so the next carrier proves itself again. And every multi-frame
-     assembly that can publish an identity or a code goes too (`carrier_boundary_forget_assemblies()`), as the
-     no-carrier pass drops them, since the next carrier's next piece could complete one with the carrier left's pieces:
-     the NXDN SACCH superframe (segments, CRC marks, part) and alias blocks; the DMR data blocks, short LC fragments and
-     Capacity Plus blocks (`dmr_reset_blocks()`), embedded LC, late-entry MI and talker alias, with the alias shown; the
-     P25 MAC fragments and Phase 1 talker aliases; the Phase 2 slots' ESS_B with its reliabilities (marked stale, see
-     `p2_cc` above), Phase 2 voice streams (the playout drained first, then reset) and staged rekey
-     (`p25p2_frame_forget_carrier()`); the ended calls' P25
-     crypto (`p25_crypto_reset_slot()`: ALG, KID, MI and the LFSR state that steps it); the dPMR superframe part; the
-     M17 LSF chunks, packet and signature; the YSF text. The evidence and assemblies together are
+     evidence and the two-slot TDMA verdict (`tdma_carrier`, see UI, Qt, "Second-slot strip") go, as the no-carrier pass
+     restarts them, so the next carrier proves itself again. And every multi-frame assembly that can publish an identity
+     or a code goes too (`carrier_boundary_forget_assemblies()`), as the no-carrier pass drops them, since the next
+     carrier's next piece could complete one with the carrier left's pieces: the NXDN SACCH superframe (segments, CRC
+     marks, part) and alias blocks; the DMR data blocks, short LC fragments and Capacity Plus blocks
+     (`dmr_reset_blocks()`), embedded LC, late-entry MI and talker alias, with the alias shown; the P25 MAC fragments
+     and Phase 1 talker aliases; the Phase 2 slots' ESS_B with its reliabilities (marked stale, see `p2_cc` above),
+     Phase 2 voice streams (the playout drained first, then reset) and staged rekey (`p25p2_frame_forget_carrier()`);
+     the ended calls' P25 crypto (`p25_crypto_reset_slot()`: ALG, KID, MI and the LFSR state that steps it); the dPMR
+     superframe part; the M17 LSF chunks, packet and signature; the YSF text. The evidence and assemblies together are
      `dsd_engine_forget_carrier_decoding()`, which a trunk-scan target switch runs as well. D-STAR slow data, X2-TDMA
      signalling and P25 link control live within one superframe or frame, which the carrier count covers; the Phase 2
      ESS_A is collected fresh from each 2V burst.
@@ -5884,50 +5885,51 @@ Qt Quick frontend (`src/ui/qt`):
   call gaining identity late takes the headline using its original start.
 - Second-slot strip (`otherSlotPanel` in `qml/MonitorScreen.qml`): shown while `MetricsModel::twoSlotCarrier` holds or
   the non-hero slot has an active call, so on a two-slot carrier the other slot's calls never move what is below it.
-  Idle, it reads "SLOT N · idle" (slot 2 with no call or slot 1 leading, slot 1 with slot 2 leading), and Skip and
-  More are hidden in their places and `Accessible.ignored`. `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the
-  decoder's own verdict, from each snapshot with no hold of its own. The decoder sets it on content that passed its
-  check, never a bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit
-  check passed with no RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove
-  it), a P25 Phase 2 FACCH, SACCH or ESS that decoded with its parity check kept (`p25p2_note_tdma_carrier()`, no soft
-  erasures), or a whole X2-TDMA voice superframe on one carrier with a further X2-TDMA sync word in its places, or
-  one that follows another whole superframe on that carrier with no hunt gap (its sync word ends exactly 24 symbols
-  after the last one ended, `dsd_state::x2tdma_superframe_*`, dropped by an acquisition reset), which is how direct
-  mode, whose other timeslot carries no sync, proves it (X2-TDMA has no FEC to check). A sync loss
-  (`noCarrier()`) keeps it. `dsd_frame_sync_reset_acquisition()`, the carrier boundary and a trunk-scan target switch
+  Idle, it reads "SLOT N · idle" (slot 2 with no call or slot 1 leading, slot 1 with slot 2 leading), and Skip and More
+  are hidden in their places and `Accessible.ignored`. `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the decoder's
+  own verdict, from each snapshot with no hold of its own. The decoder sets it on content that passed its check, never a
+  bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit check passed with no
+  RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove it), a P25 Phase 2 FACCH,
+  SACCH or ESS that decoded with its parity check kept (`p25p2_note_tdma_carrier()`, no soft erasures), or a whole
+  X2-TDMA voice superframe on one carrier with a further X2-TDMA sync word in its places, or one that follows another
+  whole superframe on that carrier with no hunt gap (its sync word ends exactly 24 symbols after the last one ended,
+  `dsd_state::x2tdma_superframe_*`, dropped by an acquisition reset), which is how direct mode, whose other timeslot
+  carries no sync, proves it (X2-TDMA has no FEC to check). A sync loss (`noCarrier()`) keeps it.
+  `dsd_frame_sync_reset_acquisition()`, the carrier boundary and a trunk-scan target switch
   (`carrier_boundary_forget_evidence()`), a decode-mode change and the start and end of an engine run clear it, and so
-  does a decoded P25 Phase 1 NID (`dsd_dispatch_handle_p25p1()`), since a trunked return from a Phase 2 voice channel
-  to a Phase 1 control channel is no carrier boundary. Another FDMA protocol heard on the same carrier with no reset
+  does a decoded P25 Phase 1 NID (`dsd_dispatch_handle_p25p1()`), since a trunked return from a Phase 2 voice channel to
+  a Phase 1 control channel is no carrier boundary. Another FDMA protocol heard on the same carrier with no reset
   between leaves it standing until the next reset or boundary. The Skip button widens with the text scale instead of
-  cutting its label short.
+  cutting its label short. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `ENGINE_NO_CARRIER_RESET`, `APP_COMMAND_QUEUE`,
+  `DMR_CONFIDENCE_GATE`, `DMR_LC_RS_VERDICT`, `P25_P2_RELIABILITY`, `P25_P1_SYNC_DISPATCH`, `X2TDMA_VOICE_HELPERS`,
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
+  `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`).
 - Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): the same deterministic grid as the Signal
   search Now panel. The widest label any cell can show (Mute, Unmute, Hold TG, Release, Skip, TG list, Avoid TG, Lock
   out) is measured at the font scale in force; four columns only where a quarter of the row fits it with
   `Theme.cardPadding` either side, else two (a 360 px phone takes two at every scale); one label line count and one
   height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces (`OutlineButton.wrapMode`
-  `Text.WordWrap`). The Avoid row spans two cells, the full width in two columns; at compact height the Avoid cell
-  takes TG list's place. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`), `tst_monitor_compact.qml`. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `ENGINE_NO_CARRIER_RESET`, `APP_COMMAND_QUEUE`,
-  `DMR_CONFIDENCE_GATE`, `DMR_LC_RS_VERDICT`, `P25_P2_RELIABILITY`, `P25_P1_SYNC_DISPATCH`, `X2TDMA_VOICE_HELPERS`,
-  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
-  `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`).
+  `Text.WordWrap`). The Avoid row spans two cells, the full width in two columns; at compact height the Avoid cell takes
+  TG list's place. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`), `tst_monitor_compact.qml`.
 - Typed input and sheet dismissal: `qml/ModalSheet.qml` hides on a tap outside its panel (on a phone the 18 px margins
   beside it), Back and Escape through `requestDismiss()`; menus, confirmations and read-only sheets keep that. A sheet
   that holds typed input sets `dismissHandler` to a `requestClose()` that compares the live field text (never state
   committed on `editingFinished`, which the scrim beats) with a baseline captured when its editing scope opened or was
   replaced, and asks through `qml/DiscardDialog.qml` (parented to the sheet) when they differ: the Signal search range
-  editor (`openedForm`, with its own Cancel), the idle Signal search screen (`openedSource`, set by `seed()` from
-  Main's `seedSignalSearch()` and when a session stops), `BackupFlow.qml`'s passphrase and unlock sheets (only while
-  editable and typed; their Cancel and the busy steps cancel at once), `DecryptionProfileEditor.qml` and its key and
-  mapping dialogs (`openedForm`, re-captured after `openMatching()`/`openTalkgroup()` prefill, plus the pending fallback
-  algorithm), `KeySheet.qml` (an unapplied direct-key draft asks the discard question; another saved profile or scope than at
-  open, not applied yet, asks "Close without applying the profile …?" through `DiscardDialog.askWith()`), `ToneFilterSheet.qml`
-  (`openedPolicy`, re-captured by `chooseScope()`), Spectrum's Go to, `ScanListScreen.qml` (`fingerprint()` includes
-  the unadded frequency fields), plus the wizard, Explore setup and talkgroup sheets. A `DiscardDialog` closes with the
-  surface under it, so it never returns when that reopens. `RadioReferenceScreen.reset()` keeps the typed zip code and
-  system ID (and their tab) across visits instead; `doImport()` clears them. Tests: `UI_QT_QML_CALL_LISTS`
-  (`tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
-  `tst_tone_filter_sheet.qml`, `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`,
-  `tst_radioreference_screen.qml`, `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
+  editor (`openedForm`, with its own Cancel), the idle Signal search screen (`openedSource`, set by `seed()` from Main's
+  `seedSignalSearch()` and when a session stops), `BackupFlow.qml`'s passphrase and unlock sheets (only while editable
+  and typed; their Cancel and the busy steps cancel at once), `DecryptionProfileEditor.qml` and its key and mapping
+  dialogs (`openedForm`, re-captured after `openMatching()`/`openTalkgroup()` prefill, plus the pending fallback
+  algorithm), `KeySheet.qml` (an unapplied direct-key draft asks the discard question; another saved profile or scope
+  than at open, not applied yet, asks "Close without applying the profile …?" through `DiscardDialog.askWith()`),
+  `ToneFilterSheet.qml` (`openedPolicy`, re-captured by `chooseScope()`), Spectrum's Go to, `ScanListScreen.qml`
+  (`fingerprint()` includes the unadded frequency fields), plus the wizard, Explore setup and talkgroup sheets. A
+  `DiscardDialog` closes with the surface under it, so it never returns when that reopens.
+  `RadioReferenceScreen.reset()` keeps the typed zip code and system ID (and their tab) across visits instead;
+  `doImport()` clears them. Tests: `UI_QT_QML_CALL_LISTS` (`tst_signal_search.qml`, `tst_settings_backup.qml`,
+  `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`, `tst_scan_row_edits.qml`,
+  `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,
+  `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
