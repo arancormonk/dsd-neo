@@ -621,9 +621,11 @@ Item {
         // The Now panel's height depends on width and font scale only: every
         // state and every content extreme below measures the same.
         function test_now_panel_height_is_steady_data() {
-            return [{tag: "default text", scale: 1.0}, {tag: "largest text", scale: 1.6}];
+            return [{tag: "default text", scale: 1.0, width: 411}, {tag: "largest text", scale: 1.6, width: 411},
+                {tag: "360 dp, default text", scale: 1.0, width: 360}, {tag: "360 dp, largest text", scale: 1.6, width: 360}];
         }
         function test_now_panel_height_is_steady(data) {
+            root.width = data.width;
             Ui.Theme.fontScale = data.scale;
             var screen = loader.item;
             var panel = findChild(screen, "searchNowPanel");
@@ -684,11 +686,17 @@ Item {
                 }
             }
             var actions = findChild(screen, "searchActions");
-            compare(actions.columns, 2, "a phone is two columns wide");
-            compare(actions.rows, 3, "six cells, three rows");
+            var narrowLarge = data.width === 360 && data.scale > 1;
+            // A narrow phone at the largest text cannot fit "permanently" in half
+            // a row: one column, so no word breaks mid-way.
+            compare(actions.columns, narrowLarge ? 1 : 2, "a phone is two columns wide, or one where a word would break");
+            compare(actions.rows, narrowLarge ? 6 : 3, "six cells");
             var more = findChild(screen, "searchMore");
-            compare(more.y, 2 * (actions.cellHeight + actions.spacing), "More closes the last row");
-            compare(actions.labelLines, data.scale > 1 ? 2 : 1);
+            compare(more.y, (actions.rows - 1) * (actions.cellHeight + actions.spacing), "More closes the last row");
+            if (data.width === 411)
+                compare(actions.labelLines, data.scale > 1 ? 2 : 1);
+            else if (data.scale > 1)
+                compare(actions.labelLines, 1, "a full-width cell holds every label on one line");
             model.status = Object.assign({}, base, {phase: 1});
             verify(!findChild(screen, "searchStatusLine").truncated, "the status line wraps onto its second line");
             verify(actions.y + actions.height <= panel.height);
@@ -849,6 +857,39 @@ Item {
             Ui.Theme.fontScale = 1.0;
             verify(!line.truncated);
             verify(line.text.indexOf("channel 81 of 801") > 0);
+        }
+        // Long valid bounds on a narrow phone at the largest text: the pass and
+        // the channel count still show whole, whatever the range name, in a
+        // line count the width and the font scale alone decide.
+        function test_status_line_keeps_progress_with_long_bounds_data() {
+            var rows = [];
+            for (var width of [360, 411]) {
+                for (var scale of [1.0, 1.6])
+                    rows.push({tag: width + " dp, scale " + scale, width: width, scale: scale});
+            }
+            return rows;
+        }
+        function test_status_line_keeps_progress_with_long_bounds(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            var screen = loader.item;
+            var line = findChild(screen, "searchStatusLine");
+            var slot = line.parent;
+            var heights = [];
+            for (var name of ["Air", "Regional interoperability and public safety mutual aid channels"]) {
+                for (var bounds of [["118.000", "137.000"], ["118.008333", "136.991667"]]) {
+                    model.status = Object.assign({}, model.status, {phase: 1, pass: 12, channel: 99998, count: 99999,
+                        rangeName: name, rangeStartMHz: bounds[0], rangeEndMHz: bounds[1]});
+                    waitForRendering(line);
+                    verify(!line.truncated, "the line fits its slot for " + bounds.join("–"));
+                    verify(line.contentHeight <= slot.height + 0.5);
+                    verify(line.text.indexOf("Pass 12") === 0, "the pass shows whole");
+                    verify(line.text.indexOf("channel 99999 of 99999") > 0, "the channel count shows whole: " + line.text);
+                    heights.push(slot.height);
+                }
+            }
+            for (var h of heights)
+                compare(h, heights[0], "the slot's height depends on width and scale only");
         }
         function test_live_cue_marks_each_measurement() {
             var cue = findChild(loader.item, "searchLiveCue");
@@ -1145,6 +1186,13 @@ Item {
             wait(100);
             grabImage(root).save("/tmp/dsd-signal-search-large.png");
             var button = findChild(loader.item, "searchStartPause");
+            verify(button.y + button.height <= loader.item.height);
+            // A narrow phone, with long valid bounds and counts.
+            root.width = 360;
+            model.status = Object.assign({}, model.status, {pass: 12, channel: 99998, count: 99999, rangeName: "Regional interoperability",
+                rangeStartMHz: "118.008333", rangeEndMHz: "136.991667"});
+            wait(100);
+            grabImage(root).save("/tmp/dsd-signal-search-large-360.png");
             verify(button.y + button.height <= loader.item.height);
         }
         function test_capture_editor() {

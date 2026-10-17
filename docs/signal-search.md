@@ -84,7 +84,10 @@ While a search runs, the screen is laid out for what is on the air now:
   **Pass 2 · Air band · 118.000–137.000 MHz · channel 81 of 801**. It names the
   range the search is in, not the range of the last detection, and a range
   edited while paused shows there once **Resume** applies it. A range name too
-  long for the line is shortened so the channel count always shows.
+  long for the line is shortened so the pass and channel count always show
+  whole; on a narrow phone with the largest text the line keeps three lines.
+  The Now panel's actions take three columns, or two, or one where a label's
+  word would not fit half the width, so no label is cut.
 - The **Now** panel keeps one height for the whole session: frequency, strength,
   identification, two lines of detail, saved-frequency names and the actions.
   The strength line shows the live and detection levels

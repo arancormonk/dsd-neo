@@ -153,7 +153,19 @@ Item {
     // configuration: never the retained detection's, which can belong to an
     // earlier range, and a paused edit shows only once Resume applies it.
     // The range name alone gives way when the line would need more than its
-    // two lines, so the channel count always shows.
+    // lines, so the pass and channel count always show. The line count is
+    // reserved from the width and the font scale alone: two, or three where
+    // the widest pass, bounds and channel count with a shortened name would
+    // not fit two (a narrow phone at the largest text).
+    readonly property int statusLines: {
+        var font = statusMetrics.font;
+        var width = statusText.width - 1;
+        if (width <= 0)
+            return 2;
+        var widest = [qsTr("Pass %1").arg("8888"), "…", qsTr("%1–%2 MHz").arg("8888.888888").arg("8888.888888"),
+                      qsTr("channel %1 of %2").arg("888888").arg("888888")].join(" · ");
+        return wrappedLines(widest, width) <= 2 ? 2 : 3;
+    }
     readonly property string statusLine: {
         var font = statusMetrics.font;
         var pass = qsTr("Pass %1").arg(status.pass || 1);
@@ -164,15 +176,19 @@ Item {
         var bounds = qsTr("%1–%2 MHz").arg(status.rangeStartMHz || "").arg(status.rangeEndMHz || "");
         var compose = function (n) { return [pass, n, bounds, channel].join(" · "); };
         var width = statusText.width - 1;
-        if (width <= 0 || wrappedLines(compose(name), width) <= 2)
+        var lines = statusLines;
+        if (width <= 0 || wrappedLines(compose(name), width) <= lines)
             return compose(name);
         var step = statusMetrics.advanceWidth("M");
         for (var budget = statusMetrics.advanceWidth(name) - step; budget > 0; budget -= step) {
             var shorter = statusMetrics.elidedText(name, Qt.ElideRight, budget);
-            if (wrappedLines(compose(shorter), width) <= 2)
+            if (wrappedLines(compose(shorter), width) <= lines)
                 return compose(shorter);
         }
-        return compose("…");
+        if (wrappedLines(compose("…"), width) <= lines)
+            return compose("…");
+        // Bounds wider than any a receiver tunes: the progress stays whole.
+        return [pass, channel].join(" · ");
     }
     /** Lines @p text takes at @p width in the status line's font, or in
      * @p metrics, wrapped at spaces as the line wraps it (a word wider than
@@ -358,11 +374,12 @@ Item {
                 color: Theme.textPrimary
             }
         }
-        // While a session runs: where the search is. Two lines are always kept
-        // for it, so a longer range name or channel count never moves the page.
+        // While a session runs: where the search is. Its lines (statusLines) are
+        // always kept for it, so a longer range name or channel count never
+        // moves the page.
         Item {
             width: parent.width
-            height: screen.sessionActive ? 2 * Math.ceil(statusMetrics.lineSpacing) : statusText.implicitHeight
+            height: screen.sessionActive ? screen.statusLines * Math.ceil(statusMetrics.lineSpacing) : statusText.implicitHeight
             Text {
                 id: statusText
                 objectName: "searchStatusLine"
@@ -372,7 +389,7 @@ Item {
                 font.family: Theme.sans
                 font.pixelSize: screen.sessionActive ? Theme.fontSize(13) : Theme.fontSize(15)
                 wrapMode: Text.Wrap
-                maximumLineCount: screen.sessionActive ? 2 : 1000
+                maximumLineCount: screen.sessionActive ? screen.statusLines : 1000
                 elide: Text.ElideRight
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
@@ -612,8 +629,10 @@ Item {
                     }
                     // A deterministic grid: three equal columns when every cell
                     // fits the widest label any cell can show at this font
-                    // scale, else two; one label line, or two when that widest
-                    // label needs them. It works for any number of cells.
+                    // scale, else two when every word of every label fits a
+                    // cell (no word breaks mid-way), else one; as many label
+                    // lines as the longest label any cell can show wraps to at
+                    // the cell width. It works for any number of cells.
                     Item {
                         id: actions
                         objectName: "searchActions"
@@ -629,10 +648,32 @@ Item {
                             }
                             return Math.ceil(widest);
                         }
-                        readonly property int columns: (width - 2 * spacing) / 3 >= widest + 2 * Theme.cardPadding ? 3 : 2
+                        // The widest single word any cell can show.
+                        readonly property real widestWord: {
+                            var font = actionMetrics.font;
+                            var widest = 0;
+                            for (var cell of screen.actionCells) {
+                                for (var label of (cell.labels || [cell.label])) {
+                                    for (var word of label.split(" "))
+                                        widest = Math.max(widest, actionMetrics.advanceWidth(word));
+                                }
+                            }
+                            return Math.ceil(widest);
+                        }
+                        readonly property int columns: (width - 2 * spacing) / 3 >= widest + 2 * Theme.cardPadding ? 3
+                                                     : (width - spacing) / 2 - 24 >= widestWord ? 2 : 1
                         readonly property real cellWidth: (width - (columns - 1) * spacing) / columns
-                        // OutlineButton keeps 12 px either side of its label.
-                        readonly property int labelLines: widest <= cellWidth - 24 ? 1 : 2
+                        // OutlineButton keeps 12 px either side of its label, which
+                        // wraps at spaces as wrappedLines() counts.
+                        readonly property int labelLines: {
+                            var font = actionMetrics.font;
+                            var lines = 1;
+                            for (var cell of screen.actionCells) {
+                                for (var label of (cell.labels || [cell.label]))
+                                    lines = Math.max(lines, screen.wrappedLines(label, cellWidth - 24, actionMetrics));
+                            }
+                            return lines;
+                        }
                         readonly property real cellHeight: Math.max(Theme.minimumTouchSize, Math.ceil(labelLines * actionMetrics.lineSpacing) + 24)
                         readonly property int rows: Math.ceil(screen.actionCells.length / columns)
                         width: parent.width

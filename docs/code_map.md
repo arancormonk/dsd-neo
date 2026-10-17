@@ -5488,7 +5488,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   expansion and the history limit reset on close and on a new session). The Now panel's
   height depends on width and font scale only: each line is a fixed-height `Text` sized
   from `FontMetrics`, and its action grid takes three equal columns when the widest label
-  any cell can show fits, else two, for any cell count; its sixth cell, More, opens the
+  any cell can show fits, else two when every word of every label fits half a row, else
+  one, with as many label lines as the longest label wraps to at the cell width
+  (`wrappedLines()`), for any cell count. The status line keeps `statusLines` lines (two,
+  or three where the widest pass, bounds and channel count would not fit two at this width
+  and scale) and shortens only the range name, so the pass and channel count always show
+  whole. Its sixth cell, More, opens the
   detection menu (`tst_signal_search.qml`). `hitMap()` passes the hit's checked `site`,
   `slot` and `crypt` through; the panel's two-line detail (`detailText()`) reads site,
   access, tone, `Slot N`, target, source, then crypt, eliding within the two lines with
