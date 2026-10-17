@@ -1043,7 +1043,7 @@ test_site_notes_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
 
 /* Put an active call on @p slot: one epoch of one transmission, as the canonical layer would hold it. */
 static dsd_call_snapshot*
-put_call(uint8_t slot, uint64_t epoch, double started_m, int protocol, uint64_t target, uint64_t source) {
+put_call(uint8_t slot, uint64_t epoch, double started_m, int protocol, uint64_t target_id, uint64_t source_id) {
     dsd_call_snapshot* call = &calls[slot];
     DSD_MEMSET(call, 0, sizeof(*call));
     call->epoch = epoch;
@@ -1052,8 +1052,8 @@ put_call(uint8_t slot, uint64_t epoch, double started_m, int protocol, uint64_t 
     call->phase = DSD_CALL_PHASE_ACTIVE;
     call->protocol = protocol;
     call->kind = DSD_CALL_KIND_GROUP_VOICE;
-    call->ota_target_id = target;
-    call->ota_source_id = source;
+    call->ota_target_id = target_id;
+    call->ota_source_id = source_id;
     call->crypto = DSD_CALL_CRYPTO_CLEAR;
     return call;
 }
@@ -1069,8 +1069,8 @@ put_crypto(dsd_call_snapshot* call, dsd_call_crypto_state crypto, uint8_t algid,
 }
 
 static int
-tuple_is(const dsd_signal_search_hit* hit, uint32_t target, uint32_t source, int slot, const char* crypt) {
-    return hit->target == target && hit->source == source && hit->slot == slot && strcmp(hit->crypt, crypt) == 0;
+tuple_is(const dsd_signal_search_hit* hit, uint32_t target_id, uint32_t source_id, int slot, const char* crypt) {
+    return hit->target == target_id && hit->source == source_id && hit->slot == slot && strcmp(hit->crypt, crypt) == 0;
 }
 
 /* A detection's IDs, texts, slot and crypt are one checked call record's: the most recent call heard on the hit,

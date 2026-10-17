@@ -578,7 +578,7 @@ dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, 
                                   const char* access) {
     search_coord* c = search_get(state);
     /* The decoders drop a frame an input interruption cut; this refuses whatever one still reports. */
-    if (!search_receiving(c, state)) {
+    if (!c || !search_receiving(c, state)) {
         return;
     }
     c->activity = dsd_decode_now_mono_ms();
@@ -610,7 +610,7 @@ dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_si
     search_coord* c = search_get(state);
     /* A repeated broadcast changes nothing and publishes nothing; a new identity publishes the hit at once, so the
        last broadcast before the channel falls silent still reaches it. */
-    if (!search_receiving(c, state) || !dsd_signal_search_site_apply(&c->site, note)) {
+    if (!c || !search_receiving(c, state) || !dsd_signal_search_site_apply(&c->site, note)) {
         return;
     }
     if (search_refresh_site(c)) {
@@ -727,7 +727,7 @@ search_call_from_record(search_call* next, const dsd_call_snapshot* record, cons
 void
 dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot) {
     search_coord* c = search_get(state);
-    if (!search_receiving(c, state) || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+    if (!c || !search_receiving(c, state) || slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return;
     }
     dsd_call_snapshot record;
