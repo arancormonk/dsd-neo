@@ -215,6 +215,10 @@ Window {
         }
         abandonSignalSearchStart();
         cancelPendingRestart();
+        // Pinned open, as Stop pins it: a screen Activity recreation reopened
+        // is only bound to status.owned, which the search clears before the
+        // decoder is idle, and Back must leave the stopped search on it.
+        mainRoot.signalSearchOpen = true;
         var state = decoderHost.sessionState;
         pendingRestart = Object.assign({
             leaveSearch: true

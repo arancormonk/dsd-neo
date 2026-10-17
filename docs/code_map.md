@@ -5506,7 +5506,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   returns), so a stop that hangs past the engine's restore timeouts cannot lock the
   screen; the site chooser's any-input cancel is ignored while it runs, and
   `startSystem()`/`restartSite()` refuse by state before cancelling, so a USB
-  attachment's start cannot drop it. `finishPendingRestart()` closes the screen just
+  attachment's start cannot drop it. `leaveSearchFor()` pins `signalSearchOpen`
+  true, as Stop does, so a screen reopened after Activity recreation (bound to `status.owned`, which
+  the search clears before the decoder is idle) stays through the stop and after a Back cancel.
+  `finishPendingRestart()` closes the screen just
   before starting the request, and a stop ending in Failed closes it and clears the flag.
   A saved request is checked (`savedStartRefusal()`) before the stop, the refusal shown in
   the screen's `localFailure`, and again in `finishPendingRestart()`, which shows the

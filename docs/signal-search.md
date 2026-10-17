@@ -265,7 +265,10 @@ showed.
   avoid list, for example) shows below it. If
   it became avoided while the search stopped, Home shows the refusal: **Retry**
   asks again and **Edit** opens that system. If Android recreates the Activity during the
-  handoff, the reopened app finds the search stopped and starts nothing.
+  handoff, the reopened app finds the search stopped and starts nothing. A search screen
+  the app reopened over a running search after such a recreation hands off the same way:
+  it stays, reading **Stopping the search…**, until the decoder is idle, and after
+  **Back** the stopped search stays on it.
 - **Retry** on a failed Signal search start opens Signal search again and starts
   the search on the same receiver; **Edit** opens Signal search. Both take the
   receiver attached now, as opening Signal search from Home does: a USB dongle

@@ -24,6 +24,10 @@ Item {
         function control(action, session, hit) { lastAction = action; }
         function arm() { return armError; }
         function cancelArm() { cancels++; }
+        function systemForHit(hit, source) {
+            return Object.assign({}, source, {freqMhz: hit.freqMHz, decodeFlag: "-fA", gainDb: 21, trunking: false,
+                searchUnresolved: false});
+        }
         function defaultRange() { return {name: "Range", startMHz: "450.000000", endMHz: "460.000000", enabled: true,
             stepNum: 12500, stepDen: 1, bandwidth: 16000, am: false, digital: 1, gainSet: false, gainAuto: true,
             gain: 0, sensitivity: 15, minimumSet: false, minimum: -60, squelchMode: 2, squelchMargin: 10,
@@ -51,6 +55,8 @@ Item {
             tryCompare(app, "active", true);
         }
         function cleanup() {
+            testContext.setDelayedStop(false);
+            app.cancelPendingRestart();
             app.signalSearchOpen = false;
             var search = findChild(app, "signalSearchScreen");
             search.searchModel = null;
@@ -290,6 +296,70 @@ Item {
                 compare(app.sessionSystem.host, data.source.host);
                 compare(app.sessionSystem.port, data.source.port);
             }
+        }
+        // A handoff from a search screen Activity recreation reopened (its
+        // signalSearchOpen still bound to status.owned): the search publishes
+        // owned=false before the decoder finishes stopping, and the screen must
+        // stay, saying it is stopping, not expose the Monitor. Back cancels the
+        // handoff and the screen stays once the stop completes, as Stop leaves
+        // it; carried through, the replacement starts once the decoder is idle.
+        function test_recreated_search_screen_handoff_data() {
+            return [{tag: "explore here, back", saved: false, back: true},
+                {tag: "explore here, completes", saved: false, back: false},
+                {tag: "saved system, back", saved: true, back: true}];
+        }
+        function test_recreated_search_screen_handoff(data) {
+            var uid = "";
+            if (data.saved) {
+                verify(savedSystems.add({name: "Warehouse", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                    freqMhz: "463.5500"}));
+                uid = savedSystems.get(savedSystems.count - 1).uid;
+            }
+            searchStub.ranges = [searchStub.defaultRange()];
+            searchStub.status = {phase: 4, owned: true, session: "17", hit: {id: "1", freqMHz: "450.125000", ended: false}};
+            testContext.setSignalSearchModel(searchStub);
+            testContext.setMetric("radioSource", {sourceType: "rtltcp", host: "10.0.0.5", port: 1235});
+            loader.active = false;
+            wait(0);
+            loader.active = true;
+            tryCompare(loader, "status", Loader.Ready);
+            var screen = findChild(app, "signalSearchScreen");
+            verify(app.signalSearchOpen && screen.visible, "an owned search reopens its screen");
+            testContext.setDelayedStop(true);
+            if (data.saved)
+                screen.startSavedSystem(uid);
+            else
+                screen.exploreDetection(searchStub.status.hit);
+            compare(decoderHost.sessionState, 3);
+            verify(app.leavingSearch);
+            // The search lets go of the tuner before the decoder is idle.
+            searchStub.status = {phase: 0, owned: false, session: "17", hit: {}};
+            testContext.setSignalSearchModel(searchStub);
+            wait(0);
+            verify(app.signalSearchOpen, "the screen stays while the search stops");
+            compare(Ui.Navigation.rootSurfaces[0], screen, "the search screen, not the Monitor, is the root while it stops");
+            compare(findChild(screen, "searchIdentification").text, "Stopping the search…");
+            if (data.back) {
+                app.requestBack();
+                verify(!app.leavingSearch && app.pendingRestart === null);
+                verify(app.signalSearchOpen);
+                compare(Ui.Navigation.rootSurfaces[0], screen);
+            }
+            testContext.setDelayedStop(false);
+            testContext.setLifecyclePhase(0);
+            wait(0);
+            if (data.back) {
+                compare(decoderHost.sessionState, 0, "nothing starts after Back");
+                verify(app.signalSearchOpen && screen.visible, "the stopped search stays on its screen");
+                verify(findChild(screen, "searchStartPause").enabled, "ready to start again");
+            } else {
+                compare(decoderHost.sessionState, 1);
+                verify(!app.signalSearchOpen);
+                compare(app.sessionSystem.name, "Exploring");
+                compare(app.sessionSystem.freqMhz, "450.125000");
+            }
+            while (savedSystems.count)
+                savedSystems.remove(0);
         }
         function visibleTitles(item, title) {
             if (!item.visible) return 0;
