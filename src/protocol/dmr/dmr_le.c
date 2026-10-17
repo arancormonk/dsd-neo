@@ -561,7 +561,7 @@ dmr_sbrc_apply_enc_identifier_slot1(const dsd_opts* opts, dsd_state* state, uint
     if (state->payload_algidR != alg) {
         state->payload_algidR = alg + 0x20; // assuming DMRA approved alg values (moto patent)
     }
-    state->dmr_crypto_inherited[1] = 0U; // the current call's own, as on slot 1
+    state->dmr_crypto_inherited[1] = 0U; // the current call's own, as on slot 0
 }
 
 static void

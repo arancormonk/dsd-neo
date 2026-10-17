@@ -182,8 +182,9 @@ shows none of the previous call's ALG ID and key ID: only what the new call's ow
 signalling supplies after its link control (a DMR PI or late-entry identifier, or a P25
 LDU2, ESS or MAC_PTT), or a forced or key-inferred algorithm the decoder chose for it,
 even when that is the same value the previous call showed. Two limits follow. A new call
-whose own PI, HDU or LDU2 decoded before its link control shows no ALG ID or key ID until
-a later one of its own decodes, and that earlier PI, HDU or LDU2, decoded while the
+whose own PI, HDU, LDU2 or DMR late-entry identifier decoded before its link control (its
+header lost, or its first embedded link control failing its check) shows no ALG ID or key
+ID until a later one of its own decodes, and that earlier signalling, decoded while the
 previous call was still active, is attributed to the previous call. A conventional P25
 Phase 1 call's HDU always precedes its first LDU1, so after a missed TDU its HDU is the
 previous call's. History does not store the call details'

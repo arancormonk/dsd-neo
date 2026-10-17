@@ -708,9 +708,9 @@ dmr_flco_resolve_key_material(const dmr_flco_ctx* ctx, int algid) {
 
 // Whether @p algid with @p kid is what the voice path itself chooses for this LC's call when the air names no ALG ID:
 // the --dmr-force-algid value for an encrypted call (dsd_dmr_apply_forced_algid()), or the ALG ID inferred from the
-// slot's loaded key for a call that is encrypted or whose service options are unknown (dmr_maybe_infer_algid_from_key()
-// in dmr_le.c), each with the 0xFF "no key id" placeholder. Left live by a replaced call, those values are the same
-// choice made for this call, so they are this call's own, not inherited.
+// slot's loaded key for an encrypted call with no forced ALG ID (dmr_maybe_infer_algid_from_key() in dmr_le.c), each
+// with the 0xFF "no key id" placeholder. Left live by a replaced call, those values are the same choice made for this
+// call, so they are this call's own, not inherited.
 static int
 dmr_flco_crypto_is_decoders_choice(const dmr_flco_ctx* ctx, uint8_t algid, uint16_t kid) {
     if (algid == 0U || kid != 0xFFU) {
@@ -720,8 +720,10 @@ dmr_flco_crypto_is_decoders_choice(const dmr_flco_ctx* ctx, uint8_t algid, uint1
     if (forced != 0 && (int)algid == forced && (ctx->so & 0x40U) != 0U) {
         return 1;
     }
+    // The late-entry inference runs only with no --dmr-force-algid in force (state->M == 0), and a decoded LC whose
+    // service options lack the privacy bit names a clear call, which is never given an inferred ALG ID.
     const int inferred = dmr_le_key_inferred_algid(ctx->state, ctx->slot);
-    return inferred != 0 && (int)algid == inferred && (ctx->so == 0U || (ctx->so & 0x40U) != 0U);
+    return ctx->state->M == 0 && inferred != 0 && (int)algid == inferred && (ctx->so & 0x40U) != 0U;
 }
 
 static void

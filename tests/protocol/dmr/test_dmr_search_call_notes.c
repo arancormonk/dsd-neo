@@ -397,21 +397,39 @@ test_replacing_call_shows_the_decoders_choice(dsd_opts* opts) {
         state->event_history_s = NULL;
         free_state(state);
     }
-    // The same values are the previous call's when the decoder would not choose them for this call: a forced ALG ID
-    // for a clear call, or an inferred one with no key loaded.
-    dsd_state* state = fresh_state();
-    dsd_decode_clock_use_test(41000000000ULL);
-    run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
-    state->payload_algid = 0x21;
-    state->payload_keyid = 0xFF;
-    run_lc(opts, state, 0U, 3U, 0x40U, 1001U, 2002U);
-    assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
-    dsd_decode_clock_test_set_ns(41500000000ULL);
-    run_lc(opts, state, 0U, 1U, 0x40U, 3333U, 4444U);
-    dsd_call_snapshot call = call_on(state, 0U);
-    assert(call.ota_target_id == 3333U && call.algid == 0U && call.kid == 0U);
-    dsd_decode_clock_use_system();
-    free_state(state);
+    // The same values are the previous call's when the decoder would not choose them for this call, so its record and
+    // history row show no ALG ID: (0) an inferred one with no key loaded; (1) an inferred one for a clear call (SO 0)
+    // with a key loaded; (2) an inferred one while --dmr-force-algid is set alongside a loaded key (the inference never
+    // runs then); (3) a forced one for a clear call.
+    for (int c = 0; c < 4; ++c) {
+        dsd_state* state = fresh_state();
+        DSD_MEMSET(history, 0, sizeof(history));
+        init_event_history(&history[0], 0, 1);
+        init_event_history(&history[1], 0, 1);
+        state->event_history_s = history;
+        dsd_decode_clock_use_test(41000000000ULL);
+        run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
+        state->payload_algid = c == 3 ? 0x24 : 0x21;
+        state->payload_keyid = 0xFF;
+        if (c == 1 || c == 2) {
+            state->R = 0x1122334455ULL;
+        }
+        if (c >= 2) {
+            state->M = 0x24;
+        }
+        run_lc(opts, state, 0U, 3U, 0x40U, 1001U, 2002U);
+        assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+        dsd_decode_clock_test_set_ns(41500000000ULL);
+        const uint8_t so = (c == 1 || c == 3) ? 0x00U : 0x40U;
+        run_lc(opts, state, 0U, 1U, so, 3333U, 4444U);
+        dsd_call_snapshot call = call_on(state, 0U);
+        assert(call.ota_target_id == 3333U && call.algid == 0U && call.kid == 0U && call.crypto_received == 0U);
+        assert(!event_row_names_alg(&history[0]));
+        state->M = 0;
+        dsd_decode_clock_use_system();
+        state->event_history_s = NULL;
+        free_state(state);
+    }
 }
 
 /* A late-entry SB of the replacing call, decoded after its LC, belongs to it even when it repeats the values the
