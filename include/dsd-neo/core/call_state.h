@@ -403,6 +403,12 @@ int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_
  * identity, activity age, crypto classification, media or listening policy. */
 int dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
                                       int signaled_id, int effective_id, int available, int fallback);
+/** The slot's active epoch now describes another transmission (one that replaced it while the canonical layer kept the
+ * epoch, e.g. an identity-less epoch a new call's LC names): forget the ALG ID, key id, MI, received crypto and
+ * restored mark the replaced transmission published into it, so they are never shown as the new call's. The
+ * classification and audio permission stay until the new call's next crypto update. Returns 1 when the record
+ * changed, 0 when the slot holds no active epoch (or nothing to forget), -1 on bad arguments. */
+int dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot);
 /** Update crypto metadata on an existing active or retained ended epoch. */
 int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);

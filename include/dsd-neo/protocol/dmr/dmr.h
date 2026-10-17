@@ -64,6 +64,9 @@ enum {
 
 void dmr_le_vendor_set(dsd_state* state, uint8_t slot, uint8_t mode);
 void dmr_le_vendor_reset(dsd_state* state, uint8_t slot);
+/** The ALG ID the late-entry path infers for the slot from its loaded scalar key (0x21 for a 40-bit key, else 0x22),
+ * or 0 with no key loaded. */
+int dmr_le_key_inferred_algid(const dsd_state* state, uint8_t slot);
 /** Forget the slot's held pre-call PI crypto (dsd_state::dmr_pi_precall_rx) and its inherited-crypto mark
  * (dmr_crypto_inherited): the transmission they were for is over or gone. Decryption state is not touched. */
 void dmr_pi_precall_reset(dsd_state* state, uint8_t slot);

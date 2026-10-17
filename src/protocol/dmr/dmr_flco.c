@@ -706,6 +706,24 @@ dmr_flco_resolve_key_material(const dmr_flco_ctx* ctx, int algid) {
     return dsd_dmr_slot_key_material(ctx->state, (int)ctx->slot, eff_kid, mapped);
 }
 
+// Whether @p algid with @p kid is what the voice path itself chooses for this LC's call when the air names no ALG ID:
+// the --dmr-force-algid value for an encrypted call (dsd_dmr_apply_forced_algid()), or the ALG ID inferred from the
+// slot's loaded key for a call that is encrypted or whose service options are unknown (dmr_maybe_infer_algid_from_key()
+// in dmr_le.c), each with the 0xFF "no key id" placeholder. Left live by a replaced call, those values are the same
+// choice made for this call, so they are this call's own, not inherited.
+static int
+dmr_flco_crypto_is_decoders_choice(const dmr_flco_ctx* ctx, uint8_t algid, uint16_t kid) {
+    if (algid == 0U || kid != 0xFFU) {
+        return 0;
+    }
+    const int forced = dsd_dmr_forced_algid(ctx->state);
+    if (forced != 0 && (int)algid == forced && (ctx->so & 0x40U) != 0U) {
+        return 1;
+    }
+    const int inferred = dmr_le_key_inferred_algid(ctx->state, ctx->slot);
+    return inferred != 0 && (int)algid == inferred && (ctx->so == 0U || (ctx->so & 0x40U) != 0U);
+}
+
 static void
 dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     const int encrypted = (ctx->so & 0x40U) != 0U;
@@ -737,11 +755,13 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     dmr_pi_precall_drop_hold(ctx->state, ctx->slot);
     // Live values a replaced call left behind (its terminator missed) are still what the voice path decrypts with,
     // but they are not this call's: published as carried, the call keeps its own (none, until its PI or the voice
-    // path's forced or inferred choice supplies them). Once the live values change they are this call's.
+    // path's forced or inferred choice supplies them). Once the live values change they are this call's, and so are
+    // values that are the decoder's own choice for this call (dmr_flco_crypto_is_decoders_choice()).
     const uint8_t idx = ctx->slot;
     const int carried = ctx->state->dmr_crypto_inherited[idx] != 0U
                         && ctx->state->dmr_crypto_inherited_algid[idx] == (int)algid
-                        && ctx->state->dmr_crypto_inherited_keyid[idx] == (int)kid;
+                        && ctx->state->dmr_crypto_inherited_keyid[idx] == (int)kid
+                        && !dmr_flco_crypto_is_decoders_choice(ctx, algid, kid);
     if (!carried) {
         ctx->state->dmr_crypto_inherited[idx] = 0U;
     }
@@ -838,10 +858,14 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     // another call, which forks the epoch. Header repeats and embedded LCs of the same call keep the mode, and so does
     // evidence decoded before any call was active (a PI after a lost voice LC header).
     dsd_call_snapshot after;
-    if (was_active
-        && (boundary == DSD_CALL_BOUNDARY_BEGIN
-            || (dsd_call_state_get(ctx->state, ctx->slot, &after) > 0 && after.epoch != before.epoch))) {
+    const int have_after = dsd_call_state_get(ctx->state, ctx->slot, &after) > 0;
+    if (was_active && (boundary == DSD_CALL_BOUNDARY_BEGIN || (have_after && after.epoch != before.epoch))) {
         dmr_le_vendor_reset(ctx->state, ctx->slot);
+        // Where the canonical layer kept the epoch (it names an identity-less one after this call), the record still
+        // holds what the replaced transmission published into it: none of that is this call's.
+        if (have_after && after.epoch == before.epoch) {
+            (void)dsd_call_state_forget_crypto_values(ctx->state, ctx->slot);
+        }
         // The slot's live ALG ID, key id and MI are still the replaced call's. Decryption keeps them, exactly as it
         // always has; publication marks them as that call's, so the new call never shows them as its own.
         const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->slot);

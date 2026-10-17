@@ -810,6 +810,36 @@ dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch
 }
 
 int
+dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return -1;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
+        || (snapshot->algid == 0U && snapshot->kid == 0U && snapshot->mi == 0U && snapshot->crypto_received == 0U
+            && snapshot->received_algid == 0U && snapshot->received_kid == 0U && snapshot->crypto_restored == 0U)) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    snapshot->algid = 0U;
+    snapshot->kid = 0U;
+    snapshot->mi = 0U;
+    snapshot->crypto_received = 0U;
+    snapshot->received_algid = 0U;
+    snapshot->received_kid = 0U;
+    snapshot->crypto_restored = 0U;
+    snapshot->revision = call_state_next_nonzero(snapshot->revision);
+    ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
 dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
     return call_state_update_crypto(state, slot, update, 0);
 }

@@ -829,13 +829,20 @@ suite runs under this compiler.
   `dsd_call_crypto_update::carried` while they are unchanged: the record keeps its own values (none on the new
   epoch) and takes only the classification (P25: from the new call's own service options,
   `p25_crypto_carried_classification()`; DMR: its LC's privacy bit). Any PI, P25 resolution or new classification
-  clears the mark, and so does any change of the live values (the call's own forced, inferred or late-entry value).
+  clears the mark, and so does a DMR late-entry SB identifier decoded for the new call (even one repeating the marked
+  values) and any change of the live values. Live values that are the decoder's own choice for the new call are
+  published as its own, never carried: the `--dmr-force-algid` value for an encrypted LC, or the ALG ID inferred from
+  the slot's loaded key (`dmr_le_key_inferred_algid()`), each with the 0xFF key id placeholder
+  (`dmr_flco_crypto_is_decoders_choice()`). Where the canonical layer keeps the epoch at the fork (a BEGIN that names
+  an identity-less active epoch), DMR first calls `dsd_call_state_forget_crypto_values()`, so the record drops the
+  ALG ID, key id, MI and received bits the replaced transmission published into it.
   A reacquired epoch's seeded crypto is kept against updates that receive nothing and name no ALG ID or key id
   (`dsd_call_snapshot::crypto_restored`; the live values a sync loss cleared). Because the record no longer holds
   carried values, the DMR heal restores the slot's live ALG ID and key id from `dsd_state::dmr_live_pub_*` (what DMR
   last published into the ending epoch), which is what it always restored. Limits: after a missed terminator, a new
-  call whose own PI or LDU2 decoded before its link control shows no ALG/KID until a later one of its own, and that
-  PI or LDU2 is attributed to the previous, still-active call (`DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`).
+  call whose own PI, HDU or LDU2 decoded before its link control shows no ALG/KID until a later one of its own, and
+  that PI, HDU or LDU2 is attributed to the previous, still-active call (a conventional P25 Phase 1 HDU always
+  precedes the LDU1 that forks the call) (`DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`).
 - API note (CRC provenance, discussion #602): `<dsd-neo/core/crc_provenance.h>` defines the bits that
   `dsd_state::event_crc_invalid` (the decoder-thread scope a dispatcher ORs its bits into and restores),
   `dsd_state::data_header_crc_invalid`, `dsd_call_snapshot::crc_invalid` and `Event_History::crc_invalid` carry:

@@ -1264,7 +1264,8 @@ struct dsd_state {
     /* The slot's live ALG ID and key id as a call found them when it replaced one whose terminator was missed. The
      * decoder keeps decrypting with them, as it always has; they are the replaced call's, so while the live values
      * still equal them the new call publishes them as carried (dsd_call_crypto_update::carried), never as its own.
-     * Cleared by any PI header, once the live values change, and with the held PI (dmr_pi_precall_reset()). */
+     * Cleared by any PI header, a late-entry SB identifier, once the live values change or are the decoder's own choice
+     * for the new call (forced or key-inferred), and with the held PI (dmr_pi_precall_reset()). */
     uint8_t dmr_crypto_inherited[2];
     int dmr_crypto_inherited_algid[2];
     int dmr_crypto_inherited_keyid[2];

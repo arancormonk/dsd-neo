@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -91,6 +92,21 @@ static int
 received_is(const dsd_call_snapshot* call, uint8_t bits, uint8_t algid, uint16_t kid) {
     return call->crypto_received == bits && ((bits & DSD_CALL_CRYPTO_RX_ALG) == 0U || call->received_algid == algid)
            && ((bits & DSD_CALL_CRYPTO_RX_KID) == 0U || call->received_kid == kid);
+}
+
+/* The single-burst codeword dmr_sbrc() reads as DMRA ALG 5 (0x25), KEY 0x44. */
+static void
+load_single_burst(dsd_state* state, uint8_t slot) {
+    static const uint8_t k_225[16] = {0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1};
+    uint8_t data_matrix[32];
+    for (int i = 0; i < 16; i++) {
+        data_matrix[i] = k_225[i];
+        data_matrix[16 + i] = k_225[i];
+    }
+    for (int i = 0; i < 32; i++) {
+        state->dmr_embedded_signalling[slot][5][i + 8] =
+            data_matrix[DeInterleaveReverseChannelBptcPlacement[DeInterleaveReverseChannelBptc[i]]];
+    }
 }
 
 static dsd_state*
@@ -336,6 +352,128 @@ test_missed_terminator_publishes_no_stale_crypto(dsd_opts* opts) {
     free_state(state);
 }
 
+/* The decoder's own choice for a replacing call is that call's own. A --dmr-force-algid value, or the ALG ID the
+   late-entry path infers from a loaded key, each with the 0xFF placeholder key id, left live by a call whose terminator
+   was missed is exactly what the voice path chooses for the replacing call too: its record, history row and Monitor
+   view show it, as before, and never as received. */
+static void
+test_replacing_call_shows_the_decoders_choice(dsd_opts* opts) {
+    static Event_History_I history[2];
+    for (int inferred = 0; inferred < 2; ++inferred) {
+        dsd_state* state = fresh_state();
+        DSD_MEMSET(history, 0, sizeof(history));
+        init_event_history(&history[0], 0, 1);
+        init_event_history(&history[1], 0, 1);
+        state->event_history_s = history;
+        dsd_decode_clock_use_test(40000000000ULL);
+        run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
+        uint8_t want = 0U;
+        if (inferred) {
+            state->R = 0x1122334455ULL; // a loaded 40-bit key: the late-entry path infers 0x21
+            state->payload_algid = 0x21;
+            state->payload_keyid = 0xFF;
+            want = 0x21U;
+        } else {
+            state->M = 0x24;
+            state->currentslot = 0;
+            assert(dsd_dmr_apply_forced_algid(state) == 1);
+            want = 0x24U;
+        }
+        run_lc(opts, state, 0U, 3U, 0x40U, 1001U, 2002U);
+        assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+        dsd_decode_clock_test_set_ns(40500000000ULL);
+        run_lc(opts, state, 0U, 1U, 0x40U, 3333U, 4444U);
+        dsd_call_snapshot call = call_on(state, 0U);
+        assert(call.ota_target_id == 3333U && call.algid == want && call.kid == 0xFFU && call.crypto_received == 0U);
+        assert(noted_valid[0] && noted[0].ota_target_id == 3333U && noted[0].crypto_received == 0U);
+        assert(event_row_names_alg(&history[0]));
+        dsd_app_slot_call view;
+        dsd_app_slot_call_view(state, 0U, dsd_decode_now_mono_s(), &view);
+        assert(view.enc != 0U && view.algid == want && view.kid == 0xFFU);
+        // Decryption keeps the same live values, as it always has.
+        assert(state->payload_algid == (int)want && state->payload_keyid == 0xFF);
+        state->M = 0;
+        dsd_decode_clock_use_system();
+        state->event_history_s = NULL;
+        free_state(state);
+    }
+    // The same values are the previous call's when the decoder would not choose them for this call: a forced ALG ID
+    // for a clear call, or an inferred one with no key loaded.
+    dsd_state* state = fresh_state();
+    dsd_decode_clock_use_test(41000000000ULL);
+    run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
+    state->payload_algid = 0x21;
+    state->payload_keyid = 0xFF;
+    run_lc(opts, state, 0U, 3U, 0x40U, 1001U, 2002U);
+    assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+    dsd_decode_clock_test_set_ns(41500000000ULL);
+    run_lc(opts, state, 0U, 1U, 0x40U, 3333U, 4444U);
+    dsd_call_snapshot call = call_on(state, 0U);
+    assert(call.ota_target_id == 3333U && call.algid == 0U && call.kid == 0U);
+    dsd_decode_clock_use_system();
+    free_state(state);
+}
+
+/* A late-entry SB of the replacing call, decoded after its LC, belongs to it even when it repeats the values the
+   replaced call left live: the next LC publishes them as the call's own, as before, and never as received. */
+static void
+test_sb_after_the_fork_is_the_calls_own(dsd_opts* opts) {
+    dsd_state* state = fresh_state();
+    opts->dmr_le = 1;
+    dsd_decode_clock_use_test(42000000000ULL);
+    run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
+    run_pi(opts, state, 0U, 0x25U, 0x44U);
+    assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+    dsd_decode_clock_test_set_ns(42500000000ULL);
+    run_lc(opts, state, 0U, 1U, 0x40U, 3333U, 4444U);
+    dsd_call_snapshot call = call_on(state, 0U);
+    assert(call.ota_target_id == 3333U && call.algid == 0U && call.kid == 0U);
+    load_single_burst(state, 0U);
+    state->currentslot = 0;
+    dmr_sbrc(opts, state, 0);
+    assert(state->payload_algid == 0x25 && state->payload_keyid == 0x44);
+    run_lc(opts, state, 0U, 3U, 0x40U, 3333U, 4444U);
+    call = call_on(state, 0U);
+    assert(call.ota_target_id == 3333U && call.algid == 0x25U && call.kid == 0x44U && call.crypto_received == 0U);
+    opts->dmr_le = 0;
+    dsd_decode_clock_use_system();
+    free_state(state);
+}
+
+/* A transmission whose identity the slot never learned (an identity-less voice epoch) and that carried voice is
+   replaced by a call whose LC names one. The canonical layer keeps the epoch and names it after the new call; the
+   ALG ID, key id and received bits the replaced transmission published into it are not the new call's. */
+static void
+test_specialized_epoch_drops_the_replaced_crypto(dsd_opts* opts) {
+    dsd_state* state = fresh_state();
+    dsd_decode_clock_use_test(43000000000ULL);
+    const dsd_call_observation provisional = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(state, &provisional, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    run_pi(opts, state, 0U, 0x21U, 0x05U);
+    const dsd_call_snapshot before = call_on(state, 0U);
+    assert(before.ota_target_id == 0U && received_is(&before, RX_BOTH, 0x21U, 0x05U) && before.algid == 0x21U);
+    assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+    dsd_decode_clock_test_set_ns(43500000000ULL);
+    run_lc(opts, state, 0U, 1U, 0x40U, 3333U, 4444U);
+    const dsd_call_snapshot after = call_on(state, 0U);
+    assert(after.epoch == before.epoch && after.ota_target_id == 3333U);
+    assert(after.algid == 0U && after.kid == 0U && after.mi == 0ULL && after.crypto_received == 0U);
+    assert(after.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    assert(noted_valid[0] && noted[0].ota_target_id == 3333U && noted[0].crypto_received == 0U);
+    // Decryption keeps the live values, as it always has.
+    assert(state->payload_algid == 0x21 && state->payload_keyid == 0x05 && state->payload_mi == 0x11223344ULL);
+    // Its own PI then gives it its own crypto.
+    run_pi(opts, state, 0U, 0x21U, 0x05U);
+    const dsd_call_snapshot own = call_on(state, 0U);
+    assert(own.ota_target_id == 3333U && own.algid == 0x21U && received_is(&own, RX_BOTH, 0x21U, 0x05U));
+    dsd_decode_clock_use_system();
+    free_state(state);
+}
+
 /* Documented limit: the next transmission's PI, its voice LC header lost and the previous call's terminator missed,
    decodes while that call is still active, so it is attributed to that call. The call its LC then opens shows no ALG ID
    or key id (they are the previous call's record's) until a later PI of its own; the live decryption inputs are the
@@ -454,6 +592,9 @@ main(void) {
     test_missed_terminator_publishes_no_stale_crypto(opts);
     test_pi_while_active_belongs_to_that_call(opts);
     test_held_pi_expires(opts);
+    test_replacing_call_shows_the_decoders_choice(opts);
+    test_sb_after_the_fork_is_the_calls_own(opts);
+    test_specialized_epoch_drops_the_replaced_crypto(opts);
     dsd_signal_search_call_set(NULL);
     free(opts);
     return 0;
