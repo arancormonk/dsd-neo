@@ -55,6 +55,8 @@ static int g_hard_rs_result;
 static int g_soft_rs_result;
 static int g_lsd_soft_result = 1;
 static int g_lcw_calls;
+/* state->p25_p1_lcw_soft as the last p25_lcw() call found it. */
+static int g_lcw_soft_seen = -1;
 static int g_policy_make_calls;
 static int g_policy_upsert_calls;
 static int g_soft_dibit_value;
@@ -225,9 +227,9 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
 void
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors) {
     (void)opts;
-    (void)state;
     (void)LCW_bits;
     (void)irrecoverable_errors;
+    g_lcw_soft_seen = state->p25_p1_lcw_soft;
     g_lcw_calls++;
 }
 
@@ -860,10 +862,34 @@ test_ldu1_cut_by_an_input_interruption_plays_and_publishes_nothing_after_the_cut
     return rc;
 }
 
+/* The link control is handled knowing whether only a soft-erasure RS retry recovered it, so its service options are
+   not taken as checked encryption evidence (P25_CRYPTO_STATE); the mark does not outlive the LDU1. */
+static int
+test_ldu1_marks_a_soft_recovered_link_control(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int soft = 0; soft < 2; soft++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_hook_counters();
+        g_hard_rs_result = soft;
+        g_soft_rs_result = 0;
+        g_lcw_soft_seen = -1;
+        processLDU1(&opts, &state);
+        rc |= expect_int("link control handled", g_lcw_calls, 1);
+        rc |= expect_int(soft ? "soft-recovered link control marked" : "hard link control unmarked", g_lcw_soft_seen,
+                         soft);
+        rc |= expect_int("mark cleared after the LDU1", state.p25_p1_lcw_soft, 0);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     dsd_decode_clock_use_test(43000000000ULL);
+    rc |= test_ldu1_marks_a_soft_recovered_link_control();
     rc |= test_ldu1_unpack_lc_fields();
     rc |= test_ldu1_build_lcw_buffers();
     rc |= test_lsd_corrected_byte();

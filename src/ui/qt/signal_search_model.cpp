@@ -216,6 +216,8 @@ SignalSearchModel::SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* ind
     if (m_ranges.isEmpty()) {
         m_ranges.append(defaultRange());
     }
+    // The version 1 journal's name: the store writes signal-search-history.v2 beside it, migrating from it once, and
+    // keeps the avoid list (backed up as kAvoidsFileName) at signal-search-history.v1.avoids.json.
     QString path = json_store_path(QStringLiteral("signal-search-history.v1"));
     QDir().mkpath(QFileInfo(path).absolutePath());
     dsd_app_signal_search_store_open(path.toUtf8().constData());
@@ -446,10 +448,71 @@ SignalSearchModel::unavoid(uint32_t frequency) {
     return true;
 }
 
+/* A frequency a control can carry: a whole, positive Hz value. Rounded through long long: long is 32 bits on Windows,
+   and a frequency above 2.147 GHz would overflow it. */
+static bool
+controlFrequency(double frequency, uint32_t* hz) {
+    if (!std::isfinite(frequency) || frequency < 1 || frequency > UINT32_MAX) {
+        return false;
+    }
+    *hz = (uint32_t)std::llround(frequency);
+    return true;
+}
+
+bool
+SignalSearchModel::avoidFrequency(const QString& session, double frequency) {
+    dsd_signal_search_control c{};
+    c.action = DSD_SEARCH_ACTION_AVOID_FREQUENCY;
+    c.session_id = session.toULongLong();
+    if (!m_owned || c.session_id != m_session || !controlFrequency(frequency, &c.frequency_hz)) {
+        return false;
+    }
+    if (dsd_app_signal_search_control(&c) < 0) {
+        m_error = tr("The decoder did not accept this action.");
+        Q_EMIT changed();
+        return false;
+    }
+    return true;
+}
+
+bool
+SignalSearchModel::avoidPermanently(const QString& session, double frequency) {
+    dsd_signal_search_control c{};
+    if (!controlFrequency(frequency, &c.frequency_hz)) {
+        return false;
+    }
+    if (m_owned) {
+        /* Permanent first, then this session, both on the decoder thread once it has checked the session. */
+        c.action = DSD_SEARCH_ACTION_AVOID_PERMANENT;
+        c.session_id = session.toULongLong();
+        if (dsd_app_signal_search_control(&c) < 0) {
+            m_error = tr("The decoder did not accept this action.");
+            Q_EMIT changed();
+            return false;
+        }
+        return true;
+    }
+    const int saved = dsd_app_signal_search_permanent_avoid(c.frequency_hz);
+    const QString refusal = saved == DSD_APP_SEARCH_AVOID_FULL ? tr("The permanent avoid list is full")
+                            : saved < 0                        ? tr("This frequency cannot be avoided")
+                                                               : QString();
+    if (refusal != m_error) {
+        m_error = refusal;
+        Q_EMIT changed();
+    }
+    refresh();
+    return saved >= 0;
+}
+
 void
 SignalSearchModel::removeAvoid(double frequency) {
     if (std::isfinite(frequency) && frequency > 0 && frequency <= UINT32_MAX) {
         dsd_app_signal_search_avoid_remove((uint32_t)frequency);
+        /* The list has room again, so a refusal for being full no longer holds. */
+        if (m_error == tr("The permanent avoid list is full")) {
+            m_error.clear();
+            Q_EMIT changed();
+        }
         /* A running session loaded this avoid when it started; lift it there too. */
         if (m_owned) {
             (void)unavoid((uint32_t)frequency);
@@ -496,6 +559,9 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
             {QStringLiteral("started"), (qulonglong)h.started_ms},
             {QStringLiteral("targetText"), QString::fromUtf8(h.target_text)},
             {QStringLiteral("sourceText"), QString::fromUtf8(h.source_text)},
+            {QStringLiteral("site"), QString::fromUtf8(h.site)},
+            {QStringLiteral("slot"), h.slot},
+            {QStringLiteral("crypt"), QString::fromUtf8(h.crypt)},
             {QStringLiteral("inputSpec"), QString::fromUtf8(h.input_spec)},
             {QStringLiteral("ppm"), h.ppm},
             {QStringLiteral("biasTee"), h.bias_tee != 0},
@@ -504,7 +570,18 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
             {QStringLiteral("gain"), h.gain_tenth_db / 10.0},
             {QStringLiteral("gainAuto"), h.gain_auto != 0},
             {QStringLiteral("matches"), matches},
+            {QStringLiteral("knownNames"), labels},
             {QStringLiteral("knownLabel"), labels.join(QStringLiteral(" / "))}};
+}
+
+/* A range bound for the status line: kHz precision at least (118.000), and every digit the bound carries. */
+static QString
+statusMHz(uint32_t hz) {
+    QString text = QString::number(hz / 1e6, 'f', 6);
+    while (text.endsWith(QLatin1Char('0')) && text.indexOf(QLatin1Char('.')) < text.size() - 4) {
+        text.chop(1);
+    }
+    return text;
 }
 
 static QVariantList
@@ -572,10 +649,14 @@ SignalSearchModel::refresh() {
                 {QStringLiteral("session"), QString::number(s.session_id)},
                 {QStringLiteral("pass"), (qulonglong)s.pass},
                 {QStringLiteral("range"), s.range_index},
+                {QStringLiteral("rangeName"), QString::fromUtf8(s.range_name)},
+                {QStringLiteral("rangeStartMHz"), statusMHz(s.range_start_hz)},
+                {QStringLiteral("rangeEndMHz"), statusMHz(s.range_end_hz)},
                 {QStringLiteral("channel"), s.channel_index},
                 {QStringLiteral("count"), s.channel_count},
                 {QStringLiteral("livePowerValid"), s.live_power_valid != 0},
                 {QStringLiteral("livePower"), s.live_power_dbfs},
+                {QStringLiteral("liveSeq"), (qulonglong)s.live_seq},
                 {QStringLiteral("message"), QString::fromUtf8(s.message)},
                 {QStringLiteral("hit"), hitMap(s.hit)}};
     Q_EMIT changed();

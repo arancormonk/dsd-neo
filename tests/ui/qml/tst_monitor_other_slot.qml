@@ -55,6 +55,7 @@ Item {
                 testContext.setMetric("slot" + slot + "TgId", 0);
             }
             testContext.setMetric("leadSlot", 0);
+            testContext.setMetric("twoSlotCarrier", false);
             testContext.setMetric("heldTg", 0);
             testContext.setMetric("persistTgLockouts", true);
             testContext.setHostRunning(false);
@@ -179,6 +180,90 @@ Item {
             compare(testContext.holdCalls(), 0);
             compare(testContext.lockoutSlotCalls(), 0);
             compare(testContext.skipSlotCalls(), 0);
+        }
+        function belowStripY() {
+            var below = item("signalStrip");
+            verify(below.visible);
+            return below.mapToItem(monitor, 0, 0).y;
+        }
+        function verifyIdleStrip(slot) {
+            var panel = item("otherSlotPanel");
+            verify(panel.visible);
+            compare(item("otherSlotLabel").text, "SLOT " + slot + " · idle");
+            verify(!item("otherSlotIdentity").visible);
+            var skip = item("otherSlotSkip");
+            var more = item("otherSlotMore");
+            verify(!skip.visible && !more.visible);
+            verify(skip.Accessible.ignored && more.Accessible.ignored);
+            // Hidden, the controls keep their places: the strip does not reflow between idle and active.
+            verify(skip.width > 0 && more.width > 0);
+        }
+        // On a two-slot carrier the strip holds its place: the other slot's call starting and ending moves nothing
+        // below it, and the active strip's controls are the ones the cases above act on.
+        function test_strip_holds_place_on_two_slot_carrier_data() {
+            return [{tag: "slot2", lead: 1}, {tag: "slot1", lead: 2}];
+        }
+        function test_strip_holds_place_on_two_slot_carrier(data) {
+            testContext.setMetric("twoSlotCarrier", true);
+            testContext.setMetric("leadSlot", data.lead);
+            var other = 3 - data.lead;
+            waitForRendering(monitor);
+            var activeY = belowStripY();
+            var skip = item("otherSlotSkip");
+            verify(skip.visible && skip.enabled && !skip.Accessible.ignored);
+            compare(item("otherSlotLabel").text, "SLOT " + other);
+            testContext.setMetric("slot" + other + "CallState", 0);
+            waitForRendering(monitor);
+            verifyIdleStrip(other);
+            compare(belowStripY(), activeY);
+            testContext.setMetric("slot" + other + "CallState", 2);
+            waitForRendering(monitor);
+            compare(belowStripY(), activeY);
+            verify(skip.visible && !skip.Accessible.ignored);
+            compare(item("otherSlotLabel").text, "SLOT " + other);
+            mouseClick(skip);
+            compare(testContext.skipSlotCalls(), 1);
+            compare(testContext.lastSkipSlot(), other - 1);
+        }
+        // Large text widens Skip rather than cutting its label short; normal text keeps the 70 px button.
+        function test_skip_label_fits_large_text() {
+            var skip = item("otherSlotSkip");
+            compare(skip.width, 70);
+            Ui.Theme.fontScale = 1.6;
+            try {
+                waitForRendering(monitor);
+                verify(skip.width > 70);
+            } finally {
+                Ui.Theme.fontScale = 1;
+            }
+            compare(skip.width, 70);
+        }
+        // With no call on either slot the reserved strip stands for slot 2.
+        function test_idle_strip_with_no_call_is_slot_2() {
+            testContext.setMetric("twoSlotCarrier", true);
+            testContext.setMetric("slot1CallState", 0);
+            testContext.setMetric("slot2CallState", 0);
+            testContext.setMetric("leadSlot", 0);
+            waitForRendering(monitor);
+            verifyIdleStrip(2);
+            mouseClick(item("otherSlotPanel"));
+            compare(testContext.skipSlotCalls(), 0);
+            verify(!item("otherSlotMenu").visible);
+        }
+        // An FDMA carrier keeps no strip; a second call is still shown while the carrier is not known as two-slot.
+        function test_fdma_carrier_shows_no_idle_strip() {
+            testContext.setMetric("twoSlotCarrier", false);
+            testContext.setMetric("slot2CallState", 0);
+            waitForRendering(monitor);
+            verify(!item("otherSlotPanel").visible);
+            testContext.setMetric("leadSlot", 0);
+            testContext.setMetric("slot1CallState", 0);
+            verify(!item("otherSlotPanel").visible);
+            testContext.setMetric("leadSlot", 1);
+            testContext.setMetric("slot1CallState", 2);
+            testContext.setMetric("slot2CallState", 2);
+            verify(item("otherSlotPanel").visible);
+            verify(item("otherSlotSkip").visible);
         }
         function test_hiding_monitor_closes_menu() {
             var menu = openMenu();

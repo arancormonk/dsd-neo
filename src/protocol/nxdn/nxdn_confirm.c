@@ -109,6 +109,7 @@ nxdn_confirm_end_frame(dsd_state* state) {
         /* Validated NXDN content: the frequency is not dead, even when it carries no control channel. */
         state->nxdn_confirm_lock_m = dsd_decode_now_mono_s();
         dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
+        dsd_signal_search_note_call(state, 0U);
     }
 }
 

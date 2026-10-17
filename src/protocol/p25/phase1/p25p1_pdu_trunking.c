@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "../p25_cc_update.h"
+#include "../p25_search_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -369,6 +370,7 @@ p25_handle_mbt_net_sts_broadcast(const dsd_opts* opts, dsd_state* state, const u
     } else {
         DSD_FPRINTF(stderr, "\n  P25 MBT NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channelt);
     }
+    p25_search_note_network(state, (uint32_t)wacn, (uint16_t)sysid);
 }
 
 static void DSD_ATTR_USED
@@ -393,13 +395,13 @@ p25_handle_mbt_rfss_status_broadcast(const dsd_opts* opts, dsd_state* state, con
     const long neigh2[1] = {f1};
     p25_cc_record_neighbor_frequencies(opts, state, neigh2, 1);
 
-    if (state->p2_sysid != 0 && (uint16_t)lsysid != state->p2_sysid) {
-        return;
+    if (state->p2_sysid == 0 || (uint16_t)lsysid == state->p2_sysid) {
+        state->p2_siteid = siteid;
+        state->p2_rfssid = rfssid;
+        p25_confirm_idens_for_current_site(state);
     }
-
-    state->p2_siteid = siteid;
-    state->p2_rfssid = rfssid;
-    p25_confirm_idens_for_current_site(state);
+    /* The search record binds the site by the SYSID this broadcast advertises, not by decoder state. */
+    p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid);
 }
 
 static void DSD_ATTR_USED

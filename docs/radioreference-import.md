@@ -108,6 +108,10 @@ The import screen is a drill-down with two stages, and shows one or the other, n
   back to it. The results list survives that, so importing several systems from one search is a
   tap each.
 
+A zip code or system ID you typed stays in its field when you leave the screen (its Back, the system
+Back) and is there on the next visit, with the zip or system ID tab still selected; a loaded system
+and the browse picks do not carry over. A finished import clears the query.
+
 ## Saved sites in Qt and Android
 
 For trunked systems, enable **Import each selected site as its own system**, select the sites, and import.

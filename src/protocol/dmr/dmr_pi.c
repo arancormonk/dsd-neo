@@ -20,6 +20,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dmr_hytera.h"
@@ -234,8 +235,13 @@ dmr_pi_handle_dmra(dsd_state* state, const uint8_t pi_byte[]) {
 // That is a transient label, not a gate: this field drives the UI and telemetry, DMR voice audio is
 // gated in the voice path from its own resolver call, and the next FLCO or PI header on the slot
 // republishes with the snapshot in place.
+//
+// @p received names the DSD_CALL_CRYPTO_RX_* fields this PI carried over the air: its ALG ID, and its key id unless the
+// vendor derives one (Kirisun hashes it from the ALG and target). They count as received only when the burst's own
+// check verified (no RAS or failed-CRC acceptance under -F) and the PI names an algorithm. With no call active on the
+// slot -- its voice LC header was lost -- they are held for the call the next checked LC opens there.
 static void
-dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
+dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
     const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
     const uint8_t algid = (uint8_t)(slot == 0U ? state->payload_algid : state->payload_algidR);
     const uint16_t kid = (uint16_t)(slot == 0U ? state->payload_keyid : state->payload_keyidR);
@@ -260,15 +266,33 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
 
     const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
                                     : dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
+    if (state->event_crc_invalid[slot] != 0U || algid == 0U) {
+        received = 0U;
+    }
+    // A PI belongs to the slot's active call, if any: its values are that call's own from now on, not ones a call
+    // whose terminator was missed left behind.
+    state->dmr_crypto_inherited[slot] = 0U;
     const dsd_call_crypto_update update = {
         .classification = has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED,
         .algid = algid,
         .kid = kid, /* OTA truth, never the override */
         .mi = mi,
         .audio_permitted = (uint8_t)has_key,
+        .received = received,
     };
     if (dsd_call_state_update_crypto(state, slot, &update) > 0) {
+        dmr_note_published_live_crypto(state, slot, algid, kid);
+        dmr_pi_precall_drop_hold(state, slot);
         dsd_event_sync_slot(opts, state, slot);
+        dsd_signal_search_note_call(state, slot);
+        return;
+    }
+    dmr_pi_precall_drop_hold(state, slot);
+    if (received != 0U) {
+        state->dmr_pi_precall_rx[slot] = received;
+        state->dmr_pi_precall_algid[slot] = algid;
+        state->dmr_pi_precall_kid[slot] = kid;
+        state->dmr_pi_precall_m[slot] = dsd_decode_now_mono_s();
     }
 }
 
@@ -285,21 +309,21 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
 
     if (MFID == 0x0A && CRCCorrect == 1) { //Kirisun
         dmr_pi_handle_kirisun(state, PI_BYTE);
-        dmr_pi_publish_crypto(opts, state);
+        dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG);
         return;
     }
 
     if (MFID == 0x68) { //Hytera Enhanced
         dmr_pi_handle_hytera(opts, state, PI_BYTE);
         if (dmr_hytera_checksum(PI_BYTE, 9U) == PI_BYTE[9]) {
-            dmr_pi_publish_crypto(opts, state);
+            dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
         }
         return;
     }
 
     if (MFID == 0x10 && CRCCorrect == 1) { //DMRA
         dmr_pi_handle_dmra(state, PI_BYTE);
-        dmr_pi_publish_crypto(opts, state);
+        dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
     }
 }
 

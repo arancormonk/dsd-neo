@@ -118,6 +118,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
         return m_usb.source;
     }
 
+    QString
+    attachedDeviceSource() const override {
+        return m_attached_source;
+    }
+
     void requestLocalDeviceAccessForSource(const QString& source, const QString& serial = QString()) override;
     QString localDeviceStatus() const override;
     int localDeviceFailureKind() const override;
@@ -235,6 +240,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     uint64_t m_device_error_session = 0;
     uint64_t m_retried_device_session = 0;
     LocalDeviceState m_usb;
+    // UsbSourceManager.attachedSource(), polled with the USB record.
+    QString m_attached_source;
     bool m_running = false;
     QString m_status = QStringLiteral("Idle");
     SessionPhaseTracker m_phase;

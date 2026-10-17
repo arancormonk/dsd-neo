@@ -69,9 +69,22 @@ p25_sm_get_ctx(void) {
     return &g_sm_ctx;
 }
 
+/* -1 until a resolution is asked for; then whether the caller vouched for the tuple's own check. */
+static int g_resolve_checked = -1;
+
+dsd_p25_crypto_state p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot,
+                                                int algid, int keyid, uint64_t mi, int talkgroup, int checked);
+
 dsd_p25_crypto_state
 p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
                    uint64_t mi, int talkgroup) {
+    return p25_crypto_resolve_checked(opts, state, phase, slot, algid, keyid, mi, talkgroup, 1);
+}
+
+dsd_p25_crypto_state
+p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
+                           uint64_t mi, int talkgroup, int checked) {
+    g_resolve_checked = checked;
     (void)opts;
     (void)phase;
     (void)slot;
@@ -691,7 +704,7 @@ test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.aes_key_loaded[0] = 1;
     state.aes_key_segments[0] = 4U;
-    hdu_handle_good_decode(&opts, &state, 0x84, 0x1234, 0x01020304ULL, 0x05060708ULL, 0x09ULL);
+    hdu_handle_good_decode(&opts, &state, 0x84, 0x1234, 0x01020304ULL, 0x05060708ULL, 0x09ULL, 1);
     rc |= expect_int("good hdu algid", state.payload_algid, 0x84);
     rc |= expect_int("good hdu kid", state.payload_keyid, 0x1234);
     rc |= expect_u64("good hdu mi", state.payload_miP, 0x0102030405060708ULL);
@@ -720,7 +733,7 @@ test_hdu_nondefinitive_metadata_preserves_prior_tuple(void) {
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     state.p25_p1_hdu_crypto_fresh = 1;
 
-    hdu_handle_good_decode(&opts, &state, 0, 0, 0ULL, 0ULL, 0ULL);
+    hdu_handle_good_decode(&opts, &state, 0, 0, 0ULL, 0ULL, 0ULL, 1);
 
     rc |= expect_int("nondefinitive HDU resolver sees prior ALGID", g_resolve_entry_algid, 0x84);
     rc |= expect_int("nondefinitive HDU resolver sees prior KID", g_resolve_entry_keyid, 0x3456);
@@ -764,7 +777,7 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     g_lookup_label = "Secure TG";
 
-    hdu_handle_good_decode(&opts, &state, 0xAA, 0x2A2A, 0xAABBCCDDULL, 0x10203040ULL, 0ULL);
+    hdu_handle_good_decode(&opts, &state, 0xAA, 0x2A2A, 0xAABBCCDDULL, 0x10203040ULL, 0ULL, 1);
 
     rc |= expect_int("lockout preserves algid", state.payload_algid, 0xAA);
     rc |= expect_int("lockout preserves kid", state.payload_keyid, 0x2A2A);
@@ -867,10 +880,36 @@ test_hdu_cut_by_an_input_interruption_publishes_nothing(void) {
     return rc;
 }
 
+/* An HDU's crypto tuple is received only when the hard Reed-Solomon decode passed: a soft-erasure retry can spend the
+   whole parity budget and accept an arbitrary payload, so it is resolved (decryption as before) but not vouched for, as
+   a Phase 2 ESS that needed soft erasures is not. */
+static int
+test_hdu_soft_recovered_crypto_is_not_received(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int soft = 0; soft < 2; soft++) {
+        reset_hook_counters();
+        reset_fec_stubs();
+        reset_soft_inputs();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        g_rs_hard_result = soft;
+        g_rs_soft_result = 0;
+        g_resolve_checked = -1;
+        processHDU(&opts, &state);
+        rc |= expect_int(soft ? "soft-recovered HDU resolves" : "hard HDU resolves", g_resolve_checked >= 0, 1);
+        rc |= expect_int(soft ? "soft-recovered HDU is not checked" : "hard HDU is checked", g_resolve_checked, !soft);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     dsd_decode_clock_use_test(123456789000ULL);
+    reset_fec_stubs();
+    rc |= test_hdu_soft_recovered_crypto_is_not_received();
     reset_fec_stubs();
     rc |= test_hdu_extracts_payload_fields();
     rc |= test_hdu_rs_reliability_uses_wire_order();

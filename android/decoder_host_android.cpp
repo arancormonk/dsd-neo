@@ -509,6 +509,13 @@ DecoderHostAndroid::refreshLocalDevice() {
     const auto usb_record = QJniObject::callStaticObjectMethod(kUsbClass, "deviceStatus", "()Ljava/lang/String;");
     const auto usb = QJsonDocument::fromJson(usb_record.toString().toUtf8()).object();
     m_usb.apply(*this, usb);
+    // Read off the bus with no permission involved, so the UI can preselect the receiver actually plugged in.
+    const auto attached = QJniObject::callStaticObjectMethod(kUsbClass, "attachedSource", "()Ljava/lang/String;");
+    const QString attachedSource = attached.isValid() ? attached.toString() : QString();
+    if (attachedSource != m_attached_source) {
+        m_attached_source = attachedSource;
+        Q_EMIT localDeviceChanged();
+    }
     // WP-S2: consuming also preserves the cold-start attachment on the first poll.
     const QJniObject attach = QJniObject::callStaticObjectMethod(kUsbClass, "takeAttachment", "()Ljava/lang/String;");
     if (attach.isValid() && !attach.toString().isEmpty()) {

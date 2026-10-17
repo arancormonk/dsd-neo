@@ -661,6 +661,43 @@ test_p25p1_nid_cut_by_an_input_interruption_decodes_nothing(void) {
     }
 }
 
+/* A trunked system's return from a Phase 2 voice channel to its Phase 1 control channel crosses no carrier boundary:
+   the decoded NID is what says the carrier is FDMA again, so the Monitor's second-slot strip goes. A NID that failed
+   (inside the evidence window or not) or that an input interruption cut says nothing about the carrier. */
+static void
+test_p25p1_decoded_nid_ends_the_two_slot_carrier(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.tdma_carrier = 1U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.tdma_carrier == 0U);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.tdma_carrier = 1U;
+    state.p25_p1_nid_evidence = 1;
+    state.p25_p1_nid_evidence_symbolcnt = 1000U;
+    state.symbolcnt = 1100U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.tdma_carrier == 1U);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    opts.mbe_out_f = stdout;
+    g_test_duid = 0x0U;
+    state.tdma_carrier = 1U;
+    g_interrupt_at_dibit = 15;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
+    assert(state.tdma_carrier == 1U);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -674,6 +711,7 @@ main(void) {
     test_p25p1_valid_nid_learns_modulation();
     test_p25p1_verdict_follows_the_nid_evidence_window();
     test_p25p1_nid_cut_by_an_input_interruption_decodes_nothing();
+    test_p25p1_decoded_nid_ends_the_two_slot_carrier();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }

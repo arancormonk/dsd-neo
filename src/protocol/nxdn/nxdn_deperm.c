@@ -776,7 +776,8 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
 }
 
 static void
-nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher) {
+nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher,
+                           uint8_t ota_cipher) {
     if (!nxdn_dcr_is_sb0_message_type(message_type)) {
         return;
     }
@@ -789,6 +790,10 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
         .kid = 0U,
         .mi = state->payload_miN,
         .audio_permitted = (uint8_t)(cipher == 0U || has_key),
+        /* The CRC-checked SACCH-2's own cipher field, not the applied (held) cipher. */
+        .enc_observed = ota_cipher == 0U   ? DSD_CALL_ENC_OBSERVED_CLEAR
+                        : ota_cipher == 1U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED
+                                           : DSD_CALL_ENC_OBSERVED_NONE,
     };
     if (dsd_call_state_update_crypto(state, 0U, &crypto) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
@@ -822,7 +827,8 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
     }
 
     state->dmr_encL = (state->nxdn_cipher_type != 0 && !dsd_key_scalar_present(state, 0)) ? 1 : 0;
-    nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes, cipher == 0x01 ? (uint8_t)state->nxdn_cipher_type : cipher);
+    nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes, cipher == 0x01 ? (uint8_t)state->nxdn_cipher_type : cipher,
+                               cipher);
     const uint8_t mfid = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 11, 7U);
     if (mfid != 0) {
         DSD_FPRINTF(stderr, "MFID: %02X; ", mfid);

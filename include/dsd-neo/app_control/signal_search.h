@@ -16,14 +16,19 @@ int dsd_app_signal_search_start(const dsd_signal_search_config* config);
 int dsd_app_signal_search_control(const dsd_signal_search_control* control);
 /** Open once per app host, before starting decoder sessions. Parent directory must exist.
  * The worker writes an append journal, compacts atomically, and keeps memory on failures. A failed history or avoid
- * write stays reported and is retried by later writes, flush and close until that file's own write succeeds. */
+ * write stays reported and is retried by later writes, flush and close until that file's own write succeeds.
+ * @p path names the version 1 journal, which is only ever read: the store keeps version 2 records (site, slot and
+ * encryption included) in its own journal beside it (a trailing ".v1" becomes ".v2", else ".v2" is appended), and
+ * the avoid list in "<path>.avoids.json". While no version 2 journal exists, the version 1 rows load with those
+ * details empty and the first write creates the version 2 journal from them; once it exists it alone is read. */
 int dsd_app_signal_search_store_open(const char* path);
 void dsd_app_signal_search_store_close(void);
 void dsd_app_signal_search_store_flush(void);
 void dsd_app_signal_search_status_get(dsd_signal_search_status* status, char* error, size_t capacity);
 /** Newest first; consistent copied records, retained even without any frontend screen. */
 size_t dsd_app_signal_search_history_get(dsd_signal_search_hit* hits, size_t capacity);
-/** Bumped by every history change (upsert, trim, reload); status refreshes leave it alone. */
+/** Bumped by every history change (upsert, trim, reload); status refreshes, and a republished detection whose
+ * persisted content is unchanged, leave it alone. */
 uint64_t dsd_app_signal_search_history_revision(void);
 /** dsd_app_signal_search_history_get() and the revision of that copy, taken together. */
 size_t dsd_app_signal_search_history_snapshot(dsd_signal_search_hit* hits, size_t capacity, uint64_t* revision);
@@ -42,7 +47,22 @@ void dsd_app_signal_search_session_avoids_clear(void);
 void dsd_app_signal_search_session_ended(void);
 /** Decoder-thread publication; no disk access. */
 void dsd_app_signal_search_publish(const dsd_signal_search_status*, const dsd_signal_search_hit*, void*);
-void dsd_app_signal_search_permanent_avoid(uint32_t frequency);
+
+/** dsd_app_signal_search_permanent_avoid() results. */
+typedef enum {
+    DSD_APP_SEARCH_AVOID_ADDED = 0,
+    /** Already avoided: the list is as asked, so this is no refusal. */
+    DSD_APP_SEARCH_AVOID_DUPLICATE = 1,
+    /** DSD_SEARCH_MAX_AVOIDS reached; nothing changed. */
+    DSD_APP_SEARCH_AVOID_FULL = -1,
+    /** Frequency 0 names no channel; nothing changed. */
+    DSD_APP_SEARCH_AVOID_INVALID = -2
+} dsd_app_search_avoid_result;
+
+/** Add a permanent avoid. Thread-safe; the store saves it in the background.
+ * DSD_SEARCH_ACTION_AVOID_PERMANENT runs it on the decoder thread before the session's own avoid, after validating
+ * the target; a control with hit_id 0 names a history row's frequency_hz instead of the current hit. */
+int dsd_app_signal_search_permanent_avoid(uint32_t frequency);
 #ifdef __cplusplus
 }
 #endif

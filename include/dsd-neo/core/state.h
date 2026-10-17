@@ -153,6 +153,8 @@ typedef struct {
     uint16_t keyid;
     uint8_t algid;
     uint8_t pending;
+    /* The staged ESS decoded without soft erasures, so its RS parity checked it (p25_crypto_resolve_checked()). */
+    uint8_t parity_checked;
 } dsd_p25_p2_rekey_state;
 
 typedef struct {
@@ -1154,6 +1156,11 @@ struct dsd_state {
     uint8_t nxdn_cipher_class;         /* applied cipher observation + 1; 0 = unclassified */
     uint8_t nxdn_cipher_class_est;     /* classification corroborated (authoritative or repeat) */
     uint8_t nxdn_cipher_class_pending; /* quarantined contradicting candidate + 1; 0 = none */
+    /* The same hysteresis over the over-the-air observations alone: a forced cipher (nxdn_cipher_force()) never
+     * touches it, so it says what the air corroborated, which is what a call record may show as received. */
+    uint8_t nxdn_cipher_rx_class;
+    uint8_t nxdn_cipher_rx_est;
+    uint8_t nxdn_cipher_rx_pending;
 
     /* NXDN frame-content confirmation (src/protocol/nxdn/nxdn_confirm.c). A sync word plus
      * a LICH is not enough to believe a frame: both are weak enough that receiver noise
@@ -1225,7 +1232,17 @@ struct dsd_state {
     unsigned int dmr_heal_fid[2];
     unsigned int dmr_heal_so[2];
     uint8_t dmr_heal_le_vendor[2];
+    /* The slot's dmr_crypto_inherited mark and tuple at the stash, restored with the live values on a heal. */
+    uint8_t dmr_heal_inherited[2];
+    int dmr_heal_inherited_algid[2];
+    int dmr_heal_inherited_keyid[2];
     uint8_t dmr_heal_valid[2];
+    /* The live ALG ID and key id DMR last published into each slot's call epoch, whether or not the record took them
+     * as the call's own (dsd_call_crypto_update::carried). The heal restores these for that epoch, which is what the
+     * decoder has always restored: the call record no longer holds carried values. */
+    uint64_t dmr_live_pub_epoch[2];
+    int dmr_live_pub_algid[2];
+    int dmr_live_pub_keyid[2];
 
     /* Per-slot DMR encryption-classification hysteresis (src/protocol/dmr/dmr_enc_class.c).
      * The service-option privacy bit arrives through channels of very different reliability --
@@ -1242,6 +1259,25 @@ struct dsd_state {
      * from verified Kirisun/Hytera Enhanced signalling. The user's late-entry setting stays in opts->dmr_le, which
      * decoding never writes (issue #657). */
     uint8_t dmr_le_vendor[2];
+
+    /* A checked DMR PI header decoded while no call was active on the slot (its voice LC header was lost): the ALG ID
+     * and key id it carried, with the DSD_CALL_CRYPTO_RX_* bits it received (<dsd-neo/core/call_state.h>), held for the
+     * call the next checked LC opens on the slot, which receives them (dmr_flco.c). Cleared when they transfer, at the
+     * slot's terminator, a carrier boundary, a retune and the no-carrier reset (dmr_pi_precall_reset()). Owned by
+     * src/protocol/dmr. */
+    uint8_t dmr_pi_precall_rx[2];
+    uint8_t dmr_pi_precall_algid[2];
+    uint16_t dmr_pi_precall_kid[2];
+    /* Decode-clock instant each held PI was decoded; it transfers only within DMR_PI_PRECALL_HOLD_S. */
+    double dmr_pi_precall_m[2];
+    /* The slot's live ALG ID and key id as a call found them when it replaced one whose terminator was missed. The
+     * decoder keeps decrypting with them, as it always has; they are the replaced call's, so while the live values
+     * still equal them the new call publishes them as carried (dsd_call_crypto_update::carried), never as its own.
+     * Cleared by any PI header, a late-entry SB identifier, once the live values change or are the decoder's own choice
+     * for the new call (forced or key-inferred), and with the held PI (dmr_pi_precall_reset()). */
+    uint8_t dmr_crypto_inherited[2];
+    int dmr_crypto_inherited_algid[2];
+    int dmr_crypto_inherited_keyid[2];
 
     char slot1light[8];
     char slot2light[8];
@@ -1380,6 +1416,13 @@ struct dsd_state {
     int p25_p1_identity_epoch_started;
     // Definitive Phase 1 HDU crypto arrived after the last authoritative LCW identity.
     int p25_p1_hdu_crypto_fresh;
+    // Per slot: the live ALG ID and key id as a conventional call found them when it replaced one whose terminator was
+    // missed. The decoder keeps them, as it always has; while they are unchanged the new call publishes them as
+    // carried, never as its own (p25_crypto_live_is_inherited()). Cleared by the slot's own resolution, a new
+    // classification and p25_crypto_reset_slot().
+    uint8_t p25_crypto_inherited[2];
+    int p25_crypto_inherited_algid[2];
+    int p25_crypto_inherited_keyid[2];
     // One non-clear HDU/LDU2 tuple contradicted explicit-clear Phase 1 service options.
     dsd_p25_p1_crypto_conflict_state p25_p1_crypto_conflict;
     // One non-clear Phase 2 ESS tuple contradicted explicit-clear service context.
@@ -1421,7 +1464,10 @@ struct dsd_state {
     unsigned int p25_p1_soft_hamming_ok; // soft Hamming corrections
     unsigned int p25_p1_soft_golay_ok;   // soft Golay corrections (hard would have failed)
     unsigned int p25_p1_soft_rs_ok;      // soft RS erasure corrections (hard would have failed)
-    unsigned int p25_p2_soft_ess_ok;     // soft ESS corrections
+    /* 1 while the LDU1 link control being handled passed only a soft-erasure RS retry: its service options are not
+       checked evidence that the call is encrypted (dsd_call_crypto_update::enc_observed). */
+    uint8_t p25_p1_lcw_soft;
+    unsigned int p25_p2_soft_ess_ok; // soft ESS corrections
     unsigned int p25_p2_soft_ess_max_depth;
     unsigned int p25_p1_soft_combined_ok;
     //iden freq storage for frequency calculations
@@ -1737,6 +1783,21 @@ struct dsd_state {
     uint32_t frame_dispatch_carrier_seq;
     /* The radio source the stream last started on, as dsd_engine_note_stream_source() keys it; 0 before any start. */
     uint64_t carrier_source_key;
+    /* The carrier on air is two-slot TDMA: since the last acquisition reset, a frame of DMR (base station, mobile or
+       direct mode), P25 Phase 2 or X2-TDMA decoded with its check passed (a DMR colour-code lock or CRC-checked burst,
+       a P25 Phase 2 Reed-Solomon block, an X2-TDMA voice superframe whose further sync words agree or that follows another), never a bare
+       sync. Decoder-thread owned; frontends read it from the snapshot to keep the second slot's place on screen. A
+       sync loss keeps it; dsd_frame_sync_reset_acquisition(), the carrier boundary and a trunk-scan target switch
+       (dsd_engine_forget_carrier_decoding()), a decoded P25 Phase 1 NID, a decode-mode change and the start and end
+       of a run clear it. */
+    uint8_t tdma_carrier;
+    /* The last whole X2-TDMA voice superframe (processX2TDMAvoice()): the carrier count it was read on and the symbol
+       count where it ended. A superframe whose sync follows it with no hunt gap chains to it, which is how a direct
+       mode carrier, whose other timeslot carries no sync word, proves it is X2-TDMA. x2tdma_superframe_valid is 0
+       when there is none, and after an acquisition reset. */
+    uint8_t x2tdma_superframe_valid;
+    uint32_t x2tdma_superframe_carrier_seq;
+    uint32_t x2tdma_superframe_end_symbol;
     int input_fallback_pending;
 
     //dmr trunking stuff

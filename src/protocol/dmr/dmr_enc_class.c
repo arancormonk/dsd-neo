@@ -22,6 +22,7 @@
  * slot's call crypto.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
@@ -105,6 +106,32 @@ dmr_le_vendor_reset(dsd_state* state, uint8_t slot) {
     state->dmr_le_vendor[dmr_enc_class_slot_index(slot)] = DMR_LE_VENDOR_NONE;
 }
 
+void
+dmr_pi_precall_drop_hold(dsd_state* state, uint8_t slot) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    state->dmr_pi_precall_rx[idx] = 0U;
+    state->dmr_pi_precall_algid[idx] = 0U;
+    state->dmr_pi_precall_kid[idx] = 0U;
+    state->dmr_pi_precall_m[idx] = 0.0;
+}
+
+void
+dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    dmr_pi_precall_drop_hold(state, slot);
+    state->dmr_crypto_inherited[idx] = 0U;
+    state->dmr_crypto_inherited_algid[idx] = 0;
+    state->dmr_crypto_inherited_keyid[idx] = 0;
+}
+
+int
+dmr_pi_precall_fresh(const dsd_state* state, uint8_t slot, double now_m) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    const double held_m = state->dmr_pi_precall_m[idx];
+    return state->dmr_pi_precall_rx[idx] != 0U && held_m > 0.0 && now_m >= held_m
+           && (now_m - held_m) <= DMR_PI_PRECALL_HOLD_S;
+}
+
 int
 dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
@@ -115,4 +142,16 @@ int
 dmr_enc_class_established_clear(const dsd_state* state, uint8_t slot) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
     return state->dmr_enc_class[idx] == DMR_ENC_CLASS_CLEAR && state->dmr_enc_class_est[idx] != 0U;
+}
+
+void
+dmr_note_published_live_crypto(dsd_state* state, uint8_t slot, int algid, int keyid) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, idx, &call) <= 0) {
+        return;
+    }
+    state->dmr_live_pub_epoch[idx] = call.epoch;
+    state->dmr_live_pub_algid[idx] = algid;
+    state->dmr_live_pub_keyid[idx] = keyid;
 }

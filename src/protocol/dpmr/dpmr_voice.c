@@ -370,6 +370,19 @@ dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* What this frame's own verified halves say about scrambling (dsd_call_crypto_update::enc_observed): a half whose CCH
+ * CRC passed, first one first. Scrambling the transmission learned from an earlier frame (Scrambled[]) is what plays
+ * the audio, not this call's own indication. */
+static uint8_t
+dpmr_frame_enc_observed(const dPMRVoiceFS2Frame_t* f) {
+    for (int o = 0; o < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; o++) {
+        if (f->CCHDataCrcOk[o] != 0U) {
+            return f->Version[o] == 3U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR;
+        }
+    }
+    return DSD_CALL_ENC_OBSERVED_NONE;
+}
+
 void
 dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     if (!dpmr_confirm_is_confirmed(state)) {
@@ -404,6 +417,7 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     dsd_call_crypto_update crypto = {
         .classification = DSD_CALL_CRYPTO_CLEAR,
         .audio_permitted = 1U,
+        .enc_observed = dpmr_frame_enc_observed(&state->dPMRVoiceFS2Frame),
     };
     if (state->dPMRVoiceFS2Frame.Scrambled[0] == DPMR_HALF_SCRAMBLED) {
         crypto.classification =

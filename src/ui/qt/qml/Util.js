@@ -247,6 +247,21 @@ function fmtMhz(hz) {
     return mhzText(hz) + " MHz"
 }
 
+// The receiver Explore or Signal search starts on: the remembered one, unless
+// that is a USB kind that is not plugged in while exactly the other kind is
+// (attached is the host's attachedDeviceSource: "usb", "airspy", "both" or
+// empty). Remembering an RTL dongle must not fail a start with only an Airspy
+// attached, nor the reverse. An rtl_tcp server is never overridden, and with
+// both kinds or nothing attached the remembered kind stands. With nothing
+// remembered, the one kind attached is the answer.
+function effectiveSource(remembered, attached) {
+    if (remembered === "rtltcp")
+        return remembered
+    if ((attached === "usb" || attached === "airspy") && remembered !== attached)
+        return attached
+    return remembered
+}
+
 // Site calculations stay in kilometers; convert only the displayed distance.
 function fmtDistanceKm(km, metricUnits) {
     if (typeof km !== "number" || !isFinite(km) || km < 0)

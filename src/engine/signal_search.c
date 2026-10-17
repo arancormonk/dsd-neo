@@ -5,12 +5,14 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -43,8 +45,23 @@ enum {
     SEARCH_ANALOG_VERDICT_MAX_MS = 3000,
     /* Live strength while listening: one measurement this often; longer after a geometry that cannot be measured. */
     SEARCH_LIVE_INTERVAL_MS = 250,
-    SEARCH_LIVE_RETRY_MS = 1000
+    SEARCH_LIVE_RETRY_MS = 1000,
+    /* A live strength no accepted measurement has refreshed for three intervals and a retry is no current level. */
+    SEARCH_LIVE_STALE_MS = 3 * SEARCH_LIVE_INTERVAL_MS + SEARCH_LIVE_RETRY_MS
 };
+
+/* The call tuple: what one checked canonical call record says, copied whole when its call is noted. */
+typedef struct {
+    /* The record's protocol as the search names it ("DMR", "P25", "NXDN", ...); "" for no tuple. */
+    char protocol[8];
+    uint8_t record_slot;
+    uint64_t epoch;
+    double started_m;
+    uint32_t target, source;
+    int slot;
+    char target_text[64], source_text[64];
+    char crypt[48];
+} search_call;
 
 typedef struct {
     dsd_signal_search_config config;
@@ -66,12 +83,18 @@ typedef struct {
     /* Paused or failed, the search has ended what the decoder was receiving (search_end_reception()). */
     int reception_ended;
     uint32_t ticket, target, before_generation;
+    /* The current visit's checked site identity, from site notes alone; cleared at each landing. */
+    dsd_signal_search_site site;
+    /* The visit's call tuple, from call notes alone; cleared at each landing and when the protocol changes. */
+    search_call call;
 #ifdef USE_RADIO
     dsd_signal_search_span span;
     dsd_signal_measure_report report;
     int report_pending;
     int live_measuring;
     uint64_t live_request, live_next;
+    /* When the shown live strength was measured. */
+    uint64_t live_accepted;
 #endif
 } search_coord;
 
@@ -107,6 +130,8 @@ static void
 search_end_hit(search_coord* c) {
     if (c->status.hit.hit_id && !c->status.hit.ended) {
         c->status.hit.ended = 1;
+        /* An ended visit has no current level. */
+        c->status.live_power_valid = 0;
         c->status.hit.ended_ms = (uint64_t)(dsd_decode_now_realtime_s() * 1000);
         search_publish(c, 1);
     }
@@ -168,6 +193,9 @@ search_select_range(search_coord* c) {
         const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
         if (r->enabled && c->status.channel_index < dsd_signal_search_channel_count(r)) {
             c->status.channel_count = dsd_signal_search_channel_count(r);
+            DSD_SNPRINTF(c->status.range_name, sizeof(c->status.range_name), "%s", r->name);
+            c->status.range_start_hz = r->start_hz;
+            c->status.range_end_hz = r->end_hz;
             return 1;
         }
         ++c->status.range_index;
@@ -282,6 +310,10 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
         return -1;
     }
     c->status.phase = DSD_SEARCH_TUNING;
+    /* A refusal (a full avoid list) belonged to the detection being left; the next one starts clean. */
+    if (visit) {
+        c->status.message[0] = '\0';
+    }
     search_publish(c, 0);
     return 0;
 }
@@ -404,6 +436,8 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         previous->need_span = 1;
         previous->visit = previous->skip = previous->hold = 0;
         previous->status.phase = DSD_SEARCH_SEARCHING;
+        /* The edited ranges show from this Resume on, not while they were being edited. */
+        (void)search_select_range(previous);
         search_publish(previous, 0);
         return 0;
     }
@@ -439,12 +473,68 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         return -1;
     }
     dsd_signal_search_evidence_set(dsd_engine_signal_search_evidence);
+    dsd_signal_search_site_set(dsd_engine_signal_search_site);
+    dsd_signal_search_call_set(dsd_engine_signal_search_call);
     dsd_signal_search_active_set(dsd_engine_signal_search_active);
     rtl_signal_search_set_owner(c->status.session_id);
     rtl_signal_search_bypass(1);
+    /* The first enabled range: validation guarantees one, so this neither wraps the pass nor fails. */
+    (void)search_select_range(c);
     search_publish(c, 0);
     return 0;
 #endif
+}
+
+/* Whether the visit's site record belongs to @p protocol ("NXDN" for NXDN48 and NXDN96). */
+static int
+search_site_is(const search_coord* c, const char* protocol) {
+    const size_t n = strlen(c->site.protocol);
+    return n && strncmp(protocol, c->site.protocol, n) == 0;
+}
+
+/* The hit shows the visit's site record only while it belongs to the hit's protocol: a site noted before the protocol
+   is identified shows once it is. 1 when the shown site changed. */
+static int
+search_refresh_site(search_coord* c) {
+    dsd_signal_search_hit* hit = &c->status.hit;
+    char site[sizeof(hit->site)] = "";
+    if (search_site_is(c, hit->protocol)) {
+        (void)dsd_signal_search_site_format(&c->site, site, sizeof(site));
+    }
+    if (strcmp(site, hit->site) == 0) {
+        return 0;
+    }
+    DSD_SNPRINTF(hit->site, sizeof(hit->site), "%s", site);
+    return 1;
+}
+
+/* Whether the visit's call tuple belongs to @p protocol, as the site record does. */
+static int
+search_call_is(const search_coord* c, const char* protocol) {
+    const size_t n = strlen(c->call.protocol);
+    return n && strncmp(protocol, c->call.protocol, n) == 0;
+}
+
+/* The hit takes the call tuple whole while it belongs to the hit's protocol. 1 when the shown tuple changed. */
+static int
+search_refresh_call(search_coord* c) {
+    dsd_signal_search_hit* hit = &c->status.hit;
+    if (!search_call_is(c, hit->protocol)) {
+        return 0;
+    }
+    const search_call* t = &c->call;
+    if (hit->target == t->target && hit->source == t->source && hit->slot == t->slot
+        && strcmp(hit->target_text, t->target_text) == 0 && strcmp(hit->source_text, t->source_text) == 0
+        && strcmp(hit->crypt, t->crypt) == 0) {
+        return 0;
+    }
+    hit->target = t->target;
+    hit->source = t->source;
+    hit->slot = t->slot;
+    DSD_SNPRINTF(hit->target_text, sizeof(hit->target_text), "%s", t->target_text);
+    DSD_SNPRINTF(hit->source_text, sizeof(hit->source_text), "%s", t->source_text);
+    DSD_SNPRINTF(hit->crypt, sizeof(hit->crypt), "%s", t->crypt);
+    return 1;
 }
 
 static void
@@ -458,20 +548,37 @@ search_identified_protocol(search_coord* c, const dsd_state* state, const char* 
     dsd_signal_search_hit* hit = &c->status.hit;
     if (strcmp(hit->protocol, identified) != 0) {
         hit->target = hit->source = 0;
-        hit->access[0] = hit->source_text[0] = hit->target_text[0] = '\0';
+        hit->slot = 0;
+        hit->access[0] = hit->source_text[0] = hit->target_text[0] = hit->crypt[0] = '\0';
+        /* Another protocol's identity is not this one's site or call: they clear, and only a new note shows one again.
+           A site or call noted before any protocol was identified waits for it. */
+        if (hit->protocol[0] && !search_site_is(c, identified)) {
+            dsd_signal_search_site_clear(&c->site);
+        }
+        if (hit->protocol[0] && !search_call_is(c, identified)) {
+            DSD_MEMSET(&c->call, 0, sizeof(c->call));
+        }
     }
     DSD_SNPRINTF(hit->protocol, sizeof(hit->protocol), "%s", identified);
+    (void)search_refresh_site(c);
+    (void)search_refresh_call(c);
+}
+
+/* Whether a protocol observation may join the visit: one is being received, and no input interruption stands (an
+   observation noted then comes from a frame it cut, whose rest is erasures getSymbol() stood in). */
+static int
+search_receiving(const search_coord* c, const dsd_state* state) {
+    return c && c->visit && !c->status.hit.ended && !state->input_interrupted
+           && (c->status.phase == DSD_SEARCH_IDENTIFYING || c->status.phase == DSD_SEARCH_LISTENING
+               || c->status.phase == DSD_SEARCH_HELD);
 }
 
 void
 dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
                                   const char* access) {
     search_coord* c = search_get(state);
-    /* Evidence noted while an input interruption stands comes from a frame it cut, whose rest is erasures getSymbol()
-       stood in: the decoders drop such a frame, and this refuses whatever one still reports. */
-    if (!c || !c->visit || c->status.hit.ended || state->input_interrupted
-        || (c->status.phase != DSD_SEARCH_IDENTIFYING && c->status.phase != DSD_SEARCH_LISTENING
-            && c->status.phase != DSD_SEARCH_HELD)) {
+    /* The decoders drop a frame an input interruption cut; this refuses whatever one still reports. */
+    if (!c || !search_receiving(c, state)) {
         return;
     }
     c->activity = dsd_decode_now_mono_ms();
@@ -482,11 +589,15 @@ dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, 
     if (!c->hold) {
         c->status.phase = DSD_SEARCH_LISTENING;
     }
-    if (target) {
-        c->status.hit.target = target;
-    }
-    if (source) {
-        c->status.hit.source = source;
+    /* A protocol that names its call in a call record names it in the tuple; evidence IDs only stand in for a hit no
+       record has named. */
+    if (!search_call_is(c, c->status.hit.protocol)) {
+        if (target) {
+            c->status.hit.target = target;
+        }
+        if (source) {
+            c->status.hit.source = source;
+        }
     }
     if (access && access[0]) {
         DSD_SNPRINTF(c->status.hit.access, sizeof(c->status.hit.access), "%s", access);
@@ -494,14 +605,161 @@ dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, 
     search_publish(c, 1);
 }
 
+void
+dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
+    search_coord* c = search_get(state);
+    /* A repeated broadcast changes nothing and publishes nothing; a new identity publishes the hit at once, so the
+       last broadcast before the channel falls silent still reaches it. */
+    if (!c || !search_receiving(c, state) || !dsd_signal_search_site_apply(&c->site, note)) {
+        return;
+    }
+    if (search_refresh_site(c)) {
+        search_publish(c, 1);
+    }
+}
+
+/* The search's name for a call record's protocol, or NULL for one the search does not identify by its calls. */
+static const char*
+search_call_protocol(int protocol) {
+    if (DSD_SYNC_IS_DMR(protocol)) {
+        return "DMR";
+    }
+    if (DSD_SYNC_IS_P25(protocol)) {
+        return "P25";
+    }
+    if (DSD_SYNC_IS_NXDN(protocol)) {
+        return "NXDN";
+    }
+    if (DSD_SYNC_IS_DPMR(protocol)) {
+        return "dPMR";
+    }
+    if (DSD_SYNC_IS_M17(protocol)) {
+        return "M17";
+    }
+    if (DSD_SYNC_IS_YSF(protocol)) {
+        return "YSF";
+    }
+    if (DSD_SYNC_IS_DSTAR(protocol)) {
+        return "D-STAR";
+    }
+    return NULL;
+}
+
+/* "ALG 84 · KID 0001" with only the parts the call received over the air, "Encrypted" when its classification says
+   encrypted, neither was received and checked signalling of the call itself says encrypted (enc_received: never a
+   forced, inferred or key-loaded classification), "" for a call not known to be encrypted. */
+static void
+search_call_crypt(const dsd_call_snapshot* call, char* out, size_t capacity) {
+    out[0] = '\0';
+    if (call->crypto != DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call->crypto != DSD_CALL_CRYPTO_ENCRYPTED
+        && call->crypto != DSD_CALL_CRYPTO_DECRYPTABLE) {
+        return;
+    }
+    const int alg = (call->crypto_received & DSD_CALL_CRYPTO_RX_ALG) != 0U;
+    const int kid = (call->crypto_received & DSD_CALL_CRYPTO_RX_KID) != 0U;
+    if (alg && kid) {
+        DSD_SNPRINTF(out, capacity, "ALG %02X \xC2\xB7 KID %04X", (unsigned)call->received_algid,
+                     (unsigned)call->received_kid);
+    } else if (alg) {
+        DSD_SNPRINTF(out, capacity, "ALG %02X", (unsigned)call->received_algid);
+    } else if (kid) {
+        DSD_SNPRINTF(out, capacity, "KID %04X", (unsigned)call->received_kid);
+    } else if (call->enc_received != 0U) {
+        DSD_SNPRINTF(out, capacity, "%s", "Encrypted");
+    }
+}
+
+static uint32_t
+search_call_id(uint64_t id) {
+    return id <= UINT32_MAX ? (uint32_t)id : 0U;
+}
+
+static int
+search_call_equal(const search_call* a, const search_call* b) {
+    return strcmp(a->protocol, b->protocol) == 0 && a->record_slot == b->record_slot && a->epoch == b->epoch
+           && a->target == b->target && a->source == b->source && a->slot == b->slot
+           && strcmp(a->target_text, b->target_text) == 0 && strcmp(a->source_text, b->source_text) == 0
+           && strcmp(a->crypt, b->crypt) == 0;
+}
+
+/* The protocol name of @p slot's active, checked call when it may be shown on the hit, NULL otherwise. Another
+   protocol's call is not this hit's once the hit's protocol is known. */
+static const char*
+search_call_admit(const search_coord* c, const dsd_state* state, uint8_t slot, dsd_call_snapshot* record) {
+    if (dsd_call_state_get(state, slot, record) <= 0 || record->phase != DSD_CALL_PHASE_ACTIVE
+        || record->crc_invalid != 0U) {
+        return NULL;
+    }
+    const char* protocol = search_call_protocol(record->protocol);
+    const dsd_signal_search_hit* hit = &c->status.hit;
+    if (!protocol || (hit->protocol[0] && strncmp(hit->protocol, protocol, strlen(protocol)) != 0)) {
+        return NULL;
+    }
+    return protocol;
+}
+
+/* The tuple is the most recent call heard on the hit: an older call still running on the other slot re-announcing
+   itself leaves the newer one shown, so the tuple never mixes two calls. */
+static int
+search_call_superseded(const search_coord* c, const char* protocol, uint8_t slot, const dsd_call_snapshot* record) {
+    if (!c->call.protocol[0] || strcmp(c->call.protocol, protocol) != 0) {
+        return 0;
+    }
+    const int same_call = c->call.record_slot == slot && c->call.epoch == record->epoch;
+    return !same_call && record->started_m < c->call.started_m;
+}
+
+static void
+search_call_from_record(search_call* next, const dsd_call_snapshot* record, const char* protocol, uint8_t slot) {
+    DSD_MEMSET(next, 0, sizeof(*next));
+    DSD_SNPRINTF(next->protocol, sizeof(next->protocol), "%s", protocol);
+    next->record_slot = slot;
+    next->epoch = record->epoch;
+    next->started_m = record->started_m;
+    next->target = search_call_id(record->ota_target_id != 0U ? record->ota_target_id : record->policy_target_id);
+    next->source = search_call_id(record->ota_source_id);
+    next->slot = (DSD_SYNC_IS_DMR(record->protocol) || DSD_SYNC_IS_P25P2(record->protocol)) ? slot + 1 : 0;
+    DSD_SNPRINTF(next->target_text, sizeof(next->target_text), "%s", record->target_text);
+    DSD_SNPRINTF(next->source_text, sizeof(next->source_text), "%s", record->source_text);
+    search_call_crypt(record, next->crypt, sizeof(next->crypt));
+}
+
+void
+dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot) {
+    search_coord* c = search_get(state);
+    if (!c || !search_receiving(c, state) || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return;
+    }
+    dsd_call_snapshot record;
+    const char* protocol = search_call_admit(c, state, slot, &record);
+    if (!protocol || search_call_superseded(c, protocol, slot, &record)) {
+        return;
+    }
+    search_call next;
+    search_call_from_record(&next, &record, protocol, slot);
+    if (search_call_equal(&next, &c->call)) {
+        return;
+    }
+    c->call = next;
+    if (search_refresh_call(c)) {
+        search_publish(c, 1);
+    }
+}
+
 #ifdef USE_RADIO
 /* The landed channel's own RF power while listening, measured by the capture-rate detector on the same dBFS scale as
    the detection. Only a capture that is the landed tune is measured; a report is accepted for its own request. Both the
    main-loop tick and the in-frame yield check service it: a continuous digital transmission keeps the decoder in its
-   synced-frame loop, where only the latter runs. */
+   synced-frame loop, where only the latter runs. A level that no accepted measurement has refreshed for
+   SEARCH_LIVE_STALE_MS (the capture keeps changing, its samples clip, or the channel cannot be measured) is withdrawn
+   and published, so a frontend never shows an old level as the current one. */
 static void
 search_live_strength(search_coord* c) {
     const uint64_t now = dsd_realtime_mono_ms();
+    if (c->status.live_power_valid && now - c->live_accepted >= SEARCH_LIVE_STALE_MS) {
+        c->status.live_power_valid = 0;
+        search_publish(c, 0);
+    }
     if (c->live_measuring) {
         dsd_signal_measure_report report;
         const int rc = rtl_signal_measure_get(&report);
@@ -515,6 +773,8 @@ search_live_strength(search_coord* c) {
             if (report.candidates[0].valid) {
                 c->status.live_power_dbfs = report.candidates[0].power_dbfs;
                 c->status.live_power_valid = 1;
+                ++c->status.live_seq;
+                c->live_accepted = now;
                 search_publish(c, 0);
             } else {
                 c->live_next = now + SEARCH_LIVE_RETRY_MS;
@@ -611,7 +871,7 @@ search_valid_action(const search_coord* c, const dsd_signal_search_control* acti
     if (!action || action->session_id != c->status.session_id || c->status.phase == DSD_SEARCH_STOPPED) {
         return 0;
     }
-    if (action->action == DSD_SEARCH_ACTION_UNAVOID) {
+    if (action->action == DSD_SEARCH_ACTION_UNAVOID || action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY) {
         return action->frequency_hz != 0;
     }
     if (action->action >= DSD_SEARCH_ACTION_HOLD
@@ -621,17 +881,34 @@ search_valid_action(const search_coord* c, const dsd_signal_search_control* acti
     return 1;
 }
 
+int
+dsd_engine_signal_search_target(const dsd_state* state, const dsd_signal_search_control* action, uint32_t* frequency) {
+    const search_coord* c = state ? search_get(state) : NULL;
+    if (!c || !search_valid_action(c, action)) {
+        return -1;
+    }
+    if (frequency) {
+        const int by_frequency =
+            action->action == DSD_SEARCH_ACTION_UNAVOID || action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY;
+        *frequency = by_frequency ? action->frequency_hz : c->status.hit.frequency_hz;
+    }
+    return 0;
+}
+
 #ifdef USE_RADIO
-/* Avoid the current hit for the rest of the session and leave it; -1 when the avoid list is full. */
+/* Avoid @p frequency for the rest of the session, leaving it if it is being visited; -1 when the avoid list is full.
+   Avoiding a frequency already avoided succeeds. */
 static int
-search_avoid_hit(search_coord* c) {
-    if (!search_contains(c->config.avoids, c->config.avoid_count, c->status.hit.frequency_hz)) {
+search_avoid(search_coord* c, uint32_t frequency) {
+    if (!search_contains(c->config.avoids, c->config.avoid_count, frequency)) {
         if (c->config.avoid_count == DSD_SEARCH_MAX_AVOIDS) {
             return -1;
         }
-        c->config.avoids[c->config.avoid_count++] = c->status.hit.frequency_hz;
+        c->config.avoids[c->config.avoid_count++] = frequency;
     }
-    c->skip = 1;
+    if (c->visit && !c->status.hit.ended && c->status.hit.frequency_hz == frequency) {
+        c->skip = 1;
+    }
     return 0;
 }
 
@@ -655,6 +932,61 @@ search_unavoid(search_coord* c, uint32_t frequency) {
         }
     }
 }
+
+/* Avoid the hit being visited, or the action's frequency; a refusal is the frontends' to show: the queue only said the
+   command was taken. A failed search keeps its error, which says more. */
+static int
+search_avoid_action(search_coord* c, const dsd_signal_search_control* action) {
+    /* A valid AVOID names the hit being visited, so it is left as well. */
+    if (search_avoid(c, action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY ? action->frequency_hz
+                                                                            : c->status.hit.frequency_hz)) {
+        if (c->status.phase != DSD_SEARCH_ERROR) {
+            DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
+            search_publish(c, 0);
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int
+search_resume(search_coord* c) {
+    if (c->status.phase != DSD_SEARCH_PAUSED) {
+        return -1;
+    }
+    c->need_span = 1;
+    c->visit = 0;
+    c->status.phase = DSD_SEARCH_SEARCHING;
+    return 0;
+}
+
+static void
+search_toggle_hold(search_coord* c) {
+    c->hold = !c->hold;
+    if (c->status.phase != DSD_SEARCH_TUNING) {
+        c->status.phase = search_reception_phase(c);
+    }
+}
+
+/* Carry out a valid @p action; -1 when it is refused. */
+static int
+search_apply_action(search_coord* c, const dsd_signal_search_control* action) {
+    switch (action->action) {
+        case DSD_SEARCH_ACTION_STOP:
+            c->stopping = 1;
+            c->tune_started = dsd_realtime_mono_ms();
+            return 0;
+        case DSD_SEARCH_ACTION_PAUSE: search_pause(c); return 0;
+        case DSD_SEARCH_ACTION_RESUME: return search_resume(c);
+        case DSD_SEARCH_ACTION_HOLD: search_toggle_hold(c); return 0;
+        case DSD_SEARCH_ACTION_AVOID:
+        case DSD_SEARCH_ACTION_AVOID_PERMANENT:
+        case DSD_SEARCH_ACTION_AVOID_FREQUENCY: return search_avoid_action(c, action);
+        case DSD_SEARCH_ACTION_SKIP: c->skip = 1; return 0;
+        case DSD_SEARCH_ACTION_UNAVOID: search_unavoid(c, action->frequency_hz); return 0;
+        default: return -1;
+    }
+}
 #endif
 
 int
@@ -667,41 +999,30 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
     }
     (void)opts;
 #ifdef USE_RADIO
-    switch (action->action) {
-        case DSD_SEARCH_ACTION_STOP:
-            c->stopping = 1;
-            c->tune_started = dsd_realtime_mono_ms();
-            break;
-        case DSD_SEARCH_ACTION_PAUSE: search_pause(c); break;
-        case DSD_SEARCH_ACTION_RESUME:
-            if (c->status.phase != DSD_SEARCH_PAUSED) {
-                return -1;
-            }
-            c->need_span = 1;
-            c->visit = 0;
-            c->status.phase = DSD_SEARCH_SEARCHING;
-            break;
-        case DSD_SEARCH_ACTION_HOLD:
-            c->hold = !c->hold;
-            if (c->status.phase != DSD_SEARCH_TUNING) {
-                c->status.phase = search_reception_phase(c);
-            }
-            break;
-        case DSD_SEARCH_ACTION_AVOID:
-        case DSD_SEARCH_ACTION_AVOID_PERMANENT:
-            if (search_avoid_hit(c)) {
-                return -1;
-            }
-            break;
-        case DSD_SEARCH_ACTION_SKIP: c->skip = 1; break;
-        case DSD_SEARCH_ACTION_UNAVOID: search_unavoid(c, action->frequency_hz); break;
-        default: return -1;
+    if (search_apply_action(c, action) != 0) {
+        return -1;
+    }
+    /* An action that took effect replaces an earlier refusal; a search error stays until the session ends. */
+    if (c->status.phase != DSD_SEARCH_ERROR) {
+        c->status.message[0] = '\0';
     }
     search_publish(c, 0);
     return 0;
 #else
     return -1;
 #endif
+}
+
+void
+// cppcheck-suppress constParameterPointer -- The coordinator attached to state publishes the message.
+dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, const char* message) {
+    search_coord* c = state ? search_get(state) : NULL;
+    if (!c || !message || c->status.session_id != session_id || c->status.phase == DSD_SEARCH_STOPPED
+        || c->status.phase == DSD_SEARCH_ERROR) {
+        return;
+    }
+    DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", message);
+    search_publish(c, 0);
 }
 
 #ifdef USE_RADIO
@@ -863,6 +1184,9 @@ search_visit_candidate(search_coord* c, dsd_opts* opts, dsd_state* state, const 
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
     dsd_signal_search_hit* hit = &c->status.hit;
     DSD_MEMSET(hit, 0, sizeof(*hit));
+    /* Nothing noted before this landing, on the span or an earlier visit, is this detection's. */
+    dsd_signal_search_site_clear(&c->site);
+    DSD_MEMSET(&c->call, 0, sizeof(c->call));
     hit->session_id = c->status.session_id;
     hit->hit_id = ++c->next_hit;
     hit->frequency_hz = found->frequency_hz;

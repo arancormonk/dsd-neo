@@ -21,14 +21,22 @@ Item {
     // hierarchical: binding it here would also disable everything the caller
     // nests inside the row.
     property bool tapEnabled: true
+    // An expandable row shows or hides content below it rather than going
+    // somewhere: its caret points down, turns up while expanded, and the row
+    // reports itself as a checkable control whose checked state is `expanded`.
+    property bool expandable: false
+    property bool expanded: false
+    property string accessibleName: title
     signal tapped
 
     width: parent ? parent.width : 0
     height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + 24)
     activeFocusOnTab: tapEnabled && Navigation.allows(row)
     Accessible.role: Accessible.Button
-    Accessible.name: title
+    Accessible.name: accessibleName
     Accessible.description: subtitle
+    Accessible.checkable: expandable
+    Accessible.checked: expandable && expanded
     readonly property bool navigationAllowed: Navigation.allows(row)
     Accessible.ignored: !visible || !navigationAllowed
     Accessible.onPressAction: activate()
@@ -61,6 +69,8 @@ Item {
 
         Text {
             width: parent.width
+            // An expandable row may carry its whole label in the title.
+            visible: text.length > 0 || !row.expandable
             text: row.subtitle
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(12)
@@ -76,8 +86,15 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: Theme.cardPadding
         anchors.verticalCenter: parent.verticalCenter
-        rotation: -90
+        rotation: !row.expandable ? -90 : row.expanded ? 180 : 0
         color: Theme.textSubdued
+
+        Behavior on rotation {
+            NumberAnimation {
+                duration: 150
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 
     Rectangle {

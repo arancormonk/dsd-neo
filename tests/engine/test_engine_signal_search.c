@@ -6,12 +6,14 @@
 #include <assert.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -68,17 +70,37 @@ rtl_signal_search_set_owner(uint64_t session) {
     tuner_owner = session;
 }
 
+/* Publications that carried a changed hit, and the last such hit. */
+static int hits_published;
+static dsd_signal_search_hit published_hit;
+
 static void
 observer(const dsd_signal_search_status* s, const dsd_signal_search_hit* h, void* ctx) {
-    (void)h;
     (void)ctx;
     status = *s;
+    if (h) {
+        ++hits_published;
+        published_hit = *h;
+    }
 }
 
 static void
 advance(unsigned ms) {
     now_ms += ms;
     dsd_decode_clock_test_set_ns(now_ms * 1000000);
+}
+
+/* The canonical call records the coordinator reads, one per slot (the core's dsd_call_state_get(), stubbed). */
+static dsd_call_snapshot calls[DSD_CALL_STATE_SLOT_COUNT];
+
+int
+dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out) {
+    (void)state;
+    if (slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    *out = calls[slot];
+    return out->epoch != 0U ? 1 : 0;
 }
 
 int
@@ -93,7 +115,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 53);
+    assert(owner >= 42 && owner <= 62);
     if (defer) {
         --defer;
         return 1;
@@ -369,11 +391,41 @@ test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_s
     tick(o, s);
     assert(request.count == 1 && request.frequencies[0] == status.hit.frequency_hz);
     assert(request.capture.capture_hz - request.capture.capture_offset_hz == status.hit.frequency_hz);
+    const uint64_t seq_before = status.live_seq;
     ready = 2; // measured, below the detection threshold: strength is still reported
     advance(100);
     tick(o, s);
     assert(status.live_power_valid && status.live_power_dbfs > -40.5f && status.live_power_dbfs < -39.5f);
     assert(status.hit.power_dbfs > -30.5f && status.hit.power_dbfs < -29.5f); // detection-time power is kept apart
+    assert(status.live_seq == seq_before + 1);
+    // The next measurement reads the same level: it is still a fresh reading, and the sequence says so.
+    const float first_level = status.live_power_dbfs;
+    realtime_ms += 250;
+    tick(o, s);
+    ready = 2;
+    tick(o, s);
+    assert(status.live_power_valid && status.live_seq == seq_before + 2);
+    assert(status.live_power_dbfs > first_level - 0.001f && status.live_power_dbfs < first_level + 0.001f);
+
+    // A level no accepted measurement refreshes is withdrawn three intervals and a retry after it was measured: here
+    // the capture stops being the landed tune, so nothing is measured. A fresh measurement shows a level again.
+    const dsd_signal_capture landed = capture;
+    capture.capture_offset_hz += 5000;
+    const dsd_signal_measure_request measured = request;
+    realtime_ms += 1749;
+    tick(o, s);
+    assert(status.live_power_valid && request.request_id == measured.request_id);
+    realtime_ms += 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.live_power_valid);
+    assert(status.live_seq == seq_before + 2); // a withdrawal is no measurement
+    capture = landed;
+    realtime_ms += 250;
+    tick(o, s);
+    assert(request.request_id != measured.request_id && !status.live_power_valid);
+    ready = 2;
+    tick(o, s);
+    assert(status.live_power_valid && status.live_power_dbfs > -40.5f && status.live_power_dbfs < -39.5f);
 
     // A session avoid can be lifted by frequency, without a hit; lifting a missing one is harmless.
     const uint32_t avoided = status.hit.frequency_hz;
@@ -602,6 +654,581 @@ test_capture_freshness(dsd_opts* o, dsd_state* s, dsd_signal_search_config* conf
     assert(status.phase == DSD_SEARCH_STOPPED);
 }
 
+/* The status names the range being searched, from the coordinator's own configuration: a detection in range A keeps
+   its own range name when the search moves on, and the status shows the quiet range B the search is in now. Edited
+   ranges reach the status only at the Resume that applies them. */
+static void
+test_status_names_running_range(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    dsd_signal_search_config two = *config;
+    two.session_id = 54;
+    two.avoid_count = 0;
+    two.range_count = 2;
+    DSD_SNPRINTF(two.ranges[0].name, sizeof(two.ranges[0].name), "%s", "Air band");
+    two.ranges[0].digital = 0;
+    two.ranges[0].max_visit_ms = 0;
+    two.ranges[1] = two.ranges[0];
+    DSD_SNPRINTF(two.ranges[1].name, sizeof(two.ranges[1].name), "%s", "Marine");
+    two.ranges[1].start_hz = 100100000;
+    two.ranges[1].end_hz = 100125000;
+    assert(dsd_engine_signal_search_start(o, s, &two, observer, NULL, error, sizeof(error)) == 0);
+    // Named from the first publication, before any span is planned.
+    assert(strcmp(status.range_name, "Air band") == 0 && status.range_start_hz == 100000000);
+    assert(status.range_end_hz == 100025000 && status.channel_count == 3);
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && strcmp(status.hit.range_name, "Air band") == 0);
+    tick(o, s); // the monitor's first verdict starts quiet timing
+    advance(500);
+    tick(o, s); // quiet: back to the span
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    land(o, s);
+    ready = 2; // nothing detected in the rest of range A
+    tick(o, s);
+    tick(o, s); // range B's span
+    assert(status.phase == DSD_SEARCH_TUNING && status.range_index == 1);
+    assert(strcmp(status.range_name, "Marine") == 0 && status.range_start_hz == 100100000);
+    assert(status.range_end_hz == 100125000);
+    assert(strcmp(status.hit.range_name, "Air band") == 0); // the retained detection keeps its own range
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING && strcmp(status.range_name, "Marine") == 0);
+
+    // Paused, the ranges are edited; the running range is still B until Resume applies the edit.
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && strcmp(status.range_name, "Marine") == 0);
+    DSD_SNPRINTF(two.ranges[0].name, sizeof(two.ranges[0].name), "%s", "Air band low");
+    two.ranges[0].end_hz = 100012500;
+    tick(o, s);
+    assert(strcmp(status.range_name, "Marine") == 0 && status.range_start_hz == 100100000);
+    assert(dsd_engine_signal_search_start(o, s, &two, observer, NULL, error, sizeof(error)) == 0);
+    assert(status.phase == DSD_SEARCH_SEARCHING && status.range_index == 0);
+    assert(strcmp(status.range_name, "Air band low") == 0 && status.range_start_hz == 100000000);
+    assert(status.range_end_hz == 100012500 && status.channel_count == 2);
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+}
+
+/* Avoiding a frequency named by a history row: no hit is needed, the visit it names is left, and the session's list is
+   bounded with a visible refusal. */
+static void
+test_avoid_by_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    dsd_signal_search_config one = *config;
+    one.session_id = 55;
+    one.avoid_count = 0;
+    one.range_count = 1;
+    one.ranges[0].start_hz = 100000000;
+    one.ranges[0].end_hz = 100025000;
+    one.ranges[0].digital = 0;
+    one.ranges[0].max_visit_ms = 0;
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100025000);
+    const uint64_t hit = status.hit.hit_id;
+
+    // What an action would act on, resolved without acting: the live hit's frequency, or the one named.
+    dsd_signal_search_control avoid_hit = {55, hit, DSD_SEARCH_ACTION_AVOID, 0};
+    uint32_t resolved = 0;
+    assert(dsd_engine_signal_search_target(s, &avoid_hit, &resolved) == 0 && resolved == 100025000);
+    avoid_hit.hit_id = hit + 1;
+    assert(dsd_engine_signal_search_target(s, &avoid_hit, &resolved) < 0);
+    avoid_hit.hit_id = hit;
+    avoid_hit.session_id = 56;
+    assert(dsd_engine_signal_search_target(s, &avoid_hit, &resolved) < 0);
+
+    // Another frequency: avoided, and the visit goes on. Again: still fine.
+    dsd_signal_search_control by_frequency = {55, 0, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500};
+    resolved = 0;
+    assert(dsd_engine_signal_search_target(s, &by_frequency, &resolved) == 0 && resolved == 100012500);
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.hit.ended);
+    // A stale session or no frequency is refused.
+    by_frequency.session_id = 56;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    by_frequency.session_id = 55;
+    by_frequency.frequency_hz = 0;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    // The frequency being visited: left, as AVOID leaves it.
+    by_frequency.frequency_hz = 100025000;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+
+    // Later spans exclude both: only 100.000 MHz is visited, this pass and the next.
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100000000);
+    land(o, s);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    tick(o, s);
+    assert(status.pass == 2);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100000000);
+
+    // A full list refuses a new frequency and says so; one already on it still succeeds and clears the refusal.
+    by_frequency.frequency_hz = 200000000;
+    for (uint32_t i = 2; i < DSD_SEARCH_MAX_AVOIDS; ++i, by_frequency.frequency_hz += 12500) {
+        assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    }
+    assert(status.message[0] == '\0');
+    const uint64_t revision = status.revision;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    assert(strcmp(status.message, "The avoid list is full") == 0 && status.revision > revision);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.hit.ended); // nothing was skipped
+    avoid_hit = (dsd_signal_search_control){55, status.hit.hit_id, DSD_SEARCH_ACTION_AVOID, 0};
+    assert(dsd_engine_signal_search_control(o, s, &avoid_hit) < 0); // the current hit has no room either
+    assert(strcmp(status.message, "The avoid list is full") == 0);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.hit.ended);
+    by_frequency.frequency_hz = 100012500;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) == 0);
+    assert(status.message[0] == '\0');
+    // A refusal belongs to the detection it was about: the next visit's tune clears it, without any other action.
+    by_frequency.frequency_hz = 300000000;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    assert(strcmp(status.message, "The avoid list is full") == 0);
+    tick(o, s); // the monitor's first verdict starts quiet timing
+    advance(500);
+    tick(o, s); // quiet: the visit ends and the search goes back to its span
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    assert(strcmp(status.message, "The avoid list is full") == 0); // a span tune is not a new detection
+    for (int i = 0; i < 8 && !(status.phase == DSD_SEARCH_TUNING && !status.hit.ended); ++i) {
+        land(o, s);
+        ready = 1;
+        tick(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended && status.message[0] == '\0');
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+
+    // A refusal decided outside the coordinator is shown in its status, for its own session only.
+    dsd_engine_signal_search_notice(s, 56, "elsewhere");
+    assert(status.message[0] == '\0');
+    dsd_engine_signal_search_notice(s, 55, "The permanent avoid list is full");
+    assert(strcmp(status.message, "The permanent avoid list is full") == 0);
+    // A failed search keeps its error: a full list refuses without replacing it.
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    failed = 1;
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && status.message[0] != '\0');
+    char search_error_text[sizeof(status.message)];
+    DSD_SNPRINTF(search_error_text, sizeof(search_error_text), "%s", status.message);
+    by_frequency.frequency_hz = 300000000;
+    assert(dsd_engine_signal_search_control(o, s, &by_frequency) < 0);
+    assert(strcmp(status.message, search_error_text) == 0);
+    failed = 0;
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+    // No search: nothing to resolve, nothing to show.
+    by_frequency.frequency_hz = 100012500;
+    assert(dsd_engine_signal_search_target(s, &by_frequency, &resolved) < 0);
+    assert(dsd_engine_signal_search_target(NULL, &by_frequency, &resolved) < 0);
+    dsd_engine_signal_search_notice(s, 55, "after the stop");
+    assert(strcmp(status.message, "after the stop") != 0);
+}
+
+static dsd_signal_search_site_note
+p25_network_note(uint32_t wacn, uint16_t sysid) {
+    dsd_signal_search_site_note note = {0};
+    note.kind = DSD_SEARCH_SITE_NOTE_P25_NETWORK;
+    note.wacn = wacn;
+    note.sysid = sysid;
+    return note;
+}
+
+static dsd_signal_search_site_note
+p25_site_note(uint16_t sysid, uint8_t rfss, uint8_t site) {
+    dsd_signal_search_site_note note = {0};
+    note.kind = DSD_SEARCH_SITE_NOTE_P25_SITE;
+    note.sysid = sysid;
+    note.rfss = rfss;
+    note.site = site;
+    return note;
+}
+
+static int
+site_text_is(const dsd_signal_search_site* record, const char* want) {
+    char text[96];
+    (void)dsd_signal_search_site_format(record, text, sizeof(text));
+    return strcmp(text, want) == 0;
+}
+
+/* The checked site record joins notes by the SYSID each one advertises and replaces itself on a new system. */
+static void
+test_site_record_binding(void) {
+    dsd_signal_search_site record;
+    dsd_signal_search_site_clear(&record);
+    assert(site_text_is(&record, ""));
+    dsd_signal_search_site_note note = p25_site_note(0x1A3, 1, 2);
+    // An RFSS status before any network status sets the SYSID; the network status that follows joins it.
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2"));
+    note = p25_network_note(0xBEE00, 0x1A3);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2"));
+    // The same broadcast again changes nothing.
+    assert(!dsd_signal_search_site_apply(&record, &note));
+    note = p25_site_note(0x1A3, 1, 2);
+    assert(!dsd_signal_search_site_apply(&record, &note));
+    // A site advertised under another SYSID is not this record's.
+    note = p25_site_note(0x2B4, 7, 9);
+    assert(!dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2"));
+    // The same system's next site replaces the site part only.
+    note = p25_site_note(0x1A3, 1, 3);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 3"));
+    // A network status naming another WACN or another SYSID replaces the record whole.
+    note = p25_network_note(0xBEE01, 0x1A3);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE01 \xC2\xB7 SYS 1A3"));
+    note = p25_site_note(0x1A3, 4, 5);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    note = p25_network_note(0xBEE01, 0x2B4);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE01 \xC2\xB7 SYS 2B4"));
+    // A site note whose SYSID differs from a site-only record replaces nothing either.
+    dsd_signal_search_site_clear(&record);
+    note = p25_site_note(0x1A3, 1, 2);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    note = p25_network_note(0xBEE00, 0x2B4);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 2B4"));
+    // Another protocol's note replaces the record; DMR and NXDN notes are whole identities.
+    dsd_signal_search_site_note dmr = {0};
+    dmr.kind = DSD_SEARCH_SITE_NOTE_DMR_TIII;
+    assert(!dsd_signal_search_site_apply(&record, &dmr)); // no text, no identity
+    DSD_SNPRINTF(dmr.text, sizeof(dmr.text), "%s", "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 3.1 \xC2\xB7 SYS 0A3F");
+    assert(dsd_signal_search_site_apply(&record, &dmr));
+    assert(strcmp(record.protocol, "DMR") == 0);
+    assert(site_text_is(&record, "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 3.1 \xC2\xB7 SYS 0A3F"));
+    dsd_signal_search_site_note nxdn = {0};
+    nxdn.kind = DSD_SEARCH_SITE_NOTE_NXDN;
+    nxdn.nxdn_site = 12;
+    nxdn.nxdn_sys = 3;
+    assert(dsd_signal_search_site_apply(&record, &nxdn));
+    assert(strcmp(record.protocol, "NXDN") == 0 && site_text_is(&record, "Site 12 \xC2\xB7 Sys 3"));
+    note = p25_network_note(0xBEE00, 0x1A3);
+    assert(dsd_signal_search_site_apply(&record, &note));
+    assert(strcmp(record.protocol, "P25") == 0 && site_text_is(&record, "WACN BEE00 \xC2\xB7 SYS 1A3"));
+    // Nothing else is a note.
+    dsd_signal_search_site_note unknown = {0};
+    assert(!dsd_signal_search_site_apply(&record, &unknown) && !dsd_signal_search_site_apply(&record, NULL));
+    char small[8];
+    assert(dsd_signal_search_site_format(&record, small, sizeof(small)) == sizeof(small) - 1);
+}
+
+/* A detection shows the site its visit heard in checked broadcasts, from the visit alone. */
+static void
+test_site_notes_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    dsd_signal_search_config one = *config;
+    one.session_id = 61;
+    one.avoid_count = 0;
+    one.range_count = 1;
+    one.ranges[0].start_hz = 100000000;
+    one.ranges[0].end_hz = 100025000;
+    one.ranges[0].digital = 1;
+    one.ranges[0].max_visit_ms = 0;
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    // A broadcast heard while the search measures its span belongs to no detection.
+    dsd_signal_search_site_note early = p25_network_note(0xABCDE, 0x123);
+    dsd_signal_search_note_site(s, &early);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && status.hit.site[0] == '\0');
+
+    // A site noted before the protocol is identified shows once it is.
+    int published = hits_published;
+    dsd_signal_search_site_note site = p25_site_note(0x1A3, 1, 2);
+    dsd_signal_search_note_site(s, &site);
+    assert(status.hit.site[0] == '\0' && hits_published == published);
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    assert(strcmp(status.hit.site, "SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+    // The network status after the RFSS status joins it, published with the hit.
+    published = hits_published;
+    dsd_signal_search_site_note network = p25_network_note(0xBEE00, 0x1A3);
+    dsd_signal_search_note_site(s, &network);
+    assert(hits_published == published + 1);
+    assert(strcmp(published_hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+    assert(strcmp(status.hit.site, published_hit.site) == 0);
+    // A repeated broadcast publishes nothing.
+    const uint64_t revision = status.revision;
+    dsd_signal_search_note_site(s, &network);
+    dsd_signal_search_note_site(s, &site);
+    assert(status.revision == revision && hits_published == published + 1);
+    // A note from a frame an input interruption cut is dropped.
+    s->input_interrupted = 1;
+    dsd_signal_search_site_note cut = p25_network_note(0xBEE00, 0x2B4);
+    dsd_signal_search_note_site(s, &cut);
+    s->input_interrupted = 0;
+    assert(strcmp(status.hit.site, published_hit.site) == 0 && status.revision == revision);
+    // A protocol change clears the site: going back to P25 shows none until a new broadcast names it.
+    dsd_signal_search_note_evidence(s, "DMR", 0, 0, NULL);
+    assert(status.hit.site[0] == '\0');
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    assert(status.hit.site[0] == '\0');
+    dsd_signal_search_note_site(s, &site);
+    dsd_signal_search_note_site(s, &network);
+    assert(strcmp(status.hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+    // NXDN48 and NXDN96 are one protocol's site.
+    dsd_signal_search_site_note nxdn = {0};
+    nxdn.kind = DSD_SEARCH_SITE_NOTE_NXDN;
+    nxdn.nxdn_site = 12;
+    nxdn.nxdn_sys = 3;
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    dsd_signal_search_note_evidence(s, "NXDN", 0, 0, NULL);
+    dsd_signal_search_note_site(s, &nxdn);
+    assert(strcmp(status.hit.protocol, "NXDN48") == 0 && strcmp(status.hit.site, "Site 12 \xC2\xB7 Sys 3") == 0);
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    dsd_signal_search_note_evidence(s, "NXDN", 0, 0, NULL);
+    assert(strcmp(status.hit.protocol, "NXDN96") == 0 && strcmp(status.hit.site, "Site 12 \xC2\xB7 Sys 3") == 0);
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    dsd_signal_search_note_site(s, &site);
+    dsd_signal_search_note_site(s, &network);
+    assert(strcmp(status.hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+
+    // The last broadcast before the channel falls silent is the detection's: it is in the live status and in the
+    // ended hit the visit publishes.
+    tick(o, s);
+    advance(500);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && published_hit.ended);
+    assert(strcmp(status.hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3 \xC2\xB7 RFSS 1 \xC2\xB7 Site 2") == 0);
+    assert(strcmp(published_hit.site, status.hit.site) == 0);
+    // Between visits nothing is noted, and the next landing starts with no site.
+    dsd_signal_search_note_site(s, &early);
+    for (int i = 0; i < 8 && !(status.phase == DSD_SEARCH_TUNING && !status.hit.ended); ++i) {
+        land(o, s);
+        ready = 1;
+        tick(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended && status.hit.site[0] == '\0');
+    land(o, s);
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    assert(status.hit.confirmed && status.hit.site[0] == '\0');
+    dsd_signal_search_note_site(s, &early);
+    assert(strcmp(status.hit.site, "WACN ABCDE \xC2\xB7 SYS 123") == 0);
+
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+    // No search: a note goes nowhere.
+    dsd_signal_search_note_site(s, &network);
+    assert(strcmp(status.hit.site, "WACN ABCDE \xC2\xB7 SYS 123") == 0);
+}
+
+/* Put an active call on @p slot: one epoch of one transmission, as the canonical layer would hold it. */
+static dsd_call_snapshot*
+put_call(uint8_t slot, uint64_t epoch, double started_m, int protocol, uint64_t target_id, uint64_t source_id) {
+    dsd_call_snapshot* call = &calls[slot];
+    DSD_MEMSET(call, 0, sizeof(*call));
+    call->epoch = epoch;
+    call->slot = slot;
+    call->started_m = started_m;
+    call->phase = DSD_CALL_PHASE_ACTIVE;
+    call->protocol = protocol;
+    call->kind = DSD_CALL_KIND_GROUP_VOICE;
+    call->ota_target_id = target_id;
+    call->ota_source_id = source_id;
+    call->crypto = DSD_CALL_CRYPTO_CLEAR;
+    return call;
+}
+
+static void
+put_crypto(dsd_call_snapshot* call, dsd_call_crypto_state crypto, uint8_t algid, uint16_t kid, uint8_t received) {
+    call->crypto = crypto;
+    call->algid = algid;
+    call->kid = kid;
+    call->crypto_received = received;
+    call->received_algid = (received & DSD_CALL_CRYPTO_RX_ALG) ? algid : 0U;
+    call->received_kid = (received & DSD_CALL_CRYPTO_RX_KID) ? kid : 0U;
+}
+
+static int
+tuple_is(const dsd_signal_search_hit* hit, uint32_t target_id, uint32_t source_id, int slot, const char* crypt) {
+    return hit->target == target_id && hit->source == source_id && hit->slot == slot && strcmp(hit->crypt, crypt) == 0;
+}
+
+/* A detection's IDs, texts, slot and crypt are one checked call record's: the most recent call heard on the hit,
+   never a mix of two slots' calls, and the crypt only what that call received over the air. */
+static void
+test_call_tuple_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    dsd_signal_search_config one = *config;
+    one.session_id = 62;
+    one.avoid_count = 0;
+    one.range_count = 1;
+    one.ranges[0].start_hz = 100000000;
+    one.ranges[0].end_hz = 100025000;
+    one.ranges[0].digital = 1;
+    one.ranges[0].max_visit_ms = 0;
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    // A call heard while the search measures its span belongs to no detection.
+    dsd_call_snapshot* a = put_call(0, 1, 1.0, DSD_SYNC_DMR_BS_VOICE_POS, 100, 200);
+    dsd_signal_search_note_call(s, 0);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && tuple_is(&status.hit, 0, 0, 0, ""));
+
+    // A call noted before the protocol is identified shows once it is, whole: IDs, texts, slot and received crypt.
+    put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED, 0x21, 0x05, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+    DSD_SNPRINTF(a->source_text, sizeof(a->source_text), "%s", "Unit 200");
+    int published = hits_published;
+    dsd_signal_search_note_call(s, 0);
+    assert(hits_published == published && status.hit.target == 0);
+    dsd_signal_search_note_evidence(s, "DMR", 0, 0, NULL);
+    assert(tuple_is(&status.hit, 100, 200, 1, "ALG 21 \xC2\xB7 KID 0005"));
+    assert(strcmp(status.hit.source_text, "Unit 200") == 0 && status.hit.target_text[0] == '\0');
+    assert(tuple_is(&published_hit, 100, 200, 1, "ALG 21 \xC2\xB7 KID 0005"));
+
+    // Two simultaneous DMR slots: the call that began later is the tuple, whole, and an older call still running on
+    // the other slot re-announcing itself does not mix its IDs or crypto into it.
+    dsd_call_snapshot* b = put_call(1, 1, 2.0, DSD_SYNC_DMR_BS_VOICE_NEG, 300, 400);
+    DSD_SNPRINTF(b->target_text, sizeof(b->target_text), "%s", "Fire");
+    published = hits_published;
+    dsd_signal_search_note_call(s, 1);
+    assert(hits_published == published + 1);
+    assert(tuple_is(&status.hit, 300, 400, 2, "") && tuple_is(&published_hit, 300, 400, 2, ""));
+    assert(strcmp(status.hit.target_text, "Fire") == 0 && status.hit.source_text[0] == '\0');
+    const uint64_t revision = status.revision;
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 300, 400, 2, "") && status.revision == revision);
+    // The tuple's own call updates it in place; a repeat that changes nothing publishes nothing.
+    put_crypto(b, DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0x24, 0x0007, DSD_CALL_CRYPTO_RX_KID);
+    dsd_signal_search_note_call(s, 1);
+    assert(tuple_is(&status.hit, 300, 400, 2, "KID 0007") && strcmp(status.hit.target_text, "Fire") == 0);
+    published = hits_published;
+    dsd_signal_search_note_call(s, 1);
+    assert(hits_published == published);
+
+    // Evidence IDs are only the fallback for a hit no call record names: they never overwrite the tuple.
+    dsd_signal_search_note_evidence(s, "DMR", 777, 888, NULL);
+    assert(tuple_is(&status.hit, 300, 400, 2, "KID 0007"));
+
+    // A later call on the same hit replaces the tuple whole, on either slot. It does not inherit the crypto the call
+    // before it received: a checked privacy indication alone shows as "Encrypted".
+    a = put_call(0, 2, 3.0, DSD_SYNC_DMR_BS_VOICE_POS, 500, 600);
+    put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0x21, 0x05, 0);
+    a->enc_received = 1U;
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, "Encrypted"));
+    assert(status.hit.target_text[0] == '\0' && status.hit.source_text[0] == '\0');
+    // A forced or inferred ALG ID the record carries but never received shows nothing beyond "Encrypted".
+    a->algid = 0x22;
+    a->kid = 0xFF;
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, "Encrypted"));
+    // An encrypted or decryptable classification no checked signalling of the call supports (a forced scrambler over a
+    // VCALL advertising clear) shows nothing at all.
+    a->enc_received = 0U;
+    put_crypto(a, DSD_CALL_CRYPTO_DECRYPTABLE, 0x01, 0x00, 0);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, ""));
+    put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED, 0x22, 0xFF, 0);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, ""));
+    // A clear call shows no crypt, whatever was received for it (a P25 ALG 80 is "clear").
+    put_crypto(a, DSD_CALL_CRYPTO_CLEAR, 0x80, 0, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, ""));
+
+    // Only an active, CRC-clean record of a protocol the search identifies is a tuple.
+    published = hits_published;
+    b = put_call(1, 2, 4.0, DSD_SYNC_DMR_BS_VOICE_NEG, 901, 902);
+    b->crc_invalid = 1;
+    dsd_signal_search_note_call(s, 1);
+    b->crc_invalid = 0;
+    b->phase = DSD_CALL_PHASE_ENDED;
+    dsd_signal_search_note_call(s, 1);
+    b->phase = DSD_CALL_PHASE_ACTIVE;
+    b->protocol = DSD_SYNC_X2TDMA_DATA_POS;
+    dsd_signal_search_note_call(s, 1);
+    b->protocol = DSD_SYNC_DMR_BS_VOICE_NEG;
+    s->input_interrupted = 1;
+    dsd_signal_search_note_call(s, 1);
+    s->input_interrupted = 0;
+    dsd_signal_search_note_call(s, 7);
+    assert(tuple_is(&status.hit, 500, 600, 1, "") && hits_published == published);
+
+    // A protocol change clears the tuple; the new protocol's call shows its own, with its Phase 2 slot.
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    assert(tuple_is(&status.hit, 0, 0, 0, "") && status.hit.target_text[0] == '\0');
+    dsd_signal_search_note_call(s, 0); // the DMR call is not this protocol's
+    assert(tuple_is(&status.hit, 0, 0, 0, ""));
+    b = put_call(1, 3, 5.0, DSD_SYNC_P25P2_POS, 1001, 1002);
+    put_crypto(b, DSD_CALL_CRYPTO_DECRYPTABLE, 0x84, 0x0001, DSD_CALL_CRYPTO_RX_ALG);
+    dsd_signal_search_note_call(s, 1);
+    assert(tuple_is(&status.hit, 1001, 1002, 2, "ALG 84"));
+    // A P25 Phase 1 call has no timeslot.
+    a = put_call(0, 3, 6.0, DSD_SYNC_P25P1_POS, 2001, 2002);
+    put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED, 0x84, 0x0001, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 2001, 2002, 0, "ALG 84 \xC2\xB7 KID 0001"));
+
+    // The last call before the channel falls silent is the detection's: the ended hit keeps it, and the call ending
+    // changes nothing.
+    tick(o, s);
+    advance(500);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && published_hit.ended);
+    assert(tuple_is(&status.hit, 2001, 2002, 0, "ALG 84 \xC2\xB7 KID 0001"));
+    assert(tuple_is(&published_hit, 2001, 2002, 0, "ALG 84 \xC2\xB7 KID 0001"));
+    // Between visits nothing is noted, and the next landing starts with no tuple; its evidence IDs are the fallback
+    // until a call record names it.
+    dsd_signal_search_note_call(s, 0);
+    for (int i = 0; i < 8 && !(status.phase == DSD_SEARCH_TUNING && !status.hit.ended); ++i) {
+        land(o, s);
+        ready = 1;
+        tick(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended && tuple_is(&status.hit, 0, 0, 0, ""));
+    land(o, s);
+    dsd_signal_search_note_evidence(s, "P25", 2001, 2002, NULL);
+    assert(status.hit.confirmed && tuple_is(&status.hit, 2001, 2002, 0, ""));
+    // A record of the previous visit's call is not this visit's until the protocol re-publishes it.
+    a = put_call(0, 4, 7.0, DSD_SYNC_P25P1_POS, 3001, 0);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 3001, 0, 0, ""));
+
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+    // No search: a note goes nowhere.
+    a->ota_target_id = 4001;
+    dsd_signal_search_note_call(s, 0);
+    assert(status.hit.target == 3001);
+    DSD_MEMSET(calls, 0, sizeof(calls));
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -763,6 +1390,11 @@ main(void) {
     test_auto_baseline_dispatches_dmr(o, s, &config);
     test_restore_retune_carries_family(o, s, &config);
     test_capture_freshness(o, s, &config);
+    test_status_names_running_range(o, s, &config);
+    test_avoid_by_frequency(o, s, &config);
+    test_site_record_binding();
+    test_site_notes_on_detection(o, s, &config);
+    test_call_tuple_on_detection(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

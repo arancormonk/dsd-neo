@@ -379,6 +379,9 @@ publish(uint64_t id, bool confirmed = false) {
     if (confirmed) {
         DSD_SNPRINTF(h.protocol, sizeof(h.protocol), "%s", "DMR");
         h.source = 123;
+        DSD_SNPRINTF(h.site, sizeof(h.site), "%s", "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 3 \xC2\xB7 SYS 1183");
+        h.slot = 2;
+        DSD_SNPRINTF(h.crypt, sizeof(h.crypt), "%s", "ALG 21 \xC2\xB7 KID 0001");
     }
     dsd_app_signal_search_publish(&s, &h, nullptr);
 }
@@ -391,15 +394,18 @@ main(int argc, char** argv) {
     QTemporaryDir temp;
     assert(temp.isValid());
     const QString journal = temp.filePath(QStringLiteral("history"));
+    // The store writes version 2 records beside the version 1 journal it is opened with.
+    const QString written = journal + QStringLiteral(".v2");
     assert(dsd_app_signal_search_store_open(journal.toUtf8().constData()) == 0);
     publish(1);
     dsd_app_signal_search_store_flush();
-    const auto before = QFileInfo(journal).size();
+    const auto before = QFileInfo(written).size();
+    assert(before > 0);
     for (int i = 0; i < 50; ++i) {
         publish(1);
     }
     dsd_app_signal_search_store_flush();
-    assert(QFileInfo(journal).size() == before);
+    assert(QFileInfo(written).size() == before);
     publish(1, true);
     std::vector<dsd_signal_search_hit> hits(1000);
     assert(dsd_app_signal_search_history_get(hits.data(), hits.size()) == 1);
@@ -410,8 +416,8 @@ main(int argc, char** argv) {
     for (int i = 2; i <= 1005; ++i) {
         publish(i);
     }
-    dsd_app_signal_search_permanent_avoid(463550000);
-    dsd_app_signal_search_permanent_avoid(463550000);
+    assert(dsd_app_signal_search_permanent_avoid(463550000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(dsd_app_signal_search_permanent_avoid(463550000) == DSD_APP_SEARCH_AVOID_DUPLICATE);
     dsd_app_signal_search_store_flush();
     dsd_app_signal_search_store_close();
     assert(dsd_app_signal_search_store_open(journal.toUtf8().constData()) == 0);
@@ -421,7 +427,7 @@ main(int argc, char** argv) {
     assert(dsd_app_signal_search_avoids_get(avoids, 4) == 1 && avoids[0] == 463550000);
     assert(dsd_app_signal_search_avoid_remove(463550000) == 0);
     dsd_app_signal_search_store_close();
-    FILE* f = dsd_fopen_private(journal.toUtf8().constData(), "ab");
+    FILE* f = dsd_fopen_private(written.toUtf8().constData(), "ab");
     assert(f);
     assert(fwrite("DSS", 1, 3, f) == 3);
     fclose(f);
@@ -443,7 +449,7 @@ main(int argc, char** argv) {
     dsd_app_signal_search_store_flush();
     dsd_app_signal_search_status_get(nullptr, error, sizeof(error));
     assert(!error[0]);
-    assert(QFileInfo(missing).size() > 0);
+    assert(QFileInfo(missing + QStringLiteral(".v2")).size() > 0);
     dsd_app_signal_search_store_close();
 
     dsd_qt::SavedSystemsModel systems;
@@ -600,6 +606,14 @@ main(int argc, char** argv) {
     assert(saved.value(QStringLiteral("port")).toInt() == 1235);
     assert(saved.value(QStringLiteral("decodeFlag")) == QStringLiteral("-fA"));
     assert(saved.value(QStringLiteral("searchUnresolved")).toBool());
+    // The checked site, slot and encryption reach the screens as they were published, and from history too.
+    const auto shown = model.history().front().toMap();
+    assert(shown.value(QStringLiteral("site")) == QStringLiteral("TIII Small · Net 12 · Site 3 · SYS 1183"));
+    assert(shown.value(QStringLiteral("slot")).toInt() == 2);
+    assert(shown.value(QStringLiteral("crypt")) == QStringLiteral("ALG 21 · KID 0001"));
+    assert(frozen.value(QStringLiteral("site")).toString().isEmpty()
+           && frozen.value(QStringLiteral("slot")).toInt() == 0);
+    assert(frozen.value(QStringLiteral("crypt")).toString().isEmpty());
     const auto confirmed = model.systemForHit(model.history().front().toMap(), {});
     assert(confirmed.value(QStringLiteral("decodeFlag")) == QStringLiteral("-fs"));
     auto nxdn = model.history().front().toMap();
@@ -684,6 +698,10 @@ main(int argc, char** argv) {
         searching.owned = 1;
         searching.live_power_valid = 1;
         searching.live_power_dbfs = -42.5f - (float)i;
+        searching.live_seq = 10 + (uint64_t)i;
+        DSD_SNPRINTF(searching.range_name, sizeof(searching.range_name), "%s", "Air band");
+        searching.range_start_hz = 118000000;
+        searching.range_end_hz = 137012500;
         dsd_app_signal_search_publish(&searching, nullptr, nullptr);
         model.refresh();
     }
@@ -692,6 +710,19 @@ main(int argc, char** argv) {
     assert(model.status().value(QStringLiteral("owned")).toBool());
     assert(model.status().value(QStringLiteral("livePowerValid")).toBool());
     assert(std::abs(model.status().value(QStringLiteral("livePower")).toDouble() + 46.5) < 1e-3);
+    // The running range as the engine names it, bounds at kHz precision or finer; and the live measurement count.
+    assert(model.status().value(QStringLiteral("liveSeq")).toULongLong() == 14);
+    assert(model.status().value(QStringLiteral("rangeName")).toString() == QStringLiteral("Air band"));
+    assert(model.status().value(QStringLiteral("rangeStartMHz")).toString() == QStringLiteral("118.000"));
+    assert(model.status().value(QStringLiteral("rangeEndMHz")).toString() == QStringLiteral("137.0125"));
+    // An edit to the stored ranges is not the running range: only the engine's next publication changes it.
+    assert(!model.ranges().isEmpty());
+    QVariantMap renamed = model.ranges().front().toMap();
+    renamed[QStringLiteral("name")] = QStringLiteral("Renamed");
+    assert(model.saveRange(0, renamed).isEmpty());
+    model.refresh();
+    assert(model.ranges().front().toMap().value(QStringLiteral("name")) == QStringLiteral("Renamed"));
+    assert(model.status().value(QStringLiteral("rangeName")).toString() == QStringLiteral("Air band"));
     publish(78, true); // the same record again: coalesced, so the history is unchanged
     model.refresh();
     assert(historySignals == 0 && dsd_app_signal_search_history_revision() == historyRevision);
@@ -722,6 +753,58 @@ main(int argc, char** argv) {
     dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
     model.refresh();
     assert(model.sessionAvoids().isEmpty() && !model.status().value(QStringLiteral("owned")).toBool());
+
+    // While a search owns the tuner, both history avoids go to the decoder thread, which checks the session first:
+    // nothing changes here until it has.
+    dsd_signal_search_status running = stopped;
+    running.revision = 6001;
+    running.phase = DSD_SEARCH_LISTENING;
+    running.owned = 1;
+    dsd_app_signal_search_publish(&running, nullptr, nullptr);
+    model.refresh();
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    assert(model.avoidPermanently(QStringLiteral("18"), 451000000) && startQueued());
+    assert(model.avoids().isEmpty());
+    reopenAdmission();
+    assert(!model.avoidFrequency(QStringLiteral("17"), 451000000)); // not the running session
+    assert(model.avoidFrequency(QStringLiteral("18"), 451000000) && startQueued());
+    reopenAdmission();
+    dsd_app_frontend_runtime_stop();
+    stopped.revision = 6002;
+    dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    model.refresh();
+    assert(model.avoids().isEmpty() && model.sessionAvoids().isEmpty());
+
+    // With no search running, a history row's permanent avoid changes the permanent list alone, at once; a full
+    // list is refused with a message, and an avoid for this session only needs a session.
+    assert(!model.avoidFrequency(QStringLiteral("18"), 451000000));
+    assert(model.avoidPermanently(QStringLiteral("18"), 451000000));
+    assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 451000000 && model.error().isEmpty());
+    assert(model.avoidPermanently(QString(), 451000000)); // already avoided: as asked
+    assert(model.avoids().size() == 1 && model.error().isEmpty());
+    assert(!model.avoidPermanently(QString(), 0) && !model.avoidPermanently(QString(), -5));
+    for (uint32_t i = 1; i < DSD_SEARCH_MAX_AVOIDS; ++i) {
+        assert(dsd_app_signal_search_permanent_avoid(451000000U + i * 12500U) == DSD_APP_SEARCH_AVOID_ADDED);
+    }
+    assert(!model.avoidPermanently(QString(), 470000000));
+    assert(model.error() == QStringLiteral("The permanent avoid list is full"));
+    assert((uint32_t)model.avoids().size() == DSD_SEARCH_MAX_AVOIDS);
+    // Lifting one through the model makes room, and the refusal goes with it.
+    model.removeAvoid(model.avoids().front().toDouble());
+    assert(model.error().isEmpty() && (uint32_t)model.avoids().size() == DSD_SEARCH_MAX_AVOIDS - 1);
+    for (const auto& avoided : model.avoids()) {
+        assert(dsd_app_signal_search_avoid_remove(avoided.toUInt()) == 0);
+    }
+    assert(model.avoidPermanently(QString(), 470000000) && model.error().isEmpty());
+    assert(dsd_app_signal_search_avoid_remove(470000000) == 0);
+    model.refresh();
+    assert(model.avoids().isEmpty());
+    // A frequency above 2^31 Hz (2.4 GHz) is avoided as itself on every platform, including those whose long is 32 bits.
+    assert(model.avoidPermanently(QString(), 2400000000.0) && model.error().isEmpty());
+    assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 2400000000U);
+    assert(dsd_app_signal_search_avoid_remove(2400000000U) == 0);
+    model.refresh();
+    assert(model.avoids().isEmpty());
 
     // A rejected start owns nothing, and decoder-session teardown retires it while keeping its message.
     dsd_signal_search_status rejected{};

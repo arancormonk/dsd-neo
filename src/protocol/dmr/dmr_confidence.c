@@ -18,10 +18,12 @@
 #define DMR_CONFIDENCE_RELOCK_OBSERVES 4U
 
 /* DMR content passed the gate: signal search's evidence, and the stamp a startup control-channel hunt reads on the
-   decoder thread (issue #703). Never cleared: a carrier boundary does not undo content that was decoded. */
+   decoder thread (issue #703). Never cleared: a carrier boundary does not undo content that was decoded. The carrier
+   is two-slot TDMA from here, until an acquisition reset or a carrier boundary (dsd_state::tdma_carrier). */
 static void
 dmr_confidence_note_evidence(dsd_state* state) {
     state->dmr_confidence_lock_m = dsd_decode_now_mono_s();
+    state->tdma_carrier = 1U;
     dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
 }
 

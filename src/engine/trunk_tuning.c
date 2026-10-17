@@ -194,6 +194,8 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     dmr_enc_class_reset(state, 1);
     dmr_le_vendor_reset(state, 0);
     dmr_le_vendor_reset(state, 1);
+    dmr_pi_precall_reset(state, 0);
+    dmr_pi_precall_reset(state, 1);
     state->payload_algid = 0;
     state->payload_algidR = 0;
     state->payload_keyid = 0;

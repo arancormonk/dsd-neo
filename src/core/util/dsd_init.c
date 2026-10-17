@@ -811,6 +811,28 @@ init_state_dpmr_confirmation(dsd_state* state) {
     state->dpmr_cch_evidence_symbolcnt = 0;
 }
 
+/* NXDN RAN, confirmation and cipher defaults. */
+static void
+init_state_nxdn_defaults(dsd_state* state) {
+    state->nxdn_last_ran = -1;
+    state->nxdn_last_ran_stand_in = 0U;
+    state->nxdn_confirmed = 0;
+    state->nxdn_confirm_weak_streak = 0;
+    state->nxdn_confirm_frame_evidence = 0;
+    state->nxdn_cipher_type = 0;
+    /* Cleared directly rather than through nxdn_cipher_class_reset(): core must not call into
+     * protocol modules. */
+    state->nxdn_cipher_class = 0;
+    state->nxdn_cipher_class_est = 0;
+    state->nxdn_cipher_class_pending = 0;
+    state->nxdn_cipher_rx_class = 0;
+    state->nxdn_cipher_rx_est = 0;
+    state->nxdn_cipher_rx_pending = 0;
+    state->nxdn_key = 0;
+    state->nxdn_pn95_seed = 228;
+    state->payload_miN = 0;
+}
+
 static void
 init_state_protocol_defaults_a(dsd_state* state) {
     // Initialize P25 neighbor/candidate UI helpers
@@ -841,20 +863,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->p25_p1_excluded_tail_corrections = 0;
     state->debug_mode = 0;
 
-    state->nxdn_last_ran = -1;
-    state->nxdn_last_ran_stand_in = 0U;
-    state->nxdn_confirmed = 0;
-    state->nxdn_confirm_weak_streak = 0;
-    state->nxdn_confirm_frame_evidence = 0;
-    state->nxdn_cipher_type = 0;
-    /* Cleared directly rather than through nxdn_cipher_class_reset(): core must not call into
-     * protocol modules. */
-    state->nxdn_cipher_class = 0;
-    state->nxdn_cipher_class_est = 0;
-    state->nxdn_cipher_class_pending = 0;
-    state->nxdn_key = 0;
-    state->nxdn_pn95_seed = 228;
-    state->payload_miN = 0;
+    init_state_nxdn_defaults(state);
 
     state->dpmr_color_code = -1;
     init_state_dpmr_confirmation(state);
@@ -867,6 +876,12 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->payload_algidR = 0;
     state->payload_keyid = 0;
     state->payload_keyidR = 0;
+    DSD_MEMSET(state->dmr_pi_precall_rx, 0, sizeof(state->dmr_pi_precall_rx));
+    DSD_MEMSET(state->dmr_pi_precall_algid, 0, sizeof(state->dmr_pi_precall_algid));
+    DSD_MEMSET(state->dmr_pi_precall_kid, 0, sizeof(state->dmr_pi_precall_kid));
+    DSD_MEMSET(state->dmr_pi_precall_m, 0, sizeof(state->dmr_pi_precall_m));
+    DSD_MEMSET(state->dmr_crypto_inherited, 0, sizeof(state->dmr_crypto_inherited));
+    DSD_MEMSET(state->dmr_live_pub_epoch, 0, sizeof(state->dmr_live_pub_epoch));
 
     //init P2 ESS_B fragments and 4V counter
     DSD_MEMSET(state->ess_b, 0, sizeof(state->ess_b));
@@ -1095,6 +1110,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_p1_identity_pending = 0;
     state->p25_p1_identity_epoch_started = 0;
     state->p25_p1_hdu_crypto_fresh = 0;
+    DSD_MEMSET(state->p25_crypto_inherited, 0, sizeof(state->p25_crypto_inherited));
     DSD_MEMSET(&state->p25_p1_crypto_conflict, 0, sizeof(state->p25_p1_crypto_conflict));
     DSD_MEMSET(state->p25_p2_media_rejected, 0, sizeof(state->p25_p2_media_rejected));
     DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));

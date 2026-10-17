@@ -3368,6 +3368,10 @@ test_scan_class_matchers_and_no_sync(void) {
         state->sps_hunt_counter = 300;
         state->p25_p1_validated_rf_mod = 1;
         state->sbuf[0] = 123.0f;
+        /* Nor the decoder's verdict that the carrier is two-slot TDMA: a decoded frame of the next acquisition proves
+           it again, whatever the snapshots published before the reset still say. */
+        state->tdma_carrier = 1U;
+        state->x2tdma_superframe_valid = 1U;
         /* A received tone never outlives the boundary this reset marks (issue #522): a new
            row, target or mode starts with nothing heard. */
         state->analog_rx.carrier_open = 1;
@@ -3378,6 +3382,7 @@ test_scan_class_matchers_and_no_sync(void) {
         dsd_frame_sync_reset_acquisition(opts, state, 1);
         assert(!state->profile_proof_valid && !state->symbol_history_count && !state->sps_hunt_counter);
         assert(state->p25_p1_validated_rf_mod == -1 && state->sidx == 0 && state->midx == 0);
+        assert(state->tdma_carrier == 0U && state->x2tdma_superframe_valid == 0U);
         assert(fabsf(state->sbuf[0] - state->min) < 0.01f);
         assert(state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
         assert(state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.ctcss_tenths_hz == 0);

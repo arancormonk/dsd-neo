@@ -440,6 +440,14 @@ p25p2_note_seed_proven(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A Reed-Solomon block of the window decoded with its parity check kept (no soft erasures, which can use all of it up):
+   noise passing a sync word does not get here, so the carrier is P25 Phase 2, two-slot TDMA (dsd_state::tdma_carrier).
+   processP2() drops a window a carrier boundary split or an input interruption cut before any block decodes. */
+static void
+p25p2_note_tdma_carrier(dsd_state* state) {
+    state->tdma_carrier = 1U;
+}
+
 void
 p25p2_process_frame_scramble(dsd_opts* opts, const dsd_state* state) {
     UNUSED(opts);
@@ -590,6 +598,9 @@ p25p2_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
     if (ec >= 0) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
+        if (!used_dynamic_erasure) {
+            p25p2_note_tdma_carrier(state);
+        }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 1, 0, 0, 0, 0);
@@ -653,6 +664,7 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
         /* Only a decode that kept its parity check proves the seed: soft erasures can use all of it up (issue #575). */
         if (!used_dynamic_erasure) {
             p25p2_note_seed_proven(opts, state);
+            p25p2_note_tdma_carrier(state);
         }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
@@ -712,6 +724,9 @@ p25p2_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
     if (ec >= 0) {
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
+        if (!used_dynamic_erasure) {
+            p25p2_note_tdma_carrier(state);
+        }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 0, 1, 0, 0);
@@ -772,6 +787,7 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
         /* Only a decode that kept its parity check proves the seed: soft erasures can use all of it up (issue #575). */
         if (!used_dynamic_erasure) {
             p25p2_note_seed_proven(opts, state);
+            p25p2_note_tdma_carrier(state);
         }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
@@ -1223,8 +1239,8 @@ p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int sl
 
 static void
 p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 0, result->algid, result->keyid, result->mi,
-                             p25p2_active_target(state, 0U));
+    (void)p25_crypto_resolve_checked(opts, state, DSD_P25_CRYPTO_PHASE2, 0, result->algid, result->keyid, result->mi,
+                                     p25p2_active_target(state, 0U), result->soft_depth == 0);
     p25p2_ess_maybe_enable_audio_slot(opts, state, 0, state->payload_algid);
     p25p2_audio_gate_diag(opts, state, "ess-slot0");
 
@@ -1265,8 +1281,8 @@ p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* 
 
 static void
 p25p2_ess_apply_slot1(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 1, result->algid, result->keyid, result->mi,
-                             p25p2_active_target(state, 1U));
+    (void)p25_crypto_resolve_checked(opts, state, DSD_P25_CRYPTO_PHASE2, 1, result->algid, result->keyid, result->mi,
+                                     p25p2_active_target(state, 1U), result->soft_depth == 0);
     p25p2_ess_maybe_enable_audio_slot(opts, state, 1, state->payload_algidR);
     p25p2_audio_gate_diag(opts, state, "ess-slot1");
 
@@ -1338,6 +1354,7 @@ p25p2_ess_stage_rekey(dsd_state* state, int slot, const p25p2_ess_result* result
     state->p25_p2_rekey[slot].algid = (uint8_t)result->algid;
     state->p25_p2_rekey[slot].keyid = (uint16_t)result->keyid;
     state->p25_p2_rekey[slot].mi = result->mi;
+    state->p25_p2_rekey[slot].parity_checked = (uint8_t)(result->soft_depth == 0);
     state->p25_p2_rekey[slot].pending = 1U;
     return 1;
 }
@@ -1370,6 +1387,8 @@ p25p2_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state) {
             .algid = rekey.algid,
             .keyid = rekey.keyid,
             .accepted = 1,
+            /* The staged decode's own verdict: an erasure-assisted ESS stays unchecked when it commits. */
+            .soft_depth = rekey.parity_checked ? 0 : 1,
         };
         DSD_FPRINTF(stderr, "%s", KYEL);
         p25p2_ess_apply_result(opts, state, slot, &result);
@@ -1440,6 +1459,7 @@ p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
            the bits were descrambled with (issue #575). */
         if (result.soft_depth == 0) {
             p25p2_note_seed_proven(opts, state);
+            p25p2_note_tdma_carrier(state);
         }
         if (!defer_rekey || !p25p2_ess_stage_rekey(state, slot, &result)) {
             p25p2_ess_apply_result(opts, state, slot, &result);

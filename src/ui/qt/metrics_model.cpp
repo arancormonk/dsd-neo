@@ -329,10 +329,10 @@ MetricsModel::~MetricsModel() = default;
 bool
 MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
-           && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot && controlEquals(other)
-           && scanTimingEquals(other) && rxToneEquals(other) && rx_tone_configured_text == other.rx_tone_configured_text
-           && toneFilterEquals(other) && toneFilterSettingEquals(other) && tetraEquals(other)
-           && ui_message == other.ui_message;
+           && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot
+           && two_slot_carrier == other.two_slot_carrier && controlEquals(other) && scanTimingEquals(other)
+           && rxToneEquals(other) && rx_tone_configured_text == other.rx_tone_configured_text && toneFilterEquals(other)
+           && toneFilterSettingEquals(other) && tetraEquals(other) && ui_message == other.ui_message;
 }
 
 void
@@ -346,6 +346,7 @@ MetricsModel::publish(const View& next) {
     const bool slot1Moved = !(next.slot_call[0] == m_view.slot_call[0]);
     const bool slot2Moved = !(next.slot_call[1] == m_view.slot_call[1]);
     const bool leadMoved = next.lead_slot != m_view.lead_slot;
+    const bool twoSlotMoved = next.two_slot_carrier != m_view.two_slot_carrier;
     const bool controlMoved = !next.controlEquals(m_view);
     const bool scanTimingMoved = !next.scanTimingEquals(m_view);
     const bool rxToneMoved = !next.rxToneEquals(m_view);
@@ -372,6 +373,9 @@ MetricsModel::publish(const View& next) {
     }
     if (slot1Moved || slot2Moved || leadMoved) {
         Q_EMIT leadSlotChanged();
+    }
+    if (twoSlotMoved) {
+        Q_EMIT twoSlotCarrierChanged();
     }
     if (controlMoved) {
         Q_EMIT controlChanged();
@@ -990,6 +994,8 @@ MetricsModel::fillSlotCalls(View& next, const dsd_state* snapshot, double now_m)
         started[slot] = next.slot_call[slot].started_m;
     }
     next.lead_slot = dsd_app_lead_slot(line_states, started, DSD_CALL_STATE_SLOT_COUNT);
+    /* The decoder's verdict as published, in the same snapshot as the slots it frames. */
+    next.two_slot_carrier = snapshot->tdma_carrier != 0U;
 }
 
 void

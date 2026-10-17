@@ -75,6 +75,14 @@ do both at once:
   while scanning and holding as well, and an I/Q replay shows the frequency each part
   of the capture was recorded on.
 
+On a two-slot TDMA carrier (DMR, P25 Phase 2, X2-TDMA) the second slot's strip
+stays in place under the hero card, reading **SLOT 2 · idle** (or **SLOT 1 · idle**
+while slot 2 leads) between that slot's calls, so the screen below it does not jump
+when the other slot keys up or drops. It appears once the decoder has decoded a
+checked frame of a two-slot protocol and goes on a retune, a scan step, a decode-mode
+change or a P25 Phase 1 frame; an FDMA carrier shows it only for a call on the other
+slot.
+
 **Skip** leaves this call without changing the talkgroup list. On P25 a group-call
 skip lasts while the receiver keeps seeing the talkgroup's call: control-channel
 grant updates, or the call on the voice channel it is parked on for the other slot.
@@ -629,8 +637,8 @@ An Android application cannot open `/dev/bus/usb` nodes, so librtlsdr cannot
 enumerate or open a dongle the way it does everywhere else. The descriptor is
 obtained in Java and injected:
 
-1. `UsbSourceManager.kt` matches an attached device against the RTL2832U
-   vendor/product table, requests permission if it does not already have it, calls
+1. `UsbSourceManager.kt` matches an attached device against the RTL2832U and Airspy
+   vendor/product table (`UsbReceiverKind.kt`), requests permission if it does not already have it, calls
    `UsbManager.openDevice()` and takes `UsbDeviceConnection.getFileDescriptor()`.
 2. That descriptor goes to `DsdNative.nativeSetUsbFd(fd)` →
    `rtl_device_set_preopened_fd()` (`src/io/radio/rtl_device.cpp`).
@@ -687,7 +695,13 @@ configure time rather than at link time or on the device.
 Attaching a listed dongle launches the app through the manifest's
 `USB_DEVICE_ATTACHED` filter, which is the only way Android grants device
 permission without a prompt. `res/xml/device_filter.xml` holds the same ids as the
-Kotlin table; add rebadged dongles to both.
+Kotlin table in `UsbReceiverKind.kt`; add rebadged dongles to both.
+
+Before any permission is asked, `UsbSourceManager.attachedSource()` reads the kind of
+receiver plugged in (`usb`, `airspy`, `both`, or empty) from `UsbManager.deviceList`,
+which needs no permission, counting only devices in that table. The host polls it into
+`DecoderHost::attachedDeviceSource`, and Explore and Signal search start on the
+attached kind when the remembered USB kind is not plugged in.
 
 ## Auto-start on USB attachment
 

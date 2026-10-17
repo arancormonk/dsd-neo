@@ -133,9 +133,77 @@ Item {
             for (var name of ["muteButton", "holdTalkgroupButton", "skipButton",
                               compact ? "avoidButtonCompact" : "talkgroupsButton"]) {
                 var action = button(name);
-                compare(action.width, (actions.width - 30) / 4);
+                compare(action.width, (actions.width - (actions.columns - 1) * 10) / actions.columns);
+                compare(action.height, actions.cellHeight);
                 verify(action.mapToItem(monitor, action.width, action.height).x <= monitor.width);
                 verify(action.mapToItem(monitor, 0, action.height).y <= stop.y);
+            }
+        }
+
+        // Every label each cell can show, as the grid measures them.
+        FontMetrics {
+            id: labelMetrics
+            font.family: Ui.Theme.sans
+            font.pixelSize: Ui.Theme.fontSize(15)
+            font.weight: Font.DemiBold
+        }
+        function cellLabels() {
+            return {
+                muteButton: ["Mute", "Unmute"],
+                holdTalkgroupButton: ["Hold TG", "Release"],
+                skipButton: ["Skip"],
+                talkgroupsButton: ["TG list"],
+                avoidButton: ["Avoid TG", "Lock out"]
+            };
+        }
+        // The action cells form one deterministic grid: four columns only where a
+        // quarter of the row fits the widest label any cell can show ("Unmute",
+        // "Release", "Lock out") with the card padding either side, else two. On a
+        // 360 px phone that is two at every text scale: four 73 px cells left
+        // "Unmute" 50 px to break inside. Every cell has the same height (at least
+        // a touch target) and is wide enough for each label it can show on one
+        // line, so no label breaks inside a word. The Avoid row spans two cells,
+        // which in two columns is the full width.
+        function test_phone_grid_data() {
+            return [
+                {tag: "phone", width: 360, scale: 1, columns: 2},
+                {tag: "phone-large-font", width: 360, scale: 1.6, columns: 2},
+                {tag: "tablet", width: 640, scale: 1, columns: 4},
+                {tag: "tablet-large-font", width: 640, scale: 1.6, columns: 4}
+            ];
+        }
+        function test_phone_grid(data) {
+            root.width = data.width;
+            root.height = 800;
+            Ui.Theme.fontScale = data.scale;
+            try {
+                waitForRendering(monitor);
+                var actions = button("monitorLiveActions");
+                compare(actions.columns, data.columns);
+                compare(actions.labelLines, 1);
+                var labels = cellLabels();
+                var height = -1;
+                for (var name in labels) {
+                    var action = button(name);
+                    verify(action.visible, name);
+                    verify(action.height >= Ui.Theme.minimumTouchSize, name);
+                    if (name !== "avoidButton") {
+                        if (height < 0)
+                            height = action.height;
+                        compare(action.height, height, name);
+                    }
+                    for (var label of labels[name])
+                        verify(action.width - 24 >= labelMetrics.advanceWidth(label), name + " fits " + label);
+                }
+                compare(button("avoidButton").height, height);
+                compare(button("avoidButton").width, 2 * actions.cell + 10);
+                if (data.columns === 2)
+                    compare(button("avoidButton").width, actions.width);
+                var mute = button("muteButton");
+                var tg = button("talkgroupsButton");
+                compare(tg.y > mute.y, data.columns === 2);
+            } finally {
+                Ui.Theme.fontScale = 1;
             }
         }
     }

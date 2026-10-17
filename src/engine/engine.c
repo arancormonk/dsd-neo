@@ -2231,6 +2231,8 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     dmr_enc_class_reset(state, 1);
     dmr_le_vendor_reset(state, 0);
     dmr_le_vendor_reset(state, 1);
+    dmr_pi_precall_reset(state, 0);
+    dmr_pi_precall_reset(state, 1);
     state->payload_mi = 0;
     state->payload_miR = 0;
     state->payload_mfid = 0;
@@ -2598,9 +2600,14 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     state->ysf_fich_confirmed = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
-    // The calls end at the boundary, and a vendor late-entry mode is its call's (issue #657).
+    // Whether the carrier is two-slot TDMA is the carrier's too: the next one proves its own with a decoded frame.
+    state->tdma_carrier = 0U;
+    // The calls end at the boundary, and a vendor late-entry mode is its call's (issue #657), as is a PI held for the
+    // call its lost voice LC header would have opened.
     dmr_le_vendor_reset(state, 0);
     dmr_le_vendor_reset(state, 1);
+    dmr_pi_precall_reset(state, 0);
+    dmr_pi_precall_reset(state, 1);
 }
 
 /* With its codes and evidence, step 3 drops every multi-frame assembly the decoders keep in dsd_state that can publish
@@ -3824,6 +3831,8 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
        a state no run has used yet; this run uses it. */
     const int enter_rc = dsd_engine_decode_clock_enter_replay(opts, state);
     state->engine_fresh = 0U;
+    /* A state an earlier run used may still say its carrier was two-slot TDMA: this run proves its own. */
+    state->tdma_carrier = 0U;
     if (enter_rc != 0) {
         rc = 1;
         goto ENGINE_OUT;
@@ -3843,6 +3852,8 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
     }
 
 ENGINE_OUT:
+    /* The run leaves its carrier: nothing it decoded says the receiver is on a two-slot carrier any more. */
+    state->tdma_carrier = 0U;
     if (lifecycle_started && hooks && hooks->stop) {
         /* The session's last calls are committed and published while the frontends are still attached, so a
            frontend that records them (the control API's event subscribers) gets the final transmission too. */

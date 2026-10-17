@@ -64,6 +64,21 @@ enum {
 
 void dmr_le_vendor_set(dsd_state* state, uint8_t slot, uint8_t mode);
 void dmr_le_vendor_reset(dsd_state* state, uint8_t slot);
+/** The ALG ID the late-entry path infers for the slot from its loaded scalar key (0x21 for a 40-bit key, else 0x22),
+ * or 0 with no key loaded. */
+int dmr_le_key_inferred_algid(const dsd_state* state, uint8_t slot);
+/** Forget the slot's held pre-call PI crypto (dsd_state::dmr_pi_precall_rx) and its inherited-crypto mark
+ * (dmr_crypto_inherited): the transmission they were for is over or gone. Decryption state is not touched. */
+void dmr_pi_precall_reset(dsd_state* state, uint8_t slot);
+/** Forget only the held pre-call PI: it transferred, or a newer PI replaced it. */
+void dmr_pi_precall_drop_hold(dsd_state* state, uint8_t slot);
+/** Record the live ALG ID and key id just published into the slot's current call epoch (dmr_live_pub_*). */
+void dmr_note_published_live_crypto(dsd_state* state, uint8_t slot, int algid, int keyid);
+/** Seconds a held pre-call PI waits for the checked LC of its transmission: the voice LC header repeat window, which
+ * covers the first superframe's embedded LC when the header itself was lost. */
+#define DMR_PI_PRECALL_HOLD_S 2.0
+/** 1 when the slot holds a pre-call PI still inside DMR_PI_PRECALL_HOLD_S at @p now_m (decode clock). */
+int dmr_pi_precall_fresh(const dsd_state* state, uint8_t slot, double now_m);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
               uint8_t type);
 uint8_t dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]);

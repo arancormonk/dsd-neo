@@ -166,15 +166,17 @@ Item {
         // password lives nowhere else. An idle visit that ended on one keeps it.
         if (screen.rrLive() && (screen.systemLoaded || radioReference.busy))
             radioReference.closeSystem();
-        screen.sourceMode = 0;
+        if (screen.sourceMode === 1)
+            screen.sourceMode = 0;
         screen.accountEditorOpen = false;
         screen.siteSearch = "";
         screen.eachSite = false;
         countrySheet.searchText = "";
         stateSheet.searchText = "";
         countySheet.searchText = "";
-        zipField.text = "";
-        sidField.text = "";
+        // The zip code and system ID typed on an earlier visit stay, with the
+        // way in they belong to: leaving the screen is not a reason to retype
+        // them. A finished import clears them (doImport()).
         screen.browseCoid = 1;
         screen.browseCountryName = qsTr("United States");
         screen.browseStid = -1;
@@ -413,6 +415,9 @@ Item {
             screen.noticeIsProblem = true;
             return;
         }
+        zipField.text = "";
+        sidField.text = "";
+        screen.sourceMode = 0;
         screen.imported(result);
     }
 

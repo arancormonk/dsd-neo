@@ -9,6 +9,7 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -212,4 +213,134 @@ dsd_signal_search_plan(const dsd_signal_search_range* range, uint32_t first, uin
     }
     span->next = first;
     return 1;
+}
+
+void
+dsd_signal_search_site_clear(dsd_signal_search_site* record) {
+    if (record) {
+        DSD_MEMSET(record, 0, sizeof(*record));
+    }
+}
+
+static const char*
+site_note_protocol(int kind) {
+    switch (kind) {
+        case DSD_SEARCH_SITE_NOTE_P25_NETWORK:
+        case DSD_SEARCH_SITE_NOTE_P25_SITE: return "P25";
+        case DSD_SEARCH_SITE_NOTE_DMR_TIII: return "DMR";
+        case DSD_SEARCH_SITE_NOTE_NXDN: return "NXDN";
+        default: return NULL;
+    }
+}
+
+/* The record @p note would make on its own. */
+static void
+site_from_note(dsd_signal_search_site* record, const dsd_signal_search_site_note* note, const char* protocol) {
+    DSD_MEMSET(record, 0, sizeof(*record));
+    DSD_SNPRINTF(record->protocol, sizeof(record->protocol), "%s", protocol);
+    switch (note->kind) {
+        case DSD_SEARCH_SITE_NOTE_P25_NETWORK:
+            record->valid = DSD_SEARCH_SITE_WACN | DSD_SEARCH_SITE_SYSID;
+            record->wacn = note->wacn;
+            record->sysid = note->sysid;
+            break;
+        case DSD_SEARCH_SITE_NOTE_P25_SITE:
+            record->valid = DSD_SEARCH_SITE_SYSID | DSD_SEARCH_SITE_RFSS_SITE;
+            record->sysid = note->sysid;
+            record->rfss = note->rfss;
+            record->site = note->site;
+            break;
+        case DSD_SEARCH_SITE_NOTE_DMR_TIII:
+            record->valid = DSD_SEARCH_SITE_TEXT;
+            DSD_SNPRINTF(record->text, sizeof(record->text), "%.*s", (int)sizeof(note->text) - 1, note->text);
+            break;
+        default:
+            record->valid = DSD_SEARCH_SITE_NXDN;
+            record->nxdn_sys = note->nxdn_sys;
+            record->nxdn_site = note->nxdn_site;
+            break;
+    }
+}
+
+static int
+site_equal(const dsd_signal_search_site* a, const dsd_signal_search_site* b) {
+    return strcmp(a->protocol, b->protocol) == 0 && a->valid == b->valid && a->wacn == b->wacn && a->sysid == b->sysid
+           && a->rfss == b->rfss && a->site == b->site && strcmp(a->text, b->text) == 0 && a->nxdn_sys == b->nxdn_sys
+           && a->nxdn_site == b->nxdn_site;
+}
+
+/* @p next (a copy of @p record) after @p note: a P25 site or network note completes the same system's record, any other
+   note replaces it. 0 when the note is not this record's. */
+static int
+site_merge_note(dsd_signal_search_site* next, const dsd_signal_search_site* record,
+                const dsd_signal_search_site_note* note, const char* protocol) {
+    const int same_protocol = strcmp(record->protocol, protocol) == 0;
+    const int has_sysid = same_protocol && (record->valid & DSD_SEARCH_SITE_SYSID);
+    if (note->kind == DSD_SEARCH_SITE_NOTE_P25_SITE && has_sysid) {
+        /* A site of another system is not this record's: the network it advertised under stays. */
+        if (record->sysid != note->sysid) {
+            return 0;
+        }
+        next->valid |= DSD_SEARCH_SITE_RFSS_SITE;
+        next->rfss = note->rfss;
+        next->site = note->site;
+    } else if (note->kind == DSD_SEARCH_SITE_NOTE_P25_NETWORK && has_sysid && record->sysid == note->sysid
+               && (!(record->valid & DSD_SEARCH_SITE_WACN) || record->wacn == note->wacn)) {
+        /* The network a site note named by its SYSID alone: the site stays. */
+        next->valid |= DSD_SEARCH_SITE_WACN;
+        next->wacn = note->wacn;
+    } else {
+        site_from_note(next, note, protocol);
+    }
+    return 1;
+}
+
+int
+dsd_signal_search_site_apply(dsd_signal_search_site* record, const dsd_signal_search_site_note* note) {
+    const char* protocol = note ? site_note_protocol(note->kind) : NULL;
+    if (!record || !protocol || (note->kind == DSD_SEARCH_SITE_NOTE_DMR_TIII && !note->text[0])) {
+        return 0;
+    }
+    dsd_signal_search_site next = *record;
+    if (!site_merge_note(&next, record, note, protocol) || site_equal(&next, record)) {
+        return 0;
+    }
+    *record = next;
+    return 1;
+}
+
+size_t
+dsd_signal_search_site_format(const dsd_signal_search_site* record, char* out, size_t capacity) {
+    if (!out || !capacity) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!record || !record->protocol[0]) {
+        return 0;
+    }
+    /* U+00B7 MIDDLE DOT between parts, as the frontends separate details. */
+    static const char dot[] = " \xC2\xB7 ";
+    int n = 0;
+    if (record->valid & DSD_SEARCH_SITE_TEXT) {
+        n = DSD_SNPRINTF(out, capacity, "%s", record->text);
+    } else if (record->valid & DSD_SEARCH_SITE_NXDN) {
+        n = DSD_SNPRINTF(out, capacity, "Site %u%sSys %u", (unsigned)record->nxdn_site, dot,
+                         (unsigned)record->nxdn_sys);
+    } else {
+        char wacn[16] = "";
+        char site[48] = "";
+        if (record->valid & DSD_SEARCH_SITE_WACN) {
+            DSD_SNPRINTF(wacn, sizeof(wacn), "WACN %05X%s", (unsigned)record->wacn, dot);
+        }
+        if (record->valid & DSD_SEARCH_SITE_RFSS_SITE) {
+            DSD_SNPRINTF(site, sizeof(site), "%sRFSS %u%sSite %u", dot, (unsigned)record->rfss, dot,
+                         (unsigned)record->site);
+        }
+        n = DSD_SNPRINTF(out, capacity, "%sSYS %03X%s", wacn, (unsigned)record->sysid, site);
+    }
+    if (n < 0) {
+        out[0] = '\0';
+        return 0;
+    }
+    return (size_t)n < capacity ? (size_t)n : capacity - 1;
 }

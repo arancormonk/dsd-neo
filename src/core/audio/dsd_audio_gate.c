@@ -243,8 +243,11 @@ dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsi
 
 // The --dmr-force-algid value, or 0 when none is in force. state->M doubles as the scrambler
 // key for 0/1 and as the 0x16 Hytera marker, neither of which is a forced ALG ID.
-static int
+int
 dsd_dmr_forced_algid(const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
     if (state->M <= 1 || state->M == 0x16) {
         return 0;
     }

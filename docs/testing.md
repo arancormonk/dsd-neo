@@ -139,6 +139,9 @@ cancelling a held size lookup, a held read open and a held write open (with no `
 refusing later transfers without a provider call. A failure on the device's side of a copy (a missing destination
 directory, a rename that cannot land, a write through `LocalOutput`) reads `LOCAL_FAILED`, and the suite first checks
 that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree.
+`ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
+classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
+RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
 late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the

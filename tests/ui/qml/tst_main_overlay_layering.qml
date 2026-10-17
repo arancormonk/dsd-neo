@@ -113,6 +113,9 @@ Item {
             tryCompare(tc.imports, "enabled", true);
             findChild(tc.imports, "importFromRadioReferenceButton").activate();
             tryCompare(tc.radioReference, "enabled", true);
+            tc.radioReference.zipText = "52401";
+            tc.radioReference.sidText = "6673";
+            tc.radioReference.sourceMode = 2;
             tc.radioReference.openSystem(6673);
             compare(tc.radioReference.selectedSites.length, 1);
             var importButton = findChild(tc.radioReference, "radioReferenceImportButton");
@@ -122,6 +125,10 @@ Item {
             verify(confirm !== null && confirm.visible && confirm.enabled);
             confirm.activate();
             compare(fakeImport.imports, 1);
+            // A finished import is done with its query: the next visit starts fresh.
+            compare(tc.radioReference.zipText, "");
+            compare(tc.radioReference.sidText, "");
+            compare(tc.radioReference.sourceMode, 0);
             compare(fakeImport.savedRow, -1, "the wizard must remain the saved-system writer");
             tryCompare(tc.wizard, "enabled", true);
             compare(tc.app.radioReferenceOpen, false);

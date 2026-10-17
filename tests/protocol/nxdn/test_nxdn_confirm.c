@@ -45,6 +45,14 @@ run_frame(dsd_state* state, int evidence) {
 }
 
 static int g_search_reports;
+static int g_call_notes;
+
+static void
+count_call_note(const dsd_state* state, uint8_t slot) {
+    (void)state;
+    expect("a single-channel call is noted on slot 0", slot, 0);
+    g_call_notes++;
+}
 
 static void
 count_search_report(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
@@ -140,6 +148,7 @@ main(void) {
     /* A signal search hears a frame's confirmation when the frame closes, after the channels that confirmed it have
      * published what they decoded (the RAN, a call), and once per frame however many CRCs passed in it. */
     dsd_signal_search_evidence_set(count_search_report);
+    dsd_signal_search_call_set(count_call_note);
     nxdn_confirm_reset(state);
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
@@ -159,7 +168,10 @@ main(void) {
     expect("the frame completing a weak streak reports at its end", g_search_reports, 2);
     run_frame(state, NXDN_EVIDENCE_WEAK);
     expect("a frame continuing the streak reports", g_search_reports, 3);
+    /* Each reported frame notes the call it published, with its evidence; no other frame does. */
+    expect("a call note with every report", g_call_notes, g_search_reports);
     dsd_signal_search_evidence_set(NULL);
+    dsd_signal_search_call_set(NULL);
 
     /* The control-channel hunt's evidence stamp: written exactly when a frame's own CRCs confirmed the transmission (as
      * a signal search hears it), on the decode clock, and never cleared by a reset. */

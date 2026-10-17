@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -43,6 +44,7 @@
 #include "../p25_cc_update.h"
 #include "../p25_extended_function.h"
 #include "../p25_response_reason.h"
+#include "../p25_search_site.h"
 #include "../p25_trunk_sm_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -226,12 +228,19 @@ p25p2_vpdu_voice_repeats_recent_end(dsd_opts* opts, dsd_state* state, int slot, 
     return 1;
 }
 
+// Whether a voice user for @p slot names a group or private voice call this decoder can track.
+static int
+p25p2_vpdu_voice_observable(const dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind,
+                            uint64_t target) {
+    return state && slot >= 0 && slot <= 1 && target != 0U
+           && (kind == DSD_CALL_KIND_GROUP_VOICE || kind == DSD_CALL_KIND_PRIVATE_VOICE)
+           && p25p2_vpdu_voice_is_addressable(opts, state, slot);
+}
+
 static int
 p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
                          uint64_t source, int service_options, p25_mac_pdu_type pdu_type) {
-    if (!state || slot < 0 || slot > 1 || target == 0U
-        || (kind != DSD_CALL_KIND_GROUP_VOICE && kind != DSD_CALL_KIND_PRIVATE_VOICE)
-        || !p25p2_vpdu_voice_is_addressable(opts, state, slot)) {
+    if (!p25p2_vpdu_voice_observable(opts, state, slot, kind, target)) {
         return 0;
     }
     if (!p25p2_vpdu_pdu_type_is_live_voice(pdu_type)) {
@@ -273,6 +282,9 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
     p25p2_vpdu_update_voice_crypto(state, slot, service_options, began, encrypted_probe);
     if (began >= 0 && opts) {
         dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    }
+    if (began >= 0) {
+        dsd_signal_search_note_call(state, (uint8_t)slot);
     }
     return began >= 0;
 }
@@ -2274,6 +2286,10 @@ p25p2_vpdu_iter_block_22(p25p2_vpdu_ctx* ctx) {
         state->p2_rfssid = rfssid;
         // Promote any matching IDENs to trusted on site identification
         p25_confirm_idens_for_current_site(state);
+        /* A MAC_SIGNAL that failed its CRC (-F) names no site a search may show. */
+        if (ctx->crc_ok) {
+            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid);
+        }
     }
 
     if (len_b < 0) {
@@ -2321,6 +2337,9 @@ p25p2_vpdu_iter_block_23(p25p2_vpdu_ctx* ctx) {
         state->p2_siteid = siteid;
         state->p2_rfssid = rfssid;
         p25_confirm_idens_for_current_site(state);
+        if (ctx->crc_ok) {
+            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid);
+        }
     }
 
     if (len_b < 0) {
@@ -3708,6 +3727,10 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
         } else {
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
         }
+        /* A MAC_SIGNAL that failed its CRC (-F) may still update decoder state, but names no system a search shows. */
+        if (ctx->crc_ok) {
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid);
+        }
     }
 
     if (len_b < 0) {
@@ -3759,6 +3782,10 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
             p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0, ctx->crc_ok);
         } else {
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
+        }
+        /* A MAC_SIGNAL that failed its CRC (-F) may still update decoder state, but names no system a search shows. */
+        if (ctx->crc_ok) {
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid);
         }
     }
 

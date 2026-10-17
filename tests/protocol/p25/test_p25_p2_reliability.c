@@ -640,6 +640,77 @@ test_ess_soft_accepts_deep_erasure(void) {
     return 1;
 }
 
+/* An ESS whose RS decode needed soft erasures is accepted and resolves the slot as before, but enough erasures decode
+   any bits, so its ALG ID and key id are not received for the call; a hard decode's are. */
+static int
+test_ess_soft_decode_is_not_received_crypto(void) {
+    printf("Test 12b: soft-erasure ESS crypto is not received... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int soft = 0; soft < 2; soft++) {
+        dsd_state_ext_free_all(&state);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        prepare_ess_soft_inputs(&state);
+        reset_ess_stubs();
+        set_p25p2_threshold(64);
+        set_ess_payload_bits(&state, 0, 0x84, 0x1234, 0x0102030405060708ULL);
+        const dsd_call_observation call = {
+            .protocol = DSD_SYNC_P25P2_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 501U,
+            .policy_target_id = 501U,
+        };
+        rc |= dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1 ? 0 : 1;
+        g_ess_hard_rc = soft ? -1 : 0;
+        g_ess_soft_min_success = soft ? 3 : -1;
+        g_ess_soft_success_rc = 0;
+        g_ess_soft_mutate_algid = -1;
+        p25p2_process_ess(&opts, &state, 0);
+        dsd_call_snapshot snapshot;
+        rc |= dsd_call_state_get(&state, 0U, &snapshot) > 0 ? 0 : 1;
+        rc |= snapshot.algid == 0x84 && snapshot.kid == 0x1234 ? 0 : 1;
+        const uint8_t want = soft ? 0U : (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+        if (snapshot.crypto_received != want) {
+            printf("FAIL (soft=%d received=%u)\n", soft, snapshot.crypto_received);
+            dsd_state_ext_free_all(&state);
+            return 1;
+        }
+
+        // A decryptable slot's identity change is staged until its pair has played, and the staged tuple keeps its
+        // decode's verdict when it commits.
+        DSD_MEMSET(&state.p25_p2_rekey, 0, sizeof(state.p25_p2_rekey));
+        const dsd_call_observation next = {
+            .protocol = DSD_SYNC_P25P2_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 502U,
+            .policy_target_id = 502U,
+        };
+        rc |= dsd_call_state_observe(&state, &next, DSD_CALL_BOUNDARY_BEGIN) == 1 ? 0 : 1;
+        state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+        state.payload_algid = 0x81;
+        state.payload_keyid = 0x1001;
+        set_ess_payload_bits(&state, 0, 0xAA, 0x1002, 0x1112131415161718ULL);
+        p25p2_process_ess(&opts, &state, 1);
+        rc |= state.p25_p2_rekey[0].pending == 1U && state.p25_p2_rekey[0].parity_checked == (soft ? 0U : 1U) ? 0 : 1;
+        p25p2_duid_post_timeslot(&opts, &state, 0, 0);
+        p25p2_duid_post_timeslot(&opts, &state, 1, 1);
+        rc |= state.p25_p2_rekey[0].pending == 0U && state.payload_algid == 0xAA ? 0 : 1;
+        rc |= dsd_call_state_get(&state, 0U, &snapshot) > 0 && snapshot.algid == 0xAA ? 0 : 1;
+        if (snapshot.crypto_received != want || rc) {
+            printf("FAIL (staged soft=%d received=%u rc=%d)\n", soft, snapshot.crypto_received, rc);
+            dsd_state_ext_free_all(&state);
+            return 1;
+        }
+    }
+    dsd_state_ext_free_all(&state);
+    reset_ess_stubs();
+    printf(rc ? "FAIL\n" : "PASS\n");
+    return rc;
+}
+
 static int
 test_ess_soft_failure_counts_once(void) {
     printf("Test 13: ESS hard/soft failure counts once... ");
@@ -1636,6 +1707,96 @@ test_window_cut_by_an_input_interruption_is_dropped(void) {
 }
 
 /*
+ * A Phase 2 carrier is two-slot TDMA, which the Monitor keeps the second slot's strip in place for
+ * (dsd_state::tdma_carrier). Only a Reed-Solomon block that decoded with its parity check kept says so: an
+ * unscrambled or scrambled FACCH or SACCH, or an ESS. A block that failed, or that decoded only by leaning on soft
+ * erasures (which can use the whole check up), proves nothing, nor does a window a carrier boundary split or an input
+ * interruption cut, whose bursts never decode.
+ */
+static int
+test_checked_block_marks_two_slot_carrier(void) {
+    printf("Test 33c: only a parity-checked block marks the carrier two-slot TDMA... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t unscrambled[4] = {0xFFU, 0xC6U, 0xFFU, 0xC6U};
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    static const uint8_t scrambled_sacch[4] = {0x39U, 0x39U, 0x39U, 0x39U};
+    int rc = 0;
+
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, unscrambled);
+    rc |= expect_int("unscrambled bursts mark the carrier", state.tdma_carrier, 1);
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("scrambled FACCH marks the carrier", state.tdma_carrier, 1);
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("scrambled SACCH marks the carrier", state.tdma_carrier, 1);
+
+    reset_xcch_stubs();
+    g_facch_min_success = 99;
+    g_sacch_min_success = 99;
+    run_seeded_superframe(&opts, &state, unscrambled);
+    rc |= expect_int("failed unscrambled bursts mark nothing", state.tdma_carrier, 0);
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("failed scrambled FACCH marks nothing", state.tdma_carrier, 0);
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("failed scrambled SACCH marks nothing", state.tdma_carrier, 0);
+
+    reset_xcch_stubs();
+    g_facch_min_success = 19; /* one dynamic erasure past the 18 fixed */
+    g_sacch_min_success = 12; /* one dynamic erasure past the 11 fixed */
+    run_seeded_superframe(&opts, &state, unscrambled);
+    rc |= expect_int("soft-erasure unscrambled bursts decode", g_facch_mac_calls > 0 && g_sacch_mac_calls > 0, 1);
+    rc |= expect_int("soft-erasure unscrambled bursts mark nothing", state.tdma_carrier, 0);
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("soft-erasure scrambled FACCH marks nothing", state.tdma_carrier, 0);
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("soft-erasure scrambled SACCH marks nothing", state.tdma_carrier, 0);
+
+    prepare_ess_soft_inputs(&state);
+    state.tdma_carrier = 0U;
+    reset_ess_stubs();
+    g_ess_hard_rc = -1;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("failed ESS marks nothing", state.tdma_carrier, 0);
+    prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
+    reset_ess_stubs();
+    g_ess_hard_rc = -1;
+    g_ess_soft_min_success = 1;
+    g_ess_soft_success_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("soft-erasure ESS decodes", g_ess_soft_calls > 0 && state.p25_p2_rs_ess_ok == 1U, 1);
+    rc |= expect_int("soft-erasure ESS marks nothing", state.tdma_carrier, 0);
+    prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
+    reset_ess_stubs();
+    g_ess_hard_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("ESS marks the carrier", state.tdma_carrier, 1);
+
+    reset_xcch_stubs();
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    rc |= expect_int("whole fed superframe marks the carrier", state.tdma_carrier, 1);
+    run_fed_superframe(&opts, &state, scrambled_facch, 400);
+    rc |= expect_int("split superframe marks nothing", state.tdma_carrier, 0);
+    g_dibit_feed_interrupt_at = 400;
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    g_dibit_feed_interrupt_at = -1;
+    rc |= expect_int("cut window marks nothing", state.tdma_carrier, 0);
+
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+/*
  * Issue #575: the first burst descrambled with a proven seed may itself carry the MAC_END_PTT that ends its call. The
  * committed row reads the live NAC only while the call is active, so the slots are rendered as soon as the proof is set,
  * before the burst's MAC PDU is dispatched; otherwise the row of a call ended by the burst that proved its NAC kept none.
@@ -2334,6 +2495,7 @@ main(void) {
     }
 
     failures += test_ess_soft_accepts_deep_erasure();
+    failures += test_ess_soft_decode_is_not_received_crypto();
     failures += test_ess_soft_failure_counts_once();
     failures += test_ess_des_manual_key_preserves_audio_gate();
     failures += test_ess_aes_slot1_loaded_key_preserves_audio_gate();
@@ -2358,6 +2520,7 @@ main(void) {
     failures += test_seed_proof_needs_a_descrambled_burst();
     failures += test_superframe_split_by_a_carrier_boundary_is_dropped();
     failures += test_window_cut_by_an_input_interruption_is_dropped();
+    failures += test_checked_block_marks_two_slot_carrier();
     failures += test_seed_proof_reaches_the_call_its_burst_ends();
     failures += test_window_position_follows_the_symbol_count();
     failures += test_missed_window_fills_in_place();

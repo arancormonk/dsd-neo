@@ -115,7 +115,12 @@ Rectangle {
             draft: draft,
             entries: entries,
             overrides: [gainMode, ppmSet, bandwidthSet, gainText, ppmText, bandwidthText, portText, timingText],
-            entryInputText: entryInputText
+            entryInputText: entryInputText,
+            // The add-a-frequency fields hold typing that is not an entry yet.
+            unadded: [freqName.text, frequency.text],
+            // So do the Airspy fields until they commit (on editingFinished; an
+            // emptied gain index never does).
+            airspyText: scanAirspy.pendingText()
         });
     }
     function requestClose() {
@@ -196,6 +201,7 @@ Rectangle {
             targetRows = preview.rows || [];
             showValidation(preview.ok ? "" : preview.error);
         }
+        scanAirspy.resetText();
         initialDraft = fingerprint();
     }
 
@@ -762,6 +768,7 @@ Rectangle {
                 }
             }
             AirspyControls {
+                id: scanAirspy
                 objectName: "scanAirspyControls"
                 width: parent.width
                 visible: screen.draft.sourceType === "airspy"

@@ -150,6 +150,24 @@ dsd_call_observation_data(int protocol, uint8_t slot, uint64_t source_id, uint64
     return observation;
 }
 
+/**
+ * Crypto provenance bits (dsd_call_crypto_update::received, dsd_call_snapshot::crypto_received): which of an update's
+ * ALG and KID were decoded from over-the-air signalling that passed its protocol's CRC/FEC check (a P25 HDU, LDU2,
+ * ESS or MAC_PTT, a DMR PI header, an NXDN corroborated VCALL, an M17 LSF). A forced, inferred, key-loaded, carried
+ * or synthesized value never sets one.
+ */
+enum {
+    DSD_CALL_CRYPTO_RX_ALG = 1U << 0,
+    DSD_CALL_CRYPTO_RX_KID = 1U << 1,
+};
+
+/** dsd_call_crypto_update::enc_observed values. */
+enum {
+    DSD_CALL_ENC_OBSERVED_NONE = 0,      /**< this update carries no checked encryption indication */
+    DSD_CALL_ENC_OBSERVED_ENCRYPTED = 1, /**< checked signalling says encrypted */
+    DSD_CALL_ENC_OBSERVED_CLEAR = 2,     /**< checked signalling says clear */
+};
+
 typedef struct {
     dsd_call_crypto_state classification;
     uint8_t algid;
@@ -157,6 +175,25 @@ typedef struct {
     uint64_t mi;
     uint8_t audio_permitted;
     double observed_m;
+    /** DSD_CALL_CRYPTO_RX_* bits: which of algid and kid this update received over the air (0: none). */
+    uint8_t received;
+    /**
+     * DSD_CALL_CRYPTO_RX_* bits whose received value checked signalling in this update contradicts: the epoch drops
+     * those received fields (a field also in @c received is received anew instead). 0 leaves them alone.
+     */
+    uint8_t contradicted;
+    /**
+     * What checked over-the-air signalling in this update says about encryption (DSD_CALL_ENC_OBSERVED_*), kept in
+     * dsd_call_snapshot::enc_received apart from the classification the decoder acts on. Applied even when @c carried
+     * is set: it is the new call's own signalling.
+     */
+    uint8_t enc_observed;
+    /**
+     * Non-zero when algid, kid and mi are live decoder values a previous call left behind (its terminator missed),
+     * which the decoder still decrypts with but which are not this epoch's: the record keeps its own algid, kid and
+     * mi (none, on a new epoch) and takes only the classification and audio permission. received must be 0.
+     */
+    uint8_t carried;
 } dsd_call_crypto_update;
 
 typedef enum {
@@ -218,6 +255,29 @@ typedef struct {
     uint8_t media_active;
     uint8_t end_reason;  /**< dsd_call_end_reason; meaningful only while phase is DSD_CALL_PHASE_ENDED. */
     uint8_t crc_invalid; /**< Sticky DSD_CRC_* bits (crc_provenance.h) for this transmission; zero is not verified. */
+    /**
+     * DSD_CALL_CRYPTO_RX_* bits: which of received_algid and received_kid this transmission received over the air.
+     * Sticky for the epoch: an update that did not receive a field leaves its received value alone, so a forced or
+     * inferred ALG ID, or a live value a sync loss cleared, changes algid/kid but never these. A new epoch starts
+     * with none; a reacquired epoch carries the ending epoch's, as it carries its identity.
+     */
+    uint8_t crypto_received;
+    uint8_t received_algid;
+    uint16_t received_kid;
+    /**
+     * Non-zero while algid, kid and mi are the values a reacquired epoch was seeded with: an update that neither
+     * received nor names an ALG ID or key id (the live values a sync loss cleared) leaves them, so the recovered call
+     * keeps its crypto until the transmission's own signalling replaces it.
+     */
+    uint8_t crypto_restored;
+    /**
+     * 1 while checked over-the-air signalling of this epoch says the call is encrypted (dsd_call_crypto_update::
+     * enc_observed): a DMR LC privacy bit, a P25 ALG ID other than 0x80 or the service options' encryption bit, an
+     * NXDN VCALL or SACCH-2 cipher, a dPMR verified scrambled half, an M17 LSF encryption type. Checked signalling
+     * saying clear resets it. Never set by a forced, inferred or key-loaded classification, so the crypto
+     * classification can say encrypted while this says nothing was received.
+     */
+    uint8_t enc_received;
     char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
@@ -369,6 +429,12 @@ int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_
  * identity, activity age, crypto classification, media or listening policy. */
 int dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
                                       int signaled_id, int effective_id, int available, int fallback);
+/** The slot's active epoch now describes another transmission (one that replaced it while the canonical layer kept the
+ * epoch, e.g. an identity-less epoch a new call's LC names): forget the ALG ID, key id, MI, received crypto and
+ * restored mark the replaced transmission published into it, so they are never shown as the new call's. The
+ * classification and audio permission stay until the new call's next crypto update. Returns 1 when the record
+ * changed, 0 when the slot holds no active epoch (or nothing to forget), -1 on bad arguments. */
+int dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot);
 /** Update crypto metadata on an existing active or retained ended epoch. */
 int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);

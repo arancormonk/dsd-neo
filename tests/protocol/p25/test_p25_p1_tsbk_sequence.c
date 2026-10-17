@@ -10,10 +10,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/fec/trellis34.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -21,8 +23,10 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -53,6 +57,43 @@ static const uint8_t k_network_status_dibits[98] = {
     2, 1, 1, 1, 2, 0, 1, 2, 1, 0, 1, 0, 2, 0, 0, 1, 3, 1, 2, 0, 2, 0, 2, 2, 2, 3, 3, 2, 1, 2, 1, 0, 2,
     2, 1, 0, 2, 3, 2, 0, 0, 1, 0, 0, 2, 0, 2, 1, 0, 2, 3, 3, 0, 3, 3, 3, 0, 3, 3, 0, 2, 3, 0, 0, 3,
 };
+
+/* Rate-1/2 trellis encoding of one TSBK (12 bytes): the 4-state machine's next state is each data dibit, from state 0
+   and closed by a zero flush dibit; each transition's nibble (p25_12.c's dibit-pair table) is two dibits, interleaved as
+   the decoder deinterleaves them. */
+static void
+encode_tsbk_dibits(const uint8_t bytes[12], uint8_t out[98]) {
+    static const uint8_t transition[16] = {2, 12, 1, 15, 14, 0, 13, 3, 9, 7, 10, 4, 5, 11, 6, 8};
+    uint8_t deinterleaved[98];
+    uint8_t state = 0;
+    for (size_t i = 0; i < 49; i++) {
+        const uint8_t next = i < 48 ? (uint8_t)((bytes[i / 4] >> (6 - 2 * (i % 4))) & 3U) : 0U;
+        const uint8_t nibble = transition[(state << 2) | next];
+        deinterleaved[2 * i] = (uint8_t)((nibble >> 2) & 3U);
+        deinterleaved[2 * i + 1] = (uint8_t)(nibble & 3U);
+        state = next;
+    }
+    for (int i = 0; i < 98; i++) {
+        out[i] = deinterleaved[dsd_trellis_interleave_98[i]];
+    }
+}
+
+/* Give the first ten bytes of @p bytes the CRC-16 crc16_lb_bridge() accepts. */
+static int
+seal_tsbk_crc(uint8_t bytes[12]) {
+    for (uint32_t crc = 0; crc <= 0xFFFFU; crc++) {
+        bytes[10] = (uint8_t)(crc >> 8);
+        bytes[11] = (uint8_t)crc;
+        int bits[96];
+        for (int i = 0; i < 96; i++) {
+            bits[i] = (bytes[i / 8] >> (7 - (i % 8))) & 1;
+        }
+        if (crc16_lb_bridge(bits, 80) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static uint8_t g_stream[3 * 101];
 static int g_stream_len = 0;
@@ -94,6 +135,17 @@ append_tsbk_stream_block(const uint8_t dibits[98], int* skipdibit) {
     }
 }
 
+/* Signal search site notes, and the last one. */
+static int g_site_notes = 0;
+static dsd_signal_search_site_note g_site_note;
+
+static void
+capture_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
+    (void)state;
+    g_site_notes++;
+    g_site_note = *note;
+}
+
 static void
 reset_decode_counters(void) {
     g_mac_count = 0;
@@ -116,6 +168,17 @@ build_two_block_stream(void) {
 
     append_tsbk_stream_block(k_group_grant_1111_dibits, &skipdibit);
     append_tsbk_stream_block(k_group_grant_2222_dibits, &skipdibit);
+}
+
+static void
+build_stream_of(const uint8_t dibits[98]) {
+    int skipdibit = 36 - 14;
+
+    DSD_MEMSET(g_stream, 0, sizeof(g_stream));
+    g_stream_len = 0;
+    g_stream_pos = 0;
+
+    append_tsbk_stream_block(dibits, &skipdibit);
 }
 
 static void
@@ -404,6 +467,7 @@ int
 main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
     dsd_signal_search_evidence_set(capture_evidence);
+    dsd_signal_search_site_set(capture_site);
     build_two_block_stream();
     reset_decode_counters();
 
@@ -462,6 +526,26 @@ main(void) {
     rc |= expect_eq_int("net-sts missing-iden marks p1 cc fdma", state.p25_cc_is_tdma, 0);
     rc |= expect_eq_int("net-sts missing-iden leaves p25 cc empty", (int)state.p25_cc_freq, 0);
     rc |= expect_eq_int("net-sts missing-iden leaves trunk cc empty", (int)state.trunk_cc_freq, 0);
+    /* The CRC-valid standard network status names the system to a Signal search, from its own fields. */
+    rc |= expect_eq_int("net-sts notes the search site once", g_site_notes, 1);
+    rc |= expect_eq_int("net-sts site note kind", g_site_note.kind, DSD_SEARCH_SITE_NOTE_P25_NETWORK);
+    rc |= expect_eq_int("net-sts site note wacn", (int)g_site_note.wacn, 0xABCDE);
+    rc |= expect_eq_int("net-sts site note sysid", (int)g_site_note.sysid, 0x123);
+
+    /* The same block with its CRC broken notes nothing. */
+    build_network_status_stream();
+    for (int i = 20; i < 80; i++) {
+        g_stream[i] = (uint8_t)(3 - g_stream[i]);
+    }
+    reset_decode_counters();
+    g_site_notes = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    processTSBK(&opts, &state);
+    rc |= expect_eq_int("corrupt net-sts fails its crc", state.p25_p1_fec_err > 0, 1);
+    rc |= expect_eq_int("corrupt net-sts notes no site", g_site_notes, 0);
+    rc |= expect_eq_int("corrupt net-sts names no system", (int)state.p2_wacn, 0);
+    g_site_notes = 0;
 
     build_network_status_stream();
     reset_decode_counters();
@@ -480,6 +564,41 @@ main(void) {
     rc |= expect_eq_int("net-sts rejected voice preserves tdma cc hint", state.p25_cc_is_tdma, 1);
     rc |= expect_eq_int("net-sts rejected voice skips wacn", (int)state.p2_wacn, 0);
     rc |= expect_eq_int("net-sts rejected voice skips sysid", (int)state.p2_sysid, 0);
+    /* The decoder's state gate is its own: the checked broadcast still names its system. */
+    rc |= expect_eq_int("net-sts rejected voice still notes its site", g_site_notes, 1);
+
+    /* The encoder reproduces the reference network status block. */
+    static const uint8_t k_network_status_bytes[12] = {0xBB, 0x00, 0x00, 0xAB, 0xCD, 0xE1,
+                                                       0x23, 0x81, 0x23, 0x00, 0x51, 0x97};
+    uint8_t encoded[98];
+    encode_tsbk_dibits(k_network_status_bytes, encoded);
+    rc |= expect_eq_int("tsbk encoder matches the reference block", memcmp(encoded, k_network_status_dibits, 98), 0);
+
+    /* Opcode 0x3B under a manufacturer's MFID is that manufacturer's message, not the standard network status
+       (TIA-102.AABC: standard opcodes are MFID $00/$01): a CRC-valid one moves no control channel and names no system. */
+    uint8_t vendor[12];
+    DSD_MEMCPY(vendor, k_network_status_bytes, sizeof(vendor));
+    vendor[1] = 0xD8;
+    rc |= expect_eq_int("vendor net-sts crc sealed", seal_tsbk_crc(vendor), 1);
+    encode_tsbk_dibits(vendor, encoded);
+    build_stream_of(encoded);
+    reset_decode_counters();
+    g_site_notes = 0;
+    g_channel_freq = 863812500;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.p25_cc_freq = 851000000;
+    state.p25_cc_is_tdma = 1;
+    state.trunk_lcn_freq[0] = 851000000;
+    processTSBK(&opts, &state);
+    rc |= expect_eq_int("vendor net-sts block passes its crc", (int)state.p25_p1_fec_ok, 1);
+    rc |= expect_eq_int("vendor net-sts sets no wacn", (int)state.p2_wacn, 0);
+    rc |= expect_eq_int("vendor net-sts sets no sysid", (int)state.p2_sysid, 0);
+    rc |= expect_eq_int("vendor net-sts keeps the cc", (int)state.p25_cc_freq, 851000000);
+    rc |= expect_eq_int("vendor net-sts keeps the tdma hint", state.p25_cc_is_tdma, 1);
+    rc |= expect_eq_int("vendor net-sts keeps lcn 0", (int)state.trunk_lcn_freq[0], 851000000);
+    rc |= expect_eq_int("vendor net-sts notes no site", g_site_notes, 0);
+    g_channel_freq = 0;
 
     /* A Signal search that leaves the TSDU (its visit ended, or a command came), or a live read that gives up on a
        stalled input, cuts it: from the cut every symbol is an erasure getSymbol() stood in. Neither the block it cut
@@ -505,6 +624,7 @@ main(void) {
         rc |= expect_eq_int("cut tsdu reports only the blocks before the cut", g_evidence, grants_before[c]);
     }
     g_interrupt_at = -1;
+    dsd_signal_search_site_set(NULL);
     dsd_decode_clock_use_system();
     return rc;
 }

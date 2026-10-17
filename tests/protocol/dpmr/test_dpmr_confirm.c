@@ -43,6 +43,14 @@ run_frame(dsd_state* state, int evidence) {
 }
 
 static int g_search_reports;
+static int g_call_notes;
+
+static void
+count_call_note(const dsd_state* state, uint8_t slot) {
+    (void)state;
+    expect("a single-channel call is noted on slot 0", slot, 0);
+    g_call_notes++;
+}
 
 static void
 count_search_report(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
@@ -118,6 +126,7 @@ main(void) {
     /* A signal search hears a frame's confirmation when the frame closes, after the frame has published the identity,
      * service and colour code its confirmation unlocked, and once per frame. */
     dsd_signal_search_evidence_set(count_search_report);
+    dsd_signal_search_call_set(count_call_note);
     dpmr_confirm_reset(state);
     dpmr_confirm_begin_frame(state);
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
@@ -134,7 +143,10 @@ main(void) {
     expect("the frame completing a weak streak is not reported mid-frame", g_search_reports, 1);
     dpmr_confirm_end_frame(state);
     expect("the frame completing a weak streak reports at its end", g_search_reports, 2);
+    /* Each reported frame notes the call it published, with its evidence; no other frame does. */
+    expect("a call note with every report", g_call_notes, g_search_reports);
     dsd_signal_search_evidence_set(NULL);
+    dsd_signal_search_call_set(NULL);
 
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     dpmr_confirm_reset(NULL);

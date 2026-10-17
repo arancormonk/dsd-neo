@@ -1155,10 +1155,29 @@ Item {
 
         objectName: "spectrumGoToSheet"
 
+        // The frequency the sheet opened on: a dismissal asks only once it differs.
+        property string openedText: ""
+
         function open(hz) {
             goToField.text = Util.mhzText(hz);
+            openedText = goToField.text;
             visible = true;
             goToField.forceActiveFocus();
+        }
+
+        function requestClose() {
+            if (goToField.text !== openedText)
+                goToDiscard.ask(function () {
+                    goToSheet.visible = false;
+                });
+            else
+                visible = false;
+        }
+        dismissHandler: requestClose
+
+        DiscardDialog {
+            id: goToDiscard
+            parent: goToSheet
         }
 
         function submit() {

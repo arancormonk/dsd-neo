@@ -40,6 +40,7 @@ m17_confirm_note_evidence(dsd_state* state, m17_evidence evidence) {
         state->m17_confirm_weak_streak = 0;
         state->m17_confirmed = 1;
         dsd_signal_search_note_evidence(state, "M17", 0, 0, NULL);
+        dsd_signal_search_note_call(state, 0U);
         return;
     }
     if (evidence != M17_EVIDENCE_WEAK || state->m17_confirm_frame_evidence != 0) {
@@ -53,6 +54,7 @@ m17_confirm_note_evidence(dsd_state* state, m17_evidence evidence) {
     if (state->m17_confirm_weak_streak >= M17_CONFIRM_WEAK_OBSERVES) {
         state->m17_confirmed = 1;
         dsd_signal_search_note_evidence(state, "M17", 0, 0, NULL);
+        dsd_signal_search_note_call(state, 0U);
     }
 }
 

@@ -67,6 +67,12 @@ Item {
     // be skipped.
     readonly property int otherSlot: heroSlot === 1 ? 2 : heroSlot === 2 ? 1 : 0
     readonly property bool otherActive: otherSlot === 1 ? metrics.slot1CallState === 2 : otherSlot === 2 ? metrics.slot2CallState === 2 : false
+    // The second-slot strip: kept in place while the decoder says the carrier is two-slot TDMA, so the other slot's
+    // calls coming and going never move the screen below it, and shown for an active second call whatever the
+    // carrier is known to be. With no call it stands for slot 2; with slot 2 leading, for slot 1.
+    readonly property bool stripVisible: metrics.twoSlotCarrier || otherActive
+    readonly property bool stripIdle: !otherActive
+    readonly property int stripSlot: heroSlot === 2 ? 1 : 2
     readonly property string otherName: otherSlot === 1 ? metrics.slot1CallName : otherSlot === 2 ? metrics.slot2CallName : ""
     readonly property string otherTg: otherSlot === 1 ? metrics.slot1TgText : otherSlot === 2 ? metrics.slot2TgText : ""
     readonly property double otherTgId: otherSlot === 1 ? metrics.slot1TgId : otherSlot === 2 ? metrics.slot2TgId : 0
@@ -668,22 +674,25 @@ Item {
 
             // The concurrent TDMA call on the non-hero slot: identity plus its own
             // call controls, so a second conversation is never invisible or untouchable.
+            // On a two-slot carrier the strip holds its place while that slot is idle.
             UiPanel {
                 width: parent.width
                 objectName: "otherSlotPanel"
-                visible: screen.otherActive
+                visible: screen.stripVisible
                 height: 56
 
                 MicroLabel {
                     id: otherSlotLabel
+                    objectName: "otherSlotLabel"
                     anchors.left: parent.left
                     anchors.leftMargin: Theme.cardPadding
                     anchors.verticalCenter: parent.verticalCenter
-                    text: qsTr("SLOT %1").arg(screen.otherSlot)
+                    text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
                 }
 
                 Text {
                     objectName: "otherSlotIdentity"
+                    visible: !screen.stripIdle
                     anchors.left: otherSlotLabel.right
                     anchors.leftMargin: 10
                     anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
@@ -700,7 +709,7 @@ Item {
                 EmergencyTag {
                     id: otherEmergencyTag
                     objectName: "otherEmergencyTag"
-                    visible: screen.otherEmergency
+                    visible: !screen.stripIdle && screen.otherEmergency
                     anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
@@ -708,10 +717,18 @@ Item {
 
                 EncTag {
                     id: otherEncTag
-                    visible: screen.otherEnc
+                    visible: !screen.stripIdle && screen.otherEnc
                     anchors.right: otherSkip.left
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
+                }
+
+                TextMetrics {
+                    id: otherSkipMetrics
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(15)
+                    font.weight: Font.DemiBold
+                    text: otherSkip.text
                 }
 
                 OutlineButton {
@@ -720,11 +737,15 @@ Item {
                     anchors.right: otherMore.left
                     anchors.rightMargin: 4
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 70
+                    // Grows with large text rather than cutting "Skip" short (the label keeps 12 px a side).
+                    width: Math.max(70, Math.ceil(otherSkipMetrics.advanceWidth) + 32)
+                    maximumLineCount: 1
                     implicitHeight: 48
                     height: 48
                     text: qsTr("Skip")
                     accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
+                    // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
+                    visible: !screen.stripIdle
                     enabled: decoderHost.running
                     onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
                 }
@@ -739,6 +760,7 @@ Item {
                     height: 48
                     icon: "more"
                     accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
+                    visible: !screen.stripIdle
                     enabled: decoderHost.running
                     onClicked: otherSlotMenu.openForOtherSlot()
                 }
@@ -1617,16 +1639,48 @@ Item {
             objectName: "monitorLiveActions"
             width: parent.width
             spacing: 10
-            readonly property real cell: (width - 30) / 4
+            // A deterministic grid, as on the Signal search Now panel: four equal
+            // columns when every cell fits the widest label any of them can show
+            // at this font scale, else two; one label line, or two (broken only
+            // at a space) when that widest label needs them, and one height for
+            // every cell, so no row is ragged and no word splits.
+            readonly property var labels: [qsTr("Mute"), qsTr("Unmute"), qsTr("Hold TG"), qsTr("Release"), qsTr("Skip"), qsTr("TG list"), qsTr("Avoid TG"), qsTr("Lock out")]
+            readonly property real widest: {
+                // advanceWidth() is a call, which a binding does not track:
+                // reading the font re-measures on a scale change.
+                var font = actionMetrics.font;
+                var widest = 0;
+                for (var label of labels)
+                    widest = Math.max(widest, actionMetrics.advanceWidth(label));
+                return Math.ceil(widest);
+            }
+            readonly property int columns: (width - 3 * spacing) / 4 >= widest + 2 * Theme.cardPadding ? 4 : 2
+            readonly property real cell: (width - (columns - 1) * spacing) / columns
+            // OutlineButton keeps 12 px either side of its label.
+            readonly property int labelLines: widest <= cell - 24 ? 1 : 2
+            readonly property real cellHeight: Math.max(Theme.minimumTouchSize, Math.ceil(labelLines * actionMetrics.lineSpacing) + 24)
 
-            Row {
+            FontMetrics {
+                id: actionMetrics
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(15)
+                font.weight: Font.DemiBold
+            }
+
+            Item {
                 objectName: "monitorCallActions"
+                readonly property int rows: Math.ceil(4 / liveActions.columns)
                 width: parent.width
-                spacing: 10
+                height: rows * liveActions.cellHeight + (rows - 1) * liveActions.spacing
 
                 OutlineButton {
                     objectName: "muteButton"
+                    x: (0 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(0 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                     text: screen.muted ? qsTr("Unmute") : qsTr("Mute")
                     enabled: decoderHost.running
                     // The label follows the engine snapshot after the command applies.
@@ -1635,7 +1689,12 @@ Item {
 
                 OutlineButton {
                     objectName: "holdTalkgroupButton"
+                    x: (1 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(1 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                     text: screen.holding ? qsTr("Release") : qsTr("Hold TG")
                     // Callsigns and dial strings have no numeric talkgroup to hold.
                     enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
@@ -1645,7 +1704,12 @@ Item {
 
                 OutlineButton {
                     objectName: "skipButton"
+                    x: (2 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(2 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                     text: qsTr("Skip")
                     accessibleName: qsTr("Skip this call")
                     enabled: decoderHost.running && screen.heroSlot !== 0
@@ -1654,8 +1718,13 @@ Item {
 
                 OutlineButton {
                     objectName: "talkgroupsButton"
-                    visible: !screen.compactHeight
+                    x: (3 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(3 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
+                    visible: !screen.compactHeight
                     text: qsTr("TG list")
                     accessibleName: qsTr("Talkgroups")
                     enabled: decoderHost.running
@@ -1667,21 +1736,30 @@ Item {
                     heroSlot: screen.heroSlot
                     running: decoderHost.running
                     visible: screen.compactHeight
+                    x: (3 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(3 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                 }
             }
 
-            Row {
+            Item {
                 objectName: "monitorAvoidActions"
                 visible: !screen.compactHeight
                 width: parent.width
-                spacing: 10
+                height: liveActions.cellHeight
 
+                // Two cells wide in four columns, the full width in two.
                 AvoidAction {
                     objectName: "avoidButton"
                     heroSlot: screen.heroSlot
                     running: decoderHost.running
-                    width: 2 * liveActions.cell + 10
+                    width: 2 * liveActions.cell + liveActions.spacing
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                 }
             }
         }

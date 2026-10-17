@@ -9,6 +9,15 @@ Search measures RF power across the radio's capture bandwidth without drawing a
 spectrum. It visits strong candidates to identify and monitor them, then continues
 through the remaining candidates and ranges.
 
+Signal search opens on the radio the last search started on, else the one Explore
+last used, else a USB dongle. On Android, a remembered RTL-SDR dongle opens as the
+Airspy when only an Airspy is plugged in, and the reverse; with both kinds or
+neither plugged in, the remembered radio stays selected, and an RTL-TCP server is
+never replaced. Explore's start, its setup screen and the radio named on its Home
+card follow the same rule. **Start search** remembers the radio it starts on
+separately from Explore, so a search never changes where Explore resumes; both
+travel with a settings backup.
+
 RF strength does not measure distance. Antenna, gain, propagation and other
 transmitters affect discovery. This is not hardware Close Call capture, and crowded
 RF conditions can mask weaker signals. A short burst may end before a listening
@@ -35,6 +44,12 @@ suppressed until the next pass.
 | Maximum visit | 30 seconds; adjustable through 600 seconds, or 0 to disable |
 | Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls |
 
+The range editor closes with **Save range** or **Cancel**. Once a field differs
+from what the editor opened with, Cancel, Back, Escape or a tap beside the panel
+asks before discarding the change. While no search runs, leaving the screen with
+a different radio or RTL-TCP host or port asks the same way; the radio the screen
+opened on, including the attached receiver it chose, is not a change.
+
 RF detection sensitivity and listening squelch are separate. Changing listening
 squelch does not change which channels pass the RF detector. An Auto or Noise
 listening squelch takes a margin of 3 to 30 dB, the range the receiver applies;
@@ -49,7 +64,70 @@ listening tune is still pending. While listening, the screen also shows the
 channel's current RF level (**Now … dBFS**), measured on the same detector scale
 roughly four times a second; history keeps the detection-time level. Live level
 needs the receiver's Fs/4 offset tuning, which keeps the landed channel away from
-hardware DC; inputs without it show only the detection level.
+hardware DC; inputs without it show only the detection level. A steady transmitter
+reads steady: on a constant-level FM carrier successive readings differ by a few
+hundredths of a dB, so the displayed tenth of a dB often does not change, while a
+change in the signal's level shows within about a second. On a paced loopback
+rtl_tcp source, 6, 12 and 18 dB steps in the transmitter's level each showed at
+the next reading, on NFM, digital-identification and decoded DMR visits. When the receiver cannot measure the
+channel for about two seconds (the capture keeps changing, drops samples or clips),
+the screen stops showing **Now** and shows only the detection level until a fresh
+measurement arrives; a visit's live level also ends with the visit. A small dot
+beside **Now** brightens briefly at each fresh measurement, including one that
+reads the same level as the last, so a steady reading is visibly a live one; it
+is hidden while no live level is shown.
+
+While a search runs, the screen is laid out for what is on the air now:
+
+- A status line under the title names the pass, the range being searched with
+  its bounds, and the channel, for example
+  **Pass 2 · Air band · 118.000–137.000 MHz · channel 81 of 801**. It names the
+  range the search is in, not the range of the last detection, and a range
+  edited while paused shows there once **Resume** applies it. A range name too
+  long for the line is shortened so the pass and channel count always show
+  whole; on a narrow phone with the largest text the line keeps three lines.
+  The Now panel's actions take three columns, or two, or one where a label's
+  word would not fit half the width, so no label is cut.
+- The **Now** panel keeps one height for the whole session: frequency, strength,
+  identification, two lines of detail, saved-frequency names and the actions.
+  The strength line shows the live and detection levels
+  (**Now -47.2 · detected -32.1 dBFS**, on two lines with the largest text);
+  the range is named in the status line. The two detail lines read the checked
+  site, the access code and tone, the call (**Slot 2 · Target 100 · Source 2001**,
+  the slot on two-slot systems only), then its encryption
+  (**WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567**;
+  **TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 ·
+  ALG 21 · KID 0001**), breaking lines only between values. Values that do not
+  fit the two lines are left off whole, the detail then ending in **· …**. Other
+  lines that do not fit end in an ellipsis, and the full text is available to
+  screen readers. When several
+  saved frequencies match, the panel names two and counts the rest
+  (**Saved: A / B +1**); the detection's history row lists them all. Between
+  detections the panel reads **Waiting for a signal**, shows the phase
+  (**Searching Air band…**, **Tuning…**, **Paused**) and the hint **Strong
+  signals open here to be identified and monitored.** (while searching, tuning
+  or paused; a stopped or failed search shows only its phase and message), and
+  keeps the actions' space empty, so nothing below it moves as detections come
+  and go. The six actions (**Hold**, **Skip**, **Avoid this session**, **Avoid
+  permanently**, **Save as system** and **More**) sit in two columns, or three
+  where every label fits. **More** offers **Explore here** and **Start** for
+  each saved system the detection matched.
+- A refusal or error (**The avoid list is full**, a radio failure) shows under
+  the **Now** panel, so it never moves the panel as it appears or clears; with
+  no search running it shows above the setup instead.
+- **Recent detections** shows the five newest; **Show more** adds 25. Under its
+  verdict a row shows the checked site and encryption the detection last had
+  (**TIII Small · Net 12 · Site 3 · SYS 1183 · Encrypted**). Each row's
+  actions button (**Actions for 463.5521 MHz**) opens what can be done with that
+  detection: **Explore here**, **Start “<saved system>”** for each saved system
+  it matched, **Save as system**, **Avoid this session** (while a search runs),
+  and **Avoid permanently**, or **Remove permanent avoid** when it already is.
+  A matched system whose site is avoided is listed but cannot start: remove the
+  avoid in its site list first.
+- **Search ranges · 3 enabled** is collapsed; tap it to show the ranges. While
+  paused, or before a search starts, the ranges are always shown with their
+  edit controls. A range list opened by hand stays open until you leave the
+  screen or a new session starts.
 
 Analog monitoring starts its quiet timing only once the monitor has read the
 landed channel. A receiver that is still preparing its listening squelch (the NFM
@@ -59,8 +137,10 @@ confirmed digital identity, access code or call details. A protocol reports its
 confirmation only after decoding the content that passed the check, so one
 validated frame, such as a single M17 link setup or D-STAR header, is enough for
 its details to reach the detection. When a digital probe
-expires, the display says **NFM monitoring · digital identification unresolved**.
-That fallback does not establish that the transmission is analog.
+expires, the panel says **NFM · digital unresolved** (screen readers hear
+**NFM monitoring · digital identification unresolved**): the channel is monitored
+as NFM because no digital identification succeeded. That fallback does not
+establish that the transmission is analog.
 
 P25 Phase 1 is confirmed by a control block whose CRC passes (TSBK, MBT or LCCH MAC)
 or by a call whose identity resolves. A carrier that sends only NIDs, such as a run
@@ -68,6 +148,67 @@ of terminators, or voice whose link control never decodes, is not confirmed: the
 list-decoded NID accepts several percent of random words and the voice link
 control's soft Reed-Solomon decode about a fifth, so neither tells such a carrier
 from noise. That carrier is monitored as NFM with the display above.
+
+A digital detection also shows the site it identified, from checked broadcasts heard
+during that visit only: a P25 network status (WACN and SYSID) or RFSS status (SYSID,
+RFSS and site) from a TSBK, MBT or Phase 2 MAC whose CRC passed, read as
+**WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2**; a DMR Tier III identity from a C_ALOHA or a
+C_SYS_PARMS/P_SYS_PARMS short LC that passed its checks, read as
+**TIII Small · Net 12 · Site 3 · SYS 1183**; or the NXDN location of a CRC-checked site,
+service or control channel message once the transmission is confirmed, read as
+**Site 12 · Sys 3**. A P25 RFSS status joins only the system its SYSID names, and a
+network status of another system replaces what was shown. Voice link control (whose
+Reed-Solomon check accepts random input), a Phase 2 broadcast let through with a failed
+CRC by `-F`, a secondary control channel or adjacent site broadcast, and any value the
+decoder keeps from earlier, from a hard-set system or from a cache never set it. Each
+detection starts with no site, a site is shown only once the detection's protocol is
+identified and matches it, and a change to another protocol clears it; the last broadcast
+before the channel falls silent is kept on the ended detection, and in its history row.
+
+A digital detection's call details -- talkgroup or destination, source, callsigns, the
+timeslot and the encryption -- come together from one checked call record: the call the
+decoder published after its own check (a DMR LC or PI header, a P25 link control, grant,
+MAC_PTT, HDU, LDU2 or ESS, an NXDN call, a dPMR, M17, YSF or D-STAR frame that confirmed
+the transmission), never pieced together from two calls. On a two-slot system the
+detection shows the call that began most recently, with its own slot (**Slot 1** or **Slot
+2** for DMR and P25 Phase 2), and a later call on the same detection replaces the earlier
+one's details whole, on either slot. A call whose record carries a CRC failure, such as a
+link control accepted as RAS under `-F`, does not set them; the IDs a protocol reports
+with its confirmation stand in only until a call record names the detection, and only when
+the content that carried them passed its own check, so a RAS repeater's talkgroup and
+source never reach the detection. The encryption shows **ALG 84 · KID 0001** with only the
+parts received over the air for that call: a P25 HDU, LDU2, ESS or MAC_PTT tuple (not one
+held back as a contradiction of clear service, and not an HDU, LDU2 or ESS whose
+Reed-Solomon decode needed soft erasures, so a weak signal whose service options say
+encrypted shows **Encrypted**; service options from a link control that needed them
+count for nothing), a DMR PI header (its key ID only where the header carries one; Kirisun's
+is derived), an NXDN call's cipher and key once corroborated and carried by the VCALL
+itself, and an M17 link setup's encryption type. **Encrypted** alone means the call's own
+checked signalling says it is encrypted and carried no ALG ID or key ID: a DMR link
+control's privacy bit, P25 service options or an ALG ID other than 80, an NXDN VCALL or
+SACCH-2 cipher, a dPMR scrambled frame, an M17 encryption type. An ALG ID forced with
+`--dmr-force-algid` or inferred from a loaded key or from late entry adds nothing to it,
+and a forced NXDN scrambler (`-ns`) on a call whose VCALL says clear shows nothing:
+decryption still uses it, but nothing on the air said the call was encrypted. A clear call
+shows nothing. A DMR PI header decoded while no call is active (the voice
+header was lost) is held for the call the next checked link control opens on that slot
+within two seconds, and forgotten at that transmission's end, a carrier change or a new
+visit. A call that fades and is reacquired keeps what it had.
+
+When a terminator is missed and the next transmission's link control replaces the call
+(DMR, or conventional P25 Phase 1), the decoder keeps decrypting with what it holds,
+exactly as before, but the new call -- its detection, its history row and the Monitor --
+shows none of the previous call's ALG ID and key ID: only what the new call's own
+signalling supplies after its link control (a DMR PI or late-entry identifier, or a P25
+LDU2, ESS or MAC_PTT), or a forced or key-inferred algorithm the decoder chose for it,
+even when that is the same value the previous call showed. Two limits follow. A new call
+whose own PI, HDU, LDU2 or DMR late-entry identifier decoded before its link control (its
+header lost, or its first embedded link control failing its check) shows no ALG ID or key
+ID until a later one of its own decodes, and that earlier signalling, decoded while the
+previous call was still active, is attributed to the previous call. A conventional P25
+Phase 1 call's HDU always precedes its first LDU1, so after a missed TDU its HDU is the
+previous call's. History keeps the call details, slot and encryption the detection last
+showed.
 
 ## Controls, history and saved systems
 
@@ -77,9 +218,21 @@ from noise. That carrier is monitored as NFM with the display above.
 - **Avoid this session** lasts until the session ends, including across Activity
   recreation. Session avoids are listed under **Avoided this session**, and
   **Stop avoiding** lifts one for the following measurements; a frequency already
-  visited in the current pass returns with the next pass. **Avoid permanently** also saves it for
-  future searches; removing a permanent avoid during a search lifts it from the
-  running session too.
+  visited in the current pass returns with the next pass. A history row's avoid
+  works the same way, and leaves the frequency at once if the search is
+  visiting it. **Avoid permanently** also saves it for future searches;
+  removing a permanent avoid during a search lifts it from the running session
+  too. With no search running, a row's permanent avoid only saves it.
+- Each list holds 1,024 frequencies. A full list is said on the screen: **The
+  avoid list is full** for this session's list and **The permanent avoid list is
+  full** for the permanent one, and nothing changes, not even a skip. A
+  permanent avoid is saved first, so when only this session's list is full the
+  screen says **Saved as a permanent avoid; this session's avoid list is full**:
+  it applies from the next search. A full-list message clears when the search
+  tunes to its next detection, and a failed search keeps its own error. An avoid
+  for a detection the search has already left (the panel was a moment old)
+  changes neither list and shows nothing: the panel already shows what the
+  search is doing now.
 - **Pause** ends any call in progress on the channel and permits range edits. A search
   that fails (its input stalls, for example) ends that call too.
   **Resume** applies them and restarts the pass under the same session, retaining
@@ -90,6 +243,45 @@ from noise. That carrier is monitored as NFM with the display above.
 - A start waiting for Android USB permission belongs to the search: leaving Signal
   search, or a later **Start search** it refuses, cancels it, so a permission
   granted afterwards starts nothing.
+- **Explore here** and **Start “<saved system>”** leave the search for another
+  session. The search's own start is cancelled first (a USB permission granted
+  afterwards cannot turn the new session into a search), then the running
+  search stops. Until it has, the screen stays and reads **Stopping the
+  search…**, with its controls set aside; a stray tap does not drop the
+  handoff. A slow stop keeps that state as long as the engine's own restore
+  timeouts allow. **Back** cancels the handoff: the search screen and its
+  controls come back while the session finishes stopping, nothing new starts,
+  and a second Back works as usual. Once the decoder is idle the screen closes
+  and the new session starts. If the search fails to stop, nothing starts and
+  Home shows the failure.
+  Explore here tunes the detection's frequency with its receive mode, gain and
+  receiver settings, on the receiver attached now, whether the search is
+  running or stopped. An rtl_tcp server stays. When the attached receiver is
+  another kind, only the settings that kind takes go with it: a detection heard
+  on an RTL dongle starts on an Airspy without the dongle's PPM, bias tee and
+  tuner gain, and an Airspy's own settings (its serial among them) never go to a
+  dongle. Explore here does not change where
+  Explore resumes from Home, even through a USB permission request. A saved
+  system starts as saved (keys, decoder and trunking). A system whose site is
+  avoided is refused with a message on the search screen, and nothing stops.
+  Like a refused **Start search**, the message stays until the next start,
+  Resume or leaving the screen, and what the search reports meanwhile (a full
+  avoid list, for example) shows below it. If
+  it became avoided while the search stopped, Home shows the refusal: **Retry**
+  asks again and **Edit** opens that system. If Android recreates the Activity during the
+  handoff, the reopened app finds the search stopped and starts nothing. A search screen
+  the app reopened over a running search after such a recreation hands off the same way:
+  it stays, reading **Stopping the search…**, until the decoder is idle, and after
+  **Back** the stopped search stays on it.
+- **Retry** on a failed Signal search start opens Signal search again and starts
+  the search on the same receiver; **Edit** opens Signal search. Both take the
+  receiver attached now, as opening Signal search from Home does: a USB dongle
+  search that failed, with only an Airspy plugged in, retries on the Airspy. An
+  rtl_tcp server stays. **Retry** on a failed Explore here starts it again on
+  the receiver attached now (Airspy settings only go with an Airspy); **Edit**
+  opens Explore setup on that attempt's receiver and frequency, not on Explore's
+  remembered answer. Starting from there keeps the detection's receive mode and
+  gain and, like Explore here, does not change where Explore resumes from Home.
 - Android Back follows the existing background-listening preference. The native
   session and history worker continue when the foreground Activity is recreated,
   and the reopened screen takes its receiver (USB, Airspy or rtl_tcp server) from
@@ -99,8 +291,17 @@ Detection history is separate from call history: an RF detection need not decode
 anything. The newest 1,000 detections are retained, with one row updated as details
 arrive. Ended, confirmed and RF-only detections remain distinguishable. The private
 versioned journal is compacted atomically; write failures are reported while
-available records remain in memory. History and permanent avoids are saved separately,
-and a failed one stays reported and is retried by later saves until it is written.
+available records remain in memory. Each record keeps the detection's checked
+site, slot and encryption, in a version 2 journal (`signal-search-history.v2`)
+beside the earlier releases' `signal-search-history.v1`. The first time no
+version 2 journal exists, the earlier journal's detections load without those
+details and the next save writes them to the version 2 journal; from then on
+only the version 2 journal is read. The earlier journal is never changed, so an
+earlier release still shows its own history, and detections it records later
+do not reach this one. A detection republished with nothing new is not written
+again. Detection history is not part of a backup. History and permanent avoids
+are saved separately, and a failed one stays reported and is retried by later
+saves until it is written.
 Orderly stop flushes the journal. Ranges and permanent avoids are also stored privately.
 
 Saved-system labels come from a cached index of saved frequencies, referenced
@@ -326,7 +527,12 @@ next stream publishes its own. A coordinator regression runs
 the real detector and tap on synthetic capture I/Q over three passes at six capture
 alignments and checks that only the transmitter's channel is ever visited; it also
 starts a search on a tap a stopped stream has emptied, which waits for the first
-block and then plans its first span from it. Coordinator
+block and then plans its first span from it. On the same tap, an NFM visit serviced
+by the main loop and a digitally confirmed visit serviced only by the in-frame yield
+check each follow 12 dB and 6 dB level changes in the live strength within three
+intervals, withdraw a level the tap stops refreshing (a producer drop with every
+block, or clipped samples) within three intervals and a retry, show a fresh level
+once measurements succeed again, and publish no level for an ended visit. Coordinator
 tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,

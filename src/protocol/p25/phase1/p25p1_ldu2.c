@@ -98,6 +98,9 @@ typedef struct {
     int lsd1_okay;
     int lsd2_okay;
     int irrecoverable_errors;
+    /* The encryption sync passed its hard Reed-Solomon decode, not a soft-erasure retry (which can spend the whole
+       parity budget and accept an arbitrary payload): only then is its tuple received. */
+    int hard_checked;
     char hex_data[16][6];
     char hex_parity[8][6];
     P25P1SoftDibit soft_dibits[16 * (3 + 2) + 8 * (3 + 2)];
@@ -482,7 +485,8 @@ ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame)
     dsd_call_snapshot call;
     const int target =
         dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= INT_MAX ? (int)call.ota_target_id : 0;
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, frame->algidhex, frame->kidhex, mi, target);
+    (void)p25_crypto_resolve_checked(opts, state, DSD_P25_CRYPTO_PHASE1, 0, frame->algidhex, frame->kidhex, mi, target,
+                                     frame->hard_checked);
 }
 
 void
@@ -507,7 +511,9 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n");
         return;
     }
+    const unsigned int soft_rs_before = state->p25_p1_soft_rs_ok;
     frame.irrecoverable_errors = ldu2_run_fec(state, frame.hex_data, frame.hex_parity, frame.soft_dibits);
+    frame.hard_checked = state->p25_p1_soft_rs_ok == soft_rs_before; // ldu2_run_fec() counts each soft recovery
 
     ldu2_decode_post_fec_fields(state, &frame);
     ldu2_print_decode_result(&frame);

@@ -13,6 +13,8 @@ ModalSheet {
     property int row: -1
     property var draft: ({})
     property string errorText: ""
+    // The form as openFor() filled it: a dismissal asks only once it differs.
+    property string openedForm: ""
     accessibleName: row < 0 ? qsTr("Add search range") : qsTr("Edit search range")
 
     function matchingStep(numerator, denominator) {
@@ -50,8 +52,42 @@ ModalSheet {
         minimumSwitch.checked = draft.minimumSet;
         airspyOverride.checked = !!draft.airspyGainSet;
         airspyGain.settings = Object.assign({}, draft.airspy || {});
+        airspyGain.resetText();
         errorText = "";
+        openedForm = formFingerprint();
         open();
+    }
+
+    /** What the form holds now, read from the live field text. */
+    function formValue() {
+        return {
+            name: nameField.text, startMHz: startField.text, endMHz: endField.text,
+            stepNum: stepNumerator.text, stepDen: stepDenominator.text, bandwidth: bandwidthField.text,
+            am: modulation.currentIndex === 1, digital: digital.currentIndex,
+            gainSet: gainMode.currentIndex !== 0, gainAuto: gainMode.currentIndex === 1, gain: gainField.text,
+            sensitivity: sensitivityField.text, minimumSet: minimumSwitch.checked, minimum: minimumField.text,
+            squelchMode: squelch.currentIndex, squelchMargin: marginField.text, squelchLevel: levelField.text,
+            probe: probeField.text, visit: visitField.text,
+            airspyGainSet: airspyOverride.checked, airspy: airspyGain.pendingSettings()
+        };
+    }
+    // The form plus the Airspy fields' typing, committed or not: a gain typed
+    // but not yet committed (or not yet a valid index) still counts.
+    function formFingerprint() {
+        return JSON.stringify({form: formValue(), airspyText: airspyGain.pendingText()});
+    }
+    function requestClose() {
+        if (visible && formFingerprint() !== openedForm)
+            discard.ask(function () {
+                sheet.visible = false;
+            });
+        else
+            visible = false;
+    }
+    dismissHandler: requestClose
+    DiscardDialog {
+        id: discard
+        parent: sheet
     }
 
     Column {
@@ -59,7 +95,7 @@ ModalSheet {
         spacing: Theme.gap
 
         Text { text: sheet.accessibleName; color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(20); font.weight: Font.Bold }
-        PlexTextField { id: nameField; width: parent.width; label: qsTr("Range name") }
+        PlexTextField { id: nameField; objectName: "searchRangeName"; width: parent.width; label: qsTr("Range name") }
         Row {
             width: parent.width
             spacing: 12
@@ -128,7 +164,7 @@ ModalSheet {
         PlexCheckBox { id: minimumSwitch; text: qsTr("Also require a minimum RF level") }
         PlexTextField { id: minimumField; width: parent.width; visible: minimumSwitch.checked; label: qsTr("Minimum RF level · dBFS"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
         Text { text: qsTr("Listening squelch"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
-        PlexComboBox { id: squelch; width: parent.width; Accessible.name: qsTr("Listening squelch mode"); model: [qsTr("Level"), qsTr("Auto"), qsTr("Noise (NFM)")] }
+        PlexComboBox { id: squelch; objectName: "searchRangeSquelch"; width: parent.width; Accessible.name: qsTr("Listening squelch mode"); model: [qsTr("Level"), qsTr("Auto"), qsTr("Noise (NFM)")] }
         PlexTextField { id: marginField; width: parent.width; visible: squelch.currentIndex !== 0; label: qsTr("Squelch margin / quieting · dB"); inputMethodHints: Qt.ImhDigitsOnly }
         PlexTextField { id: levelField; width: parent.width; visible: squelch.currentIndex === 0; label: qsTr("Listening level · dBFS"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
         Text { text: qsTr("Receiver gain"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
@@ -157,24 +193,21 @@ ModalSheet {
             Accessible.role: Accessible.AlertMessage
         }
         GradientButton {
+            objectName: "searchRangeSave"
             width: parent.width
             text: qsTr("Save range")
             onClicked: {
-                var r = Object.assign({}, sheet.draft, {
-                    name: nameField.text, startMHz: startField.text, endMHz: endField.text,
-                    stepNum: stepNumerator.text, stepDen: stepDenominator.text, bandwidth: bandwidthField.text,
-                    am: modulation.currentIndex === 1, digital: digital.currentIndex,
-                    gainSet: gainMode.currentIndex !== 0, gainAuto: gainMode.currentIndex === 1, gain: gainField.text,
-                    sensitivity: sensitivityField.text, minimumSet: minimumSwitch.checked, minimum: minimumField.text,
-                    squelchMode: squelch.currentIndex, squelchMargin: marginField.text, squelchLevel: levelField.text,
-                    probe: probeField.text, visit: visitField.text
-                });
-                r.airspyGainSet = airspyOverride.checked;
-                r.airspy = airspyGain.settings;
+                var r = Object.assign({}, sheet.draft, sheet.formValue());
                 sheet.errorText = searchModel.saveRange(sheet.row, r);
                 if (!sheet.errorText.length)
                     sheet.visible = false;
             }
+        }
+        OutlineButton {
+            objectName: "searchRangeCancel"
+            width: parent.width
+            text: qsTr("Cancel")
+            onClicked: sheet.requestClose()
         }
     }
 }

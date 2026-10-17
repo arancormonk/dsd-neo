@@ -23,7 +23,11 @@
 namespace {
 using Hit = dsd_signal_search_hit;
 using Bytes = std::vector<unsigned char>;
-constexpr uint32_t magic = 0x31535344; // DSS1, version 1, little endian
+/* Record magics, little endian. Version 2 appends the checked site, call slot and encryption to version 1's body.
+   Each version has its own file: version 2 records live in the version 2 journal, and the version 1 journal an
+   earlier release keeps writing is only ever read (migrated from while no version 2 journal exists). */
+constexpr uint32_t magic_v1 = 0x31535344; // DSS1
+constexpr uint32_t magic = 0x32535344;    // DSS2
 
 void
 put(Bytes& out, uint64_t value, unsigned n) {
@@ -47,12 +51,16 @@ checksum(const Bytes& b) {
                            [](uint32_t sum, unsigned char c) { return (sum ^ c) * 16777619U; });
 }
 
+/* The text up to its NUL, then zeros: bytes left behind a shorter text are neither persisted nor compared. The last
+   byte is always NUL. */
 template <size_t N>
 void
 put_text(Bytes& b, const char (&text)[N]) {
-    for (size_t i = 0; i < N; ++i) {
+    size_t i = 0;
+    for (; i + 1 < N && text[i]; ++i) {
         b.push_back((unsigned char)text[i]);
     }
+    b.insert(b.end(), N - i, 0);
 }
 
 template <size_t N>
@@ -66,6 +74,7 @@ take_text(const Bytes& b, size_t& at, char (&text)[N]) {
 Bytes
 encode(const Hit& h) {
     Bytes b;
+    b.reserve(2048); // one record (1,652 bytes) without regrowing: this runs on every publication
     put(b, h.session_id, 8);
     put(b, h.hit_id, 8);
     put(b, h.started_ms, 8);
@@ -100,11 +109,16 @@ encode(const Hit& h) {
                   h.airspy.mixer_gain, h.airspy.vga_gain, h.airspy.lna_agc, h.airspy.mixer_agc, h.airspy.bias_tee}) {
         put(b, (uint32_t)v, 4);
     }
+    put_text(b, h.site);
+    put(b, h.slot >= 0 && h.slot <= 2 ? (unsigned)h.slot : 0U, 1);
+    put_text(b, h.crypt);
     return b;
 }
 
+/* @p b holds one whole record of @p version (its size was checked against the magic). Nothing loaded is trusted:
+   every text ends at its own last byte and the slot is 0, 1 or 2. */
 Hit
-decode(const Bytes& b) {
+decode(const Bytes& b, uint32_t version) {
     Hit h{};
     size_t at = 0;
     h.session_id = take(b, at, 8);
@@ -142,7 +156,33 @@ decode(const Bytes& b) {
           &h.airspy.mixer_gain, &h.airspy.vga_gain, &h.airspy.lna_agc, &h.airspy.mixer_agc, &h.airspy.bias_tee}) {
         *v = (int32_t)take(b, at, 4);
     }
+    if (version >= 2) {
+        take_text(b, at, h.site);
+        h.slot = (int)take(b, at, 1);
+        if (h.slot > 2) {
+            h.slot = 0;
+        }
+        take_text(b, at, h.crypt);
+    }
     return h;
+}
+
+/* The body size of a version 1 record: the version 2 body without what version 2 appended. */
+size_t
+v1_size() {
+    Hit h{};
+    return encode(h).size() - sizeof(h.site) - 1 - sizeof(h.crypt);
+}
+
+/* The version 2 journal beside the version 1 journal @p base: a trailing ".v1" becomes ".v2", else ".v2" is
+   appended. */
+std::string
+v2_journal_path(const std::string& base) {
+    const std::string v1 = ".v1";
+    if (base.size() > v1.size() && base.compare(base.size() - v1.size(), v1.size(), v1) == 0) {
+        return base.substr(0, base.size() - v1.size()) + ".v2";
+    }
+    return base + ".v2";
 }
 
 bool
@@ -243,7 +283,9 @@ struct Store {
     std::mutex mutex;
     std::condition_variable wake, flushed;
     std::thread worker;
-    std::string path, avoid_path, error;
+    /* `base` is the path the store was opened with: the version 1 journal, and the avoid list's prefix (unchanged, so
+       every release shares one avoid list). `path` is the version 2 journal this store reads and writes. */
+    std::string base, path, avoid_path, error;
     std::vector<Hit> history, pending;
     std::vector<uint32_t> avoids, session_avoids;
     dsd_signal_search_status status{};
@@ -273,35 +315,57 @@ struct Store {
         }
     }
 
+    /* Reads every record of @p version from @p f, stopping with an error at the first record that is incomplete,
+       damaged or of any other version. */
+    void
+    read_journal(FILE* f, uint32_t version) {
+        const size_t size = version == 2 ? encode(Hit{}).size() : v1_size();
+        for (;;) {
+            Bytes header(12);
+            size_t got = fread(header.data(), 1, header.size(), f);
+            if (!got) {
+                break;
+            }
+            size_t at = 0;
+            if (got != header.size() || take(header, at, 4) != (version == 2 ? magic : magic_v1)
+                || take(header, at, 4) != size) {
+                error = "History journal has an incomplete or unsupported record";
+                break;
+            }
+            uint32_t sum = (uint32_t)take(header, at, 4);
+            Bytes bytes(size);
+            if (fread(bytes.data(), 1, size, f) != size || checksum(bytes) != sum) {
+                error = "History journal has an incomplete or damaged record";
+                break;
+            }
+            Hit h = decode(bytes, version);
+            if (h.session_id && h.hit_id && h.frequency_hz) {
+                h.ended = 1;
+                upsert(history, h);
+            }
+            ++records;
+        }
+    }
+
+    /* The version 2 journal when it exists, even empty or damaged; otherwise the rows of the version 1 journal, which
+       the first write after opening (a compaction) copies into a new version 2 journal. The version 1 journal is never
+       written, replaced or removed. */
     void
     load_history() {
-        FILE* f = dsd_fopen_private(path.c_str(), "rb");
+        errno = 0;
+        FILE* f = dsd_fopen_existing_regular_file(path.c_str(), "rb");
         if (f) {
-            const size_t size = encode(Hit{}).size();
-            for (;;) {
-                Bytes header(12);
-                size_t got = fread(header.data(), 1, header.size(), f);
-                if (!got) {
-                    break;
-                }
-                size_t at = 0;
-                if (got != header.size() || take(header, at, 4) != magic || take(header, at, 4) != size) {
-                    error = "History journal has an incomplete or unsupported record";
-                    break;
-                }
-                uint32_t sum = (uint32_t)take(header, at, 4);
-                Bytes bytes(size);
-                if (fread(bytes.data(), 1, size, f) != size || checksum(bytes) != sum) {
-                    error = "History journal has an incomplete or damaged record";
-                    break;
-                }
-                Hit h = decode(bytes);
-                if (h.session_id && h.hit_id && h.frequency_hz) {
-                    h.ended = 1;
-                    upsert(history, h);
-                }
-                ++records;
-            }
+            read_journal(f, 2);
+            fclose(f);
+            return;
+        }
+        if (errno != ENOENT) {
+            error = "History journal could not be read";
+            return;
+        }
+        f = dsd_fopen_private(base.c_str(), "rb");
+        if (f) {
+            read_journal(f, 1);
             fclose(f);
         }
     }
@@ -464,14 +528,15 @@ dsd_app_signal_search_store_open(const char* path) {
     }
     {
         std::lock_guard<std::mutex> lock(store.mutex);
-        if (store.worker.joinable() && store.path == path && !store.stop) {
+        if (store.worker.joinable() && store.base == path && !store.stop) {
             return 0;
         }
     }
     store.close();
     std::lock_guard<std::mutex> lock(store.mutex);
-    store.path = path;
-    store.avoid_path = store.path + ".avoids.json";
+    store.base = path;
+    store.path = v2_journal_path(store.base);
+    store.avoid_path = store.base + ".avoids.json";
     store.stop = false;
     store.compact = true;
     store.history_failed = false;
@@ -640,16 +705,23 @@ dsd_app_signal_search_avoids_get(uint32_t* frequencies, size_t capacity) {
     return n;
 }
 
-extern "C" void
+extern "C" int
 dsd_app_signal_search_permanent_avoid(uint32_t frequency) {
-    std::lock_guard<std::mutex> lock(store.mutex);
-    if (std::find(store.avoids.begin(), store.avoids.end(), frequency) == store.avoids.end()
-        && store.avoids.size() < DSD_SEARCH_MAX_AVOIDS) {
-        store.avoids.push_back(frequency);
-        ++store.avoids_revision;
-        store.dirty_avoids = true;
-        store.wake.notify_all();
+    if (frequency == 0) {
+        return DSD_APP_SEARCH_AVOID_INVALID;
     }
+    std::lock_guard<std::mutex> lock(store.mutex);
+    if (std::find(store.avoids.begin(), store.avoids.end(), frequency) != store.avoids.end()) {
+        return DSD_APP_SEARCH_AVOID_DUPLICATE;
+    }
+    if (store.avoids.size() >= DSD_SEARCH_MAX_AVOIDS) {
+        return DSD_APP_SEARCH_AVOID_FULL;
+    }
+    store.avoids.push_back(frequency);
+    ++store.avoids_revision;
+    store.dirty_avoids = true;
+    store.wake.notify_all();
+    return DSD_APP_SEARCH_AVOID_ADDED;
 }
 
 extern "C" int

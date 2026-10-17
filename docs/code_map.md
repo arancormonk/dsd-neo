@@ -57,7 +57,14 @@ Generated (do not edit/commit):
     voice frame is read, and Stop restores the session's own flags (`ENGINE_SIGNAL_SEARCH`).
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
-    digital transmission keeps the decoder in its synced-frame loop. A stalled input
+    digital transmission keeps the decoder in its synced-frame loop. A live strength that no
+    accepted measurement has refreshed for three intervals and a retry (1.75 s), and every
+    ended visit, publishes no live level (`ENGINE_SIGNAL_SEARCH_SCENE`); each accepted
+    measurement bumps `live_seq`, so a frontend tells a fresh reading of an unchanged level
+    from no reading. The status names the range being searched (`range_name`,
+    `range_start_hz`, `range_end_hz`), set from the coordinator's own configuration by
+    `search_select_range()` at start, at each span and at a paused restart, never from the
+    retained hit, whose range can be an earlier one (`ENGINE_SIGNAL_SEARCH`). A stalled input
     cannot hold a visit: the stall check snapshots the producer's last-sample timestamp before reading the real-time
     clock, and guards the subtraction so a newer sample cannot wrap its age into a false timeout. While a search owns
     the tuner (`rtl_signal_search_owner()`; the orchestrator's read carries no decoder state), a live radio read that finds no
@@ -72,12 +79,50 @@ Generated (do not edit/commit):
     publishes, captures or reports evidence. An analog visit's
     500 ms quiet timing starts only at the monitor's first verdict on the landed channel
     (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s. `DSD_SEARCH_ACTION_UNAVOID`
-    lifts a session avoid by frequency. Published status carries `owned` (a coordinator
-    holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
-    frequency are restored on exit: a search Stop tunes back, running the carrier boundary
-    and acquisition reset as each visit's tune does, and its retune carries the session's
-    receive family (`rtl_stream_prepare_retune_analog_profile_for_target()`), since a
-    retune landing first retires the older live family request the restore also makes. The engine loop runs no `noCarrier()`
+    lifts a session avoid by frequency; `DSD_SEARCH_ACTION_AVOID_FREQUENCY` (appended, hit ID
+    may be 0) adds one, a duplicate succeeding and the frequency being visited being left as
+    `AVOID` leaves it. A full session list refuses either avoid and publishes "The avoid list
+    is full" in `status.message` (in the ERROR phase the search error stays instead); any
+    action that takes effect, or the next visit's tune (`search_queue_tune()`), clears an
+    earlier refusal, and an ERROR phase keeps its message. `dsd_engine_signal_search_target()` validates an action
+    against the live coordinator without acting and gives the frequency it acts on;
+    `dsd_engine_signal_search_notice()` shows a refusal decided outside the coordinator in
+    the running session's status. The coordinator keeps the visit's checked site record
+    (`dsd_engine_signal_search_site()`, installed as the runtime site hook): it accepts notes
+    only while a visit is receiving and no input interruption stands, clears the record in
+    `search_visit_candidate()` at each landing (nothing from the span or an earlier visit
+    survives) and when the hit's identified protocol changes to another, and copies its formatted
+    text into `hit.site` while the record's protocol is the hit's ("NXDN" for NXDN48/NXDN96; a
+    site noted before identification waits for it), publishing the hit when the text changes,
+    so a final broadcast before silence reaches the live status and the ended hit. Decoder state
+    (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never cleared or written
+    for it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`). The hit's call tuple
+    (`target`, `source`, `target_text`, `source_text`, `slot`, `crypt`) is one canonical call
+    record's, copied whole by `dsd_engine_signal_search_call()` (installed as the runtime call
+    hook) from the slot a call note names, under the same receiving gate: the record must be
+    ACTIVE, CRC-clean (`crc_invalid == 0`) and of a protocol the search names (DMR, P25, NXDN,
+    dPMR, M17, YSF, D-STAR). The tuple is the most recent call on the hit: a note for the
+    tuple's own call (slot and epoch) updates it, a call that began no earlier (`started_m`)
+    replaces it whole on either slot, and an older call still running on the other slot leaves
+    it, so two DMR slots never mix. `slot` is the record's slot plus one for DMR and P25 Phase
+    2, else 0; `crypt` is "ALG xx · KID xxxx" from the record's received bits only
+    (`crypto_received`), "Encrypted" when its classification is encrypted, pending or
+    decryptable with none received and the call's own checked signalling says encrypted
+    (`dsd_call_snapshot::enc_received`, set from `dsd_call_crypto_update::enc_observed` by
+    the DMR LC, P25 checked ALG ID and service options, NXDN VCALL/SACCH-2, dPMR and M17
+    writers from the checked content itself -- the DMR LC's own privacy bit before the
+    classification hysteresis, a dPMR frame's CRC-verified halves, never scrambling learned
+    from an earlier frame or a forced or inferred classification), and empty otherwise. Like the site it
+    shows once the hit's protocol matches, clears at each landing and on a change to another
+    protocol, and stays on the ended hit; evidence IDs fill `target`/`source` only while no
+    tuple belongs to the hit. `site`, `slot` and `crypt` are persisted with the rest of the hit
+    (journal version 2). Published status carries `owned` (a coordinator holds the tuner) and
+    the landed channel's live RF level. Receive profiles, gain and frequency are restored on
+    exit: a search Stop tunes back, running the carrier boundary and acquisition reset as each
+    visit's tune does, and its retune carries the session's receive family
+    (`rtl_stream_prepare_retune_analog_profile_for_target()`), since a retune landing first
+    retires the older live family request the restore also makes. The engine loop runs no
+    `noCarrier()`
     while a search is paused or failed, so the first tick that finds it PAUSED or ERROR runs
     them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
     a call heard on the channel ends at the Pause, the input stall or any other failure rather
@@ -532,10 +577,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   width the front end refuses fails the tune before any backend moves. Test: `ENGINE_TRUNK_RETUNE_REGRESSION` (the `-fA`
   and `-fM` blank rows among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
-  and slicer windows at committed row boundaries, and at an input boundary (issue #634). Conventional rows also discard learned P25 modulation; trunk targets
-  retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
-  Unlocked RTL P25 trunk-scan targets try CQPSK after their first unproductive 4800-symbol/s dwell, before visiting 6000,
-  so the default three-second target visit includes the trial. This changes acquisition scheduling, not symbol timing.
+  the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
+  (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned
+  modulation. Normal no-carrier protocol confirmation resets remain in use. Unlocked RTL P25 trunk-scan targets try
+  CQPSK after their first unproductive 4800-symbol/s dwell, before visiting 6000, so the default three-second target
+  visit includes the trial. This changes acquisition scheduling, not symbol timing.
 - Frontend snapshots deep-copy only scalar scope metadata. `dsd_app_snapshot_configured_mode()` exposes the baseline;
   `dsd_scan_mode_active()` and `dsd_scan_mode_effective_profile()` distinguish combined P25 from global AUTO.
 
@@ -760,6 +806,59 @@ suite runs under this compiler.
   released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a
   sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
   `dsd_scan_keys_leave()` in `src/core/util/key_set.c`, and are likewise never deep-copied into the UI snapshot.
+- API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
+  `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
+  that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`
+  bits name a field sets it (`dsd_call_state_update_crypto()`, `_update_retained_crypto()`), and it stays for the
+  epoch: a forced (`--dmr-force-algid`), key-inferred, late-entry, carried or synthesized value, or live values a sync
+  loss cleared, change `algid`/`kid` and never the received ones. A new epoch starts with none, an epoch that
+  specializes the identity-less voice epoch it opened in keeps them, and a reacquired epoch carries the ending one's
+  (`call_state_seed_reacquired_snapshot()`); a trunk-scan context restore copies them with the snapshot. The writers
+  that set them: P25 `p25_crypto_resolve()` (HDU, LDU2, ESS, MAC_PTT; not a tuple a clear-conflict quarantine
+  deferred, nor an HDU, LDU2 or ESS whose RS decode leaned on soft erasures: `processHDU()`/`processLDU2()` (by
+  `p25_p1_soft_rs_ok` moving), the ESS paths and a staged rekey pass that verdict through
+  `p25_crypto_resolve_checked()`, `dsd_p25_p2_rekey_state::parity_checked`; the service options of an LDU1 link
+  control only a soft-erasure retry recovered, `dsd_state::p25_p1_lcw_soft`, are no encryption indication either), DMR `dmr_pi()` (Kirisun's
+  key id is a hash, so ALG only; no RAS or failed-CRC burst, no undefined DMRA
+  algorithm) directly or through `dsd_state::dmr_pi_precall_*` into the call the next checked LC opens within
+  `DMR_PI_PRECALL_HOLD_S` (only a PI decoded while no call is active is held; one decoded while a call is active is
+  that call's), NXDN
+  `nxdn_vcall_publish()` once `nxdn_cipher_received_enc()` (the applied encrypted cipher is also what the
+  over-the-air-only hysteresis `dsd_state::nxdn_cipher_rx_*` established; a forced scrambler never is) and only when
+  that VCALL itself carries the published cipher (a VCALL contradicting a received field withdraws it through
+  `dsd_call_crypto_update::contradicted`), and M17 `m17_publish_lsf()` (encryption type only).
+  Nothing else does: dPMR's scrambling flag, TETRA, X2-TDMA, EDACS, SCCH and file playback set none. History, events,
+  the terminal and Monitor read `algid`/`kid`; only Signal search reads the received ones (`CORE_CALL_STATE`,
+  `DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`, `P25_P2_RELIABILITY`, `NXDN_ENC_CLASS`, `M17_STATE_DISPATCH`).
+- API note (a call's own crypto; decryption state is separate): a call record's `algid`/`kid`/`mi` hold only the
+  epoch's own crypto -- what its own signalling or the decoder's forced or key-inferred choice for it published, or
+  what a reacquired epoch was seeded with -- never live decoder values a call whose terminator was missed left
+  behind. Decryption state is not touched for it: the DMR `payload_*` per slot, the P25 live tuple, MI and LFSR state
+  behave exactly as before at every fork (`FORK_DECRYPT_INPUTS`, which records the same values against the
+  pre-feature decoder). When a new call's link control forks such a call, the protocol marks the slot's live ALG ID
+  and key id as inherited (DMR `dmr_flco_publish_voice()`: `dsd_state::dmr_crypto_inherited*`; conventional P25
+  `p25_sm_publish_conventional_voice()`: `p25_crypto_note_inherited()`), and publishes them as
+  `dsd_call_crypto_update::carried` while they are unchanged: the record keeps its own values (none on the new
+  epoch) and takes only the classification (P25: from the new call's own service options,
+  `p25_crypto_carried_classification()`; DMR: its LC's privacy bit). Any PI, P25 resolution or new classification
+  clears the mark, and so does a DMR late-entry SB identifier decoded for the new call (even one repeating the marked
+  values) and any change of the live values. Live values that are the decoder's own choice for the new call are
+  published as its own, never carried: the `--dmr-force-algid` value for an encrypted LC, or, with no forced ALG ID,
+  the ALG ID inferred from the slot's loaded key for an encrypted LC (`dmr_le_key_inferred_algid()`), each with the
+  0xFF key id placeholder (`dmr_flco_crypto_is_decoders_choice()`). Where the canonical layer keeps the epoch at the
+  fork (a BEGIN that names an identity-less active epoch), DMR first calls `dsd_call_state_forget_crypto_values()`,
+  so the record drops the ALG ID, key id, MI and received bits the replaced transmission published into it.
+  A reacquired epoch's seeded crypto is kept against updates that receive nothing and name no ALG ID or key id
+  (`dsd_call_snapshot::crypto_restored`; the live values a sync loss cleared). Because the record no longer holds
+  carried values, the DMR heal restores the slot's live ALG ID and key id from `dsd_state::dmr_live_pub_*` (what DMR
+  last published into the ending epoch), which is what it always restored; it then binds those values to the healed
+  epoch, so a second heal with no LC or PI in between restores them too. The heal also restores the inherited mark
+  the terminator reset cleared (stashed with the live values), so the healed call's next LC still publishes them as
+  carried. Limits: after a missed terminator, a new
+  call whose own PI, HDU, LDU2 or DMR late-entry SB identifier decoded before its link control (header lost, or its
+  first embedded LC failing CRC) shows no ALG/KID until a later one of its own, and that signalling is attributed to
+  the previous, still-active call (a conventional P25 Phase 1 HDU always
+  precedes the LDU1 that forks the call) (`DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`).
 - API note (CRC provenance, discussion #602): `<dsd-neo/core/crc_provenance.h>` defines the bits that
   `dsd_state::event_crc_invalid` (the decoder-thread scope a dispatcher ORs its bits into and restores),
   `dsd_state::data_header_crc_invalid`, `dsd_call_snapshot::crc_invalid` and `Event_History::crc_invalid` carry:
@@ -1315,8 +1414,14 @@ suite runs under this compiler.
   - Frontend-neutral Signal search records, rational range validation, the aggregate
     configuration check engine and frontends share (`dsd_signal_search_validate_config()`)
     and conservative DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
-    carries validated protocol evidence and the decoder-thread active query, with no-op
-    defaults. P25 reports evidence from a control block whose CRC passes
+    carries validated protocol evidence, CRC/FEC-checked site notes
+    (`dsd_signal_search_note_site()`), call notes (`dsd_signal_search_note_call()`: a slot whose
+    canonical call record a protocol just published after its check; the engine reads the record)
+    and the decoder-thread active query, with no-op defaults. The checked site record
+    (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`,
+    `dsd_signal_search_site_format()`) is runtime's: a P25 site note joins only a record with
+    no SYSID or the same one, and a network note naming another WACN or SYSID, another protocol's
+    note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a control block whose CRC passes
     (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves, never
     from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on
     a large share of random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
@@ -1775,11 +1880,14 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
 - Target: `dsd-neo_app_control`
 - Responsibilities:
   - Signal search commands 712/713 are frontend-only and not public TCP API commands.
-    `actions/actions_signal_search.c` runs them on the decoder thread, enriches copied
-    hits using confirmed call/access-code and received-tone views, and flushes on stop.
-    Decoded-field enrichment runs only on confirmation callbacks; periodic status
-    refreshes cannot promote fields from a subsequent unconfirmed sync. The callback reads
-    the call and access code from state as it runs, so a protocol reports a confirmation
+    `actions/actions_signal_search.c` runs them on the decoder thread, adds the access code
+    and received tone to copied hits, and flushes on stop. The call tuple (IDs, texts, slot,
+    crypt) is the coordinator's and passes through untouched: the observer reads no call text
+    and carries nothing forward from an earlier publication. The access code is formatted only
+    on confirmation callbacks, from the service options of the call the tuple names (its slot,
+    the same ACTIVE, protocol and CRC checks); periodic status refreshes cannot promote it from
+    a subsequent unconfirmed sync, and keep the access code and tone the hit last had. The
+    callback reads the access code from state as it runs, so a protocol reports a confirmation
     only after committing the content that passed the check: M17's LSF, D-STAR's
     slow-data header and YSF's DCH report after publishing their callsigns (and M17's
     CAN), and the dPMR and NXDN confirm modules report a frame's confirmation from
@@ -1787,14 +1895,39 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     RAN that confirmation unlocked. One valid frame is then enough for its details to
     reach history.
     `signal_search_store.cpp` owns the mutex-protected snapshots and a native worker for
-    the versioned private journal, bounded upserts and atomic compaction/avoids. History
+    the versioned private journal, bounded upserts and atomic compaction/avoids. Each
+    journal version has its own file. The store is opened with the version 1 journal's
+    path (Qt: `signal-search-history.v1`) and reads and writes `DSS2` records (version 1's
+    `DSS1` body followed by the checked `site`, `slot` and `crypt`) in the version 2
+    journal beside it (a trailing `.v1` becomes `.v2`, else `.v2` is appended). The avoid
+    list keeps its name (`<v1 path>.avoids.json`, the backup's `kAvoidsFileName`). While
+    no version 2 journal exists, the version 1 journal's rows load with those details empty
+    and the first write after opening (always a compaction) creates the version 2 journal
+    from them; once it exists, even empty or damaged, it alone is read. The version 1
+    journal is never written, replaced or removed, so an earlier release keeps its own
+    history (rows it adds later are not migrated). Each file accepts only its own
+    version's magic; another magic, a size that does not match or a bad checksum stops
+    the load with an error, keeping the records before it. Loaded texts are cut at their
+    last byte and an out-of-range slot loads as 0. Texts are encoded up to their NUL and
+    zero-padded, and a republished hit whose encoding is unchanged neither advances the
+    history revision nor queues a write, so only new checked content does. Detection
+    history (either file) is not part of a backup. History
     and permanent avoids are separate files with separate write state: one whose write
     failed stays owed, with its error, until its own write succeeds, so saving the other
     neither retires it nor clears the error. Each later worker pass, flush and close
     retries it; a history retry compacts every retained record, so nothing is appended
     twice. The worker survives QML teardown; it never reads live decoder state. History
     and avoid revisions let frontends copy history only when it changed. The control
-    actions mirror the session's own avoid list (cleared when it stops). A rejected start
+    actions mirror the session's own avoid list (cleared when it stops), only after the
+    coordinator accepted the avoid, and with the frequency `dsd_engine_signal_search_target()`
+    resolved on the decoder thread, never an older published hit; a stale session or hit
+    changes neither list. `dsd_app_signal_search_permanent_avoid()` returns
+    `DSD_APP_SEARCH_AVOID_ADDED`/`DUPLICATE`/`FULL`/`INVALID`. `AVOID_PERMANENT` is
+    permanent-first: validate, save (a full list refuses with a notice and no skip or session
+    avoid), then the session's avoid (the current hit, or by frequency for a history row's
+    hit ID 0); a full session list after the save is reported as "Saved as a permanent
+    avoid; this session's avoid list is full" (`APP_SIGNAL_SEARCH_PROVENANCE`,
+    `APP_SIGNAL_SEARCH_STORE`). A rejected start
     with no coordinator left publishes an unowned error, and
     `dsd_app_frontend_runtime_stop()` retires any status left behind
     (`dsd_app_signal_search_session_ended()`). A rejected restart of a paused coordinator
@@ -4453,17 +4586,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves `state->nac` as it was
      (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
      evidence that vouched for the carrier's transmissions (`carrier_boundary_forget_evidence()`): the NXDN, dPMR (with
-     its CCH evidence), D-STAR, M17 and ProVoice confirmation gates restart, the YSF FICH verdict and the Phase 1 NID's
-     evidence go, as the no-carrier pass restarts them, so the next carrier proves itself again. And every multi-frame
-     assembly that can publish an identity or a code goes too (`carrier_boundary_forget_assemblies()`), as the
-     no-carrier pass drops them, since the next carrier's next piece could complete one with the carrier left's pieces:
-     the NXDN SACCH superframe (segments, CRC marks, part) and alias blocks; the DMR data blocks, short LC fragments and
-     Capacity Plus blocks (`dmr_reset_blocks()`), embedded LC, late-entry MI and talker alias, with the alias shown; the
-     P25 MAC fragments and Phase 1 talker aliases; the Phase 2 slots' ESS_B with its reliabilities (marked stale, see
-     `p2_cc` above), Phase 2 voice streams (the playout drained first, then reset) and staged rekey
-     (`p25p2_frame_forget_carrier()`); the ended calls' P25
-     crypto (`p25_crypto_reset_slot()`: ALG, KID, MI and the LFSR state that steps it); the dPMR superframe part; the
-     M17 LSF chunks, packet and signature; the YSF text. The evidence and assemblies together are
+     its CCH evidence), D-STAR, M17 and ProVoice confirmation gates restart, the YSF FICH verdict, the Phase 1 NID's
+     evidence and the two-slot TDMA verdict (`tdma_carrier`, see UI, Qt, "Second-slot strip") go, as the no-carrier pass
+     restarts them, so the next carrier proves itself again. And every multi-frame assembly that can publish an identity
+     or a code goes too (`carrier_boundary_forget_assemblies()`), as the no-carrier pass drops them, since the next
+     carrier's next piece could complete one with the carrier left's pieces: the NXDN SACCH superframe (segments, CRC
+     marks, part) and alias blocks; the DMR data blocks, short LC fragments and Capacity Plus blocks
+     (`dmr_reset_blocks()`), embedded LC, late-entry MI and talker alias, with the alias shown; the P25 MAC fragments
+     and Phase 1 talker aliases; the Phase 2 slots' ESS_B with its reliabilities (marked stale, see `p2_cc` above),
+     Phase 2 voice streams (the playout drained first, then reset) and staged rekey (`p25p2_frame_forget_carrier()`);
+     the ended calls' P25 crypto (`p25_crypto_reset_slot()`: ALG, KID, MI and the LFSR state that steps it); the dPMR
+     superframe part; the M17 LSF chunks, packet and signature; the YSF text. The evidence and assemblies together are
      `dsd_engine_forget_carrier_decoding()`, which a trunk-scan target switch runs as well. D-STAR slow data, X2-TDMA
      signalling and P25 link control live within one superframe or frame, which the carrier count covers; the Phase 2
      ESS_A is collected fresh from each 2V burst.
@@ -4711,6 +4844,40 @@ Private per-protocol modules worth knowing about:
   leaves confirmation standing, so a half no verified half speaks for since it (`DPMR_HALF_UNVERIFIED`) plays nothing
   and leaves the call's classification alone, rather than playing a scrambled call's first undecodable halves as
   clear.
+- Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each writer
+  passes the identity of one message that passed its check, after handling it, never decoder state; a SYSID of 0 names
+  no system. P25 (`src/protocol/p25/p25_search_site.h`): a TSBK network status (`tsbk_handle_network_status()`,
+  dispatched only after the block's CRC-16, and for opcode 0x3B only under MFID $00/$01: as for every standard opcode, a
+  manufacturer's 0x3B is that manufacturer's message and changes no control channel or system), an MBT network or RFSS
+  status (`p25_decode_pdu_trunking()`, reached only after the header CRC-16 and CRC-32), and the vPDU network status
+  (0x7B/0xFB) and RFSS status (0x7A/0xFA) blocks only when `p25p2_vpdu_ctx::crc_ok` holds, which covers a bridged TSBK
+  and a Phase 2 MAC but not a MAC_SIGNAL let through with a failed CRC under `-F`. An RFSS status notes the SYSID it
+  advertises, even one the decoder's `p2_sysid` check ignores. Not notes: the voice LCW network/RFSS formats
+  (Reed-Solomon only), the secondary control channel fill-in (`p25_note_sccb_site()`), adjacent-status broadcasts,
+  CLI/menu hard-set values and trunk-scan snapshot restores (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). DMR
+  (`dmr_tiii_note_search_site()` in `src/protocol/dmr/dmr_tiii_site.h`, which returns at once when no search runs):
+  C_ALOHA inside `dmr_cspdu()`'s CRC gate when the slot's `event_crc_invalid` is clear, since that gate also passes a
+  burst `-F` accepts as RAS (`DSD_CRC_RAS_UNVERIFIED`) and an MBC whose header CRC failed (`DSD_CRC_FAILED`), and the
+  C_SYS_PARMS / P_SYS_PARMS short LC that `dmr_cach()` assembles behind Hamming(17,12,3) and CRC-8 (no RAS path); a
+  C_BCAST vote/adjacent syscode names another site (`DMR_SEARCH_SITE_NOTES`). NXDN: the current-site location ID in
+  `nxdn_location_id_handler()` (SITE_INFO, SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once
+  `nxdn_confirm_is_confirmed()`, so a single short SACCH CRC does not show a site; adjacent sites and the Type-D SCCH
+  site ID (7-bit CRC) are not notes (`NXDN_SEARCH_SITE_NOTES`).
+- Signal search call notes (`dsd_signal_search_note_call()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
+  writer passes the slot of a canonical call record it just published after its check, and the engine reads that
+  record (see Signal search under Engine). DMR: `dmr_flco_publish_voice()` (a CRC-checked voice LC, after the call and
+  its crypto are published) and `dmr_pi_publish_crypto()` (a checked PI header's crypto-only update of the slot's
+  call; with no call active the PI is held per slot in `dsd_state::dmr_pi_precall_*` for the call the next checked LC
+  opens, and dropped at that slot's terminator, `dmr_pi_precall_reset()` in the no-carrier pass, a carrier boundary, a
+  retune and a trunk-scan visit). P25: the trunk state machine's canonical publish (`p25_call_publish_observation()`,
+  `p25_sm_publish_conventional_voice()`), the LCW source update, the Phase 2 vPDU voice observation and every
+  `p25_crypto_resolve()` of a checked tuple (HDU, LDU2, ESS, MAC_PTT after its identity). NXDN, dPMR, M17, YSF and
+  D-STAR: beside each search evidence report of their confirm points, after the frame published what its
+  confirmation unlocked (`NXDN_CONFIRM`, `DPMR_CONFIRM`, `M17_STATE_DISPATCH`, `YSF_DCH_DECODE`,
+  `DSTAR_HEADER_UTILS`, `P25_P2_ACTIVE_PTT_EPOCH`, `DMR_SEARCH_CALL_NOTES`). Evidence IDs: the runtime
+  `dsd_trunk_scan_hook_*_conventional_activity()` wrappers report every confirmation to the search but pass its target
+  and source only while the reporting slot's `event_crc_invalid` is clear, so the RAS acceptance the scan hold
+  deliberately honours names no detection (`DMR_SEARCH_CALL_NOTES`).
 
 - `src/protocol/tetra/tetra_confirm.{c,h}` — the same module for TETRA, whose 22-bit normal-burst training sequence
   receiver noise matches under the frame sync's eight hypotheses. A burst proves itself with a block whose CRC passed:
@@ -5310,11 +5477,89 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 - Qt Signal search uses `SignalSearchModel`, `SignalSearchScreen.qml` and
   `SignalSearchRangeEditor.qml`, sharing Theme/Plex controls, source startup and the
-  save-found-system wizard. Native status is copied on a 250 ms timer; history and the
-  avoid lists only when their store revisions move. Back delegates to Main's session
-  policy; a search a coordinator owns (`status.owned`) is a navigation root so its controls
-  remain accessible after Activity recreation. Range edits apply on paused restart.
-  Home's `onSignalSearch` seeds the source fields only when it opens the screen, so a screen
+  save-found-system wizard. The range editor's discard fingerprint and Save read the
+  Airspy gain fields' typing before it commits (`AirspyControls.pendingText()`,
+  `pendingSettings()`; the fields commit on `editingFinished`), and opening it resets them
+  (`resetText()`). The system wizard and the scan-list editor do the same: their discard
+  fingerprints include the Airspy fields' pending text, every load resets them, and the
+  wizard saves the pending settings. While a session runs the screen reads status line, Now panel,
+  five recent detections (Show more adds 25), then the ranges behind an expandable
+  `DisclosureRow` (`expandable`/`expanded`; forced open while paused or idle; a manual
+  expansion and the history limit reset on close and on a new session). The Now panel's
+  height depends on width and font scale only: each line is a fixed-height `Text` sized
+  from `FontMetrics`, and its action grid takes three equal columns when the widest label
+  any cell can show fits, else two when every word of every label fits half a row, else
+  one, with as many label lines as the longest label wraps to at the cell width
+  (`wrappedLines()`), for any cell count. The status line keeps `statusLines` lines (two,
+  or three where the widest pass, bounds and channel count would not fit two at this width
+  and scale) and shortens only the range name, so the pass and channel count always show
+  whole. Its sixth cell, More, opens the
+  detection menu (`tst_signal_search.qml`). `hitMap()` passes the hit's checked `site`,
+  `slot` and `crypt` through; the panel's two-line detail (`detailText()`) reads site,
+  access, tone, `Slot N`, target, source, then crypt, eliding within the two lines with
+  the whole text as its accessible name and description, and a history row shows site and
+  crypt under its verdict. `keepValues()` makes every space but the one after a `·`
+  non-breaking, so wrapped details break only between values. Its
+  liveness cue marks each new `liveSeq`. Each Recent detections row has an `IconButton`
+  opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
+  Explore here, Start for each distinct saved system its `matches[].systemUid` resolves to
+  (an avoided site's row disabled with its reason), Save as system, Avoid this session
+  while a search owns the tuner (`SignalSearchModel::avoidFrequency()`), and Avoid
+  permanently or Remove permanent avoid (`avoidPermanently()`: through the decoder thread
+  while a search runs, the store directly when none does). The verdicts arrive as the
+  status message or the model's error. That message (`searchMessage`, an `AlertMessage`) is
+  reparented by `sessionActive`: under the Now panel while a session runs, so it never moves
+  the panel, and above the setup while idle (`test_message_never_moves_the_now_panel`).
+  Leaving for another session is one Main operation,
+  `leaveSearchFor(request)` (`{kind: "explore", system, remember: false}` or `{kind:
+  "saved", uid}`): it abandons the search's start and runs the request through
+  `pendingRestart` (marked `leaveSearch`) once the host is Idle, stopping it from
+  Starting, Running or Failed. Until then `leavingSearch` keeps the search screen the root
+  (its `leaving` state reads "Stopping the search…", disables its controls and holds focus
+  so Escape/Back reach Main). Back cancels the handoff (`requestBack()` clears it and
+  returns), so a stop that hangs past the engine's restore timeouts cannot lock the
+  screen; the site chooser's any-input cancel is ignored while it runs, and
+  `startSystem()`/`restartSite()` refuse by state before cancelling, so a USB
+  attachment's start cannot drop it. `leaveSearchFor()` pins `signalSearchOpen`
+  true, as Stop does, so a screen reopened after Activity recreation (bound to `status.owned`, which
+  the search clears before the decoder is idle) stays through the stop and after a Back cancel.
+  `finishPendingRestart()` closes the screen just
+  before starting the request, and a stop ending in Failed closes it and clears the flag.
+  A saved request is checked (`savedStartRefusal()`) before the stop, the refusal shown in
+  the screen's `localFailure`, and again in `finishPendingRestart()`, which shows the
+  refusal (an avoided site no longer declines silently) and records the system as
+  `attemptedSource` so Home's Retry asks again and Edit opens it. Explore here
+  (`exploreHereSystem()`) is `systemForHit()` renamed Exploring, untrunked, on the
+  `effectiveSource()` kind through `onAttachedReceiver()`/`onReceiver()` (an Airspy map only
+  stays on an Airspy; a switch to an Airspy drops the RTL `ppm`, `biasTee` and gain); `startWithMap(sys,
+  row, scan, options)` records `options.remember` in `attemptedSource` and
+  `pendingStartRemember` (through a USB wait), and only a remembered explore session
+  writes `prefs.exploreFreqMhz` when it ends. `retrySource()` carries the attempted system:
+  a failed search is retried by reopening the screen and running its `startSearch()` (arm,
+  then start), and edited by reopening it (`openSignalSearchOn()`, which resolves the
+  `effectiveSource()` kind). A failed Explore here is retried on `onAttachedReceiver()` (the
+  attached kind; an Airspy map, serial included, only on an Airspy) and edited through
+  `openExploreSetupOn()`: Explore setup on that attempt's resolved receiver and frequency,
+  held in `exploreSetupBase`, whose start keeps the rest of the map and `remember: false`
+  and writes no `explore/*` prefs (`tst_signal_search_handoff.qml`). Native status
+  is copied on a 250 ms timer; history and the avoid lists only when their store revisions
+  move. While a search session is active, Escape and Back from any control go Back, which
+  delegates to Main's session policy; a search a coordinator owns (`status.owned`) is a
+  navigation root so its controls remain accessible after Activity recreation. Range edits
+  apply on paused restart. Home's `onSignalSearch` seeds the source fields
+  (`Main.seedSignalSearch()`) only when it opens the screen: `AppPrefs`
+  `search/sourceType`/`search/host`/`search/port` (written by
+  **Start search** before the start, portable in the backup), else the `explore/*` answer,
+  else `usb`. Every Explore and search entry (Home's direct Explore start, Explore setup's
+  `reset()` before it captures its dirty baseline, the unconfigured first run, failure edit,
+  search seeding, and the Home Explore card's label) resolves the remembered kind through
+  `Main.effectiveSource()` over `Util.effectiveSource()`, the one place the rule lives:
+  rtl_tcp is kept; a remembered USB kind not attached while exactly the other kind is
+  (`DecoderHost::attachedDeviceSource`: `usb`, `airspy`, `both` or empty; empty on desktop)
+  becomes the attached kind; `both` or nothing keeps it. Android polls
+  `UsbSourceManager.attachedSource()` (permission-free `UsbManager.deviceList`, classified
+  by the pure `UsbReceiverKind`, whose id table `isKnown()`/`sourceOf()` share, so hubs and
+  other devices never count) with the USB record. A screen
   reopened over an owned search never had them seeded: while an owned search runs, its
   `sourceType`/`host`/`port` follow `MetricsModel::radioSource`, the receiver in the
   decoder's options snapshot named as the Qt start path names it (`usb`, `airspy`, or
@@ -5347,8 +5592,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   Main binds the screen's `failure` to its own failure text, and the screen never assigns
   it: an assignment would drop the binding, and a connection, USB-access or configuration
   failure after Start or Resume would never reach the screen that covers Home's banner.
-  The screen's own `arm()` refusals live in `localFailure`, shown beside the host's failure
-  until the next attempt or Back (`tst_signal_search.qml`, `tst_main_session_tools.qml`).
+  The screen's own refusals (`arm()`, a refused handoff) live in `localFailure` until the
+  next attempt or Back, shown first and never hiding what follows it: the host's failure,
+  else the search's message or the model's error (`tst_signal_search.qml`,
+  `tst_main_session_tools.qml`, `tst_signal_search_handoff.qml`).
   `KnownFrequencyIndex` caches saved frequencies and referenced CSVs, rebuilding on model
   or file changes; Signal search, Spectrum and Live Exploring look up labels without
   reading files during rendering. Exact matches win, nearest matches use half the smaller
@@ -5671,6 +5918,53 @@ Qt Quick frontend (`src/ui/qt`):
   calls for the Monitor hero, its quality row and the Android notification. Later calls on the other slot do not
   displace it. Exact ties prefer the lower slot; when no call is active, the lowest ended slot wins. An earlier
   call gaining identity late takes the headline using its original start.
+- Second-slot strip (`otherSlotPanel` in `qml/MonitorScreen.qml`): shown while `MetricsModel::twoSlotCarrier` holds or
+  the non-hero slot has an active call, so on a two-slot carrier the other slot's calls never move what is below it.
+  Idle, it reads "SLOT N · idle" (slot 2 with no call or slot 1 leading, slot 1 with slot 2 leading), and Skip and More
+  are hidden in their places and `Accessible.ignored`. `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the decoder's
+  own verdict, from each snapshot with no hold of its own. The decoder sets it on content that passed its check, never a
+  bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit check passed with no
+  RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove it), a P25 Phase 2 FACCH,
+  SACCH or ESS that decoded with its parity check kept (`p25p2_note_tdma_carrier()`, no soft erasures), or a whole
+  X2-TDMA voice superframe on one carrier with a further X2-TDMA sync word in its places, or one that follows another
+  whole superframe on that carrier with no hunt gap (its sync word ends exactly 24 symbols after the last one ended,
+  `dsd_state::x2tdma_superframe_*`, dropped by an acquisition reset), which is how direct mode, whose other timeslot
+  carries no sync, proves it (X2-TDMA has no FEC to check). A sync loss (`noCarrier()`) keeps it.
+  `dsd_frame_sync_reset_acquisition()`, the carrier boundary and a trunk-scan target switch
+  (`carrier_boundary_forget_evidence()`), a decode-mode change and the start and end of an engine run clear it, and so
+  does a decoded P25 Phase 1 NID (`dsd_dispatch_handle_p25p1()`), since a trunked return from a Phase 2 voice channel to
+  a Phase 1 control channel is no carrier boundary. Another FDMA protocol heard on the same carrier with no reset
+  between leaves it standing until the next reset or boundary. The Skip button widens with the text scale instead of
+  cutting its label short. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `ENGINE_NO_CARRIER_RESET`, `APP_COMMAND_QUEUE`,
+  `DMR_CONFIDENCE_GATE`, `DMR_LC_RS_VERDICT`, `P25_P2_RELIABILITY`, `P25_P1_SYNC_DISPATCH`, `X2TDMA_VOICE_HELPERS`,
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
+  `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`).
+- Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): the same deterministic grid as the Signal
+  search Now panel. The widest label any cell can show (Mute, Unmute, Hold TG, Release, Skip, TG list, Avoid TG, Lock
+  out) is measured at the font scale in force; four columns only where a quarter of the row fits it with
+  `Theme.cardPadding` either side, else two (a 360 px phone takes two at every scale); one label line count and one
+  height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces (`OutlineButton.wrapMode`
+  `Text.WordWrap`). The Avoid row spans two cells, the full width in two columns; at compact height the Avoid cell takes
+  TG list's place. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`), `tst_monitor_compact.qml`.
+- Typed input and sheet dismissal: `qml/ModalSheet.qml` hides on a tap outside its panel (on a phone the 18 px margins
+  beside it), Back and Escape through `requestDismiss()`; menus, confirmations and read-only sheets keep that. A sheet
+  that holds typed input sets `dismissHandler` to a `requestClose()` that compares the live field text (never state
+  committed on `editingFinished`, which the scrim beats) with a baseline captured when its editing scope opened or was
+  replaced, and asks through `qml/DiscardDialog.qml` (parented to the sheet) when they differ: the Signal search range
+  editor (`openedForm`, with its own Cancel), the idle Signal search screen (`openedSource`, set by `seed()` from Main's
+  `seedSignalSearch()` and when a session stops), `BackupFlow.qml`'s passphrase and unlock sheets (only while editable
+  and typed; their Cancel and the busy steps cancel at once), `DecryptionProfileEditor.qml` and its key and mapping
+  dialogs (`openedForm`, re-captured after `openMatching()`/`openTalkgroup()` prefill, plus the pending fallback
+  algorithm), `KeySheet.qml` (an unapplied direct-key draft asks the discard question; another saved profile or scope
+  than at open, not applied yet, asks "Close without applying the profile …?" through `DiscardDialog.askWith()`),
+  `ToneFilterSheet.qml` (`openedPolicy`, re-captured by `chooseScope()`), Spectrum's Go to, `ScanListScreen.qml`
+  (`fingerprint()` includes the unadded frequency fields), plus the wizard, Explore setup and talkgroup sheets. A
+  `DiscardDialog` closes with the surface under it, so it never returns when that reopens.
+  `RadioReferenceScreen.reset()` keeps the typed zip code and system ID (and their tab) across visits instead;
+  `doImport()` clears them. Tests: `UI_QT_QML_CALL_LISTS` (`tst_signal_search.qml`, `tst_settings_backup.qml`,
+  `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`, `tst_scan_row_edits.qml`,
+  `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,
+  `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies

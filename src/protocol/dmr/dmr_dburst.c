@@ -824,6 +824,27 @@ dmr_dburst_finalize_status(dmr_data_burst_ctx* ctx) {
     }
 }
 
+/* A burst that proves the carrier is DMR, so two-slot TDMA (dsd_state::tdma_carrier): one whose own 16- or 24-bit
+   check passed (PI, voice and terminator LC, CSBK, MBC and data headers, USBD), not a RAS acceptance. This is how a
+   direct-mode or mobile carrier proves it, which the base station colour-code lock (dmr_confidence.c) never sees. Data
+   blocks, MBC continuations, idle bursts and the embedded LC's 5-bit CRC are left out: their checks are absent or too
+   short to tell noise from a DMR burst. */
+static int
+dmr_dburst_proves_tdma_carrier(const dmr_data_burst_ctx* ctx) {
+    switch (ctx->databurst) {
+        case 0x00:
+        case 0x01:
+        case 0x02:
+        case 0x03:
+        case 0x04:
+        case 0x06:
+        case 0x0B: break;
+        default: return 0;
+    }
+    return ctx->crc_original_validity != 0U && ctx->is_ras == 0U && ctx->irrecoverable_errors == 0U
+           && ctx->state->input_interrupted == 0;
+}
+
 void
 dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
                        const uint8_t* reliab98) {
@@ -862,6 +883,9 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         } else if (ctx.crc_correct == 0) {
             ctx.crc_flags = DSD_CRC_FAILED;
         }
+    }
+    if (dmr_dburst_proves_tdma_carrier(&ctx)) {
+        state->tdma_carrier = 1U;
     }
     const uint8_t saved_crc_invalid = state->event_crc_invalid[ctx.slot];
     state->event_crc_invalid[ctx.slot] = (uint8_t)(saved_crc_invalid | ctx.crc_flags);

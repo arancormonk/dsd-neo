@@ -284,6 +284,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
         ysf_dch_decode2(state, bn, bt, fn, ft, cm, trellis_buf);
         /* Reported once the callsign is on the call: a signal search reads it from there when it hears this. */
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
+        dsd_signal_search_note_call(state, 0U);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "DCH2 (CRC ERR) ");
@@ -343,6 +344,7 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
         /* A header's or terminator's callsigns arrive here, after its FICH reported: tell a signal search again once
          * they are on the call, so the frame that carries them is enough for the search to name the stations. */
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
+        dsd_signal_search_note_call(state, 0U);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "DCH (CRC ERR) ");
@@ -565,6 +567,7 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* l
     info->err = ysf_conv_fich(fichrawdibits, info->fich_decode, &info->v_error);
     if (info->err == 0) {
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
+        dsd_signal_search_note_call(state, 0U);
         info->fi = (uint8_t)convert_bits_into_output(&info->fich_decode[0], 2);
         info->cm = (uint8_t)convert_bits_into_output(&info->fich_decode[4], 2);
         info->bn = (uint8_t)convert_bits_into_output(&info->fich_decode[6], 2);

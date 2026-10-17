@@ -236,6 +236,9 @@ void audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t
 /** @brief Return 1 when P25p2 decode should queue audio for the slot under decrypt and media policy. */
 int dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg);
 
+/** @brief The --dmr-force-algid value in force, or 0 when none is (0/1 and 0x16 in state->M are not forced ALG IDs). */
+int dsd_dmr_forced_algid(const dsd_state* state);
+
 /**
  * @brief Apply a forced DMR ALGID to encrypted current-slot metadata when no OTA ALG ID is known.
  *

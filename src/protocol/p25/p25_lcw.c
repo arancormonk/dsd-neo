@@ -28,6 +28,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -403,6 +404,7 @@ p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
             };
             (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
             dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+            dsd_signal_search_note_call(ctx->state, 0U);
         }
     }
 }
@@ -975,6 +977,7 @@ p25_lcw_dispatch_mfid_d8(p25_lcw_ctx* ctx) {
                 };
                 (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
                 dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+                dsd_signal_search_note_call(ctx->state, 0U);
             }
         }
         return 1;

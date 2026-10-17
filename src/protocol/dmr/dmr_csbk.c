@@ -2980,6 +2980,12 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
             DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "TIII %s:%d-%d;%04X; ", model_str, net,
                          site, syscode);
         }
+        /* Type 0 is C_ALOHA, naming this site; type 1 (C_BCAST vote or adjacent) names another and is no note.
+           dmr_cspdu()'s gate also passes a burst -F accepted by RAS, or an MBC whose header CRC failed: the dispatcher
+           flags those for the slot, and only a CRC that matched names the site. */
+        if (state->event_crc_invalid[state->currentslot & 1] == 0U) {
+            dmr_tiii_note_search_site(state, model_str, net, site, n, sub_mask, syscode);
+        }
     } else if (type == 1) {
         dmr_syscode_print_type1(model_str, net, site, n, sub_mask, syscode);
     }

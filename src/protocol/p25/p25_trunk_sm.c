@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -2720,18 +2721,26 @@ p25_call_crypto_classification(const dsd_state* state, int slot) {
 }
 
 static void
-p25_call_publish_crypto_update(const dsd_opts* opts, dsd_state* state, int slot, double observed_m, int include_ended) {
+p25_call_publish_crypto_update(const dsd_opts* opts, dsd_state* state, int slot, double observed_m, int include_ended,
+                               int svc_says_encrypted) {
     if (!state || slot < 0 || slot > 1) {
         return;
     }
+    // Live values a replaced conventional call left behind are still what decryption uses, but not this call's.
+    const int carried = p25_crypto_live_is_inherited(state, slot);
     dsd_call_crypto_update update = {
-        .classification = p25_call_crypto_classification(state, slot),
+        .classification =
+            carried ? p25_crypto_carried_classification(state, slot) : p25_call_crypto_classification(state, slot),
         .algid = (uint8_t)(slot == 0 ? state->payload_algid : state->payload_algidR),
         .kid = (uint16_t)(slot == 0 ? state->payload_keyid : state->payload_keyidR),
         .mi = slot == 0 ? state->payload_miP : state->payload_miN,
         .audio_permitted = (uint8_t)(p25_crypto_audio_permitted(opts, state, slot) ? 1 : 0),
         .observed_m = observed_m,
+        .carried = (uint8_t)carried,
     };
+    if (svc_says_encrypted) {
+        update.enc_observed = DSD_CALL_ENC_OBSERVED_ENCRYPTED;
+    }
     if (include_ended) {
         (void)dsd_call_state_update_retained_crypto(state, (uint8_t)slot, &update);
     } else {
@@ -2741,7 +2750,15 @@ p25_call_publish_crypto_update(const dsd_opts* opts, dsd_state* state, int slot,
 
 static void
 p25_call_publish_crypto(const dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
-    p25_call_publish_crypto_update(opts, state, slot, observed_m, 0);
+    p25_call_publish_crypto_update(opts, state, slot, observed_m, 0, 0);
+}
+
+// Whether @p observation's own service options are checked evidence that the call is encrypted: they carry the
+// encryption bit and did not come from a link control only a soft-erasure RS retry recovered.
+static int
+p25_call_svc_says_encrypted(const dsd_state* state, const dsd_call_observation* observation) {
+    return observation->has_service_metadata != 0U && (observation->service_options & 0x40U) != 0U
+           && state->p25_p1_lcw_soft == 0U;
 }
 
 static uint32_t
@@ -2877,14 +2894,17 @@ p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
         .observed_m = observed_m,
     };
     if (p25_call_observation_retains_ended_call(state, slot, provenance, new_epoch, &observation)) {
-        p25_call_publish_crypto_update(opts, state, slot, observed_m, 1);
+        p25_call_publish_crypto_update(opts, state, slot, observed_m, 1,
+                                       p25_call_svc_says_encrypted(state, &observation));
         return;
     }
     const dsd_call_boundary boundary = p25_call_publish_boundary(ctx, opts, state, slot, new_epoch, allow_coalesce,
                                                                  continuous_activity, &observation, observed_m);
     const int began = dsd_call_state_observe(state, &observation, boundary);
     if (began >= 0) {
-        p25_call_publish_crypto(opts, state, slot, observed_m);
+        p25_call_publish_crypto_update(opts, state, slot, observed_m, 0,
+                                       p25_call_svc_says_encrypted(state, &observation));
+        dsd_signal_search_note_call(state, (uint8_t)slot);
     }
     if (began > 0) {
         p25_sm_diagf((dsd_opts*)opts, state, ctx, "canonical_epoch_begin",
@@ -6772,8 +6792,18 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
     if (ev->identity_valid && ev->type == P25_SM_EV_PTT && !ptt_retransmit) {
         boundary = DSD_CALL_BOUNDARY_BEGIN;
     }
+    dsd_call_snapshot previous;
+    const int replaces_active =
+        dsd_call_state_get(state, (uint8_t)slot, &previous) > 0 && previous.phase == DSD_CALL_PHASE_ACTIVE;
     (void)dsd_call_state_observe(state, &observation, boundary);
-    p25_call_publish_crypto(opts, state, slot, 0.0);
+    dsd_call_snapshot current;
+    if (replaces_active && dsd_call_state_get(state, (uint8_t)slot, &current) > 0 && current.epoch != previous.epoch) {
+        // A conventional call replaced the slot's call, whose terminator was missed: the live crypto is still that
+        // call's. Decryption keeps it, as it always has; the new call does not publish it as its own.
+        p25_crypto_note_inherited(state, slot);
+    }
+    p25_call_publish_crypto_update(opts, state, slot, 0.0, 0, p25_call_svc_says_encrypted(state, &observation));
+    dsd_signal_search_note_call(state, (uint8_t)slot);
     /* Raw MAC_PTT still has to resolve its ALGID/KID after publishing identity.
      * XCCH reports the hold once that classification is complete. */
     if (!ev->ptt_signature_valid) {

@@ -409,6 +409,57 @@ Item {
             compare(closedSpy.count, 1);
         }
 
+        // A frequency typed into "Add a frequency" but not added yet is still
+        // typing: Back asks before it goes, as for any other change.
+        function test_unadded_frequency_asks_before_closing_data() {
+            return [{tag: "name", field: "scanAddFrequencyName", value: "Fire"}, {tag: "frequency", field: "scanAddFrequency", value: "851.5"}];
+        }
+        function test_unadded_frequency_asks_before_closing(data) {
+            var back = control("scanListBack");
+            edit(data.field, data.value);
+            back.Accessible.pressAction();
+            compare(closedSpy.count, 0, "the unadded entry survives Back");
+            var dialog = findChild(screen, "scanListDiscardDialog");
+            verify(dialog.visible);
+            var keep = visualChild(dialog, function(item) { return item.text === "Keep editing" && item.activate; });
+            keep.Accessible.pressAction();
+            compare(control(data.field).text, data.value);
+            back.Accessible.pressAction();
+            var discard = visualChild(dialog, function(item) { return item.text === "Discard changes" && item.activate; });
+            discard.Accessible.pressAction();
+            compare(closedSpy.count, 1);
+            compare(screen.entries.length, 0);
+        }
+
+        // An Airspy gain index commits only when its field loses focus, and an
+        // emptied one never does. Typing still counts as a change, so leaving
+        // asks before it goes, and reopening the list shows its settings, not
+        // the typing a dismissed edit left behind.
+        function test_pending_airspy_gain_counts_and_is_reset_on_reopen() {
+            screen.draft = Object.assign({}, screen.draft, {sourceType: "airspy", airspy: {gain_mode: "sensitivity", sensitivity_gain: 9}});
+            screen.initialDraft = screen.fingerprint();
+            var controls = findChild(screen, "scanAirspyControls");
+            var gain = findChild(controls, "airspy_sensitivity_gain");
+            verify(gain !== null);
+            compare(gain.text, "9");
+            gain.text = "";
+            verify(screen.fingerprint() !== screen.initialDraft, "an emptied gain is a change");
+            control("scanListBack").Accessible.pressAction();
+            compare(closedSpy.count, 0, "the emptied gain survives Back");
+            var dialog = findChild(screen, "scanListDiscardDialog");
+            verify(dialog.visible);
+            var discard = visualChild(dialog, function(item) { return item.text === "Discard changes" && item.activate; });
+            discard.Accessible.pressAction();
+            compare(closedSpy.count, 1);
+            screen.draft.name = "Airspy list";
+            screen.draft = Object.assign({}, screen.draft, {name: "Airspy list", sourceType: "airspy", airspy: {gain_mode: "sensitivity", sensitivity_gain: 9}, isDraft: true});
+            verify(screen.persist());
+            gain.text = "14";
+            screen.openFor(0);
+            compare(gain.text, "9", "reopening shows the setting, not the dropped typing");
+            compare(screen.fingerprint(), screen.initialDraft);
+        }
+
         function test_advanced_hidden_by_default_and_keyboard_accessible() {
             verify(!control("scanAdvancedBody").visible);
             var toggle = control("scanAdvancedToggle");

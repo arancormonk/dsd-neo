@@ -28,22 +28,23 @@ static struct {
     dsd_signal_search_hit last;
 } observer;
 
+/* The access code of a confirmed hit, formatted here as the frontends show it. The call tuple (IDs, texts, slot,
+   crypt) is the coordinator's, from one checked call record; this reads only service options (M17's CAN), under the
+   same record checks: from the call the tuple names (its slot), or with no slot named, from whichever slot holds
+   one, as before the tuple existed. */
 static void
-enrich_confirmed_hit(dsd_signal_search_hit* hit) {
+format_confirmed_access(dsd_signal_search_hit* hit) {
     dsd_call_snapshot call;
     uint16_t service = 0;
     uint8_t metadata = 0;
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
-        if (dsd_call_state_get(observer.state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        if (hit->slot > 0 && slot != hit->slot - 1) {
+            continue;
+        }
+        if (dsd_call_state_get(observer.state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
             && call.protocol == observer.state->synctype && !call.crc_invalid) {
             service = call.service_options;
             metadata = call.has_service_metadata;
-            if (call.source_text[0]) {
-                DSD_SNPRINTF(hit->source_text, sizeof(hit->source_text), "%s", call.source_text);
-            }
-            if (call.target_text[0]) {
-                DSD_SNPRINTF(hit->target_text, sizeof(hit->target_text), "%s", call.target_text);
-            }
         }
     }
     uint8_t kind = 0;
@@ -74,13 +75,11 @@ publish_search(const dsd_signal_search_status* status, const dsd_signal_search_h
         && strcmp(hit->protocol, observer.last.protocol) == 0) {
         DSD_MEMCPY(hit->access, observer.last.access, sizeof(hit->access));
         DSD_MEMCPY(hit->tone, observer.last.tone, sizeof(hit->tone));
-        DSD_MEMCPY(hit->source_text, observer.last.source_text, sizeof(hit->source_text));
-        DSD_MEMCPY(hit->target_text, observer.last.target_text, sizeof(hit->target_text));
     }
     /* A periodic refresh can follow an unconfirmed sync or a damaged frame. Read
        decoded fields only in the synchronous, protocol-confirmed publication. */
     if (changed && !hit->ended && hit->confirmed) {
-        enrich_confirmed_hit(hit);
+        format_confirmed_access(hit);
     }
     if (!hit->ended) {
         dsd_app_rx_tone tone;
@@ -136,6 +135,35 @@ start_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd
     return 1;
 }
 
+/* A permanent avoid is saved first, and only then is the session's own avoid made, so a full permanent list changes
+   nothing at all. A history row (hit_id 0) names its frequency, and the session avoids it by frequency. */
+static int
+avoid_permanently(dsd_opts* opts, dsd_state* state, const dsd_signal_search_control* control) {
+    dsd_signal_search_control session = *control;
+    if (!session.hit_id) {
+        session.action = DSD_SEARCH_ACTION_AVOID_FREQUENCY;
+    }
+    uint32_t frequency = 0;
+    if (dsd_engine_signal_search_target(state, &session, &frequency)) {
+        return 2;
+    }
+    const int saved = dsd_app_signal_search_permanent_avoid(frequency);
+    if (saved != DSD_APP_SEARCH_AVOID_ADDED && saved != DSD_APP_SEARCH_AVOID_DUPLICATE) {
+        dsd_engine_signal_search_notice(state, control->session_id,
+                                        saved == DSD_APP_SEARCH_AVOID_FULL ? "The permanent avoid list is full"
+                                                                           : "This frequency cannot be avoided");
+        return 2;
+    }
+    if (dsd_engine_signal_search_control(opts, state, &session)) {
+        /* Validated above on this thread, so only a full session list refuses. */
+        dsd_engine_signal_search_notice(state, control->session_id,
+                                        "Saved as a permanent avoid; this session's avoid list is full");
+        return 1;
+    }
+    dsd_app_signal_search_session_avoid_add(control->session_id, frequency);
+    return 1;
+}
+
 static int
 control_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd) {
     if (cmd->n != sizeof(dsd_signal_search_control)) {
@@ -143,17 +171,21 @@ control_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c
     }
     dsd_signal_search_control control;
     DSD_MEMCPY(&control, cmd->data, sizeof(control));
-    dsd_signal_search_status before;
-    dsd_app_signal_search_status_get(&before, NULL, 0);
-    if (dsd_engine_signal_search_control(opts, state, &control)) {
+    if (control.action == DSD_SEARCH_ACTION_AVOID_PERMANENT) {
+        return avoid_permanently(opts, state, &control);
+    }
+    /* The frequency an avoid mirrors is the one the coordinator validates now, never an older status copy's hit. */
+    uint32_t frequency = 0;
+    if (dsd_engine_signal_search_target(state, &control, &frequency)
+        || dsd_engine_signal_search_control(opts, state, &control)) {
         return 2;
     }
     switch (control.action) {
         case DSD_SEARCH_ACTION_AVOID:
-            dsd_app_signal_search_session_avoid_add(control.session_id, before.hit.frequency_hz);
+        case DSD_SEARCH_ACTION_AVOID_FREQUENCY:
+            dsd_app_signal_search_session_avoid_add(control.session_id, frequency);
             break;
-        case DSD_SEARCH_ACTION_AVOID_PERMANENT: dsd_app_signal_search_permanent_avoid(before.hit.frequency_hz); break;
-        case DSD_SEARCH_ACTION_UNAVOID: dsd_app_signal_search_session_avoid_remove(control.frequency_hz); break;
+        case DSD_SEARCH_ACTION_UNAVOID: dsd_app_signal_search_session_avoid_remove(frequency); break;
         default: break;
     }
     return 1;

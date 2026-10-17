@@ -44,7 +44,44 @@ ModalSheet {
         editor.forceChanged = false;
         editor.currentForceSummary = force === 0 ? qsTr("normal identifiers") : force === 1 ? qsTr("privacy forcing") : qsTr("algorithm %1 fallback").arg(force.toString(16).toUpperCase());
         advancedOpen = false;
+        openedChoice = choiceValue();
         visible = sessionRunning;
+    }
+    // The profile and scope as the sheet opened: a different choice is an edit.
+    property string openedChoice: ""
+    function choiceValue() {
+        return JSON.stringify([selectedProfileUid, profileScope]);
+    }
+    /** The direct-key draft: typed here, and lost when the sheet closes. */
+    function draftEdited() {
+        return editor.keyType.length > 0 || editor.keyValue.length > 0 || editor.forceChanged;
+    }
+    /**
+     * Another profile or scope than the sheet opened with, not applied yet.
+     * The profile itself is saved (picked, or saved by "Manage matching key");
+     * what closing gives up is applying it, so the question says that.
+     */
+    function choiceUnapplied() {
+        // "No profile" leaves nothing to apply.
+        return selectedProfileUid.length > 0 && choiceValue() !== openedChoice;
+    }
+    function requestClose() {
+        var close = function () {
+            sheet.visible = false;
+        };
+        if (!visible || applyFlow.pending)
+            visible = false;
+        else if (draftEdited())
+            discard.ask(close);
+        else if (choiceUnapplied())
+            discard.askWith(close, profileScope === 1 ? qsTr("Close without applying the profile to this target?") : qsTr("Close without applying the profile to session defaults?"), qsTr("Close without applying"));
+        else
+            visible = false;
+    }
+    dismissHandler: requestClose
+    DiscardDialog {
+        id: discard
+        parent: sheet
     }
     function apply() {
         if (!visible || !sessionRunning || !editor.valid || applyFlow.pending)
@@ -200,8 +237,9 @@ ModalSheet {
         onClicked: sheet.apply()
     }
     OutlineButton {
+        objectName: "keySheetClose"
         width: parent.width
         text: applyFlow.pending ? qsTr("Close") : qsTr("Cancel")
-        onClicked: sheet.visible = false
+        onClicked: sheet.requestClose()
     }
 }

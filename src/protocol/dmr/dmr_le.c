@@ -54,13 +54,21 @@ dmr_run_lfsr_for_verified_alg(dsd_state* state, int algid) {
     }
 }
 
+int
+dmr_le_key_inferred_algid(const dsd_state* state, uint8_t slot) {
+    if (state == NULL || slot > 1U || !dsd_key_scalar_present(state, (int)slot)) {
+        return 0;
+    }
+    return ((slot == 0U ? state->R : state->RR) <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
+}
+
 static void
 dmr_maybe_infer_algid_from_key(dsd_state* state, uint8_t slot_idx, unsigned long long mi_final) {
     if (slot_idx == 0U) {
         const unsigned int so = state->dmr_so;
         const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
         if (state->payload_algid == 0 && dsd_key_scalar_present(state, 0) && so_enc_or_unknown) {
-            state->payload_algid = (state->R <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
+            state->payload_algid = dmr_le_key_inferred_algid(state, 0U);
             state->payload_keyid = 0xFF;
             state->payload_mi = mi_final;
         }
@@ -70,7 +78,7 @@ dmr_maybe_infer_algid_from_key(dsd_state* state, uint8_t slot_idx, unsigned long
     const unsigned int so = state->dmr_soR;
     const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
     if (state->payload_algidR == 0 && dsd_key_scalar_present(state, 1) && so_enc_or_unknown) {
-        state->payload_algidR = (state->RR <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
+        state->payload_algidR = dmr_le_key_inferred_algid(state, 1U);
         state->payload_keyidR = 0xFF;
         state->payload_miR = mi_final;
     }
@@ -529,6 +537,9 @@ dmr_sbrc_apply_enc_identifier_slot0(const dsd_opts* opts, dsd_state* state, uint
     if (state->payload_algid != alg) {
         state->payload_algid = alg + 0x20; // assuming DMRA approved alg values (moto patent)
     }
+    // The slot's current call carried this identifier: its values are that call's own now, even when they repeat the
+    // ones a call whose terminator was missed left live.
+    state->dmr_crypto_inherited[0] = 0U;
 }
 
 static void
@@ -550,6 +561,7 @@ dmr_sbrc_apply_enc_identifier_slot1(const dsd_opts* opts, dsd_state* state, uint
     if (state->payload_algidR != alg) {
         state->payload_algidR = alg + 0x20; // assuming DMRA approved alg values (moto patent)
     }
+    state->dmr_crypto_inherited[1] = 0U; // the current call's own, as on slot 0
 }
 
 static void

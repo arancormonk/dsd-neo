@@ -12,6 +12,12 @@ Rectangle {
     signal clicked
 
     property string accessibleName: text
+    // A caller that sizes the button for a fixed number of label lines caps
+    // them here; a label longer than that elides rather than overflowing.
+    property alias maximumLineCount: label.maximumLineCount
+    // Text.Wrap by default, which breaks a word that does not fit; a caller
+    // that sizes its cells for whole words passes Text.WordWrap.
+    property alias wrapMode: label.wrapMode
     activeFocusOnTab: enabled && visible && Navigation.allows(control)
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
@@ -48,6 +54,7 @@ Rectangle {
         width: Math.max(0, control.width - 24)
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
+        elide: Text.ElideRight
         text: control.text
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(15)

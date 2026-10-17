@@ -318,9 +318,22 @@ dsd_p25_optional_hook_init_event_history(Event_History_I* event_struct, uint8_t 
     g_init_event_calls++;
 }
 
+/* -1 until a resolution is asked for; then whether the caller vouched for the tuple's own check. */
+static int g_resolve_checked = -1;
+
+dsd_p25_crypto_state p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot,
+                                                int algid, int keyid, uint64_t mi, int talkgroup, int checked);
+
 dsd_p25_crypto_state
 p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
                    uint64_t mi, int talkgroup) {
+    return p25_crypto_resolve_checked(opts, state, phase, slot, algid, keyid, mi, talkgroup, 1);
+}
+
+dsd_p25_crypto_state
+p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
+                           uint64_t mi, int talkgroup, int checked) {
+    g_resolve_checked = checked;
     (void)opts;
     (void)phase;
     (void)slot;
@@ -1043,10 +1056,32 @@ test_ldu2_cut_by_an_input_interruption_plays_and_publishes_nothing_after_the_cut
     return rc;
 }
 
+/* An LDU2's crypto tuple is received only when the hard Reed-Solomon decode passed (see the HDU case). */
+static int
+test_ldu2_soft_recovered_crypto_is_not_received(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int soft = 0; soft < 2; soft++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_hook_counters();
+        g_hard_rs_result = soft;
+        g_soft_rs_result = 0;
+        g_resolve_checked = -1;
+        processLDU2(&opts, &state);
+        rc |= expect_int(soft ? "soft-recovered LDU2 resolves" : "hard LDU2 resolves", g_resolve_checked >= 0, 1);
+        rc |=
+            expect_int(soft ? "soft-recovered LDU2 is not checked" : "hard LDU2 is checked", g_resolve_checked, !soft);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     dsd_decode_clock_use_test(42000000000ULL);
+    rc |= test_ldu2_soft_recovered_crypto_is_not_received();
     rc |= test_ldu2_extracts_ess_fields();
     rc |= test_lsd_corrected_byte();
     rc |= test_ldu2_rs_reliability_uses_wire_order();

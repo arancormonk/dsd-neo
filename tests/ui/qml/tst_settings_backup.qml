@@ -351,6 +351,117 @@ Item {
             compare(field.input.echoMode, TextInput.Password);
         }
 
+        function tapBeside(sheet) {
+            var x = 4, y = sheet.height / 2;
+            verify(!sheet.hitsPanel(x, y), "the side margin lies outside the panel");
+            mouseClick(sheet, x, y);
+        }
+        function shownDiscard(item) {
+            if (!item || !item.visible)
+                return null;
+            if (item.accessibleName === "Discard changes?")
+                return item;
+            for (var child of item.children) {
+                var found = shownDiscard(child);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        function dismissTyped(sheet, method) {
+            if (method === "scrim")
+                tapBeside(sheet);
+            else
+                dismissBy(sheet, method);
+        }
+        // A typed passphrase is not thrown away by a stray tap beside the panel,
+        // Back or Escape: the sheet asks first. Cancel itself still cancels.
+        function test_typed_passphrase_asks_before_cancel_data() {
+            return [
+                {tag: "export by scrim", step: "export", method: "scrim", field: "backupPassphraseField"},
+                {tag: "export confirm only by scrim", step: "export", method: "scrim", field: "backupConfirmField"},
+                {tag: "export by Back", step: "export", method: "back", field: "backupPassphraseField"},
+                {tag: "export by Escape", step: "export", method: "escape", field: "backupConfirmField"},
+                {tag: "export by host Back", step: "export", method: "host", field: "backupPassphraseField"},
+                {tag: "unlock by scrim", step: "unlock", method: "scrim", field: "backupUnlockField"},
+                {tag: "unlock by Back", step: "unlock", method: "back", field: "backupUnlockField"},
+                {tag: "unlock by Escape", step: "unlock", method: "escape", field: "backupUnlockField"}
+            ];
+        }
+        function test_typed_passphrase_asks_before_cancel(data) {
+            var exporting = data.step === "export";
+            if (exporting)
+                openExport();
+            else
+                toUnlock();
+            var sheet = part(exporting ? "backupPassphraseSheet" : "backupUnlockSheet");
+            waitForRendering(sheet);
+            var field = part(data.field);
+            field.input.forceActiveFocus();
+            field.text = "half typed";
+            dismissTyped(sheet, data.method);
+            verify(sheet.visible, "the typed passphrase survives the dismissal");
+            compare(flow.step, exporting ? "exportPassphrase" : "unlock");
+            var discard = shownDiscard(sheet);
+            verify(discard !== null, "the sheet asks before discarding");
+            findChild(discard, "discardDialogKeep").activate();
+            verify(sheet.visible);
+            compare(field.text, "half typed");
+            tryVerify(function () { return Ui.Navigation.contains(sheet, app.activeFocusItem); }, 1000, "focus returns into the sheet");
+            dismissTyped(sheet, data.method);
+            discard = shownDiscard(sheet);
+            verify(discard !== null);
+            findChild(discard, "discardDialogDiscard").activate();
+            tryCompare(sheet, "visible", false);
+            compare(flow.step, "");
+            compare(field.text, "");
+            compare(calls("cancel").length, 0);
+            compare(lastFlowActive(), false);
+        }
+        // Discarding returns focus to the row that opened the sheet.
+        function test_discarded_passphrase_returns_focus_to_its_row() {
+            var row = findChild(settings, "settingsBackupExportRow");
+            row.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            var sheet = part("backupPassphraseSheet");
+            tryCompare(sheet, "visible", true);
+            tryCompare(part("backupPassphraseField").input, "activeFocus", true);
+            keyClick("a");
+            compare(part("backupPassphraseField").text, "a");
+            keyClick(Qt.Key_Escape);
+            verify(sheet.visible);
+            var discard = shownDiscard(sheet);
+            verify(discard !== null);
+            findChild(discard, "discardDialogDiscard").activate();
+            tryCompare(sheet, "visible", false);
+            tryCompare(row, "activeFocus", true);
+            compare(lastFlowActive(), false);
+        }
+        // Cancel is an answer already; the empty sheet and the file-problem sheet
+        // (no passphrase can open that file) close without asking.
+        function test_cancel_and_untyped_sheets_close_without_asking() {
+            openExport();
+            typePassphrases(pass, "");
+            part("backupExportCancel").activate();
+            tryCompare(part("backupPassphraseSheet"), "visible", false);
+            verify(!shownDiscard(flow));
+            openExport();
+            tapBeside(part("backupPassphraseSheet"));
+            tryCompare(part("backupPassphraseSheet"), "visible", false);
+            verify(!shownDiscard(flow));
+            toUnlock();
+            part("backupUnlockField").text = pass;
+            part("backupUnlockCancel").activate();
+            tryCompare(part("backupUnlockSheet"), "visible", false);
+            verify(!shownDiscard(flow));
+            unlock();
+            verify(testContext.emitBackup("inspectFinished", {ok: false, error: "Damaged", summary: {}}));
+            verify(flow.fileProblem);
+            tapBeside(part("backupUnlockSheet"));
+            tryCompare(part("backupUnlockSheet"), "visible", false);
+            verify(!shownDiscard(flow));
+            compare(lastFlowActive(), false);
+        }
         function test_cancel_before_encrypting_cancels_no_job() {
             openExport();
             typePassphrases(pass, pass);

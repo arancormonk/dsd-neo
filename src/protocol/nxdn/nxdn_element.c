@@ -47,6 +47,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -1193,6 +1194,16 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
         DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", category);
         DSD_FPRINTF(stderr, "\n Location Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
                     site_code);
+        /* Every caller holds a message its channel's CRC passed (NXDN_Elements_Content_decode()); a short SACCH CRC
+           counts once the transmission is confirmed, as its RAN does. A reserved category names no site. */
+        if (category_bit != 3U && nxdn_confirm_is_confirmed(state)) {
+            dsd_signal_search_site_note note;
+            DSD_MEMSET(&note, 0, sizeof(note));
+            note.kind = DSD_SEARCH_SITE_NOTE_NXDN;
+            note.nxdn_sys = sys_code;
+            note.nxdn_site = site_code;
+            dsd_signal_search_note_site(state, &note);
+        }
     } else {
         DSD_FPRINTF(stderr, "\n Adjacent Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
                     site_code);
@@ -2224,8 +2235,10 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
     return 0;
 }
 
+// @p received: the DSD_CALL_CRYPTO_RX_* fields this publication carries from a checked VCALL (0 for a republish).
 static void
-nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type, uint8_t key_id) {
+nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type, uint8_t key_id, uint8_t received,
+                          uint8_t contradicted, uint8_t enc_observed) {
     const int has_key = nxdn_vcall_has_key(state, cipher_type);
     const dsd_call_crypto_update update = {
         .classification = cipher_type == 0U ? DSD_CALL_CRYPTO_CLEAR
@@ -2235,6 +2248,9 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
         .kid = key_id,
         .mi = state->payload_miN,
         .audio_permitted = (uint8_t)(cipher_type == 0U || has_key),
+        .received = received,
+        .contradicted = contradicted,
+        .enc_observed = enc_observed,
     };
     if (dsd_call_state_update_crypto(state, 0U, &update) > 0) {
         dsd_call_snapshot call;
@@ -2291,8 +2307,31 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     // Publish the applied classification, not the raw observation: a quarantined contradiction
-    // must not flap the published crypto any more than it may flap the audio gate.
-    nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key);
+    // must not flap the published crypto any more than it may flap the audio gate. The cipher and
+    // key id are received only once the air itself has corroborated the applied encrypted
+    // classification: this VCALL passed its channel's CRC on a confirmed transmission and carried
+    // the key id. A forced scrambler is the decoder's choice, not a received cipher.
+    // Received only from this VCALL itself: it must carry the cipher being published. A new call that changed cipher
+    // without a decoded release finds the hysteresis still holding the previous call's cipher, which this VCALL did not
+    // carry. A VCALL contradicting a received field withdraws it.
+    const int carries = (uint32_t)info->cipher_type == state->nxdn_cipher_type;
+    const uint8_t received =
+        carries && nxdn_cipher_received_enc(state) ? (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID) : 0U;
+    uint8_t contradicted = 0U;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0) {
+        if ((call.crypto_received & DSD_CALL_CRYPTO_RX_ALG) != 0U && call.received_algid != info->cipher_type) {
+            contradicted |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
+        }
+        if ((call.crypto_received & DSD_CALL_CRYPTO_RX_KID) != 0U && call.received_kid != info->key_id) {
+            contradicted |= (uint8_t)DSD_CALL_CRYPTO_RX_KID;
+        }
+    }
+    // This checked VCALL's own cipher says whether the call is encrypted, whatever the applied (possibly forced or
+    // held) cipher is.
+    nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, received,
+                              contradicted,
+                              info->cipher_type != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR);
     dsd_event_sync_slot(opts, state, 0U);
 }
 
@@ -2479,7 +2518,8 @@ NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     if (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) {
         nxdn_vcall_iv_prepare_cipher(state);
     }
-    nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key);
+    nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, 0U, 0U,
+                              DSD_CALL_ENC_OBSERVED_NONE);
 }
 
 struct nxdn_scch_info {
@@ -2832,7 +2872,8 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
         // an encrypted one mid-stream. The hysteresis holds it until it repeats.
         state->nxdn_cipher_type = nxdn_cipher_observe(state, (uint8_t)info->cipher, 0);
         state->nxdn_key = info->key_id;
-        nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, info->key_id);
+        nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, info->key_id, 0U, 0U,
+                                  DSD_CALL_ENC_OBSERVED_NONE);
     } else {
         DSD_FPRINTF(stderr, "\n%s ", KYEL);
         DSD_FPRINTF(stderr, "Call IV B: %04llX; ", info->iv_b);
@@ -2840,7 +2881,8 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
         state->payload_miN = state->payload_miN | (info->iv_c << 6);
         state->payload_miN = state->payload_miN | info->iv_b;
         DSD_FPRINTF(stderr, "Completed IV: %016llX", state->payload_miN);
-        nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key);
+        nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, 0U, 0U,
+                                  DSD_CALL_ENC_OBSERVED_NONE);
     }
 }
 

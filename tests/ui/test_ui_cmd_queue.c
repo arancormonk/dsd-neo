@@ -4256,6 +4256,8 @@ test_modulation_and_decode_mode_setters(void) {
     opts.frame_p25p1 = 0;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state.sps_hunt_counter = 5;
+    /* The DMR carrier's two-slot verdict does not outlive the mode that decoded it. */
+    state.tdma_carrier = 1U;
     rc |= expect_int("nxdn48 mode queued",
                      dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -4264,6 +4266,7 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_int("nxdn48 selects the 2400 hunt profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
     rc |= expect_int("nxdn48 restarts the hunt dwell", state.sps_hunt_counter, 0);
     rc |= expect_int("nxdn48 installs 2400 timing", state.samplesPerSymbol, 20);
+    rc |= expect_int("nxdn48 forgets the two-slot TDMA verdict", state.tdma_carrier, 0);
     freeState(&state);
 
     /* The session's stream shape survives a mode change, because the backend fixed

@@ -1013,6 +1013,30 @@ test_direct_rtl_return_records_the_tuner_frequency(void) {
     return rc;
 }
 
+/* The no-carrier pass clears the DMR payload crypto, and with it a PI held for the call a lost voice LC header would
+   have opened: a sync loss leaves no verified pre-call crypto for whatever decodes next. */
+static int
+test_no_carrier_drops_dmr_precall_pi(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    state->payload_algid = state->payload_algidR = 0x21;
+    state->payload_keyid = state->payload_keyidR = 0x05;
+    state->dmr_pi_precall_rx[0] = state->dmr_pi_precall_rx[1] = 3U;
+    state->dmr_pi_precall_algid[0] = state->dmr_pi_precall_algid[1] = 0x21U;
+    state->dmr_pi_precall_kid[0] = state->dmr_pi_precall_kid[1] = 0x05U;
+    noCarrier(opts, state);
+    int rc = expect_true("no carrier clears the DMR payload crypto",
+                         state->payload_algid == 0 && state->payload_algidR == 0 && state->payload_keyid == 0);
+    rc |= expect_true("no carrier drops the DMR pre-call PI crypto",
+                      state->dmr_pi_precall_rx[0] == 0U && state->dmr_pi_precall_rx[1] == 0U
+                          && state->dmr_pi_precall_algid[0] == 0U && state->dmr_pi_precall_kid[1] == 0U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A DMR rest channel left from before an operator move onto an NXDN system never replaces the NXDN control channel a
    CAC validated since; with no owner it still applies, as before. */
 static int
@@ -3924,6 +3948,7 @@ test_carrier_boundary_restarts_the_evidence(void) {
     state->ysf_fich_confirmed = 1;
     state->p25_p1_nid_evidence = 1;
     state->p25_p1_nid_evidence_symbolcnt = 99U;
+    state->tdma_carrier = 1U;
     const uint32_t carrier_seq = state->carrier_seq;
 
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
@@ -3940,6 +3965,13 @@ test_carrier_boundary_restarts_the_evidence(void) {
     rc |= expect_true("evidence: the boundary drops the Phase 1 NID's evidence",
                       state->p25_p1_nid_evidence == 0 && state->p25_p1_nid_evidence_symbolcnt == 0U);
     rc |= expect_true("evidence: the boundary moves the carrier count", state->carrier_seq == carrier_seq + 1U);
+    /* The next carrier proves on its own that it is two-slot TDMA: the Monitor's second-slot strip is not kept for
+       it on the strength of the carrier left. */
+    rc |= expect_true("evidence: the boundary forgets the two-slot TDMA verdict", state->tdma_carrier == 0U);
+    /* A trunk-scan target switch, which crosses no boundary, forgets it the same way. */
+    state->tdma_carrier = 1U;
+    dsd_engine_forget_carrier_decoding(opts, state);
+    rc |= expect_true("evidence: a target switch forgets the two-slot TDMA verdict", state->tdma_carrier == 0U);
 
     free_test_runtime(opts, state);
     return rc;
@@ -4023,6 +4055,9 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     state->late_entry_mi_fragment[0][1][0] = 5U;
     state->dmr_le_vendor[0] = DMR_LE_VENDOR_HYTERA_ENH;
     state->dmr_le_vendor[1] = DMR_LE_VENDOR_KIRISUN_ENC;
+    state->dmr_pi_precall_rx[0] = state->dmr_pi_precall_rx[1] = 3U;
+    state->dmr_pi_precall_algid[1] = 0x21U;
+    state->dmr_pi_precall_kid[1] = 0x05U;
     state->dmr_alias_format[0] = 1;
     state->dmr_alias_block_len[0] = 4;
     state->dmr_alias_char_size[0] = 7;
@@ -4066,6 +4101,10 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     /* Issue #657: the calls end at the boundary, and with them each slot's vendor late-entry mode. */
     rc |= expect_true("assemblies: the boundary drops the DMR vendor late-entry modes",
                       state->dmr_le_vendor[0] == DMR_LE_VENDOR_NONE && state->dmr_le_vendor[1] == DMR_LE_VENDOR_NONE);
+    /* As does a PI held for the call a lost voice LC header would have opened. */
+    rc |= expect_true("assemblies: the boundary drops the DMR pre-call PI crypto",
+                      state->dmr_pi_precall_rx[0] == 0U && state->dmr_pi_precall_rx[1] == 0U
+                          && state->dmr_pi_precall_algid[1] == 0U && state->dmr_pi_precall_kid[1] == 0U);
     rc |= expect_true("assemblies: the boundary drops the DMR talker alias and the alias shown",
                       state->dmr_alias_format[0] == 0 && state->dmr_alias_block_len[0] == 0
                           && state->dmr_alias_char_size[0] == 0 && state->dmr_alias_block_segment[0][0][0][0] == 0
@@ -4893,12 +4932,16 @@ main(void) {
     state->provoice_confirmed = 1;
     state->provoice_confirm_weak_streak = 1;
     state->provoice_confirm_frame_evidence = 2;
+    // Whether the carrier is two-slot TDMA is the carrier's, not one transmission's: a sync loss between the other
+    // slot's calls keeps the Monitor's strip in place.
+    state->tdma_carrier = 1U;
 
     noCarrier(opts, state);
 
     rc |= expect_true("nxdn-confirmation-reset", state->nxdn_confirmed == 0 && state->nxdn_confirm_weak_streak == 0
                                                      && state->nxdn_confirm_frame_evidence == 0);
     rc |= expect_true("ysf-fich-confirmation-reset", state->ysf_fich_confirmed == 0U);
+    rc |= expect_true("no-carrier keeps the two-slot TDMA verdict", state->tdma_carrier == 1U);
     rc |= expect_true("dstar-confirmation-reset", state->dstar_confirmed == 0 && state->dstar_confirm_weak_streak == 0
                                                       && state->dstar_confirm_frame_evidence == 0);
     rc |= expect_true("provoice-confirmation-reset", state->provoice_confirmed == 0
@@ -6557,6 +6600,7 @@ main(void) {
     rc |= test_direct_return_after_hook_tune();
     rc |= test_stale_dmr_rest_channel_under_nxdn_owner();
     rc |= test_direct_rtl_return_records_the_tuner_frequency();
+    rc |= test_no_carrier_drops_dmr_precall_pi();
     rc |= test_dmr_explicit_return_destination();
     rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
     rc |= test_fsk_reacquire_cooldown_runs_across_a_replay_leave();

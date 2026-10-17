@@ -75,6 +75,17 @@ class SignalSearchModel : public QObject {
     Q_INVOKABLE QString arm();
     Q_INVOKABLE void cancelArm();
     Q_INVOKABLE bool control(int action, const QString& session, const QString& hit);
+    /** Avoid a history row's frequency for the running session @p session (DSD_SEARCH_ACTION_AVOID_FREQUENCY). The
+     * decoder's verdict, a full list included, arrives in the status message. */
+    Q_INVOKABLE bool avoidFrequency(const QString& session, double frequency);
+    /**
+     * @brief Avoid a history row's frequency permanently, and for the running session too.
+     *
+     * While this model's search owns the tuner the decoder thread validates @p session, saves the avoid and then
+     * avoids it in the session, its verdict arriving in the status message. Otherwise only the permanent list
+     * changes, here, and a refusal is this model's error.
+     */
+    Q_INVOKABLE bool avoidPermanently(const QString& session, double frequency);
     Q_INVOKABLE void removeAvoid(double frequency);
     Q_INVOKABLE bool removeSessionAvoid(double frequency);
     Q_INVOKABLE QVariantMap systemForHit(const QVariantMap& hit, const QVariantMap& source) const;

@@ -162,6 +162,12 @@ dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_cryp
     g_stub_calls[slot].kid = update->kid;
     g_stub_calls[slot].mi = update->mi;
     g_stub_calls[slot].audio_permitted = update->audio_permitted;
+    // The checked encryption indication, as the real store keeps it: set or cleared by the update's own, else kept.
+    if (update->enc_observed == DSD_CALL_ENC_OBSERVED_ENCRYPTED) {
+        g_stub_calls[slot].enc_received = 1U;
+    } else if (update->enc_observed == DSD_CALL_ENC_OBSERVED_CLEAR) {
+        g_stub_calls[slot].enc_received = 0U;
+    }
     return 0;
 }
 

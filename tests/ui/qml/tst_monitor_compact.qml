@@ -67,12 +67,11 @@ Item {
                     label = child;
             }
             verify(label !== null);
-            var measure = Qt.createQmlObject('import QtQuick; Text { text: "Talkgroups" }', root);
-            measure.font = label.font;
-            verify(measure.implicitWidth > label.width, "keep TG list when Talkgroups cannot fit one line");
-            measure.destroy();
+            // The short label is kept: the grid measures its cells by every label they can show.
             compare(button.text, "TG list");
             compare(label.lineCount, 1);
+            verify(label.implicitWidth <= label.width, "TG list fits its cell on one line");
+            compare(label.wrapMode, Text.WordWrap);
             verify(button.mapToItem(monitor, button.width, 0).x <= 360);
             root.height = 360;
             verify(!button.visible, "compact hiding stays intact");

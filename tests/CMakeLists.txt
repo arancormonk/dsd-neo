@@ -2045,6 +2045,25 @@ target_link_libraries(
 )
 add_test(NAME NXDN_ELEMENT_BOUNDS COMMAND dsd-neo_test_nxdn_element_bounds)
 
+# Signal search site notes come only from checked NXDN location IDs of a confirmed transmission
+add_executable(
+    dsd-neo_test_nxdn_search_site_notes
+    protocol/nxdn/test_nxdn_search_site_notes.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_search_site_notes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_search_site_notes
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_test_support
+)
+add_test(
+    NAME NXDN_SEARCH_SITE_NOTES
+    COMMAND dsd-neo_test_nxdn_search_site_notes
+)
+
 add_executable(
     dsd-neo_test_nxdn_enc_class
     protocol/nxdn/test_nxdn_enc_class.c
@@ -4377,7 +4396,16 @@ if(DSD_ENABLE_QT_UI)
                 ENVIRONMENT
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
         )
-        foreach(_case IN ITEMS settings_layout licenses_screen signal_search)
+        foreach(
+            _case
+            IN
+            ITEMS
+                settings_layout
+                licenses_screen
+                signal_search
+                signal_search_handoff
+                receiver_choice
+        )
             string(TOUPPER "${_case}" _case_upper)
             add_test(
                 NAME UI_QT_QML_${_case_upper}
@@ -8024,6 +8052,21 @@ target_link_libraries(
 )
 add_test(NAME P25_MBT_ADJ_RFSS COMMAND dsd-neo_test_p25_mbt_adj_rfss)
 
+# Signal search site notes come only from P25 broadcasts that passed their CRC
+add_executable(
+    dsd-neo_test_p25_search_site_notes
+    protocol/p25/test_p25_search_site_notes.c
+)
+target_include_directories(
+    dsd-neo_test_p25_search_site_notes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_search_site_notes
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_SEARCH_SITE_NOTES COMMAND dsd-neo_test_p25_search_site_notes)
+
 # P25 P1 MBT negative clamps (invalid CHAN-T)
 add_executable(
     dsd-neo_test_p25_p1_mbtx_clamp
@@ -10039,6 +10082,22 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_dmr_crc_props PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_CRC_PROPS COMMAND dsd-neo_test_dmr_crc_props)
 
+# Signal search site notes come only from DMR messages that passed their CRC
+add_executable(
+    dsd-neo_test_dmr_search_site_notes
+    protocol/dmr/test_dmr_search_site_notes.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_search_site_notes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_search_site_notes
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_SEARCH_SITE_NOTES COMMAND dsd-neo_test_dmr_search_site_notes)
+
 add_executable(dsd-neo_test_dmr_bit_utils protocol/dmr/test_dmr_bit_utils.c)
 target_include_directories(
     dsd-neo_test_dmr_bit_utils
@@ -10359,6 +10418,37 @@ add_test(
     NAME DMR_FLCO_PRIVACY_MODES
     COMMAND dsd-neo_test_dmr_flco_privacy_modes
 )
+
+# The live DMR and P25 decryption inputs across the call forks a missed terminator causes, as the decoder has always
+# left them.
+add_executable(
+    dsd-neo_test_fork_decrypt_inputs
+    protocol/test_fork_decrypt_inputs.c
+)
+target_include_directories(
+    dsd-neo_test_fork_decrypt_inputs
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_fork_decrypt_inputs
+    PRIVATE dsd-neo_proto_dmr dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME FORK_DECRYPT_INPUTS COMMAND dsd-neo_test_fork_decrypt_inputs)
+
+# DMR call notes for a signal search and the received-crypto provenance of the call records they name.
+add_executable(
+    dsd-neo_test_dmr_search_call_notes
+    protocol/dmr/test_dmr_search_call_notes.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_search_call_notes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_search_call_notes
+    PRIVATE dsd-neo_proto_dmr dsd-neo_app_control dsd-neo_test_support
+)
+add_test(NAME DMR_SEARCH_CALL_NOTES COMMAND dsd-neo_test_dmr_search_call_notes)
 
 add_executable(
     dsd-neo_test_dmr_bs_alg_refresh_error
@@ -16899,11 +16989,19 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             document_transfer
     )
+    add_test(
+        NAME ANDROID_USB_RECEIVER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            usb_receiver
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
         ANDROID_SCREEN_POLICY_JVM
         ANDROID_DOCUMENT_TRANSFER_JVM
+        ANDROID_USB_RECEIVER_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90
@@ -17561,7 +17659,7 @@ if(DSD_HAS_RADIO)
     )
     target_compile_definitions(
         dsd-neo_test_engine_signal_search_scene
-        PRIVATE USE_RADIO
+        PRIVATE USE_RADIO dsd_realtime_mono_ms=test_dsd_realtime_mono_ms
     )
     target_link_libraries(
         dsd-neo_test_engine_signal_search_scene
