@@ -5,9 +5,12 @@
 
 /* Signal search store write failures: history and permanent avoids are separate files, and each stays owed, with the
    reported error, until its own write succeeds. A directory stands in for unavailable storage.
-   Journal versions: a version 1 (DSS1) journal loads with no checked site, slot or encryption and is rewritten as
-   version 2 (DSS2), which keeps them; damaged or unknown records stop the load; the history revision moves only when a
-   record's persisted content changes. */
+   Journal versions: the store is opened with the version 1 (DSS1) journal's path and keeps version 2 (DSS2) records,
+   which add the checked site, slot and encryption, in its own file beside it (`<path>.v2`). With no version 2 journal
+   yet, the version 1 rows load with those details empty and the first write creates the version 2 journal from them;
+   the version 1 journal stays byte for byte as an earlier release left it, and once a version 2 journal exists it
+   alone is read. Damaged or unknown records stop the load; the history revision moves only when a record's persisted
+   content changes. */
 
 #include <assert.h>
 #include <dsd-neo/app_control/signal_search.h>
@@ -25,7 +28,8 @@
 
 typedef struct {
     char dir[DSD_TEST_PATH_MAX];
-    char journal[DSD_TEST_PATH_MAX];
+    char journal[DSD_TEST_PATH_MAX]; // the path the store opens: the version 1 journal
+    char v2[DSD_TEST_PATH_MAX];      // the version 2 journal the store writes
     char avoids[DSD_TEST_PATH_MAX];
 } store_paths;
 
@@ -33,13 +37,15 @@ static void
 paths_init(store_paths* p, const char* root, const char* leaf) {
     assert(dsd_test_path_join(p->dir, sizeof(p->dir), root, leaf) == 0);
     assert(dsd_test_path_join(p->journal, sizeof(p->journal), p->dir, "history") == 0);
-    int n = DSD_SNPRINTF(p->avoids, sizeof(p->avoids), "%s.avoids.json", p->journal);
+    int n = DSD_SNPRINTF(p->v2, sizeof(p->v2), "%s.v2", p->journal);
+    assert(n > 0 && (size_t)n < sizeof(p->v2));
+    n = DSD_SNPRINTF(p->avoids, sizeof(p->avoids), "%s.avoids.json", p->journal);
     assert(n > 0 && (size_t)n < sizeof(p->avoids));
 }
 
 static void
 paths_remove(const store_paths* p) {
-    static const char* const files[] = {"history", "history.avoids.json", NULL};
+    static const char* const files[] = {"history", "history.v2", "history.avoids.json", NULL};
     assert(dsd_test_remove_temp_dir(p->dir, files) == 0);
 }
 
@@ -164,6 +170,26 @@ write_record(FILE* f, uint32_t magic, const record_buf* body) {
     assert(fwrite(body->bytes, 1, body->n, f) == body->n);
 }
 
+/* A version 2 body as the store writes one: version 1's, then site, slot and encryption. */
+static void
+detailed_v2_body(record_buf* r, uint64_t id) {
+    const dsd_signal_search_hit h = {0};
+    v1_body(r, id);
+    put_field(r, "Site 1", sizeof(h.site));
+    put_le(r, 1, 1);
+    put_field(r, "Encrypted", sizeof(h.crypt));
+}
+
+static size_t
+read_file(const char* path, unsigned char* buf, size_t capacity) {
+    FILE* f = dsd_fopen_private(path, "rb");
+    assert(f);
+    size_t n = fread(buf, 1, capacity, f);
+    assert(n < capacity && !ferror(f));
+    (void)fclose(f);
+    return n;
+}
+
 static void
 write_v1_journal(const char* path, int count) {
     FILE* f = dsd_fopen_private(path, "wb");
@@ -257,7 +283,7 @@ main(void) {
     publish(1);
     dsd_app_signal_search_store_flush();
     assert(!store_error());
-    const long record = file_size(clean.journal);
+    const long record = file_size(clean.v2);
     assert(record > 0);
     dsd_app_signal_search_store_close();
 
@@ -271,12 +297,12 @@ main(void) {
     assert(dsd_mkdir(late.dir, 0700) == 0);
     assert(dsd_app_signal_search_permanent_avoid(462575000) == DSD_APP_SEARCH_AVOID_ADDED);
     assert(wait_error_cleared());
-    assert(file_size(late.journal) == record);
+    assert(file_size(late.v2) == record);
     assert(file_size(late.avoids) > 0);
     // The retry rewrote the journal; later detections append to it without repeating it.
     publish(3);
     dsd_app_signal_search_store_flush();
-    assert(!store_error() && file_size(late.journal) == 2 * record);
+    assert(!store_error() && file_size(late.v2) == 2 * record);
     assert(reopen(late.journal, hits, 8) == 2 && hits[0].hit_id == 3 && hits[1].hit_id == 2);
     assert(dsd_app_signal_search_avoids_get(avoids, 4) == 1 && avoids[0] == 462575000);
     dsd_app_signal_search_store_close();
@@ -286,7 +312,7 @@ main(void) {
     store_paths blocked;
     paths_init(&blocked, root, "blocked");
     assert(dsd_mkdir(blocked.dir, 0700) == 0);
-    assert(dsd_mkdir(blocked.journal, 0700) == 0);
+    assert(dsd_mkdir(blocked.v2, 0700) == 0);
     assert(dsd_app_signal_search_store_open(blocked.journal) == 0);
     publish(4);
     dsd_app_signal_search_store_flush();
@@ -295,9 +321,9 @@ main(void) {
     dsd_app_signal_search_store_flush();
     assert(store_error());
     assert(file_size(blocked.avoids) > 0);
-    assert(dsd_test_rmdir(blocked.journal) == 0);
+    assert(dsd_test_rmdir(blocked.v2) == 0);
     dsd_app_signal_search_store_flush();
-    assert(!store_error() && file_size(blocked.journal) == record);
+    assert(!store_error() && file_size(blocked.v2) == record);
     assert(reopen(blocked.journal, hits, 8) == 1 && hits[0].hit_id == 4);
     assert(dsd_app_signal_search_avoids_get(avoids, 4) == 1 && avoids[0] == 462600000);
     dsd_app_signal_search_store_close();
@@ -314,10 +340,10 @@ main(void) {
     assert(store_error());
     publish(5);
     dsd_app_signal_search_store_flush();
-    assert(store_error() && file_size(stuck.journal) == record);
+    assert(store_error() && file_size(stuck.v2) == record);
     assert(dsd_test_rmdir(stuck.avoids) == 0);
     dsd_app_signal_search_store_flush();
-    assert(!store_error() && file_size(stuck.journal) == record);
+    assert(!store_error() && file_size(stuck.v2) == record);
     assert(reopen(stuck.journal, hits, 8) == 1 && hits[0].hit_id == 5);
     assert(dsd_app_signal_search_avoids_get(avoids, 4) == 1 && avoids[0] == 462625000);
     dsd_app_signal_search_store_close();
@@ -333,7 +359,7 @@ main(void) {
     assert(dsd_mkdir(closing.dir, 0700) == 0);
     assert(reopen(closing.journal, hits, 8) == 1 && hits[0].hit_id == 6);
     assert(dsd_app_signal_search_avoids_get(avoids, 4) == 1 && avoids[0] == 462650000);
-    assert(file_size(closing.journal) == record);
+    assert(file_size(closing.v2) == record);
     dsd_app_signal_search_store_close();
 
     // Each permanent avoid says what it did: added, already there, no room, or no channel at all.
@@ -365,13 +391,15 @@ main(void) {
     assert(!store_error());
     dsd_app_signal_search_store_close();
 
-    // A version 1 journal loads every row, with no checked site, slot or encryption, and changes on disk only when
-    // the store writes next: then the compaction rewrites all of it as version 2.
+    // A version 1 journal loads every row, with no checked site, slot or encryption. The first write creates the
+    // version 2 journal holding all of them; the version 1 journal is never touched, so an earlier release still
+    // reads its own history.
     store_paths migrate;
     paths_init(&migrate, root, "migrate");
     assert(dsd_mkdir(migrate.dir, 0700) == 0);
     write_v1_journal(migrate.journal, 3);
-    const long v1_journal = file_size(migrate.journal);
+    static unsigned char v1_before[16384], v1_after[16384];
+    const size_t v1_bytes = read_file(migrate.journal, v1_before, sizeof(v1_before));
     assert(dsd_app_signal_search_store_open(migrate.journal) == 0);
     assert(!store_error());
     assert(dsd_app_signal_search_history_get(hits, 8) == 3);
@@ -384,18 +412,49 @@ main(void) {
         assert(strcmp(h->input_spec, "rtl:0") == 0 && h->ppm == 3 && h->bias_tee == 1 && h->gain_tenth_db == 280);
         assert(h->site[0] == '\0' && h->slot == 0 && h->crypt[0] == '\0');
     }
-    assert(file_size(migrate.journal) == v1_journal);
+    assert(file_size(migrate.v2) == -1);
     dsd_signal_search_hit detailed;
     detailed_hit(&detailed, 4);
     publish_hit(&detailed);
     dsd_app_signal_search_store_flush();
     assert(!store_error());
-    assert(count_v2_records(migrate.journal, (size_t)record - 12U) == 4);
-    assert(file_size(migrate.journal) == 4 * record);
+    assert(count_v2_records(migrate.v2, (size_t)record - 12U) == 4);
+    assert(file_size(migrate.v2) == 4 * record);
+    assert(read_file(migrate.journal, v1_after, sizeof(v1_after)) == v1_bytes);
+    assert(memcmp(v1_before, v1_after, v1_bytes) == 0);
     assert(reopen(migrate.journal, hits, 8) == 4);
     assert(hits[0].hit_id == 4 && hits[3].hit_id == 1 && strcmp(hits[3].target_text, "Fire") == 0);
     assert(hits[3].site[0] == '\0' && hits[3].slot == 0 && hits[3].crypt[0] == '\0');
     dsd_app_signal_search_store_close();
+    // Both exist: the version 2 journal wins. Rows an earlier release added to its own journal since stay there.
+    write_v1_journal(migrate.journal, 6);
+    const size_t v1_grown = read_file(migrate.journal, v1_before, sizeof(v1_before));
+    assert(reopen(migrate.journal, hits, 8) == 4 && hits[0].hit_id == 4);
+    publish(7);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && file_size(migrate.v2) == 5 * record);
+    dsd_app_signal_search_store_close();
+    assert(read_file(migrate.journal, v1_after, sizeof(v1_after)) == v1_grown);
+    assert(memcmp(v1_before, v1_after, v1_grown) == 0);
+    // Even an empty version 2 journal wins: what it holds is the history, and nothing is migrated again.
+    FILE* empty = dsd_fopen_private(migrate.v2, "wb");
+    assert(empty && fclose(empty) == 0);
+    assert(reopen(migrate.journal, hits, 8) == 0);
+    dsd_app_signal_search_store_close();
+    // A version 1 journal holding a version 2 record is refused at that record, as any unknown record is.
+    {
+        assert(remove(migrate.v2) == 0);
+        record_buf body;
+        detailed_v2_body(&body, 1);
+        FILE* f = dsd_fopen_private(migrate.journal, "wb");
+        assert(f);
+        write_record(f, 0x32535344U, &body);
+        assert(fclose(f) == 0);
+        assert(dsd_app_signal_search_store_open(migrate.journal) == 0);
+        assert(store_error() && dsd_app_signal_search_history_get(hits, 8) == 0);
+        dsd_app_signal_search_store_close();
+        assert(file_size(migrate.v2) == -1);
+    }
 
     // Version 2 keeps the checked site, slot and encryption through a reload, and the history revision moves only
     // when one of them, or anything else persisted, changes.
@@ -449,8 +508,8 @@ main(void) {
     dsd_app_signal_search_store_close();
 
     // What a journal says is not trusted: an out-of-range slot loads as none and a text without its NUL is cut at
-    // its last byte. A record of an unknown version, or whose size does not match its version, stops the load at
-    // that record with an error, keeping what came before it.
+    // its last byte. A record of another version, or whose size does not match its version, stops the load at that
+    // record with an error, keeping what came before it.
     store_paths hostile;
     paths_init(&hostile, root, "hostile");
     assert(dsd_mkdir(hostile.dir, 0700) == 0);
@@ -469,11 +528,11 @@ main(void) {
         DSD_MEMCPY(body.bytes + body.n, crypt, sizeof(crypt));
         body.n += sizeof(crypt);
         assert(body.n == (size_t)record - 12U);
-        FILE* f = dsd_fopen_private(hostile.journal, "wb");
+        FILE* f = dsd_fopen_private(hostile.v2, "wb");
         assert(f);
         write_record(f, 0x32535344U, &body);
         v1_body(&body, 2);
-        write_record(f, 0x33535344U, &body); // DSS3: not a version this store knows
+        write_record(f, 0x31535344U, &body); // DSS1: the version 2 journal holds only version 2 records
         assert(fclose(f) == 0);
         assert(dsd_app_signal_search_store_open(hostile.journal) == 0);
         assert(store_error());
@@ -483,7 +542,7 @@ main(void) {
         // A version 2 magic in front of a version 1 body is refused, not read past its end.
         v1_body(&body, 3);
         assert(body.n == v1_n);
-        f = dsd_fopen_private(hostile.journal, "wb");
+        f = dsd_fopen_private(hostile.v2, "wb");
         assert(f);
         write_record(f, 0x32535344U, &body);
         assert(fclose(f) == 0);

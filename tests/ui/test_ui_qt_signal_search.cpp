@@ -394,15 +394,18 @@ main(int argc, char** argv) {
     QTemporaryDir temp;
     assert(temp.isValid());
     const QString journal = temp.filePath(QStringLiteral("history"));
+    // The store writes version 2 records beside the version 1 journal it is opened with.
+    const QString written = journal + QStringLiteral(".v2");
     assert(dsd_app_signal_search_store_open(journal.toUtf8().constData()) == 0);
     publish(1);
     dsd_app_signal_search_store_flush();
-    const auto before = QFileInfo(journal).size();
+    const auto before = QFileInfo(written).size();
+    assert(before > 0);
     for (int i = 0; i < 50; ++i) {
         publish(1);
     }
     dsd_app_signal_search_store_flush();
-    assert(QFileInfo(journal).size() == before);
+    assert(QFileInfo(written).size() == before);
     publish(1, true);
     std::vector<dsd_signal_search_hit> hits(1000);
     assert(dsd_app_signal_search_history_get(hits.data(), hits.size()) == 1);
@@ -424,7 +427,7 @@ main(int argc, char** argv) {
     assert(dsd_app_signal_search_avoids_get(avoids, 4) == 1 && avoids[0] == 463550000);
     assert(dsd_app_signal_search_avoid_remove(463550000) == 0);
     dsd_app_signal_search_store_close();
-    FILE* f = dsd_fopen_private(journal.toUtf8().constData(), "ab");
+    FILE* f = dsd_fopen_private(written.toUtf8().constData(), "ab");
     assert(f);
     assert(fwrite("DSS", 1, 3, f) == 3);
     fclose(f);
@@ -446,7 +449,7 @@ main(int argc, char** argv) {
     dsd_app_signal_search_store_flush();
     dsd_app_signal_search_status_get(nullptr, error, sizeof(error));
     assert(!error[0]);
-    assert(QFileInfo(missing).size() > 0);
+    assert(QFileInfo(missing + QStringLiteral(".v2")).size() > 0);
     dsd_app_signal_search_store_close();
 
     dsd_qt::SavedSystemsModel systems;

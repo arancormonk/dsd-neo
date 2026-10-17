@@ -216,6 +216,8 @@ SignalSearchModel::SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* ind
     if (m_ranges.isEmpty()) {
         m_ranges.append(defaultRange());
     }
+    // The version 1 journal's name: the store writes signal-search-history.v2 beside it, migrating from it once, and
+    // keeps the avoid list (backed up as kAvoidsFileName) at signal-search-history.v1.avoids.json.
     QString path = json_store_path(QStringLiteral("signal-search-history.v1"));
     QDir().mkpath(QFileInfo(path).absolutePath());
     dsd_app_signal_search_store_open(path.toUtf8().constData());

@@ -23,8 +23,9 @@
 namespace {
 using Hit = dsd_signal_search_hit;
 using Bytes = std::vector<unsigned char>;
-/* Record magics, little endian. Version 2 appends the checked site, call slot and encryption to version 1's body;
-   version 1 records still load, with those empty, and the next compaction rewrites them as version 2. */
+/* Record magics, little endian. Version 2 appends the checked site, call slot and encryption to version 1's body.
+   Each version has its own file: version 2 records live in the version 2 journal, and the version 1 journal an
+   earlier release keeps writing is only ever read (migrated from while no version 2 journal exists). */
 constexpr uint32_t magic_v1 = 0x31535344; // DSS1
 constexpr uint32_t magic = 0x32535344;    // DSS2
 
@@ -173,6 +174,17 @@ v1_size() {
     return encode(h).size() - sizeof(h.site) - 1 - sizeof(h.crypt);
 }
 
+/* The version 2 journal beside the version 1 journal @p base: a trailing ".v1" becomes ".v2", else ".v2" is
+   appended. */
+std::string
+v2_journal_path(const std::string& base) {
+    const std::string v1 = ".v1";
+    if (base.size() > v1.size() && base.compare(base.size() - v1.size(), v1.size(), v1) == 0) {
+        return base.substr(0, base.size() - v1.size()) + ".v2";
+    }
+    return base + ".v2";
+}
+
 bool
 same(const Hit& a, const Hit& b) {
     return a.session_id == b.session_id && a.hit_id == b.hit_id;
@@ -271,7 +283,9 @@ struct Store {
     std::mutex mutex;
     std::condition_variable wake, flushed;
     std::thread worker;
-    std::string path, avoid_path, error;
+    /* `base` is the path the store was opened with: the version 1 journal, and the avoid list's prefix (unchanged, so
+       every release shares one avoid list). `path` is the version 2 journal this store reads and writes. */
+    std::string base, path, avoid_path, error;
     std::vector<Hit> history, pending;
     std::vector<uint32_t> avoids, session_avoids;
     dsd_signal_search_status status{};
@@ -301,38 +315,57 @@ struct Store {
         }
     }
 
+    /* Reads every record of @p version from @p f, stopping with an error at the first record that is incomplete,
+       damaged or of any other version. */
+    void
+    read_journal(FILE* f, uint32_t version) {
+        const size_t size = version == 2 ? encode(Hit{}).size() : v1_size();
+        for (;;) {
+            Bytes header(12);
+            size_t got = fread(header.data(), 1, header.size(), f);
+            if (!got) {
+                break;
+            }
+            size_t at = 0;
+            if (got != header.size() || take(header, at, 4) != (version == 2 ? magic : magic_v1)
+                || take(header, at, 4) != size) {
+                error = "History journal has an incomplete or unsupported record";
+                break;
+            }
+            uint32_t sum = (uint32_t)take(header, at, 4);
+            Bytes bytes(size);
+            if (fread(bytes.data(), 1, size, f) != size || checksum(bytes) != sum) {
+                error = "History journal has an incomplete or damaged record";
+                break;
+            }
+            Hit h = decode(bytes, version);
+            if (h.session_id && h.hit_id && h.frequency_hz) {
+                h.ended = 1;
+                upsert(history, h);
+            }
+            ++records;
+        }
+    }
+
+    /* The version 2 journal when it exists, even empty or damaged; otherwise the rows of the version 1 journal, which
+       the first write after opening (a compaction) copies into a new version 2 journal. The version 1 journal is never
+       written, replaced or removed. */
     void
     load_history() {
-        FILE* f = dsd_fopen_private(path.c_str(), "rb");
+        errno = 0;
+        FILE* f = dsd_fopen_existing_regular_file(path.c_str(), "rb");
         if (f) {
-            const size_t size_v2 = encode(Hit{}).size(), size_v1 = v1_size();
-            for (;;) {
-                Bytes header(12);
-                size_t got = fread(header.data(), 1, header.size(), f);
-                if (!got) {
-                    break;
-                }
-                size_t at = 0;
-                const uint32_t kind = got == header.size() ? (uint32_t)take(header, at, 4) : 0;
-                const uint32_t version = kind == magic ? 2 : kind == magic_v1 ? 1 : 0;
-                const size_t size = version == 2 ? size_v2 : size_v1;
-                if (!version || take(header, at, 4) != size) {
-                    error = "History journal has an incomplete or unsupported record";
-                    break;
-                }
-                uint32_t sum = (uint32_t)take(header, at, 4);
-                Bytes bytes(size);
-                if (fread(bytes.data(), 1, size, f) != size || checksum(bytes) != sum) {
-                    error = "History journal has an incomplete or damaged record";
-                    break;
-                }
-                Hit h = decode(bytes, version);
-                if (h.session_id && h.hit_id && h.frequency_hz) {
-                    h.ended = 1;
-                    upsert(history, h);
-                }
-                ++records;
-            }
+            read_journal(f, 2);
+            fclose(f);
+            return;
+        }
+        if (errno != ENOENT) {
+            error = "History journal could not be read";
+            return;
+        }
+        f = dsd_fopen_private(base.c_str(), "rb");
+        if (f) {
+            read_journal(f, 1);
             fclose(f);
         }
     }
@@ -495,14 +528,15 @@ dsd_app_signal_search_store_open(const char* path) {
     }
     {
         std::lock_guard<std::mutex> lock(store.mutex);
-        if (store.worker.joinable() && store.path == path && !store.stop) {
+        if (store.worker.joinable() && store.base == path && !store.stop) {
             return 0;
         }
     }
     store.close();
     std::lock_guard<std::mutex> lock(store.mutex);
-    store.path = path;
-    store.avoid_path = store.path + ".avoids.json";
+    store.base = path;
+    store.path = v2_journal_path(store.base);
+    store.avoid_path = store.base + ".avoids.json";
     store.stop = false;
     store.compact = true;
     store.history_failed = false;

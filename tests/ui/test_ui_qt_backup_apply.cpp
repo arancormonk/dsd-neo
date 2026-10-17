@@ -667,8 +667,11 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
     old.tree = capture();
     expect("the unclean recording spelling is stored as written",
            old.tree.files.value("saved_systems.json").contains("imports/sub/../both2.csv"));
-    if (old.tree.files.contains("signal-search-history.v1")) {
-        old.kept.append("signal-search-history.v1");
+    // Detection history (either journal version) is not carried by a backup: a restore leaves it where it is.
+    for (const char* history : {"signal-search-history.v1", "signal-search-history.v2"}) {
+        if (old.tree.files.contains(QLatin1String(history))) {
+            old.kept.append(QLatin1String(history));
+        }
     }
     expect("old configuration compiled its profiles",
            QFileInfo(at("decryption/managed")).isDir() && QFileInfo(at("decryption/old-only")).isDir());

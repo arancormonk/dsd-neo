@@ -96,26 +96,28 @@ Generated (do not edit/commit):
     site noted before identification waits for it), publishing the hit when the text changes,
     so a final broadcast before silence reaches the live status and the ended hit. Decoder state
     (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never cleared or written
-    for it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`). The hit's call tuple (`target`, `source`, `target_text`,
-    `source_text`, `slot`, `crypt`) is one canonical call record's, copied whole by
-    `dsd_engine_signal_search_call()` (installed as the runtime call hook) from the slot a call
-    note names, under the same receiving gate: the record must be ACTIVE, CRC-clean
-    (`crc_invalid == 0`) and of a protocol the search names (DMR, P25, NXDN, dPMR, M17, YSF,
-    D-STAR). The tuple is the most recent call on the hit: a note for the tuple's own call
-    (slot and epoch) updates it, a call that began no earlier (`started_m`) replaces it whole on
-    either slot, and an older call still running on the other slot leaves it, so two DMR slots
-    never mix. `slot` is the record's slot plus one for DMR and P25 Phase 2, else 0; `crypt` is
-    "ALG xx · KID xxxx" from the record's received bits only (`crypto_received`), "Encrypted"
-    when its classification is encrypted, pending or decryptable with none received, and empty
-    for a clear or unknown call. Like the site it shows once the hit's protocol matches, clears
-    at each landing and on a change to another protocol, and stays on the ended hit; evidence IDs
-    fill `target`/`source` only while no tuple belongs to the hit. `site`, `slot` and `crypt` are
-    persisted with the rest of the hit (journal version 2). Published status carries `owned` (a coordinator
-    holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
-    frequency are restored on exit: a search Stop tunes back, running the carrier boundary
-    and acquisition reset as each visit's tune does, and its retune carries the session's
-    receive family (`rtl_stream_prepare_retune_analog_profile_for_target()`), since a
-    retune landing first retires the older live family request the restore also makes. The engine loop runs no `noCarrier()`
+    for it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`). The hit's call tuple
+    (`target`, `source`, `target_text`, `source_text`, `slot`, `crypt`) is one canonical call
+    record's, copied whole by `dsd_engine_signal_search_call()` (installed as the runtime call
+    hook) from the slot a call note names, under the same receiving gate: the record must be
+    ACTIVE, CRC-clean (`crc_invalid == 0`) and of a protocol the search names (DMR, P25, NXDN,
+    dPMR, M17, YSF, D-STAR). The tuple is the most recent call on the hit: a note for the
+    tuple's own call (slot and epoch) updates it, a call that began no earlier (`started_m`)
+    replaces it whole on either slot, and an older call still running on the other slot leaves
+    it, so two DMR slots never mix. `slot` is the record's slot plus one for DMR and P25 Phase
+    2, else 0; `crypt` is "ALG xx · KID xxxx" from the record's received bits only
+    (`crypto_received`), "Encrypted" when its classification is encrypted, pending or
+    decryptable with none received, and empty for a clear or unknown call. Like the site it
+    shows once the hit's protocol matches, clears at each landing and on a change to another
+    protocol, and stays on the ended hit; evidence IDs fill `target`/`source` only while no
+    tuple belongs to the hit. `site`, `slot` and `crypt` are persisted with the rest of the hit
+    (journal version 2). Published status carries `owned` (a coordinator holds the tuner) and
+    the landed channel's live RF level. Receive profiles, gain and frequency are restored on
+    exit: a search Stop tunes back, running the carrier boundary and acquisition reset as each
+    visit's tune does, and its retune carries the session's receive family
+    (`rtl_stream_prepare_retune_analog_profile_for_target()`), since a retune landing first
+    retires the older live family request the restore also makes. The engine loop runs no
+    `noCarrier()`
     while a search is paused or failed, so the first tick that finds it PAUSED or ERROR runs
     them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
     a call heard on the channel ends at the Pause, the input stall or any other failure rather
@@ -1879,15 +1881,23 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     RAN that confirmation unlocked. One valid frame is then enough for its details to
     reach history.
     `signal_search_store.cpp` owns the mutex-protected snapshots and a native worker for
-    the versioned private journal, bounded upserts and atomic compaction/avoids. Journal
-    records are `DSS2`: version 1's body (`DSS1`) followed by the checked `site`, `slot`
-    and `crypt`. The loader accepts both, a version 1 record with those empty; any other
-    magic, a size that does not match the record's version or a bad checksum stops the
-    load with an error, keeping the records before it. Loaded texts are cut at their last
-    byte and an out-of-range slot loads as 0. The first write after opening compacts, so
-    a version 1 journal is rewritten whole as version 2. Texts are encoded up to their NUL
-    and zero-padded, and a republished hit whose encoding is unchanged neither advances
-    the history revision nor queues a write, so only new checked content does. History
+    the versioned private journal, bounded upserts and atomic compaction/avoids. Each
+    journal version has its own file. The store is opened with the version 1 journal's
+    path (Qt: `signal-search-history.v1`) and reads and writes `DSS2` records (version 1's
+    `DSS1` body followed by the checked `site`, `slot` and `crypt`) in the version 2
+    journal beside it (a trailing `.v1` becomes `.v2`, else `.v2` is appended). The avoid
+    list keeps its name (`<v1 path>.avoids.json`, the backup's `kAvoidsFileName`). While
+    no version 2 journal exists, the version 1 journal's rows load with those details empty
+    and the first write after opening (always a compaction) creates the version 2 journal
+    from them; once it exists, even empty or damaged, it alone is read. The version 1
+    journal is never written, replaced or removed, so an earlier release keeps its own
+    history (rows it adds later are not migrated). Each file accepts only its own
+    version's magic; another magic, a size that does not match or a bad checksum stops
+    the load with an error, keeping the records before it. Loaded texts are cut at their
+    last byte and an out-of-range slot loads as 0. Texts are encoded up to their NUL and
+    zero-padded, and a republished hit whose encoding is unchanged neither advances the
+    history revision nor queues a write, so only new checked content does. Detection
+    history (either file) is not part of a backup. History
     and permanent avoids are separate files with separate write state: one whose write
     failed stays owed, with its error, until its own write succeeds, so saving the other
     neither retires it nor clears the error. Each later worker pass, flush and close

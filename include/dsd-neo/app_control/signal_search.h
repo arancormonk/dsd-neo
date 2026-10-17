@@ -17,8 +17,10 @@ int dsd_app_signal_search_control(const dsd_signal_search_control* control);
 /** Open once per app host, before starting decoder sessions. Parent directory must exist.
  * The worker writes an append journal, compacts atomically, and keeps memory on failures. A failed history or avoid
  * write stays reported and is retried by later writes, flush and close until that file's own write succeeds.
- * The journal is version 2 (site, slot and encryption included); version 1 records load with those empty and the
- * first write after opening rewrites the whole journal as version 2. */
+ * @p path names the version 1 journal, which is only ever read: the store keeps version 2 records (site, slot and
+ * encryption included) in its own journal beside it (a trailing ".v1" becomes ".v2", else ".v2" is appended), and
+ * the avoid list in "<path>.avoids.json". While no version 2 journal exists, the version 1 rows load with those
+ * details empty and the first write creates the version 2 journal from them; once it exists it alone is read. */
 int dsd_app_signal_search_store_open(const char* path);
 void dsd_app_signal_search_store_close(void);
 void dsd_app_signal_search_store_flush(void);

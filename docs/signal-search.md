@@ -94,8 +94,10 @@ While a search runs, the screen is laid out for what is on the air now:
   the slot on two-slot systems only), then its encryption
   (**WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567**;
   **TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 ·
-  ALG 21 · KID 0001**), breaking lines only between values. Other lines that do not fit end in an
-  ellipsis, and the full text is available to screen readers. When several
+  ALG 21 · KID 0001**), breaking lines only between values. Values that do not
+  fit the two lines are left off whole, the detail then ending in **· …**. Other
+  lines that do not fit end in an ellipsis, and the full text is available to
+  screen readers. When several
   saved frequencies match, the panel names two and counts the rest
   (**Saved: A / B +1**); the detection's history row lists them all. Between
   detections the panel reads **Waiting for a signal**, shows the phase
@@ -262,13 +264,17 @@ Detection history is separate from call history: an RF detection need not decode
 anything. The newest 1,000 detections are retained, with one row updated as details
 arrive. Ended, confirmed and RF-only detections remain distinguishable. The private
 versioned journal is compacted atomically; write failures are reported while
-available records remain in memory. Each record keeps the detection's checked site,
-slot and encryption (journal version 2). A journal from an earlier release loads with
-those empty and is rewritten in the new format at the next save, so an earlier release
-reopening it afterwards reports the journal as unsupported and replaces it with an empty
-history at its first save.
-A detection republished with nothing new is not written again. History and permanent avoids are saved separately,
-and a failed one stays reported and is retried by later saves until it is written.
+available records remain in memory. Each record keeps the detection's checked
+site, slot and encryption, in a version 2 journal (`signal-search-history.v2`)
+beside the earlier releases' `signal-search-history.v1`. The first time no
+version 2 journal exists, the earlier journal's detections load without those
+details and the next save writes them to the version 2 journal; from then on
+only the version 2 journal is read. The earlier journal is never changed, so an
+earlier release still shows its own history, and detections it records later
+do not reach this one. A detection republished with nothing new is not written
+again. Detection history is not part of a backup. History and permanent avoids
+are saved separately, and a failed one stays reported and is retried by later
+saves until it is written.
 Orderly stop flushes the journal. Ranges and permanent avoids are also stored privately.
 
 Saved-system labels come from a cached index of saved frequencies, referenced
