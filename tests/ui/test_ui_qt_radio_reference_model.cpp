@@ -629,6 +629,24 @@ test_per_site_import() {
 }
 
 void
+test_site_import_without_coverage() {
+    for (const auto& replacement : {QByteArray(), QByteArray("<range xsi:nil=\"true\"/>")}) {
+        Harness h;
+        h.fake.replaceFrom = "<range xsi:type=\"xsd:decimal\">20</range>";
+        h.fake.replaceTo = replacement;
+        h.model.loadSystem(6673);
+        pump(h.model);
+        const auto plan = h.model.buildImportPlan({0}, {});
+        const auto imported = h.model.performImport(plan, "Site without coverage", -1);
+        expect("missing coverage still imports", imported.value("ok").toBool());
+        expect("missing coverage preserves position", imported.value("hasSitePos").toBool());
+        expect("missing coverage preserves exact coordinates",
+               qAbs(imported.value("siteLat").toDouble() - 41.65503) < 1e-8
+                   && qAbs(imported.value("siteLon").toDouble() + 91.60244) < 1e-8);
+    }
+}
+
+void
 test_mixed_simulcast_qml_plan() {
     Harness h;
     h.model.loadSystem(6673);
@@ -1235,6 +1253,7 @@ main(int argc, char** argv) {
     test_conventional_system();
     test_import_lands_in_the_library();
     test_per_site_import();
+    test_site_import_without_coverage();
     test_mixed_simulcast_qml_plan();
     test_refresh_replaces_a_row_in_place();
     test_refresh_survives_a_row_removed_mid_flight();

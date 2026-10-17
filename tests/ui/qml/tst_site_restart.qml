@@ -10,6 +10,7 @@ Item {
         function init() {
             testContext.useLifecycleHost(true, true)
             testContext.setDelayedStop(true)
+            prefs.setLocationFix(0, 0, 0)
             while (savedSystems.count) savedSystems.remove(0)
             for (var i = 0; i < 2; i++)
                 savedSystems.add({name:"Site " + i, sourceType:"rtltcp", host:"127.0.0.1", port:1234,
@@ -21,6 +22,7 @@ Item {
             findChild(loader.item, "siteChooserSheet").visible = false
             loader.item.cancelPendingRestart()
             testContext.setDelayedStop(false)
+            prefs.setLocationFix(0, 0, 0)
             testContext.useLifecycleHost(false)
             while (savedSystems.count) savedSystems.remove(0)
         }
@@ -112,6 +114,26 @@ Item {
             loader.item.restartSite(uid)
             compare(decoderHost.sessionState, 3)
             wait(10)
+            compare(loader.item.sessionSystem.uid, savedSystems.get(0).uid)
+            savedSystems.remove(0)
+            testContext.setLifecyclePhase(0)
+            tryCompare(decoderHost, "sessionState", 1)
+            compare(loader.item.sessionSystem.uid, uid)
+            compare(loader.item.pendingRestart, null)
+        }
+        function test_nearest_from_running_session_waits_for_idle() {
+            savedSystems.update(0, {siteLat:42,siteLon:-91,hasSitePos:true})
+            savedSystems.update(1, {siteLat:41,siteLon:-91,hasSitePos:true})
+            var uid = savedSystems.get(1).uid
+            var chooser = findChild(loader.item, "siteChooserSheet")
+            chooser.openFor(0)
+            chooser.useLocation()
+            decoderHost.locationResult(chooser.locationId, true, 41.01, -91, 25, Date.now(), false, "", "", "")
+            compare(chooser.nearest, 1)
+            var action = findChild(chooser, "nearestSiteButton")
+            verify(action.enabled)
+            action.clicked()
+            compare(decoderHost.sessionState, 3)
             compare(loader.item.sessionSystem.uid, savedSystems.get(0).uid)
             savedSystems.remove(0)
             testContext.setLifecyclePhase(0)

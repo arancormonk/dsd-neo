@@ -322,6 +322,12 @@ class DecoderHost : public QObject {
                               QStringLiteral("Location is not supported on this platform"));
     }
 
+    /** Fresh coordinates for distance ranking; no postal-code lookup is needed. */
+    virtual void
+    requestSiteLocation(qint64 requestId) {
+        requestCurrentLocation(requestId);
+    }
+
     virtual void
     cancelLocationRequest(qint64 requestId) {
         (void)requestId;

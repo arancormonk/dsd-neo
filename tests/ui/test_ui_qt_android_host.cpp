@@ -121,6 +121,9 @@ void
 DecoderHostAndroid::requestCurrentLocation(qint64) {}
 
 void
+DecoderHostAndroid::requestSiteLocation(qint64) {}
+
+void
 DecoderHostAndroid::cancelLocationRequest(qint64) {}
 
 void

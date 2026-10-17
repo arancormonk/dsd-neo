@@ -17,12 +17,12 @@ and one shared policy module (`include/dsd-neo/runtime/radioreference_import.h`)
 ## Site position metadata
 
 The runtime SOAP client exposes site `lat` and `lon` in degrees and `range_mi` in miles.
-`has_position` is true only when all three fields are present and valid: latitude within
-[-90, 90], longitude within [-180, 180], and a finite nonnegative range. The `(0,0,0)`
-placeholder means no position; zero latitude or longitude alone is valid. Missing, nil,
-malformed or out-of-range fields become zero and clear `has_position`, while the site's
-frequencies remain available for import. Consumers must check `has_position` before using
-these values as a position.
+`has_position` is true when latitude and longitude are present and valid: latitude within
+[-90, 90] and longitude within [-180, 180]. The `(0,0)` placeholder means no position;
+zero latitude or longitude alone is valid. Missing, nil, malformed or out-of-range coordinates
+become zero and clear `has_position`, while the site's frequencies remain available for import.
+Coverage range is optional: absent or invalid values become zero without discarding valid
+coordinates. Consumers must check `has_position` before using the coordinates as a position.
 
 Decimals use an optional sign, digits, and an optional dot followed by fraction digits,
 independent of the process locale. Exponents, commas, whitespace and nonfinite values are
@@ -121,16 +121,28 @@ site; the other sites retain their individual import settings. A single-site imp
 site identity. Identity uses RadioReference's database site ID, not the RF site number.
 
 Home groups sibling sites under one card with an **n sites ›** chooser. **Use my location** requests a
-foreground fix; valid site distances appear in miles by default. Enable **Settings → Units → Use metric
-units** to display kilometers. The preference is saved locally and updates displayed distances immediately.
-**Nearest site** skips avoided sites and sites without valid coordinates. Missing `(0, 0)` coordinates and
-nonfinite or out-of-range values never participate in distance calculations. The avoid switch is saved locally.
+foreground fix, names the nearest eligible saved site in this system, and orders the available sites by
+distance. Avoided sites appear last; sites without coordinates are explained and cannot be ranked.
+Distances appear in miles by default. Enable **Settings → Units → Use metric units** to display kilometers.
+The preference updates distances and location accuracy immediately. The chooser labels a saved fix and
+shows its reported accuracy; when that accuracy could change the nearest-site ordering, it says so.
+Missing `(0, 0)` coordinates and nonfinite or out-of-range values never participate in distance calculations.
+The avoid switch is saved locally. Re-import older saved sites to pick up corrected position metadata.
 
-Site buttons and **Nearest site** start only while Idle. While listening, open **Sites ›**, then use
-**Stop and switch** for the desired site. It stops the session, waits for confirmed Idle, and starts the
+**Listen to nearest site** starts while Idle. While listening, **Stop and switch to nearest** uses the
+named site; it indicates when you are already listening to that site. Each site's **Stop and switch**
+also remains available. A switch stops the session, waits for confirmed Idle, and starts the
 selected saved UID with that site's files. Any intervening pointer, keyboard, shortcut or wheel action
 cancels the pending restart. There is no live automatic hop: tuning alone would retain the old site's
 channel and group files, including site-specific DMR LCN maps.
+
+Site location requests accept fixes at most 30 seconds old and finish without reverse geocoding.
+An accurate recent cache can complete immediately; otherwise Android requests a fresh fix and allows
+up to 20 seconds for a more accurate provider before using the best current result. Precise foreground
+location is offered when the site chooser first requests permission, with approximate access still usable.
+If approximate access was already granted, it is respected; precise location can be enabled in Android's
+app permission settings. GPS participates when precise access is granted. No background location is requested.
+During a lookup the nearest-site action is disabled. A failed refresh labels any saved location still in use.
 
 Editing a saved site's frequency, decode flag or CSV selections clears its RadioReference grouping IDs.
 Renaming or avoiding a site preserves them. Older imports with provenance only on the library file show

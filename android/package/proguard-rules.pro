@@ -46,6 +46,7 @@
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.LocationSupport {
     public static void requestCurrentLocation(android.app.Activity, long);
+    public static void requestSiteLocation(android.app.Activity, long);
     public static void cancelLocationRequest(long);
     public static java.lang.String pollResult();
 }

@@ -481,6 +481,17 @@ DecoderHostAndroid::requestCurrentLocation(qint64 requestId) {
 }
 
 void
+DecoderHostAndroid::requestSiteLocation(qint64 requestId) {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        Q_EMIT locationResult(requestId, false, 0, 0, 0, 0, false, {}, {}, QStringLiteral("No Android context"));
+        return;
+    }
+    QJniObject::callStaticMethod<void>(kLocationClass, "requestSiteLocation", "(Landroid/app/Activity;J)V",
+                                       context.object(), static_cast<jlong>(requestId));
+}
+
+void
 DecoderHostAndroid::cancelLocationRequest(qint64 requestId) {
     QJniObject::callStaticMethod<void>(kLocationClass, "cancelLocationRequest", "(J)V", static_cast<jlong>(requestId));
 }

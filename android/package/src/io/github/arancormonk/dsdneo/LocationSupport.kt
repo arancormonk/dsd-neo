@@ -63,33 +63,45 @@ object LocationSupport {
     // accepts a much shorter cache age and may throttle the replacement past our deadline.
     private const val MAX_FIX_AGE_NS = 10 * 60 * 1_000_000_000L
     private const val MAX_ACCURACY_M = 10_000f
+    private const val SITE_FIX_AGE_NS = 30 * 1_000_000_000L
+    private const val SITE_TARGET_ACCURACY_M = 100f
     private val main = Handler(Looper.getMainLooper())
     private val worker = LocationGeocodeQueue()
     private var active: Request? = null
     private var permissionActivity: Activity? = null
     private var result: String? = null
 
-    private class Request(val activity: Activity, val id: Long) {
+    private class Request(val activity: Activity, val id: Long, val forSites: Boolean) {
         val manager = activity.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val signals = mutableListOf<CancellationSignal>()
         val listeners = mutableListOf<LocationListener>()
         val pendingProviders = mutableSetOf<String>()
         var fix: Location? = null
+        var bestFix: Location? = null
         var timeout: Runnable? = null
         var geocodeTask: FutureTask<Unit>? = null
     }
 
-    @JvmStatic fun requestCurrentLocation(activity: Activity, id: Long) {
+    @JvmStatic fun requestCurrentLocation(activity: Activity, id: Long) = request(activity, id, false)
+
+    @JvmStatic fun requestSiteLocation(activity: Activity, id: Long) = request(activity, id, true)
+
+    private fun request(activity: Activity, id: Long, forSites: Boolean) {
         main.post {
             active?.let { release(it) }
             synchronized(this) { result = null }
-            val request = Request(activity, id)
+            val request = Request(activity, id, forSites)
             active = request
             if (activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                 locate(request)
             } else if (permissionActivity == null) {
                 permissionActivity = activity
-                activity.requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), PERMISSION)
+                val permissions = if (forSites) {
+                    arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
+                } else {
+                    arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+                }
+                activity.requestPermissions(permissions, PERMISSION)
             }
         }
     }
@@ -114,6 +126,10 @@ object LocationSupport {
         val candidates = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31) candidates.add(LocationManager.FUSED_PROVIDER)
         candidates.add(LocationManager.NETWORK_PROVIDER)
+        if (request.forSites
+            && request.activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            candidates.add(LocationManager.GPS_PROVIDER)
+        }
         val providers = candidates.filter { provider ->
             try { request.manager.isProviderEnabled(provider) } catch (_: Exception) { false }
         }
@@ -123,8 +139,12 @@ object LocationSupport {
         }
         val cached = providers.mapNotNull { provider ->
             try { request.manager.getLastKnownLocation(provider) } catch (_: Exception) { null }
-        }.filter { usableFix(it) }.maxByOrNull { it.elapsedRealtimeNanos }
-        if (cached != null) {
+        }.filter { usableFix(it, request.forSites) }
+            .let { fixes ->
+                if (request.forSites) fixes.minByOrNull { it.accuracy }
+                else fixes.maxByOrNull { it.elapsedRealtimeNanos }
+            }
+        if (cached != null && (!request.forSites || cached.accuracy <= SITE_TARGET_ACCURACY_M)) {
             gotFix(request, cached)
             return
         }
@@ -156,25 +176,45 @@ object LocationSupport {
         }
     }
 
-    private fun usableFix(location: Location?): Boolean {
+    private fun usableFix(location: Location?, forSites: Boolean = false): Boolean {
         if (location == null || !location.latitude.isFinite() || location.latitude !in -90.0..90.0
             || !location.longitude.isFinite() || location.longitude !in -180.0..180.0
             || !location.hasAccuracy() || !location.accuracy.isFinite()
             || location.accuracy <= 0f || location.accuracy > MAX_ACCURACY_M
             || location.time <= 0L || location.elapsedRealtimeNanos <= 0L) return false
         val age = SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
-        return age in 0L..MAX_FIX_AGE_NS
+        return age in 0L..(if (forSites) SITE_FIX_AGE_NS else MAX_FIX_AGE_NS)
     }
 
     private fun providerResult(request: Request, provider: String, location: Location?) {
         if (active !== request || request.fix != null || !request.pendingProviders.remove(provider)) return
+        if (request.forSites) {
+            if (usableFix(location, true)) {
+                val best = request.bestFix
+                if (!usableFix(best, true) || location!!.accuracy < best!!.accuracy
+                    || (location.accuracy == best.accuracy && location.elapsedRealtimeNanos > best.elapsedRealtimeNanos)) {
+                    request.bestFix = location
+                }
+            }
+            val best = request.bestFix
+            if (usableFix(best, true)
+                && (best!!.accuracy <= SITE_TARGET_ACCURACY_M || request.pendingProviders.isEmpty())) {
+                gotFix(request, best!!)
+            } else if (request.pendingProviders.isEmpty()) {
+                finish(request, false, "", "", "No current location fix available. Try again or choose a site manually.")
+            }
+            return
+        }
         if (usableFix(location)) gotFix(request, location!!)
         else if (request.pendingProviders.isEmpty()) finish(request, false, "", "", "No location fix available; use Browse.")
     }
 
     private fun armTimeout(request: Request, error: String) {
         request.timeout?.let { main.removeCallbacks(it) }
-        request.timeout = Runnable { finish(request, false, "", "", error) }
+        request.timeout = Runnable {
+            if (request.forSites && usableFix(request.bestFix, true)) gotFix(request, request.bestFix!!)
+            else finish(request, false, "", "", error)
+        }
             .also { main.postDelayed(it, TIMEOUT_MS) }
     }
 
@@ -183,6 +223,11 @@ object LocationSupport {
         if (active !== request || request.fix != null) return
         request.fix = location
         removeUpdates(request)
+        if (request.forSites) {
+            // Site distances need coordinates, so a missing or blocked geocoder cannot delay them.
+            finish(request, false, "", "", "")
+            return
+        }
         armTimeout(request, "Geocoding timed out; use Browse.")
         // Capture only application context and coordinates; an abandoned geocoder must not retain an Activity.
         val context = request.activity.applicationContext

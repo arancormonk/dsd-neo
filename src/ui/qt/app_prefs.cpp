@@ -5,8 +5,10 @@
 
 #include "app_prefs.h"
 
+#include <QChar>
 #include <QLatin1String>
 #include <QList>
+#include <QMap>
 #include <QMetaType>
 #include <QStringList>
 #include <QVariant>

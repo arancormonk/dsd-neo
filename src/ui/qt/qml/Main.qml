@@ -1631,6 +1631,7 @@ Window {
     SiteChooserSheet {
         id: siteChooser
         anchors.fill: safeArea
+        currentSiteUid: mainRoot.sessionSystem ? (mainRoot.sessionSystem.uid || "") : ""
         // Any input cancels a site restart still waiting; a Signal search
         // handoff instead takes no input until it finishes (leavingSearch).
         onUserAction: {

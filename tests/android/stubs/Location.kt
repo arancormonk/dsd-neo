@@ -26,6 +26,7 @@ class LocationManager {
     companion object {
         const val NETWORK_PROVIDER = "network"
         const val FUSED_PROVIDER = "fused"
+        const val GPS_PROVIDER = "gps"
     }
     var enabled = true
     val disabledProviders = mutableSetOf<String>()

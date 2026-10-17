@@ -1759,6 +1759,8 @@ suite runs under this compiler.
     `include/dsd-neo/runtime/radioreference.h` and `radioreference_generate.h`; needs `USE_CURL` and `USE_EXPAT`, and
     reports `dsd_rr_available() == 0` without them. Shared curl setup lives in the module-private
     `src/runtime/curl_common.h`, alongside `rdio_export.c`'s use of it.
+    `dsd_rr_site::has_position` validates latitude/longitude independently of the optional coverage radius;
+    `(0,0)` is a missing-position placeholder. Invalid coverage becomes zero and never erases valid coordinates.
     The frontend-agnostic import policy — system classification, the import-plan builder, tune-frequency
     selection, Hz-to-MHz text, the baked-key rule and the output filename stem — lives in
     `radioreference/rr_import.c` behind `include/dsd-neo/runtime/radioreference_import.h` and compiles with
@@ -5982,6 +5984,15 @@ Qt Quick frontend (`src/ui/qt`):
   generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
   acquisition and geocoding, with `decoder_host_android` polling terminal results.
   `AppPrefs::setLocationFix` retains the private fix and accuracy for 24 hours.
+  `DecoderHost::requestSiteLocation` shares request ownership and cancellation with nearby import but asks Android
+  for coordinates only: fixes must be at most 30 seconds old, a cache must also be within 100 m to finish immediately,
+  and current providers compete for accuracy up to the 20-second deadline. GPS participates with fine foreground
+  permission; approximate permission remains usable. The new JNI entry point is retained in `proguard-rules.pro`.
+  `SiteChooserSheet` orders eligible saved siblings by distance, names the nearest site, exposes missing positions
+  and saved-fix/accuracy limitations, and gates the nearest action during a lookup. While Running that action emits
+  the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
+  completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
+  `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the

@@ -207,10 +207,10 @@ typedef struct {
     int rebanded;
     int tdma_cc;
     int bandplan_count;
-    int has_position; /**< All three values valid and not the (0,0,0) sentinel. */
+    int has_position; /**< Valid latitude/longitude, excluding the (0,0) placeholder. */
     double lat;       /**< Latitude in degrees, [-90, 90]. */
     double lon;       /**< Longitude in degrees, [-180, 180]. */
-    double range_mi;  /**< Nonnegative coverage radius in miles. */
+    double range_mi;  /**< Nonnegative coverage radius in miles; zero when absent or invalid. */
     dsd_rr_site_freq* freqs;
     size_t freq_count;
 } dsd_rr_site;

@@ -143,13 +143,12 @@ again on this edge. Saved systems carry stable UUIDs, so deleting another
 row during startup cannot stamp the wrong system. Starting/Idle/Failed and
 trunk-scan target changes clear live model caches; history remains persistent.
 
-The shared host also reserves location requests/cancellation, content-based
-diagnostics sharing, device-attach signals and a diagnostic sink. Location and
-sharing default to unsupported until their platform packages supply implementations.
-USB/lifecycle diagnostics enter the process capture directly, including when no Activity
-exists. Before Qt initialization installs the tap, bounded redacted host records wait in memory. The optional last location fix uses milliseconds since epoch and is deleted
 The shared host provides location requests/cancellation, content-based diagnostics
-sharing, device-attach signals and a diagnostic sink. Android's `LocationSupport.kt`
+sharing, device-attach signals and a diagnostic sink. Location and sharing default to
+unsupported until their platform packages supply implementations. USB/lifecycle diagnostics
+enter the process capture directly, including when no Activity exists. Before Qt initialization
+installs the tap, bounded redacted host records wait in memory. The optional last location fix
+uses milliseconds since epoch and expires after 24 hours. Android's `LocationSupport.kt`
 brokers **Use my location** for RadioReference with coarse foreground permission on
 the Android main thread. API 30+ uses `getCurrentLocation`; API 29 uses
 `requestSingleUpdate` and removes its listener on completion/cancellation. After
@@ -161,6 +160,13 @@ remaining requests; API 29–30 uses the network provider. Fix acquisition and w
 reverse geocoding each have a separate 20-second timeout. Request IDs and
 separate fix/geocode status preserve a usable fix when geocoding fails and prevent
 late responses from replacing a newer search. Activity teardown cancels the request.
+The Sites chooser uses a separate coordinate-only request: at most 30-second-old fixes,
+an accurate recent cache or fresh provider updates, and no reverse-geocoding wait. It offers
+fine and coarse foreground permission together when permission is first needed, respects
+existing approximate access, and adds GPS when fine permission is granted. A coarse result
+waits for a more accurate pending provider, up to the 20-second deadline. Accuracy and saved
+location are visible in the chooser. Existing users can enable precise location in Android's
+app permission settings; background location is never requested.
 Desktop location defaults to unsupported.
 USB/lifecycle diagnostics use the runtime log surface, including when no Activity
 exists. The optional last location fix includes accuracy in metres, uses milliseconds since epoch and is deleted
@@ -1260,9 +1266,11 @@ not be exported or logged. QString/QML key copies cannot guarantee memory erasur
 
 The Qt import screen can import each selected trunked site as a separate saved system. Each site uses its own
 recorded simulcast setting unless an explicit override is chosen. Home groups
-these rows behind **n sites ›**. The chooser offers foreground **Use my location**, distances in km,
-**Nearest site**, and a persisted avoid switch. Rows without validated coordinates are excluded from
-nearest selection. Starts require Idle; while listening, **Sites › → Stop and switch** waits for the
+these rows behind **n sites ›**. **Use my location** orders sites by distance and names the nearest
+eligible saved site. Distances use miles or the metric preference; location accuracy and missing
+site coordinates are explained. Avoided sites and sites without coordinates are excluded from
+nearest selection. **Listen to nearest site** starts while Idle; while listening, **Stop and switch to nearest**
+and each site's **Stop and switch** wait for the
 service's Idle acknowledgement before starting the selected site's saved configuration. Any intervening
 user input cancels that pending restart. This is a full session restart, with no live automatic hop.
 See [RadioReference import](../docs/radioreference-import.md#saved-sites-in-qt-and-android) for migration

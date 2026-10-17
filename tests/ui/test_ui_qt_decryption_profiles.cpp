@@ -11,6 +11,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QStandardPaths>
@@ -27,6 +29,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/log.h>
+#include <qflags.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "decoder_host.h"

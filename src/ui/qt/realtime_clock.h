@@ -25,7 +25,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_REALTIME_CLOCK_H_
 #define DSD_NEO_SRC_UI_QT_REALTIME_CLOCK_H_
 
-#include <QDateTime>
+#include <QDateTime> // IWYU pragma: keep -- this header uses QDateTime as well as QDate.
 #include <QtGlobal>
 
 namespace dsd_qt {

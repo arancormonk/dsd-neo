@@ -6,8 +6,9 @@
     android:versionCode="-- %%INSERT_VERSION_CODE%% --"
     android:versionName="-- %%INSERT_VERSION_NAME%% --">
 
-    <!-- WP-D3: approximate foreground location only. -->
+    <!-- Foreground only; approximate access remains usable for site selection. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
@@ -17,6 +18,7 @@
     <!-- required="false" on purpose: rtl_tcp, UDP and file inputs all work without
          USB host support, so a phone that lacks OTG should still be able to install. -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <!-- %%INSERT_PERMISSIONS -->
     <!-- %%INSERT_FEATURES -->
