@@ -20,6 +20,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -257,6 +258,60 @@ test_later_call_does_not_inherit(dsd_opts* opts) {
     free_state(state);
 }
 
+/* What the search's evidence hook and the scan hold each heard from the last report. */
+static int evidence_reports;
+static uint32_t evidence_target, evidence_source;
+static int scan_reports;
+static uint32_t scan_target;
+
+static void
+capture_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source, const char* access) {
+    (void)state;
+    (void)access;
+    assert(strcmp(protocol, "DMR") == 0);
+    ++evidence_reports;
+    evidence_target = target;
+    evidence_source = source;
+}
+
+static void
+capture_scan_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source, int is_private,
+                      int encrypted, int data_call) {
+    (void)opts;
+    (void)state;
+    (void)source;
+    (void)is_private;
+    (void)encrypted;
+    (void)data_call;
+    ++scan_reports;
+    scan_target = target;
+}
+
+/* An LC the RAS heuristic accepted under -F confirms DMR to a search and still holds a scanned RAS repeater, but its
+   target and source name no detection: only an LC whose own CRC verified does. */
+static void
+test_ras_lc_names_no_detection(dsd_opts* opts) {
+    dsd_state* state = fresh_state();
+    dsd_signal_search_evidence_set(capture_evidence);
+    dsd_trunk_scan_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.dmr_conventional_activity = capture_scan_activity;
+    dsd_trunk_scan_hooks_set(&hooks);
+    for (uint8_t slot = 0U; slot < 2U; ++slot) {
+        evidence_reports = scan_reports = 0;
+        state->event_crc_invalid[slot] = DSD_CRC_RAS_UNVERIFIED;
+        run_lc(opts, state, slot, 1U, 0x00U, 1001U, 2002U);
+        state->event_crc_invalid[slot] = 0U;
+        assert(evidence_reports == 1 && evidence_target == 0U && evidence_source == 0U);
+        assert(scan_reports == 1 && scan_target == 1001U);
+        run_lc(opts, state, slot, 3U, 0x00U, 1001U, 2002U);
+        assert(evidence_reports == 2 && evidence_target == 1001U && evidence_source == 2002U);
+    }
+    dsd_trunk_scan_hooks_set(NULL);
+    dsd_signal_search_evidence_set(NULL);
+    free_state(state);
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
@@ -268,6 +323,7 @@ main(void) {
     test_unverified_pi_not_received(opts);
     test_reacquired_call_keeps_received(opts);
     test_later_call_does_not_inherit(opts);
+    test_ras_lc_names_no_detection(opts);
     dsd_signal_search_call_set(NULL);
     free(opts);
     return 0;

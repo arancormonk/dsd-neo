@@ -125,6 +125,10 @@ void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
  * exception: under -F a DMR voice LC accepted by the RAS heuristic counts as
  * checked, because RAS systems never let the standard CRC verify and -F opts
  * into that acceptance; without it a scanned RAS repeater would never hold.
+ * That exception is the scan hold's alone: a signal search hears the protocol's
+ * confirmation from every report, but takes its target and source only while
+ * the reporting slot's dsd_state::event_crc_invalid is clear, so a RAS-accepted
+ * or failed-CRC identity never names a detection.
  */
 void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                    uint32_t source, int is_private, int encrypted, int data_call);

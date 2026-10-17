@@ -114,10 +114,18 @@ dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* The confirmation reaches a signal search from every report; its IDs only from content whose own check verified (no
+   -F RAS acceptance or relaxed failed CRC in the reporting slot's scope), which is stricter than the scan hold. */
+static void
+note_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source) {
+    const int checked = state != NULL && state->event_crc_invalid[state->currentslot & 1] == 0U;
+    dsd_signal_search_note_evidence(state, protocol, checked ? target : 0U, checked ? source : 0U, NULL);
+}
+
 void
 dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                               uint32_t source, int is_private, int encrypted, int data_call) {
-    dsd_signal_search_note_evidence(state, "DMR", target, source, NULL);
+    note_search_evidence(state, "DMR", target, source);
     if (g_trunk_scan_hooks.dmr_conventional_activity) {
         g_trunk_scan_hooks.dmr_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
     }
@@ -126,7 +134,7 @@ dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_st
 void
 dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                uint32_t source, int is_private, int encrypted, int data_call) {
-    dsd_signal_search_note_evidence(state, "NXDN", target, source, NULL);
+    note_search_evidence(state, "NXDN", target, source);
     if (g_trunk_scan_hooks.nxdn_conventional_activity) {
         g_trunk_scan_hooks.nxdn_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
     }
@@ -135,7 +143,7 @@ dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_s
 void
 dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                               uint32_t source, int is_private, int encrypted, int data_call) {
-    dsd_signal_search_note_evidence(state, "P25", target, source, NULL);
+    note_search_evidence(state, "P25", target, source);
     if (g_trunk_scan_hooks.p25_conventional_activity) {
         g_trunk_scan_hooks.p25_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
     }
