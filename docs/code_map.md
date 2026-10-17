@@ -5993,6 +5993,8 @@ Qt Quick frontend (`src/ui/qt`):
   a header resize while the header is in view it moves `contentY` so `headerAnchor` (the disclosure card) keeps its
   place on screen, keeping the list's start at the start, deferring to the release under a held finger, and measuring
   from the offset noted between resizes because ListView may clamp `contentY` before the header announces its height.
+  The header's end is read off the first row; the footer stands in only for an empty list, and with the first row
+  recycled far down a long list the header's own geometry is used while it is in view, else the view is left alone.
   Tests: `tst_monitor_layout_budget.qml` (tiers at 360x690, 411x780, 411x914, 640x360 by scale and live strip,
   disclosure, summary, follow and focus), `tst_monitor_recent_calls.qml`, `tst_monitor_compact.qml`,
   `tst_main_safe_area.qml`, `UI_QT_PERSISTENCE` (`test_prefs_key_table`).

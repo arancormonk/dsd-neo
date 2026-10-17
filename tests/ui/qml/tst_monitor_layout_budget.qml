@@ -135,6 +135,7 @@ Item {
             for (var key of ["snrValid", "carrierLock", "qualityValid", "ccFecValid", "voiceErrsValid", "rsValid", "tetraVisible", "tetraCodecFault"])
                 m(key, false);
             m("encLockoutCount", 0);
+            m("uiMessage", "");
             m("siteLine", "");
             m("tetraCodecText", "");
             testContext.setPrefs("monitorDetailsExpanded", false);
@@ -610,6 +611,31 @@ Item {
             verify(Math.abs(viewportY(row) - y) > 1, "not corrected under the finger");
             mouseRelease(tc.list, tc.list.width / 2, pressY);
             tryVerify(function () { return Math.abs(viewportY(row) - y) < 1; }, 2000, "corrected on release");
+        }
+
+        // Far down a long history the first row is no longer instantiated. A
+        // header resize there (the engine's message line appearing under the
+        // disclosure) happens off screen and must not move what the reader sees.
+        function test_header_resize_with_the_first_row_virtualized() {
+            callHistory.clearAll();
+            callHistory.pushMany(200, "TODAY");
+            settle();
+            tc.list.positionViewAtIndex(100, ListView.Beginning);
+            settle();
+            verify(tc.list.itemAtIndex(0) === null, "the first row is virtualized");
+            var index = tc.list.indexAt(10, tc.list.contentY + 10);
+            var row = tc.list.itemAtIndex(index);
+            verify(row !== null);
+            var y = viewportY(row);
+            var contentY = tc.list.contentY;
+            m("uiMessage", "Muted");
+            settle();
+            compare(tc.list.contentY, contentY);
+            compare(viewportY(row), y);
+            m("uiMessage", "");
+            settle();
+            compare(tc.list.contentY, contentY);
+            compare(viewportY(row), y);
         }
     }
 }

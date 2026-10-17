@@ -110,10 +110,23 @@ Item {
     // Measured from the header's end, read off the first row (or the footer of an
     // empty list), which a header resize does not move: the header's own y may or
     // may not have been updated yet when its height announces the change.
+    //
+    // Far down a long list the first row is recycled and there is nothing to read
+    // the end off. The footer then sits at the far end of the calls, not under the
+    // header, so it is only the boundary of an empty list. With the header in view
+    // ListView places it against the first row's slot, so its own geometry gives
+    // the end; with it off screen there is no end to measure and nothing to keep in
+    // place — the reader is below the header, and the view stays where it is.
     function headerEnd() {
-        var first = root.list.count > 0 ? root.list.itemAtIndex(0) : null
-        if (first)
-            return first.y
+        if (root.list.count > 0) {
+            var first = root.list.itemAtIndex(0)
+            if (first)
+                return first.y
+            var header = root.list.headerItem
+            if (header && root.headerInView)
+                return header.y + header.height
+            return null
+        }
         if (root.list.footerItem)
             return root.list.footerItem.y
         return null
