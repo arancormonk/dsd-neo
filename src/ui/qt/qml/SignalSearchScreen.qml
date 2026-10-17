@@ -174,13 +174,15 @@ Item {
         }
         return compose("…");
     }
-    /** Lines @p text takes at @p width in the status line's font, wrapped at
-     * spaces as the line wraps it (a word wider than a line breaks anywhere). */
-    function wrappedLines(text, width) {
-        var space = statusMetrics.advanceWidth(" ");
+    /** Lines @p text takes at @p width in the status line's font, or in
+     * @p metrics, wrapped at spaces as the line wraps it (a word wider than
+     * a line breaks anywhere). */
+    function wrappedLines(text, width, metrics) {
+        var m = metrics || statusMetrics;
+        var space = m.advanceWidth(" ");
         var lines = 1, x = 0;
         for (var word of text.split(" ")) {
-            var w = statusMetrics.advanceWidth(word);
+            var w = m.advanceWidth(word);
             if (x > 0 && x + space + w <= width) {
                 x += space + w;
                 continue;
@@ -237,11 +239,35 @@ Item {
     function detailText(h) {
         return [h.site || "", h.access || "", h.tone || "", h.slot > 0 ? qsTr("Slot %1").arg(h.slot) : "", h.targetText || (h.target ? qsTr("Target %1").arg(h.target) : ""), h.sourceText || (h.source ? qsTr("Source %1").arg(h.source) : ""), h.crypt || ""].filter(function (s) { return s.length > 0; }).join(" · ");
     }
-    /** @p text to show wrapped: lines break only after a " · ", so a
-     * value ("SYS 1183", "KID 0001") never splits and no line starts with
-     * a separator. Screen readers get the plain text. */
-    function keepValues(text) {
-        return text.replace(/ /g, "\u00a0").replace(/\u00a0·\u00a0/g, "\u00a0· ");
+    /** @p text to show wrapped: every space inside a value is made
+     * non-breaking, so lines break only after a " · " and a value ("SYS
+     * 1183", "KID 0001") never splits, nor does a line start with a
+     * separator. A value wider than @p width in @p metrics keeps its spaces
+     * and wraps at its words; with no @p metrics every value is kept whole.
+     * Line breaks stay. Screen readers get the plain text. */
+    function keepValues(text, width, metrics) {
+        return text.split("\n").map(function (line) {
+            return line.split(" · ").map(function (value) {
+                return metrics && metrics.advanceWidth(value) > width ? value : value.replace(/ /g, "\u00a0");
+            }).join("\u00a0· ");
+        }).join("\n");
+    }
+    /** @p values joined for @p lines lines of @p width (keepValues() text
+     * wraps only at its breakable spaces, which wrappedLines() counts): all
+     * of them, or as many leading ones as fit followed by "…", so a value
+     * is never cut.
+     * Only a first value that alone needs more lines is left to the Text's
+     * own elision. */
+    function fitValues(values, width, lines, metrics) {
+        var all = keepValues(values.join(" · "), width, metrics);
+        if (width <= 0 || wrappedLines(all, width, metrics) <= lines)
+            return all;
+        for (var k = values.length - 1; k > 0; --k) {
+            var shown = keepValues(values.slice(0, k).concat(["…"]).join(" · "), width, metrics);
+            if (wrappedLines(shown, width, metrics) <= lines)
+                return shown;
+        }
+        return all;
     }
     // The Now panel's actions. "Hold" and "Release Hold" share one cell, so a
     // Hold toggle never reflows the grid; `labels` lists every label a cell can
@@ -307,6 +333,7 @@ Item {
     FontMetrics { id: strengthMetrics; font.family: Theme.mono; font.pixelSize: Theme.fontSize(14) }
     FontMetrics { id: identificationMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(16) }
     FontMetrics { id: detailMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(14) }
+    FontMetrics { id: historyMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(13) }
     FontMetrics { id: actionMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(15); font.weight: Font.DemiBold }
     Rectangle { anchors.fill: parent; color: Theme.bg }
     Column {
@@ -530,7 +557,14 @@ Item {
                             // The hint belongs to a search that is running or paused;
                             // a stopped or failed one shows only its phase and message.
                             readonly property string fullText: !screen.receiving ? ([1, 2, 6].indexOf(screen.phase) >= 0 ? qsTr("Strong signals open here to be identified and monitored.") : "") : screen.detailText(screen.hit)
-                            text: screen.receiving ? screen.keepValues(fullText) : fullText
+                            // The values that fit both lines, ending "· …" when
+                            // some do not; elision is only the last resort.
+                            text: {
+                                // advanceWidth() is a call, which a binding does not
+                                // track: reading the font re-measures on a scale change.
+                                var font = detailMetrics.font;
+                                return screen.receiving && fullText.length > 0 ? screen.fitValues(fullText.split(" · "), width, 2, detailMetrics) : fullText;
+                            }
                             color: Theme.textSecondary
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(14)
@@ -770,7 +804,10 @@ Item {
                                 // checked with, under its verdict.
                                 readonly property string checked: [modelData.site || "", modelData.crypt || ""].filter(function (s) { return s.length > 0; }).join(" · ")
                                 readonly property string fullText: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (checked ? "\n" + checked : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "")
-                                text: screen.keepValues(fullText)
+                                text: {
+                                    var font = historyMetrics.font;
+                                    return screen.keepValues(fullText, width, historyMetrics);
+                                }
                                 Accessible.name: fullText.replace(/\n/g, " · ")
                                 color: Theme.textSecondary
                                 font.family: Theme.sans

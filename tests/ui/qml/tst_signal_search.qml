@@ -643,10 +643,25 @@ Item {
             model.status = base;
         }
         // The longest site a detection can carry: 95 bytes, its field's limit.
-        readonly property string longestSite: "TIII Large · Net 1023 · Site 4095 · SYS 3FFF · Regional interoperability network, East dist"
+        readonly property string longestSite: "WACN BEE00 · SYS 1A3 · RFSS 255 · Site 255 · TIII Large · Net 1024 · Site 4096.3 · SYS 3"
+        // What the detail shows is whole values: every one, or the leading
+        // ones that fit followed by "· …", never a value cut short.
+        function verifyWholeValues(detail, tag) {
+            var shown = detail.text.replace(/\u00a0/g, " ");
+            var full = detail.Accessible.description;
+            verify(!detail.truncated, "nothing is cut by elision in " + tag);
+            verify(detail.lineCount <= 2, "two lines at most in " + tag);
+            if (shown !== full) {
+                verify(shown.endsWith(" · …"), "\"" + shown + "\" ends after a whole value in " + tag);
+                verify((full + " · ").startsWith(shown.slice(0, -1)), "\"" + shown + "\" is the full text's leading values in " + tag);
+            }
+            verify(!/[^·] /.test(detail.text), "a value never splits across lines in " + tag);
+            return shown;
+        }
         // The detail reads site, access code, the call with its slot, then
-        // its encryption; what the two lines cannot hold elides, and the
-        // whole text is the accessible description.
+        // its encryption; what the two lines cannot hold is left off whole
+        // values at a time, and the whole text is the accessible
+        // description.
         function test_detail_reads_site_call_then_encryption_data() {
             return [{tag: "default text", scale: 1.0}, {tag: "largest text", scale: 1.6}];
         }
@@ -663,20 +678,24 @@ Item {
             compare(detail.Accessible.description, "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567");
             compare(detail.Accessible.name, detail.Accessible.description);
             // Shown, it breaks only after a separator: every other space is non-breaking.
-            compare(detail.text.replace(/\u00a0/g, " "), detail.Accessible.description);
-            verify(!/[^·] /.test(detail.text), "a value never splits across lines");
+            var p25 = verifyWholeValues(detail, "P25");
+            if (data.scale === 1.0)
+                compare(p25, detail.Accessible.description, "the P25 detail fits whole at default text");
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "DMR", unresolved: false,
                 site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, target: 100, source: 2001, crypt: "Encrypted"})});
             compare(detail.Accessible.description, "TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 · Encrypted");
-            compare(detail.text.replace(/\u00a0/g, " "), detail.Accessible.description);
-            // The longest: elided on its second line, whole for a screen reader.
+            var dmr = verifyWholeValues(detail, "DMR");
+            if (data.scale === 1.0)
+                compare(dmr, detail.Accessible.description, "the DMR detail fits whole at default text");
+            // The longest: the values that fit and "· …", whole for a screen reader.
             var longest = {confirmed: true, protocol: "DMR", unresolved: false, site: longestSite, access: "CC 15", slot: 1,
-                targetText: "Regional interoperability talkgroup band", sourceText: "Unit 7 portable", crypt: "ALG 84 · KID 0001"};
+                targetText: "Regional interoperability talkgroup band with a very long name", sourceText: "Unit 7 portable", crypt: "ALG 84 · KID 0001"};
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, longest)});
             waitForRendering(panel);
-            verify(detail.truncated, "the longest detail elides");
-            verify(detail.lineCount <= 2 && detail.height <= detail.parent.height + 0.5, "inside its two lines");
-            verify(detail.Accessible.description.endsWith("Slot 1 · Regional interoperability talkgroup band · Unit 7 portable · ALG 84 · KID 0001"));
+            var shown = verifyWholeValues(detail, "the longest detail");
+            verify(shown.endsWith(" · …"), "the longest detail leaves values off");
+            verify(detail.height <= detail.parent.height + 0.5, "inside its two lines");
+            verify(detail.Accessible.description.endsWith("Slot 1 · Regional interoperability talkgroup band with a very long name · Unit 7 portable · ALG 84 · KID 0001"));
             verify(detail.Accessible.description.startsWith(longestSite + " · CC 15"));
             compare(panel.height, height, "the panel keeps its height");
             // A clear call on a one-slot protocol names no slot and no encryption.
