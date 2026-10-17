@@ -40,6 +40,7 @@ dstar_confirm_note_evidence(dsd_state* state, dstar_evidence evidence) {
         state->dstar_confirm_weak_streak = 0;
         state->dstar_confirmed = 1;
         dsd_signal_search_note_evidence(state, "D-STAR", 0, 0, NULL);
+        dsd_signal_search_note_call(state, 0U);
         return;
     }
     if (evidence != DSTAR_EVIDENCE_WEAK || state->dstar_confirm_frame_evidence != 0) {
@@ -53,6 +54,7 @@ dstar_confirm_note_evidence(dsd_state* state, dstar_evidence evidence) {
     if (state->dstar_confirm_weak_streak >= DSTAR_CONFIRM_WEAK_OBSERVES) {
         state->dstar_confirmed = 1;
         dsd_signal_search_note_evidence(state, "D-STAR", 0, 0, NULL);
+        dsd_signal_search_note_call(state, 0U);
     }
 }
 

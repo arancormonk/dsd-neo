@@ -26,6 +26,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -574,6 +575,43 @@ test_repeat_helper_windows(void) {
     return rc;
 }
 
+/* Call notes a signal search hears on slot 0, and the slot-0 record each one found. */
+static int g_call_notes;
+static dsd_call_snapshot g_noted;
+
+static void
+capture_call_note(const dsd_state* state, uint8_t slot) {
+    if (slot == 0U) {
+        g_call_notes++;
+        (void)dsd_call_state_get(state, 0U, &g_noted);
+    }
+}
+
+/* A Phase 2 MAC_PTT publishes its identity and notes the call; the ESS/MAC_PTT crypto that resolves after it, with no
+   later identity, notes the call again, now with the tuple it received. */
+static int
+test_ptt_identity_then_crypto_notes_the_call(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x40);
+    event_ticks();
+    g_call_notes = 0;
+    dsd_signal_search_call_set(capture_call_note);
+    mac_ptt(0x66U);
+    rc |= expect("PTT identity notes the call", g_call_notes >= 1);
+    rc |= expect("noted call names the PTT", g_noted.ota_target_id == TEST_TG && g_noted.ota_source_id == TEST_SRC);
+    rc |= expect("PTT identity receives no crypto", g_noted.crypto_received == 0U);
+    const int after_identity = g_call_notes;
+    resolve_ess();
+    rc |= expect("crypto resolution notes the call", g_call_notes == after_identity + 1);
+    rc |= expect("noted call received the tuple",
+                 g_noted.crypto_received == (DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID)
+                     && g_noted.received_algid == TEST_ALGID && g_noted.received_kid == TEST_KEYID);
+    rc |= expect("noted call keeps its identity", g_noted.ota_target_id == TEST_TG);
+    dsd_signal_search_call_set(NULL);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -588,6 +626,7 @@ main(void) {
     rc |= test_post_end_changed_source_reopens();
     rc |= test_repeat_helper_windows();
     rc |= test_unverified_seed_is_no_received_nac();
+    rc |= test_ptt_identity_then_crypto_notes_the_call();
 
     if (g_state.event_history_s != NULL) {
         free(g_state.event_history_s);

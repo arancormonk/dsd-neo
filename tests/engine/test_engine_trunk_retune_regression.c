@@ -183,6 +183,15 @@ dmr_le_vendor_reset(dsd_state* state, uint8_t slot) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
+    const uint8_t idx = slot != 0U ? 1U : 0U;
+    state->dmr_pi_precall_rx[idx] = 0U;
+    state->dmr_pi_precall_algid[idx] = 0U;
+    state->dmr_pi_precall_kid[idx] = 0U;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_frame_sync_reset_mod_state(void) {
     g_frame_sync_reset_calls++;
 }

@@ -169,12 +169,25 @@ main(void) {
     observer(&status, &status.hit, observer_user);
     assert(published.hit.access[0] == '\0' && published.hit.source_text[0] == '\0');
 
-    // A protocol confirmation permits the current decoded details.
+    // A protocol confirmation permits the current access code. The call tuple is the coordinator's: the observer reads
+    // no call text of its own, even from an active, CRC-clean record.
     status.hit.confirmed = 1;
     DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "DMR");
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "CC 7") == 0);
+    assert(published.hit.source_text[0] == '\0' && published.hit.crypt[0] == '\0' && published.hit.slot == 0);
+    // The coordinator's tuple -- IDs, texts, slot and crypt from one checked record -- reaches the published status as
+    // it gave it.
+    status.hit.target = 100;
+    status.hit.source = 200;
+    status.hit.slot = 1;
+    DSD_SNPRINTF(status.hit.source_text, sizeof(status.hit.source_text), "%s", "valid talker");
+    DSD_SNPRINTF(status.hit.crypt, sizeof(status.hit.crypt), "%s", "ALG 21 \xC2\xB7 KID 0005");
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CC 7") == 0);
+    assert(published.hit.target == 100 && published.hit.source == 200 && published.hit.slot == 1);
     assert(strcmp(published.hit.source_text, "valid talker") == 0);
+    assert(strcmp(published.hit.crypt, "ALG 21 \xC2\xB7 KID 0005") == 0);
 
     // A later false sync and even a malformed call snapshot cannot enrich a periodic refresh.
     state->synctype = DSD_SYNC_P25P1_POS;
@@ -184,18 +197,37 @@ main(void) {
     observer(&status, NULL, observer_user);
     assert(strcmp(published.hit.access, "CC 7") == 0);
     assert(strcmp(published.hit.source_text, "valid talker") == 0);
+    assert(strcmp(published.hit.crypt, "ALG 21 \xC2\xB7 KID 0005") == 0 && published.hit.slot == 1);
+
+    // A later call on the same hit replaces the tuple whole: nothing of the call before it is carried forward.
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    call.protocol = state->synctype;
+    status.hit.target = 500;
+    status.hit.source = 600;
+    status.hit.source_text[0] = '\0';
+    DSD_SNPRINTF(status.hit.crypt, sizeof(status.hit.crypt), "%s", "Encrypted");
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.target == 500 && published.hit.source == 600 && published.hit.source_text[0] == '\0');
+    assert(strcmp(published.hit.crypt, "Encrypted") == 0 && strcmp(published.hit.access, "CC 7") == 0);
+    observer(&status, NULL, observer_user);
+    assert(published.hit.source_text[0] == '\0' && strcmp(published.hit.crypt, "Encrypted") == 0);
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state->dmr_color_code = 3;
     observer(&status, NULL, observer_user);
     assert(strcmp(published.hit.access, "CC 7") == 0);
 
-    // A newly confirmed protocol on the same RF frequency cannot inherit old identities.
+    // A newly confirmed protocol on the same RF frequency cannot inherit old identities: the coordinator cleared the
+    // tuple, and the observer restores none of it.
+    status.hit.target = status.hit.source = 0;
+    status.hit.slot = 0;
+    status.hit.crypt[0] = '\0';
     DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "NXDN48");
     state->synctype = DSD_SYNC_NXDN_POS;
     state->nxdn_last_ran = 3;
     call.phase = DSD_CALL_PHASE_IDLE;
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "RAN 3") == 0 && published.hit.source_text[0] == '\0');
+    assert(published.hit.target == 0 && published.hit.slot == 0 && published.hit.crypt[0] == '\0');
 
     // The coordinator's checked site reaches the published status as it gave it, on a hit change and on a periodic
     // refresh alike; the observer neither invents nor carries one.

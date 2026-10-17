@@ -97,7 +97,21 @@ Generated (do not edit/commit):
     so a final broadcast before silence reaches the live status and the ended hit. Decoder state
     (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never cleared or written
     for it. `hit.site` is not yet in the history journal (`ENGINE_SIGNAL_SEARCH`,
-    `APP_SIGNAL_SEARCH_PROVENANCE`). Published status carries `owned` (a coordinator
+    `APP_SIGNAL_SEARCH_PROVENANCE`). The hit's call tuple (`target`, `source`, `target_text`,
+    `source_text`, `slot`, `crypt`) is one canonical call record's, copied whole by
+    `dsd_engine_signal_search_call()` (installed as the runtime call hook) from the slot a call
+    note names, under the same receiving gate: the record must be ACTIVE, CRC-clean
+    (`crc_invalid == 0`) and of a protocol the search names (DMR, P25, NXDN, dPMR, M17, YSF,
+    D-STAR). The tuple is the most recent call on the hit: a note for the tuple's own call
+    (slot and epoch) updates it, a call that began no earlier (`started_m`) replaces it whole on
+    either slot, and an older call still running on the other slot leaves it, so two DMR slots
+    never mix. `slot` is the record's slot plus one for DMR and P25 Phase 2, else 0; `crypt` is
+    "ALG xx · KID xxxx" from the record's received bits only (`crypto_received`), "Encrypted"
+    when its classification is encrypted, pending or decryptable with none received, and empty
+    for a clear or unknown call. Like the site it shows once the hit's protocol matches, clears
+    at each landing and on a change to another protocol, and stays on the ended hit; evidence IDs
+    fill `target`/`source` only while no tuple belongs to the hit. `slot` and `crypt` are not yet
+    in the journal. Published status carries `owned` (a coordinator
     holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
     frequency are restored on exit: a search Stop tunes back, running the carrier boundary
     and acquisition reset as each visit's tune does, and its retune carries the session's
@@ -785,6 +799,21 @@ suite runs under this compiler.
   released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a
   sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
   `dsd_scan_keys_leave()` in `src/core/util/key_set.c`, and are likewise never deep-copied into the UI snapshot.
+- API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
+  `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
+  that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`
+  bits name a field sets it (`dsd_call_state_update_crypto()`, `_update_retained_crypto()`), and it stays for the
+  epoch: a forced (`--dmr-force-algid`), key-inferred, late-entry, carried or synthesized value, or live values a sync
+  loss cleared, change `algid`/`kid` and never the received ones. A new epoch starts with none, an epoch that
+  specializes the identity-less voice epoch it opened in keeps them, and a reacquired epoch carries the ending one's
+  (`call_state_seed_reacquired_snapshot()`); a trunk-scan context restore copies them with the snapshot. The writers
+  that set them: P25 `p25_crypto_resolve()` (HDU, LDU2, ESS, MAC_PTT; not a tuple a clear-conflict quarantine
+  deferred), DMR `dmr_pi()` (Kirisun's key id is a hash, so ALG only; no RAS or failed-CRC burst, no undefined DMRA
+  algorithm) directly or through `dsd_state::dmr_pi_precall_*` into the call the next checked LC opens, NXDN
+  `nxdn_vcall_publish()` once `nxdn_cipher_established_enc()`, and M17 `m17_publish_lsf()` (encryption type only).
+  Nothing else does: dPMR's scrambling flag, TETRA, X2-TDMA, EDACS, SCCH and file playback set none. History, events,
+  the terminal and Monitor keep reading `algid`/`kid` as before; only Signal search reads the received ones
+  (`CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`, `NXDN_ENC_CLASS`, `M17_STATE_DISPATCH`).
 - API note (CRC provenance, discussion #602): `<dsd-neo/core/crc_provenance.h>` defines the bits that
   `dsd_state::event_crc_invalid` (the decoder-thread scope a dispatcher ORs its bits into and restores),
   `dsd_state::data_header_crc_invalid`, `dsd_call_snapshot::crc_invalid` and `Event_History::crc_invalid` carry:
@@ -1341,8 +1370,10 @@ suite runs under this compiler.
     configuration check engine and frontends share (`dsd_signal_search_validate_config()`)
     and conservative DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
     carries validated protocol evidence, CRC/FEC-checked site notes
-    (`dsd_signal_search_note_site()`) and the decoder-thread active query, with no-op
-    defaults. The checked site record (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`,
+    (`dsd_signal_search_note_site()`), call notes (`dsd_signal_search_note_call()`: a slot whose
+    canonical call record a protocol just published after its check; the engine reads the record)
+    and the decoder-thread active query, with no-op defaults. The checked site record
+    (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`,
     `dsd_signal_search_site_format()`) is runtime's: a P25 site note joins only a record with
     no SYSID or the same one, and a network note naming another WACN or SYSID, another protocol's
     note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a control block whose CRC passes
@@ -1804,11 +1835,14 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
 - Target: `dsd-neo_app_control`
 - Responsibilities:
   - Signal search commands 712/713 are frontend-only and not public TCP API commands.
-    `actions/actions_signal_search.c` runs them on the decoder thread, enriches copied
-    hits using confirmed call/access-code and received-tone views, and flushes on stop.
-    Decoded-field enrichment runs only on confirmation callbacks; periodic status
-    refreshes cannot promote fields from a subsequent unconfirmed sync. The callback reads
-    the call and access code from state as it runs, so a protocol reports a confirmation
+    `actions/actions_signal_search.c` runs them on the decoder thread, adds the access code
+    and received tone to copied hits, and flushes on stop. The call tuple (IDs, texts, slot,
+    crypt) is the coordinator's and passes through untouched: the observer reads no call text
+    and carries nothing forward from an earlier publication. The access code is formatted only
+    on confirmation callbacks, from the service options of the call the tuple names (its slot,
+    the same ACTIVE, protocol and CRC checks); periodic status refreshes cannot promote it from
+    a subsequent unconfirmed sync, and keep the access code and tone the hit last had. The
+    callback reads the access code from state as it runs, so a protocol reports a confirmation
     only after committing the content that passed the check: M17's LSF, D-STAR's
     slow-data header and YSF's DCH report after publishing their callsigns (and M17's
     CAN), and the dPMR and NXDN confirm modules report a frame's confirmation from
@@ -4768,6 +4802,18 @@ Private per-protocol modules worth knowing about:
   `nxdn_location_id_handler()` (SITE_INFO, SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once
   `nxdn_confirm_is_confirmed()`, so a single short SACCH CRC does not show a site; adjacent sites and the Type-D SCCH
   site ID (7-bit CRC) are not notes (`NXDN_SEARCH_SITE_NOTES`).
+- Signal search call notes (`dsd_signal_search_note_call()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
+  writer passes the slot of a canonical call record it just published after its check, and the engine reads that
+  record (see Signal search under Engine). DMR: `dmr_flco_publish_voice()` (a CRC-checked voice LC, after the call and
+  its crypto are published) and `dmr_pi_publish_crypto()` (a checked PI header's crypto-only update of the slot's
+  call; with no call active the PI is held per slot in `dsd_state::dmr_pi_precall_*` for the call the next checked LC
+  opens, and dropped at that slot's terminator, `dmr_pi_precall_reset()` in the no-carrier pass, a carrier boundary, a
+  retune and a trunk-scan visit). P25: the trunk state machine's canonical publish (`p25_call_publish_observation()`,
+  `p25_sm_publish_conventional_voice()`), the LCW source update, the Phase 2 vPDU voice observation and every
+  `p25_crypto_resolve()` of a checked tuple (HDU, LDU2, ESS, MAC_PTT after its identity). NXDN, dPMR, M17, YSF and
+  D-STAR: beside each search evidence report of their confirm points, after the frame published what its
+  confirmation unlocked (`NXDN_CONFIRM`, `DPMR_CONFIRM`, `M17_STATE_DISPATCH`, `YSF_DCH_DECODE`,
+  `DSTAR_HEADER_UTILS`, `P25_P2_ACTIVE_PTT_EPOCH`, `DMR_SEARCH_CALL_NOTES`).
 
 - `src/protocol/tetra/tetra_confirm.{c,h}` — the same module for TETRA, whose 22-bit normal-burst training sequence
   receiver noise matches under the frame sync's eight hypotheses. A burst proves itself with a block whose CRC passed:

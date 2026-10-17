@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -2885,6 +2886,7 @@ p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
     const int began = dsd_call_state_observe(state, &observation, boundary);
     if (began >= 0) {
         p25_call_publish_crypto(opts, state, slot, observed_m);
+        dsd_signal_search_note_call(state, (uint8_t)slot);
     }
     if (began > 0) {
         p25_sm_diagf((dsd_opts*)opts, state, ctx, "canonical_epoch_begin",
@@ -6774,6 +6776,7 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
     }
     (void)dsd_call_state_observe(state, &observation, boundary);
     p25_call_publish_crypto(opts, state, slot, 0.0);
+    dsd_signal_search_note_call(state, (uint8_t)slot);
     /* Raw MAC_PTT still has to resolve its ALGID/KID after publishing identity.
      * XCCH reports the hold once that classification is complete. */
     if (!ev->ptt_signature_valid) {

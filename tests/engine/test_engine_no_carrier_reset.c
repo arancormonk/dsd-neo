@@ -1013,6 +1013,30 @@ test_direct_rtl_return_records_the_tuner_frequency(void) {
     return rc;
 }
 
+/* The no-carrier pass clears the DMR payload crypto, and with it a PI held for the call a lost voice LC header would
+   have opened: a sync loss leaves no verified pre-call crypto for whatever decodes next. */
+static int
+test_no_carrier_drops_dmr_precall_pi(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    state->payload_algid = state->payload_algidR = 0x21;
+    state->payload_keyid = state->payload_keyidR = 0x05;
+    state->dmr_pi_precall_rx[0] = state->dmr_pi_precall_rx[1] = 3U;
+    state->dmr_pi_precall_algid[0] = state->dmr_pi_precall_algid[1] = 0x21U;
+    state->dmr_pi_precall_kid[0] = state->dmr_pi_precall_kid[1] = 0x05U;
+    noCarrier(opts, state);
+    int rc = expect_true("no carrier clears the DMR payload crypto",
+                         state->payload_algid == 0 && state->payload_algidR == 0 && state->payload_keyid == 0);
+    rc |= expect_true("no carrier drops the DMR pre-call PI crypto",
+                      state->dmr_pi_precall_rx[0] == 0U && state->dmr_pi_precall_rx[1] == 0U
+                          && state->dmr_pi_precall_algid[0] == 0U && state->dmr_pi_precall_kid[1] == 0U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A DMR rest channel left from before an operator move onto an NXDN system never replaces the NXDN control channel a
    CAC validated since; with no owner it still applies, as before. */
 static int
@@ -4023,6 +4047,9 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     state->late_entry_mi_fragment[0][1][0] = 5U;
     state->dmr_le_vendor[0] = DMR_LE_VENDOR_HYTERA_ENH;
     state->dmr_le_vendor[1] = DMR_LE_VENDOR_KIRISUN_ENC;
+    state->dmr_pi_precall_rx[0] = state->dmr_pi_precall_rx[1] = 3U;
+    state->dmr_pi_precall_algid[1] = 0x21U;
+    state->dmr_pi_precall_kid[1] = 0x05U;
     state->dmr_alias_format[0] = 1;
     state->dmr_alias_block_len[0] = 4;
     state->dmr_alias_char_size[0] = 7;
@@ -4066,6 +4093,10 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     /* Issue #657: the calls end at the boundary, and with them each slot's vendor late-entry mode. */
     rc |= expect_true("assemblies: the boundary drops the DMR vendor late-entry modes",
                       state->dmr_le_vendor[0] == DMR_LE_VENDOR_NONE && state->dmr_le_vendor[1] == DMR_LE_VENDOR_NONE);
+    /* As does a PI held for the call a lost voice LC header would have opened. */
+    rc |= expect_true("assemblies: the boundary drops the DMR pre-call PI crypto",
+                      state->dmr_pi_precall_rx[0] == 0U && state->dmr_pi_precall_rx[1] == 0U
+                          && state->dmr_pi_precall_algid[1] == 0U && state->dmr_pi_precall_kid[1] == 0U);
     rc |= expect_true("assemblies: the boundary drops the DMR talker alias and the alias shown",
                       state->dmr_alias_format[0] == 0 && state->dmr_alias_block_len[0] == 0
                           && state->dmr_alias_char_size[0] == 0 && state->dmr_alias_block_segment[0][0][0][0] == 0
@@ -6557,6 +6588,7 @@ main(void) {
     rc |= test_direct_return_after_hook_tune();
     rc |= test_stale_dmr_rest_channel_under_nxdn_owner();
     rc |= test_direct_rtl_return_records_the_tuner_frequency();
+    rc |= test_no_carrier_drops_dmr_precall_pi();
     rc |= test_dmr_explicit_return_destination();
     rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
     rc |= test_fsk_reacquire_cooldown_runs_across_a_replay_leave();

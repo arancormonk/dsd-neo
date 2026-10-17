@@ -6,12 +6,14 @@
 #include <assert.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -88,6 +90,19 @@ advance(unsigned ms) {
     dsd_decode_clock_test_set_ns(now_ms * 1000000);
 }
 
+/* The canonical call records the coordinator reads, one per slot (the core's dsd_call_state_get(), stubbed). */
+static dsd_call_snapshot calls[DSD_CALL_STATE_SLOT_COUNT];
+
+int
+dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out) {
+    (void)state;
+    if (slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    *out = calls[slot];
+    return out->epoch != 0U ? 1 : 0;
+}
+
 int
 rtl_stream_is_active(void) {
     return live;
@@ -100,7 +115,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 61);
+    assert(owner >= 42 && owner <= 62);
     if (defer) {
         --defer;
         return 1;
@@ -1026,6 +1041,184 @@ test_site_notes_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     assert(strcmp(status.hit.site, "WACN ABCDE \xC2\xB7 SYS 123") == 0);
 }
 
+/* Put an active call on @p slot: one epoch of one transmission, as the canonical layer would hold it. */
+static dsd_call_snapshot*
+put_call(uint8_t slot, uint64_t epoch, double started_m, int protocol, uint64_t target, uint64_t source) {
+    dsd_call_snapshot* call = &calls[slot];
+    DSD_MEMSET(call, 0, sizeof(*call));
+    call->epoch = epoch;
+    call->slot = slot;
+    call->started_m = started_m;
+    call->phase = DSD_CALL_PHASE_ACTIVE;
+    call->protocol = protocol;
+    call->kind = DSD_CALL_KIND_GROUP_VOICE;
+    call->ota_target_id = target;
+    call->ota_source_id = source;
+    call->crypto = DSD_CALL_CRYPTO_CLEAR;
+    return call;
+}
+
+static void
+put_crypto(dsd_call_snapshot* call, dsd_call_crypto_state crypto, uint8_t algid, uint16_t kid, uint8_t received) {
+    call->crypto = crypto;
+    call->algid = algid;
+    call->kid = kid;
+    call->crypto_received = received;
+    call->received_algid = (received & DSD_CALL_CRYPTO_RX_ALG) ? algid : 0U;
+    call->received_kid = (received & DSD_CALL_CRYPTO_RX_KID) ? kid : 0U;
+}
+
+static int
+tuple_is(const dsd_signal_search_hit* hit, uint32_t target, uint32_t source, int slot, const char* crypt) {
+    return hit->target == target && hit->source == source && hit->slot == slot && strcmp(hit->crypt, crypt) == 0;
+}
+
+/* A detection's IDs, texts, slot and crypt are one checked call record's: the most recent call heard on the hit,
+   never a mix of two slots' calls, and the crypt only what that call received over the air. */
+static void
+test_call_tuple_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    dsd_signal_search_config one = *config;
+    one.session_id = 62;
+    one.avoid_count = 0;
+    one.range_count = 1;
+    one.ranges[0].start_hz = 100000000;
+    one.ranges[0].end_hz = 100025000;
+    one.ranges[0].digital = 1;
+    one.ranges[0].max_visit_ms = 0;
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    // A call heard while the search measures its span belongs to no detection.
+    dsd_call_snapshot* a = put_call(0, 1, 1.0, DSD_SYNC_DMR_BS_VOICE_POS, 100, 200);
+    dsd_signal_search_note_call(s, 0);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && tuple_is(&status.hit, 0, 0, 0, ""));
+
+    // A call noted before the protocol is identified shows once it is, whole: IDs, texts, slot and received crypt.
+    put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED, 0x21, 0x05, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+    DSD_SNPRINTF(a->source_text, sizeof(a->source_text), "%s", "Unit 200");
+    int published = hits_published;
+    dsd_signal_search_note_call(s, 0);
+    assert(hits_published == published && status.hit.target == 0);
+    dsd_signal_search_note_evidence(s, "DMR", 0, 0, NULL);
+    assert(tuple_is(&status.hit, 100, 200, 1, "ALG 21 \xC2\xB7 KID 0005"));
+    assert(strcmp(status.hit.source_text, "Unit 200") == 0 && status.hit.target_text[0] == '\0');
+    assert(tuple_is(&published_hit, 100, 200, 1, "ALG 21 \xC2\xB7 KID 0005"));
+
+    // Two simultaneous DMR slots: the call that began later is the tuple, whole, and an older call still running on
+    // the other slot re-announcing itself does not mix its IDs or crypto into it.
+    dsd_call_snapshot* b = put_call(1, 1, 2.0, DSD_SYNC_DMR_BS_VOICE_NEG, 300, 400);
+    DSD_SNPRINTF(b->target_text, sizeof(b->target_text), "%s", "Fire");
+    published = hits_published;
+    dsd_signal_search_note_call(s, 1);
+    assert(hits_published == published + 1);
+    assert(tuple_is(&status.hit, 300, 400, 2, "") && tuple_is(&published_hit, 300, 400, 2, ""));
+    assert(strcmp(status.hit.target_text, "Fire") == 0 && status.hit.source_text[0] == '\0');
+    const uint64_t revision = status.revision;
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 300, 400, 2, "") && status.revision == revision);
+    // The tuple's own call updates it in place; a repeat that changes nothing publishes nothing.
+    put_crypto(b, DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0x24, 0x0007, DSD_CALL_CRYPTO_RX_KID);
+    dsd_signal_search_note_call(s, 1);
+    assert(tuple_is(&status.hit, 300, 400, 2, "KID 0007") && strcmp(status.hit.target_text, "Fire") == 0);
+    published = hits_published;
+    dsd_signal_search_note_call(s, 1);
+    assert(hits_published == published);
+
+    // Evidence IDs are only the fallback for a hit no call record names: they never overwrite the tuple.
+    dsd_signal_search_note_evidence(s, "DMR", 777, 888, NULL);
+    assert(tuple_is(&status.hit, 300, 400, 2, "KID 0007"));
+
+    // A later call on the same hit replaces the tuple whole, on either slot. It does not inherit the crypto the call
+    // before it received: a checked privacy indication alone shows as "Encrypted".
+    a = put_call(0, 2, 3.0, DSD_SYNC_DMR_BS_VOICE_POS, 500, 600);
+    put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0x21, 0x05, 0);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, "Encrypted"));
+    assert(status.hit.target_text[0] == '\0' && status.hit.source_text[0] == '\0');
+    // A forced or inferred ALG ID the record carries but never received shows nothing beyond "Encrypted".
+    a->algid = 0x22;
+    a->kid = 0xFF;
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, "Encrypted"));
+    // A clear call shows no crypt, whatever was received for it (a P25 ALG 80 is "clear").
+    put_crypto(a, DSD_CALL_CRYPTO_CLEAR, 0x80, 0, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, ""));
+
+    // Only an active, CRC-clean record of a protocol the search identifies is a tuple.
+    published = hits_published;
+    b = put_call(1, 2, 4.0, DSD_SYNC_DMR_BS_VOICE_NEG, 901, 902);
+    b->crc_invalid = 1;
+    dsd_signal_search_note_call(s, 1);
+    b->crc_invalid = 0;
+    b->phase = DSD_CALL_PHASE_ENDED;
+    dsd_signal_search_note_call(s, 1);
+    b->phase = DSD_CALL_PHASE_ACTIVE;
+    b->protocol = DSD_SYNC_X2TDMA_DATA_POS;
+    dsd_signal_search_note_call(s, 1);
+    b->protocol = DSD_SYNC_DMR_BS_VOICE_NEG;
+    s->input_interrupted = 1;
+    dsd_signal_search_note_call(s, 1);
+    s->input_interrupted = 0;
+    dsd_signal_search_note_call(s, 7);
+    assert(tuple_is(&status.hit, 500, 600, 1, "") && hits_published == published);
+
+    // A protocol change clears the tuple; the new protocol's call shows its own, with its Phase 2 slot.
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    assert(tuple_is(&status.hit, 0, 0, 0, "") && status.hit.target_text[0] == '\0');
+    dsd_signal_search_note_call(s, 0); // the DMR call is not this protocol's
+    assert(tuple_is(&status.hit, 0, 0, 0, ""));
+    b = put_call(1, 3, 5.0, DSD_SYNC_P25P2_POS, 1001, 1002);
+    put_crypto(b, DSD_CALL_CRYPTO_DECRYPTABLE, 0x84, 0x0001, DSD_CALL_CRYPTO_RX_ALG);
+    dsd_signal_search_note_call(s, 1);
+    assert(tuple_is(&status.hit, 1001, 1002, 2, "ALG 84"));
+    // A P25 Phase 1 call has no timeslot.
+    a = put_call(0, 3, 6.0, DSD_SYNC_P25P1_POS, 2001, 2002);
+    put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED, 0x84, 0x0001, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 2001, 2002, 0, "ALG 84 \xC2\xB7 KID 0001"));
+
+    // The last call before the channel falls silent is the detection's: the ended hit keeps it, and the call ending
+    // changes nothing.
+    tick(o, s);
+    advance(500);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && published_hit.ended);
+    assert(tuple_is(&status.hit, 2001, 2002, 0, "ALG 84 \xC2\xB7 KID 0001"));
+    assert(tuple_is(&published_hit, 2001, 2002, 0, "ALG 84 \xC2\xB7 KID 0001"));
+    // Between visits nothing is noted, and the next landing starts with no tuple; its evidence IDs are the fallback
+    // until a call record names it.
+    dsd_signal_search_note_call(s, 0);
+    for (int i = 0; i < 8 && !(status.phase == DSD_SEARCH_TUNING && !status.hit.ended); ++i) {
+        land(o, s);
+        ready = 1;
+        tick(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended && tuple_is(&status.hit, 0, 0, 0, ""));
+    land(o, s);
+    dsd_signal_search_note_evidence(s, "P25", 2001, 2002, NULL);
+    assert(status.hit.confirmed && tuple_is(&status.hit, 2001, 2002, 0, ""));
+    // A record of the previous visit's call is not this visit's until the protocol re-publishes it.
+    a = put_call(0, 4, 7.0, DSD_SYNC_P25P1_POS, 3001, 0);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 3001, 0, 0, ""));
+
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+    // No search: a note goes nowhere.
+    a->ota_target_id = 4001;
+    dsd_signal_search_note_call(s, 0);
+    assert(status.hit.target == 3001);
+    DSD_MEMSET(calls, 0, sizeof(calls));
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -1191,6 +1384,7 @@ main(void) {
     test_avoid_by_frequency(o, s, &config);
     test_site_record_binding();
     test_site_notes_on_detection(o, s, &config);
+    test_call_tuple_on_detection(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

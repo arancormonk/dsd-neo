@@ -788,6 +788,20 @@ capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t t
                  active ? call.target_text : "");
 }
 
+/* Call notes a signal search hears, and the source the slot-0 call record named when each arrived. */
+static int g_call_notes;
+static char g_call_note_source[64];
+
+static void
+capture_call_note(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    g_call_notes++;
+    g_call_note_source[0] = '\0';
+    if (slot == 0U && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        DSD_SNPRINTF(g_call_note_source, sizeof(g_call_note_source), "%s", call.source_text);
+    }
+}
+
 /* A V/D2 DCH whose CRC passes reports to the search after its callsign is on the call, so the last DCH of a
  * transmission still names the station; a damaged one reports nothing. */
 static void
@@ -802,16 +816,20 @@ test_ysf_conv_dch2_search_evidence_follows_the_callsign(void) {
     state.synctype = DSD_SYNC_YSF_POS;
     begin_test_ysf_call(&state);
     dsd_signal_search_evidence_set(capture_search_evidence);
+    dsd_signal_search_call_set(capture_call_note);
+    g_call_notes = 0;
 
     encode_dch_payload_to_input("DCH2BAD789", 10U, input, 96U, 5U, 1);
     assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == -2);
-    assert(g_search_evidence.calls == 0);
+    assert(g_search_evidence.calls == 0 && g_call_notes == 0);
 
     encode_dch_payload_to_input("DCH2SRC789", 10U, input, 96U, 5U, 0);
     assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == 0);
     dsd_signal_search_evidence_set(NULL);
+    dsd_signal_search_call_set(NULL);
 
     assert(g_search_evidence.calls == 1);
+    assert(g_call_notes == 1 && strcmp(g_call_note_source, "DCH2SRC789") == 0);
     assert(g_search_evidence.call_active == 1);
     assert(strcmp(g_search_evidence.source_text, "DCH2SRC789") == 0);
     dsd_state_ext_free_all(&state);

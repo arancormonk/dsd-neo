@@ -10419,6 +10419,21 @@ add_test(
     COMMAND dsd-neo_test_dmr_flco_privacy_modes
 )
 
+# DMR call notes for a signal search and the received-crypto provenance of the call records they name.
+add_executable(
+    dsd-neo_test_dmr_search_call_notes
+    protocol/dmr/test_dmr_search_call_notes.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_search_call_notes
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_search_call_notes
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_SEARCH_CALL_NOTES COMMAND dsd-neo_test_dmr_search_call_notes)
+
 add_executable(
     dsd-neo_test_dmr_bs_alg_refresh_error
     protocol/dmr/test_dmr_bs_alg_refresh_error.c

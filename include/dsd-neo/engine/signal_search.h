@@ -35,6 +35,11 @@ void dsd_engine_signal_search_evidence(const dsd_state* state, const char* proto
 /** Runtime site hook: joins a CRC/FEC-checked site note to the visit's site record and publishes the hit when its shown
  * site changes. Notes outside a visit, or from a frame an input interruption cut, are dropped. */
 void dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_site_note* note);
+/** Runtime call hook: reads @p slot's canonical call record (active, CRC-clean, a protocol the search identifies) and
+ * makes it the hit's call tuple -- IDs, texts, slot and crypt from that one record -- when it is the tuple's own call or
+ * a call that began no earlier; publishes the hit when the shown tuple changes. Outside a visit, or from a frame an
+ * input interruption cut, it does nothing. */
+void dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot);
 #ifdef __cplusplus
 }
 #endif

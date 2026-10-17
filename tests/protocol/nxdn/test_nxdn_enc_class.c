@@ -279,6 +279,29 @@ test_lone_contradicting_vcall_does_not_flap_established_clear(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The call receives a VCALL's cipher and key id only once the hysteresis corroborated the encryption: a lone
+   non-clear VCALL is published (as before) but not received. */
+static void
+test_vcall_cipher_received_once_corroborated(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[96];
+    dsd_call_snapshot call;
+
+    reset_fixture(&opts, &state, history);
+    opts.trunk_enable = 0;
+    build_vcall(bits, 2U, 5U, 100U, 1234U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.algid == 2U && call.kid == 5U && call.crypto_received == 0U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto_received == (DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID));
+    assert(call.received_algid == 2U && call.received_kid == 5U);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     test_observe_tentative_then_corroborated();
@@ -287,6 +310,7 @@ main(void) {
     test_force_and_reset();
     test_vcall_enc_lockout_requires_corroboration();
     test_lone_contradicting_vcall_does_not_flap_established_clear();
+    test_vcall_cipher_received_once_corroborated();
     printf("NXDN enc class: OK\n");
     return 0;
 }

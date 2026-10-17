@@ -2325,6 +2325,7 @@ test_dmr_service_options_state_isolated_per_target(void) {
     seed_dmr_service_options(&state, 0x10U, 0x40U, 0x68U, 0x41U);
     state.dmr_le_vendor[0] = DMR_LE_VENDOR_KIRISUN_ENC;
     state.dmr_le_vendor[1] = DMR_LE_VENDOR_HYTERA_ENH;
+    state.dmr_pi_precall_rx[1] = 3U;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
@@ -2345,6 +2346,10 @@ test_dmr_service_options_state_isolated_per_target(void) {
     // resurrect a stale Hytera MI gate or Kirisun SB gate from that target's metadata snapshot (issue #657).
     if (state.dmr_le_vendor[0] != DMR_LE_VENDOR_NONE || state.dmr_le_vendor[1] != DMR_LE_VENDOR_NONE) {
         DSD_FPRINTF(stderr, "restored target revived a previous call's vendor late-entry mode\n");
+        test_rc = 1;
+    }
+    if (state.dmr_pi_precall_rx[0] != 0U || state.dmr_pi_precall_rx[1] != 0U) {
+        DSD_FPRINTF(stderr, "a target visit kept a previous reception's pre-call PI crypto\n");
         test_rc = 1;
     }
 

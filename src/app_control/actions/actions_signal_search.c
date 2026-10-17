@@ -28,23 +28,19 @@ static struct {
     dsd_signal_search_hit last;
 } observer;
 
+/* The access code of a confirmed hit, formatted here as the frontends show it. The call tuple (IDs, texts, slot,
+   crypt) is the coordinator's, from one checked call record; this reads only the service options of the call the
+   tuple names (its slot), under the same record checks. */
 static void
-enrich_confirmed_hit(dsd_signal_search_hit* hit) {
+format_confirmed_access(dsd_signal_search_hit* hit) {
     dsd_call_snapshot call;
     uint16_t service = 0;
     uint8_t metadata = 0;
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
-        if (dsd_call_state_get(observer.state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-            && call.protocol == observer.state->synctype && !call.crc_invalid) {
-            service = call.service_options;
-            metadata = call.has_service_metadata;
-            if (call.source_text[0]) {
-                DSD_SNPRINTF(hit->source_text, sizeof(hit->source_text), "%s", call.source_text);
-            }
-            if (call.target_text[0]) {
-                DSD_SNPRINTF(hit->target_text, sizeof(hit->target_text), "%s", call.target_text);
-            }
-        }
+    const uint8_t slot = hit->slot > 0 ? (uint8_t)(hit->slot - 1) : 0U;
+    if (dsd_call_state_get(observer.state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && call.protocol == observer.state->synctype && !call.crc_invalid) {
+        service = call.service_options;
+        metadata = call.has_service_metadata;
     }
     uint8_t kind = 0;
     uint16_t value = 0;
@@ -74,13 +70,11 @@ publish_search(const dsd_signal_search_status* status, const dsd_signal_search_h
         && strcmp(hit->protocol, observer.last.protocol) == 0) {
         DSD_MEMCPY(hit->access, observer.last.access, sizeof(hit->access));
         DSD_MEMCPY(hit->tone, observer.last.tone, sizeof(hit->tone));
-        DSD_MEMCPY(hit->source_text, observer.last.source_text, sizeof(hit->source_text));
-        DSD_MEMCPY(hit->target_text, observer.last.target_text, sizeof(hit->target_text));
     }
     /* A periodic refresh can follow an unconfirmed sync or a damaged frame. Read
        decoded fields only in the synchronous, protocol-confirmed publication. */
     if (changed && !hit->ended && hit->confirmed) {
-        enrich_confirmed_hit(hit);
+        format_confirmed_access(hit);
     }
     if (!hit->ended) {
         dsd_app_rx_tone tone;

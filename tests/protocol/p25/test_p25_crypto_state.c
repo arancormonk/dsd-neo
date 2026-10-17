@@ -15,6 +15,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -956,6 +957,86 @@ test_phase1_resolution_stamps_only_this_carriers_frequency(void) {
     return rc;
 }
 
+/* Call notes a signal search would hear, per slot. */
+static int s_call_notes[2];
+
+static void
+count_call_note(const dsd_state* state, uint8_t slot) {
+    (void)state;
+    if (slot < 2U) {
+        ++s_call_notes[slot];
+    }
+}
+
+static int
+expect_received(const char* tag, const dsd_state* state, uint8_t slot, uint8_t bits, uint8_t algid, uint16_t kid) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0) {
+        DSD_FPRINTF(stderr, "%s: no call\n", tag);
+        return 1;
+    }
+    int rc = expect_int(tag, call.crypto_received, bits);
+    if ((bits & DSD_CALL_CRYPTO_RX_ALG) != 0U) {
+        rc |= expect_int(tag, call.received_algid, algid);
+    }
+    if ((bits & DSD_CALL_CRYPTO_RX_KID) != 0U) {
+        rc |= expect_int(tag, call.received_kid, kid);
+    }
+    return rc;
+}
+
+/* A resolution of a checked HDU/LDU2/ESS/MAC_PTT tuple is received crypto, and notes the call it updated (a Phase 2
+   MAC_PTT's identity first, its crypto after, with no later LCW); a tuple a quarantine deferred, an ALGID-zero ESS and
+   the trunk SM's republish of the live values are not. */
+static int
+test_resolution_publishes_received_crypto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture(&opts, &state);
+    DSD_MEMSET(s_call_notes, 0, sizeof(s_call_notes));
+    dsd_signal_search_call_set(count_call_note);
+
+    int rc = 0;
+    rc |= expect_int("seed encrypted P2 call on slot 1", begin_p2_call(&state, 1U, 0x40U, 1U), 1);
+    rc |= expect_received("identity alone receives no crypto", &state, 1U, 0U, 0U, 0U);
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x84, 0x1234, UINT64_C(0x0102030405060708),
+                             50061);
+    rc |= expect_received("MAC_PTT/ESS tuple received", &state, 1U, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID,
+                          0x84, 0x1234);
+    rc |= expect_int("resolution notes slot 1's call", s_call_notes[1], 1);
+    rc |= expect_int("resolution notes no other slot", s_call_notes[0], 0);
+    // An ALGID-zero ESS keeps the classification and changes nothing received.
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0, 0, 0, 50061);
+    rc |= expect_received("ALGID zero keeps the received tuple", &state, 1U,
+                          DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID, 0x84, 0x1234);
+
+    // A Phase 1 HDU/LDU2 tuple opens the anonymous call it describes, received.
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xAA, 0x0042, UINT64_C(0x1111111111111111), 0);
+    rc |=
+        expect_received("P1 tuple received", &state, 0U, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID, 0xAA, 0x0042);
+    rc |= expect_int("P1 resolution notes slot 0's call", s_call_notes[0], 1);
+
+    // A clear call's contradicting tuple is quarantined, not received, until a second one corroborates it.
+    reset_fixture(&opts, &state);
+    rc |= expect_int("seed clear P2 call", begin_p2_call(&state, 0U, 0x04U, 1U), 1);
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE2, 0, 0x04, 0);
+    (void)p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x13, 0x2222, UINT64_C(0x0102030405060708), 50061);
+    rc |= expect_int("quarantined tuple pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_received("quarantined tuple not received", &state, 0U, 0U, 0U, 0U);
+    (void)p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x13, 0x2222, UINT64_C(0x0102030405060708), 50061);
+    rc |= expect_received("corroborated tuple received", &state, 0U, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID,
+                          0x13, 0x2222);
+    // The slot's crypto reset at the end of the transmission republishes cleared live values; the call keeps what
+    // it received.
+    p25_crypto_reset_slot(&state, 0);
+    p25_crypto_mark_encrypted_pending(&state, 0);
+    rc |= expect_received("reset keeps the received tuple", &state, 0U, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID,
+                          0x13, 0x2222);
+    dsd_signal_search_call_set(NULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -973,5 +1054,6 @@ main(void) {
     rc |= test_imported_key_activation_is_slot_aware();
     rc |= test_slot_local_transition_purge_and_mi_refresh();
     rc |= test_phase1_resolution_stamps_only_this_carriers_frequency();
+    rc |= test_resolution_publishes_received_crypto();
     return rc;
 }

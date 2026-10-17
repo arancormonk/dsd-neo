@@ -650,6 +650,9 @@ test_lsf_crypto_availability_matches_payload_validation(void) {
     err |= expect_int("short AES-256 LSF publishes call", get_m17_call(state, &call), 1);
     err |= expect_int("short AES-256 LSF remains pending", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
     err |= expect_u8("short AES-256 LSF blocks audio", call.audio_permitted, 0U);
+    // The CRC-checked LSF's encryption type is received; its subtype is no key id.
+    err |= expect_u8("LSF encryption type received", call.crypto_received, (uint8_t)DSD_CALL_CRYPTO_RX_ALG);
+    err |= expect_u8("LSF received encryption type", call.received_algid, 2U);
 
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
@@ -2421,6 +2424,20 @@ capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t t
         &g_search_evidence.access_kind, &g_search_evidence.access_value);
 }
 
+/* Call notes a signal search hears, and the source the slot-0 call record named when each arrived. */
+static int g_call_notes;
+static char g_call_note_source[64];
+
+static void
+capture_call_note(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    g_call_notes++;
+    g_call_note_source[0] = '\0';
+    if (slot == 0U && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        DSD_SNPRINTF(g_call_note_source, sizeof(g_call_note_source), "%s", call.source_text);
+    }
+}
+
 /* The first CRC-valid LSF is enough for its callsigns and CAN to reach a signal search: the search's confirmation is
  * reported once the LSF's call is published, not before it, and a damaged LSF reports nothing. */
 static int
@@ -2441,6 +2458,8 @@ test_lsf_search_evidence_follows_the_published_call(void) {
     const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
     state->synctype = DSD_SYNC_M17_LSF_POS;
     dsd_signal_search_evidence_set(capture_search_evidence);
+    dsd_signal_search_call_set(capture_call_note);
+    g_call_notes = 0;
 
     int err = 0;
     opts->aggressive_framesync = 1;
@@ -2450,6 +2469,7 @@ test_lsf_search_evidence_follows_the_published_call(void) {
     DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
     err |= expect_int("relaxed bad LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
     err |= expect_int("a failing LSF CRC reports nothing to search", g_search_evidence.calls, 0);
+    err |= expect_int("a failing LSF CRC notes no call", g_call_notes, 0);
 
     opts->aggressive_framesync = 1;
     DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
@@ -2463,8 +2483,11 @@ test_lsf_search_evidence_follows_the_published_call(void) {
     err |= expect_int("search sees the LSF CAN", g_search_evidence.access_valid, 1);
     err |= expect_u8("search CAN kind", g_search_evidence.access_kind, (uint8_t)DSD_ACCESS_CODE_CAN);
     err |= expect_int("search CAN value", g_search_evidence.access_value, 7);
+    err |= expect_int("the LSF's call is noted once", g_call_notes, 1);
+    err |= expect_int("the noted call names the LSF source", strcmp(g_call_note_source, M17_REF_LSF_SRC_CSD), 0);
 
     dsd_signal_search_evidence_set(NULL);
+    dsd_signal_search_call_set(NULL);
     dsd_state_ext_free_all(state);
     return err;
 }

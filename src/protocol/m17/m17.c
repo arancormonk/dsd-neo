@@ -361,6 +361,8 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
         .kid = res->es,
         .mi = mi,
         .audio_permitted = (uint8_t)(res->et == 0U || has_key),
+        /* Every caller passed the LSF's CRC-16: its encryption type is received. The subtype is not a key id. */
+        .received = (uint8_t)DSD_CALL_CRYPTO_RX_ALG,
     };
     (void)dsd_call_state_update_crypto(state, 0U, &crypto);
     m17_note_key_selection(state, crypto.classification);

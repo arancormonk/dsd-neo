@@ -105,6 +105,14 @@ dmr_le_vendor_reset(dsd_state* state, uint8_t slot) {
     state->dmr_le_vendor[dmr_enc_class_slot_index(slot)] = DMR_LE_VENDOR_NONE;
 }
 
+void
+dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    state->dmr_pi_precall_rx[idx] = 0U;
+    state->dmr_pi_precall_algid[idx] = 0U;
+    state->dmr_pi_precall_kid[idx] = 0U;
+}
+
 int
 dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);

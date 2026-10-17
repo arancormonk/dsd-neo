@@ -79,6 +79,7 @@ dpmr_confirm_end_frame(dsd_state* state) {
     if (state->dpmr_confirm_frame_evidence == (uint8_t)DPMR_EVIDENCE_STRONG
         || state->dpmr_confirm_weak_streak >= DPMR_CONFIRM_WEAK_OBSERVES) {
         dsd_signal_search_note_evidence(state, "dPMR", 0, 0, NULL);
+        dsd_signal_search_note_call(state, 0U);
     }
 }
 

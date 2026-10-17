@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -274,6 +275,9 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
     p25p2_vpdu_update_voice_crypto(state, slot, service_options, began, encrypted_probe);
     if (began >= 0 && opts) {
         dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    }
+    if (began >= 0) {
+        dsd_signal_search_note_call(state, (uint8_t)slot);
     }
     return began >= 0;
 }

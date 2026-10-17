@@ -36,6 +36,7 @@ typedef struct {
 
 typedef void (*dsd_signal_search_evidence_fn)(const dsd_state*, const char*, uint32_t, uint32_t, const char*);
 typedef void (*dsd_signal_search_site_fn)(const dsd_state*, const dsd_signal_search_site_note*);
+typedef void (*dsd_signal_search_call_fn)(const dsd_state*, uint8_t);
 typedef int (*dsd_signal_search_active_fn)(const dsd_state*);
 /** Decoder-thread query: during a search session the symbol readers take a failed (bounded) live read as an
  * interruption, not the end of the stream. */
@@ -49,6 +50,11 @@ void dsd_signal_search_note_evidence(const dsd_state* state, const char* protoco
  * message was dispatched, with the values of that message alone; the default is a no-op. */
 void dsd_signal_search_site_set(dsd_signal_search_site_fn fn);
 void dsd_signal_search_note_site(const dsd_state* state, const dsd_signal_search_site_note* note);
+/** Install at engine startup. Protocol code calls dsd_signal_search_note_call() after it published a checked call
+ * record on @p slot (its identity, or a checked crypto-only update of it); the engine reads that slot's canonical call
+ * record itself. The default is a no-op. */
+void dsd_signal_search_call_set(dsd_signal_search_call_fn fn);
+void dsd_signal_search_note_call(const dsd_state* state, uint8_t slot);
 #ifdef __cplusplus
 }
 #endif

@@ -32,6 +32,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
@@ -614,6 +615,7 @@ dmr_flco_reset_slot_crypto(dmr_flco_ctx* ctx, uint8_t idx) {
     *live.mi = 0;
     dmr_enc_class_reset(ctx->state, idx);
     dmr_le_vendor_reset(ctx->state, idx);
+    dmr_pi_precall_reset(ctx->state, idx);
 }
 
 static void
@@ -718,6 +720,19 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, class_algid);
     const int has_key = class_algid == 0 ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot)
                                          : dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, class_algid, &key);
+    // The LC carries no ALG ID or key id: they are received only when a checked PI header carried them. One that
+    // arrived before any call was active on the slot (its voice LC header lost) transfers into the call this LC
+    // opens, for the fields the live values still hold -- a forced or inferred value written since is not what the PI
+    // carried. Once in the call they stay with it; a later LC adds nothing.
+    uint8_t received = 0U;
+    const uint8_t precall = ctx->state->dmr_pi_precall_rx[ctx->slot];
+    if ((precall & DSD_CALL_CRYPTO_RX_ALG) != 0U && ctx->state->dmr_pi_precall_algid[ctx->slot] == algid) {
+        received |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
+    }
+    if ((precall & DSD_CALL_CRYPTO_RX_KID) != 0U && ctx->state->dmr_pi_precall_kid[ctx->slot] == kid) {
+        received |= (uint8_t)DSD_CALL_CRYPTO_RX_KID;
+    }
+    dmr_pi_precall_reset(ctx->state, ctx->slot);
     const dsd_call_crypto_update crypto = {
         .classification = !encrypted ? DSD_CALL_CRYPTO_CLEAR
                           : has_key  ? DSD_CALL_CRYPTO_DECRYPTABLE
@@ -726,6 +741,7 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
         .kid = kid, /* OTA truth, never the override */
         .mi = mi,
         .audio_permitted = (uint8_t)(!encrypted || has_key),
+        .received = received,
     };
     (void)dsd_call_state_update_crypto(ctx->state, ctx->slot, &crypto);
 }
@@ -814,6 +830,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     }
     dmr_flco_publish_crypto(ctx);
     dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
+    dsd_signal_search_note_call(ctx->state, ctx->slot);
 }
 
 // The heal side of the unverified-terminator end. The terminator reset below clears the live

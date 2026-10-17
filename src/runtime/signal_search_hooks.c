@@ -10,6 +10,7 @@
 static dsd_signal_search_evidence_fn evidence_fn = NULL;
 static dsd_signal_search_active_fn active_fn = NULL;
 static dsd_signal_search_site_fn site_fn = NULL;
+static dsd_signal_search_call_fn call_fn = NULL;
 
 void
 dsd_signal_search_active_set(dsd_signal_search_active_fn fn) {
@@ -43,5 +44,17 @@ void
 dsd_signal_search_note_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
     if (site_fn && note) {
         site_fn(state, note);
+    }
+}
+
+void
+dsd_signal_search_call_set(dsd_signal_search_call_fn fn) {
+    call_fn = fn;
+}
+
+void
+dsd_signal_search_note_call(const dsd_state* state, uint8_t slot) {
+    if (call_fn) {
+        call_fn(state, slot);
     }
 }

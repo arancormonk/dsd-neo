@@ -151,6 +151,29 @@ identified and matches it, and a change to another protocol clears it; the last 
 before the channel falls silent is kept on the ended detection. History does not store
 the site yet.
 
+A digital detection's call details -- talkgroup or destination, source, callsigns, the
+timeslot and the encryption -- come together from one checked call record: the call the
+decoder published after its own check (a DMR LC or PI header, a P25 link control, grant,
+MAC_PTT, HDU, LDU2 or ESS, an NXDN call, a dPMR, M17, YSF or D-STAR frame that confirmed
+the transmission), never pieced together from two calls. On a two-slot system the
+detection shows the call that began most recently, with its own slot (**Slot 1** or
+**Slot 2** for DMR and P25 Phase 2), and a later call on the same detection replaces the
+earlier one's details whole, on either slot. A call whose record carries a CRC failure,
+such as a link control accepted as RAS under `-F`, does not set them; the IDs a protocol
+reports with its confirmation stand in only until a call record names the detection.
+The encryption shows **ALG 84 · KID 0001** with only the parts received over the air for
+that call: a P25 HDU, LDU2, ESS or MAC_PTT tuple (not one held back as a contradiction of
+clear service), a DMR PI header (its key ID only where the header carries one; Kirisun's
+is derived), an NXDN call's cipher and key once corroborated, and an M17 link setup's
+encryption type. An ALG ID forced with `--dmr-force-algid`, inferred from a loaded key or
+from late entry, or carried over by the decoder from an earlier call shows only
+**Encrypted**, which is also what a checked privacy or scrambling indication alone shows;
+a clear call shows nothing. A DMR PI header decoded before its call's voice header (the
+header was lost) is held for the call the next checked link control opens on that slot,
+and forgotten at that transmission's end, a carrier change or a new visit; a call that
+fades and is reacquired keeps what it received, and a separate later call never inherits
+it. History does not store the call details' slot and encryption yet.
+
 ## Controls, history and saved systems
 
 - **Hold** overrides quiet release and the maximum visit. A held probe still falls

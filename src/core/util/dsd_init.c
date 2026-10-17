@@ -867,6 +867,9 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->payload_algidR = 0;
     state->payload_keyid = 0;
     state->payload_keyidR = 0;
+    DSD_MEMSET(state->dmr_pi_precall_rx, 0, sizeof(state->dmr_pi_precall_rx));
+    DSD_MEMSET(state->dmr_pi_precall_algid, 0, sizeof(state->dmr_pi_precall_algid));
+    DSD_MEMSET(state->dmr_pi_precall_kid, 0, sizeof(state->dmr_pi_precall_kid));
 
     //init P2 ESS_B fragments and 4V counter
     DSD_MEMSET(state->ess_b, 0, sizeof(state->ess_b));

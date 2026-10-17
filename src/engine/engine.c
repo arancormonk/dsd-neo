@@ -2231,6 +2231,8 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     dmr_enc_class_reset(state, 1);
     dmr_le_vendor_reset(state, 0);
     dmr_le_vendor_reset(state, 1);
+    dmr_pi_precall_reset(state, 0);
+    dmr_pi_precall_reset(state, 1);
     state->payload_mi = 0;
     state->payload_miR = 0;
     state->payload_mfid = 0;
@@ -2598,9 +2600,12 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     state->ysf_fich_confirmed = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
-    // The calls end at the boundary, and a vendor late-entry mode is its call's (issue #657).
+    // The calls end at the boundary, and a vendor late-entry mode is its call's (issue #657), as is a PI held for the
+    // call its lost voice LC header would have opened.
     dmr_le_vendor_reset(state, 0);
     dmr_le_vendor_reset(state, 1);
+    dmr_pi_precall_reset(state, 0);
+    dmr_pi_precall_reset(state, 1);
 }
 
 /* With its codes and evidence, step 3 drops every multi-frame assembly the decoders keep in dsd_state that can publish

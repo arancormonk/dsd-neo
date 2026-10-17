@@ -1243,6 +1243,15 @@ struct dsd_state {
      * decoding never writes (issue #657). */
     uint8_t dmr_le_vendor[2];
 
+    /* A checked DMR PI header decoded while no call was active on the slot (its voice LC header was lost): the ALG ID
+     * and key id it carried, with the DSD_CALL_CRYPTO_RX_* bits it received (<dsd-neo/core/call_state.h>), held for the
+     * call the next checked LC opens on the slot, which receives them (dmr_flco.c). Cleared when they transfer, at the
+     * slot's terminator, a carrier boundary, a retune and the no-carrier reset (dmr_pi_precall_reset()). Owned by
+     * src/protocol/dmr. */
+    uint8_t dmr_pi_precall_rx[2];
+    uint8_t dmr_pi_precall_algid[2];
+    uint16_t dmr_pi_precall_kid[2];
+
     char slot1light[8];
     char slot2light[8];
     int directmode;

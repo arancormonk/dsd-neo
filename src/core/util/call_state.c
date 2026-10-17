@@ -505,6 +505,10 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->algid = previous->algid;
     snapshot->kid = previous->kid;
     snapshot->mi = previous->mi;
+    // The reacquired segment is the transmission whose crypto was received, so it keeps what was received with it.
+    snapshot->crypto_received = previous->crypto_received;
+    snapshot->received_algid = previous->received_algid;
+    snapshot->received_kid = previous->received_kid;
     snapshot->service_options = previous->service_options;
     snapshot->has_service_metadata = previous->has_service_metadata;
     snapshot->emergency = previous->emergency;
@@ -665,11 +669,38 @@ call_state_crypto_target_accepts(const dsd_call_snapshot* snapshot, int include_
     return include_ended && snapshot->phase == DSD_CALL_PHASE_ENDED;
 }
 
+// Whether @p update receives a field the snapshot does not already hold as received with that value.
+static int
+call_state_crypto_receives_new(const dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
+    const int alg =
+        (update->received & DSD_CALL_CRYPTO_RX_ALG) != 0U
+        && ((snapshot->crypto_received & DSD_CALL_CRYPTO_RX_ALG) == 0U || snapshot->received_algid != update->algid);
+    const int kid =
+        (update->received & DSD_CALL_CRYPTO_RX_KID) != 0U
+        && ((snapshot->crypto_received & DSD_CALL_CRYPTO_RX_KID) == 0U || snapshot->received_kid != update->kid);
+    return alg || kid;
+}
+
 static int
 call_state_crypto_differs(const dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
     return snapshot->crypto != update->classification || snapshot->algid != update->algid
            || snapshot->kid != update->kid || snapshot->mi != update->mi
-           || snapshot->audio_permitted != (update->audio_permitted ? 1U : 0U);
+           || snapshot->audio_permitted != (update->audio_permitted ? 1U : 0U)
+           || call_state_crypto_receives_new(snapshot, update);
+}
+
+// Received values are sticky for the epoch: only an update that received a field replaces it, so a forced, inferred
+// or cleared live value republished later changes algid/kid and leaves what the air carried alone.
+static void
+call_state_apply_received_crypto(dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
+    if ((update->received & DSD_CALL_CRYPTO_RX_ALG) != 0U) {
+        snapshot->received_algid = update->algid;
+        snapshot->crypto_received |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
+    }
+    if ((update->received & DSD_CALL_CRYPTO_RX_KID) != 0U) {
+        snapshot->received_kid = update->kid;
+        snapshot->crypto_received |= (uint8_t)DSD_CALL_CRYPTO_RX_KID;
+    }
 }
 
 static int
@@ -702,6 +733,7 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
     snapshot->kid = update->kid;
     snapshot->mi = update->mi;
     snapshot->audio_permitted = update->audio_permitted ? 1U : 0U;
+    call_state_apply_received_crypto(snapshot, update);
     snapshot->crc_invalid |= crc_invalid;
     if (snapshot->phase == DSD_CALL_PHASE_ACTIVE) {
         snapshot->updated_m = call_state_observed_m(update->observed_m);
