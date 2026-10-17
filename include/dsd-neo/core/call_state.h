@@ -171,6 +171,11 @@ typedef struct {
     /** DSD_CALL_CRYPTO_RX_* bits: which of algid and kid this update received over the air (0: none). */
     uint8_t received;
     /**
+     * DSD_CALL_CRYPTO_RX_* bits whose received value checked signalling in this update contradicts: the epoch drops
+     * those received fields (a field also in @c received is received anew instead). 0 leaves them alone.
+     */
+    uint8_t contradicted;
+    /**
      * Non-zero when algid, kid and mi are live decoder values a previous call left behind (its terminator missed),
      * which the decoder still decrypts with but which are not this epoch's: the record keeps its own algid, kid and
      * mi (none, on a new epoch) and takes only the classification and audio permission. received must be 0.

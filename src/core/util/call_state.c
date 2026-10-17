@@ -682,6 +682,12 @@ call_state_crypto_receives_new(const dsd_call_snapshot* snapshot, const dsd_call
     return alg || kid;
 }
 
+// The received bits @p update withdraws: those it contradicts and does not receive anew, that the snapshot holds.
+static uint8_t
+call_state_crypto_withdraws(const dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
+    return (uint8_t)(update->contradicted & (uint8_t)~update->received & snapshot->crypto_received);
+}
+
 // Whether @p update's algid, kid and mi are this epoch's to publish: not live values a replaced call left behind, and
 // not the cleared live values of a reacquired epoch that still holds the crypto it was restored with.
 static int
@@ -698,13 +704,22 @@ call_state_crypto_differs(const dsd_call_snapshot* snapshot, const dsd_call_cryp
     return snapshot->crypto != update->classification
            || (owns && (snapshot->algid != update->algid || snapshot->kid != update->kid || snapshot->mi != update->mi))
            || snapshot->audio_permitted != (update->audio_permitted ? 1U : 0U)
-           || call_state_crypto_receives_new(snapshot, update);
+           || call_state_crypto_receives_new(snapshot, update) || call_state_crypto_withdraws(snapshot, update) != 0U;
 }
 
 // Received values are sticky for the epoch: only an update that received a field replaces it, so a forced, inferred
-// or cleared live value republished later changes algid/kid and leaves what the air carried alone.
+// or cleared live value republished later changes algid/kid and leaves what the air carried alone. Checked signalling
+// that contradicts a received field (dsd_call_crypto_update::contradicted) withdraws it.
 static void
 call_state_apply_received_crypto(dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
+    const uint8_t withdrawn = call_state_crypto_withdraws(snapshot, update);
+    if ((withdrawn & DSD_CALL_CRYPTO_RX_ALG) != 0U) {
+        snapshot->received_algid = 0U;
+    }
+    if ((withdrawn & DSD_CALL_CRYPTO_RX_KID) != 0U) {
+        snapshot->received_kid = 0U;
+    }
+    snapshot->crypto_received &= (uint8_t)~withdrawn;
     if ((update->received & DSD_CALL_CRYPTO_RX_ALG) != 0U) {
         snapshot->received_algid = update->algid;
         snapshot->crypto_received |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;

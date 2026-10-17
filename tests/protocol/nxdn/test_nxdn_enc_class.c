@@ -339,6 +339,54 @@ test_forced_cipher_is_not_received(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Received crypto belongs to the VCALL that carried it. A new call that changes cipher without a decoded release (AES
+   to DES) is held off by the hysteresis, so decryption keeps AES a while, but its own VCALL carried DES: its record
+   receives nothing until the air corroborates DES, then DES with its own key id. A lone contradicting VCALL inside a
+   call withdraws what was received; the next VCALL carrying the cipher receives it again, and a continuation with the
+   same cipher stays received. */
+static void
+test_received_crypto_is_the_current_vcalls(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[96];
+    dsd_call_snapshot call;
+    const uint8_t both = (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
+
+    reset_fixture(&opts, &state, history);
+    opts.trunk_enable = 0;
+    build_vcall(bits, 3U, 5U, 100U, 1234U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.crypto_received == both && call.received_algid == 3U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.crypto_received == both && call.received_algid == 3U
+           && call.received_kid == 5U);
+
+    // The next call, DES, with no release decoded between them.
+    const uint64_t aes_epoch = call.epoch;
+    build_vcall(bits, 2U, 7U, 200U, 5678U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(state.nxdn_cipher_type == 3U); // decryption as before: the hysteresis holds AES
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != aes_epoch && call.ota_target_id == 5678U);
+    assert(call.crypto_received == 0U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(state.nxdn_cipher_type == 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.crypto_received == both && call.received_algid == 2U
+           && call.received_kid == 7U);
+
+    // A lone contradicting VCALL in the DES call withdraws the received cipher; the next DES VCALL restores it.
+    build_vcall(bits, 3U, 7U, 200U, 5678U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(state.nxdn_cipher_type == 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && (call.crypto_received & DSD_CALL_CRYPTO_RX_ALG) == 0U);
+    build_vcall(bits, 2U, 7U, 200U, 5678U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.crypto_received == both && call.received_algid == 2U
+           && call.received_kid == 7U);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     test_observe_tentative_then_corroborated();
@@ -349,6 +397,7 @@ main(void) {
     test_lone_contradicting_vcall_does_not_flap_established_clear();
     test_vcall_cipher_received_once_corroborated();
     test_forced_cipher_is_not_received();
+    test_received_crypto_is_the_current_vcalls();
     printf("NXDN enc class: OK\n");
     return 0;
 }
