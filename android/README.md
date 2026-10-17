@@ -335,10 +335,58 @@ CMake is the outer build: vcpkg chainloads Qt's `qt.toolchain.cmake`, which
 chainloads the NDK toolchain, and androiddeployqt generates and drives the Gradle
 project from `android/package/`. `android/package/build.gradle` is a vendored
 copy of Qt's androiddeployqt template — files in `QT_ANDROID_PACKAGE_SOURCE_DIR`
-override the Qt template — carrying the per-artifact native-library packaging
-described under [Google Play](#google-play-the-app-bundle); re-diff it against
+override the Qt template — carrying release R8 optimization and the per-artifact
+native-library packaging described under [Google Play](#google-play-the-app-bundle); re-diff it against
 `<Qt>/android_arm64_v8a/src/android/templates/build.gradle` whenever the pinned
 Qt version changes.
+
+### Release optimization and JNI
+
+Both release APKs and AABs enable R8 code optimization, obfuscation, code shrinking
+and Android resource shrinking with `proguard-android-optimize.txt`. Debug builds
+remain unminified. R8 affects Java/Kotlin DEX code; the native decoder and Qt `.so`
+libraries have their own CMake/compiler optimization settings.
+
+`android/package/proguard-rules.pro` preserves the exact Kotlin methods called by
+name from `decoder_host_android.cpp` and the `DsdNative` JNI bindings. Add a matching
+rule whenever adding a native upcall. `qt-rules.pro` preserves Qt's native method
+registration, `UsedFromNativeCode` annotations and the unannotated bridge types and
+methods in Qt 6.11.2. Re-audit it on a Qt upgrade: annotations alone are incomplete.
+`res/raw/dsdneo_keep.xml` protects the resources Qt loads by name, including the
+library arrays androiddeployqt generates. QML and `.rcc` assets are separate from
+Android resource shrinking.
+
+CI checks the actual release DEX definitions against the app's C++ JNI calls,
+selected Qt upcalls and Qt class names referenced by the packaged native libraries.
+It requires R8 compiler markers, a nonempty mapping, and, for an AAB, the embedded
+`BUNDLE-METADATA/com.android.tools/r8.json` with optimization and shrinking enabled.
+The check prints total uncompressed DEX bytes and the bundle's R8 statistics:
+
+```sh
+python3 tools/check_android_r8.py path/to/release.apk \
+  --dexdump "$ANDROID_SDK_ROOT/build-tools/36.0.0/dexdump" \
+  --mapping build/android-app/android/android-build/build/outputs/mapping/release/mapping.txt
+python3 tools/check_android_r8.py path/to/release.aab \
+  --dexdump "$ANDROID_SDK_ROOT/build-tools/36.0.0/dexdump"
+```
+
+Keep `mapping.txt` from each distributed APK to retrace Java/Kotlin crash reports.
+CI saves the mapping and other R8 reports as `<APK artifact name>.r8` before building
+the AAB (90 days for tags, 30 otherwise); archive release mappings before expiry.
+An AAB includes its own mapping at
+`BUNDLE-METADATA/com.android.tools.build.obfuscation/proguard.map`.
+
+Before publishing an optimized release, exercise it on a device: cold launch,
+start/stop/restart decoding, background notification and screen modes, RTL-SDR and
+Airspy USB permission/attachment, file import and backup/restore, diagnostics
+sharing, and location permission/fix/cancellation. Artifact checks do not exercise
+Android lifecycle behavior or every Qt native upcall.
+
+See Android's [R8 configuration guidance](https://developer.android.com/topic/performance/app-optimization/enable-app-optimization),
+[JNI keep rules](https://developer.android.com/topic/performance/app-optimization/keep-rule-examples#java-native-interface-jni)
+and [DEX optimization measurements](https://developer.android.com/topic/performance/issues/code-optimization).
+
+### Package staging
 
 androiddeployqt is pointed at a staged copy of that directory
 (`build/android-app/android/package`) rather than the source tree, because it

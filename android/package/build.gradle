@@ -2,16 +2,17 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // Vendored from Qt 6.11.2's androiddeployqt template
-// (<Qt>/android_arm64_v8a/src/android/templates/build.gradle) with one change, marked
+// (<Qt>/android_arm64_v8a/src/android/templates/build.gradle) with changes marked
 // DSD-NEO below. Files in QT_ANDROID_PACKAGE_SOURCE_DIR override the Qt template, so
 // this copy is what Gradle actually runs. Re-diff against the Qt template when the
 // pinned Qt version changes.
 //
-// The change (jniLibs.useLegacyPackaging) picks packaging per artifact: the Play
+// jniLibs.useLegacyPackaging picks packaging per artifact: the Play
 // bundle requests uncompressed .so files in delivered APKs (extractNativeLibs=false)
 // so Play can delta-patch updates, while the sideload APK compresses them (legacy
 // packaging, install-time extraction) so the GitHub release download stays around
 // half the size. android-ci asserts both sides; see the packaging notes in android/README.md.
+// Release builds also enable R8 with the app and Qt JNI contracts preserved.
 
 buildscript {
     repositories {
@@ -80,6 +81,17 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // DSD-NEO: optimize both release artifacts. Native callers are invisible to
+    // R8, so keep their Java/Kotlin entry points and Qt's JNI registration surface.
+    buildTypes {
+        release {
+            minifyEnabled = true
+            shrinkResources = true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                          'proguard-rules.pro', 'qt-rules.pro'
+        }
     }
 
     lintOptions {

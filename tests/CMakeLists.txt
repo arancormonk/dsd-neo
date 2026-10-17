@@ -16960,6 +16960,11 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_release_sbom_filenames.py
     )
+    add_test(
+        NAME ANDROID_R8
+        COMMAND
+            ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/android/test_r8.py
+    )
     # Production Android Kotlin on the JVM, one CTest per suite of run_jvm_tests.py. Each compiles Kotlin, which is
     # memory-hungry, so they never run at once.
     add_test(

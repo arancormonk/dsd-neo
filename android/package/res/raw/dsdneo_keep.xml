@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- QtLoader/QtActivityBase resolve these by name, including the arrays that
+     androiddeployqt generates in values/libs.xml. Keep the names and contents. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@array/qt_libs,@array/bundled_libs,@array/load_local_libs,@string/use_local_qt_libs,@string/bundle_local_qt_libs,@string/system_libs_prefix,@string/fatal_error_msg" />

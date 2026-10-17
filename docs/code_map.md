@@ -6455,6 +6455,15 @@ External dependencies (resolved via CMake):
 
 ### Android foundation integration contracts
 
+Release APK/AAB builds enable R8 in `android/package/build.gradle`.
+`proguard-rules.pro` owns the named C++ → Kotlin interface contract and `DsdNative`
+bindings; update it when adding a `QJniObject` upcall. `qt-rules.pro` owns the pinned
+Qt kit's JNI keep rules, including unannotated native registration/teardown paths;
+re-audit on a Qt upgrade. `res/raw/dsdneo_keep.xml` preserves Qt's named resource
+lookups. `tools/check_android_r8.py` validates shipped DEX definitions and bundle
+metadata in Android CI; `ANDROID_R8` tests its failure cases. Device testing of
+optimized releases and mapping retention are described in `android/README.md`.
+
 Shared command IDs 592/593/594 reserve talkgroup row set/remove/export, using
 `policy_context` and `policy_generation` to reject edits from a stale list. The
 row `fields` mask selects listen/priority/preempt/name/tags. IDs 652/653 reserve a

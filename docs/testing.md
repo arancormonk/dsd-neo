@@ -166,6 +166,14 @@ Kotlin compiler plus Java; missing tools skip the CTest entries. Android CI runs
 `python3 tests/android/run_jvm_tests.py --require-tools` after its APK build, when the compiler is cached. Qt
 persistence tests use disposable directories and do not require a writable home on Linux.
 
+`ANDROID_R8` tests the optimized-artifact checker, including removed/renamed JNI
+methods, changed descriptors, lost native bindings and disabled optimization.
+Android CI also runs `tools/check_android_r8.py` on the real release APK and AAB,
+checking the app's C++ JNI contract, Qt entry points and embedded R8 metadata.
+It checks the Android resource table for Qt's named loader resources and retains
+the APK's mapping reports. This does not replace an optimized build's device smoke
+test; see `android/README.md` "Release optimization and JNI".
+
 The P25 Phase 2 voice playout (issue #651) is tested end to end by `P25_P2_VOICE_OUTPUT`: timeslots run through the real
 DUID dispatch with seeded DUIDs and `p2_scramble_offset`, and a stand-in `processMbeFrameSoft()` tags every frame (each
 short sample holds a per-slot sequence number, which float output writes as f32, the sample / 32768). Each case reads
