@@ -5513,7 +5513,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   `pendingStartRemember` (through a USB wait), and only a remembered explore session
   writes `prefs.exploreFreqMhz` when it ends. `retrySource()` carries the attempted system:
   a failed search is retried by reopening the screen and running its `startSearch()` (arm,
-  then start), and edited by reopening it (`tst_signal_search_handoff.qml`). Native status
+  then start), and edited by reopening it (`openSignalSearchOn()`, which resolves the
+  `effectiveSource()` kind). A failed Explore here is retried on `onAttachedReceiver()` (the
+  attached kind; an Airspy map, serial included, only on an Airspy) and edited through
+  `openExploreSetupOn()`: Explore setup on that attempt's resolved receiver and frequency,
+  held in `exploreSetupBase`, whose start keeps the rest of the map and `remember: false`
+  and writes no `explore/*` prefs (`tst_signal_search_handoff.qml`). Native status
   is copied on a 250 ms timer; history and the avoid lists only when their store revisions
   move. While a search session is active, Escape and Back from any control go Back, which
   delegates to Main's session policy; a search a coordinator owns (`status.owned`) is a

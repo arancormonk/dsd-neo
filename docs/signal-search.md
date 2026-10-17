@@ -257,7 +257,14 @@ showed.
   asks again and **Edit** opens that system. If Android recreates the Activity during the
   handoff, the reopened app finds the search stopped and starts nothing.
 - **Retry** on a failed Signal search start opens Signal search again and starts
-  the search on the same receiver; **Edit** opens Signal search.
+  the search on the same receiver; **Edit** opens Signal search. Both take the
+  receiver attached now, as opening Signal search from Home does: a USB dongle
+  search that failed, with only an Airspy plugged in, retries on the Airspy. An
+  rtl_tcp server stays. **Retry** on a failed Explore here starts it again on
+  the receiver attached now (Airspy settings only go with an Airspy); **Edit**
+  opens Explore setup on that attempt's receiver and frequency, not on Explore's
+  remembered answer. Starting from there keeps the detection's receive mode and
+  gain and, like Explore here, does not change where Explore resumes from Home.
 - Android Back follows the existing background-listening preference. The native
   session and history worker continue when the foreground Activity is recreated,
   and the reopened screen takes its receiver (USB, Airspy or rtl_tcp server) from

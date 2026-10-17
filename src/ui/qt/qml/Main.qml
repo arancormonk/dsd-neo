@@ -77,6 +77,10 @@ Window {
         if (attemptedSource.system && attemptedSource.system.signalSearch) {
             // A failed search is edited where it was set up.
             mainRoot.openSignalSearchOn(attemptedSource.system);
+        } else if (attemptedSource.kind === "explore" && attemptedSource.system && attemptedSource.remember === false) {
+            // A failed Explore here is edited as that attempt: its receiver
+            // and frequency, still not where Explore resumes.
+            openExploreSetupOn(attemptedSource.system);
         } else if (attemptedSource.kind === "explore") {
             openExploreSetup();
         } else {
@@ -145,8 +149,8 @@ Window {
                 signalSearchScreen.startSearch();
             } else if (request.system && request.remember === false) {
                 // Explore here: that detection's frequency, without becoming
-                // where Explore resumes.
-                mainRoot.startWithMap(request.system, -1, false, {
+                // where Explore resumes, on the receiver attached now.
+                mainRoot.startWithMap(mainRoot.onAttachedReceiver(request.system), -1, false, {
                     remember: false
                 });
             } else {
@@ -233,21 +237,31 @@ Window {
         delete system.signalSearch;
         delete system.searchUnresolved;
         delete system.uid;
-        // The receiver attached now, as every Explore start resolves it. An
-        // Airspy's own settings (its serial among them) only go with an Airspy.
-        var kind = mainRoot.effectiveSource(system.sourceType);
-        if (kind !== system.sourceType) {
-            system.sourceType = kind;
-            if (kind === "airspy")
-                system.gainDb = -1;
-        }
-        if (system.sourceType !== "airspy")
-            delete system.airspy;
-        return system;
+        return mainRoot.onAttachedReceiver(system);
     }
-    /** Open Signal search on the receiver @p system ran on. */
+    /**
+     * A copy of @p system on receiver kind @p kind. An Airspy's own settings
+     * (its serial among them) only go with an Airspy, and a switch to one
+     * starts it on its own gain.
+     */
+    function onReceiver(system, kind) {
+        var moved = Object.assign({}, system);
+        if (kind !== moved.sourceType) {
+            moved.sourceType = kind;
+            if (kind === "airspy")
+                moved.gainDb = -1;
+        }
+        if (moved.sourceType !== "airspy")
+            delete moved.airspy;
+        return moved;
+    }
+    /** A copy of @p system on the receiver attached now, as every Explore start resolves it (rtl_tcp stays). */
+    function onAttachedReceiver(system) {
+        return mainRoot.onReceiver(system, mainRoot.effectiveSource(system.sourceType));
+    }
+    /** Open Signal search on the receiver @p system ran on, resolved against the one attached now. */
     function openSignalSearchOn(system) {
-        signalSearchScreen.seed(system.sourceType || "usb", system.host || prefs.searchHost || "192.168.1.10", system.port || prefs.searchPort || 1234);
+        signalSearchScreen.seed(mainRoot.effectiveSource(system.sourceType || "usb") || "usb", system.host || prefs.searchHost || "192.168.1.10", system.port || prefs.searchPort || 1234);
         mainRoot.signalSearchOpen = true;
     }
     // The system map waiting for USB access and its row (-1 for exploration).
@@ -828,9 +842,26 @@ Window {
         return Util.effectiveSource(remembered, String(decoderHost.attachedDeviceSource || ""));
     }
 
+    // The Explore-here map an open Explore setup edits (Edit on its failure),
+    // or null when the setup edits the remembered answer.
+    property var exploreSetupBase: null
     /** Open Explore setup on the remembered answer, with the attached receiver resolved before its baseline. */
     function openExploreSetup() {
+        mainRoot.exploreSetupBase = null;
         exploreSetup.reset(mainRoot.effectiveSource(prefs.exploreSourceType), prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz);
+        mainRoot.exploreSetupOpen = true;
+    }
+
+    /**
+     * Open Explore setup on an Explore-here @p system: its receiver, resolved
+     * against the one attached now, and its frequency. Its start keeps the
+     * rest of that map (mode, gain) and, like Explore here itself, leaves
+     * the remembered Explore answer alone.
+     */
+    function openExploreSetupOn(system) {
+        var base = mainRoot.onAttachedReceiver(system);
+        exploreSetup.reset(base.sourceType, base.host, base.port, base.freqMhz);
+        mainRoot.exploreSetupBase = base;
         mainRoot.exploreSetupOpen = true;
     }
 
@@ -1028,8 +1059,27 @@ Window {
         visible: opacity > 0.0
         enabled: opacity > 0.9
 
-        onClosed: mainRoot.exploreSetupOpen = false
+        onClosed: {
+            mainRoot.exploreSetupBase = null;
+            mainRoot.exploreSetupOpen = false;
+        }
         onStart: function (sourceType, host, port, freqMhz) {
+            var base = mainRoot.exploreSetupBase;
+            mainRoot.exploreSetupBase = null;
+            if (base) {
+                // Editing a failed Explore here: a one-off frequency, as the
+                // attempt was, so the remembered answer is not rewritten.
+                var sys = Object.assign(mainRoot.onReceiver(base, sourceType), {
+                    host: host,
+                    port: port,
+                    freqMhz: freqMhz
+                });
+                mainRoot.exploreSetupOpen = false;
+                mainRoot.startWithMap(sys, -1, false, {
+                    remember: false
+                });
+                return;
+            }
             // Remembered before the start, not after: a start that fails is still
             // the answer the user gave, and asking again would be the app
             // forgetting what it was just told.

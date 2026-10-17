@@ -75,6 +75,9 @@ Item {
             tryCompare(app, "active", true);
         }
         function cleanup() {
+            testContext.setAttachedDeviceSource("");
+            app.exploreSetupOpen = false;
+            app.exploreSetupBase = null;
             app.signalSearchOpen = false;
             app.pendingStart = null;
             app.awaitingUsbAccess = false;
@@ -226,6 +229,124 @@ Item {
             app.lastExploreFreqMhz = "463.600000";
             decoderHost.stop();
             compare(prefs.exploreFreqMhz, "851.0125");
+        }
+        // Retry and Edit resolve the receiver attached now, as every Explore
+        // and Signal search entry does: a USB search that failed and an Airspy
+        // in its place retries on the Airspy; an rtl_tcp search stays put.
+        function test_retry_and_edit_of_a_failed_search_follow_the_attached_receiver_data() {
+            return [{tag: "retry usb to airspy", remembered: "usb", edit: false, want: "airspy"},
+                {tag: "edit usb to airspy", remembered: "usb", edit: true, want: "airspy"},
+                {tag: "retry airspy to usb", remembered: "airspy", edit: false, want: "usb"},
+                {tag: "retry rtl_tcp kept", remembered: "rtltcp", edit: false, want: "rtltcp"},
+                {tag: "edit rtl_tcp kept", remembered: "rtltcp", edit: true, want: "rtltcp"}];
+        }
+        function test_retry_and_edit_of_a_failed_search_follow_the_attached_receiver(data) {
+            testContext.setUsbBrokered(false);
+            prefs.searchSourceType = data.remembered;
+            startSearch();
+            compare(app.sessionSystem.sourceType, data.remembered);
+            testContext.setLifecyclePhase(4);
+            screen().requestClose();
+            testContext.setAttachedDeviceSource(data.remembered === "airspy" ? "usb" : "airspy");
+            if (data.edit) {
+                app.editFailedSource();
+                verify(app.signalSearchOpen);
+                compare(screen().sourceType, data.want);
+            } else {
+                app.retrySource();
+                tryCompare(decoderHost, "sessionState", 1);
+                verify(app.sessionSystem.signalSearch);
+                compare(app.sessionSystem.sourceType, data.want);
+            }
+            if (data.want === "rtltcp")
+                compare(data.edit ? screen().host : app.sessionSystem.host, "10.0.0.7");
+        }
+        // A failed Explore here retried after the receiver changed starts on
+        // the one attached; an Airspy's own settings stay with the Airspy.
+        function test_retry_of_a_failed_explore_here_follows_the_attached_receiver() {
+            testContext.setUsbBrokered(false);
+            enterState(0);
+            screen().sourceType = "airspy";
+            var airspyHere = Object.assign(app.exploreHereSystem(detection, app.exploreSystem("airspy", "", 0, detection.freqMHz)), {
+                airspy: {serial: "A1B2C3"}
+            });
+            app.leaveSearchFor({kind: "explore", system: airspyHere, remember: false});
+            compare(decoderHost.sessionState, 1);
+            compare(app.sessionSystem.sourceType, "airspy");
+            compare(app.sessionSystem.airspy.serial, "A1B2C3");
+            testContext.setLifecyclePhase(4);
+            testContext.setAttachedDeviceSource("usb");
+            app.retrySource();
+            tryCompare(decoderHost, "sessionState", 1);
+            compare(app.sessionSystem.sourceType, "usb");
+            verify(app.sessionSystem.airspy === undefined, "an Airspy serial does not follow a dongle");
+            compare(app.sessionSystem.freqMhz, "463.552100");
+            verify(app.attemptedSource.remember === false);
+            // And the reverse: a USB attempt with only an Airspy attached.
+            testContext.setLifecyclePhase(4);
+            testContext.setAttachedDeviceSource("airspy");
+            app.retrySource();
+            tryCompare(decoderHost, "sessionState", 1);
+            compare(app.sessionSystem.sourceType, "airspy");
+            compare(app.sessionSystem.gainDb, -1);
+            testContext.setLifecyclePhase(2);
+            decoderHost.stop();
+            compare(prefs.exploreFreqMhz, "851.0125");
+            compare(prefs.exploreSourceType, "usb");
+        }
+        // Edit on a failed Explore here opens Explore setup on that attempt:
+        // its receiver (resolved against the one attached) and frequency, not
+        // Explore's remembered answer. Its start is the attempt again, mode
+        // and gain kept, and still never becomes where Explore resumes.
+        function test_edit_of_a_failed_explore_here() {
+            testContext.setUsbBrokered(false);
+            prefs.exploreSourceType = "airspy";
+            prefs.exploreFreqMhz = "851.0125";
+            enterState(0);
+            screen().sourceType = "rtltcp";
+            screen().exploreDetection(detection);
+            compare(decoderHost.sessionState, 1);
+            testContext.setLifecyclePhase(4);
+            testContext.setAttachedDeviceSource("usb");
+            app.editFailedSource();
+            verify(app.exploreSetupOpen);
+            var setup = findChild(app, "exploreSetupScreen");
+            compare(setup.sourceType, "rtltcp", "the attempt's receiver, not Explore's remembered Airspy");
+            compare(setup.hostText, "10.0.0.7");
+            compare(setup.freqText, "463.552100");
+            testContext.setLifecyclePhase(0);
+            setup.freqText = "463.600000";
+            setup.submit();
+            verify(!app.exploreSetupOpen);
+            compare(decoderHost.sessionState, 1);
+            compare(app.sessionSystem.sourceType, "rtltcp");
+            compare(app.sessionSystem.host, "10.0.0.7");
+            compare(app.sessionSystem.freqMhz, "463.600000");
+            compare(app.sessionSystem.decodeFlag, "-fA");
+            compare(app.sessionSystem.gainDb, 21);
+            verify(app.attemptedSource.remember === false);
+            compare(prefs.exploreSourceType, "airspy", "Explore's remembered answer is not rewritten");
+            compare(prefs.exploreFreqMhz, "851.0125");
+            testContext.setLifecyclePhase(2);
+            app.lastExploreFreqMhz = "463.700000";
+            decoderHost.stop();
+            compare(prefs.exploreFreqMhz, "851.0125");
+            // A USB attempt edited with only an Airspy attached opens on the Airspy.
+            prefs.exploreSourceType = "usb";
+            screen().sourceType = "usb";
+            app.signalSearchOpen = true;
+            screen().exploreDetection(detection);
+            testContext.setLifecyclePhase(4);
+            testContext.setAttachedDeviceSource("airspy");
+            app.editFailedSource();
+            compare(setup.sourceType, "airspy");
+            // The ordinary Explore setup still edits the remembered answer.
+            app.exploreSetupOpen = false;
+            testContext.setAttachedDeviceSource("");
+            app.openExploreSetup();
+            compare(setup.sourceType, "usb");
+            compare(setup.freqText, "851.0125");
+            verify(app.exploreSetupBase === null);
         }
         // The same detection from its history row's menu.
         function test_explore_here_from_a_history_row() {

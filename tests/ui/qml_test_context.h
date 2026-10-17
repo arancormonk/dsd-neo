@@ -1986,6 +1986,13 @@ class Setup : public QObject {
         Q_EMIT m_lifecycle_host->localDeviceChanged();
     }
 
+    /** @brief Make the lifecycle host broker USB access (as Android does) or not (as the desktop does). */
+    Q_INVOKABLE void
+    setUsbBrokered(bool brokered) {
+        m_lifecycle_host->usbBrokered = brokered;
+        Q_EMIT m_lifecycle_host->localDeviceChanged();
+    }
+
     /** @brief Plug in a receiver kind ("usb", "airspy", "both" or empty) on both lifecycle hosts. */
     Q_INVOKABLE void
     setAttachedDeviceSource(const QString& source) {
