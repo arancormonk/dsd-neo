@@ -898,6 +898,18 @@ dsd_rdio_upload_attempt_once(const dsd_rdio_api_config* api, const char* endpoin
     return 0;
 }
 
+/* 0 = delivered, DSD_RDIO_UPLOAD_CANCELLED = aborted, 1 = failed (retry). */
+static int
+dsd_rdio_upload_attempt_outcome(CURLcode res, long http_code) {
+    if (res == CURLE_OK && http_code >= 200 && http_code < 300) {
+        return 0;
+    }
+    if (res == CURLE_ABORTED_BY_CALLBACK) {
+        return DSD_RDIO_UPLOAD_CANCELLED;
+    }
+    return 1;
+}
+
 static int
 dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path) {
     if (!api || !wav_path || !meta_path) {
@@ -938,11 +950,9 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
             return -1;
         }
 
-        if (res == CURLE_OK && http_code >= 200 && http_code < 300) {
-            return 0;
-        }
-        if (res == CURLE_ABORTED_BY_CALLBACK) {
-            return DSD_RDIO_UPLOAD_CANCELLED;
+        int outcome = dsd_rdio_upload_attempt_outcome(res, http_code);
+        if (outcome != 1) {
+            return outcome;
         }
 
         LOG_WARN("Rdio API upload attempt %d/%d failed (curl=%d, http=%ld)\n", attempt, attempts, (int)res, http_code);
