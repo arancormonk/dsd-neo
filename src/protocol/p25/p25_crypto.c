@@ -275,6 +275,10 @@ p25_crypto_publish_canonical(const dsd_opts* opts, dsd_state* state, int slot, u
         .received = carried ? 0U : received,
         .carried = (uint8_t)carried,
     };
+    // A checked ALG ID says whether the call is encrypted: 0x80 is clear.
+    if (!carried && (received & DSD_CALL_CRYPTO_RX_ALG) != 0U && update.algid != 0U) {
+        update.enc_observed = update.algid == 0x80U ? DSD_CALL_ENC_OBSERVED_CLEAR : DSD_CALL_ENC_OBSERVED_ENCRYPTED;
+    }
     (void)dsd_call_state_update_crypto(state, (uint8_t)slot, &update);
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0) {

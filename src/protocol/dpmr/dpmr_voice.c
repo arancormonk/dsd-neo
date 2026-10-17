@@ -404,8 +404,10 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     dsd_call_crypto_update crypto = {
         .classification = DSD_CALL_CRYPTO_CLEAR,
         .audio_permitted = 1U,
+        .enc_observed = DSD_CALL_ENC_OBSERVED_CLEAR,
     };
     if (state->dPMRVoiceFS2Frame.Scrambled[0] == DPMR_HALF_SCRAMBLED) {
+        crypto.enc_observed = DSD_CALL_ENC_OBSERVED_ENCRYPTED;
         crypto.classification =
             dsd_key_scalar_present(state, 0) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
         crypto.audio_permitted = dsd_key_scalar_present(state, 0);

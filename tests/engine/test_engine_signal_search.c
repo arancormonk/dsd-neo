@@ -1138,6 +1138,7 @@ test_call_tuple_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     // before it received: a checked privacy indication alone shows as "Encrypted".
     a = put_call(0, 2, 3.0, DSD_SYNC_DMR_BS_VOICE_POS, 500, 600);
     put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0x21, 0x05, 0);
+    a->enc_received = 1U;
     dsd_signal_search_note_call(s, 0);
     assert(tuple_is(&status.hit, 500, 600, 1, "Encrypted"));
     assert(status.hit.target_text[0] == '\0' && status.hit.source_text[0] == '\0');
@@ -1146,6 +1147,15 @@ test_call_tuple_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     a->kid = 0xFF;
     dsd_signal_search_note_call(s, 0);
     assert(tuple_is(&status.hit, 500, 600, 1, "Encrypted"));
+    // An encrypted or decryptable classification no checked signalling of the call supports (a forced scrambler over a
+    // VCALL advertising clear) shows nothing at all.
+    a->enc_received = 0U;
+    put_crypto(a, DSD_CALL_CRYPTO_DECRYPTABLE, 0x01, 0x00, 0);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, ""));
+    put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED, 0x22, 0xFF, 0);
+    dsd_signal_search_note_call(s, 0);
+    assert(tuple_is(&status.hit, 500, 600, 1, ""));
     // A clear call shows no crypt, whatever was received for it (a P25 ALG 80 is "clear").
     put_crypto(a, DSD_CALL_CRYPTO_CLEAR, 0x80, 0, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
     dsd_signal_search_note_call(s, 0);

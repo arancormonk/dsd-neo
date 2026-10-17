@@ -2737,6 +2737,12 @@ p25_call_publish_crypto_update(const dsd_opts* opts, dsd_state* state, int slot,
         .observed_m = observed_m,
         .carried = (uint8_t)carried,
     };
+    // The call's checked service options (its grant or link control) set the encryption bit.
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.has_service_metadata != 0U
+        && (call.service_options & 0x40U) != 0U) {
+        update.enc_observed = DSD_CALL_ENC_OBSERVED_ENCRYPTED;
+    }
     if (include_ended) {
         (void)dsd_call_state_update_retained_crypto(state, (uint8_t)slot, &update);
     } else {

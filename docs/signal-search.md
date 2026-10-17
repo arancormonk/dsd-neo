@@ -176,12 +176,17 @@ the content that carried them passed its own check, so a RAS repeater's talkgrou
 source never reach the detection. The encryption shows **ALG 84 · KID 0001** with only the
 parts received over the air for that call: a P25 HDU, LDU2, ESS or MAC_PTT tuple (not one
 held back as a contradiction of clear service, and not an ESS whose decode needed soft
-erasures, so a weak Phase 2 signal shows **Encrypted**), a DMR PI header (its key ID only
-where the header carries one; Kirisun's is derived), an NXDN call's cipher and key once
-corroborated, and an M17 link setup's encryption type. An ALG ID forced with
-`--dmr-force-algid` or inferred from a loaded key or from late entry shows only
-**Encrypted**, which is also what a checked privacy or scrambling indication alone shows;
-a clear call shows nothing. A DMR PI header decoded while no call is active (the voice
+erasures, so a weak Phase 2 signal whose service options say encrypted shows
+**Encrypted**), a DMR PI header (its key ID only where the header carries one; Kirisun's
+is derived), an NXDN call's cipher and key once corroborated and carried by the VCALL
+itself, and an M17 link setup's encryption type. **Encrypted** alone means the call's own
+checked signalling says it is encrypted and carried no ALG ID or key ID: a DMR link
+control's privacy bit, P25 service options or an ALG ID other than 80, an NXDN VCALL or
+SACCH-2 cipher, a dPMR scrambled frame, an M17 encryption type. An ALG ID forced with
+`--dmr-force-algid` or inferred from a loaded key or from late entry adds nothing to it,
+and a forced NXDN scrambler (`-ns`) on a call whose VCALL says clear shows nothing:
+decryption still uses it, but nothing on the air said the call was encrypted. A clear call
+shows nothing. A DMR PI header decoded while no call is active (the voice
 header was lost) is held for the call the next checked link control opens on that slot
 within two seconds, and forgotten at that transmission's end, a carrier change or a new
 visit. A call that fades and is reacquired keeps what it had.

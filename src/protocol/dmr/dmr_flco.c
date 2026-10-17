@@ -792,6 +792,8 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
         .audio_permitted = (uint8_t)(!encrypted || has_key),
         .received = carried ? 0U : received,
         .carried = (uint8_t)carried,
+        /* The checked LC's own privacy bit (through the classification hysteresis, which only over-the-air LCs feed). */
+        .enc_observed = encrypted ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR,
     };
     if (dsd_call_state_update_crypto(ctx->state, ctx->slot, &crypto) > 0) {
         dmr_note_published_live_crypto(ctx->state, ctx->slot, algid, kid);

@@ -386,6 +386,7 @@ test_missed_terminator_publishes_no_stale_crypto(dsd_opts* opts) {
     run_lc(opts, state, 0U, 1U, 0x00U, 3333U, 4444U);
     dsd_call_snapshot call = call_on(state, 0U);
     assert(call.ota_target_id == 3333U && call.crypto == DSD_CALL_CRYPTO_CLEAR && call.algid == 0U && call.kid == 0U);
+    assert(call.enc_received == 0U); // its checked LC says clear
     assert(!event_row_names_alg(&history[0]));
     dsd_app_slot_call_view(state, 0U, dsd_decode_now_mono_s(), &view);
     assert(view.enc == 0U && view.algid == 0U && view.kid == 0U);
@@ -397,6 +398,8 @@ test_missed_terminator_publishes_no_stale_crypto(dsd_opts* opts) {
     run_lc(opts, state, 0U, 1U, 0x40U, 5555U, 6666U);
     call = call_on(state, 0U);
     assert(call.ota_target_id == 5555U && call.algid == 0U && call.kid == 0U);
+    // The carried values are not its own, but its checked LC's privacy bit is: a detection shows it "Encrypted".
+    assert(call.enc_received == 1U);
     dsd_app_slot_call_view(state, 0U, dsd_decode_now_mono_s(), &view);
     assert(view.enc != 0U && view.algid == 0U);
     assert(!event_row_names_alg(&history[0]));

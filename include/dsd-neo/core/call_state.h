@@ -161,6 +161,13 @@ enum {
     DSD_CALL_CRYPTO_RX_KID = 1U << 1,
 };
 
+/** dsd_call_crypto_update::enc_observed values. */
+enum {
+    DSD_CALL_ENC_OBSERVED_NONE = 0,      /**< this update carries no checked encryption indication */
+    DSD_CALL_ENC_OBSERVED_ENCRYPTED = 1, /**< checked signalling says encrypted */
+    DSD_CALL_ENC_OBSERVED_CLEAR = 2,     /**< checked signalling says clear */
+};
+
 typedef struct {
     dsd_call_crypto_state classification;
     uint8_t algid;
@@ -175,6 +182,12 @@ typedef struct {
      * those received fields (a field also in @c received is received anew instead). 0 leaves them alone.
      */
     uint8_t contradicted;
+    /**
+     * What checked over-the-air signalling in this update says about encryption (DSD_CALL_ENC_OBSERVED_*), kept in
+     * dsd_call_snapshot::enc_received apart from the classification the decoder acts on. Applied even when @c carried
+     * is set: it is the new call's own signalling.
+     */
+    uint8_t enc_observed;
     /**
      * Non-zero when algid, kid and mi are live decoder values a previous call left behind (its terminator missed),
      * which the decoder still decrypts with but which are not this epoch's: the record keeps its own algid, kid and
@@ -257,6 +270,14 @@ typedef struct {
      * keeps its crypto until the transmission's own signalling replaces it.
      */
     uint8_t crypto_restored;
+    /**
+     * 1 while checked over-the-air signalling of this epoch says the call is encrypted (dsd_call_crypto_update::
+     * enc_observed): a DMR LC privacy bit, a P25 ALG ID other than 0x80 or the service options' encryption bit, an
+     * NXDN VCALL or SACCH-2 cipher, a dPMR verified scrambled half, an M17 LSF encryption type. Checked signalling
+     * saying clear resets it. Never set by a forced, inferred or key-loaded classification, so the crypto
+     * classification can say encrypted while this says nothing was received.
+     */
+    uint8_t enc_received;
     char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];

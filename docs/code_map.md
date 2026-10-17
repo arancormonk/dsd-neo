@@ -107,7 +107,10 @@ Generated (do not edit/commit):
     it, so two DMR slots never mix. `slot` is the record's slot plus one for DMR and P25 Phase
     2, else 0; `crypt` is "ALG xx · KID xxxx" from the record's received bits only
     (`crypto_received`), "Encrypted" when its classification is encrypted, pending or
-    decryptable with none received, and empty for a clear or unknown call. Like the site it
+    decryptable with none received and the call's own checked signalling says encrypted
+    (`dsd_call_snapshot::enc_received`, set from `dsd_call_crypto_update::enc_observed` by
+    the DMR LC, P25 checked ALG ID and service options, NXDN VCALL/SACCH-2, dPMR and M17
+    writers, never by a forced or inferred classification), and empty otherwise. Like the site it
     shows once the hit's protocol matches, clears at each landing and on a change to another
     protocol, and stays on the ended hit; evidence IDs fill `target`/`source` only while no
     tuple belongs to the hit. `site`, `slot` and `crypt` are persisted with the rest of the hit

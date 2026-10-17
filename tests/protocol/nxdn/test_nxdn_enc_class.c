@@ -322,6 +322,9 @@ test_forced_cipher_is_not_received(void) {
     assert(state.nxdn_cipher_type == 1U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
     assert(call.algid == 1U && call.crypto_received == 0U);
+    // Decryption keeps the forced scrambler, but the call's own checked VCALL said clear: nothing says encrypted, so a
+    // detection shows no "Encrypted" for it (ENGINE_SIGNAL_SEARCH).
+    assert(call.crypto != DSD_CALL_CRYPTO_CLEAR && call.enc_received == 0U);
 
     reset_fixture(&opts, &state, history);
     opts.trunk_enable = 0;
@@ -332,6 +335,7 @@ test_forced_cipher_is_not_received(void) {
     assert(state.nxdn_cipher_type == 1U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.algid == 1U && call.kid == 3U && call.crypto_received == 0U);
+    assert(call.enc_received == 1U); // this VCALL itself advertises the scrambler
     NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.crypto_received == (DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID));

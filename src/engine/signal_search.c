@@ -645,8 +645,9 @@ search_call_protocol(int protocol) {
     return NULL;
 }
 
-/* "ALG 84 · KID 0001" with only the parts the call received over the air, "Encrypted" when its checked classification
-   says encrypted and neither was received, "" for a call not known to be encrypted. */
+/* "ALG 84 · KID 0001" with only the parts the call received over the air, "Encrypted" when its classification says
+   encrypted, neither was received and checked signalling of the call itself says encrypted (enc_received: never a
+   forced, inferred or key-loaded classification), "" for a call not known to be encrypted. */
 static void
 search_call_crypt(const dsd_call_snapshot* call, char* out, size_t capacity) {
     out[0] = '\0';
@@ -663,7 +664,7 @@ search_call_crypt(const dsd_call_snapshot* call, char* out, size_t capacity) {
         DSD_SNPRINTF(out, capacity, "ALG %02X", (unsigned)call->received_algid);
     } else if (kid) {
         DSD_SNPRINTF(out, capacity, "KID %04X", (unsigned)call->received_kid);
-    } else {
+    } else if (call->enc_received != 0U) {
         DSD_SNPRINTF(out, capacity, "%s", "Encrypted");
     }
 }

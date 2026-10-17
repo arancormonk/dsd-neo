@@ -508,6 +508,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     // The reacquired segment is the transmission whose crypto was received, so it keeps what was received with it.
     snapshot->crypto_received = previous->crypto_received;
     snapshot->crypto_restored = (previous->algid != 0U || previous->kid != 0U) ? 1U : 0U;
+    snapshot->enc_received = previous->enc_received;
     snapshot->received_algid = previous->received_algid;
     snapshot->received_kid = previous->received_kid;
     snapshot->service_options = previous->service_options;
@@ -682,6 +683,18 @@ call_state_crypto_receives_new(const dsd_call_snapshot* snapshot, const dsd_call
     return alg || kid;
 }
 
+// The checked encryption indication @p update leaves the snapshot holding.
+static uint8_t
+call_state_enc_received_after(const dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
+    if (update->enc_observed == DSD_CALL_ENC_OBSERVED_ENCRYPTED) {
+        return 1U;
+    }
+    if (update->enc_observed == DSD_CALL_ENC_OBSERVED_CLEAR) {
+        return 0U;
+    }
+    return snapshot->enc_received;
+}
+
 // The received bits @p update withdraws: those it contradicts and does not receive anew, that the snapshot holds.
 static uint8_t
 call_state_crypto_withdraws(const dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
@@ -704,7 +717,8 @@ call_state_crypto_differs(const dsd_call_snapshot* snapshot, const dsd_call_cryp
     return snapshot->crypto != update->classification
            || (owns && (snapshot->algid != update->algid || snapshot->kid != update->kid || snapshot->mi != update->mi))
            || snapshot->audio_permitted != (update->audio_permitted ? 1U : 0U)
-           || call_state_crypto_receives_new(snapshot, update) || call_state_crypto_withdraws(snapshot, update) != 0U;
+           || call_state_crypto_receives_new(snapshot, update) || call_state_crypto_withdraws(snapshot, update) != 0U
+           || call_state_enc_received_after(snapshot, update) != snapshot->enc_received;
 }
 
 // Received values are sticky for the epoch: only an update that received a field replaces it, so a forced, inferred
@@ -763,6 +777,8 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
         snapshot->crypto_restored = 0U;
     }
     snapshot->audio_permitted = update->audio_permitted ? 1U : 0U;
+    // The new call's own checked indication, whatever values it carries.
+    snapshot->enc_received = call_state_enc_received_after(snapshot, update);
     if (!update->carried) {
         call_state_apply_received_crypto(snapshot, update);
     }
@@ -837,7 +853,8 @@ dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot) {
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
         || (snapshot->algid == 0U && snapshot->kid == 0U && snapshot->mi == 0U && snapshot->crypto_received == 0U
-            && snapshot->received_algid == 0U && snapshot->received_kid == 0U && snapshot->crypto_restored == 0U)) {
+            && snapshot->received_algid == 0U && snapshot->received_kid == 0U && snapshot->crypto_restored == 0U
+            && snapshot->enc_received == 0U)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -848,6 +865,7 @@ dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot) {
     snapshot->received_algid = 0U;
     snapshot->received_kid = 0U;
     snapshot->crypto_restored = 0U;
+    snapshot->enc_received = 0U;
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
