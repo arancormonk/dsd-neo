@@ -49,6 +49,13 @@ Item {
             tryCompare(edit, "visible", true);
             // The row lays the button out when it is polished, after it comes on screen.
             waitForItemPolished(item("monitorToneFilter"));
+            // Scrolled into the body's view, as a user would: the call actions below it can
+            // take more of a short screen than one row.
+            var body = item("monitorBody");
+            var bottom = edit.mapToItem(body.contentItem, 0, edit.height).y;
+            if (bottom > body.contentY + body.height)
+                body.contentY = Math.min(bottom - body.height, Math.max(0, body.contentHeight - body.height));
+            waitForRendering(monitor);
             mouseClick(edit);
             var sheet = item("toneFilterSheet");
             tryCompare(sheet, "visible", true);
