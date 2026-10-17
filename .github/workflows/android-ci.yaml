@@ -16,7 +16,7 @@ on:
     branches: [main, master]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -810,6 +810,17 @@ jobs:
             LICENSE
             COPYRIGHT
             THIRD_PARTY.md
+            legal/status.md
+            legal/components.json
+            licenses/ISC.txt
+            licenses/Unlicense.txt
+            licenses/gqrx-scanner-MIT.txt
+            licenses/LicenseRef-BCH3-Noncommercial.txt
+            licenses/LicenseRef-Simon-Rockliff.txt
+            licenses/mbelib-neo/ISC.txt
+            licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt
+            licenses/mbelib-neo/legal/status.md
+            licenses/mbelib-neo/legal/patents.md
             licenses/ezpwd-LGPL-2.1-or-later.txt
             licenses/pffft-LICENSE.txt
             licenses/pffft-NOTICES.txt
@@ -921,9 +932,11 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
+            python tools/legal_inventory.py --spdx "$SBOM_PATH" --platform android
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
+            python3 tools/legal_inventory.py --spdx "$SBOM_PATH" --platform android
           fi
 
       - name: Upload enriched SBOM
@@ -1122,9 +1135,11 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
+            python tools/legal_inventory.py --spdx "$SBOM_PATH" --platform android
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
+            python3 tools/legal_inventory.py --spdx "$SBOM_PATH" --platform android
           fi
 
       - name: Upload enriched SBOM
@@ -1208,7 +1223,7 @@ jobs:
       group: ci-fast-1
       cancel-in-progress: false
       queue: max
-    if: needs.build-apk.outputs.publishable == 'true'
+    if: ${{ !cancelled() && needs.build-apk.result == 'success' && needs.build-apk.outputs.publishable == 'true' }}
     steps:
       - name: Fail when the AAB pipeline failed
         shell: bash
@@ -1240,6 +1255,9 @@ jobs:
     # computed once, in build-apk's "Prepare artifact naming and the publish
     # gate" step.
     if: >-
+      !cancelled() &&
+      needs.build-apk.result == 'success' &&
+      needs.qt-ui-tests.result == 'success' &&
       needs.build-apk.outputs.publishable == 'true' &&
       needs.build-apk.outputs.signed == 'true'
     permissions:

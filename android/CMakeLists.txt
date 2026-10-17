@@ -59,6 +59,7 @@ execute_process(
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package
         -DPFFFT_LICENSE_DIR=${DSD_PFFFT_LICENSE_DIR}
         -DTETRA_CRYPTO_LICENSE_DIR=${DSD_TETRA_CRYPTO_LICENSE_DIR}
+        -DMBELIB_NOTICE_DIR=${DSD_MBELIB_NOTICE_DIR}
         -DSTAGE_DIR=${dsd_neo_android_package_dir} -P
         ${PROJECT_SOURCE_DIR}/cmake/stage_android_package.cmake
     COMMAND_ERROR_IS_FATAL ANY
@@ -71,6 +72,7 @@ add_custom_target(
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package
         -DPFFFT_LICENSE_DIR=${DSD_PFFFT_LICENSE_DIR}
         -DTETRA_CRYPTO_LICENSE_DIR=${DSD_TETRA_CRYPTO_LICENSE_DIR}
+        -DMBELIB_NOTICE_DIR=${DSD_MBELIB_NOTICE_DIR}
         -DSTAGE_DIR=${dsd_neo_android_package_dir} -P
         ${PROJECT_SOURCE_DIR}/cmake/stage_android_package.cmake
     COMMENT "Staging the Android package source with license files"

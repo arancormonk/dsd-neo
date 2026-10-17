@@ -8,6 +8,11 @@ The `release` workflow owns release metadata for version tags and creates the
 generated release notes exactly once. Platform packaging workflows wait for that
 release to exist, then upload their assets without rewriting the release body.
 
+The [2.11.1 licensing review](../legal/status.md) records unresolved component,
+fixture and corresponding-source findings. Artifact attestations authenticate
+build provenance; they do not certify legal clearance. Current automatic Git
+source archives do not include all fetched or bundled dependency sources.
+
 ## Release Identifiers
 
 Release tags use the form `vX.Y.Z`. The tag must match the project version
@@ -90,6 +95,18 @@ Review the matching SPDX SBOM file when present:
 ```sh
 less dsd-neo-<asset-name>.spdx.json
 ```
+
+The curated component set supplements the scanner and keeps unresolved licenses
+and the aggregate conclusion at `NOASSERTION`. Read the embedded findings and
+the packaged `legal/` and `licenses/mbelib-neo/` records. `filesAnalyzed: false`
+on these supplemental components means they are review records, not a claim
+that the scanner identified every embedded file or all runtime dependencies.
+
+Workflow concurrency distinguishes push, PR and dispatch events. Jobs following
+the PR-only classifier explicitly require successful builds and `!cancelled()`
+so tag runs are not skipped merely because that classifier did not run. DSD has
+no mbelib-style validated manual release-recovery mode: dispatching a branch
+does not authorize publishing a version tag or replacing its source identity.
 
 For manually mirrored assets, compute and compare a local SHA256 digest:
 

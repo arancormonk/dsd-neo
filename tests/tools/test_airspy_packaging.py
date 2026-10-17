@@ -5,14 +5,15 @@
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
 import textwrap
 import unittest
+from pathlib import Path
 
+from test_legal_inventory import mbelib_notice_fixture
 
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 NOTICE = "libairspy-LICENSE.txt"
@@ -33,7 +34,7 @@ COPYRIGHT_HOLDERS = ("Michael Ossmann", "Jared Boone", "Youssef Touil", "Benjami
 
 
 def run(args, **kwargs):
-    return subprocess.run(args, text=True, stdout=subprocess.PIPE,
+    return subprocess.run(args, check=False, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, **kwargs)
 
 
@@ -74,6 +75,7 @@ class AirspyPackaging(unittest.TestCase):
         tea_notices.mkdir()
         (tea_notices / "tetra_crypto-LICENSE.txt").write_text("TEA notice fixture\n")
         result = run(["cmake", f"-DPFFFT_LICENSE_DIR={fft_notices}", f"-DTETRA_CRYPTO_LICENSE_DIR={tea_notices}",
+                      f"-DMBELIB_NOTICE_DIR={mbelib_notice_fixture(self.work / 'mbelib-notices')}",
                       f"-DREPO_DIR={ROOT}", f"-DSOURCE_DIR={source}",
                       f"-DSTAGE_DIR={stage}", "-P", str(ROOT / "cmake/stage_android_package.cmake")])
         self.assert_success(result)

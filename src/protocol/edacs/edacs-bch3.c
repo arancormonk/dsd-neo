@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: ISC AND LicenseRef-BCH3-Noncommercial
 /*
  * File:    bch3.h
  * Title:   Encoder/decoder for binary BCH codes in C (Version 3.1)

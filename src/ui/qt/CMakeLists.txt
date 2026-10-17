@@ -198,6 +198,28 @@ qt_add_resources(
         "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
 )
 
+file(
+    GLOB_RECURSE _dsd_legal_notices
+    CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/LICENSES/*.txt"
+    "${PROJECT_SOURCE_DIR}/legal/*.md"
+    "${PROJECT_SOURCE_DIR}/legal/*.json"
+)
+qt_add_resources(dsd-neo_ui_qt "dsd_neo_legal_notices"
+    PREFIX "/dsdneo/notices" BASE "${PROJECT_SOURCE_DIR}" FILES ${_dsd_legal_notices}
+)
+file(
+    GLOB_RECURSE _mbe_legal_notices
+    CONFIGURE_DEPENDS
+    "${DSD_MBELIB_NOTICE_DIR}/*.txt"
+    "${DSD_MBELIB_NOTICE_DIR}/*.md"
+    "${DSD_MBELIB_NOTICE_DIR}/*.json"
+)
+qt_add_resources(dsd-neo_ui_qt "dsd_neo_mbelib_notices"
+    PREFIX "/dsdneo/notices/mbelib-neo" BASE "${DSD_MBELIB_NOTICE_DIR}"
+    FILES "${DSD_MBELIB_NOTICE_DIR}/LICENSE" ${_mbe_legal_notices}
+)
+
 qt_add_resources(
     dsd-neo_ui_qt
     "dsd_neo_tetra_crypto_notices"

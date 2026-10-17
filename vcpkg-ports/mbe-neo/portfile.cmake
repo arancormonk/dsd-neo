@@ -4,12 +4,21 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO arancormonk/mbelib-neo
-    REF 696f85704cc9cac0c0bbe3a44432ae3c19ab023b
-    SHA512 a593409b7fd16da085ba0a70509b366f35a8a7251b7cc362cbdb821d964bd7e27ca29983e2a02d7bbad3d9d2f56b09605d0c0078ea65bef74696fc89d3ab00d6
+    REF 2b69ade768095ea25e94abe1d4f2bb429fcd2f0c
+    SHA512 652c80e61633219029842142aa965032dc6334590ba08c9bc7c144bb39ea8b9385d2d8fb01e865e33226c61be86f403acdc04fc50e013779972f33e59034216a
 )
 
 set(_mbe_pffft_options)
-set(_mbe_notices "${SOURCE_PATH}/LICENSE")
+set(_mbe_notices
+    "${SOURCE_PATH}/LICENSE"
+    "${SOURCE_PATH}/LICENSES/GPL-2.0-or-later.txt"
+    "${SOURCE_PATH}/LICENSES/ISC.txt"
+    "${SOURCE_PATH}/LICENSES/LicenseRef-PFFFT.txt"
+    "${SOURCE_PATH}/LICENSES/LicenseRef-ETSI-EN-300-395-2-data.txt"
+    "${SOURCE_PATH}/docs/upstream-mbelib-attribution.md"
+    "${SOURCE_PATH}/legal/status.md"
+    "${SOURCE_PATH}/legal/patents.md"
+)
 # Releases from 2.4.1 need an offline override; retain support for rollback.
 if(EXISTS "${SOURCE_PATH}/cmake/Pffft.cmake")
     include("${CMAKE_CURRENT_LIST_DIR}/pffft.cmake")
