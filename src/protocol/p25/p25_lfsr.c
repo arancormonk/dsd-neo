@@ -11,6 +11,17 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static unsigned long long
+p25_lfsr_advance_64(unsigned long long lfsr) {
+    for (int cnt = 0; cnt < 64; cnt++) {
+        // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
+        unsigned long long bit =
+            ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
+        lfsr = (lfsr << 1) | bit;
+    }
+    return lfsr;
+}
+
 //LFSR code courtesy of https://github.com/mattames/LFSR/
 void
 LFSRP(dsd_state* state) {
@@ -28,7 +39,7 @@ LFSRP(dsd_state* state) {
         lfsr = state->payload_miN;
     }
 
-    lfsr = p25_lfsr_next_mi(lfsr);
+    lfsr = p25_lfsr_advance_64(lfsr);
 
     if (state->currentslot == 0) {
         state->payload_miP = lfsr;

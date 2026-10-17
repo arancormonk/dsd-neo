@@ -8,7 +8,7 @@
  * @brief P25 encryption LFSR helper interfaces.
  *
  * Declares the P25-specific LFSR helpers implemented in
- * `src/protocol/p25/p25_lfsr.c` and `src/protocol/p25/p25_lfsr_mi.c`.
+ * `src/protocol/p25/p25_lfsr.c`.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_LFSR_H_H
@@ -23,8 +23,6 @@ extern "C" {
 void LFSRP(dsd_state* state);
 void LFSR128(dsd_state* state);
 void p25_lfsr128_slot(dsd_state* state, int slot);
-/** The MI of the next superframe: @p mi advanced 64 steps by the P25 MI LFSR (what LFSRP() applies). */
-unsigned long long p25_lfsr_next_mi(unsigned long long mi);
 
 #ifdef __cplusplus
 }

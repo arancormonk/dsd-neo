@@ -22,6 +22,7 @@
  * slot's call crypto.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
@@ -118,24 +119,9 @@ void
 dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
     dmr_pi_precall_drop_hold(state, slot);
-    state->dmr_pi_live_m[idx] = 0.0;
-    state->dmr_sb_live_m[idx] = 0.0;
-}
-
-static int
-dmr_live_mark_fresh(double mark_m, double now_m) {
-    return mark_m > 0.0 && now_m >= mark_m && (now_m - mark_m) <= DMR_PI_PRECALL_HOLD_S;
-}
-
-int
-dmr_live_crypto_is_next_call(const dsd_state* state, uint8_t slot, double previous_m, double now_m) {
-    const uint8_t idx = dmr_enc_class_slot_index(slot);
-    const double pi_m = state->dmr_pi_live_m[idx];
-    const double sb_m = state->dmr_sb_live_m[idx];
-    // A PI leads its transmission, so one strictly after the previous call's last voice is the next call's. An SB rides the
-    // voice itself, so it cannot be placed against it; it counts only when it replaced the previous call's live crypto
-    // (dmr_le.c), which the previous call's own repeats never do.
-    return (dmr_live_mark_fresh(pi_m, now_m) && pi_m > previous_m) || dmr_live_mark_fresh(sb_m, now_m);
+    state->dmr_crypto_inherited[idx] = 0U;
+    state->dmr_crypto_inherited_algid[idx] = 0;
+    state->dmr_crypto_inherited_keyid[idx] = 0;
 }
 
 int
@@ -156,4 +142,16 @@ int
 dmr_enc_class_established_clear(const dsd_state* state, uint8_t slot) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
     return state->dmr_enc_class[idx] == DMR_ENC_CLASS_CLEAR && state->dmr_enc_class_est[idx] != 0U;
+}
+
+void
+dmr_note_published_live_crypto(dsd_state* state, uint8_t slot, int algid, int keyid) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, idx, &call) <= 0) {
+        return;
+    }
+    state->dmr_live_pub_epoch[idx] = call.epoch;
+    state->dmr_live_pub_algid[idx] = algid;
+    state->dmr_live_pub_keyid[idx] = keyid;
 }

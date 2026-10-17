@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CRYPTO_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CRYPTO_H_H
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
@@ -141,19 +142,30 @@ void p25_crypto_clear_phase1_lockout_epoch(dsd_state* state);
 dsd_p25_crypto_state p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot,
                                         int algid, int keyid, uint64_t mi, int talkgroup);
 /**
- * Note a checked Phase 1 LDU2 tuple before it resolves: one whose ALG ID, key id and MI do not continue the slot's
- * stored tuple (the MI is not the stored MI's next-superframe successor) begins a transmission's crypto, and stamps
- * dsd_state::p25_p1_tx_crypto_m as an HDU does. The previous call's own LDU2s continue its chain and stamp nothing.
- */
-void p25_crypto_p1_note_ldu2(dsd_state* state, int algid, int keyid, uint64_t mi);
-
-/**
  * p25_crypto_resolve() for a tuple whose decode may not have checked it: @p checked is 0 for a Phase 2 ESS whose RS
  * decode leaned on soft erasures (enough erasures always decode, whatever the bits). Resolution is the same; only a
  * checked tuple publishes its ALG ID and key id as received on the call (DSD_CALL_CRYPTO_RX_*).
  */
 dsd_p25_crypto_state p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot,
                                                 int algid, int keyid, uint64_t mi, int talkgroup, int checked);
+
+/**
+ * A conventional call replaced the slot's previous call, whose terminator was missed: the slot's live ALG ID and key
+ * id are still that call's. Decryption keeps them; publication marks them (p25_crypto_live_is_inherited()).
+ */
+void p25_crypto_note_inherited(dsd_state* state, int slot);
+
+/**
+ * 1 while the slot's live ALG ID and key id are still the ones p25_crypto_note_inherited() marked, so a publish of
+ * them is carried (dsd_call_crypto_update::carried); 0 otherwise, clearing the mark once they changed.
+ */
+int p25_crypto_live_is_inherited(dsd_state* state, int slot);
+
+/**
+ * The classification a call publishes while its live crypto is carried from a replaced call: its own service
+ * options' privacy bit (pending encrypted or clear), unknown without them. Never the replaced call's verdict.
+ */
+dsd_call_crypto_state p25_crypto_carried_classification(const dsd_state* state, int slot);
 
 /**
  * Return a still-pending classification to unclassified after a silent

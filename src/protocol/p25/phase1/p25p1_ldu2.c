@@ -482,7 +482,6 @@ ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame)
     dsd_call_snapshot call;
     const int target =
         dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= INT_MAX ? (int)call.ota_target_id : 0;
-    p25_crypto_p1_note_ldu2(state, frame->algidhex, frame->kidhex, mi);
     (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, frame->algidhex, frame->kidhex, mi, target);
 }
 

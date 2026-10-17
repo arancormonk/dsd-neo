@@ -2017,8 +2017,7 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     DSD_MEMSET(state->dmr_pi_precall_algid, 0, sizeof(state->dmr_pi_precall_algid));
     DSD_MEMSET(state->dmr_pi_precall_kid, 0, sizeof(state->dmr_pi_precall_kid));
     DSD_MEMSET(state->dmr_pi_precall_m, 0, sizeof(state->dmr_pi_precall_m));
-    DSD_MEMSET(state->dmr_pi_live_m, 0, sizeof(state->dmr_pi_live_m));
-    DSD_MEMSET(state->dmr_sb_live_m, 0, sizeof(state->dmr_sb_live_m));
+    DSD_MEMSET(state->dmr_crypto_inherited, 0, sizeof(state->dmr_crypto_inherited));
     state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
     rt->snapshot.trunk_chan_map_seq = state->trunk_chan_map_seq;
 }

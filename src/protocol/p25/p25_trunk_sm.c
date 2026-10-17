@@ -2725,13 +2725,17 @@ p25_call_publish_crypto_update(const dsd_opts* opts, dsd_state* state, int slot,
     if (!state || slot < 0 || slot > 1) {
         return;
     }
+    // Live values a replaced conventional call left behind are still what decryption uses, but not this call's.
+    const int carried = p25_crypto_live_is_inherited(state, slot);
     dsd_call_crypto_update update = {
-        .classification = p25_call_crypto_classification(state, slot),
+        .classification =
+            carried ? p25_crypto_carried_classification(state, slot) : p25_call_crypto_classification(state, slot),
         .algid = (uint8_t)(slot == 0 ? state->payload_algid : state->payload_algidR),
         .kid = (uint16_t)(slot == 0 ? state->payload_keyid : state->payload_keyidR),
         .mi = slot == 0 ? state->payload_miP : state->payload_miN,
         .audio_permitted = (uint8_t)(p25_crypto_audio_permitted(opts, state, slot) ? 1 : 0),
         .observed_m = observed_m,
+        .carried = (uint8_t)carried,
     };
     if (include_ended) {
         (void)dsd_call_state_update_retained_crypto(state, (uint8_t)slot, &update);
@@ -6745,16 +6749,6 @@ p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, 
                                                   call.kind == DSD_CALL_KIND_PRIVATE_VOICE, encrypted, 0);
 }
 
-/* A conventional Phase 1 transmission whose terminator was missed is replaced by the next one's link control, which
-   forks the epoch while the slot's live crypto is still the previous call's. Whether it belongs to the new
-   transmission: only when a tuple that began a transmission's crypto -- an HDU, or a late-entry LDU2 whose MI breaks
-   the slot's chain -- resolved it after the previous call's last voice (or, with no voice, after it began). */
-static int
-p25_sm_p1_crypto_belongs_to_replacement(const dsd_state* state, const dsd_call_snapshot* previous) {
-    const double previous_m = previous->media_updated_m > 0.0 ? previous->media_updated_m : previous->started_m;
-    return state->p25_p1_tx_crypto_m > 0.0 && state->p25_p1_tx_crypto_m > previous_m;
-}
-
 static int
 p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, int ptt_retransmit) {
     if (!state || !ev) {
@@ -6785,15 +6779,14 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
         boundary = DSD_CALL_BOUNDARY_BEGIN;
     }
     dsd_call_snapshot previous;
-    const int replaces_active = dsd_call_state_get(state, (uint8_t)slot, &previous) > 0
-                                && previous.phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25P1(previous.protocol);
+    const int replaces_active =
+        dsd_call_state_get(state, (uint8_t)slot, &previous) > 0 && previous.phase == DSD_CALL_PHASE_ACTIVE;
     (void)dsd_call_state_observe(state, &observation, boundary);
     dsd_call_snapshot current;
-    if (replaces_active && DSD_SYNC_IS_P25P1(call.protocol) && dsd_call_state_get(state, (uint8_t)slot, &current) > 0
-        && current.epoch != previous.epoch && !p25_sm_p1_crypto_belongs_to_replacement(state, &previous)) {
-        // The new transmission starts its own classification, as a trunked one does at its grant: its service
-        // options say clear or pending, and its own HDU/LDU2 resolves the tuple.
-        p25_crypto_begin_voice_call(state, DSD_P25_CRYPTO_PHASE1, 0, has_service_metadata ? service_options : -1, 0);
+    if (replaces_active && dsd_call_state_get(state, (uint8_t)slot, &current) > 0 && current.epoch != previous.epoch) {
+        // A conventional call replaced the slot's call, whose terminator was missed: the live crypto is still that
+        // call's. Decryption keeps it, as it always has; the new call does not publish it as its own.
+        p25_crypto_note_inherited(state, slot);
     }
     p25_call_publish_crypto(opts, state, slot, 0.0);
     dsd_signal_search_note_call(state, (uint8_t)slot);

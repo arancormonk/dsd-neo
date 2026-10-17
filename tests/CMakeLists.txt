@@ -10419,6 +10419,22 @@ add_test(
     COMMAND dsd-neo_test_dmr_flco_privacy_modes
 )
 
+# The live DMR and P25 decryption inputs across the call forks a missed terminator causes, as the decoder has always
+# left them.
+add_executable(
+    dsd-neo_test_fork_decrypt_inputs
+    protocol/test_fork_decrypt_inputs.c
+)
+target_include_directories(
+    dsd-neo_test_fork_decrypt_inputs
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_fork_decrypt_inputs
+    PRIVATE dsd-neo_proto_dmr dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME FORK_DECRYPT_INPUTS COMMAND dsd-neo_test_fork_decrypt_inputs)
+
 # DMR call notes for a signal search and the received-crypto provenance of the call records they name.
 add_executable(
     dsd-neo_test_dmr_search_call_notes

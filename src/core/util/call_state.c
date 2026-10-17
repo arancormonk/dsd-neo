@@ -507,6 +507,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->mi = previous->mi;
     // The reacquired segment is the transmission whose crypto was received, so it keeps what was received with it.
     snapshot->crypto_received = previous->crypto_received;
+    snapshot->crypto_restored = (previous->algid != 0U || previous->kid != 0U) ? 1U : 0U;
     snapshot->received_algid = previous->received_algid;
     snapshot->received_kid = previous->received_kid;
     snapshot->service_options = previous->service_options;
@@ -681,10 +682,21 @@ call_state_crypto_receives_new(const dsd_call_snapshot* snapshot, const dsd_call
     return alg || kid;
 }
 
+// Whether @p update's algid, kid and mi are this epoch's to publish: not live values a replaced call left behind, and
+// not the cleared live values of a reacquired epoch that still holds the crypto it was restored with.
+static int
+call_state_crypto_update_owns_values(const dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
+    if (update->carried) {
+        return 0;
+    }
+    return !(snapshot->crypto_restored && update->received == 0U && update->algid == 0U && update->kid == 0U);
+}
+
 static int
 call_state_crypto_differs(const dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
-    return snapshot->crypto != update->classification || snapshot->algid != update->algid
-           || snapshot->kid != update->kid || snapshot->mi != update->mi
+    const int owns = call_state_crypto_update_owns_values(snapshot, update);
+    return snapshot->crypto != update->classification
+           || (owns && (snapshot->algid != update->algid || snapshot->kid != update->kid || snapshot->mi != update->mi))
            || snapshot->audio_permitted != (update->audio_permitted ? 1U : 0U)
            || call_state_crypto_receives_new(snapshot, update);
 }
@@ -729,11 +741,16 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
         return 1;
     }
     snapshot->crypto = update->classification;
-    snapshot->algid = update->algid;
-    snapshot->kid = update->kid;
-    snapshot->mi = update->mi;
+    if (call_state_crypto_update_owns_values(snapshot, update)) {
+        snapshot->algid = update->algid;
+        snapshot->kid = update->kid;
+        snapshot->mi = update->mi;
+        snapshot->crypto_restored = 0U;
+    }
     snapshot->audio_permitted = update->audio_permitted ? 1U : 0U;
-    call_state_apply_received_crypto(snapshot, update);
+    if (!update->carried) {
+        call_state_apply_received_crypto(snapshot, update);
+    }
     snapshot->crc_invalid |= crc_invalid;
     if (snapshot->phase == DSD_CALL_PHASE_ACTIVE) {
         snapshot->updated_m = call_state_observed_m(update->observed_m);

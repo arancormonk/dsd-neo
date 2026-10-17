@@ -168,22 +168,23 @@ held back as a contradiction of clear service, and not an ESS whose decode neede
 erasures, so a weak Phase 2 signal shows **Encrypted**), a DMR PI header (its key ID only
 where the header carries one; Kirisun's is derived), an NXDN call's cipher and key once
 corroborated, and an M17 link setup's encryption type. An ALG ID forced with
-`--dmr-force-algid`, inferred from a loaded key or from late entry, or carried over by the
-decoder from an earlier call shows only **Encrypted**, which is also what a checked
-privacy or scrambling indication alone shows; a clear call shows nothing. A DMR PI header
-decoded before its call's voice header (the header was lost) is held for the call the next
-checked link control opens on that slot within two seconds, and forgotten at that
-transmission's end, a carrier change or a new visit; one decoded while the slot's call is
-still active after its voice opens the next transmission (its terminator was missed) and
-is held the same way rather than relabelling that call. A call that fades and is
-reacquired keeps what it received, and a separate later call never inherits it: when a DMR
-or conventional P25 Phase 1 transmission replaces a call whose terminator was missed, the
-new call starts without the previous call's ALG ID and key ID (in history and the Monitor
-as well), unless its own PI header (verified or not), late-entry identifier, HDU or
-late-entry LDU2, decoded ahead of its link control, supplied them; those stay the call's
-decryption inputs, but only a verified one is shown as received. A limit remains: a PI
-header decoded on a slot whose previous call never carried voice cannot be told from that
-call's own. History does not store the call details' slot and encryption yet.
+`--dmr-force-algid` or inferred from a loaded key or from late entry shows only
+**Encrypted**, which is also what a checked privacy or scrambling indication alone shows;
+a clear call shows nothing. A DMR PI header decoded while no call is active (the voice
+header was lost) is held for the call the next checked link control opens on that slot
+within two seconds, and forgotten at that transmission's end, a carrier change or a new
+visit. A call that fades and is reacquired keeps what it had.
+
+When a terminator is missed and the next transmission's link control replaces the call
+(DMR, or conventional P25 Phase 1), the decoder keeps decrypting with what it holds,
+exactly as before, but the new call -- its detection, its history row and the Monitor --
+shows none of the previous call's ALG ID and key ID: only what the new call's own
+signalling supplies (its PI, HDU, LDU2, ESS or MAC_PTT), or a forced or key-inferred
+algorithm the decoder chose for it. Two limits follow. A new call whose own PI or LDU2
+decoded before its link control (its header lost) shows no ALG ID or key ID until a later
+one of its own decodes, and that earlier PI or LDU2, decoded while the previous call was
+still active, is attributed to the previous call. History does not store the call details'
+slot and encryption yet.
 
 ## Controls, history and saved systems
 

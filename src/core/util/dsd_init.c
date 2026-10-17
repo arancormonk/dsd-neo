@@ -871,8 +871,8 @@ init_state_protocol_defaults_a(dsd_state* state) {
     DSD_MEMSET(state->dmr_pi_precall_algid, 0, sizeof(state->dmr_pi_precall_algid));
     DSD_MEMSET(state->dmr_pi_precall_kid, 0, sizeof(state->dmr_pi_precall_kid));
     DSD_MEMSET(state->dmr_pi_precall_m, 0, sizeof(state->dmr_pi_precall_m));
-    DSD_MEMSET(state->dmr_pi_live_m, 0, sizeof(state->dmr_pi_live_m));
-    DSD_MEMSET(state->dmr_sb_live_m, 0, sizeof(state->dmr_sb_live_m));
+    DSD_MEMSET(state->dmr_crypto_inherited, 0, sizeof(state->dmr_crypto_inherited));
+    DSD_MEMSET(state->dmr_live_pub_epoch, 0, sizeof(state->dmr_live_pub_epoch));
 
     //init P2 ESS_B fragments and 4V counter
     DSD_MEMSET(state->ess_b, 0, sizeof(state->ess_b));
@@ -1101,7 +1101,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_p1_identity_pending = 0;
     state->p25_p1_identity_epoch_started = 0;
     state->p25_p1_hdu_crypto_fresh = 0;
-    state->p25_p1_tx_crypto_m = 0.0;
+    DSD_MEMSET(state->p25_crypto_inherited, 0, sizeof(state->p25_crypto_inherited));
     DSD_MEMSET(&state->p25_p1_crypto_conflict, 0, sizeof(state->p25_p1_crypto_conflict));
     DSD_MEMSET(state->p25_p2_media_rejected, 0, sizeof(state->p25_p2_media_rejected));
     DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));

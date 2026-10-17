@@ -1228,6 +1228,12 @@ struct dsd_state {
     unsigned int dmr_heal_so[2];
     uint8_t dmr_heal_le_vendor[2];
     uint8_t dmr_heal_valid[2];
+    /* The live ALG ID and key id DMR last published into each slot's call epoch, whether or not the record took them
+     * as the call's own (dsd_call_crypto_update::carried). The heal restores these for that epoch, which is what the
+     * decoder has always restored: the call record no longer holds carried values. */
+    uint64_t dmr_live_pub_epoch[2];
+    int dmr_live_pub_algid[2];
+    int dmr_live_pub_keyid[2];
 
     /* Per-slot DMR encryption-classification hysteresis (src/protocol/dmr/dmr_enc_class.c).
      * The service-option privacy bit arrives through channels of very different reliability --
@@ -1255,12 +1261,13 @@ struct dsd_state {
     uint16_t dmr_pi_precall_kid[2];
     /* Decode-clock instant each held PI was decoded; it transfers only within DMR_PI_PRECALL_HOLD_S. */
     double dmr_pi_precall_m[2];
-    /* Decode-clock instants of the last PI header that set the slot's live ALG ID, key id and MI (checked or not), and
-     * of the last late-entry SB identifier that replaced another transmission's live ALG ID and key id. A call that
-     * replaces one whose terminator was missed keeps the live crypto only when one of them belongs to it
-     * (dmr_live_crypto_is_next_call()). Cleared with the held PI (dmr_pi_precall_reset()). */
-    double dmr_pi_live_m[2];
-    double dmr_sb_live_m[2];
+    /* The slot's live ALG ID and key id as a call found them when it replaced one whose terminator was missed. The
+     * decoder keeps decrypting with them, as it always has; they are the replaced call's, so while the live values
+     * still equal them the new call publishes them as carried (dsd_call_crypto_update::carried), never as its own.
+     * Cleared by any PI header, once the live values change, and with the held PI (dmr_pi_precall_reset()). */
+    uint8_t dmr_crypto_inherited[2];
+    int dmr_crypto_inherited_algid[2];
+    int dmr_crypto_inherited_keyid[2];
 
     char slot1light[8];
     char slot2light[8];
@@ -1399,11 +1406,13 @@ struct dsd_state {
     int p25_p1_identity_epoch_started;
     // Definitive Phase 1 HDU crypto arrived after the last authoritative LCW identity.
     int p25_p1_hdu_crypto_fresh;
-    // Decode-clock instant of the last Phase 1 tuple that began a transmission's crypto (0: none since the slot's
-    // crypto reset): an HDU, or an LDU2 whose MI does not continue the slot's MI chain (p25_crypto_p1_note_ldu2()).
-    // One decoded after the previous call's last voice belongs to the next transmission, so a conventional
-    // replacement keeps its tuple.
-    double p25_p1_tx_crypto_m;
+    // Per slot: the live ALG ID and key id as a conventional call found them when it replaced one whose terminator was
+    // missed. The decoder keeps them, as it always has; while they are unchanged the new call publishes them as
+    // carried, never as its own (p25_crypto_live_is_inherited()). Cleared by the slot's own resolution, a new
+    // classification and p25_crypto_reset_slot().
+    uint8_t p25_crypto_inherited[2];
+    int p25_crypto_inherited_algid[2];
+    int p25_crypto_inherited_keyid[2];
     // One non-clear HDU/LDU2 tuple contradicted explicit-clear Phase 1 service options.
     dsd_p25_p1_crypto_conflict_state p25_p1_crypto_conflict;
     // One non-clear Phase 2 ESS tuple contradicted explicit-clear service context.

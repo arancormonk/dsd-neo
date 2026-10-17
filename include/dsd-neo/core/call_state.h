@@ -170,6 +170,12 @@ typedef struct {
     double observed_m;
     /** DSD_CALL_CRYPTO_RX_* bits: which of algid and kid this update received over the air (0: none). */
     uint8_t received;
+    /**
+     * Non-zero when algid, kid and mi are live decoder values a previous call left behind (its terminator missed),
+     * which the decoder still decrypts with but which are not this epoch's: the record keeps its own algid, kid and
+     * mi (none, on a new epoch) and takes only the classification and audio permission. received must be 0.
+     */
+    uint8_t carried;
 } dsd_call_crypto_update;
 
 typedef enum {
@@ -240,6 +246,12 @@ typedef struct {
     uint8_t crypto_received;
     uint8_t received_algid;
     uint16_t received_kid;
+    /**
+     * Non-zero while algid, kid and mi are the values a reacquired epoch was seeded with: an update that neither
+     * received nor names an ALG ID or key id (the live values a sync loss cleared) leaves them, so the recovered call
+     * keeps its crypto until the transmission's own signalling replaces it.
+     */
+    uint8_t crypto_restored;
     char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];

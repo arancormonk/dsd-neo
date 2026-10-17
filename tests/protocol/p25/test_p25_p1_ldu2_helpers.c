@@ -318,15 +318,6 @@ dsd_p25_optional_hook_init_event_history(Event_History_I* event_struct, uint8_t 
     g_init_event_calls++;
 }
 
-/* The chain note leaves the tuple the resolution sees untouched; P25_CRYPTO_STATE covers what it stamps. */
-void
-p25_crypto_p1_note_ldu2(dsd_state* state, int algid, int keyid, uint64_t mi) {
-    (void)state;
-    (void)algid;
-    (void)keyid;
-    (void)mi;
-}
-
 dsd_p25_crypto_state
 p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
                    uint64_t mi, int talkgroup) {

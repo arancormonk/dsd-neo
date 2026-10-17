@@ -14,7 +14,6 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
-#include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -1039,68 +1038,89 @@ test_resolution_publishes_received_crypto(void) {
     return rc;
 }
 
-/* A checked LDU2 tuple, noted and resolved as processLDU2() does. */
-static void
-resolve_ldu2(dsd_opts* opts, dsd_state* state, int algid, int keyid, uint64_t mi, int tg) {
-    p25_crypto_p1_note_ldu2(state, algid, keyid, mi);
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, tg);
-}
-
 /* Conventional Phase 1: a call whose TDU was missed is replaced by the next transmission's link control. The new call
-   must not inherit the previous call's ALG ID and key id -- not even when the previous call's last frame was an LDU2,
-   whose MI continues its own chain -- unless a tuple that began the new transmission's crypto after the previous
-   call's voice (its HDU, or a late-entry LDU2 ahead of its LDU1, whose MI breaks the chain) carried them. */
+   publishes none of the previous call's ALG ID and key id (a clear one reads clear), while the live decryption inputs
+   stay exactly as the decoder always left them; its own checked LDU2 then gives it its own. A late-entry LDU2 decoded
+   while the previous call is still active belongs to that call (documented limit): the call its LDU1 then opens shows
+   none until its next LDU2. */
 static int
-test_conventional_p1_replacement_does_not_inherit_crypto(void) {
+test_conventional_p1_replacement_publishes_only_its_own_crypto(void) {
     static dsd_opts opts;
     static dsd_state state;
     int rc = 0;
-
-    enum { CASE_NONE, CASE_HDU, CASE_LDU2, CASE_COUNT };
-
-    for (int which = 0; which < CASE_COUNT; which++) {
+    for (int late_ldu2 = 0; late_ldu2 < 2; late_ldu2++) {
         reset_fixture(&opts, &state);
         dsd_decode_clock_use_test(1000000000ULL);
         state.synctype = DSD_SYNC_P25P1_POS;
         state.lastsynctype = DSD_SYNC_P25P1_POS;
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         (void)p25_sm_emit_active_call(&opts, &state, 0, 1001, 0, 101, 1, 0x40);
-        const uint64_t first_mi = UINT64_C(0x0102030405060708);
-        resolve_ldu2(&opts, &state, 0x84, 0x1234, first_mi, 1001);
+        (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x1234, UINT64_C(0x0102030405060708),
+                                 1001);
         dsd_call_snapshot call;
         rc |= expect_int("first call active", dsd_call_state_get(&state, 0U, &call), 1);
         const uint64_t first_epoch = call.epoch;
         rc |= expect_int("first call ALGID", call.algid, 0x84);
         dsd_decode_clock_test_set_ns(1100000000ULL);
         rc |= expect_int("first call voice", dsd_call_state_update_media(&state, 0U, 1, 0.0), 1);
-        dsd_decode_clock_test_set_ns(1200000000ULL);
-        // The previous call's own last LDU2: its MI continues the chain, so it begins nothing.
-        resolve_ldu2(&opts, &state, 0x84, 0x1234, p25_lfsr_next_mi(first_mi), 1001);
-        dsd_decode_clock_test_set_ns(1250000000ULL);
-        if (which == CASE_HDU) {
-            // The next transmission's HDU: it decodes onto the still-active previous call, and names this crypto.
-            state.p25_p1_tx_crypto_m = dsd_decode_now_mono_s();
+        int live_alg = 0x84, live_kid = 0x1234;
+        uint64_t live_mi = UINT64_C(0x0102030405060708);
+        if (late_ldu2) {
+            dsd_decode_clock_test_set_ns(1200000000ULL);
             (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xAA, 0x0042,
                                      UINT64_C(0x1111111111111111), 1001);
-        } else if (which == CASE_LDU2) {
-            // Late entry: the next transmission's LDU2 decodes before its LDU1, its MI not on the previous chain.
-            resolve_ldu2(&opts, &state, 0xAA, 0x0042, UINT64_C(0x1111111111111111), 1001);
+            rc |= expect_int("dsd_call_state_get", dsd_call_state_get(&state, 0U, &call), 1);
+            rc |= expect_int("an LDU2 while the call is active is that call's", call.algid, 0xAA);
+            live_alg = 0xAA;
+            live_kid = 0x0042;
+            live_mi = UINT64_C(0x1111111111111111);
         }
+        // As on the air: the new transmission's first voice frame marks media on the still-active call before its
+        // LDU1's link control forks it.
+        dsd_decode_clock_test_set_ns(1250000000ULL);
+        rc |= expect_int("new voice on the old call", dsd_call_state_update_media(&state, 0U, 1, 0.0), 1);
         dsd_decode_clock_test_set_ns(1300000000ULL);
-        (void)p25_sm_emit_active_call(&opts, &state, 0, 2002, 0, 202, 1, which == CASE_NONE ? 0x00 : 0x40);
+        (void)p25_sm_emit_active_call(&opts, &state, 0, 2002, 0, 202, 1, late_ldu2 ? 0x40 : 0x00);
         rc |= expect_int("replacement call active", dsd_call_state_get(&state, 0U, &call), 1);
         rc |= expect_int("replacement is a new epoch", call.epoch != first_epoch, 1);
         rc |= expect_int("replacement names its talkgroup", (int)call.ota_target_id, 2002);
-        rc |=
-            expect_int(which != CASE_NONE ? "replacement keeps its own tuple's ALGID" : "replacement inherits no ALGID",
-                       call.algid, which != CASE_NONE ? 0xAA : 0);
-        rc |= expect_int(which != CASE_NONE ? "replacement keeps its own tuple's KID" : "replacement inherits no KID",
-                         call.kid, which != CASE_NONE ? 0x0042 : 0);
-        if (which == CASE_NONE) {
-            rc |= expect_int("clear replacement is clear", call.crypto, DSD_CALL_CRYPTO_CLEAR);
+        rc |= expect_int("replacement publishes no inherited ALGID", call.algid, 0);
+        rc |= expect_int("replacement publishes no inherited KID", call.kid, 0);
+        rc |= expect_int("replacement receives nothing", call.crypto_received, 0);
+        rc |= expect_int("replacement reads its own service options", call.crypto,
+                         late_ldu2 ? DSD_CALL_CRYPTO_ENCRYPTED_PENDING : DSD_CALL_CRYPTO_CLEAR);
+        // Decryption inputs exactly as the decoder leaves them at such a fork: untouched.
+        rc |= expect_int("live ALGID untouched", state.payload_algid, live_alg);
+        rc |= expect_int("live KID untouched", state.payload_keyid, live_kid);
+        rc |= expect_u64("live MI untouched", state.payload_miP, live_mi);
+        // The replacement's own checked LDU2 makes the crypto its own (twice: against clear service options the first
+        // tuple is held back until a repeat corroborates it).
+        dsd_decode_clock_test_set_ns(1400000000ULL);
+        for (int repeat = 0; repeat < 2; repeat++) {
+            (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x1234,
+                                     UINT64_C(0x2222222222222222), 2002);
         }
+        rc |= expect_int("dsd_call_state_get", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_int("own LDU2 ALGID", call.algid, 0x84);
+        rc |= expect_int("own LDU2 KID", call.kid, 0x1234);
+        rc |= expect_int("own LDU2 received", call.crypto_received, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
         dsd_decode_clock_use_system();
     }
+    // A single call, HDU then LDU1 then LDU2: its own crypto throughout.
+    reset_fixture(&opts, &state);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xAA, 0x0042, UINT64_C(0x1111111111111111), 0);
+    (void)p25_sm_emit_active_call(&opts, &state, 0, 3003, 0, 303, 1, 0x40);
+    dsd_call_snapshot call;
+    rc |= expect_int("dsd_call_state_get", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("single call HDU ALGID kept by its LDU1", call.algid, 0xAA);
+    rc |= expect_int("single call names itself", (int)call.ota_target_id, 3003);
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xAA, 0x0042, UINT64_C(0x3333333333333333), 3003);
+    rc |= expect_int("dsd_call_state_get", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("single call LDU2 KID", call.kid, 0x0042);
+    rc |= expect_int("single call live ALGID", state.payload_algid, 0xAA);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -1123,6 +1143,6 @@ main(void) {
     rc |= test_slot_local_transition_purge_and_mi_refresh();
     rc |= test_phase1_resolution_stamps_only_this_carriers_frequency();
     rc |= test_resolution_publishes_received_crypto();
-    rc |= test_conventional_p1_replacement_does_not_inherit_crypto();
+    rc |= test_conventional_p1_replacement_publishes_only_its_own_crypto();
     return rc;
 }

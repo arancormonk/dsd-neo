@@ -13,7 +13,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
-#include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -254,18 +253,27 @@ p25_crypto_ensure_phase1_call(const dsd_opts* opts, dsd_state* state) {
 
 // @p received: the DSD_CALL_CRYPTO_RX_* fields of the slot's stored ALG ID and key id that this publication received
 // over the air -- only a resolution of an FEC/CRC-accepted HDU, LDU2, ESS or MAC_PTT tuple that no quarantine deferred.
+//
+// @p own: the slot's stored tuple is now this call's (a resolution, or a new classification that cleared it). A
+// republish that is not keeps marking live values a replaced conventional call left behind as carried.
 static void
-p25_crypto_publish_canonical(const dsd_opts* opts, dsd_state* state, int slot, uint8_t received) {
+p25_crypto_publish_canonical(const dsd_opts* opts, dsd_state* state, int slot, uint8_t received, int own) {
     if (!state || !p25_crypto_slot_valid(slot)) {
         return;
     }
+    if (own) {
+        state->p25_crypto_inherited[slot] = 0U;
+    }
+    const int carried = p25_crypto_live_is_inherited(state, slot);
     dsd_call_crypto_update update = {
-        .classification = p25_crypto_canonical_classification(state->p25_crypto_state[slot]),
+        .classification = carried ? p25_crypto_carried_classification(state, slot)
+                                  : p25_crypto_canonical_classification(state->p25_crypto_state[slot]),
         .algid = (uint8_t)p25_crypto_slot_algid(state, slot),
         .kid = (uint16_t)p25_crypto_slot_keyid(state, slot),
         .mi = p25_crypto_slot_mi(state, slot),
         .audio_permitted = (uint8_t)(p25_crypto_audio_permitted(opts, state, slot) ? 1 : 0),
-        .received = received,
+        .received = carried ? 0U : received,
+        .carried = (uint8_t)carried,
     };
     (void)dsd_call_state_update_crypto(state, (uint8_t)slot, &update);
     dsd_call_snapshot call;
@@ -532,7 +540,7 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     }
     const int began_phase1_call = phase == DSD_P25_CRYPTO_PHASE1 ? p25_crypto_ensure_phase1_call(opts, state) : 0;
     p25_crypto_set_state(state, slot, resolved);
-    p25_crypto_publish_canonical(opts, state, slot, received);
+    p25_crypto_publish_canonical(opts, state, slot, received, 1);
     // A crypto-only update of the slot's call (an LDU2 or ESS, or the MAC_PTT that published its identity first).
     dsd_signal_search_note_call(state, (uint8_t)slot);
     if (began_phase1_call && opts) {
@@ -571,7 +579,7 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
     const int service_options_clear = svc_bits >= 0 && (svc_bits & 0x40) == 0;
     p25_crypto_set_state(
         state, slot, (force_clear || service_options_clear) ? DSD_P25_CRYPTO_CLEAR : DSD_P25_CRYPTO_ENCRYPTED_PENDING);
-    p25_crypto_publish_canonical(NULL, state, slot, 0U);
+    p25_crypto_publish_canonical(NULL, state, slot, 0U, 1);
     state->p25_p2_audio_allowed[slot] = 0;
 }
 
@@ -591,7 +599,7 @@ p25_crypto_mark_encrypted_pending(dsd_state* state, int slot) {
     }
 
     p25_crypto_set_state(state, slot, DSD_P25_CRYPTO_ENCRYPTED_PENDING);
-    p25_crypto_publish_canonical(NULL, state, slot, 0U);
+    p25_crypto_publish_canonical(NULL, state, slot, 0U, 0);
     dsd_mbe_purge_slot_audio(state, slot);
 }
 
@@ -603,7 +611,7 @@ p25_crypto_p1_defer_clear_conflict(dsd_state* state, int svc_bits) {
 
     p25_crypto_p1_arm_conflict(state, state->payload_algid, state->payload_keyid);
     p25_crypto_set_state(state, 0, DSD_P25_CRYPTO_ENCRYPTED_PENDING);
-    p25_crypto_publish_canonical(NULL, state, 0, 0U);
+    p25_crypto_publish_canonical(NULL, state, 0, 0U, 0);
     dsd_mbe_purge_slot_audio(state, 0);
     return 1;
 }
@@ -631,18 +639,6 @@ p25_crypto_emit_deferred_pending(dsd_opts* opts, dsd_state* state, int slot, con
         p25_sm_emit_crypto_pending(opts, state, slot);
     } else {
         p25_sm_emit_crypto_pending_epoch(opts, state, slot);
-    }
-}
-
-void
-p25_crypto_p1_note_ldu2(dsd_state* state, int algid, int keyid, uint64_t mi) {
-    if (!state || algid == 0) {
-        return;
-    }
-    const int continues = state->payload_algid == algid && state->payload_keyid == keyid
-                          && p25_lfsr_next_mi((unsigned long long)state->payload_miP) == (unsigned long long)mi;
-    if (!continues) {
-        state->p25_p1_tx_crypto_m = dsd_decode_now_mono_s();
     }
 }
 
@@ -712,6 +708,6 @@ p25_crypto_expire_pending(dsd_state* state, int slot) {
     // downstream lockout paths with a classification nothing ever observed.
     p25_crypto_p2_clear_conflict(state, slot);
     p25_crypto_set_state(state, slot, DSD_P25_CRYPTO_UNKNOWN);
-    p25_crypto_publish_canonical(NULL, state, slot, 0U);
+    p25_crypto_publish_canonical(NULL, state, slot, 0U, 0);
     dsd_mbe_purge_slot_audio(state, slot);
 }

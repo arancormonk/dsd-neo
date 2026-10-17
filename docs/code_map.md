@@ -808,26 +808,34 @@ suite runs under this compiler.
   specializes the identity-less voice epoch it opened in keeps them, and a reacquired epoch carries the ending one's
   (`call_state_seed_reacquired_snapshot()`); a trunk-scan context restore copies them with the snapshot. The writers
   that set them: P25 `p25_crypto_resolve()` (HDU, LDU2, ESS, MAC_PTT; not a tuple a clear-conflict quarantine
-  deferred, and not an ESS whose RS decode leaned on soft erasures: the ESS paths and a staged rekey pass that verdict
-  through `p25_crypto_resolve_checked()`, `dsd_p25_p2_rekey_state::parity_checked`), DMR `dmr_pi()` (Kirisun's key id
-  is a hash, so ALG only; no RAS or failed-CRC burst, no undefined DMRA algorithm) directly or through
-  `dsd_state::dmr_pi_precall_*` into the call the next checked LC opens within `DMR_PI_PRECALL_HOLD_S`; a PI decoding
-  while the slot's active call has already carried voice opens the next transmission and is held the same way, NXDN
+  deferred, nor an ESS whose RS decode leaned on soft erasures: the ESS paths and a staged rekey pass that verdict
+  through `p25_crypto_resolve_checked()`, `dsd_p25_p2_rekey_state::parity_checked`), DMR `dmr_pi()` (Kirisun's
+  key id is a hash, so ALG only; no RAS or failed-CRC burst, no undefined DMRA
+  algorithm) directly or through `dsd_state::dmr_pi_precall_*` into the call the next checked LC opens within
+  `DMR_PI_PRECALL_HOLD_S` (only a PI decoded while no call is active is held; one decoded while a call is active is
+  that call's), NXDN
   `nxdn_vcall_publish()` once `nxdn_cipher_established_enc()`, and M17 `m17_publish_lsf()` (encryption type only).
   Nothing else does: dPMR's scrambling flag, TETRA, X2-TDMA, EDACS, SCCH and file playback set none. History, events,
-  the terminal and Monitor keep reading `algid`/`kid` as before; only Signal search reads the received ones. A
-  transmission that replaces a call whose terminator was missed publishes none of that call's live crypto: DMR
-  `dmr_flco_publish_voice()` zeroes the slot's live ALG ID, key id and MI at the fork unless the new transmission's own
-  source set them within `DMR_PI_PRECALL_HOLD_S` (`dmr_live_crypto_is_next_call()`): a PI, checked or not, decoded
-  strictly after the previous call's last voice (`dsd_state::dmr_pi_live_m`), or a late-entry SB identifier that
-  replaced the previous call's non-zero live crypto (`dmr_sb_live_m`; the previous call's own SB repeats never do).
-  Forced and inferred values are re-applied by the voice path as for any call. The conventional P25 Phase 1 publish
-  (`p25_sm_publish_conventional_voice()`) begins the new call's classification (`p25_crypto_begin_voice_call()`, as a
-  trunked grant does) unless a tuple that began the new transmission's crypto strictly after the previous call's last
-  voice resolved it (`dsd_state::p25_p1_tx_crypto_m`): an HDU, or a late-entry LDU2 whose MI is not the slot's chain
-  successor (`p25_crypto_p1_note_ldu2()`, `p25_lfsr_next_mi()`). Limit: a PI on a slot whose previous call never
-  carried voice is taken as that call's (`CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`,
-  `P25_P2_RELIABILITY`, `NXDN_ENC_CLASS`, `M17_STATE_DISPATCH`).
+  the terminal and Monitor read `algid`/`kid`; only Signal search reads the received ones (`CORE_CALL_STATE`,
+  `DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`, `P25_P2_RELIABILITY`, `NXDN_ENC_CLASS`, `M17_STATE_DISPATCH`).
+- API note (a call's own crypto; decryption state is separate): a call record's `algid`/`kid`/`mi` hold only the
+  epoch's own crypto -- what its own signalling or the decoder's forced or key-inferred choice for it published, or
+  what a reacquired epoch was seeded with -- never live decoder values a call whose terminator was missed left
+  behind. Decryption state is not touched for it: the DMR `payload_*` per slot, the P25 live tuple, MI and LFSR state
+  behave exactly as before at every fork (`FORK_DECRYPT_INPUTS`, which records the same values against the
+  pre-feature decoder). When a new call's link control forks such a call, the protocol marks the slot's live ALG ID
+  and key id as inherited (DMR `dmr_flco_publish_voice()`: `dsd_state::dmr_crypto_inherited*`; conventional P25
+  `p25_sm_publish_conventional_voice()`: `p25_crypto_note_inherited()`), and publishes them as
+  `dsd_call_crypto_update::carried` while they are unchanged: the record keeps its own values (none on the new
+  epoch) and takes only the classification (P25: from the new call's own service options,
+  `p25_crypto_carried_classification()`; DMR: its LC's privacy bit). Any PI, P25 resolution or new classification
+  clears the mark, and so does any change of the live values (the call's own forced, inferred or late-entry value).
+  A reacquired epoch's seeded crypto is kept against updates that receive nothing and name no ALG ID or key id
+  (`dsd_call_snapshot::crypto_restored`; the live values a sync loss cleared). Because the record no longer holds
+  carried values, the DMR heal restores the slot's live ALG ID and key id from `dsd_state::dmr_live_pub_*` (what DMR
+  last published into the ending epoch), which is what it always restored. Limits: after a missed terminator, a new
+  call whose own PI or LDU2 decoded before its link control shows no ALG/KID until a later one of its own, and that
+  PI or LDU2 is attributed to the previous, still-active call (`DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`).
 - API note (CRC provenance, discussion #602): `<dsd-neo/core/crc_provenance.h>` defines the bits that
   `dsd_state::event_crc_invalid` (the decoder-thread scope a dispatcher ORs its bits into and restores),
   `dsd_state::data_header_crc_invalid`, `dsd_call_snapshot::crc_invalid` and `Event_History::crc_invalid` carry:
