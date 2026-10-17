@@ -6,6 +6,7 @@
 /* Unit tests: Android session-phase mapping consumed by the Qt Quick UI. */
 
 #include <initializer_list>
+#include <stdint.h>
 #include <stdio.h>
 
 #include "../../android/run_status.h"
@@ -121,6 +122,124 @@ test_terminal_waits_for_service_idle() {
                    kSessionRunning);
         }
     }
+}
+
+void
+expect_true(const char* what, bool ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "%s\n", what);
+        g_failures++;
+    }
+}
+
+constexpr dsd_android::RunReason kPending = dsd_android::kRunPending;
+
+/* #718: Stop shows Stopping at once, and every record of the running attempt keeps it until the attempt ends. */
+void
+test_stop_request_during_running() {
+    SessionPhaseTracker tracker;
+    tracker.note_start_requested(40);
+    expect("running before the stop", tracker.update("RUNNING", true, 41, kPending, 500), kSessionRunning);
+    expect_true("a stop from Running is accepted", tracker.note_stop_requested(1000));
+    expect("the stop publishes Stopping at once", tracker.phase(), kSessionStopping);
+    expect_true("a second stop adds no request", !tracker.note_stop_requested(1100));
+    for (const uint64_t now : {1250u, 1500u, 1750u, 2999u}) {
+        expect("RUNNING polls before the service sees the stop", tracker.update("RUNNING", true, 41, kPending, now),
+               kSessionStopping);
+    }
+    expect("service STOPPING", tracker.update("STOPPING", true, 41, kPending, 3250), kSessionStopping);
+    expect("native cancel before service IDLE", tracker.update("STOPPING", false, 41, dsd_android::kRunCancelled, 3500),
+           kSessionStopping);
+    expect("terminal Idle ends the request", tracker.update("IDLE", false, 41, dsd_android::kRunCancelled, 3750),
+           kSessionIdle);
+    expect_true("an ended request never expires", !tracker.take_stop_expired());
+    expect_true("Idle takes no request", !tracker.note_stop_requested(4000));
+    expect("Idle stays Idle", tracker.phase(), kSessionIdle);
+}
+
+/* A start may still report the previous session's IDLE record, then a provisional STARTING, before it runs. */
+void
+test_stop_request_during_starting() {
+    SessionPhaseTracker tracker;
+    tracker.note_start_requested(40);
+    expect("starting before the stop", tracker.update("IDLE", false, 40, kPending, 0), kSessionStarting);
+    expect_true("a stop from Starting is accepted", tracker.note_stop_requested(10));
+    expect("the stop publishes Stopping at once", tracker.phase(), kSessionStopping);
+    expect("old session's IDLE record", tracker.update("IDLE", false, 40, kPending, 250), kSessionStopping);
+    /* A long configure: the grace counts RUNNING time, not time since the request. */
+    expect("new session STARTING", tracker.update("STARTING", false, 41, kPending, 500), kSessionStopping);
+    expect("still STARTING", tracker.update("STARTING", false, 41, kPending, 4000), kSessionStopping);
+    expect("RUNNING before the engine loop", tracker.update("RUNNING", false, 41, kPending, 4250), kSessionStopping);
+    expect("RUNNING engine", tracker.update("RUNNING", true, 41, kPending, 4500), kSessionStopping);
+    expect("RUNNING under the grace", tracker.update("RUNNING", true, 41, kPending, 6000), kSessionStopping);
+    expect("STOPPING", tracker.update("STOPPING", true, 41, kPending, 6250), kSessionStopping);
+    expect("terminal Idle", tracker.update("IDLE", false, 41, dsd_android::kRunCancelled, 6500), kSessionIdle);
+    expect_true("no expiry after a delivered stop", !tracker.take_stop_expired());
+}
+
+void
+test_stop_request_then_failure() {
+    SessionPhaseTracker tracker;
+    tracker.note_start_requested(40);
+    expect_true("stop during the start", tracker.note_stop_requested(0));
+    expect("STARTING", tracker.update("STARTING", false, 41, kPending, 250), kSessionStopping);
+    expect("failure publishes as today", tracker.update("IDLE", false, 41, dsd_android::kRunFailed, 500),
+           kSessionFailed);
+    expect_true("the failure latches", tracker.failed());
+    expect("later polls keep the failure", tracker.update("IDLE", false, 41, dsd_android::kRunFailed, 750),
+           kSessionFailed);
+    expect_true("Failed takes no request", !tracker.note_stop_requested(1000));
+    expect("Failed stays Failed", tracker.phase(), kSessionFailed);
+
+    /* A start that never reached the service fails as today too. */
+    SessionPhaseTracker undelivered;
+    undelivered.note_start_requested(40);
+    expect_true("stop during an undelivered start", undelivered.note_stop_requested(0));
+    SessionPhase phase = kSessionStopping;
+    for (int poll = 0; poll < dsd_android::kStartGraceTicks; ++poll) {
+        phase = undelivered.update("IDLE", false, 40, kPending, 250u * (uint64_t)(poll + 1));
+    }
+    expect("the start grace still fails the start", phase, kSessionFailed);
+}
+
+void
+test_later_start_clears_stop_request() {
+    SessionPhaseTracker tracker;
+    tracker.note_start_requested(40);
+    (void)tracker.update("RUNNING", true, 41, kPending, 0);
+    expect_true("stop accepted", tracker.note_stop_requested(100));
+    tracker.note_start_requested(41);
+    expect("a new attempt starts", tracker.phase(), kSessionStarting);
+    expect("its STARTING is not held", tracker.update("STARTING", false, 42, kPending, 200), kSessionStarting);
+    expect("its RUNNING is not held", tracker.update("RUNNING", true, 42, kPending, 300), kSessionRunning);
+}
+
+/* A stop the service never saw: intents are handled in order, so 2 s of RUNNING means it was lost. */
+void
+test_stop_request_grace() {
+    SessionPhaseTracker tracker;
+    tracker.note_start_requested(40);
+    (void)tracker.update("RUNNING", true, 41, kPending, 0);
+    expect_true("stop accepted", tracker.note_stop_requested(1000));
+    expect("RUNNING at 1.25 s", tracker.update("RUNNING", true, 41, kPending, 2250), kSessionStopping);
+    expect("RUNNING just under 2 s", tracker.update("RUNNING", true, 41, kPending, 2999), kSessionStopping);
+    expect_true("no expiry under the grace", !tracker.take_stop_expired());
+    expect("RUNNING for 2 s restores Running", tracker.update("RUNNING", true, 41, kPending, 3000), kSessionRunning);
+    expect_true("the expiry is reported once", tracker.take_stop_expired());
+    expect_true("and only once", !tracker.take_stop_expired());
+    expect("Running stays", tracker.update("RUNNING", true, 41, kPending, 3250), kSessionRunning);
+    expect_true("Stop can be asked again", tracker.note_stop_requested(3300));
+    expect("the second stop holds", tracker.update("RUNNING", true, 41, kPending, 3500), kSessionStopping);
+    expect("and is delivered", tracker.update("STOPPING", true, 41, kPending, 3750), kSessionStopping);
+    /* Once STOPPING was seen the stop was delivered: no grace can bring Running back. */
+    expect("delivered stop never expires", tracker.update("RUNNING", true, 41, kPending, 9000), kSessionStopping);
+    expect_true("no expiry after delivery", !tracker.take_stop_expired());
+
+    SessionPhaseTracker stopping;
+    stopping.note_start_requested(40);
+    (void)stopping.update("RUNNING", true, 41, kPending, 0);
+    expect("service already STOPPING", stopping.update("STOPPING", true, 41, kPending, 250), kSessionStopping);
+    expect_true("Stopping takes no request", !stopping.note_stop_requested(300));
 }
 
 } // namespace
@@ -292,6 +411,11 @@ main(void) {
     }
 
     test_failure_recovery();
+    test_stop_request_during_running();
+    test_stop_request_during_starting();
+    test_stop_request_then_failure();
+    test_later_start_clears_stop_request();
+    test_stop_request_grace();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "session state map: %d failure(s)\n", g_failures);
         return 1;

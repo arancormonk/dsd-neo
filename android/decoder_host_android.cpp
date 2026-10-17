@@ -26,6 +26,7 @@
 #include <atomic>
 #include <cmath>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <jni.h>
 
@@ -620,6 +621,11 @@ DecoderHostAndroid::readLifecycleStatus() const {
 bool
 DecoderHostAndroid::readEngineRunning() {
     return engine_is_running();
+}
+
+uint64_t
+DecoderHostAndroid::readRealtimeMs() {
+    return dsd_realtime_mono_ms();
 }
 
 QByteArray

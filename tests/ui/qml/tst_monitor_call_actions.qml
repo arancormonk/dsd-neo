@@ -51,6 +51,38 @@ Item {
             testContext.setHostRunning(false);
             testContext.resetCommands();
         }
+        // #718: the tap answers at once, before the service reports STOPPING.
+        function test_stop_shows_stopping_data() {
+            return [{tag: "live", file: false, idle: "Stop listening"}, {tag: "replay", file: true, idle: "Stop replay"}];
+        }
+        function test_stop_shows_stopping(data) {
+            var saved = monitor.system;
+            monitor.system = {sourceType: data.file ? "file" : "rtl"};
+            testContext.useLifecycleHost(true);
+            testContext.setDelayedStop(true);
+            testContext.setLifecyclePhase(2);
+            try {
+                var stop = button("stopListeningButton");
+                var stops = decoderHost.stopCalls();
+                compare(stop.text, data.idle);
+                verify(stop.enabled);
+                waitForRendering(monitor);
+                mouseClick(stop);
+                compare(decoderHost.stopCalls(), stops + 1);
+                compare(decoderHost.sessionState, 3);
+                compare(stop.text, "Stopping…");
+                verify(!stop.enabled);
+                mouseClick(stop);
+                compare(decoderHost.stopCalls(), stops + 1);
+                testContext.setLifecyclePhase(2);
+                compare(stop.text, data.idle);
+                verify(stop.enabled);
+            } finally {
+                testContext.setDelayedStop(false);
+                testContext.useLifecycleHost(false);
+                monitor.system = saved;
+            }
+        }
         function test_skip_targets_hero_data() {
             return [{tag: "slot1", lead: 1}, {tag: "slot2", lead: 2}];
         }

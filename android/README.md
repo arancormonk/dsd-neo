@@ -129,6 +129,11 @@ these into one `lifecycleStatus` record, including `lastError`; the existing UI
 tick reads it without consuming a decoder snapshot. Failures remain visible even
 when the run ends between polls or fails well after startup. While a native terminal
 result is present but the service is still RUNNING/STOPPING, the UI stays Stopping.
+Tapping **Stop listening** shows Stopping (the button reads "Stopping…" and is
+disabled) at once, before the service has handled the intent; the RUNNING polls
+that arrive before its STOPPING keep it. If the service still reports RUNNING
+two seconds after the tap, the stop is taken as lost: Running comes back with the
+button enabled, and the diagnostics log records it.
 Restart remains disabled until the service releases its wake lock and publishes
 IDLE; the host also checks a fresh service record before accepting a retry.
 USB claim error -6

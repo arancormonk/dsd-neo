@@ -6541,6 +6541,19 @@ live models join `clearLiveModels()` for lifecycle and trunk-scan target edges.
 Context registration placeholders in `qt_ui.cpp` keep those ownership decisions
 in one place. Every new UI_QT target also belongs in Android CI's explicit build list.
 
+Stop feedback (issue #718): `DecoderHostAndroid::stop()` (`decoder_host_android_lifecycle.cpp`) publishes Stopping
+through `setSessionPhase()` before it dispatches the stop intent, when the tracker's phase is Starting or Running, so
+`sessionState`, `transitioning` and Monitor's Stop button ("Stopping…") change on the tap instead of a later poll.
+`SessionPhaseTracker::note_stop_requested()` (`session_state_map.h`) binds the request to the start attempt being
+followed, not to a session id: the previous session's IDLE record, the new id's STARTING, RUNNING and STOPPING all
+publish Stopping until the attempt's terminal record (Idle, or a failure, published as without a request) or a later
+start attempt. `DecoderService` handles intents in order and runs a whole start inside one `onStartCommand`, so a
+delivered stop always turns RUNNING into STOPPING; RUNNING records for `kStopGraceMs` (2 s) after the request, with no
+STOPPING, drop it, republish Running and log one host diagnostics line. Times are `dsd_realtime_mono_ms()` read through
+`DecoderHostAndroid::readRealtimeMs()`, which `UI_QT_ANDROID_HOST` replaces. The request lives in the host; a recreated
+Activity maps the service state as before. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`,
+`tst_monitor_call_actions.qml`.
+
 Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") adds five `DecoderHost`
 methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker
 thread, which the rest of the interface never is.

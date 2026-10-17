@@ -1773,7 +1773,9 @@ Item {
         anchors.bottom: parent.bottom
         anchors.margins: Theme.screenPadding
         anchors.bottomMargin: 22
-        text: screen.system && screen.system.sourceType === "file" ? qsTr("Stop replay") : qsTr("Stop listening")
+        // 3 is DecoderHost.Stopping. The host publishes it the moment Stop is
+        // tapped (#718), so the tap reads as taken while the engine winds down.
+        text: decoderHost.sessionState === 3 ? qsTr("Stopping…") : screen.system && screen.system.sourceType === "file" ? qsTr("Stop replay") : qsTr("Stop listening")
         enabled: !decoderHost.transitioning && !keySheet.visible
         onClicked: decoderHost.stop()
     }
