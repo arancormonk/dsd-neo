@@ -268,13 +268,11 @@ site_equal(const dsd_signal_search_site* a, const dsd_signal_search_site* b) {
            && a->nxdn_site == b->nxdn_site;
 }
 
-int
-dsd_signal_search_site_apply(dsd_signal_search_site* record, const dsd_signal_search_site_note* note) {
-    const char* protocol = note ? site_note_protocol(note->kind) : NULL;
-    if (!record || !protocol || (note->kind == DSD_SEARCH_SITE_NOTE_DMR_TIII && !note->text[0])) {
-        return 0;
-    }
-    dsd_signal_search_site next = *record;
+/* @p next (a copy of @p record) after @p note: a P25 site or network note completes the same system's record, any other
+   note replaces it. 0 when the note is not this record's. */
+static int
+site_merge_note(dsd_signal_search_site* next, const dsd_signal_search_site* record,
+                const dsd_signal_search_site_note* note, const char* protocol) {
     const int same_protocol = strcmp(record->protocol, protocol) == 0;
     const int has_sysid = same_protocol && (record->valid & DSD_SEARCH_SITE_SYSID);
     if (note->kind == DSD_SEARCH_SITE_NOTE_P25_SITE && has_sysid) {
@@ -282,18 +280,28 @@ dsd_signal_search_site_apply(dsd_signal_search_site* record, const dsd_signal_se
         if (record->sysid != note->sysid) {
             return 0;
         }
-        next.valid |= DSD_SEARCH_SITE_RFSS_SITE;
-        next.rfss = note->rfss;
-        next.site = note->site;
+        next->valid |= DSD_SEARCH_SITE_RFSS_SITE;
+        next->rfss = note->rfss;
+        next->site = note->site;
     } else if (note->kind == DSD_SEARCH_SITE_NOTE_P25_NETWORK && has_sysid && record->sysid == note->sysid
                && (!(record->valid & DSD_SEARCH_SITE_WACN) || record->wacn == note->wacn)) {
         /* The network a site note named by its SYSID alone: the site stays. */
-        next.valid |= DSD_SEARCH_SITE_WACN;
-        next.wacn = note->wacn;
+        next->valid |= DSD_SEARCH_SITE_WACN;
+        next->wacn = note->wacn;
     } else {
-        site_from_note(&next, note, protocol);
+        site_from_note(next, note, protocol);
     }
-    if (site_equal(&next, record)) {
+    return 1;
+}
+
+int
+dsd_signal_search_site_apply(dsd_signal_search_site* record, const dsd_signal_search_site_note* note) {
+    const char* protocol = note ? site_note_protocol(note->kind) : NULL;
+    if (!record || !protocol || (note->kind == DSD_SEARCH_SITE_NOTE_DMR_TIII && !note->text[0])) {
+        return 0;
+    }
+    dsd_signal_search_site next = *record;
+    if (!site_merge_note(&next, record, note, protocol) || site_equal(&next, record)) {
         return 0;
     }
     *record = next;

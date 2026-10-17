@@ -228,12 +228,19 @@ p25p2_vpdu_voice_repeats_recent_end(dsd_opts* opts, dsd_state* state, int slot, 
     return 1;
 }
 
+// Whether a voice user for @p slot names a group or private voice call this decoder can track.
+static int
+p25p2_vpdu_voice_observable(const dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind,
+                            uint64_t target) {
+    return state && slot >= 0 && slot <= 1 && target != 0U
+           && (kind == DSD_CALL_KIND_GROUP_VOICE || kind == DSD_CALL_KIND_PRIVATE_VOICE)
+           && p25p2_vpdu_voice_is_addressable(opts, state, slot);
+}
+
 static int
 p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
                          uint64_t source, int service_options, p25_mac_pdu_type pdu_type) {
-    if (!state || slot < 0 || slot > 1 || target == 0U
-        || (kind != DSD_CALL_KIND_GROUP_VOICE && kind != DSD_CALL_KIND_PRIVATE_VOICE)
-        || !p25p2_vpdu_voice_is_addressable(opts, state, slot)) {
+    if (!p25p2_vpdu_voice_observable(opts, state, slot, kind, target)) {
         return 0;
     }
     if (!p25p2_vpdu_pdu_type_is_live_voice(pdu_type)) {

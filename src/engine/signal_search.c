@@ -681,6 +681,48 @@ search_call_equal(const search_call* a, const search_call* b) {
            && strcmp(a->crypt, b->crypt) == 0;
 }
 
+/* The protocol name of @p slot's active, checked call when it may be shown on the hit, NULL otherwise. Another
+   protocol's call is not this hit's once the hit's protocol is known. */
+static const char*
+search_call_admit(const search_coord* c, const dsd_state* state, uint8_t slot, dsd_call_snapshot* record) {
+    if (dsd_call_state_get(state, slot, record) <= 0 || record->phase != DSD_CALL_PHASE_ACTIVE
+        || record->crc_invalid != 0U) {
+        return NULL;
+    }
+    const char* protocol = search_call_protocol(record->protocol);
+    const dsd_signal_search_hit* hit = &c->status.hit;
+    if (!protocol || (hit->protocol[0] && strncmp(hit->protocol, protocol, strlen(protocol)) != 0)) {
+        return NULL;
+    }
+    return protocol;
+}
+
+/* The tuple is the most recent call heard on the hit: an older call still running on the other slot re-announcing
+   itself leaves the newer one shown, so the tuple never mixes two calls. */
+static int
+search_call_superseded(const search_coord* c, const char* protocol, uint8_t slot, const dsd_call_snapshot* record) {
+    if (!c->call.protocol[0] || strcmp(c->call.protocol, protocol) != 0) {
+        return 0;
+    }
+    const int same_call = c->call.record_slot == slot && c->call.epoch == record->epoch;
+    return !same_call && record->started_m < c->call.started_m;
+}
+
+static void
+search_call_from_record(search_call* next, const dsd_call_snapshot* record, const char* protocol, uint8_t slot) {
+    DSD_MEMSET(next, 0, sizeof(*next));
+    DSD_SNPRINTF(next->protocol, sizeof(next->protocol), "%s", protocol);
+    next->record_slot = slot;
+    next->epoch = record->epoch;
+    next->started_m = record->started_m;
+    next->target = search_call_id(record->ota_target_id != 0U ? record->ota_target_id : record->policy_target_id);
+    next->source = search_call_id(record->ota_source_id);
+    next->slot = (DSD_SYNC_IS_DMR(record->protocol) || DSD_SYNC_IS_P25P2(record->protocol)) ? slot + 1 : 0;
+    DSD_SNPRINTF(next->target_text, sizeof(next->target_text), "%s", record->target_text);
+    DSD_SNPRINTF(next->source_text, sizeof(next->source_text), "%s", record->source_text);
+    search_call_crypt(record, next->crypt, sizeof(next->crypt));
+}
+
 void
 dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot) {
     search_coord* c = search_get(state);
@@ -688,36 +730,12 @@ dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot) {
         return;
     }
     dsd_call_snapshot record;
-    if (dsd_call_state_get(state, slot, &record) <= 0 || record.phase != DSD_CALL_PHASE_ACTIVE
-        || record.crc_invalid != 0U) {
-        return;
-    }
-    const char* protocol = search_call_protocol(record.protocol);
-    const dsd_signal_search_hit* hit = &c->status.hit;
-    /* Another protocol's call is not this hit's once the hit's protocol is known. */
-    if (!protocol || (hit->protocol[0] && strncmp(hit->protocol, protocol, strlen(protocol)) != 0)) {
-        return;
-    }
-    /* The tuple is the most recent call heard on the hit: an older call still running on the other slot re-announcing
-       itself leaves the newer one shown, so the tuple never mixes two calls. */
-    const int same_call =
-        strcmp(c->call.protocol, protocol) == 0 && c->call.record_slot == slot && c->call.epoch == record.epoch;
-    if (c->call.protocol[0] && !same_call && strcmp(c->call.protocol, protocol) == 0
-        && record.started_m < c->call.started_m) {
+    const char* protocol = search_call_admit(c, state, slot, &record);
+    if (!protocol || search_call_superseded(c, protocol, slot, &record)) {
         return;
     }
     search_call next;
-    DSD_MEMSET(&next, 0, sizeof(next));
-    DSD_SNPRINTF(next.protocol, sizeof(next.protocol), "%s", protocol);
-    next.record_slot = slot;
-    next.epoch = record.epoch;
-    next.started_m = record.started_m;
-    next.target = search_call_id(record.ota_target_id != 0U ? record.ota_target_id : record.policy_target_id);
-    next.source = search_call_id(record.ota_source_id);
-    next.slot = (DSD_SYNC_IS_DMR(record.protocol) || DSD_SYNC_IS_P25P2(record.protocol)) ? slot + 1 : 0;
-    DSD_SNPRINTF(next.target_text, sizeof(next.target_text), "%s", record.target_text);
-    DSD_SNPRINTF(next.source_text, sizeof(next.source_text), "%s", record.source_text);
-    search_call_crypt(&record, next.crypt, sizeof(next.crypt));
+    search_call_from_record(&next, &record, protocol, slot);
     if (search_call_equal(&next, &c->call)) {
         return;
     }
@@ -913,6 +931,61 @@ search_unavoid(search_coord* c, uint32_t frequency) {
         }
     }
 }
+
+/* Avoid the hit being visited, or the action's frequency; a refusal is the frontends' to show: the queue only said the
+   command was taken. A failed search keeps its error, which says more. */
+static int
+search_avoid_action(search_coord* c, const dsd_signal_search_control* action) {
+    /* A valid AVOID names the hit being visited, so it is left as well. */
+    if (search_avoid(c, action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY ? action->frequency_hz
+                                                                            : c->status.hit.frequency_hz)) {
+        if (c->status.phase != DSD_SEARCH_ERROR) {
+            DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
+            search_publish(c, 0);
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int
+search_resume(search_coord* c) {
+    if (c->status.phase != DSD_SEARCH_PAUSED) {
+        return -1;
+    }
+    c->need_span = 1;
+    c->visit = 0;
+    c->status.phase = DSD_SEARCH_SEARCHING;
+    return 0;
+}
+
+static void
+search_toggle_hold(search_coord* c) {
+    c->hold = !c->hold;
+    if (c->status.phase != DSD_SEARCH_TUNING) {
+        c->status.phase = search_reception_phase(c);
+    }
+}
+
+/* Carry out a valid @p action; -1 when it is refused. */
+static int
+search_apply_action(search_coord* c, const dsd_signal_search_control* action) {
+    switch (action->action) {
+        case DSD_SEARCH_ACTION_STOP:
+            c->stopping = 1;
+            c->tune_started = dsd_realtime_mono_ms();
+            return 0;
+        case DSD_SEARCH_ACTION_PAUSE: search_pause(c); return 0;
+        case DSD_SEARCH_ACTION_RESUME: return search_resume(c);
+        case DSD_SEARCH_ACTION_HOLD: search_toggle_hold(c); return 0;
+        case DSD_SEARCH_ACTION_AVOID:
+        case DSD_SEARCH_ACTION_AVOID_PERMANENT:
+        case DSD_SEARCH_ACTION_AVOID_FREQUENCY: return search_avoid_action(c, action);
+        case DSD_SEARCH_ACTION_SKIP: c->skip = 1; return 0;
+        case DSD_SEARCH_ACTION_UNAVOID: search_unavoid(c, action->frequency_hz); return 0;
+        default: return -1;
+    }
+}
 #endif
 
 int
@@ -925,44 +998,8 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
     }
     (void)opts;
 #ifdef USE_RADIO
-    switch (action->action) {
-        case DSD_SEARCH_ACTION_STOP:
-            c->stopping = 1;
-            c->tune_started = dsd_realtime_mono_ms();
-            break;
-        case DSD_SEARCH_ACTION_PAUSE: search_pause(c); break;
-        case DSD_SEARCH_ACTION_RESUME:
-            if (c->status.phase != DSD_SEARCH_PAUSED) {
-                return -1;
-            }
-            c->need_span = 1;
-            c->visit = 0;
-            c->status.phase = DSD_SEARCH_SEARCHING;
-            break;
-        case DSD_SEARCH_ACTION_HOLD:
-            c->hold = !c->hold;
-            if (c->status.phase != DSD_SEARCH_TUNING) {
-                c->status.phase = search_reception_phase(c);
-            }
-            break;
-        case DSD_SEARCH_ACTION_AVOID:
-        case DSD_SEARCH_ACTION_AVOID_PERMANENT:
-        case DSD_SEARCH_ACTION_AVOID_FREQUENCY:
-            /* A valid AVOID names the hit being visited, so it is left as well. */
-            if (search_avoid(c, action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY ? action->frequency_hz
-                                                                                    : c->status.hit.frequency_hz)) {
-                /* The refusal is the frontends' to show: the queue only said the command was taken. A failed search
-                   keeps its error, which says more. */
-                if (c->status.phase != DSD_SEARCH_ERROR) {
-                    DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
-                    search_publish(c, 0);
-                }
-                return -1;
-            }
-            break;
-        case DSD_SEARCH_ACTION_SKIP: c->skip = 1; break;
-        case DSD_SEARCH_ACTION_UNAVOID: search_unavoid(c, action->frequency_hz); break;
-        default: return -1;
+    if (search_apply_action(c, action) != 0) {
+        return -1;
     }
     /* An action that took effect replaces an earlier refusal; a search error stays until the session ends. */
     if (c->status.phase != DSD_SEARCH_ERROR) {

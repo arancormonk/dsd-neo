@@ -726,6 +726,37 @@ dmr_flco_crypto_is_decoders_choice(const dmr_flco_ctx* ctx, uint8_t algid, uint1
     return ctx->state->M == 0 && inferred != 0 && (int)algid == inferred && (ctx->so & 0x40U) != 0U;
 }
 
+// The crypto fields a fresh pre-call PI header on the slot received that the live values still hold.
+static uint8_t
+dmr_flco_precall_received(const dmr_flco_ctx* ctx, uint8_t algid, uint16_t kid) {
+    uint8_t received = 0U;
+    const uint8_t precall = dmr_pi_precall_fresh(ctx->state, ctx->slot, dsd_decode_now_mono_s())
+                                ? ctx->state->dmr_pi_precall_rx[ctx->slot]
+                                : 0U;
+    if ((precall & DSD_CALL_CRYPTO_RX_ALG) != 0U && ctx->state->dmr_pi_precall_algid[ctx->slot] == algid) {
+        received |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
+    }
+    if ((precall & DSD_CALL_CRYPTO_RX_KID) != 0U && ctx->state->dmr_pi_precall_kid[ctx->slot] == kid) {
+        received |= (uint8_t)DSD_CALL_CRYPTO_RX_KID;
+    }
+    return received;
+}
+
+// Whether the live @p algid / @p kid are still the ones a replaced call left behind; once they are not, the slot's
+// inherited mark is cleared.
+static int
+dmr_flco_crypto_carried(const dmr_flco_ctx* ctx, uint8_t algid, uint16_t kid) {
+    const uint8_t idx = ctx->slot;
+    const int carried = ctx->state->dmr_crypto_inherited[idx] != 0U
+                        && ctx->state->dmr_crypto_inherited_algid[idx] == (int)algid
+                        && ctx->state->dmr_crypto_inherited_keyid[idx] == (int)kid
+                        && !dmr_flco_crypto_is_decoders_choice(ctx, algid, kid);
+    if (!carried) {
+        ctx->state->dmr_crypto_inherited[idx] = 0U;
+    }
+    return carried;
+}
+
 static void
 dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     const int encrypted = (ctx->so & 0x40U) != 0U;
@@ -744,29 +775,13 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     // arrived before any call was active on the slot (its voice LC header lost) transfers into the call this LC
     // opens, for the fields the live values still hold -- a forced or inferred value written since is not what the PI
     // carried. Once in the call they stay with it; a later LC adds nothing.
-    uint8_t received = 0U;
-    const uint8_t precall = dmr_pi_precall_fresh(ctx->state, ctx->slot, dsd_decode_now_mono_s())
-                                ? ctx->state->dmr_pi_precall_rx[ctx->slot]
-                                : 0U;
-    if ((precall & DSD_CALL_CRYPTO_RX_ALG) != 0U && ctx->state->dmr_pi_precall_algid[ctx->slot] == algid) {
-        received |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
-    }
-    if ((precall & DSD_CALL_CRYPTO_RX_KID) != 0U && ctx->state->dmr_pi_precall_kid[ctx->slot] == kid) {
-        received |= (uint8_t)DSD_CALL_CRYPTO_RX_KID;
-    }
+    const uint8_t received = dmr_flco_precall_received(ctx, algid, kid);
     dmr_pi_precall_drop_hold(ctx->state, ctx->slot);
     // Live values a replaced call left behind (its terminator missed) are still what the voice path decrypts with,
     // but they are not this call's: published as carried, the call keeps its own (none, until its PI or the voice
     // path's forced or inferred choice supplies them). Once the live values change they are this call's, and so are
     // values that are the decoder's own choice for this call (dmr_flco_crypto_is_decoders_choice()).
-    const uint8_t idx = ctx->slot;
-    const int carried = ctx->state->dmr_crypto_inherited[idx] != 0U
-                        && ctx->state->dmr_crypto_inherited_algid[idx] == (int)algid
-                        && ctx->state->dmr_crypto_inherited_keyid[idx] == (int)kid
-                        && !dmr_flco_crypto_is_decoders_choice(ctx, algid, kid);
-    if (!carried) {
-        ctx->state->dmr_crypto_inherited[idx] = 0U;
-    }
+    const int carried = dmr_flco_crypto_carried(ctx, algid, kid);
     const dsd_call_crypto_update crypto = {
         .classification = !encrypted ? DSD_CALL_CRYPTO_CLEAR
                           : has_key  ? DSD_CALL_CRYPTO_DECRYPTABLE
