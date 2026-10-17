@@ -23,7 +23,10 @@
 namespace {
 using Hit = dsd_signal_search_hit;
 using Bytes = std::vector<unsigned char>;
-constexpr uint32_t magic = 0x31535344; // DSS1, version 1, little endian
+/* Record magics, little endian. Version 2 appends the checked site, call slot and encryption to version 1's body;
+   version 1 records still load, with those empty, and the next compaction rewrites them as version 2. */
+constexpr uint32_t magic_v1 = 0x31535344; // DSS1
+constexpr uint32_t magic = 0x32535344;    // DSS2
 
 void
 put(Bytes& out, uint64_t value, unsigned n) {
@@ -47,12 +50,16 @@ checksum(const Bytes& b) {
                            [](uint32_t sum, unsigned char c) { return (sum ^ c) * 16777619U; });
 }
 
+/* The text up to its NUL, then zeros: bytes left behind a shorter text are neither persisted nor compared. The last
+   byte is always NUL. */
 template <size_t N>
 void
 put_text(Bytes& b, const char (&text)[N]) {
-    for (size_t i = 0; i < N; ++i) {
+    size_t i = 0;
+    for (; i + 1 < N && text[i]; ++i) {
         b.push_back((unsigned char)text[i]);
     }
+    b.insert(b.end(), N - i, 0);
 }
 
 template <size_t N>
@@ -66,6 +73,7 @@ take_text(const Bytes& b, size_t& at, char (&text)[N]) {
 Bytes
 encode(const Hit& h) {
     Bytes b;
+    b.reserve(2048); // one record (1,652 bytes) without regrowing: this runs on every publication
     put(b, h.session_id, 8);
     put(b, h.hit_id, 8);
     put(b, h.started_ms, 8);
@@ -100,11 +108,16 @@ encode(const Hit& h) {
                   h.airspy.mixer_gain, h.airspy.vga_gain, h.airspy.lna_agc, h.airspy.mixer_agc, h.airspy.bias_tee}) {
         put(b, (uint32_t)v, 4);
     }
+    put_text(b, h.site);
+    put(b, h.slot >= 0 && h.slot <= 2 ? (unsigned)h.slot : 0U, 1);
+    put_text(b, h.crypt);
     return b;
 }
 
+/* @p b holds one whole record of @p version (its size was checked against the magic). Nothing loaded is trusted:
+   every text ends at its own last byte and the slot is 0, 1 or 2. */
 Hit
-decode(const Bytes& b) {
+decode(const Bytes& b, uint32_t version) {
     Hit h{};
     size_t at = 0;
     h.session_id = take(b, at, 8);
@@ -142,7 +155,22 @@ decode(const Bytes& b) {
           &h.airspy.mixer_gain, &h.airspy.vga_gain, &h.airspy.lna_agc, &h.airspy.mixer_agc, &h.airspy.bias_tee}) {
         *v = (int32_t)take(b, at, 4);
     }
+    if (version >= 2) {
+        take_text(b, at, h.site);
+        h.slot = (int)take(b, at, 1);
+        if (h.slot > 2) {
+            h.slot = 0;
+        }
+        take_text(b, at, h.crypt);
+    }
     return h;
+}
+
+/* The body size of a version 1 record: the version 2 body without what version 2 appended. */
+size_t
+v1_size() {
+    Hit h{};
+    return encode(h).size() - sizeof(h.site) - 1 - sizeof(h.crypt);
 }
 
 bool
@@ -277,7 +305,7 @@ struct Store {
     load_history() {
         FILE* f = dsd_fopen_private(path.c_str(), "rb");
         if (f) {
-            const size_t size = encode(Hit{}).size();
+            const size_t size_v2 = encode(Hit{}).size(), size_v1 = v1_size();
             for (;;) {
                 Bytes header(12);
                 size_t got = fread(header.data(), 1, header.size(), f);
@@ -285,7 +313,10 @@ struct Store {
                     break;
                 }
                 size_t at = 0;
-                if (got != header.size() || take(header, at, 4) != magic || take(header, at, 4) != size) {
+                const uint32_t kind = got == header.size() ? (uint32_t)take(header, at, 4) : 0;
+                const uint32_t version = kind == magic ? 2 : kind == magic_v1 ? 1 : 0;
+                const size_t size = version == 2 ? size_v2 : size_v1;
+                if (!version || take(header, at, 4) != size) {
                     error = "History journal has an incomplete or unsupported record";
                     break;
                 }
@@ -295,7 +326,7 @@ struct Store {
                     error = "History journal has an incomplete or damaged record";
                     break;
                 }
-                Hit h = decode(bytes);
+                Hit h = decode(bytes, version);
                 if (h.session_id && h.hit_id && h.frequency_hz) {
                     h.ended = 1;
                     upsert(history, h);

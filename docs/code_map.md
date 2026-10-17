@@ -96,8 +96,7 @@ Generated (do not edit/commit):
     site noted before identification waits for it), publishing the hit when the text changes,
     so a final broadcast before silence reaches the live status and the ended hit. Decoder state
     (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never cleared or written
-    for it. `hit.site` is not yet in the history journal (`ENGINE_SIGNAL_SEARCH`,
-    `APP_SIGNAL_SEARCH_PROVENANCE`). The hit's call tuple (`target`, `source`, `target_text`,
+    for it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`). The hit's call tuple (`target`, `source`, `target_text`,
     `source_text`, `slot`, `crypt`) is one canonical call record's, copied whole by
     `dsd_engine_signal_search_call()` (installed as the runtime call hook) from the slot a call
     note names, under the same receiving gate: the record must be ACTIVE, CRC-clean
@@ -110,8 +109,8 @@ Generated (do not edit/commit):
     when its classification is encrypted, pending or decryptable with none received, and empty
     for a clear or unknown call. Like the site it shows once the hit's protocol matches, clears
     at each landing and on a change to another protocol, and stays on the ended hit; evidence IDs
-    fill `target`/`source` only while no tuple belongs to the hit. `slot` and `crypt` are not yet
-    in the journal. Published status carries `owned` (a coordinator
+    fill `target`/`source` only while no tuple belongs to the hit. `site`, `slot` and `crypt` are
+    persisted with the rest of the hit (journal version 2). Published status carries `owned` (a coordinator
     holds the tuner) and the landed channel's live RF level. Receive profiles, gain and
     frequency are restored on exit: a search Stop tunes back, running the carrier boundary
     and acquisition reset as each visit's tune does, and its retune carries the session's
@@ -832,10 +831,10 @@ suite runs under this compiler.
   clears the mark, and so does a DMR late-entry SB identifier decoded for the new call (even one repeating the marked
   values) and any change of the live values. Live values that are the decoder's own choice for the new call are
   published as its own, never carried: the `--dmr-force-algid` value for an encrypted LC, or, with no forced ALG ID,
-  the ALG ID inferred from the slot's loaded key for an encrypted LC (`dmr_le_key_inferred_algid()`), each with the 0xFF key id placeholder
-  (`dmr_flco_crypto_is_decoders_choice()`). Where the canonical layer keeps the epoch at the fork (a BEGIN that names
-  an identity-less active epoch), DMR first calls `dsd_call_state_forget_crypto_values()`, so the record drops the
-  ALG ID, key id, MI and received bits the replaced transmission published into it.
+  the ALG ID inferred from the slot's loaded key for an encrypted LC (`dmr_le_key_inferred_algid()`), each with the
+  0xFF key id placeholder (`dmr_flco_crypto_is_decoders_choice()`). Where the canonical layer keeps the epoch at the
+  fork (a BEGIN that names an identity-less active epoch), DMR first calls `dsd_call_state_forget_crypto_values()`,
+  so the record drops the ALG ID, key id, MI and received bits the replaced transmission published into it.
   A reacquired epoch's seeded crypto is kept against updates that receive nothing and name no ALG ID or key id
   (`dsd_call_snapshot::crypto_restored`; the live values a sync loss cleared). Because the record no longer holds
   carried values, the DMR heal restores the slot's live ALG ID and key id from `dsd_state::dmr_live_pub_*` (what DMR
@@ -1880,7 +1879,15 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     RAN that confirmation unlocked. One valid frame is then enough for its details to
     reach history.
     `signal_search_store.cpp` owns the mutex-protected snapshots and a native worker for
-    the versioned private journal, bounded upserts and atomic compaction/avoids. History
+    the versioned private journal, bounded upserts and atomic compaction/avoids. Journal
+    records are `DSS2`: version 1's body (`DSS1`) followed by the checked `site`, `slot`
+    and `crypt`. The loader accepts both, a version 1 record with those empty; any other
+    magic, a size that does not match the record's version or a bad checksum stops the
+    load with an error, keeping the records before it. Loaded texts are cut at their last
+    byte and an out-of-range slot loads as 0. The first write after opening compacts, so
+    a version 1 journal is rewritten whole as version 2. Texts are encoded up to their NUL
+    and zero-padded, and a republished hit whose encoding is unchanged neither advances
+    the history revision nor queues a write, so only new checked content does. History
     and permanent avoids are separate files with separate write state: one whose write
     failed stays owed, with its error, until its own write succeeds, so saving the other
     neither retires it nor clears the error. Each later worker pass, flush and close

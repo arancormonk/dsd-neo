@@ -148,8 +148,7 @@ CRC by `-F`, a secondary control channel or adjacent site broadcast, and any val
 decoder keeps from earlier, from a hard-set system or from a cache never set it. Each
 detection starts with no site, a site is shown only once the detection's protocol is
 identified and matches it, and a change to another protocol clears it; the last broadcast
-before the channel falls silent is kept on the ended detection. History does not store
-the site yet.
+before the channel falls silent is kept on the ended detection, and in its history row.
 
 A digital detection's call details -- talkgroup or destination, source, callsigns, the
 timeslot and the encryption -- come together from one checked call record: the call the
@@ -187,8 +186,8 @@ header lost, or its first embedded link control failing its check) shows no ALG 
 ID until a later one of its own decodes, and that earlier signalling, decoded while the
 previous call was still active, is attributed to the previous call. A conventional P25
 Phase 1 call's HDU always precedes its first LDU1, so after a missed TDU its HDU is the
-previous call's. History does not store the call details'
-slot and encryption yet.
+previous call's. History keeps the call details, slot and encryption the detection last
+showed.
 
 ## Controls, history and saved systems
 
@@ -256,7 +255,12 @@ Detection history is separate from call history: an RF detection need not decode
 anything. The newest 1,000 detections are retained, with one row updated as details
 arrive. Ended, confirmed and RF-only detections remain distinguishable. The private
 versioned journal is compacted atomically; write failures are reported while
-available records remain in memory. History and permanent avoids are saved separately,
+available records remain in memory. Each record keeps the detection's checked site,
+slot and encryption (journal version 2). A journal from an earlier release loads with
+those empty and is rewritten in the new format at the next save, so an earlier release
+reopening it afterwards reports the journal as unsupported and replaces it with an empty
+history at its first save.
+A detection republished with nothing new is not written again. History and permanent avoids are saved separately,
 and a failed one stays reported and is retried by later saves until it is written.
 Orderly stop flushes the journal. Ranges and permanent avoids are also stored privately.
 

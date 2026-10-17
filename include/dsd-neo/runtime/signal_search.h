@@ -71,13 +71,14 @@ typedef struct {
     uint32_t target, source;
     char target_text[64], source_text[64];
     /** The visit's checked site identity (dsd_signal_search_site_format()), shown only while it belongs to the hit's
-     * protocol; e.g. "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2". Not persisted in history yet. */
+     * protocol; e.g. "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2". Persisted in history (journal version 2). */
     char site[96];
-    /** The checked call tuple's timeslot: 1 or 2 on a two-slot protocol (DMR, P25 Phase 2), 0 otherwise. Not persisted
-     * in history yet. */
+    /** The checked call tuple's timeslot: 1 or 2 on a two-slot protocol (DMR, P25 Phase 2), 0 otherwise. Persisted
+     * in history (journal version 2). */
     int slot;
     /** The checked call tuple's encryption: "ALG 84 · KID 0001" with only the parts received over the air,
-     * "Encrypted" when only a checked encryption indication was, "" otherwise. Not persisted in history yet. */
+     * "Encrypted" when only a checked encryption indication was, "" otherwise. Persisted in history (journal
+     * version 2). */
     char crypt[48];
     /** Applied source settings, copied at detection time for history and save-as-system. */
     char input_spec[1024];

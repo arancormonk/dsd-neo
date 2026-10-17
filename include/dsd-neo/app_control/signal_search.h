@@ -16,14 +16,17 @@ int dsd_app_signal_search_start(const dsd_signal_search_config* config);
 int dsd_app_signal_search_control(const dsd_signal_search_control* control);
 /** Open once per app host, before starting decoder sessions. Parent directory must exist.
  * The worker writes an append journal, compacts atomically, and keeps memory on failures. A failed history or avoid
- * write stays reported and is retried by later writes, flush and close until that file's own write succeeds. */
+ * write stays reported and is retried by later writes, flush and close until that file's own write succeeds.
+ * The journal is version 2 (site, slot and encryption included); version 1 records load with those empty and the
+ * first write after opening rewrites the whole journal as version 2. */
 int dsd_app_signal_search_store_open(const char* path);
 void dsd_app_signal_search_store_close(void);
 void dsd_app_signal_search_store_flush(void);
 void dsd_app_signal_search_status_get(dsd_signal_search_status* status, char* error, size_t capacity);
 /** Newest first; consistent copied records, retained even without any frontend screen. */
 size_t dsd_app_signal_search_history_get(dsd_signal_search_hit* hits, size_t capacity);
-/** Bumped by every history change (upsert, trim, reload); status refreshes leave it alone. */
+/** Bumped by every history change (upsert, trim, reload); status refreshes, and a republished detection whose
+ * persisted content is unchanged, leave it alone. */
 uint64_t dsd_app_signal_search_history_revision(void);
 /** dsd_app_signal_search_history_get() and the revision of that copy, taken together. */
 size_t dsd_app_signal_search_history_snapshot(dsd_signal_search_hit* hits, size_t capacity, uint64_t* revision);
