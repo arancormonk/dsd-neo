@@ -183,6 +183,9 @@ main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* state = calloc(1, sizeof(*state));
     if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
         return 1;
     }
     dsd_signal_search_site_set(capture_site);
