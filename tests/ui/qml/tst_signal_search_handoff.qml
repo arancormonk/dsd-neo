@@ -421,6 +421,32 @@ Item {
             compare(decoderHost.sessionState, 0, "nothing starts");
             compare(app.sessionSystem, system);
         }
+        // The same through the route a user takes: the Now panel's More, then
+        // Explore here from its menu, then Escape while the search stops.
+        function test_escape_cancels_a_handoff_from_the_more_menu() {
+            enterState(2);
+            testContext.setDelayedStop(true);
+            var system = app.sessionSystem;
+            wait(0);
+            var more = findChild(screen(), "searchMore");
+            verify(more !== null && more.visible && more.enabled);
+            mouseClick(more);
+            activateMenuItem("searchActionExplore");
+            compare(decoderHost.sessionState, 3);
+            verify(app.leavingSearch);
+            compare(Ui.Navigation.rootSurfaces[0], screen());
+            keyClick(Qt.Key_Escape);
+            verify(!app.leavingSearch, "Escape cancels the handoff");
+            compare(app.pendingRestart, null);
+            verify(app.signalSearchOpen);
+            compare(Ui.Navigation.rootSurfaces[0], screen(), "the search screen stays the root");
+            verify(findChild(screen(), "searchStop").enabled && findChild(screen(), "searchBack").enabled, "its controls are back");
+            testContext.setDelayedStop(false);
+            testContext.setLifecyclePhase(0);
+            wait(10);
+            compare(decoderHost.sessionState, 0, "nothing starts");
+            compare(app.sessionSystem, system);
+        }
         // Escape on a running search screen is Main's Back, whichever control
         // has focus; after a cancelled handoff the next Escape is too.
         function test_escape_on_the_running_screen_is_back() {
