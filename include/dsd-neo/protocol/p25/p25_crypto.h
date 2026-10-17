@@ -141,6 +141,13 @@ void p25_crypto_clear_phase1_lockout_epoch(dsd_state* state);
 dsd_p25_crypto_state p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot,
                                         int algid, int keyid, uint64_t mi, int talkgroup);
 /**
+ * Note a checked Phase 1 LDU2 tuple before it resolves: one whose ALG ID, key id and MI do not continue the slot's
+ * stored tuple (the MI is not the stored MI's next-superframe successor) begins a transmission's crypto, and stamps
+ * dsd_state::p25_p1_tx_crypto_m as an HDU does. The previous call's own LDU2s continue its chain and stamp nothing.
+ */
+void p25_crypto_p1_note_ldu2(dsd_state* state, int algid, int keyid, uint64_t mi);
+
+/**
  * p25_crypto_resolve() for a tuple whose decode may not have checked it: @p checked is 0 for a Phase 2 ESS whose RS
  * decode leaned on soft erasures (enough erasures always decode, whatever the bits). Resolution is the same; only a
  * checked tuple publishes its ALG ID and key id as received on the call (DSD_CALL_CRYPTO_RX_*).

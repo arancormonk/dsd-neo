@@ -13,6 +13,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
+#include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -630,6 +631,18 @@ p25_crypto_emit_deferred_pending(dsd_opts* opts, dsd_state* state, int slot, con
         p25_sm_emit_crypto_pending(opts, state, slot);
     } else {
         p25_sm_emit_crypto_pending_epoch(opts, state, slot);
+    }
+}
+
+void
+p25_crypto_p1_note_ldu2(dsd_state* state, int algid, int keyid, uint64_t mi) {
+    if (!state || algid == 0) {
+        return;
+    }
+    const int continues = state->payload_algid == algid && state->payload_keyid == keyid
+                          && p25_lfsr_next_mi((unsigned long long)state->payload_miP) == (unsigned long long)mi;
+    if (!continues) {
+        state->p25_p1_tx_crypto_m = dsd_decode_now_mono_s();
     }
 }
 

@@ -817,13 +817,17 @@ suite runs under this compiler.
   Nothing else does: dPMR's scrambling flag, TETRA, X2-TDMA, EDACS, SCCH and file playback set none. History, events,
   the terminal and Monitor keep reading `algid`/`kid` as before; only Signal search reads the received ones. A
   transmission that replaces a call whose terminator was missed publishes none of that call's live crypto: DMR
-  `dmr_flco_publish_voice()` zeroes the slot's live ALG ID, key id and MI at the fork unless a held PI of the new
-  transmission set them (forced and inferred values are re-applied by the voice path as for any call), and the
-  conventional P25 Phase 1 publish (`p25_sm_publish_conventional_voice()`) begins the new call's classification
-  (`p25_crypto_begin_voice_call()`, as a trunked grant does) unless an HDU decoded after the previous call's last voice
-  (`dsd_state::p25_p1_hdu_m`) resolved it. Limit: a PI on a slot whose previous call never carried voice is taken as
-  that call's (`CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`, `P25_P2_RELIABILITY`,
-  `NXDN_ENC_CLASS`, `M17_STATE_DISPATCH`).
+  `dmr_flco_publish_voice()` zeroes the slot's live ALG ID, key id and MI at the fork unless the new transmission's own
+  source set them within `DMR_PI_PRECALL_HOLD_S` (`dmr_live_crypto_is_next_call()`): a PI, checked or not, decoded
+  strictly after the previous call's last voice (`dsd_state::dmr_pi_live_m`), or a late-entry SB identifier that
+  replaced the previous call's non-zero live crypto (`dmr_sb_live_m`; the previous call's own SB repeats never do).
+  Forced and inferred values are re-applied by the voice path as for any call. The conventional P25 Phase 1 publish
+  (`p25_sm_publish_conventional_voice()`) begins the new call's classification (`p25_crypto_begin_voice_call()`, as a
+  trunked grant does) unless a tuple that began the new transmission's crypto strictly after the previous call's last
+  voice resolved it (`dsd_state::p25_p1_tx_crypto_m`): an HDU, or a late-entry LDU2 whose MI is not the slot's chain
+  successor (`p25_crypto_p1_note_ldu2()`, `p25_lfsr_next_mi()`). Limit: a PI on a slot whose previous call never
+  carried voice is taken as that call's (`CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`,
+  `P25_P2_RELIABILITY`, `NXDN_ENC_CLASS`, `M17_STATE_DISPATCH`).
 - API note (CRC provenance, discussion #602): `<dsd-neo/core/crc_provenance.h>` defines the bits that
   `dsd_state::event_crc_invalid` (the decoder-thread scope a dispatcher ORs its bits into and restores),
   `dsd_state::data_header_crc_invalid`, `dsd_call_snapshot::crc_invalid` and `Event_History::crc_invalid` carry:

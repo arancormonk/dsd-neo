@@ -1399,9 +1399,11 @@ struct dsd_state {
     int p25_p1_identity_epoch_started;
     // Definitive Phase 1 HDU crypto arrived after the last authoritative LCW identity.
     int p25_p1_hdu_crypto_fresh;
-    // Decode-clock instant of the last Phase 1 HDU (0: none since the slot's crypto reset). An HDU decoded after the
-    // previous call's last voice belongs to the next transmission, so a conventional replacement keeps its tuple.
-    double p25_p1_hdu_m;
+    // Decode-clock instant of the last Phase 1 tuple that began a transmission's crypto (0: none since the slot's
+    // crypto reset): an HDU, or an LDU2 whose MI does not continue the slot's MI chain (p25_crypto_p1_note_ldu2()).
+    // One decoded after the previous call's last voice belongs to the next transmission, so a conventional
+    // replacement keeps its tuple.
+    double p25_p1_tx_crypto_m;
     // One non-clear HDU/LDU2 tuple contradicted explicit-clear Phase 1 service options.
     dsd_p25_p1_crypto_conflict_state p25_p1_crypto_conflict;
     // One non-clear Phase 2 ESS tuple contradicted explicit-clear service context.

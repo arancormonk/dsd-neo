@@ -6747,12 +6747,12 @@ p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, 
 
 /* A conventional Phase 1 transmission whose terminator was missed is replaced by the next one's link control, which
    forks the epoch while the slot's live crypto is still the previous call's. Whether it belongs to the new
-   transmission: only when an HDU decoded after the previous call's last voice (or, with no voice, after it began)
-   resolved it -- the HDU leads its own transmission. */
+   transmission: only when a tuple that began a transmission's crypto -- an HDU, or a late-entry LDU2 whose MI breaks
+   the slot's chain -- resolved it after the previous call's last voice (or, with no voice, after it began). */
 static int
 p25_sm_p1_crypto_belongs_to_replacement(const dsd_state* state, const dsd_call_snapshot* previous) {
     const double previous_m = previous->media_updated_m > 0.0 ? previous->media_updated_m : previous->started_m;
-    return state->p25_p1_hdu_m > 0.0 && state->p25_p1_hdu_m >= previous_m;
+    return state->p25_p1_tx_crypto_m > 0.0 && state->p25_p1_tx_crypto_m > previous_m;
 }
 
 static int

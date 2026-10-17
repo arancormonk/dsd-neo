@@ -10,6 +10,7 @@ target_sources(
         p25_crypto_state.c
         p25_frequency.c
         p25_lfsr.c
+        p25_lfsr_mi.c
         p25_lcw.c
         p25_trunk_sm.c
         p25_cc_candidates.c
