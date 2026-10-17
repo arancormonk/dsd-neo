@@ -492,11 +492,11 @@ SignalSearchModel::avoidPermanently(const QString& session, double frequency) {
         return true;
     }
     const int saved = dsd_app_signal_search_permanent_avoid(c.frequency_hz);
-    const QString error = saved == DSD_APP_SEARCH_AVOID_FULL ? tr("The permanent avoid list is full")
-                          : saved < 0                        ? tr("This frequency cannot be avoided")
-                                                             : QString();
-    if (error != m_error) {
-        m_error = error;
+    const QString refusal = saved == DSD_APP_SEARCH_AVOID_FULL ? tr("The permanent avoid list is full")
+                            : saved < 0                        ? tr("This frequency cannot be avoided")
+                                                               : QString();
+    if (refusal != m_error) {
+        m_error = refusal;
         Q_EMIT changed();
     }
     refresh();
