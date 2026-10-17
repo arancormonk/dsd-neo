@@ -282,11 +282,12 @@ CallHistoryModel::data(const QModelIndex& index, int role) const {
 }
 
 QList<uint32_t>
-CallHistoryModel::heardTalkgroups(qint64 session) const {
+CallHistoryModel::heardTalkgroups(qint64 forSession) const {
     QList<uint32_t> heard;
     QSet<uint32_t> seen;
     for (const Row& row : m_rows) {
-        if (row.kind != KindVoice || (session > 0 && row.session != session) || row.tg == 0U || row.tg > UINT32_MAX) {
+        if (row.kind != KindVoice || (forSession > 0 && row.session != forSession) || row.tg == 0U
+            || row.tg > UINT32_MAX) {
             continue;
         }
         const auto tg = static_cast<uint32_t>(row.tg);

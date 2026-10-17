@@ -30,12 +30,12 @@ class HeardTalkgroupSource {
     virtual ~HeardTalkgroupSource() = default;
 
     /**
-     * @brief The distinct talkgroups of the voice rows logged by decode session @p session
+     * @brief The distinct talkgroups of the voice rows logged by decode session @p forSession
      *        (0 = every session), newest row first.
      *
      * Ids of 0, and ids that do not fit 32 bits, are left out.
      */
-    virtual QList<uint32_t> heardTalkgroups(qint64 session) const = 0;
+    virtual QList<uint32_t> heardTalkgroups(qint64 forSession) const = 0;
 };
 
 } // namespace dsd_qt

@@ -159,7 +159,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     QStringList systemLabels() const;
 
     /** @brief HeardTalkgroupSource: read straight from the rows, no QVariant per row (issue #718). */
-    QList<uint32_t> heardTalkgroups(qint64 session) const override;
+    QList<uint32_t> heardTalkgroups(qint64 forSession) const override;
 
     /**
      * @brief Ingest newly committed voice rows from the snapshot ring.
