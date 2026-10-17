@@ -799,6 +799,12 @@ main(int argc, char** argv) {
     assert(dsd_app_signal_search_avoid_remove(470000000) == 0);
     model.refresh();
     assert(model.avoids().isEmpty());
+    // A frequency above 2^31 Hz (2.4 GHz) is avoided as itself on every platform, including those whose long is 32 bits.
+    assert(model.avoidPermanently(QString(), 2400000000.0) && model.error().isEmpty());
+    assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 2400000000U);
+    assert(dsd_app_signal_search_avoid_remove(2400000000U) == 0);
+    model.refresh();
+    assert(model.avoids().isEmpty());
 
     // A rejected start owns nothing, and decoder-session teardown retires it while keeping its message.
     dsd_signal_search_status rejected{};

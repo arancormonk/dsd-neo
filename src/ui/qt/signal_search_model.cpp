@@ -448,13 +448,14 @@ SignalSearchModel::unavoid(uint32_t frequency) {
     return true;
 }
 
-/* A frequency a control can carry: a whole, positive Hz value. */
+/* A frequency a control can carry: a whole, positive Hz value. Rounded through long long: long is 32 bits on Windows,
+   and a frequency above 2.147 GHz would overflow it. */
 static bool
 controlFrequency(double frequency, uint32_t* hz) {
     if (!std::isfinite(frequency) || frequency < 1 || frequency > UINT32_MAX) {
         return false;
     }
-    *hz = (uint32_t)std::lround(frequency);
+    *hz = (uint32_t)std::llround(frequency);
     return true;
 }
 
