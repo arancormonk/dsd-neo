@@ -1227,6 +1227,10 @@ struct dsd_state {
     unsigned int dmr_heal_fid[2];
     unsigned int dmr_heal_so[2];
     uint8_t dmr_heal_le_vendor[2];
+    /* The slot's dmr_crypto_inherited mark and tuple at the stash, restored with the live values on a heal. */
+    uint8_t dmr_heal_inherited[2];
+    int dmr_heal_inherited_algid[2];
+    int dmr_heal_inherited_keyid[2];
     uint8_t dmr_heal_valid[2];
     /* The live ALG ID and key id DMR last published into each slot's call epoch, whether or not the record took them
      * as the call's own (dsd_call_crypto_update::carried). The heal restores these for that epoch, which is what the

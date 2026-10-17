@@ -841,7 +841,10 @@ suite runs under this compiler.
   A reacquired epoch's seeded crypto is kept against updates that receive nothing and name no ALG ID or key id
   (`dsd_call_snapshot::crypto_restored`; the live values a sync loss cleared). Because the record no longer holds
   carried values, the DMR heal restores the slot's live ALG ID and key id from `dsd_state::dmr_live_pub_*` (what DMR
-  last published into the ending epoch), which is what it always restored. Limits: after a missed terminator, a new
+  last published into the ending epoch), which is what it always restored; it then binds those values to the healed
+  epoch, so a second heal with no LC or PI in between restores them too. The heal also restores the inherited mark
+  the terminator reset cleared (stashed with the live values), so the healed call's next LC still publishes them as
+  carried. Limits: after a missed terminator, a new
   call whose own PI, HDU, LDU2 or DMR late-entry SB identifier decoded before its link control (header lost, or its
   first embedded LC failing CRC) shows no ALG/KID until a later one of its own, and that signalling is attributed to
   the previous, still-active call (a conventional P25 Phase 1 HDU always

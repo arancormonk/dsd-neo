@@ -148,6 +148,25 @@ dmr_scenarios(dsd_opts* opts) {
     expect_dmr("dmr heal restores", state, 0x21, 0x05, 0x11223344ULL, 0x40U);
     free_state(state);
 
+    // Two unverified terminators after the fork, each healed by the next voice frame, with no LC or PI in between:
+    // every heal puts back the crypto the slot carried, the second as well as the first.
+    state = dmr_call_with_pi(opts);
+    dmr_lc(opts, state, 1U, 0x40U, 3333U, 4444U);
+    (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+    dsd_decode_clock_test_set_ns(1400000000ULL);
+    dmr_lc_checked(opts, state, 2U, 0x40U, 3333U, 4444U, 0U);
+    dsd_decode_clock_test_set_ns(1450000000ULL);
+    (void)dsd_call_state_observe(state, &media, DSD_CALL_BOUNDARY_BEGIN);
+    expect_dmr("dmr first heal restores", state, 0x21, 0x05, 0x11223344ULL, 0x40U);
+    (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+    dsd_decode_clock_test_set_ns(1550000000ULL);
+    dmr_lc_checked(opts, state, 2U, 0x40U, 3333U, 4444U, 0U);
+    expect_dmr("dmr second unverified terminator resets", state, 0, 0, 0ULL, 0x00U);
+    dsd_decode_clock_test_set_ns(1600000000ULL);
+    (void)dsd_call_state_observe(state, &media, DSD_CALL_BOUNDARY_BEGIN);
+    expect_dmr("dmr second heal restores", state, 0x21, 0x05, 0x11223344ULL, 0x40U);
+    free_state(state);
+
     // A PI with no call active, then the call's header.
     state = (dsd_state*)calloc(1U, sizeof(*state));
     assert(state != NULL);

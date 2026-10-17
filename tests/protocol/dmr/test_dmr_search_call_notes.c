@@ -80,6 +80,29 @@ run_pi(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t alg, uint8_t kid)
     dmr_pi(opts, state, pi, 1U, 0U);
 }
 
+/* A terminator LC whose CRC did not verify: it may be a mis-typed voice burst, so the call ends recoverably. */
+static void
+run_unverified_terminator(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t target, uint32_t source) {
+    uint8_t bits[80];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits(bits, 16U, 0x40U, 8U);
+    write_bits(bits, 24U, target, 24U);
+    write_bits(bits, 48U, source, 24U);
+    uint32_t irr = 0;
+    state->currentslot = slot;
+    dmr_flco(opts, state, bits, 0U, &irr, 2U);
+}
+
+/* The identity-less voice media mark that heals a recoverably ended call. */
+static void
+run_media_mark(dsd_state* state, uint8_t slot) {
+    dsd_call_observation media = {0};
+    media.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    media.slot = slot;
+    media.kind = DSD_CALL_KIND_VOICE;
+    (void)dsd_call_state_observe(state, &media, DSD_CALL_BOUNDARY_BEGIN);
+}
+
 static dsd_call_snapshot
 call_on(const dsd_state* state, uint8_t slot) {
     dsd_call_snapshot call;
@@ -289,6 +312,47 @@ test_later_call_does_not_inherit(dsd_opts* opts) {
     call = call_on(state, 1U);
     assert(call.ota_target_id == 7777U && call.crypto_received == 0U);
     free_state(state);
+}
+
+/* A replacing call's inherited crypto stays the replaced call's across the heals of unverified terminators: the heal
+   puts the live values back for decryption, and with them the mark that they are not this call's, so the call's next
+   embedded LC does not publish them as its own -- after one heal, and after a second with no LC or PI in between. */
+static void
+test_heal_keeps_the_inherited_mark(dsd_opts* opts) {
+    for (int heals = 1; heals <= 2; heals++) {
+        dsd_state* state = fresh_state();
+        dsd_decode_clock_use_test(20000000000ULL);
+        run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
+        run_pi(opts, state, 0U, 0x21U, 0x05U);
+        assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+        dsd_decode_clock_test_set_ns(20300000000ULL);
+        run_lc(opts, state, 0U, 1U, 0x40U, 3333U, 4444U);
+        dsd_call_snapshot call = call_on(state, 0U);
+        assert(call.ota_target_id == 3333U && call.algid == 0U && call.kid == 0U);
+        uint64_t now_ns = 20300000000ULL;
+        for (int i = 0; i < heals; i++) {
+            assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+            now_ns += 100000000ULL;
+            dsd_decode_clock_test_set_ns(now_ns);
+            run_unverified_terminator(opts, state, 0U, 3333U, 4444U);
+            assert(state->payload_algid == 0 && state->payload_keyid == 0);
+            now_ns += 50000000ULL;
+            dsd_decode_clock_test_set_ns(now_ns);
+            run_media_mark(state, 0U);
+            assert(state->payload_algid == 0x21 && state->payload_keyid == 0x05);
+        }
+        run_lc(opts, state, 0U, 3U, 0x40U, 3333U, 4444U);
+        call = call_on(state, 0U);
+        assert(call.ota_target_id == 3333U && call.algid == 0U && call.kid == 0U && call.crypto_received == 0U);
+        assert(noted_valid[0] && noted[0].algid == 0U && noted[0].kid == 0U);
+        assert(state->payload_algid == 0x21 && state->payload_keyid == 0x05 && state->payload_mi == 0x11223344ULL);
+        // B's own checked PI still makes the values its own.
+        run_pi(opts, state, 0U, 0x21U, 0x05U);
+        call = call_on(state, 0U);
+        assert(call.algid == 0x21U && call.kid == 0x05U && received_is(&call, RX_BOTH, 0x21U, 0x05U));
+        dsd_decode_clock_use_system();
+        free_state(state);
+    }
 }
 
 static int
@@ -612,6 +676,7 @@ main(void) {
     test_replacing_call_shows_the_decoders_choice(opts);
     test_sb_after_the_fork_is_the_calls_own(opts);
     test_specialized_epoch_drops_the_replaced_crypto(opts);
+    test_heal_keeps_the_inherited_mark(opts);
     dsd_signal_search_call_set(NULL);
     free(opts);
     return 0;

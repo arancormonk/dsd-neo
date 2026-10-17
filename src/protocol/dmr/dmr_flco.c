@@ -930,6 +930,11 @@ dmr_flco_stash_slot_crypto(dsd_state* state, uint8_t slot, uint64_t epoch) {
     state->dmr_heal_so[idx] = *live.so;
     state->dmr_heal_mi[idx] = *live.mi;
     state->dmr_heal_le_vendor[idx] = state->dmr_le_vendor[idx];
+    // The reset clears the mark that the live ALG ID and key id are a replaced call's (dmr_crypto_inherited); the heal
+    // puts the values back, so it must put the mark back with them, or the healed call would publish them as its own.
+    state->dmr_heal_inherited[idx] = state->dmr_crypto_inherited[idx];
+    state->dmr_heal_inherited_algid[idx] = state->dmr_crypto_inherited_algid[idx];
+    state->dmr_heal_inherited_keyid[idx] = state->dmr_crypto_inherited_keyid[idx];
     state->dmr_heal_epoch[idx] = epoch;
     state->dmr_heal_valid[idx] = 1U;
 }
@@ -959,10 +964,17 @@ dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* p
     *live.keyid = published ? state->dmr_live_pub_keyid[idx] : (int)previous->kid;
     *live.mi = state->dmr_heal_mi[idx];
     state->dmr_le_vendor[idx] = state->dmr_heal_le_vendor[idx];
+    state->dmr_crypto_inherited[idx] = state->dmr_heal_inherited[idx];
+    state->dmr_crypto_inherited_algid[idx] = state->dmr_heal_inherited_algid[idx];
+    state->dmr_crypto_inherited_keyid[idx] = state->dmr_heal_inherited_keyid[idx];
     // The stash held live, already-corroborated signaling; restoring it re-establishes the
     // classification so the resumed transmission is not re-proved from scratch.
     dmr_enc_class_force(state, idx, (*live.so & 0x40U) != 0U);
     state->dmr_heal_valid[idx] = 0U;
+    // The healed epoch is a new one, seeded with the record's (the call's own) crypto, which leaves out carried live
+    // values. Bind the restored live values to it, so a later heal of this epoch restores them too rather than falling
+    // back to the record.
+    dmr_note_published_live_crypto(state, idx, *live.algid, *live.keyid);
 }
 
 // Install the heal hook exactly once, per the contract in call_state.h ("Install once from the
