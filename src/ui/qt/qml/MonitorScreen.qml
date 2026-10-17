@@ -746,7 +746,6 @@ Item {
                     accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
                     // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
                     visible: !screen.stripIdle
-                    Accessible.ignored: screen.stripIdle || !navigationAllowed
                     enabled: decoderHost.running
                     onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
                 }
@@ -762,7 +761,6 @@ Item {
                     icon: "more"
                     accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
                     visible: !screen.stripIdle
-                    Accessible.ignored: screen.stripIdle || !navigationAllowed
                     enabled: decoderHost.running
                     onClicked: otherSlotMenu.openForOtherSlot()
                 }
